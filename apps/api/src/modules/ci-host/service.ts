@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { CI_HOST_NAMESPACE, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiHostReplySchema, CiListOutputSchema, CiRunRecordSchema,
   WorkspaceSchema,
+  requiresUserSystemd, userSystemdIntegrationFiles,
   type CiDurations, type CiHostRequest, type CiHostReply, type CiListOutput, type CiRunRecord, type CiRunInput,
   type CiTestResults, type CiTestStatus } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -184,15 +185,22 @@ export class HostCiService {
       const count = group[0]!.partition!.count
       if (group.length !== count) continue
       const ordered = [...free].sort((left, right) =>
-        Number(left.hostRef.kind === 'cloud') - Number(right.hostRef.kind === 'cloud')
-        || Number(isGitHubComputer(left)) - Number(isGitHubComputer(right))
+        Number(isGitHubComputer(left)) - Number(isGitHubComputer(right))
         || right.priority - left.priority
-        || (speed.get(right.key) ?? 0) - (speed.get(left.key) ?? 0)).slice(0, count)
-      const hostCount = Math.max(1, ordered.filter(computer => computer.hostRef.kind !== 'cloud').length)
+        || (speed.get(right.key) ?? 0) - (speed.get(left.key) ?? 0))
+      const hosts = ordered.filter(computer => computer.hostRef.kind !== 'cloud')
+      const cloud = ordered.filter(computer => computer.hostRef.kind === 'cloud')
+      const selection = group[0]!
+      const knownFiles = selection.scope === 'affected' && !selection.deriveFiles
+      const hostFiles = knownFiles ? selection.files.filter(requiresUserSystemd).length : userSystemdIntegrationFiles.size
+      const ordinaryFiles = knownFiles ? selection.files.length - hostFiles : count
+      const hostCount = hostFiles ? Math.min(hostFiles, ordinaryFiles ? count - 1 : count,
+        Math.max(1, hosts.length, count - ordinaryFiles)) : 0
       const hostIndexes = Array.from({ length: hostCount }, (_, index) => index)
-      const planned: (HostCiComputer | undefined)[] = [...ordered]
-      // Reserve a host slice even when every build computer is currently busy.
-      if (ordered[0]?.hostRef.kind === 'cloud') planned.unshift(undefined)
+      // A busy build computer holds only user-systemd files; every ordinary slice can start on cloud slots.
+      const planned: (HostCiComputer | undefined)[] = [
+        ...hostIndexes.map(index => hosts[index]), ...cloud, ...hosts.slice(hostCount),
+      ]
       const known = ordered.map(computer => speed.get(computer.key)).filter((value): value is number => value !== undefined)
       const mean = known.length ? known.reduce((sum, value) => sum + value, 0) / known.length : 1
       const weights = group.map((_, index) => {
@@ -200,7 +208,8 @@ export class HostCiService {
         return Number((computer ? speed.get(computer.key) ?? mean : mean).toPrecision(6))
       })
       for (const [index, run] of group.sort((left, right) => left.partition!.index - right.partition!.index).entries()) {
-        const next = CiRunRecordSchema.parse({ ...run, partition: { ...run.partition!, weights, hostIndexes },
+        const next = CiRunRecordSchema.parse({ ...run, partition: { ...run.partition!, weights,
+          ...(hostIndexes.length ? { hostIndexes } : {}) },
           plannedHostKey: planned[index]?.key ?? null })
         await this.save(next, null)
         replaced.set(run.id, next)
@@ -221,8 +230,12 @@ export class HostCiService {
       const seconds = (Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000
       // Fail-fast runs say nothing about speed.
       if (seconds < 120) continue
-      const weights = run.partition!.weights
-      const share = weights ? weights[run.partition!.index]! / weights.reduce((sum, value) => sum + value, 0) : 1 / run.partition!.count
+      const partition = run.partition!
+      if (partition.hostIndexes?.includes(partition.index)) continue
+      const weights = partition.weights ?? Array.from({ length: partition.count }, () => 1)
+      const ordinaryWeight = weights.reduce((sum, value, index) =>
+        sum + (partition.hostIndexes?.includes(index) ? 0 : value), 0)
+      const share = weights[partition.index]! / ordinaryWeight
       speed.set(key, share / seconds)
     }
     for (const computer of computers) {
@@ -559,18 +572,23 @@ export class HostCiService {
     queued = await this.weighPartitions(queued, computers.filter(computer => !busy.has(computer.key)))
     // Runs start at once, in queue order: each claims its computer before waiting, so none is given twice.
     await Promise.all(queued.map(async run => {
-      const hostRequired = run.suite === 'integration' && (!run.partition?.hostIndexes
-        || run.partition.hostIndexes.includes(run.partition.index))
+      if (run.suite === 'integration' && run.partition && !run.partition.weights) return
+      const hostRequired = run.suite === 'integration' && (run.partition
+        ? run.partition.hostIndexes?.includes(run.partition.index) === true
+        : run.scope === 'full' || run.deriveFiles || run.files.some(requiresUserSystemd))
       const reasons = (run.unstartedProviders ?? []).map(provider => `${provider}: dispatch retries exhausted`)
-      const preferred = (computer: HostCiComputer) => Number(run.suite === 'integration'
-        ? !isGitHubComputer(computer) : isGitHubComputer(computer))
+      const preferred = (computer: HostCiComputer) => {
+        if (run.suite !== 'integration') return Number(isGitHubComputer(computer))
+        if (computer.hostRef.kind !== 'cloud') return 0
+        return isGitHubComputer(computer) ? 1 : 2
+      }
       const order = computers.filter(computer => runsOnCircleCi(run)
         || computer.hostRef.kind !== 'cloud' || computer.hostRef.provider !== 'circleci')
         .filter(computer => !hostRequired || computer.hostRef.kind !== 'cloud')
         .filter(computer => computer.hostRef.kind !== 'cloud' || !computer.hostRef.provider
           || !run.unstartedProviders?.includes(computer.hostRef.provider))
-        .sort((left, right) => preferred(right) - preferred(left)
-          || Number(right.key === run.plannedHostKey) - Number(left.key === run.plannedHostKey)
+        .sort((left, right) => Number(right.key === run.plannedHostKey) - Number(left.key === run.plannedHostKey)
+          || preferred(right) - preferred(left)
           || right.priority - left.priority)
       for (const computer of order) {
         if (computer.hostRef.kind === 'cloud' && computer.hostRef.provider

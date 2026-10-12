@@ -105,7 +105,10 @@ it('honors persisted MCP build participation and priority while retaining assign
     const start = async () => CiRunOutputSchema.parse(await call(writer, 'ci_run', {
       workspaceId, suite: 'install', commandId: randomUUID(),
     }))
-    const get = async (ticketId: string) => CiGetOutputSchema.parse(await call(reader, 'ci_get', { workspaceId, ticketId }))
+    const get = async (ticketId: string) => {
+      await ci!.dispatch()
+      return CiGetOutputSchema.parse(await call(reader, 'ci_get', { workspaceId, ticketId }))
+    }
 
     expect((await list()).computers).toEqual([])
     await save(main, false, 100)

@@ -2,7 +2,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir, hostname, userInfo } from 'node:os'
 import { join } from 'node:path'
 import type pg from 'pg'
-import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, CiTestResultsSchema, WorkspaceSchema, integrationPartition,
+import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, CiTestResultsSchema, WorkspaceSchema,
+  integrationPartition, requiresUserSystemd,
   type CiDurations, type CiTestResults, type CiHostReply, type CiHostRequest, type CiHostRun, type CiPartition, type CiSuite, type CiPart, type CiScope } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
@@ -163,7 +164,8 @@ export class CloudCi {
     files?: string[] | undefined; defaultBranch?: string | undefined; baseCommit?: string | undefined }): Promise<CiHostRun> {
     const existing = await this.read(request.runId).catch(() => null)
     if (existing) return this.view(existing, 0)
-    if (request.suite === 'integration' && request.partition?.hostIndexes?.includes(request.partition.index)) {
+    if (request.suite === 'integration' && (request.partition?.hostIndexes?.includes(request.partition.index)
+      || !request.partition && request.files?.some(requiresUserSystemd))) {
       throw new DomainError('CI_CLOUD_UNAVAILABLE',
         'This integration partition requires a build computer with user systemd.', 409)
     }
@@ -367,6 +369,9 @@ export class CloudCi {
     }
     const candidates = selected ?? files
     const slice = new Set<string>(partition ? integrationPartition(candidates, { ...committed, ...learned }, partition) : candidates)
+    if ([...slice].some(requiresUserSystemd)) {
+      throw new DomainError('CI_CLOUD_UNAVAILABLE', 'Selected integration files require user systemd.', 409)
+    }
     if (!slice.size) throw new DomainError('CI_CLOUD_FAILED', 'This partition has no integration files.', 409)
     return this.indexSpec(files, slice)
   }

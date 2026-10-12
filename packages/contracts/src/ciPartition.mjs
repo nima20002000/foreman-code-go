@@ -1,4 +1,9 @@
-import { exclusiveIntegrationFiles, requirements } from './integrationScheduling.mjs'
+import { exclusiveIntegrationFiles, requirements, userSystemdIntegrationFiles } from './integrationScheduling.mjs'
+
+/** @param {string} file */
+export function requiresUserSystemd(file) {
+  return userSystemdIntegrationFiles.has(file)
+}
 
 /** Spread capability-dependent and host-exclusive files before balancing the remaining durations by computer speed.
  * Files without a recorded duration count as the median.
@@ -16,14 +21,18 @@ export function integrationPartition(files, durations, partition) {
   const owner = new Map()
   const heavy = new Set([...requirements.keys(), ...exclusiveIntegrationFiles])
   const heavyCounts = Array(partition.count).fill(0)
+  const indexes = Array.from({ length: partition.count }, (_, index) => index)
+  const ordinaryIndexes = indexes.filter(index => !partition.hostIndexes?.includes(index))
   const ordered = [...files].sort((left, right) => Number(heavy.has(right)) - Number(heavy.has(left))
     || weight(right) - weight(left) || (left < right ? -1 : 1))
   for (const file of ordered) {
     // Heavy files use each partition once per round before host speed breaks ties.
     const isHeavy = heavy.has(file)
-    const hostRequired = requirements.get(file)?.includes('installedWorkerHost')
-    const eligible = hostRequired && partition.hostIndexes
-      ? partition.hostIndexes : Array.from({ length: partition.count }, (_, index) => index)
+    let eligible = indexes
+    if (partition.hostIndexes) {
+      eligible = requiresUserSystemd(file) ? partition.hostIndexes : ordinaryIndexes
+    }
+    if (!eligible.length) throw new Error('Partition plan has no eligible slice for an integration file.')
     let lightest = eligible[0]
     const finish = index => (loads[index] + weight(file)) / speed(index)
     for (const index of eligible.slice(1)) {

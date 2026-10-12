@@ -23,18 +23,28 @@ describe('integration partitions', () => {
     expect(Math.max(...loads) - Math.min(...loads)).toBeLessThan(2000)
   })
 
-  it('keeps installed Worker and systemd files on host slices while covering every file once', () => {
-    const installed = [
-      'apps/api/test/workflow-systemd-restart.integration.test.ts',
+  it('isolates user-systemd files and balances ordinary files across cloud slices', () => {
+    const systemd = [
+      'apps/api/test/workflow-systemd-restart-active.integration.test.ts',
+      'apps/api/test/workflow-systemd-restart-writable-source.integration.test.ts',
+      'apps/api/test/workflow-systemd-restart-admitting-interval.integration.test.ts',
+      'apps/api/test/workflow-systemd-restart-failed-admission.integration.test.ts',
       'apps/api/test/native-service-restart.integration.test.ts',
-      'apps/api/test/remote-review-production-main-crash.integration.test.ts',
     ]
-    const selected = [...installed, ...files]
+    const cloud = [
+      'apps/api/test/workflow-systemd-restart.integration.test.ts',
+      'apps/api/test/remote-review-production-main-crash.integration.test.ts',
+      'apps/api/test/local-human-native.integration.test.ts',
+    ]
+    const selected = [...systemd, ...cloud, ...files]
     const slices = [0, 1, 2].map(index => integrationPartition(selected, durations,
-      { index, count: 3, weights: [1, 8, 8], hostIndexes: [0] }))
+      { index, count: 3, weights: [100, 2, 1], hostIndexes: [0] }))
     expect(slices.flat().sort()).toEqual([...selected].sort())
-    expect(slices[0]).toEqual(expect.arrayContaining(installed))
-    expect(slices.slice(1).flat().some(file => installed.includes(file))).toBe(false)
+    expect(slices[0]).toEqual(systemd)
+    expect(slices.slice(1).flat()).toEqual(expect.arrayContaining(cloud))
     expect(slices.slice(1).every(slice => slice.length > 0)).toBe(true)
+    const loads = slices.slice(1).map(slice => work(slice.filter(file => files.includes(file))))
+    expect(loads[0]! / loads[1]!).toBeGreaterThan(1.8)
+    expect(loads[0]! / loads[1]!).toBeLessThan(2.2)
   })
 })

@@ -30,6 +30,8 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'ci_get reads back the persisted baseCommit, scope and files. Empty affected selections pass without launching a runner. '
   + 'Requires the same CI run grants for either scope. partitions (2–32, integration only) splits integration '
   + 'into duration-balanced runs on separate computers when scripts/ci-suite.sh and scripts/ci-files.mjs support them. '
+  + 'Only files requiring user systemd wait for build computers; ordinary files use the other weighted slices on cloud slots. '
+  + 'Mixed explicit integration selections split into separate host and ordinary slices even without partitions. '
   + 'Repositories providing the scripts/ci-suite.sh part contract automatically queue unit-api and unit-web shards '
   + '(defaults 5 and 3, sized from measured durations when available), unit-web-heavy and unit-other. '
   + 'Lint, typecheck and build each queue their -api and -other parts. Each part has its own ticket and shares a groupId; '
