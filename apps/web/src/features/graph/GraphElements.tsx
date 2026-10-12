@@ -1,3 +1,4 @@
+import { useHoverControls } from '../../shared/ui/useHoverControls'
 import { memo, useCallback, useContext, useRef, useState, type ReactNode } from 'react'
 import { UnsavedChangesContext } from '../../shared/ui/unsavedChanges'
 import { useInternalNode, type NodeProps, type EdgeProps } from '@xyflow/react'
@@ -117,7 +118,7 @@ export const AgentNode = memo(function AgentNode({ data: staticData, isConnectab
   )
 })
 
-/** Inactive edges contain SVG only. Focus, pointer, and touch activate the rich controls. */
+/** Focus, pointer, and touch reveal the connection controls. */
 export const HandoffEdge = memo(function HandoffEdge({
   id, source, target, sourceX, sourceY, targetX, targetY, label, data,
 }: EdgeProps<GraphEdge>) {
@@ -125,7 +126,7 @@ export const HandoffEdge = memo(function HandoffEdge({
   const focused = useGraphPresentation((state) => state.focusedEdgeId === id)
   const entering = useGraphPresentation((state) => state.enteringEdgeId === id)
   const geometry = useContext(GraphGeometryContext)
-  const [hovered, setHovered] = useState(false)
+  const { hovered, onPointerEnter, onPointerLeave, clearHover } = useHoverControls()
   const [inspecting, setInspecting] = useState(false)
   const active = !data?.departing && (hovered || focused)
   const receiver = useInternalNode<GraphNode>(target)
@@ -142,8 +143,8 @@ export const HandoffEdge = memo(function HandoffEdge({
 
   return <g className={entering ? 'workflow-graph-edge-new' : undefined}
     role="group" tabIndex={data?.departing ? -1 : 0} aria-hidden={data?.departing || undefined} aria-label={description}
-    onPointerEnter={(event) => { if (event.pointerType !== 'touch') setHovered(true) }}
-    onPointerLeave={() => setHovered(false)}
+    onPointerEnter={(event) => { if (event.pointerType !== 'touch') onPointerEnter() }}
+    onPointerLeave={onPointerLeave}
     onFocus={() => presentation.getState().setFocusedEdgeId(id)}
     onBlur={(event) => {
       if (!event.currentTarget.contains(event.relatedTarget)) {
@@ -160,7 +161,7 @@ export const HandoffEdge = memo(function HandoffEdge({
       if (event.key === 'Escape') {
         event.stopPropagation()
         setInspecting(false)
-        setHovered(false)
+        clearHover()
         event.currentTarget.focus?.()
         presentation.getState().setFocusedEdgeId(undefined)
       } else if (event.key === 'Enter' || event.key === ' ') {
@@ -176,15 +177,17 @@ export const HandoffEdge = memo(function HandoffEdge({
     }}>
     <title>{data?.explanation ?? description}</title>
     <SignalEdgeShape id={id} curve={curve} signal={signal} label={typeof label === 'string' && label ? label : undefined} showLabel />
-    {active ? <foreignObject className="graph-edge-active-controls"
+    {active ? <rect className="board-edge-hover-bridge" x={mid.x - 112} y={mid.y}
+      width={224} height={48} /> : null}
+    <foreignObject aria-hidden={!active} data-visible={active} className="graph-edge-active-controls"
       x={mid.x - 112} y={mid.y + 10} width={224} height={inspecting ? 112 : 38}>
       <div className="graph-edge-controls nodrag nopan">
-        <Button variant="secondary" aria-label={`Inspect ${description.toLowerCase()}`} title="Inspect connection"
+        <Button variant="secondary" tabIndex={active ? 0 : -1} aria-label={`Inspect ${description.toLowerCase()}`} title="Inspect connection"
           onKeyDown={(event) => { if (event.key !== 'Escape') event.stopPropagation() }}
           onClick={(event) => { event.stopPropagation(); setInspecting((current) => !current) }}>
           <Icon name="info" size={14} />
         </Button>
-        {canRemove ? <Button variant="secondary" className="workflow-graph-edge-remove"
+        {canRemove ? <Button variant="secondary" tabIndex={active ? 0 : -1} className="workflow-graph-edge-remove"
           aria-label={removeLabel} title="Remove connection"
           onKeyDown={(event) => { if (event.key !== 'Escape') event.stopPropagation() }}
           onClick={(event) => { event.stopPropagation(); data?.onRemove?.(id) }}>
@@ -192,6 +195,6 @@ export const HandoffEdge = memo(function HandoffEdge({
         </Button> : null}
       </div>
       {inspecting ? <div className="graph-edge-inspection" role="note">{data?.explanation ?? description}</div> : null}
-    </foreignObject> : null}
+    </foreignObject>
   </g>
 })

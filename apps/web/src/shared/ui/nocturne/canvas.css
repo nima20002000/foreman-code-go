@@ -298,6 +298,8 @@
 
 /* Rim actions appear while the node is hovered or keyboard-focused. */
 .n-agent-actions { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+.n-agent-actions::after { content: ''; position: absolute; left: 100%; top: 31%; width: 40px; height: 34px; pointer-events: none; }
+.n-agent:is(:hover, [data-hovered]) .n-agent-actions::after { pointer-events: auto; }
 .n-agent-actions::before { content: ''; position: absolute; left: 132px; top: -34px; width: 130px; height: 150px; border-radius: 40% 60% 60% 30%; }
 .n-agent-action {
   position: absolute;
@@ -316,6 +318,7 @@
   transition: opacity 140ms ease, background 140ms ease, border-color 140ms ease;
 }
 .n-agent:hover .n-agent-action,
+.n-agent[data-hovered] .n-agent-action,
 .n-agent:has(:focus-visible) .n-agent-action,
 .react-flow__node:focus-visible .n-agent-action { opacity: 1; pointer-events: auto; }
 .n-agent-action--chat { left: 146px; top: -29px; }
@@ -441,6 +444,9 @@
 @keyframes n-signal-charge { from { stroke-dashoffset: 1; opacity: .9; } to { stroke-dashoffset: 0; opacity: .9; } }
 @keyframes n-signal-charge-back { from { stroke-dashoffset: -1; opacity: .9; } to { stroke-dashoffset: 0; opacity: .9; } }
 @keyframes n-signal-discharge { from { opacity: .9; } to { opacity: 0; } }
+.n-signal-edge-badge { opacity: 0; pointer-events: none; transition: opacity 140ms ease; }
+.n-signal-edge-badge[data-visible='true'] { opacity: 1; pointer-events: all; }
+.board-edge-hover-bridge { fill: transparent; pointer-events: all; }
 .n-signal-edge-badge rect { fill: var(--surface-raised); stroke: var(--border); }
 .n-signal-edge-badge text { fill: var(--text-muted); font: var(--type-eyebrow); letter-spacing: var(--type-eyebrow-tracking); text-transform: uppercase; }
 .n-signal-edge[data-signal] .n-signal-edge-badge text { fill: var(--edge-signal); }

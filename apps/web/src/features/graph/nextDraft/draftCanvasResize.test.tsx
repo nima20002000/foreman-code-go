@@ -56,6 +56,31 @@ function FixtureCanvas() {
 function mount() {
   return render(<GraphPresentationProvider><ReactFlowProvider><FixtureCanvas /></ReactFlowProvider></GraphPresentationProvider>)
 }
+
+it('keeps the edge remove button mounted while crossing to its controls', async () => {
+  const view = mount()
+  const remove = await screen.findByLabelText(/Remove handoff/)
+  const control = remove.closest('foreignObject')!
+  const edge = control.parentElement!
+  vi.useFakeTimers()
+  expect(control).toHaveAttribute('aria-hidden', 'true')
+  fireEvent.pointerEnter(edge)
+  expect(control).toHaveAttribute('aria-hidden', 'false')
+  fireEvent.pointerLeave(edge)
+  act(() => vi.advanceTimersByTime(100))
+  fireEvent.pointerEnter(remove)
+  act(() => vi.advanceTimersByTime(200))
+  expect(screen.getByRole('button', { name: /Remove handoff/ })).toBe(remove)
+  fireEvent.pointerLeave(edge)
+  act(() => vi.advanceTimersByTime(160))
+  expect(control).toHaveAttribute('aria-hidden', 'true')
+  expect(view.container.contains(remove)).toBe(true)
+  fireEvent.pointerEnter(edge)
+  fireEvent.click(remove)
+  expect(change).toHaveBeenCalledOnce()
+  expect(change.mock.calls[0][0](context.draft.graph).edges).toEqual([])
+})
+
 function mouse(target: Element | Window, type: 'mousedown' | 'mousemove' | 'mouseup', clientX: number, clientY: number) {
   const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY, button: 0, buttons: type === 'mouseup' ? 0 : 1 })
   // Vitest's Window proxy is not accepted by jsdom 30's UIEvent constructor.
