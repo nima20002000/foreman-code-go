@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, linkSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -22,6 +22,31 @@ function fixture() {
 }
 
 describe.skipIf(process.platform !== 'linux')('passive native registry producer', () => {
+  it('reads an exit publication with a retained temporary link while observing other launches', () => {
+    const f = fixture()
+    try {
+      const guardian = processIdentity(process.pid)!
+      const ended = f.seed()
+      const active = f.seed()
+      for (const row of [ended, active]) {
+        writeRecord(join(row.directory, 'birth.json'), {
+          format: 1, id: row.id, owner: f.owner, boot: row.intent.boot, guardian,
+        })
+      }
+      const exitPath = join(ended.directory, 'provider-exit.json')
+      writeRecord(exitPath, {
+        format: 1, id: ended.id, owner: f.owner, boot: ended.intent.boot, code: 0, signal: null,
+      }, true)
+      linkSync(exitPath, join(ended.directory, `.pending-${randomUUID()}`))
+
+      const snapshot = f.registry.snapshot()
+      expect(snapshot.launches.find(row => row.launchId === ended.id)?.lifecycle).toBe('ended')
+      expect(snapshot.launches.find(row => row.launchId === active.id)?.lifecycle).toBe('active')
+    } finally {
+      rmSync(f.root, { recursive: true, force: true })
+    }
+  })
+
   for (const evidence of ['native_exit_removed_cgroup', 'cgroup_v2_removed']) {
     it(`reads persisted ${evidence} cleanup after reopening and retiring the registry`, async () => {
       const f = fixture()
