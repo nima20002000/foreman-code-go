@@ -11,7 +11,7 @@ import {
 import { Settings } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
 
-import { SidebarComputers } from '../../features/computers/ComputerActivity'
+import { SidebarComputers } from '../../features/computers/SidebarComputers'
 import { ThemeToggle } from '../../features/theme'
 import { HarnessStatusMenu } from '../../features/settings/HarnessStatusMenu'
 import { useWorkspacePages } from '../api/query'
