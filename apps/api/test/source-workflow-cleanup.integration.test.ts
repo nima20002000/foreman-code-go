@@ -1,0 +1,226 @@
+import { execFileSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import pg from 'pg'
+import { expect, it } from 'vitest'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
+import { SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
+import { createFixtureDatabase, dropFixtureDatabase, removeFixtureDirectory } from './helpers/testResources.js'
+import { gitFixtureEnvironment } from './helpers/gitFixture.js'
+import { sourceStorageCapacityFixture } from './helpers/sourceStorageCapacityFixture.js'
+import { createSourceManifest, sourceSha256 } from '../src/modules/sources/manifest.js'
+import { identity, openPrivateRoot } from '../src/modules/sources/privateFilesystem.js'
+import { PrivateSourceMaterializer, releaseMaterializationClaim } from '../src/modules/sources/materialization.js'
+import { systemGitWorktreePorts, type GitWorktreePorts } from '../src/modules/sources/gitWorktree.js'
+import { closeSourceWorktree } from '../src/modules/sources/worktreeCleanup.js'
+import { measureRetainedMaterializationFootprint } from '../src/modules/sources/retainedDirectoryUsage.js'
+import { sourceWorkingTreePath } from '../src/modules/sources/sourceTreePaths.js'
+import { PostgresSourceService, type SourceExecutionHostPort } from '../src/modules/sources/service.js'
+import { PostgresSourceReservations } from '../src/modules/sources/reservations.js'
+import { closeCompletedWorkflowSources, localWorkflowSourceClosed } from '../src/modules/sources/workflowCleanup.js'
+
+const git = (cwd: string, ...args: string[]) => execFileSync('git', args,
+  { cwd, encoding: 'utf8', env: gitFixtureEnvironment() }).trim()
+
+async function fixture() {
+  const database = `source_workflow_test_${randomUUID().replaceAll('-', '')}`
+  const adminUrl = process.env.TEST_DATABASE_URL!
+  const admin = new pg.Pool({ connectionString: adminUrl })
+  await createFixtureDatabase(admin, database)
+  const url = new URL(adminUrl)
+  url.pathname = `/${database}`
+  const pool = new pg.Pool({ connectionString: url.toString() })
+  const base = await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT!, 'source-workflow-'))
+  const dispose = async () => {
+    await pool.end()
+    await dropFixtureDatabase(admin, database)
+    await admin.end()
+    await removeFixtureDirectory(base)
+  }
+  try {
+    await pool.query(`
+      create table runs (id text primary key, execution_state text not null);
+      create table harness_executions (id text primary key, run_id text not null, record jsonb not null);
+      create table execution_native_sessions (execution_id text primary key, reference jsonb,
+        workflow_finalized_at timestamptz);
+      create table execution_native_closures (execution_id text, generation bigint, execution_identity jsonb,
+        expected_reference jsonb, closed_reference jsonb, closed_at timestamptz, detached_at timestamptz,
+        detached_reference jsonb, closed_without_session boolean not null default false);
+      create table source_preparation_reconciliations (operation_id text primary key, status text not null);
+      create table job_computer_selections (operation_id text, workspace_id text, spec jsonb, released_at timestamptz);
+      create table source_storage_reservations (reservation_id uuid primary key, scope_id text, owner_kind text,
+        owner_id text, reserved_bytes bigint, state text, record jsonb);
+      create table source_execution_materializations (materialization_id uuid primary key, execution_id text,
+        reservation_id uuid, record jsonb, state text, worktree_cleanup jsonb);
+      insert into runs values ('loop-run','running')`)
+    const origin = join(base, 'origin')
+    const root = join(base, 'materializations')
+    await mkdir(origin, { mode: 0o700 })
+    await mkdir(root, { mode: 0o700 })
+    const bytes = Buffer.from('approved source\n')
+    await writeFile(join(origin, 'app.ts'), bytes)
+    git(origin, 'init', '-q', '-b', 'main')
+    git(origin, 'add', '.')
+    git(origin, 'commit', '-qm', 'Approved source')
+    const commit = git(origin, 'rev-parse', 'HEAD')
+    const manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
+      capturePolicy: 'git-tree-v1', executablePolicy: 'preserve-approved', deletions: [],
+      git: { commit, tree: git(origin, 'rev-parse', 'HEAD^{tree}'), objectFormat: 'sha1', repository: 'fixture/project' },
+      entries: [{ path: 'app.ts', kind: 'file', byteSize: bytes.length, sha256: sourceSha256(bytes), executable: false }] })
+    const handle = await openPrivateRoot(root)
+    const filesystem = await identity(handle)
+    await handle.close()
+    const binding = { version: 1 as const, mainId: randomUUID(), deviceId: null, workerInstallationId: null,
+      workspaceId: 'workspace', rootId: randomUUID(), bindingRevision: 1, locationRevision: 1,
+      canonicalPath: root, filesystem, accessMode: 'exclusive-write' as const,
+      snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
+    const system = systemGitWorktreePorts(gitFixtureEnvironment())
+    const ports: GitWorktreePorts = {
+      cloneDirectory: repository => join(base, 'clones', ...repository.split('/')),
+      git: (args, options) => system.git(args[0] === 'clone'
+        ? ['clone', '--no-checkout', origin, args.at(-1)!] : args, options),
+    }
+    const materializer = new PrivateSourceMaterializer({ async read() { return bytes } }, async () => {}, undefined, ports)
+    const executions = { async releaseClaim(record) {
+      await releaseMaterializationClaim(record.receipt, async () => 'released')
+      const worktree = await closeSourceWorktree(record.receipt, AbortSignal.timeout(30_000), ports)
+      return { ...await measureRetainedMaterializationFootprint(record.receipt), ...(worktree ? { worktree } : {}) }
+    } } as Pick<SourceExecutionHostPort, 'releaseClaim'>
+    const sources = new PostgresSourceService(pool, {} as never, {} as never, {} as never, binding.mainId,
+      {} as never, executions as SourceExecutionHostPort,
+      { confirmedClosed: record => localWorkflowSourceClosed(pool, record.receipt.executionId) })
+    return { pool, dispose, ports, binding, manifest, materializer, sources }
+  } catch (error) {
+    await dispose()
+    throw error
+  }
+}
+
+async function addOccurrence(f: Awaited<ReturnType<typeof fixture>>, state: 'running' | 'completed',
+  closed = state === 'completed') {
+  const attempt = { executionId: randomUUID(), attemptId: randomUUID(), placementHash: 'a'.repeat(64),
+    keyRevision: null, authorizationRevision: null }
+  const receipt = await f.materializer.prepare({ binding: f.binding, manifest: f.manifest, attempt,
+    sharedWritableTree: true, worktree: { repository: 'fixture/project', branch: 'foreman/loop' } })
+  const reservation = { reservationId: randomUUID(), scopeId: 'source-filesystem', ownerKind: 'materialization' as const,
+    ownerId: randomUUID(), reservedBytes: 8 * 1024 * 1024 }
+  const record = SourceMaterializationRecordSchema.parse({ receipt, rootPolicyId: randomUUID(), rootPolicyRevision: '1',
+    operationId: reservation.ownerId, reservationId: reservation.reservationId, sourceBindingHash: attempt.placementHash,
+    finalDispatchBindingHash: 'b'.repeat(64), state: 'prepared' })
+  const workingDirectory = sourceWorkingTreePath(receipt)
+  const session = { harness: 'codex', nativeSessionId: randomUUID(), providerVersion: '1.0.0' }
+  const execution = HarnessExecutionSchema.parse({ id: attempt.executionId, runId: 'loop-run', workflowNodeId: 'agent-node',
+    agentId: 'agent', agentConfigurationVersionId: 'configuration', attempt: 1, workingDirectory, input: {}, state,
+    nativeSessionId: session.nativeSessionId, createdAt: new Date().toISOString(),
+    ...(state === 'completed' ? { result: { outcome: 'succeeded' }, finishedAt: new Date().toISOString() } : {}) })
+  const executionIdentity = { id: execution.id, runId: execution.runId, workflowNodeId: execution.workflowNodeId,
+    agentId: execution.agentId, agentConfigurationVersionId: execution.agentConfigurationVersionId,
+    attempt: execution.attempt, workingDirectory }
+  await f.pool.query('insert into harness_executions values($1,$2,$3)', [execution.id, execution.runId, execution])
+  await f.pool.query('insert into execution_native_sessions values($1,$2,$3)',
+    [execution.id, session, closed ? new Date() : null])
+  await f.pool.query(`insert into execution_native_closures
+    (execution_id,generation,execution_identity,expected_reference,closed_reference,closed_at)
+    values($1,1,$2,$3,$3,$4)`, [execution.id, executionIdentity, session, closed ? new Date() : null])
+  await f.pool.query('insert into source_storage_reservations values($1,$2,$3,$4,$5,$6,$7)',
+    [reservation.reservationId, reservation.scopeId, reservation.ownerKind, reservation.ownerId,
+      reservation.reservedBytes, 'owned', reservation])
+  await f.pool.query('insert into source_execution_materializations values($1,$2,$3,$4,$5,null)',
+    [receipt.materializationId, execution.id, reservation.reservationId, record, 'prepared'])
+  return { record, reservation, workingDirectory }
+}
+
+it('releases finished Loop copies while preserving live ownership, dirty work and saved commits', async () => {
+  const f = await fixture()
+  try {
+    const clean = await addOccurrence(f, 'completed')
+    const dirty = await addOccurrence(f, 'completed')
+    const live = await addOccurrence(f, 'running')
+    const settling = await addOccurrence(f, 'completed', false)
+    await writeFile(join(clean.workingDirectory, 'result.txt'), 'saved result\n')
+    git(clean.workingDirectory, 'add', '.')
+    git(clean.workingDirectory, 'commit', '-qm', 'Save result')
+    const savedCommit = git(clean.workingDirectory, 'rev-parse', 'HEAD')
+    await writeFile(join(dirty.workingDirectory, 'uncommitted.txt'), 'preserve this work\n')
+    const reserve = () => new PostgresSourceReservations().reserve(f.pool, {
+      scopeId: 'source-filesystem', ownerKind: 'materialization', ownerId: randomUUID(), reservedBytes: 4096,
+    }, { capacity: sourceStorageCapacityFixture() })
+    await expect(reserve()).rejects.toMatchObject({ code: 'SOURCE_CAPACITY', details: {
+      exhausted: ['materializations'], usage: { activeMaterializations: 4 },
+    } })
+    await expect(f.sources.confirmClosed(live.record)).rejects.toMatchObject({ code: 'SOURCE_EXECUTION_UNCERTAIN' })
+    const report = (error: unknown): never => { throw error }
+    await closeCompletedWorkflowSources(f.pool, f.sources, report)
+    const rows = (await f.pool.query(`select m.execution_id,m.state,m.worktree_cleanup,s.state as reservation_state
+      from source_execution_materializations m join source_storage_reservations s using(reservation_id)`)).rows
+    expect(rows.find(row => row.execution_id === clean.record.receipt.executionId))
+      .toMatchObject({ state: 'closed', reservation_state: 'retained', worktree_cleanup: { state: 'removed' } })
+    expect(rows.find(row => row.execution_id === dirty.record.receipt.executionId))
+      .toMatchObject({ state: 'closed', reservation_state: 'retained', worktree_cleanup: { state: 'retained' } })
+    for (const active of [live, settling]) {
+      expect(rows.find(row => row.execution_id === active.record.receipt.executionId))
+        .toMatchObject({ state: 'prepared', reservation_state: 'owned' })
+      expect(await readFile(join(active.workingDirectory, 'app.ts'), 'utf8')).toBe('approved source\n')
+    }
+    await expect(stat(clean.workingDirectory)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(git(f.ports.cloneDirectory('fixture/project'), 'rev-parse', clean.record.receipt.worktree!.branch))
+      .toBe(savedCommit)
+    expect(await readFile(join(dirty.workingDirectory, 'uncommitted.txt'), 'utf8')).toBe('preserve this work\n')
+    await expect(reserve()).rejects.toMatchObject({ details: { usage: { activeMaterializations: 2 } } })
+    await f.pool.query('update execution_native_closures set closed_at=clock_timestamp() where execution_id=$1',
+      [settling.record.receipt.executionId])
+    await f.pool.query('update execution_native_sessions set workflow_finalized_at=clock_timestamp() where execution_id=$1',
+      [settling.record.receipt.executionId])
+    git(dirty.workingDirectory, 'add', '.')
+    git(dirty.workingDirectory, 'commit', '-qm', 'Save retained work')
+    const retainedCommit = git(dirty.workingDirectory, 'rev-parse', 'HEAD')
+    // Reproduce a close that released its reference but never finished worktree cleanup.
+    await f.pool.query('update source_execution_materializations set worktree_cleanup=null where materialization_id=$1',
+      [dirty.record.receipt.materializationId])
+    await closeCompletedWorkflowSources(f.pool, f.sources, report)
+    await expect(stat(dirty.workingDirectory)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(git(f.ports.cloneDirectory('fixture/project'), 'rev-parse', dirty.record.receipt.worktree!.branch))
+      .toBe(retainedCommit)
+    expect((await f.pool.query('select execution_state from runs')).rows[0].execution_state).toBe('running')
+    const retained = (await f.pool.query('select record,reserved_bytes from source_storage_reservations where reservation_id=$1',
+      [dirty.reservation.reservationId])).rows[0]
+    expect(retained.record.referenceReclaimed).toBe(true)
+    expect(Number(retained.reserved_bytes)).toBeLessThan(dirty.reservation.reservedBytes)
+    await expect(reserve()).resolves.toHaveProperty('reservationId')
+  } finally {
+    await f.dispose()
+  }
+}, 60_000)
+
+it('visits later cleanup candidates after more than one page of persistent retained worktrees', async () => {
+  const f = await fixture()
+  try {
+    const original = await addOccurrence(f, 'completed')
+    const count = 105
+    for (let index = 0; index < count; index++) {
+      const materializationId = `00000000-0000-4000-8000-${index.toString(16).padStart(12, '0')}`
+      const record = SourceMaterializationRecordSchema.parse({ ...original.record,
+        receipt: { ...original.record.receipt, materializationId }, reservationId: randomUUID(), operationId: randomUUID() })
+      const reservation = { ...original.reservation, reservationId: record.reservationId, ownerId: record.operationId,
+        referenceReclaimed: true }
+      await f.pool.query('insert into source_storage_reservations values($1,$2,$3,$4,$5,$6,$7)',
+        [reservation.reservationId, reservation.scopeId, reservation.ownerKind, reservation.ownerId,
+          reservation.reservedBytes, 'retained', reservation])
+      await f.pool.query('insert into source_execution_materializations values($1,$2,$3,$4,$5,$6)',
+        [materializationId, original.record.receipt.executionId, reservation.reservationId, record, 'closed',
+          { state: 'retained', message: 'Uncommitted changes remain in this worktree.' }])
+    }
+    const visited: string[] = []
+    await closeCompletedWorkflowSources(f.pool, { async confirmClosed(record) {
+      visited.push(record.receipt.materializationId)
+    } }, error => { throw error })
+    expect(visited[0]).toBe(original.record.receipt.materializationId)
+    expect(new Set(visited).size).toBe(count + 1)
+    expect(visited.at(-1)).toBe(`00000000-0000-4000-8000-${(count - 1).toString(16).padStart(12, '0')}`)
+    expect((await f.pool.query("select count(*) from source_storage_reservations where state='retained'")).rows[0].count)
+      .toBe(String(count))
+  } finally {
+    await f.dispose()
+  }
+}, 60_000)

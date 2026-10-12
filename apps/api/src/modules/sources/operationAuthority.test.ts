@@ -38,7 +38,7 @@ it('denies revoked device and changed root even with positive Main closure', asy
   await expect(authorizeClosedSourceRelease(f.sql, f.root, f.record, async () => true)).rejects.toMatchObject({ code: 'SOURCE_CONNECTION_CONFLICT' })
 })
 
-it('releases only a proven closed original claim after its admission grant expires', async () => {
+it.each([false, true])('releases a proven closed original claim with worktree=%s after its admission grant expires', async worktree => {
   const mainId = randomUUID()
   const deviceId = randomUUID()
   const workerInstallationId = randomUUID()
@@ -47,7 +47,8 @@ it('releases only a proven closed original claim after its admission grant expir
   const snapshotId = randomUUID()
   const policyId = randomUUID()
   const binding = { version: 1, mainId, deviceId, workerInstallationId, workspaceId: 'workspace', rootId,
-    bindingRevision: 1, locationRevision: 1, canonicalPath: '/original/source', accessMode: 'read-only',
+    bindingRevision: 1, locationRevision: 1, canonicalPath: '/original/source',
+    accessMode: worktree ? 'exclusive-write' : 'read-only',
     filesystem: { device: '1', inode: '2', mountId: '3' }, snapshotId, manifestDigest: hash }
   const root = SourceRootRecordSchema.parse({ version: 1, binding,
     source: { approvedSourceId: randomUUID(), snapshotId, manifestDigest: hash },
@@ -59,7 +60,9 @@ it('releases only a proven closed original claim after its admission grant expir
   const record = SourceMaterializationRecordSchema.parse({ receipt: { version: 1, binding,
     materializationId: randomUUID(), executionId: 'execution', attemptId: randomUUID(), placementHash: hash,
     keyRevision: 1, authorizationRevision: 1, verifiedManifestDigest: hash, verifiedEntries: 1,
-    verifiedBytes: 4, verifiedAt: new Date().toISOString(), localTreeIdentity: binding.filesystem },
+    verifiedBytes: 4, verifiedAt: new Date().toISOString(), localTreeIdentity: binding.filesystem,
+    ...(worktree ? { claimScope: 'execution', sharedTree: { id: randomUUID(), referenceIdentity: binding.filesystem },
+      worktree: { repository: 'fixture/project', branch: `foreman/cleanup-${randomUUID()}`, commit: 'a'.repeat(40) } } : {}) },
     rootPolicyId: policyId, rootPolicyRevision: '1', operationId: randomUUID(), reservationId: randomUUID(),
     sourceBindingHash: hash, finalDispatchBindingHash: hash, state: 'prepared' })
   const allocation = { operation_id: record.operationId, principal_id: 'admission-owner', preparation_kind: 'workflow' }

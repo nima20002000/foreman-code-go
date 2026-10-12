@@ -84,6 +84,16 @@ aggregate budget. Ordinary execution concurrency is the smaller of twice the
 available CPU count, available memory after its 1 GiB/25% reserve at 512 MiB per
 slot, and 64 slots. At most 32 preparations may be pending. Qualified verification
 pool byte and slot ceilings still apply independently.
+Capacity denials include the exhausted budgets, charged usage, measured CPU and
+memory, and admission limits so slot pressure can be distinguished from disk pressure.
+
+Completed workflow executions release active source ownership after their original
+native lifetime closes, including occurrences within a running Loop. Cleanup removes
+their unused Main reference trees and clean Git checkouts while keeping branch refs
+and commits. Dirty, untracked, or changed-branch worktrees remain charged at their
+measured retained size and are retried on later sweeps. Private closure records and
+non-Git shared working trees remain retained. Reconciliation visits bounded pages,
+prioritizing unfinished execution releases before older retained worktree cleanup.
 The Worker source handler bounds outstanding work at 64 operations, including
 capacity probes and cleanup alongside admitted preparations. The authenticated
 transport also applies its shared flow-control bounds.

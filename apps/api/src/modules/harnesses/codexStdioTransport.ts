@@ -51,6 +51,7 @@ export class CodexRpcError extends HarnessExecutionError {
 interface Operation {
   method: string
   submitted: boolean
+  reconnectFrame?: string
   resolve(value: unknown): void
   reject(error: Error): void
   cleanup(): void
@@ -60,6 +61,7 @@ const DEFAULT_TIMEOUT_MS = 30_000
 const MAX_FRAME_BYTES = 4 * 1024 * 1024
 const MAX_OPERATIONS = 256
 const MODEL_REFRESH_FAILURE = 'failed to refresh available models:'
+const RECONNECT_READ_METHODS = new Set(['thread/read', 'thread/turns/list', 'thread/items/list'])
 
 /** All stream and dispatch failures end at this boundary, never at EventEmitter. */
 export class CodexStdioTransport {
@@ -68,6 +70,9 @@ export class CodexStdioTransport {
   private readonly requestPrefix = randomUUID()
   private detached = false
   reattached(): boolean { return this.reconnected !== undefined }
+  originalProcessClosed(): boolean {
+    return this.reconnected?.originalProcessClosed() === true
+  }
   retainedThreadSettings(threadId: string): JsonObject | undefined {
     const settings = this.reconnected?.threadSettings[threadId]
     return isObject(settings) ? settings : undefined
@@ -78,6 +83,9 @@ export class CodexStdioTransport {
   private nextId = 1
   private stopped = false
   private closePromise: Promise<void> | undefined
+  private reconnection: Promise<void> | undefined
+  private observerUnavailable: Error | undefined
+  private readonly connectionController = new AbortController()
   private timing: Awaited<ReturnType<typeof openCodexRuntimeTiming>> | undefined
   private diagnosticTail = ''
 
@@ -107,12 +115,7 @@ export class CodexStdioTransport {
     if (this.owned || this.reconnected || this.stopped) throw new HarnessExecutionError('CODEX_TRANSPORT_REUSED', 'Create a new provider transport.')
     if (this.restartOptions.reconnectableStdio && this.processRecovery && hasDetachedStdioProcess(this.processRecovery)) {
       this.reconnected = await attachDetachedStdio(this.processRecovery, signal)
-      const socket = this.reconnected.socket
-      socket.on('error', error => this.fail(error))
-      socket.on('close', () => this.fail(new HarnessExecutionError(
-        'CODEX_APP_SERVER_DISCONNECTED', 'The original Codex observer disconnected.')))
-      void this.readFrames().catch(error => this.fail(error instanceof Error ? error : new Error('Codex dispatch failed.')))
-      socket.resume()
+      this.observeSocket(this.reconnected)
       return
     }
     if (this.disabledMcpServerNames.some((name) => !/^[A-Za-z0-9_-]+$/.test(name))) {
@@ -166,6 +169,11 @@ export class CodexStdioTransport {
     method: string, params?: JsonObject, signal?: AbortSignal,
     late?: (value: unknown, error?: Error) => void,
   ): Promise<unknown> {
+    if (this.reconnected && (this.observerUnavailable || this.reconnected.socket.destroyed)) {
+      this.recoverObserver(this.reconnected, this.observerUnavailable ?? new HarnessExecutionError(
+        'CODEX_APP_SERVER_DISCONNECTED', 'The original Codex observer disconnected.'))
+    }
+    if (this.reconnection) await this.waitForReconnection(signal)
     const id = `${this.requestPrefix}:${this.nextId++}`
     let frame: string
     try {
@@ -186,9 +194,13 @@ export class CodexStdioTransport {
       ...(typeof params?.threadId === 'string' ? { nativeSessionId: params.threadId } : {}) })
     return new Promise<unknown>((resolve, reject) => {
       const abort = () => this.settleFailure(id, 'CODEX_APP_SERVER_REQUEST_CANCELED')
-      const timer = setTimeout(() => this.settleFailure(id, 'CODEX_APP_SERVER_TIMEOUT'), this.timeoutMs)
+      const timer = setTimeout(() => {
+        const recoveringRead = RECONNECT_READ_METHODS.has(method) && this.reconnection !== undefined
+        this.settleFailure(id, recoveringRead ? 'CODEX_OBSERVER_UNAVAILABLE' : 'CODEX_APP_SERVER_TIMEOUT')
+      }, this.timeoutMs)
       const operation: Operation = {
         method, resolve, reject, submitted: false, ...(late ? { late } : {}),
+        ...(RECONNECT_READ_METHODS.has(method) ? { reconnectFrame: frame } : {}),
         cleanup: () => { finished(); clearTimeout(timer); signal?.removeEventListener('abort', abort) },
       }
       this.operations.set(id, operation)
@@ -198,10 +210,10 @@ export class CodexStdioTransport {
       operation.submitted = true
       try {
         this.input().write(frame, (error: Error | null | undefined) => {
-          if (error) this.settleFailure(id, 'CODEX_APP_SERVER_REQUEST_UNCERTAIN')
+          if (error) this.operationWriteFailed(id, error)
         })
-      } catch {
-        this.settleFailure(id, 'CODEX_APP_SERVER_REQUEST_UNCERTAIN')
+      } catch (error) {
+        this.operationWriteFailed(id, error instanceof Error ? error : new Error('Provider write failed.'))
       }
     })
   }
@@ -230,7 +242,7 @@ export class CodexStdioTransport {
     if (this.closePromise) return this.closePromise
     this.stop(new HarnessExecutionError('CODEX_APP_SERVER_CLOSED', 'Codex transport was closed.'))
     const physical = this.onModelRefreshFailure ? this.closeModelInspection()
-      : this.reconnected?.close() ?? this.owned?.close() ?? Promise.resolve()
+      : this.closeProcess()
     const attempt = this.timing ? physical.then(() => this.closeTiming()) : physical
     this.closePromise = attempt
     // A failed cleanup stays fenced, but the next explicit close must retry it.
@@ -245,6 +257,7 @@ export class CodexStdioTransport {
       return
     }
     this.stop(new HarnessExecutionError('CODEX_APP_SERVER_DETACHED', 'Codex observation paused for restart.'))
+    if (this.reconnection) await Promise.allSettled([this.reconnection])
     if (this.reconnected) await this.reconnected.detach()
     else if (this.owned) await detachRecoveredChild(this.owned.child)
     this.detached = true
@@ -255,6 +268,103 @@ export class CodexStdioTransport {
     if (this.reconnected) return this.reconnected.socket
     if (!this.owned) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Codex is not connected.')
     return this.owned.child.stdin
+  }
+
+  private async closeProcess(): Promise<void> {
+    if (this.reconnection) await Promise.allSettled([this.reconnection])
+    await (this.reconnected?.close() ?? this.owned?.close())
+  }
+
+  private async waitForReconnection(signal?: AbortSignal): Promise<void> {
+    if (!signal) return this.reconnection
+    signal.throwIfAborted()
+    let abort: (() => void) | undefined
+    try {
+      await Promise.race([this.reconnection, new Promise<never>((_resolve, reject) => {
+        abort = () => reject(signal.reason)
+        signal.addEventListener('abort', abort, { once: true })
+      })])
+    } finally {
+      if (abort) signal.removeEventListener('abort', abort)
+    }
+  }
+
+  private operationWriteFailed(id: RequestId, error: Error): void {
+    if (this.reconnected) this.recoverObserver(this.reconnected, error)
+    else this.settleFailure(id, 'CODEX_APP_SERVER_REQUEST_UNCERTAIN')
+  }
+
+  private observeSocket(connection: NonNullable<CodexStdioTransport['reconnected']>): void {
+    const { socket } = connection
+    socket.on('error', error => this.recoverObserver(connection, error))
+    socket.on('close', () => this.recoverObserver(connection, new HarnessExecutionError(
+      'CODEX_APP_SERVER_DISCONNECTED', 'The original Codex observer disconnected.')))
+    void this.readFrames(socket).catch(error => {
+      const failure = error instanceof Error ? error : new Error('Codex dispatch failed.')
+      if (socket.destroyed) this.recoverObserver(connection, failure)
+      else this.fail(failure)
+    })
+    socket.resume()
+  }
+
+  private recoverObserver(connection: NonNullable<CodexStdioTransport['reconnected']>, error: Error): void {
+    if (this.stopped || this.reconnected !== connection || this.reconnection) return
+    for (const [id, operation] of this.operations) {
+      if (!operation.reconnectFrame) this.settleFailure(id, 'CODEX_OBSERVER_UNAVAILABLE')
+    }
+    for (const failed of [...this.writes]) failed(error)
+    const attempt = Promise.resolve().then(() => this.reconnectObserver(connection))
+      .catch(failure => this.recoveryFailed(connection, failure))
+    this.reconnection = attempt
+    const clear = () => {
+      if (this.reconnection === attempt) this.reconnection = undefined
+    }
+    void attempt.then(clear, clear)
+  }
+
+  private async reconnectObserver(connection: NonNullable<CodexStdioTransport['reconnected']>): Promise<void> {
+    // Authenticated release keeps the registered daemon and drops incomplete observer input.
+    await connection.detach()
+    this.connectionController.signal.throwIfAborted()
+    const replacement = await attachDetachedStdio(this.processRecovery!, this.connectionController.signal)
+    this.reconnected = replacement
+    this.observerUnavailable = undefined
+    if (this.stopped) return
+    this.observeSocket(replacement)
+    const replayed: Promise<void>[] = []
+    for (const operation of this.operations.values()) {
+      if (!operation.reconnectFrame) continue
+      replayed.push(new Promise<void>((resolve, reject) => {
+        replacement.socket.write(operation.reconnectFrame!, error => {
+          if (error) reject(error)
+          else resolve()
+        })
+      }))
+    }
+    await Promise.all(replayed)
+    if (replacement.socket.destroyed) throw new HarnessExecutionError(
+      'CODEX_APP_SERVER_DISCONNECTED', 'The original Codex observer could not reconnect.')
+    this.onNotification('transport/reconnected', {})
+  }
+
+  private recoveryFailed(connection: NonNullable<CodexStdioTransport['reconnected']>, failure: unknown): never {
+    if (this.stopped) throw failure
+    let closed = false
+    try { closed = connection.originalProcessClosed() }
+    catch (closureError) {
+      failure = new AggregateError([failure, closureError], 'Original Codex process closure is unconfirmed.')
+    }
+    if (closed) {
+      const disconnected = new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED',
+        'The original Codex daemon has exited.', false, { cause: failure })
+      this.fail(disconnected)
+      throw disconnected
+    }
+    this.observerUnavailable = new HarnessExecutionError('CODEX_OBSERVER_UNAVAILABLE',
+      'Codex is still recoverable, but its observer connection is unavailable.', true, { cause: failure })
+    for (const id of this.operations.keys()) this.settleFailure(id, 'CODEX_OBSERVER_UNAVAILABLE')
+    this.onNotification('transport/observerUnavailable', {})
+    throw this.observerUnavailable
   }
 
   private async closeTiming() {
@@ -289,7 +399,9 @@ export class CodexStdioTransport {
 
   /** Current writable callback channel only; this snapshot is not delivery evidence. */
   isConnected(): boolean {
-    if (this.reconnected) return !this.stopped && !this.reconnected.socket.destroyed
+    if (this.reconnected) {
+      return !this.stopped && !this.observerUnavailable && !this.reconnection && !this.reconnected.socket.destroyed
+    }
     const child = this.owned?.child
     if (this.stopped || !child) return false
     try {
@@ -341,12 +453,13 @@ export class CodexStdioTransport {
     if (!operation) return
     this.operations.delete(id)
     operation.cleanup()
-    if (operation.submitted) this.uncertainOperations.set(id, operation)
+    if (operation.submitted && (!operation.reconnectFrame || operation.late)) {
+      this.uncertainOperations.set(id, operation)
+    }
     operation.reject(new CodexRpcError(operation.method, id, operation.submitted, code, { providerVersion: this.protocol.providerVersion }))
   }
 
-  private async readFrames(): Promise<void> {
-    const stdout = this.reconnected?.socket ?? this.owned!.child.stdout
+  private async readFrames(stdout = this.reconnected?.socket ?? this.owned!.child.stdout): Promise<void> {
     stdout.setEncoding('utf8')
     let pending = ''
     for await (const chunk of stdout) {
@@ -433,6 +546,7 @@ export class CodexStdioTransport {
   private stop(error: Error): boolean {
     if (this.stopped) return false
     this.stopped = true
+    this.connectionController.abort(error)
     for (const id of this.operations.keys()) this.settleFailure(id, 'CODEX_APP_SERVER_DISCONNECTED')
     for (const failed of [...this.writes]) failed(error)
     this.writes.clear()

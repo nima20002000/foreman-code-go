@@ -17,11 +17,15 @@ export function RunTranscript({ feed, name, onBrowse }: {
   return <section aria-label="Workflow execution transcript">
     {data.hasEarlierExecutions ? <p className="agent-chat-note">Newest 20 executions</p> : null}
     {data.executions.map(execution => {
-      const items = data.items.filter(item => item.executionId === execution.executionId)
+      const history = data.history?.executionId === execution.executionId ? data.history : undefined
+      const items = history?.items ?? data.items.filter(item => item.executionId === execution.executionId)
+      const hasEarlierItems = history?.hasEarlierItems ?? execution.hasEarlierItems
       const label = `${execution.label} · ${states[execution.state] ?? execution.state}`
       return <section key={execution.executionId} className="agent-chat-execution" aria-label={label}>
         {labelled ? <p className="agent-chat-execution-label" role="heading" aria-level={3}>{label}</p> : null}
-        {execution.hasEarlierItems ? <Button size="sm" variant="ghost"
+        {history ? <p className="agent-chat-note">Earlier activity <Button size="sm" variant="ghost"
+          onClick={() => { onBrowse(); feed.backToLatest() }}>Back to latest activity</Button></p> : null}
+        {hasEarlierItems ? <Button size="sm" variant="ghost"
           onClick={() => { onBrowse(); void feed.loadEarlier(execution.executionId) }}>Load earlier activity</Button> : null}
         {!items.length && executionIsLive(execution) ? <p className="agent-chat-note">Waiting for the first activity…</p> : null}
         <ol className="agent-chat-messages" aria-label="Execution activity">

@@ -123,7 +123,6 @@ if [ "$scope" = full ] && [ "$SUITE" = integration ] && [ -z "${SLICE:-}" ] && [
     import { integrationFileList } from "./scripts/ci-files.mjs"
     const durations = existsSync("scripts/integration-durations.json") ? JSON.parse(readFileSync("scripts/integration-durations.json", "utf8")) : {}
     const partition = JSON.parse(process.env.CI_PARTITION)
-    delete partition.weights
     writeFileSync(process.argv[1], JSON.stringify(integrationPartition(integrationFileList(process.cwd()), durations, partition)))
   ' "$selected_list"
 fi

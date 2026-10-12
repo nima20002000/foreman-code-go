@@ -119,7 +119,9 @@ function restartOwnershipFixture(options: {
     getRepeatSnapshot: async (_runId: string, owner: RunOwnership) => {
       owner.assertOwned()
       expect(locked).toBe(true)
-      return { stopRequested: false, cleanupPending: false }
+      return { stopRequested: false, cleanupPending: false,
+        run: { ...saved.run, id: 'run', workspaceId: 'workspace', executionState: 'waiting' },
+      }
     },
     getExecution: async (id: string) => executions.find(execution => execution.id === id),
     getExecutionConfiguration: async () => configuration,
@@ -159,6 +161,27 @@ it('shares one reacquired Run owner across sibling retained session detachment',
   expect(f.detached).toHaveBeenCalledTimes(2)
   expect(f.locked()).toBe(false)
   await f.managers.dispose()
+})
+
+it('uses an adopted live Run owner when a previous shared owner has released', async () => {
+  const f = restartOwnershipFixture()
+  await f.attachReviewers()
+  const previous = (await f.acquireOwnership())!
+  const stopSharing = f.coordinator.shareRunOwner(previous)
+  await previous.release()
+  const current = (await f.acquireOwnership())!
+  f.coordinator.adoptRunOwner(current)
+  const acquisitions = f.acquireOwnership.mock.calls.length
+  try {
+    await f.coordinator.closeForRestart()
+    expect(f.acquireOwnership.mock.calls.length).toBe(acquisitions)
+    expect(f.closeOwners).toEqual([current, current])
+    expect(f.detached).toHaveBeenCalledTimes(2)
+  } finally {
+    stopSharing()
+    await current.release()
+    await f.managers.dispose()
+  }
 })
 
 it.each([

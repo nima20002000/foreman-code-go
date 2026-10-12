@@ -222,8 +222,22 @@ export async function retainedReviewRecovery(fixture: Fixture, recovery: 'crash'
   const originalCredentials = await processCredentials()
   expect(originalCredentials.map(row => row.execution_id).sort())
     .toEqual([active.reviewer.id, active.requester.id].sort())
+  if (recovery === 'graceful') {
+    const shortened = await fixture.db.pool.query(`update management_principals p
+      set expires_at=clock_timestamp()+interval '70 seconds' from worker_credential_bindings b
+      where b.principal_id=p.id and b.execution_id=$1 and b.revoked_at is null and p.revoked_at is null`,
+    [active.reviewer.id])
+    expect(shortened.rowCount).toBe(1)
+  }
   await fixture.restartMain({ mode: recovery === 'graceful' ? 'graceful' : 'crash', afterShutdown: async () => {
     if (recovery === 'graceful') {
+      const lease = (await fixture.db.pool.query<{ live: boolean; remaining_ms: number }>(`select
+        p.revoked_at is null and b.revoked_at is null as live,
+        (extract(epoch from (p.expires_at-clock_timestamp()))*1000)::float8 as remaining_ms
+        from worker_credential_bindings b join management_principals p on p.id=b.principal_id
+        where b.execution_id=$1 and b.purpose='reviewer'`, [active.reviewer.id])).rows[0]!
+      expect(lease.live).toBe(true)
+      expect(lease.remaining_ms).toBeGreaterThan(5 * 60_000)
       const lifetime = (await fixture.db.pool.query<{ detached: boolean; closed: boolean }>(`select
         detached_at is not null as detached,closed_at is not null as closed from execution_native_closures
         where execution_id=$1 order by generation desc limit 1`, [active.reviewer.id])).rows[0]

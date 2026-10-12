@@ -3,8 +3,9 @@ import { expect, it, vi } from 'vitest'
 import { decodeMcpToolResult, OperatorRunCompactSchema } from '@foreman-code/contracts/operator-mcp'
 import { RunExecutionsPageSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
+import { DomainError } from '../src/modules/errors.js'
 
-it.each(['normal cleanup', 'retried cleanup', 'Stop during cleanup'] as const)(
+it.each(['normal cleanup', 'retried bookkeeping', 'retried cleanup', 'Stop during cleanup'] as const)(
   'persists an active-time timeout through %s and discloses it through authorized MCP reads', async mode => {
   const fixture = makeCurrentWorkflowFixture(randomUUID(), 'single')
   fixture.version.definition.executionPolicy!.agentActiveTimeoutMs = 600_000
@@ -19,7 +20,10 @@ it.each(['normal cleanup', 'retried cleanup', 'Stop during cleanup'] as const)(
         if (!failureInjected) {
           failureInjected = true
           if (mode === 'Stop during cleanup') await f.stop()
-          throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' })
+          if (mode === 'retried bookkeeping') {
+            throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' })
+          }
+          throw new DomainError('REPEAT_CLEANUP_PENDING', 'Native settlement is temporarily unavailable.', 409)
         }
         return settle(...settlement)
       }
@@ -46,10 +50,16 @@ it.each(['normal cleanup', 'retried cleanup', 'Stop during cleanup'] as const)(
     }
   })
   try {
-    if (mode === 'normal cleanup') {
+    if (mode === 'normal cleanup' || mode === 'retried bookkeeping') {
       await f.engine.start(f.f.run.id)
     } else {
-      await expect(f.engine.start(f.f.run.id)).rejects.toMatchObject({ code: '57014' })
+      await expect(f.engine.start(f.f.run.id)).rejects.toMatchObject({ code: 'REPEAT_CLEANUP_PENDING' })
+      const snapshot = await f.runs.getRepeatSnapshot(f.f.run.id)
+      if (mode === 'Stop during cleanup') {
+        expect(snapshot.run).toMatchObject({ executionState: 'completed', outcome: 'canceled' })
+      } else {
+        expect(snapshot.cleanupPending).toBe(true)
+      }
       const recovery = f.compose()
       await recovery.engine.start(f.f.run.id)
     }

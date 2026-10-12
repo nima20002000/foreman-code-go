@@ -101,14 +101,6 @@ export class PostgresSourceOperationAuthority {
           throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'The original source materialization is no longer owned for execution.', 409)
         if (request.operation !== 'sources.release' && record.finalDispatchBindingHash) await this.attempts.authorizeFinal(sql, principal!, record, record.finalDispatchBindingHash)
         if (request.operation === 'sources.release') {
-          if (record.receipt.worktree) {
-            const run = (await sql.query<{ execution_state: string }>(
-              'select r.execution_state from runs r join harness_executions e on e.run_id=r.id where e.id=$1',
-              [record.receipt.executionId])).rows[0]
-            if (!run || !['completed', 'interrupted'].includes(run.execution_state)) {
-              throw new DomainError('SOURCE_EXECUTION_UNCERTAIN', 'Git worktree cleanup requires a terminal Run.', 409)
-            }
-          }
           await authorizeClosedSourceRelease(sql, root, record, this.closure)
           physicalClosureConfirmed = true
         }

@@ -334,6 +334,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     const finished = beginRuntimeTiming('engine', 'run.cleanup', { runId: owner.runId })
     try {
       owner.assertOwned()
+      this.nativeExecutions.adoptRunOwner(owner)
       const snapshot = await this.runs.getRepeatSnapshot(owner.runId, owner)
       if (!snapshot.stopRequested && !snapshot.cleanupPending && snapshot.run.executionState !== 'completed') throw new DomainError(
         'GRAPH_STOP_CONFLICT', 'Cleanup requires the committed negative or terminal fence.', 409)
@@ -356,6 +357,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
     try {
       const current = await this.runs.getRepeatSnapshot(owner.runId, owner)
       if (current.run.executionState !== 'completed') throw new DomainError('GRAPH_TERMINAL_CONFLICT', 'The Run has not settled.', 409)
+      this.nativeExecutions.adoptRunOwner(owner)
       await this.nativeExecutions.finishRun(owner.runId)
       await this.onRunTerminal?.(owner.runId, reason)
       await this.runs.finishCleanup(owner.runId, false, owner)

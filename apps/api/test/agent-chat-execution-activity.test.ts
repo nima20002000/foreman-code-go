@@ -1,12 +1,13 @@
 import type pg from 'pg'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AgentChatExecutionActivityPageSchema } from '@foreman-code/contracts/agent-chat'
+import { AgentChatExecutionActivityPageSchema, type AgentChatExecutionSummary } from '@foreman-code/contracts/agent-chat'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { buildApp } from '../src/app.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { AgentChatService } from '../src/modules/conversations/agentChat.js'
 import { ExecutionActivityFold, type ExecutionEventRow } from '../src/modules/conversations/executionActivity.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
+import { executionProjectionRows } from './agent-chat-execution-activity.testSupport.js'
 
 const at = '2026-01-01T00:00:00.000Z'
 let sequence = 0
@@ -76,17 +77,51 @@ describe('Agent chat live execution activity projection', () => {
     const [full] = fold.items('execution-1', false, { message: 65_536, input: 16_000, output: 24_000 })
     expect(full?.entry.kind === 'activity' && full.entry.activity.output?.length).toBe(10_000)
   })
+
+  it('retains Claude streamed arguments, canonical file edits and redacted bounded results', () => {
+    sequence = 0
+    const token = `opm_${'a'.repeat(43)}`
+    const fold = new ExecutionActivityFold()
+    fold.apply([
+      event('claude:tool:shell', 'claude.tool', { itemId: 'claude:tool:shell', name: 'Bash', status: 'running' }),
+      event('claude:tool:shell', 'claude.tool', { itemId: 'claude:tool:shell', name: 'Bash',
+        inputJsonDelta: '{"command":"git ', status: 'running' }),
+      event('claude:tool:shell', 'claude.tool', { itemId: 'claude:tool:shell', name: 'Bash',
+        inputJsonDelta: 'status"}', status: 'running' }),
+    ])
+    expect(fold.items('execution', false)[0]?.entry).toMatchObject({ activity: { input: '{"command":"git status"}' } })
+    fold.apply([
+      event('claude:tool:shell', 'claude.tool', { itemId: 'claude:tool:shell', name: 'Bash',
+        input: { command: 'git status' }, status: 'running' }),
+      event('claude:tool:shell', 'claude.tool', { itemId: 'claude:tool:shell', name: 'Bash',
+        output: [{ type: 'text', text: `clean ${token} ${'界'.repeat(10_000)}` }], status: 'completed' }),
+      event('claude:tool:edit', 'claude.tool', { itemId: 'claude:tool:edit', name: 'Edit', status: 'running',
+        input: { file_path: '/project/app.ts', old_string: 'before', new_string: 'after' } }),
+      event('claude:tool:edit', 'claude.tool', { itemId: 'claude:tool:edit', name: 'Edit', status: 'completed', output: 'updated' }),
+    ])
+    const items = fold.items('execution', false)
+    expect(items[0]?.entry).toMatchObject({ activity: { title: 'git status', status: 'completed', truncated: true } })
+    const shell = items[0]?.entry
+    expect(shell?.kind === 'activity' && shell.activity.output).toContain('[REDACTED]')
+    expect(JSON.stringify(items)).not.toContain(token)
+    expect(shell?.kind === 'activity' && Buffer.byteLength(shell.activity.output!)).toBeLessThanOrEqual(4_000)
+    expect(items[1]?.entry).toMatchObject({ activity: { title: 'Edit /project/app.ts',
+      input: expect.stringContaining('after'), output: 'updated' } })
+  })
 })
 
-interface ExecutionFixture { id: string; tick: number | null; state: string; createdAt: Date; events: ExecutionEventRow[] }
+interface ExecutionFixture {
+  id: string; tick: number | null; state: AgentChatExecutionSummary['state']
+  createdAt: Date; events: ExecutionEventRow[]; recordRevision: number
+}
 
 function service() {
   const workspaceId = 'workspace-live', workflowId = 'workflow-live', runId = 'run-live', workflowNodeId = 'node-live', agentId = 'agent-live'
   const principal: ManagementPrincipal = { id: 'live-reader', name: 'Live reader', audience: 'operator', revokedAt: null,
     expiresAt: '2099-01-01T00:00:00.000Z', grants: [{ actions: ['agent_chat:read'], scope: { workspaceIds: [workspaceId], workflowIds: [workflowId] } }] }
   const executions: ExecutionFixture[] = [
-    { id: 'execution-main', tick: null, state: 'completed', createdAt: new Date('2026-01-01T00:00:00Z'), events: [] },
-    { id: 'execution-check-1', tick: 1, state: 'running', createdAt: new Date('2026-01-01T00:02:00Z'), events: liveRun() },
+    { id: 'execution-main', tick: null, state: 'completed', createdAt: new Date('2026-01-01T00:00:00Z'), events: [], recordRevision: 0 },
+    { id: 'execution-check-1', tick: 1, state: 'running', createdAt: new Date('2026-01-01T00:02:00Z'), events: liveRun(), recordRevision: 0 },
   ]
   executions[0]!.events = [event('final', 'item.completed', { item: { id: 'final', type: 'agentMessage', text: 'Initial work finished' } })]
   const query = vi.fn(async (sql: string, values: unknown[] = []) => {
@@ -96,11 +131,12 @@ function service() {
       if (values[0] !== runId || values[1] !== workflowNodeId || values[2] !== agentId || values[3] !== workspaceId || values[4] !== workflowId) return { rows: [] }
       return { rows: [...executions].reverse().map((execution) => ({ id: execution.id, attempt: 1, tick_index: execution.tick,
         occurrence_index: null, state: execution.state, native_session_id: 'thread', created_at: execution.createdAt,
-        started_at: execution.createdAt.toISOString(), finished_at: null, revision: execution.events.at(-1)?.sequence ?? 0 })) }
+        started_at: execution.createdAt.toISOString(), finished_at: null,
+        revision: String(execution.events.at(-1)?.sequence ?? 0), record_revision: String(execution.recordRevision) })) }
     }
     if (sql.includes('from harness_native_events n')) {
       const execution = executions.find((entry) => entry.id === values[0])
-      return { rows: (execution?.events ?? []).filter((row) => row.sequence > Number(values[2])) }
+      return { rows: executionProjectionRows(execution?.events ?? [], values) }
     }
     throw new Error(`Unexpected SQL: ${sql}`)
   })
@@ -129,7 +165,11 @@ describe('Agent chat live execution activity over HTTP', () => {
     const read = async (params: Record<string, string>, token = 'reader') => app.inject({ method: 'GET',
       url: `/api/workspaces/${workspaceId}/agent-chat/execution-activity?${new URLSearchParams({ ...query, ...params })}`,
       headers: { authorization: `Bearer ${token}` } })
-    const page = async (params: Record<string, string>) => AgentChatExecutionActivityPageSchema.parse((await read(params)).json())
+    const page = async (params: Record<string, string>) => {
+      const response = await read(params)
+      expect(response.statusCode, response.body).toBe(200)
+      return AgentChatExecutionActivityPageSchema.parse(response.json())
+    }
     try {
       const first = await page({})
       expect(first.mode).toBe('snapshot')
@@ -141,14 +181,52 @@ describe('Agent chat live execution activity over HTTP', () => {
 
       const live = f.executions[1]!
       live.events.push(event('cmd-1', 'item.completed', { item: command('cmd-1', 'completed', 'clean\n') }))
+      live.recordRevision += 1
       const changed = await page({ cursor: first.cursor! })
       expect(changed.items).toEqual([expect.objectContaining({ executionId: live.id, id: 'cmd-1',
         entry: { kind: 'activity', activity: expect.objectContaining({ title: 'git status', status: 'completed', output: 'clean\n' }) } })])
+
+      for (const id of ['paged-1', 'paged-2', 'paged-3']) {
+        live.events.push(event(id, 'item.started', { item: command(id, 'inProgress', null) }))
+        live.recordRevision += 1
+      }
+      const partial = await page({ cursor: changed.cursor!, limit: '1' })
+      expect(partial.items.map((item) => item.id)).toEqual(['paged-1'])
+      expect(partial.hasMoreChanges).toBe(true)
+      live.events.push(event('paged-4', 'item.started', { item: command('paged-4', 'inProgress', null) }))
+      live.recordRevision += 1
+      let progress = partial
+      for (const id of ['paged-2', 'paged-3', 'paged-4']) {
+        progress = await page({ cursor: progress.cursor!, limit: '1' })
+        expect(progress.items.map((item) => item.id)).toEqual([id])
+        live.recordRevision += 1
+      }
+      expect(progress.hasMoreChanges).toBe(false)
+      expect(await page({ cursor: progress.cursor! })).toMatchObject({ items: [] })
 
       const earlier = await page({ executionId: live.id, before: first.items[3]!.sequence, limit: '1' })
       expect(earlier.items.map((item) => item.id)).toEqual(['msg-1'])
       expect(earlier.executions.find((execution) => execution.executionId === live.id)?.hasEarlierItems).toBe(true)
       expect(await page({ executionId: live.id, itemId: 'mcp-1' })).toMatchObject({ mode: 'item', items: [{ id: 'mcp-1' }] })
+
+      live.events.push(event('unfinished', 'item.started', { item: command('unfinished', 'inProgress', null) }))
+      const beforeStop = await page({})
+      live.state = 'completed'
+      live.recordRevision += 1
+      let stopped = await page({ cursor: beforeStop.cursor!, limit: '1' })
+      const terminalItems = [...stopped.items]
+      for (let count = 0; stopped.hasMoreChanges && count < 20; count += 1) {
+        stopped = await page({ cursor: stopped.cursor!, limit: '1' })
+        terminalItems.push(...stopped.items)
+      }
+      expect(stopped.hasMoreChanges).toBe(false)
+      expect(terminalItems.find((item) => item.id === 'unfinished')?.entry)
+        .toMatchObject({ activity: { status: 'unknown' } })
+      expect(await page({ cursor: stopped.cursor! })).toMatchObject({ items: [] })
+      const expanded = await page({ executionId: live.id, itemId: 'unfinished' })
+      expect(expanded.items[0]?.entry).toMatchObject({ activity: { status: 'unknown' } })
+      expect(BigInt(expanded.items[0]!.revision)).toBeGreaterThan(
+        BigInt(beforeStop.items.find((item) => item.id === 'unfinished')!.revision))
 
       expect((await read({}, 'denied')).statusCode).toBe(403)
       expect(recordDenied).toHaveBeenCalledWith('wrong-scope', 'http', expect.any(String), `/api/workspaces/${workspaceId}/agent-chat/execution-activity`)

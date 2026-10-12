@@ -784,7 +784,9 @@ export function hasDetachedStdioProcess(scope: NativeProcessRecovery): boolean {
 
 /** Authenticated control stays separate from provider JSON-RPC, including after takeover. */
 async function stdioControl(scope: NativeProcessRecovery, operation: 'attach' | 'environment' | 'detach',
-  connectionId?: string, signal?: AbortSignal): Promise<{ socket: Socket; reply: Record<string, unknown> }> {
+  connectionId?: string, signal?: AbortSignal): Promise<{
+    socket: Socket; reply: Record<string, unknown>; launch: LaunchRecord; birth: BirthRecord
+  }> {
   const registration = detachedStdioRegistration(scope)
   if (!registration) throw new Error('The original Codex daemon is unavailable.')
   const { launch, birth } = registration
@@ -818,7 +820,7 @@ async function stdioControl(scope: NativeProcessRecovery, operation: 'attach' | 
         socket.pause()
         cleanup()
         if (buffer.length > end + 1) socket.unshift(buffer.subarray(end + 1))
-        resolve({ socket, reply })
+        resolve({ socket, reply, launch, birth })
       } catch (error) { fail(error instanceof Error ? error : new Error('Invalid native observer reply.')) }
     }
     socket.on('data', receive)
@@ -851,7 +853,7 @@ export async function detachedStdioEnvironment(scope: NativeProcessRecovery, sig
 
 export async function attachDetachedStdio(scope: NativeProcessRecovery, signal?: AbortSignal) {
   const connectionId = randomUUID()
-  const { socket, reply } = await stdioControl(scope, 'attach', connectionId, signal)
+  const { socket, reply, launch, birth } = await stdioControl(scope, 'attach', connectionId, signal)
   let threadSettings: Record<string, unknown>
   try { threadSettings = recordObject(reply.threadSettings) }
   catch (error) {
@@ -861,7 +863,11 @@ export async function attachDetachedStdio(scope: NativeProcessRecovery, signal?:
     }
     throw error
   }
-  return { socket, threadSettings, detach: async () => {
+  const directory = join(scope.root, key(scope.owner), launch.id)
+  return { socket, threadSettings, originalProcessClosed: () => {
+    return retiredOwner(dirname(directory), scope.owner, launch.id)
+      || observeCgroupClosure(directory, launch, birth) !== undefined
+  }, detach: async () => {
     const detached = await stdioControl(scope, 'detach', connectionId)
     detached.socket.destroy()
     socket.destroy()
