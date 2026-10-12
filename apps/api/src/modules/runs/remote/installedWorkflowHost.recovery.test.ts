@@ -197,6 +197,10 @@ describe('installed worker cold recovery', () => {
           sourceDigest: remoteWorkflowSourceDigest({ type: 'session_created',
             session: { ...f.session, nativeSessionId: 'another-session' } }),
         }, f.context)).rejects.toMatchObject({ code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE' })
+        await expect(host.extensions[0]!.handle!({ method, intent: f.intent, placement: f.placement,
+          request: { ...f.request, input: { changed: true } },
+          ...(method === 'reattach' ? { session: f.session } : {}),
+        }, f.context)).rejects.toThrow('Original workflow recovery request changed')
         expect(create).not.toHaveBeenCalled()
         expect(attach).not.toHaveBeenCalled()
       } finally { await host.close() }

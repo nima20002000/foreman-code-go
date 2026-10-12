@@ -58,9 +58,12 @@ async function fixture(options: {
   const owner = { runId: run.id, oneShotConnection: () => connection, assertOwned() { if (!state.owned) throw new Error('owner-lost') },
     release: async () => { state.released++; state.events.push('release') } } as unknown as RunOwnership
   const factory = {} as RepeatEngineStartContext['factory']
-  const runs = { acquireOwnership: async (): Promise<RunOwnership | undefined> => owner, getRepeatSnapshot: async () => {
-    AcceptedWorkflowRunV3Schema.parse(state.run); return snapshot()
-  }, repeatRepositoryFactory() { state.factoryReads++; return factory },
+  const runs = {
+    acquireOwnership: async (_runId: string, _onLost: () => void): Promise<RunOwnership | undefined> => owner,
+    getRepeatSnapshot: async () => {
+      AcceptedWorkflowRunV3Schema.parse(state.run)
+      return snapshot()
+    }, repeatRepositoryFactory() { state.factoryReads++; return factory },
     get: async (runId: string) => { assert.equal(runId, run.id); return structuredClone(state.run) },
     requestCleanup: async () => { state.cleanupPending = true; state.events.push('request-cleanup') },
     finishCleanup: async (_id: string, failed: boolean) => { state.cleanupPending = failed; state.events.push('finish-cleanup') },
