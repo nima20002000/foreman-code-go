@@ -1,9 +1,32 @@
-import { describe, it } from 'vitest'
-import { retainedReviewRecovery, useRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
+import { describe, expect, it } from 'vitest'
+import { retainedReviewRecovery, useRemoteReviewFixture, waitForReplacementReviewInventory }
+  from './helpers/remoteReviewProductionCases.js'
+import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
 
 const withRemoteReviewFixture = useRemoteReviewFixture()
 
 describe('production remote review and native recovery through authenticated MCP', () => {
+  it('waits for installations when the replacement connection arrives before inventory', async () => {
+    await withRemoteReviewFixture(async fixture => {
+      const previous = await fixture.inventory()
+      const connection = previous.hostMetadata!.connection!
+      const binding = { ...connection.binding, connectionEpoch: 'replacement-connection',
+        connectionGeneration: connection.binding.connectionGeneration + 1 }
+      const connecting = { ...previous, installations: [],
+        hostMetadata: { ...previous.hostMetadata!, connection: { ...connection, binding } } }
+      const ready = { ...connecting, installations: previous.installations.map(installation => ({
+        ...installation, connectionGeneration: harnessConnectionGeneration(binding),
+      })) }
+      const snapshots = [connecting, { ...connecting, installations: previous.installations }, ready]
+      let reads = 0
+      const inventory = await waitForReplacementReviewInventory({ profiles: fixture.profiles, inventory: async () => {
+        return snapshots[reads++]!
+      } }, previous)
+      expect(inventory).toEqual(ready)
+      expect(reads).toBe(3)
+    })
+  })
+
   it.each(['crash'] as const)(
     'continues the original retained review after Main recovery from %s with the Worker alive', async recovery => {
       await withRemoteReviewFixture(fixture => retainedReviewRecovery(fixture, recovery))

@@ -8,9 +8,26 @@ import { RunExecutionLocationV3Schema } from '@foreman-code/contracts/wave25'
 import { ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
 import { hasRetainedRemoteReviewerSource } from '../../src/modules/interactions/retainedRemoteReviewer.js'
 import { HostHarnessProfileEvidenceRepository } from '../../src/modules/harnesses/instanceSettings/profileRepository.js'
+import { harnessConnectionGeneration } from '../../src/modules/harnesses/hostConnectionGeneration.js'
 import { remoteReviewProduction, waitForRemoteReview as waitForProduction } from './remoteReviewProduction.js'
 
 type Fixture = Awaited<ReturnType<typeof remoteReviewProduction>>
+type Inventory = Awaited<ReturnType<Fixture['inventory']>>
+
+export async function waitForReplacementReviewInventory(
+  fixture: Pick<Fixture, 'inventory' | 'profiles'>, previous: Inventory,
+): Promise<Inventory> {
+  return waitForRemoteReview(fixture.inventory, value => {
+    const original = previous.hostMetadata?.connection?.binding
+    const current = value.hostMetadata?.connection?.binding
+    if (!current || !original || current.connectionEpoch === original.connectionEpoch) return false
+    // The live binding can arrive before its installation snapshot.
+    const generation = harnessConnectionGeneration(current)
+    return fixture.profiles.every(profile => value.installations.some(installation =>
+      installation.harnessInstallationId === profile.target.harnessInstallationId
+        && installation.connectionGeneration === generation))
+  }, 'replacement authenticated inventory generation')
+}
 
 export async function waitForRemoteReview<T>(read: () => Promise<T>, accept: (value: T) => boolean,
   description: string, subscribe?: (changed: () => void) => () => void): Promise<T> {
@@ -266,11 +283,7 @@ export async function retainedReviewRecovery(fixture: Fixture, recovery: 'crash'
       expect(worker.sequence).toBeGreaterThan(cached.sequence)
     }
   } })
-  const inventory = await waitForRemoteReview(fixture.inventory, value => {
-    const original = beforeInventory.hostMetadata?.connection?.binding
-    const current = value.hostMetadata?.connection?.binding
-    return !!current && !!original && current.connectionEpoch !== original.connectionEpoch
-  }, 'replacement authenticated inventory generation')
+  const inventory = await waitForReplacementReviewInventory(fixture, beforeInventory)
   expect(inventory.installations[0]?.connectionGeneration)
     .not.toBe(beforeInventory.installations[0]?.connectionGeneration)
   expect(fixture.workerPid()).toBe(originalWorkerPid)
