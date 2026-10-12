@@ -83,7 +83,7 @@ export function sourceMaterializationParent(receipt: MaterializationReceipt): st
   return [receipt.binding.canonicalPath.replace(/\/$/, ''), ...sourceMaterializationComponents(receipt)].join('/')
 }
 
-/** Main asks an Agent's computer for its current files as a git bundle on top of the worktree's base commit. */
+/** Main asks an Agent's computer for its current files as its base commit when unchanged, or a git bundle when changed. */
 export const AGENT_SNAPSHOT_NAMESPACE = 'agent-snapshot-v1'
 export const AgentSnapshotRequestSchema = z.object({
   path: z.string().startsWith('/').max(4096),
@@ -91,5 +91,5 @@ export const AgentSnapshotRequestSchema = z.object({
 }).strict()
 export const AgentSnapshotResultSchema = z.object({
   commit: z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/),
-  bundleBase64: z.string().max(960 * 1024),
+  bundleBase64: z.string().max(960 * 1024).nullable(),
 }).strict()

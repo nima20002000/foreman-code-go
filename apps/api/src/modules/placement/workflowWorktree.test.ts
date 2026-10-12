@@ -19,7 +19,7 @@ beforeEach(() => {
   vi.mocked(readPlacementHarnessFacts).mockImplementation(async () => ({ profileProof: { qualified: true } }) as never)
 })
 
-function fixture() {
+function fixture(options: { repository?: boolean } = {}) {
   const seed = makeCurrentWorkflowFixture('workflow-worktree', 'single')
   const version = structuredClone(seed.version)
   const node = version.definition.nodes[0]!
@@ -69,6 +69,10 @@ function fixture() {
       rows = [{ id: version.id, workspace_id: version.workspaceId, workflow_id: version.workflowId,
         version: version.version, entry_node_id: version.entryNodeId, execution_semantics_version: 3, record: version }]
     } else if (text.includes('from agent_configuration_versions')) rows = [{ record: configuration }]
+    else if (text.includes('from workspaces') && options.repository) rows = [{ record: {
+      id: version.workspaceId, name: 'GitHub workspace',
+      repository: { provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main' },
+    } }]
     else if (text.includes('from source_root_bindings')) rows = [{ record: root }]
     else if (text.includes('from harness_instance_settings')) rows = profiles.map(record => ({ record }))
     return { rows, rowCount: rows.length }
@@ -107,6 +111,25 @@ it('refreshes the inherited computer and freezes the workflow root and Agent pre
   if (substituted.payload.kind !== 'agent') throw new Error('Expected Agent placement')
   substituted.payload.worktree!.branch = 'foreman/substituted'
   expect(() => readPlacement(substituted)).toThrow('Accepted placement hash')
+})
+
+it('binds a GitHub Run to its freshly approved root without changing the saved workflow reference', async () => {
+  const f = fixture({ repository: true })
+  const freshRoot = structuredClone(f.root)
+  freshRoot.source.snapshotId = randomUUID()
+  freshRoot.source.approvedSourceId = randomUUID()
+  freshRoot.binding.snapshotId = freshRoot.source.snapshotId
+  freshRoot.binding.bindingRevision = 2
+  const prepare = vi.fn(async () => [freshRoot])
+  f.sources.prepareRunSources = prepare
+  vi.mocked(f.sources.resolveRootBinding).mockImplementation(async (_sql, _principal, input) =>
+    input.bindingRevision === 2 ? freshRoot : f.root)
+  const original = structuredClone(f.version.definition)
+  const accepted = (await f.prepare())!.bind('run-fresh')[0]!
+  expect(prepare).toHaveBeenCalledTimes(1)
+  expect(accepted.source).toMatchObject({ snapshotId: freshRoot.source.snapshotId,
+    rootId: freshRoot.binding.rootId, bindingRevision: 2 })
+  expect(f.version.definition).toEqual(original)
 })
 
 it('binds generated branch naming to the Run using immutable workflow and node names', async () => {

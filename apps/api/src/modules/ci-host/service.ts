@@ -27,9 +27,9 @@ export interface CiCommits {
   capabilities(repository: string, commit: string): Promise<CiRepositoryCapabilities>
   unitInventory?(repository: string, commit: string): Promise<CiUnitInventory>
   resolve(repository: string, defaultBranch: string, commit: string | undefined,
-    snapshot: { baseCommit: string; commit: string; bundle: Buffer } | null): Promise<string>
+    snapshot: { baseCommit: string; commit: string; bundle: Buffer | null } | null): Promise<string>
 }
-export type AgentSnapshots = (executionId: string) => Promise<{ baseCommit: string; commit: string; bundle: Buffer } | null>
+export type AgentSnapshots = (executionId: string) => Promise<{ baseCommit: string; commit: string; bundle: Buffer | null } | null>
 
 const log = componentLogger('jobs')
 

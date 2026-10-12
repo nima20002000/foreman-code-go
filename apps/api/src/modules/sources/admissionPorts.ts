@@ -20,6 +20,9 @@ export interface RegisteredSourceRootPort {
   fence(sql: GraphSqlClient, root: AuthorizedSourceRoot): Promise<void>
 }
 export interface SourceAdmissionPort {
+  prepareRunSources(principal: ManagementPrincipal, input: {
+    workspaceId: string; commandId: string; source: 'http' | 'mcp'; roots: readonly SourceRootRecord[]
+  }): Promise<readonly SourceRootRecord[]>
   resolveApprovedSource(sql: GraphSqlClient, principal: ManagementPrincipal,
     workspaceId: string, pin: ApprovedSourcePin): Promise<ApprovedSource>
   resolveRootBinding(sql: GraphSqlClient, principal: ManagementPrincipal,

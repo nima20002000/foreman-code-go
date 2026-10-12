@@ -2056,7 +2056,7 @@ export function buildProductionApp(
         }
         const reply = AgentSnapshotResultSchema.parse((await endpoint.request(hostRef.deviceId, AGENT_SNAPSHOT_NAMESPACE,
           { path, baseCommit }, { signal })).payload)
-        return { commit: reply.commit, bundle: Buffer.from(reply.bundleBase64, 'base64') }
+        return { commit: reply.commit, bundle: reply.bundleBase64 === null ? null : Buffer.from(reply.bundleBase64, 'base64') }
       }
       // CI runs directly on build computers (Main included) from GitHub, like self-hosted runners.
       const hostCi = new HostCiService(database.pool, commands, new RunCiAuthority(database.pool), new GitCiCommits(),

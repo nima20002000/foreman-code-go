@@ -13,7 +13,7 @@ import { PostgresWorkspaceRootPolicies, workspaceRootHostScope } from '../../src
 import type { WorkspaceRootHostPort } from '../../src/modules/sources/rootPolicyPorts.js'
 import { PostgresSourceService } from '../../src/modules/sources/service.js'
 import { PrivateSourceSnapshotStore } from '../../src/modules/sources/store.js'
-import type { RegisteredSourceRootPort } from '../../src/modules/sources/admissionPorts.js'
+import { RegisteredWorkspaceSourceRoots } from '../../src/modules/sources/registeredSourceRoots.js'
 import { createSourceManifest, sourceSha256 } from '../../src/modules/sources/manifest.js'
 import { identity, openPrivateRoot } from '../../src/modules/sources/privateFilesystem.js'
 import { assertDeviceHostInstallation } from '../../src/modules/devices/hostAuthorization.js'
@@ -53,7 +53,10 @@ export async function mixedComputerPlacement(f: Fixture, directory: string, opti
     const registered = await assertDeviceHostInstallation(sql, host, installationId)
     return registered ? { workerInstallationId: registered.workerInstallationId,
       keyRevision: registered.keyRevision, authorizationRevision: registered.authorizationRevision } : null
-  } } satisfies Pick<WorkspaceRootHostPort, 'authorize'>
+  }, sourceNamespace: async (policy, rootPolicyId) => {
+    const canonicalPath = join(policy.managedRuntimeRoot, 'source-materializations', rootPolicyId)
+    return { canonicalPath, filesystem, attestationId: randomUUID(), attestationDigest: 'a'.repeat(64) }
+  } } satisfies Pick<WorkspaceRootHostPort, 'authorize' | 'sourceNamespace'>
   const policies = new PostgresWorkspaceRootPolicies(mainId, hosts as WorkspaceRootHostPort)
   const bytes = Buffer.from('export const approved = true\n')
   const manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
@@ -117,7 +120,9 @@ export async function mixedComputerPlacement(f: Fixture, directory: string, opti
     ownerPrincipalId: f.writer.principal.id, authorizedByPrincipalId: f.writer.principal.id,
     registration: policy.registration, attestationId: randomUUID(), attestationDigest: 'a'.repeat(64), boundAt: f.f.createdAt })
     await f.db.pool.query(`insert into source_root_catalog(root_id,workspace_id,scope_hash,current_binding_revision)
-      values($1,$2,$3,1)`, [root.binding.rootId, policy.workspaceId, randomUUID()])
+      values($1,$2,$3,1)`, [root.binding.rootId, policy.workspaceId, sourceSha256(Buffer.from(JSON.stringify({
+        workspaceId: policy.workspaceId, hostRef, rootPolicyId: policy.rootPolicyId,
+      })))])
     await f.db.pool.query(`insert into source_root_bindings(root_id,binding_revision,workspace_id,snapshot_id,record)
       values($1,1,$2,$3,$4::jsonb)`, [root.binding.rootId, policy.workspaceId, source.snapshotId, JSON.stringify(root)])
     const configuration = f.f.configurations[kind === 'main' ? 0 : 1]!
@@ -158,7 +163,7 @@ export async function mixedComputerPlacement(f: Fixture, directory: string, opti
   installations.refresh(inventory)
   const unused = async (): Promise<never> => { throw new Error('No native source operation in the admission fixture') }
   const sources = new PostgresSourceService(f.db.pool, f.commands, f.locations,
-    new PrivateSourceSnapshotStore(join(directory, 'snapshots')), mainId, {} as RegisteredSourceRootPort,
+    new PrivateSourceSnapshotStore(join(directory, 'snapshots')), mainId, new RegisteredWorkspaceSourceRoots(policies, hosts as WorkspaceRootHostPort),
     { authorize: unused, prepare: unused, verify: unused, verifyWorkingDirectory: unused,
       releaseClaim: unused, authorizeFinal: unused }, { confirmedClosed: unused })
   const producer = new AgentPlacementProducer(f.db.pool, mainId, sources, policies, {

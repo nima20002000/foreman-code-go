@@ -15,7 +15,7 @@ import { toolFailure, toolResult } from './results.js'
 import { logOperatorToolFailure } from '../operator/invoke.js'
 
 export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, lint, unit, build, integration) of the workspace '
-  + 'GitHub repository at a commit: the requested one, the Agent’s current files (published to GitHub first) or the default '
+  + 'GitHub repository at a commit: the requested one, the Agent’s Run-start commit when unchanged, its edited files (published to GitHub first), or the default '
   + 'branch head. A build computer fetches it with its own GitHub CLI login, installs packages and runs the repository’s '
   + 'own script in a fresh worktree, like a self-hosted runner. scope defaults to affected; scope=full always runs everything. '
   + 'Main and paired computers participate only with builds enabled; buildPriority orders their selection. '

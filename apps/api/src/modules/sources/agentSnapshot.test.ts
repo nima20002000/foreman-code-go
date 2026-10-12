@@ -1,6 +1,7 @@
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { execFileSync } from 'node:child_process'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
@@ -11,6 +12,25 @@ const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8',
   env: gitFixtureEnvironment() }).trim()
+
+it('returns the base commit without a bundle for an unchanged large Agent worktree', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'agent-snapshot-unchanged-'))
+  roots.push(root)
+  git(root, 'init', '-q', '-b', 'main')
+  await writeFile(join(root, 'large.bin'), randomBytes(900 * 1024))
+  await writeFile(join(root, '.gitignore'), 'ignored.txt\n')
+  git(root, 'add', '.')
+  git(root, 'commit', '-qm', 'Run start')
+  const baseCommit = git(root, 'rev-parse', 'HEAD')
+  await writeFile(join(root, 'ignored.txt'), 'runtime output')
+  const ports = systemGitWorktreePorts(gitFixtureEnvironment())
+  expect(await snapshotAgentWorktree(ports, { path: root, baseCommit }, AbortSignal.timeout(30_000)))
+    .toEqual({ commit: baseCommit, bundle: null })
+  expect(git(root, 'status', '--porcelain')).toBe('')
+  await writeFile(join(root, 'large.bin'), randomBytes(900 * 1024))
+  await expect(snapshotAgentWorktree(ports, { path: root, baseCommit }, AbortSignal.timeout(30_000)))
+    .rejects.toMatchObject({ code: 'SOURCE_SNAPSHOT_TOO_LARGE' })
+})
 
 it('sends an Agent\'s current files, including uncommitted ones, to another clone without moving its branch', async () => {
   const root = await mkdtemp(join(tmpdir(), 'agent-snapshot-')); roots.push(root)

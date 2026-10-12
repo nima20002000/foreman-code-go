@@ -413,7 +413,7 @@ export async function createInstalledWorkerDomains(input: {
       }
       const snapshot = await snapshotAgentWorktree(systemGitWorktreePorts(process.env), { path, baseCommit: request.baseCommit },
         AbortSignal.any([context.signal, lifetime.signal, AbortSignal.timeout(120_000)]))
-      return { payload: AgentSnapshotResultSchema.parse({ commit: snapshot.commit, bundleBase64: snapshot.bundle.toString('base64') }) }
+      return { payload: AgentSnapshotResultSchema.parse({ commit: snapshot.commit, bundleBase64: snapshot.bundle?.toString('base64') ?? null }) }
     },
   })
   const sync = new SyncthingComputer()

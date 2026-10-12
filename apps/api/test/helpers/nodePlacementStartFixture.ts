@@ -1,6 +1,10 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
-import { rm } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
+import { join } from 'node:path'
+import { gitFixtureEnvironment } from './gitFixture.js'
+import { systemGitWorktreePorts } from '../../src/modules/sources/gitWorktree.js'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { expect, vi } from 'vitest'
 import {
@@ -42,6 +46,19 @@ export async function fixture(options: { gitSource?: boolean } = {}) {
       sourceAccessMode: options.gitSource ? 'exclusive-write' : 'read-only',
       git: { commit: 'b'.repeat(40), tree: 'c'.repeat(40), objectFormat: 'sha1', repository: 'octo/site' },
     })
+    const repositoryRoot = join(directory, 'origin')
+    await mkdir(repositoryRoot)
+    const git = (...args: string[]) => execFileSync('git', args, {
+      cwd: repositoryRoot, encoding: 'utf8', env: gitFixtureEnvironment(),
+    }).trim()
+    git('init', '-q', '-b', 'main')
+    await writeFile(join(repositoryRoot, 'source.ts'), 'export const approved = true\n')
+    git('add', '.')
+    git('commit', '-qm', 'Initial source')
+    const system = systemGitWorktreePorts(gitFixtureEnvironment())
+    placement.sources.git = { cloneDirectory: () => join(directory!, 'clone'),
+      git: (args, options) => system.git(args[0] === 'clone'
+        ? ['clone', '--no-checkout', repositoryRoot, args.at(-1)!] : args, options) }
     const workspace = (await base.db.pool.query<{ revision: number }>(
       'select revision from workspaces where id=$1', [base.f.scope.workspaceId])).rows[0]!
     await base.services.workspaces.update(base.writer.principal, 'mcp', {
@@ -69,7 +86,7 @@ export async function fixture(options: { gitSource?: boolean } = {}) {
       ...binding, startPublication: { ...binding.startPublication, placementAdmission: placement.producer,
         workerExecution: new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }) },
     })
-    const services = { ...base.services, runs, runPlacements: placement.reads }
+    const services = { ...base.services, runs, runPlacements: placement.reads, sources: placement.sources }
     app = buildApp({ logger: false,
       readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
       operator: { access: base.access, services } })
@@ -88,7 +105,7 @@ export async function fixture(options: { gitSource?: boolean } = {}) {
     agentWorkflowNode(saveInput.graph.nodes[1]).placement = placement.remote
     const path = `/api/management/workspaces/${saveInput.workspaceId}/workflows/${saveInput.workflowId}`
     const headers = { authorization: `Bearer ${base.writer.token}` }
-    return { base, placement, app, client, connect, saveInput, path, headers,
+    return { base, placement, app, services, client, connect, saveInput, path, headers, repositoryRoot, git,
       async save(via: 'http' | 'mcp') {
         if (via === 'mcp') {
           const result = await client.callTool({ name: 'workflow_save_v3', arguments: saveInput })
@@ -102,7 +119,7 @@ export async function fixture(options: { gitSource?: boolean } = {}) {
       async start(via: 'http' | 'mcp', input: ReturnType<typeof RunStartV3InputSchema.parse>) {
         if (via === 'mcp') {
           const result = await client.callTool({ name: 'run_start', arguments: input })
-          expect(result.isError).not.toBe(true)
+          expect(result.isError, JSON.stringify(result)).not.toBe(true)
           return RunStartV3ResultSchema.parse(decodeMcpToolResult(result))
         }
         const response = await app!.inject({ method: 'POST', url: `${path}/runs`, headers, payload: input })
