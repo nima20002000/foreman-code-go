@@ -172,7 +172,7 @@ it.each(['missing', 'unreadable', 'incomplete'] as const)(
   },
 )
 
-it('selects the pinned Main measurement after the same installation is qualified again', async () => {
+it('restores the pinned Main qualification from persisted records after restart and requalification', async () => {
   const f = fixture()
   const original = await f.read()
   if (f.placement.payload.kind !== 'agent') throw new Error('Expected an Agent placement.')
@@ -181,10 +181,16 @@ it('selects the pinned Main measurement after the same installation is qualified
   const newer = structuredClone(f.records[0]!)
   newer.checked_at = new Date(newer.checked_at.getTime() + 1_000)
   f.records.push(newer)
-  const resident = await f.read({ purpose: 'resident' })
-  expect(resident.qualification).toEqual(original.qualification)
-  await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE',
-    details: { reason: 'accepted_qualification_changed' } })
+  const restarted = new HarnessInstallationRegistry(new HarnessInstanceRegistry(localHarnessDrivers))
+  restarted.refresh(f.installations.list())
+  const recovered = await readPlacementHarnessFacts({ query: f.query } as unknown as GraphSqlClient,
+    f.placement, restarted, { codex: newer.suite_revision })
+  expect(recovered.qualification).toEqual(original.qualification)
+  expect(recovered.profileProof).toEqual(original.profileProof)
+  expect(restarted.list()[0]?.observedVersion).toBeNull()
+  expect((await f.read({ purpose: 'resident' })).qualification).toEqual(original.qualification)
+  delete f.placement.payload.qualificationDigest
+  expect((await f.read()).qualification?.checkedAt).toBe(newer.checked_at.toISOString())
 })
 
 it('resolves a resident proof across historical settings revisions after a payload rollback', async () => {
@@ -200,11 +206,20 @@ it('resolves a resident proof across historical settings revisions after a paylo
   const resident = await f.read({ purpose: 'resident' })
   expect(resident.override.revision).toBe(1)
   expect(resident.profileProof).toEqual(original.profileProof)
+  expect((await f.read()).profileProof).toEqual(original.profileProof)
   delete f.placement.payload.profileProofDigest
   delete f.placement.payload.qualificationDigest
   const next = await f.read()
   expect(next.override.revision).toBe(3)
   expect(next.profileProof).toEqual(newerProof)
+})
+
+it('rejects missing pinned qualification even when a newer measurement is qualified', async () => {
+  const f = fixture()
+  if (f.placement.payload.kind !== 'agent') throw new Error('Expected an Agent placement.')
+  f.placement.payload.qualificationDigest = 'b'.repeat(64)
+  await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE',
+    details: { reason: 'main_qualification_identity_missing' } })
 })
 
 it.each([true, false])('uses the latest measurement after a native instance revision changes, passed=%s', async passed => {

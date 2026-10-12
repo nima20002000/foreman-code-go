@@ -46,11 +46,11 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
   }
   if (placement.payload.kind !== 'agent') unavailable('unsupported_payload')
   const payload = placement.payload as Extract<typeof placement.payload, { kind: 'agent' }>
-  const residentProof = options?.purpose === 'resident' && payload.profileProofDigest
+  const pinnedProof = payload.profileProofDigest
   const values = await sql.query<{ record: unknown }>(`select record from harness_instance_settings
     where instance_id=$1 and record->>'instanceRevision'=$2
       and record#>>'{target,harnessInstallationId}'=$3 and record#>>'{target,installationFingerprint}'=$4
-    order by revision desc ${residentProof ? '' : 'limit 1'} for share`,
+    order by revision desc ${pinnedProof ? '' : 'limit 1'} for share`,
   [payload.instanceId, payload.instanceRevision, payload.harnessInstallationId, payload.installationFingerprint])
   if (!values.rows.length) unavailable('profile_revision_missing')
   const candidates = values.rows.map(row => HostHarnessOverrideSchema.parse(row.record))
@@ -95,7 +95,7 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
   if (!binarySha256 || !suites[harness]) return unavailable('binary_identity_missing')
   let measuredQualification: unknown
   if (!installation.observedVersion
-    || installation.hostRef.kind === 'main' && options?.purpose === 'resident' && payload.qualificationDigest) {
+    || installation.hostRef.kind === 'main' && payload.qualificationDigest) {
     if (installation.hostRef.kind !== 'main' && options?.purpose !== 'resident') unavailable('worker_qualification_missing')
     // Passive discovery does not run --version. Use the completed native measurement
     // only when its full installation and live context still match.
@@ -103,7 +103,8 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
     const matching = measured.filter(row => measuredInstallationMatches(row.evidence, qualifiedInstallation, suites[harness]))
       .sort((left, right) => Date.parse(right.qualification.checkedAt ?? right.qualification.startedAt ?? '1970-01-01T00:00:00Z')
         - Date.parse(left.qualification.checkedAt ?? left.qualification.startedAt ?? '1970-01-01T00:00:00Z'))
-    const latest = options?.purpose === 'resident' && payload.qualificationDigest
+    // Saved Runs retain their accepted measurement when later checks qualify the same installation again.
+    const latest = payload.qualificationDigest
       ? matching.find(row => placementDigest(row.qualification) === payload.qualificationDigest)?.qualification
       : matching[0]?.qualification
     if (!latest || latest.status !== 'qualified') return unavailable('main_qualification_identity_missing')

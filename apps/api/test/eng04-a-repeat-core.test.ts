@@ -9,6 +9,7 @@ import {
 } from '@foreman-code/contracts/wave25'
 import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { DomainError } from '../src/modules/errors.js'
+import { SourceError } from '../src/modules/sources/manifest.js'
 import { ExecutionLimiter } from '../src/modules/runs/limiter.js'
 import { normalizeRepeatTerminal, repeatNodeAction, repeatTerminalResolution } from '../src/modules/runs/repeatNode.js'
 import { RepeatRunRepository, type RepeatRepositoryHost, type RepeatRuntimeRun } from '../src/modules/runs/repeatPostgres.js'
@@ -18,7 +19,7 @@ import {
   makeRepeatOccurrence, repeatDigest, repeatExecutionIdentity, repeatSlotId, repeatSuccessorInput,
   type RepeatResolution, type RepeatScope, type RepeatSource,
 } from '../src/modules/runs/repeatResolution.js'
-import { executeRepeatRuntime, repeatExecutionDirectoryKey } from '../src/modules/runs/repeatRuntime.js'
+import { executeRepeatRuntime, repeatExecutionDirectoryKey, startIntervalChecks } from '../src/modules/runs/repeatRuntime.js'
 import { compileExecutionTopology } from '../src/modules/runs/topology.js'
 import { workflowNativeReservation, type WorkflowNativeReservation } from '../src/modules/runs/workflowNativeEntry.js'
 import { repeatOccurrenceMigrationSql } from '../src/infrastructure/repeatOccurrenceMigration.js'
@@ -527,17 +528,42 @@ describe('ENG04-A real repository with PostgreSQL-shaped scripted transactions (
     db.state().receipts.delete(`run.complete:${db.f.scope.runId}`)
     await expect(db.store.completeRun()).rejects.toThrow('GRAPH_RECEIPT_MISMATCH')
   })
-  it('settles the run when an agent configuration preflight times out', async () => {
+  it.each(['SOURCE_MATERIALIZATION_UNCERTAIN', 'HARNESS_PROFILE_UNAVAILABLE'])(
+    'passes an interrupted interval preparation to Run cleanup: %s', async code => {
+      const f = fixture(1)
+      const node = f.version.definition.nodes[0]!
+      if (node.kind === 'job') throw new Error('Expected an Agent node.')
+      node.interval = { everySeconds: 60 }
+      const queued = execution(f, node.id, 'queued-interval')
+      const failure = new DomainError(code, 'The queued interval cannot finish preparation.', 409)
+      let tracked!: Promise<unknown>
+      const stop = startIntervalChecks({ version: f.version, signal: new AbortController().signal,
+        store: { admitTick: async () => ({ kind: 'busy', execution: queued }) },
+        driver: { candidate: () => queued, observe: async () => { throw failure } },
+        track: task => { tracked = task } })
+      try { await expect(tracked).rejects.toBe(failure) }
+      finally { stop() }
+    },
+  )
+  it.each([
+    new DomainError('APP_MCP_PREFLIGHT_TIMEOUT', 'MCP inspection timed out.', 409),
+    new SourceError('SOURCE_MATERIALIZATION_UNCERTAIN', 'Source preparation was interrupted before activation.'),
+    new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'The saved native qualification is unavailable.', 409),
+  ])('settles queued work after a launch preparation refusal: $code', async failure => {
     const db = postgresShape(1)
     const calls: string[] = []
-    const timeout = new DomainError('APP_MCP_PREFLIGHT_TIMEOUT', 'MCP inspection timed out.', 409)
+    const cleanupResults: unknown[] = []
+    let observations = 0
     await expect(executeRepeatRuntime({
       runId: db.f.scope.runId, version: db.f.version, store: db.store, owner: db.owner,
       signal: new AbortController().signal, checkpointer: new MemorySaver(),
       lifecycle: {
         preflight: async () => {}, markRunning: async () => {}, persistWait: async () => false,
         currentState: async () => ({ executionState: db.state().run.executionState, stopRequested: false }),
-        requestCleanup: async () => { calls.push('cleanup') },
+        requestCleanup: async result => {
+          calls.push('cleanup')
+          cleanupResults.push(result)
+        },
         cancelNativeAndRequestCleanup: async () => { calls.push('cancel'); return true },
         settleRun: async () => {
           calls.push('settle')
@@ -548,9 +574,18 @@ describe('ENG04-A real repository with PostgreSQL-shaped scripted transactions (
       },
       driver: {
         candidate: (ref, attempt) => execution(db.f, ref.nodeId, 'timed-out-agent', attempt),
-        observe: async () => { throw timeout },
+        observe: async () => {
+          observations++
+          throw failure
+        },
       },
-    })).rejects.toBe(timeout)
+    })).rejects.toBe(failure)
+    expect(observations).toBe(1)
+    expect(calls.indexOf('cleanup')).toBeLessThan(calls.indexOf('cancel'))
+    if (failure.code !== 'APP_MCP_PREFLIGHT_TIMEOUT') {
+      expect(cleanupResults).toContainEqual({ outcome: 'failed',
+        error: { code: failure.code, message: failure.message, retryable: false } })
+    }
     expect(calls).toContain('cancel')
     expect(calls).toContain('settle')
     expect(calls.slice(-2)).toEqual(['finish native', 'finish cleanup'])

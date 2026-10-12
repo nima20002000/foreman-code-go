@@ -321,11 +321,13 @@ export interface RepeatRuntimeLifecycle {
   finishCleanup(): Promise<void>
 }
 
+const preparationFailureCodes = new Set(['SOURCE_MATERIALIZATION_UNCERTAIN', 'HARNESS_PROFILE_UNAVAILABLE'])
+
 /** Re-activates interval nodes beside the graph: one loop per node admits a check when it is due
  * and observes it through the same native driver without using graph parallelism slots. Each loop
  * re-observes its node's latest check until that check is settled, also after a restart. The
  * returned stop only ends scheduling: the caller's task drain waits for in-flight checks, with the
- * bounded cleanup deadline after Stop or failure. Errors back off; they do not fail the Run. */
+ * bounded cleanup deadline after Stop or failure. Transient errors back off; refused preparation closes the Run. */
 export function startIntervalChecks(input: {
   version: WorkflowVersionV3; store: Partial<Pick<RepeatRunRepository, 'admitTick'>>
   driver: RepeatExecutionDriver; signal: AbortSignal
@@ -357,6 +359,7 @@ export function startIntervalChecks(input: {
         }
       } catch (error) {
         if (input.signal.aborted) return
+        if (error instanceof DomainError && preparationFailureCodes.has(error.code)) throw error
         if (!scheduling.aborted) componentLogger('engine').warn({ err: error, workflowNodeId: node.id }, 'interval check failed')
       }
       if (scheduling.aborted) return
@@ -400,7 +403,7 @@ export async function executeRepeatRuntime(input: {
     if (error instanceof ZodError || (error instanceof Error && error.message === 'GRAPH_JSON_LIMIT')) return true
     if (typeof error !== 'object' || !error || !('code' in error)) return false
     const code = String(error.code)
-    return code.startsWith('REPEAT_') || code.startsWith('AUTH_') || [
+    return preparationFailureCodes.has(code) || code.startsWith('REPEAT_') || code.startsWith('AUTH_') || [
       'WORKFLOW_SELECTED_EXECUTION_FAILED', 'WORKFLOW_UNRESOLVED', 'WORKFLOW_RESULT_TOO_LARGE', 'EXECUTION_OCCURRENCE_CONFLICT',
       'WORKFLOW_EXECUTION_BUDGET_EXHAUSTED', 'JOB_PREPARATION_TIMEOUT',
       'RUN_PIN_CONFLICT', 'ACCESS_DENIED', 'GRAPH_SECURITY_UNQUALIFIED', 'GRAPH_STOP_CONFLICT', 'GRAPH_TERMINAL_CONFLICT',
@@ -429,7 +432,7 @@ export async function executeRepeatRuntime(input: {
   }
   const failureResult = (error: unknown): ExecutionResult | undefined => {
     if (!(error instanceof DomainError)) return undefined
-    if (!['WORKFLOW_EXECUTION_BUDGET_EXHAUSTED', 'JOB_PREPARATION_TIMEOUT',
+    if (!preparationFailureCodes.has(error.code) && !['WORKFLOW_EXECUTION_BUDGET_EXHAUSTED', 'JOB_PREPARATION_TIMEOUT',
       'WORK_RUN_EXECUTION_BUDGET_EXHAUSTED'].includes(error.code)) return undefined
     return { outcome: 'failed', error: { code: error.code, message: error.message, retryable: false } }
   }
