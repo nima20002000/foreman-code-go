@@ -210,6 +210,27 @@ describe('guardian actual child observation receipts', () => {
     expect(f.control({ ...command, operation: 'stop' }).replies).toHaveLength(1)
     expect(f.signals).toEqual([[-501, 'SIGTERM']])
   })
+  it('discards incomplete observer input only after authenticated release and rejects another owner cleanup', () => {
+    const f = guardianFixture(true, false, { restartDetachable: true, reconnectableStdio: true })
+    const command = { id: f.id, owner: 'same-lease', controlKey: 'a'.repeat(64), startTicks: '100' }
+    expect(f.control({ ...command, operation: 'detach' }).replies).toHaveLength(1)
+    const initial = f.control({ ...command, operation: 'attach', connectionId: 'initial' })
+    initial.socket.emit('data', Buffer.from('{"id":"partial'))
+    initial.socket.emit('close')
+    expect(f.control({ ...command, operation: 'stop', owner: 'settings:mcp:codex' }).destroyed).toBe(true)
+    expect(f.control({ ...command, operation: 'detach', controlKey: 'b'.repeat(64) }).destroyed).toBe(true)
+    expect(f.control({ ...command, operation: 'attach', connectionId: 'replacement' }).destroyed).toBe(true)
+    expect(f.control({ ...command, operation: 'detach', connectionId: 'initial' }).replies).toHaveLength(1)
+    const replacement = f.control({ ...command, operation: 'attach', connectionId: 'replacement' })
+    expect(replacement.destroyed).toBe(false)
+    const input: unknown[] = []
+    f.native.stdin.on('data', chunk => input.push(JSON.parse(String(chunk))))
+    const read = { id: 'read', method: 'thread/read', params: { threadId: 'same-thread' } }
+    replacement.socket.emit('data', Buffer.from(JSON.stringify(read) + '\n'))
+    expect(input).toEqual([read])
+    expect(f.signals).toEqual([])
+    expect(f.kills).toEqual([])
+  })
   it('journals actual child PID/startTicks and positive CLI exit independently of wrapper termination', () => {
     const f = guardianFixture()
     const birth = JSON.parse(f.records.get('/private/provider.json')!) as Record<string, unknown>

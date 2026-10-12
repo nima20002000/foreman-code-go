@@ -2354,6 +2354,11 @@ export class ApprovalExecutionCoordinator {
         input.owner.assertOwned()
         throw error
       }
+      if (!signal.aborted && error instanceof HarnessExecutionError
+        && error.result.error?.code === 'CODEX_OBSERVER_UNAVAILABLE') {
+        input.owner.assertOwned()
+        throw new DomainError('CODEX_OBSERVER_UNAVAILABLE', error.message, 503)
+      }
       if (error instanceof DomainError && error.code === 'APPROVAL_SETTLEMENT_PENDING' && !signal.aborted) {
         input.owner.assertOwned()
         // Waiting for durable proof is not active model time or a reason to
@@ -2400,9 +2405,13 @@ export class ApprovalExecutionCoordinator {
         if (error instanceof DomainError) code = error.code
         componentLogger('harness').warn({ executionId: execution.id, code, err: error },
           'Workflow native execution failed before cleanup')
-        const failure = activeTimeout
-          ? { outcome: 'failed' as const, error: { code: error.code, message: error.message, retryable: false } }
-          : undefined
+        let failure: ExecutionResult | undefined
+        if (activeTimeout) {
+          failure = { outcome: 'failed', error: { code: error.code, message: error.message, retryable: false } }
+        } else if (!signal.aborted && error instanceof HarnessExecutionError && error.result.error) {
+          // A closed transport is a failed observation, not a retryable native terminal.
+          failure = { outcome: 'failed', error: { ...error.result.error, retryable: false } }
+        }
         const persist = <T>(work: () => Promise<T>) =>
           retryDatabaseTimeout(work, { check: () => input.owner.assertOwned() })
         await persist(() => this.runs.requestCleanup(execution.runId, input.owner, failure,

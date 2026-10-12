@@ -296,6 +296,10 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     })
   }
   else if (message.method === 'thread/turns/list') {
+    if (flag('disconnect-turn-history')) {
+      fs.unlinkSync(path.join(root, 'disconnect-turn-history'))
+      process.exit(17)
+    }
     const persisted = loadThread(params.threadId)
     if (!persisted) { fail(message.id); return }
     const entries = [...persisted.turns]

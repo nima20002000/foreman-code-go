@@ -130,12 +130,27 @@ export class PostgresSourceReservations {
         from source_storage_reservations r where r.scope_id=$1 and r.state<>'reclaimed') usage`, [request.scopeId])).rows[0]!
     const usedBytes = capacity.verification ? Number(totals.verification_bytes) : Number(totals.bytes)
     const activeMaterializations = Number(capacity.verification ? totals.verification_materializations : totals.materializations)
+    const pendingBytes = Number(totals.pending_bytes)
+    const preparing = Number(totals.preparing)
     // Free space already excludes retained files. Outstanding writers remain fully charged in both pools.
-    if (usedBytes + request.reservedBytes > capacity.bytes
-      || Number(totals.pending_bytes) + request.reservedBytes > limits.availableBytes
-      || Number(totals.preparing) >= limits.preparing
-      || (request.ownerKind === 'materialization' && activeMaterializations >= capacity.materializations))
-      throw new DomainError('SOURCE_CAPACITY', 'Aggregate source staging, retained copies or active materializations exhaust this host/filesystem budget.', 409)
+    const exhausted: string[] = []
+    if (usedBytes + request.reservedBytes > capacity.bytes) exhausted.push('retained_bytes')
+    if (pendingBytes + request.reservedBytes > limits.availableBytes) exhausted.push('available_bytes')
+    if (preparing >= limits.preparing) exhausted.push('preparations')
+    if (request.ownerKind === 'materialization' && activeMaterializations >= capacity.materializations) {
+      exhausted.push('materializations')
+    }
+    if (exhausted.length) {
+      throw new DomainError('SOURCE_CAPACITY',
+        'Aggregate source staging, retained copies or active materializations exhaust this host/filesystem budget.', 409, {
+          exhausted,
+          usage: { usedBytes, pendingBytes, preparing, activeMaterializations, requestedBytes: request.reservedBytes },
+          limits: { bytes: capacity.bytes, availableBytes: limits.availableBytes,
+            preparing: limits.preparing, materializations: capacity.materializations },
+          measured: { cpuCount: measured.cpuCount, availableMemoryBytes: measured.availableMemoryBytes,
+            observedAt: measured.observedAt },
+        })
+    }
     const reservation = { ...request, reservationId: randomUUID(), storageCapacity: measured }
     await sql.query(`insert into source_storage_reservations(reservation_id,scope_id,owner_kind,owner_id,reserved_bytes,state,record)
       values($1,$2,$3,$4,$5,'preparing',$6::jsonb)`, [reservation.reservationId, request.scopeId, request.ownerKind, request.ownerId, request.reservedBytes, JSON.stringify(reservation)])
