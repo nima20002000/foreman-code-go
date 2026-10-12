@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import type { GitWorktreePorts } from '../sources/gitWorktree.js'
@@ -68,10 +68,13 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
   }
   const dispatched: string[][] = []
   const github = { listed: [] as { databaseId: number; displayTitle: string }[], status: 'in_progress', conclusion: '',
-    durations: null as Record<string, number> | null, testResults: null as unknown, canceled: [] as string[] }
+    durations: null as Record<string, number> | null, testResults: null as unknown, canceled: [] as string[],
+    steps: [] as { number: number; name: string; status: string; conclusion: string | null }[],
+    rateLimited: false, jobReads: [] as ('full' | 'unchanged')[] }
   const circle = { triggered: [] as string[][], outcome: '' as string, durations: null as Record<string, number> | null,
     testResults: null as unknown,
-    phantoms: 0, lookupError: '', canceled: [] as string[] }
+    phantoms: 0, lookupError: '', canceled: [] as string[],
+    steps: [] as { num: number; name: string; phase: string; outcome?: string }[], output: '' }
   let now = Date.now()
   const system = systemHostCiPorts()
   const ports: HostCiPorts = { ...system, now: () => new Date(now), run: async (file, args) => {
@@ -95,8 +98,9 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
         circle.canceled.push(args[2]!)
         return ok()
       }
-      if (args[0] === 'job' && args[1] === 'get') return ok(JSON.stringify(circle.outcome
-        ? { phase: 'ended', outcome: circle.outcome, stopped_at: '2026-10-11T02:00:00Z' } : { phase: 'started' }))
+      if (args[0] === 'job' && args[1] === 'get') return ok(JSON.stringify({ executions: [{ steps: circle.steps }], ...circle.outcome
+        ? { phase: 'ended', outcome: circle.outcome, stopped_at: '2026-10-11T02:00:00Z' } : { phase: 'started' } }))
+      if (args[0] === 'job' && args[1] === 'output' && args[2] === 'get') return ok(circle.output)
       if (args[0] === 'job' && args[1] === 'output') return ok('Suite\nall green\n')
       if (args[0] === 'job' && args[1] === 'artifact' && circle.durations) {
         const directory = join(args[args.indexOf('--output') + 1]!, 'durations')
@@ -110,6 +114,19 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
     if (file !== 'gh') return system.run(file, args)
     if (args[0] === 'auth') return ok()
     if (args[0] === 'workflow') { dispatched.push([...args]); return ok() }
+    if (args[0] === 'api') {
+      if (github.rateLimited) return { code: 1, stdout: 'HTTP/2.0 403 Forbidden\r\nX-Ratelimit-Remaining: 0\r\n\r\n{}',
+        stderr: 'gh: API rate limit exceeded for user ID 1. (HTTP 403)' }
+      const body = JSON.stringify({ jobs: [{ id: 1, status: github.status === 'completed' ? 'completed' : 'in_progress',
+        steps: github.steps }] })
+      const etag = `"${createHash('sha1').update(body).digest('hex')}"`
+      if (args.some(value => value.startsWith('If-None-Match:') && value.endsWith(etag))) {
+        github.jobReads.push('unchanged')
+        return { code: 1, stdout: `HTTP/2.0 304 Not Modified\r\nEtag: ${etag}\r\n\r\n`, stderr: 'gh: HTTP 304' }
+      }
+      github.jobReads.push('full')
+      return ok(`HTTP/2.0 200 OK\r\nEtag: W/${etag}\r\n\r\n${body}`)
+    }
     if (args[1] === 'list') return ok(JSON.stringify(github.listed))
     if (args[1] === 'cancel') { github.canceled.push(args[2]!); return ok() }
     if (args[1] === 'view' && args.includes('--log')) return ok('ci\tSuite\tall green\n')
@@ -220,6 +237,7 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(await f.cloud.handle(read)).toMatchObject({ run: { state: 'running', step: 'integration' },
       text: expect.stringContaining('Retrying dispatch (2/3)') })
     f.circle.outcome = 'succeeded'
+    f.advance(4_000)
     expect(await f.cloud.handle(read)).toMatchObject({ run: { state: 'passed', exitCode: 0 } })
     expect(f.circle.triggered).toHaveLength(2)
   })
@@ -547,6 +565,7 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(await read()).toMatchObject({ run: { state: 'running', step: 'integration' } })
     f.github.status = 'completed'; f.github.conclusion = 'success'
     f.github.durations = { 'apps/api/test/b.integration.test.ts': 250 }
+    f.advance(4_000)
     expect(await read()).toMatchObject({ run: { state: 'passed', exitCode: 0 }, text: 'ci\tSuite\tall green\n',
       durations: { 'apps/api/test/b.integration.test.ts': 250 } })
   })
@@ -591,7 +610,68 @@ describe('GitHub Actions CI on a public mirror', () => {
     const read = () => f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536, durations: true })
     expect(await read()).toMatchObject({ run: { state: 'running' } })
     f.circle.outcome = 'failed'; f.circle.durations = { 'apps/api/test/c.integration.test.ts': 180 }
+    f.advance(4_000)
     expect(await read()).toMatchObject({ run: { state: 'failed', exitCode: 1, finishedAt: '2026-10-11T02:00:00Z' },
       text: 'Suite\nall green\n', durations: { 'apps/api/test/c.integration.test.ts': 180 } })
+  })
+
+  it('shows the running GitHub step live and asks GitHub again only when its jobs changed', async () => {
+    const f = await fixture()
+    const runId = randomUUID()
+    await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit, suite: 'integration', scope: 'full' })
+    f.github.listed = [{ databaseId: 8, displayTitle: `ci ${runId}` }]
+    f.github.steps = [{ number: 1, name: 'Set up job', status: 'completed', conclusion: 'success' },
+      { number: 2, name: 'Cache', status: 'completed', conclusion: 'skipped' },
+      { number: 3, name: 'Suite', status: 'in_progress', conclusion: null }]
+    const read = () => f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 })
+    expect(await read()).toMatchObject({ run: { state: 'running', step: 'Suite' }, text: '==> Set up job\n==> Suite\n' })
+    // Reads within the poll interval answer from the kept state without asking GitHub.
+    expect(await read()).toMatchObject({ run: { step: 'Suite' } })
+    expect(f.github.jobReads).toEqual(['full'])
+    f.advance(4_000)
+    expect(await read()).toMatchObject({ run: { step: 'Suite' }, text: '==> Set up job\n==> Suite\n' })
+    expect(f.github.jobReads).toEqual(['full', 'unchanged'])
+    f.github.steps[2] = { number: 3, name: 'Suite', status: 'completed', conclusion: 'failure' }
+    f.github.status = 'completed'; f.github.conclusion = 'failure'
+    f.advance(4_000)
+    const done = await read()
+    expect(done).toMatchObject({ run: { state: 'failed', step: 'integration' } })
+    expect(done.operation === 'read' && done.text).toBe(
+      '==> Set up job\n==> Suite\n==> Suite failed\n--- GitHub Actions log ---\nci\tSuite\tall green\n')
+  })
+
+  it('streams the running CircleCI step output into the log as it grows', async () => {
+    const f = await fixture({}, { provider: 'circleci' })
+    const runId = randomUUID()
+    await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit, suite: 'integration', scope: 'full' })
+    f.circle.steps = [{ num: 101, name: 'Checkout code', phase: 'ended', outcome: 'succeeded' },
+      { num: 108, name: 'Suite', phase: 'started' }]
+    f.circle.output = 'a.test passed\n'
+    const read = (afterOffset = 0) => f.cloud.handle({ operation: 'read', runId, afterOffset, maxBytes: 65_536 })
+    const first = await read()
+    expect(first).toMatchObject({ run: { state: 'running', step: 'Suite' }, text: '==> Checkout code\n==> Suite\na.test passed\n' })
+    f.circle.output += 'b.test passed\n'
+    f.advance(4_000)
+    expect(await read(first.operation === 'read' ? first.nextOffset : 0)).toMatchObject({ text: 'b.test passed\n' })
+  })
+
+  it('pauses polling while the service rate limit is spent and resumes after the backoff', async () => {
+    const f = await fixture()
+    const runId = randomUUID()
+    await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit, suite: 'integration', scope: 'full' })
+    f.github.listed = [{ databaseId: 8, displayTitle: `ci ${runId}` }]
+    const read = () => f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 })
+    expect(await read()).toMatchObject({ run: { state: 'running' } })
+    f.github.rateLimited = true
+    f.advance(4_000)
+    expect(await read()).toMatchObject({ run: { state: 'running' } })
+    f.github.rateLimited = false
+    f.github.status = 'completed'; f.github.conclusion = 'success'
+    const reads = f.github.jobReads.length
+    f.advance(29_000)
+    expect(await read()).toMatchObject({ run: { state: 'running' } })
+    expect(f.github.jobReads).toHaveLength(reads)
+    f.advance(1_000)
+    expect(await read()).toMatchObject({ run: { state: 'passed' } })
   })
 })
