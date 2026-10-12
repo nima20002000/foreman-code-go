@@ -48,7 +48,19 @@ export function workflowExecutionRequest(input: {
   const workInput = version.definition.handoffs && tickIndex === undefined
     ? WorkActivationInputSchema.parse(execution.input) : undefined
   const noticePrompt = workInput ? trustedWorkNoticePrompt(workInput) : undefined
+  const nameOf = (nodeId: string) => {
+    const item = version.definition.nodes.find(candidate => candidate.id === nodeId)
+    return JSON.stringify(item && item.kind !== 'job' ? item.name ?? item.label ?? nodeId : nodeId)
+  }
+  // Without saved choices, finish follows every outgoing execution edge; a return never does.
+  const downstream = node.choice ? [] : version.definition.edges
+    .filter(edge => edge.kind === 'execution' && edge.source === node.id).map(edge => nameOf(edge.target))
   const returnPrompt = workInput?.work.kind === 'work_request' ? [
+    ...(downstream.length ? [
+      `To hand your deliverable to the next Agent (${downstream.join(', ')}), use {"kind":"finish"} with empty remainingFindings.`,
+      `A return goes back to ${nameOf(workInput.work.request.requesterNodeId)} only and never starts ${downstream.join(', ')}.`,
+    ] : []),
+    `Use routing.kind "return" only to answer ${nameOf(workInput.work.request.requesterNodeId)} about the work it sent you: an accepted return closes that request and ends this branch; needs_changes sends it back for another revision.`,
     'If you choose routing.kind "return", copy this routing object and add outcome "accepted" or "needs_changes":',
     JSON.stringify({ kind: 'return', requestId: workInput.work.request.requestId }),
     'Copy requestId verbatim, including every character. Check it against the accepted input before responding.',

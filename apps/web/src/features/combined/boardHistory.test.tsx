@@ -247,7 +247,8 @@ describe('Selected Board history', { timeout: 20_000 }, () => {
       expect(screen.queryByRole('button', { name: 'Open Selected Run panel' })).not.toBeInTheDocument()
       await user.click(graph.getByRole('button', { name: `Open ${name} chat` }))
       const chat = await screen.findByRole('dialog', { name: `${name} chat` })
-      expect(chat).toHaveTextContent('Selected Run')
+      // The redesigned chat header replaces the popover subtitle; the Run binding is proven by the chat read below.
+      expect(within(chat).getByTestId('agent-conversation')).toBeInTheDocument()
       await waitFor(() => expect(chatReads.at(-1)?.searchParams.get('runId')).toBe(runId))
       expect(chatReads.at(-1)?.searchParams.get('workflowNodeId')).toBe(name === 'Y' ? 'node-y' : 'node-x')
       await user.keyboard('{Escape}')

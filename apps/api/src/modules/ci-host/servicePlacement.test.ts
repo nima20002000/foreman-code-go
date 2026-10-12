@@ -27,8 +27,10 @@ function queuedRuns(count: number) {
 
 function fleet(records: CiRunRecord[], available: HostCiComputer[]) {
   const started: { computer: HostCiComputer; request: CiHostRequest }[] = []
+  let writes = 0
   const pool = { query: async (sql: string, parameters?: unknown[]) => {
     if (sql.startsWith('update ci_runs')) {
+      writes++
       const record = CiRunRecordSchema.parse(JSON.parse(parameters![3] as string))
       records[records.findIndex(item => item.id === record.id)] = record
       return { rows: [], rowCount: 1 }
@@ -53,7 +55,7 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[]) {
     },
   }
   const service = new HostCiService(pool, {} as PostgresCommandCoordinator, {} as CiAuthority, {} as CiCommits, endpoint)
-  return { service, started }
+  return { service, started, writes: () => writes }
 }
 
 it('assigns host slices to build computers even when a cloud computer has higher priority', async () => {
@@ -74,13 +76,17 @@ it('keeps the host slice queued when only cloud slots are available', async () =
   await f.service.dispatch()
   expect(f.started).toHaveLength(1)
   expect(f.started[0]?.request).toMatchObject({ partition: { index: 1, hostIndexes: [0] } })
-  expect(records[0]).toMatchObject({ state: 'queued', computer: null, partition: { hostIndexes: [0] } })
+  expect(records[0]).toMatchObject({ state: 'queued', computer: null, partition: { hostIndexes: [0] },
+    message: 'Waiting for a build computer: this integration slice needs one; no eligible computers' })
   expect(records[1]?.state).toBe('running')
+  const writes = f.writes()
+  await f.service.dispatch()
+  expect(f.writes()).toBe(writes)
   const withHost = fleet(records, [cloud, host])
   await withHost.service.dispatch()
   expect(withHost.started).toHaveLength(1)
   expect(withHost.started[0]?.computer.key).toBe(host.key)
-  expect(records[0]?.state).toBe('running')
+  expect(records[0]).toMatchObject({ state: 'running', message: null })
 })
 
 it('keeps an unpartitioned integration suite on a build computer', async () => {

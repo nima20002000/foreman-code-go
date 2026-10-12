@@ -398,14 +398,21 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
           unavailable('original_native_reconnection_unavailable')
         }
         await authorize(intent, placement, action)
-        const status = await (await journal()).status(intent.operationId)
+        const log = await journal()
+        let status = await log.status(intent.operationId)
+        let observed = matchingOriginalRegistryLaunch(registry, owned.native.launch)
+        if (observed.lifecycle !== 'active') {
+          // Native closure precedes the terminal journal commit. Join the original settlement before rebinding.
+          await owned.host.waitForSettlement(intent.operationId, context.signal)
+          status = await log.status(intent.operationId)
+          observed = matchingOriginalRegistryLaunch(registry, owned.native.launch)
+        }
         if (status.status !== 'known' || !isDeepStrictEqual(status.receipt.intent, owned.intent)
           || status.receipt.native?.sessionId !== owned.session.nativeSessionId
           || status.receipt.native?.processIdentityDigest !== owned.native.native.processIdentityDigest
           || !isDeepStrictEqual(status.receipt.connection, connectionIdentity(owned.capture.binding))) {
           unavailable('original_native_reconnection_conflict')
         }
-        const observed = matchingOriginalRegistryLaunch(registry, owned.native.launch)
         if (status.receipt.terminal ? !isDeepStrictEqual(observed, owned.physicalClosure) : observed.lifecycle !== 'active') {
           unavailable('original_native_reconnection_process_changed')
         }

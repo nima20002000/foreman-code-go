@@ -34,7 +34,7 @@ describe('F7 B-R07 compact command retention', () => {
       return HttpResponse.error()
     }))
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
-    await screen.findByText('No receipt was confirmed. The original may have been accepted; it will not be resent automatically.')
+    await screen.findByLabelText('Unknown')
     expect(original).toBeDefined()
     const queued = structuredClone(agentChatFixtures.idleAfterCompletion)
     const turn = { ...queued.turns[0]!, requestId: original!.requestId, messageId: 'reload-message',
@@ -56,9 +56,9 @@ describe('F7 B-R07 compact command retention', () => {
     if (receipt === 'completed') {
       await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(''))
     } else {
-      await screen.findByText('No receipt was confirmed. The original may have been accepted; it will not be resent automatically.')
+      await screen.findByLabelText('Unknown')
       fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' })
-      await screen.findByText(/Message could not be sent: Delivery is unknown/)
+      await screen.findByText(/Delivery is unknown/)
       expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(original!.content)
     }
     expect(posts).toBe(1)
@@ -76,7 +76,7 @@ describe('F7 B-R07 compact command retention', () => {
       const input = sends(mounted)[index]!.body as SendAgentChatMessageRequest
       mounted.mock.setState(completedFixture(startedFixture(mounted.mock.getState(agentChatFixtures.empty.context), input.requestId), `Reply ${index}`))
       await act(() => mounted.refresh())
-      await screen.findByLabelText('Latest command delivery: Next turn · Completed')
+      await screen.findAllByLabelText('Completed').then(items => items.at(-1)!)
     }
     await waitFor(() => expect(mounted.client.getMutationCache().getAll()).toHaveLength(AGENT_CHAT_ACKNOWLEDGEMENT_LIMIT))
     for (const command of mounted.client.getMutationCache().getAll()) {
@@ -85,7 +85,7 @@ describe('F7 B-R07 compact command retention', () => {
       expect(Object.keys(command.state.data as object).sort()).toEqual(['conversationId', 'replayed', 'turn'])
     }
     mounted.unmount(); reopen(mounted)
-    await screen.findByLabelText('Latest command delivery: Next turn · Completed')
+    await screen.findAllByLabelText('Completed').then(items => items.at(-1)!)
     expect(sends(mounted)).toHaveLength(total)
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('')
     expect(mounted.client.getMutationCache().getAll()).toHaveLength(AGENT_CHAT_ACKNOWLEDGEMENT_LIMIT)
@@ -107,10 +107,10 @@ describe('F7 B-R07 compact command retention', () => {
     release()
     await waitFor(() => expect(command.state.status).toBe('error'))
     retireAgentChatAcknowledgements(mounted.client); reopen(mounted)
-    await screen.findByText('No receipt was confirmed. The original may have been accepted; it will not be resent automatically.')
+    await screen.findByLabelText('Unknown')
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Keep uncertain input')
     fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' })
-    await screen.findByText('Message could not be sent: Delivery is unknown. Use “Send again as new message” and review the warning.')
+    await screen.findByText('Delivery is unknown. Use “Send again as new message” and review the warning.')
     expect(posts).toBe(1)
     expect(command.state.variables).toMatchObject({ kind: 'send', input: { content: 'Keep uncertain input' } })
   })
@@ -141,7 +141,7 @@ describe('F7 B-R08 current receipt status', () => {
       if (transport === 'SSE') installChatSource()
       const mounted = mountChat(agentChatFixtures.active); clients.push(mounted.client); await mounted.ready(); write('Later turn')
       await userEvent.click(screen.getByRole('button', { name: 'Queue message' }))
-      await screen.findByLabelText('Latest command delivery: Next turn · Queued')
+      await screen.findAllByLabelText('Queued').then(items => items.at(-1)!)
       const input = sends(mounted)[0]!.body as SendAgentChatMessageRequest
       const next = structuredClone(mounted.mock.getState(agentChatFixtures.empty.context))
       next.turns = next.turns.map((turn) => ({ ...turn, delivery: turn.requestId === input.requestId ? delivery : 'completed' }))
@@ -152,8 +152,8 @@ describe('F7 B-R08 current receipt status', () => {
         await waitFor(() => expect(AgentChatTestSource.instances).toHaveLength(1))
         act(() => AgentChatTestSource.instances[0]!.snapshot(next, 20))
       }
-      await screen.findByLabelText(`Latest command delivery: Next turn · ${deliveryLabels[delivery]}`)
-      expect(screen.queryByLabelText('Latest command delivery: Next turn · Queued')).not.toBeInTheDocument()
+      await screen.findAllByLabelText(deliveryLabels[delivery]).then(items => items.at(-1)!)
+      expect(screen.queryAllByLabelText('Queued')).toHaveLength(0)
       expect(sends(mounted)).toHaveLength(1)
     })
   }
@@ -161,13 +161,15 @@ describe('F7 B-R08 current receipt status', () => {
   it('labels the acknowledgement as historical when the matching receipt leaves the state window', async () => {
     const mounted = mountChat(agentChatFixtures.idleAfterCompletion); clients.push(mounted.client); await mounted.ready(); write('An old receipt')
     await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
-    await screen.findByLabelText('Latest command delivery: Next turn · Queued')
+    await screen.findAllByLabelText('Queued').then(items => items.at(-1)!)
     const input = sends(mounted)[0]!.body as SendAgentChatMessageRequest
     const next = completedFixture(startedFixture(mounted.mock.getState(agentChatFixtures.empty.context), input.requestId), 'Completed before aging out')
     mounted.mock.setState(next); await act(() => mounted.refresh())
-    await screen.findByLabelText('Latest command delivery: Next turn · Completed')
+    await screen.findAllByLabelText('Completed').then(items => items.at(-1)!)
     next.turns = []; next.revision++
     mounted.mock.setState(next); await act(() => mounted.refresh())
-    expect(screen.queryByLabelText('Latest command delivery: Next turn · Queued')).not.toBeInTheDocument()
+    await userEvent.hover((await screen.findAllByLabelText('Completed')).at(-1)!)
+    expect(await screen.findByText(/Initial acknowledgement: Queued/, { selector: '[role=tooltip]' })).toBeInTheDocument()
+    expect(screen.queryAllByLabelText('Queued')).toHaveLength(0)
   })
 })

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 // Keep in step with CI_TEST_RESULT_LIMITS in packages/contracts/src/ciHost.ts.
-export const CI_TEST_RESULT_LIMITS = { tests: 600, files: 300, name: 200, file: 200, message: 240 }
+export const CI_TEST_RESULT_LIMITS = { tests: 600, files: 300, name: 200, file: 200, message: 240, location: 240 }
 const rank = { failed: 0, skipped: 1, passed: 2 }
 const DAY_MS = 24 * 3_600_000
 
@@ -16,6 +16,21 @@ const testStatus = value => value === 'passed' || value === 'failed' ? value : '
 const duration = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.min(value, DAY_MS) : null
 // Terminal colors and control characters say nothing in a table.
 const plain = value => String(value ?? '').replace(/\u001b\[[0-9;]*[A-Za-z]/g, '').replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, '')
+const stackFrame = /(?:file:\/\/)?(\/[^\s()'"]+):(\d+):(\d+)/g
+
+/** Where a failure happened: the stack frame in the test's own file, else the first repository frame outside
+ * node_modules, as `path:line:column` relative to the repository. The message is clipped, so the stack is read here. */
+function failureLocation(failure, file, repository) {
+  let fallback
+  for (const [, path, line, column] of failure.matchAll(stackFrame)) {
+    const local = relative(repository, path).replaceAll('\\', '/')
+    if (!local || local.startsWith('../') || isAbsolute(local) || local.split('/').includes('node_modules')) continue
+    const location = `${local}:${line}:${column}`
+    if (local === file) return location
+    fallback ??= location
+  }
+  return fallback
+}
 
 /** Merges Vitest JSON reports. Failed tests are kept first, then skipped, then passed; summary counts every test. */
 export function ciTestResults(reports, repository = root) {
@@ -29,9 +44,11 @@ export function ciTestResults(reports, repository = root) {
         const status = testStatus(test?.status)
         summary[status]++
         const name = clip(plain(test?.fullName || test?.title).trim() || 'Unnamed test', CI_TEST_RESULT_LIMITS.name)
-        const failure = Array.isArray(test?.failureMessages) ? test.failureMessages[0] : undefined
-        const message = status === 'failed' ? clip(plain(failure).trim(), CI_TEST_RESULT_LIMITS.message) : ''
-        return { name, status, durationMs: duration(test?.duration), ...(message ? { message } : {}) }
+        const failure = status === 'failed' && Array.isArray(test?.failureMessages) ? plain(test.failureMessages[0]).trim() : ''
+        const message = clip(failure, CI_TEST_RESULT_LIMITS.message)
+        const location = failure && failureLocation(failure, path, repository)
+        return { name, status, durationMs: duration(test?.duration), ...(message ? { message } : {}),
+          ...(location ? { location: clip(location, CI_TEST_RESULT_LIMITS.location) } : {}) }
       })
       let status = 'passed'
       if (result.status === 'failed' || tests.some(test => test.status === 'failed')) status = 'failed'

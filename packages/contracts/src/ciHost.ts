@@ -56,12 +56,14 @@ export type CiDurations = z.infer<typeof CiDurationsSchema>
 /** Structured per-test results a finished test run reports with its measured durations. Bounded with the durations
  * so one read reply stays far below the device channel's 1 MiB message limit: failed tests are kept first, then
  * skipped, then passed; `summary` always counts every test. */
-export const CI_TEST_RESULT_LIMITS = { tests: 600, files: 300, name: 200, file: 200, message: 240 } as const
+export const CI_TEST_RESULT_LIMITS = { tests: 600, files: 300, name: 200, file: 200, message: 240, location: 240 } as const
 export const CiTestStatusSchema = z.enum(['passed', 'failed', 'skipped'])
 export type CiTestStatus = z.infer<typeof CiTestStatusSchema>
 const CiTestDurationSchema = z.number().nonnegative().finite().max(24 * 3_600_000).nullable()
 export const CiTestCaseSchema = z.object({ name: z.string().min(1).max(CI_TEST_RESULT_LIMITS.name), status: CiTestStatusSchema,
-  durationMs: CiTestDurationSchema, message: z.string().max(CI_TEST_RESULT_LIMITS.message).optional() }).strict()
+  durationMs: CiTestDurationSchema, message: z.string().max(CI_TEST_RESULT_LIMITS.message).optional(),
+  /** A failure's `path:line:column` in the repository, read from its full stack. */
+  location: z.string().max(CI_TEST_RESULT_LIMITS.location).optional() }).strict()
 export const CiTestFileSchema = z.object({ file: z.string().min(1).max(CI_TEST_RESULT_LIMITS.file), status: CiTestStatusSchema,
   durationMs: CiTestDurationSchema, tests: z.array(CiTestCaseSchema).max(CI_TEST_RESULT_LIMITS.tests) }).strict()
 export const CiTestSummarySchema = z.object({ passed: z.number().int().nonnegative(), failed: z.number().int().nonnegative(),

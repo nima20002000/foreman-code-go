@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HarnessExecutionSchema, MessageSchema, type HarnessExecution } from '@foreman-code/contracts'
-import { AgentChatTurnSchema, type AgentChatContext, type AgentChatTurn } from '@foreman-code/contracts/agent-chat'
+import { AgentChatTurnSchema, type AgentChatContext, type AgentChatExecutionActivityPage, type AgentChatTurn } from '@foreman-code/contracts/agent-chat'
 import { JobWorkflowNodeSchema } from '@foreman-code/contracts/job-workflow'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { RunBoardSnapshotSchema } from '@foreman-code/contracts/run-snapshots'
@@ -73,6 +73,7 @@ function fixture() {
     return value
   }
   const stored = row()
+  const nativeEvents: { sequence: number; item_key: string; record: Record<string, unknown> }[] = []
   const transcriptRows = [{ item_key: 'source-message', role: 'assistant', content: 'Saved execution output',
     original_bytes: 22, complete: true, sequence: '1', revision: '1' }]
   const message = (id: string) => MessageSchema.parse({ id: `message-${id}`, conversationId: id, role: 'assistant',
@@ -80,6 +81,13 @@ function fixture() {
   const query = vi.fn(async (sql: string, values: unknown[] = []) => {
     if (['begin', 'commit', 'rollback'].includes(sql)) return { rows: [], rowCount: 0 }
     if (sql.includes('management_principals')) return { rows: [live], rowCount: 1 }
+    if (sql.includes('from harness_executions e join runs r')) {
+      return { rows: (executions.get(String(values[0])) ?? []).filter((item) => item.workflowNodeId === values[1] && item.agentId === values[2])
+        .map((item) => ({ id: item.id, attempt: item.attempt, tick_index: null, occurrence_index: null, state: item.state,
+          native_session_id: item.nativeSessionId ?? null, created_at: new Date(item.createdAt), started_at: null, finished_at: null,
+          revision: nativeEvents.at(-1)?.sequence ?? 0 })) }
+    }
+    if (sql.includes('n.sequence>$3')) return { rows: nativeEvents.filter((row) => row.sequence > Number(values[2])) }
     if (sql.includes('from harness_native_events')) return { rows: transcriptRows, rowCount: transcriptRows.length }
     if (sql.includes('from conversation_session_defaults')) return { rows: [], rowCount: 0 }
     if (sql.includes('run_board_snapshots')) {
@@ -126,7 +134,7 @@ function fixture() {
     managers as () => NativeHarnessSessionManager, '/sch06-fixture')
   cleanup.push(chat)
   return { saved, version, context, target, principal, live, runs, source, configurations, executions, snapshots, conversations,
-    stored, capture, row, query, repository, workflows, managers, chat, runPort, pool, transcriptRows }
+    stored, capture, row, query, repository, workflows, managers, chat, runPort, pool, transcriptRows, nativeEvents }
 }
 
 async function selected(f: ReturnType<typeof fixture>, runId = f.target.runId, executionId = f.source.id) {
@@ -201,6 +209,54 @@ describe('SCH-06 historical Agent chat identity and fail-closed selection', () =
         messages: [{ content: 'Persisted update' }],
       } })
       expect((await other.callTool(call)).isError).toBe(true)
+      expect(f.managers).not.toHaveBeenCalled()
+    } finally {
+      await Promise.all(clients.map(client => client.close()))
+      await app.close()
+    }
+  })
+
+  it('returns live execution tool activity through authenticated MCP by cursor and denies a wrong scope', async () => {
+    const f = fixture()
+    f.conversations.clear()
+    f.source.state = 'running'
+    const command = (status: string, output: string | null) => ({ id: 'cmd-1', type: 'commandExecution', status,
+      command: "/bin/bash -lc 'git status'", commandActions: [{ type: 'unknown', command: 'git status' }], aggregatedOutput: output })
+    const push = (type: string, item: Record<string, unknown>) => f.nativeEvents.push({ sequence: f.nativeEvents.length + 1,
+      item_key: String(item.id), record: { type, occurredAt: f.saved.createdAt, payload: { threadId: f.source.nativeSessionId, turnId: 'turn', item } } })
+    push('item.completed', { id: 'msg-1', type: 'agentMessage', text: 'Checking the tree' })
+    push('item.started', command('inProgress', null))
+    const access = new PostgresAccessService(f.pool)
+    const denied = { ...f.principal, id: 'wrong-scope',
+      grants: [{ actions: ['agent_chat:read' as const], scope: { workspaceIds: ['other-workspace'] } }] }
+    vi.spyOn(access, 'authenticate').mockImplementation(async token => token === 'reader' ? f.principal : denied)
+    const app = buildApp({ logger: false,
+      readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access, services: { agentChat: f.chat, commands: { recordDenied: vi.fn() } } as unknown as OperatorServices },
+    })
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    const clients: Client[] = []
+    const connect = async (token: string) => {
+      const client = new Client({ name: 'execution-activity-reader', version: '1' })
+      clients.push(client)
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } }))
+      return client
+    }
+    try {
+      const reader = await connect('reader')
+      const { workspaceId, ...query } = f.context
+      const read = async (executionActivity: Record<string, unknown>) => (decodeMcpToolResult(await reader.callTool({ name: 'agent_chat_read',
+        arguments: { workspaceId, query, executionActivity } })) as { executionActivity: AgentChatExecutionActivityPage }).executionActivity
+      const first = await read({})
+      expect(first.executions).toEqual([expect.objectContaining({ executionId: f.source.id, label: 'Execution', state: 'running' })])
+      expect(first.items.map((item) => item.entry.kind === 'message' ? item.entry.message.content
+        : `${item.entry.activity.title} · ${item.entry.activity.status}`)).toEqual(['Checking the tree', 'git status · running'])
+      push('item.completed', command('completed', 'nothing to commit\n'))
+      const changed = await read({ cursor: first.cursor })
+      expect(changed).toMatchObject({ mode: 'changes', items: [{ id: 'cmd-1',
+        entry: { kind: 'activity', activity: { status: 'completed', output: 'nothing to commit\n' } } }] })
+      const other = await connect('denied')
+      expect((await other.callTool({ name: 'agent_chat_read', arguments: { workspaceId, query, executionActivity: {} } })).isError).toBe(true)
       expect(f.managers).not.toHaveBeenCalled()
     } finally {
       await Promise.all(clients.map(client => client.close()))

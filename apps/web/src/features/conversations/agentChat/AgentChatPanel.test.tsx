@@ -41,7 +41,7 @@ describe('AgentChatPanel frozen fixtures', () => {
     expect(await screen.findByText('Live workflow output')).toBeVisible()
     expect(screen.queryByText('Selected Run — chat unavailable')).not.toBeInTheDocument()
     await waitFor(() => expect(controlsExecution).toBe('selected-execution'))
-    expect(screen.queryByRole('textbox', { name: 'Message' }) !== null).toBe(state === 'completed')
+    expect(screen.getByRole('textbox', { name: 'Message' }).hasAttribute('disabled')).toBe(state !== 'completed')
     mounted.mock.setState({ ...initial, sourceTranscript: { ...initial.sourceTranscript,
       revision: '2', messages: [{ id: 'source-message', role: 'assistant', content: 'Updated workflow output', nativeMessageComplete: true }] } })
     await mounted.refresh()
@@ -87,12 +87,16 @@ describe('AgentChatPanel frozen fixtures', () => {
     const mounted = mountChat(fixture)
     await mounted.ready()
     for (const message of fixture.messages) expect(within(screen.getByRole('list', { name: 'Conversation history' })).getByText(message.content)).toBeInTheDocument()
-    if (fixture.availability.message) expect(screen.getAllByText(fixture.availability.message).length).toBeGreaterThan(0)
-    expect(screen.getByText(/Business occurrence 1 · technical attempt 1/)).toBeInTheDocument()
+    if (fixture.availability.message) {
+      await userEvent.hover(screen.getByRole('status', { name: 'Agent state' }))
+      expect(await screen.findByRole('tooltip')).toHaveTextContent(fixture.availability.message)
+    }
+    await userEvent.hover(screen.getByRole('status', { name: 'Agent state' }))
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Business occurrence 1 · technical attempt 1')
     expect(sent(mounted.mock)).toHaveLength(0)
     if (!fixture.conversation && !fixture.availability.canSend) {
-      expect(screen.queryByRole('textbox', { name: 'Message' })).not.toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Send message' })).not.toBeInTheDocument()
+      expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
     } else {
       expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled()
     }
@@ -102,7 +106,8 @@ describe('AgentChatPanel frozen fixtures', () => {
     }
     if (fixture === agentChatFixtures.steerUnavailable) {
       expect(screen.getByRole('button', { name: 'Steer' })).toBeDisabled()
-      expect(screen.getByText(fixture.capabilities.unavailable.steer!)).toBeInTheDocument()
+      await userEvent.hover(screen.getByRole('button', { name: 'Steer' }))
+      expect(await screen.findByText(fixture.capabilities.unavailable.steer!, { exact: false, selector: '[role=tooltip]' })).toBeInTheDocument()
     }
   })
 
@@ -162,9 +167,9 @@ describe('AgentChatPanel frozen fixtures', () => {
     const state: AgentChatState = structuredClone(agentChatFixtures.activeWithQueue)
     state.turns[0]!.delivery = 'submitting'; state.turns[1]!.delivery = 'canceled'
     const mounted = mountChat(state); await mounted.ready()
-    expect(screen.getByText('Sending', { selector: '.n-badge' })).toBeInTheDocument()
-    expect(screen.getByText('Canceled', { selector: '.n-badge' })).toBeInTheDocument()
-    expect(screen.getByText('Queued', { selector: '.n-badge' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Sending')).toBeInTheDocument()
+    expect(screen.getByLabelText('Canceled')).toBeInTheDocument()
+    expect(screen.getByLabelText('Queued')).toBeInTheDocument()
   })
 })
 
@@ -199,7 +204,7 @@ describe('AgentChatPanel commands and drafts', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Steer' }))
     await waitFor(() => expect(sent(mounted.mock)).toHaveLength(1))
     expect(sent(mounted.mock)[0]!.body).toMatchObject({ intent: 'steer', expectedNativeTurnId: 'turn-1' })
-    expect(await screen.findByLabelText('Latest command delivery: Steer · Delivered')).toBeInTheDocument()
+    expect(await screen.findAllByLabelText('Delivered').then(items => items.at(-1)!)).toBeInTheDocument()
   })
 
   it('queues the next turn and cancels it by turn request identity', async () => {
@@ -210,7 +215,7 @@ describe('AgentChatPanel commands and drafts', () => {
     await waitFor(() => expect(mounted.mock.calls.some((call) => call.path.endsWith('/cancel'))).toBe(true))
     const sentId = (sent(mounted.mock)[0]!.body as SendAgentChatMessageRequest).requestId
     expect(mounted.mock.calls.find((call) => call.path.endsWith('/cancel'))!.path).toContain(`/turns/${sentId}/cancel`)
-    expect(await screen.findByText('Canceled', { selector: '.n-badge' })).toBeInTheDocument()
+    expect(await screen.findByLabelText('Canceled')).toBeInTheDocument()
   })
 
   it('interrupt-and-send is one backend command, not client-side stop then send', async () => {
@@ -256,7 +261,7 @@ describe('AgentChatPanel commands and drafts', () => {
       return errorResponse('AGENT_CHAT_CONTEXT_STALE', 'Another tab started this conversation.')
     }))
     await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
-    expect(await screen.findByText('Chat context changed')).toBeInTheDocument()
+    expect(await screen.findByText('Another tab started this conversation.')).toBeInTheDocument()
     await waitFor(() => expect(mounted.client.getQueryData<AgentChatState>(agentChatStateKey(agentChatFixtures.empty.context))?.conversation?.id)
       .toBe(agentChatFixtures.idleAfterCompletion.conversation.id))
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Keep after conflict')
@@ -275,8 +280,10 @@ describe('AgentChatPanel commands and drafts', () => {
       return HttpResponse.json({ state, turn, replayed: false })
     }))
     await userEvent.click(screen.getByRole('button', { name: 'Steer' }))
-    expect(await screen.findByLabelText('Latest command delivery: Next turn · Delivered')).toBeInTheDocument()
-    expect(screen.queryByLabelText('Latest command delivery: Steer · Delivered')).not.toBeInTheDocument()
+    expect(await screen.findAllByLabelText('Delivered').then(items => items.at(-1)!)).toBeInTheDocument()
+    const delivered = within((await screen.findByText('Tests next')).closest('article')!).getByLabelText('Delivered')
+    await userEvent.hover(delivered)
+    expect(await screen.findByText(/Delivered · Next turn/, { selector: '[role=tooltip]' })).not.toHaveTextContent('Steer')
   })
 
   it('unknown delivery requires the explicit new-message warning and a fresh requestId', async () => {
@@ -307,7 +314,7 @@ describe('AgentChatPanel commands and drafts', () => {
     let posts = 0
     server.use(http.post(messagePath, () => { posts++; return HttpResponse.error() }))
     await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
-    expect(await screen.findByText('Unknown', { selector: '.n-badge' })).toBeInTheDocument()
+    expect(await screen.findByLabelText('Unknown')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Possibly delivered')
     fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' })
     await waitFor(() => expect(screen.getByText(/review the warning/)).toBeInTheDocument())
@@ -330,7 +337,7 @@ describe('AgentChatPanel commands and drafts', () => {
     write('Submitted'); await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
     const input = screen.getByRole('textbox', { name: 'Message' }); expect(input).toHaveFocus()
     write('A different draft'); await act(async () => { release() })
-    await waitFor(() => expect(screen.getByLabelText('Latest command delivery: Next turn · Delivered')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getAllByLabelText('Delivered').length).toBeGreaterThan(0))
     expect(input).toHaveValue('A different draft'); expect(input).toHaveFocus()
   })
 
@@ -352,7 +359,7 @@ describe('AgentChatPanel commands and drafts', () => {
     await waitFor(() => expect(posted).toBe(true))
     const other = { ...initial.context, agentId: 'second-agent' }
     mounted.switchContext(other)
-    await waitFor(() => expect(screen.getByText('Start a conversation')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('status', { name: 'Agent state' })).toHaveTextContent('Idle'))
     write('Second selection draft')
     await act(async () => { release() })
     await waitFor(() => expect(mounted.client.getQueryData<AgentChatState>(agentChatStateKey(initial.context))?.messages.some((message) => message.content === 'Original selection send')).toBe(true))
@@ -375,7 +382,7 @@ describe('AgentChatPanel commands and drafts', () => {
       return HttpResponse.json({ state, turn: state.turns[0], replayed: false })
     }))
     await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
-    await screen.findByLabelText('Latest command delivery: Next turn · Failed')
+    await screen.findAllByLabelText('Failed').then(items => items.at(-1)!)
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Keep failed native input')
   })
 
@@ -425,7 +432,7 @@ describe('AgentChatPanel live reads and interaction', () => {
     expect(screen.getByText(next.messages[1]!.content)).toBeInTheDocument()
     mounted.mock.setState(agentChatFixtures.idleAfterCompletion)
     act(() => source.event({ id: 5, conversationId: id, type: 'message', data: {} }))
-    await screen.findByText('It is a workflow engine.', { selector: '.conversation-message-content' })
+    await screen.findByText('It is a workflow engine.', { selector: '.conversation-message-content, .conversation-message-content p' })
     expect(screen.queryByText('Reply in progress')).not.toBeInTheDocument()
     expect(sent(mounted.mock)).toHaveLength(0)
   })
@@ -436,11 +443,11 @@ describe('AgentChatPanel live reads and interaction', () => {
     await waitFor(() => expect(AgentChatTestSource.instances).toHaveLength(1))
     const first = AgentChatTestSource.instances[0]!
     act(() => { first.snapshot(agentChatFixtures.active); first.fail() })
-    expect(screen.getByText('Connecting to live activity')).toBeInTheDocument()
+    expect(screen.getByText('Reconnecting to live updates')).toBeInTheDocument()
     mounted.mock.setState(agentChatFixtures.idleAfterCompletion)
     await waitFor(() => expect(AgentChatTestSource.instances).toHaveLength(2), { timeout: 2000 })
     act(() => AgentChatTestSource.instances[1]!.snapshot(agentChatFixtures.idleAfterCompletion))
-    await screen.findByText('Ready for a follow-up')
+    await waitFor(() => expect(screen.getByRole('status', { name: 'Agent state' })).toHaveTextContent('Completed'))
     expect(first.close).toHaveBeenCalled()
     expect(sent(mounted.mock)).toHaveLength(0)
   })
@@ -491,8 +498,8 @@ describe('AgentChatPanel live reads and interaction', () => {
     state.messages = state.messages.filter((message) => message.id !== state.turns[2]!.messageId); state.hasEarlierMessages = true
     const mounted = mountChat(state); await mounted.ready()
     const omitted = screen.getByRole('region', { name: 'Messages outside the current history page' })
-    expect(within(omitted).getByText('Queued')).toBeInTheDocument()
-    expect(within(omitted).getByText(/Message text is not included/)).toBeInTheDocument()
+    expect(within(omitted).getByLabelText('Queued')).toBeInTheDocument()
+    expect(within(omitted).getByText('Message outside this history page')).toBeInTheDocument()
     await userEvent.click(within(omitted).getByRole('button', { name: 'Cancel queued message' }))
     await waitFor(() => expect(mounted.mock.calls.some((call) => call.path.endsWith('/turns/request-3/cancel'))).toBe(true))
     expect(sent(mounted.mock)).toHaveLength(0)
@@ -515,7 +522,7 @@ describe('AgentChatPanel live reads and interaction', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
     await waitFor(() => expect(cursors).toEqual([null, '40']))
     expect(screen.getAllByText('Earlier prompt')).toHaveLength(1)
-    expect(screen.getAllByText('It is a workflow engine.', { selector: '.conversation-message-content' })).toHaveLength(1)
+    expect(screen.getAllByText('It is a workflow engine.', { selector: '.conversation-message-content, .conversation-message-content p' })).toHaveLength(1)
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Load earlier messages' })).not.toBeInTheDocument())
   })
 
@@ -563,7 +570,8 @@ it('cold readback keeps completed parent/unresolved child work visible instead o
   queued: [], latest: null, pendingInteractions: [], activities: [], page: { before: null, nextCursor: null, hasMore: false } }
   const view = mountChat(state); await view.ready()
   expect(screen.getByText('Unfinished work unconfirmed')).toBeInTheDocument()
-  expect(screen.getByText('Some tools or subagents have no confirmed outcome.')).toBeInTheDocument()
+  await userEvent.hover(screen.getByRole('status', { name: 'Agent state' }))
+  expect(await screen.findByRole('tooltip')).toHaveTextContent('Some tools or subagents have no confirmed outcome.')
 })
 it('keeps a persisted unavailable question visible with disabled reply options and the qualified recovery message', async () => {
   installChatSource()
@@ -583,6 +591,7 @@ it('displays the accepted chat account after the provider default changes', asyn
   server.use(http.get('/api/provider-accounts/:id', () => HttpResponse.json({ ...observedAccount(), isDefault: false })))
   const mounted = mountChat(initial)
   await mounted.ready()
+  await userEvent.click(screen.getByLabelText('Saved account details'))
   expect(await screen.findByText('Original account')).toBeVisible()
   expect(screen.getByRole('region', { name: 'Saved chat account' })).toBeVisible()
   expect(screen.queryByRole('combobox', { name: 'Account' })).not.toBeInTheDocument()
@@ -601,6 +610,7 @@ it('retains a removed account and its source Run without offering a replacement 
     removedAt: '2026-10-01T13:00:00.000Z', isDefault: false })))
   const mounted = mountChat(initial)
   await mounted.ready()
+  await userEvent.click(screen.getByLabelText('Saved account details'))
   expect(await screen.findByText(/This account was removed from selection/)).toBeVisible()
   expect(screen.getByRole('region', { name: 'Source Run account · saved chat account' })).toBeVisible()
   expect(screen.queryByRole('button', { name: 'Start separate chat without this Run' })).not.toBeInTheDocument()

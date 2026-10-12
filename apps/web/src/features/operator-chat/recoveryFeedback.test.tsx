@@ -1,3 +1,4 @@
+import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -34,11 +35,17 @@ function mounted(delivery: InteractionSummary['delivery'], acknowledged = false)
   render(<QueryClientProvider client={client}><OperatorChatVisibilityProvider enabled><OperatorChat /></OperatorChatVisibilityProvider></QueryClientProvider>)
   return { state, client }
 }
+/** Decision details live in the receipt's own tooltip. */
+async function decisionDetail(label: string) {
+  const receipt = await screen.findByRole('status', { name: label })
+  await userEvent.hover(receipt)
+  return document.getElementById(receipt.getAttribute('aria-describedby')!)
+}
 describe('Operator canonical cold decision readback', () => {
   it.each(['answer_recorded', 'uncertain'] as const)('retains %s feedback after a lost callback without resending the answer', async (delivery) => {
     const { client } = mounted(delivery)
-    await screen.findByText(delivery === 'uncertain' ? 'Decision delivery unconfirmed' : 'Decision recorded')
-    expect(screen.getByText('older-native-question')).toBeInTheDocument()
+    const label = delivery === 'uncertain' ? 'Decision delivery unconfirmed' : 'Decision sending'
+    expect(await decisionDetail(label)).toHaveTextContent('older-native-question')
     const reads = vi.mocked(getOperatorConversation).mock.calls.length
     fireEvent.click(screen.getByRole('button', { name: 'Refresh decision status' }))
     await waitFor(() => expect(getOperatorConversation).toHaveBeenCalledTimes(reads + 1))
@@ -47,14 +54,13 @@ describe('Operator canonical cold decision readback', () => {
   })
   it('shows provider acknowledgment after the pending approval is gone without claiming worker completion', async () => {
     const { client } = mounted('delivered', true)
-    await screen.findByText('Decision delivery acknowledged')
-    expect(screen.getByText(/Work completion is not confirmed/)).toBeInTheDocument()
+    expect(await decisionDetail('Decision delivered')).toHaveTextContent('This does not confirm work completion.')
     expect(respondOperatorInteraction).not.toHaveBeenCalled()
     client.clear()
   })
   it('does not label an idle parent with unresolved history-window overflow as Ready', async () => {
     const { state, client } = mounted('delivered', true)
-    await screen.findByText('Decision delivery acknowledged')
+    await screen.findByText('Decision delivered')
     const updated: OperatorConversationState = { ...state, revision: state.revision + 1, activitySnapshot: { ...state.activitySnapshot!,
       revision: String(state.revision + 1), hasMoreActiveWork: true, active: [{ ref: { kind: 'tool', itemId: 'older-tool' }, phase: 'active',
         outcome: null, delivery: null, evidence: 'unknown', startedAt: null }] } }
