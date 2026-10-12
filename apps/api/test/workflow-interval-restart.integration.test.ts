@@ -37,7 +37,8 @@ describe('API restart with graph work and an interval check', () => {
         if (!before) throw new Error('Expected both native turns to be admitted')
         expect(before.executions).toHaveLength(3)
         const active = before.executions.filter(execution => execution.state === 'running')
-        expect(active.filter(execution => execution.input.tick)).toHaveLength(1)
+        expect(active.filter(({ input }) => input !== null && typeof input === 'object'
+          && !Array.isArray(input) && input.tick)).toHaveLength(1)
         const calls = await fixture.provider.calls()
         const originals = active.map(execution => {
           const call = calls.find(item => {

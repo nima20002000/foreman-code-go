@@ -197,7 +197,7 @@ export async function remoteReviewProduction(options: {
     const seed = makeCurrentWorkflowFixture(randomUUID(), shape)
     if (options.workflow === 'interval') {
       seed.version.definition.handoffs = { contractVersion: 1 }
-      seed.version.definition.nodes[0]!.interval = { everySeconds: 60 }
+      seed.version.definition.nodes[0]!.interval = { everySeconds: 10 }
       seed.version.definition.executionPolicy!.maxParallelism = 2
     }
     seed.configurations = seed.configurations.map((configuration, index) => {
