@@ -55,6 +55,7 @@ import type { SubagentControlLease } from '../subagents/types.js'
 import { normalizeCodexNotification } from './codexNormalization.js'
 import { unavailableNativeResponse, type NativeResponseAvailability, type NativeResponseAvailabilityQuery } from './responseAvailability.js'
 import { CodexRpcError, CodexStdioTransport, isObject, object, text, type JsonObject, type RequestId, type RpcRequest } from './codexStdioTransport.js'
+import { CODEX_CAPACITY_ATTEMPTS, codexCapacityDelay, isCodexCapacityError, waitForCodexCapacity } from './codexCapacity.js'
 
 /** Structural client boundary shared by native production and recorded replay. */
 export type CodexTransport = Pick<CodexStdioTransport, 'start' | 'request' | 'respond' | 'reject' | 'close'>
@@ -167,6 +168,12 @@ interface StartingTurn {
   stagedBytes: number
 }
 interface Runtime extends TurnSnapshot {
+  capacityRetry?: {
+    attempt: number
+    canAdvanceIdentity: boolean
+    controller: AbortController
+    failure?: ExecutionResult
+  }
   parent?: Runtime
   contextBudgetLimit?: number
   sessionPreferences?: SessionPreferences
@@ -1028,6 +1035,56 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     let runtime: Runtime
     try {
       runtime = this.requireRuntime(session)
+    } catch (error) {
+      throw new NativeDeliveryError('turn_submission', 'not_sent', error)
+    }
+    if (runtime.capacityRetry) throw new NativeDeliveryError('turn_submission', 'not_sent',
+      new HarnessExecutionError('CODEX_TURN_ACTIVE', 'This session is waiting for model capacity.'))
+    const retry: NonNullable<Runtime['capacityRetry']> = {
+      attempt: 1, canAdvanceIdentity: !input.onSubmitted || Boolean(input.onRetry), controller: new AbortController(),
+    }
+    runtime.capacityRetry = retry
+    const retrySignal = AbortSignal.any([retry.controller.signal, subscriberSignal,
+      this.shutdownController.signal, ...(signal ? [signal] : [])])
+    const attemptSignal = AbortSignal.any([retry.controller.signal, ...(signal ? [signal] : [])])
+    try {
+      for (;;) {
+        yield* this.streamTurnAttempt(session, input, attemptSignal, subscriberSignal)
+        if (!retry.failure || retrySignal.aborted || runtime.closed) return
+        await this.finishTurnResources(runtime)
+        const turnId = runtime.activeTurnId!
+        const delayMs = codexCapacityDelay(retry.attempt)
+        this.record(runtime, 'turn.capacity_wait', {
+          threadId: session.nativeSessionId, turnId, attempt: retry.attempt, delayMs,
+        })
+        yield structuredClone(runtime.events.at(-1)!)
+        await waitForCodexCapacity(delayMs, retrySignal, this.dependencies)
+        retrySignal.throwIfAborted()
+        await input.onRetry?.(turnId)
+        retrySignal.throwIfAborted()
+        this.record(runtime, 'turn.capacity_retry', { threadId: session.nativeSessionId, turnId })
+        yield structuredClone(runtime.events.at(-1)!)
+        retrySignal.throwIfAborted()
+        retry.attempt += 1
+        delete retry.failure
+      }
+    } catch (error) {
+      if (!retrySignal.aborted || error !== retrySignal.reason) throw error
+      if (!signal?.aborted && !subscriberSignal.aborted) {
+        runtime.terminalResult = { outcome: 'canceled' }
+        this.record(runtime, 'turn.retry_canceled', { threadId: session.nativeSessionId, turnId: runtime.activeTurnId })
+        yield structuredClone(runtime.events.at(-1)!)
+      }
+    } finally {
+      delete runtime.capacityRetry
+    }
+  }
+
+  private async *streamTurnAttempt(session: NativeSessionReference, input: NativeTurnInput,
+    signal: AbortSignal | undefined, subscriberSignal: AbortSignal): AsyncGenerator<NativeHarnessEvent, void> {
+    let runtime: Runtime
+    try {
+      runtime = this.requireRuntime(session)
       signal?.throwIfAborted()
       if (this.locks.has(session.nativeSessionId)) throw new HarnessExecutionError('CODEX_SESSION_BUSY', 'A session lifecycle operation is in progress.')
       if (runtime.closed) throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'Reconcile the disconnected session before starting another turn.')
@@ -1374,6 +1431,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const runtime = this.requireRuntime(session)
     // An explicit stale target cannot withdraw the newly preparing turn's files.
     if (nativeTurnId && nativeTurnId !== runtime.activeTurnId) return false
+    if (runtime.capacityRetry?.failure) {
+      runtime.capacityRetry.controller.abort()
+      return true
+    }
     if (runtime.starting) {
       runtime.starting.cancelRequested = true
       runtime.starting.preparationController.abort()
@@ -1419,7 +1480,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
           reason: 'retention' as const } } : {}),
       pendingInteractions: all.map((entry) => entry.pending),
       ...(first?.delivery === 'pending' ? { pendingInteraction: first.pending } : {}),
-      ...(runtime.terminalResult ? { terminalResult: runtime.terminalResult } : {}),
+      ...(runtime.terminalResult && !runtime.capacityRetry?.failure ? { terminalResult: runtime.terminalResult } : {}),
       ...((runtime.finalAnswer !== undefined ? runtime.finalAnswerId : runtime.lastAgentMessageId)
         ? { nativeMessageId: runtime.finalAnswer !== undefined ? runtime.finalAnswerId! : runtime.lastAgentMessageId! } : {}),
       firstRetainedSequence: events[0]?.sequence ?? runtime.sequence,
@@ -1665,7 +1726,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
             ...history,
             correlationId,
             nativeTurnId: runtime.activeTurnId,
-            ...(runtime.terminalResult ? {
+            ...(runtime.terminalResult && !runtime.capacityRetry?.failure ? {
               terminalTurn: {
                 correlationId,
                 providerId: runtime.activeTurnId,
@@ -1685,6 +1746,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       if (runtime.session.providerVersion !== session.providerVersion) throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The loaded session belongs to another Codex release.')
       runtime.closed = true
       runtime.disposed = true
+      runtime.capacityRetry?.controller.abort()
       for (const [id, child] of this.childRuntimes) {
         if (child.runtime.parent !== runtime) continue
         child.runtime.closed = true
@@ -2634,6 +2696,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
 
   private applyTurn(runtime: Runtime, turn: JsonObject): void {
     if (turn.id !== runtime.activeTurnId || !Array.isArray(turn.items)) return
+    if (runtime.capacityRetry?.failure) return
     if (!['inProgress', 'completed', 'failed', 'interrupted'].includes(String(turn.status))) return
     for (const value of turn.items) {
       if (isObject(value) && text(value.id) && !['userMessage', 'agentMessage'].includes(String(value.type))) {
@@ -2665,10 +2728,14 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       if (!runtime.terminalResult) runtime.phase = 'active'
       return
     }
-    runtime.terminalResult = turn.status === 'completed'
+    const result: ExecutionResult = turn.status === 'completed'
       ? { outcome: 'succeeded', output: { text: runtime.finalAnswer ?? runtime.lastAgentMessage ?? '' } }
       : turn.status === 'interrupted' ? { outcome: 'canceled' }
         : { outcome: 'failed', error: { code: 'CODEX_TURN_FAILED', message: text(isObject(turn.error) ? turn.error.message : undefined) ?? 'Codex turn failed.', retryable: false } }
+    const retry = runtime.capacityRetry
+    runtime.terminalResult = result
+    if (turn.status === 'failed' && retry?.canAdvanceIdentity && isCodexCapacityError(turn.error)
+      && retry.attempt < CODEX_CAPACITY_ATTEMPTS && !retry.controller.signal.aborted) retry.failure = result
     runtime.phase = 'idle'
     void this.finishTurnResources(runtime).catch(() => undefined)
     for (const [key, waiting] of runtime.interactions) {
@@ -2884,7 +2951,10 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       if (!Array.isArray(turn.items) || !['inProgress', 'completed', 'failed', 'interrupted'].includes(String(turn.status))) return
       if (method === 'turn/completed' && turn.status === 'inProgress') return
       this.applyTurn(runtime, turn)
-      this.record(runtime, method === 'turn/started' ? 'turn.started' : 'turn.completed', { threadId: params.threadId, turnId: turn.id, status: turn.status })
+      this.record(runtime, method === 'turn/started' ? 'turn.started' : 'turn.completed', {
+        threadId: params.threadId, turnId: turn.id, status: turn.status,
+        ...(runtime.capacityRetry?.failure ? { willRetry: true } : {}),
+      })
       return
     }
     if (method === 'item/started' || method === 'item/completed') {

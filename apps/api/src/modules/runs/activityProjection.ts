@@ -276,6 +276,9 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
         status = nativeActivityStatus(string(native.turnStatus))
           ?? (native.type === 'turn.started' ? 'running' : 'completed')
         summary = `Agent turn ${status === 'running' ? 'started' : status}`
+      } else if (native.type === 'turn.capacity_wait') {
+        status = 'pending'
+        summary = 'Waiting for model capacity'
       } else if (native.type === 'thread.started') {
         summary = 'Native session created'
       } else if (native.type === 'thread.reconciled') {

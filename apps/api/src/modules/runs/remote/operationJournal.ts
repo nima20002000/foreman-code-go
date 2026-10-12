@@ -457,11 +457,14 @@ export class RemoteOperationJournal {
       receipt.turnEntryAttempted = true; receipt.turnInput = turnInput; receipt.sequence++; return { reserved: true, receipt }
     })
   }
-  acknowledgeTurn(operationId: string, turnId: string) {
+  acknowledgeTurn(operationId: string, turnId: string, retry?: { previousTurnId: string }) {
     return this.change(data => {
       const receipt = this.receipt(data, operationId)
       if (!receipt.native || !receipt.turnEntryAttempted || !turnId) throw new Error('Turn entry reservation required')
-      if (receipt.native.turnId && receipt.native.turnId !== turnId) throw new Error('Native turn ownership conflict')
+      if (retry && (receipt.stopFence || receipt.terminal || receipt.native.turnId !== retry.previousTurnId)) {
+        throw new Error('Capacity retry no longer owns the previous turn')
+      }
+      if (!retry && receipt.native.turnId && receipt.native.turnId !== turnId) throw new Error('Native turn ownership conflict')
       receipt.native.turnId = turnId; receipt.sequence++; return receipt
     })
   }

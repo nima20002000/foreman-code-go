@@ -255,6 +255,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     this.streamHistory = undefined
     let sequence = review ? this.receipt?.reviewTurns?.find(turn => turn.assignment.jobId === review.jobId)?.afterSequence ?? -1 : -1
     let submitted = false
+    let providerId: string | undefined
     streaming: while (true) {
       signal?.throwIfAborted()
       const requestedSequence = sequence
@@ -266,10 +267,18 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       if (value.history.gap || sequence + 1 < retainedFloor) {
         throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'Remote native events are unavailable; reload durable history.')
       }
-      const submittedId = review
+      const firstStarted = value.history.events.find(event => event.sequence > sequence
+        && event.type === 'turn.started' && event.payload.clientCorrelationId === input.clientCorrelationId)
+      let submittedId = review
         ? receipt.reviewTurns?.find(turn => turn.assignment.jobId === review.jobId)?.providerId : receipt.native?.turnId
+      if (typeof firstStarted?.payload.turnId === 'string') submittedId = firstStarted.payload.turnId
       if (value.context !== undefined) this.context = value.context
-      if (!submitted && submittedId) { await input.onSubmitted?.(submittedId); await input.onSettingsApplied?.(); submitted = true }
+      if (!submitted && submittedId) {
+        await input.onSubmitted?.(submittedId)
+        await input.onSettingsApplied?.()
+        providerId = submittedId
+        submitted = true
+      }
       this.streamHistory = { value: value.history, receipt, observedAt }
       try {
         for (const event of value.history.events) {
@@ -287,7 +296,17 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
             ? currentReceipt.reviewTurns?.find(turn => turn.assignment.jobId === review.jobId)?.providerId : currentReceipt.native?.turnId
           if (!submitted && currentId) {
             await input.onSubmitted?.(currentId)
+            providerId = currentId
             submitted = true
+          }
+          if (event.type === 'turn.capacity_retry' && event.payload.turnId === providerId && providerId) {
+            await input.onRetry?.(providerId)
+            providerId = undefined
+          }
+          if (event.type === 'turn.started' && event.payload.clientCorrelationId === input.clientCorrelationId
+            && typeof event.payload.turnId === 'string' && providerId === undefined) {
+            await input.onSubmitted?.(event.payload.turnId)
+            providerId = event.payload.turnId
           }
           await this.options.observeOriginalSource?.(currentReceipt, {
             type: 'event', event: { ...event, executionId: this.intent.executionId },

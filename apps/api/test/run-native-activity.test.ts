@@ -13,6 +13,11 @@ const row: ActivityReadRow = {
 }
 
 describe('native Run activity status', () => {
+  it('shows model capacity backoff as waiting activity', () => {
+    const activity = publicRunActivity({ ...row, native: { type: 'turn.capacity_wait' } },
+      fixture.version, fixture.run.id, fixture.run.outcome)
+    expect(activity).toMatchObject({ summary: 'Waiting for model capacity', status: 'pending' })
+  })
   it.each(['result_recorded', 'work_result_accepted', 'work_needs_direction'])(
     'exposes only redacted work result details for %s', (kind) => {
       const token = `opm_${'a'.repeat(43)}`

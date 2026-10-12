@@ -474,8 +474,27 @@ export class RemoteExecutionHost {
         await this.ports.authorize(resident.intent, resident.placement, 'start')
         const status = await this.ports.journal.status(operationId)
         if (status.status !== 'known' || status.receipt.stopFence) return
-        for await (const event of resident.manager.startTurn(resident.session, { prompt, clientCorrelationId: correlationId, ...(sessionMode ? { sessionMode } : {}),
-          onSubmitted: async turnId => { await this.ports.journal.acknowledgeTurn(operationId, turnId); const current = await this.ports.journal.status(operationId); if (current.status === 'known' && current.receipt.stopFence) await resident.manager.cancel(resident.session, undefined, turnId); else await this.ports.journal.markRunning(operationId) } }, resident.controller.signal)) { void event }
+        let retry: { previousTurnId: string } | undefined
+        for await (const event of resident.manager.startTurn(resident.session, {
+          prompt, clientCorrelationId: correlationId, ...(sessionMode ? { sessionMode } : {}),
+          onRetry: async previousTurnId => {
+            await this.ports.authorize(resident.intent, resident.placement, 'start')
+            const current = await this.ports.journal.status(operationId)
+            if (current.status !== 'known' || current.receipt.stopFence) {
+              resident.controller.abort(new Error('Execution stopped during capacity wait'))
+              return
+            }
+            retry = { previousTurnId }
+          },
+          onSubmitted: async turnId => {
+            await this.ports.journal.acknowledgeTurn(operationId, turnId, retry)
+            retry = undefined
+            const current = await this.ports.journal.status(operationId)
+            if (current.status === 'known' && current.receipt.stopFence) {
+              await resident.manager.cancel(resident.session, undefined, turnId)
+            } else await this.ports.journal.markRunning(operationId)
+          },
+        }, resident.controller.signal)) { void event }
         await this.settle(resident, correlationId)
       } catch { try { await this.ports.journal.uncertain(operationId, 'Native turn acknowledgment or closure unavailable') } catch { /* A faulted journal already denies entry and requires recovery. */ } }
     })()

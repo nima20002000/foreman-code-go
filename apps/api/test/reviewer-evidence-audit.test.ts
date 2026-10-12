@@ -10,6 +10,21 @@ import { LeaseGuard, ownedEvents, SingleWriterSessionManager } from '../src/modu
 import { nativeLanes } from './helpers/nativeLanes.js'
 import { correlationId, event, permission, providerId, reviewerFixture, session, terminal, sourceTerminal } from './helpers/reviewerAudit.js'
 
+it('reads the current capacity attempt without treating retained earlier turn IDs as conflicts', () => {
+  const history = terminal()
+  history.events = [
+    event('turn.started', { threadId: session.nativeSessionId, turnId: 'first-turn', clientCorrelationId: correlationId }),
+    event('turn.completed', { threadId: session.nativeSessionId, turnId: 'first-turn', status: 'failed', willRetry: true }),
+    event('turn.capacity_retry', { threadId: session.nativeSessionId, turnId: 'first-turn' }),
+    event('turn.started', { threadId: session.nativeSessionId, turnId: providerId, clientCorrelationId: correlationId }),
+    event('turn.completed', { threadId: session.nativeSessionId, turnId: providerId, status: 'completed' }),
+  ]
+  assert.equal(reviewTurnEvidence(session, history, correlationId, providerId).terminal, true)
+  const foreign = structuredClone(history)
+  foreign.events[2]!.payload.threadId = 'foreign-session'
+  assert.equal(reviewTurnEvidence(session, foreign, correlationId, providerId).terminal, false)
+})
+
 it('F2: cold Codex terminal metadata completes the exact review with no retained live events', () => {
   assert.deepEqual(reviewTurnEvidence(session, terminal(), correlationId), {
     acknowledged: true, terminal: true, nativeIdle: true, nativeBusy: false, providerId,

@@ -99,6 +99,9 @@ export interface NativeTurnInput {
   clientCorrelationId: string
   /** Await persistence of the provider identity immediately after submission acknowledgement. */
   onSubmitted?(nativeTurnId: string): Promise<void>
+  /** Release the failed attempt's writer identity before a confirmed capacity retry.
+   * Callers that persist turn IDs must supply this to enable retry. */
+  onRetry?(nativeTurnId: string): Promise<void>
   onMessageSubmitted?(identity: NativeMessageSubmission): Promise<void>
   /** Save the matched native result before publishing completion or releasing its runtime. */
   onTerminal?(observation: NativeTerminalObservation): Promise<void>

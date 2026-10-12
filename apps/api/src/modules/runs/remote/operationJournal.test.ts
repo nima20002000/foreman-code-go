@@ -21,6 +21,24 @@ const native = { sessionId: 'session', turnId: 'turn', processIdentityDigest: di
 const stop: RemoteOwnerControl = { schemaVersion: 1, protocolVersion: 1, commandId: 'stop', operationId: 'operation', attemptId: 'attempt', executionId: 'execution', bindingHash: digest, owner: intent.owner, action: { kind: 'stop' } }
 async function setup() { const root = await mkdtemp(join(tmpdir(), 'w08-journal-')); roots.push(root); const path = join(root, 'journal.json'); const journal = await RemoteOperationJournal.open(path, { initializeNewInstallation: true }); journals.push(journal); return { path, journal } }
 describe('durable remote ownership', () => {
+  it('advances a capacity retry only from the owned previous turn and denies it after Stop', async () => {
+    const { journal } = await setup()
+    await journal.accept(intent, connection, randomUUID())
+    await journal.reserveEntry(intent.operationId)
+    await journal.acknowledgeStart(intent.operationId, native)
+    await journal.reserveTurn(intent.operationId, { correlationId: 'execution:execution', promptDigest: digest })
+    await journal.acknowledgeTurn(intent.operationId, native.turnId)
+    await expect(journal.acknowledgeTurn(intent.operationId, 'retry-turn', { previousTurnId: 'foreign' }))
+      .rejects.toThrow('Capacity retry no longer owns the previous turn')
+    await journal.acknowledgeTurn(intent.operationId, 'retry-turn', { previousTurnId: native.turnId })
+    const status = await journal.status(intent.operationId)
+    expect(status.status === 'known' && status.receipt.native).toMatchObject({
+      sessionId: native.sessionId, turnId: 'retry-turn',
+    })
+    await journal.control(stop)
+    await expect(journal.acknowledgeTurn(intent.operationId, 'another-turn', { previousTurnId: 'retry-turn' }))
+      .rejects.toThrow('Capacity retry no longer owns the previous turn')
+  })
   it('recovers a journal-sized reviewer result with both history copies after restart', async () => {
     const { path, journal } = await setup()
     await journal.accept(intent, connection, randomUUID())

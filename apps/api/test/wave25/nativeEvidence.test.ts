@@ -8,6 +8,13 @@ const binding: ProjectionBinding = { key: { execution: { workflowNodeId: 'node',
   nativeSessionId: 'session', nativeTurnId: 'turn', connectionGeneration: '1', interactionId: null, closed: false }
 
 describe('bounded structured native evidence', () => {
+  it('keeps capacity attempts from closing workflow activity until the retry budget is exhausted', () => {
+    const failed = { threadId: 'session', turnId: 'turn', status: 'failed' }
+    expect(selectNativeGraphEvidence('turn.completed', { ...failed, willRetry: true })).toEqual({ kind: 'ignored' })
+    expect(selectNativeGraphEvidence('turn.completed', failed)).toMatchObject({ kind: 'evidence' })
+    expect(selectNativeGraphEvidence('turn.completed', { ...failed, status: 'completed', willRetry: true }))
+      .toMatchObject({ kind: 'evidence' })
+  })
   it('drops arguments, output, prose, command strings, paths and error bodies instead of truncating JSON', () => {
     const result = selectNativeGraphEvidence('item.started', { threadId: 'session', turnId: 'turn', prose: 'SECRET-PROBE', item: {
       id: 'tool', type: 'commandExecution', status: 'inProgress', arguments: { path: '/private/SECRET-PROBE' }, output: 'SECRET-PROBE',
