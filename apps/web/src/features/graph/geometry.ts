@@ -1,4 +1,4 @@
-import type { NodeChange } from '@xyflow/react'
+import type { Node, NodeChange } from '@xyflow/react'
 import type { GraphNode } from './types'
 import { GRAPH_NODE_MIN_WIDTH, GRAPH_NODE_MAX_WIDTH, GRAPH_NODE_MIN_HEIGHT, GRAPH_NODE_MAX_HEIGHT } from './mapper'
 import { retainArray, sameFields } from './graphReferences'
@@ -42,14 +42,14 @@ export function applyGraphGeometry<T extends { nodes: readonly { id: string; pos
  * Renderer-local buffer. Pointer events never enter the draft or presentation store.
  * Its pending records are patches, not a second workflow definition.
  */
-export function createGraphGeometryAdapter(initial: GraphNode[]) {
+export function createGraphGeometryAdapter<T extends Node = GraphNode>(initial: T[]) {
   let base = initial
   let nodes = initial
   const pending = new Map<string, GraphGeometryChange>()
   let resizing = false
   const draggingIds = new Set<string>()
 
-  function replaceNode(id: string, update: (node: GraphNode) => GraphNode) {
+  function replaceNode(id: string, update: (node: T) => T) {
     const next = nodes.map((node) => node.id === id ? update(node) : node)
     nodes = retainArray(nodes, next)
   }
@@ -73,7 +73,7 @@ export function createGraphGeometryAdapter(initial: GraphNode[]) {
     else pending.delete(change.id)
   }
 
-  function reconcile(nextBase: GraphNode[], selectedIds: ReadonlySet<string>) {
+  function reconcile(nextBase: T[], selectedIds: ReadonlySet<string>) {
     base = nextBase
     const ids = new Set(base.map((node) => node.id))
     for (const id of pending.keys()) if (!ids.has(id)) pending.delete(id)
@@ -82,7 +82,7 @@ export function createGraphGeometryAdapter(initial: GraphNode[]) {
     nodes = retainArray(nodes, base.map((node) => {
       const before = previous.get(node.id)
       const change = pending.get(node.id)
-      const candidate: GraphNode = {
+      const candidate: T = {
         ...node,
         ...(before?.measured ? { measured: before.measured } : {}),
         ...(change?.position ? { position: change.position } : {}),
@@ -97,7 +97,7 @@ export function createGraphGeometryAdapter(initial: GraphNode[]) {
     return nodes
   }
 
-  function update(changes: readonly NodeChange<GraphNode>[]) {
+  function update(changes: readonly NodeChange<T>[]) {
     let finished = false
     for (const change of changes) {
       if (change.type !== 'position' && change.type !== 'dimensions') continue
