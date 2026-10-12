@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.88] - 2026-10-12
+
+### Fixed
+
+- Ships the v0.0.87 CI distribution change (v0.0.87 failed to build).
+
 ## [0.0.87] - 2026-10-12
 
 ### Fixed
