@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm, readFile, writeFile, readdir, mkdir } from 'node:fs/promises'
+import { mkdtemp, rm, readFile, writeFile, readdir, mkdir, rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -42,8 +42,42 @@ async function fixture(copy = true) {
   }
   const claimName = sourceMaterializationClaimName(root.binding, attempt,
     owner.record?.receipt.quota, owner.record?.receipt.claimScope ?? 'execution')
-  return { directory, owner, bytes, claimName, reconciliationId: randomUUID(), nativeClosed: vi.fn(async () => true), reauthorize: vi.fn(async () => {}) }
+  return { directory, owner, bytes, manifest, claimName, reconciliationId: randomUUID(), nativeClosed: vi.fn(async () => true), reauthorize: vi.fn(async () => {}) }
 }
+
+it.each(['reservation', 'copy', 'activation'] as const)(
+  'reconciles an unacknowledged source attempt interrupted during %s after restart', async phase => {
+    const f = await fixture(false)
+    const input = { manifest: f.manifest, binding: f.owner.root.binding, attempt: f.owner.attempt }
+    const interrupted = new Error('API process stopped')
+    if (phase === 'activation') {
+      const receipt = await new PrivateSourceMaterializer({ read: async () => f.bytes }, async () => {}).prepare(input)
+      await rename(join(f.directory, receipt.materializationId, 'tree'),
+        join(f.directory, receipt.materializationId, 'staging'))
+    } else {
+      const beforeRestart = new PrivateSourceMaterializer({ read: async () => { throw interrupted } }, async () => {})
+      await expect(beforeRestart.prepare(input)).rejects.toBe(interrupted)
+      if (phase === 'reservation') {
+        const claim = JSON.parse(await readFile(join(f.directory, f.claimName), 'utf8')) as { materializationId: string }
+        await rm(join(f.directory, claim.materializationId), { recursive: true })
+      }
+    }
+    const read = vi.fn(async () => f.bytes)
+    const restarted = new PrivateSourceMaterializer({ read }, async () => {})
+    await expect(restarted.prepare(input)).rejects.toMatchObject({ code: 'SOURCE_MATERIALIZATION_UNCERTAIN' })
+    expect(read).not.toHaveBeenCalled()
+    f.nativeClosed.mockResolvedValue(false)
+    await expect(reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize))
+      .rejects.toMatchObject({ code: 'source-reconciliation-unconfirmed' })
+    expect(await readdir(f.directory)).toContain(f.claimName)
+    f.nativeClosed.mockResolvedValue(true)
+    const closure = await vi.waitFor(() =>
+      reconcileSourcePreparation(f.reconciliationId, f.owner, f.nativeClosed, f.reauthorize))
+    expect(closure).toMatchObject({ admissionClosed: true, childrenClosed: true, claimReleased: true })
+    expect(await readdir(f.directory)).not.toContain(f.claimName)
+  },
+)
+
 it('archives a closed claim, retains every source/private-repository byte and replays closure without touching a successor', async () => {
   const f = await fixture(), id = f.owner.record!.receipt.materializationId
   const claim = await readFile(join(f.directory, f.claimName))

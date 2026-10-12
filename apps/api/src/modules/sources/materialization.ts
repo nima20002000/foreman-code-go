@@ -256,22 +256,31 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
       if (legacy && claim.attempt.executionId !== attempt.executionId) return null
       MaterializationReceiptSchema.shape.materializationId.parse(claim.materializationId)
       if (!equal(claim.binding, binding) || !equal(claim.attempt, attempt)) throw new SourceError('SOURCE_ROOT_OWNED', 'The root belongs to another accepted execution/attempt.')
-      const directory = await materializationDirectory(root, {
-        materializationId: claim.materializationId, ...(claim.quota ? { quota: claim.quota } : {}),
-      })
-      let receipt: MaterializationReceipt
       try {
-        const file = await open(anchored(directory, 'receipt.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
+        const directory = await materializationDirectory(root, {
+          materializationId: claim.materializationId, ...(claim.quota ? { quota: claim.quota } : {}),
+        })
+        let receipt: MaterializationReceipt
         try {
-          const stat = await file.stat()
-          if (!stat.isFile() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw new SourceError('SOURCE_RECEIPT_INVALID', 'Invalid source receipt record.')
-          receipt = MaterializationReceiptSchema.parse((JSON.parse(await file.readFile('utf8')) as { receipt: unknown }).receipt)
-        } finally { await file.close() }
+          const file = await open(anchored(directory, 'receipt.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
+          try {
+            const stat = await file.stat()
+            if (!stat.isFile() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) {
+              throw new SourceError('SOURCE_RECEIPT_INVALID', 'Invalid source receipt record.')
+            }
+            receipt = MaterializationReceiptSchema.parse(
+              (JSON.parse(await file.readFile('utf8')) as { receipt: unknown }).receipt)
+          } finally { await file.close() }
+        } finally { await directory.close() }
+        await this.verify(receipt, { binding, attempt, signal })
+        return receipt
       } catch (error) {
-        if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') throw new SourceError('SOURCE_MATERIALIZATION_UNCERTAIN', 'The original activation is incomplete; reconcile this exact attempt before retry.')
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          throw new SourceError('SOURCE_MATERIALIZATION_UNCERTAIN',
+            'Source preparation was interrupted before activation; reconcile this attempt.', { cause: error })
+        }
         throw error
-      } finally { await directory.close() }
-      await this.verify(receipt, { binding, attempt, signal }); return receipt
+      }
     } finally { await root.close() }
   }
   async verify(input: MaterializationReceipt, expected: { binding: RootBinding; attempt: MaterializationAttempt; signal?: AbortSignal }): Promise<void> {
