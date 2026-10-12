@@ -50,6 +50,26 @@ function fixture(options: Parameters<typeof recoveryDatabase>[0] = {}) {
 }
 
 describe('ENG06-A cold Run and Stop orchestration', () => {
+  it('fences an interrupted requester before recovering an earlier completed reviewer', async () => {
+    const f = fixture()
+    f.state.execution = recoveryExecution('completed')
+    f.state.fenced = false
+    const requester = recoveryExecution('starting')
+    requester.id = 'interrupted-requester'
+    delete requester.nativeSessionId
+    f.state.others.set(requester.id, requester)
+    const original = structuredClone(f.state.execution)
+    try {
+      assert.equal(await f.coordinator.requestColdRunCleanup(f.owner), true)
+      assert.deepEqual(f.calls, ['request-cleanup'])
+      assert.deepEqual(f.state.execution, original)
+      assert.equal(f.snapshot.cleanupPending, true)
+      assert.equal(f.state.proof, undefined)
+    } finally {
+      await f.owner.release()
+    }
+  })
+
   it('leaves a running restart-detached turn available for original-result recovery', async () => {
     const f = fixture({ detached: true })
     f.state.fenced = false

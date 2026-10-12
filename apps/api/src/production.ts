@@ -987,6 +987,7 @@ export function buildProductionApp(
       if (!context.runId || !context.attempt) throw new DomainError('HARNESS_PROFILE_OWNER_CONFLICT', 'The exact Run attempt is unavailable.', 409)
       const { manager } = productionSelectedProfileManager({ factories: nativeFactories, registry: harnessRegistry, profiles: selectedProfiles,
         ...(accountBinding ? { accountBinding } : {}),
+        ...(context.nativeSessionId ? { nativeSessionId: context.nativeSessionId } : {}),
         selector, binding: { kind: 'workflow', runId: context.runId, executionId: context.executionId, attempt: context.attempt, getOwner,
           ...(context.purpose ? { purpose: context.purpose } : {}) },
         configuration, role: 'workflow', workingDirectory: context.workingDirectory, ownerAgentId: context.agentId,

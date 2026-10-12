@@ -359,14 +359,30 @@ export class RemoteExecutionHost {
     if (!isDeepStrictEqual(resident.intent, raw.intent) || !isDeepStrictEqual(resident.placement, raw.placement)
       || !isDeepStrictEqual(resident.request, raw.request) || !isDeepStrictEqual(resident.session, raw.session)) throw new Error('Original reattachment binding mismatch')
     const status = await this.ports.journal.status(raw.intent.operationId)
-    if (status.status !== 'known' || !status.receipt.native || status.receipt.terminal || status.receipt.phase === 'uncertain') throw new Error('Original resident lifetime requires reconciliation')
+    if (status.status !== 'known' || !status.receipt.native
+      || status.receipt.native.sessionId !== raw.session.nativeSessionId
+      || !isDeepStrictEqual(status.receipt.intent, raw.intent)) {
+      throw new Error('Original resident lifetime requires reconciliation')
+    }
+    if (status.receipt.terminal) {
+      if (status.receipt.phase !== 'confirmed_terminal') throw new Error('Original terminal closure is unconfirmed')
+      await this.ports.authorize(raw.intent, resident.placement, 'read')
+      const current = await this.ports.journal.status(raw.intent.operationId)
+      if (!isDeepStrictEqual(current, status)) throw new Error('Original terminal reattachment owner changed')
+      return { session: structuredClone(resident.session), status: current }
+    }
     const native = await this.ports.nativeEvidence(raw.intent, raw.session, { manager: resident.manager, request: resident.request, signal: resident.controller.signal })
     if (native.sessionId !== status.receipt.native.sessionId || native.processIdentityDigest !== status.receipt.native.processIdentityDigest
       || native.turnId !== undefined && native.turnId !== status.receipt.native.turnId) throw new Error('Reattachment replaced original native lifetime')
     await this.ports.authorize(raw.intent, resident.placement, 'read')
     const current = await this.ports.journal.status(raw.intent.operationId)
     if (current.status !== 'known' || !isDeepStrictEqual(current.receipt.intent, raw.intent)
-      || !isDeepStrictEqual(current.receipt.native, status.receipt.native) || current.receipt.terminal || current.receipt.phase === 'uncertain') throw new Error('Original reattachment owner changed')
+      || !isDeepStrictEqual(current.receipt.native, status.receipt.native) || current.receipt.terminal) throw new Error('Original reattachment owner changed')
+    if (current.receipt.phase === 'uncertain') {
+      const confirmed = await this.ports.journal.confirmRecovered(raw.intent.operationId, current.receipt.native!)
+      if (!isDeepStrictEqual(confirmed.intent, raw.intent)) throw new Error('Original reattachment owner changed')
+      return { session: structuredClone(resident.session), status: { status: 'known' as const, receipt: confirmed } }
+    }
     return { session: structuredClone(resident.session), status: current }
   }
   recover(raw: { intent: DispatchIntent; placement: AcceptedNodePlacement; request: HarnessExecutionRequest; session: NativeSessionReference; evidenceDigest: string; executionPlacement?: NativeExecutionPlacement }) {

@@ -645,6 +645,7 @@ export class ApprovalExecutionCoordinator {
     const context = {
       harness: configuration.harness.harness, executionId: execution.id, agentId: execution.agentId,
       runId: execution.runId, attempt: execution.attempt,
+      ...(execution.nativeSessionId ? { nativeSessionId: execution.nativeSessionId } : {}),
       workingDirectory: execution.workingDirectory, configuration,
       ...(purpose ? { purpose } : {}),
     }
@@ -1692,40 +1693,44 @@ export class ApprovalExecutionCoordinator {
           && pending.every((item) => item.status === 'pending' && item.deliveryState === 'not_started')) {
           if (await this.restorePendingWorkflowApprovals(owner, execution, pending, signal)) continue
         }
-        if (execution.state === 'completed') {
-          if (await this.recoverRetainedReviewer(execution, owner, signal)) continue
-          if (execution.nativeSessionId && !await this.workflowClosures?.read(execution)) {
-            // A finalized workflow has already closed its original lifetime and
-            // may have handed this session to a reviewer. Missing closure now
-            // belongs to that later lifetime, not to the original terminal gap.
-            // This owner-bound read selects cleanup only; it is NOT closure
-            // evidence. The negative pass still rechecks generation/session
-            // and requires positive physical proof under the committed fence.
-            const native = (await owner.oneShotConnection().query<{ reference: unknown; finalized: boolean }>(
-              'select reference,workflow_finalized_at is not null as finalized from execution_native_sessions where execution_id=$1 for share',
-              [execution.id])).rows[0]
-            owner.assertOwned()
-            if (native?.finalized === true) {
-              if (NativeSessionReferenceSchema.parse(native.reference).nativeSessionId !== execution.nativeSessionId) {
-                throw new DomainError('NATIVE_SESSION_IDENTITY_MISMATCH', 'Cleanup changed the captured native session.', 409)
-              }
-              await this.runs.requestCleanup(owner.runId, owner)
-              owner.assertOwned()
-              return true
-            }
-            const failures: Error[] = []
-            await attemptCleanup(failures, `${execution.id}: recover terminal native lifetime`, (signal) =>
-              recoverWorkflowNativeClosure(owner, execution, this.recoverNativeProcesses, signal, { purpose: 'terminal' }))
-            owner.assertOwned()
-            if (failures.length) throw new AggregateError(failures, 'Terminal native closure remains unconfirmed.')
-          }
-          // Includes a failed original terminal: do not poison technical retry
-          // by setting cleanupPending before the repository evaluates its slot.
-          continue
-        }
+        if (execution.state === 'completed') continue
         await this.runs.requestCleanup(owner.runId, owner)
         owner.assertOwned()
         return true
+      }
+    }
+    // An interrupted sibling fences the Run before a completed reviewer can be recovered.
+    for await (const executions of this.runs.executionPages(owner.runId, owner)) {
+      for (const execution of executions) {
+        if (this.ownedSessions.has(execution.id) || execution.state !== 'completed') continue
+        if (await this.recoverRetainedReviewer(execution, owner, signal)) continue
+        if (execution.nativeSessionId && !await this.workflowClosures?.read(execution)) {
+          // A finalized workflow has already closed its original lifetime and
+          // may have handed this session to a reviewer. Missing closure now
+          // belongs to that later lifetime, not to the original terminal gap.
+          // This owner-bound read selects cleanup only; it is NOT closure
+          // evidence. The negative pass still rechecks generation/session
+          // and requires positive physical proof under the committed fence.
+          const native = (await owner.oneShotConnection().query<{ reference: unknown; finalized: boolean }>(
+            'select reference,workflow_finalized_at is not null as finalized from execution_native_sessions where execution_id=$1 for share',
+            [execution.id])).rows[0]
+          owner.assertOwned()
+          if (native?.finalized === true) {
+            if (NativeSessionReferenceSchema.parse(native.reference).nativeSessionId !== execution.nativeSessionId) {
+              throw new DomainError('NATIVE_SESSION_IDENTITY_MISMATCH', 'Cleanup changed the captured native session.', 409)
+            }
+            await this.runs.requestCleanup(owner.runId, owner)
+            owner.assertOwned()
+            return true
+          }
+          const failures: Error[] = []
+          await attemptCleanup(failures, `${execution.id}: recover terminal native lifetime`, (signal) =>
+            recoverWorkflowNativeClosure(owner, execution, this.recoverNativeProcesses, signal, { purpose: 'terminal' }))
+          owner.assertOwned()
+          if (failures.length) throw new AggregateError(failures, 'Terminal native closure remains unconfirmed.')
+        }
+        // Includes a failed original terminal: do not poison technical retry
+        // by setting cleanupPending before the repository evaluates its slot.
       }
     }
     return false
