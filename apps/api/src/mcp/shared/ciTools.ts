@@ -2,7 +2,8 @@ import type { McpServer } from '@modelcontextprotocol/server'
 import { CiRunInputSchema, OperatorCiRunInputSchema, CiRunOutputSchema,
   CiGetInputSchema, OperatorCiGetInputSchema, CiGetOutputSchema,
   CiCancelInputSchema, OperatorCiCancelInputSchema, CiCancelOutputSchema,
-  CiLogsInputSchema, OperatorCiLogsInputSchema, CiLogsOutputSchema, CiComputersOutputSchema } from '@foreman-code/contracts'
+  CiLogsInputSchema, OperatorCiLogsInputSchema, CiLogsOutputSchema, CiComputersOutputSchema,
+  OperatorCiListInputSchema, CiListOutputSchema } from '@foreman-code/contracts'
 import { z } from 'zod'
 import type { ManagementPrincipal, ManagementAction } from '@foreman-code/contracts/management'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../../modules/jobs/ciAuthority.js'
@@ -42,12 +43,16 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'Poll every ticket in partitions. Retrying commandId returns the '
   + 'original tickets. ci_get returns state (queued, starting, running, passed, failed, canceled, lost), current step, '
   + 'computer, part, shard, exit code, group state and a 32 KiB log tail; ci_logs_read pages the full log '
-  + 'for authorized callers. Agent CI readback and cancellation are limited to tickets from that execution. '
+  + 'for authorized callers. ci_get with testStatus (passed, failed, skipped) adds the ticket’s structured test results: '
+  + 'a summary counting every test and, per test file, the tests with those statuses (bounded; failed tests first); '
+  + 'finished unit and integration runs report them. The Operator lists every CI ticket of a Run, with the Agent node '
+  + 'that requested it, placement (host, github, circleci) and test counts, with ci_list. '
+  + 'Agent CI readback and cancellation are limited to tickets from that execution. '
   + 'Agent requests publish their persisted lifecycle into their Run’s activities and Board activity snapshot. '
   + '(group=true includes bounded pages and individual cursors for every part); ci_cancel stops one ticket. '
   + 'Agents are restricted to their active Run workspace. Computers without a GitHub login report it in ci_computers_list.'
 
-export const CI_TOOLS = ['ci_run', 'ci_get', 'ci_computers_list', 'ci_cancel', 'ci_logs_read'] as const
+export const CI_TOOLS = ['ci_run', 'ci_get', 'ci_computers_list', 'ci_cancel', 'ci_logs_read', 'ci_list'] as const
 type CiTool = typeof CI_TOOLS[number]
 interface CiContext {
   principal: ManagementPrincipal
@@ -59,6 +64,7 @@ const actions: Record<CiTool, ManagementAction[]> = {
   ci_computers_list: CI_GET_ACTIONS,
   ci_cancel: ['jobs:cancel'],
   ci_logs_read: CI_GET_ACTIONS,
+  ci_list: [...CI_GET_ACTIONS, 'runs:read'],
 }
 export function ciCapabilities(context: CiContext, resource: AuthorizedResource) {
   if (!context.services.ci) return []
@@ -119,4 +125,13 @@ export function registerCiTools(server: McpServer, context: CiContext) {
     inputSchema: operator ? OperatorCiLogsInputSchema : CiLogsInputSchema,
     outputSchema: CiLogsOutputSchema, annotations: read,
   }, input => invoke('ci_logs_read', () => ci.logs(context.principal, input)))
+  // A Run's whole CI list is for the Operator; Agents read their own tickets with ci_get.
+  if (operator && available('ci_list')) server.registerTool('ci_list', {
+    description: 'List every CI ticket the Agents of one Run requested, newest first (at most 500): suite, part, '
+      + 'partition, scope, state, step, computer and placement (host, github or circleci), timing, the requesting '
+      + 'Agent’s executionId, agentId and workflow node, and passed/failed/skipped test counts once reported. '
+      + 'Read a ticket’s tests with ci_get testStatus and its log with ci_logs_read. Requires runs:read on the Run. '
+      + CI_CAPABILITY_DETAIL,
+    inputSchema: OperatorCiListInputSchema, outputSchema: CiListOutputSchema, annotations: read,
+  }, input => invoke('ci_list', () => ci.list(context.principal, input)))
 }

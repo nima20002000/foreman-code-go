@@ -17,12 +17,14 @@ import {
 
 // Transparent observation, NOT a fake canvas: retain the actual React Flow,
 // its memoized node renderer, virtualization, controls and keyboard handling.
+// Frames keep the saved Run nodes apart from the Board's CI server, a presentation component beside them.
 const observed = vi.hoisted(() => ({ frames: [] as Array<{ nodes: Node[]; edges: Edge[] }> }))
 vi.mock('@xyflow/react', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@xyflow/react')>()
   const { createElement } = await import('react')
   return { ...actual, ReactFlow: (props: ReactFlowProps) => {
-    if (props['aria-label'] === 'Run graph canvas') observed.frames.push({ nodes: props.nodes ?? [], edges: props.edges ?? [] })
+    if (props['aria-label'] === 'Run graph canvas') observed.frames.push({ edges: props.edges ?? [],
+      nodes: (props.nodes ?? []).filter((node) => node.type === 'pinnedRunNode') })
     return createElement(actual.ReactFlow, props)
   } }
 })

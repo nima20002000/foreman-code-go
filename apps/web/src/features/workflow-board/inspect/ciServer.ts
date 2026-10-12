@@ -1,0 +1,84 @@
+import { CiListOutputSchema, CiLogsOutputSchema, CiTestsOutputSchema,
+  type CiPlacement, type CiRunJob, type CiTestStatus } from '@foreman-code/contracts'
+import { apiClient, type RequestOptions } from '../../../shared/api/client'
+import type { AgentNodeState } from '../../../shared/ui/nocturne'
+
+const ciPath = (workspaceId: string) => `/api/management/workspaces/${encodeURIComponent(workspaceId)}/ci`
+
+/** The Board's reads of a Run's CI: the same service as the Operator's ci_list, ci_get testStatus and ci_logs_read. */
+export const runCiApi = {
+  list: (input: { workspaceId: string; runId: string }, options?: RequestOptions) =>
+    apiClient.request(`${ciPath(input.workspaceId)}?${new URLSearchParams({ runId: input.runId })}`, CiListOutputSchema, options),
+  tests: (input: { workspaceId: string; ticketId: string; status?: readonly CiTestStatus[] }, options?: RequestOptions) =>
+    apiClient.request(`${ciPath(input.workspaceId)}/${encodeURIComponent(input.ticketId)}/tests${input.status
+      ? `?${new URLSearchParams({ status: input.status.join(',') })}` : ''}`, CiTestsOutputSchema, options),
+  logTail: (input: { workspaceId: string; ticketId: string }, options?: RequestOptions) =>
+    apiClient.request(`${ciPath(input.workspaceId)}/${encodeURIComponent(input.ticketId)}/logs?maxBytes=32768`,
+      CiLogsOutputSchema, options),
+}
+
+const ACTIVE: readonly CiRunJob['ci']['state'][] = ['queued', 'starting', 'running']
+export const isActiveCiJob = (job: CiRunJob) => ACTIVE.includes(job.ci.state)
+
+export const CI_PLACEMENT_LABELS: Record<CiPlacement, string> = { host: 'Host CI', github: 'GitHub Actions', circleci: 'CircleCI' }
+
+/** One ci_run request: its parts and partitions share a group and one requesting Agent. */
+type GroupOutcome = 'active' | 'passed' | 'failed' | 'canceled'
+export type CiGroupStates = ReadonlyMap<string, { nodeId: string; outcome: GroupOutcome }>
+
+function outcomeOf(jobs: readonly CiRunJob[]): GroupOutcome {
+  if (jobs.some(isActiveCiJob)) return 'active'
+  if (jobs.some((job) => job.ci.state === 'failed' || job.ci.state === 'lost')) return 'failed'
+  return jobs.some((job) => job.ci.state === 'canceled') ? 'canceled' : 'passed'
+}
+
+export function ciGroupStates(jobs: readonly CiRunJob[]): CiGroupStates {
+  const groups = new Map<string, CiRunJob[]>()
+  for (const job of jobs) groups.set(job.ci.groupId, [...groups.get(job.ci.groupId) ?? [], job])
+  return new Map([...groups].map(([groupId, members]) => [groupId, { nodeId: members[0]!.requester.nodeId, outcome: outcomeOf(members) }]))
+}
+
+/** A light between an Agent and the CI server: its request going out, or the group's result coming back. */
+export type CiTransfer = { key: string; nodeId: string; direction: 'request' | 'result'; outcome?: Exclude<GroupOutcome, 'active'> }
+
+/** What changed between two reads. The first read replays nothing; a request that is already finished when first
+ * seen still travels out and back. */
+export function ciTransfers(previous: CiGroupStates | undefined, next: CiGroupStates): CiTransfer[] {
+  if (!previous) return []
+  const transfers: CiTransfer[] = []
+  for (const [groupId, group] of next) {
+    const before = previous.get(groupId)
+    if (!before) transfers.push({ key: `${groupId}:request`, nodeId: group.nodeId, direction: 'request' })
+    if (group.outcome !== 'active' && (!before || before.outcome === 'active')) {
+      transfers.push({ key: `${groupId}:result`, nodeId: group.nodeId, direction: 'result', outcome: group.outcome })
+    }
+  }
+  return transfers
+}
+
+export type CiServerSummary = { state: AgentNodeState; label: string; running: number; queued: number; failed: number
+  total: number; placements: CiPlacement[] }
+
+/** The server's own activity: running while any ticket runs, otherwise how the latest request ended. */
+export function ciServerSummary(jobs: readonly CiRunJob[]): CiServerSummary {
+  const running = jobs.filter((job) => job.ci.state === 'starting' || job.ci.state === 'running').length
+  const queued = jobs.filter((job) => job.ci.state === 'queued').length
+  const failed = jobs.filter((job) => job.ci.state === 'failed' || job.ci.state === 'lost').length
+  const placements = [...new Set(jobs.flatMap((job) => job.placement ? [job.placement] : []))]
+  const base = { running, queued, failed, total: jobs.length, placements }
+  if (running || queued) {
+    return { ...base, state: running ? 'running' : 'queued',
+      label: [running ? `${running} running` : '', queued ? `${queued} queued` : ''].filter(Boolean).join(' · ') }
+  }
+  // Jobs are newest first, so the first group is the latest request.
+  const latest = jobs[0] ? ciGroupStates(jobs.filter((job) => job.ci.groupId === jobs[0]!.ci.groupId)).values().next().value : undefined
+  if (!latest) return { ...base, state: 'idle', label: 'Idle' }
+  if (latest.outcome === 'failed') return { ...base, state: 'failed', label: 'Last CI failed' }
+  if (latest.outcome === 'canceled') return { ...base, state: 'idle', label: 'Last CI canceled' }
+  return { ...base, state: 'completed', label: 'Last CI passed' }
+}
+
+export function ciJobDuration(job: CiRunJob, now = Date.now()): number | null {
+  if (!job.ci.startedAt) return null
+  return (job.ci.finishedAt ? Date.parse(job.ci.finishedAt) : now) - Date.parse(job.ci.startedAt)
+}

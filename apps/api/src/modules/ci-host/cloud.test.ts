@@ -68,8 +68,9 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
   }
   const dispatched: string[][] = []
   const github = { listed: [] as { databaseId: number; displayTitle: string }[], status: 'in_progress', conclusion: '',
-    durations: null as Record<string, number> | null, canceled: [] as string[] }
+    durations: null as Record<string, number> | null, testResults: null as unknown, canceled: [] as string[] }
   const circle = { triggered: [] as string[][], outcome: '' as string, durations: null as Record<string, number> | null,
+    testResults: null as unknown,
     phantoms: 0, canceled: [] as string[] }
   let now = Date.now()
   const system = systemHostCiPorts()
@@ -100,6 +101,7 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
         const directory = join(args[args.indexOf('--output') + 1]!, 'durations')
         await mkdir(directory, { recursive: true })
         await writeFile(join(directory, 'durations.json'), JSON.stringify(circle.durations))
+        if (circle.testResults) await writeFile(join(directory, 'test-results.json'), JSON.stringify(circle.testResults))
         return ok()
       }
       return { code: 1, stdout: '', stderr: `unexpected circleci ${args.join(' ')}` }
@@ -116,6 +118,7 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
       const directory = args[args.indexOf('-D') + 1]!
       await mkdir(directory, { recursive: true })
       await writeFile(join(directory, 'durations.json'), JSON.stringify(github.durations))
+      if (github.testResults) await writeFile(join(directory, 'test-results.json'), JSON.stringify(github.testResults))
       return ok()
     }
     return { code: 1, stdout: '', stderr: `unexpected gh ${args.join(' ')}` }
@@ -412,6 +415,30 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536, durations: true }))
       .toMatchObject({ run: { state: 'passed', step: 'unit-api' }, durations })
   })
+  it.each(['github', 'circleci'] as const)('reads integration test results from %s artifacts', async provider => {
+    const f = await fixture({}, { provider })
+    const runId = randomUUID()
+    await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+      suite: 'integration', scope: 'full' })
+    const durations = { 'apps/api/test/a.integration.test.ts': 250 }
+    const testResults = { summary: { passed: 0, failed: 1, skipped: 0 }, truncated: false, files: [
+      { file: 'apps/api/test/a.integration.test.ts', status: 'failed', durationMs: 250,
+        tests: [{ name: 'a saves', status: 'failed', durationMs: 20, message: 'expected 1 to be 2' }] }] }
+    f.github.listed = [{ databaseId: 9, displayTitle: `ci ${runId}` }]
+    f.github.status = 'completed'
+    f.github.conclusion = 'failure'
+    f.circle.outcome = 'failed'
+    for (const service of [f.github, f.circle]) Object.assign(service, { durations, testResults })
+    const read = await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536, durations: true,
+      testResults: true })
+    expect(read).toMatchObject({ run: { state: 'failed' }, durations, testResults })
+    // A restarted Main still answers from the kept result; a read that does not ask for test results stays lean.
+    const plain = await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1, durations: true })
+    expect(plain.operation === 'read' && 'testResults' in plain).toBe(false)
+    expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1, testResults: true }))
+      .toMatchObject({ testResults })
+  })
+
   it('encodes affected integration files against the complete commit inventory before partitioning', async () => {
     const f = await fixture()
     const files = ['apps/api/test/b.integration.test.ts', 'apps/api/test/d.integration.test.ts']

@@ -20,6 +20,7 @@ import { adaptiveDeadlineMs, groupUsed, integrationProcessLimits, integrationPro
 import { boundedLog, emptyCounts, junitReport, logArchive, mergedVitestReport, positiveInteger,
   readVitestReport, privateDirectory, writeReport } from './verification-reports.mjs'
 import { scheduleQueue } from './dense-scheduler.mjs'
+import { writeCiTestResults } from './ci-test-results.mjs'
 import { readProfiles, startProcessMetrics, writeProfiles } from './dense-resources.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -960,6 +961,15 @@ export async function runIntegration(argv = [], {
         if (output) writeDurations(resolve(output), measured)
       } catch (error) {
         console.error(`[integration] could not record measured durations: ${error.message}`)
+      }
+      // Structured per-test results, so a host CI dispatcher can show them with the ticket.
+      const testResults = readProductEnvironment(env, 'INTEGRATION_TEST_RESULTS_OUTPUT')
+      if (testResults) {
+        try {
+          writeCiTestResults(resolve(testResults), [join(failedLogs, 'vitest.json')], root)
+        } catch (error) {
+          console.error(`[integration] could not record test results: ${error.message}`)
+        }
       }
       console.log(`[integration] machine-readable reports: ${failedLogs}`)
       if (!active.size && !cleanupError) removeTestRoot(tempRoot)

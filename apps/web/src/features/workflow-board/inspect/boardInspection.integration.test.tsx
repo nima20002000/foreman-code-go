@@ -557,5 +557,132 @@ describe('Live Run status on the Board', () => {
     expect(nodeState(added)).toBe('waiting')
     await userEvent.setup().click(within(waits).getByRole('button', { name: `Open decision for ${nameOf(added)}` }))
     expect(await screen.findByRole('dialog', { name: 'Human approval inbox' })).toBeVisible()
+  }, 15_000)
+})
+
+describe('CI server on the Board', () => {
+  it('activates with the Run’s CI and opens its jobs, filtered test results and log in the shared dialog', async () => {
+    const { scope, version } = fixture.runs.after
+    const agent = nativeNode(version.definition.nodes[1]!), name = agent.name ?? agent.label ?? agent.id
+    const ticket = '00000000-0000-4000-8000-000000000021'
+    const results = { summary: { passed: 1, failed: 1, skipped: 1 }, truncated: false, files: [
+      { file: 'apps/api/test/save.test.ts', status: 'failed', durationMs: 1200, tests: [
+        { name: 'save rejects a stale revision', status: 'failed', durationMs: 800, message: 'expected 409 to be 200' },
+        { name: 'save writes the record', status: 'passed', durationMs: 400 }] },
+      { file: 'apps/api/test/later.test.ts', status: 'skipped', durationMs: 3, tests: [
+        { name: 'later waits for a computer', status: 'skipped', durationMs: null }] }] }
+    const job = (state: 'running' | 'failed') => ({ ticketId: ticket, scope: 'affected', placement: 'github', message: null,
+      requester: { executionId: 'exec-ci', agentId: agent.agentId, nodeId: agent.id, nodeName: name },
+      tests: state === 'failed' ? results.summary : null,
+      ci: { id: ticket, groupId: '00000000-0000-4000-8000-000000000022', suite: 'unit', part: 'unit-api', partition: null, state,
+        exitCode: state === 'failed' ? 1 : null, queuedAt: '2026-10-01T00:00:00.000Z', startedAt: '2026-10-01T00:00:01.000Z',
+        finishedAt: state === 'failed' ? '2026-10-01T00:02:01.000Z' : null, step: 'unit-api',
+        computer: { hostRef: { kind: 'cloud', mainId: 'main-1', provider: 'github', slot: 0 }, label: 'GitHub Actions 1' } } })
+    let jobs: unknown[] = []
+    const requested: (string | null)[] = []
+    let logReads = 0
+    const ci = `/api/management/workspaces/${scope.workspaceId}/ci`
+    server.use(
+      http.get(ci, ({ request }) => HttpResponse.json({ runId: new URL(request.url).searchParams.get('runId'), jobs, truncated: false })),
+      http.get(`${ci}/${ticket}/tests`, ({ request }) => {
+        const status = new URL(request.url).searchParams.get('status')
+        requested.push(status)
+        const wanted = status?.split(',') ?? ['passed', 'failed', 'skipped']
+        return HttpResponse.json({ ticketId: ticket, tests: { ...results, files: results.files.flatMap((file) => {
+          const tests = file.tests.filter((test) => wanted.includes(test.status))
+          return tests.length ? [{ ...file, tests }] : []
+        }) } })
+      }),
+      http.get(`${ci}/${ticket}/logs`, () => { logReads++; return HttpResponse.json({ text: '::step unit-api\nTests  1 failed | 1 passed', nextOffset: 40, logBytes: 40 }) }),
+    )
+    const { cache } = await mount(href(scope))
+    const serverNode = async (label: RegExp) => (await within(pinnedCanvas()).findByRole('button', { name: label })).closest<HTMLElement>('.n-agent')!
+    const refresh = () => act(async () => { await cache.refetchQueries({ queryKey: [...runInspectionQueryKey(scope), 'ci-jobs'] }) })
+
+    // Idle without CI; it runs (with the node activity styling) while an Agent's ticket runs, then shows the result.
+    expect((await serverNode(/^CI server, Idle/)).getAttribute('data-state')).toBe('idle')
+    jobs = [job('running')]
+    await refresh()
+    expect((await serverNode(/^CI server, 1 running/)).getAttribute('data-state')).toBe('running')
+    // The request travels as a light from the Agent to the server, and the result travels back; no lasting line.
+    const light = () => pinnedCanvas().querySelector('.ci-transfer')
+    await waitFor(() => expect(light()).toHaveTextContent('CI request'))
+    jobs = [job('failed')]
+    await refresh()
+    const failed = await serverNode(/^CI server, Last CI failed/)
+    expect(failed.getAttribute('data-state')).toBe('failed')
+    await waitFor(() => expect(light()).toHaveTextContent('CI failed'))
+    await waitFor(() => expect(light()).toBeNull(), { timeout: 8000 })
+
+    // The server opens the shared dialog; a job row opens its tests.
+    // A click on the canvas (jsdom has no pointer view for the canvas pan handler).
+    fireEvent.click(within(failed).getByRole('button', { name: /^CI server/ }))
+    const user = userEvent.setup()
+    const dialog = await screen.findByRole('dialog', { name: 'CI server' })
+    const row = within(within(dialog).getByRole('region', { name: 'CI jobs' })).getAllByRole('row')[1]!
+    for (const text of ['unit · unit-api', 'Affected', 'GitHub Actions', 'GitHub Actions 1', 'Failed', '1 passed · 1 failed · 1 skipped', name, '2m 0s']) {
+      expect(row).toHaveTextContent(text)
+    }
+    await user.click(within(row).getByRole('button', { name: `Show tests of unit · unit-api requested by ${name}` }))
+    expect(within(dialog).getByRole('tab', { name: 'Tests' })).toHaveAttribute('aria-selected', 'true')
+    const tests = await within(dialog).findByRole('list', { name: 'Test results' })
+    expect(within(dialog).getByText(`Requested by ${name}`)).toBeVisible()
+    expect(tests).toHaveTextContent('save rejects a stale revision')
+    expect(tests).toHaveTextContent('expected 409 to be 200')
+    expect(tests).toHaveTextContent('save writes the record')
+    expect(tests).toHaveTextContent('later waits for a computer')
+    expect(requested).toEqual([null])
+
+    // Status chips filter through the same read the Operator uses (ci_get testStatus).
+    const filters = within(dialog).getByRole('group', { name: 'Show tests by status' })
+    await user.click(within(filters).getByRole('button', { name: 'Passed 1' }))
+    await user.click(within(filters).getByRole('button', { name: 'Skipped 1' }))
+    expect(within(filters).getByRole('button', { name: 'Failed 1' })).toHaveAttribute('aria-pressed', 'true')
+    await waitFor(() => expect(requested.at(-1)).toBe('failed'))
+    await waitFor(() => expect(within(dialog).getByRole('list', { name: 'Test results' })).not.toHaveTextContent('save writes the record'))
+    expect(within(dialog).getByRole('list', { name: 'Test results' })).toHaveTextContent('save rejects a stale revision')
+    expect(within(dialog).getByRole('list', { name: 'Test results' })).not.toHaveTextContent('later waits for a computer')
+
+    await user.click(within(dialog).getByRole('tab', { name: 'Log' }))
+    expect(await within(dialog).findByLabelText('Log tail')).toHaveTextContent('Tests 1 failed | 1 passed')
+    // The filter survives a visit to another tab.
+    await user.click(within(dialog).getByRole('tab', { name: 'Tests' }))
+    const kept = within(dialog).getByRole('group', { name: 'Show tests by status' })
+    expect(within(kept).getByRole('button', { name: 'Passed 1' })).toHaveAttribute('aria-pressed', 'false')
+    expect(within(kept).getByRole('button', { name: 'Skipped 1' })).toHaveAttribute('aria-pressed', 'false')
+    expect(await within(dialog).findByRole('list', { name: 'Test results' })).not.toHaveTextContent('save writes the record')
+    expect(requested.at(-1)).toBe('failed')
+    await user.click(within(dialog).getByRole('tab', { name: 'Log' }))
+    await within(dialog).findByLabelText('Log tail')
+    await user.click(within(dialog).getByRole('button', { name: 'Close CI server' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'CI server' })).not.toBeInTheDocument())
+    // Closed from the Log tab, the dialog reads no log, even when the job runs again.
+    const reads = logReads
+    jobs = [job('running')]
+    await refresh()
+    await serverNode(/^CI server, 1 running/)
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)) })
+    expect(logReads).toBe(reads)
+  }, 20_000)
+
+  it('keeps the CI server state but sends no lights under reduced motion', async () => {
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: query.includes('reduce'), media: query,
+      addEventListener() {}, removeEventListener() {} }))
+    const { scope, version } = fixture.runs.after
+    const agent = nativeNode(version.definition.nodes[0]!)
+    let jobs: unknown[] = []
+    server.use(http.get(`/api/management/workspaces/${scope.workspaceId}/ci`, () => HttpResponse.json({ runId: scope.runId, jobs, truncated: false })))
+    const { cache } = await mount(href(scope))
+    await within(pinnedCanvas()).findByRole('button', { name: /^CI server, Idle/ })
+    jobs = [{ ticketId: '00000000-0000-4000-8000-000000000031', scope: 'full', placement: 'host', message: null, tests: null,
+      requester: { executionId: 'exec-ci', agentId: agent.agentId, nodeId: agent.id, nodeName: 'Coder' },
+      ci: { id: '00000000-0000-4000-8000-000000000031', groupId: '00000000-0000-4000-8000-000000000032', suite: 'lint',
+        part: 'lint-api', partition: null, state: 'running', exitCode: null, queuedAt: '2026-10-01T00:00:00.000Z',
+        startedAt: '2026-10-01T00:00:01.000Z', finishedAt: null, step: 'lint-api',
+        computer: { hostRef: { kind: 'main', mainId: 'main-1' }, label: 'Main computer' } } }]
+    await act(async () => { await cache.refetchQueries({ queryKey: [...runInspectionQueryKey(scope), 'ci-jobs'] }) })
+    const node = (await within(pinnedCanvas()).findByRole('button', { name: /^CI server, 1 running/ })).closest('.n-agent')
+    expect(node).toHaveAttribute('data-state', 'running')
+    expect(pinnedCanvas().querySelector('.ci-transfer')).toBeNull()
   })
 })

@@ -48,6 +48,27 @@ export const CiDurationsSchema = z.record(z.string().min(1).max(300), z.number()
   .refine(value => Object.keys(value).length <= 1000, 'Give at most 1000 file durations.')
 export type CiDurations = z.infer<typeof CiDurationsSchema>
 
+/** Structured per-test results a finished test run reports with its measured durations. Bounded with the durations
+ * so one read reply stays far below the device channel's 1 MiB message limit: failed tests are kept first, then
+ * skipped, then passed; `summary` always counts every test. */
+export const CI_TEST_RESULT_LIMITS = { tests: 600, files: 300, name: 200, file: 200, message: 240 } as const
+export const CiTestStatusSchema = z.enum(['passed', 'failed', 'skipped'])
+export type CiTestStatus = z.infer<typeof CiTestStatusSchema>
+const CiTestDurationSchema = z.number().nonnegative().finite().max(24 * 3_600_000).nullable()
+export const CiTestCaseSchema = z.object({ name: z.string().min(1).max(CI_TEST_RESULT_LIMITS.name), status: CiTestStatusSchema,
+  durationMs: CiTestDurationSchema, message: z.string().max(CI_TEST_RESULT_LIMITS.message).optional() }).strict()
+export const CiTestFileSchema = z.object({ file: z.string().min(1).max(CI_TEST_RESULT_LIMITS.file), status: CiTestStatusSchema,
+  durationMs: CiTestDurationSchema, tests: z.array(CiTestCaseSchema).max(CI_TEST_RESULT_LIMITS.tests) }).strict()
+export const CiTestSummarySchema = z.object({ passed: z.number().int().nonnegative(), failed: z.number().int().nonnegative(),
+  skipped: z.number().int().nonnegative() }).strict()
+export const CiTestResultsSchema = z.object({ summary: CiTestSummarySchema,
+  files: z.array(CiTestFileSchema).max(CI_TEST_RESULT_LIMITS.files),
+  /** Some tests or files were left out to stay within the bounds. */
+  truncated: z.boolean() }).strict()
+  .refine(value => value.files.reduce((count, file) => count + file.tests.length, 0) <= CI_TEST_RESULT_LIMITS.tests,
+    `Give at most ${CI_TEST_RESULT_LIMITS.tests} tests.`)
+export type CiTestResults = z.infer<typeof CiTestResultsSchema>
+
 export const CiHostRunIdSchema = z.uuid()
 /** `durations` are Main's learned integration file durations; the commit's committed durations fill the gaps. */
 export const CiHostStartSchema = z.object({
@@ -61,9 +82,10 @@ export const CiHostStartSchema = z.object({
 export const CiHostRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('status') }).strict(),
   CiHostStartSchema,
-  // `durations: true` asks a finished test run for the file durations it measured.
+  // `durations: true` asks a finished test run for the file durations it measured, `testResults: true` for its
+  // test results. Results are opt-in so a Worker never sends them to a Main whose reply schema predates them.
   z.object({ operation: z.literal('read'), runId: CiHostRunIdSchema, afterOffset: z.number().int().nonnegative(),
-    maxBytes: z.number().int().min(1).max(65_536), durations: z.boolean().optional() }).strict(),
+    maxBytes: z.number().int().min(1).max(65_536), durations: z.boolean().optional(), testResults: z.boolean().optional() }).strict(),
   z.object({ operation: z.literal('cancel'), runId: CiHostRunIdSchema }).strict(),
 ])
 export type CiHostRequest = z.infer<typeof CiHostRequestSchema>
@@ -84,7 +106,7 @@ export const CiHostReplySchema = z.discriminatedUnion('operation', [
   CiHostStatusSchema,
   z.object({ operation: z.literal('start'), run: CiHostRunSchema }).strict(),
   z.object({ operation: z.literal('read'), run: CiHostRunSchema, text: z.string(), nextOffset: z.number().int().nonnegative(),
-    durations: CiDurationsSchema.optional() }).strict(),
+    durations: CiDurationsSchema.optional(), testResults: CiTestResultsSchema.optional() }).strict(),
   z.object({ operation: z.literal('cancel'), run: CiHostRunSchema }).strict(),
 ])
 export type CiHostReply = z.infer<typeof CiHostReplySchema>

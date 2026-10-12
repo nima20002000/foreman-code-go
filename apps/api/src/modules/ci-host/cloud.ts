@@ -2,8 +2,8 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir, hostname, userInfo } from 'node:os'
 import { join } from 'node:path'
 import type pg from 'pg'
-import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, WorkspaceSchema, integrationPartition,
-  type CiDurations, type CiHostReply, type CiHostRequest, type CiHostRun, type CiPartition, type CiSuite, type CiPart, type CiScope } from '@foreman-code/contracts'
+import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, CiTestResultsSchema, WorkspaceSchema, integrationPartition,
+  type CiDurations, type CiTestResults, type CiHostReply, type CiHostRequest, type CiHostRun, type CiPartition, type CiSuite, type CiPart, type CiScope } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { ensureClone, fetchRepositoryBranch, systemGitWorktreePorts, type GitWorktreePorts } from '../sources/gitWorktree.js'
@@ -19,7 +19,7 @@ const log = componentLogger('jobs')
 export interface CloudRun {
   runId: string; repository: string; mirror: string; commit: string; suite: CiSuite; startedAt: string
   providerRunId: string | null; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
-  message: string | null; durations?: CiDurations
+  message: string | null; durations?: CiDurations; testResults?: CiTestResults
   scope?: CiScope; files?: string[]; part?: CiPart; baseCommit?: string
   dispatch?: { input: CloudDispatchInput; attempts: number; at: string }
   workflowStarted?: boolean
@@ -95,7 +95,8 @@ export class CloudCi {
     const text = log.subarray(request.afterOffset, request.afterOffset + request.maxBytes)
     return CiHostReplySchema.parse({ operation: 'read', run: this.view(run, log.length), text: text.toString('utf8'),
       nextOffset: request.afterOffset + text.length,
-      ...(request.durations && run.durations ? { durations: run.durations } : {}) })
+      ...(request.durations && run.durations ? { durations: run.durations } : {}),
+      ...(request.testResults && run.testResults ? { testResults: run.testResults } : {}) })
   }
 
   /** Main's login for the service works; checked at most once a minute. */
@@ -382,7 +383,7 @@ export class CloudCi {
     }
   }
 
-  /** Follows the provider's run; once it finishes, keeps its log and measured durations. */
+  /** Follows the provider's run; once it finishes, keeps its log, measured durations and test results. */
   private async refresh(runId: string): Promise<CloudRun> {
     let run = await this.read(runId)
     if (!['starting', 'running'].includes(run.state)) return run
@@ -401,16 +402,21 @@ export class CloudCi {
     await writeFile(this.path(runId, 'log'), Buffer.from(await this.provider.log(run).catch(() => '')).subarray(-LOG_LIMIT),
       { flag: 'a', mode: 0o600 })
     let durations: CiDurations | undefined
-    if (run.suite === 'integration' || run.part === 'unit-api' || run.part === 'unit-web') {
-      const parsed = CiDurationsSchema.safeParse(await this.provider.durations(run, join(this.root, 'runs', runId, 'artifact'))
-        .catch(() => null))
-      if (parsed.success) durations = parsed.data
+    let testResults: CiTestResults | undefined
+    if (run.suite === 'integration' || run.suite === 'unit') {
+      const artifacts = await this.provider.artifacts(run, join(this.root, 'runs', runId, 'artifact')).catch(() => null)
+      const parsed = CiDurationsSchema.safeParse(artifacts?.durations)
+      if (parsed.success && (run.suite === 'integration' || run.part === 'unit-api' || run.part === 'unit-web')) {
+        durations = parsed.data
+      }
+      const tests = CiTestResultsSchema.safeParse(artifacts?.testResults)
+      if (tests.success) testResults = tests.data
     }
     const passed = status.conclusion === 'success'
     return this.save({ ...run, state: passed ? 'passed' : status.conclusion === 'cancelled' ? 'canceled' : 'failed',
       exitCode: passed ? 0 : 1, finishedAt: status.finishedAt,
       message: passed ? run.message : [run.message, `${this.provider.label}: ${status.conclusion}.`].filter(Boolean).join(' '),
-      ...(durations ? { durations } : {}) })
+      ...(durations ? { durations } : {}), ...(testResults ? { testResults } : {}) })
   }
 }
 

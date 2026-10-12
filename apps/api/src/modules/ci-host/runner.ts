@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { availableParallelism, homedir, totalmem } from 'node:os'
 import { join, matchesGlob } from 'node:path'
-import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, integrationPartition,
+import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, CiTestResultsSchema, integrationPartition,
   CiScopeSchema, CiSelectedFilesSchema, validCiSelection,
   type CiDurations, type CiHostReply, type CiHostRun, type CiSuite, type CiPart, type CiPartition, type CiScope } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
@@ -78,12 +78,15 @@ export class HostCiRunner {
         nextOffset = request.afterOffset + bytesRead
       } finally { await handle.close() }
     }
-    // A finished test run reports the file durations it measured, so Main can learn them.
-    const measured = request.durations && !['starting', 'running'].includes(run.state)
-      ? CiDurationsSchema.safeParse(await readFile(join(this.runDirectory(request.runId), 'measured-durations.json'), 'utf8')
-        .then(text => JSON.parse(text) as unknown).catch(() => null)) : null
+    // A finished test run reports the file durations and test results it measured, so Main can learn and show them.
+    const finished = !['starting', 'running'].includes(run.state)
+    const report = (name: string) => readFile(join(this.runDirectory(request.runId), name), 'utf8')
+      .then(text => JSON.parse(text) as unknown).catch(() => null)
+    const measured = request.durations && finished ? CiDurationsSchema.safeParse(await report('measured-durations.json')) : null
+    const tests = request.testResults && finished ? CiTestResultsSchema.safeParse(await report('test-results.json')) : null
     return CiHostReplySchema.parse({ operation: 'read', run, text, nextOffset,
-      ...(measured?.success ? { durations: measured.data } : {}) })
+      ...(measured?.success ? { durations: measured.data } : {}),
+      ...(tests?.success ? { testResults: tests.data } : {}) })
   }
 
   private runDirectory(runId: string) { return join(this.root, 'runs', runId) }
@@ -341,6 +344,7 @@ export class HostCiRunner {
       // The repository's integration runner uses them for per-file hang deadlines and reports what it measured.
       integrationEnvironment = ` FOREMAN_CODE_INTEGRATION_DURATIONS=${quote(join(run, 'expected-durations.json'))}`
         + ` FOREMAN_CODE_INTEGRATION_DURATIONS_OUTPUT=${quote(join(run, 'measured-durations.json'))}`
+        + ` FOREMAN_CODE_INTEGRATION_TEST_RESULTS_OUTPUT=${quote(join(run, 'test-results.json'))}`
       if (meta.partition || affected) {
         const tests = join(source, 'apps/api/test')
         const files = existsSync(tests) ? (await readdir(tests)).filter(file => file.endsWith('.integration.test.ts'))
@@ -359,7 +363,9 @@ export class HostCiRunner {
       // The repository's own integration runner sizes its shards to this computer.
       // Compiled test modules outlive the run's worktree, so the next run on this computer starts warm.
       `export TMPDIR=${quote(join(run, 'tmp'))} CI=true NODE_OPTIONS=--max-old-space-size=6144`
+        // The repository's suite hook writes structured test results here; integration has its own setting.
         + (capabilities.parts ? ` CI_HOST_RUNNER=1 FOREMAN_CODE_CI_DEDICATED=1`
+          + (meta.suite === 'integration' ? '' : ` TEST_RESULTS_OUTPUT=${quote(join(run, 'test-results.json'))}`)
           + ` FOREMAN_CODE_VITEST_CACHE=${quote(join(this.root, 'vitest-cache'))}` : '') + integrationEnvironment,
       'mkdir -p "$TMPDIR"',
       `finish() { echo "$1" > ${quote(join(run, 'exit.tmp'))};`

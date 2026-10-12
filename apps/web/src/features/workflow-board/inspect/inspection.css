@@ -46,3 +46,33 @@
   .run-live-now[data-working] > i { animation: run-live-pulse 1.6s ease-in-out infinite; }
 }
 @keyframes run-live-pulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 0%, transparent); } }
+
+/* CI server: a presentation-only Board component beside the Agents, with its jobs, tests and log in a dialog. */
+.react-flow__edge-ciTransfer { pointer-events: none; }
+.ci-server-dialog .n-dialog-body { display: grid; gap: var(--space-3); min-width: 0; }
+.ci-jobs-table td { vertical-align: top; }
+.ci-jobs-table td small { display: block; color: var(--text-muted); font: var(--type-caption); margin-top: 2px; }
+.ci-jobs-table tr[aria-selected='true'] td { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.ci-job-open { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; font-weight: 600; text-align: start; cursor: pointer; overflow-wrap: anywhere; }
+.ci-job-open:hover { text-decoration: underline; }
+.ci-job-open:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+.ci-server-note { margin: 0; color: var(--text-muted); font: var(--type-caption); }
+.ci-server-job { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); margin: 0; color: var(--text-muted); font: var(--type-caption); }
+.ci-server-job strong { color: var(--text); font: var(--type-control); }
+.ci-server-tests, .ci-server-log { display: grid; gap: var(--space-3); min-width: 0; }
+.ci-test-filters { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.ci-test-filters .n-button[aria-pressed='false'] { color: var(--text-muted); text-decoration: line-through; }
+.ci-test-files, .ci-test-files ul { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; min-width: 0; }
+.ci-test-files > li { display: grid; gap: var(--space-2); padding: var(--space-2) var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-raised); }
+.ci-test-files > li[data-status='failed'] { border-color: var(--danger-border); }
+.ci-test-file { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); min-width: 0; }
+.ci-test-file code { flex: 1 1 240px; min-width: 0; overflow-wrap: anywhere; font-size: 12px; }
+.ci-test-file > span:last-child, .ci-test-files ul li > span:not(.ci-test-name) { color: var(--text-muted); font: var(--type-caption); }
+.ci-test-files ul { padding-inline-start: var(--space-3); }
+.ci-test-files ul li { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); min-width: 0; font: var(--type-caption); }
+.ci-test-name { flex: 1 1 240px; min-width: 0; color: var(--text); overflow-wrap: anywhere; }
+.ci-test-message, .ci-log { margin: 0; max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); font-family: var(--font-mono, monospace); font-size: 12px; }
+.ci-test-message { flex-basis: 100%; color: var(--danger); }
+.ci-log { max-height: 420px; }
+.ci-log:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }

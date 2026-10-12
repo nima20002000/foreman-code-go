@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process'
-import { lstatSync, readFileSync } from 'node:fs'
-import { posix } from 'node:path'
+import { lstatSync, readFileSync, rmSync } from 'node:fs'
+import { posix, resolve } from 'node:path'
 import { repositoryFileList, selectByIndexes } from './ci-files.mjs'
+import { writeCiTestResults } from './ci-test-results.mjs'
 
 const projects = ['packages/contracts', 'apps/api', 'apps/web', 'apps/worker']
 
@@ -49,6 +50,7 @@ async function run(command) {
   delete environment.DEFAULT_BRANCH
   delete environment.CI_PARTITION
   delete environment.CI_DURATIONS
+  delete environment.TEST_RESULTS_OUTPUT
   const child = spawn(command[0], command.slice(1), { stdio: 'inherit', env: environment })
   return new Promise((resolve, reject) => {
     child.once('error', reject)
@@ -70,10 +72,21 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const code = await run(['corepack', 'pnpm', '--filter', '@foreman-code/contracts', 'build'])
     if (code) process.exit(code)
   }
+  // With TEST_RESULTS_OUTPUT, each Vitest command also writes a JSON report; together they become the results.
+  const output = suite === 'unit' && process.env.TEST_RESULTS_OUTPUT ? resolve(process.env.TEST_RESULTS_OUTPUT) : null
+  const reports = []
   for (const command of commands) {
-    const wrapped = suite === 'unit' ? [process.execPath, 'scripts/test-command.mjs', '--', ...command] : command
+    const report = output && command.includes('vitest') ? `${output}.${reports.length}.vitest.json` : null
+    if (report) reports.push(report)
+    const reported = report ? [...command, '--reporter=default', '--reporter=json', `--outputFile.json=${report}`] : command
+    const wrapped = suite === 'unit' ? [process.execPath, 'scripts/test-command.mjs', '--', ...reported] : reported
     const code = await run(wrapped)
     if (code) { process.exitCode = code; break }
+  }
+  if (output && reports.length) {
+    try { writeCiTestResults(output, reports) }
+    catch (error) { console.error(`Test results were not recorded: ${error.message}`) }
+    for (const report of reports) rmSync(report, { force: true })
   }
   if (!commands.length) console.log('No affected files for this suite.')
 }

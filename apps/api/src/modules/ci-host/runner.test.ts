@@ -44,7 +44,7 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
   await writeFile(join(origin, 'apps/web/heavy-tests.json'), JSON.stringify({ files: [] }))
   await writeFile(join(origin, 'scripts/ci-unit-files.mjs'),
     await readFile(new URL('../../../../../scripts/ci-unit-files.mjs', import.meta.url), 'utf8'))
-  for (const file of ['ci-affected-run.mjs', 'ci-files.mjs', 'ci-suite.sh']) {
+  for (const file of ['ci-affected-run.mjs', 'ci-files.mjs', 'ci-suite.sh', 'ci-test-results.mjs']) {
     await writeFile(join(origin, 'scripts', file), await readFile(new URL(`../../../../../scripts/${file}`, import.meta.url), 'utf8'))
   }
   await writeFile(join(origin, 'scripts/test-command.mjs'),
@@ -85,7 +85,8 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
   const unitReport = `${process.execPath} -e 'const fs = require("node:fs"); const path = require("node:path");
     const args = process.argv.slice(1); const output = args.find(arg => arg.startsWith("--outputFile.json="));
     if (output) fs.writeFileSync(output.slice("--outputFile.json=".length), JSON.stringify({ testResults:
-      args.filter(arg => /\\.test\\.tsx?$/.test(arg)).map(file => ({ name: path.resolve(file), status: "passed", startTime: 1, endTime: 6 })) }));' "$@"\n`
+      args.filter(arg => /\\.test\\.tsx?$/.test(arg)).map(file => ({ name: path.resolve(args[1] === "--dir" ? args[2] : ".", file), status: "passed", startTime: 1, endTime: 6,
+      assertionResults: [{ fullName: path.basename(file) + " works", status: "passed", duration: 4 }] })) }));' "$@"\n`
   await writeFile(join(bin, 'corepack'), `#!/bin/bash\necho "corepack $*"\n${integration}${unitReport}`
     + `if [ "$2" = db:up ]; then code=${options.databaseExit ?? 0};`
     + ' if [ "$code" = 0 ]; then touch "$TMPDIR/database-ready"; fi; exit "$code"; fi\n'
@@ -304,6 +305,22 @@ describe('host CI runner', () => {
     const project = part === 'unit-api' ? 'apps/api/test' : 'apps/web/src'
     const extension = part === 'unit-api' ? 'ts' : 'tsx'
     expect(measured.sort()).toEqual([`${project}/first.test.${extension}`, `${project}/second.test.${extension}`])
+  })
+
+  it.each([['full part', {}], ['affected selection', { scope: 'affected' as const,
+    files: ['apps/api/test/first.test.ts', 'apps/api/test/second.test.ts'] }]])('reports structured test results of a unit-api %s', async (_kind, selection) => {
+    const f = await computer()
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+      suite: 'unit', part: 'unit-api', ...selection })
+    expect((await f.settle(runId)).run).toMatchObject({ state: 'passed', step: 'unit-api' })
+    const result = await f.runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1, testResults: true })
+    expect(result.operation === 'read' && result.testResults).toEqual({ summary: { passed: 2, failed: 0, skipped: 0 },
+      truncated: false, files: ['first', 'second'].map(name => ({ file: `apps/api/test/${name}.test.ts`, status: 'passed',
+        durationMs: 5, tests: [{ name: `${name}.test.ts works`, status: 'passed', durationMs: 4 }] })) })
+    // A Main from before test results asks only for durations and gets the reply shape it knows.
+    const durations = await f.runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1, durations: true })
+    expect(durations.operation === 'read' && 'testResults' in durations).toBe(false)
   })
 
   it('preserves a failing unit part exit code after collecting its durations', async () => {

@@ -49,6 +49,7 @@ jobs:
       CI_PARTITION: << pipeline.parameters.partition >>
       CI_DURATIONS: << pipeline.parameters.durations >>
       DURATIONS_OUTPUT: /tmp/ci-durations/durations.json
+      TEST_RESULTS_OUTPUT: /tmp/ci-durations/test-results.json
     steps:
       - checkout
       - run:

@@ -19,7 +19,7 @@ it('runs only affected integration files and balances partitions within that sel
     await mkdir(join(origin, 'scripts'))
     await writeFile(join(origin, 'scripts/ci-suite.sh'),
       await readFile(new URL('../../../../../scripts/ci-suite.sh', import.meta.url), 'utf8'))
-    for (const file of ['ci-files.mjs', 'ci-affected-run.mjs']) {
+    for (const file of ['ci-files.mjs', 'ci-affected-run.mjs', 'ci-test-results.mjs']) {
       await writeFile(join(origin, 'scripts', file),
         await readFile(new URL(`../../../../../scripts/${file}`, import.meta.url), 'utf8'))
     }
