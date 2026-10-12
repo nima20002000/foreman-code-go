@@ -51,10 +51,48 @@ function fixture() {
     computers: vi.fn(async () => [computer]),
     request: vi.fn(async () => { throw new Error('Build computer unavailable') }),
   }
-  const create = () => new HostCiService(pool, new PostgresCommandCoordinator(pool), authority,
+  const commands = new PostgresCommandCoordinator(pool)
+  const create = () => new HostCiService(pool, commands, authority,
     {} as CiCommits, endpoint)
-  return { create, pool, endpoint, resolve, read: () => ({ record, logTail }) }
+  return { create, pool, commands, endpoint, resolve, read: () => ({ record, logTail }) }
 }
+
+it('refreshes submitted CI in the background without status reads and stops on close', async () => {
+  vi.useFakeTimers()
+  const f = fixture()
+  const ci = f.create()
+  vi.spyOn(f.commands, 'execute').mockResolvedValue({ value: { ticketId: f.read().record.id }, replayed: false })
+  let finished = false
+  vi.mocked(f.endpoint.request).mockImplementation(async (_computer, request) => {
+    if (request.operation !== 'read') throw new Error('Unexpected request')
+    const record = f.read().record
+    const run: CiHostRun = {
+      runId: record.id, state: finished ? 'failed' : 'running', step: 'lint',
+      exitCode: finished ? 1 : null, startedAt: record.startedAt!,
+      finishedAt: finished ? new Date().toISOString() : null, logBytes: 0, message: null,
+    }
+    return { operation: 'read', run, text: '', nextOffset: 0 }
+  })
+  try {
+    await ci.run(caller, { workspaceId: 'workspace', suite: 'lint', commandId: 'background' })
+    await ci.dispatch()
+    expect(f.read().record.state).toBe('running')
+    finished = true
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(f.read().record.state).toBe('failed')
+    vi.mocked(f.endpoint.request).mockClear()
+    expect((await ci.get(caller, { workspaceId: 'workspace', ticketId: f.read().record.id })).run.state).toBe('failed')
+    expect(f.endpoint.request).not.toHaveBeenCalled()
+    await ci.close()
+    vi.mocked(f.endpoint.computers).mockClear()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(f.endpoint.computers).not.toHaveBeenCalled()
+  } finally {
+    await ci.close()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  }
+})
 
 it('serves authenticated MCP polling from persisted data while fleet dispatch is blocked', async () => {
   const f = fixture()

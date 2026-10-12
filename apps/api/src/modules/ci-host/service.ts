@@ -113,6 +113,7 @@ export class HostCiService {
         return { ticketId: runs[0]!.id, ...(runs.length > 1 ? { partitions: runs.map(run => ({ ticketId: run.id })) } : {}) }
       },
     })
+    this.start()
     void this.dispatch()
     return outcome.value
   }
