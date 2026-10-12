@@ -6,7 +6,8 @@ import { harnessNames } from './settingsPresentation'
 import { useHostHarnessRegistryQuery } from '../../shared/api/computerSettings'
 import { useRuntimeIdentityQuery } from '../../shared/api/runtimeIdentity'
 import { useNavigationUiStore } from '../workspaces/navigationUiStore'
-import { SidebarHoverCardHeader, useSidebarHoverCard } from '../../shared/ui/SidebarHoverCard'
+import { SidebarHoverCardHeader } from '../../shared/ui/SidebarHoverCardHeader'
+import { useSidebarHoverCard } from '../../shared/ui/useSidebarHoverCard'
 import './harnessStatusMenu.css'
 
 function installationStatus(installation: HostHarnessInstallationDto | undefined,
