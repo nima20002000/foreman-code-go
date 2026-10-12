@@ -916,7 +916,7 @@ it('uses every cloud slot for ordinary integration files and persists throughput
   const f = await fixture({ cloud: { github: 4, circleci: 4 } })
   f.computers.splice(0, 2)
   const files = [
-    ...Array.from({ length: 64 }, (_, index) => `apps/api/test/ordinary-${index}.integration.test.ts`),
+    ...Array.from({ length: 256 }, (_, index) => `apps/api/test/ordinary-${index}.integration.test.ts`),
     'apps/api/test/remote-review-production-main-crash.integration.test.ts',
     'apps/api/test/workflow-systemd-restart.integration.test.ts',
   ]
