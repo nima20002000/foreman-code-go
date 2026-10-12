@@ -1,3 +1,4 @@
+import { retryDatabaseTimeout } from '../../infrastructure/databaseTimeout.js'
 import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import { runtimeTimingPoint, timeRuntimeOperation, withRuntimeTimingContext } from '../../infrastructure/runtimeTiming.js'
 import { inspectNativeResponse } from '../harnesses/responseAvailability.js'
@@ -1867,18 +1868,24 @@ export class ApprovalExecutionCoordinator {
     ensured: { execution: HarnessExecution; created: boolean }, repeat: RepeatNativeObservationStore): Promise<ApprovalExecutionObservation> {
     const credentialFailure = new AbortController()
     let signal = AbortSignal.any([input.signal, credentialFailure.signal])
+    const bookkeeping = <T>(work: () => Promise<T>) => retryDatabaseTimeout(work, {
+      signal, check: () => input.owner.assertOwned(),
+    })
     let stopRenewal: (() => Promise<void>) | undefined
     signal.throwIfAborted()
     assertNativeWorkflowConfiguration(input.request.configuration.harness, input.approval,
       input.approval?.handler === 'orchestrator'
         && input.request.configuration.agentId === input.approval.designatedOrchestratorAgentId)
     let execution = ensured.execution
+    const validateContinuation = () => bookkeeping(async () => {
+      await this.validateContinuation?.(execution.id, signal)
+    })
     let repeatLaunch = false
     let nativeTurnOffered = false
     const assertBoundary = async () => {
       signal.throwIfAborted()
       input.owner.assertOwned()
-      await repeat.assertNativeBoundary(execution.id)
+      await bookkeeping(() => repeat.assertNativeBoundary(execution.id))
       signal.throwIfAborted()
       input.owner.assertOwned()
     }
@@ -1940,12 +1947,13 @@ export class ApprovalExecutionCoordinator {
         await this.finishRepeatExecution(execution, repeat, input.owner, signal)
         return { state: 'completed', execution, result: execution.result }
       }
-      await this.budgets.ensure(execution.id, input.graphThreadId, input.agentActiveTimeoutMs ?? this.activeTimeoutMs)
-      await this.budgets.resume(execution.id)
+      await bookkeeping(() => this.budgets.ensure(
+        execution.id, input.graphThreadId, input.agentActiveTimeoutMs ?? this.activeTimeoutMs))
+      await bookkeeping(() => this.budgets.resume(execution.id))
       const budgetStarted = performance.now()
       // An exhausted budget found on recovery takes the same deadline path as a
       // live timeout: abort, close the exact session and settle negatively.
-      const remainingMs = await this.budgets.remaining(execution.id).catch((error: unknown) => {
+      const remainingMs = await bookkeeping(() => this.budgets.remaining(execution.id)).catch((error: unknown) => {
         if (error instanceof DomainError && error.code === 'EXECUTION_ACTIVE_TIMEOUT') return 0
         throw error
       })
@@ -1956,21 +1964,25 @@ export class ApprovalExecutionCoordinator {
       signal = AbortSignal.any([signal, deadline.signal])
       // Read the durable reference before resolving a manager: a repository
       // failure must not evict a resident session still needed by run cleanup.
-      const existing = execution.nativeSessionId ? await this.interactions.getForExecution(execution.id) : undefined
+      const existing = execution.nativeSessionId
+        ? await bookkeeping(() => this.interactions.getForExecution(execution.id)) : undefined
       const request = HarnessExecutionRequestSchema.parse({
         ...input.request, executionId: execution.id, runId: execution.runId,
         workflowNodeId: execution.workflowNodeId, workingDirectory: execution.workingDirectory,
         runtimeDirectory: execution.runtimeDirectory, systemPrompt: execution.systemPrompt, input: execution.input,
       })
       if (request.systemPrompt === undefined) delete request.systemPrompt
-      context = { ...await this.managerContext(execution, input.request.configuration), workflowRequest: request }
-      await this.validateContinuation?.(execution.id, signal)
+      context = {
+        ...await bookkeeping(() => this.managerContext(execution, input.request.configuration)),
+        workflowRequest: request,
+      }
+      await validateContinuation()
       {
-        await repeat.assertExecutionAdmission(execution.id)
+        await bookkeeping(() => repeat.assertExecutionAdmission(execution.id))
         // Resolving this manager constructs an object only. Native preflight
         // is fenced below, AFTER its durable lifetime registration commits.
         if (execution.nativeSessionId) {
-          session = await repeat.exactSession(execution.id)
+          session = await bookkeeping(() => repeat.exactSession(execution.id))
           if (session.harness !== context.harness || session.nativeSessionId !== execution.nativeSessionId) {
             throw new DomainError('NATIVE_SESSION_IDENTITY_MISMATCH', 'Recovery changed the captured native session.', 409)
           }
@@ -2012,13 +2024,13 @@ export class ApprovalExecutionCoordinator {
         signal.throwIfAborted()
         input.owner.assertOwned()
         const pendingExecution = HarnessExecutionSchema.parse({ ...execution, state: 'waiting' })
-        await this.runs.updateExecution(pendingExecution, input.owner, originalHistory)
-        execution = (await repeat.readExecution(pendingExecution.id)).execution
+        await bookkeeping(() => this.runs.updateExecution(pendingExecution, input.owner, originalHistory))
+        execution = (await bookkeeping(() => repeat.readExecution(pendingExecution.id))).execution
         ownedSession!.execution = execution
         const waiting: DurableInteraction[] = []
         for (const pending of history.pendingInteractions) {
-          const interaction = await this.interactions.getNativeRequest(execution.id, session!.harness,
-            session!.nativeSessionId, pending.turn.nativeRequestId!)
+          const interaction = await bookkeeping(() => this.interactions.getNativeRequest(execution.id, session!.harness,
+            session!.nativeSessionId, pending.turn.nativeRequestId!))
           if (!interaction) throw new DomainError('APPROVAL_ORIGINAL_SOURCE_REQUIRED',
             'The owned native request publication did not commit.', 409)
           if (interaction.deliveryState !== 'delivered') waiting.push(interaction)
@@ -2040,7 +2052,7 @@ export class ApprovalExecutionCoordinator {
               'No exact committed launch permit exists. Native work was not started.', 409)
           } }))
         startCredentialMaintenance()
-        await this.validateContinuation?.(execution.id, signal)
+        await validateContinuation()
         signal.throwIfAborted()
         input.owner.assertOwned()
         await assertBoundary()
@@ -2052,9 +2064,9 @@ export class ApprovalExecutionCoordinator {
           resolved!.markResident?.()
           const createdEvidence = this.captureNative(input.owner, execution, { type: 'session_created', session: observed }, 'live', setupLane ?? manager!.capturedLease(observed))
           execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: observed.nativeSessionId, state: 'running' })
-          await this.runs.updateExecution(execution, input.owner, createdEvidence)
+          await bookkeeping(() => this.runs.updateExecution(execution, input.owner, createdEvidence))
           ownedSession!.execution = execution
-          await this.validateContinuation?.(execution.id, signal)
+          await validateContinuation()
           signal.throwIfAborted()
           input.owner.assertOwned()
           await assertBoundary()
@@ -2099,7 +2111,7 @@ export class ApprovalExecutionCoordinator {
           }
           for await (const events of nativeEvents) {
             signal.throwIfAborted()
-            await this.budgets.assertActive(execution.id)
+            await bookkeeping(() => this.budgets.assertActive(execution.id))
             const lease = manager.currentProjectionLease(session!)
             const frames = events.map((event) => {
               const original = safeValue({ ...event, executionId: execution.id })
@@ -2107,7 +2119,7 @@ export class ApprovalExecutionCoordinator {
                 { type: 'event', event: original }, 'live', manager!.capturedLease(session!)) }
             })
             await timeRuntimeOperation('engine', 'native.persist_batch',
-              () => this.runs.appendNativeEvents(frames, input.owner, lease), { count: frames.length })
+              () => bookkeeping(() => this.runs.appendNativeEvents(frames, input.owner, lease)), { count: frames.length })
             const history = await manager.history(session!, signal)
             const waiting = await observePending(history, events.at(-1), lease)
             if (waiting) return waiting
@@ -2122,7 +2134,7 @@ export class ApprovalExecutionCoordinator {
         if (existing) this.assertSessionIdentity(session, existing)
         const environment = await this.prepareEnvironment(context, resolved, { signal })
         startCredentialMaintenance()
-        await this.validateContinuation?.(execution.id, signal)
+        await validateContinuation()
         signal.throwIfAborted()
         input.owner.assertOwned()
         await assertBoundary()
@@ -2144,7 +2156,7 @@ export class ApprovalExecutionCoordinator {
         for (;;) {
           lane.guard.signal.throwIfAborted()
           input.owner.assertOwned()
-          await this.budgets.assertActive(execution.id)
+          await bookkeeping(() => this.budgets.assertActive(execution.id))
           const observed = await timeRuntimeOperation('harness', 'native.reconcile',
             () => nativeManager.reconcile(session!, `execution:${execution.id}`, lane.guard.signal))
           const messageReceipt = observed.nativeSubmission
@@ -2162,9 +2174,9 @@ export class ApprovalExecutionCoordinator {
             lane.providerId = providerId
           }
           if (lane.providerId) {
-            await this.interactions.coordination.acknowledgeLaneTurn(
-              lane.fence, `execution:${execution.id}`, lane.providerId,
-            )
+            await bookkeeping(() => this.interactions.coordination.acknowledgeLaneTurn(
+              lane.fence, `execution:${execution.id}`, lane.providerId!,
+            ))
           }
           const lease = { ...lane.fence, ...(lane.providerId ? { providerId: lane.providerId } : {}), live: false as const }
           const captured = this.captureNative(input.owner, execution,
@@ -2178,17 +2190,19 @@ export class ApprovalExecutionCoordinator {
             await stopRenewal?.()
             signal.throwIfAborted()
             await timeRuntimeOperation('engine', 'execution.accept_terminal',
-              () => this.runs.updateExecution(completed, input.owner, captured))
+              () => bookkeeping(() => this.runs.updateExecution(completed, input.owner, captured)))
             // Read the first-terminal normalizer's immutable result, not a local
             // copy of unvalidated provider output. The original remains private.
-            execution = (await repeat.readExecution(execution.id)).execution
+            execution = (await bookkeeping(() => repeat.readExecution(execution.id))).execution
             ownedSession!.execution = execution
           } else {
             for (const event of observed.events) {
               await lane.guard.check()
               const originalEvent = safeValue({ ...event, executionId: execution.id })
-              await this.runs.appendNativeEvent(originalEvent, input.owner, lease, undefined, undefined,
-                this.captureNative(input.owner, execution, { type: 'event', event: originalEvent }, 'recovery', lane))
+              const original = this.captureNative(input.owner, execution,
+                { type: 'event', event: originalEvent }, 'recovery', lane)
+              await bookkeeping(() => this.runs.appendNativeEvent(originalEvent, input.owner, lease,
+                undefined, undefined, original))
             }
           }
           if (exactTerminal) return { waiting: undefined }
@@ -2199,7 +2213,7 @@ export class ApprovalExecutionCoordinator {
       })
       const { waiting } = observed
       if (waiting) return waiting
-      execution = (await repeat.readExecution(execution.id)).execution
+      execution = (await bookkeeping(() => repeat.readExecution(execution.id))).execution
       assertSameRepeatExecution(ensured.execution, execution)
       if (execution.state !== 'completed' || !execution.result || !execution.finishedAt) throw new DomainError(
         'REPEAT_BOUNDARY_PENDING', 'The exact original native terminal has not committed.', 409)
@@ -2257,7 +2271,7 @@ export class ApprovalExecutionCoordinator {
       if ((resolved && !manager) || isLeaseLost(rawError)
         || (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY')) throw error
       if (sessionWithoutTurn) {
-        const stored = (await repeat.readExecution(execution.id)).execution
+        const stored = (await bookkeeping(() => repeat.readExecution(execution.id))).execution
         assertSameRepeatExecution(ensured.execution, stored)
         ownedSession!.execution = stored
       }

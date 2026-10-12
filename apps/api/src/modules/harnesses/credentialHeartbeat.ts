@@ -1,7 +1,9 @@
+import { isDatabaseTimeout } from '../../infrastructure/databaseTimeout.js'
 import { WORKER_CREDENTIAL_EXPIRY_MARGIN_MS, WORKER_CREDENTIAL_RENEWAL_WINDOW_MS } from '../access/workerCredentials.js'
 import { DomainError } from '../errors.js'
 
 function isTransientRefreshFailure(error: unknown): boolean {
+  if (isDatabaseTimeout(error)) return true
   if (error instanceof DomainError) return error.status === 503 && error.details?.retryable === true
   if (!error || typeof error !== 'object') return false
   const code = 'code' in error ? error.code : undefined
