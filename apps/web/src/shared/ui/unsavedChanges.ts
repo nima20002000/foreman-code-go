@@ -23,6 +23,8 @@ export const UnsavedChangesContext = createContext<{
   changed(): void
   register(id: string, editor: EditorRegistration): () => void
   request(ids?: string[]): Promise<boolean>
+  /** True while any editor holds unsaved, busy, or unconfirmed changes; never prompts. */
+  unsaved?(): boolean
 } | null>(null)
 
 /** Register the existing draft, never copy it into the navigation guard. */

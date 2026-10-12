@@ -11,16 +11,9 @@ export function RuntimeInstanceBoundary({ children }: { children: ReactNode }) {
   const installationId = useRuntimeInstallationId()
   const current = installationId ? `installation:${installationId}` : undefined
   const [accepted, setAccepted] = useState<string>()
-  // Keep the release that this document first connected to, separately from installation ownership.
-  const [documentCheckoutId, setDocumentCheckoutId] = useState<string>()
   const [storageFailed, setStorageFailed] = useState(false)
-  const unsavedChanges = useContext(UnsavedChangesContext)
   const reloading = useRef(false)
   const reconnecting = identity.failureCount > 0 && !identity.isError
-  const checkoutId = identity.data?.checkoutId
-  useEffect(() => {
-    if (!identity.isError && checkoutId) setDocumentCheckoutId((initial) => initial ?? checkoutId)
-  }, [checkoutId, identity.isError])
   useEffect(() => {
     if (!current || identity.isError || reloading.current || storageFailed) return
     try {
@@ -42,14 +35,32 @@ export function RuntimeInstanceBoundary({ children }: { children: ReactNode }) {
     </main>
   }
   return <>
-    {documentCheckoutId && checkoutId !== documentCheckoutId
-      ? <div className="runtime-reconnecting runtime-update" role="alert">
-        <span>The app was updated. Reload to use Operator chat and the latest settings. Your edits are kept until you reload.</span>
-        <Button size="sm" onClick={async () => {
-          if (!unsavedChanges || await unsavedChanges.request()) window.location.reload()
-        }}>Reload app</Button>
-      </div>
-      : reconnecting && <div className="runtime-reconnecting" role="status">Reconnecting…</div>}
+    {reconnecting && <div className="runtime-reconnecting" role="status">Reconnecting…</div>}
     {children}
   </>
+}
+
+/** After a release, reload silently once no editor holds unsaved or pending changes. */
+export function ReleaseAutoReload() {
+  const identity = useRuntimeIdentityQuery()
+  const unsavedChanges = useContext(UnsavedChangesContext)
+  // Keep the release that this document first connected to, separately from installation ownership.
+  const [documentCheckoutId, setDocumentCheckoutId] = useState<string>()
+  const checkoutId = identity.isError ? undefined : identity.data?.checkoutId
+  useEffect(() => {
+    if (checkoutId) setDocumentCheckoutId((initial) => initial ?? checkoutId)
+  }, [checkoutId])
+  const updated = Boolean(documentCheckoutId && checkoutId && checkoutId !== documentCheckoutId)
+  useEffect(() => {
+    if (!updated) return
+    const reloadWhenClean = () => {
+      if (unsavedChanges?.unsaved?.()) return false
+      window.location.reload()
+      return true
+    }
+    if (reloadWhenClean()) return
+    const timer = window.setInterval(() => { if (reloadWhenClean()) window.clearInterval(timer) }, 5_000)
+    return () => window.clearInterval(timer)
+  }, [updated, unsavedChanges])
+  return null
 }

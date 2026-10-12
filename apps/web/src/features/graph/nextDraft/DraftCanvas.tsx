@@ -21,6 +21,8 @@ import { WorkConnectionLimitEditor } from './WorkConnectionLimitEditor'
 import type { EditGraph } from './AuthoringFields'
 import { useWorkflowBoard } from '../../workflow-board/context'
 import { SelectedRunCanvas } from '../../workflow-board/inspect/SelectedRunCanvas'
+import { CiServerDialog, CiServerNode, type CiServerFlowNode } from '../../workflow-board/inspect/CiServer'
+import { CI_SERVER_NODE_ID, ciServerFlowNode, ciServerSummary } from '../../workflow-board/inspect/ciServer'
 import '@xyflow/react/dist/style.css'
 
 export type OpenAgentPanel = { nodeId: string; panel: AgentPanel }
@@ -120,7 +122,8 @@ const DraftJob=memo(function DraftJob({id,data,selected}:NodeProps<JobGraphNode>
 ><AgentHandles name={data.label}/></AgentNodeView>
     {panel?<Dialog open className="job-dialog" title={data.label} description="Noninteractive job" onOpenChange={value=>{if(!value)inspect(()=>setOpen(undefined))}}>{panels(id).info}{panels(id).settings}</Dialog>:null}</>
 })
-const nodeTypes = { agent: DraftAgent, job: DraftJob }, edgeTypes = { typed: TypedEdge }
+const nodeTypes = { agent: DraftAgent, job: DraftJob, ciServer: CiServerNode }, edgeTypes = { typed: TypedEdge }
+const idleCiServer = ciServerSummary([])
 const fitViewOptions = RESPONSIVE_FIT_OPTIONS
 const proOptions = { hideAttribution: true }
 export type DraftCanvasHandle = { flush(): void; cancel(): void }
@@ -139,12 +142,16 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
   change, geometry, pending, report, inspect = (action) => action(), removalDisabled = false,
   open, setOpen = () => undefined, panels = () => ({ chat: null, settings: null, info: null }), children }, ref) {
   const selectedRun = useWorkflowBoard()?.run
-  const responsive = useResponsiveGraphViewport<GraphNode, DraftEdge>({ enabled: !selectedRun })
+  const responsive = useResponsiveGraphViewport<GraphNode | CiServerFlowNode, DraftEdge>({ enabled: !selectedRun })
   const [project] = useState(() => createGraphTopologyProjector())
   const topology = useMemo(() => project(graph, agents), [project, graph, agents])
   const [adapter] = useState(() => createGraphGeometryAdapter(topology.nodes))
   const [nodes, setNodes] = useState(topology.nodes)
   const [connecting, setConnecting] = useState(false)
+  const [ciOpen, setCiOpen] = useState(false)
+  // Every Board shows the CI server automatically; it is never a workflow node and cannot be added by hand.
+  const ciServer = useMemo(() => ciServerFlowNode(nodes, idleCiServer, () => setCiOpen(true)), [nodes])
+  const flowNodes = useMemo<(GraphNode | CiServerFlowNode)[]>(() => ciServer ? [...nodes, ciServer] : nodes, [nodes, ciServer])
   const connectionSource = useRef<string | undefined>(undefined)
   const selectedIds = useGraphPresentation((state) => state.selectedNodeIds)
   const presentation = useGraphPresentationStore()
@@ -189,7 +196,8 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
           } } }
     })
   }, [graph, baseGraph, semanticLocked, change, report, removalDisabled])
-  const onNodesChange = (changes: NodeChange<GraphNode>[]) => {
+  const onNodesChange = (allChanges: NodeChange<GraphNode | CiServerFlowNode>[]) => {
+    const changes = allChanges.filter((item): item is NodeChange<GraphNode> => !('id' in item) || item.id !== CI_SERVER_NODE_ID)
     const nextSelection = new Set(presentation.getState().selectedNodeIds)
     for (const item of changes) if (item.type === 'select') {
       if (item.selected) nextSelection.add(item.id); else nextSelection.delete(item.id)
@@ -227,14 +235,14 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
     <div ref={responsive.containerRef} className={`next-draft-canvas board-draft-canvas${connecting ? ' is-connecting' : ''}`} style={selectedRun ? { display: 'none' } : undefined} aria-hidden={!!selectedRun} inert={!!selectedRun} aria-label="Editable workflow graph">
       {/* While a Run is shown, the draft's data stays mounted but its flow does not: a hidden
           flow measures a zero-size box and would come back empty on Return to draft. */}
-      {selectedRun ? null : <ReactFlow<GraphNode, DraftEdge> nodes={nodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+      {selectedRun ? null : <ReactFlow<GraphNode | CiServerFlowNode, DraftEdge> nodes={flowNodes} edges={edges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         onNodesChange={onNodesChange} connectionMode={ConnectionMode.Loose} connectionRadius={120} deleteKeyCode={null}
         fitView fitViewOptions={fitViewOptions} proOptions={proOptions} minZoom={RESPONSIVE_MIN_ZOOM} maxZoom={1.6} onInit={responsive.onInit}
         onMove={responsive.onMove}
         isValidConnection={(connection) => connection.source !== connection.target}
         onConnectStart={() => setConnecting(true)} onConnectEnd={() => setConnecting(false)}
         onClickConnectStart={() => setConnecting(true)} onClickConnectEnd={() => setConnecting(false)}
-        onNodeClick={(_, node) => selectNode(node.id)}
+        onNodeClick={(_, node) => { if (node.id !== CI_SERVER_NODE_ID) selectNode(node.id) }}
         onPaneClick={() => inspect(() => { connectionSource.current = undefined; setOpen(undefined); presentation.getState().setFocusedNodeId(undefined); presentation.getState().setFocusedEdgeId(undefined) })}
         onConnect={(connection) => {
           connectionSource.current = undefined
@@ -244,6 +252,7 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
       </ReactFlow>}
       {children}
     </div>
+    {selectedRun ? null : <CiServerDialog open={ciOpen} onOpenChange={setCiOpen} jobs={[]} names={new Map()} truncated={false} error={false} loading={false} />}
     {selectedRun ? <SelectedRunCanvas key={JSON.stringify(selectedRun)} scope={selectedRun} panels={panels} layout={topology.nodes} geometry={geometry} /> : null}
   </CanvasContext.Provider>
 })

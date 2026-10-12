@@ -51,3 +51,12 @@ it('connects Agent to Job and does not rearm the Job', async () => {
   fireEvent.click(agent(1))
   expect(change).toHaveBeenCalledOnce()
 })
+
+it('shows the CI server on a saved workflow Board without adding it to the graph', async () => {
+  const { change } = mount()
+  const server = await screen.findByRole('button', { name: /^CI server, Idle/ })
+  fireEvent.click(server)
+  const dialog = await screen.findByRole('dialog', { name: 'CI server' })
+  expect(dialog).toHaveTextContent('No Run selected')
+  expect(change).not.toHaveBeenCalled()
+})

@@ -43,7 +43,8 @@ export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
   }, [])
   const surfaces = useCallback(() => ask([...editors.current].filter(([, entry]) => entry.current.scope === 'surface').map(([id]) => id)), [ask])
   const changed = useCallback(() => refresh((value) => value + 1), [])
-  const context = useMemo(() => ({ register, request: ask, changed, surfaces }), [register, ask, changed, surfaces])
+  const unsaved = useCallback(() => activeEditors([...editors.current.keys()]).length > 0, [activeEditors])
+  const context = useMemo(() => ({ register, request: ask, changed, surfaces, unsaved }), [register, ask, changed, surfaces, unsaved])
   const shouldBlockFn = useCallback(async ({ current, next }: { current: LeaveTarget; next: LeaveTarget }) => {
     if (current.pathname === next.pathname && JSON.stringify(current.search) === JSON.stringify(next.search)) return false
     if (pending.current) return true
