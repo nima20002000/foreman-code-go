@@ -187,7 +187,7 @@ export const AgentChatExecutionItemSchema = z.object({
   id: z.string().min(1).max(1024),
   /** First native event of the entry: chronological order within its execution. */
   sequence: NativeSequenceSchema,
-  /** Last native event that changed the entry. */
+  /** Native item revision plus persisted execution revision; state-only transitions also change this value. */
   revision: NativeSequenceSchema,
   occurredAt: TimestampSchema.optional(),
   entry: z.discriminatedUnion("kind", [
@@ -208,7 +208,7 @@ export const AgentChatExecutionSummarySchema = z.object({
   createdAt: TimestampSchema,
   startedAt: TimestampSchema.optional(),
   finishedAt: TimestampSchema.optional(),
-  /** Latest native event sequence of the execution; "0" before the first event. */
+  /** Latest native event sequence plus persisted execution revision. */
   revision: NativeSequenceSchema,
   /** Present when this page holds the execution's newest window: older entries exist before it. */
   hasEarlierItems: z.boolean().optional(),
@@ -220,6 +220,7 @@ export type AgentChatExecutionSummary = z.infer<typeof AgentChatExecutionSummary
  * execution of the selected Run Agent (newest 20 executions, including interval checks and retries).
  * Without cursor: newest window of each execution. With cursor: only entries changed since it.
  * executionId+before: older entries of one execution. executionId+itemId: one entry with full bodies.
+ * Bodies and pages are bounded in UTF-8 bytes and report truncation. Cursors are opaque and include execution-state changes.
  */
 export const AgentChatExecutionActivityQuerySchema = AgentChatContextSchema.omit({ workspaceId: true }).extend({
   runId: IdSchema,

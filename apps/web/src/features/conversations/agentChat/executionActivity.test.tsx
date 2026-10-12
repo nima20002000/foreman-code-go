@@ -1,4 +1,5 @@
-import { fireEvent, screen, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import type { QueryClient } from '@tanstack/react-query'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -6,13 +7,14 @@ import {
 } from '@foreman-code/contracts/agent-chat'
 import { server } from '../../../mocks/server'
 import { useConversationDraftStore } from '../conversationDraftStore'
-import { mergeExecutionActivity } from './executionActivity'
+import { deferred } from '../../run-board/testFixtures'
+import { mergeExecutionActivity, type ExecutionActivityFeed } from './executionActivity'
 import { installChatSource, mountChat } from './testSupport'
 
 const at = '2026-09-27T12:00:00.000Z'
 const message = (executionId: string, id: string, sequence: string, content: string, role: 'user' | 'assistant' = 'assistant'): AgentChatExecutionItem =>
   ({ executionId, id, sequence, revision: sequence, entry: { kind: 'message', message: { id: `${executionId}:${id}`, role, content, nativeMessageComplete: true } } })
-const tool = (executionId: string, id: string, sequence: string, title: string, status: 'running' | 'completed', output: string, truncated = false): AgentChatExecutionItem =>
+const tool = (executionId: string, id: string, sequence: string, title: string, status: 'running' | 'completed' | 'unknown', output: string, truncated = false): AgentChatExecutionItem =>
   ({ executionId, id, sequence, revision: sequence, entry: { kind: 'activity', activity: { id, kind: 'tool', title, status, output, ...(truncated ? { truncated } : {}) } } })
 const executions = (checkState: 'running' | 'completed'): AgentChatExecutionActivityPage['executions'] => [
   { executionId: 'execution-main', label: 'Execution', attempt: 1, state: 'completed', createdAt: at, revision: '3' },
@@ -20,6 +22,41 @@ const executions = (checkState: 'running' | 'completed'): AgentChatExecutionActi
 ]
 const snapshot = (checkState: 'running' | 'completed', items: AgentChatExecutionItem[]): AgentChatExecutionActivityPage =>
   ({ mode: 'snapshot', executions: executions(checkState), hasEarlierExecutions: false, cursor: '{}', hasMoreChanges: false, items })
+
+const activityQuery = { predicate: (query: { queryKey: readonly unknown[] }) => query.queryKey.at(-1) === 'execution-activity' }
+const activityData = (client: QueryClient) => client.getQueriesData<ExecutionActivityFeed>(activityQuery)[0]?.[1]
+const runState = () => {
+  const state: AgentChatState = structuredClone(agentChatFixtures.empty)
+  state.context.runId = 'selected-run'
+  return state
+}
+const livePage = (items: AgentChatExecutionItem[], revision: string,
+  options: { hasEarlierItems?: boolean } = {}): AgentChatExecutionActivityPage => ({
+  mode: 'snapshot',
+  executions: [{ ...executions('running')[1]!, revision, hasEarlierItems: options.hasEarlierItems ?? false }],
+  hasEarlierExecutions: false,
+  cursor: `live-${revision}`,
+  hasMoreChanges: false,
+  items,
+})
+const numberedMessages = (first: number, last: number) => Array.from({ length: last - first + 1 }, (_, index) => {
+  const sequence = String(first + index)
+  return message('execution-check', `note-${sequence}`, sequence, `Activity ${sequence}`)
+})
+async function pollActivity(mounted: ReturnType<typeof mountChat>, page: AgentChatExecutionActivityPage) {
+  mounted.mock.setExecutionActivity(runState().context, page)
+  await act(async () => { await mounted.client.refetchQueries(activityQuery) })
+}
+async function finishRead(client: QueryClient, release: () => void) {
+  const merged = deferred<void>()
+  const unsubscribe = client.getQueryCache().subscribe(event => {
+    if (event.type === 'updated' && activityQuery.predicate(event.query) && event.action.type === 'success') {
+      merged.resolve(undefined)
+    }
+  })
+  await act(async () => { release(); await merged.promise })
+  unsubscribe()
+}
 
 beforeEach(installChatSource)
 afterEach(() => { useConversationDraftStore.getState().clearAllDrafts(); vi.unstubAllGlobals() })
@@ -64,6 +101,163 @@ describe('Board Agent chat live execution activity', () => {
       tool('execution-check', 'cmd-1', '9', 'git status', 'completed', 'clean'),
     ]))
     expect(await screen.findByRole('region', { name: 'Interval check 1 · Completed' }, { timeout: 3000 })).toBeVisible()
+  })
+
+  it('loads unread history from the contiguous window after a much older entry changes', async () => {
+    const state = runState()
+    const mounted = mountChat(state)
+    mounted.mock.setExecutionActivity(state.context, livePage(numberedMessages(101, 103), '300', { hasEarlierItems: true }))
+    const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
+    const oldPlan = { ...message('execution-check', 'plan', '1', 'Updated original plan'), revision: '301' }
+    await pollActivity(mounted, livePage([oldPlan], '301', { hasEarlierItems: true }))
+    expect(within(check).getByText('Updated original plan')).toBeVisible()
+
+    const before: string[] = []
+    server.use(http.get('/api/workspaces/:workspaceId/agent-chat/execution-activity', ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get('before')
+      if (!cursor) return undefined
+      before.push(cursor)
+      const items = cursor === '101' ? numberedMessages(50, 100) : numberedMessages(2, 49)
+      return HttpResponse.json({ ...livePage(items, '301', { hasEarlierItems: cursor === '101' }),
+        mode: 'earlier', cursor: undefined })
+    }))
+    fireEvent.click(within(check).getByRole('button', { name: 'Load earlier activity' }))
+    expect(await within(check).findByText('Activity 100')).toBeVisible()
+    fireEvent.click(within(check).getByRole('button', { name: 'Load earlier activity' }))
+    expect(await within(check).findByText('Activity 2')).toBeVisible()
+    expect(before).toEqual(['101', '50'])
+    expect(activityData(mounted.client)?.cursor).toBe('live-301')
+  })
+
+  it.each(['earlier', 'item'] as const)('keeps newer execution rows, status and cursor after a delayed %s read', async mode => {
+    const state = runState()
+    const mounted = mountChat(state)
+    const main = { ...executions('running')[0]!, state: 'running' as const, revision: '10', hasEarlierItems: true }
+    mounted.mock.setExecutionActivity(state.context, { ...snapshot('running', [
+      message('execution-main', 'prompt', '9', 'Original prompt'),
+      tool('execution-main', 'command', '10', 'check status', 'running', 'Initial output', true),
+    ]), executions: [main], cursor: 'before-check' })
+    const initial = await screen.findByRole('region', { name: 'Execution · Working' })
+    const pending = deferred<AgentChatExecutionActivityPage>()
+    let requested = false
+    server.use(http.get('/api/workspaces/:workspaceId/agent-chat/execution-activity', async ({ request }) => {
+      const params = new URL(request.url).searchParams
+      if (!params.has(mode === 'earlier' ? 'before' : 'itemId')) return undefined
+      requested = true
+      return HttpResponse.json(await pending.promise)
+    }))
+    if (mode === 'earlier') fireEvent.click(within(initial).getByRole('button', { name: 'Load earlier activity' }))
+    else {
+      fireEvent.click(within(initial).getByText('Ran check status'))
+      fireEvent.click(within(initial).getByRole('button', { name: 'Show full details' }))
+    }
+    await waitFor(() => expect(requested).toBe(true))
+    const finished = { ...main, state: 'completed' as const, revision: '12' }
+    await pollActivity(mounted, { ...snapshot('completed', [
+      { ...tool('execution-main', 'command', '10', 'check status', 'unknown', 'Latest output'), revision: '12' },
+      { ...tool('execution-main', 'older-command', '5', 'earlier status', 'unknown', 'Latest older output'), revision: '12' },
+      message('execution-check', 'result', '5', 'New check transcript'),
+    ]), executions: [finished, executions('completed')[1]!], cursor: 'after-check', hasEarlierExecutions: true })
+    expect(screen.getByText('New check transcript')).toBeVisible()
+
+    const items = mode === 'earlier' ? [
+      tool('execution-main', 'older-command', '5', 'earlier status', 'running', 'Old output'),
+      message('execution-main', 'older-note', '8', 'Older execution note'),
+    ] : [tool('execution-main', 'command', '10', 'check status', 'running', 'Old full output')]
+    await finishRead(mounted.client, () => pending.resolve({ ...snapshot('running', items),
+      mode, executions: [main], cursor: undefined }))
+    const transcript = screen.getByRole('region', { name: 'Workflow execution transcript' })
+    expect(within(transcript).getByText('New check transcript')).toBeVisible()
+    expect(within(transcript).getByRole('region', { name: 'Execution · Completed' })).toBeVisible()
+    expect(within(transcript).getByRole('region', { name: 'Interval check 1 · Completed' })).toBeVisible()
+    expect(within(transcript).queryByText('Running')).not.toBeInTheDocument()
+    expect(within(transcript).getAllByText('Unconfirmed')[0]).toBeVisible()
+    expect(within(transcript).getByText('Newest 20 executions')).toBeVisible()
+    expect(activityData(mounted.client)?.cursor).toBe('after-check')
+    if (mode === 'earlier') expect(within(transcript).getByText('Older execution note')).toBeVisible()
+    else expect(within(transcript).queryByText('Old full output')).not.toBeInTheDocument()
+  })
+
+  it('bounds live retention and rendering while history stays browsable during polling', async () => {
+    const state = runState()
+    const mounted = mountChat(state)
+    mounted.mock.setExecutionActivity(state.context, livePage(numberedMessages(1, 200), '200'))
+    const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
+    for (const end of [400, 600, 800]) {
+      await pollActivity(mounted, livePage(numberedMessages(end - 199, end), String(end)))
+      expect(activityData(mounted.client)?.items.length).toBeLessThanOrEqual(200)
+      expect(within(check).getAllByRole('listitem').length).toBeLessThanOrEqual(200)
+    }
+    expect(within(check).getByText('Activity 800')).toBeVisible()
+    expect(within(check).queryByText('Activity 1')).not.toBeInTheDocument()
+
+    const pending = deferred<AgentChatExecutionActivityPage>()
+    const abandoned = deferred<AgentChatExecutionActivityPage>()
+    const before: string[] = []
+    server.use(http.get('/api/workspaces/:workspaceId/agent-chat/execution-activity', async ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get('before')
+      if (!cursor) return undefined
+      before.push(cursor)
+      if (cursor === '601') return HttpResponse.json(await pending.promise)
+      if (cursor === '201') return HttpResponse.json(await abandoned.promise)
+      return HttpResponse.json({ ...livePage(numberedMessages(201, 400), '850', { hasEarlierItems: true }),
+        mode: 'earlier', cursor: undefined })
+    }))
+    fireEvent.click(within(check).getByRole('button', { name: 'Load earlier activity' }))
+    await waitFor(() => expect(before).toEqual(['601']))
+    await pollActivity(mounted, livePage(numberedMessages(801, 850), '850'))
+    await finishRead(mounted.client, () => pending.resolve({
+      ...livePage(numberedMessages(401, 600), '800', { hasEarlierItems: true }), mode: 'earlier', cursor: undefined,
+    }))
+    expect(within(check).getByText('Activity 401')).toBeVisible()
+    expect(within(check).queryByText('Activity 850')).not.toBeInTheDocument()
+    await pollActivity(mounted, livePage(numberedMessages(851, 900), '900'))
+    expect(within(check).getByText('Activity 401')).toBeVisible()
+    fireEvent.click(within(check).getByRole('button', { name: 'Load earlier activity' }))
+    expect(await within(check).findByText('Activity 201')).toBeVisible()
+    expect(before).toEqual(['601', '401'])
+    expect(within(check).getAllByRole('listitem').length).toBeLessThanOrEqual(200)
+    fireEvent.click(within(check).getByRole('button', { name: 'Load earlier activity' }))
+    await waitFor(() => expect(before).toEqual(['601', '401', '201']))
+    fireEvent.click(within(check).getByRole('button', { name: 'Back to latest activity' }))
+    expect(within(check).getByText('Activity 900')).toBeVisible()
+    await pollActivity(mounted, livePage(numberedMessages(901, 950), '950'))
+    await finishRead(mounted.client, () => abandoned.resolve({
+      ...livePage(numberedMessages(1, 200), '900'), mode: 'earlier', cursor: undefined,
+    }))
+    expect(within(check).getByText('Activity 950')).toBeVisible()
+    expect(within(check).queryByText('Activity 201')).not.toBeInTheDocument()
+    expect(within(check).queryByRole('button', { name: 'Back to latest activity' })).not.toBeInTheDocument()
+    expect(activityData(mounted.client)?.items.length).toBeLessThanOrEqual(200)
+  })
+
+  it('caps multibyte transcript bytes and reloads entries evicted by the byte budget', async () => {
+    const state = runState()
+    const mounted = mountChat(state)
+    const content = '漢'.repeat(4_000)
+    const items = Array.from({ length: 30 }, (_, index) => message('execution-check', `large-${index + 1}`,
+      String(index + 1), `Large activity ${index + 1}: ${content}`, 'user'))
+    mounted.mock.setExecutionActivity(state.context, livePage(items.slice(0, 10), '10'))
+    const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
+    await pollActivity(mounted, livePage(items.slice(10, 20), '20'))
+    await pollActivity(mounted, livePage(items.slice(20), '30'))
+    const retained = activityData(mounted.client)!
+    const bytes = retained.items.reduce((total, item) => total + new TextEncoder().encode(JSON.stringify(item)).byteLength, 0)
+    expect(bytes).toBeLessThanOrEqual(256 * 1024)
+    expect(retained.items.length).toBeLessThan(30)
+    expect(within(check).getAllByRole('listitem')).toHaveLength(retained.items.length)
+    expect(within(check).queryByText(`Large activity 1: ${content}`)).not.toBeInTheDocument()
+    const boundary = retained.before['execution-check']!
+    let requestedBefore: string | null = null
+    server.use(http.get('/api/workspaces/:workspaceId/agent-chat/execution-activity', ({ request }) => {
+      const before = new URL(request.url).searchParams.get('before')
+      if (!before) return undefined
+      requestedBefore = before
+      return HttpResponse.json({ ...livePage([items[0]!], '30'), mode: 'earlier', cursor: undefined })
+    }))
+    fireEvent.click(within(check).getByRole('button', { name: 'Load earlier activity' }))
+    expect(await within(check).findByText(`Large activity 1: ${content}`)).toBeVisible()
+    expect(requestedBefore).toBe(boundary)
   })
 })
 

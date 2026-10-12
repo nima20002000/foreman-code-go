@@ -18,6 +18,7 @@ import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { buildApp } from '../src/app.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
+import { executionProjectionRows } from './agent-chat-execution-activity.testSupport.js'
 
 const cleanup: AgentChatService[] = []
 afterEach(async () => { await Promise.all(cleanup.splice(0).map((chat) => chat.shutdown())) })
@@ -85,9 +86,9 @@ function fixture() {
       return { rows: (executions.get(String(values[0])) ?? []).filter((item) => item.workflowNodeId === values[1] && item.agentId === values[2])
         .map((item) => ({ id: item.id, attempt: item.attempt, tick_index: null, occurrence_index: null, state: item.state,
           native_session_id: item.nativeSessionId ?? null, created_at: new Date(item.createdAt), started_at: null, finished_at: null,
-          revision: nativeEvents.at(-1)?.sequence ?? 0 })) }
+          revision: String(nativeEvents.at(-1)?.sequence ?? 0), record_revision: '0' })) }
     }
-    if (sql.includes('n.sequence>$3')) return { rows: nativeEvents.filter((row) => row.sequence > Number(values[2])) }
+    if (sql.startsWith('with identities as')) return { rows: executionProjectionRows(nativeEvents, values) }
     if (sql.includes('from harness_native_events')) return { rows: transcriptRows, rowCount: transcriptRows.length }
     if (sql.includes('from conversation_session_defaults')) return { rows: [], rowCount: 0 }
     if (sql.includes('run_board_snapshots')) {
