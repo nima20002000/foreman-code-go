@@ -70,3 +70,15 @@ it('keeps execution attempt details when both facts describe the same completed 
   })
   expect(runNodeView(record, true, identity.workflowNodeId, 'unrelated-agent').inRun).toBe(false)
 })
+
+it('shows the Agent awake on an interval check, then its graph state again', () => {
+  const { fixture, topology } = branchingRepeat()
+  const identity = fixture.identities[0]!
+  const graph = { identity: { ...identity, occurrence: null }, state: 'completed' as const, resultOutcome: 'succeeded' as const }
+  const check = { identity: { ...identity, executionId: 'check-2', occurrence: null }, state: 'running' as const, resultOutcome: null, tickIndex: 2 }
+  const record = (executions: PinnedNodeDisplayCut['state']['executions']) => ({ topology, state: { resolutions: [], executions } })
+  expect(runNodeView(record([graph, check]), true, identity.workflowNodeId, identity.agentId)).toEqual({
+    state: 'running', label: 'Checking · check 2', inRun: true })
+  expect(runNodeView(record([graph, { ...check, state: 'completed', resultOutcome: 'succeeded' }]), true,
+    identity.workflowNodeId, identity.agentId)).toEqual({ state: 'completed', label: 'Completed', inRun: true })
+})

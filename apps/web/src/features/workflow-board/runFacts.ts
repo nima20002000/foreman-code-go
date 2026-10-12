@@ -6,7 +6,7 @@ import type { AgentNodeState, Tone } from '../../shared/ui/nocturne'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
 import { currentRunKey } from './currentRunQuery'
 import { useWorkflowBoard } from './context'
-import { pinnedNodeStates, type PinnedNodeDisplayCut } from './inspect/pinnedTopology'
+import { checkingView, pinnedNodeStates, runningIntervalChecks, type PinnedNodeDisplayCut } from './inspect/pinnedTopology'
 
 /** Cache-only subscriber: no Query observer with a competing queryFn. Only
  * CurrentRunObserver owns current-state fetching and invalidation/refetch work. */
@@ -38,7 +38,10 @@ export function runNodeView(record: (PinnedNodeDisplayCut & Pick<RepeatGraphCurr
   if (!record) return { state: 'unavailable', label: 'Unavailable', inRun: false }
   if (!record.topology.nodes.some((node) => node.workflowNodeId === nodeId && node.kind!=='job' && node.agentId === agentId)) return { state: 'idle', label: 'Not in this Run', inRun: false }
   const latest = pinnedNodeStates(record).get(nodeId)
-  const [state, label] = lifecycleView(latest?.label ?? 'not_activated')
+  // A running interval check wakes the Agent; its graph state returns when the check finishes.
+  const check = runningIntervalChecks(record).get(nodeId)
+  const awake = check ? checkingView(check.check, check.queued) : undefined
+  const [state, label] = awake ? [awake.state, awake.label] : lifecycleView(latest?.label ?? 'not_activated')
   if (!latest?.occurrenceIndex) return { state, label, inRun: true }
   const attempt = latest.attempt ? `technical attempt ${latest.attempt}` : 'no execution'
   return { state, label, inRun: true, activity: `Business occurrence ${latest.occurrenceIndex} · ${attempt}` }

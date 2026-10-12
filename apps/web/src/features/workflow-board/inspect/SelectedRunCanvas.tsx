@@ -19,7 +19,7 @@ import { readPinnedAgentVersion } from '../runDetailsClient'
 import { useSelectedRunQueryState, useSelectedRunRecord } from '../runFacts'
 import { useRunHandoffsQuery } from '../runHandoffsQuery'
 import { runInspectionQueryKey, useRunVersionQuery } from './queries'
-import { pinnedNodeStates, pinnedTopology } from './pinnedTopology'
+import { checkingView, pinnedNodeStates, pinnedTopology, runningIntervalChecks } from './pinnedTopology'
 import { runsSelectorApi } from '../../runs-selector/client'
 import { isRunAccessError } from '../../runs-selector/query'
 import { runBoardCi } from '../../run-board/model'
@@ -179,6 +179,7 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
   const waits = useMemo(() => interactionWaits(record, pending.isError ? [] : pending.data?.items ?? [], names),
     [record, pending.data, pending.isError, names])
   const states = useMemo(() => pinnedNodeStates(record), [record])
+  const checking = useMemo(() => live ? runningIntervalChecks(record) : new Map<string, { check: number; queued: boolean }>(), [record, live])
   const choreography = useRunChoreography(record, topology?.edges)
   // One line per agent pair: an approval beside a handoff is drawn on the handoff's line.
   const lines = useMemo(() => relationshipLines(topology?.edges ?? []), [topology])
@@ -243,10 +244,11 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
       const selected = board.inspection.runNodeId === node.id
       const recorded = !record ? 'Current status unavailable' : !state ? 'No activation in the bounded current cut' :
         `${state.label}${state.occurrenceIndex ? ` · repetition ${state.occurrenceIndex}` : ''}${state.attempt ? ` · attempt ${state.attempt}` : ''}`
+        + (checking.has(node.id) ? ` · ${checkingView(checking.get(node.id)!.check, checking.get(node.id)!.queued).label}` : '')
       const nodeFacts:Facts = node.kind==='job'?{...unknownFacts,harness:undefined,harnessLabel:'Job',roleLabel:'Job',model:undefined,meta:[{label:'Revision',value:String(node.jobDefinitionRevision)}]}:facts.get(node.configurationId)??unknownFacts
       const baseView = !record ? { state: 'unavailable' as const, label: 'Unavailable' }
         : choreography.nodes.get(node.id) ?? { state: 'idle' as const, label: 'Not started' }
-      const current = liveNodeView(baseView, waits.get(node.id), cis.get(node.id), checks.get(node.id))
+      const current = liveNodeView(baseView, waits.get(node.id), cis.get(node.id), checks.get(node.id), checking.get(node.id))
       const view = current === baseView ? baseView : { ...baseView, ...current }
       const shown = `${view.state}:${view.label}:${'transition' in view ? `${view.transition}@${view.transitionKey}` : ''}`
       const cached = previous.current.get(node.id)
@@ -260,7 +262,7 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
     }) ?? []
     previous.current = next
     return result
-  }, [topology, states, record, facts, jobExecutions, board.inspection.runNodeId, choreography.nodes, cis, waits, checks])
+  }, [topology, states, record, facts, jobExecutions, board.inspection.runNodeId, choreography.nodes, cis, waits, checks, checking])
   const layoutById = useMemo(() => new Map(layout?.map((node) => [node.id, node])), [layout])
   const pinnedById = useMemo(() => new Map(version?.definition.nodes.map((node) => [node.id, node])), [version])
   const presented = useRef(new Map<string, { source: RunNode; node: RunNode }>())

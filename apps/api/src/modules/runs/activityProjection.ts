@@ -13,6 +13,8 @@ export interface ActivityReadRow {
   harness_execution_id: string | null;
   execution_node_id: string | null; execution_agent_id: string | null;
   execution_attempt: number | null; work_activation_id: string | null;
+  /** Set when the execution is an interval check. */
+  execution_tick_index?: number | null;
   job_execution_id?: string | null; job_attempt_id?: string | null; job_operation_id?: string | null;
   node_execution_id?: string | null; job_definition_id?: string | null;
   ci_ticket_id?: string | null; ci_activity?: unknown;
@@ -242,7 +244,11 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
         : state === 'starting' ? 'starting' : state === 'running' ? 'running'
           : state === 'waiting' ? 'pending' : 'queued'
       const label = jobActor ? 'Job' : 'Agent'
-      summary = state === 'completed' ? `${label} work completed`
+      const check = count(row.execution_tick_index)
+      summary = check ? state === 'completed' ? `Interval check ${check} finished`
+        : state === 'running' ? `Checking · check ${check}` : state === 'waiting' ? `Interval check ${check} waiting`
+          : state === 'starting' ? `Interval check ${check} starting` : `Interval check ${check} queued`
+        : state === 'completed' ? `${label} work completed`
         : state === 'running' ? `${label} working` : state === 'waiting' ? `${label} waiting`
           : `${label} work queued`
       if (status === 'failed') detail = 'Error details are available in Run inspection.'
