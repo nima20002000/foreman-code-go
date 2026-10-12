@@ -253,6 +253,11 @@ describe.skipIf(!postgresEnabled)('pairing-managed CI root enrollment', () => {
       expect(f.rootRequests).toContain('workspace-roots.prepare-managed')
       const choices = decodeMcpToolResult(await f.client.callTool({ name: 'workspace_root_choices_list',
         arguments: { workspaceId: f.workspaceId } })) as Awaited<ReturnType<typeof f.roots.choices>>
+      const approved = choices.allowlists.find(allowlist =>
+        allowlist.applicationInstallationId === f.worker.target.applicationInstallationId)!
+      expect(approved).toEqual(f.workerAllowlist)
+      expect(approved.runtimeFilesystemId).toMatch(/^[a-f0-9]{1,16}$/)
+      for (const base of approved.bases) expect(base.filesystemId).toMatch(/^[a-f0-9]{1,16}$/)
       const managed = choices.policies.find(policy => policy.bindingPurpose === 'ci-enrollment')!
       expect(managed).toMatchObject({ hostRef: f.worker.target.hostRef, accessMode: 'read-write',
         canonicalProjectRoot: join(f.managedBase, sourceSha256(Buffer.from(f.workspaceId))), locationRevision: '1' })

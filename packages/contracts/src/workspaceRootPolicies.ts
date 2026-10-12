@@ -17,12 +17,15 @@ export const WorkspaceLocationIdentitySchema = z.union([
   }),
 ])
 export const RootAccessSchema = z.enum(['read-only', 'read-write'])
+const FilesystemIdSchema = z.string().regex(/^[a-f0-9]{1,16}$/)
 export const ApprovedRootAllowlistSchema = z.object({ schemaVersion: z.literal(1), hostRef: WorkspaceRootHostSchema,
   applicationInstallationId: z.uuid(), configurationRevision: Revision,
   bases: z.array(z.object({ baseId: z.uuid(), canonicalPath: z.string().startsWith('/'), filesystem: RootFilesystemIdentitySchema,
+    filesystemId: FilesystemIdSchema.optional(),
     managedBy: z.literal('worker-pairing').optional(),
     accessModes: z.array(RootAccessSchema).min(1).max(2) }).strict()).min(1).max(32),
   managedRuntimeRoot: z.string().startsWith('/'), runtimeFilesystem: RootFilesystemIdentitySchema,
+  runtimeFilesystemId: FilesystemIdSchema.optional(),
 }).strict()
 export type ApprovedRootAllowlist = z.infer<typeof ApprovedRootAllowlistSchema>
 export const WorkspaceRootSelectionSchema = z.object({ workspaceId: IdSchema, hostRef: WorkspaceRootHostSchema,

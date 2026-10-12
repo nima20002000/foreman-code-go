@@ -48,4 +48,13 @@ describe('protected root configuration discovery and audited adoption', () => {
     expect(WorkspaceRootConfigurationAdoptResultSchema.safeParse({ value: configuration }).success).toBe(false)
     expect(WorkspaceRootConfigurationAdoptResultSchema.safeParse({ ...result, value: { ...configuration, arbitrary: true } }).success).toBe(false)
   })
+  it('retains persistent filesystem IDs through approved configuration adoption readback', () => {
+    const value = { ...configuration, runtimeFilesystemId: '1234abcd',
+      bases: configuration.bases.map(base => ({ ...base, filesystemId: '9876abcd' })) }
+    expect(WorkspaceRootConfigurationAdoptResultSchema.parse({ value, replayed: true }))
+      .toEqual({ value, replayed: true })
+    expect(WorkspaceRootConfigurationAdoptResultSchema.safeParse({
+      value: { ...value, runtimeFilesystemId: 'not-a-filesystem-id' }, replayed: false,
+    }).success).toBe(false)
+  })
 })

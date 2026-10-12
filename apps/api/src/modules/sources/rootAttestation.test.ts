@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, rm, symlink, rename, chmod, readdir, readlink } from 'node:fs/promises'
+import { mkdir, rm, symlink, rename, chmod, readdir, readlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { qualifyApprovedRootAllowlist, verifyApprovedRootAllowlist, attestWorkspaceRoot, browseApprovedRoot, createWorkspaceRootWorkerHandler } from './rootAttestation.js'
 import type { WorkspaceRootSelection } from '@foreman-code/contracts/workspace-root-policies'
+import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 async function fixture() {
-  const root = await mkdtemp('/tmp/root-policy-'); roots.push(root)
+  const root = await privateFixtureDirectory('root-policy-'); roots.push(root)
   const base = join(root, 'projects'), runtime = join(root, 'runtime'); await mkdir(base, { mode: 0o700 }); await mkdir(runtime, { mode: 0o700 }); await mkdir(join(base, 'project'), { mode: 0o755 })
   const mainId = randomUUID(), baseId = randomUUID()
   const allowlist = await qualifyApprovedRootAllowlist({ schemaVersion: 1, hostRef: { kind: 'main', mainId }, applicationInstallationId: mainId,
@@ -26,6 +27,47 @@ it('verifies persisted approved identities on restart and rejects base replaceme
   await rename(f.base, `${f.base}-old`); await mkdir(f.base, { mode: 0o700 })
   await expect(verifyApprovedRootAllowlist(f.allowlist)).rejects.toThrow('changed')
   await expect(attestWorkspaceRoot(f.allowlist, f.selection)).rejects.toThrow('replaced')
+})
+
+it.each(['mountId', 'device'] as const)('accepts the same filesystem and directories after %s changes', async field => {
+  const f = await fixture()
+  const previousIdentity = (filesystem: typeof f.allowlist.runtimeFilesystem) => ({
+    ...filesystem, [field]: String(BigInt(filesystem[field]) + 1n),
+  })
+  const previous = { ...f.allowlist,
+    bases: f.allowlist.bases.map(base => ({ ...base, filesystem: previousIdentity(base.filesystem) })),
+    runtimeFilesystem: previousIdentity(f.allowlist.runtimeFilesystem) }
+  const saved = structuredClone(previous)
+  const current = await verifyApprovedRootAllowlist(previous)
+  expect(current).toEqual(f.allowlist)
+  const attested = await attestWorkspaceRoot(previous, f.selection)
+  expect(attested.canonicalProjectRoot).toBe(join(f.base, 'project'))
+  expect(attested.runtimeFilesystem).toEqual(f.allowlist.runtimeFilesystem)
+  expect((await browseApprovedRoot(previous, f.selection, '')).directories.map(directory => directory.name))
+    .toEqual(['project'])
+  expect(previous).toEqual(saved)
+})
+
+it.each(['base', 'runtime'])('rejects a different persistent filesystem ID for the %s even with the same device and inode', async target => {
+  const f = await fixture()
+  const changed = structuredClone(f.allowlist)
+  if (target === 'base') {
+    const base = changed.bases[0]!
+    base.filesystemId = base.filesystemId === '1' ? '2' : '1'
+  } else {
+    changed.runtimeFilesystemId = changed.runtimeFilesystemId === '1' ? '2' : '1'
+  }
+  const code = target === 'base' ? 'ROOT_BASE_CHANGED' : 'ROOT_RUNTIME_CHANGED'
+  await expect(verifyApprovedRootAllowlist(changed)).rejects.toMatchObject({ code })
+  await expect(attestWorkspaceRoot(changed, f.selection)).rejects.toMatchObject({ code })
+})
+
+it('rejects runtime directory replacement on the original filesystem', async () => {
+  const f = await fixture()
+  await rename(f.runtime, `${f.runtime}-old`)
+  await mkdir(f.runtime, { mode: 0o700 })
+  await expect(verifyApprovedRootAllowlist(f.allowlist)).rejects.toMatchObject({ code: 'ROOT_RUNTIME_CHANGED' })
+  await expect(attestWorkspaceRoot(f.allowlist, f.selection)).rejects.toMatchObject({ code: 'ROOT_RUNTIME_CHANGED' })
 })
 it('rejects traversal and symlink directories at component operations', async () => {
   const f = await fixture(); await symlink(f.runtime, join(f.base, 'link'))
