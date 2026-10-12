@@ -30,6 +30,8 @@ export type GraphNodeData = {
   stepLabel: string
   waitLabel?: string
   initialPrompt?: string
+  /** Saved interval check period; absent when interval checks are off. */
+  intervalSeconds?: number
   runState?: HarnessExecutionState
   runOutcome?: RunOutcome
   runActive?: boolean

@@ -4,7 +4,7 @@ type ExecutionFact = RepeatGraphCurrentV3['state']['executions'][number]
 type ResolutionFact = RepeatGraphCurrentV3['state']['resolutions'][number]
 /** Display-only input. The current query validates the complete canonical cut. */
 export type PinnedNodeDisplayCut = { state: {
-  executions: readonly Pick<ExecutionFact, 'identity' | 'state' | 'resultOutcome'>[]
+  executions: readonly (Pick<ExecutionFact, 'identity' | 'state' | 'resultOutcome'> & Partial<Pick<ExecutionFact, 'tickIndex'>>)[]
   resolutions: readonly { ref: Pick<ResolutionFact['ref'], 'nodeId' | 'occurrence'>;
     value: Pick<ResolutionFact['value'], 'resolution'|'execution'|'outcome'> }[]
 } }
@@ -22,6 +22,7 @@ export function pinnedNodeStates(record?: PinnedNodeDisplayCut) {
     })
   }
   for (const fact of record.state.executions) {
+    if (fact.tickIndex) continue // An interval check is not the node's graph state.
     const id = fact.identity, index = id.occurrence?.occurrenceIndex ?? 0
     const previous = states.get(id.workflowNodeId)
     if (!previous || index > previous.occurrenceIndex || index === previous.occurrenceIndex && id.attempt >= previous.attempt) {
@@ -37,7 +38,7 @@ export function pinnedTopology(version: WorkflowVersionV3) {
   return {
     nodes: version.definition.nodes.map((node,index)=>{
       const common={id:node.id,label:node.name??node.label??node.id,entry:node.id===version.entryNodeId,blockId:blocks.get(node.id),position:node.position??{x:(index%4)*300,y:Math.floor(index/4)*200}}
-      return node.kind==='job'?{...common,kind:'job' as const,jobDefinitionId:node.jobDefinitionId,jobDefinitionRevision:node.jobDefinitionRevision,jobDefinitionVersionId:node.jobDefinitionVersionId}:{...common,kind:'agent' as const,agentId:node.agentId,configurationId:version.agentConfigurationVersionIds[node.agentId]!}
+      return node.kind==='job'?{...common,kind:'job' as const,jobDefinitionId:node.jobDefinitionId,jobDefinitionRevision:node.jobDefinitionRevision,jobDefinitionVersionId:node.jobDefinitionVersionId}:{...common,kind:'agent' as const,agentId:node.agentId,configurationId:version.agentConfigurationVersionIds[node.agentId]!,intervalSeconds:node.interval?.everySeconds}
     }),
     edges: version.definition.edges,
   }

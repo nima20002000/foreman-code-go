@@ -1,0 +1,52 @@
+import { useState } from 'react'
+import { AGENT_INTERVAL_MAX_SECONDS, AGENT_INTERVAL_MIN_SECONDS, type WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
+import { Select, Switch, TextField } from '../../../shared/ui/nocturne'
+import type { DraftNode } from './model'
+
+const UNITS = [{ value: 'seconds', label: 'Seconds', seconds: 1 }, { value: 'minutes', label: 'Minutes', seconds: 60 },
+  { value: 'hours', label: 'Hours', seconds: 3600 }] as const
+type Unit = typeof UNITS[number]['value']
+const unitSeconds = (unit: Unit) => UNITS.find(item => item.value === unit)!.seconds
+const largestUnit = (seconds: number): Unit => seconds % 3600 === 0 ? 'hours' : seconds % 60 === 0 ? 'minutes' : 'seconds'
+
+/** "Every 5 min" for an interval in seconds. */
+export function intervalLabel(seconds: number): string {
+  const unit = largestUnit(seconds), count = seconds / unitSeconds(unit)
+  return `Every ${count} ${unit === 'hours' ? 'h' : unit === 'minutes' ? 'min' : 's'}`
+}
+
+/** Off by default. While its Run is active, the Agent is re-activated in its own session to check on the Run. */
+export function IntervalFields({ node, change }: {
+  node: DraftNode; change: (update: (graph: WorkflowDefinitionV3) => WorkflowDefinitionV3) => void
+}) {
+  const everySeconds = node.kind === 'job' ? undefined : node.interval?.everySeconds
+  const [unit, setUnit] = useState<Unit>(() => everySeconds ? largestUnit(everySeconds) : 'minutes')
+  const [count, setCount] = useState(() => everySeconds ? String(everySeconds / unitSeconds(largestUnit(everySeconds))) : '1')
+  if (node.kind === 'job') return null
+  const write = (seconds: number | undefined) => change((graph) => ({ ...graph, nodes: graph.nodes.map((item) => {
+    if (item.id !== node.id || item.kind === 'job') return item
+    const next = { ...item }
+    if (seconds === undefined) delete next.interval
+    else next.interval = { everySeconds: seconds }
+    return next
+  }) }))
+  const seconds = Number(count) * unitSeconds(unit)
+  const valid = Number.isInteger(seconds) && seconds >= AGENT_INTERVAL_MIN_SECONDS && seconds <= AGENT_INTERVAL_MAX_SECONDS
+  const apply = (nextCount: string, nextUnit: Unit) => {
+    setCount(nextCount); setUnit(nextUnit)
+    const value = Number(nextCount) * unitSeconds(nextUnit)
+    if (Number.isInteger(value) && value >= AGENT_INTERVAL_MIN_SECONDS && value <= AGENT_INTERVAL_MAX_SECONDS) write(value)
+  }
+  return <fieldset className="next-draft-choice"><legend>Interval checks</legend>
+    <Switch label="Re-activate on an interval" checked={everySeconds !== undefined}
+      hint="While the Run is active, this agent is woken in its own session to check the Run's status and its own work. Checks never hand off work. Needs native approval handling or a Codex agent that never asks for approval."
+      onChange={(event) => write(event.currentTarget.checked ? (valid ? seconds : 60) : undefined)} />
+    {everySeconds !== undefined ? <div className="next-draft-inline">
+      <TextField label="Every" type="number" inputMode="numeric" min={1} step={1} value={count}
+        error={valid ? undefined : 'Choose between 10 seconds and 24 hours.'}
+        onChange={(event) => apply(event.target.value, unit)} />
+      <Select label="Unit" value={unit} options={UNITS.map(({ value, label }) => ({ value, label }))}
+        onChange={(event) => apply(count, event.target.value as Unit)} />
+    </div> : null}
+  </fieldset>
+}

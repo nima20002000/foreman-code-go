@@ -1,5 +1,6 @@
 import type { ActivitySnapshotV1, CiActivity, DurableInteraction } from '@foreman-code/contracts'
 import type { RepeatGraphCurrentV3 } from '@foreman-code/contracts/wave25'
+import type { RunIntervalCheck } from '@foreman-code/contracts/run-snapshots'
 import type { AgentNodeState } from '../../../shared/ui/nocturne'
 import { ciNodePresentation } from '../../run-board/ciPresentation'
 
@@ -34,11 +35,16 @@ export function interactionWaits(record: RepeatGraphCurrentV3 | undefined, inter
   return waits
 }
 
-/** A pending answer or an unfinished CI job is what the Agent is waiting on; otherwise the lifecycle view stands. */
-export function liveNodeView(base: View, wait: InteractionWait | undefined, ci: CiActivity | undefined): View {
+/** A pending answer or an unfinished CI job is what the Agent is waiting on; then a running interval check;
+ * otherwise the lifecycle view stands, with the next check time while one is due. */
+export function liveNodeView(base: View, wait: InteractionWait | undefined, ci: CiActivity | undefined,
+  check?: RunIntervalCheck): View {
   if (wait) return { state: 'waiting', label: wait.label }
   if (ci && isActiveCi(ci)) return { state: 'waiting', label: `Waiting for ${ciNodePresentation(ci).label}` }
-  return ci ? { ...base, label: `${base.label} · ${ciNodePresentation(ci).label}` } : base
+  if (check?.running) return { state: 'running', label: 'Interval check running' }
+  const view = ci ? { ...base, label: `${base.label} · ${ciNodePresentation(ci).label}` } : base
+  return check?.nextCheckAt ? { ...view, label: `${view.label} · Next check ${new Date(check.nextCheckAt)
+    .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` } : view
 }
 
 /** Every unfinished CI ticket an Agent of this Run requested, oldest first. */
