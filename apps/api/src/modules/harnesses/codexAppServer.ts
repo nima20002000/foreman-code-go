@@ -849,7 +849,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
           restarting ? candidate.transport.detachForRestart!() : candidate.transport.close(),
         ])
         const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
-        if (failures.length) throw new AggregateError([error, ...failures], 'Native attachment cleanup is unconfirmed.')
+        if (failures.length) {
+          throw new AggregateError([error, ...failures], 'Native attachment cleanup is unconfirmed.', { cause: error })
+        }
         throw error
       }
     })

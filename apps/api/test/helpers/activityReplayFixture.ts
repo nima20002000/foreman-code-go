@@ -1,6 +1,7 @@
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './testResources.js'
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:net'
+import { join } from 'node:path'
 import { expect } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
@@ -96,7 +97,7 @@ export async function setup(options: { operatorSandbox?: 'read-only' | 'workspac
   const replay = new ActivityProductionReplay()
   const database = { pool: db.pool, ping: async () => { await db.pool.query('select 1') },
     migrate: () => applyApplicationMigrations(db.pool), close: async () => {} }
-  const infrastructure = replay.infrastructure(workspace.harnessWorkspaceRoot)
+  const infrastructure = replay.infrastructure(join(workspace.harnessWorkspaceRoot, 'native-process-registry'))
   let production = buildProductionApp(config, database, checkpoints, false, undefined, undefined, undefined, infrastructure)
   let origin = await startActivityReplayProduction(production, replay, closes, config.port)
   const headers = { authorization: `Bearer ${writer.token}` }
@@ -142,7 +143,23 @@ export async function admittedRun(f: Awaited<ReturnType<typeof setup>>, mode: 'c
   return ManualRunStartResultSchema.parse(response.json())
 }
 export async function completedRun(f: Awaited<ReturnType<typeof setup>>) {
+  const starts = f.replay.starts.length
   const started = await admittedRun(f)
-  return eventually(async () => SavedRunDetailsSchema.parse((await f.http('GET',
-    `/api/management/workspaces/${f.saved.scope.workspaceId}/runs/${started.run.id}`)).json()), (detail) => detail.run.outcome === 'succeeded')
+  let nextReconciliation = Date.now() + 5_000
+  const detail = await eventually(async () => {
+    // The server retries pending native settlement every five seconds; GET is a passive snapshot read.
+    if (Date.now() >= nextReconciliation) {
+      nextReconciliation = Date.now() + 5_000
+      await f.reconcile()
+    }
+    const response = await f.http('GET',
+      `/api/management/workspaces/${f.saved.scope.workspaceId}/runs/${started.run.id}`)
+    expect(response.statusCode, response.body).toBe(200)
+    const result = SavedRunDetailsSchema.parse(response.json())
+    expect(result.run.outcome, JSON.stringify(result.executions.map(execution => execution.result))).not.toBe('failed')
+    return result
+  }, (result) => result.run.outcome === 'succeeded')
+  expect(detail.executions).toHaveLength(f.saved.version.definition.nodes.length)
+  expect(f.replay.starts.slice(starts)).toHaveLength(detail.executions.length)
+  return detail
 }

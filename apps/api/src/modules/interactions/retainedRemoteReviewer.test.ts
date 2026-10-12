@@ -289,6 +289,17 @@ describe('atomic original remote reviewer retention', () => {
 })
 
 describe('retained remote reviewer recovery', () => {
+  it('declines recovery after credential revocation while live reviewer access remains denied', async () => {
+    const f = fixture()
+    f.state.revoked = true
+    try {
+      expect(await readRecoverableRemoteReviewer(f.connection, f.execution)).toBeUndefined()
+      await expect(readRetainedRemoteReviewer(f.connection, f.execution))
+        .rejects.toMatchObject({ code: 'REMOTE_REVIEWER_DENIED' })
+      expect(f.state).toMatchObject({ finalized: false, purpose: 'workflow', committed: false })
+    } finally { await f.connection.close() }
+  })
+
   it('reconstructs saved startup instructions and work context when recovering the original reviewer', async () => {
     const f = await recoveryFixture({ handoff: true })
     try {

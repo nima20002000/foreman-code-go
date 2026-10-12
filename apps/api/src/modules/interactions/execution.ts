@@ -97,6 +97,7 @@ interface OwnedNativeSession {
   preparing?: Promise<IssuedWorkerCredential['environment'] | undefined>
   // A canceled remote attach can leave the original Worker session running without a Main acknowledgment.
   restartAttachment?: { session: NativeSessionReference; request: HarnessExecutionRequest }
+  terminalRecoveredWithoutCredential?: boolean
   cleanup?: Promise<Error[]>
   reviewFinalizer?: symbol
   reviewFinishing?: boolean
@@ -312,7 +313,8 @@ export class ApprovalExecutionCoordinator {
   /** Close only the captured, registered native lifetime. Unlike Stop recovery,
    * this path has no resolver, capability query, orphan-process fallback or new
    * credential. Failure leaves the owner resident and the durable barrier closed. */
-  private async closeRepeatLifetime(owned: OwnedNativeSession, assertCurrent: () => void): Promise<void> {
+  private async closeRepeatLifetime(owned: OwnedNativeSession, assertCurrent: () => void,
+    finishRecoveredCredentials?: () => Promise<void>): Promise<void> {
     const session = owned.session
     const generation = owned.generation
     const registration = owned.closureGeneration
@@ -322,8 +324,9 @@ export class ApprovalExecutionCoordinator {
       if (this.ownedSessions.get(owned.execution.id) !== owned || owned.generation !== generation
         || owned.opening || owned.openingFailed || !session || !registration || !this.workflowClosures
         || owned.closureGeneration !== registration || owned.session !== session
-        || this.credentials && (!credential
-          || this.managerCredentials.get(owned.manager)?.principalId !== credential.principalId
+        || this.credentials && !credential
+          && !(owned.terminalRecoveredWithoutCredential && finishRecoveredCredentials)
+        || credential && (this.managerCredentials.get(owned.manager)?.principalId !== credential.principalId
           || this.managerCredentials.get(owned.manager)?.environment !== credential.environment)) {
         throw new DomainError('REPEAT_CLEANUP_PENDING', 'The exact native lifetime cannot yet be closed.', 409)
       }
@@ -339,6 +342,9 @@ export class ApprovalExecutionCoordinator {
       if (!proof || proof.durableGeneration !== registration) await this.closeWorkflowSession(owned)
       check()
       if (credential) await this.credentials?.revoke({ principalId: credential.principalId })
+      else if (owned.terminalRecoveredWithoutCredential && finishRecoveredCredentials) {
+        await finishRecoveredCredentials()
+      }
       check()
       this.managerCredentials.delete(owned.manager)
       await owned.stopReviewerRenewal?.()
@@ -397,7 +403,8 @@ export class ApprovalExecutionCoordinator {
       owned.execution = execution
       await this.budgets.finish(execution.id, execution.finishedAt)
       check()
-      await this.closeRepeatLifetime(owned, check)
+      await this.closeRepeatLifetime(owned, check,
+        () => finishRecoveredWorkflowCredentials(owner, execution, this.credentials, signal))
     } else {
       // A crash after close/COMMIT is repaired without touching a native manager.
       // The proof reader rejects newer generations and any older unclosed one.
@@ -645,6 +652,7 @@ export class ApprovalExecutionCoordinator {
     const context = {
       harness: configuration.harness.harness, executionId: execution.id, agentId: execution.agentId,
       runId: execution.runId, attempt: execution.attempt,
+      ...(execution.nativeSessionId ? { nativeSessionId: execution.nativeSessionId } : {}),
       workingDirectory: execution.workingDirectory, configuration,
       ...(purpose ? { purpose } : {}),
     }
@@ -747,6 +755,7 @@ export class ApprovalExecutionCoordinator {
           && !history.pendingInteraction && history.pendingInteractions.length === 0
       }
       if (await completed()) {
+        owned.terminalRecoveredWithoutCredential = true
         resolved.markResident?.()
         return undefined
       }
@@ -757,6 +766,7 @@ export class ApprovalExecutionCoordinator {
       try { access = await originalApplicationAccess.call(resolved.manager, session, signal) }
       catch (error) {
         if (!await completed()) throw error
+        owned.terminalRecoveredWithoutCredential = true
         resolved.markResident?.()
         return undefined
       }
@@ -1675,7 +1685,7 @@ export class ApprovalExecutionCoordinator {
     }
   }
 
-  /** Recover checkpoint-bound pending approvals after verified restart detachment.
+  /** Recover restart-detached turns and checkpoint-bound pending approvals.
    * Other cold nonterminal lifetimes require physical cleanup before settlement. */
   async requestColdRunCleanup(owner: RunOwnership, approvals: readonly DurableInteraction[] = [],
     signal?: AbortSignal): Promise<boolean> {
@@ -1685,45 +1695,51 @@ export class ApprovalExecutionCoordinator {
       for (const execution of executions) {
         if (this.ownedSessions.has(execution.id)) continue
         if (execution.state === 'queued' && !execution.nativeSessionId && !execution.startedAt) continue
+        if (execution.state === 'running' && execution.nativeSessionId
+          && await readDetachedWorkflowSession(owner, execution)) continue
         const pending = approvals.filter((item) => item.executionId === execution.id)
         if (execution.state === 'waiting' && pending.length
           && pending.every((item) => item.status === 'pending' && item.deliveryState === 'not_started')) {
           if (await this.restorePendingWorkflowApprovals(owner, execution, pending, signal)) continue
         }
-        if (execution.state === 'completed') {
-          if (await this.recoverRetainedReviewer(execution, owner, signal)) continue
-          if (execution.nativeSessionId && !await this.workflowClosures?.read(execution)) {
-            // A finalized workflow has already closed its original lifetime and
-            // may have handed this session to a reviewer. Missing closure now
-            // belongs to that later lifetime, not to the original terminal gap.
-            // This owner-bound read selects cleanup only; it is NOT closure
-            // evidence. The negative pass still rechecks generation/session
-            // and requires positive physical proof under the committed fence.
-            const native = (await owner.oneShotConnection().query<{ reference: unknown; finalized: boolean }>(
-              'select reference,workflow_finalized_at is not null as finalized from execution_native_sessions where execution_id=$1 for share',
-              [execution.id])).rows[0]
-            owner.assertOwned()
-            if (native?.finalized === true) {
-              if (NativeSessionReferenceSchema.parse(native.reference).nativeSessionId !== execution.nativeSessionId) {
-                throw new DomainError('NATIVE_SESSION_IDENTITY_MISMATCH', 'Cleanup changed the captured native session.', 409)
-              }
-              await this.runs.requestCleanup(owner.runId, owner)
-              owner.assertOwned()
-              return true
-            }
-            const failures: Error[] = []
-            await attemptCleanup(failures, `${execution.id}: recover terminal native lifetime`, (signal) =>
-              recoverWorkflowNativeClosure(owner, execution, this.recoverNativeProcesses, signal, { purpose: 'terminal' }))
-            owner.assertOwned()
-            if (failures.length) throw new AggregateError(failures, 'Terminal native closure remains unconfirmed.')
-          }
-          // Includes a failed original terminal: do not poison technical retry
-          // by setting cleanupPending before the repository evaluates its slot.
-          continue
-        }
+        if (execution.state === 'completed') continue
         await this.runs.requestCleanup(owner.runId, owner)
         owner.assertOwned()
         return true
+      }
+    }
+    // An interrupted sibling fences the Run before a completed reviewer can be recovered.
+    for await (const executions of this.runs.executionPages(owner.runId, owner)) {
+      for (const execution of executions) {
+        if (this.ownedSessions.has(execution.id) || execution.state !== 'completed') continue
+        if (await this.recoverRetainedReviewer(execution, owner, signal)) continue
+        if (execution.nativeSessionId && !await this.workflowClosures?.read(execution)) {
+          // A finalized workflow has already closed its original lifetime and
+          // may have handed this session to a reviewer. Missing closure now
+          // belongs to that later lifetime, not to the original terminal gap.
+          // This owner-bound read selects cleanup only; it is NOT closure
+          // evidence. The negative pass still rechecks generation/session
+          // and requires positive physical proof under the committed fence.
+          const native = (await owner.oneShotConnection().query<{ reference: unknown; finalized: boolean }>(
+            'select reference,workflow_finalized_at is not null as finalized from execution_native_sessions where execution_id=$1 for share',
+            [execution.id])).rows[0]
+          owner.assertOwned()
+          if (native?.finalized === true) {
+            if (NativeSessionReferenceSchema.parse(native.reference).nativeSessionId !== execution.nativeSessionId) {
+              throw new DomainError('NATIVE_SESSION_IDENTITY_MISMATCH', 'Cleanup changed the captured native session.', 409)
+            }
+            await this.runs.requestCleanup(owner.runId, owner)
+            owner.assertOwned()
+            return true
+          }
+          const failures: Error[] = []
+          await attemptCleanup(failures, `${execution.id}: recover terminal native lifetime`, (signal) =>
+            recoverWorkflowNativeClosure(owner, execution, this.recoverNativeProcesses, signal, { purpose: 'terminal' }))
+          owner.assertOwned()
+          if (failures.length) throw new AggregateError(failures, 'Terminal native closure remains unconfirmed.')
+        }
+        // Includes a failed original terminal: do not poison technical retry
+        // by setting cleanupPending before the repository evaluates its slot.
       }
     }
     return false

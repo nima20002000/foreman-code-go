@@ -305,6 +305,8 @@ it('hands over an interrupted ordinary remote workflow attachment before disposi
   assert.ok(error instanceof DomainError)
   assert.equal(error.code, 'ENGINE_RESTART')
   assert.equal(attempts, 2)
+  assert.equal(f.state.preflightCalls, 0)
+  assert.equal(f.state.restores, 0)
   await first.manager.dispose!()
   assert.deepEqual(f.execution(), before)
   assert.equal(f.rows().at(-1)!.detached, true)

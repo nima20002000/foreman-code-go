@@ -903,7 +903,55 @@ describe('actual worker native-port adapter', () => {
     expect(f.manager.attachSession).not.toHaveBeenCalled()
     expect(f.state.starts).toBe(1)
     await f.journal.uncertain(f.intent.operationId, 'lost native observation')
-    await expect(f.host.handle(frame)).rejects.toThrow('requires reconciliation')
+    f.ports.nativeEvidence = async () => ({ sessionId: f.session.nativeSessionId,
+      processIdentityDigest: 'b'.repeat(64) })
+    await expect(f.host.handle(frame)).rejects.toThrow('Reattachment replaced original native lifetime')
+    expect(await f.journal.status(f.intent.operationId)).toMatchObject({
+      status: 'known', receipt: { phase: 'uncertain' },
+    })
+  })
+
+  it('reattaches an uncertain observation only after proving the original resident identity', async () => {
+    const f = await setup()
+    await f.host.prepare(f)
+    await f.journal.uncertain(f.intent.operationId, 'Main disconnected')
+    f.manager.attachSession = vi.fn(async () => { throw new Error('replacement forbidden') })
+    const frame = { method: 'reattach', intent: f.intent, placement: f.placement,
+      request: f.request, session: f.session }
+    f.state.allowed = false
+    await expect(f.host.handle(frame)).rejects.toThrow('revoked')
+    expect(await f.journal.status(f.intent.operationId)).toMatchObject({
+      status: 'known', receipt: { phase: 'uncertain' },
+    })
+    f.state.allowed = true
+    expect(await f.host.handle(frame)).toMatchObject({ session: f.session,
+      status: { status: 'known', receipt: { phase: 'start_acknowledged' } } })
+    expect(f.manager.attachSession).not.toHaveBeenCalled()
+    expect(f.state.starts).toBe(1)
+    expect(f.state.turns).toBe(0)
+  })
+
+  it('reattaches the closed original session to collect its saved terminal without launching native work', async () => {
+    const f = await setup()
+    const result = { outcome: 'succeeded' as const, output: { text: 'Original result' } }
+    f.manager.reconcile = async () => ({ events: [], pendingInteractions: [], terminalResult: result })
+    f.ports.settle = async () => ({ kind: 'completed', closureEvidenceDigest: 'a'.repeat(64), result })
+    await f.host.prepare(f)
+    await f.host.startTurn(f.intent.operationId, 'original prompt', 'execution:execution')
+    await f.host.drain()
+    f.manager.attachSession = vi.fn(async () => { throw new Error('replacement forbidden') })
+    f.ports.nativeEvidence = vi.fn(async () => { throw new Error('Original process already closed') })
+    const frame = { method: 'reattach', intent: f.intent, placement: f.placement,
+      request: f.request, session: f.session }
+    const original = await f.journal.status(f.intent.operationId)
+    expect(await f.host.handle(frame)).toEqual({ session: f.session, status: original })
+    expect(original).toMatchObject({ status: 'known', receipt: { phase: 'confirmed_terminal', terminal: { result } } })
+    f.state.allowed = false
+    await expect(f.host.handle(frame)).rejects.toThrow('revoked')
+    expect(f.ports.nativeEvidence).not.toHaveBeenCalled()
+    expect(f.manager.attachSession).not.toHaveBeenCalled()
+    expect(f.state.starts).toBe(1)
+    expect(f.state.turns).toBe(1)
   })
 
   it('recovers a lost prepare acknowledgement by observing the original resident without replaying prepare', async () => {

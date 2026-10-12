@@ -192,6 +192,8 @@ describe('actual Main and installed Codex qualification read capability', () => 
   it('accepts producer-shaped identity-qualified proof through the shipped worker mount and keeps exact revision checks', async () => {
     const stateDirectory = await mkdtemp(join(persistentFixtureRoot, 'graphql-codex-revision-'))
     try {
+      // Worker startup must only inspect installation files owned by this fixture.
+      vi.stubEnv('HOME', stateDirectory)
       const codexBinary = join(stateDirectory, 'codex')
       const appMcpLauncher = join(stateDirectory, 'graphql-mcp.mjs')
       await writeFile(codexBinary, '#!/bin/sh\nprintf "codex-cli 0.132.0\\n"\n', { mode: 0o700 })
@@ -228,7 +230,10 @@ describe('actual Main and installed Codex qualification read capability', () => 
         f.facts.harness.qualification.suiteRevision = 'codex-live-4'
         await expect(f.reader.capture()).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
       } finally { await worker.stop() }
-    } finally { await rm(stateDirectory, { recursive: true, force: true }) }
+    } finally {
+      vi.unstubAllEnvs()
+      await rm(stateDirectory, { recursive: true, force: true })
+    }
   })
   it('reads the exact persisted record afresh for every allocation and readonly repository lookup', async () => {
     const f = fixture()

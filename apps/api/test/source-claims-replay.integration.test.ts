@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import pg from 'pg'
 import { expect, it } from 'vitest'
 import { runWorktreesMigration } from '../src/infrastructure/runWorktreesMigration.js'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import { SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
 import { PrivateSourceMaterializer, releaseMaterializationClaim } from '../src/modules/sources/materialization.js'
 import { PostgresSourceService, type SourceExecutionHostPort } from '../src/modules/sources/service.js'
@@ -80,8 +81,20 @@ it.each(closureCases)('closes linked worktrees after $failure with $outputBytes 
       (materialization_id,record,state,execution_id,reservation_id) values ($1,$2,'prepared',$3,$4)`,
       [receipt.materializationId, record, receipt.executionId, record.reservationId])
     await pool.query(`insert into runs(id,execution_state) values ('ongoing-workflow','running')`)
+    const execution = HarnessExecutionSchema.parse({
+      id: receipt.executionId,
+      runId: 'ongoing-workflow',
+      workflowNodeId: 'source-node',
+      agentId: 'source-agent',
+      agentConfigurationVersionId: 'source-configuration',
+      attempt: 1,
+      workingDirectory: tree,
+      input: {},
+      state: 'running',
+      createdAt: new Date().toISOString(),
+    })
     await pool.query(`insert into harness_executions values ($1,'ongoing-workflow',$2)`,
-      [receipt.executionId, { state: 'running' }])
+      [receipt.executionId, execution])
     await pool.query(`insert into source_storage_reservations values ($1,$2,$3,$4,'owned',$5,$6)`, [reservation.reservationId, reservation.scopeId, reservation.ownerKind, reservation.ownerId, reservation.reservedBytes, reservation])
     const makeService = (releaseClaim: SourceExecutionHostPort['releaseClaim']) => new PostgresSourceService(pool,
       {} as PostgresCommandCoordinator, {} as WorkspaceLocationService, {} as PrivateSourceSnapshotStore,
@@ -110,9 +123,11 @@ it.each(closureCases)('closes linked worktrees after $failure with $outputBytes 
     await closeCompletedWorkflowSources(pool, recovered, report)
     expect((await pool.query('select state from source_execution_materializations')).rows[0].state).toBe('prepared')
     const session = { harness: 'codex', nativeSessionId: 'source-session', providerVersion: '1.0.0' }
-    await pool.query(`update harness_executions set record=$1`, [{
+    await pool.query(`update harness_executions set record=$1`, [HarnessExecutionSchema.parse({
+      ...execution,
       state: 'completed', nativeSessionId: session.nativeSessionId, result: { outcome: 'succeeded' },
-    }])
+      finishedAt: new Date().toISOString(),
+    })])
     await pool.query('insert into execution_native_sessions values($1,null,$2)', [receipt.executionId, session])
     await pool.query(`insert into execution_native_closures(execution_id,generation,expected_reference)
       values($1,1,$2)`, [receipt.executionId, session])

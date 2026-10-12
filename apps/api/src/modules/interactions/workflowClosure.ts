@@ -112,7 +112,7 @@ export async function readWorkflowClosure(sql: Sql, execution: HarnessExecution)
 export async function readDetachedWorkflowSession(owner: RunOwnership,
   execution: HarnessExecution): Promise<NativeSessionReference | undefined> {
   owner.assertOwned()
-  if (execution.runId !== owner.runId || execution.state !== 'waiting') return conflict()
+  if (execution.runId !== owner.runId || !['running', 'waiting'].includes(execution.state)) return conflict()
   const row = (await owner.oneShotConnection().query<ClosureRow & { record: unknown; reference: unknown }>(`select
     c.generation::text,c.execution_identity,c.expected_reference,c.closed_reference,
     c.closed_at is not null as closed,c.detached_at is not null as detached,c.detached_reference,c.closed_without_session,
@@ -132,7 +132,7 @@ export async function readDetachedWorkflowSession(owner: RunOwnership,
   if (!row || !row.detached || row.closed || row.closed_without_session || row.prior_unclosed !== false) return undefined
   const current = HarnessExecutionSchema.parse(row.record)
   const session = NativeSessionReferenceSchema.parse(row.reference)
-  if (current.state !== 'waiting' || !isDeepStrictEqual(current, execution)
+  if (!['running', 'waiting'].includes(current.state) || !isDeepStrictEqual(current, execution)
     || !isDeepStrictEqual(row.execution_identity, executionIdentity(current))
     || current.nativeSessionId !== session.nativeSessionId
     || !isDeepStrictEqual(row.detached_reference, session)

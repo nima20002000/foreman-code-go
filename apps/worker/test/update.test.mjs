@@ -15,6 +15,7 @@ import { readUpdateRecord, superviseWorkerUpdate, waitForWorkerReady, locateWork
 import { recoverPendingWorkerUpdate, writeUpdateRecord, migrateWorkerService } from '../src/updateSupervisor.mjs';
 import { renderUserService } from '../src/service.mjs';
 import { DeviceConnectionError } from '../../../apps/api/src/modules/devices/deviceWire.ts';
+import { DeviceApplicationError } from '../../../apps/api/src/modules/devices/deviceApplicationError.ts';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const facts = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.2',
@@ -379,6 +380,40 @@ test('a persisted channel failure retries automatically after Worker starts on a
   updater.ready();
   await until(async () => (await updater.status()).state === 'restarting');
   assert.equal((await readUpdateRecord(f.stateDirectory)).status.lastError, null);
+});
+
+test('application channel loss retries without classifying permission or revocation as channel loss', async t => {
+  const cases = [
+    { error: new DeviceApplicationError('unavailable'), expected: 'worker_update_channel_unavailable' },
+    { error: new DeviceApplicationError('transport'), expected: 'worker_update_channel_unavailable' },
+    { error: new DeviceApplicationError('timeout'), expected: 'worker_update_channel_unavailable' },
+    { error: new DeviceApplicationError('permission'), expected: 'worker_update_failed' },
+    { error: new DeviceConnectionError('revoked'), expected: 'worker_update_failed' },
+  ];
+  for (const { error, expected } of cases) {
+    await t.test(error.code, async t => {
+      const f = await fixture(t);
+      let connected = false;
+      let launched = 0;
+      const updater = await new WorkerUpdater({ ...f.options,
+        launchSupervisor: async () => { launched++; },
+        connection: () => connected ? f.options.connection() : { captureRequest: () => ({
+          request: async () => { throw error; },
+        }) },
+      }).initialize();
+      t.after(() => updater.close());
+      await assert.rejects(updater.start(), { code: expected });
+      assert.equal((await readUpdateRecord(f.stateDirectory)).status.lastError, expected);
+      assert.equal(launched, 0);
+      if (expected === 'worker_update_channel_unavailable') {
+        connected = true;
+        updater.ready();
+        await until(async () => (await updater.status()).state === 'restarting');
+        assert.equal(launched, 1);
+        assert.equal((await readUpdateRecord(f.stateDirectory)).status.lastError, null);
+      }
+    });
+  }
 });
 
 test('reconnection retries a retained generic update failure from before channel errors were classified', async t => {

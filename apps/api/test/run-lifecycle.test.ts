@@ -137,6 +137,7 @@ function fixture() {
     finishCleanup: async (_id: string, pending: boolean) => { control.cleanupPending = pending },
   }
   const native = { shareRunOwner: () => () => {}, cancelRun: async () => { calls.cancel++ }, finishRun: async () => { calls.finish++ },
+    preserveActiveForRestart: async () => false,
     reconcileReviews: async () => undefined, closeForRestart: async () => undefined, requestColdRunCleanup: async () => false,
     nativeBoundaryEvidence: async () => { throw new Error('No native evidence is fabricated in engine port tests') } }
   const interactions = { list: async () => { throw new Error('Historical pagination must never select resume IDs') } }
@@ -275,12 +276,30 @@ for (const hasApprovalSibling of [false, true]) it(`reconciliation does not repl
   assert.equal(f.run.outcome, 'pending'); assert.equal(f.calls.settled, 0); assert.equal(f.calls.cancel, 0)
 })
 it('a checkpoint read failure leaves delivered approval state recoverable for the next tick', async () => {
-  const f = fixture(), item = f.addInteraction(1, true); f.waiting(item)
-  const read = f.control.read; f.control.read = async () => { throw new Error('checkpoint unavailable') }
-  assert.equal((await f.reconcile()).length, 1); assert.equal(f.run.executionState, 'waiting')
-  assert.equal(f.items.get(item.id)?.deliveryState, 'delivered'); assert.equal(f.calls.cancel, 0)
-  f.control.read = read; f.control.work = async () => f.complete()
-  assert.deepEqual(await f.reconcile(), []); assert.equal(f.run.outcome, 'succeeded')
+  const f = fixture()
+  const item = f.addInteraction(1, true)
+  f.waiting(item)
+  let now = Date.now()
+  const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+  const read = f.control.read
+  f.control.read = async () => { throw new Error('checkpoint unavailable') }
+  try {
+    assert.equal((await f.reconcile()).length, 1)
+    assert.equal(f.run.executionState, 'waiting')
+    assert.equal(f.items.get(item.id)?.deliveryState, 'delivered')
+    assert.equal(f.calls.cancel, 0)
+    f.control.read = read
+    f.control.work = async () => f.complete()
+    now += 999
+    assert.deepEqual(await f.reconcile(), [])
+    assert.equal(f.run.outcome, 'pending')
+    assert.deepEqual(f.calls.consumed, [])
+    now++
+    assert.deepEqual(await f.reconcile(), [])
+    assert.equal(f.run.outcome, 'succeeded')
+    assert.deepEqual(f.calls.consumed, [[item.id]])
+    assert.equal(f.calls.cancel, 0)
+  } finally { clock.mockRestore() }
 })
 it('run-level resume selects only current IDs even beyond 150 old interactions', async () => {
   const f = fixture()

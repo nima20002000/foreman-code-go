@@ -132,9 +132,10 @@ export async function sourceFixture(relativeCwd='', options: {
     source:{kind:'pending',...source,revisionId:'revision',rootId:sourceRoot.binding.rootId,bindingRevision:1,materializationId:null,materializationDigest:null},
     payload:{kind:'agent',agentId:'agent',agentConfigurationVersionId:'configuration',driverId:harness,driverRevision:'1',instanceId:randomUUID(),instanceRevision:'1',harnessInstallationId:`installed-${harness}`,installationFingerprint:'a'.repeat(64),runtimeContractVersion:1,protocolRevision:`${harness}-native-adapter-v1`,credentialScopeRefs:[],
       ...(options.artifactOutputKeys ? { artifactOutputs: { version: 1 as const, outputKeys: options.artifactOutputKeys } } : {})}})
+  const input = {}
   const intent=deriveDispatch(placement,{
     executionId:'execution', attemptId:options.attemptId??'attempt', operationId:options.operationId??'operation',
-    technicalAttempt:1, occurrenceId:null, occurrenceIndex:0, inputDigest:`sha256:${'b'.repeat(64)}`,
+    technicalAttempt:1, occurrenceId:null, occurrenceIndex:0, inputDigest:commandInputHash(input),
     owner:{grantId:'grant',epoch:'1'},
   })
   const attempt={executionId:intent.executionId,attemptId:intent.attemptId,keyRevision:1,authorizationRevision:1,placementHash:''}
@@ -148,7 +149,7 @@ export async function sourceFixture(relativeCwd='', options: {
   const sources=new SourceOperationWorkerService({authenticate:async()=>undefined,approvedRoots:async()=>approvedRoots,currentOwner:async()=>owner})
   const configuration:AgentConfigurationVersion={id:'configuration',agentId:'agent',workspaceId:'workspace',version:1,prompt:{system:'Unit workflow instructions.'},assignedSkills:[],harness:DEFAULT_HARNESS_DEFAULTS[harness],contentHash:'fixture',createdAt:new Date().toISOString()}
   const request={executionId:intent.executionId,runId:intent.runId,workspaceId:'workspace',workflowNodeId:intent.nodeId,workingDirectory:workingTree.canonicalCwd,
-    runtimeDirectory:join(runtime,'workflow-runs',intent.executionId,intent.attemptId),configuration,input:{}}
+    runtimeDirectory:join(runtime,'workflow-runs',intent.executionId,intent.attemptId),configuration,input}
   return {root,approvedRoots,sources,owner,nativePlacement,intent,placement,request,context:{binding,signal:new AbortController().signal}}
 }
 

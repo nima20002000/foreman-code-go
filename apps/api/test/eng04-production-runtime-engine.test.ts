@@ -58,9 +58,12 @@ async function fixture(options: {
   const owner = { runId: run.id, oneShotConnection: () => connection, assertOwned() { if (!state.owned) throw new Error('owner-lost') },
     release: async () => { state.released++; state.events.push('release') } } as unknown as RunOwnership
   const factory = {} as RepeatEngineStartContext['factory']
-  const runs = { acquireOwnership: async (_runId: string): Promise<RunOwnership | undefined> => owner, getRepeatSnapshot: async () => {
-    AcceptedWorkflowRunV3Schema.parse(state.run); return snapshot()
-  }, repeatRepositoryFactory() { state.factoryReads++; return factory },
+  const runs = {
+    acquireOwnership: (async () => owner) as (runId: string, onLost: () => void) => Promise<RunOwnership | undefined>,
+    getRepeatSnapshot: async () => {
+      AcceptedWorkflowRunV3Schema.parse(state.run)
+      return snapshot()
+    }, repeatRepositoryFactory() { state.factoryReads++; return factory },
     get: async (runId: string) => { assert.equal(runId, run.id); return structuredClone(state.run) },
     requestCleanup: async () => { state.cleanupPending = true; state.events.push('request-cleanup') },
     finishCleanup: async (_id: string, failed: boolean) => { state.cleanupPending = failed; state.events.push('finish-cleanup') },
@@ -70,6 +73,7 @@ async function fixture(options: {
   lifecycleCalls.settle = () => { state.events.push('settle'); terminal() }
   const stopSharingOwner = vi.fn()
   const native = { shareRunOwner: vi.fn(() => stopSharingOwner),
+    preserveActiveForRestart: async () => false,
     cancelRun: async () => { state.nativeCancel++; if (!state.clean) throw new Error('native closure uncertain') },
     finishRun: async () => { state.events.push('finish-native') },
     nativeBoundaryEvidence: async () => { throw new Error('No fake native evidence in registration tests') },

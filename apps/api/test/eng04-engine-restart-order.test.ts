@@ -19,7 +19,9 @@ function deferred() {
 
 // Current engine and checkpoint inspection; recording repository/native ports.
 // This isolates shutdown ordering and does not claim database or provider proof.
-for (const uncertain of [false, true]) test(`restart holds owner until captured native closure ${uncertain ? 'succeeds on retry' : 'completes'}`, async () => {
+for (const preserving of [false, true]) for (const uncertain of [false, true]) test(
+  `restart ${preserving ? 'preserves active work and ' : ''}holds owner until captured native closure `
+    + `${uncertain ? 'succeeds on retry' : 'completes'}`, async () => {
   const f = makeCurrentWorkflowFixture('restart-order', 'single')
   const entered = deferred(), closure = deferred(), events: string[] = []
   let released = false
@@ -39,6 +41,12 @@ for (const uncertain of [false, true]) test(`restart holds owner until captured 
   }
   const native = {
     shareRunOwner: () => () => {},
+    preserveActiveForRestart: vi.fn(async (actual: typeof owner) => {
+      assert.equal(actual, owner)
+      owner.assertOwned()
+      events.push('preserve-check')
+      return preserving
+    }),
     requestColdRunCleanup: vi.fn(async (actual: typeof owner) => {
       assert.equal(actual, owner)
       return false
@@ -72,8 +80,15 @@ for (const uncertain of [false, true]) test(`restart holds owner until captured 
   // Drain every microtask caused by abort, not merely its first continuation.
   await setImmediate()
   assert.equal(events.includes('abort'), true)
-  assert(events.indexOf('cleanup-intent') < events.indexOf('close-start'))
-  assert(events.indexOf('cleanup-intent') < events.indexOf('abort'))
+  assert.equal(native.preserveActiveForRestart.mock.calls.length, 1)
+  if (preserving) {
+    assert.equal(events.includes('cleanup-intent'), false)
+    assert(events.indexOf('preserve-check') < events.indexOf('close-start'))
+    assert(events.indexOf('preserve-check') < events.indexOf('abort'))
+  } else {
+    assert(events.indexOf('cleanup-intent') < events.indexOf('close-start'))
+    assert(events.indexOf('cleanup-intent') < events.indexOf('abort'))
+  }
   assert.equal(events.includes('release'), false)
   assert.equal(native.closeForRestart.mock.calls.length, 1)
   if (uncertain) closure.reject(new Error('original native detachment unconfirmed'))
@@ -102,6 +117,8 @@ for (const uncertain of [false, true]) test(`restart holds owner until captured 
   }
   assert(events.indexOf('close-settled') < events.indexOf('release'))
   assert.equal(events.filter((event) => event === 'release').length, 1)
+  assert.equal(native.preserveActiveForRestart.mock.calls.length, uncertain ? 2 : 1)
+  if (preserving) assert.equal(events.includes('cleanup-intent'), false)
 })
 
 
@@ -121,7 +138,8 @@ test('restart retains the original owner when cleanup persistence fails and retr
       events.push('cleanup-intent')
     }),
   }
-  const native = { shareRunOwner: () => () => {}, requestColdRunCleanup: async () => false, closeForRestart: vi.fn(async () => { events.push('close') }),
+  const native = { shareRunOwner: () => () => {}, preserveActiveForRestart: async () => false,
+    requestColdRunCleanup: async () => false, closeForRestart: vi.fn(async () => { events.push('close') }),
     cancelRun: vi.fn(), finishRun: vi.fn() }
   type Args = ConstructorParameters<typeof LangGraphWorkflowEngine>
   const engine = new LangGraphWorkflowEngine(runs as unknown as Args[0], {
@@ -166,7 +184,8 @@ for (const failFirst of [false, true]) test(`naturally completing drive holds it
       events.push('cleanup-intent')
     },
   }
-  const native = { shareRunOwner: () => () => {}, requestColdRunCleanup: async () => false, closeForRestart: vi.fn(async () => { owner.assertOwned(); events.push('close') }) }
+  const native = { shareRunOwner: () => () => {}, preserveActiveForRestart: async () => false,
+    requestColdRunCleanup: async () => false, closeForRestart: vi.fn(async () => { owner.assertOwned(); events.push('close') }) }
   type Args = ConstructorParameters<typeof LangGraphWorkflowEngine>
   const engine = new LangGraphWorkflowEngine(runs as unknown as Args[0], {
     getVersion: async (versionId: string) => { assert.equal(versionId, f.version.id); return f.version },

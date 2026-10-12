@@ -24,6 +24,7 @@ export interface NativeManagerResolutionContext extends NativeManagerOwnershipCo
   configuration: AgentConfigurationVersion
   runId?: string
   attempt?: number
+  nativeSessionId?: string
   /** Exact immutable W08 placement loaded by the existing continuation owner. */
   acceptedPlacement?: AcceptedNodePlacement
   artifactOutputs?: WorkflowArtifactOutputsV1

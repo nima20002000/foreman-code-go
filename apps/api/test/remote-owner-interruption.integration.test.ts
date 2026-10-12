@@ -6,6 +6,7 @@ import { SourcePreparationSchema } from '@foreman-code/contracts/source-admissio
 import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { hasPositiveRemoteEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 import { receipts, useRemoteReviewFixture, waitForRemoteReview } from './helpers/remoteReviewProductionCases.js'
+import { startWhenReady } from './helpers/harnessInstallationUpdate.js'
 
 const withRemoteReviewFixture = useRemoteReviewFixture()
 
@@ -73,8 +74,11 @@ it('closes an unbound attempt after owner restarts, records interruption, and ad
 
     await rm(join(fixture.provider.directory, 'block-requester-session'))
     await fixture.provider.releaseReview()
-    const later = await fixture.start()
-    const launched = await waitForRemoteReview(() => fixture.executions(later.run.id), executions => executions.some(
+    const later = (await startWhenReady(fixture))!
+    const launched = await waitForRemoteReview(async () => {
+      await fixture.reconcileReviews()
+      return fixture.executions(later.run.id)
+    }, executions => executions.some(
       execution => execution.workflowNodeId !== fixture.version.entryNodeId && !!execution.nativeSessionId),
     'later Run native session')
     expect(launched.some(execution => execution.nativeSessionId)).toBe(true)

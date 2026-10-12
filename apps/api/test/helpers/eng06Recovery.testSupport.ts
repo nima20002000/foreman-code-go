@@ -59,6 +59,10 @@ export function recoveryDatabase(options: { bound?: boolean; detached?: boolean;
         return rows(record?.runId === values[1] ? [{ record }] : [])
       }
       if (text.includes('from execution_native_closures c where execution_id=')) return rows(values[0] === state.execution.id && state.lifetime ? [state.lifetime] : [])
+      if (text.includes('from runs r join harness_executions e')) {
+        return rows(!state.fenced && !state.finalized && state.lifetime && state.session
+          ? [{ ...state.lifetime, record: state.execution, reference: state.session }] : [])
+      }
       if (text.includes('from harness_executions e join execution_native_sessions')) return rows(state.lifetime && state.session
         ? [{ ...state.lifetime, record: state.execution, reference: state.session }] : [])
       if (text.includes('from execution_native_recoveries p')) return rows(state.proof && state.lifetime

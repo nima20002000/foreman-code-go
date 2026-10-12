@@ -450,7 +450,9 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
   else if (message.method === 'test/request') {
     send({ id: 555, method: 'test/native', params: {} }); result(message.id, {})
   } else if (message.method === 'test/epipe') {
-    result(message.id, {}); process.stdin.pause(); fs.closeSync(0)
+    process.stdin.pause()
+    fs.closeSync(0)
+    result(message.id, { stdinClosed: true })
   }
 })
 if (process.env.TEST_CODEX_TRANSPORT_READY) log({ nativeReady: process.env.TEST_CODEX_TRANSPORT_READY })
