@@ -116,7 +116,7 @@ describe('Persisted execution activity through HTTP and authenticated MCP', { ti
     })
     const mcpPage = async (request: ActivityRequest = {}) => {
       const result = await mcp.callTool({ name: 'agent_chat_read', arguments: mcpArguments(request) })
-      expect(result.isError).not.toBe(true)
+      expect(result.isError, JSON.stringify(result)).not.toBe(true)
       const page = ReadAgentChatResponseSchema.parse(decodeMcpToolResult(result)).executionActivity
       expect(page).toBeDefined()
       return page!

@@ -169,17 +169,18 @@ export const AgentChatTurnSchema = z.object({
 }).strict();
 export type AgentChatTurn = z.infer<typeof AgentChatTurnSchema>;
 
+const NativeSequenceSchema = z.string().regex(/^(0|[1-9][0-9]{0,18})$/);
 /** Public text from the workflow execution, separate from its follow-up conversation. */
 export const AgentChatSourceTranscriptSchema = z.object({
   executionId: IdSchema,
   state: HarnessExecutionSchema.shape.state,
-  revision: OperatorActivityCursorSchema,
+  /** Latest public native message revision; "0" when no messages have been recorded. */
+  revision: NativeSequenceSchema,
   messages: z.array(MessageSchema.omit({ conversationId: true })).max(100),
   hasEarlierMessages: z.boolean(),
 }).strict();
 export type AgentChatSourceTranscript = z.infer<typeof AgentChatSourceTranscriptSchema>;
 
-const NativeSequenceSchema = z.string().regex(/^(0|[1-9][0-9]{0,18})$/);
 /** One public entry of a workflow execution: a message or a tool, file, MCP, plan, reasoning-summary or subagent step. */
 export const AgentChatExecutionItemSchema = z.object({
   executionId: IdSchema,
