@@ -7,6 +7,20 @@ import {
 } from '@foreman-code/contracts'
 import { configurationInput } from './agentConfiguration.js'
 
+it('preserves, replaces and clears the native loading policy in immutable configuration content', () => {
+  const current = AgentConfigurationVersionSchema.parse({
+    id: 'configuration', workspaceId: 'workspace', agentId: 'agent', version: 1,
+    harness: DEFAULT_HARNESS_DEFAULTS.codex, prompt: {}, assignedSkills: [],
+    nativeTools: { mcpServers: ['linear'], apps: false }, contentHash: 'saved', createdAt: '2026-10-12T00:00:00.000Z',
+  })
+  const agent = { id: 'agent', name: 'Agent' }
+  expect(configurationInput('workspace', agent, current).nativeTools).toEqual(current.nativeTools)
+  expect(configurationInput('workspace', { ...agent, nativeTools: {} }, current).nativeTools).toEqual({})
+  expect(configurationInput('workspace', { ...agent, nativeTools: { mcpServers: [] } }, current).nativeTools)
+    .toEqual({ mcpServers: [] })
+  expect(current.nativeTools).toEqual({ mcpServers: ['linear'], apps: false })
+})
+
 const retired = AgentConfigurationVersionSchema.parse({
   id: 'saved-configuration',
   workspaceId: 'workspace',

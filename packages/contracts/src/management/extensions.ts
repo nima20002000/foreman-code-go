@@ -25,6 +25,7 @@ export const AgentCreateInputSchema = z.object({
   harnessProfileSelection: AgentSchema.shape.harnessProfileSelection,
   prompt: AgentSchema.shape.prompt, assignedSkills: AgentSchema.shape.assignedSkills,
   graphqlTools: AgentSchema.shape.graphqlTools,
+  nativeTools: AgentSchema.shape.nativeTools,
 }).strict();
 export const AgentUpdateInputSchema = z.object({
   ...Workspace, agentId: IdSchema, ...Mutation,
@@ -36,8 +37,9 @@ export const AgentUpdateInputSchema = z.object({
   harnessProfileSelection: AgentSchema.shape.harnessProfileSelection,
   prompt: AgentSchema.shape.prompt, assignedSkills: AgentSchema.shape.assignedSkills,
   graphqlTools: AgentSchema.shape.graphqlTools,
+  nativeTools: AgentSchema.shape.nativeTools,
 }).strict().refine((value) => [value.name, value.description, value.role, value.configuration,
-  value.prompt, value.assignedSkills, value.graphqlTools, value.harnessProfileSelection].some((item) => item !== undefined), "At least one editable field is required");
+  value.prompt, value.assignedSkills, value.graphqlTools, value.nativeTools, value.harnessProfileSelection].some((item) => item !== undefined), "At least one editable field is required");
 export const AgentCloneInputSchema = z.object({
   ...Workspace, commandId: Command, agentId: IdSchema, sourceAgentId: IdSchema,
   expectedSourceRevision: Revision, expectedSourceConfigurationVersionId: IdSchema,

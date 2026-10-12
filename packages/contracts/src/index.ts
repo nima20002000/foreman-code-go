@@ -1,4 +1,6 @@
 import { TextTruncationSchema } from './activityText.js';
+import { NativeToolsSchema } from './nativeTools.js';
+export * from './nativeTools.js';
 import { PromptSettingSnapshotSchema } from './prompts.js';
 import { AcceptedProviderAccountBindingSchema } from './providerAccounts.js';
 export * from './providerAccounts.js';
@@ -330,6 +332,7 @@ export function validateHarnessWorkflowCompatibility(
 }
 
 export const AgentTemplateSchema = z.object({
+  nativeTools: NativeToolsSchema.optional(),
   harnessProfileSelection: z.lazy(() => HarnessProfileSelectionSchema).optional(),
   role: AgentProductRoleSchema,
   boardAddable: z.boolean(),
@@ -403,10 +406,12 @@ export const DEFAULT_HARNESS_DEFAULTS: HarnessDefaults = HarnessDefaultsSchema.p
 export const DEFAULT_AGENT_DEFAULTS: AgentDefaults = AgentDefaultsSchema.parse({
   orchestrator: {
     role: "orchestrator", boardAddable: true,
+    nativeTools: { mcpServers: [], apps: false },
     harness: { ...DEFAULT_HARNESS_DEFAULTS.codex },
   },
   coder: {
     role: "coder", boardAddable: true,
+    nativeTools: { mcpServers: [], apps: false },
     harness: { ...DEFAULT_HARNESS_DEFAULTS.codex },
   },
   operator: {
@@ -732,6 +737,7 @@ export type ReviewStatus = z.infer<typeof ReviewStatusSchema>;
 /** An Agent is a separately addressable worker; workflow nodes reference it by agentId. */
 export const AgentSchema = z
   .object({
+    nativeTools: NativeToolsSchema.optional(),
     id: IdSchema,
     name: z.string().trim().min(1),
     description: z.string().optional(),
@@ -772,6 +778,7 @@ export type WorkflowVersion = import('./wave25/workflowSchemas.js').WorkflowVers
 /** Immutable prompt, skill, model and harness settings used to start a native session. */
 export const AgentConfigurationVersionSchema = z
   .object({
+    nativeTools: NativeToolsSchema.optional(),
     harnessProfileSelection: z.lazy(() => HarnessProfileSelectionSchema).optional(),
     id: IdSchema,
     workspaceId: IdSchema,
@@ -794,6 +801,7 @@ export const AgentConfigurationVersionSchema = z
 export type AgentConfigurationVersion = z.infer<typeof AgentConfigurationVersionSchema>;
 
 export const OperatorConfigurationVersionSchema = z.object({
+  nativeTools: NativeToolsSchema.optional(),
   harnessProfileSelection: z.lazy(() => HarnessProfileSelectionSchema).optional(),
   id: IdSchema,
   operatorId: IdSchema,
