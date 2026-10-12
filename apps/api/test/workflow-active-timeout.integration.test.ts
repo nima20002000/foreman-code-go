@@ -54,7 +54,12 @@ it.each(['normal cleanup', 'retried bookkeeping', 'retried cleanup', 'Stop durin
       await f.engine.start(f.f.run.id)
     } else {
       await expect(f.engine.start(f.f.run.id)).rejects.toMatchObject({ code: 'REPEAT_CLEANUP_PENDING' })
-      expect((await f.runs.getRepeatSnapshot(f.f.run.id)).cleanupPending).toBe(true)
+      const snapshot = await f.runs.getRepeatSnapshot(f.f.run.id)
+      if (mode === 'Stop during cleanup') {
+        expect(snapshot.run).toMatchObject({ executionState: 'completed', outcome: 'canceled' })
+      } else {
+        expect(snapshot.cleanupPending).toBe(true)
+      }
       const recovery = f.compose()
       await recovery.engine.start(f.f.run.id)
     }
