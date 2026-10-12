@@ -18,10 +18,15 @@ export interface HostCiPorts {
   memoryBytes: number
 }
 
+/** The CircleCI CLI otherwise spawns a telemetry process for every call, and CI polling calls it constantly. */
+function withoutCliTelemetry(file: string, environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return file === 'circleci' ? { ...environment, CIRCLECI_CLI_TELEMETRY_OPTOUT: '1' } : environment
+}
+
 export function systemHostCiPorts(environment: NodeJS.ProcessEnv = process.env): HostCiPorts {
   return {
     run: (file, args, options = {}) => new Promise(resolve => {
-      execFile(file, [...args], { cwd: options.cwd, env: options.env ?? environment, timeout: options.timeoutMs ?? 600_000,
+      execFile(file, [...args], { cwd: options.cwd, env: withoutCliTelemetry(file, options.env ?? environment), timeout: options.timeoutMs ?? 600_000,
         maxBuffer: 16 * 1024 * 1024, encoding: 'utf8' }, (error, stdout, stderr) => {
         const code = error ? (typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : 1) : 0
         resolve({ code, stdout, stderr })
