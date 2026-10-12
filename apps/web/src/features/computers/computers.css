@@ -92,7 +92,14 @@ button.computer-account:focus-visible { outline: 2px solid var(--n-focus); outli
   border-radius: 6px; color: var(--text-muted); font-size: 12px; text-decoration: none; }
 .sidebar-computer:hover { color: var(--text); background: var(--surface-hover); }
 .sidebar-computer:focus-visible { outline: 2px solid var(--n-focus); outline-offset: -2px; }
-.sidebar-computer-icon { display: flex; flex-shrink: 0; color: var(--load-color); }
+.sidebar-computer-icon { position: relative; display: flex; flex-shrink: 0; width: 16px; height: 16px; color: var(--load-color); }
+.sidebar-computer-icon[data-running]::before { content: ''; position: absolute; inset: -4px; border: 1.5px solid currentColor;
+  border-right-color: transparent; border-bottom-color: transparent; border-radius: 50%; pointer-events: none; }
+.sidebar-computer-glyph { display: flex; }
+.sidebar-computer-count { position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center;
+  min-width: 12px; height: 12px; padding-inline: 2px; box-sizing: border-box; border-radius: 999px;
+  background: var(--surface); color: var(--text); font-size: 9px; line-height: 1; font-weight: 600;
+  font-variant-numeric: tabular-nums; pointer-events: none; }
 .sidebar-computers > li:is([data-load='offline'], [data-load='unknown']) .sidebar-computer-icon { opacity: .6; }
 .sidebar-computer-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-computer-metric { flex-shrink: 0; color: var(--text-faint); font-size: 11px; font-variant-numeric: tabular-nums; }
@@ -128,7 +135,9 @@ button.computer-account:focus-visible { outline: 2px solid var(--n-focus); outli
 .computer-hover-versions dt { color: var(--n-muted); }
 .computer-hover-versions dd { margin: 0; font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: no-preference) {
-  .sidebar-computer-icon { transition: color 400ms ease-out; }
+  .sidebar-computer-icon { transition: color 200ms ease-out; }
+  .sidebar-computer-icon[data-running]::before { animation: computer-activity-spin 1.2s linear infinite; }
   .computer-hover-card { animation: computer-hover-in 120ms ease-out; }
 }
+@keyframes computer-activity-spin { to { transform: rotate(360deg); } }
 @keyframes computer-hover-in { from { opacity: 0; } }
