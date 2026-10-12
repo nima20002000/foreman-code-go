@@ -1,5 +1,5 @@
 import { importGitSourceObjects } from './gitSourceObjects.js'
-import { processSourceEntries } from './entryProcessing.js'
+import { processSourceDirectories } from './entryProcessing.js'
 import { sourceMaterializationClaimName, restoreQuotaMaterializationClaim, writeSourceClaim } from './quotaClaims.js'
 import { reclaimMaterializationQuota, reclaimPreparationQuota, removeSourceDirectory } from './quotaReclamation.js'
 import { constants } from 'node:fs'
@@ -21,6 +21,7 @@ import { assertWorktreeReceipt, verifyWorktreeBranch } from './worktreeRequest.j
 import { systemGitWorktreePorts, type GitWorktreePorts, type WorktreeRequest } from './gitWorktree.js'
 import { sourceWorkingTreePath } from './sourceTreePaths.js'
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
+import { componentLogger } from '../diagnostics/logger.js'
 
 const equal = isDeepStrictEqual
 /** Preserve the claim API while sharing Main's joined directory-lock implementation. */
@@ -59,6 +60,14 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
     worktree?: WorktreeRequest }): Promise<MaterializationReceipt> {
     const bytes = this.bytes
     if (!bytes) throw new SourceError('SOURCE_READ_ONLY_VERIFIER', 'A verification-only materializer cannot prepare source bytes.')
+    const started = performance.now()
+    let checkpoint = started
+    const phases: Record<string, number> = {}
+    const completed = (phase: string) => {
+      const now = performance.now()
+      phases[phase] = Math.round(now - checkpoint)
+      checkpoint = now
+    }
     const manifest = verifySourceManifest(input.manifest), binding = RootBindingSchema.parse(input.binding)
     if (binding.snapshotId !== manifest.snapshotId || binding.manifestDigest !== manifest.manifestDigest)
       throw new SourceError('SOURCE_PIN_CONFLICT', 'The root is not bound to this exact source snapshot.')
@@ -141,13 +150,12 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
       await mkdir(anchored(reservation, 'staging'), { mode: 0o700 })
       tree = await openChildDirectory(reservation, 'staging')
       const staging = tree
-      await processSourceEntries(manifest.entries, async entry => {
-        signal.throwIfAborted()
-        const content = await bytes.read(manifest, entry, signal)
-        signal.throwIfAborted()
-        verifySourceBytes(entry, content)
-        const { parent, leaf } = await entryParent(staging, entry.path, true)
-        try {
+      completed('authorizationAndReservationMs')
+      await processSourceDirectories(staging, manifest.entries, async (parent, entries) => {
+        const write = async (entry: SourceManifest['entries'][number], content: Uint8Array) => {
+          signal.throwIfAborted()
+          verifySourceBytes(entry, content)
+          const leaf = entry.path.slice(entry.path.lastIndexOf('/') + 1)
           const file = await open(anchored(parent, leaf),
             constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
           const readOnly = binding.accessMode === 'read-only' || input.sharedWritableTree
@@ -157,10 +165,19 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
             await file.chmod(mode | (entry.executable ? 0o100 : 0))
             await file.sync()
           } finally { await file.close() }
-          await parent.sync()
-        } finally { await parent.close() }
-      }, signal)
+        }
+        if (bytes.readEntries) {
+          await bytes.readEntries(manifest, entries, signal, write)
+        } else {
+          for (const entry of entries) {
+            signal.throwIfAborted()
+            await write(entry, await bytes.read(manifest, entry, signal))
+          }
+        }
+      }, { create: true, signal })
+      completed('copyMs')
       await verifyMaterializedSourceTree(tree, manifest, signal)
+      completed('verifyReferenceMs')
       const writable = input.sharedWritableTree && binding.accessMode === 'exclusive-write'
       if (manifest.git?.metadata) {
         const metadata = await bytes.readGitMetadata?.(manifest, signal)
@@ -170,6 +187,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
             blobPath: async path => join(binding.canonicalPath, ...(quota ? [quota.namespace] : []), id, 'staging', path) })
         }
       }
+      completed('importGitObjectsMs')
       signal.throwIfAborted(); await this.authorize(binding, attempt)
       const current = await openPrivateRoot(binding.canonicalPath)
       try { if (!equal(await identity(current), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root replaced before activation.') }
@@ -180,6 +198,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
       const shared = worktree ?? (writable
         ? await withClaimLock(root, () => prepareSharedWorkingTree({ root: root!, binding, manifest,
           reference: tree!, signal, authorize: () => this.authorize(binding, attempt) })) : undefined)
+      completed('prepareWorkingTreeMs')
       const receipt = MaterializationReceiptSchema.parse({ version: 1, materializationId: id, binding, ...attempt, ...(quota ? { quota } : {}),
         claimScope: 'execution',
         ...(shared ? { sharedTree: { id: shared.id, referenceIdentity } } : {}),
@@ -194,6 +213,10 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
       signal.throwIfAborted()
       await rename(anchored(reservation, 'staging'), anchored(reservation, 'tree'))
       await reservation.sync(); await root.sync()
+      completed('activateMs')
+      componentLogger('engine').info({ executionId: attempt.executionId, attemptId: attempt.attemptId,
+        snapshotId: manifest.snapshotId, entries: manifest.totalEntries, durationMs: Math.round(performance.now() - started),
+        phases }, 'source preparation completed')
       return receipt
     } finally {
       await tree?.close(); await reservation?.close(); await slotDirectory?.close(); await root?.close(); this.active--
@@ -295,23 +318,28 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
 }
 export async function verifyMaterializedSourceTree(tree: FileHandle, manifest: SourceManifest, signal?: AbortSignal): Promise<void> {
   const expected = new Set(manifest.entries.map((entry) => entry.path))
+  const directories = new Set<string>()
+  for (const entry of manifest.entries) {
+    const parts = entry.path.split('/')
+    for (let depth = 1; depth < parts.length; depth++) directories.add(parts.slice(0, depth).join('/'))
+  }
   const walk = async (directory: FileHandle, prefix: string): Promise<void> => {
     for (const item of await readdir(anchored(directory), { withFileTypes: true })) {
       signal?.throwIfAborted()
       const path = prefix ? `${prefix}/${item.name}` : item.name
       sourcePath(path)
       if (item.isDirectory()) {
-        if (!manifest.entries.some((entry) => entry.path.startsWith(`${path}/`))) throw new SourceError('SOURCE_TREE_EXTRA', 'Unexpected materialization directory.')
+        if (!directories.has(path)) throw new SourceError('SOURCE_TREE_EXTRA', 'Unexpected materialization directory.')
         const child = await openChildDirectory(directory, item.name)
         try { await walk(child, path) } finally { await child.close() }
       } else if (!item.isFile() || !expected.has(path)) throw new SourceError('SOURCE_TREE_EXTRA', 'Unexpected materialization entry.')
     }
   }
   await walk(tree, '')
-  await processSourceEntries(manifest.entries, async entry => {
-    signal?.throwIfAborted()
-    const { parent, leaf } = await entryParent(tree, entry.path, false)
-    try {
+  await processSourceDirectories(tree, manifest.entries, async (parent, entries) => {
+    for (const entry of entries) {
+      signal?.throwIfAborted()
+      const leaf = entry.path.slice(entry.path.lastIndexOf('/') + 1)
       const file = await open(anchored(parent, leaf), constants.O_RDONLY | constants.O_NOFOLLOW)
       try {
         const stat = await file.stat()
@@ -319,8 +347,8 @@ export async function verifyMaterializedSourceTree(tree: FileHandle, manifest: S
           throw new SourceError('SOURCE_TREE_INVALID', 'Materialized kind, size, link count or executable policy changed.')
         verifySourceBytes(entry, await file.readFile({ signal }))
       } finally { await file.close() }
-    } finally { await parent.close() }
-  }, signal)
+    }
+  }, signal ? { signal } : {})
 }
 
 /** Called only after authoritative execution reconciliation, never on disconnect. */
