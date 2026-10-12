@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { pruneCiImages } from './ciRuntimeImages.js'
+import { pruneCiImages, retainedCiJobImages } from './ciRuntimeImages.js'
 
 const command = vi.hoisted(() => ({ run: vi.fn() }))
 vi.mock('node:child_process', async importOriginal => {
@@ -17,6 +17,24 @@ const name = 'localhost/foreman-code-verification:abcdef123456'
 afterEach(() => command.run.mockReset())
 
 describe('CI image pruning', () => {
+  it('keeps images for unfinished Jobs and drops fully reclaimed Jobs still retained as history', async () => {
+    const receipts = [
+      { id: 'running', stopped: false, publication: 'pending', image: 'running-image' },
+      { id: 'publishing', stopped: true, publication: 'collecting', image: 'publishing-image' },
+      { id: 'cleanup-pending', stopped: true, publication: 'complete', image: 'cleanup-image' },
+      { id: 'closed', stopped: true, publication: 'complete', image: 'old-image' },
+      { id: 'failed-closed', stopped: true, publication: 'failed', image: 'failed-image' },
+      { id: 'shared', stopped: false, publication: 'pending', image: 'cleanup-image' },
+    ].map(value => ({ intent: { operationId: value.id }, terminal: { processStopped: value.stopped },
+      publication: value.publication, execution: { acceptedSpec: { policy: { imageDigest: value.image } } } }))
+    const journal = {
+      jobOperations: async () => receipts as never,
+      jobNativeOwner: async (id: string) => ['closed', 'failed-closed'].includes(id)
+        ? { sourceReclamation: { quotaReclaimed: true } } as never : null,
+    }
+    expect(await retainedCiJobImages(journal)).toEqual(['running-image', 'publishing-image', 'cleanup-image'])
+  })
+
   it('removes all managed commit tags from an unused image and preserves a multiply tagged kept image', async () => {
     const oldTags = [name, `localhost/foreman-code-verification:${'a'.repeat(40)}`,
       `localhost/foreman-code-verification:${'b'.repeat(64)}`]

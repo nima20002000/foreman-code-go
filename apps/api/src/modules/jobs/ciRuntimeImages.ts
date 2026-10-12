@@ -1,5 +1,16 @@
 import { createHash } from 'node:crypto'
 import { runCiRuntimeCommand } from './ciRuntimeCommands.js'
+import type { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
+
+export async function retainedCiJobImages(journal: Pick<RemoteOperationJournal, 'jobOperations' | 'jobNativeOwner'>) {
+  const images: string[] = []
+  for (const receipt of await journal.jobOperations()) {
+    const finished = receipt.terminal?.processStopped && ['complete', 'failed'].includes(receipt.publication)
+    if (finished && (await journal.jobNativeOwner(receipt.intent.operationId))?.sourceReclamation) continue
+    images.push(receipt.execution.acceptedSpec.policy.imageDigest)
+  }
+  return [...new Set(images)]
+}
 
 export async function pruneCiImages({ keep, env, installer, signal }: {
   keep: readonly string[]; env: NodeJS.ProcessEnv; installer: string; signal?: AbortSignal | undefined
