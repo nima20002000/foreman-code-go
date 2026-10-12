@@ -368,14 +368,16 @@ describe('installed host resident execution continuity', () => {
       const replacement = { ...f.context.binding,
         connectionGeneration: f.context.binding.connectionGeneration + 1, connectionEpoch: randomUUID() }
       f.reconnect(replacement)
-      const read = f.call('history')
-      const result = expect(read).resolves.toMatchObject({ payload: {
-        history: f.history, status: { receipt: { terminal: { kind: 'completed' } } },
-      } })
+      let readSettled = false
+      const outcome = f.call('history').then(response => ({ response }), (error: unknown) => ({ error }))
+        .then(result => { readSettled = true; return result })
       // Let reconnection inspect the closed process while its terminal commit is still blocked.
       await new Promise<void>(resolve => setImmediate(resolve))
+      expect(readSettled).toBe(false)
       release()
-      await result
+      expect(await outcome).toMatchObject({ response: { payload: {
+        history: f.history, status: { receipt: { terminal: { kind: 'completed' } } },
+      } } })
       expect(f.create).toHaveBeenCalledOnce()
       expect(f.turns).toHaveBeenCalledOnce()
       expect(f.attach).not.toHaveBeenCalled()
