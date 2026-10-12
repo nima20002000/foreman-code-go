@@ -122,7 +122,7 @@ describe('workspace section routes', () => {
   it('opens the workflow directory from the Workflows sidebar button', async () => {
     const user = userEvent.setup()
     const { router } = renderRoute('/workspaces/workspace-1/settings')
-    await user.click(await screen.findByRole('button', { name: 'Workflows', exact: true }))
+    await user.click(await screen.findByRole('button', { name: 'Workflows' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/workflows'))
     expect(within(screen.getByRole('navigation', { name: 'Workspace sections' })).getByRole('link', { name: 'Workflows' })).toHaveAttribute('aria-current', 'page')
     expect(await screen.findByTestId('workflow-card-workflow-content-pipeline')).toBeVisible()

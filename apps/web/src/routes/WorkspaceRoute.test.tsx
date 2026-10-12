@@ -59,9 +59,9 @@ describe('WorkspaceRoute', () => {
     )
 
     expect(await screen.findByTestId('workspace-stale')).toHaveTextContent('agent-old')
-    const workflows = await screen.findByRole('button', { name: 'Workflows', exact: true })
+    const workflows = await screen.findByRole('button', { name: 'Workflows' })
     expect(workflows).not.toHaveAttribute('aria-current')
-    const workspaces = screen.getAllByRole('button', { name: 'Workspaces', exact: true })
+    const workspaces = screen.getAllByRole('button', { name: 'Workspaces' })
       .find(button => !button.hasAttribute('aria-expanded'))!
     expect(workspaces).toHaveClass('nav-item-active')
     await userEvent.click(workflows)

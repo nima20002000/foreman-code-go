@@ -33,7 +33,7 @@ export default tseslint.config(
       'react-hooks/rules-of-hooks': 'error',
       'react-refresh/only-export-components': [
         'warn',
-        { allowConstantExport: true },
+        { allowConstantExport: true, extraHOCs: ['createLink'] },
       ],
     },
   },
