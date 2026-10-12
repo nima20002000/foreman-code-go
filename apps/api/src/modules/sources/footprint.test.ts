@@ -1,14 +1,16 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import type { RootBinding } from '@foreman-code/contracts/source-materialization'
+import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { sourceMaterializationBytes, sourceStructureBytes } from './footprint.js'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { PrivateSourceSnapshotStore } from './store.js'
 import { PrivateSourceMaterializer, releaseMaterializationClaim } from './materialization.js'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
 import { measureRetainedMaterializationFootprint } from './retainedDirectoryUsage.js'
+import { sourceWorkingTreePath } from './sourceTreePaths.js'
 
 const directories: string[] = []
 afterEach(async () => {
@@ -16,7 +18,7 @@ afterEach(async () => {
 })
 
 it('covers the complete parent structure of a directory-heavy source through capture and closure', async () => {
-  const directory = await mkdtemp('/tmp/source-footprint-')
+  const directory = await mkdtemp(join(persistentFixtureRoot, 'source-footprint-'))
   directories.push(directory)
   const canonical = join(directory, 'canonical')
   const root = join(directory, 'materializations')
@@ -46,11 +48,20 @@ it('covers the complete parent structure of a directory-heavy source through cap
   const materializer = new PrivateSourceMaterializer(store, async () => {})
   const receipt = await materializer.prepare({ manifest, binding, attempt, sharedWritableTree: true })
   expect(await materializer.prepare({ manifest, binding, attempt, sharedWritableTree: true })).toEqual(receipt)
+  await materializer.verify(receipt, { binding, attempt })
+  const beforeClosure = await measureRetainedMaterializationFootprint(receipt)
+  expect(beforeClosure.retainedBytes + 16 * 1024).toBeLessThanOrEqual(sourceMaterializationBytes(manifest))
   await releaseMaterializationClaim(receipt, async () => 'released')
+  await expect(stat(join(root, receipt.materializationId, 'tree'))).rejects.toMatchObject({ code: 'ENOENT' })
+  for (const entry of manifest.entries) {
+    expect(await readFile(join(sourceWorkingTreePath(receipt), entry.path))).toEqual(bytes)
+  }
   const footprint = await measureRetainedMaterializationFootprint(receipt)
   expect(footprint.retainedBytes).toBeGreaterThan(manifest.totalEntries * 8192 + 2 * 1024 * 1024)
   expect(footprint.retainedBytes + 16 * 1024).toBeLessThanOrEqual(sourceMaterializationBytes(manifest))
-  await materializer.verify(receipt, { binding, attempt })
+  expect(footprint.retainedBytes).toBeLessThan(beforeClosure.retainedBytes)
+  expect(footprint.sharedTree).toEqual(beforeClosure.sharedTree)
+  await expect(materializer.verify(receipt, { binding, attempt })).rejects.toMatchObject({ code: 'ENOENT' })
   await releaseMaterializationClaim(receipt, async () => 'released')
   expect(await measureRetainedMaterializationFootprint(receipt)).toEqual(footprint)
 }, 120_000)
