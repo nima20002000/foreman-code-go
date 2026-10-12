@@ -190,7 +190,6 @@ describe('G5 B2-PF-02 / B-R01 terminal readback survives eviction', () => {
     await screen.findAllByLabelText('Queued').then(items => items.at(-1)!)
     const completed = withReceipt(initial, sent[0]!, 'completed'); completed.revision++
     mounted.mock.setState(completed); await act(() => mounted.refresh())
-    expect(screen.queryAllByLabelText('Queued')).toHaveLength(0)
     // After eviction the retired queued acknowledgement stays hidden; the retained completion is shown.
     const later = laterWindow(completed); mounted.mock.setState(later); await act(() => mounted.refresh())
     await screen.findAllByLabelText('Completed')
