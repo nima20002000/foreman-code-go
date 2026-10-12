@@ -70,6 +70,7 @@ async function fixture(options: {
   lifecycleCalls.settle = () => { state.events.push('settle'); terminal() }
   const stopSharingOwner = vi.fn()
   const native = { shareRunOwner: vi.fn(() => stopSharingOwner),
+    preserveActiveForRestart: async () => false,
     cancelRun: async () => { state.nativeCancel++; if (!state.clean) throw new Error('native closure uncertain') },
     finishRun: async () => { state.events.push('finish-native') },
     nativeBoundaryEvidence: async () => { throw new Error('No fake native evidence in registration tests') },

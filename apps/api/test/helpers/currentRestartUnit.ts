@@ -10,7 +10,7 @@ import { ApprovalExecutionCoordinator } from '../../src/modules/interactions/exe
 import { createWorkflowNativeCaptureChannel } from '../../src/modules/interactions/workflowNativeCapture.js'
 import type { RepeatNativeObservationStore } from '../../src/modules/interactions/repeatObservation.js'
 import { PostgresWorkflowClosureStore } from '../../src/modules/interactions/workflowClosure.js'
-import type { NativeHarnessSessionManager } from '../../src/modules/harnesses/port.js'
+import type { ChildProcessEnvironment, NativeHarnessSessionManager } from '../../src/modules/harnesses/port.js'
 import type { NativeSessionManagerResolver } from '../../src/modules/interactions/runtimePorts.js'
 import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import { nativeLanes } from './nativeLanes.js'
@@ -50,7 +50,7 @@ export function currentRestartUnit(reviewer = false, acceptedPlacement?: Accepte
   const state = { stopped: false, cleanup: false, finalized: reviewer, outstanding: false, owned: true,
     failBegin: false, failCloseWrite: false, loseCommitReply: false, failNativeClose: false, loseAtFinalFence: false,
     finalizationWrites: 0, revocations: 0, retirementCalls: 0, closeWrites: 0, beginCalls: 0,
-    preflightCalls: 0, closes: 0, restartCloses: 0, attaches: 0, cancels: 0, creates: 0, turns: 0, reads: 0,
+    preflightCalls: 0, restores: 0, closes: 0, restartCloses: 0, attaches: 0, cancels: 0, creates: 0, turns: 0, reads: 0,
     resolutions: 0, budgetStops: 0, interactionCancels: 0 }
   // The reviewer fixture starts after a positively closed workflow lifetime.
   // Keep that real predecessor in the SQL model so all generation checks see it.
@@ -239,6 +239,11 @@ export function currentRestartUnit(reviewer = false, acceptedPlacement?: Accepte
     await beforePreflight()
     return { credential: { principalId: 'synthetic-credential', expiresAt: new Date(Date.now() + 300_000).toISOString(),
       environment: { agentId: execution.agentId, variables: {} } } }
+  }, restore: async (executionId: string, environment: ChildProcessEnvironment) => {
+    assert.equal(executionId, execution.id)
+    assert.equal(environment.agentId, execution.agentId)
+    state.restores++
+    return { principalId: 'synthetic-credential', expiresAt: new Date(Date.now() + 300_000).toISOString(), environment }
   }, revokeForExecution: async () => { state.revocations++ } }
   const cold = () => {
     let resident = false, restartClosed = false
