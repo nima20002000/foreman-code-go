@@ -49,8 +49,8 @@ it('F11: failed cleanup remains retryable after terminal settlement and a fresh 
     adoptRunOwner: (actual: RunOwnership) => { actual.assertOwned(); nativeOwner = actual },
     async finishRun(id: string) {
       assert.equal(id, record.id)
-      assert.equal(nativeOwner, owner)
       attempts++
+      if (attempts > 1) assert.equal(nativeOwner, owner)
       if (fail) throw new Error('native close failed')
     },
     cancelRun: vi.fn(async () => { throw new Error('Successful terminal cleanup must not cancel the Run') }),

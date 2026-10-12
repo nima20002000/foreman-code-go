@@ -163,6 +163,27 @@ it('shares one reacquired Run owner across sibling retained session detachment',
   await f.managers.dispose()
 })
 
+it('uses an adopted live Run owner when a previous shared owner has released', async () => {
+  const f = restartOwnershipFixture()
+  await f.attachReviewers()
+  const previous = (await f.acquireOwnership())!
+  const stopSharing = f.coordinator.shareRunOwner(previous)
+  await previous.release()
+  const current = (await f.acquireOwnership())!
+  f.coordinator.adoptRunOwner(current)
+  const acquisitions = f.acquireOwnership.mock.calls.length
+  try {
+    await f.coordinator.closeForRestart()
+    expect(f.acquireOwnership.mock.calls.length).toBe(acquisitions)
+    expect(f.closeOwners).toEqual([current, current])
+    expect(f.detached).toHaveBeenCalledTimes(2)
+  } finally {
+    stopSharing()
+    await current.release()
+    await f.managers.dispose()
+  }
+})
+
 it.each([
   { boundary: 'acquiring', timeout: false },
   { boundary: 'observing', timeout: false },
