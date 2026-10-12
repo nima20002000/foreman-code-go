@@ -71,11 +71,11 @@ export class HostCiRunner {
       } finally { await handle.close() }
     }
     // A finished test run reports the file durations and test results it measured, so Main can learn and show them.
-    const finished = request.durations && !['starting', 'running'].includes(run.state)
+    const finished = !['starting', 'running'].includes(run.state)
     const report = (name: string) => readFile(join(this.runDirectory(request.runId), name), 'utf8')
       .then(text => JSON.parse(text) as unknown).catch(() => null)
-    const measured = finished ? CiDurationsSchema.safeParse(await report('measured-durations.json')) : null
-    const tests = finished ? CiTestResultsSchema.safeParse(await report('test-results.json')) : null
+    const measured = request.durations && finished ? CiDurationsSchema.safeParse(await report('measured-durations.json')) : null
+    const tests = request.testResults && finished ? CiTestResultsSchema.safeParse(await report('test-results.json')) : null
     return CiHostReplySchema.parse({ operation: 'read', run, text, nextOffset,
       ...(measured?.success ? { durations: measured.data } : {}),
       ...(tests?.success ? { testResults: tests.data } : {}) })

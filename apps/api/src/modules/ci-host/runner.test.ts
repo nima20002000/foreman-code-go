@@ -314,12 +314,13 @@ describe('host CI runner', () => {
     await f.runner.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
       suite: 'unit', part: 'unit-api', ...selection })
     expect((await f.settle(runId)).run).toMatchObject({ state: 'passed', step: 'unit-api' })
-    const result = await f.runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1, durations: true })
+    const result = await f.runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1, testResults: true })
     expect(result.operation === 'read' && result.testResults).toEqual({ summary: { passed: 2, failed: 0, skipped: 0 },
       truncated: false, files: ['first', 'second'].map(name => ({ file: `apps/api/test/${name}.test.ts`, status: 'passed',
         durationMs: 5, tests: [{ name: `${name}.test.ts works`, status: 'passed', durationMs: 4 }] })) })
-    const plain = await f.runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 })
-    expect(plain.operation === 'read' && 'testResults' in plain).toBe(false)
+    // A Main from before test results asks only for durations and gets the reply shape it knows.
+    const durations = await f.runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1, durations: true })
+    expect(durations.operation === 'read' && 'testResults' in durations).toBe(false)
   })
 
   it('preserves a failing unit part exit code after collecting its durations', async () => {

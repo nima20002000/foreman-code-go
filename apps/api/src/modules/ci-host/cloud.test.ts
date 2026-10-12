@@ -429,12 +429,13 @@ describe('GitHub Actions CI on a public mirror', () => {
     f.github.conclusion = 'failure'
     f.circle.outcome = 'failed'
     for (const service of [f.github, f.circle]) Object.assign(service, { durations, testResults })
-    const read = await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536, durations: true })
+    const read = await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536, durations: true,
+      testResults: true })
     expect(read).toMatchObject({ run: { state: 'failed' }, durations, testResults })
-    // A restarted Main still answers from the kept result; a read without durations stays lean.
-    const plain = await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 })
+    // A restarted Main still answers from the kept result; a read that does not ask for test results stays lean.
+    const plain = await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1, durations: true })
     expect(plain.operation === 'read' && 'testResults' in plain).toBe(false)
-    expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1, durations: true }))
+    expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1, testResults: true }))
       .toMatchObject({ testResults })
   })
 

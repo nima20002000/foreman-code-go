@@ -392,10 +392,18 @@ export class HostCiService {
       const reply = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 1,
         ...(['integration', 'unit'].includes(run.suite) ? { durations: true } : {}) }).catch(() => null)
       if (reply?.operation !== 'read') return
-      // Results land before the finished state, so a reader that sees the outcome also sees its tests.
-      if (reply.testResults && !['starting', 'running'].includes(reply.run.state)) {
-        await this.pool.query('update ci_runs set test_results=$2::jsonb where id=$1', [run.id, JSON.stringify(reply.testResults)])
-          .catch(error => log.warn({ err: error, runId: run.id }, 'CI test results not recorded'))
+      // Test results are asked for apart from the read above: a Worker from before them rejects the flag, and its
+      // run must still settle. They land before the finished state, so a reader that sees the outcome also sees its
+      // tests; if they cannot be saved, the run stays active and the next pass tries again.
+      if (['integration', 'unit'].includes(run.suite) && !['starting', 'running'].includes(reply.run.state)) {
+        const results = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 1,
+          testResults: true }).catch(() => null)
+        if (results?.operation === 'read' && results.testResults) {
+          const saved = await this.pool.query('update ci_runs set test_results=$2::jsonb where id=$1',
+            [run.id, JSON.stringify(results.testResults)]).then(() => true,
+            (error: unknown) => { log.warn({ err: error, runId: run.id }, 'CI test results not recorded; retrying'); return false })
+          if (!saved) return
+        }
       }
       await this.settle(run, computer, reply.run)
       // A run is read here until it finishes, so its measured durations are learned once.

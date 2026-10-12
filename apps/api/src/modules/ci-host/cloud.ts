@@ -96,7 +96,7 @@ export class CloudCi {
     return CiHostReplySchema.parse({ operation: 'read', run: this.view(run, log.length), text: text.toString('utf8'),
       nextOffset: request.afterOffset + text.length,
       ...(request.durations && run.durations ? { durations: run.durations } : {}),
-      ...(request.durations && run.testResults ? { testResults: run.testResults } : {}) })
+      ...(request.testResults && run.testResults ? { testResults: run.testResults } : {}) })
   }
 
   /** Main's login for the service works; checked at most once a minute. */

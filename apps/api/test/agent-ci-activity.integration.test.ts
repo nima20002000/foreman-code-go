@@ -59,6 +59,8 @@ async function fixture(options: { deferMigration?: number } = {}) {
     [graph.scope.workspaceId, JSON.stringify({ repository: { provider: 'github', owner: 'example',
       name: 'project', defaultBranch: 'main' } })])
   let online = false
+  // A Worker from before test results: its strict request schema rejects the flag that asks for them.
+  let legacyWorker = false
   const computer: HostCiComputer = { key: 'synthetic-build', hostRef: { kind: 'main', mainId: randomUUID() },
     label: 'Build computer', priority: 1 }
   const hostRuns = new Map<string, CiHostRun>()
@@ -80,7 +82,8 @@ async function fixture(options: { deferMigration?: number } = {}) {
         hostRuns.set(run.runId, canceled)
         return { operation: 'cancel', run: canceled }
       }
-      const tests = request.durations && run.finishedAt ? reported.get(run.runId) : undefined
+      if (legacyWorker && 'testResults' in request) throw new Error('Unrecognized key: "testResults"')
+      const tests = request.testResults && run.finishedAt ? reported.get(run.runId) : undefined
       return { operation: 'read', run, text: '', nextOffset: 0, ...(tests ? { testResults: tests } : {}) }
     },
   }
@@ -130,6 +133,7 @@ async function fixture(options: { deferMigration?: number } = {}) {
   return { database, graph, node, executionId, ci, app, reader, denied, request, boardInput, activity, board,
     submit, get, finish, call, value, workerToken, credentials, insertExecution, computer,
     online() { online = true },
+    legacyWorker(value: boolean) { legacyWorker = value },
     async close() {
       await ci.close()
       await app.close()
@@ -277,6 +281,32 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       expect(deniedHttp.statusCode).toBe(403)
       expect((await f.database.pool.query<{ count: number }>(`select count(*)::int as count from management_audit
         where principal_id=$1 and outcome='denied'`, [otherRun.principal.id])).rows[0]!.count).toBeGreaterThan(0)
+    } finally { await f.close() }
+  }, 120000)
+
+  it('settles CI on a Worker from before test results and retries results that could not be saved', async () => {
+    const f = await fixture()
+    try {
+      const results: CiTestResults = { summary: { passed: 1, failed: 0, skipped: 0 }, truncated: false, files: [
+        { file: 'apps/api/test/a.integration.test.ts', status: 'passed', durationMs: 5,
+          tests: [{ name: 'a saves', status: 'passed', durationMs: 5 }] }] }
+      const stored = async (ticketId: string) => (await f.database.pool.query<{ test_results: unknown }>(
+        'select test_results from ci_runs where id=$1', [ticketId])).rows[0]!.test_results
+      f.online()
+      f.legacyWorker(true)
+      const old = await f.submit()
+      f.finish(old.ticketId, 'passed', results)
+      expect((await f.get(old.ticketId)).run.state).toBe('passed')
+      expect(await stored(old.ticketId)).toBeNull()
+
+      f.legacyWorker(false)
+      const ticket = await f.submit()
+      await f.database.pool.query('alter table ci_runs add constraint ci_results_blocked check (test_results is null) not valid')
+      f.finish(ticket.ticketId, 'passed', results)
+      expect((await f.get(ticket.ticketId)).run.state).toBe('running')
+      await f.database.pool.query('alter table ci_runs drop constraint ci_results_blocked')
+      expect((await f.get(ticket.ticketId)).run.state).toBe('passed')
+      expect(await stored(ticket.ticketId)).toEqual(results)
     } finally { await f.close() }
   }, 120000)
 
