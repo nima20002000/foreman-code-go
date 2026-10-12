@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.89] - 2026-10-12
+
+### Fixed
+
+- Stopping a Run cancels its Agents' CI tickets and provider runs.
+- ci_computers_list shows each computer's running tickets; a just-triggered CircleCI run is not an error.
+- The web app offers a reload after a release instead of failing Operator settings and chat checks.
+
 ## [0.0.88] - 2026-10-12
 
 ### Fixed
