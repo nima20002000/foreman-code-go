@@ -103,6 +103,32 @@ it('reports the failing subcommand with bounded diagnostics and redacts arbitrar
   }
 })
 
+it('joins concurrent snapshot imports, validates each metadata pin and isolates caller cancellation', async () => {
+  const f = await fixture()
+  let release!: () => void
+  let entered!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const started = new Promise<void>(resolve => { entered = resolve })
+  const controller = new AbortController()
+  const reason = new Error('Caller canceled')
+  const first = importGitSourceObjects({ ...f.input, signal: controller.signal,
+    blobPath: async path => { entered(); await gate; return f.input.blobPath(path) } })
+  const observed = first.catch((error: unknown) => error)
+  await started
+  const second = importGitSourceObjects({ ...f.input,
+    blobPath: async () => { throw new Error('The joined import must use the original verified carrier') } })
+  const invalid = importGitSourceObjects({ ...f.input, metadata: Buffer.from('changed metadata') })
+  await expect(invalid).rejects.toMatchObject({ code: 'SOURCE_BYTES_INVALID' })
+  controller.abort(reason)
+  release()
+  expect(await observed).toBe(reason)
+  expect(await second).toBe(f.destination)
+  expect(git(f.destination, ['rev-parse', `refs/foreman/sources/${f.input.manifest.snapshotId}`])).toBe(f.commit)
+  const objects = git(f.source, ['rev-list', '--objects', '--no-object-names', `${f.commit}^{tree}`])
+  expect(git(f.destination, ['cat-file', '--batch'], `${objects}\n${f.commit}\n`))
+    .toBe(git(f.source, ['cat-file', '--batch'], `${objects}\n${f.commit}\n`))
+})
+
 it('rejects a destination object format mismatch before publishing the approved ref', async () => {
   const f = await fixture('sha256')
   await rm(f.destination, { recursive: true })

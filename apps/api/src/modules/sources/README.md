@@ -134,3 +134,35 @@ bytes even when attributes request CRLF. File modes follow the manifest's
 executable policy; stripping execute bits can intentionally leave Git mode changes.
 Each occurrence uses a unique branch suffix. Fresh clones install atomically,
 so concurrent first-use preparations can share the installed cache.
+
+Main-local Git Agents reference the retained immutable snapshot instead of
+writing an additional private reference copy for each execution. Their private
+receipt files pin the snapshot store and byte-directory identities. Reads check
+those identities, the saved manifest, every file hash and link count. Active
+materialization records already prevent snapshot retention from deleting those
+bytes. Worker and quota-bound Job copies retain their independent references.
+Each writable checkout still receives separate inodes and its own branch.
+
+Tree writers retain original write descriptors until data writeback completes,
+including writeback error reporting. Qualified journaled ext4 on Linux 6+ uses
+manifest-bounded descriptor batches, queued writeback followed by data waits,
+and a directory timestamp update followed
+by directory fsync to force a full journal commit after all data waits. DAX,
+non-journaled filesystems, restricted descriptor budgets and hosts without the
+optional Python helper retain per-file fsync. No filesystem or harness settings
+are changed. This relies on Linux's [data-wait implementation](https://github.com/torvalds/linux/blob/master/fs/sync.c)
+and [ext4 directory fsync forcing a full commit](https://github.com/torvalds/linux/blob/master/fs/ext4/fsync.c).
+
+Copies and verification use qualified descriptors and bounded buffers, yield
+between files, reuse pinned ancestors within each operation and avoid access-time
+writes. Concurrent imports of one snapshot share Git object import work. Hashes,
+modes, link counts, source/attempt pins, fresh authorization, synced receipts and
+atomic activation remain required. Failed preparation retains an uncertain claim.
+
+On the v0.0.82 repository tree (4,663 entries, 37.1 MB), five concurrent local
+materializations measured 92.7–93.0 seconds before these changes and 13.5–16.2
+seconds after them. The remaining data writeback took about 8 seconds in that
+trial; the requested sub-10-second preparation target is not yet achieved.
+These measurements exercise real snapshots and Git worktrees with a fixture
+authorization callback, rather than a complete harness launch. Production DB
+state was not changed. Runtime phase logs separate copy and synchronization.

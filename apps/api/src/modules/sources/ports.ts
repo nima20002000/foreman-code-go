@@ -1,8 +1,15 @@
-import type { SourceManifest, SourceEntry, RootBinding, MaterializationReceipt } from '@foreman-code/contracts/source-materialization'
+import type { SourceManifest, SourceEntry, RootBinding, MaterializationReceipt, SourceSnapshotReference }
+  from '@foreman-code/contracts/source-materialization'
+import type { FileHandle } from 'node:fs/promises'
 
 /** Main persists this exact approved pin; neither worker nor resolver chooses latest. */
 export type SourceSnapshotPin = Pick<SourceManifest, 'snapshotId' | 'manifestDigest' | 'approvedSourceId'>
 export interface SourceByteReader {
+  openReference?(manifest: SourceManifest, signal: AbortSignal): Promise<{
+    tree: FileHandle; snapshotReference: SourceSnapshotReference;
+  }>
+  /** Local snapshots can copy raw files in bulk; the materializer still verifies the activated tree. */
+  copyTo?(manifest: SourceManifest, target: FileHandle, fileMode: 0o400 | 0o600, signal: AbortSignal): Promise<void>
   readGitMetadata?(manifest: SourceManifest, signal: AbortSignal): Promise<Uint8Array>
   read(snapshot: SourceSnapshotPin, entry: SourceEntry, signal: AbortSignal): Promise<Uint8Array>
   /** A batch retains qualified snapshot handles; every entry still requires byte verification. */

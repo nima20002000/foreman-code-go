@@ -1,33 +1,13 @@
 import type { SourceEntry } from '@foreman-code/contracts/source-materialization'
 import type { FileHandle } from 'node:fs/promises'
 import { entryParent } from './privateFilesystem.js'
-import { SourceError, sourcePath } from './manifest.js'
+import { SOURCE_LIMITS, SourceError, sourcePath } from './manifest.js'
+import { syncSourceTree } from './sourceTreeSync.js'
+import { withSourceDirectoryParents } from './directoryParents.js'
+import type { SourceFileWriter } from './sourceFileWriter.js'
 
-/** Four entries bound buffered file content to 64 MiB, including maximum-size files. */
-export async function processSourceEntries<Entry>(
-  entries: readonly Entry[],
-  work: (entry: Entry) => Promise<void>,
-  signal?: AbortSignal,
-): Promise<void> {
-  let next = 0
-  let failure: { error: unknown } | undefined
-  const worker = async () => {
-    try {
-      while (!failure && next < entries.length) {
-        signal?.throwIfAborted()
-        const entry = entries[next++]!
-        await work(entry)
-      }
-      signal?.throwIfAborted()
-    } catch (error) {
-      failure ??= { error }
-    }
-  }
-  // Join outstanding I/O before callers close directory handles or activate a tree.
-  await Promise.all(Array.from({ length: Math.min(4, entries.length) }, worker))
-  if (failure) throw failure.error
-  signal?.throwIfAborted()
-}
+import { processSourceEntries } from './entryConcurrency.js'
+export { processSourceEntries } from './entryConcurrency.js'
 
 /** Each worker retains one qualified parent and processes one file at a time. */
 export async function processSourceDirectories(
@@ -43,20 +23,15 @@ export async function processSourceDirectories(
     group.push(entry)
     directories.set(directory, group)
   }
-  const groups: SourceEntry[][] = []
-  for (const directory of directories.values()) {
-    const size = Math.min(64, Math.ceil(directory.length / 4))
-    for (let offset = 0; offset < directory.length; offset += size) {
-      groups.push(directory.slice(offset, offset + size))
-    }
-  }
-  await processSourceEntries(groups, async group => {
-    const { parent } = await entryParent(tree, group[0]!.path, options.create ?? false)
-    try {
-      await work(parent, group)
-      if (options.create) await parent.sync()
-    } finally { await parent.close() }
-  }, options.signal)
+  await withSourceDirectoryParents(tree, options.create ?? false, async parentForPath => {
+    await processSourceEntries([...directories.values()], async group => {
+      const parent = await parentForPath(group[0]!.path)
+      try {
+        await work(parent, group)
+      } finally { await parent.close() }
+    }, options.signal)
+  })
+  if (options.create) await syncSourceTree(tree, options.signal ?? AbortSignal.timeout(SOURCE_LIMITS.preparationMs))
 }
 
 /** Git emits files in tree order; parents remain open until their last write is joined. */
@@ -64,7 +39,7 @@ export async function withSourceTreeWriter<Result>(
   tree: FileHandle,
   paths: readonly string[],
   work: (write: (entry: SourceEntry, bytes: Uint8Array) => Promise<void>) => Promise<Result>,
-  writeEntry: (parent: FileHandle, entry: SourceEntry, bytes: Uint8Array) => Promise<void>,
+  writer: Pick<SourceFileWriter, 'write' | 'finish'>,
   signal: AbortSignal,
 ): Promise<Result> {
   const expected = new Set(paths.map(sourcePath))
@@ -92,12 +67,12 @@ export async function withSourceTreeWriter<Result>(
       })
       const parent = await directory.parent
       try {
-        await writeEntry(parent, entry, bytes)
+        await writer.write(parent, entry, bytes)
       } finally {
         if (--directory.remaining === 0) {
           delete directory.parent
           delete directory.opened
-          try { await parent.sync() } finally { await parent.close() }
+          await parent.close()
         }
       }
     })
@@ -114,5 +89,6 @@ export async function withSourceTreeWriter<Result>(
   if ('error' in outcome) throw outcome.error
   const failures = closed.filter(result => result.status === 'rejected')
   if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'Source directory closure failed.')
+  await writer.finish()
   return outcome.result
 }

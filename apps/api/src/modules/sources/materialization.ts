@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import { open, mkdir, rename, statfs, readdir, readlink, stat, readFile, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import { MaterializationReceiptSchema, RootBindingSchema, type MaterializationReceipt, type RootBinding, type SourceManifest, sourceMaterializationParent, sourceMaterializationComponents, type SourceProjectQuotaSlot } from '@foreman-code/contracts/source-materialization'
+import { MaterializationReceiptSchema, RootBindingSchema, type MaterializationReceipt, type RootBinding, type SourceManifest, type SourceSnapshotReference, SourceMaterializationFileSchema, sourceMaterializationParent, sourceMaterializationComponents, type SourceProjectQuotaSlot } from '@foreman-code/contracts/source-materialization'
 import { sourceMaterializationBytes } from './footprint.js'
 import { SOURCE_LIMITS, SourceError, sourcePath, verifySourceBytes, verifySourceManifest } from './manifest.js'
 import { anchored, identity, openChildDirectory, openPrivateRoot,
@@ -22,6 +22,9 @@ import { systemGitWorktreePorts, type GitWorktreePorts, type WorktreeRequest } f
 import { sourceWorkingTreePath } from './sourceTreePaths.js'
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 import { componentLogger } from '../diagnostics/logger.js'
+import { scheduler } from 'node:timers/promises'
+import { verifySourceEntry } from './verifySourceEntry.js'
+import { openSnapshotReference } from './snapshotReference.js'
 
 const equal = isDeepStrictEqual
 /** Preserve the claim API while sharing Main's joined directory-lock implementation. */
@@ -101,6 +104,7 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
     this.active++
     let slotDirectory: FileHandle | undefined
     let quota: SourceProjectQuotaSlot | undefined
+    let snapshotReference: SourceSnapshotReference | undefined
     let root: FileHandle | undefined, reservation: FileHandle | undefined, tree: FileHandle | undefined
     const id = randomUUID(), lockName = sourceMaterializationClaimName(binding, attempt, this.quotaPool, 'execution')
     try {
@@ -147,36 +151,50 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
         await verifyJobQuotaOwnership({ ...this.quotaPool, binding, slot: quota, signal,
           directory: join(binding.canonicalPath, quota.namespace, id) })
       }
-      await mkdir(anchored(reservation, 'staging'), { mode: 0o700 })
-      tree = await openChildDirectory(reservation, 'staging')
-      const staging = tree
-      completed('authorizationAndReservationMs')
-      await processSourceDirectories(staging, manifest.entries, async (parent, entries) => {
-        const write = async (entry: SourceManifest['entries'][number], content: Uint8Array) => {
-          signal.throwIfAborted()
-          verifySourceBytes(entry, content)
-          const leaf = entry.path.slice(entry.path.lastIndexOf('/') + 1)
-          const file = await open(anchored(parent, leaf),
-            constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-          const readOnly = binding.accessMode === 'read-only' || input.sharedWritableTree
-          const mode = readOnly ? 0o400 : 0o600
-          try {
-            await file.writeFile(content)
-            await file.chmod(mode | (entry.executable ? 0o100 : 0))
-            await file.sync()
-          } finally { await file.close() }
-        }
-        if (bytes.readEntries) {
-          await bytes.readEntries(manifest, entries, signal, write)
+      const reuseSnapshot = bytes.openReference && input.worktree && input.sharedWritableTree
+        && binding.deviceId === null && !quota
+      if (reuseSnapshot) {
+        const reference = await bytes.openReference!(manifest, signal)
+        tree = reference.tree
+        snapshotReference = reference.snapshotReference
+        completed('authorizationAndReservationMs')
+      } else {
+        await mkdir(anchored(reservation, 'staging'), { mode: 0o700 })
+        tree = await openChildDirectory(reservation, 'staging')
+        const staging = tree
+        completed('authorizationAndReservationMs')
+        if (bytes.copyTo) {
+          const fileMode = binding.accessMode === 'read-only' || input.sharedWritableTree ? 0o400 : 0o600
+          await bytes.copyTo(manifest, staging, fileMode, signal)
         } else {
-          for (const entry of entries) {
-            signal.throwIfAborted()
-            await write(entry, await bytes.read(manifest, entry, signal))
-          }
+          await processSourceDirectories(staging, manifest.entries, async (parent, entries) => {
+            const write = async (entry: SourceManifest['entries'][number], content: Uint8Array) => {
+              signal.throwIfAborted()
+              verifySourceBytes(entry, content)
+              const leaf = entry.path.slice(entry.path.lastIndexOf('/') + 1)
+              const file = await open(anchored(parent, leaf),
+                constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
+              const readOnly = binding.accessMode === 'read-only' || input.sharedWritableTree
+              const mode = readOnly ? 0o400 : 0o600
+              try {
+                await file.writeFile(content)
+                await file.chmod(mode | (entry.executable ? 0o100 : 0))
+                await file.sync()
+              } finally { await file.close() }
+            }
+            if (bytes.readEntries) {
+              await bytes.readEntries(manifest, entries, signal, write)
+            } else {
+              for (const entry of entries) {
+                signal.throwIfAborted()
+                await write(entry, await bytes.read(manifest, entry, signal))
+              }
+            }
+          }, { create: true, signal })
         }
-      }, { create: true, signal })
+      }
       completed('copyMs')
-      await verifyMaterializedSourceTree(tree, manifest, signal)
+      await verifyMaterializedSourceTree(tree, manifest, signal, snapshotReference ? { snapshotBytes: true } : {})
       completed('verifyReferenceMs')
       const writable = input.sharedWritableTree && binding.accessMode === 'exclusive-write'
       if (manifest.git?.metadata) {
@@ -184,7 +202,9 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
         if (!metadata) throw new SourceError('SOURCE_GIT_OBJECT_UNAVAILABLE', 'Approved Git metadata is unavailable.')
         if (writable && input.worktree) {
           await importGitSourceObjects({ ports: this.git, repository: input.worktree.repository, manifest, metadata, signal,
-            blobPath: async path => join(binding.canonicalPath, ...(quota ? [quota.namespace] : []), id, 'staging', path) })
+            blobPath: async path => snapshotReference
+              ? join(snapshotReference.canonicalStorePath, manifest.snapshotId, 'bytes', path)
+              : join(binding.canonicalPath, ...(quota ? [quota.namespace] : []), id, 'staging', path) })
         }
       }
       completed('importGitObjectsMs')
@@ -206,12 +226,12 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
         verifiedManifestDigest: manifest.manifestDigest, verifiedEntries: manifest.totalEntries,
         verifiedBytes: manifest.totalBytes, verifiedAt: new Date().toISOString(), localTreeIdentity: shared?.filesystem ?? referenceIdentity })
       const record = await open(anchored(reservation, 'receipt.json'), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-      try { await record.writeFile(JSON.stringify({ receipt, manifest })); await record.sync() } finally { await record.close() }
-      await tree.sync()
+      try { await record.writeFile(JSON.stringify({ receipt, manifest, ...(snapshotReference ? { snapshotReference } : {}) })); await record.sync() } finally { await record.close() }
+      if (!snapshotReference) await tree.sync()
       // The fresh UUID reservation is exclusively app-owned. Its tree name has
       // never existed; rename cannot overwrite a caller or an execution tree.
       signal.throwIfAborted()
-      await rename(anchored(reservation, 'staging'), anchored(reservation, 'tree'))
+      if (!snapshotReference) await rename(anchored(reservation, 'staging'), anchored(reservation, 'tree'))
       await reservation.sync(); await root.sync()
       completed('activateMs')
       componentLogger('engine').info({ executionId: attempt.executionId, attemptId: attempt.attemptId,
@@ -291,20 +311,23 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
       const directory = await materializationDirectory(root, receipt)
       try {
         const record = await open(anchored(directory, 'receipt.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
-        let stored: { receipt: MaterializationReceipt; manifest: SourceManifest }
+        let stored: ReturnType<typeof SourceMaterializationFileSchema.parse>
         try {
           const stat = await record.stat()
           if (!stat.isFile() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw new SourceError('SOURCE_RECEIPT_INVALID', 'Invalid receipt record.')
-          stored = JSON.parse(await record.readFile('utf8')) as typeof stored
+          stored = SourceMaterializationFileSchema.parse(JSON.parse(await record.readFile('utf8')))
         } finally { await record.close() }
         const manifest = verifySourceManifest(stored.manifest)
         if (!equal(stored.receipt, receipt) || manifest.manifestDigest !== receipt.verifiedManifestDigest || manifest.snapshotId !== receipt.binding.snapshotId
           || manifest.totalEntries !== receipt.verifiedEntries || manifest.totalBytes !== receipt.verifiedBytes)
           throw new SourceError('SOURCE_RECEIPT_INVALID', 'Stored source receipt changed.')
-        const tree = await openChildDirectory(directory, 'tree')
+        const tree = stored.snapshotReference
+          ? await openSnapshotReference(stored.snapshotReference, manifest, expected.signal)
+          : await openChildDirectory(directory, 'tree')
         try {
           if (!equal(await identity(tree), receipt.sharedTree?.referenceIdentity ?? receipt.localTreeIdentity)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Materialized source reference replaced.')
-          await verifyMaterializedSourceTree(tree, manifest, expected.signal)
+          await verifyMaterializedSourceTree(tree, manifest, expected.signal,
+            stored.snapshotReference ? { snapshotBytes: true } : {})
           await verifySharedWorkingTree(root, receipt)
           await verifyWorktreeBranch(receipt, { git: this.git, signal: expected.signal })
         } finally { await tree.close() }
@@ -316,7 +339,8 @@ export class PrivateSourceMaterializer implements SourceMaterializationPort {
     return sourceWorkingTreePath(receipt)
   }
 }
-export async function verifyMaterializedSourceTree(tree: FileHandle, manifest: SourceManifest, signal?: AbortSignal): Promise<void> {
+export async function verifyMaterializedSourceTree(tree: FileHandle, manifest: SourceManifest, signal?: AbortSignal,
+  options: { snapshotBytes?: true } = {}): Promise<void> {
   const expected = new Set(manifest.entries.map((entry) => entry.path))
   const directories = new Set<string>()
   for (const entry of manifest.entries) {
@@ -339,14 +363,8 @@ export async function verifyMaterializedSourceTree(tree: FileHandle, manifest: S
   await processSourceDirectories(tree, manifest.entries, async (parent, entries) => {
     for (const entry of entries) {
       signal?.throwIfAborted()
-      const leaf = entry.path.slice(entry.path.lastIndexOf('/') + 1)
-      const file = await open(anchored(parent, leaf), constants.O_RDONLY | constants.O_NOFOLLOW)
-      try {
-        const stat = await file.stat()
-        if (!stat.isFile() || stat.nlink !== 1 || stat.size !== entry.byteSize || !!(stat.mode & 0o111) !== entry.executable)
-          throw new SourceError('SOURCE_TREE_INVALID', 'Materialized kind, size, link count or executable policy changed.')
-        verifySourceBytes(entry, await file.readFile({ signal }))
-      } finally { await file.close() }
+      verifySourceEntry(parent, entry, options)
+      await scheduler.yield()
     }
   }, signal ? { signal } : {})
 }

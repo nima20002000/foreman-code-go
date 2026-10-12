@@ -58,10 +58,12 @@ it('materializes batches with isolated attempt receipts and rechecks authorizati
   const singleRead = vi.spyOn(f.store, 'read')
   const batchRead = vi.spyOn(f.store, 'readEntries')
   const authorize = vi.fn(async () => {})
-  const materializer = new PrivateSourceMaterializer(f.store, authorize)
+  const materializer = new PrivateSourceMaterializer({
+    read: f.store.read.bind(f.store), readEntries: f.store.readEntries.bind(f.store),
+  }, authorize)
   const firstAttempt = attempt()
   const receipt = await materializer.prepare({ manifest: f.manifest, binding, attempt: firstAttempt })
-  expect(batchRead).toHaveBeenCalledTimes(4)
+  expect(batchRead).toHaveBeenCalled()
   expect(singleRead).not.toHaveBeenCalled()
   const tree = await materializer.resolve(receipt, { binding, attempt: firstAttempt })
   for (const entry of f.manifest.entries) expect(await readFile(join(tree, entry.path))).toEqual(f.bytes)
@@ -91,6 +93,42 @@ it('reads every included entry and rejects changed pins before delivering bytes'
     [{ ...f.manifest.entries[0]!, sha256: 'f'.repeat(64) }], AbortSignal.timeout(5000), consume))
     .rejects.toMatchObject({ code: 'SOURCE_PIN_CONFLICT' })
   expect(consume).not.toHaveBeenCalled()
+})
+
+it('copies local snapshots into detached writable files with pinned bytes and private directories', async () => {
+  const f = await fixture()
+  const root = await mkdtemp(join(persistentFixtureRoot, 'source-copy-'))
+  roots.push(root)
+  const tree = await openPrivateRoot(root)
+  try {
+    await f.store.copyTo(f.manifest, tree, 0o600, AbortSignal.timeout(5000))
+    for (const entry of f.manifest.entries) expect(await readFile(join(root, entry.path))).toEqual(f.bytes)
+    await writeFile(join(root, f.manifest.entries[0]!.path), 'Agent edit')
+    expect(await f.read()).toEqual(f.manifest.entries.map(() => f.bytes))
+    await expect(f.store.copyTo({ ...f.manifest, manifestDigest: 'f'.repeat(64) }, tree, 0o400,
+      AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'SOURCE_PIN_CONFLICT' })
+  } finally { await tree.close() }
+})
+
+it.each(['bytes', 'hardlink', 'symlink'] as const)('rejects %s corruption during a bulk snapshot copy', async change => {
+  const f = await fixture()
+  const path = join(f.root, f.manifest.snapshotId, 'bytes', f.manifest.entries[0]!.path)
+  if (change === 'bytes') {
+    await chmod(path, 0o600)
+    await writeFile(path, Buffer.alloc(f.bytes.length, 'x'))
+  } else if (change === 'hardlink') {
+    await link(path, join(f.root, 'linked-source'))
+  } else {
+    await rm(path)
+    await symlink(join(f.root, 'outside-source'), path)
+  }
+  const root = await mkdtemp(join(persistentFixtureRoot, 'source-copy-corrupt-'))
+  roots.push(root)
+  const tree = await openPrivateRoot(root)
+  try {
+    await expect(f.store.copyTo(f.manifest, tree, 0o400, AbortSignal.timeout(5000)))
+      .rejects.toMatchObject(change === 'symlink' ? { code: 'ELOOP' } : { code: 'SOURCE_BYTES_INVALID' })
+  } finally { await tree.close() }
 })
 
 it.each(['bytes', 'hardlink', 'symlink'] as const)('rejects %s changes on a later snapshot batch', async change => {

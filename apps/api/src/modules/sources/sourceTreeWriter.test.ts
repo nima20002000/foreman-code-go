@@ -6,6 +6,12 @@ import { deferred } from '../../../test/helpers/agentChatF1.js'
 import { withSourceTreeWriter } from './entryProcessing.js'
 import { sourceSha256 } from './manifest.js'
 import { anchored, openPrivateRoot } from './privateFilesystem.js'
+import { syncSourceTree } from './sourceTreeSync.js'
+import type { SourceFileWriter } from './sourceFileWriter.js'
+
+function writer(tree: FileHandle, write: SourceFileWriter['write']) {
+  return { write, finish: () => syncSourceTree(tree, AbortSignal.timeout(5000)) }
+}
 
 const roots: string[] = []
 afterEach(async () => {
@@ -31,7 +37,7 @@ it('shares a parent during overlapping writes and closes every parent after publ
     const result = await withSourceTreeWriter(f.tree, f.entries.map(entry => entry.path), async write => {
       await Promise.all(f.entries.map(entry => write(entry, f.bytes)))
       return 'complete'
-    }, async (parent, entry, bytes) => {
+    }, writer(f.tree, async (parent, entry, bytes) => {
       parents.add(parent)
       if (entry.path.startsWith('src/') && !entry.path.slice(4).includes('/')) {
         firstParents.push(parent)
@@ -40,7 +46,7 @@ it('shares a parent during overlapping writes and closes every parent after publ
       }
       const file = await open(anchored(parent, entry.path.split('/').at(-1)!), 'wx', 0o600)
       try { await file.writeFile(bytes); await file.sync() } finally { await file.close() }
-    }, AbortSignal.timeout(5000))
+    }), AbortSignal.timeout(5000))
     expect(result).toBe('complete')
     expect(firstParents[0]).toBe(firstParents[1])
     for (const entry of f.entries) expect(await readFile(join(f.root, entry.path))).toEqual(f.bytes)
@@ -61,12 +67,12 @@ it('joins an interrupted writer and closes parents whose remaining writes were n
       const results = await Promise.allSettled(f.entries.slice(0, 2).map(entry => write(entry, f.bytes)))
       const rejected = results.find(result => result.status === 'rejected')
       if (rejected?.status === 'rejected') throw rejected.reason
-    }, async parent => {
+    }, writer(f.tree, async parent => {
       parents.add(parent)
       entered.resolve()
       await blocked.promise
       throw failure
-    }, AbortSignal.timeout(5000))
+    }), AbortSignal.timeout(5000))
     const observed = writing.then(() => { settled = true }, error => { settled = true; return error })
     await entered.promise
     expect(settled).toBe(false)
@@ -80,9 +86,9 @@ it('rejects incomplete writes and canceled captures without publishing success',
   const f = await fixture()
   try {
     await expect(withSourceTreeWriter(f.tree, f.entries.map(entry => entry.path), async () => 'complete',
-      async () => {}, AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'SOURCE_TREE_INVALID' })
+      writer(f.tree, async () => {}), AbortSignal.timeout(5000))).rejects.toMatchObject({ code: 'SOURCE_TREE_INVALID' })
     await expect(withSourceTreeWriter(f.tree, f.entries.map(entry => entry.path), async write => {
       await write(f.entries[0]!, f.bytes)
-    }, async () => {}, AbortSignal.abort())).rejects.toMatchObject({ name: 'AbortError' })
+    }, writer(f.tree, async () => {}), AbortSignal.abort())).rejects.toMatchObject({ name: 'AbortError' })
   } finally { await f.tree.close() }
 })

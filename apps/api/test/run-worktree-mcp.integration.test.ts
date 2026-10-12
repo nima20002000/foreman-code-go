@@ -3,7 +3,9 @@ import { randomUUID } from 'node:crypto'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { AcceptedWorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, RunStartV3ResultSchema } from '@foreman-code/contracts/wave25'
+import { SourceMaterializationFileSchema } from '@foreman-code/contracts/source-materialization'
+import { RunPlacementGetResultSchema } from '@foreman-code/contracts/placement-readback'
 import { decodeMcpToolResult, OperatorRunGetResultSchema } from '@foreman-code/contracts/operator-mcp'
 import { repeatRuntimeDirectory } from '../src/modules/runs/repeatRepositoryHost.js'
 import { RunWorktrees } from '../src/modules/runs/runWorktrees.js'
@@ -12,12 +14,82 @@ import { currentOperatorIntegration } from './helpers/currentOperatorIntegration
 import { insertProviderRun } from './helpers/wave25Br1003Runtime.js'
 import { gitFixtureEnvironment } from './helpers/gitFixture.js'
 import { postgresEnabled } from './helpers/eng04CurrentDatabase.js'
+import { sourceWorkingTreePath } from '../src/modules/sources/sourceTreePaths.js'
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
+import { sourceWorktreeMcpFixture } from './helpers/sourceWorktreeMcpFixture.js'
 
 function result(raw: Parameters<typeof decodeMcpToolResult>[0]) {
   return OperatorRunGetResultSchema.parse(decodeMcpToolResult(raw))
 }
 
 describe.runIf(postgresEnabled)('Run isolation and authenticated MCP readback', () => {
+  it('starts isolated agent checkouts from a retained snapshot through MCP and persists their working directories', async () => {
+    const f = await sourceWorktreeMcpFixture()
+    try {
+      const denied = await f.base.access.issue({ name: 'Run reader', audience: 'operator',
+        expiresAt: new Date(Date.now() + 600000),
+        grants: [{ actions: ['runs:read'], scope: { workspaceIds: [f.input.workspaceId] } }] })
+      await expectMcpAccessDenied((await f.connect(denied.token)).callTool({ name: 'run_start',
+        arguments: { ...f.input, commandId: randomUUID() } }))
+      expect(await f.base.runs.listSummaries(f.input.workspaceId)).toHaveLength(0)
+      const starts = await Promise.all([1, 2].map(async () => {
+        const response = await f.client.callTool({ name: 'run_start',
+          arguments: { ...f.input, commandId: randomUUID() } })
+        expect(response.isError, JSON.stringify(response)).not.toBe(true)
+        return RunStartV3ResultSchema.parse(decodeMcpToolResult(response)).run.id
+      }))
+      const directories: string[] = []
+      const references = []
+      for (const runId of starts) {
+        await expect.poll(async () => {
+          const run = await f.base.runs.get(runId)
+          if (run?.executionState === 'completed') {
+            const details = result(await f.client.callTool({ name: 'run_get', arguments: {
+              workspaceId: f.input.workspaceId, runId, detail: 'full' } }))
+            if ('detail' in details) throw new Error('Expected full Run details')
+            const failures = details.executions.map(execution => ({ id: execution.id, result: execution.result }))
+            throw new Error(`Run completed before approval: ${JSON.stringify(failures)}`)
+          }
+          return run?.executionState
+        }, { timeout: 30000 }).toBe('waiting')
+        const persisted = result(await f.client.callTool({ name: 'run_get', arguments: {
+          workspaceId: f.input.workspaceId, runId, detail: 'full' } }))
+        if ('detail' in persisted) throw new Error('Expected full Run details')
+        expect(persisted.executions).toHaveLength(2)
+        for (const execution of persisted.executions) {
+          const readback = RunPlacementGetResultSchema.parse(decodeMcpToolResult(await f.client.callTool({
+            name: 'run_node_placement_get', arguments: { workspaceId: f.input.workspaceId,
+              workflowId: f.input.workflowId, runId, nodeId: execution.workflowNodeId },
+          }))).readback
+          if (readback.evidence !== 'accepted') throw new Error('Expected accepted Agent placement')
+          expect(readback.nativePlacements).toHaveLength(1)
+          const native = readback.nativePlacements![0]!
+          const receipt = native.materialization.receipt
+          expect(native.executionId).toBe(execution.id)
+          expect(native.workingTree.canonicalCwd).toBe(execution.workingDirectory)
+          expect(native.materialization.finalDispatchBindingHash).toBe(native.bindingHash)
+          expect(receipt.binding.snapshotId).toBe(f.source.snapshotId)
+          const record = SourceMaterializationFileSchema.parse(JSON.parse(await readFile(
+            join(receipt.binding.canonicalPath, receipt.materializationId, 'receipt.json'), 'utf8')))
+          expect(record.snapshotReference).toBeDefined()
+          references.push(record.snapshotReference)
+          directories.push(sourceWorkingTreePath(receipt))
+        }
+      }
+      expect(new Set(directories).size).toBe(4)
+      for (const reference of references) expect(reference).toEqual(references[0])
+      await writeFile(join(directories[0]!, 'app.txt'), 'Agent edit\n')
+      for (const directory of directories.slice(1)) {
+        expect(await readFile(join(directory, 'app.txt'), 'utf8')).toBe('approved source\n')
+      }
+      expect(await readFile(join(references[0]!.canonicalStorePath, f.source.snapshotId,
+        'bytes', 'app.txt'), 'utf8')).toBe('approved source\n')
+      expect(f.base.dispatchErrors).toEqual([])
+    } finally {
+      await f.close()
+    }
+  }, 60000)
+
   it('isolates concurrent Runs, recovers their persisted checkout and respects read grants', async () => {
     let service: RunWorktrees
     let runtimeRoot: string

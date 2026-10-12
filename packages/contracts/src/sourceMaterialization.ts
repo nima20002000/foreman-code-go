@@ -76,6 +76,21 @@ export const MaterializationReceiptSchema = z.object({
 })
 export type MaterializationReceipt = z.infer<typeof MaterializationReceiptSchema>
 
+/** Main's private receipt file can reuse its retained, immutable snapshot bytes. */
+export const SourceSnapshotReferenceSchema = z.object({
+  canonicalStorePath: z.string().min(1), storeIdentity: RootBindingSchema.shape.filesystem,
+}).strict()
+export type SourceSnapshotReference = z.infer<typeof SourceSnapshotReferenceSchema>
+export const SourceMaterializationFileSchema = z.object({
+  receipt: MaterializationReceiptSchema, manifest: SourceManifestSchema,
+  snapshotReference: SourceSnapshotReferenceSchema.optional(),
+}).strict().superRefine((value, context) => {
+  if (value.snapshotReference && (!value.receipt.worktree || value.receipt.binding.deviceId !== null || value.receipt.quota)) {
+    context.addIssue({ code: 'custom', path: ['snapshotReference'],
+      message: 'Shared snapshot references require a Main-local agent worktree without a Job quota.' })
+  }
+})
+
 export function sourceMaterializationComponents(receipt: Pick<MaterializationReceipt, 'materializationId' | 'quota'>): string[] {
   return [...(receipt.quota ? [receipt.quota.namespace] : []), receipt.materializationId]
 }

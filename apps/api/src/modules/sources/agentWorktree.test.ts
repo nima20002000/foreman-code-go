@@ -81,6 +81,37 @@ it('gives each workflow agent its own verified worktree and branch instead of on
   expect(await readFile(join(reviewerTree, 'src/app.ts'), 'utf8')).toBe('accepted source\n')
 })
 
+it('reuses retained Main snapshot bytes while isolating writable worktrees and detecting later snapshot corruption', async () => {
+  const f = await fixture()
+  const snapshotRoot = join(f.base, 'snapshots')
+  await mkdir(snapshotRoot, { mode: 0o700 })
+  const store = new PrivateSourceSnapshotStore(snapshotRoot)
+  const manifest = await captureGitSource({ root: f.origin, approvedSourceId: randomUUID(), commit: f.commit,
+    repository: 'octo/site', approvedPaths: ['src/app.ts'], executablePolicy: 'preserve-approved', sink: store })
+  const binding = { ...f.binding, snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
+  const inputs = [f.attempt(), f.attempt()].map(attempt => ({ manifest, binding, attempt,
+    sharedWritableTree: true as const, worktree: { repository: 'octo/site', branch: 'foreman/snapshot-reference' } }))
+  const materializer = new PrivateSourceMaterializer(store, async () => {}, undefined, f.ports)
+  const receipts = await Promise.all(inputs.map(input => materializer.prepare(input)))
+  const reference = await store.openReference(manifest, AbortSignal.timeout(5000))
+  try {
+    for (const receipt of receipts) expect(receipt.sharedTree?.referenceIdentity).toEqual(await identity(reference.tree))
+  } finally { await reference.tree.close() }
+  const first = sourceWorkingTreePath(receipts[0]!)
+  const second = sourceWorkingTreePath(receipts[1]!)
+  expect(first).not.toBe(second)
+  await writeFile(join(first, 'src/app.ts'), 'Agent edit\n')
+  expect(await readFile(join(second, 'src/app.ts'), 'utf8')).toBe('accepted source\n')
+  const verifier = new PrivateSourceMaterializer(null, async () => {}, undefined, f.ports)
+  await verifier.verify(receipts[0]!, { binding, attempt: inputs[0]!.attempt })
+  expect(await materializer.prepare(inputs[0]!)).toEqual(receipts[0])
+  const source = join(snapshotRoot, manifest.snapshotId, 'bytes/src/app.ts')
+  await chmod(source, 0o600)
+  await writeFile(source, Buffer.alloc(Buffer.byteLength('accepted source\n'), 'x'))
+  await expect(verifier.verify(receipts[1]!, { binding, attempt: inputs[1]!.attempt }))
+    .rejects.toMatchObject({ code: 'SOURCE_BYTES_INVALID' })
+})
+
 it('reclaims a closed Main reference copy while preserving dirty work and idempotent closure metadata', async () => {
   const f = await fixture()
   const receipt = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt(),
