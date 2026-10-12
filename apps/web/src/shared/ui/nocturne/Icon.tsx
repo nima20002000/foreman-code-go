@@ -16,6 +16,7 @@ const paths = {
   copy: 'M9 9h12v12H9zM15 9V3H3v12h6',
   code: 'm8 5-7 7 7 7M16 5l7 7-7 7m-1-18-4 22',
   terminal: 'm4 6 6 6-6 6m9 0h7',
+  server: 'M4 4h16v7H4zM4 13h16v7H4zM8 7.5h.01M8 16.5h.01M12 7.5h4M12 16.5h4',
   workflow: 'M3 3h6v6H3zM15 15h6v6h-6zM15 3h6v6h-6zM9 6h6M6 9v9h9',
   grid: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
   settings: 'M4 7h16M4 17h16M8 3v8M16 13v8',

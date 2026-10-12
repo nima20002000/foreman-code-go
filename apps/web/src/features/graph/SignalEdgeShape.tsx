@@ -2,16 +2,17 @@ import { useState, type CSSProperties } from 'react'
 import { BaseEdge } from '@xyflow/react'
 import type { EdgeSignal, FloatingCurve } from './signalEdge'
 
-/** One fact in flight. `startsAt` is a performance.now() time; it may be in the past or future. */
-export type EdgePulse = { key: string; signal: EdgeSignal; reversed: boolean; startsAt: number }
+/** One fact in flight. `startsAt` is a performance.now() time; it may be in the past or future.
+ * `word` replaces the signal's usual word for facts that are not handoffs, such as a CI request. */
+export type EdgePulse = { key: string; signal: EdgeSignal; reversed: boolean; startsAt: number; word?: string }
 
 /** What each crossing says on its pulse. */
 const PULSE_WORDS: Record<EdgeSignal, string> = { task: 'Handoff', return: 'Next round', approval: 'Approval request', grant: 'Approved', error: 'Rejected' }
 
 /** A comet carrying its word, with a charging wire behind it. The delay is fixed at mount so re-renders never restart it. */
-function PulseFlight({ path, pulse }: { path: string; pulse: EdgePulse }) {
+export function PulseFlight({ path, pulse }: { path: string; pulse: EdgePulse }) {
   const [delay] = useState(() => pulse.startsAt - performance.now())
-  const word = PULSE_WORDS[pulse.signal], width = Math.round(word.length * 7.8 + 24)
+  const word = pulse.word ?? PULSE_WORDS[pulse.signal], width = Math.round(word.length * 7.8 + 24)
   return <g className="n-signal-edge-flight" data-signal={pulse.signal} data-reversed={pulse.reversed || undefined}
     style={{ '--flight-delay': `${Math.round(delay)}ms` } as CSSProperties}>
     <path className="n-signal-edge-charge" d={path} pathLength={1} />

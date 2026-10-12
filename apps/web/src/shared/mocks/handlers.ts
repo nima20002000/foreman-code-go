@@ -317,6 +317,10 @@ export const handlers: RequestHandler[] = [
   http.get('/api/management/interactions', () => HttpResponse.json({
     items: [], nextCursor: null, pendingCount: 0, pendingByWorkflow: {},
   })),
+  // The Board's CI server: no Agent of a mock Run has requested CI unless a test says so.
+  http.get('/api/management/workspaces/:workspaceId/ci', ({ request }) => HttpResponse.json({
+    runId: new URL(request.url).searchParams.get('runId'), jobs: [], truncated: false,
+  })),
   http.get('/api/management/harnesses/:harness/execution-readiness', ({ params, request }) => HttpResponse.json({
     harness: params.harness, scope: new URL(request.url).searchParams.get('scope') ?? 'saved-harness-defaults',
     ...(new URL(request.url).searchParams.has('configurationVersionId') ? { configurationVersionId: new URL(request.url).searchParams.get('configurationVersionId') } : {}),
