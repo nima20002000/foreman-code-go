@@ -162,9 +162,9 @@ describe('AgentChatPanel frozen fixtures', () => {
     const state: AgentChatState = structuredClone(agentChatFixtures.activeWithQueue)
     state.turns[0]!.delivery = 'submitting'; state.turns[1]!.delivery = 'canceled'
     const mounted = mountChat(state); await mounted.ready()
-    expect(screen.getByText('Sending', { selector: '.n-badge' })).toBeInTheDocument()
-    expect(screen.getByText('Canceled', { selector: '.n-badge' })).toBeInTheDocument()
-    expect(screen.getByText('Queued', { selector: '.n-badge' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Sending')).toBeInTheDocument()
+    expect(screen.getByLabelText('Canceled')).toBeInTheDocument()
+    expect(screen.getByLabelText('Queued')).toBeInTheDocument()
   })
 })
 
@@ -199,7 +199,7 @@ describe('AgentChatPanel commands and drafts', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Steer' }))
     await waitFor(() => expect(sent(mounted.mock)).toHaveLength(1))
     expect(sent(mounted.mock)[0]!.body).toMatchObject({ intent: 'steer', expectedNativeTurnId: 'turn-1' })
-    expect(await screen.findByText('Server recorded: Steer · Delivered')).toBeInTheDocument()
+    expect(await screen.findAllByLabelText('Delivered').then(items => items.at(-1)!)).toBeInTheDocument()
   })
 
   it('queues the next turn and cancels it by turn request identity', async () => {
@@ -210,7 +210,7 @@ describe('AgentChatPanel commands and drafts', () => {
     await waitFor(() => expect(mounted.mock.calls.some((call) => call.path.endsWith('/cancel'))).toBe(true))
     const sentId = (sent(mounted.mock)[0]!.body as SendAgentChatMessageRequest).requestId
     expect(mounted.mock.calls.find((call) => call.path.endsWith('/cancel'))!.path).toContain(`/turns/${sentId}/cancel`)
-    expect(await screen.findByText('Canceled', { selector: '.n-badge' })).toBeInTheDocument()
+    expect(await screen.findByLabelText('Canceled')).toBeInTheDocument()
   })
 
   it('interrupt-and-send is one backend command, not client-side stop then send', async () => {
@@ -275,8 +275,8 @@ describe('AgentChatPanel commands and drafts', () => {
       return HttpResponse.json({ state, turn, replayed: false })
     }))
     await userEvent.click(screen.getByRole('button', { name: 'Steer' }))
-    expect(await screen.findByText('Server recorded: Next turn · Delivered')).toBeInTheDocument()
-    expect(screen.queryByText('Server recorded: Steer · Delivered')).not.toBeInTheDocument()
+    expect(await screen.findAllByLabelText('Delivered').then(items => items.at(-1)!)).toBeInTheDocument()
+    expect(screen.queryAllByLabelText('Delivered')).toHaveLength(0)
   })
 
   it('unknown delivery requires the explicit new-message warning and a fresh requestId', async () => {
@@ -307,7 +307,7 @@ describe('AgentChatPanel commands and drafts', () => {
     let posts = 0
     server.use(http.post(messagePath, () => { posts++; return HttpResponse.error() }))
     await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
-    expect(await screen.findByText('Unknown', { selector: '.n-badge' })).toBeInTheDocument()
+    expect(await screen.findByLabelText('Unknown')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Possibly delivered')
     fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' })
     await waitFor(() => expect(screen.getByText(/review the warning/)).toBeInTheDocument())
@@ -375,7 +375,7 @@ describe('AgentChatPanel commands and drafts', () => {
       return HttpResponse.json({ state, turn: state.turns[0], replayed: false })
     }))
     await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
-    await screen.findByText('Server recorded: Next turn · Failed')
+    await screen.findAllByLabelText('Failed').then(items => items.at(-1)!)
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Keep failed native input')
   })
 

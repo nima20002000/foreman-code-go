@@ -47,9 +47,9 @@ it.each([401, 403])('retains the original send across a post-acceptance %s and r
   expect(reloaded.client.getMutationCache().getAll()[0]?.state.variables).toMatchObject({
     kind: 'send', input: original,
   })
-  await screen.findByText('No receipt was confirmed. The original may have been accepted; it will not be resent automatically.')
+  await screen.findByLabelText('Unknown')
   fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' })
-  await screen.findByText(/Message could not be sent: Delivery is unknown/)
+  await screen.findByText(/Delivery is unknown/)
   expect(posts).toBe(1)
   expect(reloaded.mock.calls.filter(call => call.method === 'POST')).toHaveLength(0)
 

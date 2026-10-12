@@ -464,6 +464,7 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
     const chat = unsavedChat ? <EmptyState icon="chat" title="Save this Agent and workflow to chat"
       description="Save the Agent settings and workflow changes, then reopen chat. Workflow alerts list any missing setup." />
       : <AgentChatPanel name={pinned?.name ?? nodeTitle(graph, node.id)} activity={run.activity} running={run.state === 'running'}
+      role={pinned?.role ?? (agent?.productRole === 'orchestrator' ? 'Orchestrator' : 'Worker')} runLabel={pinned?.runLabel ?? run.label} onClose={() => inspect(() => setOpenNode(undefined))}
       context={{ workspaceId: graph.workspaceId, workflowId: graph.id, workflowNodeId: node.id, agentId: node.agentId,
         ...(board?.run ? { runId: board.run.runId } : {}) }}
       onNewConversation={() => {
@@ -474,7 +475,7 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
           else { setOpenNode(undefined); setPanel('agents') }
         } else { setOpenNode(undefined); setPanel('agents') }
       }} />
-    if (pinned) return { chat,
+    if (pinned) return { chat, chatHasHeader: true,
       settings: <p className="agent-panel-note">This is a saved Run Agent. Return to the draft to edit settings for future work. Chat does not change this Run.</p>,
       info: <AgentInfoTabs scope={board?.run} agentId={node.agentId} details={<AgentFacts items={[{ label: 'Status', value: run.activity ? `${run.label} · ${run.activity}` : run.label },
         { label: 'Node', value: node.id, mono: true }, { label: 'Agent', value: node.agentId, mono: true },
@@ -482,6 +483,7 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
     const role = roleEvidence(context, node.agentId, edit.agentEdits)
     return {
       chat,
+      chatHasHeader: !unsavedChat,
       settings: <fieldset className="board-popover-fields" disabled={edit.busy || reloading || editIntent.locked}>
         <p className="agent-panel-note">Executable changes require every affected Run to stop and finish cleanup before Save. Use Stop-and-save or discard the edits. Moving Agents on the Board does not require Stop.</p>
         <BoardAgentSettings draftKey={draftKey} edit={edit} nodeId={node.id} close={() => setOpenNode(undefined)}

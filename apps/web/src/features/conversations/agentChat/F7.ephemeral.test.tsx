@@ -23,7 +23,7 @@ describe('F7 B-R06 terminal-decided ephemeral Codex facts', () => {
     const first = await send('First live ephemeral turn')
     let state = completedFixture(startedFixture(mounted.mock.getState(initial.context), first.requestId), 'First answer')
     mounted.mock.setState(state); await act(() => mounted.refresh())
-    await screen.findByText('Server recorded: Next turn · Completed')
+    await screen.findAllByLabelText('Completed').then(items => items.at(-1)!)
     expect(state.capabilities.resume).toBe(true)
     const second = await send('Follow up in the resident session')
     expect(second.expectedConversationId).toBe(state.conversation!.id)
@@ -34,7 +34,7 @@ describe('F7 B-R06 terminal-decided ephemeral Codex facts', () => {
     const lost = ephemeralFixture('restarted')
     state = { ...state, sessionState: lost.sessionState, capabilities: lost.capabilities, availability: lost.availability, revision: state.revision + 1 }
     mounted.mock.setState(state); await act(() => mounted.refresh())
-    await screen.findByText('Native session unavailable')
+    await screen.findByText('Original session unavailable')
     fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'Keep after restart' } })
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
     expect(screen.getAllByText(/ephemeral Codex session was lost/).length).toBeGreaterThan(0)

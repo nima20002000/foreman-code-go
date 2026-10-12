@@ -65,7 +65,7 @@ const PinnedRunNode = memo(function PinnedRunNode({ id, data, selected, width, h
     {panel && ui?.panels && data.kind==='agent' ? <AgentPopover open anchor={anchor} title={data.label} subtitle={`Selected Run · ${data.recorded}`}
       harness={data.facts.harness} icon={data.facts.icon} panel={panel}
       onClose={() => ui.setOpen(undefined)}
-      {...ui.panels(id,{agentId:data.agentId,name:data.label})} /> : null}
+      {...ui.panels(id,{agentId:data.agentId,name:data.label,role:data.facts.roleLabel,runLabel:data.status})} /> : null}
   </>
 })
 // Pulses and traces are timed once per canvas, so an edge remount never replays a handoff.
