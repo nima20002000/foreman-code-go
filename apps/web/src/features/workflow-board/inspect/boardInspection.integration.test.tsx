@@ -534,9 +534,18 @@ describe('Live Run status on the Board', () => {
     expect(nodeState(added)).toBe('queued')
     expect(screen.queryByRole('region', { name: 'Run status' })).not.toBeInTheDocument()
 
-    // The turn passes; the second Agent's node shows its CI wait until it finishes.
+    // The turn passes; the second Agent runs CI on a cloud computer. CI lives on the CI server, not in a strip on top.
     ciState = 'running'
     await advance(() => cut('2', 'running', [execution(first, 'completed'), execution(added, 'running')]))
+    const ciServerButton = await within(pinnedCanvas()).findByRole('button', { name: /^CI server, 1 running/ })
+    expect(screen.queryByRole('list', { name: 'CI jobs' })).not.toBeInTheDocument()
+    fireEvent.click(ciServerButton)
+    const ciDialog = await screen.findByRole('dialog', { name: 'CI server' })
+    const ciRow = within(within(ciDialog).getByRole('region', { name: 'CI jobs' })).getAllByRole('row')[1]!
+    for (const text of ['build · build-api', 'GitHub Actions', 'GitHub Actions 2', 'Step build-api', 'Running', nameOf(added)]) {
+      expect(ciRow).toHaveTextContent(text)
+    }
+    await userEvent.setup().click(within(ciDialog).getByRole('button', { name: 'Close CI server' }))
     await waitFor(() => expect(nodeState(added)).toBe('waiting'))
     expect(within(agentNode(added)).getByText('Waiting for CI build-api · running')).toBeVisible()
     expect(nodeState(first)).toBe('completed')

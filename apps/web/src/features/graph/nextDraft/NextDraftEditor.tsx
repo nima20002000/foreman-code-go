@@ -12,6 +12,7 @@ import { Inbox, Redo2, Save, Undo2 } from 'lucide-react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GraphDraftV3Schema, staysOnWorkflowBoard, sameAuthoredWorkflow, type WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { ActionMenu, AgentFacts, Button, ConfirmDialog, EmptyState, Icon, IconButton, LoadingState, TextField, Toolbar, type AgentPanel } from '../../../shared/ui/nocturne'
+import { ToastContext } from '../../../shared/ui/nocturne/toastContext'
 import { GraphPresentationProvider } from '../GraphPresentation'
 import { useGraphPresentationStore } from '../useGraphPresentation'
 import { applyGraphGeometry, type GraphGeometryChange } from '../geometry'
@@ -146,6 +147,14 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
   const reloadMutation = useMutation({ mutationFn: () => nextDraftApi.context(graph.workspaceId, graph.id, undefined, true), retry: false })
   const reloading = reloadMutation.isPending
   const layout = useDraftLayout(draftKey)
+  const toast = useContext(ToastContext)
+  const layoutFailure = layout.journalError ?? (layout.isError ? layout.error?.message ?? 'Layout could not be saved.' : undefined)
+  const retryLayout = layout.mutate
+  // Layout is presentation only: it saves silently, also during a Run; only a real failure is reported, unobtrusively.
+  useEffect(() => {
+    if (layoutFailure) toast?.notify({ title: 'Node layout was not saved.', description: layoutFailure, tone: 'warning',
+      action: { label: 'Retry', onClick: () => retryLayout() } })
+  }, [layoutFailure, toast, retryLayout])
   const preflight = useBoardStartPreflight(context.draft, { enabled: board?.authoringActive !== false })
   const access = useLocalHumanAccessQuery()
   const principal = !access.isError ? access.data?.principal : undefined
@@ -569,8 +578,6 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
           else openPanel(issue.code === 'ENTRY_REQUIRED' && !graph.nodes.length ? 'agents' : 'workflow')
         }} />
       <div className="board-notices" aria-live="polite">
-        {layout.isError || layout.retained || layout.journalError ? <BoardNotice tone="warning" title="Positions are retained locally.">{layout.journalError ?? layout.error?.message}
-          <Button size="sm" disabled={layout.isPending || !!layout.journalError} onClick={() => layout.mutate()}>Reconcile layout</Button></BoardNotice> : null}
         {!pendingStart && workspace.data && workspace.data.locationValidation.status !== 'ready' ? <BoardNotice tone="warning" title="Choose an execution folder to run this workflow."
           action={<Button size="sm" onClick={board?.openLocation}>Choose folder</Button>} /> : null}
         {pendingStart ? <BoardNotice tone="warning" title="An earlier start may have gone through."

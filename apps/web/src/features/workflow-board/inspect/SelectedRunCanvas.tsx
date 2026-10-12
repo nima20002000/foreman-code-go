@@ -26,10 +26,10 @@ import { useRunChoreography } from './runChoreography'
 import { useInteractionsQuery } from '../../../shared/api/query'
 import { interactionWaits, liveNodeView } from './runLiveStatus'
 import { RunSubagentsOverlay } from '../../run-subagents/RunSubagentsOverlay'
-import { CI_SERVER_NODE_ID, CiServerDialog, CiServerNode, CiTransferEdge,
+import { CiServerDialog, CiServerNode, CiTransferEdge,
   type CiServerFlowNode, type CiTransferFlowEdge } from './CiServer'
 import { useCiTransfers } from './useCiTransfers'
-import { CI_SERVER_SIZE, ciNodeActivities, ciServerSummary, isActiveCiJob, runCiApi } from './ciServer'
+import { CI_SERVER_NODE_ID, ciNodeActivities, ciServerFlowNode, ciServerSummary, isActiveCiJob, runCiApi } from './ciServer'
 import { useInspectionPresentation } from './presentation'
 import type { SubagentLayoutNode } from '../../run-subagents/layout'
 import './inspection.css'
@@ -47,7 +47,7 @@ type RunNode = Node<ReturnType<typeof pinnedTopology>['nodes'][number] & {
   selected: boolean; resizable?: boolean; inspect(): void
 }, 'pinnedRunNode'>
 /** Run identity is pinned; its circle uses the workflow's editable presentation. */
-const PinnedRunNode = memo(function PinnedRunNode({ id, data, width, height }: NodeProps<RunNode>) {
+const PinnedRunNode = memo(function PinnedRunNode({ id, data, selected, width, height }: NodeProps<RunNode>) {
   const ui = useContext(RunAgentPanels), anchor = useRef<HTMLButtonElement>(null)
   const panel = ui?.open?.nodeId === id ? ui.open.panel : undefined
   const meta = [...(data.blockId ? [{ label: 'Repeat', value: data.blockId }] : []),
@@ -55,7 +55,7 @@ const PinnedRunNode = memo(function PinnedRunNode({ id, data, width, height }: N
     ...data.facts.meta].slice(0, 2)
   return <><AgentNodeView ref={anchor} className="pinned-run-node" name={data.label} harness={data.facts.harness} harnessLabel={data.facts.harnessLabel}
     model={data.facts.model} icon={data.facts.icon} statusLabel={data.status} state={data.state} transition={data.transition} transitionKey={data.transitionKey} meta={meta}
-    entry={data.entry} selected={data.selected} ariaLabel={`Inspect Run node ${data.label}`} onSelect={()=>{if(data.kind==='job'){data.inspect();ui?.setOpen({nodeId:id,panel:'info'})}}} openPanel={panel}
+    entry={data.entry} selected={selected} ariaLabel={`Inspect Run node ${data.label}`} onSelect={()=>{if(data.kind==='job'){data.inspect();ui?.setOpen({nodeId:id,panel:'info'})}}} openPanel={panel}
     onAction={ui?.panels && data.kind==='agent' ? (next) => ui.setOpen(panel === next ? undefined : { nodeId: id, panel: next }) : undefined}>
     <AgentHandles name={data.label} connectable={false} />
     {data.kind === 'agent' && data.resizable ? <CircularNodeResizer id={id} name={data.label}
@@ -118,6 +118,8 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
 }) {
   const [adapter] = useState(() => createGraphGeometryAdapter<RunNode>([]))
   const [canvasNodes, setCanvasNodes] = useState<RunNode[]>([])
+  // Node selection is local presentation, like the draft canvas; it never changes the Run.
+  const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set())
   const [open, setOpen] = useState<OpenAgentPanel>()
   const board = useWorkflowBoard()!
   const query = useRunVersionQuery(scope)
@@ -276,14 +278,20 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
     return result
   }), [nodes, layoutById, pinnedById, geometry])
   useLayoutEffect(() => {
-    const selected = new Set(presentedNodes.filter((node) => node.data.selected).map((node) => node.id))
+    const selected = new Set([...picked, ...presentedNodes.filter((node) => node.data.selected).map((node) => node.id)])
     setCanvasNodes(adapter.reconcile(presentedNodes, selected))
-  }, [adapter, presentedNodes])
+  }, [adapter, presentedNodes, picked])
   const flushGeometry = () => {
     const changes = adapter.flush()
     if (changes.length) geometry?.(changes)
   }
   const onNodesChange = (changes: NodeChange<RunNode | CiServerFlowNode>[]) => {
+    const selections = changes.filter((change) => change.type === 'select' && change.id !== CI_SERVER_NODE_ID)
+    if (selections.length) setPicked((current) => {
+      const next = new Set(current)
+      for (const change of selections) if (change.type === 'select') { if (change.selected) next.add(change.id); else next.delete(change.id) }
+      return next
+    })
     const editable = changes.filter((change): change is NodeChange<RunNode> =>
       change.type === 'position' && Boolean(layoutById.has(change.id) && geometry))
     const result = adapter.update(editable)
@@ -297,17 +305,8 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
     ])
     setCanvasNodes(result.nodes)
   }
-  // The CI server stands below the Agents, centered under them, so it adds no width; it is not part of the saved graph.
-  const ciServerNode = useMemo<CiServerFlowNode | undefined>(() => {
-    if (!canvasNodes.length) return undefined
-    const left = Math.min(...canvasNodes.map((node) => node.position.x))
-    const right = Math.max(...canvasNodes.map((node) => node.position.x + (node.width ?? 212)))
-    const bottom = Math.max(...canvasNodes.map((node) => node.position.y + (node.height ?? 212)))
-    return { id: CI_SERVER_NODE_ID, type: 'ciServer', position: { x: (left + right) / 2 - CI_SERVER_SIZE.width / 2, y: bottom + 160 },
-      // Not selectable or draggable, yet its button must still take clicks.
-      ...CI_SERVER_SIZE, style: { ...CI_SERVER_SIZE, pointerEvents: 'all' }, draggable: false, selectable: false, connectable: false,
-      deletable: false, data: { summary: ciSummary, rim: 'box', open: () => useInspectionPresentation.getState().setOpen(ciDialogKey, true) } }
-  }, [ciSummary, canvasNodes, ciDialogKey])
+  const ciServerNode = useMemo(() => ciServerFlowNode(canvasNodes, ciSummary,
+    () => useInspectionPresentation.getState().setOpen(ciDialogKey, true)), [ciSummary, canvasNodes, ciDialogKey])
   const flowNodes = useMemo(() => ciServerNode ? [...canvasNodes, ciServerNode] : canvasNodes, [canvasNodes, ciServerNode])
   const finishResize = (change: GraphGeometryChange) => {
     setCanvasNodes(adapter.finishResize(change.id, change.width!, change.height!, change.position))
@@ -349,17 +348,10 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
     {missingNode ? <Alert tone="warning" title="The linked node is not in this Run’s saved version.">
       <Button size="sm" onClick={() => board.selectInspection({})}>Clear missing node selection</Button>
     </Alert> : null}
-    {version ? <div className="pinned-run-flow" onKeyDown={(event) => {
-      // Keyboard parity with onEdgeClick: Enter/Space on a focused relationship opens it.
-      if (event.key !== 'Enter' && event.key !== ' ') return
-      const edgeId = (event.target as Element).closest?.('.react-flow__edge')?.getAttribute('data-id')
-      if (!edgeId || !topology?.edges.some((edge) => edge.id === edgeId)) return
-      event.preventDefault(); board.selectInspection({ runRelationshipId: edgeId }); board.openRuns()
-    }}>
+    {version ? <div className="pinned-run-flow">
       <ReactFlowProvider><RunAgentPanels.Provider value={{ panels, open, setOpen, beginResize: adapter.beginResize, resize, finishResize }}><Choreography.Provider value={motion}><ReactFlow<RunNode | CiServerFlowNode, RunEdge | CiTransferFlowEdge> nodes={flowNodes} edges={flowEdges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         onNodesChange={onNodesChange} nodesDraggable={Boolean(geometry)} nodesConnectable={false} nodesFocusable edgesFocusable
         elementsSelectable deleteKeyCode={null} onlyRenderVisibleElements
-        onEdgeClick={(_, edge) => { if (edge.type !== 'pinnedRunEdge') return; board.selectInspection({ runRelationshipId: edge.id }); board.openRuns() }}
         fitView fitViewOptions={fitViewOptions} proOptions={proOptions} minZoom={0.1} maxZoom={1.6}
         aria-label="Run graph canvas">
         <SelectedRunSubagents key={scope.runId} scope={scope} nodes={canvasNodes} />

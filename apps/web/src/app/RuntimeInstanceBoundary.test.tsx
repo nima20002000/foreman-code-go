@@ -6,7 +6,7 @@ import { http, HttpResponse } from 'msw'
 import { server } from '../mocks/server'
 import { bindProtectedChatInstance } from '../shared/api/protectedChatStorage'
 import { ApiError, apiClient } from '../shared/api/client'
-import { RuntimeInstanceBoundary } from './RuntimeInstanceBoundary'
+import { ReleaseAutoReload, RuntimeInstanceBoundary } from './RuntimeInstanceBoundary'
 import { UnsavedChangesContext } from '../shared/ui/unsavedChanges'
 
 vi.mock('../shared/api/protectedChatStorage', async (original) => ({
@@ -120,38 +120,51 @@ it('keeps content hidden on storage failure and allows a real retry', async () =
   await waitFor(() => expect(screen.getByText('Protected content')).toBeVisible())
 })
 
-it('announces release changes while keeping the same mounted draft and storage owner', async () => {
-  const client = mount()
-  const draft = await screen.findByRole('textbox', { name: 'Draft' })
-  await userEvent.setup().type(draft, 'Unsaved settings')
-  const calls = vi.mocked(bindProtectedChatInstance).mock.calls.length
-  for (const checkoutId of ['c'.repeat(64), 'd'.repeat(64)]) {
-    server.use(http.get('*/api/runtime/identity', () => HttpResponse.json({ ...identity, checkoutId })))
-    await act(async () => { await client.invalidateQueries({ queryKey: ['workbench', 'runtime-identity'] }) })
-    expect(await screen.findByRole('alert')).toHaveTextContent('The app was updated.')
-    expect(screen.getByRole('textbox', { name: 'Draft' })).toBe(draft)
-    expect(draft).toHaveValue('Unsaved settings')
-    expect(screen.getByRole('button', { name: 'Reload app' })).toBeEnabled()
-  }
-  expect(bindProtectedChatInstance).toHaveBeenCalledTimes(calls)
-})
-
-it('checks unsaved changes before reloading an updated app', async () => {
-  const request = vi.fn().mockResolvedValue(false)
+function mountReleaseWatcher(unsaved: () => boolean) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   clients.push(client)
-  render(<QueryClientProvider client={client}>
-    <UnsavedChangesContext.Provider value={{ request, surfaces: request, changed: vi.fn(), register: () => () => {} }}>
-      <RuntimeInstanceBoundary><input aria-label="Draft" defaultValue="Unsaved draft" /></RuntimeInstanceBoundary>
-    </UnsavedChangesContext.Provider>
-  </QueryClientProvider>)
-  const draft = await screen.findByRole('textbox', { name: 'Draft' })
+  const guard = { request: async () => true, surfaces: async () => true, changed: vi.fn(), register: () => () => {}, unsaved }
+  render(<QueryClientProvider client={client}><RuntimeInstanceBoundary>
+    <UnsavedChangesContext.Provider value={guard}><ReleaseAutoReload /><input aria-label="Draft" defaultValue="" /></UnsavedChangesContext.Provider>
+  </RuntimeInstanceBoundary></QueryClientProvider>)
+  return client
+}
+function stubReload() {
+  const reload = vi.fn()
+  vi.stubGlobal('location', { ...window.location, reload })
+  return reload
+}
+
+it('reloads silently after a release when nothing is unsaved', async () => {
+  const reload = stubReload()
+  const client = mountReleaseWatcher(() => false)
+  await screen.findByRole('textbox', { name: 'Draft' })
+  expect(reload).not.toHaveBeenCalled()
   server.use(http.get('*/api/runtime/identity', () => HttpResponse.json({ ...identity, checkoutId: 'c'.repeat(64) })))
   await act(async () => { await client.invalidateQueries({ queryKey: ['workbench', 'runtime-identity'] }) })
-  await userEvent.setup().click(await screen.findByRole('button', { name: 'Reload app' }))
-  expect(request).toHaveBeenCalledOnce()
+  await waitFor(() => expect(reload).toHaveBeenCalledOnce())
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  vi.unstubAllGlobals()
+})
+
+it('waits for unsaved edits to settle before reloading an updated app', async () => {
+  const reload = stubReload()
+  let dirty = true
+  const client = mountReleaseWatcher(() => dirty)
+  const draft = await screen.findByRole('textbox', { name: 'Draft' })
+  await userEvent.setup().type(draft, 'Unsaved draft')
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  server.use(http.get('*/api/runtime/identity', () => HttpResponse.json({ ...identity, checkoutId: 'c'.repeat(64) })))
+  await act(async () => { await client.invalidateQueries({ queryKey: ['workbench', 'runtime-identity'] }) })
+  await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+  expect(reload).not.toHaveBeenCalled()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   expect(screen.getByRole('textbox', { name: 'Draft' })).toBe(draft)
   expect(draft).toHaveValue('Unsaved draft')
+  dirty = false
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+  expect(reload).toHaveBeenCalledOnce()
+  vi.unstubAllGlobals()
 })
 
 it('hides the previous document state when the database installation changes', async () => {
