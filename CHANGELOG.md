@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.84] - 2026-10-12
+
+### Fixed
+
+- After an API restart, running Agents and their interval checks are re-adopted before source verification and finish normally (restart survival, part 4).
+
 ## [0.0.83] - 2026-10-12
 
 ### Added
