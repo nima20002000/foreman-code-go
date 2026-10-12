@@ -28,7 +28,14 @@ function readSubagent(record: unknown) {
   } }
 }
 
-export interface SubagentReadScope { sql: pg.PoolClient; principal: ManagementPrincipal; stopped: boolean; workflowId: string; workflowVersionId: string }
+export interface SubagentReadScope {
+  sql: pg.PoolClient
+  principal: ManagementPrincipal
+  stopped: boolean
+  workflowId: string
+  workflowVersionId: string
+  projectionLocked: boolean
+}
 export class RunSubagentService {
   private readonly backfills = new Map<string, Promise<void>>()
   constructor(readonly pool: pg.Pool, readonly controls: SubagentControlResolver = () => undefined, readonly nativeRecovery?: SubagentNativeRecoverySource,
@@ -58,22 +65,40 @@ export class RunSubagentService {
 
   /** Exact live grants and immutable Run ownership are rechecked for every page, command and retry. */
   async scoped<T>(principal: ManagementPrincipal, input: { workspaceId: string; runId: string }, action: ManagementAction,
-    work: (scope: SubagentReadScope) => Promise<T>): Promise<T> {
+    work: (scope: SubagentReadScope) => Promise<T>,
+    options: { projectionLock?: 'if-available' } = {}): Promise<T> {
     const sql = await this.pool.connect()
     try {
       await sql.query('begin')
+      // Listing reads immutable ownership and a committed stop state; commands still lock the Run.
+      const runLock = options.projectionLock === 'if-available' ? '' : ' for share'
       const row = (await sql.query<{ workflow_id: string; workflow_version_id: string; stopped: boolean }>(`select workflow_id,workflow_version_id,
-        (stop_requested_at is not null or execution_state in ('completed','interrupted')) as stopped from runs where id=$1 and workspace_id=$2 for share`, [input.runId, input.workspaceId])).rows[0]
+        (stop_requested_at is not null or execution_state in ('completed','interrupted')) as stopped from runs
+        where id=$1 and workspace_id=$2${runLock}`, [input.runId, input.workspaceId])).rows[0]
       if (!row) throw new DomainError('RUN_NOT_FOUND', 'The Run was not found in this workspace.', 404)
       const live = await readLiveManagementPrincipal(sql, principal.id)
       const resource = { workspaceId: input.workspaceId, workflowId: row.workflow_id, runId: input.runId }
       requireAuthorization(live, 'runs:read', resource)
       requireAuthorization(live, action, resource)
-      await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`run-subagents:${input.runId}`])
-      const result = await work({ sql, principal: live, stopped: row.stopped, workflowId: row.workflow_id, workflowVersionId: row.workflow_version_id })
+      let projectionLocked = true
+      if (options.projectionLock === 'if-available') {
+        // Polling can read committed children while another request projects native events.
+        const lock = await sql.query<{ acquired: boolean }>(
+          'select pg_try_advisory_xact_lock(hashtext($1)) as acquired', [`run-subagents:${input.runId}`])
+        projectionLocked = lock.rows[0]!.acquired
+      } else {
+        await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`run-subagents:${input.runId}`])
+      }
+      const result = await work({ sql, principal: live, stopped: row.stopped,
+        workflowId: row.workflow_id, workflowVersionId: row.workflow_version_id, projectionLocked })
       await sql.query('commit')
       return result
-    } catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
+    } catch (error) {
+      await sql.query('rollback')
+      throw error
+    } finally {
+      sql.release()
+    }
   }
   async child(scope: SubagentReadScope, input: z.infer<typeof RunSubagentGetInputSchema>) {
     const row = (await scope.sql.query<{ record: unknown }>('select record from run_subagents where id=$1 and run_id=$2 for update', [input.subagentId, input.runId])).rows[0]
@@ -87,7 +112,8 @@ export class RunSubagentService {
   async list(principal: ManagementPrincipal, raw: unknown) {
     const input = RunSubagentsListInputSchema.parse(raw)
     const result = await this.scoped(principal, input, 'runs:read', async scope => {
-      const projection = await reconcileRunSubagents(scope.sql, input.runId)
+      const projection = scope.projectionLocked
+        ? await reconcileRunSubagents(scope.sql, input.runId) : 'catching-up'
       const key = decodeCursor(input.cursor, [input.workspaceId, input.runId, 'children'])
       const rows = (await scope.sql.query<{ id: string; record: unknown }>(`select id,record from run_subagents where run_id=$1 and ($2::text is null or id>$2 collate "C") order by id collate "C" limit $3`, [input.runId, key, input.limit + 1])).rows
       return RunSubagentsPageSchema.parse({ items: await Promise.all(rows.slice(0, input.limit).map(async row => {
@@ -95,7 +121,7 @@ export class RunSubagentService {
         if (child.workspaceId !== input.workspaceId || child.workflowId !== scope.workflowId || child.workflowVersionId !== scope.workflowVersionId) throw new DomainError('SUBAGENT_SCOPE_CONFLICT', 'The child has inconsistent immutable Run scope.', 409)
         return { subagent: child, availableActions: subagentAvailableActions(child, scope.principal, scope.stopped, this.controls(child)) }
       })), nextCursor: rows.length > input.limit ? encodeCursor([input.workspaceId, input.runId, 'children'], rows[input.limit - 1]!.id) : null, projection })
-    })
+    }, { projectionLock: 'if-available' })
     this.scheduleRecovery(principal, input)
     return result
   }
