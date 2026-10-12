@@ -1746,7 +1746,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       if (runtime.session.providerVersion !== session.providerVersion) throw new HarnessExecutionError('CODEX_SESSION_VERSION_MISMATCH', 'The loaded session belongs to another Codex release.')
       runtime.closed = true
       runtime.disposed = true
-      runtime.capacityRetry?.controller.abort()
+      if (runtime.capacityRetry?.failure) runtime.capacityRetry.controller.abort()
       for (const [id, child] of this.childRuntimes) {
         if (child.runtime.parent !== runtime) continue
         child.runtime.closed = true

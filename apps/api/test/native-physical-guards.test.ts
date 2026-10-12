@@ -23,7 +23,9 @@ function fixture() {
     workflowVersionId: 'version-proof-1', executionSemanticsVersion: 3 as const }
   const stored = { execution, ref: { nodeId: execution.workflowNodeId, occurrence: null },
     inputDigest: `sha256:${'1'.repeat(64)}` } as StoredRepeatExecution
-  const capture = { execution, session, owner, source: { type: 'history' }, closureGeneration: '1',
+  const capture = { execution, session, owner,
+    source: { type: 'history', history: { correlationId: `execution:${execution.id}`,
+      nativeTurnId: 'original-turn', events: [], pendingInteractions: [] } }, closureGeneration: '1',
     lane: { id: 'original-lane', token: 'original-token', connectionGeneration: 1, providerId: 'original-turn' },
     assertCurrent() {} } as unknown as WorkflowNativeCapture
   const run = { id: scope.runId, workspaceId: scope.workspaceId, workflowId: scope.workflowId,

@@ -227,6 +227,21 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await wire('turn/start')).length, 1)
   })
 
+  it('closing a session during capacity backoff cancels the wait without resubmitting', async () => {
+    const session = await manager.createSession(source)
+    const { result } = await start(session)
+    const current = await state(f.directory, session.nativeSessionId)
+    await emit(f.directory, { method: 'turn/completed', params: { threadId: session.nativeSessionId, turn: {
+      ...current.turns.at(-1), status: 'failed', completedAt: 2,
+      error: { message: 'Selected model is at capacity.', codexErrorInfo: 'serverOverloaded', additionalDetails: null },
+    } } })
+    await until(async () => (await manager.history(session)).events.some(event => event.type === 'turn.capacity_wait'))
+    await manager.close(session)
+    const events = await result
+    assert.equal(events.filter(event => event.type === 'turn.retry_canceled').length, 1)
+    assert.equal((await wire('turn/start')).length, 1)
+  })
+
   it('F16/F17: pipe submission keeps the mapping; uncertain responses cannot be retransmitted', async () => {
     await flag('no-resolution')
     const session = await manager.createSession(source)

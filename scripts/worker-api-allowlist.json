@@ -110,6 +110,7 @@
   "apps/api/src/modules/harnesses/claudeSdk/sessionControls.ts",
   "apps/api/src/modules/harnesses/claudeSdk/sessionManager.ts",
   "apps/api/src/modules/harnesses/codexAppServer.ts",
+  "apps/api/src/modules/harnesses/codexCapacity.ts",
   "apps/api/src/modules/harnesses/codexChildControls.ts",
   "apps/api/src/modules/harnesses/codexCommandOutput.ts",
   "apps/api/src/modules/harnesses/codexDiagnostics.ts",
