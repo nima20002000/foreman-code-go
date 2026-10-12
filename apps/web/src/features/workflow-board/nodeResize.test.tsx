@@ -1,19 +1,30 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { installFlowLayout } from '../run-board/testFlowLayout'
 import { useGraphDraftStore } from '../graph/store'
 import { nextDraftKey } from '../graph/nextDraft/state'
 import { nextDraftDirty } from '../graph/nextDraft/state'
 import { inspectionBoardFixture } from './inspect/inspectionFixtures'
-import { boardHref, installBoardTestLifecycle, measureBoardWire, mountMeasuredBoard } from './eng05D.testSupport'
+import { boardHref, setRunState, installBoardTestLifecycle, measureBoardWire, mountMeasuredBoard } from './eng05D.testSupport'
+
+const observed = vi.hoisted(() => ({ flow: undefined as import('@xyflow/react').ReactFlowProps | undefined }))
+vi.mock('@xyflow/react', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@xyflow/react')>()
+  const { createElement } = await import('react')
+  return { ...actual, ReactFlow: (props: import('@xyflow/react').ReactFlowProps) => {
+    if (props['aria-label'] === 'Run graph canvas') observed.flow = props
+    return createElement(actual.ReactFlow, props)
+  } }
+})
 
 installBoardTestLifecycle()
 
-it('resizes a Run node through layout Save and shows the persisted circle on the draft and Run', async () => {
+it('resizes an active Run node through layout Save and shows the persisted circle on the draft and Run', async () => {
   installFlowLayout(1000, 720)
   const fixture = await inspectionBoardFixture('circle-resize')
   const scope = fixture.runs.before.scope
+  setRunState(fixture, scope, 'running')
   const originalVersion = structuredClone(fixture.mock.versions.get(scope.workflowVersionId))
   const originalRun = structuredClone(fixture.mock.runs.get(scope.runId))
   const wire = measureBoardWire(fixture.mock)
@@ -45,4 +56,36 @@ it('resizes a Run node through layout Save and shows the persisted circle on the
   await history.back()
   await waitFor(() => expect(screen.getByLabelText('Selected Run pinned topology')).toBeInTheDocument())
   expect(await screen.findByRole('slider', { name: `Resize ${label}` })).toHaveAttribute('aria-valuenow', String(initial + 8))
+}, 15_000)
+
+it('moves an active Run node through presentation Save without changing the Run or version', async () => {
+  installFlowLayout(1000, 720)
+  const fixture = await inspectionBoardFixture('active-node-move')
+  const scope = fixture.runs.before.scope
+  setRunState(fixture, scope, 'running')
+  const originalVersion = structuredClone(fixture.mock.versions.get(scope.workflowVersionId))
+  const originalRun = structuredClone(fixture.mock.runs.get(scope.runId))
+  const wire = measureBoardWire(fixture.mock)
+  await mountMeasuredBoard(boardHref(scope))
+  const label = fixture.first.name ?? fixture.first.label ?? fixture.first.id
+  await screen.findByRole('slider', { name: `Resize ${label}` })
+  expect(observed.flow?.nodesDraggable).toBe(true)
+  expect(observed.flow?.nodesConnectable).toBe(false)
+  const node = observed.flow!.nodes!.find((node) => node.id === fixture.first.id)!
+  expect(node.draggable).toBe(true)
+  const position = { x: 500, y: 320 }
+  act(() => observed.flow!.onNodesChange!([{ id: node.id, type: 'position', position, dragging: true }]))
+  expect(observed.flow!.nodes!.find((item) => item.id === node.id)!.position).toEqual(position)
+  expect(wire.writes()).toHaveLength(0)
+  // React Flow can end a drag without repeating the final position.
+  act(() => observed.flow!.onNodesChange!([{ id: node.id, type: 'position', dragging: false }]))
+  const key = nextDraftKey(scope.workspaceId, scope.workflowId)
+  await waitFor(() => expect(useGraphDraftStore.getState().nextDrafts[key]!.context.draft.graph.nodes[0])
+    .toMatchObject({ position }))
+  expect(wire.writes()).toHaveLength(1)
+  expect(wire.writes()[0]).toMatchObject({ method: 'PUT', status: 200 })
+  expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[key]!)).toBe(false)
+  expect(fixture.mock.workflows.get(scope.workflowId)!.nodes[0]).toMatchObject({ position })
+  expect(fixture.mock.versions.get(scope.workflowVersionId)).toEqual(originalVersion)
+  expect(fixture.mock.runs.get(scope.runId)).toEqual(originalRun)
 }, 15_000)

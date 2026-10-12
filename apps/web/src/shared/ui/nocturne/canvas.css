@@ -296,7 +296,7 @@
   white-space: nowrap;
 }
 
-/* Rim actions stay visible and clickable before the Agent is selected. */
+/* Rim actions appear while the node is hovered or keyboard-focused. */
 .n-agent-actions { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
 .n-agent-actions::before { content: ''; position: absolute; left: 132px; top: -34px; width: 130px; height: 150px; border-radius: 40% 60% 60% 30%; }
 .n-agent-action {
@@ -311,9 +311,13 @@
   background: var(--surface-raised);
   color: var(--agent-hue);
   cursor: pointer;
-  pointer-events: auto;
-  transition: background 140ms ease, border-color 140ms ease;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 140ms ease, background 140ms ease, border-color 140ms ease;
 }
+.n-agent:hover .n-agent-action,
+.n-agent:has(:focus-visible) .n-agent-action,
+.react-flow__node:focus-visible .n-agent-action { opacity: 1; pointer-events: auto; }
 .n-agent-action--chat { left: 146px; top: -29px; }
 .n-agent-action--settings { left: 194px; top: 10px; }
 .n-agent-action--info { left: 218px; top: 66px; }
