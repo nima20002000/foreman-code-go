@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir, open, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { availableParallelism, homedir, totalmem } from 'node:os'
 import { join, matchesGlob } from 'node:path'
 import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, integrationPartition,
@@ -39,6 +40,11 @@ interface RunMeta {
   scope?: CiScope; files?: string[]; part?: CiPart; defaultBranch?: string; baseCommit?: string; deriveFiles?: boolean
 }
 
+type StartRequest = { runId: string; repository: string; commit: string; suite: CiSuite
+  part?: CiPart | undefined; partition?: CiPartition | undefined; durations?: CiDurations | undefined;
+  scope?: CiScope | undefined; files?: string[] | undefined; defaultBranch?: string | undefined;
+  baseCommit?: string | undefined }
+
 const unitName = (runId: string) => `foreman-ci-${runId}`
 // GitHub CLI's own credential helper: a computer that is logged in to gh fetches without any app setup.
 const gitAuth = ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential']
@@ -47,6 +53,8 @@ const gitAuth = ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth g
  * systemd user service, so it outlives a Worker restart, and its CPU and memory stay below the host reserve. */
 export class HostCiRunner {
   private readonly preparing = new Map<string, Promise<void>>()
+  private startQueue = Promise.resolve()
+  private startingRunId: string | null = null
   private githubChecked: { at: number; ready: boolean; reason: string | null } | undefined
 
   constructor(private readonly root = join(homedir(), '.local/share/foreman-code/ci-host'),
@@ -86,7 +94,15 @@ export class HostCiRunner {
   }
 
   private async writeMeta(meta: RunMeta) {
-    await writeFile(join(this.runDirectory(meta.runId), 'meta.json'), JSON.stringify(meta), { mode: 0o600 })
+    const path = join(this.runDirectory(meta.runId), 'meta.json')
+    const temporary = `${path}.${randomUUID()}.tmp`
+    try {
+      // Busy checks must see a complete record while launch updates the run state.
+      await writeFile(temporary, JSON.stringify(meta), { mode: 0o600, flag: 'wx' })
+      await rename(temporary, path)
+    } finally {
+      await rm(temporary, { force: true })
+    }
   }
 
   private async github(): Promise<{ ready: boolean; reason: string | null }> {
@@ -116,6 +132,8 @@ export class HostCiRunner {
   }
 
   private async active(): Promise<string | null> {
+    const preparing = this.preparing.keys().next().value
+    if (preparing) return preparing
     const directory = join(this.root, 'runs')
     if (!existsSync(directory)) return null
     for (const runId of await readdir(directory)) {
@@ -125,12 +143,24 @@ export class HostCiRunner {
     return null
   }
 
-  private async start(request: { runId: string; repository: string; commit: string; suite: CiSuite
-    part?: CiPart | undefined; partition?: CiPartition | undefined; durations?: CiDurations | undefined;
-    scope?: CiScope | undefined; files?: string[] | undefined; defaultBranch?: string | undefined;
-    baseCommit?: string | undefined }) {
+  private async start(request: StartRequest) {
+    // Keep the busy check and initial persistence together, including same-run retries.
+    const previous = this.startQueue
+    let release!: () => void
+    this.startQueue = new Promise<void>(resolve => { release = resolve })
+    await previous
+    try {
+      return await this.startRun(request)
+    } finally {
+      this.startingRunId = null
+      release()
+    }
+  }
+
+  private async startRun(request: StartRequest) {
     const directory = this.runDirectory(request.runId)
     if (existsSync(join(directory, 'meta.json'))) return this.refresh(request.runId)
+    this.startingRunId = request.runId
     const busy = await this.active()
     if (busy) throw new DomainError('CI_HOST_BUSY', 'This computer is already running a CI suite.', 409)
     const github = await this.github()
@@ -365,6 +395,8 @@ export class HostCiRunner {
 
   /** Reads the current state of a run, settling it once its unit has exited, and frees its worktree. */
   async refresh(runId: string): Promise<CiHostRun> {
+    // Launch can finish while the metadata read is awaiting I/O.
+    const preparing = this.preparing.has(runId) || this.startingRunId === runId
     let meta = await this.readMeta(runId)
     const directory = this.runDirectory(runId)
     if (meta.state === 'running') {
@@ -379,7 +411,7 @@ export class HostCiRunner {
           await this.finish(runId, 'lost', null, 'The CI unit ended without an exit status.')
         }
       }
-    } else if (meta.state === 'starting' && !this.preparing.has(runId)) {
+    } else if (meta.state === 'starting' && !preparing) {
       await this.finish(runId, 'lost', null, 'The Worker restarted while preparing this run.')
     }
     meta = await this.readMeta(runId)
