@@ -14,8 +14,14 @@ const protocol: CodexProtocol = { request() {}, serverRequest() {}, notification
 let f: Fixture
 const transports: CodexStdioTransport[] = []
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
-async function transport(requestHandler = async () => undefined, timeout = 200): Promise<CodexStdioTransport> {
-  const value = new CodexStdioTransport(f.binary, f.directory, { ...process.env }, protocol, requestHandler, () => undefined, () => undefined, timeout)
+async function transport(options: {
+  requestHandler?: () => Promise<void>
+  timeout?: number
+  onDisconnect?: (error: Error) => void
+} = {}): Promise<CodexStdioTransport> {
+  const value = new CodexStdioTransport(f.binary, f.directory, { ...process.env }, protocol,
+    options.requestHandler ?? (async () => undefined), () => undefined,
+    options.onDisconnect ?? (() => undefined), options.timeout ?? 200)
   transports.push(value)
   await value.start()
   return value
@@ -109,7 +115,7 @@ void (async () => {
   })
 
   it('F11: intentional close immediately settles outstanding submitted calls and clears listeners', async () => {
-    const value = await transport(undefined, 30_000)
+    const value = await transport({ timeout: 30_000 })
     const controller = new AbortController()
     const pending = observe(value.request('test/noresponse', {}, controller.signal))
     await pause(20)
@@ -155,18 +161,25 @@ void (async () => {
 
   it('F10: an asynchronous native-request handler exception is caught at dispatch', async () => {
     let attempted = false
-    const value = await transport(async () => { attempted = true; throw new Error('translation failed') })
+    const value = await transport({ requestHandler: async () => {
+      attempted = true
+      throw new Error('translation failed')
+    } })
     await value.request('test/request')
     await until(async () => attempted)
     assert.deepEqual(await value.request('test/echo', { alive: true }), { alive: true })
   })
 
   it('F09: stdin EPIPE cannot become an unhandled stream error', async () => {
-    const value = await transport()
-    await value.request('test/epipe')
-    await pause(50)
-    await value.respond(998, 'test/response', {}).catch(() => undefined)
-    await pause(50)
+    // Provider startup shares the RPC deadline; process scheduling can exceed 200 ms in CI.
+    const disconnected: Error[] = []
+    const value = await transport({ timeout: 5_000, onDisconnect: error => { disconnected.push(error) } })
+    assert.deepEqual(await value.request('test/epipe'), { stdinClosed: true })
+    await assert.rejects(value.respond(998, 'test/response', {}), (error: unknown) =>
+      errorCode(error) === 'NATIVE_RESPONSE_DELIVERY_UNCERTAIN')
+    const failure = await until(async () => disconnected[0])
+    assert.equal((failure as NodeJS.ErrnoException).code, 'EPIPE')
+    assert.equal(value.isConnected(), false)
     // Running under --unhandled-rejections=strict makes boundary regressions fatal.
     await value.close()
   })
