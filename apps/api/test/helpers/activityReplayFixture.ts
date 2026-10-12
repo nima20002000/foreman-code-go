@@ -1,6 +1,7 @@
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './testResources.js'
 import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:net'
+import { join } from 'node:path'
 import { expect } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
@@ -96,7 +97,7 @@ export async function setup(options: { operatorSandbox?: 'read-only' | 'workspac
   const replay = new ActivityProductionReplay()
   const database = { pool: db.pool, ping: async () => { await db.pool.query('select 1') },
     migrate: () => applyApplicationMigrations(db.pool), close: async () => {} }
-  const infrastructure = replay.infrastructure(workspace.harnessWorkspaceRoot)
+  const infrastructure = replay.infrastructure(join(workspace.harnessWorkspaceRoot, 'native-process-registry'))
   let production = buildProductionApp(config, database, checkpoints, false, undefined, undefined, undefined, infrastructure)
   let origin = await startActivityReplayProduction(production, replay, closes, config.port)
   const headers = { authorization: `Bearer ${writer.token}` }
