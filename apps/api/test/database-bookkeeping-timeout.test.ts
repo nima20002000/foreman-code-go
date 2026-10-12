@@ -21,6 +21,7 @@ const timeouts = [
   new Error('Query read timeout'),
   Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' }),
   new RunGraphError('GRAPH_TRANSACTION_FAILED', { cause: new Error('Query read timeout') }),
+  new Error('Connection terminated due to connection timeout'),
 ]
 
 it.each(timeouts)('retries bookkeeping until the database answers: %s', async error => {
@@ -143,6 +144,72 @@ it('still stops at lease expiry when all database checks time out', async () => 
     await vi.advanceTimersByTimeAsync(900)
     expect(await pending).toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
     expect(guard.signal.aborted).toBe(true)
+  } finally {
+    await guard.stop()
+  }
+})
+
+it('confirms the same writer before foreground work resumes after expiry', async () => {
+  vi.useFakeTimers()
+  let unavailable = true
+  const check = vi.fn(async () => {
+    if (unavailable) throw timeouts[0]
+  })
+  const recover = vi.fn(async () => {
+    if (unavailable) throw timeouts[0]
+    return new Date(Date.now() + 900).toISOString()
+  })
+  const guard = new LeaseGuard(900, check, recover, new AbortController().signal,
+    new Date(Date.now() + 900).toISOString(), { recover })
+  const confirmed = vi.fn()
+  const pending = guard.check().then(confirmed)
+  try {
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(guard.signal.aborted).toBe(false)
+    expect(confirmed).not.toHaveBeenCalled()
+    unavailable = false
+    await vi.advanceTimersByTimeAsync(1_000)
+    await pending
+    expect(confirmed).toHaveBeenCalledOnce()
+    expect(recover).toHaveBeenCalled()
+  } finally {
+    await guard.stop()
+  }
+})
+
+it('honors Stop during expired native lease recovery without another renewal', async () => {
+  vi.useFakeTimers()
+  const controller = new AbortController()
+  const reason = new DomainError('GRAPH_STOP_CONFLICT', 'Stopped', 409)
+  const recover = vi.fn().mockRejectedValue(timeouts[0])
+  const guard = new LeaseGuard(900, async () => { throw timeouts[0] }, recover, controller.signal,
+    new Date(Date.now() + 900).toISOString(), { recover })
+  const pending = guard.check().catch(error => error)
+  try {
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(guard.signal.aborted).toBe(false)
+    controller.abort(reason)
+    expect(await pending).toBe(reason)
+    const attempts = recover.mock.calls.length
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(recover).toHaveBeenCalledTimes(attempts)
+  } finally {
+    await guard.stop()
+  }
+})
+
+it('ends native observation on a non-database renewal failure', async () => {
+  vi.useFakeTimers()
+  const failed = new Error('Native writer configuration failed')
+  const recover = vi.fn().mockRejectedValue(failed)
+  const guard = new LeaseGuard(900, async () => {}, recover, new AbortController().signal,
+    new Date(Date.now() + 900).toISOString(), { recover })
+  try {
+    await vi.advanceTimersByTimeAsync(300)
+    expect(guard.signal.reason).toBe(failed)
+    expect(recover).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(900)
+    expect(recover).toHaveBeenCalledOnce()
   } finally {
     await guard.stop()
   }

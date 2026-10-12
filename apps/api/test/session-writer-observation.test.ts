@@ -106,7 +106,71 @@ it.each([1, 2])('accepts a completed turn after %i transient renewal timeouts', 
   }
 })
 
-it('fences the writer at its confirmed expiry when renewal timeouts persist', async () => {
+it.each(['Query read timeout', 'Connection terminated due to connection timeout', 'delayed response'])(
+  'continues the same native turn after a two-minute database stall: %s', async message => {
+    vi.useFakeTimers()
+    const provider = silentProvider()
+    const startTurn = provider.manager.startTurn
+    provider.manager.startTurn = vi.fn(async function* (...args: Parameters<NativeHarnessSessionManager['startTurn']>) {
+      yield* startTurn(...args)
+      yield completed
+    })
+    const coordination = nativeLanes()
+    const renewLane = coordination.renewLane.bind(coordination)
+    const assertLaneLease = coordination.assertLaneLease.bind(coordination)
+    const resumed = deferred()
+    let unavailable = false
+    vi.spyOn(coordination, 'renewLane').mockImplementation(async (...args) => {
+      if (unavailable && message === 'delayed response') await resumed.promise
+      else if (unavailable) throw new Error(message)
+      return renewLane(...args)
+    })
+    vi.spyOn(coordination, 'assertLaneLease').mockImplementation(async (...args) => {
+      if (unavailable) throw new Error(message)
+      return assertLaneLease(...args)
+    })
+    const writer = new SingleWriterSessionManager(provider.manager, coordination, 'stream-agent', 30_000)
+    await writer.createSession({ kind: 'operator' } as Parameters<typeof writer.createSession>[0])
+    const iterator = writer.startTurn(session, {
+      prompt: 'stream', clientCorrelationId: 'stream-turn',
+    })[Symbol.asyncIterator]()
+    expect(await iterator.next()).toEqual({ value: frame, done: false })
+    const original = await coordination.getLane('codex', session.nativeSessionId)
+    const result = iterator.next().then(value => ({ value }), error => ({ error }))
+    try {
+      await provider.reading.promise
+      unavailable = true
+      await vi.advanceTimersByTimeAsync(120_000)
+      expect(provider.signal()?.aborted).toBe(false)
+      expect(writer.isActive(session)).toBe(true)
+      unavailable = false
+      resumed.resolve()
+      await vi.advanceTimersByTimeAsync(1_000)
+      const recovered = await coordination.getLane('codex', session.nativeSessionId)
+      expect(recovered?.leaseToken).toBe(original?.leaseToken)
+      expect(recovered?.connectionGeneration).toBe(original?.connectionGeneration)
+      expect(vi.mocked(coordination.renewLane)).toHaveBeenLastCalledWith(
+        original!.id, original!.leaseToken, 30_000,
+        { owner: 'stream-agent', connectionGeneration: original!.connectionGeneration },
+      )
+      expect(Date.parse(recovered!.leaseExpiresAt!)).toBeGreaterThan(Date.now())
+      provider.release.resolve()
+      expect(await result).toEqual({ value: { value: completed, done: false } })
+      expect((await iterator.next()).done).toBe(true)
+      expect(provider.manager.startTurn).toHaveBeenCalledOnce()
+      expect(provider.manager.cancel).not.toHaveBeenCalled()
+      expect(provider.manager.close).not.toHaveBeenCalled()
+    } finally {
+      unavailable = false
+      resumed.resolve()
+      provider.release.resolve()
+      await result
+      await iterator.return?.()
+    }
+  },
+)
+
+it('fences the writer when another owner takes over during a database stall', async () => {
   vi.useFakeTimers()
   const provider = silentProvider()
   const startTurn = provider.manager.startTurn
@@ -130,27 +194,27 @@ it('fences the writer at its confirmed expiry when renewal timeouts persist', as
   try {
     await provider.reading.promise
     await vi.advanceTimersByTimeAsync(8_100)
-    const attempts = renewal.mock.calls.length
     await vi.advanceTimersByTimeAsync(899)
     expect(provider.signal()?.aborted).toBe(false)
     expect(renewal.mock.calls.length).toBeGreaterThan(1)
-    expect(renewal).toHaveBeenCalledTimes(attempts)
     expect((await coordination.getLane('codex', session.nativeSessionId))?.leaseExpiresAt)
       .toBe(original?.leaseExpiresAt)
     await vi.advanceTimersByTimeAsync(1)
-    expect(await result).toMatchObject({ error: { code: 'SESSION_LANE_LEASE_LOST' } })
-    expect(provider.signal()?.aborted).toBe(true)
-    expect(writer.isActive(session)).toBe(false)
+    expect(provider.signal()?.aborted).toBe(false)
     const lane = (await coordination.getLane('codex', session.nativeSessionId))!
     await coordination.claimLane(lane.id, lane.revision, 'stream-agent', 'successor-token',
       new Date(Date.now() + 9_000).toISOString(), 'successor-turn')
+    renewal.mockRestore()
+    await vi.advanceTimersByTimeAsync(300)
+    expect(await result).toMatchObject({ error: { code: 'SESSION_LANE_LEASE_LOST' } })
     await expect(lease.guard.check()).rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
+    expect(provider.signal()?.aborted).toBe(true)
+    expect(writer.isActive(session)).toBe(false)
     await expect(coordination.acknowledgeLaneTurn(lease.fence, 'stream-turn', 'provider-turn'))
       .rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
     provider.release.resolve()
     await provider.detached.promise
     await vi.advanceTimersByTimeAsync(1_000)
-    expect(renewal).toHaveBeenCalledTimes(attempts)
     expect((await coordination.getLane('codex', session.nativeSessionId))?.leaseToken).toBe('successor-token')
   } finally {
     provider.release.resolve()
@@ -173,6 +237,31 @@ it('rejects a late renewal response before a delayed expiry timer can run', asyn
     await expect(guard.check()).rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
   } finally {
     await guard.stop()
+  }
+})
+
+it.each(['owner', 'generation'] as const)('rejects expired recovery under a changed %s', async changed => {
+  vi.useFakeTimers()
+  const provider = silentProvider()
+  const coordination = nativeLanes()
+  const writer = new SingleWriterSessionManager(provider.manager, coordination, 'stream-agent', 9_000)
+  await writer.createSession({ kind: 'operator' } as Parameters<typeof writer.createSession>[0])
+  const lease = await writer.acquire(session, 'stream-turn')
+  try {
+    await coordination.releaseLane(lease.fence.id, lease.fence.token, {
+      observedStatus: 'idle', connectionGeneration: changed === 'generation' ? 1 : 0,
+    })
+    const released = (await coordination.getLane('codex', session.nativeSessionId))!
+    // Keep the token to test owner/generation checks independently of token replacement.
+    const successor = await coordination.claimLane(released.id, released.revision,
+      changed === 'owner' ? 'successor-agent' : 'stream-agent', lease.fence.token,
+      new Date(Date.now() + 18_000).toISOString(), 'successor-turn')
+    vi.setSystemTime(Date.now() + 9_000)
+    await expect(lease.guard.check()).rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
+    expect(lease.guard.signal.aborted).toBe(true)
+    expect(await coordination.getLane('codex', session.nativeSessionId)).toEqual(successor)
+  } finally {
+    await lease.guard.stop()
   }
 })
 

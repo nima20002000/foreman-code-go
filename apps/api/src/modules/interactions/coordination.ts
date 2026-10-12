@@ -15,6 +15,7 @@ const recoverableJob = `(state in ('pending','leased','blocked_busy','blocked_di
   and (record->>'retryAfter' is null or (record->>'retryAfter')::timestamptz <= clock_timestamp())`
 
 export interface WriterFence { id: string; token: string }
+export interface LaneLeaseOwnership { owner: string; connectionGeneration: number }
 
 function leaseInput(id: string, owner: string, token: string, expiresAt: string) {
   const input = {
@@ -429,25 +430,32 @@ export class PostgresInteractionCoordinationRepository {
     throw new DomainError('NATIVE_TURN_IDENTITY_CONFLICT', 'The acknowledged turn differs from the owned writer.', 409)
   }
 
-  async assertLaneLease(id: string, token: string): Promise<void> {
+  async assertLaneLease(id: string, token: string, ownership?: LaneLeaseOwnership): Promise<void> {
     const result = await this.queryConnection.query(
       `select id from native_session_lanes where id=$1 and record->>'leaseToken'=$2
-       and (record->>'leaseExpiresAt')::timestamptz > clock_timestamp()`, [id, token],
+       and (record->>'leaseExpiresAt')::timestamptz > clock_timestamp()
+       and ($3::text is null or (record->>'leaseOwner'=$3
+         and (record->>'connectionGeneration')::bigint=$4))`,
+      [id, token, ownership?.owner ?? null, ownership?.connectionGeneration ?? null],
     )
     if (!result.rowCount) throw new DomainError('SESSION_LANE_LEASE_LOST', 'The native writer lease expired or changed owners.', 409)
   }
 
-  async renewLane(id: string, token: string, leaseMs: number): Promise<string> {
+  async renewLane(id: string, token: string, leaseMs: number, ownership?: LaneLeaseOwnership): Promise<string> {
+    // The token and captured owner/generation fence recovery against a concurrent claim or reattachment.
     const result = await this.queryConnection.query<{ expires_at: string }>(
       `update native_session_lanes set revision=revision+1, updated_at=clock_timestamp(),
        record=jsonb_set(jsonb_set(record, '{revision}', to_jsonb((revision+1)::bigint)),
          '{leaseExpiresAt}', to_jsonb(to_char(
            (clock_timestamp()+($3 * interval '1 millisecond')) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')))
        where id=$1 and record->>'leaseToken'=$2
-       and (record->>'leaseExpiresAt')::timestamptz > clock_timestamp()
-       returning record->>'leaseExpiresAt' as expires_at`, [id, token, leaseMs],
+       and ($4::text is not null or (record->>'leaseExpiresAt')::timestamptz > clock_timestamp())
+       and ($4::text is null or (record->>'leaseOwner'=$4
+         and (record->>'connectionGeneration')::bigint=$5))
+       returning record->>'leaseExpiresAt' as expires_at`,
+      [id, token, leaseMs, ownership?.owner ?? null, ownership?.connectionGeneration ?? null],
     )
-    if (result.rowCount !== 1) throw new DomainError('SESSION_LANE_LEASE_LOST', 'An expired native writer lease cannot be renewed.', 409)
+    if (result.rowCount !== 1) throw new DomainError('SESSION_LANE_LEASE_LOST', 'The native writer lease is no longer owned.', 409)
     return result.rows[0]!.expires_at
   }
 

@@ -11,6 +11,7 @@ export function isDatabaseTimeout(error: unknown): boolean {
     if (code === 'DATABASE_READ_TIMEOUT') return true
     if (code !== undefined && code !== 'GRAPH_TRANSACTION_FAILED') return false
     if (error instanceof Error && error.message === 'Query read timeout') return true
+    if (error instanceof Error && error.message === 'Connection terminated due to connection timeout') return true
     error = 'cause' in error ? error.cause : undefined
   }
   return false
