@@ -7,6 +7,20 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.78] - 2026-10-12
+
+### Changed
+
+- Interval checks run outside the workflow's parallelism limit, so a watcher can check while other Agents work.
+- Agent executions start faster: source files are prepared, copied and verified in parallel.
+
+### Fixed
+
+- Laptop CI preparation: the root binding owner mismatch that failed every minute; retries reuse the same source capture and back off (up to 1 hour) with the failure shown in enrollment status.
+- CI computers prune verification images no profile needs; settled Runs' source copies are reclaimed.
+- CI volumes are sparse (32 GiB default) instead of fully allocated 96 GiB; leaked CI seed receipts; approved-root identity survives remounts and reboots.
+- Flaky remote-review recovery tests (connection epoch before installations).
+
 ## [0.0.77] - 2026-10-12
 
 ### Added
