@@ -278,7 +278,7 @@ export class RepeatRunRepository {
       if (state?.state !== 'queued') return repeatConflict('WORK_ACTIVATION_NOT_QUEUED')
       // One execution of a node at a time: graph work waits for the node's running interval check.
       const checking = await context.sql.query(`select 1 from harness_executions where run_id=$1 and workflow_node_id=$2
-        and tick_index is not null and record->>'state'<>'completed' limit 1`, [context.scope.runId, ref.nodeId])
+        and record #> '{input,tick}' is not null and record->>'state'<>'completed' limit 1`, [context.scope.runId, ref.nodeId])
       if (checking.rowCount) return repeatConflict('INTERVAL_CHECK_RUNNING')
       const execution = HarnessExecutionSchema.parse(candidate(ref.nodeId))
       this.assertCandidate(context, ref, execution, 1)
@@ -961,9 +961,10 @@ export class RepeatRunRepository {
         values($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`, [execution.id, context.scope.runId, slotId, occurrenceId,
         workActivationId, execution.attempt, previousExecutionId, JSON.stringify(identity)])
     } else {
-      await context.sql.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,repeat_occurrence_id,record,tick_index)
-        values($1,$2,$3,$4,$5,$6,$7::jsonb,$8)`, [execution.id, context.scope.runId, ref.nodeId,
-        execution.agentId, execution.attempt, occurrenceId, JSON.stringify(execution), tickIndex])
+      // Only checks write tick_index; ordinary work keeps the statement every schema accepts.
+      await context.sql.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,repeat_occurrence_id,record${tickIndex === null ? '' : ',tick_index'})
+        values($1,$2,$3,$4,$5,$6,$7::jsonb${tickIndex === null ? '' : ',$8'})`, [execution.id, context.scope.runId, ref.nodeId,
+        execution.agentId, execution.attempt, occurrenceId, JSON.stringify(execution), ...(tickIndex === null ? [] : [tickIndex])])
       await context.sql.query(`insert into run_repeat_executions(execution_id,run_id,slot_id,occurrence_id,technical_attempt,previous_execution_id,identity)
         values($1,$2,$3,$4,$5,$6,$7::jsonb)`, [execution.id, context.scope.runId, slotId, occurrenceId,
         execution.attempt, previousExecutionId, JSON.stringify(identity)])
