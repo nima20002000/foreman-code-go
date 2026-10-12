@@ -83,6 +83,8 @@ describe('CI runtime preparation boundaries', () => {
     const imageId = 'a'.repeat(64)
     const staleId = 'b'.repeat(64)
     const intermediate = 'c'.repeat(64)
+    const staleTags = ['localhost/foreman-code-verification:bbbbbbbbbbbb',
+      `localhost/foreman-code-verification:${'d'.repeat(40)}`]
     const images = new Set([imageId, staleId, intermediate])
     const installation = createHash('sha256').update(installer).digest('hex')
     await writeCiRuntimeCache({ installer, inputDigest: await ciRuntimeInputDigest({ repository: f.source, commit }),
@@ -90,11 +92,17 @@ describe('CI runtime preparation boundaries', () => {
         seedReceiptPath, contextReceiptPath, qualificationSource: f.source } })
     command.run.mockImplementation(async (_file, args: string[]) => {
       if (args.includes('ps')) return '[]'
-      if (args.includes('images')) return JSON.stringify([...images].map(Id => ({ Id,
-        Names: Id === intermediate ? [] : [`localhost/foreman-code-verification:${Id.slice(0, 12)}`] })))
+      if (args.includes('images')) return JSON.stringify([...images].map(Id => {
+        if (Id === intermediate) return { Id, Names: [] }
+        const names = Id === staleId ? staleTags : [`localhost/foreman-code-verification:${Id.slice(0, 12)}`]
+        return { Id, Names: names }
+      }))
       if (args.includes('inspect')) return JSON.stringify([{ Id: args.at(-1),
         Labels: { 'io.foreman-code.installation': installation } }])
-      if (args.includes('rmi')) images.delete(args.at(-1)!)
+      if (args.includes('rmi')) {
+        if (staleTags.every(tag => args.includes(tag))) images.delete(staleId)
+        else images.delete(args.at(-1)!)
+      }
       if (args.includes('build')) throw new Error('Cache reuse must not build')
       return ''
     })

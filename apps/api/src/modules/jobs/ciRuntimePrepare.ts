@@ -207,6 +207,8 @@ async function prepareRuntime({ repository, commit, installer, review, keepImage
   }
   signal?.throwIfAborted()
   await writeCiRuntimeCache({ installer, inputDigest, prepared })
+  stage('prune-images')
+  await pruneCiImages({ keep: [...keepImages, prepared.imageId], env, installer, signal })
   return prepared
 }
 
