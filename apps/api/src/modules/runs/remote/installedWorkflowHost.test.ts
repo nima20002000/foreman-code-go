@@ -345,6 +345,47 @@ describe('installed host resident execution continuity', () => {
     }
   })
 
+  it('waits for original terminal settlement when reconnecting during native closure', async () => {
+    const f = await runningInstalledFixture()
+    const closeOwner = f.closeOwner.getMockImplementation()!
+    let closed!: () => void
+    let release!: () => void
+    const physicallyClosed = new Promise<void>(resolve => { closed = resolve })
+    const continueSettlement = new Promise<void>(resolve => { release = resolve })
+    f.closeOwner.mockImplementation(async owner => {
+      const result = await closeOwner(owner)
+      closed()
+      await continueSettlement
+      return result
+    })
+    try {
+      f.disconnect()
+      f.finish('succeeded')
+      await physicallyClosed
+      expect(await f.journal.status(f.intent.operationId)).toMatchObject({
+        status: 'known', receipt: { phase: 'running' },
+      })
+      const replacement = { ...f.context.binding,
+        connectionGeneration: f.context.binding.connectionGeneration + 1, connectionEpoch: randomUUID() }
+      f.reconnect(replacement)
+      const read = f.call('history')
+      const result = expect(read).resolves.toMatchObject({ payload: {
+        history: f.history, status: { receipt: { terminal: { kind: 'completed' } } },
+      } })
+      // Let reconnection inspect the closed process while its terminal commit is still blocked.
+      await new Promise<void>(resolve => setImmediate(resolve))
+      release()
+      await result
+      expect(f.create).toHaveBeenCalledOnce()
+      expect(f.turns).toHaveBeenCalledOnce()
+      expect(f.attach).not.toHaveBeenCalled()
+      expect(f.cancel).not.toHaveBeenCalled()
+    } finally {
+      release()
+      await f.host.close()
+    }
+  })
+
   it.each(['generation', 'approval wait'] as const)('rebinds %s to the original resident before history and Stop', async phase => {
     const f = await runningInstalledFixture(phase)
     try {
