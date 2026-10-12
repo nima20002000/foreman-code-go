@@ -7,6 +7,19 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.77] - 2026-10-12
+
+### Added
+
+- CI server on every Run Board: it lights up while CI runs, sends a light from the requesting Agent and back with the result, and opens a Jobs / Tests / Log modal with Passed / Failed / Skipped filters. CI records per-test results; Operator MCP `ci_list` and `ci_get testStatus` read them.
+- Per-Agent interval checks (off by default): an Agent node can re-check its work every N seconds/minutes/hours beside the graph, with the Agent MCP tool `run_status_get`. At most 1,000 checks per Run.
+
+### Fixed
+
+- Full suite green: Codex threads before their first turn, restart recovery of running turns, remote owner interruption cleanup, CI runner start/exit races, laptop CI umask.
+- Board forms no longer fill browser storage with the whole Agent catalog ("Changes can't be kept in this browser").
+- The sidebar keeps computers and their last readings through slow refreshes.
+
 ## [0.0.76] - 2026-10-12
 
 ### Added
