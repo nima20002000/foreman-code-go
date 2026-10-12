@@ -181,7 +181,8 @@ export class HostCiRunner {
       .flatMap(key => this.environment[key] ? [`--setenv=${key}=${this.environment[key]}`] : [])
     const started = await this.ports.run('systemd-run', ['--user', '--quiet', '--collect', `--unit=${unitName(meta.runId)}`,
       `--property=MemoryMax=${Math.floor(this.ports.memoryBytes - reserve)}`, `--property=CPUQuota=${this.ports.cpus * 100}%`,
-      `--working-directory=${source}`, ...environment, '/bin/bash', join(this.runDirectory(meta.runId), 'run.sh')],
+      // Desktop sessions default to umask 0002; suites expect the 0022 every cloud CI runner uses.
+      '--property=UMask=0022', `--working-directory=${source}`, ...environment, '/bin/bash', join(this.runDirectory(meta.runId), 'run.sh')],
     { env: this.environment, timeoutMs: 30_000 })
     if (started.code !== 0) throw new Error(`The CI unit could not start: ${started.stderr.trim().slice(0, 500)}`)
     await this.writeMeta({ ...meta, state: 'running' })
