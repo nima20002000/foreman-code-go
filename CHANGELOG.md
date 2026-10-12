@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.92] - 2026-10-12
+
+### Changed
+
+- The Board's CI server is drawn as a server tower with drive-bay status lights.
+
+### Fixed
+
+- A test no longer names a fleet computer, which had blocked all cloud CI through the public mirror.
+
 ## [0.0.91] - 2026-10-12
 
 ### Fixed
