@@ -33,7 +33,8 @@ import { agent3Database, seedAgent3 } from './wave25Agent3.js'
 
 /** Real SQL, workflow engine, Codex adapter, credentials and approval services with replayed provider IO. */
 export async function codexApprovalRuntime(handler: 'user' | 'orchestrator' = 'user',
-  options: ApprovalProviderOptions & { fixture?: ReturnType<typeof makeCurrentWorkflowFixture> } = {}) {
+  options: ApprovalProviderOptions & { fixture?: ReturnType<typeof makeCurrentWorkflowFixture>
+    approvalPolicy?: 'never' } = {}) {
   const db = await agent3Database()
   let engine: LangGraphWorkflowEngine | undefined
   const engines: LangGraphWorkflowEngine[] = []
@@ -51,6 +52,7 @@ export async function codexApprovalRuntime(handler: 'user' | 'orchestrator' = 'u
           ...structuredClone(DEFAULT_CODEX_ADVANCED_CONFIGURATION),
           approvalsReviewer: handler === 'orchestrator' && c.agentId === entry.agentId ? 'auto_review' : 'user',
           webSearch: 'disabled',
+          ...(options.approvalPolicy ? { approvalPolicy: options.approvalPolicy } : {}),
         },
       },
     }))

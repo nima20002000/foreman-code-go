@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { expect } from 'vitest'
-import { AgentSchema } from '@foreman-code/contracts'
+import { AgentSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION } from '@foreman-code/contracts'
 import { ManagementActionSchema, type ManagementGrant } from '@foreman-code/contracts/management'
 import {
   CurrentWorkflowSaveInputSchema,
@@ -19,9 +19,11 @@ import { graphRpc, graphRpcValue, graphHeaders } from './eng04-graph-composition
 
 /** Current product Create and full-definition Save fixture; only workspace and Agent rows are seeded. */
 export async function writerFixture(db: Awaited<ReturnType<typeof currentDatabase>>, form: CurrentFixtureForm = 'sequential',
-  options: { agentActiveTimeoutMs?: number } = {}) {
+  options: { agentActiveTimeoutMs?: number; approvalPolicy?: 'never' } = {}) {
     const f = makeCurrentWorkflowFixture(randomUUID(), form)
-    const configurations = f.configurations
+    const configurations = f.configurations.map(config => options.approvalPolicy && config.harness.harness === 'codex'
+      ? { ...config, harness: { ...config.harness, advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION,
+        ...config.harness.advanced, approvalPolicy: options.approvalPolicy } } } : config)
     // Only workspace/Agent configuration fixtures are seeded. No workflow or
     // immutable v3 version is inserted here; both travel through product HTTP/MCP.
     await db.pool.query(`insert into workspaces(id,record,execution_location,execution_location_identity,location_revision)
