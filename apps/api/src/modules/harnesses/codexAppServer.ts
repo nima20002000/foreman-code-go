@@ -109,6 +109,7 @@ export interface CodexOriginalSessionLifetime {
 
 const MAX_EVENTS = 1_024
 const MAX_EVENT_BYTES = 8 * 1024 * 1024
+const MAX_HISTORY_BYTES = 128 * 1024
 const MAX_STAGED = 256
 const MAX_INTERACTIONS = 128
 const RESPONSE_DEADLINE_MS = 30_000
@@ -1380,14 +1381,39 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     this.captureResponseDeliveries(runtime)
     const all = [...runtime.interactions.values()]
     const first = all.find((entry) => entry.delivery === 'pending')
+    // Streamed frames are persisted individually. Observation proofs need a
+    // smaller window so their combined JSON stays within graph traversal limits.
+    let firstEvent = runtime.events.length
+    let historyBytes = 0
+    while (firstEvent > 0) {
+      const size = runtime.eventSizes[firstEvent - 1]!
+      if (historyBytes + size > MAX_HISTORY_BYTES && firstEvent < runtime.events.length) break
+      historyBytes += size
+      firstEvent -= 1
+    }
+    const events = runtime.events.slice(firstEvent)
+    const terminalEvent = runtime.terminalResult ? runtime.events.findLast((event) => {
+      if (event.type === 'turn.completed') return event.payload.turnId === runtime.activeTurnId
+      const thread = event.payload.thread
+      return event.type === 'thread.reconciled' && isObject(thread) && Array.isArray(thread.turns)
+        && thread.turns.some((turn) => isObject(turn) && turn.id === runtime.activeTurnId)
+    }) : undefined
+    // Reconciliation can append metadata after a large original terminal read.
+    // Keep that atomic provider frame even when transcript context rolls out.
+    if (terminalEvent && !events.includes(terminalEvent)) events.unshift(terminalEvent)
+    const gapStart = terminalEvent && terminalEvent.sequence < (runtime.events[firstEvent]?.sequence ?? runtime.sequence)
+      ? terminalEvent.sequence + 1 : undefined
     return structuredClone({
-      events: runtime.events,
+      events,
+      ...(gapStart !== undefined && gapStart < runtime.events[firstEvent]!.sequence
+        ? { gap: { fromSequence: gapStart, toSequence: runtime.events[firstEvent]!.sequence - 1,
+          reason: 'retention' as const } } : {}),
       pendingInteractions: all.map((entry) => entry.pending),
       ...(first?.delivery === 'pending' ? { pendingInteraction: first.pending } : {}),
       ...(runtime.terminalResult ? { terminalResult: runtime.terminalResult } : {}),
       ...((runtime.finalAnswer !== undefined ? runtime.finalAnswerId : runtime.lastAgentMessageId)
         ? { nativeMessageId: runtime.finalAnswer !== undefined ? runtime.finalAnswerId! : runtime.lastAgentMessageId! } : {}),
-      firstRetainedSequence: runtime.events[0]?.sequence ?? runtime.sequence,
+      firstRetainedSequence: events[0]?.sequence ?? runtime.sequence,
       nextSequence: runtime.sequence,
       interactionDeliveries: all.map((entry) => ({
         nativeRequestId: entry.pending.turn.nativeRequestId!, state: entry.delivery,
