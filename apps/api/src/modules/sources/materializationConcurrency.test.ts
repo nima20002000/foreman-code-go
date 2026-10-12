@@ -13,7 +13,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
 })
 
-it('prepares ready files concurrently and activates only after all approved bytes are verified', async () => {
+it('prepares directories concurrently and activates only after all approved bytes are verified', async () => {
   const root = await mkdtemp(join(persistentFixtureRoot, 'source-start-'))
   roots.push(root)
   const bytes = Buffer.from('approved source\n')
@@ -24,7 +24,7 @@ it('prepares ready files concurrently and activates only after all approved byte
     capturePolicy: 'exclusive-explicit-bytes-v1',
     executablePolicy: 'strip',
     entries: Array.from({ length: 12 }, (_, index) => ({
-      path: `src/file-${String(index).padStart(2, '0')}.txt`,
+      path: `src/group-${Math.floor(index / 2)}/file-${String(index).padStart(2, '0')}.txt`,
       kind: 'file' as const,
       byteSize: bytes.length,
       sha256: sourceSha256(bytes),
@@ -68,6 +68,7 @@ it('prepares ready files concurrently and activates only after all approved byte
   const preparing = materializer.prepare({ manifest, binding, attempt })
   try {
     await expect.poll(() => started.length).toBe(4)
+    expect(new Set(started.map(path => path.slice(0, path.lastIndexOf('/')))).size).toBe(4)
     const children = await readdir(root, { withFileTypes: true })
     const reservation = children.find(child => child.isDirectory())!
     expect(await readdir(join(root, reservation.name))).toEqual(['staging'])
