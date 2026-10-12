@@ -6,6 +6,7 @@ import { SourceRootRecordSchema, type SourceRootRecord } from '@foreman-code/con
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
 import { SavedNodePlacementSchema } from '@foreman-code/contracts/node-placement'
 import { HostHarnessOverrideSchema, HostHarnessProfileEvidenceSchema } from '@foreman-code/contracts/harness-registry'
+import { HarnessQualificationSchema } from '@foreman-code/contracts/harness-qualification'
 import { AgentPlacementProducer } from '../../src/modules/placement/agentProducer.js'
 import { RunPlacementReadService } from '../../src/modules/placement/readService.js'
 import { readRemoteObservations } from '../../src/modules/runs/remote/persistence.js'
@@ -20,6 +21,8 @@ import { assertDeviceHostInstallation } from '../../src/modules/devices/hostAuth
 import { HarnessInstallationRegistry, type HarnessInstallationRecord } from '../../src/modules/harnesses/installationRegistry.js'
 import { HarnessInstanceRegistry, localHarnessDrivers } from '../../src/modules/harnesses/instanceRegistry.js'
 import { harnessHostKey } from '../../src/modules/harnesses/instanceSettings/repository.js'
+import { qualificationIdentity } from '../../src/modules/harnesses/qualification/identity.js'
+import { HarnessQualificationRepository } from '../../src/modules/harnesses/qualification/repository.js'
 import { WorkerExecutionPolicy } from '../../src/modules/settings/workerExecution.js'
 import type { currentOperatorIntegration } from './currentOperatorIntegration.js'
 
@@ -154,13 +157,21 @@ export async function mixedComputerPlacement(f: Fixture, directory: string, opti
       projectRoot: canonicalProjectRoot, cwdPolicy: 'project-root', relativeCwd: '', instanceId,
       instanceRevision: '1', harnessInstallationId, source, rootBinding: { rootId: root.binding.rootId, bindingRevision: 1 } }))
   }
-  await f.db.pool.query(`insert into harness_qualifications(harness,version,binary_sha256,suite_revision,profile,status,
-    checks,started_at,checked_at) values('codex','0.156.1',$1,'codex-live-4','codex-0.156','passed',$2::jsonb,$3,$3)`,
-  ['a'.repeat(64), JSON.stringify([{ id: 'fixture-check', passed: true, detail: null }]), f.f.createdAt])
   const instances = new HarnessInstanceRegistry(localHarnessDrivers)
   instances.reload(instanceValues)
   const installations = new HarnessInstallationRegistry(instances)
   installations.refresh(inventory)
+  const mainPlacement = placements[0]!
+  const mainHarness = installations.pin({ instanceId: mainPlacement.instanceId,
+    hostRef: mainPlacement.hostRef, harnessInstallationId: mainPlacement.harnessInstallationId,
+    connectionGeneration: '1', environmentGeneration: '1' })
+  const qualification = HarnessQualificationSchema.parse({ harness: 'codex', version: '0.156.1',
+    binarySha256: 'a'.repeat(64), suiteRevision: 'codex-live-4', profile: 'codex-0.156', status: 'qualified',
+    checks: [{ id: 'fixture-check', passed: true, detail: null }], failureReason: null,
+    startedAt: f.f.createdAt, checkedAt: f.f.createdAt })
+  await new HarnessQualificationRepository(f.db.pool).save(qualification, {
+    qualificationIdentity: qualificationIdentity(mainHarness, qualification.suiteRevision),
+  })
   const unused = async (): Promise<never> => { throw new Error('No native source operation in the admission fixture') }
   const sources = new PostgresSourceService(f.db.pool, f.commands, f.locations,
     new PrivateSourceSnapshotStore(join(directory, 'snapshots')), mainId, new RegisteredWorkspaceSourceRoots(policies, hosts as WorkspaceRootHostPort),
