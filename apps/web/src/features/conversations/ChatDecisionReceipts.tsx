@@ -25,7 +25,7 @@ export function ChatDecisionReceipts({ snapshot, onRefresh, pending = false }: {
       const delivery = receipt.providerAcknowledged ? 'The provider acknowledged this decision.'
         : 'Delivery to the provider is not confirmed. Do not submit this decision again.'
       const detail = `${delivery} ${receipt.workerAcknowledged ? 'The worker acknowledged it.' : 'Work completion is unconfirmed.'}
-Request: ${receipt.native?.requestId ?? receipt.id}`
+Request: ${receipt.native?.requestId ?? receipt.id}${receipt.owner.kind === 'chat_request' ? ` · Message request: ${receipt.owner.requestId}` : ''}`
       let glyph = <LoaderCircle size={12} aria-hidden="true" />
       if (receipt.providerAcknowledged) glyph = <Check size={12} aria-hidden="true" />
       else if (receipt.delivery === 'uncertain' || receipt.delivery === 'failed') glyph = <CircleAlert size={12} aria-hidden="true" />

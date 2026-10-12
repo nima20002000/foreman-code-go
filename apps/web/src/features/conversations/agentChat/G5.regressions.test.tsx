@@ -193,7 +193,7 @@ describe('G5 B2-PF-02 / B-R01 terminal readback survives eviction', () => {
     await screen.findAllByLabelText('Completed').then(items => items.at(-1)!)
     const later = laterWindow(completed); mounted.mock.setState(later); await act(() => mounted.refresh())
     await userEvent.hover((await screen.findAllByLabelText('Completed')).at(-1)!)
-    expect(await screen.findByRole('tooltip')).toHaveTextContent('Initial acknowledgement: Queued')
+    expect(await screen.findByText(/Initial acknowledgement: Queued/, { selector: '[role=tooltip]' })).toBeInTheDocument()
     expect(screen.queryAllByLabelText('Queued')).toHaveLength(0)
     const mutation = mounted.client.getMutationCache().getAll()[0]!
     expect(isRetirableAcknowledgement({ status: mutation.state.status, result: mutation.state.data as AgentChatCommandRecord['result'],

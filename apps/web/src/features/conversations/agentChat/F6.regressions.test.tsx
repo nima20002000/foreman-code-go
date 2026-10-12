@@ -70,7 +70,7 @@ describe('F6 B-R01 receipt readback', () => {
         if (transport === 'GET') mounted.mock.setState(recovered)
         await act(async () => { post.release() })
         if (transport === 'SSE') {
-          await screen.findByText('Command not confirmed')
+          await screen.findByLabelText('Unknown')
           if (!edited) {
             fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' })
             await screen.findByText(/review the warning/)
@@ -82,7 +82,7 @@ describe('F6 B-R01 receipt readback', () => {
         await screen.findAllByLabelText(label).then(items => items.at(-1)!)
         const input = screen.getByRole('textbox', { name: 'Message' })
         await waitFor(() => expect(input).toHaveValue(edited ? 'My next draft, edited while the request was pending' : ''))
-        expect(screen.queryByText('Command not confirmed')).not.toBeInTheDocument()
+        expect(screen.queryAllByLabelText('Unknown')).toHaveLength(0)
         expect(screen.queryByText(/review the warning/)).not.toBeInTheDocument()
         if (!edited) {
           expect(screen.getByRole('button', { name: delivery === 'completed' ? 'Send message' : 'Queue message' })).toBeDisabled()
@@ -166,7 +166,7 @@ describe('F6 B-R02 history bootstrap and ordering', () => {
     await screen.findByText('message 51')
     expect(cursors).toEqual([null, '151', '101'])
     expect(transcriptText()).toEqual(all.slice(50).map((message) => message.content))
-    expect(screen.getAllByText('message 201', { selector: '.conversation-message-content' })).toHaveLength(1)
+    expect(screen.getAllByText('message 201', { selector: '.conversation-message-content, .conversation-message-content p' })).toHaveLength(1)
     await userEvent.click(screen.getByRole('button', { name: 'Load earlier messages' }))
     await screen.findByText('message 1')
     expect(cursors).toEqual([null, '151', '101', '51'])
@@ -265,7 +265,7 @@ describe('F6 B-R04 completed replies remain the following target', () => {
       return client.invalidateQueries({ queryKey: agentChatStateKey(state.context) })
     }
     const assertLatestAtBottom = (text: string) => {
-      const reply = within(scroll).getByText(text, { selector: '.conversation-message-content' })
+      const reply = within(scroll).getByText(text, { selector: '.conversation-message-content, .conversation-message-content p' })
       for (const tool of scroll.querySelectorAll('.operator-tool-activity')) {
         expect(tool.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
       }
@@ -275,13 +275,13 @@ describe('F6 B-R04 completed replies remain the following target', () => {
       expect(replyTop + 40).toBeLessThanOrEqual(top + height)
     }
     await act(() => refresh(toolHeavyState(3, true)))
-    await within(scroll).findByText('Completed reply 3', { selector: '.conversation-message-content' })
+    await within(scroll).findByText('Completed reply 3', { selector: '.conversation-message-content, .conversation-message-content p' })
     assertLatestAtBottom('Completed reply 3')
     scroll.scrollTop = 0; fireEvent.scroll(scroll)
     await act(() => refresh(toolHeavyState(4, true)))
     expect(scroll.scrollTop).toBe(0)
     await userEvent.click(await screen.findByRole('button', { name: 'Jump to latest' }))
-    await within(scroll).findByText('Completed reply 4', { selector: '.conversation-message-content' })
+    await within(scroll).findByText('Completed reply 4', { selector: '.conversation-message-content, .conversation-message-content p' })
     assertLatestAtBottom('Completed reply 4')
   })
 })

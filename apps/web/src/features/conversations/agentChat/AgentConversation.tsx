@@ -137,7 +137,7 @@ function AgentConversationContent({ context, name, role, activity, runLabel, onC
   const stale = ApiError.is(error) && error.code === 'AGENT_CHAT_CONTEXT_STALE'
   const sessionMissing = state?.availability.reason === 'native_session_missing' || state?.sessionState === 'unavailable'
   const canStop = !retired && !!state && (busy || hasQueue) && state.availability.reason !== 'run_active' && !sessionMissing
-    && (state.capabilities.interruptAndSend || !!state.capabilities.unavailable.interruptAndSend)
+    && state.capabilities.interruptAndSend
   const latestReply = state?.messages.filter((message) => message.role === 'assistant' && message.activityChannel !== 'reasoning' && message.nativeMessageComplete !== false).at(-1)
   const resendFiles = sendAgain && state ? [...state.messages, ...(chat.history.data?.pages.flatMap((batch) => batch.pages.flatMap((page) => page.messages)) ?? [])]
     .flatMap((message) => message.attachments ?? []) : []
@@ -156,6 +156,11 @@ function AgentConversationContent({ context, name, role, activity, runLabel, onC
   if (!attention && state?.sessionState === 'interrupting') attention = 'Stopping chat'
   if (!attention && state?.sessionState === 'uncertain') attention = 'Delivery unconfirmed'
   if (!attention && !chat.online) attention = 'You are offline'
+  if (sessionMissing) {
+    attention = 'Original session unavailable'
+    if (!conversation?.providerAccountBinding && onNewConversation) attentionAction = <Button size="sm" variant="ghost"
+      onClick={onNewConversation}>{context.runId ? 'Start separate chat without this Run' : 'Choose another Agent for a new conversation'}</Button>
+  }
   if (!attention && (chat.connection === 'reconnecting' || chat.connection === 'unavailable')) attention = 'Reconnecting to live updates'
   if (!attention && chat.query.isError) {
     attention = 'Chat could not be refreshed'
@@ -163,11 +168,6 @@ function AgentConversationContent({ context, name, role, activity, runLabel, onC
   }
   if (!attention && compactReason) attention = compactReason
   if (!attention && background) attention = background.label
-  if (!attention && sessionMissing) {
-    attention = 'Original session unavailable'
-    if (!conversation?.providerAccountBinding && onNewConversation) attentionAction = <Button size="sm" variant="ghost"
-      onClick={onNewConversation}>{context.runId ? 'Start separate chat without this Run' : 'Choose another Agent for a new conversation'}</Button>
-  }
   const composerDisabled = retired || !!state && !state.conversation && !state.availability.canSend
   let composerReason = commandOnly ? controlReason : nextReason
   if (state?.availability.reason === 'run_active') composerReason = state.sourceTranscript?.state === 'starting'
@@ -200,12 +200,12 @@ function AgentConversationContent({ context, name, role, activity, runLabel, onC
         actions={!retired ? <>
           {state.activeTurn && (state.capabilities.steer !== 'unavailable' || state.capabilities.unavailable.steer)
             ? <Tooltip content={steerReason ?? 'Steer the active turn'}>
-              <IconButton size="sm" variant="ghost" label="Steer" disabled={!!steerReason || empty}
+              <IconButton size="sm" variant="ghost" label="Steer" title={steerReason ?? 'Steer the active turn'} disabled={!!steerReason || empty}
                 onClick={() => void submit('steer')}><CornerDownLeft size={15} aria-hidden="true" /></IconButton>
             </Tooltip> : null}
           {state.activeTurn && (state.capabilities.interruptAndSend || state.capabilities.unavailable.interruptAndSend)
             ? <Tooltip content={interruptReason ?? 'Interrupt and send'}>
-              <IconButton size="sm" variant="ghost" label="Interrupt and send" disabled={!!interruptReason || empty}
+              <IconButton size="sm" variant="ghost" label="Interrupt and send" title={interruptReason ?? 'Interrupt and send'} disabled={!!interruptReason || empty}
                 onClick={() => void submit('interrupt_and_send')}><RotateCcw size={15} aria-hidden="true" /></IconButton>
             </Tooltip> : null}
           {conversation?.providerAccountBinding ? <details className="agent-chat-options agent-chat-account">

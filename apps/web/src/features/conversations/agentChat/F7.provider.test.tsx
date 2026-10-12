@@ -37,7 +37,7 @@ describe('F7 B-R05 provider wire parity (MSW, no native execution)', () => {
     await screen.findAllByLabelText('Queued').then(items => items.at(-1)!)
     expect(mounted.mock.getState(context).activeTurn?.requestId).toBe(first.requestId)
     state = completedFixture(mounted.mock.getState(context), 'First completed reply'); mounted.mock.setState(state)
-    await act(() => mounted.refresh()); await screen.findByText('First completed reply', { selector: '.conversation-message-content' })
+    await act(() => mounted.refresh()); await screen.findByText('First completed reply', { selector: '.conversation-message-content, .conversation-message-content p' })
     state = startedFixture(state, second.requestId); mounted.mock.setState(state)
     await act(() => mounted.refresh()); await screen.findAllByLabelText('Delivered').then(items => items.at(-1)!)
     state = completedFixture(state, 'Second completed reply'); mounted.mock.setState(state)

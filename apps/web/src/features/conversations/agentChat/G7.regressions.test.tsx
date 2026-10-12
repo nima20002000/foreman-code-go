@@ -102,7 +102,7 @@ describe('G7 contextual notices and first-message availability (React + MSW, not
     await userEvent.hover(screen.getByRole('button', { name: 'Steer' }))
     expect(await screen.findByRole('tooltip')).toHaveTextContent('A long provider-specific explanation.')
     await userEvent.hover(screen.getByRole('status', { name: 'Agent state' }))
-    expect(await screen.findByRole('tooltip')).toHaveTextContent('Business occurrence 1')
+    expect(await screen.findByText(/Business occurrence 1/, { selector: '[role=tooltip]' })).toBeInTheDocument()
     const actions = screen.getByRole('group', { name: 'Chat actions' })
     expect(transcript).not.toContainElement(actions)
     expect(actions.parentElement).toBe(transcript.closest('.conversation-viewport')!.parentElement)

@@ -98,7 +98,7 @@ function openFromKeyboard(summary: HTMLElement) {
 
 function scrollMetrics(scroll: HTMLElement, height: number) {
   // Deliberately modeled metrics, not a claim about real phone/browser layout.
-  const rows = () => [...scroll.querySelectorAll('.operator-tool-activity, .conversation-message-content')]
+  const rows = () => [...scroll.querySelectorAll('article, details')]
   let top = 0
   Object.defineProperties(scroll, {
     scrollHeight: { configurable: true, get: () => rows().length * 40 },

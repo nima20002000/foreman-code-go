@@ -41,7 +41,7 @@ it('shows online reconnection while saved GET reads remain available', async () 
   act(() => stream.open())
   act(() => stream.fail())
   expect(await screen.findByText('Reconnecting to live updates')).toBeVisible()
-  expect(screen.getByText('It is a workflow engine.', { selector: '.conversation-message-content' })).toBeVisible()
+  expect(screen.getByText('It is a workflow engine.', { selector: '.conversation-message-content, .conversation-message-content p' })).toBeVisible()
 })
 
 it('shows the Board chat command error inline', async () => {
