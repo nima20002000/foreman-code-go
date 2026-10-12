@@ -59,7 +59,7 @@ async function fixture(options: {
     release: async () => { state.released++; state.events.push('release') } } as unknown as RunOwnership
   const factory = {} as RepeatEngineStartContext['factory']
   const runs = {
-    acquireOwnership: async (_runId: string, _onLost: () => void): Promise<RunOwnership | undefined> => owner,
+    acquireOwnership: (async () => owner) as (runId: string, onLost: () => void) => Promise<RunOwnership | undefined>,
     getRepeatSnapshot: async () => {
       AcceptedWorkflowRunV3Schema.parse(state.run)
       return snapshot()
