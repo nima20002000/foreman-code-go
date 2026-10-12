@@ -7,6 +7,7 @@ import { server } from '../mocks/server'
 import { bindProtectedChatInstance } from '../shared/api/protectedChatStorage'
 import { ApiError, apiClient } from '../shared/api/client'
 import { RuntimeInstanceBoundary } from './RuntimeInstanceBoundary'
+import { UnsavedChangesContext } from '../shared/ui/unsavedChanges'
 
 vi.mock('../shared/api/protectedChatStorage', async (original) => ({
   ...await original<typeof import('../shared/api/protectedChatStorage')>(), bindProtectedChatInstance: vi.fn(() => false),
@@ -36,6 +37,7 @@ it('withholds protected content until the local installation is bound', async ()
   mount()
   expect(screen.queryByText('Protected content')).not.toBeInTheDocument()
   expect(await screen.findByText('Protected content')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Reload app' })).not.toBeInTheDocument()
   expect(bindProtectedChatInstance).toHaveBeenCalledWith(`installation:${identity.installationId}`)
 })
 it.each(['network', 502, 503] as const)('automatically recovers from an initial %s outage', async (failure) => {
@@ -118,7 +120,7 @@ it('keeps content hidden on storage failure and allows a real retry', async () =
   await waitFor(() => expect(screen.getByText('Protected content')).toBeVisible())
 })
 
-it('keeps the same mounted draft and storage owner across release changes and reinstall', async () => {
+it('announces release changes while keeping the same mounted draft and storage owner', async () => {
   const client = mount()
   const draft = await screen.findByRole('textbox', { name: 'Draft' })
   await userEvent.setup().type(draft, 'Unsaved settings')
@@ -126,10 +128,30 @@ it('keeps the same mounted draft and storage owner across release changes and re
   for (const checkoutId of ['c'.repeat(64), 'd'.repeat(64)]) {
     server.use(http.get('*/api/runtime/identity', () => HttpResponse.json({ ...identity, checkoutId })))
     await act(async () => { await client.invalidateQueries({ queryKey: ['workbench', 'runtime-identity'] }) })
+    expect(await screen.findByRole('alert')).toHaveTextContent('The app was updated.')
     expect(screen.getByRole('textbox', { name: 'Draft' })).toBe(draft)
     expect(draft).toHaveValue('Unsaved settings')
+    expect(screen.getByRole('button', { name: 'Reload app' })).toBeEnabled()
   }
   expect(bindProtectedChatInstance).toHaveBeenCalledTimes(calls)
+})
+
+it('checks unsaved changes before reloading an updated app', async () => {
+  const request = vi.fn().mockResolvedValue(false)
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  clients.push(client)
+  render(<QueryClientProvider client={client}>
+    <UnsavedChangesContext.Provider value={{ request, surfaces: request, changed: vi.fn(), register: () => () => {} }}>
+      <RuntimeInstanceBoundary><input aria-label="Draft" defaultValue="Unsaved draft" /></RuntimeInstanceBoundary>
+    </UnsavedChangesContext.Provider>
+  </QueryClientProvider>)
+  const draft = await screen.findByRole('textbox', { name: 'Draft' })
+  server.use(http.get('*/api/runtime/identity', () => HttpResponse.json({ ...identity, checkoutId: 'c'.repeat(64) })))
+  await act(async () => { await client.invalidateQueries({ queryKey: ['workbench', 'runtime-identity'] }) })
+  await userEvent.setup().click(await screen.findByRole('button', { name: 'Reload app' }))
+  expect(request).toHaveBeenCalledOnce()
+  expect(screen.getByRole('textbox', { name: 'Draft' })).toBe(draft)
+  expect(draft).toHaveValue('Unsaved draft')
 })
 
 it('hides the previous document state when the database installation changes', async () => {
