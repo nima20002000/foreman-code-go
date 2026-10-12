@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useRuntimeIdentityQuery, useRuntimeInstallationId } from '../shared/api/runtimeIdentity'
 import { bindProtectedChatInstance } from '../shared/api/protectedChatStorage'
 import { Button } from '../shared/ui/nocturne'
+import { UnsavedChangesContext } from '../shared/ui/unsavedChanges'
 import './runtimeBoundary.css'
 
 /** Check installation ownership before document-scoped drafts or outbox can render. */
@@ -10,9 +11,16 @@ export function RuntimeInstanceBoundary({ children }: { children: ReactNode }) {
   const installationId = useRuntimeInstallationId()
   const current = installationId ? `installation:${installationId}` : undefined
   const [accepted, setAccepted] = useState<string>()
+  // Keep the release that this document first connected to, separately from installation ownership.
+  const [documentCheckoutId, setDocumentCheckoutId] = useState<string>()
   const [storageFailed, setStorageFailed] = useState(false)
+  const unsavedChanges = useContext(UnsavedChangesContext)
   const reloading = useRef(false)
   const reconnecting = identity.failureCount > 0 && !identity.isError
+  const checkoutId = identity.data?.checkoutId
+  useEffect(() => {
+    if (!identity.isError && checkoutId) setDocumentCheckoutId((initial) => initial ?? checkoutId)
+  }, [checkoutId, identity.isError])
   useEffect(() => {
     if (!current || identity.isError || reloading.current || storageFailed) return
     try {
@@ -34,7 +42,14 @@ export function RuntimeInstanceBoundary({ children }: { children: ReactNode }) {
     </main>
   }
   return <>
-    {reconnecting && <div className="runtime-reconnecting" role="status">Reconnecting…</div>}
+    {documentCheckoutId && checkoutId !== documentCheckoutId
+      ? <div className="runtime-reconnecting runtime-update" role="alert">
+        <span>The app was updated. Reload to use Operator chat and the latest settings. Your edits are kept until you reload.</span>
+        <Button size="sm" onClick={async () => {
+          if (!unsavedChanges || await unsavedChanges.request()) window.location.reload()
+        }}>Reload app</Button>
+      </div>
+      : reconnecting && <div className="runtime-reconnecting" role="status">Reconnecting…</div>}
     {children}
   </>
 }
