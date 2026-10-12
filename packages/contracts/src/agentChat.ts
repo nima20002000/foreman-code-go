@@ -179,6 +179,78 @@ export const AgentChatSourceTranscriptSchema = z.object({
 }).strict();
 export type AgentChatSourceTranscript = z.infer<typeof AgentChatSourceTranscriptSchema>;
 
+const NativeSequenceSchema = z.string().regex(/^(0|[1-9][0-9]{0,18})$/);
+/** One public entry of a workflow execution: a message or a tool, file, MCP, plan, reasoning-summary or subagent step. */
+export const AgentChatExecutionItemSchema = z.object({
+  executionId: IdSchema,
+  /** Stable within the execution; a later page with the same id replaces the entry. */
+  id: z.string().min(1).max(1024),
+  /** First native event of the entry: chronological order within its execution. */
+  sequence: NativeSequenceSchema,
+  /** Last native event that changed the entry. */
+  revision: NativeSequenceSchema,
+  occurredAt: TimestampSchema.optional(),
+  entry: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("message"), message: MessageSchema.omit({ conversationId: true }) }).strict(),
+    z.object({ kind: z.literal("activity"),
+      activity: OperatorActivitySchema.pick({ id: true, kind: true, title: true, status: true, input: true, output: true, truncated: true }) }).strict(),
+  ]),
+}).strict();
+export type AgentChatExecutionItem = z.infer<typeof AgentChatExecutionItemSchema>;
+
+export const AgentChatExecutionSummarySchema = z.object({
+  executionId: IdSchema,
+  /** Human label: Execution, Attempt n, Interval check n or Occurrence n. */
+  label: z.string().min(1).max(120),
+  attempt: z.number().int().positive(),
+  tickIndex: z.number().int().positive().optional(),
+  state: HarnessExecutionSchema.shape.state,
+  createdAt: TimestampSchema,
+  startedAt: TimestampSchema.optional(),
+  finishedAt: TimestampSchema.optional(),
+  /** Latest native event sequence of the execution; "0" before the first event. */
+  revision: NativeSequenceSchema,
+  /** Present when this page holds the execution's newest window: older entries exist before it. */
+  hasEarlierItems: z.boolean().optional(),
+}).strict();
+export type AgentChatExecutionSummary = z.infer<typeof AgentChatExecutionSummarySchema>;
+
+/**
+ * GET /api/workspaces/:workspaceId/agent-chat/execution-activity — live public activity of every
+ * execution of the selected Run Agent (newest 20 executions, including interval checks and retries).
+ * Without cursor: newest window of each execution. With cursor: only entries changed since it.
+ * executionId+before: older entries of one execution. executionId+itemId: one entry with full bodies.
+ */
+export const AgentChatExecutionActivityQuerySchema = AgentChatContextSchema.omit({ workspaceId: true }).extend({
+  runId: IdSchema,
+  cursor: z.string().max(4096).optional(),
+  executionId: IdSchema.optional(),
+  before: NativeSequenceSchema.optional(),
+  itemId: z.string().min(1).max(1024).optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(200),
+}).strict().superRefine((value, context) => {
+  if ((value.before !== undefined || value.itemId !== undefined) && !value.executionId) {
+    context.addIssue({ code: "custom", path: ["executionId"], message: "before and itemId require executionId" });
+  }
+  if (value.before !== undefined && value.itemId !== undefined) {
+    context.addIssue({ code: "custom", path: ["itemId"], message: "Use before or itemId, not both" });
+  }
+});
+export type AgentChatExecutionActivityQuery = z.input<typeof AgentChatExecutionActivityQuerySchema>;
+
+export const AgentChatExecutionActivityPageSchema = z.object({
+  mode: z.enum(["snapshot", "changes", "earlier", "item"]),
+  executions: z.array(AgentChatExecutionSummarySchema).max(20),
+  hasEarlierExecutions: z.boolean(),
+  /** Ordered by execution creation, then sequence. Changes and earlier pages merge by executionId and id. */
+  items: z.array(AgentChatExecutionItemSchema).max(200),
+  /** Pass to the next read to receive only changes. Absent for earlier and item pages. */
+  cursor: z.string().max(4096).optional(),
+  /** More changes are ready now; read again with cursor without waiting. */
+  hasMoreChanges: z.boolean(),
+}).strict();
+export type AgentChatExecutionActivityPage = z.infer<typeof AgentChatExecutionActivityPageSchema>;
+
 export const AgentChatStateSchema = z.object({
   responseAvailability: NativeInteractionResponseAvailabilitySchema.optional(),
   qualificationKey: z.string().regex(/^[a-f0-9]{64}$/).optional(),  context: AgentChatContextSchema,
@@ -292,10 +364,17 @@ export const ReadAgentChatRequestSchema = z.object({
   query: AgentChatQuerySchema,
   history: AgentChatReadbackQuerySchema.optional(),
   receipts: AgentChatReadbackQuerySchema.optional(),
+  /** Live execution activity of a Run Agent (query.runId required); same page as the HTTP execution-activity read. */
+  executionActivity: z.object({
+    cursor: z.string().max(4096).optional(), executionId: IdSchema.optional(),
+    before: NativeSequenceSchema.optional(), itemId: z.string().min(1).max(1024).optional(),
+    limit: z.number().int().min(1).max(200).optional(),
+  }).strict().optional(),
 }).strict();
 export const ReadAgentChatResponseSchema = AgentChatStateSchema.extend({
   history: AgentChatHistoryPageSchema.optional(),
   receipts: AgentChatTurnPageSchema.optional(),
+  executionActivity: AgentChatExecutionActivityPageSchema.optional(),
 }).strict();
 
 /**

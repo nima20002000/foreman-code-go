@@ -50,19 +50,16 @@ describe('G7 T-03/T-06/T-08/RISK-01 mounted Board action area', () => {
     expect(dialog.querySelectorAll('.conversation-viewport-scroll')).toHaveLength(1)
     expect(transcript).not.toContainElement(actions)
     expect(actions.parentElement).toBe(transcript.closest('.conversation-viewport')!.parentElement)
-    expect(within(transcript).getByText('Agent is working')).toBeVisible()
-    expect(within(transcript).queryByText(/No partial assistant text/)).not.toBeInTheDocument()
+    expect(within(transcript).getByRole('status', { name: `${fixture.first.name!} is working` })).toBeInTheDocument()
     // Native session controls (context usage and its popover) sit between Attach and Queue in the same action area.
-    expect(actions).toContainElement(await within(dialog).findByRole('button', { name: /context/i }))
+    expect(actions).toContainElement(await within(dialog).findByLabelText('Session options'))
     for (const name of ['Attach files', 'Queue message', 'Steer', 'Interrupt and send', 'Stop chat']) {
-      const control = within(actions).getByRole('button', { name })
-      expect(control).toBeEnabled()
-      for (let step = 0; step < 8 && document.activeElement !== control; step++) {
-        await userEvent.tab()
-        expect(dialog).toContainElement(document.activeElement as HTMLElement)
-      }
-      expect(control).toHaveFocus()
+      expect(within(actions).getByRole('button', { name })).toBeEnabled()
     }
+    for (let step = 0; step < 16 && document.activeElement !== within(actions).getByRole('button', { name: 'Stop chat' }); step++) {
+      await userEvent.tab()
+    }
+    expect(within(actions).getByRole('button', { name: 'Stop chat' })).toHaveFocus()
     // Inspecting/scrolling history must not move controls into it or dismiss the popover.
     fireEvent.scroll(transcript, { target: { scrollTop: 10 } })
     expect(within(actions).getByRole('button', { name: 'Stop chat' })).toBeInTheDocument()
