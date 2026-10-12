@@ -50,23 +50,24 @@ afterAll(() => {
   else Reflect.deleteProperty(HTMLElement.prototype, 'animate')
 })
 
-it('shows each computer as a row whose load is named in words and colored by level', async () => {
+it('shows each computer as an icon-only button whose load is named in words and colored by level', async () => {
   const f = computersFixture(inRouter().element)
   const main = await screen.findByRole('button', { name: 'Main PC, Main, Plenty of capacity' })
   expect(main.closest('li')).toHaveAttribute('data-load', 'calm')
   const device = screen.getByRole('button', { name: `${deviceName}, Worker, Offline` })
   expect(device.closest('li')).toHaveAttribute('data-load', 'offline')
-  expect(within(device).getByText('Offline')).toBeInTheDocument()
+  expect(device.textContent).toBe('')
   f.activity.computers[0]!.agents.push({ id: 'execution-1', workspaceId: 'workspace-1', workflowId: 'workflow-1',
     workflowName: 'Release', runId: 'run-1', nodeId: 'review', agentName: 'Reviewer', state: 'waiting' })
   await act(() => f.client.invalidateQueries({ queryKey: ['computer-activity'] }))
-  expect(await screen.findByRole('button', { name: 'Main PC, Main, Some load, 1 running Agent or CI job' })).toHaveTextContent('1 running')
+  expect(await screen.findByRole('button', { name: 'Main PC, Main, Some load, 1 running Agent or CI job' })).toHaveTextContent(/^1$/)
 })
-it('derives the level from live CPU and shows the short metric', async () => {
+it('derives the level from live CPU and shows the reading in the detail card', async () => {
   computersFixture(inRouter().element, cpuReading(95))
   const main = await screen.findByRole('button', { name: 'Main PC, Main, Near its limits' })
   expect(main.closest('li')).toHaveAttribute('data-load', 'saturated')
-  expect(within(main).getByText('CPU 95%')).toBeInTheDocument()
+  act(() => main.focus())
+  expect(await within(await screen.findByRole('tooltip')).findByRole('meter', { name: 'CPU' })).toBeInTheDocument()
 })
 it('shows a detail card on hover with role, load, utilization, running work and versions', async () => {
   const f = computersFixture(inRouter().element, [computerReadHandler('maintenance', { computers: [{ target: mainTarget, status: {
@@ -142,7 +143,6 @@ it('shows cloud CI services by machines in use', async () => {
     { provider: 'circleci', name: 'CircleCI', ready: false, slots: 24, running: 0 })
   await act(() => f.client.invalidateQueries({ queryKey: ['computer-activity'] }))
   const github = await screen.findByRole('button', { name: 'GitHub Actions, Cloud CI, Heavy load, 12 running Agents and CI jobs' })
-  expect(within(github).getByText('12/16')).toBeInTheDocument()
   const circle = screen.getByRole('button', { name: 'CircleCI, Cloud CI, Not logged in on Main' })
   expect(circle.closest('li')).toHaveAttribute('data-load', 'offline')
   await userEvent.setup().hover(github)
