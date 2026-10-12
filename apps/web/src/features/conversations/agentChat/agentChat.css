@@ -155,7 +155,7 @@
 .agent-chat-composer { position: relative; min-width: 0; }
 .agent-chat-input-box { position: relative; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface-raised); }
 .agent-chat-input-box:focus-within { border-color: var(--focus); box-shadow: 0 0 0 2px var(--accent-subtle); }
-.agent-chat-input-box textarea {
+.agent-chat-input-box .n-input {
   display: block;
   box-sizing: border-box;
   width: 100%;
@@ -172,8 +172,8 @@
   overflow-y: auto;
   outline: none;
 }
-.agent-chat-input-box textarea::placeholder { color: var(--text-faint); }
-.agent-chat-input-box textarea:disabled { cursor: default; }
+.agent-chat-input-box .n-input::placeholder { color: var(--text-faint); }
+.agent-chat-input-box .n-input:disabled { cursor: default; }
 .agent-chat-send.n-button { position: absolute; right: var(--space-2); bottom: var(--space-2); width: 28px; height: 28px; min-height: 28px; padding: 0; border-radius: var(--radius-full); }
 .agent-chat-composer-tools { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-1); }
 .agent-chat-composer-tools:empty { display: none; }
@@ -221,3 +221,7 @@ body:has(.n-agent-popover[data-panel='chat']) .operator-chat-launcher { visibili
 @media (prefers-reduced-motion: reduce) {
   .agent-chat-typing > span { animation: none; }
 }
+
+.agent-chat-field.n-field { gap: 0; }
+.agent-chat-field > label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.agent-chat-input-box .n-input:focus { outline: none; border: 0; box-shadow: none; }

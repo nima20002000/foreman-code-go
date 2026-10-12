@@ -3,8 +3,8 @@ import type { AgentChatTurn } from '@foreman-code/contracts/agent-chat'
 import { Tooltip } from '../../../shared/ui/nocturne'
 import { deliveryLabels, intentLabels } from './model'
 
-export function ChatDeliveryState({ delivery, turn }: {
-  delivery: AgentChatTurn['delivery']; turn?: AgentChatTurn
+export function ChatDeliveryState({ delivery, turn, initialDelivery }: {
+  delivery: AgentChatTurn['delivery']; turn?: AgentChatTurn; initialDelivery?: AgentChatTurn['delivery']
 }) {
   const sending = delivery === 'queued' || delivery === 'submitting'
   const failed = delivery === 'failed' || delivery === 'unknown'
@@ -12,7 +12,8 @@ export function ChatDeliveryState({ delivery, turn }: {
   if (sending) glyph = <LoaderCircle size={12} aria-hidden="true" />
   if (failed) glyph = <CircleAlert size={12} aria-hidden="true" />
   if (delivery === 'canceled') glyph = <Minus size={12} aria-hidden="true" />
-  const details = [deliveryLabels[delivery], turn ? intentLabels[turn.intent] : '', turn?.error?.message,
+  const details = [deliveryLabels[delivery],
+    initialDelivery && initialDelivery !== delivery ? `Initial acknowledgement: ${deliveryLabels[initialDelivery]}` : '', turn ? intentLabels[turn.intent] : '', turn?.error?.message,
     delivery === 'accepted' ? 'Provider acknowledged delivery; consumption is not yet confirmed.' : '',
     delivery === 'unknown' ? 'The original may have been accepted. Sending again can repeat work.' : '',
   ].filter(Boolean).join(' · ')

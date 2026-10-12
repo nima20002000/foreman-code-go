@@ -454,6 +454,7 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
       const details=<JobNodePanel workspaceId={graph.workspaceId} definitionId={node.jobDefinitionId} definitionRevision={node.jobDefinitionRevision} definitionVersionId={node.jobDefinitionVersionId} workflowExecution={pinned?.kind==='job'?pinned.workflowExecution:undefined}/>
       return {chat:details,info:details,settings:pinned?details:<fieldset disabled={edit.busy||reloading||editIntent.locked}><p>Saved job revision {node.jobDefinitionRevision}</p><Button onClick={()=>{setOpenNode(undefined);change(value=>removeNode(value,node.id))}}>Remove job node</Button><NodeWorkflowFields graph={graph} node={node} context={context} agentEdits={edit.agentEdits} change={change}/></fieldset>}
     }
+    const pinnedAgent = pinned?.kind !== 'job' ? pinned : undefined
     const agent = agents.find((item) => item.id === node.agentId)
     const run = runNodeView(runRecord, Boolean(board?.run), node.id, node.agentId)
     const savedGraph = (context.savedDraft ?? context.draft).graph
@@ -464,7 +465,7 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
     const chat = unsavedChat ? <EmptyState icon="chat" title="Save this Agent and workflow to chat"
       description="Save the Agent settings and workflow changes, then reopen chat. Workflow alerts list any missing setup." />
       : <AgentChatPanel name={pinned?.name ?? nodeTitle(graph, node.id)} activity={run.activity} running={run.state === 'running'}
-      role={pinned?.role ?? (agent?.productRole === 'orchestrator' ? 'Orchestrator' : 'Worker')} runLabel={pinned?.runLabel ?? run.label} onClose={() => inspect(() => setOpenNode(undefined))}
+      role={pinnedAgent?.role ?? (agent?.productRole === 'orchestrator' ? 'Orchestrator' : 'Worker')} runLabel={pinnedAgent?.runLabel ?? run.label} onClose={() => inspect(() => setOpenNode(undefined))}
       context={{ workspaceId: graph.workspaceId, workflowId: graph.id, workflowNodeId: node.id, agentId: node.agentId,
         ...(board?.run ? { runId: board.run.runId } : {}) }}
       onNewConversation={() => {

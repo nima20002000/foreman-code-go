@@ -54,6 +54,7 @@ export function AgentChatTranscript({
     state.pendingInteraction, unresolved.map(record => [record.command, record.status])])
   const originalCommand = (turn: AgentChatTurn) => commands.find(record => record.command?.kind === 'send'
     && record.command.input.requestId === turn.requestId)?.command
+  const initialDelivery = (turn: AgentChatTurn) => commands.find(record => record.result?.turn?.requestId === turn.requestId)?.result?.turn?.delivery
   const messageActions = (turn: AgentChatTurn, message?: Message) => {
     const original = originalCommand(turn)
     let input: Pick<SendAgentChatMessageRequest, 'content' | 'attachments'> | undefined
@@ -97,7 +98,7 @@ export function AgentChatTranscript({
           <li key={`message:${message.id}`}>
             <AgentChatMessage message={message} name={name}
               status={message.role === 'user' && receipts.has(message.id)
-                ? <ChatDeliveryState delivery={receipts.get(message.id)!.delivery} turn={receipts.get(message.id)!} /> : undefined}
+                ? <ChatDeliveryState delivery={receipts.get(message.id)!.delivery} turn={receipts.get(message.id)!} initialDelivery={initialDelivery(receipts.get(message.id)!)} /> : undefined}
               actions={message.role === 'user' && receipts.has(message.id) ? messageActions(receipts.get(message.id)!, message) : undefined}>
               {message.attachments?.length ? <ChatMessageFiles message={message} workspaceId={state.context.workspaceId} /> : null}
             </AgentChatMessage>
@@ -113,7 +114,7 @@ export function AgentChatTranscript({
         return <AgentChatMessage key={turn.requestId} name={name}
           message={{ id: turn.messageId, role: 'user', content: original?.kind === 'send'
             ? original.input.content : 'Message outside this history page', createdAt: turn.createdAt }}
-          status={<ChatDeliveryState delivery={turn.delivery} turn={turn} />} actions={messageActions(turn)} />
+          status={<ChatDeliveryState delivery={turn.delivery} turn={turn} initialDelivery={initialDelivery(turn)} />} actions={messageActions(turn)} />
       })}
     </section> : null}
     {unresolved.map(record => {

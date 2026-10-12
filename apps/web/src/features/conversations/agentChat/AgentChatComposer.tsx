@@ -1,7 +1,7 @@
 import { useLayoutEffect, useId, type ReactNode, type RefObject } from 'react'
 import { ArrowUp, CornerDownLeft, SlidersHorizontal, Square } from 'lucide-react'
 import { parseSessionCommand, type SessionMode } from '@foreman-code/contracts'
-import { IconButton, Tooltip } from '../../../shared/ui/nocturne'
+import { IconButton, Textarea, Tooltip } from '../../../shared/ui/nocturne'
 import { useConversationDraftStore } from '../conversationDraftStore'
 import { SessionControls } from '../sessionControls/SessionControls'
 import { CompactionActivity } from '../sessionControls/CompactionActivity'
@@ -49,8 +49,7 @@ export function AgentChatComposer({ name, draftKey, inputRef, sessionControls, d
     onSubmit={event => { event.preventDefault(); submit() }}>
     {menu.menu}
     <div className="agent-chat-input-box">
-      <label className="n-sr-only" htmlFor={id}>Message</label>
-      <textarea id={id} ref={inputRef} rows={1} value={draft} maxLength={32_000} disabled={disabled}
+      <Textarea label="Message" className="agent-chat-field" id={id} ref={inputRef} rows={1} value={draft} maxLength={32_000} disabled={disabled}
         placeholder={reason ?? `Message ${name}…`} aria-describedby={`${id}-hint`} {...menu.inputProps}
         onChange={event => { setDraft(draftKey, event.currentTarget.value); menu.reset() }}
         onKeyDown={event => {

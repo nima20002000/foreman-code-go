@@ -1,5 +1,6 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
+import userEvent from '@testing-library/user-event'
 import type { ActivitySnapshotV1, InteractionSummary } from '@foreman-code/contracts'
 import { ChatDecisionReceipts } from './ChatDecisionReceipts'
 
@@ -23,22 +24,25 @@ function snapshot(acknowledged: boolean): ActivitySnapshotV1 {
   }
 }
 
-it('replaces the unconfirmed warning when a completed answer turn reads back as acknowledged', () => {
+it('replaces the unconfirmed warning when a completed answer turn reads back as acknowledged', async () => {
   const onRefresh = vi.fn()
   const { rerender, unmount } = render(<ChatDecisionReceipts snapshot={snapshot(false)} onRefresh={onRefresh} />)
-  expect(screen.getByText(/Delivery to the provider is not confirmed/)).toBeInTheDocument()
+  await userEvent.hover(screen.getByRole('status', { name: 'Decision recorded' }))
+  expect(await screen.findByRole('tooltip')).toHaveTextContent('Delivery to the provider is not confirmed')
   rerender(<ChatDecisionReceipts snapshot={snapshot(true)} onRefresh={onRefresh} />)
   expect(screen.getByText('Decision delivery acknowledged')).toBeInTheDocument()
   expect(screen.queryByText(/Delivery to the provider is not confirmed/)).not.toBeInTheDocument()
   expect(screen.queryByText(/Do not submit this decision again/)).not.toBeInTheDocument()
   unmount()
   render(<ChatDecisionReceipts snapshot={snapshot(true)} onRefresh={onRefresh} />)
-  expect(screen.getByText('The provider acknowledged this decision.', { exact: false })).toBeInTheDocument()
+  await userEvent.hover(screen.getByRole('status', { name: 'Decision delivery acknowledged' }))
+  expect(await screen.findByRole('tooltip')).toHaveTextContent('The provider acknowledged this decision.')
 })
 
-it('keeps an unconfirmed answer visible when readback has no provider acknowledgement', () => {
+it('keeps an unconfirmed answer visible when readback has no provider acknowledgement', async () => {
   const { rerender } = render(<ChatDecisionReceipts snapshot={snapshot(false)} onRefresh={vi.fn()} />)
   rerender(<ChatDecisionReceipts snapshot={snapshot(false)} onRefresh={vi.fn()} />)
-  expect(screen.getByText(/Delivery to the provider is not confirmed/)).toBeInTheDocument()
+  await userEvent.hover(screen.getByRole('status', { name: 'Decision recorded' }))
+  expect(await screen.findByRole('tooltip')).toHaveTextContent('Delivery to the provider is not confirmed')
   expect(screen.queryByText('Decision delivery acknowledged')).not.toBeInTheDocument()
 })

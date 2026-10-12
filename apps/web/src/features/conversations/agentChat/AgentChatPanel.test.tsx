@@ -41,7 +41,7 @@ describe('AgentChatPanel frozen fixtures', () => {
     expect(await screen.findByText('Live workflow output')).toBeVisible()
     expect(screen.queryByText('Selected Run — chat unavailable')).not.toBeInTheDocument()
     await waitFor(() => expect(controlsExecution).toBe('selected-execution'))
-    expect(screen.queryByRole('textbox', { name: 'Message' }) !== null).toBe(state === 'completed')
+    expect(screen.getByRole('textbox', { name: 'Message' }).hasAttribute('disabled')).toBe(state !== 'completed')
     mounted.mock.setState({ ...initial, sourceTranscript: { ...initial.sourceTranscript,
       revision: '2', messages: [{ id: 'source-message', role: 'assistant', content: 'Updated workflow output', nativeMessageComplete: true }] } })
     await mounted.refresh()
@@ -87,12 +87,16 @@ describe('AgentChatPanel frozen fixtures', () => {
     const mounted = mountChat(fixture)
     await mounted.ready()
     for (const message of fixture.messages) expect(within(screen.getByRole('list', { name: 'Conversation history' })).getByText(message.content)).toBeInTheDocument()
-    if (fixture.availability.message) expect(screen.getAllByText(fixture.availability.message).length).toBeGreaterThan(0)
-    expect(screen.getByText(/Business occurrence 1 · technical attempt 1/)).toBeInTheDocument()
+    if (fixture.availability.message) {
+      await userEvent.hover(screen.getByRole('status', { name: 'Agent state' }))
+      expect(await screen.findByRole('tooltip')).toHaveTextContent(fixture.availability.message)
+    }
+    await userEvent.hover(screen.getByRole('status', { name: 'Agent state' }))
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Business occurrence 1 · technical attempt 1')
     expect(sent(mounted.mock)).toHaveLength(0)
     if (!fixture.conversation && !fixture.availability.canSend) {
-      expect(screen.queryByRole('textbox', { name: 'Message' })).not.toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Send message' })).not.toBeInTheDocument()
+      expect(screen.getByRole('textbox', { name: 'Message' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
     } else {
       expect(screen.getByRole('textbox', { name: 'Message' })).toBeEnabled()
     }
@@ -102,7 +106,8 @@ describe('AgentChatPanel frozen fixtures', () => {
     }
     if (fixture === agentChatFixtures.steerUnavailable) {
       expect(screen.getByRole('button', { name: 'Steer' })).toBeDisabled()
-      expect(screen.getByText(fixture.capabilities.unavailable.steer!)).toBeInTheDocument()
+      await userEvent.hover(screen.getByRole('button', { name: 'Steer' }))
+      expect(await screen.findByRole('tooltip')).toHaveTextContent(fixture.capabilities.unavailable.steer!)
     }
   })
 
@@ -256,7 +261,7 @@ describe('AgentChatPanel commands and drafts', () => {
       return errorResponse('AGENT_CHAT_CONTEXT_STALE', 'Another tab started this conversation.')
     }))
     await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
-    expect(await screen.findByText('Chat context changed')).toBeInTheDocument()
+    expect(await screen.findByText('Another tab started this conversation.')).toBeInTheDocument()
     await waitFor(() => expect(mounted.client.getQueryData<AgentChatState>(agentChatStateKey(agentChatFixtures.empty.context))?.conversation?.id)
       .toBe(agentChatFixtures.idleAfterCompletion.conversation.id))
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Keep after conflict')
@@ -491,8 +496,8 @@ describe('AgentChatPanel live reads and interaction', () => {
     state.messages = state.messages.filter((message) => message.id !== state.turns[2]!.messageId); state.hasEarlierMessages = true
     const mounted = mountChat(state); await mounted.ready()
     const omitted = screen.getByRole('region', { name: 'Messages outside the current history page' })
-    expect(within(omitted).getByText('Queued')).toBeInTheDocument()
-    expect(within(omitted).getByText(/Message text is not included/)).toBeInTheDocument()
+    expect(within(omitted).getByLabelText('Queued')).toBeInTheDocument()
+    expect(within(omitted).getByText('Message outside this history page')).toBeInTheDocument()
     await userEvent.click(within(omitted).getByRole('button', { name: 'Cancel queued message' }))
     await waitFor(() => expect(mounted.mock.calls.some((call) => call.path.endsWith('/turns/request-3/cancel'))).toBe(true))
     expect(sent(mounted.mock)).toHaveLength(0)
@@ -563,7 +568,8 @@ it('cold readback keeps completed parent/unresolved child work visible instead o
   queued: [], latest: null, pendingInteractions: [], activities: [], page: { before: null, nextCursor: null, hasMore: false } }
   const view = mountChat(state); await view.ready()
   expect(screen.getByText('Unfinished work unconfirmed')).toBeInTheDocument()
-  expect(screen.getByText('Some tools or subagents have no confirmed outcome.')).toBeInTheDocument()
+  await userEvent.hover(screen.getByRole('status', { name: 'Agent state' }))
+  expect(await screen.findByRole('tooltip')).toHaveTextContent('Some tools or subagents have no confirmed outcome.')
 })
 it('keeps a persisted unavailable question visible with disabled reply options and the qualified recovery message', async () => {
   installChatSource()
@@ -583,6 +589,7 @@ it('displays the accepted chat account after the provider default changes', asyn
   server.use(http.get('/api/provider-accounts/:id', () => HttpResponse.json({ ...observedAccount(), isDefault: false })))
   const mounted = mountChat(initial)
   await mounted.ready()
+  await userEvent.click(screen.getByLabelText('Saved account details'))
   expect(await screen.findByText('Original account')).toBeVisible()
   expect(screen.getByRole('region', { name: 'Saved chat account' })).toBeVisible()
   expect(screen.queryByRole('combobox', { name: 'Account' })).not.toBeInTheDocument()
@@ -601,6 +608,7 @@ it('retains a removed account and its source Run without offering a replacement 
     removedAt: '2026-10-01T13:00:00.000Z', isDefault: false })))
   const mounted = mountChat(initial)
   await mounted.ready()
+  await userEvent.click(screen.getByLabelText('Saved account details'))
   expect(await screen.findByText(/This account was removed from selection/)).toBeVisible()
   expect(screen.getByRole('region', { name: 'Source Run account · saved chat account' })).toBeVisible()
   expect(screen.queryByRole('button', { name: 'Start separate chat without this Run' })).not.toBeInTheDocument()

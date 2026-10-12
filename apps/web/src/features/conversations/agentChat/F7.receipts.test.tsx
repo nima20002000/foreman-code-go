@@ -168,7 +168,8 @@ describe('F7 B-R08 current receipt status', () => {
     await screen.findAllByLabelText('Completed').then(items => items.at(-1)!)
     next.turns = []; next.revision++
     mounted.mock.setState(next); await act(() => mounted.refresh())
-    await screen.findAllByLabelText('Queued').then(items => items.at(-1)!)
+    await userEvent.hover((await screen.findAllByLabelText('Completed')).at(-1)!)
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('Initial acknowledgement: Queued')
     expect(screen.queryAllByLabelText('Queued')).toHaveLength(0)
   })
 })
