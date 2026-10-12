@@ -20,6 +20,9 @@ export const runCiApi = {
 const ACTIVE: readonly CiRunJob['ci']['state'][] = ['queued', 'starting', 'running']
 export const isActiveCiJob = (job: CiRunJob) => ACTIVE.includes(job.ci.state)
 
+/** The CI server tower on the Board; edges meet its box-shaped border. */
+export const CI_SERVER_SIZE = { width: 184, height: 212 } as const
+
 export const CI_PLACEMENT_LABELS: Record<CiPlacement, string> = { host: 'Host CI', github: 'GitHub Actions', circleci: 'CircleCI' }
 
 /** One ci_run request: its parts and partitions share a group and one requesting Agent. */

@@ -7,14 +7,15 @@ export const AGENT_NODE_SIZE = 212
 const RIM_GAP = 7
 
 type Point = { x: number; y: number }
-type RimSize = { width: number; height: number }
+/** box: a rectangular node (the CI server), whose rim is its border rather than an inscribed ellipse. */
+type RimSize = { width: number; height: number; box?: boolean }
 /** task: a handoff; return: a repeat carry; approval: a request for review; grant: its answer; error: a failed receiver. */
 export type EdgeSignal = 'task' | 'return' | 'approval' | 'grant' | 'error'
 export type FloatingCurve = { path: string; mid: Point & { angle: number } }
 
 function dimensions(node: InternalNode<Node>): RimSize {
   return { width: node.measured.width ?? node.width ?? AGENT_NODE_SIZE,
-    height: node.measured.height ?? node.height ?? AGENT_NODE_SIZE }
+    height: node.measured.height ?? node.height ?? AGENT_NODE_SIZE, ...(node.data.rim === 'box' ? { box: true } : {}) }
 }
 function center(node: InternalNode<Node>): Point {
   const { width, height } = dimensions(node)
@@ -28,8 +29,9 @@ export function floatingCurve(source: Point, target: Point, bend: number, radius
   const dx = target.x - source.x, dy = target.y - source.y, length = Math.hypot(dx, dy) || 1
   const control = { x: (source.x + target.x) / 2 - dy / length * bend, y: (source.y + target.y) / 2 + dx / length * bend }
   const leave = unit(control.x - source.x, control.y - source.y), enter = unit(target.x - control.x, target.y - control.y)
-  const rim = (direction: Point, size?: RimSize) => size
-    ? 1 / Math.hypot(direction.x / (size.width / 2), direction.y / (size.height / 2)) + RIM_GAP : radius
+  const rim = (direction: Point, size?: RimSize) => size?.box
+    ? Math.min(size.width / 2 / Math.abs(direction.x || 1e-9), size.height / 2 / Math.abs(direction.y || 1e-9)) + RIM_GAP
+    : size ? 1 / Math.hypot(direction.x / (size.width / 2), direction.y / (size.height / 2)) + RIM_GAP : radius
   const sourceRadius = rim(leave, sourceSize), targetRadius = rim(enter, targetSize)
   const start = { x: source.x + leave.x * sourceRadius, y: source.y + leave.y * sourceRadius }
   const end = { x: target.x - enter.x * targetRadius, y: target.y - enter.y * targetRadius }
