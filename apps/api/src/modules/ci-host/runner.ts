@@ -362,7 +362,8 @@ export class HostCiRunner {
         + (capabilities.parts ? ` CI_HOST_RUNNER=1 FOREMAN_CODE_CI_DEDICATED=1`
           + ` FOREMAN_CODE_VITEST_CACHE=${quote(join(this.root, 'vitest-cache'))}` : '') + integrationEnvironment,
       'mkdir -p "$TMPDIR"',
-      `finish() { echo "$1" > ${quote(join(run, 'exit'))}; exit "$1"; }`,
+      `finish() { echo "$1" > ${quote(join(run, 'exit.tmp'))};`
+        + ` mv -- ${quote(join(run, 'exit.tmp'))} ${quote(join(run, 'exit'))}; exit "$1"; }`,
       `step() { echo "$1" > ${quote(join(run, 'step'))}; echo "::step $1"; }`,
       ...(meta.message ? [`echo ${quote(meta.message)}`] : []),
       'step install', `${pm} install${existsSync(join(source, 'pnpm-lock.yaml')) ? ' --frozen-lockfile' : ''} || finish $?`,
@@ -401,7 +402,8 @@ export class HostCiRunner {
     const directory = this.runDirectory(runId)
     if (meta.state === 'running') {
       const exit = await readFile(join(directory, 'exit'), 'utf8').catch(() => null)
-      if (exit !== null) {
+      // A unit launched before atomic exit publication can expose an empty file mid-write.
+      if (exit !== null && exit.trim() !== '') {
         const code = Number(exit.trim())
         await this.finish(runId, code === 0 ? 'passed' : 'failed', Number.isInteger(code) ? code : 1, meta.message)
       } else {

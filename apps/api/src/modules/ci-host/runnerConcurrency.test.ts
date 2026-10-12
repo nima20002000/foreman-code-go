@@ -68,10 +68,24 @@ async function computer(beforeGithub?: () => Promise<void>) {
   fixtures.push({ root, runner })
   const request = { operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: 'a'.repeat(40),
     suite: 'lint', scope: 'full' }
-  return { runner, request }
+  return { root, runner, request }
 }
 
 describe('host CI runner concurrent starts', () => {
+  it('waits for a complete exit status before settling a failing suite', async () => {
+    const { root, runner, request } = await computer()
+    await runner.handle(request)
+    const read = { operation: 'read', runId: request.runId, afterOffset: 0, maxBytes: 1 }
+    await vi.waitFor(async () => {
+      await expect(runner.handle(read)).resolves.toMatchObject({ run: { state: 'running' } })
+    })
+    const exit = join(root, 'runs', request.runId, 'exit')
+    await writeFile(exit, '')
+    await expect(runner.handle(read)).resolves.toMatchObject({ run: { state: 'running', exitCode: null } })
+    await writeFile(exit, '3\n')
+    await expect(runner.handle(read)).resolves.toMatchObject({ run: { state: 'failed', exitCode: 3 } })
+  })
+
   it('admits one start and preserves same-run retries during GitHub preflight', async () => {
     const github = barrier()
     const { runner, request } = await computer(github.pause)
