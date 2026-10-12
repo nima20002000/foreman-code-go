@@ -40,7 +40,6 @@ export function deviceConnector(options: {
   return (signal) => {
     if (signal.aborted) return Promise.reject(new DeviceConnectionError('transport'))
     const raw = options.create(url.href, { headers: { Authorization: `Bearer ${options.credential}` }, rejectUnauthorized: true, perMessageDeflate: false, maxPayload: 16_384, handshakeTimeout: 10_000 })
-    const adapted = adaptDeviceSocket(raw)
     return new Promise<DeviceSocket>((resolve, reject) => {
       const cleanup = () => { raw.off('open', open); raw.off('error', fail); raw.off('close', fail); raw.off('unexpected-response', rejected); signal.removeEventListener('abort', fail) }
       const rejected = (_request: unknown, response: unknown) => {
@@ -56,7 +55,13 @@ export function deviceConnector(options: {
         const certificateFailure = code?.startsWith('ERR_TLS_CERT_') || ['CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'SELF_SIGNED_CERT_IN_CHAIN', 'DEPTH_ZERO_SELF_SIGNED_CERT'].includes(code ?? '')
         cleanup(); adapted.close(); reject(new DeviceConnectionError(certificateFailure ? 'wrong-main' : 'transport'))
       }
-      raw.on('open', open); raw.on('error', fail); raw.on('close', fail); raw.on('unexpected-response', rejected); signal.addEventListener('abort', fail, { once: true })
+      raw.on('open', open)
+      raw.on('error', fail)
+      raw.on('close', fail)
+      raw.on('unexpected-response', rejected)
+      // Classify handshake errors before the adapter closes the socket.
+      const adapted = adaptDeviceSocket(raw)
+      signal.addEventListener('abort', fail, { once: true })
     })
   }
 }

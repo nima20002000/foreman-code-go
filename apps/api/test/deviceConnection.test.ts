@@ -339,6 +339,26 @@ describe('device-only carrier and lifecycle', () => {
     await expect(rejected).rejects.toThrow('wrong-main')
     expect(rejectedSocket.closed).toBe(true)
   })
+  it.each([
+    ['ERR_TLS_CERT_ALTNAME_INVALID', 'wrong-main'],
+    ['CERT_HAS_EXPIRED', 'wrong-main'],
+    ['UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'wrong-main'],
+    ['SELF_SIGNED_CERT_IN_CHAIN', 'wrong-main'],
+    ['DEPTH_ZERO_SELF_SIGNED_CERT', 'wrong-main'],
+    ['ECONNRESET', 'transport'],
+  ])('classifies handshake error %s before synchronous socket close', async (code, failure) => {
+    const socket = new Socket()
+    const connect = deviceConnector({
+      url: 'wss://main/device/connect', credential: 'secret', create: () => socket,
+    })
+    const connection = connect(new AbortController().signal)
+    socket.emit('error', { code })
+    await expect(connection).rejects.toMatchObject({ code: failure })
+    expect(socket.closed).toBe(true)
+    for (const event of ['open', 'message', 'error', 'close', 'unexpected-response']) {
+      expect(socket.listenerCount(event)).toBe(0)
+    }
+  })
 })
 
 
