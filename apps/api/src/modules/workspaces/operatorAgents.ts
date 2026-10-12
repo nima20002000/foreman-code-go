@@ -163,7 +163,8 @@ export class OperatorAgentMutationService {
           ...(input.graphqlTools !== undefined ? {graphqlTools:input.graphqlTools} : {}),
           ...(input.nativeTools !== undefined ? {nativeTools:input.nativeTools} : {}),
         }),configuration)
-        return this.persist(client,input.workspaceId,edited,principal)
+        const result = await this.persist(client,input.workspaceId,edited,principal)
+        return { ...result, affectedWorkflowIds: current.workflowIds }
       },
     })
   }
