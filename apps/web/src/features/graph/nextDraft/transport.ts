@@ -200,8 +200,8 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
     },
     async context(workspaceId: string, workflowId: string, options?: RequestOptions, reload = false): Promise<AuthoringContext> {
       for (let attempt = 0; attempt < 3; ++attempt) {
-        // The two saved reads still bracket the Agent read; only the first runs alongside it.
-        const [before, agents] = await Promise.all([load(workspaceId, workflowId, options), client.listManagedAgents(workspaceId, options)])
+        const before = await load(workspaceId, workflowId, options)
+        const agents = await client.listManagedAgents(workspaceId, options)
         const after = await load(workspaceId, workflowId, options)
         if (before.savedRevision === after.savedRevision
           && sameAuthoredWorkflow(before.savedDraft.graph, after.savedDraft.graph)) {
