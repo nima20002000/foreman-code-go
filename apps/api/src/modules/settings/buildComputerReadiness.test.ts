@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { CI_HOST_NAMESPACE } from '@foreman-code/contracts'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
@@ -17,7 +18,7 @@ function fixture(host: 'main' | 'device', memory: number | null = 14 * 2 ** 30, 
     registration: profile.root.registration, mainInstallationId: profile.root.binding.mainId })
   const endpoint = { currentBinding: () => ({ workerInstallationId: target.applicationInstallationId,
     keyRevision: target.keyRevision, authorizationRevision: target.authorizationRevision }),
-  captureRequest: () => ({}), clockReason: () => null } as unknown as DeviceEndpoint
+  captureRequest: () => ({}), clockReason: () => null, capabilities: () => [] } as unknown as DeviceEndpoint
   const sql = { query: async (text: string) => ({ rows: text.includes('select record from job_runtime_profiles')
     ? [{ record: profile }] : Array.from({ length: computing }, () => ({
       limits: profile.spec.resources.limits, compute_closed: false,
@@ -29,6 +30,23 @@ function fixture(host: 'main' | 'device', memory: number | null = 14 * 2 ** 30, 
 }
 
 describe('build computer readiness', () => {
+  it.each([true, false])('uses Host CI readiness (%s) without requiring protected profiles', async ready => {
+    const f = fixture('device')
+    const endpoint = f.input.endpoint()
+    endpoint.capabilities = () => [{ namespace: CI_HOST_NAMESPACE, version: 1,
+      mainCanRequest: true, workerCanRequest: false, maxJsonBytes: 1_048_576, maxBinaryBytes: 0 }]
+    const request = vi.fn(async () => ({ payload: { operation: 'status', ready,
+      reasons: ready ? [] : ['Connect GitHub on this computer.'], cpuCount: 8, memoryBytes: 16 * 2 ** 30, runs: [] } }))
+    endpoint.captureRequest = () => ({ binding: endpoint.currentBinding(f.target.hostRef.kind === 'device'
+      ? f.target.hostRef.deviceId : '')!, request }) as ReturnType<DeviceEndpoint['captureRequest']>
+    f.input.profiles.readiness = vi.fn()
+    expect(await buildComputerReadiness(f.input)(f.sql, f.target, 100)).toEqual({
+      state: ready ? 'ready' : 'setup-required', reasons: ready ? [] : ['Connect GitHub on this computer.'],
+      remoteExecutionEnabled: true,
+    })
+    expect(request).toHaveBeenCalledWith({ operation: 'status' }, { timeoutMs: 30_000 })
+    expect(f.input.profiles.readiness).not.toHaveBeenCalled()
+  })
   it('reports an untrusted Worker clock before considering runtime or capacity', async () => {
     const f = fixture('device')
     f.input.endpoint().clockReason = () => 'Worker clock differs from Main by more than 2 minutes.'

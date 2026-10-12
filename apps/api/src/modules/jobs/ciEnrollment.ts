@@ -98,7 +98,7 @@ export class CiEnrollment {
     const computers = (await this.inventory.computers()).map(computer => {
       const stored = saved.find(row => buildComputerKey(row.state.target) === buildComputerKey(computer.target))?.state
       const state = this.targetState(computer, stored)
-      const setup = hasTemplates ? {} : templateSetupRequired
+      const setup = hasTemplates || computer.executionMode === 'host' ? {} : templateSetupRequired
       return { ...state, ...setup, target: computer.target, ...this.availability(computer, state.enabled) }
     })
     return { workspaceId, computers }
@@ -186,18 +186,24 @@ export class CiEnrollment {
   }
 
   private initial(computer: CiEnrollmentTarget): CiEnrollmentComputer {
-    return { target: computer.target, revision: 0, enabled: true, state: 'pending', profileIds: [], templates: [],
+    return { target: computer.target, ...(computer.executionMode ? { executionMode: computer.executionMode } : {}),
+      revision: 0, enabled: true, state: 'pending', profileIds: [], templates: [],
       message: null, updatedAt: null }
   }
 
   private targetState(computer: CiEnrollmentTarget, state?: CiEnrollmentComputer): CiEnrollmentComputer {
     if (!state) return this.initial(computer)
-    if (canonical(state.target) === canonical(computer.target)) return state
+    if (canonical(state.target) === canonical(computer.target)) {
+      return { ...state, ...(computer.executionMode ? { executionMode: computer.executionMode } : {}) }
+    }
     return { ...this.initial(computer), revision: state.revision, enabled: state.enabled }
   }
 
   private availability(computer: CiEnrollmentTarget, enabled: boolean): Partial<CiEnrollmentComputer> {
-    if (!enabled || !computer.buildEnabled) return { state: 'disabled' }
+    if (!enabled) return { state: 'disabled', message: 'CI enrollment is disabled for this workspace.' }
+    if (!computer.buildEnabled) {
+      return { state: 'disabled', message: 'Builds are disabled for this computer. Enable builds with build_computer_update.' }
+    }
     if (!computer.connected) return { state: 'offline' }
     return {}
   }
@@ -219,6 +225,18 @@ export class CiEnrollment {
         : null,
     }))
     try {
+      if (computer.executionMode === 'host') {
+        record.state.templates = []
+        delete record.state.managedSetup
+        const status = await this.inventory.hostStatus?.(computer.target)
+        record.state.state = 'offline'
+        if (status) record.state.state = status.ready ? 'ready' : 'setup-required'
+        record.state.message = status?.ready
+          ? 'Host CI is ready. Use ci_run; verification runtime profiles and preparation are not required.'
+          : status?.reasons.join('\n').slice(0, 2000) || 'Host CI is unavailable on this connection.'
+        await this.repository.save(this.pool, workspaceId, record)
+        return
+      }
       const verification = templates.filter(template => template.schemaVersion === 2)
       const runtime = this.inventory.runtimeStatus
         ? await this.inventory.runtimeStatus(computer.target) : undefined

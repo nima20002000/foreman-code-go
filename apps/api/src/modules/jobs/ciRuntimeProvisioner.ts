@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { BuildComputerPrepareGetInputSchema, BuildComputerPrepareInputSchema, BuildComputerPrepareStatusSchema,
-  CI_RUNTIME_NAMESPACE, CiRuntimeWorkerStateSchema, WorkspaceSchema, type BuildComputerPrepareInput,
+  CI_HOST_NAMESPACE, CI_RUNTIME_NAMESPACE, CiRuntimeWorkerStateSchema, WorkspaceSchema, type BuildComputerPrepareInput,
   type BuildComputerPrepareStatus, type CiRuntimeRequest, type CiRuntimeWorkerState } from '@foreman-code/contracts'
 import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import type { JobDefinitionSpecRecord } from '@foreman-code/contracts/job-verification'
@@ -125,6 +125,7 @@ export class CiRuntimeProvisioner {
     const devices = new Map<string, JobVerificationProfile>()
     for (const { profile } of (await this.profiles.list(principal, workspaceId)).profiles) {
       if (profile.schemaVersion !== 2 || profile.status === 'revoked' || !profile.spec.suites.includes(suite as never)) continue
+      if (this.usesHostCi(profile)) continue
       if (request && (!matchesRuntimePolicy(request, profile) || !('verification' in request)
         || canonical(request.verification.resources) !== canonical(profile.spec.resources))) continue
       const computer = this.computerId(profile)
@@ -190,6 +191,7 @@ export class CiRuntimeProvisioner {
       // Another owner may have committed completion while this operation was being read.
       Object.assign(record, await this.repository.get(id))
       if (['qualified', 'failed'].includes(record.status.state)) return
+      await principal()
       await runCiPreparation(record, { profiles: this.profiles, sources: this.sources, principal, signal, checkpoint,
         repository: workspaceId => this.projectRepository(workspaceId), now: this.timing.now,
         publish: (repository, commit) => this.sources.publish(repository, commit, signal),
@@ -264,11 +266,21 @@ export class CiRuntimeProvisioner {
       mainInstallationId: profile.root.binding.mainId })
   }
 
+  private usesHostCi(profile: JobVerificationProfile): boolean {
+    const hostRef = profile.root.selection.hostRef
+    return hostRef.kind === 'device' && !!this.endpoint()?.capabilities(hostRef.deviceId)
+      .some(value => value.namespace === CI_HOST_NAMESPACE && value.mainCanRequest)
+  }
+
   private async requireEnabled(profile: JobVerificationProfile, sql: JobSql = this.pool): Promise<void> {
     const target = this.profileTarget(profile)
     await assertBuildComputerTarget(sql, target)
     if (!(await readBuildComputerPreference(sql, target)).buildEnabled) {
       throw new DomainError('BUILD_COMPUTER_DISABLED', 'Enable builds on this computer before preparing its runtime.', 409)
+    }
+    if (this.usesHostCi(profile)) {
+      throw new DomainError('CI_RUNTIME_RETIRED',
+        'This computer uses Host CI. Start a Host CI run with ci_run; legacy runtime preparation is unavailable.', 409)
     }
   }
 
