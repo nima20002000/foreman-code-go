@@ -116,6 +116,11 @@ function restartOwnershipFixture(options: {
   }
   const coordinator = new ApprovalExecutionCoordinator({
     acquireOwnership,
+    getRepeatSnapshot: async (_runId: string, owner: RunOwnership) => {
+      owner.assertOwned()
+      expect(locked).toBe(true)
+      return { stopRequested: false, cleanupPending: false }
+    },
     getExecution: async (id: string) => executions.find(execution => execution.id === id),
     getExecutionConfiguration: async () => configuration,
     getRepeatVersion: async () => ({ ...saved.version, definition: { ...saved.version.definition,

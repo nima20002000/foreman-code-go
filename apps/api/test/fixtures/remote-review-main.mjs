@@ -1,5 +1,5 @@
 /* global process, setInterval, clearInterval */
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, rename, writeFile } from 'node:fs/promises'
 import { componentLogger, serializeError } from '../../src/modules/diagnostics/logger.ts'
 import { createDatabase } from '../../src/infrastructure/database.ts'
 import { createCheckpointStore } from '../../src/infrastructure/checkpoints.ts'
@@ -8,6 +8,17 @@ import { codexQualificationSuite } from '../../src/modules/harnesses/qualificati
 import { discoverInventoryLauncher } from '../../src/modules/harnesses/hostDiscovery.ts'
 import { inventoryDriverPayloads } from '../../src/modules/harnesses/payloadDiscovery.ts'
 import { discoverInstalledClaudeSdk } from '../../src/modules/harnesses/claudeSdk/currentPin.ts'
+import { ApprovalExecutionCoordinator } from '../../src/modules/interactions/execution.ts'
+
+if (process.env.FOREMAN_CODE_RESTART_FIXTURE_READY) {
+  const preserve = ApprovalExecutionCoordinator.prototype.preserveActiveForRestart
+  ApprovalExecutionCoordinator.prototype.preserveActiveForRestart = function (owner) {
+    return Promise.all([
+      preserve.call(this, owner),
+      writeFile(`${process.env.FOREMAN_CODE_RESTART_FIXTURE_READY}.preserving`, 'preserving', { mode: 0o600 }),
+    ]).then(([result]) => result)
+  }
+}
 
 const { config, infrastructure, claudeInventory } = JSON.parse(await readFile(process.argv[2], 'utf8'))
 infrastructure.inventoryDiscovery = {
@@ -46,8 +57,10 @@ if (process.env.FOREMAN_CODE_RESTART_FIXTURE_READY) {
 }
 process.send?.({ kind: 'ready', origin })
 if (process.env.FOREMAN_CODE_RESTART_FIXTURE_READY) {
-  await writeFile(process.env.FOREMAN_CODE_RESTART_FIXTURE_READY,
+  const readyFile = process.env.FOREMAN_CODE_RESTART_FIXTURE_READY
+  await writeFile(`${readyFile}.tmp`,
     JSON.stringify({ pid: process.pid, origin }), { mode: 0o600 })
+  await rename(`${readyFile}.tmp`, readyFile)
 }
 let closing = false
 let reconciliationFailure

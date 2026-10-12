@@ -191,6 +191,7 @@ async function recoveryFixture(options: { handoff?: boolean } = {}) {
       getRepeatVersion: async () => f.base.version,
       repeat: async () => ({ readWorkExecutionContext: async () => ({ parentRequest: null }) }),
       get: async () => ({ ...f.base.run, executionState: 'running', outcome: 'pending' }),
+      getRepeatSnapshot: async () => ({ run: f.base.run, stopRequested: false, cleanupPending: false }),
       acquireOwnership,
     } as unknown as Args[0], { coordination } as Args[1], {} as Args[2],
     { resolve: () => ({ manager, processState: 'resident', markResident: resident }) }, 60_000,

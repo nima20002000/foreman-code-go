@@ -1237,13 +1237,14 @@ export class ApprovalExecutionCoordinator {
     const task = (async () => {
       const reviewResults = await Promise.allSettled([drainingReviews])
       for (const owned of sessions) owned.controller.abort(reason)
-      const closeSession = async (owned: OwnedNativeSession) => {
+      const closeSession = async (owned: OwnedNativeSession, owner?: RunOwnership) => {
         const safe = nativePersistenceRedactor(Object.values(this.managerCredentials.get(owned.manager)?.environment.variables ?? {}))
         const failures: Error[] = []
         await attemptCleanup(failures, `${owned.execution.id}: close for restart`, async () => {
           if (this.ownedSessions.get(owned.execution.id) !== owned) return
           if (this.closedExecutions.has(owned.execution.id)) return
-          const snapshot = await this.runs.getRepeatSnapshot(owned.execution.runId, owned.runOwner)
+          // Local engine ownership can finish before its native session detaches.
+          const snapshot = await this.runs.getRepeatSnapshot(owned.execution.runId, owner)
           if (snapshot.stopRequested || snapshot.cleanupPending) {
             const cleanup = await this.cleanupSession(owned)
             if (cleanup.length) throw new AggregateError(cleanup, 'Interrupted native cleanup remains unconfirmed.')
@@ -1300,7 +1301,7 @@ export class ApprovalExecutionCoordinator {
         try {
           // Sibling closes share one Run lock until every remote receipt has committed.
           if (retained) this.adoptRunOwner(retained.owner)
-          return (await Promise.all(resident.map(closeSession))).flat()
+          return (await Promise.all(resident.map(owned => closeSession(owned, retained?.owner)))).flat()
         } finally { if (retained) await retained.release() }
       }))
       const safe = nativePersistenceRedactor(sessions.flatMap(owned =>

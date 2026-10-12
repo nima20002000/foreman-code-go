@@ -100,6 +100,7 @@ export function native2Fixture(completed = true,
   const runs = {
     ensureExecution: forbidden('ensureExecution'),
     get: async () => run,
+    getRepeatSnapshot: async () => ({ run, stopRequested: false, cleanupPending: false }),
     getExecutionConfiguration: async () => configuration,
     getExecution: async () => execution,
     updateExecution: async (next: HarnessExecution) => { calls.push(`terminal:${next.result?.outcome ?? next.state}`); execution = next },

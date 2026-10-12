@@ -74,6 +74,7 @@ export async function installedRestartService(directory: string, configuration: 
   await writeFile(join(api, 'dist/restart-fixture.js'),
     fixture.replaceAll('../../src/', './').replaceAll('.ts\'', '.js\''))
   const readyFile = join(directory, 'service-ready.json')
+  const preservingFile = `${readyFile}.preserving`
   const unit = `graphql-restart-${randomUUID()}.service`
   const unitPath = join(serviceUser.homedir, '.config/systemd/user', unit)
   const envFile = join(directory, 'service.env')
@@ -103,7 +104,9 @@ export async function installedRestartService(directory: string, configuration: 
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
         const status = (await systemctl('show', unit, '--property=ActiveState', '--value')).stdout.trim()
-        if (status === 'failed' || status === 'inactive') throw new Error(`Installed API startup failed: ${unit}`)
+        if (status === 'failed' || status === 'inactive') {
+          throw new Error(`Installed API startup failed: ${unit}`, { cause: error })
+        }
         return undefined
       }
     }, value => value !== undefined, { timeoutMs: 120_000, description: 'installed systemd API startup' })
@@ -118,9 +121,18 @@ export async function installedRestartService(directory: string, configuration: 
     },
     async restart() {
       await rm(readyFile, { force: true })
+      await rm(preservingFile, { force: true })
       await systemctl('restart', unit)
       return ready()
     },
+    waitForPreservation: () => readUntil(async () => {
+      try {
+        return await readFile(preservingFile, 'utf8')
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        return undefined
+      }
+    }, value => value === 'preserving', { timeoutMs: 10_000, description: 'Main checking restart preservation' }),
     stop: () => systemctl('stop', unit),
     async close() {
       try {

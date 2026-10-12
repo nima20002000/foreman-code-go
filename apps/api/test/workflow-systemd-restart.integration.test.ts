@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
@@ -41,8 +40,7 @@ describe('installed Main-local workflows across systemd restart', () => {
         if (phase !== 'active') {
           await readUntil(service.state, value => value === 'deactivating',
           { timeoutMs: 10_000, description: 'systemd beginning API restart' })
-          // Keep admission blocked while Main classifies the saved session.
-          await delay(500)
+          await service.waitForPreservation()
           if (phase === 'failed admission') await fixture.provider.failWorkflowAdmission()
           await fixture.provider.releaseWorkflowAdmission()
         }

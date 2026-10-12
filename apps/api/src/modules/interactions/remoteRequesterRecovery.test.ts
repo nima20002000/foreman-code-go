@@ -92,6 +92,7 @@ async function recoverRequester(detached: boolean) {
   const coordinator = new ApprovalExecutionCoordinator({
     getExecution: async () => execution, getExecutionConfiguration: async () => configuration,
     getRepeatVersion: async () => base.version, get: async () => base.run,
+    getRepeatSnapshot: async () => ({ run: base.run, stopRequested: false, cleanupPending: false }),
     async *executionPages() { yield [execution] }, acquireOwnership,
   } as unknown as Args[0], { coordination } as Args[1], {} as Args[2], {
     resolve: () => ({ manager, processState: 'needs_start', markResident() {} }),
