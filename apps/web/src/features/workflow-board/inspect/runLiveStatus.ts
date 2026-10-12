@@ -3,6 +3,7 @@ import type { RepeatGraphCurrentV3 } from '@foreman-code/contracts/wave25'
 import type { RunIntervalCheck } from '@foreman-code/contracts/run-snapshots'
 import type { AgentNodeState } from '../../../shared/ui/nocturne'
 import { ciNodePresentation } from '../../run-board/ciPresentation'
+import { checkingView } from './pinnedTopology'
 
 /** Why an Agent is paused on a human or Agent answer. Only `pending` (unanswered) requests are waits here. */
 export type InteractionWait = { interactionId: string; label: string; actionable: boolean }
@@ -35,13 +36,15 @@ export function interactionWaits(record: RepeatGraphCurrentV3 | undefined, inter
   return waits
 }
 
-/** A pending answer or an unfinished CI job is what the Agent is waiting on; then a running interval check;
- * otherwise the lifecycle view stands, with the next check time while one is due. */
+/** A pending answer or an unfinished CI job is what the Agent is waiting on; then a running interval check
+ * (from the current cut, or the Run read's live check state); otherwise the lifecycle view stands, with the
+ * next check time while one is due. */
 export function liveNodeView(base: View, wait: InteractionWait | undefined, ci: CiActivity | undefined,
-  check?: RunIntervalCheck): View {
+  check?: RunIntervalCheck, checking?: { check: number; queued: boolean }): View {
   if (wait) return { state: 'waiting', label: wait.label }
   if (ci && isActiveCi(ci)) return { state: 'waiting', label: `Waiting for ${ciNodePresentation(ci).label}` }
-  if (check?.running) return { state: 'running', label: 'Interval check running' }
+  if (checking) return checkingView(checking.check, checking.queued)
+  if (check?.running) return checkingView(check.checks)
   const view = ci ? { ...base, label: `${base.label} · ${ciNodePresentation(ci).label}` } : base
   return check?.nextCheckAt ? { ...view, label: `${view.label} · Next check ${new Date(check.nextCheckAt)
     .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` } : view

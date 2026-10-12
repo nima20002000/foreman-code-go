@@ -21,7 +21,7 @@ select coalesce((select max(sequence) from recent),0)::text as high_water,
 /** Extract protocol metadata and recorded work results without native provider bodies. */
 export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,a.occurred_at,a.harness_execution_id,
   coalesce(e.workflow_node_id,j.record#>>'{workflow,nodeId}') as execution_node_id,e.agent_id as execution_agent_id,
-  coalesce(e.attempt,x.technical_attempt) as execution_attempt,e.work_activation_id,
+  coalesce(e.attempt,x.technical_attempt) as execution_attempt,e.work_activation_id,e.tick_index as execution_tick_index,
   j.id as job_execution_id,j.attempt_id as job_attempt_id,j.operation_id as job_operation_id,
   cq.id::text as ci_ticket_id,case when cq.id is not null then a.payload->'ci' end as ci_activity,
   w.node_execution_id,j.accepted_spec->>'definitionId' as job_definition_id,

@@ -1,7 +1,7 @@
 import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 import { describe, expect, it } from 'vitest'
 import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
-import { pinnedNodeStates, pinnedTopology, type PinnedNodeDisplayCut } from './pinnedTopology'
+import { pinnedNodeStates, pinnedTopology, runningIntervalChecks, type PinnedNodeDisplayCut } from './pinnedTopology'
 
 describe('immutable canvas display projection', () => {
   it('uses only saved node names and configuration pins', () => {
@@ -24,6 +24,10 @@ describe('immutable canvas display projection', () => {
       { identity: identity('check'), state: 'running', resultOutcome: null, tickIndex: 1 },
     ] } }
     expect(pinnedNodeStates(cut).get(version.definition.nodes[0]!.id)?.label).toBe('succeeded')
+    expect(runningIntervalChecks(cut).get(version.definition.nodes[0]!.id)).toEqual({ check: 1, queued: false })
+    const finished: PinnedNodeDisplayCut = { state: { resolutions: [], executions: cut.state.executions
+      .map((fact) => ({ ...fact, state: 'completed' as const, resultOutcome: 'succeeded' as const })) } }
+    expect(runningIntervalChecks(finished).size).toBe(0)
   })
 
   it('does not synthesize an ordinary repeat plan or occurrence', () => {

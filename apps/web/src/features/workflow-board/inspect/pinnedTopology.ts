@@ -32,6 +32,20 @@ export function pinnedNodeStates(record?: PinnedNodeDisplayCut) {
   }
   return states
 }
+/** The unfinished interval check of each node, by check number. A check wakes the Agent without
+ * changing its graph state, so it is read beside pinnedNodeStates, not inside it. */
+export function runningIntervalChecks(record?: PinnedNodeDisplayCut) {
+  const checks = new Map<string, { check: number; queued: boolean }>()
+  for (const fact of record?.state.executions ?? []) {
+    if (!fact.tickIndex || fact.state === 'completed') continue
+    const id = fact.identity.workflowNodeId
+    if ((checks.get(id)?.check ?? 0) < fact.tickIndex) checks.set(id, { check: fact.tickIndex, queued: fact.state === 'queued' })
+  }
+  return checks
+}
+/** How a node looks while an interval check is unfinished. */
+export const checkingView = (check: number, queued = false) => queued
+  ? { state: 'queued' as const, label: `Check ${check} queued` } : { state: 'running' as const, label: `Checking · check ${check}` }
 export function pinnedTopology(version: WorkflowVersionV3) {
   const blocks = new Map(version.definition.repeat?.blocks.flatMap((block) =>
     block.nodeIds.map((nodeId) => [nodeId, block.id] as const)) ?? [])

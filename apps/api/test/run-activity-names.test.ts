@@ -44,4 +44,15 @@ describe('Run activity admission names', () => {
       expect(JSON.stringify(activity)).not.toContain(node.name)
     }
   })
+
+  it('names an interval check execution as a check, from start to finish', () => {
+    const at = (state: string, check?: number) => publicRunActivity({ ...row, execution_tick_index: check ?? null,
+      result_outcome: state === 'completed' ? 'succeeded' : null, safe_payload: { state, actorName: 'Admission name' } },
+    fixture.version, fixture.run.id, fixture.run.outcome)
+    expect(at('queued', 3)).toMatchObject({ status: 'queued', summary: 'Interval check 3 queued' })
+    expect(at('starting', 3)).toMatchObject({ status: 'starting', summary: 'Interval check 3 starting' })
+    expect(at('running', 3)).toMatchObject({ status: 'running', summary: 'Checking · check 3' })
+    expect(at('completed', 3)).toMatchObject({ status: 'completed', summary: 'Interval check 3 finished' })
+    expect(at('running')).toMatchObject({ status: 'running', summary: 'Agent working' })
+  })
 })
