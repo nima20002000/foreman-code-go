@@ -11,7 +11,7 @@ import {
 import type { GraphTransactionSql } from './connection.js'
 import { assertGraphTransaction } from './connection.js'
 import { RunGraphError } from './errors.js'
-import { repeatSlotId, workActivationSlotId } from '../runs/repeatResolution.js'
+import { repeatSlotId, tickSlotId, workActivationSlotId } from '../runs/repeatResolution.js'
 import { readWorkflowJobGraphExecutionsLocked } from './workflowJobProjection.js'
 import { readImmutableWorkflowVersion, readPinnedAgentConfigurations,
   type ImmutableAgentConfigurationRow } from '../workflows/immutableRead.js'
@@ -75,6 +75,7 @@ interface ExecutionRow {
   state: string; result_outcome: string | null; slot_run_id: string; slot_occurrence_id: string | null;
   continued_from_execution_id: string | null;
   slot_node_id: string; input_digest: string; occurrence: unknown;
+  slot_tick_index: number | null; native_tick_index: number | null;
 }
 /** Whitelisted SQL expressions: never select input_json, result_json, an entire
  * harness record, prompt, path, session, credential, or raw native payload. */
@@ -93,6 +94,7 @@ export async function readRepeatGraphExecutionsLocked(sql: GraphTransactionSql, 
       (e.record->>'attempt')::integer as record_attempt,e.record->>'state' as state,e.record #>> '{result,outcome}' as result_outcome,
       s.run_id as slot_run_id,s.occurrence_id as slot_occurrence_id,
       s.work_activation_id as slot_work_activation_id,s.workflow_node_id as slot_node_id,s.input_digest,
+      s.tick_index as slot_tick_index,e.tick_index as native_tick_index,
       o.record as occurrence
     from run_repeat_executions x left join harness_executions e on e.id=x.execution_id
     left join run_repeat_slots s on s.slot_id=x.slot_id left join run_repeat_occurrences o on o.occurrence_id=x.occurrence_id
@@ -114,12 +116,14 @@ export async function readRepeatGraphExecutionsLocked(sql: GraphTransactionSql, 
       || !equal(row.identity, occurrence ? identity : bare)
       || (row.work_activation_id ?? null) !== (row.slot_work_activation_id ?? null)
       || (row.work_activation_id ?? null) !== (row.native_work_activation_id ?? null)
-      || row.slot_id !== (row.work_activation_id
-        ? workActivationSlotId(scope.runId, row.work_activation_id)
-        : repeatSlotId(scope.runId, { nodeId: identity.workflowNodeId, occurrence }))) return conflict()
+      || (row.slot_tick_index ?? null) !== (row.native_tick_index ?? null)
+      || row.slot_id !== (row.slot_tick_index ? tickSlotId(scope.runId, identity.workflowNodeId, row.slot_tick_index)
+        : row.work_activation_id ? workActivationSlotId(scope.runId, row.work_activation_id)
+          : repeatSlotId(scope.runId, { nodeId: identity.workflowNodeId, occurrence }))) return conflict()
     return RepeatGraphExecutionV3Schema.parse({ identity, inputDigest: row.input_digest,
       ...(row.continued_from_execution_id ? { continuedFromExecutionId: row.continued_from_execution_id } : {}),
       ...(row.work_activation_id ? { workActivationId: row.work_activation_id } : {}),
+      ...(row.slot_tick_index ? { tickIndex: row.slot_tick_index } : {}),
       previousExecutionId: row.previous_execution_id, state: row.state, resultOutcome: row.result_outcome })
   })
   const agentIds = new Set(parsed.map(execution => execution.identity.executionId))

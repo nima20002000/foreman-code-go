@@ -20,11 +20,12 @@ import { readUnconsumedWorkflowApprovals } from './workflowLifecycle.js'
 
 import type { RunOwnership } from './ownership.js'
 import { normalizeRepeatTerminal, type RepeatExecutionDriver } from './repeatNode.js'
-import { assertRepeatExecution, repeatConflict, type RepeatNodeRef, type RepeatScope } from './repeatResolution.js'
+import { assertRepeatExecution, repeatConflict, repeatTickIndex, type RepeatNodeRef, type RepeatScope } from './repeatResolution.js'
 import type { RepeatRunRepository } from './repeatPostgres.js'
 import { buildWorkHandoffGraph } from './workHandoffGraph.js'
 import { workHandoffNodeAction } from './workHandoffNode.js'
 import { ExecutionLimiter } from './limiter.js'
+import { componentLogger } from '../diagnostics/logger.js'
 
 /** Adapt the existing exact-session native driver, not a second native runtime.
  * The shell supplies the same ApprovalExecutionCoordinator/SingleWriterSessionManager
@@ -257,7 +258,7 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
         },
         consumeLaunch: (id) => { check(); return id === execution.id && store.consumeLaunch(id) },
       }
-      const executionContext = context.version.definition.handoffs
+      const executionContext = context.version.definition.handoffs && repeatTickIndex(execution.input) === undefined
         ? await store.readWorkExecutionContext(execution.id) : undefined
       check()
       const request = workflowExecutionRequest({ execution: { ...execution, ...paths },
@@ -315,6 +316,44 @@ export interface RepeatRuntimeLifecycle {
   finishCleanup(): Promise<void>
 }
 
+/** Re-activates interval nodes beside the graph: one loop per node admits a check when it is due
+ * and observes it through the same native driver. Stopping waits for an in-flight check, never
+ * starts another, and leaves graph routing untouched. Errors back off; they do not fail the Run. */
+export function startIntervalChecks(input: {
+  version: WorkflowVersionV3; store: Partial<Pick<RepeatRunRepository, 'admitTick'>>
+  driver: RepeatExecutionDriver; signal: AbortSignal
+}): () => Promise<void> {
+  const nodes = input.version.definition.nodes.filter((node) => node.kind !== 'job' && node.interval)
+  if (!nodes.length) return async () => {}
+  const admitTick = input.store.admitTick?.bind(input.store)
+  if (!admitTick) return repeatConflict('TICK_STORE_REQUIRED')
+  const stopped = new AbortController(), scheduling = AbortSignal.any([input.signal, stopped.signal])
+  const loops = nodes.map((node) => (async () => {
+    while (!scheduling.aborted) {
+      let waitMs = 5_000
+      try {
+        const admission = await admitTick(node.id, () => input.driver.candidate({ nodeId: node.id, occurrence: null }, 1))
+        const execution = admission.kind === 'admitted' ? admission.execution
+          : admission.kind === 'busy' ? admission.execution : undefined
+        if (execution) {
+          await input.driver.observe(execution, input.signal)
+          waitMs = 1_000
+        } else if (admission.kind === 'wait' && admission.dueAt) {
+          waitMs = Math.min(60_000, Math.max(1_000, Date.parse(admission.dueAt) - Date.now()))
+        }
+      } catch (error) {
+        if (scheduling.aborted) return
+        componentLogger('engine').warn({ err: error, workflowNodeId: node.id }, 'interval check failed')
+      }
+      await delay(waitMs, undefined, { signal: scheduling }).catch(() => undefined)
+    }
+  })())
+  return async () => {
+    stopped.abort()
+    await Promise.allSettled(loops)
+  }
+}
+
 /** Executes the one graph on the existing Run thread. Settlement retries drain
  * wrappers and re-enter the same checkpoint; business progression stays inside
  * guarded graph edges. The shared engine owns Run ownership/admission,
@@ -326,6 +365,7 @@ export async function executeRepeatRuntime(input: {
   store: Pick<RepeatRunRepository, 'admit' | 'acceptTerminal' | 'enterBlock' | 'readOccurrence' | 'transition'
     | 'resolveExcluded' | 'completeRun' | 'ensureWorkEntry' | 'admitWorkActivation' | 'acceptWorkTerminal'
     | 'admitWorkRequest' | 'returnWork' | 'recordWorkUnresolved' | 'resolveWaitingWorkJoins' | 'completeWorkRun'>
+    & Partial<Pick<RepeatRunRepository, 'admitTick'>>
   driver: RepeatExecutionDriver; lifecycle: RepeatRuntimeLifecycle
   checkpointer: import('@langchain/langgraph-checkpoint').BaseCheckpointSaver
   configuredParallelism?: number
@@ -337,6 +377,7 @@ export async function executeRepeatRuntime(input: {
   const failed = new AbortController(), signal = AbortSignal.any([input.signal, failed.signal])
   const tasks = new Set<Promise<unknown>>()
   let firstFailure: unknown, preflightComplete = false, cancellation: Promise<boolean> | undefined
+  let stopChecks = async (): Promise<void> => {}
   const definitive = (error: unknown): boolean => {
     if (repeatSettlementPending(error) || isGraphInterrupt(error)) return false
     if (error instanceof ZodError || (error instanceof Error && error.message === 'GRAPH_JSON_LIMIT')) return true
@@ -444,6 +485,7 @@ export async function executeRepeatRuntime(input: {
         // Native iterators need not honor cancellation; the graph invocation is raced
         // independently, then existing exact native cleanup and wrapper drain run below.
         let onAbort: (() => void) | undefined
+        stopChecks = startIntervalChecks({ version: input.version, store: input.store, driver: input.driver, signal })
         try {
           const invocation = invoke(state)
           tasks.add(invocation)
@@ -453,7 +495,10 @@ export async function executeRepeatRuntime(input: {
             signal.addEventListener('abort', onAbort, { once: true })
             if (signal.aborted) onAbort()
           })])
-        } finally { if (onAbort) signal.removeEventListener('abort', onAbort) }
+        } finally {
+          if (onAbort) signal.removeEventListener('abort', onAbort)
+          await stopChecks()
+        }
         await drain()
         signal.throwIfAborted()
         if (firstFailure) throw firstFailure

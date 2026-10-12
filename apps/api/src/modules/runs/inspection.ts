@@ -28,7 +28,7 @@ import {
   type StoredRepeatExecution,
 } from './repeatPostgres.js'
 import {
-  assertRepeatRef, repeatDigest, repeatExecutionIdentity, repeatId, repeatSlotId, sameRepeatValue, workActivationSlotId,
+  assertRepeatRef, repeatDigest, repeatExecutionIdentity, repeatId, repeatSlotId, sameRepeatValue, tickSlotId, workActivationSlotId,
   type RepeatScope,
 } from './repeatResolution.js'
 import { INSPECTION_OCCURRENCE_COLUMNS, inspectionExecutionsQuery } from './inspectionPageQuery.js'
@@ -108,6 +108,7 @@ interface ExecutionRow extends OccurrenceRow {
   identity_occurrence_id: string | null; technical_attempt: number | null;
   slot_id: string | null; slot_run_id: string | null; slot_node_id: string | null; slot_occurrence_id: string | null;
   work_activation_id?: string | null; native_work_activation_id?: string | null; attempt_work_activation_id?: string | null;
+  slot_tick_index?: number | null; native_tick_index?: number | null;
 }
 export function inspectionExecutionRowSummary(row: ExecutionRow, snapshot: AcceptedRepeatRunSnapshot): RunExecutionSummary {
   const summary = RunExecutionSummarySchema.parse(row.summary)
@@ -115,11 +116,16 @@ export function inspectionExecutionRowSummary(row: ExecutionRow, snapshot: Accep
   const ref = { nodeId: summary.workflowNodeId, occurrence }, scope = scopeOf(snapshot)
   assertRepeatRef(snapshot.version, scope, ref)
   const activationId = row.work_activation_id ?? null
-  evidence(snapshot.version.definition.handoffs
-    ? summary.kind !== 'job' && activationId !== null && activationId.length > 0 && occurrence === null
-      && row.native_work_activation_id === activationId && row.attempt_work_activation_id === activationId
-    : activationId === null && (row.native_work_activation_id ?? null) === null && (row.attempt_work_activation_id ?? null) === null)
-  const slotId = activationId ? workActivationSlotId(scope.runId, activationId) : repeatSlotId(scope.runId, ref)
+  const tickIndex = row.slot_tick_index ?? null
+  evidence(tickIndex !== null
+    ? summary.kind !== 'job' && occurrence === null && summary.tickIndex === tickIndex && row.native_tick_index === tickIndex
+      && activationId === null && (row.native_work_activation_id ?? null) === null && (row.attempt_work_activation_id ?? null) === null
+    : summary.tickIndex === undefined && (snapshot.version.definition.handoffs
+      ? summary.kind !== 'job' && activationId !== null && activationId.length > 0 && occurrence === null
+        && row.native_work_activation_id === activationId && row.attempt_work_activation_id === activationId
+      : activationId === null && (row.native_work_activation_id ?? null) === null && (row.attempt_work_activation_id ?? null) === null))
+  const slotId = tickIndex !== null ? tickSlotId(scope.runId, ref.nodeId, tickIndex)
+    : activationId ? workActivationSlotId(scope.runId, activationId) : repeatSlotId(scope.runId, ref)
   const node = snapshot.version.definition.nodes.find((item) => item.id === ref.nodeId)!
   const identity = summary.kind === 'job'
     ? { kind: summary.kind, executionId: summary.executionId, workflowNodeId: summary.workflowNodeId,

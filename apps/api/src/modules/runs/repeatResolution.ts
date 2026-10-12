@@ -79,6 +79,24 @@ export function repeatSlotId(runId: string, ref: RepeatNodeRef): string {
 export function workActivationSlotId(runId: string, activationId: string): string {
   return repeatId('work-slot', runId, activationId)
 }
+export function tickSlotId(runId: string, nodeId: string, tickIndex: number): string {
+  return repeatId('tick-slot', runId, nodeId, tickIndex)
+}
+/** The interval check index frozen in a slot input; undefined for ordinary graph work. */
+export function repeatTickIndex(input: unknown): number | undefined {
+  if (!input || typeof input !== 'object' || !('tick' in input)) return undefined
+  const tick = (input as { tick: unknown }).tick
+  const index = tick && typeof tick === 'object' && 'index' in tick ? (tick as { index: unknown }).index : undefined
+  if (!Number.isSafeInteger(index) || (index as number) < 1) return repeatConflict('TICK_INPUT_INVALID')
+  return index as number
+}
+/** The one slot an execution may occupy: its check, work activation or graph node slot. */
+export function expectedRepeatSlotId(runId: string, ref: RepeatNodeRef, input: unknown,
+  workActivationId: string | null): string {
+  const tickIndex = repeatTickIndex(input)
+  if (tickIndex !== undefined) return tickSlotId(runId, ref.nodeId, tickIndex)
+  return workActivationId ? workActivationSlotId(runId, workActivationId) : repeatSlotId(runId, ref)
+}
 export function repeatBlock(version: WorkflowVersionV3, blockId: string): RepeatBlockV1 {
   const block = version.definition.repeat?.blocks.find((item) => item.id === blockId)
   if (!block) return repeatConflict('REPEAT_BLOCK_NOT_FOUND')

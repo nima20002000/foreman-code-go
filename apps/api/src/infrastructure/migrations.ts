@@ -7,6 +7,7 @@ import { retiredHarnessCredentialsMigration } from './retiredHarnessCredentialsM
 import { bugReportsMigration } from './bugReportsMigration.js'
 import { hostCiRunsMigration } from './hostCiRunsMigration.js'
 import { hostCiActivityMigration } from './hostCiActivityMigration.js'
+import { agentIntervalMigration } from './agentIntervalMigration.js'
 import { ciFileDurationsMigration } from './ciFileDurationsMigration.js'
 import { sessionControlsMigration } from './sessionControlsMigration.js'
 import { workerConversationBindingMigration } from './workerConversationBindingMigration.js'
@@ -913,6 +914,7 @@ export const migrations = [
   providerAccountsMigration,
   providerAccountObservationsMigration,
   hostCiActivityMigration,
+  agentIntervalMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

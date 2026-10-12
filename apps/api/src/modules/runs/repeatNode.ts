@@ -6,7 +6,7 @@ import { ExecutionLimiter } from './limiter.js'
 import { assertRepeatNativeUpdate } from '../interactions/repeatNativeEvidence.js'
 import { parseCurrentChoiceResult } from './currentRouting.js'
 import {
-  assertRepeatExecution, blockForNode, repeatConflict, repeatDigest, repeatExecutionIdentity,
+  assertRepeatExecution, blockForNode, repeatConflict, repeatDigest, repeatExecutionIdentity, repeatTickIndex,
   type RepeatNodeRef, type RepeatResolution, type RepeatScope,
 } from './repeatResolution.js'
 
@@ -44,6 +44,8 @@ export function normalizeRepeatTerminal(version: WorkflowVersionV3, scope: Repea
   if (execution.state !== 'completed') return execution
   if (!execution.result) return repeatConflict('EXECUTION_RESULT_MISSING')
   if (execution.result.outcome !== 'succeeded') return execution
+  // An interval check has no result contract; its reply never routes the graph.
+  if (repeatTickIndex(execution.input) !== undefined) return execution
   if (version.definition.handoffs) {
     try { parseWorkHandoffResult(execution.result); return execution }
     catch {

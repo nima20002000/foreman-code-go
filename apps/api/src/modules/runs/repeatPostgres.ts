@@ -48,7 +48,7 @@ import {
   bindRepeatNodeInput, blockForNode, decideRepeatAdmission, decideRepeatBlockEntry, decideRepeatExit, finalRepeatExport,
   freezeRepeatEntry, makeRepeatOccurrence, repeatBlock, repeatConflict, repeatDigest,
   repeatExecutionIdentity, repeatId, repeatSlotId, repeatSuccessorInput, sameRepeatValue,
-  workActivationSlotId,
+  workActivationSlotId, expectedRepeatSlotId, repeatTickIndex, tickSlotId,
   type RepeatEntryInput, type RepeatInputBinding, type RepeatNodeInput, type RepeatNodeRef,
   type RepeatResolution, type RepeatScope, type RepeatSource,
 } from './repeatResolution.js'
@@ -110,6 +110,8 @@ export interface StoredRepeatExecution {
   execution: HarnessExecution; ref: RepeatNodeRef; slotId: string; input: RepeatNodeInput; inputDigest: string; accepted: boolean
   workActivationId?: string | null
 }
+export type RepeatTickAdmission = { kind: 'busy'; execution?: HarnessExecution }
+  | { kind: 'wait'; dueAt: string | null } | { kind: 'admitted'; execution: HarnessExecution }
 export type WorkTerminalAcceptance = { kind: 'accepted'; execution: HarnessExecution; replayed: boolean }
   | { kind: 'retry'; execution: HarnessExecution }
 const SourceSchema = z.object({ relationshipId: GraphIdSchema, execution: GraphExecutionIdentitySchema,
@@ -894,6 +896,54 @@ export class RepeatRunRepository {
       return { kind: 'admitted', execution: queued, reused: false }
     })
   }
+  /** Interval check admission for a node whose graph work is settled. A check is one more
+   * execution of the node in its own slot: no input bindings, resolution, routing or budget use.
+   * busy returns an unfinished check so a restarted owner can observe it again. */
+  async admitTick(nodeId: string, candidate: () => HarnessExecution): Promise<RepeatTickAdmission> {
+    return this.transaction(async (context) => {
+      this.active(context)
+      const node = context.version.definition.nodes.find((item) => item.id === nodeId)
+      if (!node || node.kind === 'job' || !node.interval || blockForNode(context.version, nodeId)) return repeatConflict('TICK_NODE_CONFLICT')
+      const facts = (await context.sql.query<{ open_id: string | null; open_tick: boolean | null; last_finished: string | null
+        last_tick: number; graph_open: boolean }>(`select
+          (select e.id from harness_executions e where e.run_id=$1 and e.workflow_node_id=$2
+            and e.record->>'state'<>'completed' order by e.tick_index nulls first,e.id limit 1) as open_id,
+          (select e.tick_index is not null from harness_executions e where e.run_id=$1 and e.workflow_node_id=$2
+            and e.record->>'state'<>'completed' order by e.tick_index nulls first,e.id limit 1) as open_tick,
+          (select max(e.record->>'finishedAt') from harness_executions e where e.run_id=$1 and e.workflow_node_id=$2
+            and e.record->>'state'='completed') as last_finished,
+          coalesce((select max(e.tick_index) from harness_executions e where e.run_id=$1 and e.workflow_node_id=$2),0) as last_tick,
+          case when $3 then exists(select 1 from run_work_activations a where a.run_id=$1 and a.workflow_node_id=$2
+              and a.state<>'completed')
+            else not exists(select 1 from run_repeat_resolutions r where r.run_id=$1 and r.occurrence_key=''
+              and r.workflow_node_id=$2) end as graph_open`,
+      [context.scope.runId, nodeId, Boolean(context.version.definition.handoffs)])).rows[0]!
+      if (facts.open_id) {
+        if (!facts.open_tick) return { kind: 'busy' }
+        await this.recordedEffect(context, 'input.bind', facts.open_id)
+        return { kind: 'busy', execution: (await this.execution(context, facts.open_id)).execution }
+      }
+      if (facts.graph_open || !facts.last_finished) return { kind: 'wait', dueAt: null }
+      const dueAt = new Date(Date.parse(facts.last_finished) + node.interval.everySeconds * 1000).toISOString()
+      if (dueAt > context.now) return { kind: 'wait', dueAt }
+      const ref: RepeatNodeRef = { nodeId, occurrence: null }
+      const execution = HarnessExecutionSchema.parse(candidate())
+      this.assertCandidate(context, ref, execution, 1)
+      const tickIndex = facts.last_tick + 1
+      const input = { executionSemanticsVersion: 3, runInput: context.hooks.run.input, occurrence: null, entry: null,
+        predecessors: [], tick: { index: tickIndex, everySeconds: node.interval.everySeconds } }
+      const queued = HarnessExecutionSchema.parse({ ...execution, input })
+      const inputDigest = repeatDigest(input, 4 * 1024 * 1024), slotId = tickSlotId(context.scope.runId, nodeId, tickIndex)
+      await context.hooks.assertAdmissionLocked(context.sql, queued, ref)
+      await this.effect(context, 'input.bind', queued.id, { ref, queued, inputDigest, bindings: [], tickIndex },
+        [{ type: 'repeat.execution.queued', ref, execution: repeatExecutionIdentity(queued), inputDigest }], async () => {
+          await context.sql.query(`insert into run_repeat_slots(slot_id,run_id,occurrence_id,workflow_node_id,input_json,input_digest)
+            values($1,$2,null,$3,$4,$5)`, [slotId, context.scope.runId, nodeId, canonicalGraphJson(input, 4 * 1024 * 1024), inputDigest])
+          await this.insertExecution(context, ref, queued, slotId, inputDigest, [], null)
+        })
+      return { kind: 'admitted', execution: queued }
+    })
+  }
   private assertCandidate(context: Context, ref: RepeatNodeRef, candidate: HarnessExecution, attempt: number): void {
     assertRepeatExecution(context.version, context.scope, ref, candidate)
     if (candidate.attempt !== attempt || candidate.state !== 'queued' || candidate.result !== undefined || candidate.nativeSessionId !== undefined
@@ -904,7 +954,9 @@ export class RepeatRunRepository {
   private async insertExecution(context: Context, ref: RepeatNodeRef, execution: HarnessExecution, slotId: string,
     inputDigest: string, bindings: RepeatInputBinding[], previousExecutionId: string | null,
     workActivationId: string | null = null): Promise<void> {
-    await assertWorkflowExecutionCapacityLocked(context.sql, context.scope.runId, context.version, workActivationId)
+    if (repeatTickIndex(execution.input) === undefined) {
+      await assertWorkflowExecutionCapacityLocked(context.sql, context.scope.runId, context.version, workActivationId)
+    }
     const occurrenceId = ref.occurrence?.occurrenceId ?? null
     const identity = ref.occurrence ? { ...repeatExecutionIdentity(execution), occurrence: ref.occurrence } : repeatExecutionIdentity(execution)
     if (workActivationId) {
@@ -1273,14 +1325,15 @@ async function validateStoredExecutionRow(sql: GraphTransactionSql, scope: Repea
   const identity = occurrence ? RepeatExecutionIdentityV1Schema.parse({ ...repeatExecutionIdentity(execution), occurrence }) : repeatExecutionIdentity(execution)
   const input = JSON.parse(row.input_json) as RepeatNodeInput
   const workActivationId = row.work_activation_id ?? null
-  const expectedSlotId = workActivationId ? workActivationSlotId(scope.runId, workActivationId) : repeatSlotId(scope.runId, ref)
+  const tick = repeatTickIndex(input) !== undefined
+  const expectedSlotId = expectedRepeatSlotId(scope.runId, ref, input, workActivationId)
   if (execution.id !== executionId || row.execution_run_id !== execution.runId
     || row.execution_node_id !== execution.workflowNodeId || row.execution_agent_id !== execution.agentId
     || row.execution_attempt !== execution.attempt || row.execution_occurrence_id !== row.occurrence_id
     || row.identity_occurrence_id !== row.occurrence_id || row.technical_attempt !== execution.attempt
     || workActivationId !== (row.native_work_activation_id ?? null)
     || workActivationId !== (row.attempt_work_activation_id ?? null)
-    || (version.definition.handoffs ? !workActivationId
+    || (version.definition.handoffs && !tick ? !workActivationId
       || (input as RepeatNodeInput & { work?: { activation?: { activationId: string } } }).work?.activation?.activationId !== workActivationId
       : workActivationId !== null)
     || !sameRepeatValue(identity, row.identity)
