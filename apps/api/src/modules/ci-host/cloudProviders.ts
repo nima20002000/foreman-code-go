@@ -267,7 +267,8 @@ export class CircleCiProvider implements CloudProvider {
   async log(run: CloudRun) {
     const { job } = await this.job(run)
     if (!job) return ''
-    return (await this.ports.run('circleci', ['job', 'output', 'list', job.id], { timeoutMs: 300_000 })).stdout
+    // Every line of every step: the default view keeps only each step's last 200 lines, which drops test failures.
+    return (await this.ports.run('circleci', ['job', 'output', 'list', job.id, '--tail', '0'], { timeoutMs: 300_000 })).stdout
   }
 
   async artifacts(run: CloudRun, directory: string) {

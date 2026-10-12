@@ -34,6 +34,24 @@ test('merges Vitest reports into repository files with per-test status, duration
   ] })
 })
 
+test('reads the exact failure location from the full stack even when the message is clipped', () => {
+  const root = resolve('results-fixture')
+  const file = 'apps/web/src/a.test.tsx'
+  const stack = (...frames) => `TestingLibraryElementError: Unable to find an element\n${'<div />\n'.repeat(200)}`
+    + frames.map(frame => `    at ${frame}`).join('\n')
+  const results = ciTestResults([{ testResults: [{ name: resolve(root, file), status: 'failed', assertionResults: [
+    { fullName: 'own file', status: 'failed', failureMessages: [stack(
+      `getElementError (${resolve(root, 'node_modules/.pnpm/dom/dist/config.js')}:37:19)`,
+      `${resolve(root, 'apps/web/src/helpers.ts')}:12:5`, `${resolve(root, file)}:54:19`,
+      `file://${resolve(root, 'node_modules/vitest/dist/run.js')}:2681:43`)] },
+    { fullName: 'helper only', status: 'failed', failureMessages: [stack(`file://${resolve(root, 'apps/web/src/helpers.ts')}:8:3`)] },
+    { fullName: 'outside', status: 'failed', failureMessages: [stack(`${resolve(root, '../elsewhere/x.ts')}:1:1`)] },
+  ] }] }], root)
+  const tests = results.files[0].tests
+  assert.ok(tests[0].message.length <= CI_TEST_RESULT_LIMITS.message)
+  assert.deepEqual(tests.map(test => test.location), [`${file}:54:19`, 'apps/web/src/helpers.ts:8:3', undefined])
+})
+
 test('keeps failed tests first within the bounds and still counts every test', () => {
   const passing = Array.from({ length: CI_TEST_RESULT_LIMITS.files + 20 }, (_, index) => ({
     name: `apps/web/src/p${String(index).padStart(3, '0')}.test.tsx`, status: 'passed', startTime: 0, endTime: 1,
