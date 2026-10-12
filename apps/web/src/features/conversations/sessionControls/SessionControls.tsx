@@ -16,7 +16,6 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
   const saveDefault = useRef<HTMLButtonElement>(null)
   const anchor = useRef<HTMLButtonElement>(null)
   const surface = useRef<HTMLDivElement>(null)
-  const restoringFocus = useRef(false)
   useFloatingSurface(open, anchor, surface, 320, 'end')
   useEffect(() => { setOpen(false) }, [budgetOwner])
   useEffect(() => {
@@ -30,10 +29,8 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
     return () => document.removeEventListener('pointerdown', outside)
   }, [open])
   const close = () => {
-    restoringFocus.current = true
     setOpen(false)
     anchor.current?.focus()
-    queueMicrotask(() => { restoringFocus.current = false })
   }
   if (!state) return <span role="status">{!controls.conversationId ? 'No native context yet' : controls.query.isError ? 'Context unavailable' : 'Context loading…'}</span>
   const context = state.context
@@ -63,7 +60,7 @@ export function SessionControls({ controls }: { controls: ComposerSessionControl
     <div className="session-context">
       <Button ref={anchor} size="sm" variant="ghost" className="session-context-meter" aria-label={meterLabel} title={meterLabel}
         aria-expanded={open} aria-controls={`${id}-context`} data-stale={context?.stale ? 'true' : undefined}
-        onClick={() => setOpen(true)} onFocus={() => { if (!restoringFocus.current) setOpen(true) }} onMouseEnter={() => setOpen(true)}>
+        onClick={() => setOpen(value => !value)}>
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
           <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" opacity=".2" strokeWidth="2.5" />
           {percentage !== null ? <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="2.5"

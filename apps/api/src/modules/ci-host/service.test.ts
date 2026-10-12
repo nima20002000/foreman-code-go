@@ -148,7 +148,7 @@ it.each(['lint', 'integration'] as const)('serves authenticated MCP %s polling f
   }
 })
 
-it.each([10, 40_000])('persists a bounded %i-byte log with terminal status across service restart', async length => {
+it.each([10, 40_000, 70_000])('persists a bounded %i-byte log with terminal status across service restart', async length => {
   const f = fixture()
   const log = 'x'.repeat(length) + '\nfinished\n'
   const state: CiHostRun = {
@@ -167,6 +167,14 @@ it.each([10, 40_000])('persists a bounded %i-byte log with terminal status acros
   expect(result.run.state).toBe('passed')
   expect(result.logTail).toBe(log.slice(-32_768))
   expect(f.endpoint.request).not.toHaveBeenCalled()
+  const page = await f.create().logs(caller, {
+    workspaceId: 'workspace', ticketId: state.runId, afterOffset: 0, maxBytes: 500_000,
+  })
+  expect(page).toEqual({ text: log.slice(0, 65_536), maxBytes: 65_536,
+    nextOffset: Math.min(log.length, 65_536), logBytes: log.length })
+  expect(f.endpoint.request).toHaveBeenCalledWith(expect.anything(), {
+    operation: 'read', runId: state.runId, afterOffset: 0, maxBytes: 65_536,
+  })
 })
 
 it('checks worker ownership before returning cached logs or group data', async () => {
@@ -177,4 +185,14 @@ it('checks worker ownership before returning cached logs or group data', async (
   expect(f.pool.query).toHaveBeenCalledTimes(1)
   expect(f.endpoint.computers).not.toHaveBeenCalled()
   expect(f.endpoint.request).not.toHaveBeenCalled()
+})
+
+it('retries a CI read once after a statement timeout, then reports a retryable error', async () => {
+  const f = fixture()
+  const canceled = () => Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' })
+  f.resolve.mockRejectedValueOnce(canceled())
+  expect(await f.create().get(caller, { ticketId: f.read().record.id })).toMatchObject({ run: { id: f.read().record.id } })
+  f.resolve.mockRejectedValueOnce(canceled()).mockRejectedValueOnce(canceled())
+  await expect(f.create().get(caller, { ticketId: f.read().record.id })).rejects.toMatchObject({
+    code: 'DATABASE_READ_TIMEOUT', status: 503, details: { retryable: true, sqlState: '57014' } })
 })

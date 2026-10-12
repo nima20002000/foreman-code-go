@@ -1,5 +1,5 @@
-.harness-status-menu { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); min-width: 0; gap: 2px; padding: 8px 0; overflow: clip; border-bottom: 1px solid var(--border); }
-.harness-status-link { display: flex; min-width: 0; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 6px 4px; border-radius: 6px; color: var(--text-muted); font-size: 12px; text-decoration: none; }
+.harness-status-menu { display: flex; flex-wrap: wrap; min-width: 0; gap: 2px; padding: 8px 0; overflow: clip; border-bottom: 1px solid var(--border); }
+.harness-status-link { display: flex; flex: 1 1 5rem; min-width: 0; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 6px 4px; border-radius: 6px; color: var(--text-muted); font-size: 12px; text-decoration: none; }
 .harness-status-link:hover { color: var(--text); background: var(--surface-hover); }
 .harness-status-link:focus-visible { outline: 2px solid var(--n-accent); outline-offset: -2px; }
 .harness-status-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -9,12 +9,5 @@
 .harness-status-light--missing { background: var(--n-danger); }
 .workspace-shell-navigation-collapsed .harness-status-name { display: none; }
 .workspace-shell-navigation-collapsed .harness-status-initial { display: inline; font-size: 10px; }
-.workspace-shell-navigation-collapsed .harness-status-link { justify-content: center; padding-inline: 4px; }
-
-.workspace-shell-navigation-collapsed .harness-status-menu { grid-template-columns: minmax(0, 1fr); }
-
-@container sidebar-footer (max-width: 14.5rem) {
-  .harness-status-menu { grid-template-columns: minmax(0, 1fr); }
-  .harness-status-link { justify-content: flex-start; padding-inline: 8px; }
-  .workspace-shell-navigation-collapsed .harness-status-link { justify-content: center; padding-inline: 4px; }
-}
+.workspace-shell-navigation-collapsed .harness-status-link { flex: 0 0 auto; justify-content: center; padding-inline: 4px; }
+.workspace-shell-navigation-collapsed .harness-status-menu { flex-direction: column; }

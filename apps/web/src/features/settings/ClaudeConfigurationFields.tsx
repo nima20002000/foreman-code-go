@@ -11,7 +11,7 @@ type Props = {
   value: ClaudeHarnessConfiguration
   onChange(value: ClaudeHarnessConfiguration): void
   models: readonly (Pick<HarnessOptions['models'][number], 'id' | 'name'> & Partial<Pick<HarnessOptions['models'][number], 'reasoningEfforts'>>)[]
-  qualified: boolean
+  qualified: boolean | undefined
   pending?: boolean
   error?: string
   issues?: readonly FieldIssue[]
@@ -52,6 +52,6 @@ export function ClaudeConfigurationFields({ value, onChange, models, qualified, 
         onChange={(event) => onChange({ ...value, sandbox: event.target.value as ClaudeHarnessConfiguration['sandbox'] })} />
     </div>
     {pending ? <span className="harness-status" role="status">Checking the selected Claude configuration…</span> : null}
-    {error ? <Alert tone="danger" live title={error} /> : !qualified && !pending ? <Alert tone="warning" title="Claude profile is not verified">Check the saved profile in computer settings.</Alert> : null}
+    {error ? <Alert tone="danger" live title={error} /> : qualified === false && !pending ? <Alert tone="warning" title="Claude profile is not verified">Check the saved profile in computer settings.</Alert> : null}
   </div>
 }

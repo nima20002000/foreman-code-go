@@ -1,5 +1,6 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { ApiError } from '../../shared/api/client'
+import { useBlockingReadError } from '../../shared/api/readFailure'
 import { runsSelectorApi } from './client'
 import { flattenRunPages, nextRunsCursor, RUNS_MAX_PAGES, RUNS_PAGE_SIZE } from './presentation'
 import type { RunsSelectorScope } from './types'
@@ -25,22 +26,27 @@ export function runReadErrorLabel(error: unknown, subject: 'run' | 'list' = 'run
 }
 const retry = (count: number, error: unknown) => !isRunAccessError(error) && count < 1
 
+/** Shared by the hook and hover prefetch so both fill the same cache entry. */
+export const runSummariesQuery = ({ workspaceId, workflowId }: RunsSelectorScope) => ({
+  queryKey: runsSelectorKeys.list({ workspaceId, workflowId }),
+  queryFn: ({ pageParam, signal }: { pageParam: string | undefined; signal: AbortSignal }) => runsSelectorApi.list({ workspaceId, workflowId,
+    limit: RUNS_PAGE_SIZE, ...(pageParam === undefined ? {} : { cursor: pageParam }) }, { signal }),
+  initialPageParam: undefined as string | undefined,
+  getNextPageParam: nextRunsCursor,
+  // The cap stops forward paging rather than evicting the newest page.
+  maxPages: RUNS_MAX_PAGES,
+  staleTime: 5_000,
+  gcTime: 60_000,
+})
+
 export function useRunSummaries(identity: RunsSelectorScope, enabled = true) {
   // Callers may pass a selection that also carries runId; the list is workflow-scoped.
-  const scope = { workspaceId: identity.workspaceId, workflowId: identity.workflowId }
   const query = useInfiniteQuery({
-    queryKey: runsSelectorKeys.list(scope),
-    queryFn: ({ pageParam, signal }) => runsSelectorApi.list({ ...scope, limit: RUNS_PAGE_SIZE,
-      ...(pageParam === undefined ? {} : { cursor: pageParam }) }, { signal }),
-    initialPageParam: undefined as string | undefined,
-    getNextPageParam: nextRunsCursor,
-    // The cap stops forward paging rather than evicting the newest page.
-    maxPages: RUNS_MAX_PAGES,
+    ...runSummariesQuery(identity),
     enabled,
     retry,
-    staleTime: 5_000,
-    gcTime: 60_000,
-    refetchInterval: (query) => enabled && !isRunAccessError(query.state.error) ? 15_000 : false,
+    // The Board also reads this list to notice a Run started elsewhere; the read is a small indexed page.
+    refetchInterval: (query) => enabled && !isRunAccessError(query.state.error) ? 5_000 : false,
     placeholderData: () => undefined,
   })
   // A forbidden background refetch must not leave authorized-looking cached rows.
@@ -70,8 +76,8 @@ export function useSelectedRunSnapshot(selection: SelectedRunState) {
     placeholderData: () => undefined,
   })
   const current = selection.isCurrent(generation)
-  // Do not render cached data after *any* failed authorization/validation read.
-  const snapshot = current && !query.isError ? query.data?.snapshot : undefined
+  const blocked = useBlockingReadError(query)
+  const snapshot = current && !blocked ? query.data?.snapshot : undefined
   const activitySnapshot = snapshot ? query.data?.activitySnapshot : undefined
   return { ...query, data: snapshot ? { snapshot, activitySnapshot } : undefined, snapshot, activitySnapshot }
 }

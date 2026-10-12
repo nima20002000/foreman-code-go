@@ -104,8 +104,6 @@ export type RunNodeCue = RunNodeDisplay & { transition?: AgentNodeTransition; tr
 export type RunChoreography = {
   nodes: Map<string, RunNodeCue>
   pulses: Map<string, Pulse[]>
-  /** The latest pulse per relationship, so its arrow can point where the last fact travelled. */
-  directions: Map<string, { reversed: boolean; at: number }>
 }
 
 function transitionFor(before: RunNodeDisplay, after: RunNodeDisplay): AgentNodeTransition | undefined {
@@ -160,11 +158,9 @@ export function useRunChoreography(record: RepeatGraphCurrentV3 | undefined, edg
   const pulses = new Map<string, Pulse[]>()
   const next = new Map<string, Pulse>()
   const landing = new Map<string, Handoff>()
-  const directions = new Map<string, { reversed: boolean; at: number }>()
   let wake = Infinity
   for (const [key, handoff] of m.handoffs) {
     const startsAt = m.starts.get(key)!, lands = startsAt + TRAVEL_MS
-    if (startsAt > -Infinity && startsAt <= now && (directions.get(handoff.edgeId)?.at ?? -Infinity) < startsAt) directions.set(handoff.edgeId, { reversed: handoff.reversed, at: startsAt })
     if (now >= lands) {
       // A pulse that just reached its receiver sets off the bang; history lands silently.
       if (!m.landed.has(key)) { m.landed.add(key); if (startsAt > -Infinity) landing.set(handoff.to, handoff) }
@@ -198,5 +194,5 @@ export function useRunChoreography(record: RepeatGraphCurrentV3 | undefined, edg
     const timer = setTimeout(() => setTick((value) => value + 1), Math.max(16, wake - performance.now() + 16))
     return () => clearTimeout(timer)
   }, [wake, tick])
-  return { nodes, pulses, directions }
+  return { nodes, pulses }
 }

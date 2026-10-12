@@ -33,7 +33,7 @@ export function JobResult({ workspaceId, executionId, expectedWorkflow,
 }) {
   const result = useJobExecution(workspaceId, executionId)
   const artifacts = useJobArtifacts(workspaceId, executionId, Boolean(result.data))
-  if (result.error) return <Alert title="Result unavailable" tone="danger">{jobError(result.error)}</Alert>
+  if (result.error && !result.data) return <Alert title="Result unavailable" tone="danger">{jobError(result.error)}</Alert>
   if (!result.data) return <p role="status">Loading job execution…</p>
   const execution = result.data
   if (expectedDefinitionVersionId && execution.acceptedSpec.definitionVersionId !== expectedDefinitionVersionId
@@ -51,6 +51,7 @@ export function JobResult({ workspaceId, executionId, expectedWorkflow,
   }
   return <div className="jobs-page">
     <PageHeader title="Job result" description={execution.id} />
+    {result.error ? <p role="alert">Result refresh failed. Showing the last successful read. {jobError(result.error)}</p> : null}
     <div className="job-status" aria-label="Independent job statuses">
       <Badge tone={execution.process.outcome === 'succeeded' ? 'success' : ['build_failed', 'preparation_failed', 'spawn_failed', 'timed_out'].includes(execution.process.outcome ?? '') ? 'danger' : 'neutral'}>Process: {processLabel(execution)}</Badge>
       <Badge tone={execution.transport === 'offline' ? 'warning' : 'neutral'}>Transport: {execution.transport}</Badge>
@@ -76,8 +77,8 @@ export function JobResult({ workspaceId, executionId, expectedWorkflow,
         {' / '}{execution.initiatingAgent.agentId}{' / '}{execution.initiatingAgent.executionId}
       </dd></>}
     </dl>
-    <JobLogs key={`${execution.id}:${execution.attemptId}`} workspaceId={workspaceId} executionId={execution.id} attemptId={execution.attemptId} enabled={!result.isError} />
-    <section aria-label="Job artifacts"><h2>Artifacts</h2>{Boolean(artifacts.error) && <Alert title="Artifacts unavailable" tone="danger">{jobError(artifacts.error)}</Alert>}
+    <JobLogs key={`${execution.id}:${execution.attemptId}`} workspaceId={workspaceId} executionId={execution.id} attemptId={execution.attemptId} enabled={Boolean(result.data)} />
+    <section aria-label="Job artifacts"><h2>Artifacts</h2>{Boolean(artifacts.error) && <Alert title={artifacts.data ? "Artifacts refresh failed" : "Artifacts unavailable"} tone="warning">{jobError(artifacts.error)}</Alert>}
       {execution.acceptedSpec.outputs.map(output => {
         const artifact = artifacts.data?.find(item => item.path === output.path)
         return <Card key={output.path}><CardBody><strong className="job-wrap">{output.path}</strong>

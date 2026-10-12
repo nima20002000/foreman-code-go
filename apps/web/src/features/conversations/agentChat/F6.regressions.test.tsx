@@ -79,7 +79,7 @@ describe('F6 B-R01 receipt readback', () => {
           act(() => AgentChatTestSource.instances[0]!.snapshot(recovered))
         }
         const label = { queued: 'Queued', accepted: 'Delivered', completed: 'Completed' }[delivery]
-        await screen.findByText(`Server recorded: Next turn · ${label}`)
+        await screen.findByLabelText(`Latest command delivery: Next turn · ${label}`)
         const input = screen.getByRole('textbox', { name: 'Message' })
         await waitFor(() => expect(input).toHaveValue(edited ? 'My next draft, edited while the request was pending' : ''))
         expect(screen.queryByText('Command not confirmed')).not.toBeInTheDocument()
@@ -115,7 +115,7 @@ describe('F6 B-R01 receipt readback', () => {
     }))
     write('This text is outside the current page')
     await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
-    await screen.findByText('Server recorded: Next turn · Unknown')
+    await screen.findByLabelText('Latest command delivery: Next turn · Unknown')
     const input = screen.getByRole('textbox', { name: 'Message' })
     expect(input).toHaveValue('This text is outside the current page')
     fireEvent.keyDown(input, { key: 'Enter' })

@@ -111,6 +111,9 @@ export interface CodexOriginalSessionLifetime {
 
 const MAX_EVENTS = 1_024
 const MAX_EVENT_BYTES = 8 * 1024 * 1024
+// The active turn stream persists every frame durably. Frames it has not read
+// yet exist nowhere else, so retention never evicts them below this hard cap.
+const MAX_UNREAD_EVENT_BYTES = 128 * 1024 * 1024
 const MAX_HISTORY_BYTES = 128 * 1024
 const MAX_STAGED = 256
 const MAX_INTERACTIONS = 128
@@ -215,6 +218,8 @@ interface Runtime extends TurnSnapshot {
     nativeResponse: JsonObject; sequence: number }>
   responseDeliveries: Map<string, NativeResponseDeliveryEvidence>
   events: NativeHarnessEvent[]
+  /** First sequence the active turn stream has not yielded yet. */
+  streamCursor?: number
   eventSizes: number[]
   eventBytes: number
   sequence: number
@@ -1130,6 +1135,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }
     signal?.addEventListener('abort', abort, { once: true })
     let cursor = runtime.sequence
+    runtime.streamCursor = cursor
     let nativeSubmissionAttempted = false
     let operationFailure: Error | undefined
     let cleaningUp = false
@@ -1232,7 +1238,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
           const firstSequence = runtime.events[0]?.sequence ?? runtime.sequence
           if (cursor < firstSequence) throw new HarnessExecutionError('NATIVE_HISTORY_GAP', 'The in-memory event window was exceeded; reload durable history.')
           const available = runtime.events.filter((event) => event.sequence >= cursor)
-          for (const event of available) { cursor = event.sequence + 1; yield structuredClone(event) }
+          for (const event of available) { cursor = event.sequence + 1; yield structuredClone(event); runtime.streamCursor = cursor }
           // The consumer can suspend at yield while more events (including terminal
           // events) arrive. Drain them before returning or registering a waiter.
           if (runtime.events.some((event) => event.sequence >= cursor)) continue
@@ -1263,6 +1269,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     } finally {
       signal?.removeEventListener('abort', abort)
       runtime.streamActive = false
+      delete runtime.streamCursor
     }
   }
 
@@ -3036,6 +3043,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     runtime.eventSizes.push(size)
     runtime.eventBytes += size
     while (runtime.events.length > MAX_EVENTS || runtime.eventBytes > MAX_EVENT_BYTES) {
+      const unread = runtime.streamCursor !== undefined && runtime.events[0]!.sequence >= runtime.streamCursor
+      if (unread && runtime.eventBytes <= MAX_UNREAD_EVENT_BYTES) break
       runtime.events.shift()
       runtime.eventBytes -= runtime.eventSizes.shift()!
     }

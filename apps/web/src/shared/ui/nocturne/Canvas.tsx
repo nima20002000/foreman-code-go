@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { Icon, type IconName } from './Icon'
 import { IconButton } from './Button'
 import { cx } from './utils'
+import { useHoverControls } from '../useHoverControls'
 
 /** Visual state only. Feature code maps runtime facts to one of these; the canvas never infers progress. */
 export type AgentNodeState = 'idle' | 'queued' | 'running' | 'waiting' | 'approved' | 'completed' | 'failed' | 'unavailable'
@@ -46,8 +47,10 @@ export const AgentNodeView = forwardRef<HTMLButtonElement, AgentNodeViewProps>(f
   name, harness, harnessLabel, model, icon = 'bot', statusLabel, state = 'idle', transition, transitionKey, meta = [],
   entry, selected, openPanel, pending, ariaLabel, className, onSelect, onAction, children,
 }, ref) {
+  const hover = useHoverControls()
   const known = harness === 'codex' || harness === 'claude' ? harness : 'neutral'
   return <div className={cx('n-agent', className)} data-state={state} data-transition={transition} data-harness={known} data-selected={selected || undefined}
+    data-hovered={hover.hovered || undefined} onPointerEnter={hover.onPointerEnter} onPointerLeave={hover.onPointerLeave}
     data-open={openPanel ? '' : undefined} data-pending={pending || undefined} data-entry={entry || undefined}>
     <span className="n-agent-energy" aria-hidden="true" />
     {transition ? <span key={transitionKey ?? transition} className="n-agent-wave" aria-hidden="true">
@@ -64,7 +67,6 @@ export const AgentNodeView = forwardRef<HTMLButtonElement, AgentNodeViewProps>(f
       {meta.length ? <span className="n-agent-meta">{meta.slice(0, 2).map((item) => <span key={item.label}><small>{item.label}</small><b>{item.value}</b></span>)}</span> : null}
     </button>
     {state === 'completed' ? <span className="n-agent-done" aria-hidden="true"><Icon name="check" size={12} /></span> : null}
-    {entry ? <span className="n-agent-entry">Starts here</span> : null}
     {onAction ? <div className="n-agent-actions" role="group" aria-label={`${name} actions`}>
       {(['chat', 'settings', 'info'] as const).map((panel) => <button key={panel} type="button"
         className={`n-agent-action n-agent-action--${panel} nodrag nopan`} aria-label={`Open ${name} ${actionLabels[panel]}`}

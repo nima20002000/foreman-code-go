@@ -1,7 +1,9 @@
+import { useEffect, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { GeneralSettingsUpdateInputSchema, GeneralSettingsUpdateResultSchema, ManagedGeneralSettingsSchema,
   type GeneralSettingsUpdateInput, type ManagedGeneralSettings, type Theme } from '@foreman-code/contracts/management'
-import { apiClient, ApiError } from './client'
+import { apiClient } from './client'
+import { commandWasRejected } from './commandAttempt'
 import { useHarnessSessionEpoch } from './harnessSettings'
 import { sessionGeneration, sessionIsSwitching } from './sessionBoundary'
 import { useAccessFailureLatch } from './useAccessFailureLatch'
@@ -20,16 +22,22 @@ export function useGeneralSettings() {
       '/api/management/settings/general', ManagedGeneralSettingsSchema, { signal })),
   })
   const denied = useAccessFailureLatch(settings)
+  const unconfirmed = useRef(false)
   const update = useMutation({ mutationKey: [...queryKey, 'update'], retry: false,
     mutationFn: (input: GeneralSettingsUpdateInput) => apiClient.request(
       '/api/management/settings/general', GeneralSettingsUpdateResultSchema,
       { method: 'PUT', body: GeneralSettingsUpdateInputSchema.parse(input) }),
     onSuccess: result => {
+      unconfirmed.current = false
       if (sessionGeneration() === generation) cache.setQueryData(queryKey, keepLatest(result.value))
     },
+    onError: error => { if (!commandWasRejected(error)) unconfirmed.current = true },
   })
-  const uncertain = update.isError && (!(update.error instanceof ApiError)
-    || update.error.status === 0 || update.error.status >= 500)
+  const uncertain = update.isError && (unconfirmed.current || !commandWasRejected(update.error))
+  useEffect(() => {
+    if (update.isError && !uncertain && !denied && settings.isSuccess
+      && settings.dataUpdatedAt > update.submittedAt) update.reset()
+  }, [update, uncertain, denied, settings.isSuccess, settings.dataUpdatedAt])
   const refresh = async () => {
     const result = await settings.refetch()
     if (!result.isError && !uncertain) update.reset()

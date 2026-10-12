@@ -66,7 +66,11 @@ test('lint checks changed files and typecheck checks packages reached by imports
   const typecheck = selectAffectedFiles({ suite: 'typecheck', changedFiles: [source], sources })
   assert.ok(typecheck.files.includes(source))
   assert.deepEqual(affectedCommands('typecheck', typecheck.files), [['corepack', 'pnpm', '--dir', 'apps/api', 'typecheck']])
-  assert.deepEqual(affectedCommands('unit', [unit]), [['corepack', 'pnpm', '--dir', 'apps/api', 'exec', 'vitest', 'run', 'src/feature.test.ts']])
+  assert.deepEqual(affectedCommands('unit', [unit]), [[process.execPath, 'scripts/test-command.mjs', '--',
+    'corepack', 'pnpm', '--dir', 'apps/api', 'exec', 'vitest', 'run', 'src/feature.test.ts']])
+  assert.deepEqual(affectedCommands('unit', ['apps/web/src/view.test.tsx', 'scripts/tool.test.mjs']), [
+    ['corepack', 'pnpm', '--dir', 'apps/web', 'exec', 'vitest', 'run', 'src/view.test.tsx'],
+    [process.execPath, '--test', 'scripts/tool.test.mjs']])
   assert.deepEqual(selectByIndexes(['a', 'b', 'c'], 's:0,2'), ['a', 'c'])
   assert.throws(() => selectByIndexes(['a', 'b', 'c'], '-1'), /Invalid/)
 })

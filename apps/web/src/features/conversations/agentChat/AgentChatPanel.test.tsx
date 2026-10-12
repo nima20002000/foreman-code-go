@@ -199,7 +199,7 @@ describe('AgentChatPanel commands and drafts', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Steer' }))
     await waitFor(() => expect(sent(mounted.mock)).toHaveLength(1))
     expect(sent(mounted.mock)[0]!.body).toMatchObject({ intent: 'steer', expectedNativeTurnId: 'turn-1' })
-    expect(await screen.findByText('Server recorded: Steer · Delivered')).toBeInTheDocument()
+    expect(await screen.findByLabelText('Latest command delivery: Steer · Delivered')).toBeInTheDocument()
   })
 
   it('queues the next turn and cancels it by turn request identity', async () => {
@@ -275,8 +275,8 @@ describe('AgentChatPanel commands and drafts', () => {
       return HttpResponse.json({ state, turn, replayed: false })
     }))
     await userEvent.click(screen.getByRole('button', { name: 'Steer' }))
-    expect(await screen.findByText('Server recorded: Next turn · Delivered')).toBeInTheDocument()
-    expect(screen.queryByText('Server recorded: Steer · Delivered')).not.toBeInTheDocument()
+    expect(await screen.findByLabelText('Latest command delivery: Next turn · Delivered')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Latest command delivery: Steer · Delivered')).not.toBeInTheDocument()
   })
 
   it('unknown delivery requires the explicit new-message warning and a fresh requestId', async () => {
@@ -330,7 +330,7 @@ describe('AgentChatPanel commands and drafts', () => {
     write('Submitted'); await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
     const input = screen.getByRole('textbox', { name: 'Message' }); expect(input).toHaveFocus()
     write('A different draft'); await act(async () => { release() })
-    await waitFor(() => expect(screen.getByText('Server recorded: Next turn · Delivered')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByLabelText('Latest command delivery: Next turn · Delivered')).toBeInTheDocument())
     expect(input).toHaveValue('A different draft'); expect(input).toHaveFocus()
   })
 
@@ -375,7 +375,7 @@ describe('AgentChatPanel commands and drafts', () => {
       return HttpResponse.json({ state, turn: state.turns[0], replayed: false })
     }))
     await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
-    await screen.findByText('Server recorded: Next turn · Failed')
+    await screen.findByLabelText('Latest command delivery: Next turn · Failed')
     expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue('Keep failed native input')
   })
 

@@ -6,6 +6,7 @@ import { WorkspaceRepositorySchema } from './workspaceRepository.js'
 /** Host CI: a build computer runs a suite directly in a git worktree of the commit, like a self-hosted runner.
  * It fetches with its own GitHub CLI login and installs packages normally; a systemd unit caps CPU and memory. */
 export const CI_HOST_NAMESPACE = 'ci-host-v1'
+export const CI_LOG_MAX_BYTES = 65_536
 
 export const CiSuiteSchema = z.enum(['install', 'typecheck', 'lint', 'unit', 'build', 'integration'])
 export type CiSuite = z.infer<typeof CiSuiteSchema>
@@ -89,7 +90,7 @@ export const CiHostRequestSchema = z.discriminatedUnion('operation', [
   // `durations: true` asks a finished test run for the file durations it measured, `testResults: true` for its
   // test results. Results are opt-in so a Worker never sends them to a Main whose reply schema predates them.
   z.object({ operation: z.literal('read'), runId: CiHostRunIdSchema, afterOffset: z.number().int().nonnegative(),
-    maxBytes: z.number().int().min(1).max(65_536), durations: z.boolean().optional(), testResults: z.boolean().optional() }).strict(),
+    maxBytes: z.number().int().min(1).max(CI_LOG_MAX_BYTES), durations: z.boolean().optional(), testResults: z.boolean().optional() }).strict(),
   z.object({ operation: z.literal('cancel'), runId: CiHostRunIdSchema }).strict(),
 ])
 export type CiHostRequest = z.infer<typeof CiHostRequestSchema>

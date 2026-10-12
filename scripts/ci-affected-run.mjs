@@ -33,8 +33,10 @@ export function affectedCommands(suite, files) {
       }
       const nodeFiles = selected.filter(file => file.endsWith('.mjs'))
       const vitestFiles = selected.filter(file => !file.endsWith('.mjs'))
-      if (nodeFiles.length) commands.push([process.execPath, '--test', ...nodeFiles])
-      if (vitestFiles.length) commands.push(['corepack', 'pnpm', '--dir', project, 'exec', 'vitest', 'run',
+      // Only API tests use the disposable PostgreSQL server, which CI starts for the unit and unit-api parts alone.
+      const database = project === 'apps/api' ? [process.execPath, 'scripts/test-command.mjs', '--'] : []
+      if (nodeFiles.length) commands.push([...database, process.execPath, '--test', ...nodeFiles])
+      if (vitestFiles.length) commands.push([...database, 'corepack', 'pnpm', '--dir', project, 'exec', 'vitest', 'run',
         ...vitestFiles.map(file => file.slice(project.length + 1))])
     } else throw new Error(`Unsupported affected suite: ${suite}`)
   }
@@ -79,8 +81,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const report = output && command.includes('vitest') ? `${output}.${reports.length}.vitest.json` : null
     if (report) reports.push(report)
     const reported = report ? [...command, '--reporter=default', '--reporter=json', `--outputFile.json=${report}`] : command
-    const wrapped = suite === 'unit' ? [process.execPath, 'scripts/test-command.mjs', '--', ...reported] : reported
-    const code = await run(wrapped)
+    const code = await run(reported)
     if (code) { process.exitCode = code; break }
   }
   if (output && reports.length) {

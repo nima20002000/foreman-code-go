@@ -10,11 +10,16 @@ import { ensureClone, fetchRepositoryBranch, systemGitWorktreePorts, type GitWor
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 import type { HostCiComputer } from './service.js'
 import { CLOUD_START_TIMEOUT_MS, CircleCiProvider, GitHubActionsProvider,
-  type CloudDispatchInput, type CloudProvider } from './cloudProviders.js'
+  type CloudDispatchInput, type CloudProvider, type CloudStatus } from './cloudProviders.js'
 import { runsOnCircleCi } from './parts.js'
 
 const LOG_LIMIT = 4 * 1024 * 1024
 const MAX_DISPATCH_ATTEMPTS = 3
+/** A running run asks its service at most this often; reads in between answer from the kept state and log. */
+const POLL_MS = 4_000
+const MAX_BACKOFF_MS = 10 * 60_000
+/** Provider CLI polls run on Main, which also runs Agents: at most this many follow runs at once per service. */
+const POLL_CONCURRENCY = 3
 const log = componentLogger('jobs')
 
 export interface CloudRun {
@@ -24,6 +29,9 @@ export interface CloudRun {
   scope?: CiScope; files?: string[]; part?: CiPart; baseCommit?: string
   dispatch?: { input: CloudDispatchInput; attempts: number; at: string }
   workflowStarted?: boolean
+  /** Live progress kept while the run is followed: steps already written to the log, the running step's output
+   * bytes written so far, and bytes written in all. */
+  live?: { step: string | null; seen: string[]; output?: { key: string; bytes: number }; bytes: number }
 }
 type Mirrors = (repository: string) => Promise<string | null>
 
@@ -44,6 +52,10 @@ export function workspaceMirrors(pool: pg.Pool): Mirrors {
  * result, log and measured durations back. */
 export class CloudCi {
   private checked: { at: number; ready: boolean } | undefined
+  private readonly polled = new Map<string, number>()
+  private backoff = { until: 0, ms: 0 }
+  private following = 0
+  private readonly waiting: (() => void)[] = []
   private readonly operations = new Map<string, Promise<unknown>>()
   private readonly published = new Map<string, Promise<{
     git: (args: string[]) => Promise<string>; branch: string; defaultBranch?: string; baseCommit?: string
@@ -123,6 +135,7 @@ export class CloudCi {
 
   private view(run: CloudRun, logBytes: number): CiHostRun {
     let step: string | null = run.part ?? run.suite
+    if (run.state === 'running' && run.live?.step) step = run.live.step
     if (run.state === 'starting') step = 'dispatch'
     if (run.state === 'queued') step = null
     return { runId: run.runId, state: run.state, step,
@@ -388,10 +401,68 @@ export class CloudCi {
     }
   }
 
-  /** Follows the provider's run; once it finishes, keeps its log, measured durations and test results. */
+  /** Follows the provider's run at most every few seconds, pausing while the service's rate limit is spent. */
   private async refresh(runId: string): Promise<CloudRun> {
-    let run = await this.read(runId)
+    const run = await this.read(runId)
     if (!['starting', 'running'].includes(run.state)) return run
+    const now = this.ports.now().getTime()
+    if (now < this.backoff.until) return run
+    if (run.state === 'running' && run.workflowStarted && now - (this.polled.get(runId) ?? -Infinity) < POLL_MS) return run
+    if (this.following >= POLL_CONCURRENCY) await new Promise<void>(resolve => { this.waiting.push(resolve) })
+    else this.following++
+    try {
+      // A poll that waited for its slot skips the service if a rate limit was hit meanwhile.
+      if (this.ports.now().getTime() < this.backoff.until) return run
+      const next = await this.follow(run)
+      this.backoff = { until: 0, ms: 0 }
+      return next
+    } catch (error) {
+      if (!(error instanceof DomainError && error.code === 'CI_CLOUD_RATE_LIMITED')) throw error
+      const ms = Math.min(MAX_BACKOFF_MS, Math.max(30_000, this.backoff.ms * 2))
+      this.backoff = { until: now + ms, ms }
+      log.warn({ runId, provider: this.provider.id, backoffMs: ms }, 'Cloud CI rate limited; polling paused')
+      return run
+    } finally {
+      // The slot passes straight to the next waiting poll.
+      const next = this.waiting.shift()
+      if (next) next()
+      else this.following--
+    }
+  }
+
+  /** Writes the steps the run has started, and new output of the running step, to its log. */
+  private async progress(run: CloudRun, status: CloudStatus): Promise<CloudRun> {
+    const live = run.live ?? { step: null, seen: [], bytes: 0 }
+    const seen = new Set(live.seen)
+    const chunks: Buffer[] = []
+    let output = live.output, bytes = live.bytes, step = live.step
+    for (const value of status.steps ?? []) {
+      if (value.state === 'skipped') continue
+      const name = value.name.split('\n')[0]!.trim().slice(0, 80) || value.key
+      step = name
+      if (!seen.has(value.key)) { seen.add(value.key); chunks.push(Buffer.from(`==> ${name}\n`)) }
+      if (value.state === 'failed' && !seen.has(`${value.key}:failed`)) {
+        seen.add(`${value.key}:failed`); chunks.push(Buffer.from(`==> ${name} failed\n`))
+      }
+      if (status.output?.key === value.key) {
+        const text = Buffer.from(status.output.text)
+        const written = output?.key === value.key ? output.bytes : 0
+        if (text.length > written) chunks.push(text.subarray(written))
+        output = { key: value.key, bytes: Math.max(written, text.length) }
+      }
+    }
+    let chunk = Buffer.concat(chunks)
+    // The provider's whole log is kept at the end, so the live copy stays within the same bound.
+    chunk = chunk.subarray(0, Math.max(0, LOG_LIMIT - bytes))
+    if (!chunk.length && step === live.step && output?.bytes === live.output?.bytes && seen.size === live.seen.length) return run
+    if (chunk.length) await writeFile(this.path(run.runId, 'log'), chunk, { flag: 'a', mode: 0o600 })
+    bytes += chunk.length
+    return this.save({ ...run, live: { step, seen: [...seen], ...(output ? { output } : {}), bytes } })
+  }
+
+  /** Follows the provider's run; once it finishes, keeps its log, measured durations and test results. */
+  private async follow(run: CloudRun): Promise<CloudRun> {
+    const runId = run.runId
     if (run.state === 'starting' || !run.providerRunId || !run.workflowStarted && this.provider.id === 'circleci') {
       const providerRunId = await this.provider.find(run)
       if (!providerRunId) {
@@ -403,8 +474,12 @@ export class CloudCi {
       await this.provider.find(run)
     }
     const status = await this.provider.status(run)
+    this.polled.set(runId, this.ports.now().getTime())
+    run = await this.progress(run, status)
     if (!status.done) return run
-    await writeFile(this.path(runId, 'log'), Buffer.from(await this.provider.log(run).catch(() => '')).subarray(-LOG_LIMIT),
+    this.polled.delete(runId)
+    const full = Buffer.from(await this.provider.log(run).catch(() => '')).subarray(-LOG_LIMIT)
+    await writeFile(this.path(runId, 'log'), run.live?.bytes ? Buffer.concat([Buffer.from(`--- ${this.provider.label} log ---\n`), full]) : full,
       { flag: 'a', mode: 0o600 })
     let durations: CiDurations | undefined
     let testResults: CiTestResults | undefined

@@ -1,4 +1,6 @@
-.graph-edge-active-controls { overflow: visible; pointer-events: none; }
+.graph-edge-active-controls { overflow: visible; pointer-events: none; opacity: 0; transition: opacity 140ms ease; }
+.graph-edge-active-controls[data-visible='true'] { opacity: 1; }
+.graph-edge-active-controls[data-visible='false'] * { pointer-events: none; }
 .graph-edge-controls { display: flex; justify-content: center; gap: var(--space-1); }
 .graph-edge-controls > button { min-width: 32px; min-height: 32px; padding: 4px; pointer-events: auto; }
 .graph-edge-inspection {

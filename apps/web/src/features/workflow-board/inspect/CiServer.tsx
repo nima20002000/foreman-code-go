@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Handle, Position, type Edge, type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
 import type { CiRunJob, CiTestStatus } from '@foreman-code/contracts'
 import type { RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
-import { AgentNodeView, Alert, Badge, Button, Dialog, EmptyState, Spinner, Tabs, type Tone } from '../../../shared/ui/nocturne'
+import { Alert, Badge, Button, Dialog, EmptyState, Icon, Spinner, Tabs, type Tone } from '../../../shared/ui/nocturne'
 import { PulseFlight, type EdgePulse } from '../../graph/SignalEdgeShape'
 import { useFloatingCurve } from '../../graph/signalEdge'
 import { formatClock, formatDuration } from '../../run-subagents/presentation'
@@ -11,22 +11,30 @@ import { ciComputerLabel, ciJobLabel } from './runLiveStatus'
 import { runInspectionQueryKey } from './queries'
 import { CI_PLACEMENT_LABELS, ciJobDuration, isActiveCiJob, runCiApi, type CiServerSummary } from './ciServer'
 
-export const CI_SERVER_NODE_ID = 'ci-server'
 const SHORT_PLACEMENTS = { host: 'Host CI', github: 'GitHub', circleci: 'CircleCI' } as const
 
-export type CiServerFlowNode = Node<{ summary: CiServerSummary; open(): void }, 'ciServer'>
-/** A presentation-only component of the Board, never a workflow node: no edges, no saved geometry, no execution. */
+export type CiServerFlowNode = Node<{ summary: CiServerSummary; open(): void; rim: 'box' }, 'ciServer'>
+/** A presentation-only component of the Board, never a workflow node: no edges, no saved geometry, no execution.
+ * Drawn as a server tower (drive bays, status LEDs, vents) so it never reads as an Agent. */
 export const CiServerNode = memo(function CiServerNode({ data }: NodeProps<CiServerFlowNode>) {
   const { summary } = data
   const where = summary.placements.length ? summary.placements.map((placement) => SHORT_PLACEMENTS[placement]).join(' · ')
     : 'Host CI · GitHub · CircleCI'
-  return <AgentNodeView className="ci-server-node" name="CI server" harnessLabel={where} icon="server"
-    statusLabel={summary.label} state={summary.state}
-    meta={[{ label: 'Jobs', value: String(summary.total) }, { label: 'Failed', value: String(summary.failed) }]}
-    ariaLabel={`CI server, ${summary.label}. Open CI jobs and test results`} onSelect={data.open}>
+  return <div className="ci-server-node" data-state={summary.state}>
+    <button type="button" className="ci-server-chassis" onClick={data.open}
+      aria-label={`CI server, ${summary.label}. Open CI jobs and test results`}>
+      <span className="ci-server-bays" aria-hidden="true">{[0, 1, 2].map((bay) => <span key={bay} className="ci-server-bay">
+        <i className="ci-server-led" /><i className="ci-server-slot" /></span>)}</span>
+      <span key={summary.label} className="ci-server-status"><i aria-hidden="true" />{summary.label}</span>
+      <strong className="ci-server-name"><Icon name="server" size={14} />CI server</strong>
+      <span className="ci-server-where">{where}</span>
+      <span className="ci-server-meta"><span><small>Jobs</small><b>{summary.total}</b></span>
+        <span><small>Failed</small><b>{summary.failed}</b></span></span>
+      <span className="ci-server-vents" aria-hidden="true" />
+    </button>
     {/* Only for the passing lights; nothing connects to the server. */}
-    <Handle id="left" type="target" position={Position.Left} isConnectable={false} className="n-agent-target" />
-  </AgentNodeView>
+    <Handle id="left" type="target" position={Position.Left} isConnectable={false} className="ci-server-target" />
+  </div>
 })
 
 export type CiTransferFlowEdge = Edge<{ pulses: EdgePulse[] }, 'ciTransfer'>
@@ -48,7 +56,7 @@ const label = (value: string) => value[0]!.toUpperCase() + value.slice(1)
 type Tab = 'jobs' | 'tests' | 'log'
 /** The CI server's jobs for this Run; a job opens its test results and log tail. */
 export function CiServerDialog({ open, onOpenChange, scope, jobs, names, truncated, error, loading }: {
-  open: boolean; onOpenChange(open: boolean): void; scope: RepeatGraphScopeV3; jobs: readonly CiRunJob[]
+  open: boolean; onOpenChange(open: boolean): void; scope?: RepeatGraphScopeV3 | undefined; jobs: readonly CiRunJob[]
   names: ReadonlyMap<string, string>; truncated: boolean; error: boolean; loading: boolean
 }) {
   const [tab, setTab] = useState<Tab>('jobs')
@@ -59,25 +67,27 @@ export function CiServerDialog({ open, onOpenChange, scope, jobs, names, truncat
   const agent = (job: CiRunJob) => names.get(job.requester.nodeId) ?? job.requester.nodeName
   const show = (job: CiRunJob) => { setSelectedId(job.ticketId); setTab('tests') }
   return <Dialog open={open} onOpenChange={onOpenChange} size="xl" className="ci-server-dialog" title="CI server"
-    closeLabel="Close CI server" description="CI jobs the Agents of this Run requested, on Host CI, GitHub Actions or CircleCI.">
+    closeLabel="Close CI server" description={scope ? 'CI jobs the Agents of this Run requested, on Host CI, GitHub Actions or CircleCI.'
+      : 'CI jobs that Agents request during a Run appear here, on Host CI, GitHub Actions or CircleCI.'}>
     {/* The shared Dialog keeps its children while closed; nothing here may poll then. */}
     {open ? <>{error ? <Alert tone="warning" title="CI jobs could not be read.">
       {jobs.length ? 'The list shows the last jobs read.' : 'Reading CI needs the CI read grants for this workspace.'}</Alert> : null}
     <Tabs label="CI server" value={tab} onValueChange={(value) => setTab(value as Tab)} keepMounted={false} items={[
       { value: 'jobs', label: 'Jobs', badge: jobs.length, content: loading ? <Spinner label="Loading CI jobs" />
-        : <CiJobsTable jobs={jobs} agent={agent} selectedId={selected?.ticketId} truncated={truncated} onShow={show} /> },
-      { value: 'tests', label: 'Tests', disabled: !selected,
-        content: selected ? <CiJobTests scope={scope} job={selected} agent={agent(selected)}
+        : <CiJobsTable jobs={jobs} agent={agent} selectedId={selected?.ticketId} truncated={truncated} onShow={show} run={Boolean(scope)} /> },
+      { value: 'tests', label: 'Tests', disabled: !selected || !scope,
+        content: selected && scope ? <CiJobTests scope={scope} job={selected} agent={agent(selected)}
         statuses={statuses} onStatusesChange={setStatuses} /> : null },
-      { value: 'log', label: 'Log', disabled: !selected, content: selected ? <CiJobLog scope={scope} job={selected} /> : null },
+      { value: 'log', label: 'Log', disabled: !selected || !scope, content: selected && scope ? <CiJobLog scope={scope} job={selected} /> : null },
     ]} /></> : null}
   </Dialog>
 }
 
-function CiJobsTable({ jobs, agent, selectedId, truncated, onShow }: { jobs: readonly CiRunJob[]; agent(job: CiRunJob): string
-  selectedId?: string | undefined; truncated: boolean; onShow(job: CiRunJob): void }) {
-  if (!jobs.length) return <EmptyState icon="terminal" title="No CI jobs in this Run yet"
-    description="When an Agent runs CI, its jobs appear here with their test results." />
+function CiJobsTable({ jobs, agent, selectedId, truncated, onShow, run }: { jobs: readonly CiRunJob[]; agent(job: CiRunJob): string
+  selectedId?: string | undefined; truncated: boolean; onShow(job: CiRunJob): void; run: boolean }) {
+  if (!jobs.length) return <EmptyState icon="terminal" title={run ? 'No CI jobs in this Run yet' : 'No Run selected'}
+    description={run ? 'When an Agent runs CI, its jobs appear here with their test results.'
+      : 'Start or select a Run; when its Agents run CI, the jobs appear here with their test results.'} />
   return <div className="n-table-scroll" role="region" aria-label="CI jobs" tabIndex={0}>
     <table className="n-table ci-jobs-table"><thead><tr>
       {['Job', 'Scope', 'Placement', 'State', 'Agent', 'Started', 'Duration'].map((name) => <th key={name} scope="col">{name}</th>)}
@@ -88,6 +98,7 @@ function CiJobsTable({ jobs, agent, selectedId, truncated, onShow }: { jobs: rea
       <td>{job.placement ? CI_PLACEMENT_LABELS[job.placement] : 'Waiting for a computer'}
         {job.ci.computer ? <small>{job.ci.computer.label}</small> : null}</td>
       <td><Badge tone={stateTone[job.ci.state]} dot>{label(job.ci.state)}</Badge>
+        {job.ci.step ? <small>Step {job.ci.step}</small> : null}
         {job.tests ? <small>{job.tests.passed} passed · {job.tests.failed} failed · {job.tests.skipped} skipped</small> : null}</td>
       <td>{agent(job)}</td>
       <td>{job.ci.startedAt ? <time dateTime={job.ci.startedAt}>{formatClock(job.ci.startedAt)}</time>

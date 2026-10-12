@@ -1,7 +1,7 @@
 import { z } from 'zod'
 export { CurrentWorkflowCreateInputSchema, type CurrentWorkflowCreateInput } from './currentAuthoring.js'
 import { WorkspaceDetailsRecordFields } from '../index.js'
-import { ManagedWorkflowRecordFields, ManagementPageInfoSchema,
+import { ManagedWorkflowRecordFields, ManagementPageInfoSchema, ExpectedRevisionSchema,
   RepeatCapabilitiesResultSchema } from '../management/index.js'
 import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema, WorkflowRunV3Schema, RunDetailsV3Schema } from './saved.js'
 import { sameWorkflowValue } from './meaningfulEdit.js'
@@ -9,7 +9,10 @@ import { sameWorkflowValue } from './meaningfulEdit.js'
 /** Current product reads. Retired or missing execution tags fail, including on
  * historical selection. Saved revision numbers and wire protocol versions are independent. */
 export const CurrentManagedWorkflowSchema = z.object({ ...ManagedWorkflowRecordFields, workflow: WorkflowDefinitionV3Schema }).strict()
-export const CurrentManagedWorkflowPageSchema = z.object({ items: z.array(CurrentManagedWorkflowSchema), pageInfo: ManagementPageInfoSchema }).strict()
+export const CurrentManagedWorkflowPageSchema = z.object({
+  items: z.array(CurrentManagedWorkflowSchema), pageInfo: ManagementPageInfoSchema,
+  orderRevision: ExpectedRevisionSchema.default(0),
+}).strict()
 export const CurrentManagedWorkflowCommandResultSchema = z.object({ value: CurrentManagedWorkflowSchema, replayed: z.boolean() }).strict()
 export const CurrentWorkspaceDetailsSchema = z.object({ ...WorkspaceDetailsRecordFields, workflows: z.array(WorkflowDefinitionV3Schema) }).strict()
 export const CurrentGetWorkflowResponseSchema = z.object({ workflow: WorkflowDefinitionV3Schema }).strict()

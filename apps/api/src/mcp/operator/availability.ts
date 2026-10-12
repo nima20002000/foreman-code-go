@@ -197,6 +197,10 @@ export function operatorToolRequirements(name: OperatorToolName, resource?: Auth
   }
   if (name === 'run_handoffs_get_v1') result.push({action:'workflows:read',scope:'workflow'})
   if (name === 'workflow_trigger_update') result.push({action:'workflows:read',scope:'workflow'})
+  if (name === 'workflow_reorder') {
+    result[0]!.scope = 'workflow'
+    result.push({ action: 'workflows:read', scope: 'workflow' })
+  }
   if (name === 'workflow_trigger_fire') result.push({action:'runs:start',scope:'workflow'},{action:'workspace_locations:read',scope:'workspace'})
   return result
 }

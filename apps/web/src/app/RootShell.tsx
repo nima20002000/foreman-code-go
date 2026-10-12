@@ -2,6 +2,7 @@ import { UnsavedChangesProvider } from '../shared/ui/UnsavedChangesProvider'
 import { AppNavigationHistoryProvider } from '../shared/ui/AppNavigationHistory'
 import { Outlet } from '@tanstack/react-router'
 import { AppConnectionBoundary } from './AppConnectionBoundary'
+import { ReleaseAutoReload } from './RuntimeInstanceBoundary'
 
 import { OperatorChat, OperatorChatVisibilityProvider } from '../features/operator-chat'
 import { ApprovalInbox } from '../features/approvals'
@@ -11,7 +12,7 @@ import { sessionIsSwitching } from '../shared/api/sessionBoundary'
 import { useSyncedTheme } from '../features/theme/useSyncedTheme'
 
 export function RootShell() {
-  return <AppConnectionBoundary><AppNavigationHistoryProvider><UnsavedChangesProvider><LocalShell /></UnsavedChangesProvider></AppNavigationHistoryProvider></AppConnectionBoundary>
+  return <AppConnectionBoundary><AppNavigationHistoryProvider><UnsavedChangesProvider><ReleaseAutoReload /><LocalShell /></UnsavedChangesProvider></AppNavigationHistoryProvider></AppConnectionBoundary>
 }
 
 function LocalShell() {

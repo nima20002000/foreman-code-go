@@ -14,7 +14,7 @@ import {
   SaveHarnessDefaultsRequestSchema,
   SaveHarnessDefaultsResponseSchema,
 } from '@foreman-code/contracts'
-import { SavedWorkspaceDetailsSchema, SavedWorkflowResponseSchema, SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
+import { SavedWorkflowResponseSchema, SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import type { OperatorServices } from '../mcp/operator/types.js'
 import { InteractionListInputSchema } from '@foreman-code/contracts/management'
 import type { FastifyInstance } from 'fastify'
@@ -84,7 +84,8 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
 
   app.get<{ Params: WorkspaceParams }>('/api/workspaces/:workspaceId', async (request) => {
     const details = await services.workspaces.getDetails(request.params.workspaceId, requirePrincipal(request))
-    return details ? SavedWorkspaceDetailsSchema.parse(details) : notFound('workspace', request.params.workspaceId)
+    // getDetails already returns a SavedWorkspaceDetailsSchema-parsed value; a second parse of this large read only costs time.
+    return details ?? notFound('workspace', request.params.workspaceId)
   })
 
   app.get<{ Params: WorkspaceParams }>('/api/workspaces/:workspaceId/agents', async (request) =>

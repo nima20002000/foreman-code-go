@@ -36,6 +36,11 @@ afterEach(() => {
   clearRetentionCommandMemory()
 })
 
+function workspacesDestination() {
+  return screen.getAllByRole('button', { name: 'Workspaces' })
+    .find(button => !button.hasAttribute('aria-expanded'))!
+}
+
 describe('workspace section routes', () => {
   beforeEach(() => {
     server.use(
@@ -72,7 +77,7 @@ describe('workspace section routes', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces'))
     expect(await screen.findByRole('heading', { name: 'Workspaces', level: 1 })).toBeVisible()
     expect(await screen.findByTestId('workspace-card-workspace-1')).toHaveTextContent('Website')
-    expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveAttribute('aria-current', 'page')
+    expect(workspacesDestination()).toHaveAttribute('aria-current', 'page')
     expect(screen.getByTestId('workspace-entry-workspace-1')).not.toHaveClass('nav-item-active')
     expect(screen.getByRole('button', { name: 'Expand Website' })).toHaveAttribute(
       'aria-expanded',
@@ -146,7 +151,7 @@ describe('workspace section routes', () => {
     expect(screen.queryByTestId('coming-soon')).not.toBeInTheDocument()
     expect(within(await screen.findByRole('navigation', { name: 'Workspace sections' })).getByRole('link', { name: 'Project files' })).toHaveAttribute('aria-current', 'page')
     expect(screen.queryByRole('link', { name: 'Files' })).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
+    expect(workspacesDestination()).toHaveClass('nav-item-active')
   })
 
   it('opens each settings card on its own page instead of below the hub', async () => {

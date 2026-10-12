@@ -219,6 +219,9 @@ function sessionControlsResponse(conversationId: string) {
 }
 
 export const handlers: RequestHandler[] = [
+  // The Board polls each workflow's Run list; tests that need Runs install their own page.
+  http.get('*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/summaries',
+    () => HttpResponse.json({ items: [], pageInfo: { nextCursor: null } })),
   http.get('/api/management/workspaces/:workspaceId/repository', ({ params, request }) => {
     const workspaceId = String(params.workspaceId)
     if (new URL(request.url).searchParams.has('commandId')) {

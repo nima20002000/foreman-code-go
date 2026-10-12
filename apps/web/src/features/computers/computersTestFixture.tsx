@@ -10,7 +10,6 @@ import type { z } from 'zod'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import { server } from '../../mocks/server'
 import { computerKey } from '../../shared/api/computerActivity'
-import { useComputerUi } from './computerUiStore'
 
 export const mainId = '11111111-1111-4111-8111-111111111111'
 export const deviceId = '22222222-2222-4222-8222-222222222222'
@@ -34,7 +33,6 @@ export function computerReadHandler(kind: 'accounts' | 'maintenance',
 }
 
 export function computersFixture(children: React.ReactNode, handlers: HttpHandler[] = []) {
-  useComputerUi.setState({ activity: undefined })
   const statuses = new Map<string, BuildComputerStatus>([mainTarget, deviceTarget].map((target, index) => [
     computerKey(target), { preference: { target, revision: 1, buildEnabled: true, buildPriority: 100 - index * 50,
       buildAllowancePercent: 60 },

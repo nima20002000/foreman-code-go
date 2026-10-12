@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -31,6 +31,27 @@ beforeEach(() => {
 })
 afterEach(() => { cleanup(); clients.splice(0).forEach(client => client.clear()) })
 describe('authenticated target-local execution folder', () => {
+  it.each(['browse', 'validate'])('allows dismissal during a pending %s read', async operation => {
+    let release!: () => void
+    const pending = new Promise<void>(resolve => { release = resolve })
+    server.use(http.post(`/api/management/workspaces/workspace-1/root-location/${operation}`, async ({ request }) => {
+      const input = await request.json() as WorkspaceRootSelection
+      await pending
+      return HttpResponse.json(operation === 'browse'
+        ? { workspaceId: input.workspaceId, selection: input, browse: { relativePath: input.relativePath, directories: [], truncated: false } }
+        : { workspaceId: input.workspaceId, selection: input, attestation: rootAttestation(input, workerRoot), checkedAt: '2026-10-01T00:00:00.000Z' })
+    }))
+    mount()
+    const user = userEvent.setup()
+    await choose(user)
+    await user.click(screen.getByRole('button', { name: operation === 'browse' ? 'Browse this computer' : 'Validate candidate folder' }))
+    const cancel = screen.getByRole('button', { name: 'Cancel' })
+    expect(cancel).toBeEnabled()
+    await user.click(cancel)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await act(async () => { release(); await pending })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
   it('lets an invalid native folder selection be corrected after a definitive rejection', async () => {
     const writes: WorkspaceRootSelection[] = []
     server.use(http.put('/api/management/workspaces/workspace-1/root-location', async ({ request }) => {

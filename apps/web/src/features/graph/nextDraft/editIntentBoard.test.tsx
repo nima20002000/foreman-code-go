@@ -16,12 +16,17 @@ import { journalIntent } from './nim2644Journal.fixture'
 
 async function confirmDiscard(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: /^Discard changes$/ }))
-  await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Discard changes' }))
+  const dialog = await screen.findByRole('alertdialog')
+  expect(dialog).toHaveTextContent('Agent positions on the board are kept. Running work isn’t affected.')
+  await user.click(within(dialog).getByRole('button', { name: 'Discard changes' }))
 }
 
 async function confirmStop(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByRole('button', { name: 'Stop affected Runs and save' }))
-  await user.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Stop runs and save' }))
+  const dialog = await screen.findByRole('alertdialog')
+  expect(dialog).toHaveTextContent('Stop-and-save stops every affected Run and waits for full cleanup before saving.')
+  expect(dialog).toHaveTextContent('Stopped runs are not restarted.')
+  await user.click(within(dialog).getByRole('button', { name: 'Stop runs and save' }))
 }
 
 // Mounted React state/form tests with a mocked transport and canvas. These do
@@ -173,4 +178,14 @@ it('stages default worktree changes through Stop-and-save and locks further work
   expect(advance.mock.calls[0]?.[0]).toMatchObject({ action: 'stop_and_save' })
   expect(screen.getByRole('button', { name: /^Worktree:/ })).toBeDisabled()
   expect(useGraphDraftStore.getState().nextDrafts[key]?.graph.defaultWorktree).toEqual(worktree)
+})
+
+
+it('opens ordinary Agent settings without a Stop warning or staging a save', async () => {
+  const stage = vi.spyOn(nextDraftApi, 'editStage')
+  mount()
+  await userEvent.setup().click(screen.getByRole('button', { name: /^(Entry · )?Node 0$/ }))
+  const panel = await screen.findByRole('dialog', { name: 'node-0 settings' })
+  expect(panel).not.toHaveTextContent('Executable changes require every affected Run')
+  expect(stage).not.toHaveBeenCalled()
 })

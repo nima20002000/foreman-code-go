@@ -460,7 +460,7 @@ describe('Run inspection inside the one mounted Board', () => {
 })
 
 describe('Live Run status on the Board', () => {
-  it('shows whose turn it is, Agent CI at the top and a pending decision that opens the existing inbox', async () => {
+  it('shows turns, CI and pending decisions on Agent nodes without a status strip', async () => {
     const { scope, version, run } = fixture.runs.after
     const first = nativeNode(version.definition.nodes[0]!), added = nativeNode(version.definition.nodes[1]!)
     const nameOf = (node: typeof first) => node.name ?? node.label ?? node.id
@@ -519,7 +519,6 @@ describe('Live Run status on the Board', () => {
       }),
     )
     const { cache } = await mount(href(scope))
-    const status = await screen.findByRole('region', { name: 'Run status' })
     const agentNode = (node: typeof first) => within(pinnedCanvas()).getByRole('button', { name: `Inspect Run node ${nameOf(node)}` })
       .closest<HTMLElement>('.n-agent')!
     const nodeState = (node: typeof first) => agentNode(node).getAttribute('data-state')
@@ -531,34 +530,34 @@ describe('Live Run status on the Board', () => {
     })
 
     // The first Agent's turn: it is visibly running, the next one is queued, not idle.
-    await waitFor(() => expect(within(status).getByRole('status')).toHaveTextContent(`Working now: ${nameOf(first)}`))
-    expect(within(within(status).getByRole('list', { name: 'Waiting Agents' })).getByText(nameOf(added)).closest('li')).toHaveTextContent('Queued')
     await waitFor(() => expect(nodeState(first)).toBe('running'))
     expect(nodeState(added)).toBe('queued')
+    expect(screen.queryByRole('region', { name: 'Run status' })).not.toBeInTheDocument()
 
-    // The turn passes; the second Agent runs CI on a cloud computer, shown at the top until it finishes.
+    // The turn passes; the second Agent runs CI on a cloud computer. CI lives on the CI server, not in a strip on top.
     ciState = 'running'
     await advance(() => cut('2', 'running', [execution(first, 'completed'), execution(added, 'running')]))
-    const ciJobs = await within(status).findByRole('list', { name: 'CI jobs' })
-    expect(ciJobs).toHaveTextContent('CI running')
-    expect(ciJobs).toHaveTextContent('build · build-api')
-    expect(ciJobs).toHaveTextContent(`requested by ${nameOf(added)}`)
-    expect(ciJobs).toHaveTextContent('GitHub Actions 2')
-    expect(ciJobs).toHaveTextContent('step build-api')
+    const ciServerButton = await within(pinnedCanvas()).findByRole('button', { name: /^CI server, 1 running/ })
+    expect(screen.queryByRole('list', { name: 'CI jobs' })).not.toBeInTheDocument()
+    fireEvent.click(ciServerButton)
+    const ciDialog = await screen.findByRole('dialog', { name: 'CI server' })
+    const ciRow = within(within(ciDialog).getByRole('region', { name: 'CI jobs' })).getAllByRole('row')[1]!
+    for (const text of ['build · build-api', 'GitHub Actions', 'GitHub Actions 2', 'Step build-api', 'Running', nameOf(added)]) {
+      expect(ciRow).toHaveTextContent(text)
+    }
+    await userEvent.setup().click(within(ciDialog).getByRole('button', { name: 'Close CI server' }))
     await waitFor(() => expect(nodeState(added)).toBe('waiting'))
     expect(within(agentNode(added)).getByText('Waiting for CI build-api · running')).toBeVisible()
     expect(nodeState(first)).toBe('completed')
+    expect(screen.queryByRole('region', { name: 'Run status' })).not.toBeInTheDocument()
 
-    // CI finished and the Run now waits on the owner's decision: nobody is working, and the request is actionable.
+    // CI finished and the second Agent's node now explains the pending decision.
     ciState = 'passed'; decision = true
     await advance(() => cut('3', 'waiting', [execution(first, 'completed'), execution(added, 'completed')]))
-    await waitFor(() => expect(within(status).queryByRole('list', { name: 'CI jobs' })).not.toBeInTheDocument())
-    await waitFor(() => expect(within(status).getByRole('status')).toHaveTextContent('No Agent is working right now'))
-    const waits = await within(status).findByRole('list', { name: 'Waiting Agents' })
-    await waitFor(() => expect(waits).toHaveTextContent('Waiting for your decision'))
-    expect(within(agentNode(added)).getByText('Waiting for your decision')).toBeVisible()
+    await waitFor(() => expect(within(agentNode(added)).getByText('Waiting for your decision')).toBeVisible())
     expect(nodeState(added)).toBe('waiting')
-    await userEvent.setup().click(within(waits).getByRole('button', { name: `Open decision for ${nameOf(added)}` }))
+    expect(screen.queryByRole('region', { name: 'Run status' })).not.toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Open human approval inbox' }))
     expect(await screen.findByRole('dialog', { name: 'Human approval inbox' })).toBeVisible()
   }, 15_000)
 })
@@ -598,10 +597,10 @@ describe('CI server on the Board', () => {
           return tests.length ? [{ ...file, tests }] : []
         }) } })
       }),
-      http.get(`${ci}/${ticket}/logs`, () => { logReads++; return HttpResponse.json({ text: '::step unit-api\nTests  1 failed | 1 passed', nextOffset: 40, logBytes: 40 }) }),
+      http.get(`${ci}/${ticket}/logs`, () => { logReads++; return HttpResponse.json({ text: '::step unit-api\nTests  1 failed | 1 passed', nextOffset: 40, logBytes: 40, maxBytes: 65_536 }) }),
     )
     const { cache } = await mount(href(scope))
-    const serverNode = async (label: RegExp) => (await within(pinnedCanvas()).findByRole('button', { name: label })).closest<HTMLElement>('.n-agent')!
+    const serverNode = async (label: RegExp) => (await within(pinnedCanvas()).findByRole('button', { name: label })).closest<HTMLElement>('.ci-server-node')!
     const refresh = () => act(async () => { await cache.refetchQueries({ queryKey: [...runInspectionQueryKey(scope), 'ci-jobs'] }) })
 
     // Idle without CI; it runs (with the node activity styling) while an Agent's ticket runs, then shows the result.
@@ -612,8 +611,7 @@ describe('CI server on the Board', () => {
     const agentNode = within(pinnedCanvas()).getByRole('button', { name: `Inspect Run node ${name}` }).closest<HTMLElement>('.n-agent')!
     await waitFor(() => expect(agentNode).toHaveAttribute('data-state', 'waiting'))
     expect(agentNode).toHaveTextContent('Waiting for CI unit-api · running')
-    expect(within(screen.getByRole('region', { name: 'Run status' })).getByRole('list', { name: 'CI jobs' }))
-      .toHaveTextContent('GitHub Actions 1')
+    expect(screen.queryByRole('region', { name: 'Run status' })).not.toBeInTheDocument()
 
     // The request travels as a light from the Agent to the server, and the result travels back; no lasting line.
     const light = () => pinnedCanvas().querySelector('.ci-transfer')
@@ -693,7 +691,7 @@ describe('CI server on the Board', () => {
         startedAt: '2026-10-01T00:00:01.000Z', finishedAt: null, step: 'lint-api',
         computer: { hostRef: { kind: 'main', mainId: 'main-1' }, label: 'Main computer' } } }]
     await act(async () => { await cache.refetchQueries({ queryKey: [...runInspectionQueryKey(scope), 'ci-jobs'] }) })
-    const node = (await within(pinnedCanvas()).findByRole('button', { name: /^CI server, 1 running/ })).closest('.n-agent')
+    const node = (await within(pinnedCanvas()).findByRole('button', { name: /^CI server, 1 running/ })).closest('.ci-server-node')
     expect(node).toHaveAttribute('data-state', 'running')
     expect(pinnedCanvas().querySelector('.ci-transfer')).toBeNull()
   })
