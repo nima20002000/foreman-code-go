@@ -917,7 +917,7 @@ it('cancels queued and running runs and skips a computer without a GitHub login'
 })
 
 it('fails a ticket at once with the reason when the public mirror refuses its commit', async () => {
-  const f = await fixture({ github: { laptop: false, builder: false }, cloud: { github: 1 } })
+  const f = await fixture({ github: { laptop: false, builder: false }, cloud: { github: 1, circleci: 0 } })
   try {
     const request = f.endpoint.request.bind(f.endpoint)
     f.endpoint.request = async (computer, input) => {
