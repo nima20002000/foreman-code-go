@@ -376,7 +376,17 @@ export async function settleWorkflowRun(owner: RunOwnership, interrupted = false
       'select failure_result from run_cleanup_intents where run_id=$1', [run.id])).rows[0]
     const failure = cleanup?.failure_result ? ExecutionResultSchema.parse(cleanup.failure_result) : undefined
     if (failure && failure.outcome !== 'failed') return fail('RUN_FAILURE_CAUSE_INVALID')
-    const result: ExecutionResult = snapshot.stopRequested ? { outcome: 'canceled' } : failure ?? { outcome: 'failed', error: {
+    let interruptedResult: ExecutionResult | undefined
+    if (!snapshot.stopRequested && !failure) {
+      const execution = (await sql.query<{ result: unknown }>(`
+        select record->'result' as result from harness_executions
+        where run_id=$1 and tick_index is null and record->>'state'='completed'
+          and record#>>'{result,outcome}'='failed'
+          and record#>>'{result,error,code}'='EXECUTION_INTERRUPTED'
+        order by created_at,id limit 1`, [run.id])).rows[0]
+      if (execution) interruptedResult = ExecutionResultSchema.parse(execution.result)
+    }
+    const result: ExecutionResult = snapshot.stopRequested ? { outcome: 'canceled' } : failure ?? interruptedResult ?? { outcome: 'failed', error: {
       code: interrupted ? 'EXECUTION_INTERRUPTED' : 'WORKFLOW_SELECTED_EXECUTION_FAILED',
       message: interrupted ? 'The owned execution was interrupted and physically settled; native work was not replayed.'
         : 'A selected execution did not complete successfully.', retryable: false,

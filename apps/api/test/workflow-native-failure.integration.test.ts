@@ -4,6 +4,7 @@ import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import { decodeMcpToolResult, OperatorRunCompactSchema } from '@foreman-code/contracts/operator-mcp'
 import { RunExecutionsPageSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
+import { DomainError } from '../src/modules/errors.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 
@@ -24,7 +25,7 @@ it.each([false, true])('retains a lost native connection as a failed Run after c
       store.settleNegativeExecution = async (...args) => {
         if (!retried) {
           retried = true
-          throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' })
+          throw new DomainError('REPEAT_CLEANUP_PENDING', 'Native settlement is temporarily unavailable.', 409)
         }
         return settle(...args)
       }
@@ -44,8 +45,13 @@ it.each([false, true])('retains a lost native connection as a failed Run after c
     }
   })
   try {
-    const observedFailure = await f.engine.start(f.f.run.id).then(() => null, (error: unknown) => error)
-    expect(observedFailure).toBeInstanceOf(Error)
+    if (retry) {
+      await expect(f.engine.start(f.f.run.id)).rejects.toMatchObject({ code: 'REPEAT_CLEANUP_PENDING' })
+      expect((await f.runs.getRepeatSnapshot(f.f.run.id)).cleanupPending).toBe(true)
+    } else {
+      await f.engine.start(f.f.run.id)
+      expect(await f.runs.get(f.f.run.id)).toMatchObject({ outcome: 'failed' })
+    }
     await f.compose().engine.start(f.f.run.id)
     const scope = { workspaceId: f.f.run.workspaceId, runId: f.f.run.id }
     const saved = await f.runs.get(f.f.run.id)
