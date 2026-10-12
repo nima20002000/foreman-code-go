@@ -7,6 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.95] - 2026-10-12
+
+### Changed
+
+- Board Agent chat redesign with live Agent activity (tools, commands, files, plans) while an Agent works.
+- CI queue entries say why they wait.
+
+### Fixed
+
+- Releases no longer interrupt running Agents: computer pins survive shutdown and credential leases are renewed safely across the restart.
+- Long Loop runs no longer starve on "source staging budget": finished executions release their workspace copies.
+- A dropped Codex app-server connection reconnects and resumes the Agent's thread instead of ending the Run; interrupted Runs keep the failure reason.
+- Integration CI: only the few tests that need a build computer wait for one; everything else spreads over cloud slots, and a cloud slice can no longer take the build computer its sibling needs.
+- Agent chat history paging, late responses, live tool status and Claude tool details; bounded chat memory.
+- Sidebar computer icons keep their width; harness icons have readable contrast in both themes.
+- Worker restart no longer fails with WORKER_WORKFLOW_UNAVAILABLE.
+
 ## [0.0.94] - 2026-10-12
 
 ### Changed
