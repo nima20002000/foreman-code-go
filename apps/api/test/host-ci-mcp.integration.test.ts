@@ -835,12 +835,67 @@ it('queues a run while every computer is busy and starts it on the first one tha
     const second = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'two' }))
     const third = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'three' }))
     await f.ci.dispatch()
-    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: third.ticketId })).run.state).toBe('queued')
+    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: third.ticketId })).run)
+      .toMatchObject({ state: 'queued', message: 'No ready computer for install; laptop: busy; builder: busy' })
     f.finish(first.ticketId, 0, 'ok\n')
     await f.ci.dispatch()
     const moved = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: third.ticketId }))
-    expect(moved.run).toMatchObject({ state: 'running', computer: { label: f.started[0]!.computer } })
+    expect(moved.run).toMatchObject({ state: 'running', computer: { label: f.started[0]!.computer }, message: null })
     expect((await f.call(f.operator, 'ci_logs_read', { ticketId: second.ticketId })).isError).not.toBe(true)
+  } finally { await f.close() }
+})
+
+it('persists a host slice waiting reason through MCP while its cloud sibling runs, then clears it on start', async () => {
+  const readiness = { laptop: true }
+  const f = await fixture({ github: readiness, cloud: true })
+  f.computers.splice(1, 1)
+  try {
+    const reader = await f.connect(CI_GET_ACTIONS)
+    const older = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+      suite: 'integration', commandId: 'older-integration',
+    }))
+    await f.ci.dispatch()
+    const slices = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+      suite: 'integration', partitions: 2, commandId: 'waiting-integration',
+    }))
+    await f.ci.dispatch()
+    await f.ci.close()
+    const read = async () => {
+      const result = await reader.callTool({ name: 'ci_get', arguments: {
+        workspaceId: f.workspaceId, ticketId: slices.ticketId,
+      } })
+      expect(result.isError).not.toBe(true)
+      return CiGetOutputSchema.parse(decodeMcpToolResult(result))
+    }
+    const waiting = await read()
+    const host = waiting.partitions!.find(run => run.partition!.hostIndexes!.includes(run.partition!.index))!
+    const sibling = waiting.partitions!.find(run => run.id !== host.id)!
+    expect(host).toMatchObject({ state: 'queued', computer: null,
+      message: 'Waiting for a build computer: this integration slice needs one; laptop: busy' })
+    expect(sibling).toMatchObject({ state: 'running', computer: { hostRef: { kind: 'cloud' } } })
+    expect((await f.pool.query('select record from ci_runs where id=$1', [host.id])).rows[0].record).toEqual(host)
+    const computers = CiComputersOutputSchema.parse(await f.value(reader, 'ci_computers_list', {}))
+    expect(computers.computers.find(computer => computer.label === 'laptop'))
+      .toMatchObject({ ready: true, running: [older.ticketId] })
+
+    f.finish(sibling.id, 0, 'Cloud slice completed.\n')
+    await f.ci.dispatch()
+    expect((await read()).partitions!.find(run => run.id === host.id)).toEqual(host)
+    readiness.laptop = false
+    f.finish(older.ticketId, 0, 'Older integration completed.\n')
+    await f.ci.dispatch()
+    const unready = (await read()).partitions!.find(run => run.id === host.id)!
+    expect(unready).toMatchObject({ state: 'queued',
+      message: 'Waiting for a build computer: this integration slice needs one; laptop: Log in to GitHub.' })
+    expect((await f.pool.query('select record from ci_runs where id=$1', [host.id])).rows[0].record).toEqual(unready)
+    await f.ci.dispatch()
+    expect((await read()).partitions!.find(run => run.id === host.id)).toEqual(unready)
+
+    readiness.laptop = true
+    await f.ci.dispatch()
+    const running = (await read()).partitions!.find(run => run.id === host.id)!
+    expect(running).toMatchObject({ state: 'running', computer: { label: 'laptop' }, message: null })
+    expect((await f.pool.query('select record from ci_runs where id=$1', [host.id])).rows[0].record).toEqual(running)
   } finally { await f.close() }
 })
 
@@ -957,7 +1012,7 @@ it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and ru
     exhausted = true
     const queued = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
     expect(queued.run).toMatchObject({ state: 'queued', computer: null, step: null, startedAt: null,
-      finishedAt: null, unstartedProviders: [provider], message: expect.stringContaining('queued for another computer') })
+      finishedAt: null, unstartedProviders: [provider], message: expect.stringContaining('dispatch retries exhausted') })
     expect((await f.pool.query('select record,host_key from ci_runs where id=$1', [started.ticketId])).rows[0])
       .toMatchObject({ host_key: null, record: queued.run })
     expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(started)
@@ -965,10 +1020,10 @@ it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and ru
     await f.ci.dispatch()
     const running = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
     expect(running.run).toMatchObject({ id: started.ticketId, state: 'running', computer: { label: 'laptop' },
-      message: queued.run.message, unstartedProviders: [provider] })
+      message: null, unstartedProviders: [provider] })
     f.finish(started.ticketId, 0, 'Completed on another computer.\n')
     const finished = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
-    expect(finished.run).toMatchObject({ state: 'passed', exitCode: 0, message: queued.run.message })
+    expect(finished.run).toMatchObject({ state: 'passed', exitCode: 0, message: null })
     expect((await f.pool.query('select record from ci_runs where id=$1', [started.ticketId])).rows[0].record)
       .toEqual(finished.run)
     expect(dispatches).toEqual([started.ticketId])
