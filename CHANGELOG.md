@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.81] - 2026-10-12
+
+### Fixed
+
+- Agent worktrees on Main and Workers get a repo-local Foreman Code Agent Git identity when none is set (reported by an in-app Integrator Agent).
+- A transient database timeout (read or statement timeout) no longer kills running Agents or interval checks; bookkeeping retries while the native session is kept. Ownership loss, Stop and real failures still close.
+- Laptop CI: legacy runtime preparation no longer loops; Host CI readiness is reported correctly (Mana ready).
+
 ## [0.0.80] - 2026-10-12
 
 ### Fixed
