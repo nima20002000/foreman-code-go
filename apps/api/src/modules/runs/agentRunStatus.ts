@@ -5,6 +5,7 @@ import { WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { workerScope, workerScopesForAction } from '../access/appPolicy.js'
 import { DomainError } from '../errors.js'
 import { ciActivityFromRecord } from './agentCiSnapshot.js'
+import { workflowJobLifecycle } from '../run-graph/workflowJobProjection.js'
 
 const clip = (text: string) => text.slice(0, RUN_STATUS_LIMITS.messageLength)
 
@@ -38,7 +39,23 @@ export class AgentRunStatusService {
          e.record->>'startedAt' as started_at,e.record->>'finishedAt' as finished_at,e.tick_index is not null as tick,
          e.record#>>'{result,error,code}' as error_code,e.record#>>'{result,error,message}' as error_message
        from harness_executions e where e.run_id=$1 order by e.created_at,e.id limit 16001`, [binding.run_id])).rows
-    if (executions.length > 16000) throw new DomainError('RUN_STATUS_TOO_LARGE', 'This Run has too many executions to summarize.', 409)
+    const jobs = (await this.pool.query<{ id: string; node_id: string; phase: string | null; outcome: string | null
+      stopped: boolean | null; started_at: string | null; finished_at: string | null; publication: string | null
+      result_issue: string | null }>(
+      `select j.id,j.record#>>'{workflow,nodeId}' as node_id,j.record#>>'{process,phase}' as phase,
+         j.record#>>'{process,outcome}' as outcome,(j.record#>>'{process,processStopped}')::boolean as stopped,
+         j.record->>'startedAt' as started_at,j.record->>'finishedAt' as finished_at,j.record->>'publication' as publication,
+         j.record->>'resultIssue' as result_issue
+       from workflow_job_executions w join job_executions j on j.id=w.job_execution_id
+       where w.run_id=$1 order by j.record->>'createdAt',j.id limit 16001`, [binding.run_id])).rows
+    if (executions.length + jobs.length > 16000) throw new DomainError('RUN_STATUS_TOO_LARGE', 'This Run has too many executions to summarize.', 409)
+    for (const job of jobs) {
+      const { state, resultOutcome } = workflowJobLifecycle(job)
+      const problem = job.outcome && job.outcome !== 'succeeded' ? job.outcome : job.result_issue
+      executions.push({ id: job.id, node_id: job.node_id, state, outcome: resultOutcome, started_at: job.started_at,
+        finished_at: job.finished_at, tick: false, error_code: problem ? `JOB_${problem.toUpperCase()}` : null,
+        error_message: problem ? `The Job ended with ${problem.replaceAll('_', ' ')}.` : null })
+    }
     const nodes = version.definition.nodes.map(node => {
       const own = executions.filter(execution => execution.node_id === node.id)
       const latest = own.at(-1)

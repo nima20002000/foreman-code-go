@@ -27,6 +27,17 @@ interface JobProjectionRow {
   valid: boolean | null
 }
 
+/** A workflow Job's lifecycle as graph and status readers show it. */
+export function workflowJobLifecycle(row: Pick<JobProjectionRow, 'phase' | 'outcome' | 'stopped' | 'finished_at'
+  | 'publication' | 'result_issue'>): Pick<RepeatGraphExecutionV3, 'state' | 'resultOutcome'> {
+  const terminal = row.phase === 'terminal' && row.stopped === true && !!row.finished_at
+    && ['complete', 'failed', 'expired'].includes(row.publication ?? '')
+  if (!terminal) return { state: row.phase === 'queued' || row.phase === 'running' ? row.phase : 'starting', resultOutcome: null }
+  if (row.outcome === 'cancelled') return { state: 'completed', resultOutcome: 'canceled' }
+  if (row.outcome === 'succeeded' && row.publication === 'complete' && !row.result_issue) return { state: 'completed', resultOutcome: 'succeeded' }
+  return { state: 'completed', resultOutcome: 'failed' }
+}
+
 /** The preparation reserves the execution identity before a Job is admitted. */
 export async function readWorkflowJobGraphExecutionsLocked(sql: GraphTransactionSql, scope: RepeatGraphScopeV3,
   executionIds?: readonly string[]): Promise<RepeatGraphExecutionV3[]> {
@@ -90,16 +101,7 @@ export async function readWorkflowJobGraphExecutionsLocked(sql: GraphTransaction
       || row.slot_id !== repeatSlotId(scope.runId, { nodeId: row.workflow_node_id, occurrence })) {
       throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
     }
-    const terminal = row.phase === 'terminal' && row.stopped === true && !!row.finished_at
-      && ['complete', 'failed', 'expired'].includes(row.publication ?? '')
-    let state: RepeatGraphExecutionV3['state'] = 'starting'
-    let resultOutcome: RepeatGraphExecutionV3['resultOutcome'] = null
-    if (terminal) {
-      state = 'completed'
-      if (row.outcome === 'cancelled') resultOutcome = 'canceled'
-      else if (row.outcome === 'succeeded' && row.publication === 'complete' && !row.result_issue) resultOutcome = 'succeeded'
-      else resultOutcome = 'failed'
-    } else if (row.phase === 'queued' || row.phase === 'running') state = row.phase
+    const { state, resultOutcome } = workflowJobLifecycle(row)
     return RepeatGraphExecutionV3Schema.parse({ identity: qualifyRepeatGraphExecution({
       kind: 'job', workflowNodeId: row.workflow_node_id, executionId: row.execution_id,
       jobDefinitionId: row.definition_id, jobDefinitionVersionId: row.definition_version_id, attempt: 1,
