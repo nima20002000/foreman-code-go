@@ -1,3 +1,4 @@
+import { useHoverControls } from '../../../shared/ui/useHoverControls'
 import type { JobWorkflowAdmissionReference } from '@foreman-code/contracts/job-workflow'
 import { createContext, useContext, memo, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
@@ -78,15 +79,17 @@ type RunEdge = Edge<{ kind: WorkflowRelationship['kind']; bend: number; label: s
 const PinnedRunEdge = memo(function PinnedRunEdge({ id, source, target, data, selected }: EdgeProps<RunEdge>) {
   const { pulses, reversed } = useContext(Choreography)
   const curve = useFloatingCurve(source, target, data?.bend ?? 28)
-  const [hovered, setHovered] = useState(false)
+  const { hovered, onPointerEnter, onPointerLeave } = useHoverControls()
   const [expanded, setExpanded] = useState(false)
   if (!curve) return null
   const showUsage = hovered || selected || expanded
   const usage = data?.used === undefined ? 'Usage unavailable' : data.limit === undefined
     ? `${data.used} used · no connection cap` : `${data.used} of ${data.limit} used`
-  return <g onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
+  return <g onPointerEnter={onPointerEnter} onPointerLeave={onPointerLeave}>
     <SignalEdgeShape id={id} curve={curve} kind={data?.kind} pulses={pulses.get(id)} reversed={reversed.get(id)}
       label={data?.label} showLabel={data?.explicit && (hovered || selected)} />
+    {data?.handoffs && showUsage ? <rect className="board-edge-hover-bridge"
+      x={curve.mid.x - 90} y={curve.mid.y} width={180} height={54} /> : null}
     {data?.handoffs ? <foreignObject className="pinned-work-limit-object"
       x={curve.mid.x - 90} y={curve.mid.y + 12} width={180} height={showUsage ? 70 : 42}>
       <div className="pinned-work-limit-control nodrag nopan">

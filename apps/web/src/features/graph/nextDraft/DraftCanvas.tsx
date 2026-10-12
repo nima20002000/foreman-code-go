@@ -1,3 +1,4 @@
+import { useHoverControls } from '../../../shared/ui/useHoverControls'
 import type { JobWorkflowAdmissionReference } from '@foreman-code/contracts/job-workflow'
 import { createContext, forwardRef, memo, useContext, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Background, ConnectionMode, ReactFlow, type Edge, type EdgeProps, type NodeChange, type NodeProps } from '@xyflow/react'
@@ -78,18 +79,20 @@ type DraftEdge = Edge<{ kind: WorkflowRelationship['kind']; bend: number; label:
   onApplyLimit?: (value?: number) => void }>
 const TypedEdge = memo(function TypedEdge({ id, source, target, data }: EdgeProps<DraftEdge>) {
   const curve = useFloatingCurve(source, target, data?.bend ?? 28)
-  const [hovered, setHovered] = useState(false)
+  const { hovered, onPointerEnter, onPointerLeave } = useHoverControls()
   const [editing, setEditing] = useState(false)
   if (!curve) return null
   const offset = data?.explicit ? (data.label.length * 7.2 + 24) / 2 + 8 : 0
   const limit = data?.maxWorkHandoffsPerRun
-  return <g onPointerEnter={() => setHovered(true)} onPointerLeave={() => setHovered(false)}>
+  return <g onPointerEnter={onPointerEnter} onPointerLeave={onPointerLeave}>
     <SignalEdgeShape id={id} curve={curve} kind={data?.kind}
       label={data?.label} showLabel={data?.explicit && hovered} />
-    {hovered ? <foreignObject className="board-edge-remove nodrag nopan" x={curve.mid.x + offset - 18} y={curve.mid.y - 36} width={36} height={36}>
+    {hovered ? <rect className="board-edge-hover-bridge" x={curve.mid.x - 18} y={curve.mid.y - 36}
+      width={offset + 36} height={48} /> : null}
+    <foreignObject aria-hidden={!hovered} data-visible={hovered} className="board-edge-remove nodrag nopan" x={curve.mid.x + offset - 18} y={curve.mid.y - 36} width={36} height={36}>
       <IconButton size="sm" variant="ghost" label={data?.removeLabel ?? `Remove connection from ${source} to ${target}`}
-        disabled={data?.removalDisabled} onClick={(event) => { event.stopPropagation(); data?.remove() }}><Icon name="close" size={14} /></IconButton>
-    </foreignObject> : null}
+        tabIndex={hovered ? 0 : -1} disabled={data?.removalDisabled} onClick={(event) => { event.stopPropagation(); data?.remove() }}><Icon name="close" size={14} /></IconButton>
+    </foreignObject>
     {data?.workPolicy ? <foreignObject className="work-connection-limit-object"
       x={curve.mid.x - (editing ? 132 : 54)} y={curve.mid.y + 12}
       width={editing ? 264 : 108} height={editing ? 208 : 42}>

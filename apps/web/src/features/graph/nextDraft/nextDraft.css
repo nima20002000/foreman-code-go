@@ -34,6 +34,7 @@
 .work-connection-limit-editor input[aria-invalid='true'] { border-color: var(--danger); }
 .work-connection-limit-editor p { margin: 0; color: var(--text-muted); font: var(--type-caption); }
 .work-connection-limit-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.board-edge-remove { overflow: visible; pointer-events: auto; }
+.board-edge-remove { overflow: visible; opacity: 0; pointer-events: none; transition: opacity 140ms ease; }
+.board-edge-remove[data-visible='true'] { opacity: 1; pointer-events: auto; }
 .board-edge-remove .n-icon-button { width: 36px; height: 36px; border: 1px solid var(--border-strong);
   border-radius: var(--radius-full); background: var(--surface-raised); box-shadow: var(--shadow-popover); }

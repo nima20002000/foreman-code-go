@@ -40,7 +40,7 @@ export function SignalEdgeShape({ id, curve, kind = 'execution', signal, pulses,
       <path className="n-signal-edge-chevron" data-reversed={reversed || undefined} d="M -4 -4 L 2 0 L -4 4" />
     </g>
     {pulses?.map((pulse) => <PulseFlight key={pulse.key} path={curve.path} pulse={pulse} />)}
-    {label && showLabel ? <g className="n-signal-edge-badge" transform={`translate(${mid.x} ${mid.y - 18})`}>
+    {label ? <g aria-hidden={!showLabel} data-visible={Boolean(showLabel)} className="n-signal-edge-badge" transform={`translate(${mid.x} ${mid.y - 18})`}>
       <rect x={-(label.length * 3.6 + 12)} y={-11} width={label.length * 7.2 + 24} height={22} rx={11} />
       <text textAnchor="middle" y={4}>{label}</text>
     </g> : null}
