@@ -1,3 +1,4 @@
+import { nativeToolsSummary } from '@foreman-code/contracts'
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { SavedNodePlacementSchema, type SavedNodePlacement } from '@foreman-code/contracts/node-placement'
 import {
@@ -208,6 +209,7 @@ function EditableAgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, cre
         <HarnessBasicFields value={configuration} issues={issuesAt(issues, ['harness'])} onChange={updateConfiguration}
           accountHost={placement?.hostRef} />
       </div>
+      <p>Native tools: {nativeToolsSummary(agent.nativeTools)}</p>
       {Boolean(workspaceId || nodePlacement || placementOptions) && <section className="agent-worktree-fields" aria-label="Worktree">
         <h3>Worktree</h3>
         <Button size="sm" variant="secondary" disabled={worktreeDisabled || (!placement && !branchPrefix)}

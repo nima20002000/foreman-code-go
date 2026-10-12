@@ -6,7 +6,7 @@ import { sameCodexNativeOutputSandbox, type CodexNativeOutputQualificationInput 
 import { CodexStdioTransport, object, type JsonObject } from './codexStdioTransport.js'
 import { qualifyCodex, assertCodexUnchanged } from './codexProtocol.js'
 import { inheritedAgentEnvironment } from './secrets.js'
-import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames } from './appMcpLauncher.js'
+import { codexDisabledMcpTransports } from './codexNativeTools.js'
 import { runCommand } from './process.js'
 import type { NativeProcessRegistry } from './recovery/processRegistry.js'
 import { assertCodexProtectedOutputPlacement, codexNativeOutputSandboxProbeCommand,
@@ -18,6 +18,14 @@ import { CodexCommandOutput, recordedCodexCommandOutput } from './codexCommandOu
 
 const unavailable = () => new DomainError('WORKER_NATIVE_OUTPUT_PROTECTION_FAILED',
   'The selected native sandbox did not prove protection of its output store.', 409)
+
+const probeNativeTools = Object.freeze({ mcpServers: [] as readonly string[], apps: false, plugins: false })
+
+/** The shell-only probe uses a fixed loading policy, independent of the Agent's allowed tools. */
+export function codexOutputProtectionIdentity(input: CodexNativeOutputQualificationInput) {
+  const { configuration, binary, binaryIdentity, providerVersion, schemaIdentity, expectedSandbox } = input
+  return { configuration, binary, binaryIdentity, providerVersion, schemaIdentity, expectedSandbox, probeNativeTools }
+}
 
 /** Probe the selected binary with the same sandbox policy, using a separately
  * owned diagnostic actor without an application credential. Assistant claims
@@ -74,8 +82,8 @@ export async function qualifyCodexOutputProtection(input: {
     const servers: unknown = JSON.parse(listed.stdout)
     if (listed.exitCode !== 0 || !Array.isArray(servers) || servers.length > 500
       || servers.some((entry) => typeof entry?.name !== 'string')) throw unavailable()
-    const disabled = chatExcludedAppMcpServerNames(APP_MCP_SERVER_NAME)
-      .filter((name) => servers.some((entry) => entry.name === name))
+    const disabled = servers.map(entry => String(entry.name))
+    const mcpTransportOverrides = codexDisabledMcpTransports(servers, disabled)
     const observedTurn: { id?: string } = {}
     const commands: Array<{ threadId: string; turnId: string; item: JsonObject }> = []
     const commandOutput = new CodexCommandOutput()
@@ -119,7 +127,9 @@ export async function qualifyCodexOutputProtection(input: {
             if (turn.id === observedTurn.id) complete()
           }
         }
-      }, fail, 30_000, recovery, disabled)
+      }, fail, 30_000, recovery, disabled, undefined, {
+        nativeApps: probeNativeTools.apps, nativePlugins: probeNativeTools.plugins, mcpTransportOverrides,
+      })
     await transport.start(signal)
     const policy = selected.expectedSandbox
     const started = object(await transport.request('thread/start', { cwd: policy.cwd,
@@ -127,6 +137,9 @@ export async function qualifyCodexOutputProtection(input: {
       experimentalRawEvents: true,
       model: selected.configuration.model,
       config: { ...Object.fromEntries(disabled.map((name) => [`mcp_servers.${name}.enabled`, false])),
+        ...mcpTransportOverrides,
+        'features.apps': probeNativeTools.apps,
+        'features.plugins': probeNativeTools.plugins,
         model_reasoning_effort: selected.configuration.reasoningEffort,
         sandbox_workspace_write: { writable_roots: [...policy.writableRoots], network_access: policy.networkAccess,
           exclude_tmpdir_env_var: policy.excludeTmpdirEnvVar, exclude_slash_tmp: policy.excludeSlashTmp } },

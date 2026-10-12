@@ -49,7 +49,9 @@ if (args[0] === 'mcp') {
     process.exit(1)
   }
   if (args[1] === 'list') {
-    console.log(JSON.stringify([{ name: read('mcp.json', { name: 'graphql' }).name || 'graphql' }]))
+    const entries = read('mcp-list.json', [{ name: read('mcp.json', { name: 'graphql' }).name || 'graphql' }])
+    console.log(JSON.stringify(Array.isArray(entries)
+      ? entries.map(entry => ({ transport: { type: 'stdio', command: 'fixture-mcp' }, ...entry })) : entries))
     process.exit(0)
   }
   const entryName = read('mcp.json', { name: 'graphql' }).name || 'graphql'

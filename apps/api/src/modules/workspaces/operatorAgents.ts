@@ -52,7 +52,8 @@ export async function readAgentForReuse(client: pg.ClientBase, principal: Manage
   }
   const agent = agentWithConfiguration(AgentSchema.parse({...AgentSchema.parse(row.record), productRole: configuration.productRole,
     configurationVersionId: configuration.id, prompt: configuration.prompt, assignedSkills: configuration.assignedSkills,
-    graphqlTools: configuration.graphqlTools, harnessProfileSelection: configuration.harnessProfileSelection}), configuration.harness)
+    graphqlTools: configuration.graphqlTools, nativeTools: configuration.nativeTools,
+    harnessProfileSelection: configuration.harnessProfileSelection}), configuration.harness)
   return {agent, baseRevision: Number(row.metadata_revision), workflowIds: references.rows.map((item) => item.id)}
 }
 
@@ -124,6 +125,7 @@ export class OperatorAgentMutationService {
         const agent = await saveAgentConfiguration(client,input.workspaceId,agentWithConfiguration(AgentSchema.parse({
           id:input.agentId,name:input.name,productRole:input.productRole,description:input.description,role:input.role,
           prompt:input.prompt ?? {},assignedSkills:input.assignedSkills ?? [], harnessProfileSelection,
+          nativeTools: input.nativeTools ?? defaults.value[input.productRole].nativeTools,
           ...(input.graphqlTools ? {graphqlTools:input.graphqlTools} : {}),
         }),configuration), false, this.validateProfile(principal))
         const revision = await client.query<{metadata_revision:string}>('select metadata_revision from agents where id=$1',[agent.id])
@@ -159,6 +161,7 @@ export class OperatorAgentMutationService {
           ...(input.prompt !== undefined ? {prompt:input.prompt} : {}),
           ...(input.assignedSkills !== undefined ? {assignedSkills:input.assignedSkills} : {}),
           ...(input.graphqlTools !== undefined ? {graphqlTools:input.graphqlTools} : {}),
+          ...(input.nativeTools !== undefined ? {nativeTools:input.nativeTools} : {}),
         }),configuration)
         return this.persist(client,input.workspaceId,edited,principal)
       },
@@ -190,6 +193,7 @@ export class OperatorAgentMutationService {
           id:input.agentId,name:input.name,description:source.description,role:source.role,productRole:source.productRole,
           harnessConfiguration:configuration,harnessProfileSelection:selection,prompt:source.prompt,assignedSkills:source.assignedSkills,
           graphqlTools:source.graphqlTools,
+          nativeTools: source.nativeTools,
         }),false,this.validateProfile(principal))
         const revision = await client.query<{metadata_revision:string}>('select metadata_revision from agents where id=$1',[agent.id])
         return {agent,metadataRevision:Number(revision.rows[0]!.metadata_revision)}
@@ -219,7 +223,8 @@ export class OperatorAgentMutationService {
         authorizeAgentConfiguration(principal,input.workspaceId,configuration,version.assignedSkills)
         if (!selection) await this.harnesses.qualifyConfiguration(configuration)
         return this.persist(client,input.workspaceId,agentWithConfiguration(AgentSchema.parse({...current.agent,
-          prompt:version.prompt,assignedSkills:version.assignedSkills,graphqlTools:version.graphqlTools,harnessProfileSelection:selection}),configuration),principal)
+          prompt:version.prompt,assignedSkills:version.assignedSkills,graphqlTools:version.graphqlTools,
+          nativeTools:version.nativeTools,harnessProfileSelection:selection}),configuration),principal)
       },
     })
   }

@@ -1,4 +1,5 @@
 import { worktreeSecurity } from './worktreeSecurity.js'
+import { codexDisabledMcpTransports } from './codexNativeTools.js'
 import { APP_MCP_SERVER_NAMES, APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
 import { beginRuntimeTiming, runtimeTimingPoint, timeRuntimeOperation } from '../diagnostics/runtimeTiming.js'
 import { isWorkflowStart, sessionStartConfiguration, sessionStartDirectory, sessionStartOwner,
@@ -21,7 +22,7 @@ import {
   type ApprovalResponseOption, type CodexAdvancedConfiguration, type CodexHarnessConfiguration,
   type ExecutionResult, type McpDetection, type NativeHarnessCapabilities, type NativeHarnessEvent,
   type NativeSessionReference, type PendingNativeInteraction,
-  isSessionNativeInteraction,
+  isSessionNativeInteraction, nativeMcpServerAllowed,
 } from '@foreman-code/contracts'
 
 import { DomainError } from '../errors.js'
@@ -224,7 +225,9 @@ interface Prepared {
   strippedCredentialVariable: string | undefined
   environment: NodeJS.ProcessEnv
   qualified: QualifiedCodex
-  disabledAppMcpServerNames: readonly string[]
+  disabledMcpServerNames: readonly string[]
+  mcpTransportOverrides?: Record<string, string>
+  nativeApps?: boolean | undefined
   /** The App MCP server whose tools a workflow Agent calls without native prompts; app grants still authorize each call. */
   approvedAppMcpServerName?: string
   effectiveSandbox?: CodexNativeOutputSandbox
@@ -350,7 +353,11 @@ function configOverrides(value: CodexHarnessConfiguration): JsonObject {
   }
   return config
 }
-function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'workingDirectory' | 'input' | 'disabledAppMcpServerNames' | 'approvedAppMcpServerName'>, resume = false): JsonObject {
+function threadParameters(
+  prepared: Pick<Prepared, 'harnessConfiguration' | 'workingDirectory' | 'input' | 'disabledMcpServerNames'
+    | 'mcpTransportOverrides' | 'nativeApps' | 'approvedAppMcpServerName'>,
+  resume = false,
+): JsonObject {
   const value = prepared.harnessConfiguration
   const draft = advanced(value)
   return {
@@ -365,7 +372,9 @@ function threadParameters(prepared: Pick<Prepared, 'harnessConfiguration' | 'wor
         ? { model_context_window: prepared.input.sessionPreferences.contextBudget } : {}),
       ...(prepared.input.sessionPreferences?.autoCompactTokens != null
         ? { model_auto_compact_token_limit: prepared.input.sessionPreferences.autoCompactTokens } : {}),
-      ...Object.fromEntries(prepared.disabledAppMcpServerNames.map((name) => [`mcp_servers.${name}.enabled`, false])),
+      ...Object.fromEntries(prepared.disabledMcpServerNames.map((name) => [`mcp_servers.${name}.enabled`, false])),
+      ...prepared.mcpTransportOverrides,
+      ...(prepared.nativeApps !== undefined ? { 'features.apps': prepared.nativeApps } : {}),
       // Codex 0.16x prompts for every MCP tool call under on-request approval; an unattended workflow Agent would
       // wait on its own App tools (ci_run, context_get) forever. Each call is still authorized by the Agent's grants.
       ...(prepared.approvedAppMcpServerName
@@ -2027,9 +2036,12 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     await this.validateMcpPolicies(harnessConfiguration, qualified.binary, workingDirectory, environment, signal, io)
     let scopedCredentialVariable: string | undefined
     let excludedCredentialVariable: string | undefined
-    let disabledAppMcpServerNames: readonly string[] = []
+    let disabledMcpServerNames: readonly string[] = []
+    let mcpTransportOverrides: Record<string, string> = {}
     let approvedAppMcpServerName: string | undefined
-    if (this.appMcpAccess === 'none') {
+    const nativeTools = accepted(input).nativeTools
+    const nativeApps = nativeMcpServerAllowed('codex_apps', nativeTools) ? nativeTools?.apps : false
+    if (this.appMcpAccess === 'none' || nativeTools?.mcpServers !== undefined || nativeTools?.apps === false) {
       const listed = await io.runCommand(qualified.binary, ['mcp', 'list', '--json'], workingDirectory, signal, environment)
       let entries: unknown
       try { entries = JSON.parse(listed.stdout) } catch { entries = undefined }
@@ -2037,8 +2049,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         || !entries.every((entry: unknown) => isObject(entry) && typeof entry.name === 'string')) {
         throw new HarnessExecutionError('CODEX_MCP_INSPECTION_FAILED', 'Codex MCP configuration inspection failed; absence was not established.')
       }
-      const configuredNames = new Set(entries.map((entry: JsonObject) => entry.name))
-      disabledAppMcpServerNames = chatExcludedAppMcpServerNames(this.appMcpServerName).filter((name) => configuredNames.has(name))
+      const configuredNames = entries.map((entry: JsonObject) => String(entry.name))
+      const chatExcluded = this.appMcpAccess === 'none' ? chatExcludedAppMcpServerNames(this.appMcpServerName) : []
+      disabledMcpServerNames = configuredNames.filter(name => chatExcluded.includes(name)
+        || !nativeMcpServerAllowed(name, nativeTools))
+      mcpTransportOverrides = codexDisabledMcpTransports(entries, disabledMcpServerNames)
     }
     try {
       const mcp = await this.mcpConfiguration(qualified.binary, workingDirectory, environment, qualified.providerVersion, signal, io)
@@ -2057,7 +2072,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       io.environment(input.environment, strippedCredentialVariable ? [strippedCredentialVariable] : []), signal,
       undefined, { qualified, assertUnchanged: io.assertUnchanged,
         runCommand: io.runCommand,
-        transportFactory: (...args) => this.ownTransport(this.dependencies.transport(...args)) })
+        transportFactory: (...args) => {
+          args[9] = disabledMcpServerNames
+          args[11] = { ...args[11], nativeApps, mcpTransportOverrides }
+          return this.ownTransport(this.dependencies.transport(...args))
+        } })
     if (this.nativeOutputs) {
       if (!isWorkflowStart(input) || this.appMcpAccess !== 'scoped' || harnessConfiguration.sandbox === 'read-only'
         || harnessConfiguration.sandbox === 'danger-full-access' && this.nativeOutputs.storageKind !== 'buffer') {
@@ -2068,7 +2087,8 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       signal.throwIfAborted()
     }
     return { input, harnessConfiguration, workingDirectory, scopedCredentialVariable, strippedCredentialVariable, environment: scopedEnvironment, qualified,
-      disabledAppMcpServerNames, contextBudgetLimit: typeof modelFacts === 'object' ? modelFacts.contextWindow ?? undefined : undefined,
+      disabledMcpServerNames, mcpTransportOverrides, nativeApps,
+      contextBudgetLimit: typeof modelFacts === 'object' ? modelFacts.contextWindow ?? undefined : undefined,
       ...(approvedAppMcpServerName ? { approvedAppMcpServerName } : {}),
     }
   }
@@ -2252,8 +2272,9 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         disconnected = true
         if (runtime?.generation === generation && runtime.transport === transport && !runtime.disposed) this.handleDisconnect(runtime)
       },
-      undefined, this.processRecovery, prepared.disabledAppMcpServerNames, undefined,
-      { reconnectableStdio: isWorkflowStart(prepared.input)
+      undefined, this.processRecovery, prepared.disabledMcpServerNames, undefined,
+      { nativeApps: prepared.nativeApps, mcpTransportOverrides: prepared.mcpTransportOverrides ?? {},
+        reconnectableStdio: isWorkflowStart(prepared.input)
         && advanced(prepared.harnessConfiguration).sessionPersistence !== 'ephemeral' },
     )
     // Also own cold-attachment candidates before a Runtime has been published.
@@ -2267,7 +2288,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         const servers = config.mcp_servers === undefined ? {} : object(config.mcp_servers, 'CODEX_APP_MCP_UNAVAILABLE')
         if (chatExcludedAppMcpServerNames(this.appMcpServerName).some((name) => {
           const entry = servers[name]
-          return prepared.disabledAppMcpServerNames.includes(name)
+          return prepared.disabledMcpServerNames.includes(name)
             ? !Object.hasOwn(servers, name) || !isObject(entry) || entry.enabled !== false
             : Object.hasOwn(servers, name)
         })) {

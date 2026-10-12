@@ -3,7 +3,7 @@ import { isWorkflowStart, sessionStartDirectory, sessionStartOwner, sessionStart
 import { claudeCompactionResultMatches } from './compactionResults.js'
 import { recoveredClaudeCompaction } from './compactionHistory.js'
 import { z } from 'zod'
-import { SessionPreferencesSchema } from '@foreman-code/contracts'
+import { SessionPreferencesSchema, nativeMcpServerAllowed } from '@foreman-code/contracts'
 import { claudeContextSnapshot, claudeSessionEnvironment, claudeContextProfiles, ClaudePreferenceError } from './sessionControls.js'
 import type { CompactionState, ContextSnapshot, SessionPreferences } from '@foreman-code/contracts'
 import { claudeNativeEvent } from './nativeEvents.js'
@@ -180,7 +180,19 @@ export function createClaudeNativeSessionManager(options: {
   let sessionPreferences: SessionPreferences | undefined
   let disposed = false
   const now = options.now ?? (() => new Date().toISOString())
+  function filterMcpServers(start: NativeSessionStart, servers: Readonly<Record<string, unknown>>) {
+    const policy = sessionStartConfiguration(start).nativeTools
+    return Object.fromEntries(Object.entries(servers).filter(([name]) =>
+      name === 'graphql-files' || nativeMcpServerAllowed(name, policy)))
+  }
   function queryOptions(start: NativeSessionStart, preferences = SessionPreferencesSchema.parse({})) {
+    const configuration = sessionStartConfiguration(start)
+    const nativeTools = configuration.nativeTools
+    const sdkOptions = { ...options.sdkOptions }
+    if (nativeTools?.mcpServers !== undefined || nativeTools?.apps === false) {
+      sdkOptions.mcpServers = filterMcpServers(start, configuredServers)
+    }
+    if (nativeTools?.apps === false) sdkOptions.plugins = []
     const environment = { ...(options.sdkOptions.env as Record<string, string> | undefined),
       ...start.environment?.variables }
     if (Object.keys(environment).some(isDatabaseCredentialVariable)) {
@@ -188,15 +200,15 @@ export function createClaudeNativeSessionManager(options: {
         'The Claude environment cannot contain database credentials.')
     }
     const scoped = claudeSessionEnvironment(appMcpTokenEnvironment(environment), preferences)
-    const instructions = agentInstructionBundle(sessionStartConfiguration(start))
+    const instructions = agentInstructionBundle(configuration)
     const systemPrompt = sessionStartSystemPrompt(start)?.value.text
-    if (!instructions && !systemPrompt) return { ...options.sdkOptions, env: scoped }
-    const base = options.sdkOptions.systemPrompt
+    if (!instructions && !systemPrompt) return { ...sdkOptions, env: scoped }
+    const base = sdkOptions.systemPrompt
     if (base !== undefined && typeof base !== 'string') {
       throw new HarnessExecutionError('CLAUDE_SYSTEM_PROMPT_UNSUPPORTED',
         'Persistent Agent instructions require a string SDK system prompt.')
     }
-    return { ...options.sdkOptions, env: scoped,
+    return { ...sdkOptions, env: scoped,
       systemPrompt: [base, systemPrompt, instructions?.text].filter(Boolean).join('\n\n') }
   }
   function qualified(capability: 'basicTurns' | 'resume' | 'fork' | 'history') {
@@ -312,6 +324,7 @@ export function createClaudeNativeSessionManager(options: {
     return { endpoint: endpoint.toString() }
   }
   async function deliverCredentials(runtime: Runtime, start: NativeSessionStart, servers: Readonly<Record<string, unknown>>, signal?: AbortSignal): Promise<ClaudeMcpInspection> {
+    servers = filterMcpServers(start, servers)
     const managedName = expectedMcp.serverName
     const httpCredential = managedHttpCredential(start, servers, managedName)
     delete runtime.httpCredentialAcknowledgement
@@ -390,7 +403,7 @@ export function createClaudeNativeSessionManager(options: {
       const start = runtime.start
       runtime.sdk = await options.runner.open({ scope: options.scope,
         options: { ...queryOptions(start, preferences), model: profile?.id ?? options.sdkOptions.model,
-          mcpServers: runtime.credentialServers ?? options.sdkOptions.mcpServers },
+          ...(runtime.credentialServers ? { mcpServers: runtime.credentialServers } : {}) },
         ...(runtime.session ? { resume: { ...options.scope, nativeSessionId: runtime.session.nativeSessionId } } : {}),
         ...(startup.signal ? { signal: startup.signal } : {}), onObservation: observation => observed(runtime, observation),
         ...(options.cancelPendingRequests ? { cancelPendingRequests: () => {
@@ -959,7 +972,8 @@ export function createClaudeNativeSessionManager(options: {
       }
       const original = JSON.parse(inspected.identity) as NativeSessionStart
       if (!sameJson(withoutCredentials(original), withoutCredentials(start))) throw new HarnessExecutionError('CLAUDE_INSPECTION_CONTEXT_CONFLICT', 'Credential delivery changed the accepted owner/configuration or noncredential environment.')
-      const configured = options.sdkOptions.mcpServers && typeof options.sdkOptions.mcpServers === 'object' ? options.sdkOptions.mcpServers as Record<string, unknown> : {}
+      const configured = filterMcpServers(start, configuredServers)
+      servers = filterMcpServers(start, servers)
       const topology = (entries: Readonly<Record<string, unknown>>) => JSON.stringify(Object.entries(entries).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => {
         const config = value && typeof value === 'object' ? value as Record<string, unknown> : {}
         if (config.type === 'sdk') return [name, { type: 'sdk', name: config.name }]

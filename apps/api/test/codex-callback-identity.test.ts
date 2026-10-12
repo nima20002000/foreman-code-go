@@ -52,7 +52,7 @@ async function fixture(id: string | number = 901, files = true) {
   }
   const runtime = seam.runtime({ input: source, harnessConfiguration: source.request.configuration.harness as CodexHarnessConfiguration,
     workingDirectory: '/callback-no-io', scopedCredentialVariable: undefined, strippedCredentialVariable: undefined,
-    environment: {}, disabledAppMcpServerNames: [], qualified: {
+    environment: {}, disabledMcpServerNames: [], qualified: {
       binary: 'not-executed', identity: 'fixture-identity', providerVersion: RECORDED_CODEX_VERSION, protocol: fixtureProtocol,
       schemaManifestSha256: 'fixture-schema', stableSchemaGitBlob: 'fixture-stable', referenceSchemaManifestSha256: 'fixture-reference',
     } }, session, transport)

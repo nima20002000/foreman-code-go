@@ -56,8 +56,9 @@ export function NewBoardAgent({ draftKey, edit, report }: { draftKey: string; ed
         if (!saved) return
         const workers = editorAgents(edit).filter((item) => item.productRole === 'coder' && edit.graph.nodes.some((node) => node.kind !== 'job' && node.agentId === item.id)).length
         const name = role === 'orchestrator' ? 'Orchestrator' : `Worker ${workers + 1}`
-        try { installAgent(draftKey, edit.instanceId, defaultAgentForHarness(saved.harness.harness,
-          `agent-${crypto.randomUUID()}`, name, saved.harness, role)) } catch (error) { report(error) }
+        try { installAgent(draftKey, edit.instanceId, { ...defaultAgentForHarness(saved.harness.harness,
+          `agent-${crypto.randomUUID()}`, name, saved.harness, role),
+          ...(saved.nativeTools ? { nativeTools: structuredClone(saved.nativeTools) } : {}) }) } catch (error) { report(error) }
       }}>{role === 'orchestrator' ? 'Orchestrator' : 'Worker'}</Button>)}</div>
   </section>
 }

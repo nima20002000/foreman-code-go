@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { BYTE_TRANSFER_POLICY } from '@foreman-code/contracts/byte-transfer'
 import { MAX_FILE_READ_BYTES } from '@foreman-code/contracts/files'
 import { DomainError } from '../../errors.js'
-import { qualifyCodexOutputProtection } from '../../harnesses/codexOutputProtection.js'
+import { codexOutputProtectionIdentity, qualifyCodexOutputProtection } from '../../harnesses/codexOutputProtection.js'
 import { sameCodexNativeOutputSandbox, type CodexNativeOutputs, type CodexNativeOutputTurnPin,
   type CodexNativeOutputQualificationInput } from '../../harnesses/codexNativeOutput.js'
 import { WorkerNativeOutputRegistry } from './workerNativeOutputRegistry.js'
@@ -30,7 +30,7 @@ export function createLocalWorkflowNativeOutputs(input: {
     maxSnapshotBytes: BYTE_TRANSFER_POLICY.maxStagingBytes,
     maxCommandRecords: BYTE_TRANSFER_POLICY.maxRecords * BYTE_TRANSFER_POLICY.maxActiveGlobal }
   let budget: Promise<Awaited<ReturnType<typeof createNativeOutputBudgetLedger>>> | undefined
-  let qualified: CodexNativeOutputQualificationInput | undefined
+  let qualified: ReturnType<typeof codexOutputProtectionIdentity> | undefined
   const initialize = () => budget ??= (async () => {
     await mkdir(rootDirectory, { recursive: true, mode: 0o700 })
     await mkdir(budgetDirectory, { recursive: true, mode: 0o700 })
@@ -44,8 +44,7 @@ export function createLocalWorkflowNativeOutputs(input: {
     assertNativeOutputRootExcluded(budgetDirectory, roots)
   }
   const assertQualified = async (qualification: CodexNativeOutputQualificationInput, signal: AbortSignal) => {
-    const { configuration, binary, binaryIdentity, providerVersion, schemaIdentity, expectedSandbox } = qualification
-    const selected = { configuration, binary, binaryIdentity, providerVersion, schemaIdentity, expectedSandbox }
+    const selected = codexOutputProtectionIdentity(qualification)
     signal.throwIfAborted()
     await input.assertCurrent(signal)
     await input.artifacts().authority.assertDeclarations(input.executionId)

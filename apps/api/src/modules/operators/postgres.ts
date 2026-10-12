@@ -10,6 +10,7 @@ import {
   type OperatorAgent,
   type OperatorConfigurationVersion,
   type WorkspaceSkillReference,
+  type NativeTools,
 } from '@foreman-code/contracts'
 import type pg from 'pg'
 import type { HarnessProfileSelection } from '@foreman-code/contracts/harness-registry'
@@ -74,8 +75,10 @@ export class PostgresOperatorRepository {
     const defaults = snapshot.value.operator
     return OperatorConfigurationVersionSchema.parse({ id: `${OPERATOR_ID}-inspection`, operatorId: OPERATOR_ID, version: 1,
       harness: defaults.harness, showThinking: defaults.showThinking ?? false,
+      ...(defaults.nativeTools ? { nativeTools: defaults.nativeTools } : {}),
       ...(defaults.harnessProfileSelection ? { harnessProfileSelection: defaults.harnessProfileSelection } : {}),
-      contentHash: defaults.harnessProfileSelection ? hash({ harness: defaults.harness, harnessProfileSelection: defaults.harnessProfileSelection }) : hash(defaults.harness),
+      contentHash: defaults.harnessProfileSelection || defaults.nativeTools
+        ? hash({ harness: defaults.harness, harnessProfileSelection: defaults.harnessProfileSelection, nativeTools: defaults.nativeTools }) : hash(defaults.harness),
       createdAt: new Date().toISOString() })
   }
 
@@ -98,13 +101,17 @@ export class PostgresOperatorRepository {
       ? await this.accountConfigurations.resolve(defaults.harness, defaults.harnessProfileSelection, { sql: client })
       : defaults.harness
     const harness = acceptedConfiguration(requested)
+    const nativePolicy = defaults.nativeTools ? { nativeTools: defaults.nativeTools } : {}
     const profile = defaults.harnessProfileSelection ? { harnessProfileSelection: defaults.harnessProfileSelection } : {}
     // Saved defaults were authorized and resolved when saved; keep those exact references.
     const skills = await operatorSkillContent(client, defaults.assignedSkills, defaults.assignedSkills)
+    const content = { harness: canonical(harness), ...skills, ...profile, ...nativePolicy }
+    const contentHash = 'assignedSkills' in skills || defaults.harnessProfileSelection || defaults.nativeTools
+      ? `sha256:${createHash('sha256').update(JSON.stringify(content)).digest('hex')}` : hash(harness)
     const configuration = OperatorConfigurationVersionSchema.parse({
       id: `${OPERATOR_ID}-config-v1-${randomUUID()}`, operatorId: OPERATOR_ID, version: 1,
-      harness, showThinking: defaults.showThinking ?? false, ...skills, ...profile,
-      contentHash: 'assignedSkills' in skills || defaults.harnessProfileSelection ? `sha256:${createHash('sha256').update(JSON.stringify({ harness: canonical(harness), ...skills, ...profile })).digest('hex')}` : hash(harness), createdAt,
+      harness, showThinking: defaults.showThinking ?? false, ...skills, ...profile, ...nativePolicy,
+      contentHash, createdAt,
     })
     const operator = OperatorAgentSchema.parse({
       id: OPERATOR_ID, role: 'operator', name: 'Operator', currentConfigurationVersionId: configuration.id,
@@ -128,7 +135,8 @@ export class PostgresOperatorRepository {
   }
 
   async updateWithClient(client: pg.ClientBase, harness: HarnessConfiguration, expectedConfigurationVersionId: string, showThinking = false,
-    assignedSkills?: readonly WorkspaceSkillReference[], harnessProfileSelection?: HarnessProfileSelection | null) {
+    assignedSkills?: readonly WorkspaceSkillReference[], harnessProfileSelection?: HarnessProfileSelection | null,
+    nativeTools?: NativeTools | null) {
       harness = acceptedConfiguration(harness)
       await client.query('select pg_advisory_xact_lock(hashtext($1))', ['application-operator'])
       const row = await client.query<{ record: unknown; current_configuration_version_id: string }>(
@@ -140,6 +148,8 @@ export class PostgresOperatorRepository {
       }
       const previous = (await client.query<{ record: unknown }>('select record from operator_configuration_versions where id = $1', [expectedConfigurationVersionId])).rows[0]
       const previousConfiguration = previous ? OperatorConfigurationVersionSchema.parse(previous.record) : undefined
+      const policy = nativeTools === null ? undefined : nativeTools ?? previousConfiguration?.nativeTools
+      const nativePolicy = policy ? { nativeTools: policy } : {}
       const selection = harnessProfileSelection === null ? undefined : harnessProfileSelection ?? previousConfiguration?.harnessProfileSelection
       if (this.accountConfigurations) {
         harness = await this.accountConfigurations.resolve(harness, selection, { sql: client })
@@ -152,9 +162,11 @@ export class PostgresOperatorRepository {
       const version = Number(versionRow.rows[0]?.version ?? 1)
       const createdAt = new Date().toISOString()
       const profile = selection ? { harnessProfileSelection: selection } : {}
+      const content = { harness: canonical(harness), showThinking, ...skills, ...profile, ...nativePolicy }
+      const contentHash = `sha256:${createHash('sha256').update(JSON.stringify(content)).digest('hex')}`
       const configuration = OperatorConfigurationVersionSchema.parse({
         id: `${OPERATOR_ID}-config-v${version}-${randomUUID()}`, operatorId: OPERATOR_ID, version,
-        harness, showThinking, ...skills, ...profile, contentHash: `sha256:${createHash('sha256').update(JSON.stringify({ harness: canonical(harness), showThinking, ...skills, ...profile })).digest('hex')}`, createdAt,
+        harness, showThinking, ...skills, ...profile, ...nativePolicy, contentHash, createdAt,
       })
       await client.query('insert into operator_configuration_versions (id, operator_id, version, record) values ($1,$2,$3,$4::jsonb)', [configuration.id, OPERATOR_ID, version, JSON.stringify(configuration)])
       const next = OperatorAgentSchema.parse({ ...operator, currentConfigurationVersionId: configuration.id, updatedAt: createdAt })

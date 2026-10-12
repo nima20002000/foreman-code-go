@@ -94,7 +94,12 @@ export class CodexStdioTransport {
     /** Process-local only; never edits the native configuration file. */
     private readonly disabledMcpServerNames: readonly string[] = [],
     private readonly onModelRefreshFailure?: () => void,
-    private readonly restartOptions: { reconnectableStdio?: boolean } = {},
+    private readonly restartOptions: {
+      reconnectableStdio?: boolean
+      nativeApps?: boolean | undefined
+      nativePlugins?: boolean
+      mcpTransportOverrides?: Record<string, string>
+    } = {},
   ) {}
 
   async start(signal?: AbortSignal): Promise<void> {
@@ -120,7 +125,13 @@ export class CodexStdioTransport {
     try {
       this.owned = spawnOwnedStdioProcess({
         binary: this.binary, args: ['app-server', '--stdio',
+          ...Object.entries(this.restartOptions.mcpTransportOverrides ?? {})
+            .flatMap(([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]),
           ...this.disabledMcpServerNames.flatMap((name) => ['-c', `mcp_servers.${name}.enabled=false`]),
+          ...(this.restartOptions.nativeApps !== undefined
+            ? ['-c', `features.apps=${this.restartOptions.nativeApps}`] : []),
+          ...(this.restartOptions.nativePlugins !== undefined
+            ? ['-c', `features.plugins=${this.restartOptions.nativePlugins}`] : []),
           ...(this.timing?.arguments ?? []),
         ], cwd: this.cwd, environment: this.environment,
         onError: (error) => this.fail(error),

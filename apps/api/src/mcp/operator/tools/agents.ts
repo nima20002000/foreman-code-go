@@ -13,7 +13,7 @@ export function registerAgentTools(server: McpServer, context: OperatorRequestCo
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'agent_list', () => context.services.agents.list(context.principal, input)))
   if (operatorToolAvailable(context, 'agent_get')) server.registerTool('agent_get', {
-    description: 'Read a logical agent and the workflows that reference it.', inputSchema: AgentGetInputSchema,
+    description: 'Read a logical agent, its saved nativeTools loading policy and the workflows that reference it. Omitted policy fields inherit host settings; Foreman Code remains role-scoped.', inputSchema: AgentGetInputSchema,
     outputSchema: ManagedAgentDetailSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'agent_get', () => context.services.agents.get(context.principal, input.workspaceId, input.agentId)))

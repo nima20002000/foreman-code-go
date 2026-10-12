@@ -68,6 +68,7 @@ export async function prepareCurrentStagedAgents(client: pg.PoolClient, principa
       role: item.agent.role, productRole: configuration.productRole, harness: harness.harness, harnessConfiguration: harness,
       model: harness.model, effort: projectHarnessEffort(harness), fastMode: harness.harness === 'codex' ? harness.serviceTier === 'priority' : undefined,
       prompt: configuration.prompt, assignedSkills: configuration.assignedSkills, graphqlTools: configuration.graphqlTools, configurationVersionId: id,
+      nativeTools: configuration.nativeTools,
       harnessProfileSelection: configuration.harnessProfileSelection,
       createdAt: old?.createdAt ?? now, updatedAt: now })
     resultant[agent.id] = id

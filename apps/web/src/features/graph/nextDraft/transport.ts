@@ -124,6 +124,7 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
         const content = configure?.type === 'agent.configure' ? {
           prompt: configure.prompt, assignedSkills: configure.assignedSkills,
           ...(configure.graphqlTools ? { graphqlTools: configure.graphqlTools } : {}),
+          ...(configure.nativeTools ? { nativeTools: configure.nativeTools } : {}),
           ...(configure.description ? { description: configure.description } : {}), ...(configure.role ? { role: configure.role } : {}),
         } : { prompt: {}, assignedSkills: [] }
         const configuration = configure?.type === 'agent.configure' ? configure.configuration : operation.configuration
@@ -142,6 +143,7 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
           ...(edit.configure ? { configuration: SupportedHarnessConfigurationSchema.parse(edit.configure.configuration), prompt: edit.configure.prompt,
             assignedSkills: edit.configure.assignedSkills, description: edit.configure.description ?? null,
             ...(edit.configure.graphqlTools ? { graphqlTools: edit.configure.graphqlTools } : {}),
+            ...(edit.configure.nativeTools ? { nativeTools: edit.configure.nativeTools } : {}),
             role: edit.configure.role ?? null } : {}),
         }
         const pending = structuredClone({ path: `${agentsPath}/${part(operation.agentId)}`, method: 'PATCH' as const, body: {

@@ -9,7 +9,7 @@ import { WorkerMcpRelayRequestSchema, WorkerMcpRelayResponseSchema, WorkerNative
   WorkerNativeOutputDeclarationsAuthorizationSchema, WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
 import { WorkerNativeOutputReadinessSchema } from '@foreman-code/contracts/worker-mcp-relay'
 import { sameCodexNativeOutputSandbox, type CodexNativeOutputQualificationInput } from '../../harnesses/codexNativeOutput.js'
-import { qualifyCodexOutputProtection } from '../../harnesses/codexOutputProtection.js'
+import { codexOutputProtectionIdentity, qualifyCodexOutputProtection } from '../../harnesses/codexOutputProtection.js'
 import type { NativeProcessRegistry } from '../../harnesses/recovery/processRegistry.js'
 import { createChannelTransferClient } from '../../byte-transfer/carrier.js'
 import { DomainError } from '../../errors.js'
@@ -54,7 +54,7 @@ export function createInstalledWorkflowNativeOutputProviders(input: {
     maxSnapshotBytes: BYTE_TRANSFER_POLICY.maxStagingBytes,
     maxCommandRecords: BYTE_TRANSFER_POLICY.maxRecords * BYTE_TRANSFER_POLICY.maxActiveGlobal }
   let storage: Promise<Awaited<ReturnType<typeof createNativeOutputBudgetLedger>>> | undefined
-  let qualified: CodexNativeOutputQualificationInput | undefined
+  let qualified: ReturnType<typeof codexOutputProtectionIdentity> | undefined
   const assertStoragePlacement = (policy: CodexNativeOutputQualificationInput['expectedSandbox']) => {
     const roots = [policy.cwd, ...policy.writableRoots,
       ...(!policy.excludeSlashTmp ? ['/tmp'] : []),
@@ -113,11 +113,12 @@ export function createInstalledWorkflowNativeOutputProviders(input: {
       }
       assertStoragePlacement(qualification.expectedSandbox)
       await initialize(signal)
-      if (!qualified || !isDeepStrictEqual(qualified, qualification)) {
+      const selected = codexOutputProtectionIdentity(qualification)
+      if (!qualified || !isDeepStrictEqual(qualified, selected)) {
         await qualifyCodexOutputProtection({ qualification, protectedDirectory: rootDirectory,
           registry: input.registry, ...input.qualification,
           assertCurrent: (bounded) => context.assertCurrent(undefined, bounded), signal })
-        qualified = structuredClone(qualification)
+        qualified = structuredClone(selected)
       }
       await context.assertCurrent(undefined, signal)
     },
