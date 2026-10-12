@@ -1,4 +1,4 @@
-import { within, waitFor } from '@testing-library/react'
+import { act, within, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { expect, it } from 'vitest'
@@ -9,7 +9,7 @@ import { computersFixture, mainTarget } from './computersTestFixture'
 
 const status = (): ComputerSyncStatus => ({ target: mainTarget, installed: true, running: true, message: null,
   folders: [{ workspaceId: 'workspace', name: 'Website', participating: true, enabled: true, revision: 1,
-    status: { workspaceId: 'workspace', path: '/home/owner/shared/workspace-id', state: 'idle', connected: true,
+    status: { workspaceId: 'workspace', path: '/projects/shared/workspace-id', state: 'idle', connected: true,
       conflicts: [], message: null } }] })
 async function open() {
   return within(document.body)
@@ -29,7 +29,7 @@ it('shows status and persists off and on with readback revisions', async () => {
   ])
   const dialog = await open()
   const toggle = await dialog.findByRole('switch', { name: 'Sync Website' })
-  expect(dialog.getByText('/home/owner/shared/workspace-id')).toBeVisible()
+  expect(dialog.getByText('/projects/shared/workspace-id')).toBeVisible()
   await userEvent.click(toggle)
   await waitFor(() => expect(toggle).not.toBeChecked())
   await userEvent.click(toggle)
@@ -127,4 +127,22 @@ it('recovers a revision conflict by refreshing before making a different save', 
   await waitFor(() => expect(dialog.getByRole('switch', { name: 'Sync Website' })).not.toBeChecked())
   expect(writes.map(input => input.expectedRevision)).toEqual([1, 2])
   expect(writes[0]!.commandId).not.toBe(writes[1]!.commandId)
+})
+
+
+it('unlocks a rejected sync change after a successful background read', async () => {
+  const fixture = computersFixture(<ComputerSyncPanel target={mainTarget} />, [
+    http.post('*/api/management/computers/sync/status', () => HttpResponse.json(status())),
+    http.post('*/api/management/computers/sync/update', () => HttpResponse.json({
+      error: { code: 'REVISION_CONFLICT', message: 'Sync settings changed.' },
+    }, { status: 409 })),
+  ])
+  const dialog = await open()
+  const toggle = await dialog.findByRole('switch', { name: 'Sync Website' })
+  await userEvent.click(toggle)
+  await dialog.findByText('Sync settings changed.')
+  expect(toggle).toBeDisabled()
+  await act(async () => { await fixture.client.invalidateQueries({ queryKey: ['computer-sync'] }) })
+  await waitFor(() => expect(toggle).toBeEnabled())
+  expect(toggle).toBeChecked()
 })

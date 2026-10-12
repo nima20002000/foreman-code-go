@@ -125,10 +125,10 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   const background = state && !busy ? chatBackgroundWork(state.activitySnapshot) : undefined
   const empty = (!draft.trim() && !attachments.hasAttachments) || attachments.hasBlockingAttachments || draft.length > 32_000
   const latest = chat.latestCommand
+  const receipt = chat.currentReceipt ?? chat.confirmedReceipt ?? chat.latestReceipt
   const error = !receipt && latest?.status === 'error' ? latest.error : undefined
   const notActive = latest?.command?.kind === 'send' && ApiError.is(error) && error.code === 'AGENT_CHAT_TURN_NOT_ACTIVE'
   const stale = ApiError.is(error) && error.code === 'AGENT_CHAT_CONTEXT_STALE'
-  const receipt = chat.currentReceipt ?? chat.confirmedReceipt ?? chat.latestReceipt
   // Capability notes describe actions available NOW, not every provider limitation while idle.
   const unavailable = state ? [...new Set([
     state.activeTurn && state.capabilities.steer === 'unavailable' ? state.capabilities.unavailable.steer : undefined,

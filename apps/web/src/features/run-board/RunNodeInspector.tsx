@@ -92,8 +92,8 @@ function NodeExecutionResult({ selection, scope, node, executionId }: {
   selection: SelectedRunState; scope: RepeatGraphScopeV3; node: RunBoardNodeSnapshot; executionId: string
 }) {
   const query = useRunNodeRead(selection, [node.id, executionId], signal => readRunExecution(scope, executionId, { signal }))
-  if (!selection.isCurrent(selection.generation) || sessionIsSwitching()) return null
   const blocked = useBlockingReadError(query)
+  if (!selection.isCurrent(selection.generation) || sessionIsSwitching()) return null
   if (blocked || query.isError && !query.data) return <p role="status">
     Execution result unavailable. {ApiError.is(query.error)
       ? <>{query.error.message} <code>{query.error.code}</code></>

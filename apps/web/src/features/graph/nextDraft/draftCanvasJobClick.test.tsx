@@ -34,22 +34,27 @@ function mount() {
   return { change, job, agent, edges }
 }
 
-it('connects Job to Agent with one selection per click', async () => {
-  const { job, agent, edges, change } = mount()
+it('selects Job then Agent without changing workflow connections', async () => {
+  const { job, agent, change } = mount()
   fireEvent.click(job())
   fireEvent.click(agent(1))
-  expect(change).toHaveBeenCalledOnce()
-  expect(edges()).toEqual(['job-node>node-1'])
+  expect(change).not.toHaveBeenCalled()
 })
 
-it('connects Agent to Job and does not rearm the Job', async () => {
-  const { job, agent, edges, change } = mount()
+it('selects Agent then Job without changing workflow connections', async () => {
+  const { job, agent, change } = mount()
   fireEvent.click(agent(0))
   fireEvent.click(job())
+  fireEvent.click(agent(1))
+  expect(change).not.toHaveBeenCalled()
+})
+
+it('creates a connection only after the connection handles are activated', async () => {
+  const { change, edges } = mount()
+  fireEvent.click(screen.getByLabelText('Connect Node 0 to another agent'))
+  fireEvent.click(screen.getByLabelText(`Connect to ${definition.name}`))
   expect(change).toHaveBeenCalledOnce()
   expect(edges()).toEqual(['node-0>job-node'])
-  fireEvent.click(agent(1))
-  expect(change).toHaveBeenCalledOnce()
 })
 
 it('shows the CI server on a saved workflow Board without adding it to the graph', async () => {

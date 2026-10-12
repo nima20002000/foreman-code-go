@@ -10,7 +10,8 @@ export function AgentHandles({ name, connectable = true }: { name: string; conne
   return <>
     {hidden.map(([id, position]) => <Handle key={id} id={id} type="source" position={position} isConnectable={false} className="n-agent-side" />)}
     <Handle id="right" type="source" position={Position.Right} isConnectable={connectable} className="n-agent-port"
-      aria-label={`Connect ${name} to another agent`} title="Drag to another agent, or select it and then the other agent" />
-    <Handle id="left" type="target" position={Position.Left} isConnectable={connectable} className="n-agent-target" />
+      aria-label={`Connect ${name} to another agent`} title="Drag this handle to another agent, or click both connection handles" />
+    <Handle id="left" type="target" position={Position.Left} isConnectable={connectable} className="n-agent-target"
+      aria-label={`Connect to ${name}`} />
   </>
 }

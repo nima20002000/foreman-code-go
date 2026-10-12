@@ -33,7 +33,7 @@ export function ProviderAccountSelect({ provider, value, onChange, disabled = fa
   const unavailable = access.discovery.isSuccess && !available
   return <div className="provider-account-select">
     <Select label="Account" value={value ?? ''} options={options}
-      disabled={disabled || !available || !query.isSuccess || Boolean(denied)}
+      disabled={disabled || !available || !query.isSuccess || access.discovery.isError || Boolean(denied)}
       hint="Choose an account on the selected computer. Manage accounts in Settings > Harnesses."
       onChange={event => onChange(event.target.value || undefined)} />
     {access.discovery.isPending || !unavailable && query.isPending ? <small role="status">Loading accounts…</small> : null}

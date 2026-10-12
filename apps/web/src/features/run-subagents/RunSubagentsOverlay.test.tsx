@@ -144,6 +144,11 @@ describe('Run subagent overlays', () => {
     expect(screen.queryByText(/subagent activity|isn't shown yet/)).not.toBeInTheDocument()
   })
   it('retains the selected helper and its draft after a temporary roster failure', async () => {
+    const capabilities = subagentCapabilities('codex-collab')
+    capabilities.sendInput = { support: 'supported', qualification: 'passed' }
+    const record = detail(child({ nativeMode: 'codex-collab', capabilities }))
+    record.availableActions.sendInput = true
+    server.use(http.get(`${base}/:subagentId`, () => HttpResponse.json(record)))
     const { client } = await mount()
     fireEvent.click(screen.getByRole('button', { name: 'Research, Codex, Running' }))
     await screen.findByText('Child answer')

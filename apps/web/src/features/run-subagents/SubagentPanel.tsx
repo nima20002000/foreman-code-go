@@ -76,10 +76,10 @@ export function SubagentPanel({ scope, subagentId, anchor, onClose }: {
   const receipt = lastCommand?.data
   const revisionConflict = ApiError.is(lastCommand?.error) && lastCommand.error.code === 'SUBAGENT_REVISION_CONFLICT'
   const unsettled = commandError || Boolean(receipt && ['accepted', 'dispatching', 'uncertain'].includes(receipt.state))
-  const allowed = (action: 'sendInput' | 'interrupt') => Boolean(!detail.isError && child && child.provider !== 'opencode' && record?.availableActions[action]
+  const allowed = (action: 'sendInput' | 'interrupt') => Boolean(child && child.provider !== 'opencode' && record?.availableActions[action]
     && child.capabilities[action].support === 'supported' && child.capabilities[action].qualification === 'passed')
   const send = (operation: 'input' | 'interrupt') => {
-    if (!child || !allowed(operation === 'input' ? 'sendInput' : 'interrupt') || pending || unsettled) return
+    if (detail.isError || !child || !allowed(operation === 'input' ? 'sendInput' : 'interrupt') || pending || unsettled) return
     command.mutate({ operation, commandId: crypto.randomUUID(), expectedRevision: child.revision, text })
   }
   const recheck = () => { if (lastCommand?.variables) command.mutate(lastCommand.variables) }
@@ -107,10 +107,10 @@ export function SubagentPanel({ scope, subagentId, anchor, onClose }: {
       {revisionConflict ? <Button size="sm" loading={detail.isFetching} onClick={() => void refresh()}>Refresh</Button>
         : unsettled && lastCommand?.variables ? <Button size="sm" disabled={pending} onClick={recheck}>Check again</Button> : null}
       {canInterrupt && <Button variant="danger"
-        disabled={pending || unsettled}
+        disabled={detail.isError || pending || unsettled}
         onClick={() => send('interrupt')}>Interrupt</Button>}
       {canSend && <Button variant="primary"
-        disabled={!text.trim() || pending || unsettled}
+        disabled={detail.isError || !text.trim() || pending || unsettled}
         onClick={() => send('input')}>Send</Button>}
     </div>
   </div> : undefined

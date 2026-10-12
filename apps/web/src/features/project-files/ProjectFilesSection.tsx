@@ -136,7 +136,7 @@ function ProjectFileItem({ workspaceId, row, onRemove }: ProjectFilesSectionProp
         const signal = controller.current?.signal
         if (signal && !download.isPending) download.mutate(signal)
       }}><Download size={16} aria-hidden="true" /></IconButton>
-      : <span className="project-file-pending">{row.file.state === 'pending' ? 'Processing…' : 'Unavailable'}</span>}
+      : <span className="project-file-pending">{row.file.state === 'pending' ? 'Upload pending' : 'Unavailable'}</span>}
     <IconButton label={`Remove ${name}`} size="sm" variant="ghost" onClick={onRemove}>
       <Trash2 size={16} aria-hidden="true" />
     </IconButton>

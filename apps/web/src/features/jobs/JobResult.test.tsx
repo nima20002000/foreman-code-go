@@ -1,13 +1,19 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { it, expect } from 'vitest'
 import { server } from '../../mocks/server'
 import { JobResult } from './JobResult'
 import { execution, logPage, verificationExecution } from './fixtures'
+import { jobKeys } from './query'
 const root = '*/api/management/workspaces/:workspaceId/jobs/executions/:id'
-function mount() { return render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><JobResult workspaceId={execution.workspaceId} executionId={execution.id} /></QueryClientProvider>) }
+function mount() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return { client, ...render(<QueryClientProvider client={client}>
+    <JobResult workspaceId={execution.workspaceId} executionId={execution.id} />
+  </QueryClientProvider>) }
+}
 function responses(value: JobExecutionRecord = execution) { server.use(http.get(root, () => HttpResponse.json({ execution: value })), http.get(`${root}/logs`, () => HttpResponse.json(logPage)), http.get(`${root}/artifacts`, () => HttpResponse.json({ artifacts: [] }))) }
 
 it('retains a valid long declared output path in its exact job result', async () => {
@@ -25,6 +31,29 @@ it('renders exit7 independently from healthy transport and missing required outp
   expect(await screen.findByText('Required artifact missing')).toBeInTheDocument()
   expect(await screen.findByText(/build failed <script>/)).toBeInTheDocument()
   expect(document.querySelector('.job-log-window script')).toBeNull()
+})
+it('retains results through a server failure and withdraws them through denial and later network failure', async () => {
+  responses()
+  const view = mount()
+  await screen.findByText('Process: build failed')
+  await screen.findByText(/build failed <script>/)
+  const queryKey = jobKeys.execution(execution.workspaceId, execution.id)
+  server.use(http.get(root, () => HttpResponse.json({ error: { code: 'TEMPORARY', message: 'Try again' } }, { status: 503 })))
+  await act(async () => { await view.client.invalidateQueries({ queryKey, exact: true }) })
+  expect(screen.getByText('Process: build failed')).toBeVisible()
+  expect(screen.getByText(/build failed <script>/)).toBeVisible()
+  expect(screen.getByText(/Result refresh failed/)).toBeVisible()
+  server.use(http.get(root, () => HttpResponse.json({ error: { code: 'FORBIDDEN', message: 'Denied' } }, { status: 403 })))
+  await act(async () => { await view.client.invalidateQueries({ queryKey, exact: true }) })
+  expect(screen.queryByText('Process: build failed')).not.toBeInTheDocument()
+  server.use(http.get(root, () => HttpResponse.error()))
+  await act(async () => { await view.client.invalidateQueries({ queryKey, exact: true }) })
+  expect(screen.queryByText('Process: build failed')).not.toBeInTheDocument()
+  responses()
+  await act(async () => { await view.client.invalidateQueries({ queryKey, exact: true }) })
+  expect(await screen.findByText('Process: build failed')).toBeVisible()
+  view.unmount()
+  view.client.clear()
 })
 it.each(['offline', 'unknown'] as const)(
   'shows persisted terminal outcomes with %s transport without possibly-running guidance', async transport => {
