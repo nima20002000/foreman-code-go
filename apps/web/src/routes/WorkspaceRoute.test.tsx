@@ -1,4 +1,5 @@
-import { screen, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 
 import { renderWithRouter } from '../test/renderWithRouter'
@@ -48,8 +49,8 @@ describe('WorkspaceRoute', () => {
     expect(screen.queryByText('Execution folder could not be checked')).not.toBeInTheDocument()
   })
 
-  it('marks the workflows destination active for the graph route', async () => {
-    renderWithRouter(
+  it('keeps Workspaces active on the graph route and opens the workflows directory', async () => {
+    const { router } = renderWithRouter(
       <WorkspaceRouteView
         workspaceId="workspace-1"
         selectedAgentId="agent-old"
@@ -58,10 +59,13 @@ describe('WorkspaceRoute', () => {
     )
 
     expect(await screen.findByTestId('workspace-stale')).toHaveTextContent('agent-old')
-    // Workflows is the workspace's workflow directory link; the graph route itself does not mark it current.
-    expect(await screen.findByTitle('Workflows')).toHaveAttribute('href', '/workspaces/workspace-1/workflows')
-    expect(screen.getByTitle('Workflows')).not.toHaveAttribute('aria-current')
-    expect(screen.getByRole('link', { name: 'Workspaces' })).toHaveClass('nav-item-active')
+    const workflows = await screen.findByRole('button', { name: 'Workflows', exact: true })
+    expect(workflows).not.toHaveAttribute('aria-current')
+    const workspaces = screen.getAllByRole('button', { name: 'Workspaces', exact: true })
+      .find(button => !button.hasAttribute('aria-expanded'))!
+    expect(workspaces).toHaveClass('nav-item-active')
+    await userEvent.click(workflows)
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/workflows'))
   })
 
   it('offers creation on an empty board without an extra button above an open graph', async () => {
