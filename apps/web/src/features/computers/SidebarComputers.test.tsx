@@ -113,11 +113,15 @@ it('opens the card on keyboard focus with a Worker last seen time and app versio
         connectionEpoch: '55555555-5555-4555-8555-555555555555' },
       phase: 'offline', dispatch: false, transfer: false, appVersion: '9.9.0', protocolVersion: 1, lastSeenAt } } })),
   ])
-  await screen.findByRole('button', { name: `${deviceName}, Worker, Offline` })
+  const device = await screen.findByRole('button', { name: `${deviceName}, Worker, Offline` })
   const user = userEvent.setup()
   await user.tab()
   await user.tab()
-  const card = await screen.findByRole('tooltip')
+  expect(device).toHaveFocus()
+  // The previously focused computer's card lingers briefly; read the card this button describes.
+  await waitFor(() => expect(device).toHaveAttribute('aria-describedby'))
+  const card = document.getElementById(device.getAttribute('aria-describedby')!)!
+  expect(card).toHaveRole('tooltip')
   expect(within(card).getByText('Worker')).toBeInTheDocument()
   expect(await within(card).findByText('· last seen 2 min ago')).toBeInTheDocument()
   expect(await within(card).findByText('9.9.1')).toBeInTheDocument()
