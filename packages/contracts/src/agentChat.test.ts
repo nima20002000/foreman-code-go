@@ -4,6 +4,18 @@ import { AgentChatStateSchema, SendAgentChatMessageRequestSchema, agentChatFixtu
 import { ReadSelectedRunChatResponseSchema } from './selectedRunChat.js';
 
 describe("agent chat contract", () => {
+  it.each(['starting', 'running', 'completed'] as const)('accepts an empty %s source transcript at revision zero', state => {
+    const context = { ...agentChatFixtures.empty.context, runId: 'source-run' };
+    const sourceTranscript = { executionId: 'source-execution', state, revision: '0',
+      messages: [], hasEarlierMessages: false };
+    const value = { ...agentChatFixtures.empty, context, sourceTranscript };
+    expect(AgentChatStateSchema.parse(value).sourceTranscript).toEqual(sourceTranscript);
+    const target = { workspaceId: context.workspaceId, workflowId: context.workflowId,
+      workflowNodeId: context.workflowNodeId, runId: context.runId, executionId: sourceTranscript.executionId };
+    const selected = ReadSelectedRunChatResponseSchema.parse({ kind: 'selected', selection: target, key: null, state: value });
+    expect(selected).toMatchObject({ kind: 'selected', state: { sourceTranscript } });
+  });
+
   it.each(['starting', 'running', 'completed'] as const)('accepts a %s source transcript without creating a conversation', state => {
     const context = { ...agentChatFixtures.empty.context, runId: 'source-run' };
     const sourceTranscript = { executionId: 'source-execution', state, revision: '1',
