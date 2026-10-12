@@ -23,6 +23,10 @@ describe('planned API restart during a native workflow turn', () => {
           'persisted active execution')
           expect(before).toHaveLength(1)
           const execution = before[0]!
+          // Session binding precedes turn admission; restart only after Main has accepted the native turn.
+          await waitForRemoteReview(() => fixture.details(started.run.id), details =>
+            details.activity.some(activity => activity.harnessExecutionId === execution.id
+              && activity.payload.nativeEventType === 'turn.started'), 'persisted native turn admission')
           const reader = await fixture.access.issue({ name: 'Restart readback reader', audience: 'operator',
             expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['runs:read'],
               scope: { workspaceIds: [started.run.workspaceId], workflowIds: [started.run.workflowId] } }] })
