@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.80] - 2026-10-12
+
+### Fixed
+
+- Running graph work and interval checks survive an API restart: preservation is decided before handoff cancellation, and closure retries keep that decision.
+
 ## [0.0.79] - 2026-10-12
 
 ### Fixed
