@@ -15,15 +15,16 @@ async function fixture(t) {
   return join(directory, 'volume.ext4');
 }
 
-test('creating a quota volume keeps every backing byte physically allocated after formatting', async t => {
+test('creating a quota volume preserves its finite size while allocating only filesystem metadata', async t => {
   const backing = await fixture(t);
   execFileSync('/bin/sh', [createVolume, backing, '64M'], {
     env: environment, timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'],
   });
   const details = await stat(backing);
   assert.equal(details.size, 64 * 2 ** 20);
-  assert.ok(details.blocks * 512 >= details.size,
-    `Only ${details.blocks * 512} of ${details.size} backing bytes remain allocated`);
+  assert.ok(details.blocks * 512 > 0);
+  assert.ok(details.blocks * 512 < details.size / 2,
+    `${details.blocks * 512} of ${details.size} backing bytes were allocated`);
   const filesystem = execFileSync('dumpe2fs', ['-h', backing], {
     env: environment, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'],
   });
