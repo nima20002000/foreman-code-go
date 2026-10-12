@@ -141,3 +141,5 @@
   .ci-server-node[data-state='running'] .ci-server-bay:nth-child(3) .ci-server-led { animation-delay: -.7s; }
 }
 @keyframes ci-server-blink { 0% { opacity: 1; } 100% { opacity: .25; } }
+/* The handoff limit shows only while its edge is hovered or the control has keyboard focus. */
+.pinned-work-limit-object[data-visible='false']:not(:focus-within) { opacity: 0; }

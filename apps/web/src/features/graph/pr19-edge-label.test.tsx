@@ -18,7 +18,7 @@ vi.mock('@xyflow/react', async (original) => ({ ...await original<typeof import(
 }))
 afterEach(cleanup)
 describe('PR19 custom handoff labels', () => {
-  it('renders an explicit label through the production edge and preserves it after moving and saving', () => {
+  it('names the edge by its explicit label without drawing it, and preserves it after moving and saving', () => {
     // Minimal graph data; these pure mappers preserve unrelated domain metadata.
     const workflow = { id: 'named-workflow', workspaceId: 'workspace', name: 'Named workflow', executionSemanticsVersion: 3, entryNodeId: 'a', executionCondition: { kind: 'manual' }, nodes: [{ id: 'a', agentId: 'agent-a' }, { id: 'b', agentId: 'agent-b' }],
       edges: [{ id: 'edge', source: 'a', target: 'b', kind: 'execution', label: 'Only after review approval' }] } as WorkflowDefinition
@@ -27,7 +27,7 @@ describe('PR19 custom handoff labels', () => {
     const props = { ...edge, sourceX: 0, sourceY: 0, targetX: 200, targetY: 0,
       sourcePosition: Position.Right, targetPosition: Position.Left } as EdgeProps<GraphEdge>
     render(<QueryClientProvider client={new QueryClient()}><ReactFlowProvider><GraphPresentationProvider><svg><HandoffEdge {...props} /></svg></GraphPresentationProvider></ReactFlowProvider></QueryClientProvider>)
-    expect(screen.getByText('Only after review approval')).toBeInTheDocument()
+    expect(screen.queryByText('Only after review approval')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('group', { name: /Only after review approval/ }))
     expect(screen.getByRole('button', { name: /only after review approval/i })).toBeInTheDocument()
     const moved = graph.nodes.map((node) => ({ ...node, position: { x: node.position.x + 50, y: node.position.y + 10 } }))
