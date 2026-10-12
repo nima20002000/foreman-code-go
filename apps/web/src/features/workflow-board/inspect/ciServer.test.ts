@@ -28,6 +28,14 @@ describe('CI server lights', () => {
     expect(ciTransfers(finished, finished)).toEqual([])
   })
 
+  it('reports a request with a canceled part and no failure as canceled', () => {
+    const states = ciGroupStates([job('coder', group(8), 'canceled'), job('coder', group(8), 'passed')])
+    expect(states.get(group(8))).toEqual({ nodeId: 'coder', outcome: 'canceled' })
+    expect(ciServerSummary([job('coder', group(8), 'canceled'), job('coder', group(8), 'passed')]))
+      .toMatchObject({ state: 'idle', label: 'Last CI canceled' })
+    expect(ciGroupStates([job('coder', group(9), 'canceled'), job('coder', group(9), 'failed')]).get(group(9))?.outcome).toBe('failed')
+  })
+
   it('sends a request that finished between reads out and back', () => {
     expect(ciTransfers(new Map(), ciGroupStates([job('coder', group(3), 'passed')]))).toEqual([
       { key: `${group(3)}:request`, nodeId: 'coder', direction: 'request' },

@@ -29,7 +29,7 @@ export type CiGroupStates = ReadonlyMap<string, { nodeId: string; outcome: Group
 function outcomeOf(jobs: readonly CiRunJob[]): GroupOutcome {
   if (jobs.some(isActiveCiJob)) return 'active'
   if (jobs.some((job) => job.ci.state === 'failed' || job.ci.state === 'lost')) return 'failed'
-  return jobs.every((job) => job.ci.state === 'canceled') ? 'canceled' : 'passed'
+  return jobs.some((job) => job.ci.state === 'canceled') ? 'canceled' : 'passed'
 }
 
 export function ciGroupStates(jobs: readonly CiRunJob[]): CiGroupStates {

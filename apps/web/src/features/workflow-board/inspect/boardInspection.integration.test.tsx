@@ -580,6 +580,7 @@ describe('CI server on the Board', () => {
         computer: { hostRef: { kind: 'cloud', mainId: 'main-1', provider: 'github', slot: 0 }, label: 'GitHub Actions 1' } } })
     let jobs: unknown[] = []
     const requested: (string | null)[] = []
+    let logReads = 0
     const ci = `/api/management/workspaces/${scope.workspaceId}/ci`
     server.use(
       http.get(ci, ({ request }) => HttpResponse.json({ runId: new URL(request.url).searchParams.get('runId'), jobs, truncated: false })),
@@ -592,7 +593,7 @@ describe('CI server on the Board', () => {
           return tests.length ? [{ ...file, tests }] : []
         }) } })
       }),
-      http.get(`${ci}/${ticket}/logs`, () => HttpResponse.json({ text: '::step unit-api\nTests  1 failed | 1 passed', nextOffset: 40, logBytes: 40 })),
+      http.get(`${ci}/${ticket}/logs`, () => { logReads++; return HttpResponse.json({ text: '::step unit-api\nTests  1 failed | 1 passed', nextOffset: 40, logBytes: 40 }) }),
     )
     const { cache } = await mount(href(scope))
     const serverNode = async (label: RegExp) => (await within(pinnedCanvas()).findByRole('button', { name: label })).closest<HTMLElement>('.n-agent')!
@@ -644,8 +645,24 @@ describe('CI server on the Board', () => {
 
     await user.click(within(dialog).getByRole('tab', { name: 'Log' }))
     expect(await within(dialog).findByLabelText('Log tail')).toHaveTextContent('Tests 1 failed | 1 passed')
+    // The filter survives a visit to another tab.
+    await user.click(within(dialog).getByRole('tab', { name: 'Tests' }))
+    const kept = within(dialog).getByRole('group', { name: 'Show tests by status' })
+    expect(within(kept).getByRole('button', { name: 'Passed 1' })).toHaveAttribute('aria-pressed', 'false')
+    expect(within(kept).getByRole('button', { name: 'Skipped 1' })).toHaveAttribute('aria-pressed', 'false')
+    expect(await within(dialog).findByRole('list', { name: 'Test results' })).not.toHaveTextContent('save writes the record')
+    expect(requested.at(-1)).toBe('failed')
+    await user.click(within(dialog).getByRole('tab', { name: 'Log' }))
+    await within(dialog).findByLabelText('Log tail')
     await user.click(within(dialog).getByRole('button', { name: 'Close CI server' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'CI server' })).not.toBeInTheDocument())
+    // Closed from the Log tab, the dialog reads no log, even when the job runs again.
+    const reads = logReads
+    jobs = [job('running')]
+    await refresh()
+    await serverNode(/^CI server, 1 running/)
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)) })
+    expect(logReads).toBe(reads)
   }, 20_000)
 
   it('keeps the CI server state but sends no lights under reduced motion', async () => {

@@ -53,20 +53,24 @@ export function CiServerDialog({ open, onOpenChange, scope, jobs, names, truncat
 }) {
   const [tab, setTab] = useState<Tab>('jobs')
   const [selectedId, setSelectedId] = useState<string>()
+  // Kept here so the status filter survives a visit to another tab.
+  const [statuses, setStatuses] = useState<CiTestStatus[]>([...STATUSES])
   const selected = jobs.find((job) => job.ticketId === selectedId)
   const agent = (job: CiRunJob) => names.get(job.requester.nodeId) ?? job.requester.nodeName
   const show = (job: CiRunJob) => { setSelectedId(job.ticketId); setTab('tests') }
   return <Dialog open={open} onOpenChange={onOpenChange} size="xl" className="ci-server-dialog" title="CI server"
     closeLabel="Close CI server" description="CI jobs the Agents of this Run requested, on Host CI, GitHub Actions or CircleCI.">
-    {error ? <Alert tone="warning" title="CI jobs could not be read.">
+    {/* The shared Dialog keeps its children while closed; nothing here may poll then. */}
+    {open ? <>{error ? <Alert tone="warning" title="CI jobs could not be read.">
       {jobs.length ? 'The list shows the last jobs read.' : 'Reading CI needs the CI read grants for this workspace.'}</Alert> : null}
     <Tabs label="CI server" value={tab} onValueChange={(value) => setTab(value as Tab)} keepMounted={false} items={[
       { value: 'jobs', label: 'Jobs', badge: jobs.length, content: loading ? <Spinner label="Loading CI jobs" />
         : <CiJobsTable jobs={jobs} agent={agent} selectedId={selected?.ticketId} truncated={truncated} onShow={show} /> },
       { value: 'tests', label: 'Tests', disabled: !selected,
-        content: selected ? <CiJobTests scope={scope} job={selected} agent={agent(selected)} /> : null },
+        content: selected ? <CiJobTests scope={scope} job={selected} agent={agent(selected)}
+        statuses={statuses} onStatusesChange={setStatuses} /> : null },
       { value: 'log', label: 'Log', disabled: !selected, content: selected ? <CiJobLog scope={scope} job={selected} /> : null },
-    ]} />
+    ]} /></> : null}
   </Dialog>
 }
 
@@ -105,8 +109,8 @@ function CiJobHeader({ job, agent }: { job: CiRunJob; agent?: string }) {
   </p>
 }
 
-function CiJobTests({ scope, job, agent }: { scope: RepeatGraphScopeV3; job: CiRunJob; agent: string }) {
-  const [statuses, setStatuses] = useState<CiTestStatus[]>([...STATUSES])
+function CiJobTests({ scope, job, agent, statuses, onStatusesChange }: { scope: RepeatGraphScopeV3; job: CiRunJob; agent: string
+  statuses: readonly CiTestStatus[]; onStatusesChange(statuses: CiTestStatus[]): void }) {
   const selected = STATUSES.filter((status) => statuses.includes(status))
   const query = useQuery({
     queryKey: [...runInspectionQueryKey(scope), 'ci-tests', job.ticketId, selected.join(','), job.ci.state],
@@ -116,8 +120,8 @@ function CiJobTests({ scope, job, agent }: { scope: RepeatGraphScopeV3; job: CiR
   })
   const results = query.data?.ticketId === job.ticketId ? query.data.tests : undefined
   const counts = results?.summary ?? job.tests
-  const toggle = (status: CiTestStatus) => setStatuses((current) => current.includes(status)
-    ? current.filter((value) => value !== status) : [...current, status])
+  const toggle = (status: CiTestStatus) => onStatusesChange(statuses.includes(status)
+    ? statuses.filter((value) => value !== status) : [...statuses, status])
   return <div className="ci-server-tests">
     <CiJobHeader job={job} agent={agent} />
     <div className="ci-test-filters" role="group" aria-label="Show tests by status">
@@ -131,7 +135,7 @@ function CiJobTests({ scope, job, agent }: { scope: RepeatGraphScopeV3; job: CiR
         <Button size="sm" onClick={() => void query.refetch()}>Retry</Button></Alert>
       : !results ? <EmptyState icon="terminal" title="No test results for this job"
         description={isActiveCiJob(job) ? 'Results arrive when the job finishes.'
-          : 'Unit and integration jobs report their tests when they finish; other suites have only a log.'} />
+          : 'Vitest unit and integration jobs report their tests when they finish; other jobs have only a log.'} />
       : <CiTestFiles files={results.files} truncated={results.truncated} />}
   </div>
 }

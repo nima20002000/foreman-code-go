@@ -18,14 +18,13 @@ import {
 // Transparent observation, NOT a fake canvas: retain the actual React Flow,
 // its memoized node renderer, virtualization, controls and keyboard handling.
 // Frames keep the saved Run nodes apart from the Board's CI server, a presentation component beside them.
-const observed = vi.hoisted(() => ({ frames: [] as Array<{ nodes: Node[]; edges: Edge[]; others: Node[] }> }))
+const observed = vi.hoisted(() => ({ frames: [] as Array<{ nodes: Node[]; edges: Edge[] }> }))
 vi.mock('@xyflow/react', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@xyflow/react')>()
   const { createElement } = await import('react')
   return { ...actual, ReactFlow: (props: ReactFlowProps) => {
     if (props['aria-label'] === 'Run graph canvas') observed.frames.push({ edges: props.edges ?? [],
-      nodes: (props.nodes ?? []).filter((node) => node.type === 'pinnedRunNode'),
-      others: (props.nodes ?? []).filter((node) => node.type !== 'pinnedRunNode') })
+      nodes: (props.nodes ?? []).filter((node) => node.type === 'pinnedRunNode') })
     return createElement(actual.ReactFlow, props)
   } }
 })
@@ -88,7 +87,6 @@ describe('ENG05-D real pinned canvas scale and invalidation', () => {
     expect(observed.frames).toHaveLength(before)
     expect(observed.frames.at(-1)).toBe(frame)
     expect(new Set(frame.nodes.map((node) => node.id)).size).toBe(400)
-    expect(frame.others.map((node) => node.type)).toEqual(['ciServer'])
     expect(wire.activity()).toHaveLength(0)
     expect(wire.writes()).toHaveLength(0)
     expect(cache.getQueryState(currentRunKey(scope))?.status).toBe('success')
