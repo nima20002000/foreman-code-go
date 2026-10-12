@@ -587,8 +587,8 @@ export class HostCiService {
         .filter(computer => !hostRequired || computer.hostRef.kind !== 'cloud')
         .filter(computer => computer.hostRef.kind !== 'cloud' || !computer.hostRef.provider
           || !run.unstartedProviders?.includes(computer.hostRef.provider))
-        .sort((left, right) => preferred(right) - preferred(left)
-          || Number(right.key === run.plannedHostKey) - Number(left.key === run.plannedHostKey)
+        .sort((left, right) => Number(right.key === run.plannedHostKey) - Number(left.key === run.plannedHostKey)
+          || preferred(right) - preferred(left)
           || right.priority - left.priority)
       for (const computer of order) {
         if (computer.hostRef.kind === 'cloud' && computer.hostRef.provider
