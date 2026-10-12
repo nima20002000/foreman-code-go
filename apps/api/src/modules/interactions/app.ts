@@ -17,6 +17,8 @@ import { WORKER_NATIVE_OUTPUT_TOOL_NAMES, WorkerNativeOutputOperationSchema } fr
 import { resolveImmutableApprovalRoute } from '../workflows/approvalRoutes.js'
 import { assertWave25WorkerBinding } from './wave25/credentialAuthority.js'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { AgentRunStatus } from '@foreman-code/contracts'
+import { AgentRunStatusService } from '../runs/agentRunStatus.js'
 import type pg from 'pg'
 
 import { workerScope, workerScopesForAction, hasWorkerAction, requireReadableInteraction, requireRespondableInteraction } from '../access/appPolicy.js'
@@ -59,6 +61,8 @@ export interface AppInteractionService {
   canRespond(principal: ManagementPrincipal): Promise<boolean>
   /** The bound Agent's product role and the Foreman Code MCP tools enabled for its pinned configuration and node. */
   toolAccess(principal: ManagementPrincipal): Promise<WorkerToolAccess>
+  /** Bounded status of the caller's own Run; only nodes with interval checks may read it. */
+  runStatus?(principal: ManagementPrincipal): Promise<AgentRunStatus>
   list(principal: ManagementPrincipal, input: unknown): Promise<unknown>
   get(principal: ManagementPrincipal, interactionId: string, contentCursor?: string): Promise<unknown>
   respond(principal: ManagementPrincipal, input: unknown, options?: InteractionResponseOptions): Promise<unknown>
@@ -71,6 +75,7 @@ export class PostgresAppInteractionService implements AppInteractionService {
     private readonly commands: PostgresCommandCoordinator,
     private readonly orchestration?: Pick<InteractionService, 'respond'> & Partial<Pick<InteractionService, 'readActivity'>>,
   ) {}
+  runStatus(principal: ManagementPrincipal): Promise<AgentRunStatus> { return new AgentRunStatusService(this.pool).read(principal) }
   /** Local shared directory; the harness still controls whether the Agent may write there. */
   syncedFolder?: (workspaceId: string, hostRef: { kind: 'main' } | { kind: 'device'; deviceId: string }) => Promise<string | null>
 
@@ -133,7 +138,7 @@ export class PostgresAppInteractionService implements AppInteractionService {
     workerScope(principal)
     // The Run pins the exact configuration version and workflow version; both are immutable for this credential.
     const result = await this.pool.query<{ role: string | null; defaults: unknown; override: unknown;
-      harness: unknown; artifact_outputs: unknown; purpose: string; local_outputs: boolean }>(
+      harness: unknown; artifact_outputs: unknown; purpose: string; local_outputs: boolean; interval: unknown }>(
       `select c.record->>'productRole' as role, c.record->'graphqlTools' as defaults,
          c.record->'harness' as harness,b.purpose,
          ((p.run_id is null and r.record#>>'{executionLocation,runnerId}'='runner-local')
@@ -141,7 +146,9 @@ export class PostgresAppInteractionService implements AppInteractionService {
          (select n->'graphqlTools' from jsonb_array_elements(v.record->'definition'->'nodes') n
           where n->>'id'=e.workflow_node_id limit 1) as override,
          (select n->'artifactOutputs' from jsonb_array_elements(v.record->'definition'->'nodes') n
-          where n->>'id'=e.workflow_node_id limit 1) as artifact_outputs
+          where n->>'id'=e.workflow_node_id limit 1) as artifact_outputs,
+         (select n->'interval' from jsonb_array_elements(v.record->'definition'->'nodes') n
+          where n->>'id'=e.workflow_node_id limit 1) as interval
        from worker_credential_bindings b
        join runs r on r.id=b.run_id
        join agent_configuration_versions c on c.id=(r.record->'agentConfigurationVersionIds'->>b.agent_id)
@@ -156,7 +163,7 @@ export class PostgresAppInteractionService implements AppInteractionService {
     const role = row?.role === 'orchestrator' ? 'orchestrator' : 'coder'
     const defaults = row?.defaults == null ? undefined : GraphqlToolDefaultsSchema.parse(row.defaults)
     const override = row?.override == null ? undefined : GraphqlToolOverrideSchema.parse(row.override)
-    const tools = effectiveGraphqlTools(role, defaults, override).filter(tool => {
+    const tools = effectiveGraphqlTools(role, defaults, override, row?.interval != null).filter(tool => {
       const operation = WorkerNativeOutputOperationSchema.options.find(operation =>
         WORKER_NATIVE_OUTPUT_TOOL_NAMES[operation] === tool)
       if (!operation) return true

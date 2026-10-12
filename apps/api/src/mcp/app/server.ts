@@ -2,6 +2,7 @@ import { MCP_DISPLAY_NAME, PRODUCT_SLUG } from '@foreman-code/contracts/product'
 import { McpServer } from '@modelcontextprotocol/server'
 import { cacheToolSchemaConversions } from '../shared/schemaCache.js'
 import { z } from 'zod'
+import { AgentRunStatusSchema, GRAPHQL_AGENT_TOOLS } from '@foreman-code/contracts'
 
 import { invokeAppTool } from './invoke.js'
 import {
@@ -62,6 +63,15 @@ export async function registerAppTools(server: McpServer, context: AppRequestCon
   }, async (input) => invokeAppTool(context, 'interaction_get', () => context.interactions.get(
     context.principal, input.interactionId, input.contentCursor,
   )))
+
+  const runStatus = context.interactions.runStatus?.bind(context.interactions)
+  if (runStatus) server.registerTool('run_status_get', {
+    description: GRAPHQL_AGENT_TOOLS.run_status_get.description
+      + ' Use it during interval checks to look for failed or stuck nodes, failing CI and repeated errors.',
+    inputSchema: z.object({}).strict(),
+    outputSchema: AgentRunStatusSchema,
+    annotations: readAnnotations,
+  }, async () => invokeAppTool(context, 'run_status_get', () => runStatus(context.principal)))
 
   if (await context.interactions.canRespond(context.principal)) {
     server.registerTool('interaction_respond', {
