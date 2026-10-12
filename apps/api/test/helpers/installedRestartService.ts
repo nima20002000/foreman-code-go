@@ -50,24 +50,19 @@ export async function installedRestartService(directory: string, configuration: 
     recursive: true, filter: path => path !== join(repository, 'packages/contracts/node_modules'),
   })
   await deployProductionApi(async (command: string, args: string[]) => {
-    const installationArgs = args.includes('install') ? [...args, '--prod=false'] : args
-    if (args.includes('install')) {
-      await mkdir(join(api, 'test/helpers'), { recursive: true })
-      await copyFile(join(repository, 'apps/api/test/helpers/testPool.mjs'), join(api, 'test/helpers/testPool.mjs'))
-    }
-    // Restoration loads the database guard from stable installed dependencies.
-    const guard = join(repository, 'scripts/test-postgres-guard.mjs')
-    const nodeOptions = process.env.NODE_OPTIONS?.replaceAll(guard, join(release, 'scripts/test-postgres-guard.mjs'))
+    // The disposable deployment workspace is discarded, so it needs no dependency restoration.
+    if (args.includes('install')) return
     try {
-      await execute(command, installationArgs, { cwd: deployment, maxBuffer: 4 * 1024 * 1024,
-        env: { ...process.env, CI: 'true', npm_config_offline: 'true',
-          ...(args.includes('install') && nodeOptions ? { NODE_OPTIONS: nodeOptions } : {}) } })
+      await execute(command, args, { cwd: deployment, maxBuffer: 4 * 1024 * 1024,
+        env: { ...process.env, CI: 'true', npm_config_offline: 'true' } })
     } catch (error) {
       const output = error as Error & { stdout?: string; stderr?: string; code?: unknown; signal?: unknown }
       throw new Error(`${output.message} (code ${output.code}, signal ${output.signal})\n`
         + `${output.stderr ?? ''}\n${output.stdout ?? ''}`, { cause: error })
     }
   }, api)
+  await mkdir(join(api, 'test/helpers'), { recursive: true })
+  await copyFile(join(repository, 'apps/api/test/helpers/testPool.mjs'), join(api, 'test/helpers/testPool.mjs'))
   const source = join(repository, 'apps/api/src')
   await cp(source, join(api, 'dist'), { recursive: true, filter: path => !path.endsWith('.ts') })
   for (const path of await sources(source)) {

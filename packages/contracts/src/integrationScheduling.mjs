@@ -4,6 +4,10 @@ export const requirements = new Map([
   ['apps/api/test/operator-management-file-authority.integration.test.ts', ['nativeCgroupDelegation']],
   ['apps/api/test/test-database-startup.integration.test.ts', ['testDatabaseStartup']],
   ['apps/api/test/workflow-systemd-restart.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/workflow-systemd-restart-active.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/workflow-systemd-restart-writable-source.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/workflow-systemd-restart-admitting-interval.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/workflow-systemd-restart-failed-admission.integration.test.ts', ['installedWorkerHost']],
   ['apps/api/test/native-service-restart.integration.test.ts', ['installedWorkerHost']],
   ['apps/api/test/computer-workflow-save.regression-directories.integration.test.ts', ['installedWorkerHost']],
   ['apps/api/test/computer-workflow-save.regression-reservation-cleanup-preparing.integration.test.ts', ['installedWorkerHost']],
@@ -39,6 +43,11 @@ export const requirements = new Map([
 const startupFile = 'apps/api/test/dev-startup.integration.test.ts'
 // These files measure bounded startup/latency while exercising shared host resources.
 export const exclusiveIntegrationFiles = [startupFile,
+  // Keep installed API packaging sequential on each user-systemd host.
+  'apps/api/test/workflow-systemd-restart-active.integration.test.ts',
+  'apps/api/test/workflow-systemd-restart-writable-source.integration.test.ts',
+  'apps/api/test/workflow-systemd-restart-admitting-interval.integration.test.ts',
+  'apps/api/test/workflow-systemd-restart-failed-admission.integration.test.ts',
   'apps/api/test/test-startup-isolation-environment.integration.test.ts',
   'apps/api/test/test-startup-isolation-native-storage.integration.test.ts',
   'apps/api/test/test-startup-isolation-workspace-storage.integration.test.ts',

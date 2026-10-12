@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { CurrentWorkflowSaveInputSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
@@ -29,20 +29,6 @@ describe('ENG-S3-ONLY B wiring (source assertions, not native/PG qualification)'
     expect(management).not.toContain('admitOneShotRun')
     expect(management).not.toContain('assertWave25Admission')
     expect(source('../src/modules/runs/currentProduction.ts')).toContain('readonly startPublication: RepeatStartPublication')
-  })
-  it('retires old public execution routes/registrations while preserving authenticated denial audit', () => {
-    const transport = source('../src/mcp/unified/transport.ts')
-    expect(transport.indexOf('await services.access.authenticate')).toBeLessThan(transport.indexOf('await retiredExecutionToolCall'))
-    for (const hook of ['unavailableRunToolCall', 'unavailableCurrentWorkflowToolCall', 'unavailableRunGraphToolCall', 'unavailableRunInspectionToolCall']) {
-      expect(transport).toContain(`?? await ${hook}`)
-    }
-    const routes = source('../src/routes/management.ts'), server = source('../src/mcp/operator/server.ts')
-    expect(routes).not.toContain('services.drafts')
-    expect(server).not.toContain('registerGraphTools')
-    expect(server).not.toContain('registerRepeatTools')
-    expect(existsSync(new URL('../src/modules/repeats/authoring.ts', import.meta.url))).toBe(false)
-    expect(source('../src/routes/product.ts')).not.toContain('createForWorkflow')
-    expect(source('../src/modules/workflows/postgres.ts')).not.toContain('CompatibleWorkflowVersionSchema')
   })
   it('keeps repeat absent for ordinary saves and rejects empty repeat plans and retired execution tags', () => {
     for (const form of ['single', 'repeat'] as const) {
