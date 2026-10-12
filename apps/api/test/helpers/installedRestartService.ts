@@ -35,18 +35,31 @@ export async function installedRestartService(directory: string, configuration: 
   await mkdir(dirname(api), { recursive: true, mode: 0o700 })
   await cp(join(repository, 'scripts'), join(release, 'scripts'), { recursive: true })
   await cp(join(repository, 'packages/contracts/src'), join(release, 'packages/contracts/src'), { recursive: true })
+  // Legacy pnpm deployment changes its source workspace's dependency selection.
+  const deployment = join(directory, 'deployment-source')
+  await mkdir(join(deployment, 'scripts'), { recursive: true, mode: 0o700 })
+  for (const name of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']) {
+    await copyFile(join(repository, name), join(deployment, name))
+  }
+  await copyFile(join(repository, 'scripts/require-pnpm.mjs'), join(deployment, 'scripts/require-pnpm.mjs'))
+  for (const name of ['api', 'web', 'worker']) {
+    await mkdir(join(deployment, 'apps', name), { recursive: true })
+    await copyFile(join(repository, 'apps', name, 'package.json'), join(deployment, 'apps', name, 'package.json'))
+  }
+  await cp(join(repository, 'packages/contracts'), join(deployment, 'packages/contracts'), {
+    recursive: true, filter: path => path !== join(repository, 'packages/contracts/node_modules'),
+  })
   await deployProductionApi(async (command: string, args: string[]) => {
     const installationArgs = args.includes('install') ? [...args, '--prod=false'] : args
     if (args.includes('install')) {
       await mkdir(join(api, 'test/helpers'), { recursive: true })
       await copyFile(join(repository, 'apps/api/test/helpers/testPool.mjs'), join(api, 'test/helpers/testPool.mjs'))
     }
-    // Keep the same database guard on stable installed dependencies while pnpm
-    // replaces the workspace's modules during deployment and restoration.
+    // Restoration loads the database guard from stable installed dependencies.
     const guard = join(repository, 'scripts/test-postgres-guard.mjs')
     const nodeOptions = process.env.NODE_OPTIONS?.replaceAll(guard, join(release, 'scripts/test-postgres-guard.mjs'))
     try {
-      await execute(command, installationArgs, { cwd: repository, maxBuffer: 4 * 1024 * 1024,
+      await execute(command, installationArgs, { cwd: deployment, maxBuffer: 4 * 1024 * 1024,
         env: { ...process.env, CI: 'true', npm_config_offline: 'true',
           ...(args.includes('install') && nodeOptions ? { NODE_OPTIONS: nodeOptions } : {}) } })
     } catch (error) {

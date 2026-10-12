@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import { inspectQuotaHelperAbi } from '../../../scripts/quota-helper-abi.mjs';
 import { persistentFixtureRoot } from './fixtureStorage.mjs';
 
@@ -13,9 +13,23 @@ const targets = [
   'ubuntu-24.04-x64-node-22.23.2-target.json', 'ubuntu-26.04-x64-node-22.23.2-target.json',
 ];
 
+const containers = await mkdtemp(join(persistentFixtureRoot, 'quota-helper-containers-'));
+const storage = ['--root', join(containers, 'storage'), '--runroot', join(containers, 'run')];
+const podman = (args, timeout = 60_000) => spawnSync('podman', [...storage, ...args], {
+  encoding: 'utf8', timeout,
+});
+const images = new Set();
+after(async () => {
+  // Rootless image layers can belong to subordinate UIDs; Podman removes its own store.
+  const cleanup = podman(['system', 'reset', '--force']);
+  assert.ifError(cleanup.error);
+  assert.equal(cleanup.status, 0, cleanup.stderr);
+  await rm(containers, { recursive: true, force: true });
+});
+
 for (const name of targets) {
   test(`the released quota observer loads on ${name}`, { timeout: 180_000 }, async t => {
-    const directory = await mkdtemp(join(persistentFixtureRoot, 'quota-helper-release-'));
+    const directory = await mkdtemp(join(containers, 'release-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const output = join(directory, 'release');
     const build = spawnSync(process.execPath, [join(repository, 'scripts/build-worker-artifact.mjs'),
@@ -27,14 +41,20 @@ for (const name of targets) {
     const requirements = await inspectQuotaHelperAbi(helper, manifest.target);
     t.diagnostic(JSON.stringify({ target: manifest.target, requirements }));
     const image = `docker.io/library/ubuntu:${manifest.target.osRelease}`;
-    const libc = spawnSync('podman', ['run', '--rm', '--network=none', '--read-only', '--cap-drop=all',
-      image, 'getconf', 'GNU_LIBC_VERSION'], { encoding: 'utf8', timeout: 60_000 });
+    if (!images.has(image)) {
+      const pull = podman(['pull', image], 120_000);
+      assert.ifError(pull.error);
+      assert.equal(pull.status, 0, pull.stderr);
+      images.add(image);
+    }
+    const libc = podman(['run', '--pull=never', '--rm', '--network=none', '--read-only', '--cap-drop=all',
+      image, 'getconf', 'GNU_LIBC_VERSION']);
     assert.ifError(libc.error);
     assert.equal(libc.status, 0, libc.stderr);
     assert.equal(libc.stdout.trim().replace('glibc ', 'glibc-'), manifest.target.libc);
-    const probe = spawnSync('podman', ['run', '--rm', '--network=none', '--read-only', '--cap-drop=all',
+    const probe = podman(['run', '--pull=never', '--rm', '--network=none', '--read-only', '--cap-drop=all',
       '--env', 'LD_BIND_NOW=1', '--volume', `${helper}:/observer:ro`, image,
-      '/observer'], { encoding: 'utf8', timeout: 60_000 });
+      '/observer']);
     assert.ifError(probe.error);
     // With no paths the read-only observer exits before filesystem or quota access.
     assert.equal(probe.status, 2, probe.stderr);
