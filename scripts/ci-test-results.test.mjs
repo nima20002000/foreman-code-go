@@ -86,7 +86,7 @@ process.exit(3)
     env: { ...process.env, SUITE: 'unit-web', SCOPE: 'full', SLICE: '1/3', DURATIONS_INPUT: '',
       DURATIONS_OUTPUT: join(directory, 'reports', 'durations.json'), TEST_RESULTS_OUTPUT: output,
       CI_STATE: join(directory, 'state'), PATH: `${directory}${delimiter}${process.env.PATH}`,
-      SEEN_FILE: join(directory, 'seen.json') },
+      SEEN_FILE: join(directory, 'seen.json'), CI_HOST_RUNNER: '0' },
   })
   assert.equal(result.status, 3, result.stderr)
   assert.equal(JSON.parse(readFileSync(join(directory, 'seen.json'), 'utf8')), null)
