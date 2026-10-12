@@ -63,6 +63,14 @@ function reportScope(report: BugReport): AuthorizedResource {
   }
 }
 
+function reportForCaller(
+  report: BugReportCreateResult['report'],
+  principalId: string,
+): BugReportCreateResult['report'] {
+  if ('reporter' in report && report.reporter.principalId === principalId) return report
+  return { id: report.id, status: report.status, title: report.title }
+}
+
 export class BugReportService {
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator) {}
 
@@ -116,14 +124,18 @@ export class BugReportService {
         })
         const recorded = await recordBugReport(sql, report)
         return {
-          report: recorded.report,
+          report: reportForCaller(recorded.report, current.id),
           deduplicated: recorded.outcome !== 'created',
           outcome: recorded.outcome,
           message: reportMessage(recorded.report, recorded.outcome),
         }
       },
     })
-    return { ...result.value, replayed: result.replayed }
+    return {
+      ...result.value,
+      report: reportForCaller(result.value.report, current.id),
+      replayed: result.replayed,
+    }
   }
 
   async list(principal: ManagementPrincipal, raw: BugReportListInput) {

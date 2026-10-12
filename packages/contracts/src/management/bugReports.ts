@@ -76,7 +76,8 @@ export const BugReportCloseInputSchema = z.object({
   note: z.string().trim().min(1).max(1000).optional(),
 }).strict()
 export const BugReportCreateResultSchema = z.object({
-  report: BugReportSchema,
+  /** Reports owned by another caller expose only their summary. */
+  report: BugReportSchema.or(BugReportSchema.pick({ id: true, status: true, title: true })),
   deduplicated: z.boolean(),
   /** created: a new report; repeat: counted on an existing report; reopened: a fixed report came back. */
   outcome: z.enum(['created', 'repeat', 'reopened']),

@@ -182,7 +182,8 @@ it('reports from a scoped Agent and lets Operator discover, read and triage pers
     const renewedAgent = await f.connect(renewed.environment.variables.GRAPHQL_MCP_TOKEN!)
     const renewedRepeat = BugReportCreateResultSchema.parse(value(await renewedAgent.callTool({ name: 'bug_report',
       arguments: { ...input, commandId: randomUUID() } })))
-    expect(renewedRepeat).toMatchObject({ deduplicated: true, report: { id: first.report.id, occurrenceCount: 3 } })
+    expect(renewedRepeat).toMatchObject({ deduplicated: true })
+    expect(renewedRepeat.report).toEqual({ id: first.report.id, status: first.report.status, title: first.report.title })
     const writer = await f.operator(['bug_reports:report', 'bug_reports:read', 'bug_reports:update', 'capabilities:read'])
     expect((await writer.client.listTools()).tools.map(tool => tool.name))
       .toEqual(expect.arrayContaining(['bug_report', 'bug_reports_list', 'bug_report_get', 'bug_report_update',
@@ -202,7 +203,8 @@ it('reports from a scoped Agent and lets Operator discover, read and triage pers
     expect(schema.outputSchema).toBeDefined()
     const read = BugReportSchema.parse(value(await writer.client.callTool({ name: 'bug_report_get',
       arguments: { reportId: first.report.id } })))
-    expect(read).toEqual(renewedRepeat.report)
+    expect(read).toEqual({ ...first.report, occurrenceCount: 3, revision: 3,
+      lastReportedAt: expect.any(String), updatedAt: expect.any(String) })
     const update = { reportId: read.id, commandId: randomUUID(), expectedRevision: read.revision, status: 'triaged' }
     const updated = BugReportUpdateResultSchema.parse(value(await writer.client.callTool({ name: 'bug_report_update',
       arguments: update })))
@@ -248,6 +250,7 @@ it('keeps reporting within the live execution grant and denies worker management
     expect(wrongSchema.properties).not.toHaveProperty('workspaceId')
     const input = reportInput()
     const accepted = BugReportCreateResultSchema.parse(value(await f.worker.callTool({ name: 'bug_report', arguments: input })))
+    expect(accepted.report).toEqual({ id: created.report.id, status: created.report.status, title: created.report.title })
     await f.db.pool.query('update management_principals set grants=$2::jsonb where id=$1', [f.credential.principalId,
       JSON.stringify([{ actions: ['interactions:read'], scope: {
         workspaceIds: [f.f.scope.workspaceId], workflowIds: [f.f.scope.workflowId], runIds: [f.f.run.id],
@@ -256,7 +259,8 @@ it('keeps reporting within the live execution grant and denies worker management
     const revoked = await f.worker.callTool({ name: 'bug_report', arguments: input })
     expect(JSON.stringify(revoked.content)).toContain('ACCESS_DENIED')
     expect(value(await writer.client.callTool({ name: 'bug_report_get', arguments: { reportId: accepted.report.id } })))
-      .toEqual(accepted.report)
+      .toEqual({ ...created.report, occurrenceCount: 2, revision: 2,
+        lastReportedAt: expect.any(String), updatedAt: expect.any(String) })
     const audits = await f.db.pool.query('select action,outcome from management_audit where principal_id=$1',
       [f.credential.principalId])
     expect(audits.rows).toContainEqual({ action: 'bug_report', outcome: 'denied' })
@@ -369,9 +373,11 @@ it('closes reports in batches into history, counts reworded repeats and reopens 
     } })
     expect(regression.message).toContain('regression')
     const viaDuplicate = await report(writer.client, { ...reportInput(), title: 'Run list misses filters' })
-    expect(viaDuplicate).toMatchObject({ outcome: 'repeat', report: { id: first.report.id, occurrenceCount: 4 } })
+    expect(viaDuplicate).toMatchObject({ outcome: 'repeat' })
+    expect(viaDuplicate.report).toEqual({ id: first.report.id, status: 'open', title: first.report.title })
     expect((await list()).map(item => item.id)).toEqual([first.report.id])
     expect(value(await writer.client.callTool({ name: 'bug_report_get', arguments: { reportId: first.report.id } })))
-      .toEqual(viaDuplicate.report)
+      .toEqual({ ...regression.report, occurrenceCount: 4, revision: 5,
+        lastReportedAt: expect.any(String), updatedAt: expect.any(String) })
   } finally { await f.close() }
 }, 60_000)

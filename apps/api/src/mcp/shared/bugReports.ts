@@ -25,7 +25,8 @@ export function registerBugReportTool(server: McpServer, context: {
       + 'A report whose title matches an existing report in the workspace (ignoring case and spacing) is not filed '
       + 'again: it increments that report\'s occurrenceCount, and outcome/message say it was already filed with its id '
       + 'and status. A repeat of a report closed as fixed reopens it as a regression (outcome reopened). Always available to workflow Agents regardless of '
-      + 'saved tool choices, with the explicit bug_reports:report grant in scope.',
+      + 'saved tool choices. A match owned by another reporter returns only report.id, report.status and report.title. '
+      + 'Requires the explicit bug_reports:report grant in scope.',
     inputSchema,
     outputSchema: BugReportCreateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },

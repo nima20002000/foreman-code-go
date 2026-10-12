@@ -243,12 +243,16 @@ describe('bug report HTTP persistence', () => {
     const nextDelegate = await reportingDelegate()
     const repeat = BugReportCreateResultSchema.parse((await f.request('POST', '/api/management/bug-reports',
       f.input(), nextDelegate.token)).json())
-    expect(repeat).toMatchObject({ deduplicated: true, report: { id: first.report.id, occurrenceCount: 2 } })
+    expect(repeat).toMatchObject({ deduplicated: true })
+    expect(repeat.report).toEqual({ id: first.report.id, status: first.report.status, title: first.report.title })
+    expect(await f.bugReports.get(f.owner.principal, first.report.id)).toMatchObject({ occurrenceCount: 2 })
     const otherOwner = await f.issue([{ actions: ['bug_reports:report'], scope: { workspaceIds: [f.workspaceId] } }])
     const otherDelegate = await reportingDelegate(otherOwner.principal.id)
     const other = BugReportCreateResultSchema.parse((await f.request('POST', '/api/management/bug-reports',
       f.input(), otherDelegate.token)).json())
-    expect(other).toMatchObject({ deduplicated: true, outcome: 'repeat', report: { id: first.report.id, occurrenceCount: 3 } })
+    expect(other).toMatchObject({ deduplicated: true, outcome: 'repeat' })
+    expect(other.report).toEqual({ id: first.report.id, status: first.report.status, title: first.report.title })
+    expect(await f.bugReports.get(f.owner.principal, first.report.id)).toMatchObject({ occurrenceCount: 3 })
     const distinct = BugReportCreateResultSchema.parse((await f.request('POST', '/api/management/bug-reports',
       f.input({ title: 'A different failure' }), otherDelegate.token)).json())
     expect(distinct).toMatchObject({ deduplicated: false, outcome: 'created' })
@@ -256,8 +260,9 @@ describe('bug report HTTP persistence', () => {
 
   it('closes reports over HTTP into history and keeps them out of the default list', async () => {
     const f = await fixture()
-    const created = BugReportCreateResultSchema.parse((await f.request('POST', '/api/management/bug-reports',
-      f.input())).json()).report
+    const created = BugReportSchema.parse(BugReportCreateResultSchema.parse((await f.request(
+      'POST', '/api/management/bug-reports', f.input(),
+    )).json()).report)
     const close = { commandId: `close-${randomUUID()}`, status: 'wont-fix', note: 'Works as designed',
       reports: [{ reportId: created.id, expectedRevision: created.revision }] }
     const reader = await f.issue([{ actions: ['bug_reports:read'], scope: { workspaceIds: [f.workspaceId] } }])
@@ -343,12 +348,13 @@ describe('bug report HTTP persistence', () => {
     const input = f.input()
     const response = await f.app.inject({ method: 'POST', url: '/api/management/bug-reports', payload: input })
     expect(response.statusCode).toBe(201)
-    expect(BugReportCreateResultSchema.parse(response.json()).report.reporter.audience).toBe('user')
+    expect(BugReportSchema.parse(BugReportCreateResultSchema.parse(response.json()).report).reporter.audience).toBe('user')
     const reporter = await f.issue([{ actions: ['bug_reports:report'], scope: { workspaceIds: [f.workspaceId] } }])
-    const unscoped = f.input()
+    const unscoped = f.input({ title: 'Inferred workspace failure' })
     delete unscoped.workspaceId
-    expect(BugReportCreateResultSchema.parse((await f.request('POST', '/api/management/bug-reports', unscoped,
-      reporter.token)).json()).report.workspaceId).toBe(f.workspaceId)
+    expect(BugReportSchema.parse(BugReportCreateResultSchema.parse((await f.request(
+      'POST', '/api/management/bug-reports', unscoped, reporter.token,
+    )).json()).report).workspaceId).toBe(f.workspaceId)
     expect((await f.request('POST', '/api/management/bug-reports', unscoped)).statusCode).toBe(400)
   })
 })
