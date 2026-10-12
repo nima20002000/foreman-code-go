@@ -1,4 +1,5 @@
 import { approvedGitTreePaths, captureGitSource } from './capture.js'
+import { processSourceEntries } from './entryProcessing.js'
 import { latestDefaultCommit } from './defaultBranch.js'
 import { constants } from 'node:fs'
 import { randomUUID } from 'node:crypto'
@@ -124,10 +125,7 @@ export async function prepareSharedWorkingTree(input: {
     const tree = await openChildDirectory(directory, 'staging')
     let filesystem: RootBinding['filesystem']
     try {
-      for (const entry of manifest.entries) {
-        signal.throwIfAborted()
-        await copyEntry(reference, tree, entry)
-      }
+      await processSourceEntries(manifest.entries, entry => copyEntry(reference, tree, entry), signal)
       await input.authorize()
       signal.throwIfAborted()
       filesystem = await identity(tree)
@@ -203,10 +201,7 @@ export async function prepareAgentWorktree(input: {
     let filesystem: RootBinding['filesystem']
     try {
       if (startCommit === commit) {
-        for (const entry of manifest.entries) {
-          signal.throwIfAborted()
-          await copyEntry(input.reference, tree, entry)
-        }
+        await processSourceEntries(manifest.entries, entry => copyEntry(input.reference, tree, entry), signal)
         await verifyWorktreeContent(tree, manifest, signal)
       } else {
         // Keep the approved reference; bootstrap the writable checkout from verified Git objects.
@@ -236,7 +231,7 @@ export async function prepareAgentWorktree(input: {
 
 /** The worktree holds exactly the approved files plus Git's own `.git` link file. */
 async function verifyWorktreeContent(tree: FileHandle, manifest: SourceManifest, signal: AbortSignal) {
-  for (const entry of manifest.entries) {
+  await processSourceEntries(manifest.entries, async entry => {
     signal.throwIfAborted()
     const { parent, leaf } = await entryParent(tree, entry.path, false)
     try {
@@ -249,5 +244,5 @@ async function verifyWorktreeContent(tree: FileHandle, manifest: SourceManifest,
         verifySourceBytes(entry, await file.readFile())
       } finally { await file.close() }
     } finally { await parent.close() }
-  }
+  }, signal)
 }
