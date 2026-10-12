@@ -1,3 +1,4 @@
+import { isDatabaseTimeout, retryDatabaseTimeout } from '../../infrastructure/databaseTimeout.js'
 import { beginRuntimeTiming, timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
@@ -382,6 +383,12 @@ export async function executeRepeatRuntime(input: {
   const { withCleanupDeadline } = await import('../interactions/cleanup.js')
   const { ZodError } = await import('zod')
   const failed = new AbortController(), signal = AbortSignal.any([input.signal, failed.signal])
+  const bookkeeping = <T>(work: () => Promise<T>) => retryDatabaseTimeout(work, {
+    signal, check: () => input.owner.assertOwned(),
+  })
+  const readCurrentState = () => retryDatabaseTimeout(() => input.lifecycle.currentState(), {
+    check: () => input.owner.assertOwned(),
+  })
   const tasks = new Set<Promise<unknown>>()
   let firstFailure: unknown, preflightComplete = false, cancellation: Promise<boolean> | undefined
   const definitive = (error: unknown): boolean => {
@@ -469,19 +476,19 @@ export async function executeRepeatRuntime(input: {
     },
   }) : null
   const repeat = work ? null : buildRepeatGraph({ ...input, signal, track, limiter })
-  const readCheckpoint = async (): Promise<import('./repeatGraph.js').RepeatCheckpoint> => work
+  const readCheckpoint = (): Promise<import('./repeatGraph.js').RepeatCheckpoint> => bookkeeping(async () => work
     ? await work.graph.getState(work.config) as import('./repeatGraph.js').RepeatCheckpoint
-    : await repeat!.graph.getState(repeat!.config)
+    : await repeat!.graph.getState(repeat!.config))
   const invoke = (state: unknown): Promise<unknown> => work
     ? work.graph.invoke(state as typeof work.initial | null, work.config)
     : repeat!.graph.invoke(state as import('./repeatNode.js').RepeatGraphState | null, repeat!.config)
   try {
     input.owner.assertOwned()
-    await input.lifecycle.preflight()
+    await bookkeeping(() => input.lifecycle.preflight())
     preflightComplete = true
     signal.throwIfAborted()
-    await input.lifecycle.markRunning()
-    if (!work) await input.store.resolveExcluded()
+    await bookkeeping(() => input.lifecycle.markRunning())
+    if (!work) await bookkeeping(() => input.store.resolveExcluded())
     const snapshot = await readCheckpoint()
     if (snapshot.values.runId && snapshot.values.runId !== input.runId) return repeatConflict('RUN_PIN_CONFLICT')
     // A2 commits authenticated task-local resume writes on this checkpointer.
@@ -514,39 +521,39 @@ export async function executeRepeatRuntime(input: {
         await drain()
         signal.throwIfAborted()
         if (firstFailure) throw firstFailure
-        if (await input.lifecycle.persistWait(await readCheckpoint())) return
+        if (await bookkeeping(async () => input.lifecycle.persistWait(await readCheckpoint()))) return
         if (work) {
-          if (await input.store.completeWorkRun() === 'needs_direction') {
+          if (await bookkeeping(() => input.store.completeWorkRun()) === 'needs_direction') {
             if (!input.lifecycle.persistDirectionWait) throw new DomainError('WORK_DIRECTION_WAIT_WRITER_REQUIRED',
               'Unresolved work requires the durable workflow direction-wait writer.', 409)
-            await input.lifecycle.persistDirectionWait()
+            await bookkeeping(() => input.lifecycle.persistDirectionWait!())
             return
           }
         }
-        else await timeRuntimeOperation('engine', 'run.settle', () => input.store.completeRun())
-        await input.lifecycle.requestCleanup()
+        else await timeRuntimeOperation('engine', 'run.settle', () => bookkeeping(() => input.store.completeRun()))
+        await bookkeeping(() => input.lifecycle.requestCleanup())
         await input.lifecycle.finishNative()
         await input.lifecycle.finishCleanup()
         return
       } catch (error) {
-        if (!repeatSettlementPending(error)) throw error
+        const databaseTimeout = isDatabaseTimeout(error)
+        if (!databaseTimeout && !repeatSettlementPending(error)) throw error
         await drain()
         input.owner.assertOwned()
         signal.throwIfAborted()
         if (firstFailure) throw firstFailure
-        const current = await input.lifecycle.currentState()
+        const current = await readCurrentState()
         if (current.stopRequested || current.executionState === 'completed') throw error
         // Yield to the caller when another REAL approval is outstanding. Holding
         // this callback could prevent the orchestrator from answering that wait.
-        if (await input.lifecycle.persistWait(await readCheckpoint())) return
-        // Retry only the same saved checkpoint, after all wrappers have drained.
-        // Bound this local retry: a reviewer may itself be awaiting this MCP
-        // response. The existing engine reconciliation handles longer receipt
-        // gaps; neither a new Run nor a new occurrence/native turn is admitted.
-        if (attempt >= 2) throw error
+        if (await bookkeeping(async () => input.lifecycle.persistWait(await readCheckpoint()))) return
+        // Database deadlines retry the saved checkpoint. Settlement waits yield
+        // after bounded retries so reviewers can receive their MCP responses.
+        if (!databaseTimeout && attempt >= 2) throw error
         state = null
-        await timeRuntimeOperation('engine', 'settlement.backoff', () => delay(100, undefined, { signal }),
-          { intervalMs: 100 })
+        const backoffMs = databaseTimeout ? 1_000 : 100
+        await timeRuntimeOperation('engine', 'settlement.backoff', () => delay(backoffMs, undefined, { signal }),
+          { intervalMs: backoffMs })
       }
     }
   } catch (error) {
@@ -558,13 +565,13 @@ export async function executeRepeatRuntime(input: {
       await drain(true)
       throw error
     }
-    const current = await input.lifecycle.currentState()
+    const current = await readCurrentState()
     if (current.executionState === 'completed') throw error // immutable terminal, cleanup may still be pending
     const terminalFailure = !preflightComplete || !!firstFailure || definitive(error) || input.signal.aborted || current.stopRequested
     if (!terminalFailure) {
       await drain()
       if ((isGraphInterrupt(error) || repeatSettlementPending(error))
-        && await input.lifecycle.persistWait(await readCheckpoint())) return
+        && await bookkeeping(async () => input.lifecycle.persistWait(await readCheckpoint()))) return
       // I/O, ambiguous receipts and settlement waits retain exact durable work.
       // The owning engine may retry the same checkpoint, never initial state.
       throw error
@@ -577,7 +584,7 @@ export async function executeRepeatRuntime(input: {
     const clean = await closing
     input.owner.assertOwned()
     await input.lifecycle.settleRun(current.stopRequested, input.signal.aborted && !current.stopRequested)
-    if (clean && drained && (await input.lifecycle.currentState()).executionState === 'completed') {
+    if (clean && drained && (await readCurrentState()).executionState === 'completed') {
       await input.lifecycle.finishNative()
       await input.lifecycle.finishCleanup()
     }
