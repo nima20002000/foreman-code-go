@@ -23,9 +23,7 @@ import { runsSelectorApi } from '../../runs-selector/client'
 import { isRunAccessError } from '../../runs-selector/query'
 import { useRunChoreography } from './runChoreography'
 import { useInteractionsQuery } from '../../../shared/api/query'
-import { useApprovalInboxStore } from '../../approvals/approvalInboxStore'
 import { interactionWaits, liveNodeView } from './runLiveStatus'
-import { RunLiveStatus } from './RunLiveStatus'
 import { RunSubagentsOverlay } from '../../run-subagents/RunSubagentsOverlay'
 import { CI_SERVER_NODE_ID, CiServerDialog, CiServerNode, CiTransferEdge,
   type CiServerFlowNode, type CiTransferFlowEdge } from './CiServer'
@@ -156,9 +154,6 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
   })
   const ciRunJobs = ciList.data?.runId === scope.runId ? ciList.data.jobs : undefined
   const cis = useMemo(() => ciNodeActivities(ciRunJobs ?? []), [ciRunJobs])
-  const ciJobs = useMemo(() => (ciRunJobs ?? []).filter(isActiveCiJob)
-    .map(({ ci, requester }) => ({ ci, nodeId: requester.nodeId, agentId: requester.agentId }))
-    .sort((a, b) => a.ci.queuedAt.localeCompare(b.ci.queuedAt) || a.ci.id.localeCompare(b.ci.id)), [ciRunJobs])
   // Shown with the Agents from the first render, so the first fit includes it; unknown until its first read.
   const ciUnavailable = ciList.isError && !ciRunJobs
   const ciSummary = useMemo(() => ciRunJobs ? ciServerSummary(ciRunJobs) : { ...ciServerSummary([]), state: 'unavailable' as const,
@@ -342,9 +337,6 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
   return <section className="next-draft-canvas board-draft-canvas pinned-run-canvas" aria-label="Selected Run pinned topology">
     {/* Seen, the Run is just this Board; the small Run tag names it. Assistive tech still gets the exact pins. */}
     <h2 className="visually-hidden">{version?.definition.name ?? 'Selected Run'} · Run {scope.runId} · version {scope.workflowVersionId}</h2>
-    <RunLiveStatus live={live} ci={ciJobs} waits={waits}
-      nodes={nodes.map((node) => ({ id: node.id, name: node.data.label, state: node.data.state, label: node.data.status }))}
-      onOpenDecision={() => useApprovalInboxStore.getState().openInbox({ workspaceId: scope.workspaceId, workflowId: scope.workflowId })} />
     {query.isPaused ? <p role="status">Pinned topology refresh is paused. Any retained topology is a previously verified saved version.</p>
       : query.isPending ? <p role="status">Loading this Run’s exact saved topology…</p> : null}
     {query.isError || denied || canonicalDenied ? <Alert tone="warning" title="The selected Run topology is unavailable.">

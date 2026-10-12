@@ -6,7 +6,7 @@ import { ciNodePresentation } from '../../run-board/ciPresentation'
 import { checkingView } from './pinnedTopology'
 
 /** Why an Agent is paused on a human or Agent answer. Only `pending` (unanswered) requests are waits here. */
-export type InteractionWait = { interactionId: string; label: string; actionable: boolean }
+export type InteractionWait = { interactionId: string; label: string }
 export type RunCiJob = { ci: CiActivity; nodeId: string; agentId: string }
 type View = { state: AgentNodeState; label: string }
 
@@ -31,7 +31,7 @@ export function interactionWaits(record: RepeatGraphCurrentV3 | undefined, inter
     const label = interaction.kind === 'work_direction' ? 'Waiting for your decision'
       : interaction.approval.handler === 'user' ? 'Waiting for your approval'
         : reviewerName ? `Waiting for approval from ${reviewerName}` : 'Waiting for approval'
-    waits.set(nodeId, { interactionId: interaction.id, label, actionable: interaction.approval.handler === 'user' })
+    waits.set(nodeId, { interactionId: interaction.id, label })
   }
   return waits
 }
