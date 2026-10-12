@@ -100,7 +100,10 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
       if (args[0] === 'job' && args[1] === 'get') return ok(JSON.stringify({ executions: [{ steps: circle.steps }], ...circle.outcome
         ? { phase: 'ended', outcome: circle.outcome, stopped_at: '2026-10-11T02:00:00Z' } : { phase: 'started' } }))
       if (args[0] === 'job' && args[1] === 'output' && args[2] === 'get') return ok(circle.output)
-      if (args[0] === 'job' && args[1] === 'output') return ok('Suite\nall green\n')
+      // The CLI's default view keeps only each step's last lines.
+      if (args[0] === 'job' && args[1] === 'output') {
+        return ok(args[args.indexOf('--tail') + 1] === '0' ? 'Suite\nall green\n' : '_… 1 earlier lines hidden_\nall green\n')
+      }
       if (args[0] === 'job' && args[1] === 'artifact' && args.includes('--json') && circle.durations) {
         const listed = ['durations/durations.json', ...circle.testResults ? ['durations/test-results.json'] : [],
           'integration-logs/run/slot-1/a.integration.test.ts.log']
