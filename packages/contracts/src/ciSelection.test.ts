@@ -1,9 +1,19 @@
 import { expect, it } from 'vitest'
 import { CiRunInputSchema, OperatorCiRunInputSchema } from './ci.js'
-import { CiHostRequestSchema } from './ciHost.js'
+import { CiHostRequestSchema, CiPartitionSchema } from './ciHost.js'
 
 const input = { suite: 'unit', scope: 'affected', files: ['apps/api/src/feature.test.ts'],
   commit: 'a'.repeat(40), commandId: 'affected' }
+
+it('preserves host partition indexes and rejects invalid or duplicate indexes', () => {
+  const partition = { index: 1, count: 3, weights: [1, 2, 2], hostIndexes: [0] }
+  expect(CiPartitionSchema.parse(partition)).toEqual(partition)
+  expect(CiHostRequestSchema.parse({ operation: 'start', runId: '00000000-0000-4000-8000-000000000001',
+    repository: 'example/project', commit: input.commit, suite: 'integration', partition })).toMatchObject({ partition })
+  for (const hostIndexes of [[], [0, 0], [-1], [3], [0.5]]) {
+    expect(CiPartitionSchema.safeParse({ ...partition, hostIndexes }).success).toBe(false)
+  }
+})
 
 it('accepts a full base SHA through Agent, Operator and host contracts and rejects abbreviated or invalid bases', () => {
   for (const baseCommit of ['b'.repeat(40), 'b'.repeat(64)]) {

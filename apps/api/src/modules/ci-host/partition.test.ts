@@ -22,4 +22,19 @@ describe('integration partitions', () => {
     const loads = slices.map(work)
     expect(Math.max(...loads) - Math.min(...loads)).toBeLessThan(2000)
   })
+
+  it('keeps installed Worker and systemd files on host slices while covering every file once', () => {
+    const installed = [
+      'apps/api/test/workflow-systemd-restart.integration.test.ts',
+      'apps/api/test/native-service-restart.integration.test.ts',
+      'apps/api/test/remote-review-production-main-crash.integration.test.ts',
+    ]
+    const selected = [...installed, ...files]
+    const slices = [0, 1, 2].map(index => integrationPartition(selected, durations,
+      { index, count: 3, weights: [1, 8, 8], hostIndexes: [0] }))
+    expect(slices.flat().sort()).toEqual([...selected].sort())
+    expect(slices[0]).toEqual(expect.arrayContaining(installed))
+    expect(slices.slice(1).flat().some(file => installed.includes(file))).toBe(false)
+    expect(slices.slice(1).every(slice => slice.length > 0)).toBe(true)
+  })
 })

@@ -3,6 +3,8 @@ export const requirements = new Map([
   ['apps/api/test/operator-file-delivery.integration.test.ts', ['nativeCgroupDelegation']],
   ['apps/api/test/operator-management-file-authority.integration.test.ts', ['nativeCgroupDelegation']],
   ['apps/api/test/test-database-startup.integration.test.ts', ['testDatabaseStartup']],
+  ['apps/api/test/workflow-systemd-restart.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/native-service-restart.integration.test.ts', ['installedWorkerHost']],
   ['apps/api/test/computer-workflow-save.regression-directories.integration.test.ts', ['installedWorkerHost']],
   ['apps/api/test/computer-workflow-save.regression-reservation-cleanup-preparing.integration.test.ts', ['installedWorkerHost']],
   ['apps/api/test/computer-workflow-save.regression-reservation-cleanup-completed.integration.test.ts', ['installedWorkerHost']],

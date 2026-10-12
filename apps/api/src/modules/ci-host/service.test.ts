@@ -22,12 +22,13 @@ const computer: HostCiComputer = {
   key: 'main:builder', hostRef: { kind: 'main', mainId: 'main' }, label: 'Builder', priority: 0,
 }
 
-function fixture() {
+function fixture(suite: 'lint' | 'integration' = 'lint') {
   let record = CiRunRecordSchema.parse({
     id: '11111111-1111-4111-8111-111111111111', workspaceId: 'workspace',
-    groupId: '22222222-2222-4222-8222-222222222222', suite: 'lint', part: null,
-    scope: 'full', files: [], partition: null, repository: 'owner/repo', commit: 'a'.repeat(40),
-    state: 'running', computer: { hostRef: computer.hostRef, label: computer.label }, step: 'lint',
+    groupId: '22222222-2222-4222-8222-222222222222', suite, part: null,
+    scope: 'full', files: [], partition: suite === 'integration' ? { index: 0, count: 2, hostIndexes: [0] } : null,
+    repository: 'owner/repo', commit: 'a'.repeat(40),
+    state: 'running', computer: { hostRef: computer.hostRef, label: computer.label }, step: suite,
     exitCode: null, message: null, queuedAt: '2026-10-12T00:00:00.000Z',
     startedAt: '2026-10-12T00:00:01.000Z', finishedAt: null,
     initiator: { principalId: 'worker', executionId: 'execution' },
@@ -94,8 +95,8 @@ it('refreshes submitted CI in the background without status reads and stops on c
   }
 })
 
-it('serves authenticated MCP polling from persisted data while fleet dispatch is blocked', async () => {
-  const f = fixture()
+it.each(['lint', 'integration'] as const)('serves authenticated MCP %s polling from persisted data while fleet dispatch is blocked', async suite => {
+  const f = fixture(suite)
   const ci = f.create()
   let unblock!: () => void
   const blocked = new Promise<void>(resolve => { unblock = resolve })
