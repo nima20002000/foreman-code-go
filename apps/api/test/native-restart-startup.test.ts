@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import type { NativeSessionReference } from '@foreman-code/contracts'
 import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
-import { afterEach, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { DomainError } from '../src/modules/errors.js'
 import { NativeDeliveryError } from '../src/modules/harnesses/errors.js'
 import { currentRestartUnit } from './helpers/currentRestartUnit.js'
@@ -38,6 +38,50 @@ function assertPreserved(f: ReturnType<typeof fixture>, before: ReturnType<typeo
   assert.equal(f.rows().at(-1)!.closed, false)
   assert.equal(f.rows().at(-1)!.detached, false)
 }
+
+it.each([
+  { kind: 'graph work', tick: undefined },
+  { kind: 'interval check', tick: { index: 1, everySeconds: 10 } },
+])('adopts detached Main $kind before verifying its writable source under a fresh writer lease', async ({ tick }) => {
+  const placement = { hostRef: { kind: 'main' } } as AcceptedNodePlacement
+  const f = currentRestartUnit(false, placement, tick ? { tick } : {})
+  connections.push(f.connection)
+  const first = f.cold()
+  await first.attachOriginal()
+  await first.coordinator.closeForRestart()
+  expect(f.rows().at(-1)?.detached).toBe(true)
+  const execution = structuredClone(f.execution())
+  const restarted = f.cold()
+  restarted.manager.originalEnvironment = async () => ({ ORIGINAL_PROCESS_TOKEN: 'retained-fixture-token' })
+  const verify = vi.fn(async () => {
+    const captures = restarted.coordinator.passiveOwnedNativeSessions()
+    expect(captures).toHaveLength(1)
+    expect(captures[0]).toMatchObject({ execution, session: f.session })
+    captures[0]!.assertCurrent()
+    expect(f.state.attaches).toBe(2)
+    return 'verified source'
+  })
+  expect(await restarted.coordinator.withSourceObservationLane(f.owner, execution, verify)).toBe('verified source')
+  expect(verify).toHaveBeenCalledOnce()
+  expect(restarted.coordinator.passiveOwnedNativeSessions()).toEqual([])
+  expect(f.execution()).toEqual(execution)
+  expect(f.state.creates).toBe(0)
+  expect(f.state.turns).toBe(0)
+  expect(f.state.restores).toBe(1)
+  await restarted.coordinator.closeForRestart()
+})
+
+it('does not invent a source owner from a saved session without confirmed restart detachment', async () => {
+  const f = currentRestartUnit(false, { hostRef: { kind: 'main' } } as AcceptedNodePlacement)
+  connections.push(f.connection)
+  const restarted = f.cold()
+  await restarted.coordinator.withSourceObservationLane(f.owner, f.execution(), async () => {
+    expect(restarted.coordinator.passiveOwnedNativeSessions()).toEqual([])
+  })
+  expect(f.state.attaches).toBe(0)
+  expect(f.state.creates).toBe(0)
+  expect(f.state.turns).toBe(0)
+})
 
 afterEach(async () => {
   await Promise.all(connections.splice(0).map((connection) => connection.close()))

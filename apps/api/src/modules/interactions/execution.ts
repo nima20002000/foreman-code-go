@@ -62,6 +62,7 @@ import { finishRecoveredWorkflowCredentials } from './workflowTerminalRecovery.j
 import { assertSavedPendingApprovalOriginalLocked } from './nativeApprovalProof.js'
 import { openWorkflowLifecycleLocked } from '../runs/repeatLifecycle.js'
 import { workflowExecutionRequest } from '../runs/workflowExecutionRequest.js'
+import { repeatTickIndex } from '../runs/repeatResolution.js'
 import { readRecoverableRemoteReviewer, readRetainedRemoteReviewer,
   retainRemoteReviewerCredential } from './retainedRemoteReviewer.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
@@ -599,11 +600,25 @@ export class ApprovalExecutionCoordinator {
     await this.reviewers.reconcile(onError)
   }
 
-  /** Revalidate source on the actual resident workflow owner between turns.
-   * This acquires no native manager, credential, process or execution grant. */
+  /** Restore a detached Main session before source verification requires its writer. */
+  private async restoreSourceSession(owner: RunOwnership, execution: HarnessExecution): Promise<void> {
+    if (!execution.nativeSessionId || !['running', 'waiting'].includes(execution.state)) return
+    const session = await readDetachedWorkflowSession(owner, execution)
+    if (!session) return
+    const configuration = await this.runs.getExecutionConfiguration(execution.agentConfigurationVersionId)
+    if (!configuration) throw new DomainError('AGENT_CONFIGURATION_NOT_FOUND',
+      'The accepted Agent configuration is unavailable.', 409)
+    const context = await this.managerContext(execution, configuration)
+    if (context.acceptedPlacement?.hostRef.kind !== 'main') return
+    await this.attachSession(context, session, { restartOwner: owner })
+    owner.assertOwned()
+  }
+
+  /** Revalidate source under the resident session's writer lease between turns. */
   async withSourceObservationLane<T>(owner: RunOwnership, execution: HarnessExecution, work: () => Promise<T>): Promise<T> {
     owner.assertOwned()
     if (owner.runId !== execution.runId) throw new DomainError('RUN_OWNERSHIP_LOST', 'Source observation requires its original Run owner.', 409)
+    if (!this.ownedSessions.has(execution.id)) await this.restoreSourceSession(owner, execution)
     const owned = this.ownedSessions.get(execution.id)
     if (!owned?.session) return work()
     const session = owned.session, generation = owned.generation
@@ -681,7 +696,7 @@ export class ApprovalExecutionCoordinator {
     run: Pick<WorkflowRun, 'id' | 'workflowVersionId' | 'workspaceId'>, owner?: RunOwnership) {
     const version = await this.runs.getRepeatVersion(run.id, run.workflowVersionId, owner)
     let executionContext
-    if (version.definition.handoffs) {
+    if (version.definition.handoffs && repeatTickIndex(execution.input) === undefined) {
       const retained = owner ? undefined : await this.retainRunOwner(execution, () => {})
       try {
         executionContext = await (await this.runs.repeat(owner ?? retained!.owner)).readWorkExecutionContext(execution.id)

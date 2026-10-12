@@ -95,8 +95,10 @@ export async function remoteReviewProduction(options: {
   workerRelease?: string | Promise<string>
   installationRefreshIntervalMs?: number; parallelSetup?: boolean; includeNodeRuntimePayload?: boolean
   installedMainService?: boolean
+  sourceAccessMode?: 'read-only' | 'exclusive-write'
   reportPhase?: (phase: string, elapsedMs: number) => void
 } = {}) {
+  const rootAccessMode = options.sourceAccessMode === 'exclusive-write' ? 'read-write' : 'read-only'
   const reportPhase = (phase: string, elapsedMs: number) => {
     reportIntegrationPhase(phase, elapsedMs)
     options.reportPhase?.(phase, elapsedMs)
@@ -205,9 +207,11 @@ export async function remoteReviewProduction(options: {
     seed.configurations = seed.configurations.map((configuration, index) => {
       let systemPrompt = shape === 'sequential' || index === 0 ? 'fixture-reviewer' : 'fixture-requester'
       if (options.workflow === 'interval') systemPrompt += ' fixture-work-handoff'
+      if (options.sourceAccessMode === 'exclusive-write') systemPrompt += ' fixture-write-source'
       return AgentConfigurationVersionSchema.parse({
         ...configuration, prompt: { system: systemPrompt },
         harness: { ...configuration.harness, model: 'test-model',
+          ...(options.sourceAccessMode === 'exclusive-write' ? { sandbox: 'workspace-write' } : {}),
           ...(options.workflow === 'interval' ? { advanced: {
             ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'never',
           } } : {}) },
@@ -395,7 +399,8 @@ export async function remoteReviewProduction(options: {
       const mainLocation = WorkspaceBoundLocationSetResultSchema.parse(await value('workspace_root_location_set', {
         workspaceId: saved.scope.workspaceId, commandId: randomUUID(), hostRef: mainHost,
         allowedBaseId: mainAllowlist.bases[0]!.baseId, configurationRevision: mainAllowlist.configurationRevision,
-        relativePath: 'project', accessMode: 'read-only', expectedLocationRevision: 1, expectedRootPolicyRevision: 0,
+        relativePath: 'project', accessMode: rootAccessMode,
+        expectedLocationRevision: 1, expectedRootPolicyRevision: 0,
       })).value
       const workspace = ManagedWorkspaceSchema.parse(await value('workspace_get', {
         workspaceId: saved.scope.workspaceId,
@@ -486,7 +491,8 @@ export async function remoteReviewProduction(options: {
     const hostRef = { kind: 'device' as const, mainId, deviceId: pairing.deviceId }
     const roots = await qualifyApprovedRootAllowlist({ schemaVersion: 1, hostRef,
       applicationInstallationId: identity.workerInstallationId, configurationRevision: '1',
-      bases: [{ baseId: randomUUID(), canonicalPath: join(directory, 'worker-projects'), accessModes: ['read-only'] }],
+      bases: [{ baseId: randomUUID(), canonicalPath: join(directory, 'worker-projects'),
+        accessModes: [rootAccessMode] }],
       managedRuntimeRoot: workerRuntime })
     await writeFile(join(stateDirectory, 'approved-roots.json'), JSON.stringify(roots), { mode: 0o600 })
     // Harness replacement fixtures leave Node identity to the installed Worker's runtime validation.
@@ -603,7 +609,8 @@ export async function remoteReviewProduction(options: {
       })).value
       location = WorkspaceBoundLocationSetResultSchema.parse(await value('workspace_root_location_set', {
         workspaceId: saved.scope.workspaceId, commandId: randomUUID(), hostRef, allowedBaseId: roots.bases[0]!.baseId,
-        configurationRevision: adopted.configurationRevision, relativePath: 'project', accessMode: 'read-only',
+        configurationRevision: adopted.configurationRevision, relativePath: 'project',
+        accessMode: rootAccessMode,
         expectedLocationRevision: mainLocation.locationRevision, expectedRootPolicyRevision: 0,
       })).value
     }
@@ -614,7 +621,7 @@ export async function remoteReviewProduction(options: {
       workspaceId: saved.scope.workspaceId, commandId: randomUUID(), source,
       selection: { hostRef: executionHostRef, rootPolicyId: location.binding.rootPolicyId,
         rootPolicyRevision: location.binding.rootPolicyRevision, locationRevision: location.binding.locationRevision },
-      expectedBindingRevision: 0, accessMode: 'read-only',
+      expectedBindingRevision: 0, accessMode: options.sourceAccessMode ?? 'read-only',
     })).value
     const workflowScope = { workspaceId: saved.scope.workspaceId, workflowId: saved.scope.workflowId }
     const before = CurrentWorkflowReadResultSchema.parse(await value(CURRENT_WORKFLOW_TOOLS.saved, workflowScope))

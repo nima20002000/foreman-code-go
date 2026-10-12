@@ -4,7 +4,8 @@ import { DurableInteractionSchema, HarnessExecutionSchema, type HarnessExecution
 import { graphSourceDigest } from '../../src/modules/run-graph/publication.js'
 import { ExclusiveGraphConnection } from '../../src/modules/run-graph/connection.js'
 import { RepeatRunRepository, type RepeatRepositoryHost } from '../../src/modules/runs/repeatPostgres.js'
-import { bindRepeatNodeInput, repeatExecutionIdentity, repeatSlotId } from '../../src/modules/runs/repeatResolution.js'
+import { bindRepeatNodeInput, repeatDigest, repeatExecutionIdentity, repeatSlotId, tickSlotId }
+  from '../../src/modules/runs/repeatResolution.js'
 import type { RunOwnership } from '../../src/modules/runs/ownership.js'
 import { ApprovalExecutionCoordinator } from '../../src/modules/interactions/execution.js'
 import { createWorkflowNativeCaptureChannel } from '../../src/modules/interactions/workflowNativeCapture.js'
@@ -26,9 +27,15 @@ export interface RestartClosureRow {
  * settlement run unchanged. The repository host is a narrow recording port;
  * it checks the independently seeded input receipt rather than minting one.
  * Synthetic managers never contact a provider. */
-export function currentRestartUnit(reviewer = false, acceptedPlacement?: AcceptedNodePlacement) {
+export function currentRestartUnit(reviewer = false, acceptedPlacement?: AcceptedNodePlacement,
+  options: { tick?: { index: number; everySeconds: number } } = {}) {
   const f = currentUnitSnapshot('be001-restart', 'single'), configuration = f.configurations[0]!
   const node = f.version.definition.nodes[0]!
+  if (options.tick) {
+    assert.ok(node.kind !== 'job')
+    node.interval = { everySeconds: options.tick.everySeconds }
+    f.version.definition.handoffs = { contractVersion: 1 }
+  }
   if (reviewer) {
     configuration.productRole = 'orchestrator'
     const approval = { handler: 'orchestrator' as const, designatedOrchestratorAgentId: configuration.agentId }
@@ -39,9 +46,12 @@ export function currentRestartUnit(reviewer = false, acceptedPlacement?: Accepte
   f.run.executionState = 'waiting'
   const candidate = HarnessExecutionSchema.parse({ id: 'be001-restart-execution', runId: f.run.id, workflowNodeId: node.id,
     agentId: configuration.agentId, agentConfigurationVersionId: configuration.id, attempt: 1, input: {}, state: 'queued', createdAt: f.createdAt })
-  const ref = { nodeId: node.id, occurrence: null }, slot = repeatSlotId(f.run.id, ref)
-  const bound = bindRepeatNodeInput({ version: f.version, runInput: f.run.input, recipient: candidate,
+  const ref = { nodeId: node.id, occurrence: null }
+  const slot = options.tick ? tickSlotId(f.run.id, node.id, options.tick.index) : repeatSlotId(f.run.id, ref)
+  const frozen = bindRepeatNodeInput({ version: f.version, runInput: f.run.input, recipient: candidate,
     ref, occurrence: null, entry: null, predecessors: [] })
+  const input = options.tick ? { ...frozen.input, tick: options.tick } : frozen.input
+  const bound = { ...frozen, input, digest: repeatDigest(input) }
   let execution: HarnessExecution = HarnessExecutionSchema.parse({ ...candidate, input: bound.input,
     state: reviewer ? 'completed' : 'waiting', nativeSessionId: 'be001-restart-native',
     workingDirectory: '/synthetic', runtimeDirectory: '/synthetic/runtime',
@@ -149,7 +159,8 @@ export function currentRestartUnit(reviewer = false, acceptedPlacement?: Accepte
       return result([{ record: execution, accepted: reviewer, identity: repeatExecutionIdentity(candidate), slot_id: slot,
         occurrence_id: null, workflow_node_id: node.id, input_json: JSON.stringify(bound.input), input_digest: bound.digest,
         execution_run_id: f.run.id, execution_node_id: node.id, execution_agent_id: configuration.agentId, execution_attempt: 1,
-        execution_occurrence_id: null, identity_occurrence_id: null, technical_attempt: 1 }])
+        execution_occurrence_id: null, identity_occurrence_id: null, technical_attempt: 1,
+        execution_tick_index: options.tick?.index ?? null, tick_index: options.tick?.index ?? null }])
     }
     if (q.startsWith('select payload_digest from run_repeat_effects')) {
       assert.deepEqual(values, [f.run.id, 'input.bind', execution.id]); return result([{ payload_digest: inputReceipt }])
