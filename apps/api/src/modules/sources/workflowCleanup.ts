@@ -41,7 +41,11 @@ export async function closeCompletedWorkflowSources(
     join source_storage_reservations s on s.reservation_id=m.reservation_id
     where (m.record#>'{receipt,worktree}' is null or r.execution_state in ('completed','interrupted'))
       and (m.state<>'closed' or (
-        s.state='retained' and s.reserved_bytes=(s.record->>'reservedBytes')::bigint
+        s.state='retained' and s.record->>'referenceReclaimed' is distinct from 'true' and (
+          s.reserved_bytes=(s.record->>'reservedBytes')::bigint
+          or (m.record#>'{receipt,sharedTree}' is not null
+            and m.record#>>'{receipt,binding,deviceId}' is null)
+        )
         and not exists(select 1 from source_preparation_reconciliations c
           where c.operation_id::text=m.record->>'operationId' and c.status='closed')
       )) and e.record->>'state'='completed'

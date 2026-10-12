@@ -14,7 +14,7 @@ import { measureRetainedMaterializationFootprint } from './retainedDirectoryUsag
 import type { RootBinding } from '@foreman-code/contracts/source-materialization'
 import { captureGitSource } from './capture.js'
 import { PrivateSourceSnapshotStore } from './store.js'
-import { PrivateSourceMaterializer } from './materialization.js'
+import { PrivateSourceMaterializer, releaseMaterializationClaim } from './materialization.js'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
 import { sourceWorkingTreePath } from './sourceTreePaths.js'
@@ -79,6 +79,34 @@ it('gives each workflow agent its own verified worktree and branch instead of on
   await f.materializer().verify(one, { binding: f.binding, attempt: coder.attempt })
   expect(await f.materializer().prepare(coder)).toEqual(one)
   expect(await readFile(join(reviewerTree, 'src/app.ts'), 'utf8')).toBe('accepted source\n')
+})
+
+it('reclaims a closed Main reference copy while preserving dirty work and idempotent closure metadata', async () => {
+  const f = await fixture()
+  const receipt = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt(),
+    sharedWritableTree: true, worktree: { repository: 'octo/site', branch: 'foreman/reference-cleanup' } })
+  const output = join(sourceWorkingTreePath(receipt), 'uncommitted.txt')
+  await writeFile(output, 'Keep the Agent work\n')
+  const reference = join(f.binding.canonicalPath, receipt.materializationId, 'tree')
+  const before = await measureRetainedMaterializationFootprint(receipt)
+  await expect(releaseMaterializationClaim(receipt, async () => 'owned'))
+    .rejects.toMatchObject({ code: 'SOURCE_ROOT_OWNED' })
+  expect(await readFile(join(reference, 'src/app.ts'), 'utf8')).toBe('accepted source\n')
+  for (let replay = 0; replay < 2; replay++) {
+    await releaseMaterializationClaim(receipt, async () => 'released')
+    await expect(stat(reference)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await readFile(output, 'utf8')).toBe('Keep the Agent work\n')
+    expect(await closeSourceWorktree(receipt, AbortSignal.timeout(30_000), f.ports))
+      .toMatchObject({ state: 'retained' })
+    const footprint = await measureRetainedMaterializationFootprint(receipt)
+    expect(footprint.retainedBytes).toBeLessThan(before.retainedBytes)
+    expect(footprint.sharedTree!.bytes).toBe(before.sharedTree!.bytes)
+  }
+  git(sourceWorkingTreePath(receipt), 'add', '.')
+  git(sourceWorkingTreePath(receipt), 'commit', '-qm', 'Save Agent work')
+  const savedCommit = git(sourceWorkingTreePath(receipt), 'rev-parse', 'HEAD')
+  expect(await closeSourceWorktree(receipt, AbortSignal.timeout(30_000), f.ports)).toEqual({ state: 'removed' })
+  expect(git(f.ports.cloneDirectory('octo/site'), 'rev-parse', receipt.worktree!.branch)).toBe(savedCommit)
 })
 
 it('keeps the shared working copy for workspaces without a repository', async () => {
