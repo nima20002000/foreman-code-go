@@ -35,6 +35,38 @@ export async function enableProductionServices(run, units, { firstInstall }) {
   if (firstInstall) await run('/usr/bin/systemctl', ['--user', 'enable', ...units])
 }
 
+export function apiServiceTemplate(databaseUnit) {
+  return `[Unit]
+Description=Foreman Code production API and dashboard
+Wants=${databaseUnit}
+After=${databaseUnit}
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+Delegate=yes
+WorkingDirectory=@APP@/current/apps/api
+EnvironmentFile=@HOME@/.config/graphql-production/production.env
+Environment=FOREMAN_CODE_API_ENV_FILE=@HOME@/.config/graphql-production/production.env
+Environment=DATABASE_POOL_MAX=40
+Environment=DATABASE_QUERY_TIMEOUT_MS=5000
+Environment=FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY=@APP@/current/worker-artifacts
+Environment=PATH=@PATH@
+ExecStart=@NODE@ @APP@/current/apps/api/dist/server.js
+ExecStartPost=@NODE@ @APP@/current/scripts/local-production.mjs health
+Restart=always
+RestartSec=3
+TimeoutStartSec=120
+TimeoutStopSec=60
+# Guardians retain their registered native cgroups across API restarts.
+KillMode=process
+UMask=0077
+
+[Install]
+WantedBy=default.target
+`
+}
+
 export async function launchProduction({ lockPath, start, ready, openDashboard, timeoutMs = 90_000 }) {
   await withInstallationLock(lockPath, async () => {
     const deadline = Date.now() + timeoutMs
