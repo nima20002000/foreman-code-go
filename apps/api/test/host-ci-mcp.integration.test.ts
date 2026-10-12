@@ -861,6 +861,25 @@ it('cancels queued and running runs and skips a computer without a GitHub login'
   } finally { await f.close() }
 })
 
+it('fails a ticket at once with the reason when the public mirror refuses its commit', async () => {
+  const f = await fixture({ github: { laptop: false, builder: false }, cloud: { github: 1 } })
+  try {
+    const request = f.endpoint.request.bind(f.endpoint)
+    f.endpoint.request = async (computer, input) => {
+      if (computer.hostRef.kind === 'cloud' && input.operation === 'start') {
+        throw new DomainError('CI_MIRROR_PRIVATE_DATA', 'Not published to the public CI mirror: test/example.test.ts:3', 409)
+      }
+      return request(computer, input)
+    }
+    const run = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'private' }))
+    await f.ci.dispatch()
+    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: run.ticketId }))
+    expect(read.run).toMatchObject({ state: 'failed', message: expect.stringContaining('test/example.test.ts:3') })
+    await f.ci.dispatch()
+    expect(f.started).toHaveLength(0)
+  } finally { await f.close() }
+})
+
 it('lists cloud CI slots beside build computers through MCP', async () => {
   const f = await fixture({ cloud: true })
   try {
