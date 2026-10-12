@@ -320,8 +320,11 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
       return conflict('REPEAT_START_RUNTIME_UNAVAILABLE', 'New v3 Runs remain disabled until canonical publication and the complete existing-engine lifecycle are composed.')
     }
     const sourceTransport = source === 'http' ? 'http' : 'mcp'
+    const preparationStarted = performance.now()
     const { preparedPlacements, prepared } = await prepareStart(pool, locations, input, principal, sourceTransport, publication,
       options.schedule)
+    // Preparation has its own deadline; keep the remaining shared lock-wait budget.
+    lockWait.deadline += performance.now() - preparationStarted
     options.schedule?.signal?.throwIfAborted()
     return await withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
       options.schedule?.signal?.throwIfAborted()
