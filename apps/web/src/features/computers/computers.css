@@ -41,6 +41,7 @@
 .computer-meter { width: 2rem; height: .25rem; border-radius: 999px; background: var(--n-border); overflow: hidden; }
 .computer-meter > span { display: block; height: 100%; background: var(--n-accent); }
 .computer-metric-value { min-width: 2.25rem; text-align: end; font-variant-numeric: tabular-nums; }
+.computer-metric[data-stale] { opacity: .55; }
 .computer-meter > span[data-high] { background: var(--n-warning); }
 .sidebar-computers { list-style: none; margin: 0; padding: 0; display: grid; gap: .15rem; }
 .sidebar-computers > li { display: grid; gap: .2rem; padding: .3rem .35rem .4rem; border-radius: var(--n-radius-sm); }

@@ -60,7 +60,7 @@ it('shows workflow-only activity and keeps an open modal readable when the compu
   await user.keyboard('{Escape}')
   await waitFor(() => expect(modal).not.toBeVisible())
 })
-it('reports an activity read error and retries without showing stale computers', async () => {
+it('reports an activity read error and keeps the computers listed as stale until a retry', async () => {
   const f = computersFixture(<SidebarComputers />)
   f.activity.computers[0]!.jobs.push({ id: 'job-1', name: 'Build', workspaceId: 'workspace-1', workspaceName: 'Store',
     phase: 'preparing', startedAt: null })
@@ -71,7 +71,8 @@ it('reports an activity read error and retries without showing stale computers',
   }, { status: 503 })))
   await act(() => f.client.invalidateQueries({ queryKey: ['computer-activity'] }))
   expect(await screen.findByText('Activity could not be read.')).toBeVisible()
-  expect(screen.queryByRole('button', { name: 'Activity on Main PC' })).not.toBeInTheDocument()
+  // The menu keeps its computers; nothing is presented as current while reads fail.
+  expect(screen.getByRole('button', { name: 'Activity on Main PC' })).toHaveAttribute('title', 'Main PC: Status stale')
   server.use(http.get('*/api/management/computers/activity', () => HttpResponse.json(f.activity)))
   await userEvent.setup().click(screen.getByRole('button', { name: 'Retry activity' }))
   expect(await screen.findByText('Build')).toBeVisible()

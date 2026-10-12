@@ -14,9 +14,10 @@ import './computers.css'
 export function SidebarComputers() {
   const query = useComputerActivity()
   const open = useComputerUi(state => state.openActivity)
-  const fresh = useComputerActivityFreshness(query.dataUpdatedAt, query.fetchStatus)
-  const computers = query.isError ? [] : query.data?.computers ?? []
-  const clouds = query.isError ? [] : query.data?.cloud ?? []
+  const fresh = useComputerActivityFreshness(query.dataUpdatedAt, query.fetchStatus) && !query.isError
+  // A failed refresh keeps the last list; freshness below marks it stale instead of emptying the menu.
+  const computers = query.data?.computers ?? []
+  const clouds = query.data?.cloud ?? []
   return <>
     {computers.length + clouds.length > 0 && <ul className="sidebar-computers" aria-label="Computers">
       {computers.map(computer => {
