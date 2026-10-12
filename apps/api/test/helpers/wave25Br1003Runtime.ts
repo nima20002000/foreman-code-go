@@ -1,5 +1,5 @@
 import { agentWorkflowVersion } from './agentWorkflowFixture.js'
-import { currentOperatorAuthority } from '../../src/modules/access/runAuthority.js'
+import { bindRunAuthority, currentOperatorAuthority, type AcceptedRunAuthority } from '../../src/modules/access/runAuthority.js'
 import { requireAuthorization } from '../../src/modules/access/policy.js'
 import type pg from 'pg'
 import { AcceptedRepeatStartV1Schema } from '@foreman-code/contracts/wave25'
@@ -52,6 +52,7 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
     nativeSourcePersisted?: Parameters<typeof createWorkflowRepositoryServices>[2];
     nativeCommitted?: ConstructorParameters<typeof PostgresRunRepository>[4];
     approvalNodeIds?: string[]; insertRun?: boolean; workerParallelism?: number;
+    onRunTerminal?: ConstructorParameters<typeof LangGraphWorkflowEngine>[8];
     outputFor?: ConstructorParameters<typeof CheckpointTestProvider>[4];
     admitPlacementExecutionLocked?: RepeatRepositoryServices['admitPlacementExecutionLocked'];
     preparePlacementExecution?: RepeatRepositoryServices['preparePlacementExecution'];
@@ -128,7 +129,8 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
         new PostgresWorkflowClosureStore(db.pool), new PostgresRepeatReviewerBindings(db.pool),
         workflowCapture.capture, reviewCapture.capture, options.recoverNativeProcesses)
       const engine = new LangGraphWorkflowEngine(runs, workflows, native, checkpointer, db.directory,
-        locations, launchCredentials, repository, undefined, { workerParallelism: options.workerParallelism ?? 2 })
+        locations, launchCredentials, repository, options.onRunTerminal,
+        { workerParallelism: options.workerParallelism ?? 2 })
       const service = new InteractionService(repository, budgets, native, (interaction) => engine.resumeInteraction(interaction),
         undefined, (interaction) => native.inspectInteractionActivity(interaction))
       registerApprovalCheckpointResume(service, engine)
@@ -169,7 +171,8 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
 export const providerAppEndpoint = 'http://127.0.0.1:4100/mcp/app'
 
 /** Canonical insertion after seedAgent3 has published through typed Save. */
-export async function insertProviderRun(pool: pg.Pool, fixture: ReturnType<typeof makeCurrentWorkflowFixture>) {
+export async function insertProviderRun(pool: pg.Pool, fixture: ReturnType<typeof makeCurrentWorkflowFixture>,
+  authority?: AcceptedRunAuthority) {
   const { run, version } = fixture
   const row = (await pool.query<{ revision: string }>('select revision::text from workflows where id=$1', [version.workflowId])).rows[0]
   if (!row) throw new Error('Provider fixture requires a saved workflow')
@@ -184,8 +187,11 @@ export async function insertProviderRun(pool: pg.Pool, fixture: ReturnType<typeo
       currentVersionId: version.id, archived: false, definition: version.definition },
     workspace: { id: run.workspaceId, archived: false, location: run.executionLocation }, draft: null,
   } })
-  await withExclusiveGraphConnection(pool, (connection) => connection.transaction((sql) =>
-    insertRepeatRun(sql, accepted, repeatStartPublication)))
+  await withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
+    const admitted = await insertRepeatRun(sql, accepted, repeatStartPublication)
+    if (authority) await bindRunAuthority(sql as unknown as pg.PoolClient, admitted.id, authority)
+    return admitted
+  }))
 }
 
 /** Production credential validation and issuance with a provider-specific inspector. */
