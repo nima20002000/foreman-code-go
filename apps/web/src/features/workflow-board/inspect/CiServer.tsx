@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Handle, Position, type Edge, type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
 import type { CiRunJob, CiTestStatus } from '@foreman-code/contracts'
 import type { RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
-import { AgentNodeView, Alert, Badge, Button, Dialog, EmptyState, Spinner, Tabs, type Tone } from '../../../shared/ui/nocturne'
+import { Alert, Badge, Button, Dialog, EmptyState, Icon, Spinner, Tabs, type Tone } from '../../../shared/ui/nocturne'
 import { PulseFlight, type EdgePulse } from '../../graph/SignalEdgeShape'
 import { useFloatingCurve } from '../../graph/signalEdge'
 import { formatClock, formatDuration } from '../../run-subagents/presentation'
@@ -14,19 +14,28 @@ import { CI_PLACEMENT_LABELS, ciJobDuration, isActiveCiJob, runCiApi, type CiSer
 export const CI_SERVER_NODE_ID = 'ci-server'
 const SHORT_PLACEMENTS = { host: 'Host CI', github: 'GitHub', circleci: 'CircleCI' } as const
 
-export type CiServerFlowNode = Node<{ summary: CiServerSummary; open(): void }, 'ciServer'>
-/** A presentation-only component of the Board, never a workflow node: no edges, no saved geometry, no execution. */
+export type CiServerFlowNode = Node<{ summary: CiServerSummary; open(): void; rim: 'box' }, 'ciServer'>
+/** A presentation-only component of the Board, never a workflow node: no edges, no saved geometry, no execution.
+ * Drawn as a server tower (drive bays, status LEDs, vents) so it never reads as an Agent. */
 export const CiServerNode = memo(function CiServerNode({ data }: NodeProps<CiServerFlowNode>) {
   const { summary } = data
   const where = summary.placements.length ? summary.placements.map((placement) => SHORT_PLACEMENTS[placement]).join(' · ')
     : 'Host CI · GitHub · CircleCI'
-  return <AgentNodeView className="ci-server-node" name="CI server" harnessLabel={where} icon="server"
-    statusLabel={summary.label} state={summary.state}
-    meta={[{ label: 'Jobs', value: String(summary.total) }, { label: 'Failed', value: String(summary.failed) }]}
-    ariaLabel={`CI server, ${summary.label}. Open CI jobs and test results`} onSelect={data.open}>
+  return <div className="ci-server-node" data-state={summary.state}>
+    <button type="button" className="ci-server-chassis" onClick={data.open}
+      aria-label={`CI server, ${summary.label}. Open CI jobs and test results`}>
+      <span className="ci-server-bays" aria-hidden="true">{[0, 1, 2].map((bay) => <span key={bay} className="ci-server-bay">
+        <i className="ci-server-led" /><i className="ci-server-slot" /></span>)}</span>
+      <span key={summary.label} className="ci-server-status"><i aria-hidden="true" />{summary.label}</span>
+      <strong className="ci-server-name"><Icon name="server" size={14} />CI server</strong>
+      <span className="ci-server-where">{where}</span>
+      <span className="ci-server-meta"><span><small>Jobs</small><b>{summary.total}</b></span>
+        <span><small>Failed</small><b>{summary.failed}</b></span></span>
+      <span className="ci-server-vents" aria-hidden="true" />
+    </button>
     {/* Only for the passing lights; nothing connects to the server. */}
-    <Handle id="left" type="target" position={Position.Left} isConnectable={false} className="n-agent-target" />
-  </AgentNodeView>
+    <Handle id="left" type="target" position={Position.Left} isConnectable={false} className="ci-server-target" />
+  </div>
 })
 
 export type CiTransferFlowEdge = Edge<{ pulses: EdgePulse[] }, 'ciTransfer'>

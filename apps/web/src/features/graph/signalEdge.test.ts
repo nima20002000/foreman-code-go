@@ -23,6 +23,12 @@ describe('floating agent connections', () => {
       { width: 360, height: 208 }, { width: 272, height: 320 })
     expect(vertical.path).toBe('M 0,111 Q 0,300 0,433')
   })
+  it('enters a box-shaped node at its border, also on a diagonal', () => {
+    const curve = floatingCurve({ x: 0, y: 0 }, { x: 400, y: 400 }, 0, undefined, undefined,
+      { width: 184, height: 212, box: true })
+    // The diagonal meets the 184-wide box at its side (x offset 92), not inside its corner as an ellipse would.
+    expect(curve.path.endsWith(`${(400 - 92 - 7 / Math.SQRT2).toFixed(1)},${(400 - 92 - 7 / Math.SQRT2).toFixed(1)}`)).toBe(true)
+  })
 })
 
 describe('relationship lines', () => {

@@ -30,7 +30,7 @@ import { RunSubagentsOverlay } from '../../run-subagents/RunSubagentsOverlay'
 import { CI_SERVER_NODE_ID, CiServerDialog, CiServerNode, CiTransferEdge,
   type CiServerFlowNode, type CiTransferFlowEdge } from './CiServer'
 import { useCiTransfers } from './useCiTransfers'
-import { ciNodeActivities, ciServerSummary, isActiveCiJob, runCiApi } from './ciServer'
+import { CI_SERVER_SIZE, ciNodeActivities, ciServerSummary, isActiveCiJob, runCiApi } from './ciServer'
 import { useInspectionPresentation } from './presentation'
 import type { SubagentLayoutNode } from '../../run-subagents/layout'
 import './inspection.css'
@@ -305,10 +305,10 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
     const left = Math.min(...canvasNodes.map((node) => node.position.x))
     const right = Math.max(...canvasNodes.map((node) => node.position.x + (node.width ?? 212)))
     const bottom = Math.max(...canvasNodes.map((node) => node.position.y + (node.height ?? 212)))
-    return { id: CI_SERVER_NODE_ID, type: 'ciServer', position: { x: (left + right) / 2 - 106, y: bottom + 160 },
+    return { id: CI_SERVER_NODE_ID, type: 'ciServer', position: { x: (left + right) / 2 - CI_SERVER_SIZE.width / 2, y: bottom + 160 },
       // Not selectable or draggable, yet its button must still take clicks.
-      width: 212, height: 212, style: { width: 212, height: 212, pointerEvents: 'all' }, draggable: false, selectable: false, connectable: false,
-      deletable: false, data: { summary: ciSummary, open: () => useInspectionPresentation.getState().setOpen(ciDialogKey, true) } }
+      ...CI_SERVER_SIZE, style: { ...CI_SERVER_SIZE, pointerEvents: 'all' }, draggable: false, selectable: false, connectable: false,
+      deletable: false, data: { summary: ciSummary, rim: 'box', open: () => useInspectionPresentation.getState().setOpen(ciDialogKey, true) } }
   }, [ciSummary, canvasNodes, ciDialogKey])
   const flowNodes = useMemo(() => ciServerNode ? [...canvasNodes, ciServerNode] : canvasNodes, [canvasNodes, ciServerNode])
   const finishResize = (change: GraphGeometryChange) => {

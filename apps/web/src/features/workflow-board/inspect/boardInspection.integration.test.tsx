@@ -601,7 +601,7 @@ describe('CI server on the Board', () => {
       http.get(`${ci}/${ticket}/logs`, () => { logReads++; return HttpResponse.json({ text: '::step unit-api\nTests  1 failed | 1 passed', nextOffset: 40, logBytes: 40 }) }),
     )
     const { cache } = await mount(href(scope))
-    const serverNode = async (label: RegExp) => (await within(pinnedCanvas()).findByRole('button', { name: label })).closest<HTMLElement>('.n-agent')!
+    const serverNode = async (label: RegExp) => (await within(pinnedCanvas()).findByRole('button', { name: label })).closest<HTMLElement>('.ci-server-node')!
     const refresh = () => act(async () => { await cache.refetchQueries({ queryKey: [...runInspectionQueryKey(scope), 'ci-jobs'] }) })
 
     // Idle without CI; it runs (with the node activity styling) while an Agent's ticket runs, then shows the result.
@@ -693,7 +693,7 @@ describe('CI server on the Board', () => {
         startedAt: '2026-10-01T00:00:01.000Z', finishedAt: null, step: 'lint-api',
         computer: { hostRef: { kind: 'main', mainId: 'main-1' }, label: 'Main computer' } } }]
     await act(async () => { await cache.refetchQueries({ queryKey: [...runInspectionQueryKey(scope), 'ci-jobs'] }) })
-    const node = (await within(pinnedCanvas()).findByRole('button', { name: /^CI server, 1 running/ })).closest('.n-agent')
+    const node = (await within(pinnedCanvas()).findByRole('button', { name: /^CI server, 1 running/ })).closest('.ci-server-node')
     expect(node).toHaveAttribute('data-state', 'running')
     expect(pinnedCanvas().querySelector('.ci-transfer')).toBeNull()
   })
