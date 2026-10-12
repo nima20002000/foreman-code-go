@@ -47,6 +47,8 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + `that maximum; responses report the applied maxBytes and nextOffset. group=true divides the capped budget `
   + 'between parts and reports each part’s maxBytes and nextOffset. '
   + 'ci_get reads the persisted background refresh without waiting for dispatch or build computers. '
+  + 'Queued tickets include the dispatch waiting reason in message; it clears when they start. '
+  + 'ci_computers_list shows readiness reasons and assigned tickets to explain busy computers. '
   + 'Status and the log tail update on the dispatcher cadence (normally five seconds). Pre-upgrade tickets '
   + 'can have an empty cached tail; ci_logs_read still reads their logs. '
   + 'ci_get with testStatus (passed, failed, skipped) adds the ticket’s structured test results: '

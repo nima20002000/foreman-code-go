@@ -466,7 +466,8 @@ export class HostCiService {
     const requeued = state.state === 'queued' && computer.hostRef.kind === 'cloud'
     const unstartedProviders = new Set(run.unstartedProviders ?? [])
     if (requeued && computer.hostRef.provider) unstartedProviders.add(computer.hostRef.provider)
-    const message = [...new Set([run.message, state.message].filter(Boolean))].join(' ') || null
+    const previousMessage = run.state === 'queued' && state.state !== 'queued' ? null : run.message
+    const message = [...new Set([previousMessage, state.message].filter(Boolean))].join(' ') || null
     const next = CiRunRecordSchema.parse({ ...run, state: state.state, step: state.step, exitCode: state.exitCode,
       computer: requeued ? null : { hostRef: computer.hostRef, label: computer.label },
       startedAt: requeued ? null : run.startedAt ?? state.startedAt,
@@ -560,6 +561,7 @@ export class HostCiService {
     await Promise.all(queued.map(async run => {
       const hostRequired = run.suite === 'integration' && (!run.partition?.hostIndexes
         || run.partition.hostIndexes.includes(run.partition.index))
+      const reasons = (run.unstartedProviders ?? []).map(provider => `${provider}: dispatch retries exhausted`)
       const preferred = (computer: HostCiComputer) => Number(run.suite === 'integration'
         ? !isGitHubComputer(computer) : isGitHubComputer(computer))
       const order = computers.filter(computer => runsOnCircleCi(run)
@@ -573,9 +575,15 @@ export class HostCiService {
       for (const computer of order) {
         if (computer.hostRef.kind === 'cloud' && computer.hostRef.provider
           && run.unstartedProviders?.includes(computer.hostRef.provider)) continue
-        if (busy.has(computer.key)) continue
+        if (busy.has(computer.key)) {
+          reasons.push(`${computer.label}: busy`)
+          continue
+        }
         const usesGitHubIntegration = run.suite === 'integration' && isGitHubComputer(computer)
-        if (usesGitHubIntegration && integrationOnGitHub.size >= githubIntegrationLimit) continue
+        if (usesGitHubIntegration && integrationOnGitHub.size >= githubIntegrationLimit) {
+          reasons.push(`${computer.label}: slots reserved for queued checks`)
+          continue
+        }
         busy.add(computer.key)
         if (usesGitHubIntegration) integrationOnGitHub.add(computer.key)
         try {
@@ -588,6 +596,7 @@ export class HostCiService {
           if (reply.operation !== 'start') {
             busy.delete(computer.key)
             if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
+            reasons.push(`${computer.label}: no start reply`)
             continue
           }
           const saved = await this.settle(run, computer, reply.run)
@@ -603,12 +612,14 @@ export class HostCiService {
             if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
             run = await this.read(run.id, run.workspaceId)
             if (run.state !== 'queued') return
+            reasons.push(`${computer.label}: ${reply.run.message ?? 'dispatch created no work'}`)
             continue
           }
           return
         } catch (error) {
           // A busy or unready computer is skipped; the run stays queued for the next free one.
           const code = (error as { code?: unknown } | null)?.code
+          reasons.push(`${computer.label}: ${code === 'CI_HOST_BUSY' ? 'busy' : (error as Error).message}`)
           if (code !== 'CI_HOST_BUSY') {
             busy.delete(computer.key)
             if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
@@ -624,6 +635,15 @@ export class HostCiService {
           }
           log.warn({ err: error, runId: run.id, computer: computer.key }, 'CI start failed')
         }
+      }
+      const prefix = hostRequired ? 'Waiting for a build computer: this integration slice needs one'
+        : `No ready computer for ${run.part ?? run.suite}`
+      const message = `${prefix}; ${reasons.join('; ') || 'no eligible computers'}`.slice(0, 2000)
+      if (message !== run.message) {
+        await this.pool.query(`update ci_runs set record=$4::jsonb
+          where id=$1 and state=$2 and host_key is not distinct from $3
+            and record->>'message' is distinct from $5`,
+        [run.id, 'queued', null, JSON.stringify({ ...run, message }), message])
       }
     }))
   }

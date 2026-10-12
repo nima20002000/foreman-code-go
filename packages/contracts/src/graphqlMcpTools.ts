@@ -48,7 +48,7 @@ export const GRAPHQL_AGENT_TOOLS = {
       + "Retry the same commandId and payload. Integration supports 2–32 partitions on separate computers.",
     roles: ["operator", "orchestrator", "coder"],
   },
-  ci_get: { label: "Read CI result", description: "Read CI run state, current step, computer, exit code and bounded log tail by ticketId.", roles: ["operator", "orchestrator", "coder"] },
+  ci_get: { label: "Read CI result", description: "Read CI run state, queued waiting reason in message, current step, computer, exit code and bounded log tail by ticketId.", roles: ["operator", "orchestrator", "coder"] },
   ci_computers_list: { label: "List CI computers", description: "Read authorized build computers with readiness, GitHub login, size and running CI runs.", roles: ["operator", "orchestrator", "coder"] },
   ci_cancel: { label: "Cancel CI", description: "Cancel a queued or running CI run by ticketId. Requires jobs:cancel. Poll ci_get to confirm the outcome.", roles: ["operator", "orchestrator", "coder"] },
   ci_logs_read: { label: "Read CI logs", description: "Read CI log text by ticketId. Omit afterOffset for the last maxBytes, or continue with nextOffset.", roles: ["operator", "orchestrator", "coder"] },
