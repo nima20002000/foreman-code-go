@@ -394,22 +394,37 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(f.mirrorGit('rev-parse', 'main')).toBe(head)
   })
 
-  it.each(['github', 'circleci'] as const)('excludes installed Worker and systemd files from %s cloud slices', async provider => {
-    const installed = [
-      'apps/api/test/workflow-systemd-restart.integration.test.ts',
+  it.each(['github', 'circleci'] as const)('runs installed Worker fixtures but excludes user-systemd files on %s', async provider => {
+    const systemd = [
+      'apps/api/test/workflow-systemd-restart-active.integration.test.ts',
       'apps/api/test/native-service-restart.integration.test.ts',
+    ]
+    const cloud = [
+      'apps/api/test/workflow-systemd-restart.integration.test.ts',
       'apps/api/test/remote-review-production-main-crash.integration.test.ts',
     ]
-    const f = await fixture(Object.fromEntries(installed.map(file => [file, ''])), { provider })
-    const ordinary = ['a', 'b', 'c', 'd'].map(name => `apps/api/test/${name}.integration.test.ts`)
-    const inventory = [...ordinary, ...installed].sort()
+    const f = await fixture(Object.fromEntries([...systemd, ...cloud].map(file => [file, ''])), { provider })
+    const ordinary = [...cloud, ...['a', 'b', 'c', 'd'].map(name => `apps/api/test/${name}.integration.test.ts`)]
+    const inventory = [...ordinary, ...systemd].sort()
     await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
       suite: 'integration', scope: 'full', partition: { index: 1, count: 2, hostIndexes: [0] } })
     const commands = provider === 'github' ? f.dispatched : f.circle.triggered
     expect(commands).toHaveLength(1)
     const slice = selectByIndexes(inventory, commands[0]!.find(value => value.startsWith('slice='))!.slice('slice='.length))
-    expect(slice.length).toBeGreaterThan(0)
-    expect(slice.every(file => ordinary.includes(file))).toBe(true)
+    expect(slice.sort()).toEqual(ordinary.sort())
+  })
+
+  it.each(['github', 'circleci'] as const)('rejects user-systemd files without host metadata on %s', async provider => {
+    const file = 'apps/api/test/native-service-restart.integration.test.ts'
+    const f = await fixture({ [file]: '' }, { provider })
+    await expect(f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site',
+      commit: f.commit, suite: 'integration', scope: 'affected', files: [file] }))
+      .rejects.toMatchObject({ code: 'CI_CLOUD_UNAVAILABLE' })
+    await expect(f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site',
+      commit: f.commit, suite: 'integration', scope: 'affected', files: [file], partition: { index: 0, count: 2 } }))
+      .rejects.toMatchObject({ code: 'CI_CLOUD_UNAVAILABLE' })
+    expect(f.dispatched).toHaveLength(0)
+    expect(f.circle.triggered).toHaveLength(0)
   })
 
   it.each(['github', 'circleci'] as const)('spreads heavy integration files across every %s slice', async provider => {

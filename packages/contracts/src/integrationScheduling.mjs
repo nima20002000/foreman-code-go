@@ -40,6 +40,15 @@ export const requirements = new Map([
   ['apps/api/test/job-qualification-native-faults.integration.test.ts', ['nativeCgroupDelegation']],
 ])
 
+// These fixtures control services through systemctl --user; installed Worker processes alone do not need it.
+export const userSystemdIntegrationFiles = new Set([
+  'apps/api/test/workflow-systemd-restart-active.integration.test.ts',
+  'apps/api/test/workflow-systemd-restart-writable-source.integration.test.ts',
+  'apps/api/test/workflow-systemd-restart-admitting-interval.integration.test.ts',
+  'apps/api/test/workflow-systemd-restart-failed-admission.integration.test.ts',
+  'apps/api/test/native-service-restart.integration.test.ts',
+])
+
 const startupFile = 'apps/api/test/dev-startup.integration.test.ts'
 // These files measure bounded startup/latency while exercising shared host resources.
 export const exclusiveIntegrationFiles = [startupFile,

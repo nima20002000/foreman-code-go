@@ -1,5 +1,5 @@
 import { matchesGlob } from 'node:path'
-import { integrationPartition, type CiDurations, type CiPart, type CiPartition,
+import { integrationPartition, requiresUserSystemd, type CiDurations, type CiPart, type CiPartition,
   type CiRunInput } from '@foreman-code/contracts'
 
 export interface CiUnitInventory {
@@ -27,7 +27,10 @@ export function planCiParts(input: CiRunInput, durations: CiDurations, inventory
   const selected = affected ? [...new Set(input.files)].sort() : []
   if (affected && !selected.length) return [{ part: null, partition: null, files: [] }]
   if (input.suite === 'install' || input.suite === 'integration') {
-    const count = affected ? Math.min(input.partitions ?? 1, selected.length) : input.partitions ?? 1
+    const mixed = input.suite === 'integration' && selected.some(requiresUserSystemd)
+      && selected.some(file => !requiresUserSystemd(file))
+    const requested = Math.max(input.partitions ?? 1, mixed ? 2 : 1)
+    const count = affected ? Math.min(requested, selected.length) : requested
     return Array.from({ length: Math.max(1, count) }, (_, index) => ({ part: null,
       partition: count > 1 ? { index, count } : null, files: selected }))
   }
