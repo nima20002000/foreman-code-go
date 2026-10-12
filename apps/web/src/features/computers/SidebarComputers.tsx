@@ -117,8 +117,9 @@ function ComputerIcon({ icon, runningCount, activityIds }: {
       ? activityIds.some(id => !previous.current.activityIds?.includes(id))
       : runningCount > previous.current.runningCount
     previous.current = { runningCount, activityIds }
+    if (!started || runningCount === 0) return
     const motion = window.matchMedia('(prefers-reduced-motion: reduce)')
-    if (!started || runningCount === 0 || motion.matches) return
+    if (motion.matches) return
     const animation = glyph.current?.animate([
       { transform: 'scale(1)' }, { transform: 'scale(1.08)' }, { transform: 'scale(1)' },
     ], { duration: 300, easing: 'ease-out' })
