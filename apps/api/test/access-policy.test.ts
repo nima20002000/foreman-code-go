@@ -54,12 +54,14 @@ describe('management access policy', () => {
 
   it('checks large workflow scopes without combining read and update grants', () => {
     const workflowIds = Array.from({ length: 5_000 }, (_, index) => `workflow-${index}`)
-    const caller = { ...principal, grants: [
-      { actions: ['workflows:read' as const], scope: { workspaceIds: ['workspace-1'], workflowIds } },
-      { actions: ['workflows:update' as const], scope: {
-        workspaceIds: ['workspace-2'], workflowIds: [...workflowIds],
-      } },
-    ] }
+    const grants = Array.from({ length: 10 }, (_, index) => {
+      const ids = workflowIds.slice(index * 500, (index + 1) * 500)
+      return [
+        { actions: ['workflows:read' as const], scope: { workspaceIds: ['workspace-1'], workflowIds: ids } },
+        { actions: ['workflows:update' as const], scope: { workspaceIds: ['workspace-2'], workflowIds: ids } },
+      ]
+    }).flat()
+    const caller = { ...principal, grants }
     const snapshot = authorizationPrincipal(caller)
     for (const workflowId of workflowIds) {
       expect(isAuthorized(snapshot, 'workflows:read', { workspaceId: 'workspace-1', workflowId })).toBe(true)
