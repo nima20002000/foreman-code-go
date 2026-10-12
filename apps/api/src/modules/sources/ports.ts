@@ -5,6 +5,9 @@ export type SourceSnapshotPin = Pick<SourceManifest, 'snapshotId' | 'manifestDig
 export interface SourceByteReader {
   readGitMetadata?(manifest: SourceManifest, signal: AbortSignal): Promise<Uint8Array>
   read(snapshot: SourceSnapshotPin, entry: SourceEntry, signal: AbortSignal): Promise<Uint8Array>
+  /** A batch retains qualified snapshot handles; every entry still requires byte verification. */
+  readEntries?(snapshot: SourceSnapshotPin, entries: readonly SourceEntry[], signal: AbortSignal,
+    consume: (entry: SourceEntry, bytes: Uint8Array) => Promise<void>): Promise<void>
 }
 export type MaterializationAttempt = {
   placementHash: string; executionId: string; attemptId: string; keyRevision: number | null; authorizationRevision: number | null

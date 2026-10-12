@@ -266,4 +266,49 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
       const bytes = await this.readEntry(snapshot, entry); signal.throwIfAborted(); return bytes
     } finally { await snapshot.close(); await root.close() }
   }
+
+  async readEntries(pin: SourceSnapshotPin, entries: readonly SourceEntry[], signal: AbortSignal,
+    consume: (entry: SourceEntry, bytes: Uint8Array) => Promise<void>): Promise<void> {
+    signal.throwIfAborted()
+    if (!entries.length) return
+    const { root, snapshot } = await this.directory(pin.snapshotId, false)
+    try {
+      const stored = await this.readManifest(snapshot, pin.snapshotId)
+      const { manifest } = stored
+      if (manifest.snapshotId !== pin.snapshotId || manifest.manifestDigest !== pin.manifestDigest
+        || manifest.approvedSourceId !== pin.approvedSourceId
+        || entries.some(entry => !isDeepStrictEqual(stored.entries.get(entry.path), entry))) {
+        throw new SourceError('SOURCE_PIN_CONFLICT', 'Canonical source access requires the approved snapshot and inclusion.')
+      }
+      const directory = entries[0]!.path.slice(0, entries[0]!.path.lastIndexOf('/') + 1)
+      if (entries.some(entry => !entry.path.startsWith(directory)
+        || entry.path.slice(directory.length).includes('/'))) {
+        throw new SourceError('SOURCE_PATH_INVALID', 'A source read batch requires one directory.')
+      }
+      const data = await openChildDirectory(snapshot, 'bytes')
+      try {
+        const { parent } = await entryParent(data, entries[0]!.path, false)
+        try {
+          for (const entry of entries) {
+            signal.throwIfAborted()
+            const file = await open(anchored(parent, entry.path.slice(directory.length)),
+              constants.O_RDONLY | constants.O_NOFOLLOW)
+            try {
+              const stat = await file.stat()
+              if (!stat.isFile() || stat.nlink !== 1 || stat.size !== entry.byteSize) {
+                throw new SourceError('SOURCE_BYTES_INVALID', 'Canonical source kind/size/link count changed.')
+              }
+              const bytes = await file.readFile({ signal })
+              verifySourceBytes(entry, bytes)
+              await consume(entry, bytes)
+            } finally { await file.close() }
+          }
+          signal.throwIfAborted()
+          if ((await this.readManifest(snapshot, pin.snapshotId)).identity !== stored.identity) {
+            throw new SourceError('SOURCE_PIN_CONFLICT', 'Canonical source manifest changed during the batch.')
+          }
+        } finally { await parent.close() }
+      } finally { await data.close() }
+    } finally { await snapshot.close(); await root.close() }
+  }
 }
