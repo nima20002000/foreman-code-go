@@ -14,7 +14,8 @@ import {
   copyVerificationRuntime, deployProductionApi, desktopLaunchEnvironment, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
   pruneReleases, removeUninstalledRelease, readActiveRuns, readProductionIdentity, waitForIdleRuns, renderEnvironment, waitForProductionReady, withInstallationLock,
   shouldOpenDashboardAfterInstall,
-  productionIntegrationPaths, publishDesktopIntegration, enableProductionServices, launchProduction, launchBrowser,
+  productionIntegrationPaths, publishDesktopIntegration, enableProductionServices, apiServiceTemplate,
+  launchProduction, launchBrowser,
 } from './local-production-runtime.mjs'
 
 const source = fileURLToPath(new URL('../', import.meta.url))
@@ -132,34 +133,7 @@ UMask=0077
 [Install]
 WantedBy=default.target
 `))
-  await publish(join(directory, units.api), service(`[Unit]
-Description=Foreman Code production API and dashboard
-Wants=${units.database}
-After=${units.database}
-StartLimitIntervalSec=0
-
-[Service]
-Type=exec
-Delegate=yes
-WorkingDirectory=@APP@/current/apps/api
-EnvironmentFile=@HOME@/.config/graphql-production/production.env
-Environment=FOREMAN_CODE_API_ENV_FILE=@HOME@/.config/graphql-production/production.env
-Environment=DATABASE_POOL_MAX=40
-Environment=DATABASE_QUERY_TIMEOUT_MS=5000
-Environment=FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY=@APP@/current/worker-artifacts
-Environment=PATH=@PATH@
-ExecStart=@NODE@ @APP@/current/apps/api/dist/server.js
-ExecStartPost=@NODE@ @APP@/current/scripts/local-production.mjs health
-Restart=always
-RestartSec=3
-TimeoutStartSec=120
-TimeoutStopSec=60
-KillMode=control-group
-UMask=0077
-
-[Install]
-WantedBy=default.target
-`))
+  await publish(join(directory, units.api), service(apiServiceTemplate(units.database)))
 }
 
 async function installDesktop(firstInstall) {

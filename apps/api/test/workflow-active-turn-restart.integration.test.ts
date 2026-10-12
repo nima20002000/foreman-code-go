@@ -34,8 +34,11 @@ describe('planned API restart during a native workflow turn', () => {
           await fixture.restartMain({ mode: 'graceful', afterShutdown: async () => {
             const preserved = (await fixture.executions(started.run.id))[0]!
             expect(preserved.id).toBe(execution.id)
+            expect(preserved.attempt).toBe(execution.attempt)
+            expect(preserved.state).toBe('running')
             expect(preserved.nativeSessionId).toBe(original.sessionId)
             expect(preserved.result).toBeUndefined()
+            expect(() => process.kill(original.pid, 0)).not.toThrow()
             if (completion === 'while API is down') {
               await fixture.provider.releaseWorkflowTurns()
               blocked = false
