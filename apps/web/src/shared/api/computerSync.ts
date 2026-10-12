@@ -39,6 +39,10 @@ export function useComputerSync(target: DeviceProvisioningTarget) {
   }
   const uncertain = update.isError && (!(update.error instanceof ApiError)
     || update.error.status === 0 || update.error.status >= 500)
+  useEffect(() => {
+    if (update.isError && !uncertain && status.isSuccess
+      && status.dataUpdatedAt > update.submittedAt) update.reset()
+  }, [update, uncertain, status.isSuccess, status.dataUpdatedAt])
   const refresh = async () => {
     const result = await status.refetch()
     if (!result.isError && update.isError && !uncertain) update.reset()
@@ -47,3 +51,4 @@ export function useComputerSync(target: DeviceProvisioningTarget) {
     if (update.variables) update.mutate(update.variables)
   } }
 }
+import { useEffect } from 'react'

@@ -30,6 +30,10 @@ export function useGeneralSettings() {
   })
   const uncertain = update.isError && (!(update.error instanceof ApiError)
     || update.error.status === 0 || update.error.status >= 500)
+  useEffect(() => {
+    if (update.isError && !uncertain && !denied && settings.isSuccess
+      && settings.dataUpdatedAt > update.submittedAt) update.reset()
+  }, [update, uncertain, denied, settings.isSuccess, settings.dataUpdatedAt])
   const refresh = async () => {
     const result = await settings.refetch()
     if (!result.isError && !uncertain) update.reset()
@@ -42,3 +46,4 @@ export function useGeneralSettings() {
     if (update.variables && !denied && !sessionIsSwitching()) update.mutate(update.variables)
   } }
 }
+import { useEffect } from 'react'

@@ -1,5 +1,6 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { ApiError } from '../../shared/api/client'
+import { useBlockingReadError } from '../../shared/api/readFailure'
 import { runsSelectorApi } from './client'
 import { flattenRunPages, nextRunsCursor, RUNS_MAX_PAGES, RUNS_PAGE_SIZE } from './presentation'
 import type { RunsSelectorScope } from './types'
@@ -70,8 +71,8 @@ export function useSelectedRunSnapshot(selection: SelectedRunState) {
     placeholderData: () => undefined,
   })
   const current = selection.isCurrent(generation)
-  // Do not render cached data after *any* failed authorization/validation read.
-  const snapshot = current && !query.isError ? query.data?.snapshot : undefined
+  const blocked = useBlockingReadError(query)
+  const snapshot = current && !blocked ? query.data?.snapshot : undefined
   const activitySnapshot = snapshot ? query.data?.activitySnapshot : undefined
   return { ...query, data: snapshot ? { snapshot, activitySnapshot } : undefined, snapshot, activitySnapshot }
 }

@@ -75,7 +75,7 @@ describe('G5 B2-PF-01 / B-R01 provisional steer', () => {
       if (edited) write('A newer draft written while waiting')
       const pending = withReceipt(initial, sent[0]!, 'submitting')
       mounted.mock.setState(pending); await act(() => mounted.refresh())
-      await screen.findByText('Server recorded: Steer · Sending')
+      await screen.findByLabelText('Latest command delivery: Steer · Sending')
       const expectedDraft = edited ? 'A newer draft written while waiting' : 'Original steering instruction'
       expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(expectedDraft)
       const rejected = structuredClone(agentChatFixtures.idleAfterCompletion)
@@ -125,7 +125,7 @@ describe('G5 B2-PF-02 / B-R01 terminal readback survives eviction', () => {
         mounted.mock.setState(recovered)
         if (transport === 'GET') await act(() => mounted.refresh())
         else act(() => AgentChatTestSource.instances[0]!.snapshot(recovered, 20))
-        await screen.findByText('Server recorded: Next turn · Completed')
+        await screen.findByLabelText('Latest command delivery: Next turn · Completed')
         await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(''))
         const command = mounted.client.getMutationCache().getAll()[0]!
         expect(proofFor(mounted.client, command.mutationId)).toMatchObject({ conversationId: initial.conversation!.id,
@@ -134,7 +134,7 @@ describe('G5 B2-PF-02 / B-R01 terminal readback survives eviction', () => {
         mounted.mock.setState(later); await act(() => mounted.refresh())
         if (lateError) await act(async () => { post.release() })
         await waitFor(() => expect(command.state.status).toBe('error'))
-        await screen.findByText('Last confirmed receipt: Next turn · Completed')
+        await screen.findByLabelText('Latest command delivery: Next turn · Completed')
         expect(screen.queryByText('Unknown', { exact: true })).not.toBeInTheDocument()
         expect(screen.queryByText(/No receipt was confirmed/)).not.toBeInTheDocument()
         expect(screen.queryByText('Command not confirmed')).not.toBeInTheDocument()
@@ -143,7 +143,7 @@ describe('G5 B2-PF-02 / B-R01 terminal readback survives eviction', () => {
         expect(sent).toHaveLength(1)
         mounted.unmount()
         render(<QueryClientProvider client={mounted.client}><AgentChatPanel name="Coder" context={initial.context} /></QueryClientProvider>)
-        await screen.findByText('Last confirmed receipt: Next turn · Completed')
+        await screen.findByLabelText('Latest command delivery: Next turn · Completed')
         expect(screen.queryByText('Command not confirmed')).not.toBeInTheDocument()
         expect(screen.queryByText(/No receipt was confirmed/)).not.toBeInTheDocument()
         // A new equal-text draft is intentional; replayed proof must not erase it or warn as unknown.
@@ -170,7 +170,7 @@ describe('G5 B2-PF-02 / B-R01 terminal readback survives eviction', () => {
       AgentChatTestSource.instances[0]!.snapshot(terminal, 20)
       AgentChatTestSource.instances[0]!.snapshot(later, 21)
     })
-    await screen.findByText('Last confirmed receipt: Next turn · Completed')
+    await screen.findByLabelText('Latest command delivery: Next turn · Completed')
     await waitFor(() => expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(''))
     expect(screen.queryByText('Command not confirmed')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Send again as new message' })).not.toBeInTheDocument()
@@ -187,14 +187,14 @@ describe('G5 B2-PF-02 / B-R01 terminal readback survives eviction', () => {
       return HttpResponse.json({ state, turn: state.turns.at(-1), replayed: false })
     }))
     write('Initially queued'); await userEvent.click(screen.getByRole('button', { name: 'Send message' }))
-    await screen.findByText('Server recorded: Next turn · Queued')
+    await screen.findByLabelText('Latest command delivery: Next turn · Queued')
     const completed = withReceipt(initial, sent[0]!, 'completed'); completed.revision++
     mounted.mock.setState(completed); await act(() => mounted.refresh())
-    await screen.findByText('Server recorded: Next turn · Completed')
+    await screen.findByLabelText('Latest command delivery: Next turn · Completed')
     const later = laterWindow(completed); mounted.mock.setState(later); await act(() => mounted.refresh())
-    await screen.findByText('Initial acknowledgement: Next turn · Queued')
-    await screen.findByText('Last confirmed receipt: Next turn · Completed')
-    expect(screen.queryByText('Server recorded: Next turn · Queued')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Latest command delivery: Next turn · Queued')).not.toBeInTheDocument()
+    await screen.findByLabelText('Latest command delivery: Next turn · Completed')
+    expect(screen.queryByLabelText('Latest command delivery: Next turn · Queued')).not.toBeInTheDocument()
     const mutation = mounted.client.getMutationCache().getAll()[0]!
     expect(isRetirableAcknowledgement({ status: mutation.state.status, result: mutation.state.data as AgentChatCommandRecord['result'],
       readback: proofFor(mounted.client, mutation.mutationId) }, later)).toBe(true)

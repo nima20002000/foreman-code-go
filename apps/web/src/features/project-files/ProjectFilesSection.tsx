@@ -78,10 +78,6 @@ function WorkspaceProjectFiles({ workspaceId }: ProjectFilesSectionProps) {
       {visibleRows.map((row) => <ProjectFileItem key={`${row.file.fileId}:${row.revision.revisionId}`}
         workspaceId={workspaceId} row={row} onRemove={() => uiStore.setState({ removing: row })} />)}
     </ul>}
-    {!upload.isPending && visibleRows.some((row) => row.file.state === 'pending') && <div>
-      <p className="project-files-message" role="status">Not ready means the upload has not completed. Check its status, or remove the entry and upload the file again.</p>
-      <Button size="sm" variant="ghost" disabled={query.isFetching} onClick={() => { void query.refetch() }}>Check upload status</Button>
-    </div>}
     {!query.isPending && !query.isError && visibleRows.length === 0 && <p className="project-files-message">No files.</p>}
     {query.hasNextPage && <Button size="sm" variant="ghost" disabled={query.isFetching}
       onClick={() => { void query.fetchNextPage() }}>More</Button>}
@@ -140,7 +136,7 @@ function ProjectFileItem({ workspaceId, row, onRemove }: ProjectFilesSectionProp
         const signal = controller.current?.signal
         if (signal && !download.isPending) download.mutate(signal)
       }}><Download size={16} aria-hidden="true" /></IconButton>
-      : <span className="project-file-pending">Not ready</span>}
+      : <span className="project-file-pending">{row.file.state === 'pending' ? 'Processing…' : 'Unavailable'}</span>}
     <IconButton label={`Remove ${name}`} size="sm" variant="ghost" onClick={onRemove}>
       <Trash2 size={16} aria-hidden="true" />
     </IconButton>

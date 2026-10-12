@@ -449,9 +449,10 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
   const attention = accessDenied ? [] : newerOperatorSummaries(entries, list.data?.attention ?? entries)
     .filter((item) => item.revision > (deletedRevisions.current.get(item.conversationId) ?? -1) && item.needsAttention)
   const liveConnection = connection && connection.id === selectedId ? connection.state : 'connecting'
-  const connectionState = selected.isError || selected.failureCount > 0
+  const connectionState = liveConnection !== 'connected' && (selected.isError || selected.failureCount > 0)
     ? 'reconnecting' : liveConnection
-  const turnStatus = conversation ? operatorTurnStatus(conversation, connectionState) : ''
+  const turnStatus = conversation
+    ? operatorTurnStatus(conversation, connectionState, selected.isSuccess && selected.failureCount === 0) : ''
   const respondVariables = respond.variables
   const cancelVariables = cancel.variables
   const close = () => {
@@ -549,12 +550,13 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
         else close()
       }}>
       {operatorResizeEdges.map((edge) => <button key={edge} type="button" className={`operator-chat-resize operator-chat-resize-${edge}`} {...grip(edge)} />)}
-      {settingsWarning ? <Alert live tone="warning" title="Operator settings unavailable">{settingsWarning}</Alert> : null}
+      {settingsWarning ? <details><summary>Operator settings refresh failed</summary>{settingsWarning}</details> : null}
       {accessDenied ? <Alert live tone="danger" title="Operator access unavailable">Check your browser enrollment and permissions.</Alert> : null}
-      {!accessDenied && list.isError ? <Alert live tone="warning" title="Conversation status could not be refreshed">Attention indicators may be stale.</Alert> : null}
       <div className="operator-chat-navigation" data-history-open={historyOpen}>
         <IconButton className="operator-history-toggle" ref={historyTriggerRef} label={historyOpen ? 'Collapse history' : 'Open history'} variant="ghost"
-          aria-expanded={historyOpen} aria-controls={historyId} onClick={() => showHistory(!historyOpen)}><Icon name="menu" /></IconButton>
+          aria-expanded={historyOpen} aria-controls={historyId} onClick={() => showHistory(!historyOpen)}
+          title={list.isError ? 'History refresh failed. Open history to retry.' : undefined}>
+          <Icon name={list.isError ? 'warning' : 'menu'} /></IconButton>
         <button type="button" className="operator-chat-move" title="Drag to move Operator chat" {...moveGrip}><span aria-hidden="true" /></button>
         <IconButton ref={closeRef} label="Close Operator chat" variant="ghost" className="operator-chat-close" onClick={close}><Icon name="close" /></IconButton>
       </div>

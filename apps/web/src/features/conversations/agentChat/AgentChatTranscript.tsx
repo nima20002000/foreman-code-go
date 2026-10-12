@@ -35,6 +35,10 @@ export function AgentChatTranscript({
   }
   const messages = mergeChatMessages(...[...(history.data?.pages.flatMap((batch) => batch.pages) ?? [])].reverse().map((page) => page.messages), state.messages).filter((message) => message.activityChannel !== 'reasoning')
   const receipts = new Map(state.turns.map((turn) => [turn.messageId, turn]))
+  const latestCommand = commands.at(-1)?.command
+  const latestRequestId = latestCommand?.kind === 'send' ? latestCommand.input.requestId : undefined
+  const deliveryLabel = (turn: AgentChatState['turns'][number]) => turn.requestId === latestRequestId
+    ? `Latest command delivery: ${intentLabels[turn.intent]} · ${deliveryLabels[turn.delivery]}` : undefined
   // Every nonterminal receipt is in state, but its text can lie outside the bounded message cut.
   const orphaned = state.turns.filter((turn) => !messages.some((message) => message.id === turn.messageId))
   const unresolved = commands.filter((record) => record.command?.kind === 'send'
@@ -46,7 +50,7 @@ export function AgentChatTranscript({
     if (message.role === 'assistant') return message.nativeMessageComplete === false
       ? <Badge>{message.requestId === state.activeTurn?.requestId ? 'Reply in progress' : 'Partial reply'}</Badge> : null
     if (message.role !== 'user') return null
-    return receipt ? <span className="agent-chat-delivery" data-delivery={receipt.delivery}>
+    return receipt ? <span className="agent-chat-delivery" data-delivery={receipt.delivery} aria-label={deliveryLabel(receipt)}>
       <Badge tone={receipt.delivery === 'unknown' ? 'warning' : receipt.delivery === 'failed' ? 'danger' : 'neutral'}>{deliveryLabels[receipt.delivery]}</Badge>
       <span>{intentLabels[receipt.intent]}</span>
     </span> : <span className="agent-chat-note">Delivery receipt not included in this history page.</span>
@@ -70,7 +74,7 @@ export function AgentChatTranscript({
         const original = commands.find((record) => record.command?.kind === 'send' && record.command.input.requestId === turn.requestId)?.command
         const content = original?.kind === 'send' ? original.input.content : undefined
         return <div key={turn.requestId} className="agent-chat-message-actions" data-delivery={turn.delivery}>
-          <p><Badge tone={!readOnly && turn.delivery === 'unknown' ? 'warning' : turn.delivery === 'failed' ? 'danger' : 'neutral'}>{deliveryLabels[turn.delivery]}</Badge> {intentLabels[turn.intent]} · order {turn.sequence}</p>
+          <p aria-label={deliveryLabel(turn)}><Badge tone={!readOnly && turn.delivery === 'unknown' ? 'warning' : turn.delivery === 'failed' ? 'danger' : 'neutral'}>{deliveryLabels[turn.delivery]}</Badge> {intentLabels[turn.intent]} · order {turn.sequence}</p>
           <p className="agent-chat-note">{turn.delivery === 'unknown' && content
             ? 'Message text is outside the current history page. Your locally submitted text is shown below.'
             : 'Message text is not included in the current history page. Load earlier messages to read it.'}</p>
@@ -100,7 +104,6 @@ export function AgentChatTranscript({
       const original = commands.find(record => record.command?.kind === 'send'
         && record.command.input.requestId === turn.requestId)?.command
       return <div className="agent-chat-message-actions">
-        {turn.delivery === 'accepted' ? <p className="agent-chat-note">Provider acknowledged delivery; consumption is not yet confirmed.</p> : null}
         {turn.error ? <p className="agent-chat-note">{turn.error.message}</p> : null}
         {!readOnly && turn.delivery === 'queued' ? <><Button size="sm" disabled={!!cancelReason} title={cancelReason} onClick={() => onCancel(turn.requestId)}>Cancel queued message</Button>
           {cancelReason ? <p className="agent-chat-note">{cancelReason}</p> : null}</> : null}

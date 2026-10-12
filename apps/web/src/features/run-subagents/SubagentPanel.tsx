@@ -6,6 +6,7 @@ import { SUBAGENT_LIMITS,
 import { Button, CodeBlock, EmptyState, ErrorState, MessageBubble, Spinner, StatusBadge, Tabs, Textarea, ToolCallCard } from '../../shared/ui/nocturne'
 import { SubagentPopover } from './SubagentPopover'
 import { ApiError } from '../../shared/api/client'
+import { useBlockingReadError } from '../../shared/api/readFailure'
 import { subagentsApi } from './client'
 import { formatBytes, formatClock, providerNames, subagentName, subagentStatus, subagentTiming, toolStatus } from './presentation'
 import { subagentsKey, useSubagentDetail, useSubagentMessages, useSubagentTools, type SubagentsScope } from './query'
@@ -36,10 +37,13 @@ export function SubagentPanel({ scope, subagentId, anchor, onClose }: {
   scope: SubagentsScope; subagentId: string; anchor: RefObject<HTMLElement | null>; onClose: () => void
 }) {
   const detail = useSubagentDetail(scope, subagentId)
-  const record = detail.isError ? undefined : detail.data
+  const detailBlocked = useBlockingReadError(detail)
+  const record = detailBlocked ? undefined : detail.data
   const child = record?.subagent
   const messages = useSubagentMessages(scope, subagentId, Boolean(child))
   const tools = useSubagentTools(scope, subagentId, Boolean(child))
+  const messagesBlocked = useBlockingReadError(messages)
+  const toolsBlocked = useBlockingReadError(tools)
   const ui = useMemo(() => createStore(() => ({ text: '' })), [])
   const text = useStore(ui, (state) => state.text)
   const [tab, setTab] = useState('messages')
@@ -72,7 +76,7 @@ export function SubagentPanel({ scope, subagentId, anchor, onClose }: {
   const receipt = lastCommand?.data
   const revisionConflict = ApiError.is(lastCommand?.error) && lastCommand.error.code === 'SUBAGENT_REVISION_CONFLICT'
   const unsettled = commandError || Boolean(receipt && ['accepted', 'dispatching', 'uncertain'].includes(receipt.state))
-  const allowed = (action: 'sendInput' | 'interrupt') => Boolean(child && child.provider !== 'opencode' && record?.availableActions[action]
+  const allowed = (action: 'sendInput' | 'interrupt') => Boolean(!detail.isError && child && child.provider !== 'opencode' && record?.availableActions[action]
     && child.capabilities[action].support === 'supported' && child.capabilities[action].qualification === 'passed')
   const send = (operation: 'input' | 'interrupt') => {
     if (!child || !allowed(operation === 'input' ? 'sendInput' : 'interrupt') || pending || unsettled) return
@@ -85,8 +89,8 @@ export function SubagentPanel({ scope, subagentId, anchor, onClose }: {
   }
   const provider = child ? providerNames[child.provider] : 'Provider'
   const status = child ? subagentStatus(child.status) : undefined
-  const messageItems = messages.data?.pages.flatMap((page) => page.items) ?? []
-  const toolItems = tools.data?.pages.flatMap((page) => page.items) ?? []
+  const messageItems = messagesBlocked ? [] : messages.data?.pages.flatMap((page) => page.items) ?? []
+  const toolItems = toolsBlocked ? [] : tools.data?.pages.flatMap((page) => page.items) ?? []
   const canSend = allowed('sendInput'), canInterrupt = allowed('interrupt')
   const footer = child && child.provider !== 'opencode' && (canSend || canInterrupt || receipt || commandError || pending) ? <div className="run-subagent-steer">
     {canSend && <Textarea label="Message to subagent" value={text} maxLength={SUBAGENT_LIMITS.text} rows={2}
@@ -112,10 +116,11 @@ export function SubagentPanel({ scope, subagentId, anchor, onClose }: {
   </div> : undefined
   return <SubagentPopover anchor={anchor} title={child ? subagentName(child) : 'Subagent'}
     description={child ? `${provider} subagent` : undefined} busy={pending} onClose={onClose} footer={footer}>
-    {detail.isError ? <ErrorState title="Couldn't load this subagent" description="It may have been removed, or you may no longer have access."
+    {detail.isError && (!child || detailBlocked) ? <ErrorState title="Couldn't load this subagent" description={detail.error.message}
       onRetry={() => void detail.refetch()} retrying={detail.isFetching} />
       : !child || !status ? <Spinner label="Loading subagent" /> : <div className="run-subagent-body">
         <section className="run-subagent-summary" aria-label="Status">
+          {detail.isError ? <p role="alert">Subagent refresh failed. Showing the last successful read.</p> : null}
           <StatusBadge label={status.label} tone={status.tone} busy={child.status === 'running'} />
           <span>{subagentTiming(child)}</span>
           {child.evidence !== 'confirmed' && <p className="run-subagent-note">This status isn't confirmed yet and may still change.</p>}
@@ -127,12 +132,12 @@ export function SubagentPanel({ scope, subagentId, anchor, onClose }: {
           {record.pendingInteraction.responseOptions.some(option => option.input)
             ? <NativeInteractionResponse key={record.pendingInteraction.turn.nativeRequestId}
               options={record.pendingInteraction.responseOptions}
-              disabled={!record.availableActions.respond || pending || unsettled}
+              disabled={detail.isError || !record.availableActions.respond || pending || unsettled}
               onSelect={(optionId, response) => command.mutate({ operation: 'respond', commandId: crypto.randomUUID(),
                 expectedRevision: child.revision, text: '', nativeRequestId: record.pendingInteraction!.turn.nativeRequestId!,
                 optionId, ...(response !== undefined ? { response } : {}) })} />
             : record.pendingInteraction.responseOptions.map(option => <Button key={option.optionId}
-              disabled={!record.availableActions.respond || pending || unsettled}
+              disabled={detail.isError || !record.availableActions.respond || pending || unsettled}
               onClick={() => command.mutate({ operation: 'respond', commandId: crypto.randomUUID(),
                 expectedRevision: child.revision, text: '', nativeRequestId: record.pendingInteraction!.turn.nativeRequestId!,
                 optionId: option.optionId })}>{option.label}</Button>)}
@@ -141,7 +146,8 @@ export function SubagentPanel({ scope, subagentId, anchor, onClose }: {
           { value: 'messages', label: 'Messages', ...(messageItems.length ? { badge: `${messageItems.length}${messages.hasNextPage ? '+' : ''}` } : {}), content: <div className="run-subagent-feed">
             {coverageNote(messages.data?.pages.at(-1)?.coverage.transcript ?? child.coverage.transcript, 'conversation', provider) &&
               <p className="run-subagent-note">{coverageNote(messages.data?.pages.at(-1)?.coverage.transcript ?? child.coverage.transcript, 'conversation', provider)}</p>}
-            {messages.isError ? <ErrorState title="Couldn't load messages" description="Try again in a moment." onRetry={() => void messages.refetch()} retrying={messages.isFetching} />
+            {messages.isError && !messagesBlocked && messages.data ? <p role="alert">Messages refresh failed. <Button size="sm" onClick={() => void messages.refetch()}>Retry messages</Button></p> : null}
+            {messagesBlocked || messages.isError && !messages.data ? <ErrorState title="Couldn't load messages" description="Try again in a moment." onRetry={() => void messages.refetch()} retrying={messages.isFetching} />
               : messages.isPending ? <Spinner label="Loading messages" /> : <>
                 {messageItems.map((item) => <Message key={item.id} item={item} name={subagentName(child)} />)}
                 {!messageItems.length && <EmptyState title="No messages yet" description="Messages appear here as the subagent works." icon="chat" />}
@@ -151,7 +157,8 @@ export function SubagentPanel({ scope, subagentId, anchor, onClose }: {
           { value: 'tools', label: 'Tool calls', ...(toolItems.length ? { badge: `${toolItems.length}${tools.hasNextPage ? '+' : ''}` } : {}), content: <div className="run-subagent-feed">
             {coverageNote(tools.data?.pages.at(-1)?.coverage.tools ?? child.coverage.tools, 'tool calls', provider) &&
               <p className="run-subagent-note">{coverageNote(tools.data?.pages.at(-1)?.coverage.tools ?? child.coverage.tools, 'tool calls', provider)}</p>}
-            {tools.isError ? <ErrorState title="Couldn't load tool calls" description="Try again in a moment." onRetry={() => void tools.refetch()} retrying={tools.isFetching} />
+            {tools.isError && !toolsBlocked && tools.data ? <p role="alert">Tool calls refresh failed. <Button size="sm" onClick={() => void tools.refetch()}>Retry tool calls</Button></p> : null}
+            {toolsBlocked || tools.isError && !tools.data ? <ErrorState title="Couldn't load tool calls" description="Try again in a moment." onRetry={() => void tools.refetch()} retrying={tools.isFetching} />
               : tools.isPending ? <Spinner label="Loading tool calls" /> : <>
                 {toolItems.map((item) => <Tool key={item.id} item={item} />)}
                 {!toolItems.length && <EmptyState title="No tool calls yet" description="Tools the subagent uses appear here." icon="terminal" />}

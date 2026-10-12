@@ -10,7 +10,7 @@ import { mockRuntimeIdentity } from '../../shared/mocks/handlers'
 import { boundLocationKeys } from '../../shared/api/workspaceBoundLocation'
 import { WorkspaceExecutionLocationSettings } from './WorkspaceExecutionLocationSettings'
 import { useBoundLocationDraftStore } from './workspaceBoundLocationDraftStore'
-import { mainRoot, rootMainId, boundRootReadback } from './workspaceBoundLocation.fixtures'
+import { mainRoot, workerRoot, rootMainId, boundRootReadback } from './workspaceBoundLocation.fixtures'
 
 const clients: QueryClient[] = []
 const base = mainRoot.bases[0]!.canonicalPath
@@ -164,15 +164,30 @@ describe('compact Main folder browser', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Choose folder' })).not.toBeInTheDocument())
   })
 
-  it('keeps missing approved Main configuration explicit and never falls back to local browsing', async () => {
+  it('offers the approved-root picker when no Main shortcut applies, without local browsing', async () => {
     server.use(http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({ workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [] })))
     mount(); const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: 'Execution location' }))
-    expect(await screen.findByText('Main folder access is unavailable.')).toBeVisible()
-    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    expect(await screen.findByText(/No approved folders are available/)).toBeVisible()
+    expect(screen.getByRole('combobox', { name: 'Computer and approved base folder' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'New folder' })).not.toBeInTheDocument()
     expect(localRootReads).toEqual([])
     expect(writes).toHaveLength(0)
+  })
+  it('opens the general approved-root picker for a saved worker folder', async () => {
+    saved = boundRootReadback({ workspaceId: 'workspace-1', hostRef: workerRoot.hostRef,
+      allowedBaseId: workerRoot.bases[0]!.baseId, configurationRevision: workerRoot.configurationRevision,
+      relativePath: 'project', accessMode: 'read-write', expectedLocationRevision: 0,
+      expectedRootPolicyRevision: 0 }, workerRoot)
+    server.use(http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({
+      workspaceId: 'workspace-1', readiness: 'metadata-only', policies: saved.evidence === 'bound' ? [saved.binding] : [], allowlists: [mainRoot, workerRoot],
+    })))
+    mount()
+    await userEvent.setup().click(await screen.findByRole('button', { name: 'Execution location' }))
+    expect(await screen.findByRole('combobox', { name: 'Computer and approved base folder' })).toBeVisible()
+    expect(screen.queryByText('Main folder access is unavailable.')).not.toBeInTheDocument()
+    expect(writes).toHaveLength(0)
+    expect(localRootReads).toEqual([])
   })
 
   it('denies root metadata without opening a filesystem browser', async () => {

@@ -23,7 +23,7 @@ describe('F7 B-R06 terminal-decided ephemeral Codex facts', () => {
     const first = await send('First live ephemeral turn')
     let state = completedFixture(startedFixture(mounted.mock.getState(initial.context), first.requestId), 'First answer')
     mounted.mock.setState(state); await act(() => mounted.refresh())
-    await screen.findByText('Server recorded: Next turn · Completed')
+    await screen.findByLabelText('Latest command delivery: Next turn · Completed')
     expect(state.capabilities.resume).toBe(true)
     const second = await send('Follow up in the resident session')
     expect(second.expectedConversationId).toBe(state.conversation!.id)

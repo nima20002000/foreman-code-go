@@ -12,7 +12,7 @@ import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-re
 import './harnessModelFields.css'
 
 type Props = { value: HarnessConfiguration; onChange(value: HarnessConfiguration): void; issues?: readonly FieldIssue[] }
-function EditableHarnessBasicFields({ value, onChange, issues = [], includeSandbox = true, qualified = false, checking = false, checkError, accountHost }: Props & { includeSandbox?: boolean; qualified?: boolean; checking?: boolean; checkError?: string; accountHost?: DeviceProvisioningTarget['hostRef'] | undefined }) {
+function EditableHarnessBasicFields({ value, onChange, issues = [], includeSandbox = true, qualified, checking = false, checkError, accountHost }: Props & { includeSandbox?: boolean; qualified?: boolean; checking?: boolean; checkError?: string; accountHost?: DeviceProvisioningTarget['hostRef'] | undefined }) {
   const query = useProviderHarnessModels(value.harness, value.harness === 'opencode' ? undefined : value.accountId, accountHost)
   const refresh = useRefreshNativeHarness(value.harness)
   const selected = query.data?.models.find((item) => item.id === value.model)

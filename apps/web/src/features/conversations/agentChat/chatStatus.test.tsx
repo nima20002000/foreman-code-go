@@ -27,12 +27,12 @@ it.each([
   clients.push(mounted.client)
   await mounted.ready()
   expect(screen.getByText(label)).toBeVisible()
-  const availability = screen.getByText('Chat unavailable').closest('details')!
-  fireEvent.click(within(availability).getByText('Chat unavailable'))
+  const availability = screen.getByText('Messaging paused').closest('details')!
+  fireEvent.click(within(availability).getByText('Messaging paused'))
   expect(within(availability).getByText('Native delivery not confirmed')).toBeVisible()
 })
 
-it('shows online reconnection while saved GET reads remain available', async () => {
+it('keeps readable chat quiet while polling is available', async () => {
   const mounted = mountChat(agentChatFixtures.idleAfterCompletion)
   clients.push(mounted.client)
   await mounted.ready()
@@ -40,7 +40,7 @@ it('shows online reconnection while saved GET reads remain available', async () 
   const stream = AgentChatTestSource.instances[0]!
   act(() => stream.open())
   act(() => stream.fail())
-  expect(await screen.findByText('Reconnecting to live updates. Information may be stale.')).toBeVisible()
+  expect(screen.queryByText('Connecting to activity updates.')).not.toBeInTheDocument()
   expect(screen.getByText('It is a workflow engine.', { selector: '.conversation-message-content' })).toBeVisible()
 })
 

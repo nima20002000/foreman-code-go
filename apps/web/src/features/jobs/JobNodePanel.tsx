@@ -3,6 +3,7 @@ import type { JobWorkflowAdmissionReference } from '@foreman-code/contracts/job-
 import type { JobDefinitionRecord } from '@foreman-code/contracts/job-verification'
 import { Alert, Button, Card, CardBody } from '../../shared/ui/nocturne'
 import { jobsClient } from './client'
+import { useBlockingReadError } from '../../shared/api/readFailure'
 import { useJobDefinitions } from './query'
 import { jobError, jobReadRetry } from './model'
 import { JobSpecFacts } from './JobSpecFacts'
@@ -12,11 +13,12 @@ import './jobs.css'
 /** Board adapters supply the job variant's saved definition pins; accepted results never reconstruct them. */
 export function JobNodePanel({ workspaceId, definitionId, definitionRevision, definitionVersionId, workflowExecution }: { workspaceId: string; definitionId: string; definitionRevision: number; definitionVersionId:string; workflowExecution?: JobWorkflowAdmissionReference }) {
   const definition = useQuery({ queryKey: ['jobs', workspaceId, 'definition', definitionId, definitionVersionId], queryFn: ({ signal }) => jobsClient.definitionVersion(workspaceId, definitionId,definitionVersionId, { signal }), enabled: !workflowExecution, retry: jobReadRetry })
+  const blocked = useBlockingReadError(definition)
   if (workflowExecution) return <JobRunResult reference={workflowExecution} definitionVersionId={definitionVersionId} />
-  if (definition.error) return <Alert title="Job unavailable" tone="danger">{jobError(definition.error)}</Alert>
+  if (definition.error && (blocked || !definition.data)) return <Alert title="Job unavailable" tone="danger">{jobError(definition.error)}</Alert>
   if (!definition.data) return <p role="status">Loading saved job node…</p>
   if (definition.data.revision !== definitionRevision) return <Alert title="Saved job revision unavailable" tone="warning">This node pins revision {definitionRevision}, but its saved version was returned as revision {definition.data.revision}. No substitute command is shown for this saved node.</Alert>
-  return <Card><CardBody><h3 className="job-wrap">{definition.data.name}</h3><p>Noninteractive job · saved definition revision {definitionRevision}. No agent or provider session.</p><JobSpecFacts spec={definition.data.spec} /></CardBody></Card>
+  return <Card><CardBody>{definition.error ? <p role="alert">Job refresh failed. Showing the last successful read.</p> : null}<h3 className="job-wrap">{definition.data.name}</h3><p>Noninteractive job · saved definition revision {definitionRevision}. No agent or provider session.</p><JobSpecFacts spec={definition.data.spec} /></CardBody></Card>
 }
 
 export function JobNodePicker({ workspaceId, onChoose }: { workspaceId: string; onChoose: (definition: JobDefinitionRecord) => void }) {
