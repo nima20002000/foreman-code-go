@@ -55,7 +55,9 @@ it.each(['pending', 'unchanged', 'revision', 'membership', 'order'] as const)(
         reads += 1
         if (reads === 1) return page(original)
         await gate
-        return page(refreshed, changed ? 5 : 4)
+        return page(refreshed.map(item => ({ ...item, workflow: {
+          ...item.workflow, name: `${item.workflow.name} refreshed`,
+        } })), changed ? 5 : 4)
       }),
       http.put('/api/management/workspaces/workspace-1/workflows/order', async ({ request }) => {
         const input = await request.json() as WorkflowReorderInput
@@ -80,10 +82,11 @@ it.each(['pending', 'unchanged', 'revision', 'membership', 'order'] as const)(
           release()
           await polling
         })
+        await within(sidebar).findByRole('link', { name: /^Beta refreshed/ })
       }
       drop()
       if (changed) {
-        expect(listNames(sidebar)).toEqual(refreshed.map(item => item.workflow.name))
+        expect(listNames(sidebar)).toEqual(refreshed.map(item => `${item.workflow.name} refreshed`))
         expect(requests).toHaveLength(0)
         expect(screen.queryByText('Saving workflow order…')).not.toBeInTheDocument()
       } else {
