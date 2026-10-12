@@ -80,8 +80,11 @@ export class ProductionHarnessRegistry {
     const cwd = process.cwd()
     const provenance = this.environment.INVOCATION_ID ? 'systemd' : this.environment.SSH_CONNECTION ? 'ssh'
       : this.environment.DISPLAY || this.environment.WAYLAND_DISPLAY ? 'gui' : 'terminal'
-    return { generation: commandInputHash({ path, cwd, node: process.execPath, platform: process.platform, architecture: process.arch,
-      nodeOptions: this.environment.NODE_OPTIONS ?? '' }), path, cwd, provenance }
+    // A deploy installs each release in its own folder; the folder name alone must not invalidate qualified profiles,
+    // or every running Agent would be interrupted by an update. The Node version still distinguishes runtimes.
+    const stable = (value: string) => value.replace(/\/releases\/release-[A-Za-z0-9_-]+/gu, '/releases/current')
+    return { generation: commandInputHash({ path: stable(path), cwd: stable(cwd), node: process.version, platform: process.platform,
+      architecture: process.arch, nodeOptions: this.environment.NODE_OPTIONS ?? '' }), path, cwd, provenance }
   }
   refreshMain(signal?: AbortSignal): Promise<void> {
     this.assertOpen(); signal?.throwIfAborted()
