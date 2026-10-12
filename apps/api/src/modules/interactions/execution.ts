@@ -1344,7 +1344,9 @@ export class ApprovalExecutionCoordinator {
               if (!isCredentialAuthorityLost(error)) throw error
               await this.runs.requestCleanup(owned.execution.runId, owner)
               const cleanup = await this.cleanupSession(owned)
-              if (cleanup.length) throw new AggregateError(cleanup, 'Interrupted native cleanup remains unconfirmed.')
+              if (cleanup.length) {
+                throw new AggregateError(cleanup, 'Interrupted native cleanup remains unconfirmed.', { cause: error })
+              }
               return
             }
           }
