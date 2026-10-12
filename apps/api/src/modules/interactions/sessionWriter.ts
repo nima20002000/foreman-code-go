@@ -545,7 +545,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     input: NativeTurnInput & { onTurnOffered?(): void; onSessionReady?(): Promise<void> }, signal?: AbortSignal,
     batches = nativeEventBatches): AsyncIterable<NativeHarnessEvent[]> {
     const lease = await this.acquire(session, input.clientCorrelationId, signal)
-    const evidence = new ReviewEvidenceTracker(session, input.clientCorrelationId)
+    let evidence = new ReviewEvidenceTracker(session, input.clientCorrelationId)
     let submitted = false
     try {
       await this.requireIdle(this.manager, session, input.clientCorrelationId, lease)
@@ -563,6 +563,18 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       onTurnOffered?.()
       const events = this.manager.startTurn(session, {
         ...nativeInput,
+        onRetry: async (providerId) => {
+          await lease.guard.check()
+          if (session.harness !== 'codex' || lease.providerId !== providerId || !evidence.snapshot().terminal) {
+            throw new DomainError('NATIVE_TURN_IDENTITY_CONFLICT', 'Capacity retry does not match a completed owned turn.', 409)
+          }
+          await input.onRetry?.(providerId)
+          await this.coordination.bindLaneTurn(lease.fence, input.clientCorrelationId)
+          evidence = new ReviewEvidenceTracker(session, input.clientCorrelationId)
+          delete lease.providerId
+          lease.observedStatus = 'uncertain'
+          await lease.guard.check()
+        },
         onMessageSubmitted: async (receipt) => {
           await lease.guard.check()
           if (receipt.nativeSessionId !== session.nativeSessionId || receipt.clientCorrelationId !== input.clientCorrelationId) {

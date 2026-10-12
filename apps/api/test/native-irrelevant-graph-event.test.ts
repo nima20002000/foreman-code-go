@@ -1,8 +1,8 @@
 import type pg from 'pg'
 import { HarnessExecutionSchema } from '@foreman-code/contracts'
-import { makeCurrentWorkflowFixture, RunGraphScopeSchema } from '@foreman-code/contracts/wave25'
+import { makeCurrentWorkflowFixture, RunGraphScopeSchema, type NativeGraphCorrelationRecord } from '@foreman-code/contracts/wave25'
 import { afterEach, expect, it, vi } from 'vitest'
-import { ExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
+import { didGraphTransactionCommit, ExclusiveGraphConnection, type GraphTransactionSql } from '../src/modules/run-graph/connection.js'
 import { PostgresNativeGraphProjectionWriter } from '../src/modules/run-graph/nativeWriter.js'
 import { appendWorkflowNativeGraphEventLocked } from '../src/modules/runs/workflowNativeGraph.js'
 import * as ingestion from '../src/modules/run-graph/nativeIngestion.js'
@@ -28,11 +28,19 @@ function fixture(type: string, expiresBeforeCommit = false) {
   const raw = vi.spyOn(rawEvents, 'appendNormalizedNativeEvent').mockResolvedValue({ inserted: true, rejected: false })
   const semantic = vi.spyOn(ingestion, 'appendNativeGraphEvent').mockResolvedValue({ rawInserted: false,
     projected: 0, rejected: 0, ignored: 1 })
-  vi.spyOn(records, 'readNativeGraphCorrelation').mockResolvedValue(undefined)
-  const correlation = vi.spyOn(PostgresNativeGraphProjectionWriter.prototype, 'persistCorrelation').mockResolvedValue(undefined)
-  const statements: string[] = []
+  const correlations = new Map<string, NativeGraphCorrelationRecord>()
+  vi.spyOn(records, 'readNativeGraphCorrelation').mockImplementation(async (_sql, _scope, _key, correlationKey) =>
+    correlations.get(correlationKey))
+  const correlation = vi.spyOn(PostgresNativeGraphProjectionWriter.prototype, 'persistCorrelation')
+    .mockImplementation(async (_sql, _scope, _revision, value) => { correlations.set(value.correlationKey, structuredClone(value)) })
+  vi.spyOn(records, 'readNativeGraphActivity').mockResolvedValue(undefined)
+  let transaction: GraphTransactionSql | undefined
   const connection = new ExclusiveGraphConnection({ query: async (sql: string) => {
-    statements.push(sql)
+    if (sql.includes('select correlation_key from run_native_correlations')) {
+      const latest = [...correlations.values()].at(-1)
+      return { rows: latest ? [{ correlation_key: latest.correlationKey }] : [], rowCount: latest ? 1 : 0 }
+    }
+    if (sql.startsWith('delete from run_native_projection_checkpoints')) return { rows: [], rowCount: 1 }
     if (sql.startsWith('select record from runs')) return { rows: [{ record: run }], rowCount: 1 }
     if (sql.startsWith('select record from harness_executions')) return { rows: [{ record: execution }], rowCount: 1 }
     if (sql.includes('select record,harness,native_session_id')) return { rows: [{ record: {
@@ -44,8 +52,12 @@ function fixture(type: string, expiresBeforeCommit = false) {
   } } as unknown as pg.ClientBase, () => owner.assertOwned())
   const event = { executionId: execution.id, connectionId: 'original-connection', sequence: 1,
     occurredAt: run.createdAt, type, payload: { text: 'original transcript', turnId: 'original-turn' } }
-  const append = () => connection.transaction((sql) => appendWorkflowNativeGraphEventLocked(sql, owner, event,
-    { id: 'original-lane', token: 'original-lease', providerId: 'original-turn', live: true }))
+  const append = () => connection.transaction((sql) => {
+    transaction = sql
+    return appendWorkflowNativeGraphEventLocked(sql, owner, event,
+      { id: 'original-lane', token: 'original-lease', live: true,
+        ...(event.type === 'turn.capacity_retry' ? {} : { providerId: 'original-turn' }) })
+  })
   const appendCaptured = (mismatch?: 'transaction' | 'run' | 'execution') => connection.transaction((sql) => {
     const context = { sql, execution, scope: RunGraphScopeSchema.parse({
       workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
@@ -58,8 +70,24 @@ function fixture(type: string, expiresBeforeCommit = false) {
       { id: 'original-lane', token: 'original-lease', providerId: 'original-turn', live: true },
       undefined, undefined, context)
   })
-  return { append, appendCaptured, raw, semantic, correlation, statements, event }
+  return { append, appendCaptured, raw, semantic, correlation, correlations, event,
+    committed: () => transaction !== undefined && didGraphTransactionCommit(transaction) }
 }
+
+it('preserves the failed native correlation and records a separate capacity retry', async () => {
+  const f = fixture('turn.started')
+  await f.append()
+  const original = structuredClone([...f.correlations.values()][0]!)
+  f.event.type = 'turn.capacity_retry'
+  f.event.sequence = 2
+  await f.append()
+  expect(f.committed()).toBe(true)
+  expect(f.correlations.get(original.correlationKey)).toEqual(original)
+  expect([...f.correlations.values()][1]).toMatchObject({
+    nativeSessionId: original.nativeSessionId, nativeTurnId: null,
+    firstNativeSequence: '2', lastNativeSequence: '2', terminalNativeSequence: null,
+  })
+})
 
 it('retains the original transcript and correlation without redundant semantic ingestion', async () => {
   const f = fixture('native.notification'); await f.append()
@@ -67,7 +95,7 @@ it('retains the original transcript and correlation without redundant semantic i
   expect(f.raw.mock.calls[0]![1].event).toEqual(f.event)
   expect(f.correlation).toHaveBeenCalledOnce()
   expect(f.semantic).not.toHaveBeenCalled()
-  expect(f.statements).toContain('commit')
+  expect(f.committed()).toBe(true)
 })
 
 for (const type of ['turn.started', 'transport.disconnected']) it(`still ingests ${type} evidence`, async () => {
@@ -78,8 +106,7 @@ for (const type of ['turn.started', 'transport.disconnected']) it(`still ingests
 it('still rejects an expired original lane before committing a transcript', async () => {
   const f = fixture('native.notification', true)
   await expect(f.append()).rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
-  expect(f.statements).toContain('rollback')
-  expect(f.statements).not.toContain('commit')
+  expect(f.committed()).toBe(false)
 })
 
 it('retains the same captured transcript and correlation when reusing its validated context', async () => {

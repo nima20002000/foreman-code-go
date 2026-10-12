@@ -82,6 +82,26 @@ function terminal(events: NativeHarnessEvent[]): NativeHistory {
 }
 
 describe('remote native history streaming', () => {
+  it('publishes retry identities in event order when a reader sees several native attempts at once', async () => {
+    const correlation = 'execution:execution'
+    const events = [
+      { ...event(0), type: 'turn.started', payload: { threadId: 'native-session', turnId: 'first-turn', clientCorrelationId: correlation } },
+      { ...event(1), type: 'turn.completed', payload: { threadId: 'native-session', turnId: 'first-turn', status: 'failed', willRetry: true } },
+      { ...event(2), type: 'turn.capacity_retry', payload: { threadId: 'native-session', turnId: 'first-turn' } },
+      { ...event(3), type: 'turn.started', payload: { threadId: 'native-session', turnId: 'native-turn', clientCorrelationId: correlation } },
+    ]
+    const f = setup(() => terminal(events))
+    const session = await f.proxy.createSession(f.start)
+    const identities: string[] = []
+    const delivered: NativeHarnessEvent[] = []
+    for await (const frame of f.proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: correlation,
+      onSubmitted: async id => { identities.push(`submitted:${id}`) },
+      onRetry: async id => { identities.push(`retry:${id}`) },
+    })) delivered.push(frame)
+    expect(identities).toEqual(['submitted:first-turn', 'retry:first-turn', 'submitted:native-turn'])
+    expect(delivered).toEqual(events)
+    expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
+  })
   it.each(['prepare', 'reattach'] as const)('preserves restart cancellation during %s before acknowledgment', async mode => {
     const f = setup(() => terminal([event(0)]))
     const controller = new AbortController()

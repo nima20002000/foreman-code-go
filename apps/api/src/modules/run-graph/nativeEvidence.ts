@@ -10,6 +10,7 @@ export type SafeNativeEvidence = { kind: 'evidence'; type: string; payload: Reco
 
 /** Do not serialize or walk routine token/output/metadata payloads in the graph hot path. */
 export function selectNativeGraphEvidence(type: string, input: Record<string, unknown>): SafeNativeEvidence {
+  if (type === 'turn.completed' && input.willRetry === true && input.status === 'failed') return { kind: 'ignored' }
   if (!['item.started', 'item.completed', 'item.snapshot', 'turn.started', 'turn.completed', 'message.updated', 'message.part.updated'].includes(type)) return { kind: 'ignored' }
   const payload = pick(input, ['threadId', 'turnId', 'sessionID', 'nativeTurnStatus'])
   if (type.startsWith('item.')) {
