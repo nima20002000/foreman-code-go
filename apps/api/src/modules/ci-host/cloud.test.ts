@@ -356,6 +356,35 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(() => f.mirrorGit('cat-file', '-e', f.commit)).toThrow()
   })
 
+  it.each(['github', 'circleci'] as const)('refuses a host partition on %s before publishing or dispatching', async provider => {
+    const f = await fixture({}, { provider })
+    const head = f.mirrorGit('rev-parse', 'main')
+    await expect(f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site',
+      commit: f.commit, suite: 'integration', scope: 'full',
+      partition: { index: 0, count: 2, hostIndexes: [0] } })).rejects.toMatchObject({ code: 'CI_CLOUD_UNAVAILABLE' })
+    expect(f.dispatched).toHaveLength(0)
+    expect(f.circle.triggered).toHaveLength(0)
+    expect(f.mirrorGit('rev-parse', 'main')).toBe(head)
+  })
+
+  it.each(['github', 'circleci'] as const)('excludes installed Worker and systemd files from %s cloud slices', async provider => {
+    const installed = [
+      'apps/api/test/workflow-systemd-restart.integration.test.ts',
+      'apps/api/test/native-service-restart.integration.test.ts',
+      'apps/api/test/remote-review-production-main-crash.integration.test.ts',
+    ]
+    const f = await fixture(Object.fromEntries(installed.map(file => [file, ''])), { provider })
+    const ordinary = ['a', 'b', 'c', 'd'].map(name => `apps/api/test/${name}.integration.test.ts`)
+    const inventory = [...ordinary, ...installed].sort()
+    await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
+      suite: 'integration', scope: 'full', partition: { index: 1, count: 2, hostIndexes: [0] } })
+    const commands = provider === 'github' ? f.dispatched : f.circle.triggered
+    expect(commands).toHaveLength(1)
+    const slice = selectByIndexes(inventory, commands[0]!.find(value => value.startsWith('slice='))!.slice('slice='.length))
+    expect(slice.length).toBeGreaterThan(0)
+    expect(slice.every(file => ordinary.includes(file))).toBe(true)
+  })
+
   it.each(['github', 'circleci'] as const)('spreads heavy integration files across every %s slice', async provider => {
     const heavy = [
       'apps/api/test/remote-review-production-main-crash.integration.test.ts',

@@ -133,6 +133,10 @@ export class CloudCi {
     files?: string[] | undefined; defaultBranch?: string | undefined; baseCommit?: string | undefined }): Promise<CiHostRun> {
     const existing = await this.read(request.runId).catch(() => null)
     if (existing) return this.view(existing, 0)
+    if (request.suite === 'integration' && request.partition?.hostIndexes?.includes(request.partition.index)) {
+      throw new DomainError('CI_CLOUD_UNAVAILABLE',
+        'This integration partition requires a build computer with user systemd.', 409)
+    }
     const mirror = await this.mirrors(request.repository)
     // CircleCI's machine image has no podman, which the Worker and check suites use; it takes integration work only.
     if (this.provider.id === 'circleci' && request.suite !== 'integration') {

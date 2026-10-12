@@ -154,18 +154,25 @@ export class HostCiService {
     for (const group of groups.values()) {
       const count = group[0]!.partition!.count
       if (group.length !== count) continue
-      const ordered = [...free].sort((left, right) => Number(isGitHubComputer(left)) - Number(isGitHubComputer(right))
+      const ordered = [...free].sort((left, right) =>
+        Number(left.hostRef.kind === 'cloud') - Number(right.hostRef.kind === 'cloud')
+        || Number(isGitHubComputer(left)) - Number(isGitHubComputer(right))
         || right.priority - left.priority
         || (speed.get(right.key) ?? 0) - (speed.get(left.key) ?? 0)).slice(0, count)
+      const hostCount = Math.max(1, ordered.filter(computer => computer.hostRef.kind !== 'cloud').length)
+      const hostIndexes = Array.from({ length: hostCount }, (_, index) => index)
+      const planned: (HostCiComputer | undefined)[] = [...ordered]
+      // Reserve a host slice even when every build computer is currently busy.
+      if (ordered[0]?.hostRef.kind === 'cloud') planned.unshift(undefined)
       const known = ordered.map(computer => speed.get(computer.key)).filter((value): value is number => value !== undefined)
       const mean = known.length ? known.reduce((sum, value) => sum + value, 0) / known.length : 1
       const weights = group.map((_, index) => {
-        const computer = ordered[index]
+        const computer = planned[index]
         return Number((computer ? speed.get(computer.key) ?? mean : mean).toPrecision(6))
       })
       for (const [index, run] of group.sort((left, right) => left.partition!.index - right.partition!.index).entries()) {
-        const next = CiRunRecordSchema.parse({ ...run, partition: { ...run.partition!, weights },
-          plannedHostKey: ordered[index]?.key ?? null })
+        const next = CiRunRecordSchema.parse({ ...run, partition: { ...run.partition!, weights, hostIndexes },
+          plannedHostKey: planned[index]?.key ?? null })
         await this.save(next, null)
         replaced.set(run.id, next)
       }
@@ -442,10 +449,13 @@ export class HostCiService {
     queued = await this.weighPartitions(queued, computers.filter(computer => !busy.has(computer.key)))
     // Runs start at once, in queue order: each claims its computer before waiting, so none is given twice.
     await Promise.all(queued.map(async run => {
+      const hostRequired = run.suite === 'integration' && (!run.partition?.hostIndexes
+        || run.partition.hostIndexes.includes(run.partition.index))
       const preferred = (computer: HostCiComputer) => Number(run.suite === 'integration'
         ? !isGitHubComputer(computer) : isGitHubComputer(computer))
       const order = computers.filter(computer => run.suite === 'integration'
         || computer.hostRef.kind !== 'cloud' || computer.hostRef.provider !== 'circleci')
+        .filter(computer => !hostRequired || computer.hostRef.kind !== 'cloud')
         .filter(computer => computer.hostRef.kind !== 'cloud' || !computer.hostRef.provider
           || !run.unstartedProviders?.includes(computer.hostRef.provider))
         .sort((left, right) => preferred(right) - preferred(left)

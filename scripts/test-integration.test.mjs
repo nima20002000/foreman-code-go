@@ -93,6 +93,8 @@ test('each affected integration file runs only when its required capability is p
     ['apps/api/test/operator-file-delivery.integration.test.ts', 'nativeCgroupDelegation'],
     ['apps/api/test/operator-management-file-authority.integration.test.ts', 'nativeCgroupDelegation'],
     ['apps/api/test/test-database-startup.integration.test.ts', 'testDatabaseStartup'],
+    ['apps/api/test/workflow-systemd-restart.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/native-service-restart.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/computer-workflow-save.regression-directories.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/computer-workflow-save.regression-reservation-cleanup-preparing.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/computer-workflow-save.regression-reservation-cleanup-completed.integration.test.ts', 'installedWorkerHost'],
@@ -159,6 +161,8 @@ test('unsupported integration files remain required and prevent a complete or pa
 
 test('installed Worker suites remain unavailable and nonzero even when explicitly selected in a Job', async () => {
   const files = [
+    'apps/api/test/workflow-systemd-restart.integration.test.ts',
+    'apps/api/test/native-service-restart.integration.test.ts',
     'apps/api/test/computer-workflow-save.regression-directories.integration.test.ts',
     'apps/api/test/computer-workflow-save.regression-reservation-cleanup-preparing.integration.test.ts',
     'apps/api/test/computer-workflow-save.regression-reservation-cleanup-completed.integration.test.ts',
