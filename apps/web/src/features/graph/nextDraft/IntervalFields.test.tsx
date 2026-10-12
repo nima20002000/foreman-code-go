@@ -3,7 +3,8 @@ import { useState } from 'react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 import { makeCurrentWorkflowFixture, WorkflowDefinitionV3Schema, type WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
-import { IntervalFields, intervalLabel } from './IntervalFields'
+import { IntervalFields } from './IntervalFields'
+import { intervalLabel } from './intervalLabel'
 
 afterEach(cleanup)
 

@@ -27,10 +27,10 @@ async function intervalRuntime() {
   f.version.agentConfigurationVersionIds = { [watcher.agentId]: f.configurations[0]!.id }
   watcher.interval = { everySeconds: 10 }
   const checkStarted = deferred<string>(), checkGate = deferred(), workerGate = deferred()
-  let pool: { query: (text: string, values: unknown[]) => Promise<{ rows: Array<{ node: string; tick: number | null }> }> }
+  const db: { pool?: { query: (text: string, values: unknown[]) => Promise<{ rows: Array<{ node: string; tick: number | null }> }> } } = {}
   const runtime = await codexApprovalRuntime('user', { fixture: f, approvalPolicy: 'never',
     workflowOutput: async (executionId) => {
-      const [row] = (await pool.query('select workflow_node_id as node,tick_index as tick from harness_executions where id=$1',
+      const [row] = (await db.pool!.query('select workflow_node_id as node,tick_index as tick from harness_executions where id=$1',
         [executionId])).rows
       if (row?.tick) {
         checkStarted.resolve(executionId)
@@ -40,7 +40,7 @@ async function intervalRuntime() {
       if (row?.node === worker.id) await workerGate.promise
       return `${row?.node} done`
     } })
-  pool = runtime.db.pool as never
+  db.pool = runtime.db.pool as never
   return { runtime, f, watcher, worker, checkStarted, checkGate, workerGate }
 }
 

@@ -37,12 +37,12 @@ describe('live Run waits', () => {
   })
 
   it('shows a running interval check and when the next one is due', () => {
-    const idle = { state: 'succeeded' as const, label: 'Succeeded' }
+    const idle = { state: 'completed' as const, label: 'Succeeded' }
     const check = { nodeId: 'a', everySeconds: 60, checks: 2, running: false, nextCheckAt: null }
     expect(liveNodeView(idle, undefined, undefined, { ...check, running: true })).toEqual({ state: 'running', label: 'Interval check running' })
     expect(liveNodeView(idle, undefined, undefined, check)).toBe(idle)
     const next = liveNodeView(idle, undefined, undefined, { ...check, nextCheckAt: '2026-10-12T10:05:30.000Z' })
-    expect(next.state).toBe('succeeded')
+    expect(next.state).toBe('completed')
     expect(next.label).toBe(`Succeeded · Next check ${new Date('2026-10-12T10:05:30.000Z')
       .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`)
     // A wait for an answer still explains the node first.

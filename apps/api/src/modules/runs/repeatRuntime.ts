@@ -377,7 +377,6 @@ export async function executeRepeatRuntime(input: {
   const failed = new AbortController(), signal = AbortSignal.any([input.signal, failed.signal])
   const tasks = new Set<Promise<unknown>>()
   let firstFailure: unknown, preflightComplete = false, cancellation: Promise<boolean> | undefined
-  let stopChecks = async (): Promise<void> => {}
   const definitive = (error: unknown): boolean => {
     if (repeatSettlementPending(error) || isGraphInterrupt(error)) return false
     if (error instanceof ZodError || (error instanceof Error && error.message === 'GRAPH_JSON_LIMIT')) return true
@@ -485,7 +484,7 @@ export async function executeRepeatRuntime(input: {
         // Native iterators need not honor cancellation; the graph invocation is raced
         // independently, then existing exact native cleanup and wrapper drain run below.
         let onAbort: (() => void) | undefined
-        stopChecks = startIntervalChecks({ version: input.version, store: input.store, driver: input.driver, signal })
+        const stopChecks = startIntervalChecks({ version: input.version, store: input.store, driver: input.driver, signal })
         try {
           const invocation = invoke(state)
           tasks.add(invocation)
