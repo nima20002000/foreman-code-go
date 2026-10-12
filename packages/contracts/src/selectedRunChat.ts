@@ -31,6 +31,9 @@ const Selected = z.object({
   history: AgentChatHistoryPageSchema.optional(), receipts: AgentChatTurnPageSchema.optional(),
 }).strict().superRefine((value, context) => {
   const { selection, state, key } = value;
+  if (state.sourceTranscript && state.sourceTranscript.executionId !== selection.executionId) {
+    context.addIssue({ code: 'custom', path: ['state', 'sourceTranscript', 'executionId'], message: 'Mixed execution transcript identity' });
+  }
   for (const field of ["workspaceId", "workflowId", "runId", "workflowNodeId"] as const) {
     if (state.context[field] !== selection[field]) context.addIssue({ code: "custom", path: ["state", "context", field], message: "Mixed Run chat identity" });
   }

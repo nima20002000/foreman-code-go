@@ -13,6 +13,11 @@ import { PostgresOperatorConversationRepository } from '../src/modules/conversat
 import { assertRunChatConversation, runChatStorageKey, selectRunChatExecution } from '../src/modules/conversations/selectedRunChat.js'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import type { PostgresRunRepository } from '../src/modules/runs/postgres.js'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { buildApp } from '../src/app.js'
+import { PostgresAccessService } from '../src/modules/access/postgres.js'
+import type { OperatorServices } from '../src/mcp/operator/types.js'
 
 const cleanup: AgentChatService[] = []
 afterEach(async () => { await Promise.all(cleanup.splice(0).map((chat) => chat.shutdown())) })
@@ -68,11 +73,15 @@ function fixture() {
     return value
   }
   const stored = row()
+  const transcriptRows = [{ item_key: 'source-message', role: 'assistant', content: 'Saved execution output',
+    original_bytes: 22, complete: true, sequence: '1', revision: '1' }]
   const message = (id: string) => MessageSchema.parse({ id: `message-${id}`, conversationId: id, role: 'assistant',
     content: `Transcript for ${id}`, createdAt: saved.createdAt, updatedAt: saved.createdAt })
   const query = vi.fn(async (sql: string, values: unknown[] = []) => {
     if (['begin', 'commit', 'rollback'].includes(sql)) return { rows: [], rowCount: 0 }
     if (sql.includes('management_principals')) return { rows: [live], rowCount: 1 }
+    if (sql.includes('from harness_native_events')) return { rows: transcriptRows, rowCount: transcriptRows.length }
+    if (sql.includes('from conversation_session_defaults')) return { rows: [], rowCount: 0 }
     if (sql.includes('run_board_snapshots')) {
       const run = runs.get(String(values[2]))
       return { rows: run && run.workspaceId === values[0] && run.workflowId === values[1]
@@ -117,7 +126,7 @@ function fixture() {
     managers as () => NativeHarnessSessionManager, '/sch06-fixture')
   cleanup.push(chat)
   return { saved, version, context, target, principal, live, runs, source, configurations, executions, snapshots, conversations,
-    stored, capture, row, query, repository, workflows, managers, chat, runPort }
+    stored, capture, row, query, repository, workflows, managers, chat, runPort, pool, transcriptRows }
 }
 
 async function selected(f: ReturnType<typeof fixture>, runId = f.target.runId, executionId = f.source.id) {
@@ -135,6 +144,70 @@ function addJob(f: ReturnType<typeof fixture>) {
 }
 
 describe('SCH-06 historical Agent chat identity and fail-closed selection', () => {
+  it.each(['starting', 'running', 'completed'] as const)('reads the %s execution transcript without a chat or native probe', async state => {
+    const f = fixture()
+    f.conversations.clear()
+    f.source.state = state
+    f.runs.get(f.target.runId)!.executionState = 'running'
+    const { workspaceId, ...query } = f.context
+    const result = await f.chat.read(f.principal, workspaceId, query)
+    expect(result.sourceTranscript).toMatchObject({ executionId: f.source.id, state,
+      messages: [{ content: 'Saved execution output' }] })
+    expect(result.conversation).toBeNull()
+    expect(result.availability.canSend).toBe(state === 'completed')
+    const controls = await f.chat.readContextControls(f.principal, f.context)
+    expect(controls.conversationId).toBeNull()
+    expect(controls.busyReason !== null).toBe(state !== 'completed')
+    expect(f.managers).not.toHaveBeenCalled()
+    expect(f.repository.admit).not.toHaveBeenCalled()
+  })
+
+  it('returns persisted execution text and pending controls through authenticated MCP and denies a wrong scope', async () => {
+    const f = fixture()
+    f.conversations.clear()
+    f.source.state = 'running'
+    const access = new PostgresAccessService(f.pool)
+    const denied = { ...f.principal, id: 'wrong-scope',
+      grants: [{ actions: ['agent_chat:read' as const], scope: { workspaceIds: ['other-workspace'] } }] }
+    vi.spyOn(access, 'authenticate').mockImplementation(async token => token === 'reader' ? f.principal : denied)
+    const app = buildApp({ logger: false,
+      readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
+      operator: { access, services: { agentChat: f.chat, commands: { recordDenied: vi.fn() } } as unknown as OperatorServices },
+    })
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    const clients: Client[] = []
+    const connect = async (token: string) => {
+      const client = new Client({ name: 'execution-chat-reader', version: '1' })
+      clients.push(client)
+      await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+        authProvider: { token: async () => token },
+      }))
+      return client
+    }
+    try {
+      const reader = await connect('reader')
+      const other = await connect('denied')
+      const { workspaceId, ...query } = f.context
+      const call = { name: 'agent_chat_read', arguments: { workspaceId, query } }
+      expect(decodeMcpToolResult(await reader.callTool(call))).toMatchObject({ sourceTranscript: {
+        executionId: f.source.id, messages: [{ content: 'Saved execution output' }],
+      } })
+      expect(decodeMcpToolResult(await reader.callTool({ name: 'agent_chat_controls_get',
+        arguments: { workspaceId, context: query, executionId: f.source.id } }))).toMatchObject({
+        conversationId: null, busyReason: expect.any(String),
+      })
+      f.transcriptRows[0]!.content = 'Persisted update'
+      expect(decodeMcpToolResult(await reader.callTool(call))).toMatchObject({ sourceTranscript: {
+        messages: [{ content: 'Persisted update' }],
+      } })
+      expect((await other.callTool(call)).isError).toBe(true)
+      expect(f.managers).not.toHaveBeenCalled()
+    } finally {
+      await Promise.all(clients.map(client => client.close()))
+      await app.close()
+    }
+  })
+
   it.each([undefined, 'agent'] as const)('keeps exact Agent provenance in a mixed snapshot with kind %s', async (kind) => {
     const f = fixture()
     if (kind) f.version.definition.nodes[0]!.kind = kind

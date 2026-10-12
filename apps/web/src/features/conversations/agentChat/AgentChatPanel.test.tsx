@@ -23,6 +23,31 @@ afterEach(() => {
 })
 
 describe('AgentChatPanel frozen fixtures', () => {
+  it.each(['starting', 'running', 'completed'] as const)('shows the %s execution transcript before a follow-up chat exists', async state => {
+    const initial = structuredClone(agentChatFixtures.empty)
+    initial.context.runId = 'selected-run'
+    initial.sourceTranscript = { executionId: 'selected-execution', state, revision: '1',
+      messages: [{ id: 'source-message', role: 'assistant', content: 'Live workflow output', nativeMessageComplete: state === 'completed' }],
+      hasEarlierMessages: false }
+    initial.availability = state === 'completed' ? { canSend: true }
+      : { canSend: false, reason: 'run_active', message: 'Follow-up messaging opens after this execution finishes.' }
+    let controlsExecution: string | null = null
+    server.use(http.get('/api/workspaces/:workspaceId/agent-chat/session-controls', ({ request }) => {
+      controlsExecution = new URL(request.url).searchParams.get('executionId')
+      return HttpResponse.json({ error: { code: 'AGENT_CHAT_UNAVAILABLE', message: 'Controls unavailable in fixture' } }, { status: 409 })
+    }))
+    const mounted = mountChat(initial)
+    await mounted.ready()
+    expect(await screen.findByText('Live workflow output')).toBeVisible()
+    expect(screen.queryByText('Selected Run — chat unavailable')).not.toBeInTheDocument()
+    await waitFor(() => expect(controlsExecution).toBe('selected-execution'))
+    expect(screen.queryByRole('textbox', { name: 'Message' }) !== null).toBe(state === 'completed')
+    mounted.mock.setState({ ...initial, sourceTranscript: { ...initial.sourceTranscript,
+      revision: '2', messages: [{ id: 'source-message', role: 'assistant', content: 'Updated workflow output', nativeMessageComplete: true }] } })
+    await mounted.refresh()
+    expect(await screen.findByText('Updated workflow output')).toBeVisible()
+  })
+
   it('does not restore protected content from a GET begun before a command denial', async () => {
     const mounted = mountChat(agentChatFixtures.idleAfterCompletion)
     await mounted.ready()

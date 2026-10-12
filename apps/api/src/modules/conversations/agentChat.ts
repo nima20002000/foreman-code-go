@@ -4,6 +4,7 @@ import { withInteractionResponse, isSessionNativeInteraction } from '@foreman-co
 import { resolveAgentChatDirectory, revalidateAgentChatDirectory } from './agentChatDirectory.js'
 import type { SessionControlRequest } from '@foreman-code/contracts'
 import { pendingSessionControls } from '../harnesses/sessionControlDefaults.js'
+import { readRunChatTranscript } from './runChatTranscript.js'
 import { SessionControlStateSchema } from '@foreman-code/contracts'
 import { validateSessionMessage } from './sessionControls/messageAdmission.js'
 import { parseSessionCommand, sessionTaskContent } from '@foreman-code/contracts'
@@ -122,9 +123,9 @@ interface Resolution {
   /** How a first message would create its native session. */
   create?: Omit<NewAgentConversation, 'context'>
   configuration?: AgentConfigurationVersion
+  source?: HarnessExecution
 }
 
-const TERMINAL_RUN_STATES = new Set(['completed', 'interrupted'])
 const STEER_UNAVAILABLE_REASON = 'This harness cannot add input to a running turn. Queue it for the next turn or interrupt and send.'
 
 function failure(error: unknown, code = 'AGENT_CHAT_TURN_FAILED'): ExecutionResult {
@@ -262,14 +263,6 @@ export class AgentChatService {
       if (!version || !node || node.agentId !== context.agentId) {
         return blocked('agent_missing', 'This Agent is not part of the selected Run.')
       }
-      if (!selectedRun && !TERMINAL_RUN_STATES.has(run.executionState)) {
-        return blocked('run_active', 'This Agent belongs to a Run that is still working. Chat opens when the Run finishes.')
-      }
-      if (row && !selectedRun) {
-        const configuration = await this.workflows.getAgentConfiguration(row.agent_configuration_version_id)
-        const unavailable = this.sessionUnavailable(row, configuration)
-        return { context, key, row, ...(configuration ? { configuration } : {}), ...(unavailable ? { blocked: unavailable } : {}) }
-      }
       if (row) {
         assertRunChatConversation(row, context, executionId)
         // A continued conversation stays on its original execution, including after another attempt.
@@ -309,21 +302,27 @@ export class AgentChatService {
       }
       if (!source) {
         if (executionId) staleRunChat()
+        if (run.executionState !== 'completed' && run.executionState !== 'interrupted') {
+          return blocked('run_active', 'Waiting for this Agent’s execution to start. Its public transcript will appear here.')
+        }
         return blocked('native_session_missing', 'This Run has no stored execution for this Agent.')
       }
       executionId = source.id
       row ??= await findRunChatConversation(this.pool, context, executionId)
       if (row) assertRunChatConversation(row, context, executionId, source)
       key = row?.agent_key ?? runChatStorageKey(context, executionId)
+      const sourceResolution = { context, key, executionId, source, ...(row ? { row } : {}) }
       const configuration = await this.workflows.getAgentConfiguration(row?.agent_configuration_version_id ?? source.agentConfigurationVersionId)
-      if (!configuration) return blocked('agent_missing', 'The Agent configuration used by this Run is unavailable.')
+      if (!configuration) return { ...sourceResolution, blocked: { reason: 'agent_missing',
+        message: 'The Agent configuration used by this Run is unavailable. Its transcript remains readable.' } }
       if (configuration.harness.harness === 'opencode') {
-        return { ...blocked('harness_unavailable', RETIRED_OPENCODE_MESSAGE), configuration }
+        return { ...sourceResolution, configuration, blocked: { reason: 'harness_unavailable', message: RETIRED_OPENCODE_MESSAGE } }
       }
       if (configuration.id !== source.agentConfigurationVersionId || configuration.agentId !== context.agentId
         || row && row.harness !== configuration.harness.harness) staleRunChat()
-      if (!TERMINAL_RUN_STATES.has(run.executionState)) {
-        return { ...blocked('run_active', 'This Agent belongs to a Run that is still working. Chat opens when the Run finishes.'), configuration }
+      if (source.state !== 'completed') {
+        return { ...sourceResolution, configuration, blocked: { reason: 'run_active',
+          message: 'The execution transcript is read-only while this Agent starts or works. Follow-up messages open when its execution finishes.' } }
       }
       if (row) {
         const unavailable = this.sessionUnavailable(row, configuration)
@@ -331,15 +330,17 @@ export class AgentChatService {
             || configuration.harness.harness === 'codex' && configuration.harness.advanced?.sessionPersistence === 'ephemeral')
             ? { reason: 'native_session_missing' as const, message: 'The Run source cannot be forked. Stored chat messages remain readable; no replacement session will be created.' }
             : undefined)
-        return { context, key, executionId, row, configuration, ...(unavailable ? { blocked: unavailable } : {}) }
+        return { ...sourceResolution, configuration, ...(unavailable ? { blocked: unavailable } : {}) }
       }
       if (!source.nativeSessionId || !source.workingDirectory || source.state !== 'completed') {
-        return { ...blocked('native_session_missing', 'This execution has no resumable stored native session. No other execution was selected.'), configuration }
+        return { ...sourceResolution, configuration, blocked: { reason: 'native_session_missing',
+          message: 'This execution has no resumable stored native session. Its transcript remains readable.' } }
       }
       if (configuration.harness.harness === 'codex' && configuration.harness.advanced?.sessionPersistence === 'ephemeral') {
-        return { ...blocked('native_session_missing', 'This Run used an ephemeral Codex session; a durable chat fork is unavailable.'), configuration }
+        return { ...sourceResolution, configuration, blocked: { reason: 'native_session_missing',
+          message: 'This execution used an ephemeral Codex session. Its transcript remains readable; follow-up chat is unavailable.' } }
       }
-      return { context, key, executionId, configuration, create: {
+      return { ...sourceResolution, configuration, create: {
         agentConfigurationVersionId: configuration.id, harness: configuration.harness.harness,
         origin: { kind: 'run_execution', runId: run.id, executionId, sourceNativeSessionId: source.nativeSessionId },
         workingDirectory: source.workingDirectory, runtimeDirectory: '',
@@ -454,6 +455,7 @@ export class AgentChatService {
     const { context } = resolution
     const livePrincipal = await readLiveManagementPrincipal(this.pool, principal.id)
     this.authorize(livePrincipal, 'agent_chat:read', context)
+    const sourceTranscript = resolution.source ? await readRunChatTranscript(this.pool, resolution.source) : undefined
     const blocked = resolution.blocked ?? await this.harnessUnavailable(resolution)
     const capabilities = this.capabilities(resolution.configuration, resolution.row)
     if (blocked && ['native_session_missing', 'harness_unavailable', 'agent_missing'].includes(blocked.reason)) {
@@ -464,9 +466,12 @@ export class AgentChatService {
     }
     const availability = blocked ? { canSend: false, reason: blocked.reason, message: blocked.message } : { canSend: true, message: 'Foreman Code workflow tools are not available in chat. The scoped Foreman Code App MCP server is disabled for chat only; other accepted Agent settings are retained.' }
     if (!resolution.row) {
+      const finalPrincipal = await readLiveManagementPrincipal(this.pool, principal.id)
+      this.authorize(finalPrincipal, 'agent_chat:read', context)
       return AgentChatStateSchema.parse({ context, conversation: null, sessionState: 'none', availability, capabilities,
+        ...(sourceTranscript ? { sourceTranscript } : {}),
         activeTurn: null, turns: [], messages: [], hasEarlierMessages: false, activities: [], revision: 0,
-        qualificationKey: commandInputHash({ principal: livePrincipal, configurationId: resolution.configuration?.id ?? null,
+        qualificationKey: commandInputHash({ principal: finalPrincipal, configurationId: resolution.configuration?.id ?? null,
           availability, capabilities }).slice(7) })
     }
     let loaded = await this.repository.state(resolution.row.id, { recoverOverflow: true })
@@ -525,6 +530,7 @@ export class AgentChatService {
       activeTurn: row.active_request_id ? { requestId: row.active_request_id,
         ...(row.active_native_turn_id ? { nativeTurnId: row.active_native_turn_id } : {}), startedAt: loaded.activeStartedAt?.toISOString() ?? loaded.turns.find((turn) => turn.requestId === row.active_request_id)?.createdAt ?? row.created_at.toISOString() } : null,
       turns: loaded.turns, messages: loaded.messages, hasEarlierMessages: loaded.hasEarlierMessages, activities,
+      ...(sourceTranscript ? { sourceTranscript } : {}),
       ...(loaded.hasMoreTurns ? { hasMoreTurns: true } : {}),
       ...(row.pending_interaction ? { pendingInteraction: row.pending_interaction } : {}),
       ...(row.last_result ? { lastResult: row.last_result } : {}),
@@ -597,9 +603,10 @@ export class AgentChatService {
     this.authorize(principal, 'agent_chat:read', context)
     const live = await readLiveManagementPrincipal(this.pool, principal.id)
     this.authorize(live, 'agent_chat:read', context)
-    const resolved = await this.resolveControlContext(principal, context, executionId)
+    const resolved = context.runId && !executionId ? await this.resolve(context)
+      : await this.resolveControlContext(principal, context, executionId)
     if (resolved.row) return this.readSessionControls(principal, context.workspaceId, resolved.row.id)
-    if (resolved.blocked || !resolved.configuration) {
+    if (!resolved.configuration) {
       throw new DomainError('AGENT_CHAT_UNAVAILABLE', resolved.blocked?.message ?? 'This node has no chat configuration.', 409)
     }
     const defaultsRow = await this.pool.query<{ record: unknown }>(`select record from conversation_session_defaults
@@ -610,7 +617,8 @@ export class AgentChatService {
       profileKey: resolved.configuration.id, desiredMode: 'regular', appliedMode: null,
       defaults, desired: defaults, applied: null, applicability: 'next-turn',
       capabilities: pendingSessionControls(resolved.configuration.harness), context: null,
-      nativeSessionId: null, nativeProviderVersion: null, compaction: null, compactions: [], busyReason: null })
+      nativeSessionId: null, nativeProviderVersion: null, compaction: null, compactions: [],
+      busyReason: resolved.blocked?.message ?? null })
   }
 
   async changeContextControls(principal: ManagementPrincipal, context: AgentChatContext,

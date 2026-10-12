@@ -14,6 +14,20 @@ it('refreshes an accepted model projection at the same message revision without 
 })
 
 describe('Agent chat identity and state projection', () => {
+  it('refreshes a source transcript independently of the conversation revision and rejects older text', () => {
+    const previous: AgentChatState = { ...structuredClone(agentChatFixtures.empty),
+      context: { ...agentChatFixtures.empty.context, runId: 'source-run' },
+      sourceTranscript: { executionId: 'source-execution', state: 'running', revision: '1',
+        messages: [{ id: 'source-item', role: 'assistant', content: 'Partial output' }], hasEarlierMessages: false } }
+    const incoming: AgentChatState = { ...previous, sourceTranscript: { ...previous.sourceTranscript!, revision: '2',
+      messages: [{ id: 'source-item', role: 'assistant', content: 'Completed output', nativeMessageComplete: true }] } }
+    const accepted = acceptAgentChatState(previous, incoming, 'read')
+    expect(accepted.sourceTranscript?.messages[0]?.content).toBe('Completed output')
+    expect(acceptAgentChatState(accepted, previous, 'read').sourceTranscript).toEqual(accepted.sourceTranscript)
+    expect(stateBelongsToContext(previous, previous.context)).toBe(true)
+    expect(stateBelongsToContext({ ...previous, context: agentChatFixtures.empty.context }, agentChatFixtures.empty.context)).toBe(false)
+  })
+
   it.each(Object.entries(agentChatFixtures))('accepts the exact context of fixture %s', (_name, state) => {
     expect(stateBelongsToContext(state, state.context)).toBe(true)
   })

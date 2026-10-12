@@ -37,7 +37,8 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   const retired = conversation?.harness === 'opencode' || state?.capabilities.harness === 'opencode'
   const conversationId = conversation?.id
   const sessionControls = useSessionControls(conversationId, {
-    workspaceId: context.workspaceId, context,
+    workspaceId: context.workspaceId, context, executionId: state?.sourceTranscript?.executionId,
+    enabled: !!state,
   })
   const resendFileClient = useMemo(() => conversationId ? createFileCardHttpClient({
     download: `/api/workspaces/${encodeURIComponent(context.workspaceId)}/agent-chat/conversations/${encodeURIComponent(conversationId)}/files/{fileId}/revisions/{revisionId}/content`,
@@ -152,14 +153,22 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     online: chat.online,
     hasConversation: !!state?.conversation,
   })
+  let sessionLabel = status.execution
+  if (!state?.conversation && state?.sourceTranscript) {
+    sessionLabel = state.availability.canSend ? 'Ready for a follow-up' : 'Execution transcript · read-only'
+  } else if (state && !state.conversation && !state.availability.canSend) {
+    sessionLabel = context.runId ? 'Selected Run — chat unavailable' : 'Chat unavailable for this Agent'
+  }
+  let availabilityLabel = 'Chat note'
+  if (state && !state.availability.canSend) {
+    availabilityLabel = state.sourceTranscript ? 'Messaging unavailable' : 'Chat unavailable'
+  }
   const notices = <div className="agent-chat-notices">
     {runActivity}
     {!retired && conversation ? <PinnedProviderAccount binding={conversation.providerAccountBinding}
       label={conversation.origin.kind === 'run_execution' ? 'Source Run account · saved chat account' : 'Saved chat account'} /> : null}
     {retired ? <p role="status">Retired harness (OpenCode): read-only</p> : <CompactionActivity controls={sessionControls} />}
-    {state ? <p className="agent-chat-session-label" role="status">{!state.conversation && !state.availability.canSend
-      ? context.runId ? 'Selected Run — chat unavailable' : 'Chat unavailable for this Agent'
-      : status.execution}</p> : null}
+    {state ? <p className="agent-chat-session-label" role="status">{sessionLabel}</p> : null}
     {background ? <p role="status">{background.message}</p> : null}
     {status.connection ? <Alert tone="warning" title={!chat.online ? 'You are offline'
       : chat.connection === 'unavailable' ? 'Live updates unavailable' : 'Connecting to live activity'} live>
@@ -169,7 +178,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
       <Button size="sm" onClick={() => { void chat.query.refetch() }}>Refresh chat</Button></Alert> : null}
     {chat.query.isPending ? <LoadingState label="Loading this Agent conversation…" rows={1} /> : null}
     {state?.availability.message ? <details className="agent-chat-availability">
-      <summary title={state.availability.message}>{state.availability.canSend ? 'Chat note' : 'Chat unavailable'}</summary>
+      <summary title={state.availability.message}>{availabilityLabel}</summary>
       <p>{state.availability.message}</p>
     </details> : null}
     {sessionMissing && conversation?.providerAccountBinding ? <p role="status">This chat keeps its saved account and native profile. Restore access to its original computer and profile to continue.</p> : null}
@@ -182,7 +191,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
         : <p>Choose another saved Agent or leave the selected Run to start a separate conversation. There is no replacement-session command for this exact selection.</p>}
     </div> : null}
     {state?.sessionState === 'none' && state.availability.canSend ? <p className="agent-chat-note">
-      {context.runId ? 'Your first message forks this finished Run’s native session. It never restarts or changes the Run.'
+      {context.runId ? 'Your first message forks this completed execution’s native session. It never restarts or changes the Run.'
         : 'Your first message starts a native conversation using this Agent’s accepted settings. Unsaved settings do not apply.'}
     </p> : null}
     {busy && !state?.messages.some((message) => message.role === 'assistant' && message.requestId === state.activeTurn?.requestId && message.nativeMessageComplete === false)
