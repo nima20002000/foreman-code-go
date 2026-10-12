@@ -13,9 +13,10 @@ import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
 
 type Runtime = Awaited<ReturnType<typeof currentOperatorIntegration>>
 
-async function activeWorkflow() {
-  const runtime = await currentOperatorIntegration({
-    fixture: makeCurrentWorkflowFixture(randomUUID(), 'single'), approvalNodeIds: [], insertRun: false,
+async function activeWorkflow(mode: 'running' | 'waiting' = 'running') {
+  const fixture = makeCurrentWorkflowFixture(randomUUID(), 'single')
+  const runtime = await currentOperatorIntegration({ fixture, insertRun: false,
+    approvalNodeIds: mode === 'waiting' ? [fixture.version.entryNodeId] : [],
   })
   const connection = runtime.provider.connection.bind(runtime.provider)
   vi.spyOn(runtime.provider, 'connection').mockImplementation((): NativeHarnessSessionManager => {
@@ -24,7 +25,7 @@ async function activeWorkflow() {
       async *startTurn(session, input, signal) {
         for await (const event of manager.startTurn(session, input, signal)) {
           yield event
-          if (event.type === 'turn.started') {
+          if (event.type === 'turn.started' && mode === 'running') {
             await new Promise<void>((_resolve, reject) => {
               if (signal?.aborted) reject(signal.reason)
               else signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
@@ -176,6 +177,26 @@ describe.runIf(postgresEnabled)('restart credential safety', () => {
       }
     }, 60_000,
   )
+
+  it('reacquires the yielded Run owner before cleaning up a revoked waiting Worker', async () => {
+    const runtime = await activeWorkflow('waiting')
+    try {
+      const active = await start(runtime)
+      await readUntil(active.read, details => details.run.executionState === 'waiting',
+        { timeoutMs: 30_000, description: 'the graph yielding for approval' })
+      const original = await lease(runtime, active.execution.id)
+      await runtime.access.revoke(runtime.writer.principal.id)
+      await runtime.engine.shutdown()
+      expect(await lease(runtime, active.execution.id)).toMatchObject({
+        principal_id: original.principal_id, expires_at: original.expires_at, live: false,
+      })
+      expect(await detachment(runtime, active.execution.id)).toEqual({ detached: false, closed: true })
+      expect((await active.read()).run.outcome).toBe('pending')
+      expect(runtime.provider.counts).toMatchObject({ sessions: 1, starts: 1, responses: 0 })
+    } finally {
+      await runtime.close()
+    }
+  }, 60_000)
 
   it.each(['connection failure', 'revoked worker'] as const)(
     'does not preserve a Worker after a %s during renewal', async failure => {

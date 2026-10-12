@@ -1373,12 +1373,13 @@ export class ApprovalExecutionCoordinator {
         })))
         const resident = siblings.filter(owned => this.ownedSessions.get(owned.execution.id) === owned
           && !this.closedExecutions.has(owned.execution.id))
-        const remote = resident.find(owned => owned.context.acceptedPlacement?.hostRef.kind === 'device')
-        const retained = remote && await this.retainRunOwner(remote.execution, () => {
+        const ownerSession = resident.find(owned => owned.context.acceptedPlacement?.hostRef.kind === 'device'
+          || this.credentials?.renew && this.managerCredentials.has(owned.manager))
+        const retained = ownerSession && await this.retainRunOwner(ownerSession.execution, () => {
           for (const owned of siblings) owned.controller.abort()
         })
         try {
-          // Sibling closes share one Run lock until every remote receipt has committed.
+          // Sibling closes share one Run lock until every close or cleanup commits.
           if (retained) this.adoptRunOwner(retained.owner)
           return (await Promise.all(resident.map(owned => closeSession(owned, retained?.owner)))).flat()
         } finally { if (retained) await retained.release() }
