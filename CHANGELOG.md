@@ -7,6 +7,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.87] - 2026-10-12
+
+### Fixed
+
+- CI distribution: CircleCI now takes typecheck, lint, build and unit parts too (all but the podman Worker unit tests) instead of leaving checks queued behind GitHub slots.
+- The systemd restart integration coverage is split to fit the runner watchdog; a retired source-text test became a behavior test.
+
 ## [0.0.86] - 2026-10-12
 
 ### Fixed
