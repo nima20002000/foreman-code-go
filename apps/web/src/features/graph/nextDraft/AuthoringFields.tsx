@@ -5,6 +5,7 @@ import type { DraftAgentEdits } from './agentEdits'
 import { attachAgent, changeApprovalHandler, entryChoices, nodeTitle, putRelationship,
   removeRelationship, roleEvidence, setWorkConnectionLimit, type DraftNode, type NextDraftContext } from './model'
 import { WorkConnectionLimitEditor } from './WorkConnectionLimitEditor'
+import { IntervalFields } from './IntervalFields'
 import { Button, Icon, IconButton, SegmentedControl, Select, Switch, TextField, type SelectOption } from '../../../shared/ui/nocturne'
 
 export type EditGraph = (update: (graph: WorkflowDefinitionV3) => WorkflowDefinitionV3) => void
@@ -87,6 +88,7 @@ export function NodeWorkflowFields({ graph, node, context, change, agentEdits }:
       hint={!eligible && !starts ? choices.mode === 'orchestrator' ? 'Only an orchestrator can start this workflow.' : 'This node can’t start the workflow.' : undefined}
       onChange={(event) => { const checked = event.currentTarget.checked; change((value) => ({ ...value, entryNodeId: checked ? node.id : value.entryNodeId === node.id ? null : value.entryNodeId })) }} />
     <ChoiceFields graph={graph} node={node} change={change} />
+    <IntervalFields node={node} change={change} />
   </section>
 }
 

@@ -242,6 +242,7 @@ export function workflowToGraph(
         stepLabel: `Step ${index + 1}`,
         waitLabel: waitLabel(agent, state, options.runFacts),
         initialPrompt: workflowNode.initialPrompt,
+        ...(workflowNode.interval ? { intervalSeconds: workflowNode.interval.everySeconds } : {}),
         runState,
         runOutcome,
         runActive: options.runActive,

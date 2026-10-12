@@ -40,6 +40,8 @@ export const RepeatGraphExecutionV3Schema = z.object({
   identity: RepeatGraphExecutionIdentityV3Schema, inputDigest: GraphDigestSchema,
   /** Present only for the new versioned work-handoff policy. */
   workActivationId: GraphIdSchema.optional(),
+  /** Present only for an interval check of its node; checks never route the graph. */
+  tickIndex: z.number().int().positive().optional(),
   previousExecutionId: GraphIdSchema.nullable(),
   continuedFromExecutionId: GraphIdSchema.optional(),
   // Observed durable lifecycle only. No native-active/acknowledged inference.
@@ -49,7 +51,8 @@ export const RepeatGraphExecutionV3Schema = z.object({
   if ((value.state === 'completed') !== (value.resultOutcome !== null)
     || (value.identity.attempt === 1) !== (value.previousExecutionId === null)
     || value.previousExecutionId === value.identity.executionId
-    || value.workActivationId !== undefined && value.identity.occurrence !== null) {
+    || value.workActivationId !== undefined && value.identity.occurrence !== null
+    || value.tickIndex !== undefined && (value.identity.occurrence !== null || value.workActivationId !== undefined)) {
     context.addIssue({ code: 'custom', message: 'REPEAT_GRAPH_EXECUTION_CONFLICT' })
   }
 })

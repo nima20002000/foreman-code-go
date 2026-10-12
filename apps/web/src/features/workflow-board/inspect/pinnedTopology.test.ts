@@ -13,6 +13,19 @@ describe('immutable canvas display projection', () => {
     expect(result.nodes.filter((node) => node.entry).map((node) => node.id)).toEqual([version.entryNodeId])
   })
 
+  it('keeps a node on its graph state while interval checks run and shows its saved interval', () => {
+    const { version } = makeCurrentWorkflowFixture('interval-pinned', 'single')
+    nativeNode(version.definition.nodes[0]!).interval = { everySeconds: 300 }
+    expect(nativeNode(pinnedTopology(version).nodes[0])?.intervalSeconds).toBe(300)
+    const identity = (executionId: string) => ({ workflowNodeId: version.definition.nodes[0]!.id, executionId,
+      agentId: 'agent', agentConfigurationVersionId: 'cfg', attempt: 1, occurrence: null })
+    const cut: PinnedNodeDisplayCut = { state: { resolutions: [], executions: [
+      { identity: identity('graph'), state: 'completed', resultOutcome: 'succeeded' },
+      { identity: identity('check'), state: 'running', resultOutcome: null, tickIndex: 1 },
+    ] } }
+    expect(pinnedNodeStates(cut).get(version.definition.nodes[0]!.id)?.label).toBe('succeeded')
+  })
+
   it('does not synthesize an ordinary repeat plan or occurrence', () => {
     const { version } = makeCurrentWorkflowFixture('ordinary-pinned', 'single')
     const original = JSON.stringify(version)

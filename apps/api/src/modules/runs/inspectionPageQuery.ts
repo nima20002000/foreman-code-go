@@ -24,7 +24,7 @@ export function inspectionExecutionsQuery(input: RunExecutionsListInput, after: 
           'agentId',e.record->'agentId','agentConfigurationVersionId',e.record->'agentConfigurationVersionId',
           'attempt',e.record->'attempt','state',e.record->'state','failure',e.record#>'{result,error}',
           'continuedFromExecutionId',e.record#>'{sessionContinuation,previousExecutionId}',
-          'createdAt',e.record->'createdAt',
+          'createdAt',e.record->'createdAt','tickIndex',s.tick_index,
           'startedAt',e.record->'startedAt','finishedAt',e.record->'finishedAt','acceptedResultAvailable',e.accepted,
           'worktree',(select jsonb_build_object('repository',np.record#>'{materialization,receipt,worktree,repository}',
             'branch',np.record#>'{materialization,receipt,worktree,branch}') from execution_native_placements np
@@ -33,6 +33,7 @@ export function inspectionExecutionsQuery(input: RunExecutionsListInput, after: 
         x.identity,x.run_id as identity_run_id,x.occurrence_id as identity_occurrence_id,x.technical_attempt,
         s.slot_id,s.run_id as slot_run_id,s.workflow_node_id as slot_node_id,s.occurrence_id as slot_occurrence_id,
         s.work_activation_id,e.work_activation_id as native_work_activation_id,x.work_activation_id as attempt_work_activation_id,
+        s.tick_index as slot_tick_index,e.tick_index as native_tick_index,
         ${INSPECTION_OCCURRENCE_COLUMNS},true as job_pinned,null::integer as job_definition_revision
         from harness_executions e left join run_repeat_executions x on x.execution_id=e.id
         left join run_repeat_slots s on s.slot_id=x.slot_id
@@ -53,6 +54,7 @@ export function inspectionExecutionsQuery(input: RunExecutionsListInput, after: 
         x.identity,x.run_id as identity_run_id,x.occurrence_id as identity_occurrence_id,x.technical_attempt,
         s.slot_id,s.run_id as slot_run_id,s.workflow_node_id as slot_node_id,s.occurrence_id as slot_occurrence_id,
         s.work_activation_id,null::text as native_work_activation_id,x.work_activation_id as attempt_work_activation_id,
+        s.tick_index as slot_tick_index,null::integer as native_tick_index,
         ${INSPECTION_OCCURRENCE_COLUMNS},
         coalesce(j.accepted_spec=j.record->'acceptedSpec' and j.id=w.node_execution_id and j.workspace_id=run.workspace_id
           and j.record->>'id'=j.id and j.record->>'workspaceId'=j.workspace_id

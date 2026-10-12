@@ -31,6 +31,15 @@ describe('Foreman Code MCP tools per Agent', () => {
     expect(effectiveGraphqlTools('coder', outputs, { add: [], remove: outputs })).toEqual(['bug_report'])
   })
 
+  it('enables Run status only on nodes with interval checks, never from Agent defaults or node tool changes', () => {
+    for (const role of ['coder', 'orchestrator'] as const) {
+      expect(graphqlRoleTools(role)).not.toContain('run_status_get')
+      expect(effectiveGraphqlTools(role)).not.toContain('run_status_get')
+      expect(effectiveGraphqlTools(role, ['run_status_get'], { add: ['run_status_get'], remove: [] })).not.toContain('run_status_get')
+      expect(effectiveGraphqlTools(role, ['context_get'], undefined, true)).toEqual(['bug_report', 'context_get', 'run_status_get'])
+    }
+  })
+
   it('keeps bug reporting available for existing explicit defaults and node removals', () => {
     for (const role of ['coder', 'orchestrator'] as const) {
       expect(effectiveGraphqlTools(role, [], { add: [], remove: ['bug_report'] })).toEqual(['bug_report'])

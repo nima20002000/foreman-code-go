@@ -4,13 +4,14 @@ import { assertGraphTransaction, type GraphTransactionSql } from '../run-graph/c
 import { repeatConflict } from './repeatResolution.js'
 
 /** Call while holding the Run lock. Starting an unissued activation consumes
- * its reservation; retries and new activations require additional capacity. */
+ * its reservation; retries and new activations require additional capacity.
+ * Interval checks are bounded by their interval and the Run's lifetime, not this budget. */
 export async function hasWorkflowExecutionCapacityLocked(sql: GraphTransactionSql, runId: string,
   version: WorkflowVersionV3, activationId: string | null = null): Promise<boolean> {
   assertGraphTransaction(sql)
   const maximum = version.definition.executionPolicy!.maxNodeExecutions
   const row = (await sql.query<{ total: string }>(`select (
-    (select count(*) from harness_executions e where e.run_id=$1
+    (select count(*) from harness_executions e where e.run_id=$1 and e.tick_index is null
       and not exists (select 1 from workflow_native_entries n
         where n.execution_id=e.id and n.run_id=e.run_id and n.phase='not_submitted'))
     + (select count(*) from run_repeat_executions where run_id=$1 and identity->>'kind'='job')

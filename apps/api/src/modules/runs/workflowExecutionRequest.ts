@@ -7,6 +7,26 @@ import {
 import { WorkActivationInputSchema, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { currentInitialPrompt } from './currentRouting.js'
 import { trustedWorkNoticePrompt } from './workHandoffNotice.js'
+import { repeatTickIndex } from './repeatResolution.js'
+
+function every(seconds: number | undefined): string {
+  if (!seconds) return 'on an interval'
+  if (seconds % 3600 === 0) return `every ${seconds / 3600} hour${seconds === 3600 ? '' : 's'}`
+  if (seconds % 60 === 0) return `every ${seconds / 60} minute${seconds === 60 ? '' : 's'}`
+  return `every ${seconds} seconds`
+}
+
+/** Request-only text for an interval check. Earlier work is in the continued session when one exists. */
+function intervalCheckPrompt(index: number, everySeconds: number | undefined, continued: boolean, initialPrompt?: string): string {
+  return [
+    ...(initialPrompt ? [`Your task in this workflow: ${initialPrompt}`, ''] : []),
+    `Foreman Code interval check ${index}. While this Run is active you are re-activated ${every(everySeconds)}.`,
+    'Call run_status_get to read your own Run: each node\'s state, the Run\'s CI tickets and recent errors.',
+    `${continued ? 'Review your own earlier work too, and look' : 'Look'} for common problems: failed or stuck nodes, failing CI, repeated errors.`,
+    'Report briefly what you found and anything that needs attention. This check does not route the workflow;',
+    'your reply is recorded for this Run but is not passed to other nodes.',
+  ].join('\n')
+}
 
 export function workflowExecutionRequest(input: {
   execution: HarnessExecution
@@ -18,10 +38,15 @@ export function workflowExecutionRequest(input: {
   const { execution, version, configuration, workspaceId, executionContext } = input
   const node = version.definition.nodes.find(item => item.id === execution.workflowNodeId)
   if (!node || node.kind === 'job') throw new Error('Native execution requires an Agent workflow node.')
-  const initialPrompt = currentInitialPrompt(node,
-    version.definition.repeat?.blocks.some(block => block.exitNodeId === node.id) ?? false,
-    version.definition.handoffs !== undefined)
-  const workInput = version.definition.handoffs ? WorkActivationInputSchema.parse(execution.input) : undefined
+  const tickIndex = repeatTickIndex(execution.input)
+  const initialPrompt = tickIndex !== undefined
+    ? intervalCheckPrompt(tickIndex, node.interval?.everySeconds, Boolean(execution.sessionContinuation),
+      execution.sessionContinuation ? undefined : node.initialPrompt)
+    : currentInitialPrompt(node,
+      version.definition.repeat?.blocks.some(block => block.exitNodeId === node.id) ?? false,
+      version.definition.handoffs !== undefined)
+  const workInput = version.definition.handoffs && tickIndex === undefined
+    ? WorkActivationInputSchema.parse(execution.input) : undefined
   const noticePrompt = workInput ? trustedWorkNoticePrompt(workInput) : undefined
   const returnPrompt = workInput?.work.kind === 'work_request' ? [
     'If you choose routing.kind "return", copy this routing object and add outcome "accepted" or "needs_changes":',

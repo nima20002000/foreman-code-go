@@ -10,6 +10,7 @@ import { CircularNodeResizer } from '../CircularNodeResizer'
 import { useGraphDraftStore } from '../store'
 import { useGraphPresentation, useGraphPresentationStore } from '../useGraphPresentation'
 import { AgentHandles } from '../AgentHandles'
+import { intervalLabel } from './intervalLabel'
 import { agentNodeFacts, edgeBend, relationshipLines, useFloatingCurve } from '../signalEdge'
 import { SignalEdgeShape } from '../SignalEdgeShape'
 import { RESPONSIVE_FIT_OPTIONS, RESPONSIVE_MIN_ZOOM, useResponsiveGraphViewport } from '../useResponsiveGraphViewport'
@@ -47,12 +48,13 @@ const DraftAgent = memo(function DraftAgent({ id, data, selected, width, height 
   const runSelected = Boolean(useWorkflowBoard()?.run)
   const run = { label: 'Idle', state: 'idle' as const }
   const facts = agentNodeFacts(data.agent)
+  const meta = data.intervalSeconds ? [{ label: 'Checks', value: intervalLabel(data.intervalSeconds) }, ...facts.meta].slice(0, 2) : facts.meta
   const core = useRef<HTMLButtonElement>(null)
   const panel = open?.nodeId === id ? open.panel : undefined
   const select = () => inspect(() => { presentation.getState().setFocusedNodeId(id); presentation.getState().setFocusedEdgeId(undefined) })
   return <>
     <AgentNodeView ref={core} name={data.label} harness={facts.harness} harnessLabel={facts.harnessLabel} model={facts.model}
-      icon={facts.icon} statusLabel={run.label} state={run.state} meta={facts.meta} entry={entry} selected={selected} openPanel={panel}
+      icon={facts.icon} statusLabel={run.label} state={run.state} meta={meta} entry={entry} selected={selected} openPanel={panel}
       ariaLabel={`${data.label}, ${facts.roleLabel}${entry ? ', starts the workflow' : ''}, ${facts.harnessLabel}, ${run.label}`}
       onSelect={(event) => { event.stopPropagation(); if (selectNode) selectNode(id); else select() }}
       onAction={(next) => inspect(() => {

@@ -11,6 +11,7 @@ import { CircularNodeResizer } from '../../graph/CircularNodeResizer'
 import type { GraphGeometryChange } from '../../graph/geometry'
 import { AgentHandles } from '../../graph/AgentHandles'
 import { SignalEdgeShape } from '../../graph/SignalEdgeShape'
+import { intervalLabel } from '../../graph/nextDraft/intervalLabel'
 import { agentNodeFacts, edgeBend, relationshipLines, useFloatingCurve } from '../../graph/signalEdge'
 import type { EdgePulse } from '../../graph/SignalEdgeShape'
 import { useWorkflowBoard } from '../context'
@@ -51,7 +52,9 @@ type RunNode = Node<ReturnType<typeof pinnedTopology>['nodes'][number] & {
 const PinnedRunNode = memo(function PinnedRunNode({ id, data, width, height }: NodeProps<RunNode>) {
   const ui = useContext(RunAgentPanels), anchor = useRef<HTMLButtonElement>(null)
   const panel = ui?.open?.nodeId === id ? ui.open.panel : undefined
-  const meta = [...(data.blockId ? [{ label: 'Repeat', value: data.blockId }] : []), ...data.facts.meta].slice(0, 2)
+  const meta = [...(data.blockId ? [{ label: 'Repeat', value: data.blockId }] : []),
+    ...(data.kind === 'agent' && data.intervalSeconds ? [{ label: 'Checks', value: intervalLabel(data.intervalSeconds) }] : []),
+    ...data.facts.meta].slice(0, 2)
   return <><AgentNodeView ref={anchor} className="pinned-run-node" name={data.label} harness={data.facts.harness} harnessLabel={data.facts.harnessLabel}
     model={data.facts.model} icon={data.facts.icon} statusLabel={data.status} state={data.state} transition={data.transition} transitionKey={data.transitionKey} meta={meta}
     entry={data.entry} selected={data.selected} ariaLabel={`Inspect Run node ${data.label}`} onSelect={()=>{if(data.kind==='job'){data.inspect();ui?.setOpen({nodeId:id,panel:'info'})}}} openPanel={panel}
@@ -144,6 +147,8 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
     return data?.snapshot.kind === 'available' && data.snapshot.workflowVersionId === scope.workflowVersionId
       ? runBoardCi(data.snapshot, data.activitySnapshot) : new Map<string, CiActivity>()
   }, [ciQuery.data, ciQuery.isError, scope.workflowVersionId])
+  const checks = useMemo(() => new Map((ciQuery.isError ? undefined : ciQuery.data)?.intervalChecks
+    ?.map((check) => [check.nodeId, check]) ?? []), [ciQuery.data, ciQuery.isError])
   const topology = useMemo(() => version ? pinnedTopology(version) : undefined, [version])
   const ciJobs = useMemo(() => {
     const data = ciQuery.isError ? undefined : ciQuery.data
@@ -241,7 +246,7 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
       const nodeFacts:Facts = node.kind==='job'?{...unknownFacts,harness:undefined,harnessLabel:'Job',roleLabel:'Job',model:undefined,meta:[{label:'Revision',value:String(node.jobDefinitionRevision)}]}:facts.get(node.configurationId)??unknownFacts
       const baseView = !record ? { state: 'unavailable' as const, label: 'Unavailable' }
         : choreography.nodes.get(node.id) ?? { state: 'idle' as const, label: 'Not started' }
-      const current = liveNodeView(baseView, waits.get(node.id), cis.get(node.id))
+      const current = liveNodeView(baseView, waits.get(node.id), cis.get(node.id), checks.get(node.id))
       const view = current === baseView ? baseView : { ...baseView, ...current }
       const shown = `${view.state}:${view.label}:${'transition' in view ? `${view.transition}@${view.transitionKey}` : ''}`
       const cached = previous.current.get(node.id)
@@ -255,7 +260,7 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
     }) ?? []
     previous.current = next
     return result
-  }, [topology, states, record, facts, jobExecutions, board.inspection.runNodeId, choreography.nodes, cis, waits])
+  }, [topology, states, record, facts, jobExecutions, board.inspection.runNodeId, choreography.nodes, cis, waits, checks])
   const layoutById = useMemo(() => new Map(layout?.map((node) => [node.id, node])), [layout])
   const pinnedById = useMemo(() => new Map(version?.definition.nodes.map((node) => [node.id, node])), [version])
   const presented = useRef(new Map<string, { source: RunNode; node: RunNode }>())
