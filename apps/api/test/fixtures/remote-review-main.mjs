@@ -1,6 +1,6 @@
-/* global process */
-import { readFile } from 'node:fs/promises'
-import { serializeError } from '../../src/modules/diagnostics/logger.ts'
+/* global process, setInterval, clearInterval */
+import { readFile, writeFile } from 'node:fs/promises'
+import { componentLogger, serializeError } from '../../src/modules/diagnostics/logger.ts'
 import { createDatabase } from '../../src/infrastructure/database.ts'
 import { createCheckpointStore } from '../../src/infrastructure/checkpoints.ts'
 import { buildProductionApp } from '../../src/production.ts'
@@ -21,6 +21,14 @@ const database = createDatabase(config.database)
 const checkpoints = createCheckpointStore(config.database.connectionString, config.checkpoints.schema, config.database)
 const production = buildProductionApp(config, database, checkpoints, false,
   undefined, undefined, { codex: codexQualificationSuite }, infrastructure)
+const reportReconciliation = error => componentLogger('engine').error({ err: error }, 'run reconciliation failed')
+if (process.env.FOREMAN_CODE_RESTART_FIXTURE_READY) {
+  production.app.post('/__fixture-reconcile', async request => {
+    if (request.body.kind === 'reconcile-reviews') await production.engine.reconcile(reportReconciliation)
+    else await production.reconcile(reportReconciliation)
+    return { reconciled: true }
+  })
+}
 const files = production.registerFileStorage()
 await checkpoints.setup()
 await production.initialize()
@@ -28,7 +36,19 @@ await production.initialize()
 await files.bytes.initialize()
 const origin = await production.app.listen({ host: '127.0.0.1', port: config.port })
 await production.startDeviceListener()
+let reconciliationTimer
+if (process.env.FOREMAN_CODE_RESTART_FIXTURE_READY) {
+  await production.reconcile(reportReconciliation)
+  reconciliationTimer = setInterval(() => {
+    void production.reconcile(reportReconciliation).catch(reportReconciliation)
+  }, 5000)
+  reconciliationTimer.unref()
+}
 process.send?.({ kind: 'ready', origin })
+if (process.env.FOREMAN_CODE_RESTART_FIXTURE_READY) {
+  await writeFile(process.env.FOREMAN_CODE_RESTART_FIXTURE_READY,
+    JSON.stringify({ pid: process.pid, origin }), { mode: 0o600 })
+}
 let closing = false
 let reconciliationFailure
 process.on('message', async message => {
@@ -54,6 +74,7 @@ process.on('message', async message => {
 async function close() {
   if (closing) return
   closing = true
+  clearInterval(reconciliationTimer)
   try {
     await production.shutdown()
     await checkpoints.close()

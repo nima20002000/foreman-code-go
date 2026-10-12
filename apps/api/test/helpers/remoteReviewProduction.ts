@@ -46,6 +46,7 @@ import { waitForChildReady } from './remoteReviewReadiness.js'
 import { measureIntegrationPhase, reportIntegrationPhase } from './integrationPhase.js'
 import { remoteReviewWorkerArtifacts } from './remoteReviewWorkerArtifacts.js'
 import { remoteReviewChanges } from './remoteReviewChanges.js'
+import { installedRestartService } from './installedRestartService.js'
 import type { RuntimeTimingRecord } from '../../src/modules/diagnostics/runtimeTiming.js'
 
 const execute = promisify(execFile)
@@ -93,6 +94,7 @@ export async function remoteReviewProduction(options: {
   claudeInventory?: boolean; parallelProfileChecks?: boolean; reuseMatchingProfiles?: boolean
   workerRelease?: string | Promise<string>
   installationRefreshIntervalMs?: number; parallelSetup?: boolean; includeNodeRuntimePayload?: boolean
+  installedMainService?: boolean
   reportPhase?: (phase: string, elapsedMs: number) => void
 } = {}) {
   const reportPhase = (phase: string, elapsedMs: number) => {
@@ -235,11 +237,20 @@ export async function remoteReviewProduction(options: {
       'Worker update artifacts', () => remoteReviewWorkerArtifacts(workerRelease))
     workerEnvironment.FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY = logEnvironment.FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY
     let main: ChildProcess | undefined
+    const mainService = options.installedMainService
+      ? await installedRestartService(directory, mainConfiguration, logEnvironment, runtime) : undefined
+    if (mainService) closes.push(mainService.close)
+    if (mainService) await execute(provider.binary, ['--version'], { env: logEnvironment })
     let mainFailure = ''
     const failures: Array<{ code: string; runId: string | null; namespace?: unknown;
       phase?: unknown; errorType?: unknown; errorLocation?: unknown; errorDetail?: string | undefined }> = []
     let origin = ''
     const stopMain = async (signal: NodeJS.Signals = 'SIGTERM') => {
+      if (mainService) {
+        if (signal !== 'SIGTERM') throw new Error('Installed restart fixtures use graceful systemd shutdown.')
+        await mainService.stop()
+        return
+      }
       if (!main || main.exitCode !== null || main.signalCode !== null) return
       const stopped = main
       await new Promise<void>((resolve, reject) => {
@@ -301,6 +312,12 @@ export async function remoteReviewProduction(options: {
       })
     }
     const startMain = async (workingDirectory = fileURLToPath(new URL('../../../..', import.meta.url))) => {
+      if (mainService) {
+        const ready = await mainService.start()
+        if (!ready) throw new Error('Installed API readiness was not published.')
+        origin = ready.origin
+        return
+      }
       let ready = false
       mainFailure = ''
       const started = spawn(process.execPath, [
@@ -481,9 +498,12 @@ export async function remoteReviewProduction(options: {
     const workerEntrypoint = fileURLToPath(new URL('../fixtures/remote-review-worker.mjs', import.meta.url))
     beginPhase('Worker release readiness')
     beginPhase('installed Worker initialization')
-    await execute(process.execPath, [workerEntrypoint, stateDirectory, workerRelease, 'initialize'], {
-      env: workerEnvironment,
-    })
+    const needsWorker = !options.installedMainService || options.executionHost !== 'main'
+    if (needsWorker) {
+      await execute(process.execPath, [workerEntrypoint, stateDirectory, workerRelease, 'initialize'], {
+        env: workerEnvironment,
+      })
+    }
     let worker: ChildProcess | undefined
     let ready = false
     let workerStateRevision = 0
@@ -523,7 +543,7 @@ export async function remoteReviewProduction(options: {
     // Main closes its native sessions while the Worker transport is still available.
     closes.splice(closes.indexOf(stopMain), 0, () => stopWorker())
     beginPhase('Worker connection')
-    await startWorker()
+    if (needsWorker) await startWorker()
     beginPhase('Worker inventory')
     const executionHostRef = options.executionHost === 'main' ? mainHost : hostRef
     const inventory = await waitForRemoteReview(async () => HarnessRegistryReadbackSchema.parse(
@@ -664,8 +684,14 @@ export async function remoteReviewProduction(options: {
       child.once('exit', exited)
       child.send({ kind, requestId }, error => { if (error) finish(error) })
     })
-    const reconcile = () => requestReconciliation('reconcile')
-    const reconcileReviews = () => requestReconciliation('reconcile-reviews')
+    const serviceReconciliation = async (kind: string) => {
+      const response = await fetch(`${origin}/__fixture-reconcile`, { method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${writer.token}` },
+        body: JSON.stringify({ kind }) })
+      if (!response.ok) throw new Error(`Installed API reconciliation failed: ${await response.text()}`)
+    }
+    const reconcile = () => mainService ? serviceReconciliation('reconcile') : requestReconciliation('reconcile')
+    const reconcileReviews = () => mainService ? serviceReconciliation('reconcile-reviews') : requestReconciliation('reconcile-reviews')
     async function details(runId: string) {
       const response = await fetch(`${origin}/api/management/workspaces/${saved.scope.workspaceId}/runs/${runId}`, {
         headers: { authorization: `Bearer ${writer.token}` } })
@@ -699,6 +725,7 @@ export async function remoteReviewProduction(options: {
       entryCapture: (operationId: string) => new InstalledWorkflowRecovery(
         join(stateDirectory, 'workflow-recovery'), registry).readEntry(operationId),
       workerPid: () => worker?.pid,
+      mainService,
       inventory: () => value('harness_registry_get', executionHostRef).then(HarnessRegistryReadbackSchema.parse),
       blockWorkerDiscovery() {
         let entered!: () => void

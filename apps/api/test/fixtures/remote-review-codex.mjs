@@ -217,7 +217,7 @@ async function started(turn, prompt) {
 }
 
 log({ nativeStarted: { pid: process.pid } })
-createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line => {
+createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', async line => {
   const message = JSON.parse(line)
   if (!message.method) {
     const waiting = pending.get(message.id)
@@ -276,7 +276,19 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line =
     reply(message.id, { config: { approval_policy: thread?.settings.approvalPolicy ?? 'on-request',
       mcp_servers: { [mcpName]: { ...mcp.transport, enabled: mcp.enabled, required: true } } }, origins: {}, layers: [] })
   } else if (message.method === 'mcpServerStatus/list') {
-    reply(message.id, { data: [{ name: mcpName, runtimeStatus: mcp.enabled ? 'connected' : 'disabled', toolsError: null,
+    const workflowAdmission = thread?.instructions.includes('fixture-work-handoff') && thread.turns.length === 0
+    if (workflowAdmission && existsSync(join(root, 'block-workflow-admission'))) {
+      const admitted = readFileSync(join(root, 'calls.jsonl'), 'utf8').split('\n')
+        .filter(line => line && JSON.parse(line).workflowTurn).length
+      if (admitted >= 2) {
+        log({ workflowAdmissionBlocked: { pid: process.pid, sessionId: thread.id } })
+        while (existsSync(join(root, 'block-workflow-admission'))) {
+          await new Promise(resolve => setTimeout(resolve, 20))
+        }
+      }
+    }
+    const enabled = mcp.enabled && !(workflowAdmission && existsSync(join(root, 'fail-workflow-admission')))
+    reply(message.id, { data: [{ name: mcpName, runtimeStatus: enabled ? 'connected' : 'disabled', toolsError: null,
       tools: mcp.enabled ? { context_get: { name: 'context_get', inputSchema: { type: 'object' } } } : {},
       resources: [], resourceTemplates: [], authStatus: 'bearerToken' }], nextCursor: null })
   } else if (message.method === 'model/list') {
