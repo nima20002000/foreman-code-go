@@ -1,5 +1,4 @@
 import type { JobWorkflowAdmissionReference } from '@foreman-code/contracts/job-workflow'
-import type { CiActivity } from '@foreman-code/contracts'
 import { createContext, useContext, memo, useMemo, useRef, useState } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { Background, ReactFlow, ReactFlowProvider, useNodesInitialized, useReactFlow, type Edge, type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
@@ -22,17 +21,16 @@ import { runInspectionQueryKey, useRunVersionQuery } from './queries'
 import { pinnedNodeStates, pinnedTopology } from './pinnedTopology'
 import { runsSelectorApi } from '../../runs-selector/client'
 import { isRunAccessError } from '../../runs-selector/query'
-import { runBoardCi } from '../../run-board/model'
 import { useRunChoreography } from './runChoreography'
 import { useInteractionsQuery } from '../../../shared/api/query'
 import { useApprovalInboxStore } from '../../approvals/approvalInboxStore'
-import { activeCiJobs, interactionWaits, liveNodeView } from './runLiveStatus'
+import { interactionWaits, liveNodeView } from './runLiveStatus'
 import { RunLiveStatus } from './RunLiveStatus'
 import { RunSubagentsOverlay } from '../../run-subagents/RunSubagentsOverlay'
 import { CI_SERVER_NODE_ID, CiServerDialog, CiServerNode, CiTransferEdge,
   type CiServerFlowNode, type CiTransferFlowEdge } from './CiServer'
 import { useCiTransfers } from './useCiTransfers'
-import { ciServerSummary, isActiveCiJob, runCiApi } from './ciServer'
+import { ciNodeActivities, ciServerSummary, isActiveCiJob, runCiApi } from './ciServer'
 import { useInspectionPresentation } from './presentation'
 import type { SubagentLayoutNode } from '../../run-subagents/layout'
 import './inspection.css'
@@ -135,26 +133,16 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
   const handoffsDenied = useProtectedAccessError(handoffsQuery)
   const handoffs = !handoffsDenied && !handoffsQuery.isError ? handoffsQuery.data : undefined
   const record = useSelectedRunRecord()
-  const ciQuery = useQuery({
+  const snapshotQuery = useQuery({
     queryKey: [...runInspectionQueryKey(scope), 'board-activity'],
     queryFn: ({ signal }) => runsSelectorApi.snapshot({ workspaceId: scope.workspaceId,
       workflowId: scope.workflowId, runId: scope.runId }, { signal }),
     enabled: Boolean(version && record && !canonicalDenied), retry: false, staleTime: 0,
     refetchInterval: query => isRunAccessError(query.state.error) ? false : 1500,
   })
-  const cis = useMemo(() => {
-    const data = ciQuery.isError ? undefined : ciQuery.data
-    return data?.snapshot.kind === 'available' && data.snapshot.workflowVersionId === scope.workflowVersionId
-      ? runBoardCi(data.snapshot, data.activitySnapshot) : new Map<string, CiActivity>()
-  }, [ciQuery.data, ciQuery.isError, scope.workflowVersionId])
-  const checks = useMemo(() => new Map((ciQuery.isError ? undefined : ciQuery.data)?.intervalChecks
-    ?.map((check) => [check.nodeId, check]) ?? []), [ciQuery.data, ciQuery.isError])
+  const checks = useMemo(() => new Map((snapshotQuery.isError ? undefined : snapshotQuery.data)?.intervalChecks
+    ?.map((check) => [check.nodeId, check]) ?? []), [snapshotQuery.data, snapshotQuery.isError])
   const topology = useMemo(() => version ? pinnedTopology(version) : undefined, [version])
-  const ciJobs = useMemo(() => {
-    const data = ciQuery.isError ? undefined : ciQuery.data
-    return data?.snapshot.kind === 'available' && data.snapshot.workflowVersionId === scope.workflowVersionId
-      ? activeCiJobs(data.activitySnapshot, scope.runId) : []
-  }, [ciQuery.data, ciQuery.isError, scope.workflowVersionId, scope.runId])
   const live = Boolean(record && record.state.run.executionState !== 'completed')
   // Every CI ticket this Run's Agents requested; polled while the Run or any ticket is still going.
   const ciList = useQuery({
@@ -165,6 +153,10 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
       : live || query.state.data?.jobs.some(isActiveCiJob) ? 1500 : false,
   })
   const ciRunJobs = ciList.data?.runId === scope.runId ? ciList.data.jobs : undefined
+  const cis = useMemo(() => ciNodeActivities(ciRunJobs ?? []), [ciRunJobs])
+  const ciJobs = useMemo(() => (ciRunJobs ?? []).filter(isActiveCiJob)
+    .map(({ ci, requester }) => ({ ci, nodeId: requester.nodeId, agentId: requester.agentId }))
+    .sort((a, b) => a.ci.queuedAt.localeCompare(b.ci.queuedAt) || a.ci.id.localeCompare(b.ci.id)), [ciRunJobs])
   // Shown with the Agents from the first render, so the first fit includes it; unknown until its first read.
   const ciUnavailable = ciList.isError && !ciRunJobs
   const ciSummary = useMemo(() => ciRunJobs ? ciServerSummary(ciRunJobs) : { ...ciServerSummary([]), state: 'unavailable' as const,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CiRunJob } from '@foreman-code/contracts'
-import { ciGroupStates, ciServerSummary, ciTransfers } from './ciServer'
+import { ciGroupStates, ciNodeActivities, ciServerSummary, ciTransfers } from './ciServer'
 
 let sequence = 0
 function job(nodeId: string, groupId: string, state: CiRunJob['ci']['state'], placement: CiRunJob['placement'] = 'host'): CiRunJob {
@@ -44,6 +44,19 @@ describe('CI server lights', () => {
 })
 
 describe('CI server activity', () => {
+  it('shows running parts ahead of newer completed or queued parts, then retains the latest result per Agent', () => {
+    const passed = job('a', group(4), 'passed')
+    const queued = job('a', group(4), 'queued')
+    const starting = job('a', group(4), 'starting')
+    const running = job('a', group(4), 'running')
+    const olderRunning = job('a', group(3), 'running')
+    const other = job('b', group(5), 'failed')
+    expect(ciNodeActivities([passed, queued, starting, running, olderRunning, other]))
+      .toEqual(new Map([['a', running.ci], ['b', other.ci]]))
+    expect(ciNodeActivities([passed, job('a', group(3), 'failed'), other]))
+      .toEqual(new Map([['a', passed.ci], ['b', other.ci]]))
+  })
+
   it('is idle without CI, active while any ticket runs, then shows how the latest request ended', () => {
     expect(ciServerSummary([])).toMatchObject({ state: 'idle', label: 'Idle', total: 0 })
     expect(ciServerSummary([job('a', group(4), 'running', 'github'), job('b', group(5), 'queued', null)]))
