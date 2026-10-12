@@ -97,6 +97,7 @@ interface OwnedNativeSession {
   preparing?: Promise<IssuedWorkerCredential['environment'] | undefined>
   // A canceled remote attach can leave the original Worker session running without a Main acknowledgment.
   restartAttachment?: { session: NativeSessionReference; request: HarnessExecutionRequest }
+  terminalRecoveredWithoutCredential?: boolean
   cleanup?: Promise<Error[]>
   reviewFinalizer?: symbol
   reviewFinishing?: boolean
@@ -312,7 +313,8 @@ export class ApprovalExecutionCoordinator {
   /** Close only the captured, registered native lifetime. Unlike Stop recovery,
    * this path has no resolver, capability query, orphan-process fallback or new
    * credential. Failure leaves the owner resident and the durable barrier closed. */
-  private async closeRepeatLifetime(owned: OwnedNativeSession, assertCurrent: () => void): Promise<void> {
+  private async closeRepeatLifetime(owned: OwnedNativeSession, assertCurrent: () => void,
+    finishRecoveredCredentials?: () => Promise<void>): Promise<void> {
     const session = owned.session
     const generation = owned.generation
     const registration = owned.closureGeneration
@@ -322,8 +324,9 @@ export class ApprovalExecutionCoordinator {
       if (this.ownedSessions.get(owned.execution.id) !== owned || owned.generation !== generation
         || owned.opening || owned.openingFailed || !session || !registration || !this.workflowClosures
         || owned.closureGeneration !== registration || owned.session !== session
-        || this.credentials && (!credential
-          || this.managerCredentials.get(owned.manager)?.principalId !== credential.principalId
+        || this.credentials && !credential
+          && !(owned.terminalRecoveredWithoutCredential && finishRecoveredCredentials)
+        || credential && (this.managerCredentials.get(owned.manager)?.principalId !== credential.principalId
           || this.managerCredentials.get(owned.manager)?.environment !== credential.environment)) {
         throw new DomainError('REPEAT_CLEANUP_PENDING', 'The exact native lifetime cannot yet be closed.', 409)
       }
@@ -339,6 +342,9 @@ export class ApprovalExecutionCoordinator {
       if (!proof || proof.durableGeneration !== registration) await this.closeWorkflowSession(owned)
       check()
       if (credential) await this.credentials?.revoke({ principalId: credential.principalId })
+      else if (owned.terminalRecoveredWithoutCredential && finishRecoveredCredentials) {
+        await finishRecoveredCredentials()
+      }
       check()
       this.managerCredentials.delete(owned.manager)
       await owned.stopReviewerRenewal?.()
@@ -397,7 +403,8 @@ export class ApprovalExecutionCoordinator {
       owned.execution = execution
       await this.budgets.finish(execution.id, execution.finishedAt)
       check()
-      await this.closeRepeatLifetime(owned, check)
+      await this.closeRepeatLifetime(owned, check,
+        () => finishRecoveredWorkflowCredentials(owner, execution, this.credentials, signal))
     } else {
       // A crash after close/COMMIT is repaired without touching a native manager.
       // The proof reader rejects newer generations and any older unclosed one.
@@ -748,6 +755,7 @@ export class ApprovalExecutionCoordinator {
           && !history.pendingInteraction && history.pendingInteractions.length === 0
       }
       if (await completed()) {
+        owned.terminalRecoveredWithoutCredential = true
         resolved.markResident?.()
         return undefined
       }
@@ -758,6 +766,7 @@ export class ApprovalExecutionCoordinator {
       try { access = await originalApplicationAccess.call(resolved.manager, session, signal) }
       catch (error) {
         if (!await completed()) throw error
+        owned.terminalRecoveredWithoutCredential = true
         resolved.markResident?.()
         return undefined
       }

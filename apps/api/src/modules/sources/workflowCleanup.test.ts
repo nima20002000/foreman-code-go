@@ -84,8 +84,19 @@ function remoteSourceFixture() {
   const pool = { query: async () => ({ rows: [{ record, execution, settlement_pending: settlement.pending }] }) } as unknown as Pick<pg.Pool, 'query'>
   const sources = { confirmClosed: vi.fn(async () => undefined) }
   const report = vi.fn()
-  return { pool, sources, report, record, settlement }
+  return { pool, sources, report, record, execution, settlement }
 }
+
+it('leaves a sessionless interrupted copy for physical reservation reclamation', async () => {
+  const f = remoteSourceFixture()
+  delete f.execution.nativeSessionId
+  f.execution.result = { outcome: 'failed',
+    error: { code: 'EXECUTION_INTERRUPTED', message: 'Owner restarted', retryable: false } }
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).not.toHaveBeenCalled()
+  expect(hasRetainedRemoteReviewerSource).not.toHaveBeenCalled()
+  expect(f.report).not.toHaveBeenCalled()
+})
 
 it('retains the source claim for a verified original reviewer, then requires physical closure after retention ends', async () => {
   const f = remoteSourceFixture()

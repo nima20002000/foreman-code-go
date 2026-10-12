@@ -51,9 +51,11 @@ export async function closeCompletedWorkflowSources(
       // Stop or cleanup can arrive between result publication and the native closure commit.
       // Keep its source until that owner has finished; confirmClosed still fences release.
       if (row.settlement_pending) continue
+      const execution = HarnessExecutionSchema.parse(row.execution)
+      // Sessionless attempts use reservation reclamation, which removes their unused copy after physical closure.
+      if (!execution.nativeSessionId) continue
       const record = SourceMaterializationRecordSchema.parse(row.record)
       if (record.receipt.binding.deviceId !== null) {
-        const execution = HarnessExecutionSchema.parse(row.execution)
         // Credential expiry or revocation does not release the original process's source.
         if (execution.id === record.receipt.executionId
           && await hasRetainedRemoteReviewerSource(pool, execution)) continue
