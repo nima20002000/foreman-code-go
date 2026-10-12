@@ -51,7 +51,7 @@ export const executionItemsSql = `with identities as (
       and ($7::bigint is null or (revision,item_key)>($7,$8)))
   order by case when $3='changes' then revision end asc,
     case when $3='changes' then item_key end asc,first_sequence desc,item_key
-  limit $9
+  limit $9::integer
 ), events as materialized (
   select s.item_key,n.sequence,n.record->>'type' as type,n.record->'payload' as payload,
     n.record->>'occurredAt' as occurred_at
@@ -67,12 +67,12 @@ export const executionItemsSql = `with identities as (
     or (type in ('item.started','item.completed','item.snapshot')
       and payload#>>'{item,type}' in ('agentMessage','userMessage'))
 ), message_parts as (
-  select e.*,coalesce(u.content,left(raw_text,$10)) as content,
+  select e.*,coalesce(u.content,left(raw_text,$10::integer)) as content,
     coalesce(u.characters,length(raw_text)) as characters,
     greatest(coalesce(u.bytes,octet_length(raw_text)),coalesce((payload#>>'{truncation,originalBytes}')::bigint,0)) as bytes
   from message_events e left join lateral (
-    select string_agg(left(value->>'text',greatest($10-prefix_characters,0)::integer),'' order by position)
-        filter (where prefix_characters<$10) as content,
+    select string_agg(left(value->>'text',greatest($10::integer-prefix_characters,0)::integer),'' order by position)
+        filter (where prefix_characters<$10::integer) as content,
       sum(length(value->>'text')) as characters,sum(octet_length(value->>'text')) as bytes
     from (select value,position,coalesce(sum(length(value->>'text')) over (
       order by position rows between unbounded preceding and 1 preceding),0) as prefix_characters
@@ -90,18 +90,18 @@ export const executionItemsSql = `with identities as (
   where (final_sequence is not null and sequence=final_sequence)
     or (final_sequence is null and (last_replace is null or sequence>=last_replace))
   union all
-  select item_key,sequence,'input',left(payload->>'inputJsonDelta',$11),
+  select item_key,sequence,'input',left(payload->>'inputJsonDelta',$11::integer),
     length(payload->>'inputJsonDelta'),octet_length(payload->>'inputJsonDelta')
   from events where payload->>'inputJsonDelta' is not null
   union all
-  select item_key,sequence,'output',left(payload->>'delta',$12),
+  select item_key,sequence,'output',left(payload->>'delta',$12::integer),
     length(payload->>'delta'),octet_length(payload->>'delta')
   from events where payload->>'nativeMethod' in (
     'item/commandExecution/outputDelta','item/reasoning/summaryTextDelta','item/plan/delta')
 ), offsets as (
   select *,coalesce(sum(characters) over (partition by item_key,kind order by sequence
     rows between unbounded preceding and 1 preceding),0) as prefix_characters,
-    case kind when 'message' then $10 when 'input' then $11 else $12 end as bound
+    case kind when 'message' then $10::integer when 'input' then $11::integer else $12::integer end as bound
   from chunks
 ), bodies as (
   select item_key,kind,string_agg(left(content,greatest(bound-prefix_characters,0)::integer),'' order by sequence)
@@ -125,7 +125,7 @@ export const executionItemsSql = `with identities as (
   left join bodies b on b.item_key=s.item_key and b.kind='output'
   left join lateral (
     select left(case when jsonb_typeof(payload->'input')='string' then payload->>'input'
-      else (payload->'input')::text end,$11) as value,
+      else (payload->'input')::text end,$11::integer) as value,
       octet_length((payload->'input')::text) as bytes,
       left(payload#>>'{input,command}',624) as command,left(payload#>>'{input,file_path}',624) as file
     from events where item_key=s.item_key and payload->'input' is not null
@@ -133,11 +133,11 @@ export const executionItemsSql = `with identities as (
   ) i on true
   left join lateral (
     select left(coalesce(parts.value,case when jsonb_typeof(payload->'output')='string'
-      then payload->>'output' else (payload->'output')::text end),$12) as value,
+      then payload->>'output' else (payload->'output')::text end),$12::integer) as value,
       coalesce(parts.bytes,octet_length((payload->'output')::text)) as bytes
     from events left join lateral (
-      select string_agg(left(value->>'text',greatest($12-prefix_characters,0)::integer),E'\\n' order by position)
-        filter (where prefix_characters<$12) as value,sum(octet_length(value->>'text')+1) as bytes
+      select string_agg(left(value->>'text',greatest($12::integer-prefix_characters,0)::integer),E'\\n' order by position)
+        filter (where prefix_characters<$12::integer) as value,sum(octet_length(value->>'text')+1) as bytes
       from (select value,position,coalesce(sum(length(value->>'text')+1) over (
         order by position rows between unbounded preceding and 1 preceding),0) as prefix_characters
         from jsonb_array_elements(case when jsonb_typeof(payload->'output')='array'
@@ -152,23 +152,23 @@ export const executionItemsSql = `with identities as (
 ), tool_bodies as (
   select f.*,case when type='claude.tool' then input
     when item->>'type'='commandExecution' then left(jsonb_build_object(
-      'command',left(item->>'command',$11),'cwd',left(item->>'cwd',1024))::text,$11)
-    when item->>'type'='fileChange' then left((item->'changes')::text,$11)
-    when item->>'type' in ('mcpToolCall','dynamicToolCall') then left((item->'arguments')::text,$11)
-    when item->>'type'='webSearch' then left(coalesce((item->'action')::text,item->>'query'),$11)
-    when item->>'type'='collabAgentToolCall' then left(jsonb_build_object('prompt',left(item->>'prompt',$11),
+      'command',left(item->>'command',$11::integer),'cwd',left(item->>'cwd',1024))::text,$11::integer)
+    when item->>'type'='fileChange' then left((item->'changes')::text,$11::integer)
+    when item->>'type' in ('mcpToolCall','dynamicToolCall') then left((item->'arguments')::text,$11::integer)
+    when item->>'type'='webSearch' then left(coalesce((item->'action')::text,item->>'query'),$11::integer)
+    when item->>'type'='collabAgentToolCall' then left(jsonb_build_object('prompt',left(item->>'prompt',$11::integer),
       'model',left(item->>'model',240),'effort',left(item->>'reasoningEffort',240),
-      'agents',left((item->'receiverThreadIds')::text,$11))::text,$11) end as tool_input,
+      'agents',left((item->'receiverThreadIds')::text,$11::integer))::text,$11::integer) end as tool_input,
     case when type='claude.tool' then output
       when payload->>'nativeMethod'='turn/plan/updated' then left(concat_ws(E'\\n',
-        left(payload->>'explanation',$12),plan.value),$12)
-      when item->>'type'='plan' then left(item->>'text',$12)
-      when item->>'type'='commandExecution' then coalesce(left(item->>'aggregatedOutput',$12),output)
+        left(payload->>'explanation',$12::integer),plan.value),$12::integer)
+      when item->>'type'='plan' then left(item->>'text',$12::integer)
+      when item->>'type'='commandExecution' then coalesce(left(item->>'aggregatedOutput',$12::integer),output)
       when item->>'type'='reasoning' then coalesce(nullif(summary.value,''),output)
-      when item->>'type'='mcpToolCall' then left(coalesce(nullif(item->'error','null'::jsonb)::text,mcp.value,(item->'result')::text),$12)
-      when item->>'type'='webSearch' then left((item->'results')::text,$12)
-      when item->>'type'='collabAgentToolCall' then left((item->'agentsStates')::text,$12)
-      when item->>'type'='dynamicToolCall' then left((item->'contentItems')::text,$12)
+      when item->>'type'='mcpToolCall' then left(coalesce(nullif(item->'error','null'::jsonb)::text,mcp.value,(item->'result')::text),$12::integer)
+      when item->>'type'='webSearch' then left((item->'results')::text,$12::integer)
+      when item->>'type'='collabAgentToolCall' then left((item->'agentsStates')::text,$12::integer)
+      when item->>'type'='dynamicToolCall' then left((item->'contentItems')::text,$12::integer)
       else output end as tool_output
   from fields f
   left join lateral (select string_agg(part,E'\\n' order by position) as value from (
@@ -182,16 +182,16 @@ export const executionItemsSql = `with identities as (
     from jsonb_array_elements(case when jsonb_typeof(item->'summary')='array'
       then item->'summary' else '[]'::jsonb end) with ordinality p(value,position)
     where jsonb_typeof(value)='string' limit 100) parts) summary on true
-  left join lateral (select string_agg(left(value->>'text',greatest($12-prefix_characters,0)::integer),E'\\n' order by position)
-      filter (where prefix_characters<$12) as value
+  left join lateral (select string_agg(left(value->>'text',greatest($12::integer-prefix_characters,0)::integer),E'\\n' order by position)
+      filter (where prefix_characters<$12::integer) as value
     from (select value,position,coalesce(sum(length(value->>'text')+1) over (
       order by position rows between unbounded preceding and 1 preceding),0) as prefix_characters
       from jsonb_array_elements(case when jsonb_typeof(item#>'{result,content}')='array'
       then item#>'{result,content}' else '[]'::jsonb end) with ordinality p(value,position)
       where value->>'type'='text') parts) mcp on true
 ), bounded as (
-  select f.*,${utf8Prefix('message', '$10')} as bounded_message,
-    ${utf8Prefix('tool_input', '$11')} as bounded_input,${utf8Prefix('tool_output', '$12')} as bounded_output
+  select f.*,${utf8Prefix('message', '$10::integer')} as bounded_message,
+    ${utf8Prefix('tool_input', '$11::integer')} as bounded_input,${utf8Prefix('tool_output', '$12::integer')} as bounded_output
   from tool_bodies f
 ), projected as (
   select item_key,first_sequence,revision,jsonb_build_object('type',case when message is not null
@@ -208,14 +208,14 @@ export const executionItemsSql = `with identities as (
           then regexp_replace(tool_command,'\\s+',' ','g')
         when type='claude.tool' and tool_file is not null then tool_name||' '||tool_file
         when type='claude.tool' and tool_name like 'mcp\\_\\_%' escape '\\' then tool_name end,
-      'publicTruncated',input_bytes>$11 or output_bytes>$12
-        or octet_length(coalesce(tool_input,''))>$11 or octet_length(coalesce(tool_output,''))>$12
-        or octet_length(coalesce(item->>'command',''))+octet_length(coalesce(item->>'cwd',''))+32>$11
-        or octet_length(coalesce(item->>'prompt',''))>$11
-        or octet_length(coalesce((payload->'plan')::text,(item->'summary')::text,item->>'text',''))>$12
-        or octet_length(coalesce(item->>'aggregatedOutput',''))>$12
-        or octet_length(coalesce(nullif(item->'changes','null'::jsonb)::text,nullif(item->'arguments','null'::jsonb)::text,''))>$11
-        or octet_length(coalesce((item->'result')::text,(item->'contentItems')::text,(item->'results')::text,''))>$12,
+      'publicTruncated',input_bytes>$11::integer or output_bytes>$12::integer
+        or octet_length(coalesce(tool_input,''))>$11::integer or octet_length(coalesce(tool_output,''))>$12::integer
+        or octet_length(coalesce(item->>'command',''))+octet_length(coalesce(item->>'cwd',''))+32>$11::integer
+        or octet_length(coalesce(item->>'prompt',''))>$11::integer
+        or octet_length(coalesce((payload->'plan')::text,(item->'summary')::text,item->>'text',''))>$12::integer
+        or octet_length(coalesce(item->>'aggregatedOutput',''))>$12::integer
+        or octet_length(coalesce(nullif(item->'changes','null'::jsonb)::text,nullif(item->'arguments','null'::jsonb)::text,''))>$11::integer
+        or octet_length(coalesce((item->'result')::text,(item->'contentItems')::text,(item->'results')::text,''))>$12::integer,
       'item',jsonb_build_object('id',item_key,'type',item->>'type','status',item->>'status',
         'server',left(item->>'server',504),'tool',left(item->>'tool',504),
         'error',case when item->'error' is not null and item->'error'<>'null'::jsonb then 'error' end,
