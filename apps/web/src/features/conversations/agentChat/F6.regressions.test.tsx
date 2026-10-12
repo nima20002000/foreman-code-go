@@ -252,7 +252,7 @@ describe('F6 B-R04 completed replies remain the following target', () => {
     const scroll = screen.getByRole('region', { name: 'Agent conversation transcript' })
     expect(scroll.closest('.n-agent-popover')).not.toBeNull()
     // jsdom supplies no layout: these metrics exercise the real scroll handler, not browser geometry.
-    const rows = () => [...scroll.querySelectorAll('.operator-tool-activity, .conversation-message-content')]
+    const rows = () => [...scroll.querySelectorAll('.agent-chat-tool, .conversation-message-content')]
     const height = width === 320 ? 160 : 240
     let top = 0
     Object.defineProperties(scroll, {
@@ -266,7 +266,8 @@ describe('F6 B-R04 completed replies remain the following target', () => {
     }
     const assertLatestAtBottom = (text: string) => {
       const reply = within(scroll).getByText(text, { selector: '.conversation-message-content, .conversation-message-content p' })
-      for (const tool of scroll.querySelectorAll('.operator-tool-activity')) {
+        .closest('.conversation-message-content')!
+      for (const tool of scroll.querySelectorAll('.agent-chat-tool')) {
         expect(tool.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
       }
       expect(rows().at(-1)).toBe(reply)

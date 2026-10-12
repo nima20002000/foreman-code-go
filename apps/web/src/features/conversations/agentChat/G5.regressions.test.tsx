@@ -190,10 +190,12 @@ describe('G5 B2-PF-02 / B-R01 terminal readback survives eviction', () => {
     await screen.findAllByLabelText('Queued').then(items => items.at(-1)!)
     const completed = withReceipt(initial, sent[0]!, 'completed'); completed.revision++
     mounted.mock.setState(completed); await act(() => mounted.refresh())
-    await screen.findAllByLabelText('Completed').then(items => items.at(-1)!)
-    const later = laterWindow(completed); mounted.mock.setState(later); await act(() => mounted.refresh())
     await userEvent.hover((await screen.findAllByLabelText('Completed')).at(-1)!)
     expect(await screen.findByText(/Initial acknowledgement: Queued/, { selector: '[role=tooltip]' })).toBeInTheDocument()
+    await userEvent.unhover((await screen.findAllByLabelText('Completed')).at(-1)!)
+    // After eviction the retired acknowledgement is not shown again; the retained completion is.
+    const later = laterWindow(completed); mounted.mock.setState(later); await act(() => mounted.refresh())
+    await screen.findAllByLabelText('Completed')
     expect(screen.queryAllByLabelText('Queued')).toHaveLength(0)
     const mutation = mounted.client.getMutationCache().getAll()[0]!
     expect(isRetirableAcknowledgement({ status: mutation.state.status, result: mutation.state.data as AgentChatCommandRecord['result'],
