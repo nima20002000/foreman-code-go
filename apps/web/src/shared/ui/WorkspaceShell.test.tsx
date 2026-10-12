@@ -23,6 +23,11 @@ function expectNewTab(button: HTMLElement, url: string) {
   open.mockRestore()
 }
 
+function workspacesDestination() {
+  return screen.getAllByRole('button', { name: 'Workspaces' })
+    .find(button => !button.hasAttribute('aria-expanded'))!
+}
+
 describe('WorkspaceShell', () => {
   it.each([false, true])('keeps OpenCode out of the complete sidebar with collapsed navigation: %s', async collapsed => {
     updateMockHarnessDefaults({ ...getMockHarnessDefaults(), claude: savedClaudeConfiguration })
@@ -108,7 +113,7 @@ describe('WorkspaceShell', () => {
 
     const workspaces = screen.getByRole('button', { name: 'Workspaces', expanded: true })
     expect(workspaces).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByTitle('Workspaces')).toHaveClass('nav-item-active')
+    expect(workspacesDestination()).toHaveClass('nav-item-active')
 
     const workflows = await screen.findByTitle('Workflows')
     expectNewTab(workflows, '/workspaces/workspace-1/workflows')
@@ -163,7 +168,7 @@ describe('WorkspaceShell', () => {
 
     expect(screen.getByTestId('workspace-shell')).toHaveClass('workspace-shell-navigation-collapsed')
     expect(screen.getByRole('complementary', { name: 'Primary navigation' })).toHaveAttribute('data-collapsed', 'true')
-    expect(screen.getByTitle('Workspaces')).toHaveAttribute('title', 'Workspaces')
+    expect(workspacesDestination()).toHaveAttribute('title', 'Workspaces')
     expect(screen.getByTitle('Workflows')).toHaveAttribute('title', 'Workflows')
     expect(screen.queryByRole('button', { name: 'New workspace' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'New workflow' })).not.toBeInTheDocument()
@@ -195,7 +200,7 @@ describe('WorkspaceShell', () => {
 
     expect(screen.getByTestId('sidebar-brand')).toHaveTextContent('Foreman Code')
     expect(screen.getByTestId('sidebar-brand').querySelector('.sidebar-brand-name')).toHaveTextContent('Foreman Code')
-    expect(screen.getByTitle('Workspaces')).toHaveAttribute('title', 'Workspaces')
+    expect(workspacesDestination()).toHaveAttribute('title', 'Workspaces')
   })
 
   it('keeps the temporarily hidden Agents route content available by deep link', async () => {
@@ -205,7 +210,7 @@ describe('WorkspaceShell', () => {
 
     expect(await screen.findByRole('region', { name: 'Workspace content' })).toHaveTextContent('Directory')
     expect(screen.queryByRole('button', { name: 'Agents' })).not.toBeInTheDocument()
-    expect(screen.getByTitle('Workspaces')).not.toHaveClass('nav-item-active')
+    expect(workspacesDestination()).not.toHaveClass('nav-item-active')
     expect(await screen.findByTitle('Workflows')).not.toHaveAttribute('aria-current')
   })
 
@@ -214,7 +219,7 @@ describe('WorkspaceShell', () => {
     await screen.findByTestId('workspace-shell')
 
     expect(screen.queryByRole('button', { name: 'Terminal' })).not.toBeInTheDocument()
-    expect(screen.getByTitle('Workspaces')).not.toHaveClass('nav-item-active')
+    expect(workspacesDestination()).not.toHaveClass('nav-item-active')
     expect(await screen.findByTestId('workspace-entry-workspace-1')).not.toHaveClass('nav-item-active')
   })
 
