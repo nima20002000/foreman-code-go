@@ -17,14 +17,13 @@ import { reserveFromExitedParent } from './helpers/eng06LaunchReservation.testSu
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 
 async function runtime() {
-  let registry: NativeProcessRegistry
   const recover = vi.fn((id: string, signal: AbortSignal) => registry.closeOwner(`execution:${id}`, signal))
   const fixture = makeCurrentWorkflowFixture(randomUUID(), 'single')
   const f = await checkpointRuntimeFixture(1, 1, {
     fixture, approvalNodeIds: [fixture.version.entryNodeId], recoverNativeProcesses: recover,
   })
   const root = join(f.db.directory, 'native-owner-registry')
-  registry = new NativeProcessRegistry(root)
+  const registry = new NativeProcessRegistry(root)
   let disconnected = false
   const connection = f.provider.connection.bind(f.provider)
   // Provider transport is synthetic; closure uses an original registry whose OS parent exited.

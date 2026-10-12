@@ -17,6 +17,8 @@ const diagnosticWords = new Set(('fatal error warning unable to add database has
   + 'signal killed timed out broken pipe resource temporarily unavailable input output').split(' '))
 
 function importFailure(operation: string, code: number, stderr: string): SourceError {
+  // ANSI CSI sequences intentionally start with the ESC control character.
+  // eslint-disable-next-line no-control-regex
   const diagnostic = stderr.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
     .replace(/[^\s]+/g, token => diagnosticWords.has(token.toLowerCase().replace(/^[(:]+|[):,.;]+$/g, ''))
       ? token : `[redacted]${/[):,.;]+$/.exec(token)?.[0] ?? ''}`)

@@ -857,7 +857,7 @@ export async function attachDetachedStdio(scope: NativeProcessRecovery, signal?:
   catch (error) {
     socket.destroy()
     if (!await new NativeProcessRegistry(scope.root).closeOwner(scope.owner)) {
-      throw new AggregateError([error], 'Invalid observer reply and native closure remain unconfirmed.')
+      throw new AggregateError([error], 'Invalid observer reply and native closure remain unconfirmed.', { cause: error })
     }
     throw error
   }
