@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.85] - 2026-10-12
+
+### Fixed
+
+- A "model at capacity" turn failure is retried in the same session with backoff instead of failing the Run.
+- An Agent whose final result breaks the handoff contract gets up to two corrective turns before the node fails.
+- Foreman Code MCP no longer fails to start because of a credential-binding race at session start.
+- Changing an Agent's model or profile moves its workflow node placements on save; agent_update lists affected workflows.
+
 ## [0.0.84] - 2026-10-12
 
 ### Fixed
