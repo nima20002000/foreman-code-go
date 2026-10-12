@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
@@ -56,15 +56,13 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
     : value === 'https://github.com/octo/site-ci.git' ? mirror : value
   const git: GitWorktreePorts = {
     cloneDirectory: repository => join(root, 'clones', ...repository.split('/')),
-    git: (args, options) => {
-      try {
-        const stdout = execFileSync('git', args.map(local), { cwd: options.cwd, env: { ...environment, ...options.env }, encoding: 'utf8' })
-        return Promise.resolve({ code: 0, stdout, stderr: '' })
-      } catch (error) {
-        const failed = error as { status?: number; stdout?: string; stderr?: string }
-        return Promise.resolve({ code: failed.status ?? 1, stdout: failed.stdout ?? '', stderr: failed.stderr ?? '' })
-      }
-    },
+    // Asynchronous like Main's git, so concurrent starts really overlap.
+    git: (args, options) => new Promise(resolve => {
+      execFile('git', args.map(local), { cwd: options.cwd, env: { ...environment, ...options.env }, encoding: 'utf8' },
+        (error, stdout, stderr) => {
+          resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stdout, stderr })
+        })
+    }),
   }
   const dispatched: string[][] = []
   const github = { listed: [] as { databaseId: number; displayTitle: string }[], status: 'in_progress', conclusion: '',
@@ -552,6 +550,34 @@ describe('GitHub Actions CI on a public mirror', () => {
     await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit, suite: 'integration', scope: 'full',
       partition: { index: 0, count: 2 } })
     expect(f.dispatched).toHaveLength(1)
+  })
+
+  it('publishes concurrent runs of different commits from two services to one mirror without losing a push', async () => {
+    const f = await fixture()
+    const commits: string[] = []
+    for (const name of ['one', 'two', 'three', 'four', 'five', 'six']) {
+      await f.write(`${name}.txt`, `${name}\n`); f.run('add', '.'); f.run('commit', '-qm', name)
+      commits.push(f.run('rev-parse', 'HEAD')); f.push(`HEAD:refs/heads/${name}`)
+    }
+    const other = f.reopen()
+    const started = await Promise.allSettled(commits.map((commit, index) => (index % 2 ? other : f.cloud).handle({
+      operation: 'start', runId: randomUUID(), repository: 'octo/site', commit, suite: 'unit' })))
+    expect(started.map(result => result.status === 'rejected' ? String(result.reason) : 'started'))
+      .toEqual(commits.map(() => 'started'))
+    for (const commit of commits) {
+      expect(f.mirrorGit('rev-parse', `refs/heads/ci/${commit}^{tree}`)).toBe(f.run('rev-parse', `${commit}^{tree}`))
+    }
+    expect(commits.map(commit => f.mirrorGit('rev-parse', `refs/heads/ci/${commit}`)))
+      .toContain(f.mirrorGit('rev-parse', 'refs/heads/main'))
+  })
+
+  it("reports git's reason when the mirror cannot be read", async () => {
+    const f = await fixture()
+    f.mirrorGit('update-ref', '-d', 'refs/heads/main')
+    await expect(f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
+      suite: 'unit' })).rejects.toMatchObject({ code: 'CI_CLOUD_FAILED',
+      message: expect.stringMatching(/^git fetch failed for the CI mirror\. .*main/) })
+    expect(f.dispatched).toEqual([])
   })
 
   it('follows the GitHub run to its result, log and measured durations', async () => {

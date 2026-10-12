@@ -34,6 +34,9 @@ export interface CloudRun {
   live?: { step: string | null; seen: string[]; output?: { key: string; bytes: number }; bytes: number }
 }
 type Mirrors = (repository: string) => Promise<string | null>
+/** Pushes to one mirror, across both services, run one at a time: concurrent force-pushes of the mirror's main fail
+ * the remote's old-value check ("incorrect old value provided"), and concurrent fetches race on its local ref. */
+const mirrorPushes = new Map<string, Promise<unknown>>()
 
 /** The public mirror configured for a private repository's workspace, if any. */
 export function workspaceMirrors(pool: pg.Pool): Mirrors {
@@ -239,7 +242,11 @@ export class CloudCi {
     const key = `${mirror}\n${commit}\n${defaultBranch ?? ''}\n${baseCommit ?? ''}`
     let published = this.published.get(key)
     if (!published) {
-      published = this.push(repository, mirror, commit, defaultBranch, baseCommit)
+      const queued = (mirrorPushes.get(mirror) ?? Promise.resolve()).catch(() => undefined)
+      const pushed = queued.then(() => this.push(repository, mirror, commit, defaultBranch, baseCommit))
+      published = pushed
+      mirrorPushes.set(mirror, pushed)
+      void pushed.catch(() => undefined).then(() => { if (mirrorPushes.get(mirror) === pushed) mirrorPushes.delete(mirror) })
       this.published.set(key, published)
       // A failed push is retried by the next start; a done one is kept for the run's later partitions.
       published.catch(() => { this.published.delete(key) })
@@ -253,7 +260,11 @@ export class CloudCi {
     const clone = await ensureClone(this.git, repository, signal)
     const git = async (args: string[], env?: Record<string, string>) => {
       const result = await this.git.git(args, { cwd: clone, signal: AbortSignal.timeout(600_000), ...(env ? { env } : {}) })
-      if (result.code !== 0) throw new DomainError('CI_CLOUD_FAILED', `git ${args[0]} failed for the CI mirror.`, 502)
+      if (result.code !== 0) {
+        // Git's own reason, without any credentials in a URL.
+        const detail = result.stderr.replace(/\/\/[^/@\s]+@/g, '//').trim().slice(-500)
+        throw new DomainError('CI_CLOUD_FAILED', `git ${args[0]} failed for the CI mirror.${detail ? ` ${detail}` : ''}`, 502)
+      }
       return result.stdout.trim()
     }
     const base = `refs/foreman/mirror/${mirror}`
