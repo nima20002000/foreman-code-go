@@ -76,6 +76,7 @@ function HoverRow({ level, label, icon, name, metric, link, card, runningCount, 
   const surface = useRef<HTMLDivElement>(null)
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const [open, setOpen] = useState(false)
+  const countLabel = `${runningCount} running ${runningCount === 1 ? 'Agent or CI job' : 'Agents and CI jobs'}`
   useFloatingSurface(open, anchor, surface, 288, 'start', 'inline')
   function show(delay: number) { clearTimeout(timer.current); timer.current = setTimeout(() => setOpen(true), delay) }
   function scheduleHide() {
@@ -94,9 +95,7 @@ function HoverRow({ level, label, icon, name, metric, link, card, runningCount, 
   }, [open])
   return <li data-load={level}>
     <Link ref={anchor} {...link} className="sidebar-computer"
-      aria-label={runningCount > 0
-        ? `${label}, ${runningCount} running ${runningCount === 1 ? 'Agent or CI job' : 'Agents and CI jobs'}`
-        : label}
+      aria-label={runningCount > 0 ? `${label}, ${countLabel}` : label}
       aria-describedby={open ? id : undefined}
       onMouseEnter={() => show(200)} onMouseLeave={scheduleHide} onFocus={() => show(0)} onBlur={scheduleHide}>
       <ComputerIcon icon={icon} runningCount={runningCount} activityIds={activityIds} />
