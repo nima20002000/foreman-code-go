@@ -976,7 +976,7 @@ it('lists persisted active tickets on their assigned computers even when host st
 })
 
 it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and runs it elsewhere through MCP', async provider => {
-  const readiness = { laptop: false, builder: false }
+  const readiness = { laptop: true, builder: false }
   const f = await fixture({ github: readiness,
     cloud: { github: provider === 'github' ? 2 : 0, circleci: provider === 'circleci' ? 2 : 0 } })
   const pending = new Map<string, CiHostRun>()
@@ -1002,10 +1002,11 @@ it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and ru
   }
   try {
     const reader = await f.connect(CI_GET_ACTIONS)
-    const input = { suite: 'integration', scope: 'full', commandId: 'cloud-recovery' }
+    const input = { suite: 'integration', scope: 'full', partitions: 2, commandId: 'cloud-recovery' }
     expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
     expect((await f.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
-    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
+    const tickets = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
+    const started = { ticketId: tickets.partitions![1]!.ticketId }
     await f.ci.dispatch()
     expect((CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))).run)
       .toMatchObject({ state: 'starting', step: 'dispatch', computer: { hostRef: { provider } } })
@@ -1015,8 +1016,8 @@ it.each(['github', 'circleci'] as const)('requeues an unstarted %s ticket and ru
       finishedAt: null, unstartedProviders: [provider], message: expect.stringContaining('dispatch retries exhausted') })
     expect((await f.pool.query('select record,host_key from ci_runs where id=$1', [started.ticketId])).rows[0])
       .toMatchObject({ host_key: null, record: queued.run })
-    expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(started)
-    readiness.laptop = true
+    expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(tickets)
+    f.finish(tickets.ticketId, 0, 'Host slice completed.\n')
     await f.ci.dispatch()
     const running = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
     expect(running.run).toMatchObject({ id: started.ticketId, state: 'running', computer: { label: 'laptop' },
@@ -1039,9 +1040,10 @@ it('preserves MCP cancellation when an in-flight refresh returns an unstarted ti
   const blocked = new Promise<void>(resolve => { release = resolve })
   const reading = new Promise<void>(resolve => { entered = resolve })
   try {
-    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
-      suite: 'integration', scope: 'full', commandId: 'cancel-unstarted',
+    const tickets = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+      suite: 'integration', scope: 'full', partitions: 2, commandId: 'cancel-unstarted',
     }))
+    const started = { ticketId: tickets.partitions![1]!.ticketId }
     await f.ci.dispatch()
     const request = f.endpoint.request.bind(f.endpoint)
     f.endpoint.request = async (computer, input) => {
@@ -1082,12 +1084,21 @@ it('prefers build computers and CircleCI over higher-priority GitHub slots for i
     expect(read.partitions!.filter(run => run.computer?.hostRef.provider === 'circleci')).toHaveLength(2)
     expect(read.partitions!.every(run => run.state === 'running')).toBe(true)
     const fallback = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
-      suite: 'integration', commandId: 'integration-fallback', partitions: 2,
+      suite: 'integration', commandId: 'integration-fallback', partitions: 3,
     }))
     await f.ci.dispatch()
     const fallbackRead = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: fallback.ticketId }))
-    expect(fallbackRead.partitions!.every(run => run.state === 'running'
+    const hostSlice = fallbackRead.partitions!.find(run => run.partition!.index === 0)!
+    expect(hostSlice).toMatchObject({ state: 'queued', computer: null,
+      message: expect.stringContaining('Waiting for a build computer') })
+    expect(fallbackRead.partitions!.filter(run => run.id !== hostSlice.id).every(run => run.state === 'running'
       && run.computer?.hostRef.provider === 'github')).toBe(true)
+    f.finish(read.partitions!.find(run => run.computer?.hostRef.kind === 'device')!.id, 0, 'Host slice completed.\n')
+    await f.ci.dispatch()
+    const running = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: fallback.ticketId }))
+    expect(running.partitions!.every(run => run.state === 'running')).toBe(true)
+    expect(running.partitions!.find(run => run.id === hostSlice.id))
+      .toMatchObject({ computer: { hostRef: { kind: 'device' } }, message: null })
   } finally { await f.close() }
 })
 
