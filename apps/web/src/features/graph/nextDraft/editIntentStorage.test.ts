@@ -117,3 +117,30 @@ describe('NIM-2642 protected local form and exact-command recovery', () => {
     expect(readEditOutbox(key)).toBeUndefined()
   })
 })
+
+describe('edit storage under a full browser quota', () => {
+  it('frees superseded form copies and earlier sign-in data, then keeps the current form', () => {
+    storeEditSnapshot(key, newNextDraft(fixture(), 'closed-tab-form'))
+    // That form belongs to a closed tab, and a newer tab became the latest form of the workflow.
+    const ownTab = sessionStorage.getItem(protectedKey('ui', 'graph-edit-intent:tab'))!
+    const closedTab = protectedKey('draft', `graph-edit-intent:${key}:closed-tab`)
+    localStorage.setItem(closedTab, localStorage.getItem(protectedKey('draft', `graph-edit-intent:${key}:${ownTab}`))!)
+    localStorage.removeItem(protectedKey('draft', `graph-edit-intent:${key}:${ownTab}`))
+    localStorage.setItem(protectedKey('ui', `graph-edit-intent:${key}:latest`), JSON.stringify('newer-tab'))
+    localStorage.setItem('graphql.chat:earlier-epoch:draft:old-form', 'x'.repeat(100))
+    localStorage.setItem('unrelated-preference', 'keep')
+    const setItem = Storage.prototype.setItem
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, name: string, value: string) {
+      if (this.getItem(closedTab) !== null) throw new DOMException('The quota has been exceeded.', 'QuotaExceededError')
+      setItem.call(this, name, value)
+    })
+
+    const edit = newNextDraft(fixture(), 'current-form')
+    expect(() => storeEditSnapshot(key, edit)).not.toThrow()
+
+    expect(readEditSnapshot(key)?.graph).toEqual(edit.graph)
+    expect(localStorage.getItem(closedTab)).toBeNull()
+    expect(localStorage.getItem('graphql.chat:earlier-epoch:draft:old-form')).toBeNull()
+    expect(localStorage.getItem('unrelated-preference')).toBe('keep')
+  })
+})

@@ -6,7 +6,7 @@ import { ManagedAgentSchema } from '@foreman-code/contracts/management'
 import { GraphDraftV3Schema, GraphEditStageInputV3Schema, WorkflowDefinitionV3Schema, sameAuthoredWorkflow, sameWorkflowValue,
   type GraphEditIntentV3, type GraphEditStageInputV3 } from '@foreman-code/contracts/wave25'
 import { ApiError } from '../../../shared/api/client'
-import { protectedKey } from '../../../shared/api/protectedChatStorage'
+import { chatStoragePrefix, identityEpoch, protectedKey } from '../../../shared/api/protectedChatStorage'
 import { assertSession, sessionGeneration, sessionIsSwitching, SessionChangedError } from '../../../shared/api/sessionBoundary'
 import { nextDraftKey, type NextDraftEdit } from './state'
 
@@ -38,10 +38,29 @@ function read<T>(name: string, schema: z.ZodType<T>): T | undefined {
 }
 function write(name: string, value: unknown) {
   const encoded = JSON.stringify(value)
-  try {
+  const attempt = () => {
     const local = storage(); local.setItem(name, encoded)
     if (local.getItem(name) !== encoded) throw new Error(storageFailure)
-  } catch { throw new Error(storageFailure) }
+  }
+  try { attempt() } catch {
+    // A full origin quota is usually old form copies; free them once and retry.
+    try { pruneSupersededForms(); attempt() } catch { throw new Error(storageFailure) }
+  }
+}
+/** Removes stored data no tab can restore: keys of earlier sign-in epochs and other tabs' form copies
+ * that are no longer the latest form of their workflow. Outboxes and submission evidence are kept. */
+function pruneSupersededForms() {
+  const local = storage(), current = `${chatStoragePrefix}${identityEpoch()}:`
+  const draftPrefix = protectedKey('draft'), ownTab = tab(), names: string[] = []
+  for (let i = 0; i < local.length; i++) { const name = local.key(i); if (name) names.push(name) }
+  for (const name of names) {
+    if (name.startsWith(chatStoragePrefix) && !name.startsWith(current)) { local.removeItem(name); continue }
+    if (!name.startsWith(draftPrefix)) continue
+    const id = decodeURIComponent(name.slice(draftPrefix.length)), split = id.lastIndexOf(':')
+    const scope = id.slice(prefix.length, split), tabId = id.slice(split + 1)
+    if (!id.startsWith(prefix) || split < prefix.length || tabId === ownTab) continue
+    if (local.getItem(key('ui', `${scope}:latest`)) !== JSON.stringify(tabId)) local.removeItem(name)
+  }
 }
 function assertScope(scope: string, workspaceId: string, workflowId: string) {
   if (scope !== nextDraftKey(workspaceId, workflowId)) throw new Error('The retained edit has a different workspace or workflow.')
