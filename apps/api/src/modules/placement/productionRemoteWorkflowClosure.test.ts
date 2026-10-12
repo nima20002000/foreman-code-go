@@ -12,7 +12,8 @@ const ports = vi.hoisted(() => {
     mainId: '11111111-1111-4111-8111-111111111111',
     deviceId: '22222222-2222-4222-8222-222222222222',
     workerInstallationId: '33333333-3333-4333-8333-333333333333',
-    bootId: 'original-boot', keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1,
+    bootId: '66666666-6666-4666-8666-666666666666',
+    keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1,
   }
   const intent = {
     schemaVersion: 1, protocolVersion: 1, mainId: connection.mainId,
