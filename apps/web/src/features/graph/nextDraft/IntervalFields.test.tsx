@@ -23,6 +23,7 @@ describe('Agent interval checks in node settings', () => {
   it('is off by default, then saves the period the author chooses and clears it when turned off', () => {
     const { saved } = mount()
     const toggle = screen.getByRole('switch', { name: /Re-activate on an interval/ })
+    expect(screen.getByText(/Checks never hand off work or use maximum parallelism slots/)).toBeVisible()
     expect(toggle).not.toBeChecked()
     expect(screen.queryByLabelText('Every')).not.toBeInTheDocument()
     expect(saved()).not.toHaveProperty('interval')

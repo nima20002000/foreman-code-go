@@ -28,7 +28,7 @@ export function IntervalFields({ node, change }: {
   }
   return <fieldset className="next-draft-choice"><legend>Interval checks</legend>
     <Switch label="Re-activate on an interval" checked={everySeconds !== undefined}
-      hint="While the Run is active, this agent is woken to check the Run's status and, in its own session, its earlier work. Checks never hand off work. Needs native approval handling or a Codex agent that never asks for approval, and no artifact outputs."
+      hint="While the Run is active, this agent is woken to check the Run's status and, in its own session, its earlier work. Checks never hand off work or use maximum parallelism slots. They wait for work on this node to finish, and work on this node waits for a running check. Each Run allows at most 1,000 checks. Needs native approval handling or a Codex agent that never asks for approval, and no artifact outputs."
       onChange={(event) => write(event.currentTarget.checked ? (valid ? seconds : 60) : undefined)} />
     {everySeconds !== undefined ? <div className="next-draft-inline">
       <TextField label="Every" type="number" inputMode="numeric" min={1} step={1} value={count}

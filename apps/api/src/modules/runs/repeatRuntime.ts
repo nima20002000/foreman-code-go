@@ -317,13 +317,13 @@ export interface RepeatRuntimeLifecycle {
 }
 
 /** Re-activates interval nodes beside the graph: one loop per node admits a check when it is due
- * and observes it through the same native driver and Run-local limiter as graph work. Each loop
+ * and observes it through the same native driver without using graph parallelism slots. Each loop
  * re-observes its node's latest check until that check is settled, also after a restart. The
  * returned stop only ends scheduling: the caller's task drain waits for in-flight checks, with the
  * bounded cleanup deadline after Stop or failure. Errors back off; they do not fail the Run. */
 export function startIntervalChecks(input: {
   version: WorkflowVersionV3; store: Partial<Pick<RepeatRunRepository, 'admitTick'>>
-  driver: RepeatExecutionDriver; limiter: ExecutionLimiter; signal: AbortSignal
+  driver: RepeatExecutionDriver; signal: AbortSignal
   track(task: Promise<unknown>): void
 }): () => void {
   const nodes = input.version.definition.nodes.filter((node) => node.kind !== 'job' && node.interval)
@@ -344,8 +344,7 @@ export function startIntervalChecks(input: {
         const execution = admission.kind === 'admitted' ? admission.execution
           : admission.kind === 'busy' ? admission.execution : undefined
         if (execution) {
-          if (execution.state === 'completed') await input.driver.observe(execution, input.signal)
-          else await input.limiter.run(input.signal, () => input.driver.observe(execution, input.signal))
+          await input.driver.observe(execution, input.signal)
           settled = execution.id
           waitMs = 1_000
         } else if (admission.kind === 'wait' && admission.dueAt) {
@@ -459,7 +458,7 @@ export async function executeRepeatRuntime(input: {
         }
       })
     }
-  // Graph work and interval checks share the Run's parallelism limit.
+  // Graph Agent work and Jobs share the Run's parallelism limit.
   const limiter = new ExecutionLimiter(
     Math.min(input.configuredParallelism ?? 4, input.version.definition.executionPolicy!.maxParallelism), 1000)
   const work = input.version.definition.handoffs ? buildWorkHandoffGraph({
@@ -495,7 +494,7 @@ export async function executeRepeatRuntime(input: {
         // independently, then existing exact native cleanup and wrapper drain run below.
         let onAbort: (() => void) | undefined
         const stopChecks = startIntervalChecks({ version: input.version, store: input.store, driver: input.driver,
-          limiter, signal, track: (task) => {
+          signal, track: (task) => {
             tasks.add(task)
             void task.then(() => { tasks.delete(task) }, () => { tasks.delete(task) })
           } })

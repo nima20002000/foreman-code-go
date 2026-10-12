@@ -26,8 +26,7 @@ async function intervalRuntime() {
   f.configurations = [f.configurations[0]!]
   f.version.agentConfigurationVersionIds = { [watcher.agentId]: f.configurations[0]!.id }
   watcher.interval = { everySeconds: 10 }
-  // Checks share the Run's parallelism limit; two slots let the check run beside the working node.
-  f.version.definition.executionPolicy!.maxParallelism = 2
+  f.version.definition.executionPolicy!.maxParallelism = 1
   const checkStarted = deferred<string>(), checkGate = deferred(), workerGate = deferred()
   const db: { pool?: { query: (text: string, values: unknown[]) => Promise<{ rows: Array<{ node: string; tick: number | null }> }> } } = {}
   const runtime = await codexApprovalRuntime('user', { fixture: f, approvalPolicy: 'never',
