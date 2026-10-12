@@ -31,16 +31,18 @@ export class RunCiAuthority implements CiAuthority {
   constructor(private readonly pool: pg.Pool) {}
 
   async resolve(caller: ManagementPrincipal, requestedWorkspace: string | undefined, actions: ManagementAction[]) {
+    // Reads verify the binding from one lock-free snapshot; only mutating CI calls lock the Run.
+    const mutating = actions.some(action => !action.endsWith(':read'))
     const sql = await this.pool.connect()
     try {
-      await sql.query('begin')
+      await sql.query(mutating ? 'begin' : 'begin isolation level repeatable read read only')
       let principalId = caller.id
       let workspaceId = requestedWorkspace
       let executionId: string | undefined
       let initiatingAgent: JobInitiatingAgent | undefined
       if (caller.audience === 'worker') {
         // Credential admission locks the Run before its worker binding.
-        await sql.query(`select r.id from runs r join worker_credential_bindings b
+        if (mutating) await sql.query(`select r.id from runs r join worker_credential_bindings b
           on b.run_id=r.id and b.workspace_id=r.workspace_id
           where b.principal_id=$1 and b.agent_id=$2 and b.purpose='workflow' and b.revoked_at is null
           for share of r`, [caller.id, caller.agentId])
@@ -50,7 +52,7 @@ export class RunCiAuthority implements CiAuthority {
             r.record->>'authorizationPrincipalId' as authorization_principal_id
           from worker_credential_bindings b join runs r on r.id=b.run_id and r.workspace_id=b.workspace_id
           join run_authority_principals a on a.run_id=r.id and a.principal_id=r.record->>'authorizationPrincipalId'
-          where b.principal_id=$1 and b.agent_id=$2 and b.purpose='workflow' and b.revoked_at is null for share of b,r,a`,
+          where b.principal_id=$1 and b.agent_id=$2 and b.purpose='workflow' and b.revoked_at is null${mutating ? ' for share of b,r,a' : ''}`,
         [caller.id, caller.agentId])).rows[0]
         const scoped = binding && workerScopesForAction(caller, 'interactions:read').some(scope =>
           scope.workspaceIds?.includes(binding.workspace_id) && scope.workflowIds?.includes(binding.workflow_id)

@@ -186,3 +186,13 @@ it('checks worker ownership before returning cached logs or group data', async (
   expect(f.endpoint.computers).not.toHaveBeenCalled()
   expect(f.endpoint.request).not.toHaveBeenCalled()
 })
+
+it('retries a CI read once after a statement timeout, then reports a retryable error', async () => {
+  const f = fixture()
+  const canceled = () => Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' })
+  f.resolve.mockRejectedValueOnce(canceled())
+  expect(await f.create().get(caller, { ticketId: f.read().record.id })).toMatchObject({ run: { id: f.read().record.id } })
+  f.resolve.mockRejectedValueOnce(canceled()).mockRejectedValueOnce(canceled())
+  await expect(f.create().get(caller, { ticketId: f.read().record.id })).rejects.toMatchObject({
+    code: 'DATABASE_READ_TIMEOUT', status: 503, details: { retryable: true, sqlState: '57014' } })
+})
