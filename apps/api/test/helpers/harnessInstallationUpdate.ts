@@ -69,7 +69,7 @@ export async function completedRun(fixture: Fixture, runId: string) {
     await fixture.reconcile()
     return fixture.details(runId)
   }, value => value.run.executionState === 'completed', 'resident Run completion')
-  expect(details.run.outcome).toBe('succeeded')
+  expect(details.run.outcome, JSON.stringify({ run: details.run.result, executions: details.executions.map(item => [item.id, item.result]) })).toBe('succeeded')
   return details
 }
 

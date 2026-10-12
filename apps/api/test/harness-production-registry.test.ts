@@ -75,8 +75,18 @@ it('pins actual main installation payloads and invalidates selections after pass
     await registry.refreshMain()
     expect(() => registry.installations.assertCurrent(selection)).toThrow()
     expect(registry.pinDefault('codex').installation.installationFingerprint).toBe('payload-B')
+    const configuration = { id: 'accepted-configuration', agentId: 'recorded-agent',
+      harness: { harness: 'codex', model: 'recorded-model', reasoningEffort: 'medium', serviceTier: 'standard', sandbox: 'read-only' } }
+    const launching = registry.pinAccepted(configuration)
     registry.stop()
     expect(() => registry.pinDefault('codex')).toThrow('shutting down')
+    expect(() => registry.refreshMain()).toThrow(expect.objectContaining({ code: 'HARNESS_REGISTRY_CLOSING' }))
+    // Application shutdown changes no installation: an in-flight launch keeps and revalidates its original binding.
+    expect(() => registry.installations.assertCurrent(launching)).not.toThrow()
+    await expect(registry.installations.metadata(launching, 'suite', async () => 'loaded')).resolves.toBe('loaded')
+    const revalidated = registry.pinAccepted(configuration)
+    expect(revalidated.inventoryRevision).toBe(launching.inventoryRevision)
+    expect(() => registry.installations.assertCurrent(revalidated)).not.toThrow()
   } finally { await pool.end() }
 })
 

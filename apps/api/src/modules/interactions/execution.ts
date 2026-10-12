@@ -86,6 +86,11 @@ function isRestartCancellation(error: unknown, signal?: AbortSignal): boolean {
     && error.cleanup === 'confirmed' && error.cause === reason
 }
 
+function isCredentialAuthorityLost(error: unknown): boolean {
+  return error instanceof DomainError && ([401, 403].includes(error.status)
+    || error.code === 'WORKER_CREDENTIAL_NOT_RENEWABLE')
+}
+
 interface OwnedNativeSession {
   execution: HarnessExecution
   context: NativeManagerResolutionContext
@@ -130,6 +135,8 @@ interface ApprovalObservationInput {
 /** Idempotent ensure/observe boundary called first on every LangGraph node entry. */
 export class ApprovalExecutionCoordinator {
   private readonly managerCredentials = new WeakMap<NativeHarnessSessionManager, IssuedWorkerCredential>()
+
+  private readonly credentialRenewals = new WeakMap<NativeHarnessSessionManager, Promise<void>>()
 
   readonly reviewers: ReviewerDispatcher
   get reviewCoordination() { return this.interactions.coordination }
@@ -818,15 +825,9 @@ export class ApprovalExecutionCoordinator {
         throw new Error('The resident worker credential cannot be renewed without replacing its process.')
       }
       if (this.credentials.renew && expiresAt <= Date.now() + WORKER_CREDENTIAL_RENEWAL_WINDOW_MS) {
-        const renewedExpiry = await this.credentials.renew(context.executionId, { principalId: credential.principalId })
-        if (!Number.isFinite(Date.parse(renewedExpiry)) || Date.parse(renewedExpiry) <= Date.now()) {
-          throw new Error('Worker credential renewal did not return a live lease.')
-        }
-        signal?.throwIfAborted()
-        if (this.managerCredentials.get(resolved.manager) !== credential) {
-          throw new Error('The native credential owner changed during renewal.')
-        }
-        this.managerCredentials.set(resolved.manager, { ...credential, expiresAt: renewedExpiry })
+        await this.renewCredential(resolved.manager, context.executionId, {
+          check: async () => { signal?.throwIfAborted() },
+        })
       }
       signal?.throwIfAborted()
       // A resident process keeps its original token/environment, including across long waits.
@@ -842,6 +843,31 @@ export class ApprovalExecutionCoordinator {
     this.managerCredentials.set(resolved.manager, prepared.credential)
     signal?.throwIfAborted()
     return prepared.credential.environment
+  }
+
+  private renewCredential(manager: NativeHarnessSessionManager, executionId: string,
+    options: { force?: boolean; check(): Promise<void> }): Promise<void> {
+    const renew = async () => {
+      await options.check()
+      const credential = this.managerCredentials.get(manager)
+      if (!credential) throw new Error('The native process lost its credential lease.')
+      if (!options.force && Date.parse(credential.expiresAt) > Date.now() + WORKER_CREDENTIAL_RENEWAL_WINDOW_MS) return
+      if (!this.credentials?.renew) throw new Error('The native credential cannot be renewed.')
+      const expiresAt = await this.credentials.renew(executionId, { principalId: credential.principalId })
+      await options.check()
+      if (this.managerCredentials.get(manager) !== credential || !Number.isFinite(Date.parse(expiresAt))
+        || Date.parse(expiresAt) <= Date.now()) {
+        throw new Error('Native credential renewal lost its owner or returned an invalid expiry.')
+      }
+      this.managerCredentials.set(manager, { ...credential, expiresAt })
+    }
+    // A restart joins the heartbeat before reading and replacing the same process credential.
+    const previous = this.credentialRenewals.get(manager)
+    const renewal = (previous ? previous.then(renew, renew) : renew()).finally(() => {
+      if (this.credentialRenewals.get(manager) === renewal) this.credentialRenewals.delete(manager)
+    })
+    this.credentialRenewals.set(manager, renewal)
+    return renewal
   }
 
   /** Snapshot the owned process values before a terminal cleanup can discard them. */
@@ -1013,12 +1039,7 @@ export class ApprovalExecutionCoordinator {
           throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The reviewer lost its live process credential.', 409)
         }
         if (Date.parse(credential.expiresAt) <= Date.now() + WORKER_CREDENTIAL_RENEWAL_WINDOW_MS) {
-          if (!this.credentials?.renew) throw new Error('The reviewer credential cannot be renewed in place.')
-          const expiresAt = await this.credentials.renew(executionId, { principalId: initial.principalId })
-          await check()
-          if (this.managerCredentials.get(owned.manager) !== credential || !Number.isFinite(Date.parse(expiresAt))
-            || Date.parse(expiresAt) <= Date.now()) throw new Error('Reviewer credential renewal lost its owner or returned an invalid expiry.')
-          this.managerCredentials.set(owned.manager, { ...credential, expiresAt })
+          await this.renewCredential(owned.manager, executionId, { check })
         }
       },
       onFailure: (error) => {
@@ -1092,10 +1113,14 @@ export class ApprovalExecutionCoordinator {
     const credential = this.managerCredentials.get(owned.manager)
     if (!credential || this.ownedSessions.get(owned.execution.id) !== owned)
       throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The retained process lease changed.', 409)
-    const expiresAt = await this.credentials!.renew!(owned.execution.id, credential)
-    if (this.ownedSessions.get(owned.execution.id) !== owned || owned.controller.signal.aborted)
-      throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The retained process no longer owns its lease.', 409)
-    this.managerCredentials.set(owned.manager, { ...credential, expiresAt })
+    await this.renewCredential(owned.manager, owned.execution.id, {
+      check: async () => {
+        owned.controller.signal.throwIfAborted()
+        if (this.ownedSessions.get(owned.execution.id) !== owned)
+          throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The retained process no longer owns its lease.', 409)
+        await this.validateContinuation?.(owned.execution.id, owned.controller.signal)
+      },
+    })
     if (!owned.reviewOwner && owned.session) {
       try {
         const retained = await this.retainRunOwner(owned.execution, () => {})
@@ -1236,7 +1261,29 @@ export class ApprovalExecutionCoordinator {
     owner.assertOwned()
     for (const owned of active) await this.budgets.beginWait(owned.execution.id)
     owner.assertOwned()
+    for (const owned of active) {
+      try { await this.renewForRestart(owned, owner) }
+      catch (error) {
+        if (isCredentialAuthorityLost(error)) return false
+        throw error
+      }
+    }
+    owner.assertOwned()
     return true
+  }
+
+  private async renewForRestart(owned: OwnedNativeSession, owner?: RunOwnership): Promise<void> {
+    if (!this.credentials?.renew || !this.managerCredentials.has(owned.manager)) return
+    await this.renewCredential(owned.manager, owned.execution.id, {
+      force: true,
+      check: async () => {
+        owner?.assertOwned()
+        if (this.ownedSessions.get(owned.execution.id) !== owned || owned.failed || owned.cleanup)
+          throw new DomainError('NATIVE_CREDENTIAL_RECOVERY_REQUIRED', 'The native process no longer owns its lease.', 409)
+        await this.validateContinuation?.(owned.execution.id)
+        owner?.assertOwned()
+      },
+    })
   }
 
   /** Production calls this AFTER stopping/draining producers and BEFORE raw
@@ -1291,6 +1338,18 @@ export class ApprovalExecutionCoordinator {
             await owned.manager.dispose()
             return
           }
+          if (snapshot.run.executionState !== 'completed') {
+            try { await this.renewForRestart(owned, owner) }
+            catch (error) {
+              if (!isCredentialAuthorityLost(error)) throw error
+              await this.runs.requestCleanup(owned.execution.runId, owner)
+              const cleanup = await this.cleanupSession(owned)
+              if (cleanup.length) {
+                throw new AggregateError(cleanup, 'Interrupted native cleanup remains unconfirmed.', { cause: error })
+              }
+              return
+            }
+          }
           await this.closeWorkflowSessionOwned(owned, true)
         })
         return failures.map((error) => safe.error(error) as Error)
@@ -1314,12 +1373,23 @@ export class ApprovalExecutionCoordinator {
         })))
         const resident = siblings.filter(owned => this.ownedSessions.get(owned.execution.id) === owned
           && !this.closedExecutions.has(owned.execution.id))
-        const remote = resident.find(owned => owned.context.acceptedPlacement?.hostRef.kind === 'device')
-        const retained = remote && await this.retainRunOwner(remote.execution, () => {
-          for (const owned of siblings) owned.controller.abort()
+        const ownerSession = resident.find(owned => owned.context.acceptedPlacement?.hostRef.kind === 'device'
+          || this.credentials?.renew && this.managerCredentials.has(owned.manager))
+        const retained = ownerSession && await withCleanupDeadline(async signal => {
+          for (;;) {
+            signal.throwIfAborted()
+            try {
+              return await this.retainRunOwner(ownerSession.execution, () => {
+                for (const owned of siblings) owned.controller.abort()
+              })
+            } catch (error) {
+              if (!(error instanceof DomainError) || error.code !== 'SESSION_LANE_BUSY') throw error
+              await delay(25, undefined, { signal })
+            }
+          }
         })
         try {
-          // Sibling closes share one Run lock until every remote receipt has committed.
+          // Sibling closes share one Run lock until every close or cleanup commits.
           if (retained) this.adoptRunOwner(retained.owner)
           return (await Promise.all(resident.map(owned => closeSession(owned, retained?.owner)))).flat()
         } finally { if (retained) await retained.release() }
@@ -1682,7 +1752,7 @@ export class ApprovalExecutionCoordinator {
   }
 
   private async retainRunOwner(execution: HarnessExecution, onLost: () => void) {
-    let owner = this.sharedRunOwners.get(execution.runId) ?? this.ownedSessions.get(execution.id)?.runOwner
+    let owner = this.ownedSessions.get(execution.id)?.runOwner ?? this.sharedRunOwners.get(execution.runId)
     try { owner?.assertOwned() }
     catch (error) {
       if (!(error instanceof DomainError) || error.code !== 'RUN_OWNERSHIP_LOST') throw error
@@ -1961,13 +2031,12 @@ export class ApprovalExecutionCoordinator {
           const credential = this.managerCredentials.get(manager!)
           if (!credential) throw new Error('The execution lost its native credential lease.')
           if (Date.parse(credential.expiresAt) <= Date.now() + WORKER_CREDENTIAL_RENEWAL_WINDOW_MS) {
-            if (!this.credentials?.renew) throw new Error('This native credential cannot be renewed.')
-            const expiresAt = await this.credentials.renew(context!.executionId, { principalId: credential.principalId })
-            signal.throwIfAborted()
-            input.owner.assertOwned()
-            if (this.managerCredentials.get(manager!) !== credential || !Number.isFinite(Date.parse(expiresAt))
-              || Date.parse(expiresAt) <= Date.now()) throw new Error('Native credential renewal lost its owner or returned an invalid expiry.')
-            this.managerCredentials.set(manager!, { ...credential, expiresAt })
+            await this.renewCredential(manager!, context!.executionId, {
+              check: async () => {
+                signal.throwIfAborted()
+                input.owner.assertOwned()
+              },
+            })
           }
           input.owner.assertOwned()
         },

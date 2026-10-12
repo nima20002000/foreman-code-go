@@ -407,7 +407,7 @@ vi.mock('../src/modules/runs/workflowLifecycle.js', () => ({
 /** Engine cancellation composition only. Native physical closure is exercised
  * by the coordinator fixtures above; the settlement repository is a port here. */
 function engineFixture(approvals: ApprovalExecutionCoordinator) {
-  Object.assign(approvals, { finishRun: async () => undefined, reconcileReviews: async () => undefined, requestColdRunCleanup: async () => false,
+  Object.assign(approvals, { adoptRunOwner: () => undefined, finishRun: async () => undefined, reconcileReviews: async () => undefined, requestColdRunCleanup: async () => false,
     closeForRestart: async () => undefined })
   const f = makeCurrentWorkflowFixture('stop-fixture', 'single'), calls: string[] = []
   let owned = true, stopRequested = false, cleanupPending = false

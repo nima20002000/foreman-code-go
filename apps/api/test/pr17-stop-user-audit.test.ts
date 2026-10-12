@@ -44,10 +44,13 @@ it('F11: failed cleanup remains retryable after terminal settlement and a fresh 
         stopRequested: false, cleanupPending: pending }
     },
   }
+  let nativeOwner: RunOwnership | undefined
   const nativeExecutions = {
+    adoptRunOwner: (actual: RunOwnership) => { actual.assertOwned(); nativeOwner = actual },
     async finishRun(id: string) {
       assert.equal(id, record.id)
       attempts++
+      if (attempts > 1) assert.equal(nativeOwner, owner)
       if (fail) throw new Error('native close failed')
     },
     cancelRun: vi.fn(async () => { throw new Error('Successful terminal cleanup must not cancel the Run') }),

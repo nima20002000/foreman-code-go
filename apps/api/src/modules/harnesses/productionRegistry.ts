@@ -67,7 +67,9 @@ export class ProductionHarnessRegistry {
     await this.refreshMain()
   }
   get initialized(): boolean { return Boolean(this.mainId && this.snapshots.size) }
-  stop(): void { this.stopped = true; this.refreshGeneration++; this.installations.invalidate() }
+  // Stopping admission does not change any installation. Bindings already pinned by in-flight
+  // launches stay current, so an application restart detaches them instead of failing them as stale.
+  stop(): void { this.stopped = true; this.refreshGeneration++ }
   private assertOpen(): void {
     if (this.stopped) throw new DomainError('HARNESS_REGISTRY_CLOSING', 'Harness inventory is shutting down.', 503)
   }
@@ -159,8 +161,9 @@ export class ProductionHarnessRegistry {
     this.installations.refresh(records)
     this.inventoryIdentity = identity
   }
+  // Session pins read the last collected inventory and stay available while the application shuts down:
+  // in-flight launches revalidate their original selection until the engine detaches them for restart.
   pinAccepted(configuration: { id: string; agentId: string; harness: unknown }): RegistryHarnessSelection {
-    this.assertOpen()
     const value = HarnessConfigurationSchema.parse(configuration.harness)
     if (value.harness === 'opencode') throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
     const instance: ConfiguredHarnessInstance = { instanceId: configuration.id, instanceRevision: configuration.id,
@@ -185,7 +188,6 @@ export class ProductionHarnessRegistry {
       environmentGeneration: this.targetEnvironment().generation })
   }
   pinOverride(value: HostHarnessOverride): RegistryHarnessSelection {
-    this.assertOpen()
     if (value.driverId === 'opencode' || value.configuration.harness === 'opencode') throw new DomainError(
       'HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
     const instance: ConfiguredHarnessInstance = { instanceId: value.instanceId, instanceRevision: value.instanceRevision,
