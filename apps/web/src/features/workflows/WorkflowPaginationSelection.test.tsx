@@ -153,7 +153,11 @@ it('keeps a deep-linked active workflow visible without fetching intervening pag
   renderWithRouter(<WorkflowNavigation workspaceId="workspace-1" activeWorkflowId="Zeta" />)
   expect(await screen.findByRole('link', { name: /Zeta/ })).toHaveAttribute('aria-current', 'page')
   expect(await screen.findByRole('link', { name: /Alpha/ })).toBeVisible()
-  expect(screen.getAllByRole('link')).toHaveLength(5)
+  expect(screen.getAllByRole('link')).toHaveLength(6)
+  expect(screen.getByText('Selected workflow')).toBeVisible()
+  for (const name of ['Alpha', 'Bravo', 'Charlie', 'Delta', 'Echo']) {
+    expect(screen.getByRole('link', { name: new RegExp(name) })).toBeVisible()
+  }
   expect(pages).toBe(1); expect(details).toBe(1)
   expect(screen.getByRole('button', { name: 'Show more workflows' })).toBeVisible()
 })

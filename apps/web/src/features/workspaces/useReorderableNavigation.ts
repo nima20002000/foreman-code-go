@@ -55,6 +55,12 @@ export interface ReorderableNavigation {
   containerProps: ReorderContainerProps
   getItemProps: (id: string) => ReorderItemProps
   getKeyboardProps: (id: string) => ReorderKeyboardProps
+  move: (id: string, direction: -1 | 1) => void
+}
+
+interface ReorderOptions {
+  onReorder?: (ids: readonly string[]) => void
+  disabled?: boolean
 }
 
 interface DragSession {
@@ -82,14 +88,20 @@ interface DragSession {
 export function useReorderableNavigation(
   parentKey: string,
   items: readonly ReorderableNavigationItem[],
+  options: ReorderOptions = {},
 ): ReorderableNavigation {
   const storedOrder = useNavigationOrderStore((state) => state.orders[parentKey])
   const setOrder = useNavigationOrderStore((state) => state.setOrder)
   const announce = useNavigationOrderStore((state) => state.announce)
+  const { onReorder, disabled = false } = options
+  const commitOrder = useCallback((ids: readonly string[]) => {
+    if (onReorder) onReorder(ids)
+    else setOrder(parentKey, ids)
+  }, [onReorder, parentKey, setOrder])
 
   const orderedIds = useMemo(
-    () => applyStoredOrder(items.map((item) => item.id), storedOrder),
-    [items, storedOrder],
+    () => applyStoredOrder(items.map((item) => item.id), onReorder ? undefined : storedOrder),
+    [items, onReorder, storedOrder],
   )
 
   const listRef = useRef<HTMLUListElement | null>(null)
@@ -98,6 +110,12 @@ export function useReorderableNavigation(
   const suppressClickRef = useRef(false)
   const suppressClickTimerRef = useRef<number | null>(null)
   const [previewIds, setPreviewIds] = useState<readonly string[] | null>(null)
+
+  useEffect(() => {
+    if (!disabled) return
+    cancelDragRef.current?.()
+    setPreviewIds(null)
+  }, [disabled])
 
   useEffect(() => () => {
     cancelDragRef.current?.()
@@ -139,7 +157,7 @@ export function useReorderableNavigation(
 
   const beginDrag = useCallback(
     (event: ReactPointerEvent<HTMLElement>, id: string) => {
-      if (event.button !== 0 || dragRef.current) return
+      if (disabled || event.button !== 0 || dragRef.current) return
       const listElement = listRef.current
       if (!listElement) return
 
@@ -204,7 +222,7 @@ export function useReorderableNavigation(
           suppressClickTimerRef.current = null
         }, 0)
         if (!commit || !finalIds) return
-        setOrder(parentKey, finalIds)
+        commitOrder(finalIds)
         announce(`Moved ${label} to position ${finalIds.indexOf(id) + 1} of ${finalIds.length}`)
       }
 
@@ -325,7 +343,7 @@ export function useReorderableNavigation(
         session.holdTimer = window.setTimeout(activate, TOUCH_HOLD_MS)
       }
     },
-    [announce, items, orderedIds, parentKey, setOrder],
+    [announce, commitOrder, disabled, items, orderedIds],
   )
 
   const getItemProps = useCallback(
@@ -338,17 +356,18 @@ export function useReorderableNavigation(
 
   const moveByKeyboard = useCallback(
     (id: string, direction: -1 | 1) => {
+      if (disabled) return
       const index = orderedIds.indexOf(id)
       if (index === -1) return
       const targetIndex = index + direction
       if (targetIndex < 0 || targetIndex >= orderedIds.length) return
       const next = moveItemToIndex(orderedIds, id, targetIndex)
       if (sameOrder(next, orderedIds)) return
-      setOrder(parentKey, next)
+      commitOrder(next)
       const label = items.find((item) => item.id === id)?.label ?? id
       announce(`Moved ${label} to position ${targetIndex + 1} of ${next.length}`)
     },
-    [announce, items, orderedIds, parentKey, setOrder],
+    [announce, commitOrder, disabled, items, orderedIds],
   )
 
   const getKeyboardProps = useCallback(
@@ -369,5 +388,6 @@ export function useReorderableNavigation(
     containerProps,
     getItemProps,
     getKeyboardProps,
+    move: moveByKeyboard,
   }
 }

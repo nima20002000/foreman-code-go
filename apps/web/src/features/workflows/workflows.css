@@ -47,8 +47,21 @@
 }
 .workflow-navigation-row .workflow-navigation-remove:hover:not(:disabled) { color: #cc3d3d; background: color-mix(in srgb, var(--n-hover) 65%, black); }
 .workflow-navigation-remove-error { margin: 0.25rem 0.625rem; color: var(--danger); font-size: 12px; }
+.workflow-navigation-row-reorderable .workflow-navigation-item { padding-right: 5.5rem; cursor: grab; }
+.workflow-navigation-move {
+  position: absolute;
+  top: 0.2rem;
+  right: 1.9rem;
+  display: flex;
+  opacity: 0;
+  pointer-events: none;
+}
+.workflow-navigation-move .n-icon-button { width: 1.75rem; min-width: 1.75rem; }
+.workflow-navigation-row:hover .workflow-navigation-move,
+.workflow-navigation-row:focus-within .workflow-navigation-move { opacity: 1; pointer-events: auto; }
 @media (hover: none) {
   .workflow-navigation-row .workflow-navigation-remove { opacity: 1; pointer-events: auto; }
+  .workflow-navigation-move { opacity: 1; pointer-events: auto; }
 }
 
 .workflow-navigation-row .workflow-navigation-item {

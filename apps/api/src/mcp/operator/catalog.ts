@@ -178,6 +178,7 @@ export const OPERATOR_TOOL_ACTIONS: ReadonlyArray<{ name: OperatorToolName; acti
   { name: 'workflow_get', action: 'workflows:read' },
   { name: 'workflow_create', action: 'workflows:create' },
   { name: 'workflow_update', action: 'workflows:update' },
+  { name: 'workflow_reorder', action: 'workflows:update' },
   { name: 'workflow_archive', action: 'workflows:archive' },
   { name: 'workflow_batch_archive', action: 'workflows:archive' },
   { name: 'agent_list', action: 'agents:read' },

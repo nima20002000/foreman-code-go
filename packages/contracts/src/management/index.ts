@@ -109,6 +109,7 @@ export const ManagedWorkflowSchema = z.object({ ...ManagedWorkflowRecordFields, 
 export type ManagedWorkflow = z.infer<typeof ManagedWorkflowSchema>;
 export const ManagedWorkflowPageSchema = z.object({
   items: z.array(ManagedWorkflowSchema), pageInfo: ManagementPageInfoSchema,
+  orderRevision: ExpectedRevisionSchema.default(0),
 }).strict();
 export const ManagedWorkflowCommandResultSchema = z.object({ value: ManagedWorkflowSchema, replayed: z.boolean() }).strict();
 
@@ -216,6 +217,22 @@ export const WorkflowBatchArchiveInputSchema = z.object({
       "Each workflow must appear only once"),
 }).strict();
 export type WorkflowBatchArchiveInput = z.infer<typeof WorkflowBatchArchiveInputSchema>;
+export const WorkflowReorderInputSchema = z.object({
+  ...WorkspaceScopeSchema.shape,
+  ...RevisionMutationFields,
+  workflowIds: z.array(IdSchema).min(2)
+    .refine((ids) => new Set(ids).size === ids.length, "Each workflow must appear only once"),
+}).strict();
+export type WorkflowReorderInput = z.infer<typeof WorkflowReorderInputSchema>;
+export const WorkflowOrderSchema = z.object({
+  workspaceId: IdSchema,
+  workflowIds: z.array(IdSchema),
+  orderRevision: ExpectedRevisionSchema,
+}).strict();
+export const WorkflowReorderResultSchema = z.object({
+  value: WorkflowOrderSchema, replayed: z.boolean(),
+}).strict();
+export type WorkflowReorderResult = z.infer<typeof WorkflowReorderResultSchema>;
 export const WorkflowBatchArchiveResultSchema = z.object({
   value: z.object({ workflowIds: z.array(IdSchema) }).strict(), replayed: z.boolean(),
 }).strict();
@@ -684,7 +701,7 @@ export const OperatorToolNameSchema = z.enum([
   "workspace_storage_folders_list", "workspace_storage_folder_delete",
   "workspace_list", "workspace_get", "workspace_create", "workspace_update", "workspace_archive", "workspace_batch_archive",
   "workspace_location_validate", "workspace_location_set",
-  "workflow_list", "workflow_get", "workflow_create", "workflow_update", "workflow_archive", "workflow_batch_archive",
+  "workflow_list", "workflow_get", "workflow_create", "workflow_update", "workflow_reorder", "workflow_archive", "workflow_batch_archive",
   "agent_list", "agent_get", "graph_draft_open", "graph_draft_get", "graph_draft_apply",
   "graph_draft_layout", "graph_draft_revert_applied", "graph_validate", "graph_save", "graph_draft_discard", "run_list", "run_get", "run_current_get_v1", "run_history_get_v1",
   "run_events_list", "run_handoffs_get_v1", "run_activities_get_v1", "run_node_placement_get", "workflow_node_placement_choices", "run_start", "run_stop",

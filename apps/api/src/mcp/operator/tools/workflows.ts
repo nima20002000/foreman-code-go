@@ -6,6 +6,7 @@ import type { McpServer } from '@modelcontextprotocol/server'
 
 import {
   WorkflowBatchArchiveInputSchema, WorkflowBatchArchiveResultSchema,
+  WorkflowReorderInputSchema, WorkflowReorderResultSchema,
   WorkflowArchiveInputSchema, WorkflowGetInputSchema,
   WorkflowUpdateInputSchema,
 } from '@foreman-code/contracts/management'
@@ -17,16 +18,22 @@ import type { OperatorRequestContext } from '../types.js'
 export function registerWorkflowTools(server: McpServer, context: OperatorRequestContext): void {
   registerCurrentWorkflowTools(server, context)
   if (operatorToolAvailable(context, 'workflow_list')) server.registerTool('workflow_list', {
-    description: 'List authorized workflow summaries, including empty workflows (10 by default). Use detail:full or workflow_get for the saved definition. Pass pageInfo.nextCursor as cursor; null means the end.', inputSchema: OperatorWorkflowListInputSchema,
+    description: 'List authorized workflow summaries in saved workspace order, including empty workflows (10 by default). '
+      + 'Use detail:full or workflow_get for the saved definition. Each page includes orderRevision for workflow_reorder. '
+      + 'Pass pageInfo.nextCursor as cursor; null means the end. Restart pagination after order or membership changes.',
+    inputSchema: OperatorWorkflowListInputSchema,
     outputSchema: WorkflowSummaryPageSchema.or(ManagedWorkflowPageSchema),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async ({ detail, ...input }) => invokeOperatorTool(context, 'workflow_list', async () => {
     const page = await context.services.workflows.list(context.principal, input)
     if (detail === 'full') return page
-    return { detail: 'compact', pageInfo: page.pageInfo, items: page.items.map(({ workflow, ...item }) => ({
-      ...item, workflow: { id: workflow.id, workspaceId: workflow.workspaceId, name: workflow.name },
-      detailsOmitted: true,
-    })) }
+    return {
+      detail: 'compact', pageInfo: page.pageInfo, orderRevision: page.orderRevision,
+      items: page.items.map(({ workflow, ...item }) => ({
+        ...item, workflow: { id: workflow.id, workspaceId: workflow.workspaceId, name: workflow.name },
+        detailsOmitted: true,
+      })),
+    }
   }))
   if (operatorToolAvailable(context, 'workflow_get')) server.registerTool('workflow_get', {
     description: 'Read a workflow and its current saved version reference.', inputSchema: WorkflowGetInputSchema,
@@ -58,6 +65,18 @@ export function registerWorkflowTools(server: McpServer, context: OperatorReques
     outputSchema: ManagedWorkflowCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, async (input) => invokeOperatorTool(context, 'workflow_update', () => context.services.workflows.update(context.principal, 'mcp', input)))
+  if (operatorToolAvailable(context, 'workflow_reorder')) server.registerTool('workflow_reorder', {
+    description: 'Persist the order of at least two unique active workflows in one workspace. '
+      + 'Pass workflow_list.orderRevision as expectedRevision; workflow revisions remain unchanged. '
+      + 'The submitted IDs replace only their existing slots, preserving omitted workflows, including hidden or unloaded items. '
+      + 'Requires workflows:read and workflows:update for every submitted workflow. '
+      + 'Stale order revisions, archived workflows or foreign/missing IDs reject the whole command. '
+      + 'Returns only the submitted IDs in saved order. Retry the same commandId and input after an uncertain reply, '
+      + 'then restart workflow_list pagination to read the persisted result.',
+    inputSchema: WorkflowReorderInputSchema, outputSchema: WorkflowReorderResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }, async (input) => invokeOperatorTool(context, 'workflow_reorder',
+    () => context.services.workflows.reorder(context.principal, 'mcp', input)))
   if (operatorToolAvailable(context, 'workflow_batch_archive')) server.registerTool('workflow_batch_archive', {
     description: 'Atomically delete (archive) 1–100 selected workflows, retaining versions and runs. Requires archive permission for every workflow and its expected revision. Active runs or any conflict reject the entire batch. Retry an uncertain outcome with the same commandId and input.',
     inputSchema: WorkflowBatchArchiveInputSchema, outputSchema: WorkflowBatchArchiveResultSchema,
