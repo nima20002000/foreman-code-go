@@ -44,9 +44,12 @@ it('F11: failed cleanup remains retryable after terminal settlement and a fresh 
         stopRequested: false, cleanupPending: pending }
     },
   }
+  let nativeOwner: RunOwnership | undefined
   const nativeExecutions = {
+    adoptRunOwner: (actual: RunOwnership) => { actual.assertOwned(); nativeOwner = actual },
     async finishRun(id: string) {
       assert.equal(id, record.id)
+      assert.equal(nativeOwner, owner)
       attempts++
       if (fail) throw new Error('native close failed')
     },

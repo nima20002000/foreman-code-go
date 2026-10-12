@@ -82,10 +82,12 @@ async function fixture(options: {
     if (state.cleanupFailure) state.run = { ...state.run, outcome: 'failed', result: state.cleanupFailure }
   }
   const stopSharingOwner = vi.fn()
+  let nativeOwner: RunOwnership | undefined
   const native = { shareRunOwner: vi.fn(() => stopSharingOwner),
+    adoptRunOwner: (actual: RunOwnership) => { actual.assertOwned(); nativeOwner = actual },
     preserveActiveForRestart: async () => false,
     cancelRun: async () => { state.nativeCancel++; if (!state.clean) throw new Error('native closure uncertain') },
-    finishRun: async () => { state.events.push('finish-native') },
+    finishRun: async () => { assert.equal(nativeOwner, owner); state.events.push('finish-native') },
     nativeBoundaryEvidence: async () => { throw new Error('No fake native evidence in registration tests') },
     closeForRestart: async () => { state.events.push('restart-close') }, reconcileReviews: async () => undefined, requestColdRunCleanup: async () => false }
   const { LangGraphWorkflowEngine: Engine } = await import('../src/modules/runs/engine.js')

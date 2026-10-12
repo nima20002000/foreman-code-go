@@ -63,7 +63,7 @@ for (const handoffs of preserving ? [false, true] : [false]) test(
       events.push('close-start')
       try { await closure.promise } finally { events.push('close-settled') }
     }),
-    cancelRun: vi.fn(), finishRun: vi.fn(),
+    adoptRunOwner: vi.fn(), cancelRun: vi.fn(), finishRun: vi.fn(),
   }
   type Args = ConstructorParameters<typeof LangGraphWorkflowEngine>
   const engine = new LangGraphWorkflowEngine(runs as unknown as Args[0], {
@@ -149,7 +149,7 @@ test('restart retains the original owner when cleanup persistence fails and retr
   }
   const native = { shareRunOwner: () => () => {}, preserveActiveForRestart: async () => false,
     requestColdRunCleanup: async () => false, closeForRestart: vi.fn(async () => { events.push('close') }),
-    cancelRun: vi.fn(), finishRun: vi.fn() }
+    adoptRunOwner: vi.fn(), cancelRun: vi.fn(), finishRun: vi.fn() }
   type Args = ConstructorParameters<typeof LangGraphWorkflowEngine>
   const engine = new LangGraphWorkflowEngine(runs as unknown as Args[0], {
     getVersion: async (versionId: string) => { assert.equal(versionId, f.version.id); return f.version },
