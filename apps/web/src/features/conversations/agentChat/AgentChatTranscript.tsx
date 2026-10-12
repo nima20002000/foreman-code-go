@@ -10,6 +10,7 @@ import { OperatorApprovalCard } from '../../operator-chat/OperatorApprovalCard'
 import type { InteractionResponseValue, SessionMode } from '@foreman-code/contracts'
 import { ConversationHistory } from '../ConversationHistory'
 import { ConversationViewport } from '../ConversationViewport'
+import { RunTranscript } from './RunTranscript'
 import { approvalReplyAvailable, deliveryLabels, intentLabels, mergeChatMessages } from './model'
 import { confirmedCommandReceipt } from './commandRecords'
 import { applyCanonicalActivityItems } from './activityMerge'
@@ -54,9 +55,11 @@ export function AgentChatTranscript({
   // reasoning, or synthetic "thinking" strings. Unknown delta payloads only trigger state reads.
   const activities = applyCanonicalActivityItems(state.activities, state.activitySnapshot).filter((entry) => entry.kind !== 'thinking')
   const placement = placeChatActivities(messages, activities, state.activeTurn?.requestId)
-  const revision = JSON.stringify([messages, state.turns, activities, state.pendingInteraction, unresolved.map((record) => [record.command, record.status])])
+  const revision = JSON.stringify([state.sourceTranscript, messages, state.turns, activities,
+    state.pendingInteraction, unresolved.map((record) => [record.command, record.status])])
   return <ConversationViewport revision={revision}>{(onBrowse) => <>
     {notices}
+    {state.sourceTranscript ? <RunTranscript transcript={state.sourceTranscript} name={name} /> : null}
     {onRefresh ? <ChatDecisionReceipts snapshot={state.activitySnapshot} onRefresh={onRefresh} pending={refreshing} /> : null}
     {id && (state.hasEarlierMessages && !history.data || history.hasNextPage) ? <Button size="sm" variant="ghost" disabled={history.isFetching}
       onClick={() => { onBrowse(); void history.fetchNextPage() }}>Load earlier messages</Button> : null}
@@ -85,7 +88,7 @@ export function AgentChatTranscript({
         </div>
       })}
     </section> : null}
-    <ConversationHistory messages={messages} assistantName={name} renderStatus={status}
+    {(!state.sourceTranscript || state.conversation) && <ConversationHistory messages={messages} assistantName={name} renderStatus={status}
       renderAfter={(message) => message.attachments?.length ? <ChatMessageFiles message={message} workspaceId={state.context.workspaceId} /> : null}
       interleaved={placement.rows.map(({ entry, beforeMessageId }) => ({
         key: JSON.stringify([id, entry.requestId, entry.id]), beforeMessageId,
@@ -110,7 +113,7 @@ export function AgentChatTranscript({
             : <><p className="agent-chat-note">Original send inputs are unavailable in this view. Do not use displayed outputs as new inputs.</p>
               {onRefresh ? <Button size="sm" disabled={refreshing} onClick={onRefresh}>Read original send inputs</Button> : null}</>}</> : null}
       </div>
-    }} />
+    }} />}
     {unresolved.map((record) => record.command?.kind === 'send' ? <MessageBubble key={record.command.input.requestId} role="user" author="You"
       status={<Badge tone={record.status === 'pending' ? 'neutral' : 'warning'}>{record.status === 'pending' ? 'Sending' : 'Unknown'}</Badge>}>
       <p className="conversation-message-content">{record.command.input.content}</p>

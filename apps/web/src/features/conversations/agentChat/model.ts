@@ -12,12 +12,15 @@ export function sameAgentChatContext(a: AgentChatContext, b: AgentChatContext): 
 }
 export function stateBelongsToContext(state: AgentChatState, context: AgentChatContext): boolean {
   if (!sameAgentChatContext(state.context, context)) return false
+  if (state.sourceTranscript && !context.runId) return false
   const conversation = state.conversation
   if (!conversation) return state.messages.length === 0 && state.turns.length === 0 && !state.pendingInteraction
   if (conversation.workspaceId !== context.workspaceId || conversation.workflowId !== context.workflowId
     || conversation.workflowNodeId !== context.workflowNodeId || conversation.agentId !== context.agentId) return false
   if (context.runId ? conversation.origin.kind !== 'run_execution' || conversation.origin.runId !== context.runId
     : conversation.origin.kind !== 'fresh') return false
+  if (state.sourceTranscript && conversation.origin.kind === 'run_execution'
+    && state.sourceTranscript.executionId !== conversation.origin.executionId) return false
   return state.messages.every((message) => message.conversationId === conversation.id)
 }
 
@@ -89,7 +92,15 @@ export function acceptAgentChatState(previous: AgentChatState | undefined, incom
         const messages = advanced || source === 'read' ? mergeChatMessages(previous.messages, incoming.messages)
           .filter((message) => incoming.messages.some((entry) => entry.id === message.id)) : previous.messages
         if (source === 'receipt' && !qualificationChanged) return { ...previous, messages, ...(activitySnapshot ? { activitySnapshot } : {}) }
-        return { ...previous, messages, ...(activitySnapshot ? { activitySnapshot } : {}), capabilities: incoming.capabilities, availability: incoming.availability, responseAvailability: incoming.responseAvailability, qualificationKey: incoming.qualificationKey }
+        let sourceTranscript = previous.sourceTranscript
+        if (source === 'read' && (!sourceTranscript || !incoming.sourceTranscript
+          || sourceTranscript.executionId !== incoming.sourceTranscript.executionId
+          || BigInt(incoming.sourceTranscript.revision) >= BigInt(sourceTranscript.revision))) {
+          sourceTranscript = incoming.sourceTranscript
+        }
+        return { ...previous, messages, ...(activitySnapshot ? { activitySnapshot } : {}),
+          sourceTranscript, capabilities: incoming.capabilities, availability: incoming.availability,
+          responseAvailability: incoming.responseAvailability, qualificationKey: incoming.qualificationKey }
       }
     }
   }

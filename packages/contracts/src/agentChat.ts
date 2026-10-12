@@ -15,7 +15,7 @@ export const AgentChatDirectoryBindingSchema = z.object({ workflowVersionId: z.s
 export type AgentChatDirectoryBinding = z.infer<typeof AgentChatDirectoryBindingSchema>;
 
 import {
-  RecordedAgentHarnessSchema, ExecutionResultSchema, IdSchema, MessageSchema, OperatorActivityCursorSchema,
+  RecordedAgentHarnessSchema, HarnessExecutionSchema, ExecutionResultSchema, IdSchema, MessageSchema, OperatorActivityCursorSchema,
   OperatorActivitySchema, PendingNativeInteractionSchema, TimestampSchema,
 } from "./index.js";
 
@@ -169,6 +169,16 @@ export const AgentChatTurnSchema = z.object({
 }).strict();
 export type AgentChatTurn = z.infer<typeof AgentChatTurnSchema>;
 
+/** Public text from the workflow execution, separate from its follow-up conversation. */
+export const AgentChatSourceTranscriptSchema = z.object({
+  executionId: IdSchema,
+  state: HarnessExecutionSchema.shape.state,
+  revision: OperatorActivityCursorSchema,
+  messages: z.array(MessageSchema.omit({ conversationId: true })).max(100),
+  hasEarlierMessages: z.boolean(),
+}).strict();
+export type AgentChatSourceTranscript = z.infer<typeof AgentChatSourceTranscriptSchema>;
+
 export const AgentChatStateSchema = z.object({
   responseAvailability: NativeInteractionResponseAvailabilitySchema.optional(),
   qualificationKey: z.string().regex(/^[a-f0-9]{64}$/).optional(),  context: AgentChatContextSchema,
@@ -191,6 +201,7 @@ export const AgentChatStateSchema = z.object({
   /** Legacy overflow recovery only: turns is incomplete, sending is blocked, queued cancellation remains available. */
   hasMoreTurns: z.literal(true).optional(),
   messages: z.array(MessageSchema).max(100),
+  sourceTranscript: AgentChatSourceTranscriptSchema.optional(),
   hasEarlierMessages: z.boolean(),
   activities: z.array(OperatorActivitySchema).max(100),
   pendingInteraction: PendingNativeInteractionSchema.optional(),
