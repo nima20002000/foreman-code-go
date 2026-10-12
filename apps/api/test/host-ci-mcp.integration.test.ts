@@ -63,8 +63,8 @@ function fakeComputers(github: Record<string, boolean> = {}, cloud: boolean | { 
       }
       if (request.operation === 'start') {
         if (computer.hostRef.kind === 'cloud' && computer.hostRef.provider === 'circleci'
-          && request.suite !== 'integration') {
-          throw new DomainError('CI_CLOUD_UNAVAILABLE', 'CircleCI runs integration only.', 409)
+          && request.part === 'unit-other') {
+          throw new DomainError('CI_CLOUD_UNAVAILABLE', 'CircleCI cannot run the Worker unit tests (no podman).', 409)
         }
         if (github[computer.label] === false) throw new DomainError('COMPUTER_GITHUB_REQUIRED', 'Log in to GitHub.', 409)
         const existing = runs.get(request.runId)

@@ -10,7 +10,7 @@ import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../jobs/ciAuthority.js'
 import { DomainError } from '../errors.js'
 import { requireAuthorization } from '../access/policy.js'
 import { componentLogger } from '../diagnostics/logger.js'
-import { ciGroupState, planCiParts, type CiUnitInventory } from './parts.js'
+import { ciGroupState, planCiParts, runsOnCircleCi, type CiUnitInventory } from './parts.js'
 import { assertCiReadAccess } from './runAccess.js'
 import type { CiRepositoryCapabilities } from './repository.js'
 import { RUN_CI_JOBS_SQL, runCiJob, storedCiTestResults, type RunCiJobRow } from './runJobs.js'
@@ -455,7 +455,7 @@ export class HostCiService {
         || run.partition.hostIndexes.includes(run.partition.index))
       const preferred = (computer: HostCiComputer) => Number(run.suite === 'integration'
         ? !isGitHubComputer(computer) : isGitHubComputer(computer))
-      const order = computers.filter(computer => run.suite === 'integration'
+      const order = computers.filter(computer => runsOnCircleCi(run)
         || computer.hostRef.kind !== 'cloud' || computer.hostRef.provider !== 'circleci')
         .filter(computer => !hostRequired || computer.hostRef.kind !== 'cloud')
         .filter(computer => computer.hostRef.kind !== 'cloud' || !computer.hostRef.provider

@@ -10,6 +10,7 @@ import { ensureClone, fetchRepositoryBranch, systemGitWorktreePorts, type GitWor
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 import type { HostCiComputer } from './service.js'
 import { CircleCiProvider, GitHubActionsProvider, type CloudDispatchInput, type CloudProvider } from './cloudProviders.js'
+import { runsOnCircleCi } from './parts.js'
 
 const LOG_LIMIT = 4 * 1024 * 1024
 const START_TIMEOUT_MS = 75_000
@@ -138,9 +139,9 @@ export class CloudCi {
         'This integration partition requires a build computer with user systemd.', 409)
     }
     const mirror = await this.mirrors(request.repository)
-    // CircleCI's machine image has no podman, which the Worker and check suites use; it takes integration work only.
-    if (this.provider.id === 'circleci' && request.suite !== 'integration') {
-      throw new DomainError('CI_CLOUD_UNAVAILABLE', `${this.provider.label} runs integration partitions only.`, 409)
+    // CircleCI's machine image has no podman, which the Worker unit tests (unit-other) use.
+    if (this.provider.id === 'circleci' && !runsOnCircleCi(request)) {
+      throw new DomainError('CI_CLOUD_UNAVAILABLE', `${this.provider.label} cannot run the Worker unit tests (no podman).`, 409)
     }
     if (!mirror || !await this.ready()) {
       throw new DomainError('CI_CLOUD_UNAVAILABLE', `This workspace has no CI mirror, or Main is not logged in to ${this.provider.label}.`, 409)
