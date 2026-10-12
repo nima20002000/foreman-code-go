@@ -42,11 +42,13 @@ export function buildRepeatGraph(input: {
   checkpointer: BaseCheckpointSaver; signal: AbortSignal; configuredParallelism?: number; maximumWaiting?: number
   jobs?: { store: WorkflowJobNodeStore; driver: WorkflowJobDriver }
   track?: (task: Promise<Partial<RepeatGraphState>>) => void
+  /** The Run-local limiter shared with interval checks. */
+  limiter?: ExecutionLimiter
 }) {
   const version = WorkflowVersionV3Schema.parse(input.version), layout = compileRepeatLayout(version)
   const configured = input.configuredParallelism ?? 4
   if (!Number.isSafeInteger(configured) || configured < 1) return repeatConflict('INVALID_RUNNER_PARALLELISM')
-  const limiter = new ExecutionLimiter(Math.min(configured, version.definition.executionPolicy!.maxParallelism), input.maximumWaiting ?? 1000)
+  const limiter = input.limiter ?? new ExecutionLimiter(Math.min(configured, version.definition.executionPolicy!.maxParallelism), input.maximumWaiting ?? 1000)
   const action = repeatNodeAction({ ...input, limiter })
   const jobAction = input.jobs && workflowJobNodeAction({ runId: input.runId, store: input.jobs.store, driver: input.jobs.driver, limiter, signal: input.signal })
   const current = async (blockId: string, state: RepeatGraphState): Promise<RepeatOccurrenceV1> => {

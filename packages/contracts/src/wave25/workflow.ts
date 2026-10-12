@@ -8,7 +8,7 @@ import { ExecutionSemanticsVersionSchema } from './workflowShape.js'
 export { EXECUTION_SEMANTICS_VERSION, ExecutionSemanticsVersionSchema } from './workflowShape.js'
 export {
   DEFAULT_AGENT_ACTIVE_TIMEOUT_MS, MAX_AGENT_ACTIVE_TIMEOUT_MS, AgentActiveTimeoutMsSchema,
-  AGENT_INTERVAL_MIN_SECONDS, AGENT_INTERVAL_MAX_SECONDS, AgentIntervalSchema,
+  AGENT_INTERVAL_MIN_SECONDS, AGENT_INTERVAL_MAX_SECONDS, AGENT_INTERVAL_MAX_CHECKS_PER_RUN, AgentIntervalSchema,
   WorkflowExecutionPolicySchema,
   ChoiceOutcomeSchema, ChoiceTargetSchema, WorkflowChoiceSchema,
   WorkflowExecutionRelationshipSchema, WorkflowApprovalRelationshipSchema, WorkflowRelationshipSchema,

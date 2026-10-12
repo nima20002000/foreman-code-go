@@ -317,41 +317,49 @@ export interface RepeatRuntimeLifecycle {
 }
 
 /** Re-activates interval nodes beside the graph: one loop per node admits a check when it is due
- * and observes it through the same native driver. Stopping waits for an in-flight check, never
- * starts another, and leaves graph routing untouched. Errors back off; they do not fail the Run. */
+ * and observes it through the same native driver and Run-local limiter as graph work. Each loop
+ * re-observes its node's latest check until that check is settled, also after a restart. The
+ * returned stop only ends scheduling: the caller's task drain waits for in-flight checks, with the
+ * bounded cleanup deadline after Stop or failure. Errors back off; they do not fail the Run. */
 export function startIntervalChecks(input: {
   version: WorkflowVersionV3; store: Partial<Pick<RepeatRunRepository, 'admitTick'>>
-  driver: RepeatExecutionDriver; signal: AbortSignal
-}): () => Promise<void> {
+  driver: RepeatExecutionDriver; limiter: ExecutionLimiter; signal: AbortSignal
+  track(task: Promise<unknown>): void
+}): () => void {
   const nodes = input.version.definition.nodes.filter((node) => node.kind !== 'job' && node.interval)
-  if (!nodes.length) return async () => {}
+  if (!nodes.length) return () => {}
   const admitTick = input.store.admitTick?.bind(input.store)
   if (!admitTick) return repeatConflict('TICK_STORE_REQUIRED')
   const stopped = new AbortController(), scheduling = AbortSignal.any([input.signal, stopped.signal])
-  const loops = nodes.map((node) => (async () => {
-    while (!scheduling.aborted) {
+  for (const node of nodes) input.track((async () => {
+    let settled: string | null = null
+    for (;;) {
       let waitMs = 5_000
       try {
-        const admission = await admitTick(node.id, () => input.driver.candidate({ nodeId: node.id, occurrence: null }, 1))
+        // A check is never admitted once scheduling stopped; the throw rolls the admission back.
+        const admission = await admitTick(node.id, () => {
+          scheduling.throwIfAborted()
+          return input.driver.candidate({ nodeId: node.id, occurrence: null }, 1)
+        }, settled)
         const execution = admission.kind === 'admitted' ? admission.execution
           : admission.kind === 'busy' ? admission.execution : undefined
         if (execution) {
-          await input.driver.observe(execution, input.signal)
+          if (execution.state === 'completed') await input.driver.observe(execution, input.signal)
+          else await input.limiter.run(input.signal, () => input.driver.observe(execution, input.signal))
+          settled = execution.id
           waitMs = 1_000
         } else if (admission.kind === 'wait' && admission.dueAt) {
           waitMs = Math.min(60_000, Math.max(1_000, Date.parse(admission.dueAt) - Date.now()))
         }
       } catch (error) {
-        if (scheduling.aborted) return
-        componentLogger('engine').warn({ err: error, workflowNodeId: node.id }, 'interval check failed')
+        if (input.signal.aborted) return
+        if (!scheduling.aborted) componentLogger('engine').warn({ err: error, workflowNodeId: node.id }, 'interval check failed')
       }
+      if (scheduling.aborted) return
       await delay(waitMs, undefined, { signal: scheduling }).catch(() => undefined)
     }
   })())
-  return async () => {
-    stopped.abort()
-    await Promise.allSettled(loops)
-  }
+  return () => stopped.abort()
 }
 
 /** Executes the one graph on the existing Run thread. Settlement retries drain
@@ -451,15 +459,17 @@ export async function executeRepeatRuntime(input: {
         }
       })
     }
+  // Graph work and interval checks share the Run's parallelism limit.
+  const limiter = new ExecutionLimiter(
+    Math.min(input.configuredParallelism ?? 4, input.version.definition.executionPolicy!.maxParallelism), 1000)
   const work = input.version.definition.handoffs ? buildWorkHandoffGraph({
     runId: input.runId, version: input.version, checkpointer: input.checkpointer, signal, track,
     port: { ensureEntryActivation: () => input.store.ensureWorkEntry(),
       executeActivation: workHandoffNodeAction({ version: input.version, store: input.store,
-        driver: input.driver, limiter: new ExecutionLimiter(
-          Math.min(input.configuredParallelism ?? 4, input.version.definition.executionPolicy!.maxParallelism), 1000), signal }),
+        driver: input.driver, limiter, signal }),
     },
   }) : null
-  const repeat = work ? null : buildRepeatGraph({ ...input, signal, track })
+  const repeat = work ? null : buildRepeatGraph({ ...input, signal, track, limiter })
   const readCheckpoint = async (): Promise<import('./repeatGraph.js').RepeatCheckpoint> => work
     ? await work.graph.getState(work.config) as import('./repeatGraph.js').RepeatCheckpoint
     : await repeat!.graph.getState(repeat!.config)
@@ -484,7 +494,11 @@ export async function executeRepeatRuntime(input: {
         // Native iterators need not honor cancellation; the graph invocation is raced
         // independently, then existing exact native cleanup and wrapper drain run below.
         let onAbort: (() => void) | undefined
-        const stopChecks = startIntervalChecks({ version: input.version, store: input.store, driver: input.driver, signal })
+        const stopChecks = startIntervalChecks({ version: input.version, store: input.store, driver: input.driver,
+          limiter, signal, track: (task) => {
+            tasks.add(task)
+            void task.then(() => { tasks.delete(task) }, () => { tasks.delete(task) })
+          } })
         try {
           const invocation = invoke(state)
           tasks.add(invocation)
@@ -496,7 +510,7 @@ export async function executeRepeatRuntime(input: {
           })])
         } finally {
           if (onAbort) signal.removeEventListener('abort', onAbort)
-          await stopChecks()
+          stopChecks()
         }
         await drain()
         signal.throwIfAborted()

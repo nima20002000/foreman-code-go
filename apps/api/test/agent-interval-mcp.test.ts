@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest'
 import {
-  AGENT_INTERVAL_MAX_SECONDS, AGENT_INTERVAL_MIN_SECONDS, CURRENT_WORKFLOW_TOOLS, CurrentWorkflowCapabilitiesSchema,
+  AGENT_INTERVAL_MAX_CHECKS_PER_RUN, AGENT_INTERVAL_MAX_SECONDS, AGENT_INTERVAL_MIN_SECONDS, CURRENT_WORKFLOW_TOOLS, CurrentWorkflowCapabilitiesSchema,
   CurrentWorkflowReadResultSchema, CurrentWorkflowSaveResultSchema,
 } from '@foreman-code/contracts/wave25'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
@@ -33,7 +33,8 @@ it('discovers, saves, clears and reads back Agent interval checks through authen
   const capabilities = CurrentWorkflowCapabilitiesSchema.parse(graphRpcValue(
     (await f.call(CURRENT_WORKFLOW_TOOLS.capabilities, {})).result))
   expect(capabilities.agentInterval).toMatchObject({ field: 'node.interval.everySeconds', defaultEnabled: false,
-    minimumSeconds: AGENT_INTERVAL_MIN_SECONDS, maximumSeconds: AGENT_INTERVAL_MAX_SECONDS, runStatusTool: 'run_status_get' })
+    minimumSeconds: AGENT_INTERVAL_MIN_SECONDS, maximumSeconds: AGENT_INTERVAL_MAX_SECONDS,
+    maximumChecksPerRun: AGENT_INTERVAL_MAX_CHECKS_PER_RUN, runStatusTool: 'run_status_get' })
   expect(JSON.stringify((await graphRpc(f.app, f.writer.token, 'tools/list')).result)).toContain('node.interval')
 
   const watcher = f.input.graph.nodes[0]!
@@ -72,4 +73,15 @@ it('discovers, saves, clears and reads back Agent interval checks through authen
   if (node.kind !== 'job') node.interval = { everySeconds: AGENT_INTERVAL_MIN_SECONDS - 1 }
   expect((await f.call(CURRENT_WORKFLOW_TOOLS.save, { ...input, commandId: randomUUID(), expectedRevision: cleared.revision,
     expectedWorkflowVersionId: cleared.currentVersionId, graph: tooFast })).result?.isError).toBe(true)
+
+  // A check never publishes artifacts, so an Agent declaring artifact outputs cannot run checks.
+  const withOutputs = structuredClone(cleared.version.definition)
+  const producer = withOutputs.nodes[0]!
+  if (producer.kind !== 'job') Object.assign(producer, { interval: { everySeconds: 60 }, artifactOutputs: { version: 1, outputKeys: ['report'] } })
+  const refused = await f.call(CURRENT_WORKFLOW_TOOLS.save, { ...input, commandId: randomUUID(), expectedRevision: cleared.revision,
+    expectedWorkflowVersionId: cleared.currentVersionId, graph: withOutputs })
+  expect(refused.result?.isError).toBe(true)
+  expect(JSON.stringify(refused.result)).toContain('AGENT_INTERVAL_WITH_ARTIFACT_OUTPUTS')
+  expect(CurrentWorkflowReadResultSchema.parse(graphRpcValue((await f.call(CURRENT_WORKFLOW_TOOLS.saved, scope)).result))
+    .version.id).toBe(cleared.version.id)
 }, 60_000)

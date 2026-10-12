@@ -1,0 +1,120 @@
+import { expect, it, vi } from 'vitest'
+import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
+import { DomainError } from '../src/modules/errors.js'
+import { executeRepeatRuntime, type RepeatRuntimeLifecycle } from '../src/modules/runs/repeatRuntime.js'
+import type { RepeatExecutionDriver } from '../src/modules/runs/repeatNode.js'
+import type { RepeatTickAdmission } from '../src/modules/runs/repeatPostgres.js'
+import { a1Scenario, graphHarness } from './helpers/eng04A1GraphHarness.js'
+
+function deferred<T = void>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}
+const untilAborted = (signal: AbortSignal) => new Promise<never>((_resolve, reject) => {
+  if (signal.aborted) reject(signal.reason)
+  signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+})
+
+/** Real graph runtime with deterministic ports: the entry Agent checks every 10 seconds while the
+ * second node works until released. Checks are admitted once the second node has started. */
+function intervalRun(options: { maxParallelism: number; observeCheck(check: HarnessExecution, signal: AbortSignal): Promise<void> }) {
+  const f = a1Scenario('sequential', `interval-runtime-${options.maxParallelism}`)
+  f.configurations = f.configurations.map((configuration) => ({ ...configuration, harness: { ...configuration.harness,
+    advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'never' as const } } })) as typeof f.configurations
+  const [watcher, worker] = f.version.definition.nodes
+  if (!watcher || !worker) throw new Error('Expected two Agent nodes')
+  watcher.interval = { everySeconds: 10 }
+  f.version.definition.executionPolicy!.maxParallelism = options.maxParallelism
+  const workerStarted = deferred(), workerRelease = deferred(), events: string[] = []
+  const h = graphHarness(f, { beforeObserve: async (execution, _ref, signal) => {
+    if (execution.workflowNodeId !== worker.id) return
+    events.push('worker:start')
+    workerStarted.resolve()
+    await Promise.race([workerRelease.promise, untilAborted(signal)])
+    events.push('worker:end')
+  } })
+  const checks: HarnessExecution[] = [], settledIds: Array<string | null> = []
+  let allocating = false
+  const admitTick = async (nodeId: string, candidate: () => HarnessExecution, settledId: string | null): Promise<RepeatTickAdmission> => {
+    expect(nodeId).toBe(watcher.id)
+    await workerStarted.promise
+    settledIds.push(settledId)
+    const latest = checks.at(-1)
+    if (latest && latest.id !== settledId) return { kind: 'busy', execution: latest }
+    if (latest) return { kind: 'wait', dueAt: null }
+    allocating = true
+    try { checks.push(candidate()) } finally { allocating = false }
+    return { kind: 'admitted', execution: checks.at(-1)! }
+  }
+  const observed: string[] = []
+  const driver: RepeatExecutionDriver = {
+    candidate: (ref, attempt) => allocating ? HarnessExecutionSchema.parse({ id: `check-${checks.length + 1}`,
+      runId: f.run.id, workflowNodeId: watcher.id, agentId: watcher.agentId,
+      agentConfigurationVersionId: f.version.agentConfigurationVersionIds[watcher.agentId],
+      attempt: 1, input: { tick: { index: checks.length + 1, everySeconds: 10 } }, state: 'queued', createdAt: f.createdAt })
+      : h.input.driver.candidate(ref, attempt),
+    observe: async (execution, signal) => {
+      if (!execution.id.startsWith('check-')) return h.input.driver.observe(execution, signal)
+      observed.push(execution.id)
+      await options.observeCheck(execution, signal)
+    },
+  }
+  const lifecycle = {
+    preflight: vi.fn(async () => {}), markRunning: vi.fn(async () => {}),
+    currentState: vi.fn(async () => ({ executionState: 'running', stopRequested: h.controller.signal.aborted })),
+    persistWait: vi.fn(async () => false), cancelNativeAndRequestCleanup: vi.fn(async () => true),
+    settleRun: vi.fn(async () => {}), requestCleanup: vi.fn(async () => {}),
+    finishNative: vi.fn(async () => {}), finishCleanup: vi.fn(async () => {}),
+  } satisfies RepeatRuntimeLifecycle
+  const run = () => executeRepeatRuntime({ ...h.input, store: { ...h.input.store, admitTick }, driver,
+    owner: { assertOwned() {} }, lifecycle })
+  return { h, run, lifecycle, checks, settledIds, observed, events, workerStarted, workerRelease }
+}
+
+it('settles a Stop through bounded cleanup while a running check ignores cancellation', async () => {
+  const checkStarted = deferred()
+  const t = intervalRun({ maxParallelism: 2, observeCheck: async () => {
+    checkStarted.resolve()
+    await new Promise(() => {})
+  } })
+  const running = t.run()
+  await checkStarted.promise
+  t.h.controller.abort(new DomainError('RUN_STOPPED', 'Stop requested.', 409))
+  await expect(running).rejects.toMatchObject({ code: 'RUN_STOPPED' })
+  expect(t.lifecycle.cancelNativeAndRequestCleanup).toHaveBeenCalledTimes(1)
+  expect(t.lifecycle.settleRun).toHaveBeenCalledWith(true, false)
+  expect(t.checks).toHaveLength(1)
+}, 15_000)
+
+it('runs checks within the Run parallelism limit and completes the Run after the in-flight check', async () => {
+  const t = intervalRun({ maxParallelism: 1, observeCheck: async () => {
+    t.events.push('check')
+  } })
+  const running = t.run()
+  await t.workerStarted.promise
+  await vi.waitFor(() => expect(t.checks).toHaveLength(1))
+  // The only slot belongs to the working node, so the admitted check waits for it.
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  expect(t.observed).toEqual([])
+  t.workerRelease.resolve()
+  await running
+  expect(t.events).toEqual(['worker:start', 'worker:end', 'check'])
+  expect(t.checks).toHaveLength(1)
+  expect(t.h.completeCalls).toBe(1)
+  expect(t.lifecycle.finishCleanup).toHaveBeenCalledTimes(1)
+}, 15_000)
+
+it('re-observes a check whose cleanup failed before admitting another', async () => {
+  let attempts = 0
+  const t = intervalRun({ maxParallelism: 2, observeCheck: async () => {
+    if (++attempts === 1) throw new Error('native close failed')
+  } })
+  const running = t.run()
+  await vi.waitFor(() => expect(t.settledIds).toContain('check-1'), { timeout: 10_000, interval: 50 })
+  t.workerRelease.resolve()
+  await running
+  expect(t.observed).toEqual(['check-1', 'check-1'])
+  expect(t.checks).toHaveLength(1)
+  expect(t.settledIds.slice(0, 3)).toEqual([null, null, 'check-1'])
+}, 20_000)

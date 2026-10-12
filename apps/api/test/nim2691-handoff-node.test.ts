@@ -3,6 +3,7 @@ import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema, WorkRequestSchema } from '@foreman-code/contracts/wave25'
 import { ExecutionLimiter } from '../src/modules/runs/limiter.js'
 import { workHandoffNodeAction } from '../src/modules/runs/workHandoffNode.js'
+import { DomainError } from '../src/modules/errors.js'
 
 describe('NIM-2691 workflow activation routing', () => {
   it('fans a finished entry result to both saved connections once', async () => {
@@ -44,6 +45,39 @@ describe('NIM-2691 workflow activation routing', () => {
     const next = await action('activation-entry')
     expect(calls.sort()).toEqual(version.definition.edges.filter((edge) => edge.source === source.id).map((edge) => edge.id).sort())
     expect(new Set(next)).toEqual(new Set(calls.map((id) => `activation-${id}`)))
+  })
+
+  it('waits for the node\'s running interval check before admitting its activation', async () => {
+    const fixture = makeCurrentWorkflowFixture('work-node-check')
+    const version = WorkflowVersionV3Schema.parse({ ...fixture.version, definition: {
+      ...fixture.version.definition, handoffs: { contractVersion: 1 },
+      executionPolicy: { maxParallelism: 1, maxNodeExecutions: 3 },
+    } })
+    const node = version.definition.nodes.at(-1)!
+    if (node.kind === 'job') throw new Error('Agent-only fixture unexpectedly contains a Job')
+    const execution = HarnessExecutionSchema.parse({ id: 'execution-after-check', runId: fixture.run.id,
+      workflowNodeId: node.id, agentId: node.agentId,
+      agentConfigurationVersionId: version.agentConfigurationVersionIds[node.agentId],
+      attempt: 1, input: {}, state: 'completed', createdAt: fixture.createdAt, finishedAt: fixture.createdAt,
+      result: { outcome: 'succeeded', output: { routing: { kind: 'finish' },
+        data: { latestDeliverable: { artifact: 'a' }, remainingFindings: [] } } } })
+    let admissions = 0
+    const store = {
+      resolveWaitingWorkJoins: async () => [],
+      admitWorkActivation: async () => {
+        if (++admissions === 1) throw new DomainError('INTERVAL_CHECK_RUNNING', 'The node\'s interval check is still running.', 409)
+        return { execution, reused: false }
+      },
+      acceptWorkTerminal: async () => ({ kind: 'accepted' as const, execution, replayed: false }),
+      admitWorkRequest: async () => { throw new Error('A finish without routes requests no work') },
+      returnWork: async () => { throw new Error('A finish cannot return work') },
+      recordWorkUnresolved: async () => { throw new Error('No findings remain') },
+    }
+    const action = workHandoffNodeAction({ version, store: store as never,
+      driver: { candidate: () => { throw new Error('Allocated outside admission') }, observe: async () => undefined },
+      limiter: new ExecutionLimiter(1, 10), signal: new AbortController().signal })
+    await action('activation-entry')
+    expect(admissions).toBe(2)
   })
 
   it('keeps a technical retry in one activation before admitting its first business request', async () => {

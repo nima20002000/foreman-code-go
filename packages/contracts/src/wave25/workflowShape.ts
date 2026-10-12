@@ -86,6 +86,8 @@ export type WorkflowExecutionPolicy = z.infer<typeof WorkflowExecutionPolicySche
  * active, after its first finished execution. Absent means off. Checks never route the graph. */
 export const AGENT_INTERVAL_MIN_SECONDS = 10
 export const AGENT_INTERVAL_MAX_SECONDS = 24 * 60 * 60
+/** Checks across all Agents of one Run; the bound keeps the Run's history readable. */
+export const AGENT_INTERVAL_MAX_CHECKS_PER_RUN = 1000
 export const AgentIntervalSchema = z.object({
   everySeconds: z.number().int().min(AGENT_INTERVAL_MIN_SECONDS).max(AGENT_INTERVAL_MAX_SECONDS),
 }).strict()
@@ -195,6 +197,10 @@ export const WorkflowDefinitionV3Schema = CurrentWorkflowDefinitionBaseSchema.ex
   for (const [index, node] of definition.nodes.entries()) {
     if (node.kind !== 'job' && node.interval && repeatMembers.has(node.id)) {
       context.addIssue({ code: 'custom', path: ['nodes', index, 'interval'], message: 'AGENT_INTERVAL_IN_REPEAT_BLOCK' })
+    }
+    // A check replies in prose; it never publishes the node's declared artifact outputs.
+    if (node.kind !== 'job' && node.interval && node.artifactOutputs) {
+      context.addIssue({ code: 'custom', path: ['nodes', index, 'interval'], message: 'AGENT_INTERVAL_WITH_ARTIFACT_OUTPUTS' })
     }
   }
   const pairs = new Set<string>()

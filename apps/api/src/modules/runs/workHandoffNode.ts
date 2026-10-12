@@ -1,4 +1,6 @@
+import { setTimeout as delay } from 'node:timers/promises'
 import { parseWorkHandoffResult, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
+import { DomainError } from '../errors.js'
 import type { RepeatRunRepository } from './repeatPostgres.js'
 import type { RepeatExecutionDriver } from './repeatNode.js'
 import { ExecutionLimiter } from './limiter.js'
@@ -14,8 +16,17 @@ export function workHandoffNodeAction(input: {
 }) {
   const execute = async (activationId: string): Promise<readonly string[]> => {
     input.signal.throwIfAborted()
-    const admitted = await input.store.admitWorkActivation(activationId,
+    const admit = () => input.store.admitWorkActivation(activationId,
       (nodeId) => input.driver.candidate({ nodeId, occurrence: null }, 1))
+    let admitted
+    for (;;) {
+      try { admitted = await admit(); break }
+      catch (error) {
+        // The node's interval check finishes first; its slot is not held while waiting.
+        if (!(error instanceof DomainError && error.code === 'INTERVAL_CHECK_RUNNING')) throw error
+        await delay(1_000, undefined, { signal: input.signal })
+      }
+    }
     let execution = admitted.execution
     for (;;) {
       input.signal.throwIfAborted()

@@ -276,6 +276,10 @@ export class RepeatRunRepository {
         'select state from run_work_activations where run_id=$1 and activation_id=$2 for update',
         [context.scope.runId, activationId])).rows[0]
       if (state?.state !== 'queued') return repeatConflict('WORK_ACTIVATION_NOT_QUEUED')
+      // One execution of a node at a time: graph work waits for the node's running interval check.
+      const checking = await context.sql.query(`select 1 from harness_executions where run_id=$1 and workflow_node_id=$2
+        and tick_index is not null and record->>'state'<>'completed' limit 1`, [context.scope.runId, ref.nodeId])
+      if (checking.rowCount) return repeatConflict('INTERVAL_CHECK_RUNNING')
       const execution = HarnessExecutionSchema.parse(candidate(ref.nodeId))
       this.assertCandidate(context, ref, execution, 1)
       const queued = HarnessExecutionSchema.parse({ ...execution, input })
@@ -899,18 +903,19 @@ export class RepeatRunRepository {
   }
   /** Interval check admission for a node whose graph work is settled. A check is one more
    * execution of the node in its own slot: no input bindings, resolution, routing or budget use.
-   * busy returns an unfinished check so a restarted owner can observe it again. */
-  async admitTick(nodeId: string, candidate: () => HarnessExecution): Promise<RepeatTickAdmission> {
+   * Until the caller has observed the node's latest check through settlement (settledId), busy
+   * returns that check again, so neither a cleanup failure nor a restart leaves it behind. */
+  async admitTick(nodeId: string, candidate: () => HarnessExecution, settledId: string | null): Promise<RepeatTickAdmission> {
     return this.transaction(async (context) => {
       this.active(context)
       const node = context.version.definition.nodes.find((item) => item.id === nodeId)
       if (!node || node.kind === 'job' || !node.interval || blockForNode(context.version, nodeId)) return repeatConflict('TICK_NODE_CONFLICT')
       const facts = await readIntervalCheckFacts(context.sql, context.scope.runId, nodeId, Boolean(context.version.definition.handoffs))
-      if (facts.openId) {
-        if (!facts.openTick) return { kind: 'busy' }
-        await this.recordedEffect(context, 'input.bind', facts.openId)
-        return { kind: 'busy', execution: (await this.execution(context, facts.openId)).execution }
+      if (facts.lastTickId && facts.lastTickId !== settledId) {
+        await this.recordedEffect(context, 'input.bind', facts.lastTickId)
+        return { kind: 'busy', execution: (await this.execution(context, facts.lastTickId)).execution }
       }
+      if (facts.openId) return { kind: 'busy' }
       const dueAt = nextIntervalCheckAt(facts, node.interval.everySeconds)
       if (!dueAt || dueAt > context.now) return { kind: 'wait', dueAt }
       const ref: RepeatNodeRef = { nodeId, occurrence: null }
@@ -956,9 +961,9 @@ export class RepeatRunRepository {
         values($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`, [execution.id, context.scope.runId, slotId, occurrenceId,
         workActivationId, execution.attempt, previousExecutionId, JSON.stringify(identity)])
     } else {
-      await context.sql.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,repeat_occurrence_id,tick_index,record)
-        values($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`, [execution.id, context.scope.runId, ref.nodeId,
-        execution.agentId, execution.attempt, occurrenceId, tickIndex, JSON.stringify(execution)])
+      await context.sql.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,repeat_occurrence_id,record,tick_index)
+        values($1,$2,$3,$4,$5,$6,$7::jsonb,$8)`, [execution.id, context.scope.runId, ref.nodeId,
+        execution.agentId, execution.attempt, occurrenceId, JSON.stringify(execution), tickIndex])
       await context.sql.query(`insert into run_repeat_executions(execution_id,run_id,slot_id,occurrence_id,technical_attempt,previous_execution_id,identity)
         values($1,$2,$3,$4,$5,$6,$7::jsonb)`, [execution.id, context.scope.runId, slotId, occurrenceId,
         execution.attempt, previousExecutionId, JSON.stringify(identity)])

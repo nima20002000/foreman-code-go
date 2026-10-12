@@ -22,6 +22,18 @@ describe('Agent interval checks in the saved workflow definition', () => {
     expect(JSON.stringify(result.error?.issues)).toContain('AGENT_INTERVAL_IN_REPEAT_BLOCK')
   })
 
+  it('rejects interval checks on an Agent that declares artifact outputs', () => {
+    const f = makeCurrentWorkflowFixture('interval-artifacts')
+    const definition = structuredClone(f.version.definition)
+    const node = { ...definition.nodes[0]!, interval: { everySeconds: 60 } }
+    definition.nodes[0] = node
+    expect(WorkflowDefinitionV3Schema.safeParse(definition).success).toBe(true)
+    definition.nodes[0] = { ...node, artifactOutputs: { version: 1, outputKeys: ['report'] } }
+    const result = WorkflowDefinitionV3Schema.safeParse(definition)
+    expect(result.success).toBe(false)
+    expect(JSON.stringify(result.error?.issues)).toContain('AGENT_INTERVAL_WITH_ARTIFACT_OUTPUTS')
+  })
+
   it('requires an Agent that never routes approvals to the workflow', () => {
     const f = makeCurrentWorkflowFixture('interval-approval')
     const version = structuredClone(f.version)
