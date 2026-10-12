@@ -59,8 +59,19 @@ function pruneSupersededForms() {
     const id = decodeURIComponent(name.slice(draftPrefix.length)), split = id.lastIndexOf(':')
     const scope = id.slice(prefix.length, split), tabId = id.slice(split + 1)
     if (!id.startsWith(prefix) || split < prefix.length || tabId === ownTab) continue
-    if (local.getItem(key('ui', `${scope}:latest`)) !== JSON.stringify(tabId)) local.removeItem(name)
+    if (local.getItem(key('ui', `${scope}:latest`)) !== JSON.stringify(tabId)) { local.removeItem(name); continue }
+    // Copies written before forms kept only their own Agents hold the whole workspace catalog.
+    try {
+      const raw = local.getItem(name), snapshot = raw === null ? undefined : SnapshotSchema.parse(JSON.parse(raw))
+      const agents = snapshot && referencedAgents(snapshot)
+      if (snapshot && agents && agents.length < snapshot.context.agents.length) local.setItem(name, JSON.stringify({ ...snapshot, context: { ...snapshot.context, agents } }))
+    } catch { /* an unreadable copy is left for reconciliation, never rewritten */ }
   }
+}
+/** The workspace Agent catalog is server state; a form copy keeps only the Agents its forms refer to. */
+function referencedAgents(edit: Pick<NextDraftEdit, 'context' | 'graph' | 'agentEdits' | 'agentForms'>) {
+  const text = JSON.stringify([edit.context.draft, edit.context.savedDraft, edit.graph, edit.agentEdits, edit.agentForms])
+  return edit.context.agents.filter(({ agent }) => text.includes(JSON.stringify(agent.id)))
 }
 function assertScope(scope: string, workspaceId: string, workflowId: string) {
   if (scope !== nextDraftKey(workspaceId, workflowId)) throw new Error('The retained edit has a different workspace or workflow.')
@@ -116,7 +127,7 @@ export function editSnapshotSubmitted(scope: string, edit: NextDraftEdit, stageC
     && !!snapshot.submittedStageCommands?.includes(stageCommandId)
 }
 export function storeEditSnapshot(scope: string, edit: Pick<NextDraftEdit, 'context' | 'graph' | 'agentEdits' | 'agentForms' | 'remoteEditIntent'>, acknowledgedStageCommandId?: string) {
-  const value = SnapshotSchema.parse({ context: edit.context, graph: edit.graph,
+  const value = SnapshotSchema.parse({ context: { ...edit.context, agents: referencedAgents(edit) }, graph: edit.graph,
     ...(edit.agentForms ? { agentForms: edit.agentForms } : {}),
     ...(edit.agentEdits ? { agentEdits: edit.agentEdits } : {}),
     ...(edit.remoteEditIntent ? { remoteEditIntent: edit.remoteEditIntent } : {}) })

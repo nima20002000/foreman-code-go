@@ -91,7 +91,9 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext, update
         && (!hasLocalChanges(snapshot.context, snapshot.graph) || sameAuthoredWorkflow(snapshot.graph, fresh.graph))
       const retained = stale ? undefined : snapshot
       if (retained) {
-        useGraphDraftStore.getState().installNextDraft(draftKey, retained.context)
+        // Retained forms keep only their own Agents; the rest of the catalog comes from the server.
+        const catalog = new Map([...(source.data?.agents ?? []), ...retained.context.agents].map((record) => [record.agent.id, record]))
+        useGraphDraftStore.getState().installNextDraft(draftKey, { ...retained.context, agents: [...catalog.values()] })
         useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => ({ ...state,
           graph: retained.graph, agentEdits: retained.agentEdits, agentForms: retained.agentForms, remoteEditIntent: retained.remoteEditIntent }))
       } else if (source.data && !source.isError) {

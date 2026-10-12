@@ -143,4 +143,39 @@ describe('edit storage under a full browser quota', () => {
     expect(localStorage.getItem('graphql.chat:earlier-epoch:draft:old-form')).toBeNull()
     expect(localStorage.getItem('unrelated-preference')).toBe('keep')
   })
+
+  it('compacts the latest form of another workflow that still holds the whole Agent catalog', () => {
+    const otherKey = nextDraftKey('workspace', 'other-workflow'), context = fixture()
+    const catalogOnly = { ...context.agents[0]!, agent: { ...context.agents[0]!.agent, id: 'catalog-only-agent' } }
+    const other = { ...context, agents: [...context.agents, catalogOnly],
+      draft: { ...context.draft, workflowId: 'other-workflow', graph: { ...context.draft.graph, id: 'other-workflow' } } }
+    other.savedDraft = other.draft
+    const otherForm = protectedKey('draft', `graph-edit-intent:${otherKey}:other-tab`)
+    // Written by an older app version: the latest copy of its workflow, with the full catalog.
+    localStorage.setItem(otherForm, JSON.stringify({ context: other, graph: other.draft.graph }))
+    localStorage.setItem(protectedKey('ui', `graph-edit-intent:${otherKey}:latest`), JSON.stringify('other-tab'))
+    const setItem = Storage.prototype.setItem
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, name: string, value: string) {
+      if (name !== otherForm && this.getItem(otherForm)?.includes('catalog-only-agent')) throw new DOMException('The quota has been exceeded.', 'QuotaExceededError')
+      setItem.call(this, name, value)
+    })
+
+    const edit = newNextDraft(fixture(), 'current-form')
+    expect(() => storeEditSnapshot(key, edit)).not.toThrow()
+
+    expect(readEditSnapshot(key)?.graph).toEqual(edit.graph)
+    const kept = JSON.parse(localStorage.getItem(otherForm)!)
+    expect(kept.graph).toEqual(other.draft.graph)
+    expect(kept.context.agents.map((record: { agent: { id: string } }) => record.agent.id)).toEqual(context.agents.map((record) => record.agent.id))
+  })
+})
+
+describe('form copies and the workspace Agent catalog', () => {
+  it('keeps only the Agents the workflow refers to', () => {
+    const context = fixture()
+    const catalogOnly = { ...context.agents[0]!, agent: { ...context.agents[0]!.agent, id: 'catalog-only-agent' } }
+    storeEditSnapshot(key, newNextDraft({ ...context, agents: [...context.agents, catalogOnly] }, 'form'))
+
+    expect(readEditSnapshot(key)?.context.agents.map((record) => record.agent.id)).toEqual(context.agents.map((record) => record.agent.id))
+  })
 })
