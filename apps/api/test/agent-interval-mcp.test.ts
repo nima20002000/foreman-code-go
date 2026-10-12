@@ -35,7 +35,9 @@ it('discovers, saves, clears and reads back Agent interval checks through authen
   expect(capabilities.agentInterval).toMatchObject({ field: 'node.interval.everySeconds', defaultEnabled: false,
     minimumSeconds: AGENT_INTERVAL_MIN_SECONDS, maximumSeconds: AGENT_INTERVAL_MAX_SECONDS,
     maximumChecksPerRun: AGENT_INTERVAL_MAX_CHECKS_PER_RUN, runStatusTool: 'run_status_get' })
-  expect(JSON.stringify((await graphRpc(f.app, f.writer.token, 'tools/list')).result)).toContain('node.interval')
+  const tools = JSON.stringify((await graphRpc(f.app, f.writer.token, 'tools/list')).result)
+  expect(tools).toContain('node.interval')
+  expect(tools).toContain('Checks do not consume maxParallelism slots and serialize with work on the same node.')
 
   const watcher = f.input.graph.nodes[0]!
   if (watcher.kind === 'job') throw new Error('Expected an Agent node')

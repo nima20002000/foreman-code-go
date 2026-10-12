@@ -87,21 +87,29 @@ it('settles a Stop through bounded cleanup while a running check ignores cancell
   expect(t.checks).toHaveLength(1)
 }, 15_000)
 
-it('runs checks within the Run parallelism limit and completes the Run after the in-flight check', async () => {
+it('checks beside graph work with one parallelism slot and completes after the in-flight check', async () => {
+  const checkStarted = deferred()
+  const checkRelease = deferred()
   const t = intervalRun({ maxParallelism: 1, observeCheck: async () => {
-    t.events.push('check')
+    t.events.push('check:start')
+    checkStarted.resolve()
+    await checkRelease.promise
+    t.events.push('check:end')
   } })
   const running = t.run()
   await t.workerStarted.promise
-  await vi.waitFor(() => expect(t.checks).toHaveLength(1))
-  // The only slot belongs to the working node, so the admitted check waits for it.
-  await new Promise((resolve) => setTimeout(resolve, 200))
-  expect(t.observed).toEqual([])
+  await checkStarted.promise
+  expect(t.events).toEqual(['worker:start', 'check:start'])
+  expect(t.observed).toEqual(['check-1'])
   t.workerRelease.resolve()
+  await vi.waitFor(() => expect(t.events).toEqual(['worker:start', 'check:start', 'worker:end']))
+  expect(t.h.completeCalls).toBe(0)
+  expect(t.lifecycle.finishCleanup).not.toHaveBeenCalled()
+  checkRelease.resolve()
   await running
-  expect(t.events).toEqual(['worker:start', 'worker:end', 'check'])
-  expect(t.checks).toHaveLength(1)
+  expect(t.events).toEqual(['worker:start', 'check:start', 'worker:end', 'check:end'])
   expect(t.h.completeCalls).toBe(1)
+  expect(t.checks).toHaveLength(1)
   expect(t.lifecycle.finishCleanup).toHaveBeenCalledTimes(1)
 }, 15_000)
 
