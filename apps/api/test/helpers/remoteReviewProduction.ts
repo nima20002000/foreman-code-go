@@ -10,7 +10,8 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { AgentConfigurationVersionSchema, DurableInteractionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
+import { AgentConfigurationVersionSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION,
+  DurableInteractionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
 import { HarnessOptionsResultSchema, ManagedWorkspaceSchema, ManagementActionSchema } from '@foreman-code/contracts/management'
 import { ClaudeHarnessConfigurationSchema } from '@foreman-code/contracts/claude'
 import { ComputerSyncStatusSchema } from '@foreman-code/contracts/computer-accounts'
@@ -87,7 +88,8 @@ async function postDeviceJson(endpoint: string, certificate: Buffer, payload: un
 /** Fresh production instances share only persisted data; the Worker runs the
  * shipped installed domains in a separate process with its own native owners. */
 export async function remoteReviewProduction(options: {
-  workflow?: 'approval' | 'sequential' | 'single'; modelCatalog?: 'empty-at-startup'; executionHost?: 'main' | 'worker'
+  workflow?: 'approval' | 'sequential' | 'single' | 'interval'
+  modelCatalog?: 'empty-at-startup'; executionHost?: 'main' | 'worker'
   claudeInventory?: boolean; parallelProfileChecks?: boolean; reuseMatchingProfiles?: boolean
   workerRelease?: string | Promise<string>
   installationRefreshIntervalMs?: number; parallelSetup?: boolean; includeNodeRuntimePayload?: boolean
@@ -191,13 +193,24 @@ export async function remoteReviewProduction(options: {
     const repositoryName = `${repository.owner}/${repository.name}`
     await configureRemoteReviewGitHub({ project, origin: join(directory, 'github.git'), repository: repositoryName,
       homes: [logEnvironment.HOME!, workerEnvironment.HOME!] })
-    const shape = options.workflow ?? 'approval'
+    const shape = options.workflow === 'interval' ? 'sequential' : options.workflow ?? 'approval'
     const seed = makeCurrentWorkflowFixture(randomUUID(), shape)
-    seed.configurations = seed.configurations.map((configuration, index) => AgentConfigurationVersionSchema.parse({
-      ...configuration, prompt: { system: shape === 'sequential' || index === 0
-        ? 'fixture-reviewer' : 'fixture-requester' },
-      harness: { ...configuration.harness, model: 'test-model' },
-    }))
+    if (options.workflow === 'interval') {
+      seed.version.definition.handoffs = { contractVersion: 1 }
+      seed.version.definition.nodes[0]!.interval = { everySeconds: 60 }
+      seed.version.definition.executionPolicy!.maxParallelism = 2
+    }
+    seed.configurations = seed.configurations.map((configuration, index) => {
+      let systemPrompt = shape === 'sequential' || index === 0 ? 'fixture-reviewer' : 'fixture-requester'
+      if (options.workflow === 'interval') systemPrompt += ' fixture-work-handoff'
+      return AgentConfigurationVersionSchema.parse({
+        ...configuration, prompt: { system: systemPrompt },
+        harness: { ...configuration.harness, model: 'test-model',
+          ...(options.workflow === 'interval' ? { advanced: {
+            ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'never',
+          } } : {}) },
+      })
+    })
     const saved = await seedAgent3(db.pool, project, seed, { run: false })
     const config = loadConfig({ DATABASE_URL: db.databaseUrl, PORT: String(await freePort()),
       HARNESS_WORKSPACE_ROOT: runtime, FILE_STORAGE_ROOT: join(directory, 'files'),

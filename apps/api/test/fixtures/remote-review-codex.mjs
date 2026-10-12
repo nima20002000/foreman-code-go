@@ -179,8 +179,18 @@ async function started(turn, prompt) {
   if (String(turn.items[0].clientId).startsWith('review-')) return review(turn, prompt)
   if (thread.instructions.includes('fixture-reviewer')) {
     log({ workflowTurn: { pid: process.pid, sessionId: thread.id, turnId: turn.id } })
-    while (existsSync(join(root, 'block-workflow-turns'))) await new Promise(resolve => setTimeout(resolve, 20))
-    complete(turn)
+    const block = join(root, 'block-workflow-turns')
+    const position = readFileSync(join(root, 'calls.jsonl'), 'utf8').split('\n')
+      .filter(line => line && JSON.parse(line).workflowTurn).length
+    while (existsSync(block)) {
+      const contents = readFileSync(block, 'utf8')
+      if (contents && position <= JSON.parse(contents).allowFirst) break
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    const output = thread.instructions.includes('fixture-work-handoff')
+      ? JSON.stringify({ routing: { kind: 'finish' }, data: { latestDeliverable: 'fixture complete', remainingFindings: [] } })
+      : 'fixture complete'
+    complete(turn, output)
     log({ workflowCompleted: { pid: process.pid, sessionId: thread.id, turnId: turn.id } })
     return
   }

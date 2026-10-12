@@ -50,6 +50,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   private shutdownTask: Promise<void> | undefined
   private restartIntent: Promise<void> | undefined
   private restartClosure: Promise<void> | undefined
+  private readonly restartPreservedOwners = new WeakSet<RunOwnership>()
 
   constructor(
     private readonly runs: PostgresRunRepository,
@@ -454,10 +455,15 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
                 approvals = { saver: this.checkpointer, interactions }
               }
             }
+            // Decide before cancellation drains observation; reuse that decision
+            // for closure retries under the same Run owner.
+            const preserved = this.restartPreservedOwners.has(owner)
+              || await this.nativeExecutions.preserveActiveForRestart(owner)
+            if (preserved) this.restartPreservedOwners.add(owner)
             // Freeze handoff tasks before classifying their queued reservations.
             // These tasks do not abort Jobs, which require the cleanup fence first.
             if (accepted.version.definition.handoffs) this.activeRuns.get(runId)?.abort(reason)
-            await this.requestRestartCleanup(owner, approvals)
+            if (!preserved) await this.requestRestartCleanup(owner, approvals)
           }
         })))
         const intentErrors = intents.flatMap((item) => item.status === 'rejected' ? [item.reason] : [])
@@ -493,7 +499,6 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
   private async requestRestartCleanup(owner: RunOwnership, approvals?: WorkflowRestartApprovals): Promise<void> {
     const { version } = await this.runs.getRepeatSnapshot(owner.runId, owner)
     if (version.definition.handoffs && await settleWorkForRestart(owner, approvals)) return
-    if (await this.nativeExecutions.preserveActiveForRestart(owner)) return
     await this.runs.requestCleanup(owner.runId, owner)
   }
 }
