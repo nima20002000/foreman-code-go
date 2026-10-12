@@ -178,7 +178,7 @@ describe.runIf(postgresEnabled)('restart credential safety', () => {
     }, 60_000,
   )
 
-  it('reacquires the yielded Run owner before cleaning up a revoked waiting Worker', async () => {
+  it('waits for a competing owner before cleaning up a revoked waiting Worker', async () => {
     const runtime = await activeWorkflow('waiting')
     try {
       const active = await start(runtime)
@@ -186,7 +186,9 @@ describe.runIf(postgresEnabled)('restart credential safety', () => {
         { timeoutMs: 30_000, description: 'the graph yielding for approval' })
       const original = await lease(runtime, active.execution.id)
       await runtime.access.revoke(runtime.writer.principal.id)
+      const acquire = vi.spyOn(runtime.runs, 'acquireOwnership').mockResolvedValueOnce(undefined)
       await runtime.engine.shutdown()
+      expect(acquire).toHaveBeenCalledTimes(2)
       expect(await lease(runtime, active.execution.id)).toMatchObject({
         principal_id: original.principal_id, expires_at: original.expires_at, live: false,
       })

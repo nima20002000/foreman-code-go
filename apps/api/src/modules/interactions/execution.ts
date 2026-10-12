@@ -1375,8 +1375,18 @@ export class ApprovalExecutionCoordinator {
           && !this.closedExecutions.has(owned.execution.id))
         const ownerSession = resident.find(owned => owned.context.acceptedPlacement?.hostRef.kind === 'device'
           || this.credentials?.renew && this.managerCredentials.has(owned.manager))
-        const retained = ownerSession && await this.retainRunOwner(ownerSession.execution, () => {
-          for (const owned of siblings) owned.controller.abort()
+        const retained = ownerSession && await withCleanupDeadline(async signal => {
+          for (;;) {
+            signal.throwIfAborted()
+            try {
+              return await this.retainRunOwner(ownerSession.execution, () => {
+                for (const owned of siblings) owned.controller.abort()
+              })
+            } catch (error) {
+              if (!(error instanceof DomainError) || error.code !== 'SESSION_LANE_BUSY') throw error
+              await delay(25, undefined, { signal })
+            }
+          }
         })
         try {
           // Sibling closes share one Run lock until every close or cleanup commits.
