@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.90] - 2026-10-12
+
+### Fixed
+
+- Deploying a new release no longer interrupts running Agents: harness qualification no longer depends on the release install folder.
+
 ## [0.0.89] - 2026-10-12
 
 ### Fixed
