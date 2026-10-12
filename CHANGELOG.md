@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.96] - 2026-10-12
+
+### Fixed
+
+- The v0.0.95 web build failed on test-file type errors; this release ships v0.0.95's changes.
+
 ## [0.0.95] - 2026-10-12
 
 ### Changed
