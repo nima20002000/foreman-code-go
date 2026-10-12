@@ -114,6 +114,7 @@ export async function installedRestartService(directory: string, configuration: 
   return {
     unit, registry,
     state: async () => (await systemctl('show', unit, '--property=ActiveState', '--value')).stdout.trim(),
+    pid: async () => Number((await systemctl('show', unit, '--property=MainPID', '--value')).stdout.trim()),
     async start() {
       await rm(readyFile, { force: true })
       await systemctl('start', unit)

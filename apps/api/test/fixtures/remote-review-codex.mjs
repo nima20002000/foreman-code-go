@@ -178,6 +178,9 @@ async function started(turn, prompt) {
   if (prompt.startsWith('Call files_read with fileId ')) return qualificationFiles(turn, prompt)
   if (String(turn.items[0].clientId).startsWith('review-')) return review(turn, prompt)
   if (thread.instructions.includes('fixture-reviewer')) {
+    if (thread.instructions.includes('fixture-write-source')) {
+      writeFileSync(join(thread.settings.cwd, 'README.md'), '# Native workflow edit\n')
+    }
     log({ workflowTurn: { pid: process.pid, sessionId: thread.id, turnId: turn.id } })
     const block = join(root, 'block-workflow-turns')
     const position = readFileSync(join(root, 'calls.jsonl'), 'utf8').split('\n')
