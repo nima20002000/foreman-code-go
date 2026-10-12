@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process'
-import { mkdir, rename, rm } from 'node:fs/promises'
+import { mkdir, open, rename, rm } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { SourceError } from './manifest.js'
 import { DomainError } from '../errors.js'
 import { gitFailure } from './gitErrors.js'
+import { directoryFlags, withPrivateDirectoryLock } from './privateFilesystem.js'
 
 export interface WorktreeRequest { repository: string; branch: string }
 export interface GitWorktreePorts {
@@ -52,7 +53,29 @@ export async function addGitWorktree(ports: GitWorktreePorts, request: WorktreeR
     if (options?.checkout === 'deferred') await run(['read-tree', commit], path)
     const head = (await run(['rev-parse', 'HEAD'], path)).trim()
     if (head !== commit) throw new SourceError('SOURCE_WORKTREE_CONFLICT', 'The worktree is not at the approved commit.')
+    await ensureWorktreeGitIdentity(ports, path, signal)
     return { branch, commit }
+  }
+}
+
+/** Linked worktrees share repo-local configuration, so identity setup holds the common directory lock. */
+export async function ensureWorktreeGitIdentity(ports: GitWorktreePorts, path: string, signal: AbortSignal): Promise<void> {
+  const common = await runGit(ports, ['rev-parse', '--path-format=absolute', '--git-common-dir'], path, signal)
+  const directory = await open(common.trim(), directoryFlags)
+  try {
+    await withPrivateDirectoryLock(directory, async () => {
+      for (const [key, fallback] of [
+        ['user.name', 'Foreman Code Agent'],
+        ['user.email', 'agent@foreman-code.invalid'],
+      ] as const) {
+        const configured = await ports.git(['config', '--local', '--get', key], { cwd: path, signal })
+        if (configured.code !== 0 && configured.code !== 1) throw gitFailure('SOURCE_WORKTREE_FAILED', 'config')
+        if (configured.code === 0 && configured.stdout.trim()) continue
+        await runGit(ports, ['config', '--local', key, fallback], path, signal)
+      }
+    }, { signal })
+  } finally {
+    await directory.close()
   }
 }
 
