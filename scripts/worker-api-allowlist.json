@@ -289,6 +289,7 @@
   "apps/api/src/modules/sources/bindingHash.ts",
   "apps/api/src/modules/sources/capture.ts",
   "apps/api/src/modules/sources/defaultBranch.ts",
+  "apps/api/src/modules/sources/entryProcessing.ts",
   "apps/api/src/modules/sources/footprint.ts",
   "apps/api/src/modules/sources/gitErrors.ts",
   "apps/api/src/modules/sources/gitSourceObjects.ts",

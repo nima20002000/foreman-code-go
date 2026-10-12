@@ -76,7 +76,7 @@ it.each(closureCases)('closes linked worktrees after $failure with $outputBytes 
     const linkBytes = links.reduce((sum, stat) => sum + Math.max(4096, stat.size, stat.blocks * 512), 0)
     const expectedBytes = beforeLinks + linkBytes
       + Math.max(4096, afterTree.blocks * 512) - Math.max(4096, beforeTree.blocks * 512)
-    const reservation = { reservationId: randomUUID(), scopeId: `main:${filesystem.device}:${filesystem.mountId}`, ownerKind: 'materialization', ownerId: randomUUID(), reservedBytes: 100_000 }
+    const reservation = { reservationId: randomUUID(), scopeId: `main:${filesystem.device}:${filesystem.mountId}`, ownerKind: 'materialization' as const, ownerId: randomUUID(), reservedBytes: 100_000 }
     const record = SourceMaterializationRecordSchema.parse({ receipt, rootPolicyId: randomUUID(), rootPolicyRevision: '1', operationId: reservation.ownerId,
       reservationId: reservation.reservationId, sourceBindingHash: attempt.placementHash, finalDispatchBindingHash: null, state: 'prepared' })
     await pool.query(`insert into source_execution_materializations
