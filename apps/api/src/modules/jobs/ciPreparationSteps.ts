@@ -27,6 +27,7 @@ export interface CiPreparationStepPorts {
 export async function runCiPreparation(record: CiPreparationRecord, ports: CiPreparationStepPorts): Promise<void> {
   const update = async (state: CiPreparationRecord['status']['state'], stage: string | null = null) => {
     record.status = { ...record.status, state, stage, message: null }
+    if (state === 'qualified') record.status.failureCount = 0
     await ports.checkpoint()
   }
   if (!record.manifest) {
@@ -68,6 +69,7 @@ export async function runCiPreparation(record: CiPreparationRecord, ports: CiPre
     if (reusable?.profile.schemaVersion === 2 && reusable.profile.status === 'qualified'
       && reusable.profile.spec.policy.imageDigest === record.prepared.imageId) {
       record.status = { ...record.status, state: 'qualified', stage: null, message: null,
+        failureCount: 0,
         profiles: [{ profileId: reusable.profile.id, revision: reusable.profile.revision, status: 'qualified' }],
         reuse: { image: true, qualification: true, qualificationSourceCommit: reusable.profile.sourceCommit ?? null } }
       await ports.checkpoint()

@@ -16,6 +16,28 @@ import { ciPreparationFixture as fixture, qualifiedPreparationProfile, preparati
   from './helpers/ciPreparationFixture.js'
 
 describe('build computer CI runtime preparation over the authenticated MCP endpoint', () => {
+  it('persists exponentially capped failure backoff and resets it for a different commit', async () => {
+    const f = await fixture({ prepareFails: true })
+    try {
+      const delays = [120_000, 240_000, 480_000, 960_000, 1_920_000, 3_600_000, 3_600_000]
+      for (let attempt = 1; attempt <= 7; attempt++) {
+        const started = await f.call('build_computer_prepare', { workspaceId: f.workspaceId,
+          profileId: 'p-unit', commit, commandId: `failed-prepare-${attempt}` })
+        expect(started.isError).not.toBe(true)
+        const status = await f.settle('p-unit')
+        expect(status).toMatchObject({ state: 'failed', failureCount: attempt })
+        const delay = Date.parse(status.retryAt!) - Date.parse(status.updatedAt!)
+        expect(delay).toBeLessThanOrEqual(delays[attempt - 1]!)
+        expect(delay).toBeGreaterThan(delays[attempt - 1]! - 5000)
+        const read = await f.call('build_computer_prepare_get', { workspaceId: f.workspaceId,
+          profileId: 'p-unit' }, 'reader')
+        expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(read))).toEqual(status)
+      }
+      await f.call('build_computer_prepare', { workspaceId: f.workspaceId, profileId: 'p-unit',
+        commit: 'd'.repeat(40), commandId: 'different-commit' })
+      expect(await f.settle('p-unit')).toMatchObject({ state: 'failed', failureCount: 1 })
+    } finally { await f.app.close() }
+  })
   it('prepares Main as its own build computer, restarting Main around its runtime refresh', async () => {
     const f = await fixture({ main: 'installed' })
     try {
