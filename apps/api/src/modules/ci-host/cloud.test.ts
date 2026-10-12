@@ -72,7 +72,8 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
   const circle = { triggered: [] as string[][], outcome: '' as string, durations: null as Record<string, number> | null,
     testResults: null as unknown,
     phantoms: 0, lookupError: '', canceled: [] as string[],
-    steps: [] as { num: number; name: string; phase: string; outcome?: string }[], output: '' }
+    steps: [] as { num: number; name: string; phase: string; outcome?: string }[], output: '',
+    downloaded: [] as string[], downloadGate: Promise.resolve() as Promise<void> }
   let now = Date.now()
   const system = systemHostCiPorts()
   const ports: HostCiPorts = { ...system, now: () => new Date(now), run: async (file, args) => {
@@ -100,14 +101,20 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
         ? { phase: 'ended', outcome: circle.outcome, stopped_at: '2026-10-11T02:00:00Z' } : { phase: 'started' } }))
       if (args[0] === 'job' && args[1] === 'output' && args[2] === 'get') return ok(circle.output)
       if (args[0] === 'job' && args[1] === 'output') return ok('Suite\nall green\n')
-      if (args[0] === 'job' && args[1] === 'artifact' && circle.durations) {
-        const directory = join(args[args.indexOf('--output') + 1]!, 'durations')
-        await mkdir(directory, { recursive: true })
-        await writeFile(join(directory, 'durations.json'), JSON.stringify(circle.durations))
-        if (circle.testResults) await writeFile(join(directory, 'test-results.json'), JSON.stringify(circle.testResults))
-        return ok()
+      if (args[0] === 'job' && args[1] === 'artifact' && args.includes('--json') && circle.durations) {
+        const listed = ['durations/durations.json', ...circle.testResults ? ['durations/test-results.json'] : [],
+          'integration-logs/run/slot-1/a.integration.test.ts.log']
+        return ok(JSON.stringify(listed.map(path => ({ path, url: `https://artifacts.example/${path}`, execution: 0 }))))
       }
       return { code: 1, stdout: '', stderr: `unexpected circleci ${args.join(' ')}` }
+    }
+    if (file === 'curl') {
+      const url = args.at(-1)!
+      circle.downloaded.push(url)
+      await circle.downloadGate
+      const body = url.endsWith('/durations.json') ? circle.durations : url.endsWith('/test-results.json') ? circle.testResults : 'log'
+      await writeFile(args[args.indexOf('-o') + 1]!, JSON.stringify(body))
+      return ok()
     }
     if (file !== 'gh') return system.run(file, args)
     if (args[0] === 'auth') return ok()
@@ -637,6 +644,36 @@ describe('GitHub Actions CI on a public mirror', () => {
     f.advance(4_000)
     expect(await read()).toMatchObject({ run: { state: 'failed', exitCode: 1, finishedAt: '2026-10-11T02:00:00Z' },
       text: 'Suite\nall green\n', durations: { 'apps/api/test/c.integration.test.ts': 180 } })
+  })
+
+  it('downloads only the durations artifacts of a finished CircleCI job', async () => {
+    const f = await fixture({}, { provider: 'circleci' })
+    const runId = randomUUID()
+    await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit, suite: 'integration', scope: 'full' })
+    const testResults = { summary: { passed: 0, failed: 1, skipped: 0 }, truncated: false, files: [
+      { file: 'apps/api/test/a.integration.test.ts', status: 'failed', durationMs: 90,
+        tests: [{ name: 'a saves', status: 'failed', durationMs: 20, message: 'expected 1 to be 2' }] }] }
+    Object.assign(f.circle, { outcome: 'failed', durations: { 'apps/api/test/a.integration.test.ts': 90 }, testResults })
+    expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1, durations: true, testResults: true }))
+      .toMatchObject({ run: { state: 'failed' }, durations: { 'apps/api/test/a.integration.test.ts': 90 }, testResults })
+    expect(f.circle.downloaded).toEqual(['https://artifacts.example/durations/durations.json',
+      'https://artifacts.example/durations/test-results.json'])
+  })
+
+  it('answers a read from the kept log while another read is still collecting the finished run', async () => {
+    const f = await fixture({}, { provider: 'circleci' })
+    const runId = randomUUID()
+    await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit, suite: 'integration', scope: 'full' })
+    let release!: () => void
+    f.circle.downloadGate = new Promise(resolve => { release = resolve })
+    Object.assign(f.circle, { outcome: 'failed', durations: { 'apps/api/test/a.integration.test.ts': 90 } })
+    const collecting = f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536, durations: true })
+    await expect.poll(() => f.circle.downloaded.length).toBe(1)
+    expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 }))
+      .toMatchObject({ run: { state: 'running' }, text: 'Suite\nall green\n' })
+    release()
+    expect(await collecting).toMatchObject({ run: { state: 'failed' }, text: 'Suite\nall green\n',
+      durations: { 'apps/api/test/a.integration.test.ts': 90 } })
   })
 
   it('shows the running GitHub step live and asks GitHub again only when its jobs changed', async () => {
