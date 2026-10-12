@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { CiActivitySchema, CiRunRecordSchema, CiSuiteSchema, CiScopeSchema, CiSelectedFilesSchema, CiTestResultsSchema,
+import { CI_LOG_MAX_BYTES, CiActivitySchema, CiRunRecordSchema, CiSuiteSchema, CiScopeSchema, CiSelectedFilesSchema,
+  CiTestResultsSchema,
   CiTestStatusSchema, CiTestSummarySchema, validCiSelection } from './ciHost.js'
 import { IdSchema } from './schemaPrimitives.js'
 import { JobResourceRequestSchema } from './jobVerificationPolicy.js'
@@ -78,15 +79,18 @@ export type CiListOutput = z.infer<typeof CiListOutputSchema>
 export const CiLogsInputSchema = CiTicketInputSchema.extend({
   /** Omit to read the last maxBytes; continue with nextOffset. */
   afterOffset: z.number().int().nonnegative().optional(),
-  maxBytes: z.number().int().min(1).max(65_536).optional(),
+  maxBytes: z.number().int().min(1).optional()
+    .describe(`Defaults to ${CI_LOG_MAX_BYTES} bytes; larger values are clamped to this limit.`),
   /** Include a bounded page from every part, with a separate cursor for each ticket. */
   group: z.boolean().optional(),
 }).strict()
 export const OperatorCiLogsInputSchema = CiLogsInputSchema.extend({ workspaceId: IdSchema }).strict()
 export const CiLogsOutputSchema = z.object({ text: z.string(), nextOffset: z.number().int().nonnegative(),
   logBytes: z.number().int().nonnegative(),
+  maxBytes: z.number().int().min(1).max(CI_LOG_MAX_BYTES),
   parts: z.array(z.object({ run: CiRunRecordSchema, text: z.string(), nextOffset: z.number().int().nonnegative(),
-    logBytes: z.number().int().nonnegative() }).strict()).optional(),
+    logBytes: z.number().int().nonnegative(),
+    maxBytes: z.number().int().min(1).max(CI_LOG_MAX_BYTES) }).strict()).optional(),
 }).strict()
 export const CiComputersOutputSchema = z.object({ computers: z.array(z.object({
   label: z.string(), hostRef: CiRunRecordSchema.shape.computer.unwrap().shape.hostRef,
