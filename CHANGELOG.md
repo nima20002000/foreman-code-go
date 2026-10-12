@@ -7,6 +7,15 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.82] - 2026-10-12
+
+### Fixed
+
+- Agent processes and interval checks survive an API restart during a check (restart survival, part 3).
+- Fast MCP calls: `ci_get` reads stored CI status and log tails instead of waiting on fleet dispatch; CI keeps dispatching and finishing in the background.
+- Long Agent sessions no longer fail when their event history passes the graph JSON limit.
+- The changelog no longer blocks the public CI mirror.
+
 ## [0.0.81] - 2026-10-12
 
 ### Fixed
