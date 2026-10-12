@@ -131,6 +131,8 @@ interface ApprovalObservationInput {
 export class ApprovalExecutionCoordinator {
   private readonly managerCredentials = new WeakMap<NativeHarnessSessionManager, IssuedWorkerCredential>()
 
+  private readonly credentialRenewals = new WeakMap<NativeHarnessSessionManager, Promise<void>>()
+
   readonly reviewers: ReviewerDispatcher
   get reviewCoordination() { return this.interactions.coordination }
   private readonly writers = new WeakMap<NativeHarnessSessionManager, SingleWriterSessionManager>()
@@ -818,15 +820,9 @@ export class ApprovalExecutionCoordinator {
         throw new Error('The resident worker credential cannot be renewed without replacing its process.')
       }
       if (this.credentials.renew && expiresAt <= Date.now() + WORKER_CREDENTIAL_RENEWAL_WINDOW_MS) {
-        const renewedExpiry = await this.credentials.renew(context.executionId, { principalId: credential.principalId })
-        if (!Number.isFinite(Date.parse(renewedExpiry)) || Date.parse(renewedExpiry) <= Date.now()) {
-          throw new Error('Worker credential renewal did not return a live lease.')
-        }
-        signal?.throwIfAborted()
-        if (this.managerCredentials.get(resolved.manager) !== credential) {
-          throw new Error('The native credential owner changed during renewal.')
-        }
-        this.managerCredentials.set(resolved.manager, { ...credential, expiresAt: renewedExpiry })
+        await this.renewCredential(resolved.manager, context.executionId, {
+          check: async () => { signal?.throwIfAborted() },
+        })
       }
       signal?.throwIfAborted()
       // A resident process keeps its original token/environment, including across long waits.
@@ -842,6 +838,31 @@ export class ApprovalExecutionCoordinator {
     this.managerCredentials.set(resolved.manager, prepared.credential)
     signal?.throwIfAborted()
     return prepared.credential.environment
+  }
+
+  private renewCredential(manager: NativeHarnessSessionManager, executionId: string,
+    options: { force?: boolean; check(): Promise<void> }): Promise<void> {
+    const renew = async () => {
+      await options.check()
+      const credential = this.managerCredentials.get(manager)
+      if (!credential) throw new Error('The native process lost its credential lease.')
+      if (!options.force && Date.parse(credential.expiresAt) > Date.now() + WORKER_CREDENTIAL_RENEWAL_WINDOW_MS) return
+      if (!this.credentials?.renew) throw new Error('The native credential cannot be renewed.')
+      const expiresAt = await this.credentials.renew(executionId, { principalId: credential.principalId })
+      await options.check()
+      if (this.managerCredentials.get(manager) !== credential || !Number.isFinite(Date.parse(expiresAt))
+        || Date.parse(expiresAt) <= Date.now()) {
+        throw new Error('Native credential renewal lost its owner or returned an invalid expiry.')
+      }
+      this.managerCredentials.set(manager, { ...credential, expiresAt })
+    }
+    // A restart joins the heartbeat before reading and replacing the same process credential.
+    const previous = this.credentialRenewals.get(manager)
+    const renewal = (previous ? previous.then(renew, renew) : renew()).finally(() => {
+      if (this.credentialRenewals.get(manager) === renewal) this.credentialRenewals.delete(manager)
+    })
+    this.credentialRenewals.set(manager, renewal)
+    return renewal
   }
 
   /** Snapshot the owned process values before a terminal cleanup can discard them. */
@@ -1013,12 +1034,7 @@ export class ApprovalExecutionCoordinator {
           throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The reviewer lost its live process credential.', 409)
         }
         if (Date.parse(credential.expiresAt) <= Date.now() + WORKER_CREDENTIAL_RENEWAL_WINDOW_MS) {
-          if (!this.credentials?.renew) throw new Error('The reviewer credential cannot be renewed in place.')
-          const expiresAt = await this.credentials.renew(executionId, { principalId: initial.principalId })
-          await check()
-          if (this.managerCredentials.get(owned.manager) !== credential || !Number.isFinite(Date.parse(expiresAt))
-            || Date.parse(expiresAt) <= Date.now()) throw new Error('Reviewer credential renewal lost its owner or returned an invalid expiry.')
-          this.managerCredentials.set(owned.manager, { ...credential, expiresAt })
+          await this.renewCredential(owned.manager, executionId, { check })
         }
       },
       onFailure: (error) => {
@@ -1092,10 +1108,14 @@ export class ApprovalExecutionCoordinator {
     const credential = this.managerCredentials.get(owned.manager)
     if (!credential || this.ownedSessions.get(owned.execution.id) !== owned)
       throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The retained process lease changed.', 409)
-    const expiresAt = await this.credentials!.renew!(owned.execution.id, credential)
-    if (this.ownedSessions.get(owned.execution.id) !== owned || owned.controller.signal.aborted)
-      throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The retained process no longer owns its lease.', 409)
-    this.managerCredentials.set(owned.manager, { ...credential, expiresAt })
+    await this.renewCredential(owned.manager, owned.execution.id, {
+      check: async () => {
+        owned.controller.signal.throwIfAborted()
+        if (this.ownedSessions.get(owned.execution.id) !== owned)
+          throw new DomainError('REVIEWER_CREDENTIAL_LOST', 'The retained process no longer owns its lease.', 409)
+        await this.validateContinuation?.(owned.execution.id, owned.controller.signal)
+      },
+    })
     if (!owned.reviewOwner && owned.session) {
       try {
         const retained = await this.retainRunOwner(owned.execution, () => {})
@@ -1236,21 +1256,23 @@ export class ApprovalExecutionCoordinator {
     owner.assertOwned()
     for (const owned of active) await this.budgets.beginWait(owned.execution.id)
     owner.assertOwned()
-    // Nothing renews a detached process credential until the next API re-adopts its session.
-    // Start the restart with a full lease so an expiry during the update cannot revoke a surviving Agent.
-    for (const owned of active) {
-      const credential = this.managerCredentials.get(owned.manager)
-      if (!credential || !this.credentials?.renew) continue
-      try {
-        const expiresAt = await this.credentials.renew(owned.execution.id, { principalId: credential.principalId })
-        if (this.managerCredentials.get(owned.manager) === credential) this.managerCredentials.set(owned.manager, { ...credential, expiresAt })
-      } catch (error) {
-        componentLogger('engine').warn({ executionId: owned.execution.id, err: error },
-          'Worker credential renewal before restart failed')
-      }
-    }
+    for (const owned of active) await this.renewForRestart(owned, owner)
     owner.assertOwned()
     return true
+  }
+
+  private async renewForRestart(owned: OwnedNativeSession, owner?: RunOwnership): Promise<void> {
+    if (!this.credentials?.renew || !this.managerCredentials.has(owned.manager)) return
+    await this.renewCredential(owned.manager, owned.execution.id, {
+      force: true,
+      check: async () => {
+        owner?.assertOwned()
+        if (this.ownedSessions.get(owned.execution.id) !== owned || owned.failed || owned.cleanup)
+          throw new DomainError('NATIVE_CREDENTIAL_RECOVERY_REQUIRED', 'The native process no longer owns its lease.', 409)
+        await this.validateContinuation?.(owned.execution.id)
+        owner?.assertOwned()
+      },
+    })
   }
 
   /** Production calls this AFTER stopping/draining producers and BEFORE raw
@@ -1305,6 +1327,7 @@ export class ApprovalExecutionCoordinator {
             await owned.manager.dispose()
             return
           }
+          if (snapshot.run.executionState !== 'completed') await this.renewForRestart(owned, owner)
           await this.closeWorkflowSessionOwned(owned, true)
         })
         return failures.map((error) => safe.error(error) as Error)
@@ -1975,13 +1998,12 @@ export class ApprovalExecutionCoordinator {
           const credential = this.managerCredentials.get(manager!)
           if (!credential) throw new Error('The execution lost its native credential lease.')
           if (Date.parse(credential.expiresAt) <= Date.now() + WORKER_CREDENTIAL_RENEWAL_WINDOW_MS) {
-            if (!this.credentials?.renew) throw new Error('This native credential cannot be renewed.')
-            const expiresAt = await this.credentials.renew(context!.executionId, { principalId: credential.principalId })
-            signal.throwIfAborted()
-            input.owner.assertOwned()
-            if (this.managerCredentials.get(manager!) !== credential || !Number.isFinite(Date.parse(expiresAt))
-              || Date.parse(expiresAt) <= Date.now()) throw new Error('Native credential renewal lost its owner or returned an invalid expiry.')
-            this.managerCredentials.set(manager!, { ...credential, expiresAt })
+            await this.renewCredential(manager!, context!.executionId, {
+              check: async () => {
+                signal.throwIfAborted()
+                input.owner.assertOwned()
+              },
+            })
           }
           input.owner.assertOwned()
         },
