@@ -520,6 +520,19 @@ it('disables a saved account whose readiness observation predates the discovered
   expect(option).toBeDisabled()
   expect(screen.getByRole('combobox', { name: 'Account' })).toHaveValue(personalId)
 })
+it('retains the saved account name after a temporary list refresh failure', async () => {
+  fixtures()
+  const { client } = mount(<ProviderAccountSelect provider="codex" value={personalId} onChange={vi.fn()} />)
+  await screen.findByRole('option', { name: /Personal · signed in · ready/ })
+  server.use(http.get('/api/provider-accounts/page', () => HttpResponse.json({
+    error: { code: 'TEMPORARY_FAILURE', message: 'Try again' },
+  }, { status: 503 })))
+  await act(async () => { await client.invalidateQueries({ queryKey: ['provider-accounts'] }) })
+  expect(screen.getByRole('option', { name: /Personal · signed in · ready/ })).toBeInTheDocument()
+  expect(screen.getByRole('combobox', { name: 'Account' })).toHaveValue(personalId)
+  expect(screen.getByRole('combobox', { name: 'Account' })).toBeDisabled()
+  expect(screen.getByText(/Account details could not be refreshed/)).toBeVisible()
+})
 
 it('shows sign-in separately from qualification and clears stale display identity after an unavailable observation', async () => {
   const data = fixtures()

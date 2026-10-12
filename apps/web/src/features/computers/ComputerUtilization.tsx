@@ -6,11 +6,11 @@ import { metricView, sampleClock } from '../resource-telemetry/telemetryView'
 import { useMonotonicElapsed } from '../resource-telemetry/useMonotonicElapsed'
 
 export function ComputerUtilization({ target, online, compact = false }: {
-  target: DeviceProvisioningTarget; online: boolean; compact?: boolean
+  target: DeviceProvisioningTarget; online: boolean | undefined; compact?: boolean
 }) {
-  const query = useComputerUtilization(target, online)
+  const query = useComputerUtilization(target, online !== false)
   // A slow or failed refresh keeps the previous reading; its own deadline decides what is current.
-  const received = online ? query.data : null
+  const received = online !== false ? query.data : null
   const elapsed = useMonotonicElapsed(received?.receivedMonoMs)
   const result = received?.result
   const sample = result?.kind === 'sample' ? result.sample : undefined
@@ -25,11 +25,11 @@ export function ComputerUtilization({ target, online, compact = false }: {
   // Between readings the meters show the last current values, marked stale, rather than flickering to empty.
   const now = Date.now(), last = useRef<{ cpu: number | null; memory: number | null; storage: typeof storage; at: number }>(null)
   if (cpuPercent !== null || memoryPercent !== null || storage) last.current = { cpu: cpuPercent, memory: memoryPercent, storage, at: now }
-  const held = online && last.current && now - last.current.at < LAST_KNOWN_MS ? last.current : null
+  const held = online !== false && last.current && now - last.current.at < LAST_KNOWN_MS ? last.current : null
   const shown = { cpu: cpuPercent ?? held?.cpu ?? null, memory: memoryPercent ?? held?.memory ?? null, storage: storage ?? held?.storage ?? null }
   const shownStoragePercent = shown.storage?.totalBytes ? (shown.storage.totalBytes - shown.storage.availableBytes) / shown.storage.totalBytes * 100 : null
   return <div className="computer-utilization" data-compact={compact || undefined} aria-label="Computer utilization"
-    aria-busy={online && query.isPending}>
+    aria-busy={online !== false && query.isPending}>
     <UtilizationMetric label="CPU" value={shown.cpu} stale={cpuPercent === null} reason={cpu?.statusLabel ?? 'Unavailable'} icon={<Cpu size={13} />} />
     <UtilizationMetric label="Memory" value={shown.memory} stale={memoryPercent === null} reason={memory?.statusLabel ?? 'Unavailable'}
       icon={<MemoryStick size={13} />} />

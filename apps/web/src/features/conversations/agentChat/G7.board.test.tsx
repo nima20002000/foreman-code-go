@@ -50,7 +50,8 @@ describe('G7 T-03/T-06/T-08/RISK-01 mounted Board action area', () => {
     expect(dialog.querySelectorAll('.conversation-viewport-scroll')).toHaveLength(1)
     expect(transcript).not.toContainElement(actions)
     expect(actions.parentElement).toBe(transcript.closest('.conversation-viewport')!.parentElement)
-    expect(within(transcript).getByText(/No partial assistant text has been received/)).toBeInTheDocument()
+    expect(within(transcript).getByText('Agent is working')).toBeVisible()
+    expect(within(transcript).queryByText(/No partial assistant text/)).not.toBeInTheDocument()
     // Native session controls (context usage and its popover) sit between Attach and Queue in the same action area.
     expect(actions).toContainElement(await within(dialog).findByRole('button', { name: /context/i }))
     for (const name of ['Attach files', 'Queue message', 'Steer', 'Interrupt and send', 'Stop chat']) {

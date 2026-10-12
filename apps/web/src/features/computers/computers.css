@@ -20,6 +20,7 @@
 .computer-live-state { display: flex; align-items: center; gap: .4rem; color: var(--n-muted); font-size: .75rem; }
 .computer-presence-dot { width: .4rem; height: .4rem; border-radius: 50%; background: var(--n-muted); }
 .computer-presence-dot[data-online='true'] { background: var(--n-success); }
+.computer-presence-dot[data-stale='true'] { background: transparent; box-shadow: 0 0 0 1px var(--n-muted); }
 .computer-row-controls { display: flex; align-items: center; flex-wrap: wrap; gap: .6rem; }
 .computer-role-chip { position: relative; gap: 0; min-width: 5.7rem; }
 .computer-role-chip > label { position: absolute; width: 1px; height: 1px; clip-path: inset(50%); overflow: hidden; }

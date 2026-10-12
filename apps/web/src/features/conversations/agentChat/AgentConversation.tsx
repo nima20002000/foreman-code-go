@@ -125,11 +125,10 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
   const background = state && !busy ? chatBackgroundWork(state.activitySnapshot) : undefined
   const empty = (!draft.trim() && !attachments.hasAttachments) || attachments.hasBlockingAttachments || draft.length > 32_000
   const latest = chat.latestCommand
-  const receipt = chat.latestReceipt
+  const receipt = chat.currentReceipt ?? chat.confirmedReceipt ?? chat.latestReceipt
   const error = !receipt && latest?.status === 'error' ? latest.error : undefined
   const notActive = latest?.command?.kind === 'send' && ApiError.is(error) && error.code === 'AGENT_CHAT_TURN_NOT_ACTIVE'
   const stale = ApiError.is(error) && error.code === 'AGENT_CHAT_CONTEXT_STALE'
-  const currentReceipt = chat.currentReceipt
   // Capability notes describe actions available NOW, not every provider limitation while idle.
   const unavailable = state ? [...new Set([
     state.activeTurn && state.capabilities.steer === 'unavailable' ? state.capabilities.unavailable.steer : undefined,
@@ -152,16 +151,17 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
     connection: chat.connection,
     online: chat.online,
     hasConversation: !!state?.conversation,
+    snapshotFresh: chat.query.isSuccess && chat.query.failureCount === 0,
   })
   let sessionLabel = status.execution
   if (!state?.conversation && state?.sourceTranscript) {
     sessionLabel = state.availability.canSend ? 'Ready for a follow-up' : 'Execution transcript · read-only'
   } else if (state && !state.conversation && !state.availability.canSend) {
-    sessionLabel = context.runId ? 'Selected Run — chat unavailable' : 'Chat unavailable for this Agent'
+    sessionLabel = context.runId ? 'No conversation for this Run' : 'No conversation yet'
   }
   let availabilityLabel = 'Chat note'
   if (state && !state.availability.canSend) {
-    availabilityLabel = state.sourceTranscript ? 'Messaging unavailable' : 'Chat unavailable'
+    availabilityLabel = 'Messaging paused'
   }
   const notices = <div className="agent-chat-notices">
     {runActivity}
@@ -190,14 +190,11 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
       {onNewConversation ? <Button size="sm" onClick={onNewConversation}>{context.runId ? 'Start separate chat without this Run' : 'Choose another Agent for a new conversation'}</Button>
         : <p>Choose another saved Agent or leave the selected Run to start a separate conversation. There is no replacement-session command for this exact selection.</p>}
     </div> : null}
-    {state?.sessionState === 'none' && state.availability.canSend ? <p className="agent-chat-note">
-      {context.runId ? 'Your first message forks this completed execution’s native session. It never restarts or changes the Run.'
-        : 'Your first message starts a native conversation using this Agent’s accepted settings. Unsaved settings do not apply.'}
-    </p> : null}
-    {busy && !state?.messages.some((message) => message.role === 'assistant' && message.requestId === state.activeTurn?.requestId && message.nativeMessageComplete === false)
-      ? <p className="agent-chat-note">No partial assistant text has been received for this turn. A completed reply will appear when available.</p> : null}
-    {receipt ? <p className="agent-chat-note" role="status">{currentReceipt ? 'Server recorded' : latest?.result?.turn ? 'Initial acknowledgement' : 'Last confirmed receipt'}: {intentLabels[receipt.intent]} · {deliveryLabels[currentReceipt?.delivery ?? receipt.delivery]}</p> : null}
-    {!currentReceipt && latest?.result?.turn && chat.confirmedReceipt ? <p className="agent-chat-note" role="status">Last confirmed receipt: {intentLabels[chat.confirmedReceipt.intent]} · {deliveryLabels[chat.confirmedReceipt.delivery]}</p> : null}
+    {receipt && !state?.turns.some(turn => turn.requestId === receipt.requestId) ? <details
+      aria-label={`Latest command delivery: ${intentLabels[receipt.intent]} · ${deliveryLabels[receipt.delivery]}`}>
+      <summary>Last message: {deliveryLabels[receipt.delivery]}</summary>
+      <p>{intentLabels[receipt.intent]}. Load earlier messages to see its text.</p>
+    </details> : null}
     {error ? <Alert title={stale ? 'Chat context changed' : notActive ? 'The targeted turn has finished' : 'Command not confirmed'} tone="warning" live>
       <p>{error instanceof Error ? error.message : 'The command could not be confirmed.'}</p>
       {stale ? <p>The latest conversation is being fetched. Your draft is kept; review it before sending again.</p> : null}
@@ -210,8 +207,6 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
       {state?.activeTurn && steerReason && !unavailable.includes(steerReason) && steerReason !== nextReason ? <p>{steerReason}</p> : null}
       {stopReason && (busy || hasQueue) && stopReason !== nextReason && !unavailable.includes(stopReason) ? <p>{stopReason}</p> : null}
       {state?.activeTurn && interruptReason && interruptReason !== nextReason && !unavailable.includes(interruptReason) ? <p>{interruptReason}</p> : null}
-      {canStop ? <p>Stops this chat’s active turn and all queued messages, not the workflow Run.</p> : null}
-      {state?.capabilities.steer === 'cooperative_next_step' && state.activeTurn ? <p>Steer adds input at the next processing step; it does not guarantee which native turn consumes it.</p> : null}
     </div>
   </div>
   return <div className="agent-conversation" data-testid="agent-conversation" data-chat-key={chat.draftKey}>
@@ -230,7 +225,7 @@ function AgentConversationContent({ context, name, runActivity, onNewConversatio
         sendLabel={busy ? 'Queue message' : 'Send message'} onSubmit={(content, mode) => submit('next_turn', content, mode)} /> : null}
       {!retired && (state?.activeTurn || canStop) ? <div className="agent-chat-controls" role="group" aria-label="Active turn controls">
         {state?.activeTurn && (state.capabilities.steer !== 'unavailable' || state.capabilities.unavailable.steer) ? <Button size="sm" disabled={!!steerReason || empty}
-          title={steerReason} aria-describedby={reasonId} onClick={() => submit('steer')}>Steer</Button> : null}
+          title={steerReason ?? 'Add input at the next processing step'} aria-describedby={reasonId} onClick={() => submit('steer')}>Steer</Button> : null}
         {state?.activeTurn && (state.capabilities.interruptAndSend || state.capabilities.unavailable.interruptAndSend) ? <Button size="sm" disabled={!!interruptReason || empty}
           title={interruptReason} aria-describedby={reasonId} onClick={() => submit('interrupt_and_send')}>Interrupt and send</Button> : null}
         {canStop ? <ChatPrimaryActions stopReason={stopReason} describedBy={reasonId}

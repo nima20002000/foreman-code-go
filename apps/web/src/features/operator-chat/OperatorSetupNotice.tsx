@@ -6,8 +6,11 @@ export function OperatorSetupNotice({ data, checking, failed, onRetry }: {
   data?: OperatorChatSetup; checking: boolean; failed: boolean; onRetry(): void;
 }) {
   if (checking && !data) return <p role="status">Checking Foreman Code MCP installation…</p>
-  if (failed) return <Alert tone="warning" title="Foreman Code MCP could not be checked"
-    action={<Button size="sm" disabled={checking} onClick={onRetry}>Check again</Button>}>Chat is unavailable until the installation is verified.</Alert>
+  if (failed) return <details><summary>Tool connection check failed</summary>
+    <p>{data?.status === 'configured' ? 'The connection was configured at the last successful check.'
+      : 'Check the tool connection before sending a message.'}</p>
+    <Button size="sm" disabled={checking} onClick={onRetry}>Check again</Button>
+  </details>
   if (!data) return null
   if (data.harness === 'opencode') return <p role="status">Retired harness (OpenCode): read-only</p>
   if (data.status === 'configured') return <ExecutionReadinessNotice harness={data.harness} configurationVersionId={data.configurationVersionId} />

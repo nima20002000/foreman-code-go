@@ -1,5 +1,6 @@
 import { useId } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useBlockingReadError } from '../../shared/api/readFailure'
 import type { RepeatGraphScopeV3 } from '@foreman-code/contracts/wave25'
 import { assertSession, sessionGeneration, sessionIsSwitching } from '../../shared/api/sessionBoundary'
 import { runReadErrorLabel } from '../runs-selector/query'
@@ -20,8 +21,13 @@ export function PinnedNodePlacement({ scope, nodeId }: { scope: RepeatGraphScope
     },
     enabled: !sessionIsSwitching(), retry: false, staleTime: 0, gcTime: 0, placeholderData: () => undefined,
   })
+  const blocked = useBlockingReadError(query)
   if (session !== sessionGeneration() || sessionIsSwitching()) return null
-  if (query.isError) return <p role="status">{runReadErrorLabel(query.error)}. Computer evidence is unavailable.</p>
+  if (blocked || query.isError && !query.data) return <p role="status">{runReadErrorLabel(query.error)}. Computer evidence is unavailable.</p>
   if (!query.data) return <p role="status">{query.isPaused ? 'Offline. Computer evidence is unavailable.' : 'Reading accepted computer evidence…'}</p>
-  return <NodePlacementFacts runId={scope.runId} nodeId={nodeId} readback={query.data.readback} />
+  return <>
+    {query.isError ? <p role="status">Computer details refresh failed. Showing the last successful read from {new Date(query.dataUpdatedAt).toLocaleTimeString()}.
+      <button type="button" onClick={() => void query.refetch()}>Retry computer details</button></p> : null}
+    <NodePlacementFacts runId={scope.runId} nodeId={nodeId} readback={query.data.readback} />
+  </>
 }

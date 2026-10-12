@@ -1,6 +1,7 @@
 import { Cloud, Monitor, Server } from 'lucide-react'
 import type { ComputerActivity, ComputerActivityList } from '@foreman-code/contracts/computer-activity'
 import { computerKey, useComputerActivity } from '../../shared/api/computerActivity'
+import { useBlockingReadError } from '../../shared/api/readFailure'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
 import { Alert, Button, Dialog, LoadingState } from '../../shared/ui/nocturne'
 import { formatDuration } from '../resource-telemetry/telemetryView'
@@ -16,13 +17,14 @@ export function SidebarComputers() {
   const open = useComputerUi(state => state.openActivity)
   const fresh = useComputerActivityFreshness(query.dataUpdatedAt, query.fetchStatus) && !query.isError
   // A failed refresh keeps the last list; freshness below marks it stale instead of emptying the menu.
-  const computers = query.data?.computers ?? []
-  const clouds = query.data?.cloud ?? []
+  const blocked = useBlockingReadError(query)
+  const computers = blocked ? [] : query.data?.computers ?? []
+  const clouds = blocked ? [] : query.data?.cloud ?? []
   return <>
     {computers.length + clouds.length > 0 && <ul className="sidebar-computers" aria-label="Computers">
       {computers.map(computer => {
         // Without a fresh observation, presence and activity are last-known facts, not current state.
-        const online = fresh && computer.online
+        const online = fresh ? computer.online : undefined
         const busy = fresh && (computer.jobs.length > 0 || computer.agents.length > 0)
         return <li key={computerKey(computer.target)} data-online={online}>
           <button type="button" className="sidebar-computer" aria-label={`Activity on ${computer.name}`}
@@ -31,13 +33,14 @@ export function SidebarComputers() {
             <span className="sidebar-computer-icon"><Monitor size={16} aria-hidden="true" />
               {busy && <span className="computer-activity-dot" data-testid="computer-busy" aria-hidden="true" />}</span>
             <span className="sidebar-computer-name">{computer.name}</span>
-            <span className="computer-presence-dot" data-online={online} aria-hidden="true" />
+            <span className="computer-presence-dot" data-stale={!fresh || undefined} data-online={online} aria-hidden="true" />
           </button>
           <ComputerUtilization target={computer.target} online={online} compact />
         </li>
       })}
       {clouds.map(cloud => {
-        const ready = fresh && cloud.ready, running = fresh ? cloud.running : 0
+        const ready = fresh ? cloud.ready : undefined
+        const running = fresh ? cloud.running : 0
         const state = !fresh ? 'Status stale' : !cloud.ready ? 'Not logged in on Main'
           : `${cloud.running} of ${cloud.slots} CI machines in use`
         return <li key={cloud.provider} data-online={ready}>
@@ -45,7 +48,7 @@ export function SidebarComputers() {
             <span className="sidebar-computer-icon"><Cloud size={16} aria-hidden="true" />
               {running > 0 && <span className="computer-activity-dot" data-testid="computer-busy" aria-hidden="true" />}</span>
             <span className="sidebar-computer-name">{cloud.name}</span>
-            <span className="computer-presence-dot" data-online={ready} aria-hidden="true" />
+            <span className="computer-presence-dot" data-stale={!fresh || undefined} data-online={ready} aria-hidden="true" />
           </span>
           <div className="computer-utilization" data-compact aria-label={`${cloud.name} CI machines`}>
             <span className="computer-metric cloud-machines" title={`${cloud.name}: ${state}`}>

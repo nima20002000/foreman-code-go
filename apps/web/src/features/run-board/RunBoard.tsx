@@ -24,11 +24,13 @@ export function RunBoard({ selection }: RunBoardProps) {
 
   const current = selection.isCurrent(selection.generation)
   const snapshot = current ? query.snapshot : undefined
-  const failed = current && query.isError
+  const failed = current && query.isError && !snapshot
   const loading = !failed && !snapshot
   return <section className={inspection.nodeId ? 'run-board run-board-inspecting' : 'run-board'}
     aria-label="Selected Run board" aria-busy={loading}
     data-run-id={selection.identity.runId} data-generation={selection.generation.id}>
+    {query.isError && snapshot ? <p role="status">Run refresh failed. Showing the last successful read.
+      <button type="button" onClick={() => void query.refetch()}>Retry Run refresh</button></p> : null}
     {failed ? <div className="run-board-message" role="status">
       <span>{runReadErrorLabel(query.error)}</span>
       <button type="button" onClick={() => {

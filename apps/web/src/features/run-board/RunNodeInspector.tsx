@@ -4,6 +4,7 @@ import type { RepeatGraphScopeV3, RunExecutionSummary } from '@foreman-code/cont
 import { useHarnessSessionEpoch } from '../../shared/api/harnessSettings'
 import { sessionIsSwitching } from '../../shared/api/sessionBoundary'
 import { ApiError } from '../../shared/api/client'
+import { useBlockingReadError } from '../../shared/api/readFailure'
 import { Button } from '../../shared/ui/nocturne'
 import type { SelectedRunState } from '../runs-selector/useSelectedRun'
 import { isRunAccessError, runReadErrorLabel } from '../runs-selector/query'
@@ -48,10 +49,11 @@ export function RunNodeInspector({ selection, snapshot, nodeId, executionId, onI
     enabled: Boolean(node) && !sessionIsSwitching(), retry: false, staleTime: 0, gcTime: 0, maxPages: 5,
     refetchInterval: query => isRunAccessError(query.state.error) ? false : 3000,
   })
+  const blocked = useBlockingReadError(pages)
   if (!selection.isCurrent(selection.generation) || sessionIsSwitching()) return null
   const items = pages.data?.pages.flatMap(page => page.items) ?? []
   const invalid = node && items.some(item => !matchesNode(node, item))
-  const unavailable = pages.isError || invalid
+  const unavailable = Boolean(blocked) || invalid || pages.isError && !pages.data
   const runFailure = pages.data?.pages[0]?.run.failure
   return <section className="run-execution-inspector" aria-label={`Run node inspector: ${node?.name ?? nodeId}`}>
     <header><h2>{node?.name ?? nodeId}</h2><span>Read only</span>
@@ -59,6 +61,7 @@ export function RunNodeInspector({ selection, snapshot, nodeId, executionId, onI
     {!node ? <p role="status">This node is not in the saved Run.</p> : <>
       {node.kind !== 'job' ? <PinnedProviderAccount binding={snapshot.providerAccountBindings?.[node.id]} label="Saved Run account" /> : null}
       <SelectedNodePlacement selection={selection} nodeId={node.id} />
+      {pages.isError && !unavailable ? <p role="status">Execution refresh failed. Showing the last successful read.</p> : null}
       {unavailable ? <p role="status">{invalid ? 'Execution does not match this saved node.' : runReadErrorLabel(pages.error)}</p> : <>
         {pages.isPending ? <p role="status">Reading node executions…</p> : null}
         {runFailure ? <p role="status">Run failed: {runFailure.message} <code>{runFailure.code}</code></p> : null}
@@ -89,8 +92,9 @@ function NodeExecutionResult({ selection, scope, node, executionId }: {
   selection: SelectedRunState; scope: RepeatGraphScopeV3; node: RunBoardNodeSnapshot; executionId: string
 }) {
   const query = useRunNodeRead(selection, [node.id, executionId], signal => readRunExecution(scope, executionId, { signal }))
+  const blocked = useBlockingReadError(query)
   if (!selection.isCurrent(selection.generation) || sessionIsSwitching()) return null
-  if (query.isError) return <p role="status">
+  if (blocked || query.isError && !query.data) return <p role="status">
     Execution result unavailable. {ApiError.is(query.error)
       ? <>{query.error.message} <code>{query.error.code}</code></>
       : runReadErrorLabel(query.error)}
@@ -103,6 +107,7 @@ function NodeExecutionResult({ selection, scope, node, executionId }: {
   const execution = detail.execution
   const occurrence = execution.occurrence
   return <article aria-label={`Execution ${executionId}`}>
+    {query.isError ? <p role="status">Result refresh failed. Showing the last successful read.</p> : null}
     <ExecutionBranch execution={execution} />
     {execution.kind === 'job' ? <JobRunResult definitionVersionId={execution.jobDefinitionVersionId}
       reference={{ kind: 'job', workspaceId: scope.workspaceId, workflowId: scope.workflowId,
