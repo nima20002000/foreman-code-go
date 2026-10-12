@@ -1236,6 +1236,20 @@ export class ApprovalExecutionCoordinator {
     owner.assertOwned()
     for (const owned of active) await this.budgets.beginWait(owned.execution.id)
     owner.assertOwned()
+    // Nothing renews a detached process credential until the next API re-adopts its session.
+    // Start the restart with a full lease so an expiry during the update cannot revoke a surviving Agent.
+    for (const owned of active) {
+      const credential = this.managerCredentials.get(owned.manager)
+      if (!credential || !this.credentials?.renew) continue
+      try {
+        const expiresAt = await this.credentials.renew(owned.execution.id, { principalId: credential.principalId })
+        if (this.managerCredentials.get(owned.manager) === credential) this.managerCredentials.set(owned.manager, { ...credential, expiresAt })
+      } catch (error) {
+        componentLogger('engine').warn({ executionId: owned.execution.id, err: error },
+          'Worker credential renewal before restart failed')
+      }
+    }
+    owner.assertOwned()
     return true
   }
 
