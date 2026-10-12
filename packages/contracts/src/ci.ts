@@ -138,6 +138,7 @@ export const BuildComputerPrepareInputSchema = z.object({ workspaceId: IdSchema,
 export const BuildComputerPrepareGetInputSchema = z.object({ workspaceId: IdSchema, profileId: IdSchema }).strict()
 export const BuildComputerPrepareStatusSchema = z.object({
   preparationLimits: CiPreparationLimitsSchema.optional(),
+  failureCount: z.number().int().nonnegative().optional(), retryAt: z.string().datetime().optional(),
   profileId: IdSchema, deviceId: IdSchema.nullable(),
   state: z.enum(['idle', 'approving', 'preparing', 'binding', 'refreshing', 'qualifying', 'qualified', 'failed']),
   commit: CommitSchema.nullable(), stage: z.string().max(80).nullable(), message: z.string().max(2000).nullable(),

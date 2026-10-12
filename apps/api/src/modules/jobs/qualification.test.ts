@@ -28,14 +28,14 @@ const id = '00000000-0000-4000-8000-000000000001'
 const digest = 'a'.repeat(64)
 const hash = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
 
-it('keeps the fully allocated backing reservation stable when writes grow extent metadata', () => {
+it('keeps sparse backing identity stable as writes allocate extents and detects replacement or resizing', () => {
   const backing = { path: '/approved/volume.ext4', device: '1', inode: '2', bytes: '68719476736',
-    allocatedBytes: '68719611904', mode: '33056', uid: '0', links: '1' }
+    allocatedBytes: '1024', mode: '33056', uid: '0', links: '1' }
   const original = backingFileConfigurationIdentity(backing)
   expect(backingFileConfigurationIdentity({ ...backing, allocatedBytes: '68719620096' })).toEqual(original)
   expect(original.reservedBytes).toBe(backing.bytes)
   expect(backingFileConfigurationIdentity({ ...backing, inode: '3' })).not.toEqual(original)
-  expect(() => backingFileConfigurationIdentity({ ...backing, allocatedBytes: '1024' })).toThrow('fully allocated')
+  expect(backingFileConfigurationIdentity({ ...backing, bytes: '34359738368' })).not.toEqual(original)
 })
 
 it('retains bounded diagnostic stderr alongside the original native exit code', async () => {
@@ -291,11 +291,11 @@ describe('qualification metadata and measured observation verification (no nativ
   it('rejects injected controller credentials rather than passing them to a diagnostic', () => {
     expect(() => JobQualificationCandidateSchema.parse({ ...candidate(), controllerEnvironment: { ...candidate().controllerEnvironment, OPENAI_API_KEY: 'forbidden' } })).toThrow()
   })
-  it('requires fixed preallocated protected backing storage and exact finite ext4 geometry', () => {
-    const observed = { expectedBytes: 2097152n, backingBytes: 2097152n, allocatedBytes: 2097152n, rootOwned: true, writableByWorker: false,
+  it('requires protected backing storage and finite ext4 geometry independently of physical allocation', () => {
+    const observed = { expectedBytes: 2097152n, backingBytes: 2097152n, rootOwned: true, writableByWorker: false,
       links: 1n, offset: 0n, sizeLimit: 2097152n, blockDeviceBytes: 2097152n, filesystemBytes: 2000000n, filesystemType: 0xef53n, mountOptions: ['rw', 'nosuid', 'nodev'] }
     expect(() => validateBoundedVolumeGeometry(observed)).not.toThrow()
-    for (const weaker of [{ allocatedBytes: 1024n }, { rootOwned: false }, { writableByWorker: true }, { links: 2n }, { offset: 4096n },
+    for (const weaker of [{ rootOwned: false }, { writableByWorker: true }, { links: 2n }, { offset: 4096n },
       { sizeLimit: 0n }, { backingBytes: 4194304n }, { blockDeviceBytes: 4194304n }, { filesystemBytes: 4194304n }, { filesystemType: 0x58465342n },
       { mountOptions: ['rw'] }, { mountOptions: ['rw', 'nosuid', 'nodev', 'discard'] }]) expect(() => validateBoundedVolumeGeometry({ ...observed, ...weaker })).toThrow()
   })

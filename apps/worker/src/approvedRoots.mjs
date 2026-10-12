@@ -23,7 +23,6 @@ export async function loadApprovedRoots(stateDirectory, pairing) {
   }
   const facts = await hostFacts(process.env.HOME ?? '', paths);
   if (!facts.rootPersistent || !facts.homePersistent || !facts.storagePersistent) throw new WorkerError('approved_root_not_persistent');
-  try { await verifyApprovedRootAllowlist(allowlist); }
+  try { return await verifyApprovedRootAllowlist(allowlist); }
   catch { throw new WorkerError('approved_root_filesystem_mismatch'); }
-  return allowlist;
 }

@@ -10,7 +10,8 @@ import { expect, it } from 'vitest'
 import { runWorktreesMigration } from '../src/infrastructure/runWorktreesMigration.js'
 import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import { SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
-import { PrivateSourceMaterializer, releaseMaterializationClaim } from '../src/modules/sources/materialization.js'
+import { PrivateSourceMaterializer, archiveMaterializationClaim, releaseMaterializationClaim }
+  from '../src/modules/sources/materialization.js'
 import { PostgresSourceService, type SourceExecutionHostPort } from '../src/modules/sources/service.js'
 import { createSourceManifest, sourceSha256 } from '../src/modules/sources/manifest.js'
 import { identity, openPrivateRoot } from '../src/modules/sources/privateFilesystem.js'
@@ -18,7 +19,8 @@ import type { PostgresCommandCoordinator } from '../src/modules/commands/postgre
 import type { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import type { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
 import type { RegisteredSourceRootPort } from '../src/modules/sources/admissionPorts.js'
-import { measureRetainedSourceDirectory } from '../src/modules/sources/retainedDirectoryUsage.js'
+import { measureRetainedSourceDirectory, measureRetainedMaterializationFootprint }
+  from '../src/modules/sources/retainedDirectoryUsage.js'
 import { PostgresSourceReservations } from '../src/modules/sources/reservations.js'
 import { closeCompletedWorkflowSources } from '../src/modules/sources/workflowCleanup.js'
 
@@ -96,10 +98,10 @@ it.each(closureCases)('closes linked worktrees after $failure with $outputBytes 
     await pool.query(`insert into harness_executions values ($1,'ongoing-workflow',$2)`,
       [receipt.executionId, execution])
     await pool.query(`insert into source_storage_reservations values ($1,$2,$3,$4,'owned',$5,$6)`, [reservation.reservationId, reservation.scopeId, reservation.ownerKind, reservation.ownerId, reservation.reservedBytes, reservation])
-    const makeService = (releaseClaim: SourceExecutionHostPort['releaseClaim']) => new PostgresSourceService(pool,
+    const makeService = (releaseClaim: SourceExecutionHostPort['releaseClaim'], expectedRecord = record) => new PostgresSourceService(pool,
       {} as PostgresCommandCoordinator, {} as WorkspaceLocationService, {} as PrivateSourceSnapshotStore,
       binding.mainId, {} as RegisteredSourceRootPort, { releaseClaim } as SourceExecutionHostPort,
-      { async confirmedClosed(original) { expect(original).toEqual(record); return true } })
+      { async confirmedClosed(original) { expect(original).toEqual(expectedRecord); return true } })
     if (failure === 'database-failure') await pool.query(`create function fail_source_close() returns trigger language plpgsql as $$ begin raise exception 'injected Main DB failure'; end $$;
       create trigger fail_source_close before update on source_execution_materializations for each row execute function fail_source_close()`)
     const initial = makeService(async original => {
@@ -170,6 +172,46 @@ it.each(closureCases)('closes linked worktrees after $failure with $outputBytes 
     await expect(new PostgresSourceReservations(async () => sourceStorageCapacityFixture()).reserve(pool, { scopeId: reservation.scopeId,
       ownerKind: 'materialization', ownerId: randomUUID(), reservedBytes: 100_000 }))
       .resolves.toHaveProperty('reservationId')
+
+    const sharedAttempt = { ...attempt, executionId: randomUUID(), attemptId: randomUUID() }
+    const shared = await new PrivateSourceMaterializer({ async read() { return bytes } }, async () => {})
+      .prepare({ manifest, binding, attempt: sharedAttempt, sharedWritableTree: true })
+    const sharedReservation = { ...reservation, reservationId: randomUUID(), ownerId: randomUUID() }
+    const sharedRecord = SourceMaterializationRecordSchema.parse({ ...record, receipt: shared,
+      operationId: sharedReservation.ownerId, reservationId: sharedReservation.reservationId })
+    await pool.query('update runs set execution_state=$1', ['completed'])
+    await pool.query('insert into harness_executions values($1,$2,$3)', [shared.executionId, execution.runId,
+      HarnessExecutionSchema.parse({ ...execution, id: shared.executionId, state: 'completed',
+        nativeSessionId: 'shared-session', result: { outcome: 'succeeded' }, finishedAt: new Date().toISOString() })])
+    await pool.query(`insert into source_execution_materializations
+      (materialization_id,record,state,execution_id,reservation_id) values($1,$2,'closed',$3,$4)`,
+    [shared.materializationId, sharedRecord, shared.executionId, sharedReservation.reservationId])
+    await pool.query('insert into source_storage_reservations values($1,$2,$3,$4,\'owned\',$5,$6)',
+      [sharedReservation.reservationId, sharedReservation.scopeId, sharedReservation.ownerKind,
+        sharedReservation.ownerId, sharedReservation.reservedBytes, sharedReservation])
+    // Reproduce a previous close that archived the claim but left its reference copy accounted as retained.
+    await archiveMaterializationClaim(shared, { filesystem }, async () => 'released')
+    const oldFootprint = await measureRetainedMaterializationFootprint(shared)
+    await new PostgresSourceReservations().retainMaterialization(pool, sharedReservation,
+      { ...oldFootprint, retainedBytes: oldFootprint.retainedBytes + 16 * 1024 })
+    expect(oldFootprint.retainedBytes + 16 * 1024).not.toBe(sharedReservation.reservedBytes)
+    let releases = 0
+    const cleanup = makeService(async original => {
+      releases += 1
+      await releaseMaterializationClaim(original.receipt, async () => 'released')
+      return measureRetainedMaterializationFootprint(original.receipt)
+    }, sharedRecord)
+    await closeCompletedWorkflowSources(pool, cleanup, report)
+    expect(releases).toBe(1)
+    await expect(lstat(join(root, shared.materializationId, 'tree'))).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(await readFile(join(root, shared.sharedTree!.id, 'tree/app.ts'))).toEqual(bytes)
+    const accounted = (await pool.query('select state,reserved_bytes,record from source_storage_reservations where reservation_id=$1',
+      [sharedReservation.reservationId])).rows[0]!
+    expect(accounted.state).toBe('retained')
+    expect(accounted.record.referenceReclaimed).toBe(true)
+    expect(Number(accounted.reserved_bytes)).toBeLessThan(oldFootprint.retainedBytes + 16 * 1024)
+    await closeCompletedWorkflowSources(pool, cleanup, report)
+    expect(releases).toBe(1)
   } finally {
     await pool.end(); await dropFixtureDatabase(admin, database); await admin.end(); await removeFixtureDirectory(root)
   }

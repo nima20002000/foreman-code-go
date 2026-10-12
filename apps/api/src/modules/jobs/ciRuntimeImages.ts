@@ -1,5 +1,16 @@
 import { createHash } from 'node:crypto'
 import { runCiRuntimeCommand } from './ciRuntimeCommands.js'
+import type { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
+
+export async function retainedCiJobImages(journal: Pick<RemoteOperationJournal, 'jobOperations' | 'jobNativeOwner'>) {
+  const images: string[] = []
+  for (const receipt of await journal.jobOperations()) {
+    const finished = receipt.terminal?.processStopped && ['complete', 'failed'].includes(receipt.publication)
+    if (finished && (await journal.jobNativeOwner(receipt.intent.operationId))?.sourceReclamation) continue
+    images.push(receipt.execution.acceptedSpec.policy.imageDigest)
+  }
+  return [...new Set(images)]
+}
 
 export async function pruneCiImages({ keep, env, installer, signal }: {
   keep: readonly string[]; env: NodeJS.ProcessEnv; installer: string; signal?: AbortSignal | undefined
@@ -13,7 +24,8 @@ export async function pruneCiImages({ keep, env, installer, signal }: {
     const id = image.Id.replace(/^sha256:/u, '')
     if (kept.has(id)) continue
     const names = image.Names ?? []
-    if (names.length !== 1 || !/^localhost\/foreman-code-(?:verification|ci-build):[a-f0-9]{12}$/u.test(names[0]!)) {
+    if (!names.length || !names.every(name =>
+      /^localhost\/foreman-code-(?:verification|ci-build):(?:[a-f0-9]{12}|[a-f0-9]{40}|[a-f0-9]{64})$/u.test(name))) {
       continue
     }
     const inspected = JSON.parse((await podman(['image', 'inspect', image.Id])).stdout) as
@@ -22,7 +34,8 @@ export async function pruneCiImages({ keep, env, installer, signal }: {
     if (inspected.length !== 1 || owned?.Id.replace(/^sha256:/u, '') !== id
       || owned.Labels?.['io.foreman-code.installation'] !== installation) continue
     // Podman refuses removal while an execution or Buildah container references the image.
-    await podman(['rmi', '--no-prune', image.Id]).catch(error => {
+    const references = names.length > 1 ? names : [image.Id]
+    await podman(['rmi', '--no-prune', ...references]).catch(error => {
       if (error.code !== 2) throw error
     })
   }

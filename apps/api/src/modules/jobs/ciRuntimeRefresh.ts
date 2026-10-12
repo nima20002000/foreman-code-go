@@ -82,10 +82,9 @@ export async function scheduleCiRuntimeRefresh(input: {
   }
   const base = input.workDirectory ?? join(input.stateDirectory, 'managed', 'ci')
   await mkdir(base, { recursive: true, mode: 0o700 })
+  await pruneCiRuntimeRefreshFiles(input.stateDirectory, base)
   const short = input.operationId
   const seedReceiptPath = join(base, `installed-seed-receipt-${short}.json`)
-  await copyFile(input.prepared.seedReceiptPath, seedReceiptPath)
-  await chmod(seedReceiptPath, 0o600)
   const original = await readCiRuntimeTemplate(input.stateDirectory)
   if (!original) throw new DomainError('CI_RUNTIME_INSTALLATION_MISSING', 'No installed CI runtime is available.', 409)
   const quotaPool = await relocateCiQuotaSlots(original, input.root)
@@ -103,19 +102,26 @@ export async function scheduleCiRuntimeRefresh(input: {
   const refreshInput = currentBytes
     ? { expectedConfigurationSha256: createHash('sha256').update(currentBytes).digest('hex'), captureInput }
     : captureInput
-  await writeFile(refreshPath, JSON.stringify(refreshInput), { mode: 0o600 })
   const workerUnit = await currentServiceUnit()
   const unit = `foreman-ci-refresh-${short}`
   const log = join(base, `refresh-${short}.log`)
-  await writeFile(join(base, LAST_REFRESH), JSON.stringify({ operationId: input.operationId,
-    commit: input.prepared.commit, log }), { mode: 0o600 })
-  await pruneCiRuntimeRefreshFiles(input.stateDirectory, base, [seedReceiptPath, refreshPath])
   const cli = input.cli ?? [process.execPath, process.argv[1]!, currentBytes ? 'refresh-job-runtime' : 'capture-job-runtime']
   const script = 'unit=$1; log=$2; shift 2; systemctl --user stop "$unit"; "$@" > "$log" 2>&1;'
     + ' echo "exit=$?" >> "$log"; systemctl --user start "$unit"'
-  await run('systemd-run', ['--user', '--collect', `--unit=${unit}`, `--setenv=PATH=${environment.PATH ?? '/usr/bin:/bin'}`,
-    `--working-directory=${process.cwd()}`, '/bin/sh', '-c', script, 'refresh', workerUnit, log,
-    ...cli, '--state', input.stateDirectory, '--input', refreshPath], { env: environment })
+  try {
+    await copyFile(input.prepared.seedReceiptPath, seedReceiptPath)
+    await chmod(seedReceiptPath, 0o600)
+    await writeFile(refreshPath, JSON.stringify(refreshInput), { mode: 0o600 })
+    await writeFile(join(base, LAST_REFRESH), JSON.stringify({ operationId: input.operationId,
+      commit: input.prepared.commit, log }), { mode: 0o600 })
+    await pruneCiRuntimeRefreshFiles(input.stateDirectory, base, [seedReceiptPath, refreshPath])
+    await run('systemd-run', ['--user', '--collect', `--unit=${unit}`, `--setenv=PATH=${environment.PATH ?? '/usr/bin:/bin'}`,
+      `--working-directory=${process.cwd()}`, '/bin/sh', '-c', script, 'refresh', workerUnit, log,
+      ...cli, '--state', input.stateDirectory, '--input', refreshPath], { env: environment })
+  } catch (error) {
+    await pruneCiRuntimeRefreshFiles(input.stateDirectory, base)
+    throw error
+  }
   return { unit, workerUnit }
 }
 

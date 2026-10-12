@@ -1,6 +1,6 @@
 import { importGitSourceObjects } from './gitSourceObjects.js'
 import { sourceMaterializationClaimName, restoreQuotaMaterializationClaim, writeSourceClaim } from './quotaClaims.js'
-import { reclaimMaterializationQuota, reclaimPreparationQuota } from './quotaReclamation.js'
+import { reclaimMaterializationQuota, reclaimPreparationQuota, removeSourceDirectory } from './quotaReclamation.js'
 import { constants } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { open, mkdir, rename, statfs, readdir, readlink, stat, readFile, type FileHandle } from 'node:fs/promises'
@@ -321,7 +321,22 @@ export async function releaseMaterializationClaim(receipt: MaterializationReceip
     if (!quotaPool) throw new SourceError('SOURCE_QUOTA_MISSING', 'The original quota configuration is required for cleanup.')
     return reclaimMaterializationQuota(receipt, quotaPool, reconcile, signal)
   }
-  return archiveMaterializationClaim(receipt, { filesystem: receipt.binding.filesystem, signal }, reconcile)
+  await archiveMaterializationClaim(receipt, { filesystem: receipt.binding.filesystem, signal }, reconcile)
+  if (!receipt.sharedTree || receipt.binding.deviceId !== null) return
+  const root = await openPrivateRoot(receipt.binding.canonicalPath)
+  try {
+    if (!equal(await identity(root), receipt.binding.filesystem)) {
+      throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root changed before reference cleanup.')
+    }
+    await withClaimLock(root, async () => {
+      if (await reconcile() !== 'released') throw new SourceError('SOURCE_ROOT_OWNED', 'Execution closure changed.')
+      const directory = await materializationDirectory(root, receipt)
+      try {
+        // The Agent writes its separate shared tree; keep the receipt for idempotent closure.
+        await removeSourceDirectory(directory, 'tree', receipt, signal)
+      } finally { await directory.close() }
+    }, { signal })
+  } finally { await root.close() }
 }
 
 /** Only the separately signed original-Job cleanup grant can authorize a restored volume. */

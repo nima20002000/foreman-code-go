@@ -13,7 +13,7 @@
 set -eu
 user=${1:?usage: install.sh <user> <job-quota-query> [volume-GiB] [installation-plan.json]}
 observer=${2:?path to artifacts/job-quota-query in the Worker artifact}
-size=${3:-96}
+size=${3:-32}
 plan=${4:-}
 [ "$(id -u)" -eq 0 ] || { echo 'Run with sudo.' >&2; exit 1; }
 home=$(getent passwd "$user" | cut -d: -f6)

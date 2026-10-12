@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { pruneCiImages } from './ciRuntimeImages.js'
+import { pruneCiImages, retainedCiJobImages } from './ciRuntimeImages.js'
 
 const command = vi.hoisted(() => ({ run: vi.fn() }))
 vi.mock('node:child_process', async importOriginal => {
@@ -17,6 +17,43 @@ const name = 'localhost/foreman-code-verification:abcdef123456'
 afterEach(() => command.run.mockReset())
 
 describe('CI image pruning', () => {
+  it('keeps images for unfinished Jobs and drops fully reclaimed Jobs still retained as history', async () => {
+    const receipts = [
+      { id: 'running', stopped: false, publication: 'pending', image: 'running-image' },
+      { id: 'publishing', stopped: true, publication: 'collecting', image: 'publishing-image' },
+      { id: 'cleanup-pending', stopped: true, publication: 'complete', image: 'cleanup-image' },
+      { id: 'closed', stopped: true, publication: 'complete', image: 'old-image' },
+      { id: 'failed-closed', stopped: true, publication: 'failed', image: 'failed-image' },
+      { id: 'shared', stopped: false, publication: 'pending', image: 'cleanup-image' },
+    ].map(value => ({ intent: { operationId: value.id }, terminal: { processStopped: value.stopped },
+      publication: value.publication, execution: { acceptedSpec: { policy: { imageDigest: value.image } } } }))
+    const journal = {
+      jobOperations: async () => receipts as never,
+      jobNativeOwner: async (id: string) => ['closed', 'failed-closed'].includes(id)
+        ? { sourceReclamation: { quotaReclaimed: true } } as never : null,
+    }
+    expect(await retainedCiJobImages(journal)).toEqual(['running-image', 'publishing-image', 'cleanup-image'])
+  })
+
+  it('removes all managed commit tags from an unused image and preserves a multiply tagged kept image', async () => {
+    const oldTags = [name, `localhost/foreman-code-verification:${'a'.repeat(40)}`,
+      `localhost/foreman-code-verification:${'b'.repeat(64)}`]
+    const images = [
+      { Id: 'a'.repeat(64), Names: oldTags },
+      { Id: 'b'.repeat(64), Names: [name, 'localhost/foreman-code-verification:bbbbbbbbbbbb'] },
+    ]
+    const removed: string[][] = []
+    command.run.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'images') return JSON.stringify(images)
+      if (args[0] === 'image') return JSON.stringify([{ Id: args.at(-1),
+        Labels: { 'io.foreman-code.installation': installation } }])
+      if (args[0] === 'rmi') removed.push(args)
+      return ''
+    })
+    await pruneCiImages({ keep: [`sha256:${'b'.repeat(64)}`], env: process.env, installer })
+    expect(removed).toEqual([['rmi', '--no-prune', ...oldTags]])
+  })
+
   it('preserves foreign names, installations, additional tags and retained image IDs', async () => {
     const images = [
       { Id: 'a'.repeat(64), Names: [name], owner: installation },

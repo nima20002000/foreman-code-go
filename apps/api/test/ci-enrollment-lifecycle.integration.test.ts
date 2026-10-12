@@ -12,6 +12,46 @@ import { ciEnrollmentFixture } from './ci-enrollment.test-support.js'
 describe.skipIf(!postgresEnabled)('automatic CI enrollment: lifecycle', () => {
   const fixture = ciEnrollmentFixture()
 
+  it('persists preparation failures through MCP and waits for backoff before retrying', async () => {
+    const f = await fixture()
+    try {
+      await f.enrollment.reconcile()
+      const retryAt = new Date(Date.now() + 60 * 60_000).toISOString()
+      const message = 'Root catalog authority does not match the approved workspace/host.'
+      for (const [id, status] of f.preparations) {
+        f.preparations.set(id, { ...status, state: 'failed', message, failureCount: 6, retryAt })
+      }
+      await f.enrollment.reconcile()
+      await f.enrollment.reconcile()
+      expect(f.preparation.start).toHaveBeenCalledTimes(3)
+      const reader = await f.access.issue({ name: 'Enrollment reader', audience: 'operator',
+        grants: [{ actions: ['job_definitions:read'], scope: { workspaceIds: [f.workspaceId] } }],
+        expiresAt: new Date(Date.now() + 600_000) })
+      const client = await f.connect(reader.token)
+      const read = await client.callTool({ name: 'ci_enrollment_get', arguments: { workspaceId: f.workspaceId } })
+      expect(read.isError).not.toBe(true)
+      const state = CiEnrollmentStateSchema.parse(decodeMcpToolResult(read))
+      expect(state.computers.every(computer => computer.state === 'failed'
+        && computer.message?.includes(message) && computer.message.includes(retryAt))).toBe(true)
+      const persisted = await f.db.pool.query('select state from ci_enrollment_computers where workspace_id=$1',
+        [f.workspaceId])
+      expect(persisted.rows.map(row => row.state)).toEqual(expect.arrayContaining(state.computers))
+      expect((await client.callTool({ name: 'ci_enrollment_update', arguments: {
+        workspaceId: f.workspaceId, target: f.computers[0]!.target, commandId: randomUUID(),
+        expectedRevision: 0, enabled: true,
+      } })).isError).toBe(true)
+      const [id, failure] = [...f.preparations][0]!
+      f.preparations.set(id, { ...failure, retryAt: new Date(Date.now() - 1).toISOString() })
+      await f.enrollment.reconcile()
+      expect(f.preparation.start).toHaveBeenCalledTimes(4)
+      expect(f.preparations.get(id)!.state).toBe('preparing')
+      const restarted = new CiEnrollment(f.db.pool, f.commands, f.profiles, f.preparation, f.inventory)
+      expect(await restarted.read(reader.principal, { workspaceId: f.workspaceId }))
+        .toEqual(await f.enrollment.read(reader.principal, { workspaceId: f.workspaceId }))
+      await restarted.close()
+    } finally { await f.close() }
+  })
+
   it('drops disconnected and build-disabled computers, then restores their saved profiles on reconnect', async () => {
     const f = await fixture()
     try {

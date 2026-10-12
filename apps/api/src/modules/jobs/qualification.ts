@@ -353,14 +353,14 @@ async function fingerprintExecutableBytes(handle: Awaited<ReturnType<typeof open
 
 /** Geometry proof is actual kernel/file metadata, not a caller ready/limit declaration. */
 export function validateBoundedVolumeGeometry(value: {
-  expectedBytes: bigint; backingBytes: bigint; allocatedBytes: bigint; rootOwned: boolean; writableByWorker: boolean;
+  expectedBytes: bigint; backingBytes: bigint; rootOwned: boolean; writableByWorker: boolean;
   links: bigint; offset: bigint; sizeLimit: bigint; blockDeviceBytes: bigint; filesystemBytes: bigint;
   filesystemType: bigint; mountOptions: string[];
 }) {
-  if (value.expectedBytes <= 0n || value.backingBytes !== value.expectedBytes || value.allocatedBytes < value.expectedBytes ||
+  if (value.expectedBytes <= 0n || value.backingBytes !== value.expectedBytes ||
     !value.rootOwned || value.writableByWorker || value.links !== 1n || value.offset !== 0n || value.sizeLimit !== value.expectedBytes ||
     value.blockDeviceBytes !== value.expectedBytes || value.filesystemType !== 0xef53n || value.filesystemBytes <= 0n || value.filesystemBytes > value.expectedBytes ||
-    !['rw', 'nosuid', 'nodev'].every(option => value.mountOptions.includes(option)) || value.mountOptions.includes('discard')) throw new Error('Fixed, reserved, root-owned ext4 volume boundary unavailable.')
+    !['rw', 'nosuid', 'nodev'].every(option => value.mountOptions.includes(option)) || value.mountOptions.includes('discard')) throw new Error('Fixed-size, root-owned ext4 volume boundary unavailable.')
 }
 
 async function measureBackingFile(path: string, bytes: number) {
@@ -368,17 +368,16 @@ async function measureBackingFile(path: string, bytes: number) {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
   try {
     const details = await file.stat({ bigint: true })
-    if (!details.isFile() || details.uid !== 0n || details.mode & 0o222n || details.nlink !== 1n || details.size !== BigInt(bytes) || details.blocks * 512n < details.size) throw new Error('Backing file must be fixed-size, fully allocated, root-owned and unwritable by the worker.')
+    if (!details.isFile() || details.uid !== 0n || details.mode & 0o222n || details.nlink !== 1n || details.size !== BigInt(bytes)) throw new Error('Backing file must be fixed-size, root-owned and unwritable by the worker.')
     return { path, device: String(details.dev), inode: String(details.ino), bytes: String(details.size), allocatedBytes: String(details.blocks * 512n),
       mode: String(details.mode), uid: String(details.uid), links: String(details.nlink) }
   } finally { await file.close() }
 }
 
 export function backingFileConfigurationIdentity(backing: Awaited<ReturnType<typeof measureBackingFile>>) {
-  const { allocatedBytes, ...identity } = backing
-  if (BigInt(allocatedBytes) < BigInt(backing.bytes)) throw new Error('Backing file must remain fully allocated.')
-  // Loop writes can grow extent metadata without changing the reserved volume.
-  return { ...identity, reservedBytes: backing.bytes }
+  const { path, device, inode, bytes, mode, uid, links } = backing
+  // Sparse extents grow with loop writes without changing the volume's size or identity.
+  return { path, device, inode, bytes, mode, uid, links, reservedBytes: bytes }
 }
 
 async function measureBoundedExt4Volume(candidate: JobQualificationCandidate, mount: { filesystems?: Array<{ target: string; source: string; fstype: string; options: string; 'maj:min': string }> }) {
@@ -395,7 +394,7 @@ async function measureBoundedExt4Volume(candidate: JobQualificationCandidate, mo
   const offset = BigInt((await readFile(`${sysfs}/loop/offset`, 'utf8')).trim())
   const sizeLimit = BigInt((await readFile(`${sysfs}/loop/sizelimit`, 'utf8')).trim())
   const blockDeviceBytes = BigInt((await readFile(`${sysfs}/size`, 'utf8')).trim()) * 512n
-  validateBoundedVolumeGeometry({ expectedBytes: BigInt(candidate.backingBytes), backingBytes: BigInt(backing.bytes), allocatedBytes: BigInt(backing.allocatedBytes),
+  validateBoundedVolumeGeometry({ expectedBytes: BigInt(candidate.backingBytes), backingBytes: BigInt(backing.bytes),
     rootOwned: true, writableByWorker: false, links: BigInt(backing.links), offset, sizeLimit, blockDeviceBytes,
     filesystemBytes: fs.blocks * fs.bsize, filesystemType: fs.type, mountOptions: selected.options.split(',') })
   return { backing, device: String(source.dev), mount: selected, offset: String(offset), sizeLimit: String(sizeLimit), blockDeviceBytes: String(blockDeviceBytes), filesystemBytes: String(fs.blocks * fs.bsize), filesystemType: String(fs.type) }

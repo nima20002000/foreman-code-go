@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 import type { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { systemGitWorktreePorts } from '../sources/gitWorktree.js'
 import { prepareCiRuntime } from './ciRuntimePrepare.js'
+import { retainedCiJobImages } from './ciRuntimeImages.js'
 import { currentCiRuntimePaths, lastCiRuntimeRefresh, retireCiRuntimeConfigurations,
   scheduleCiRuntimeRefresh } from './ciRuntimeRefresh.js'
 import { CiRuntimeWorker } from './ciRuntimeWorker.js'
@@ -34,7 +35,7 @@ export function createMainCiRuntime(input: {
       const journal = await input.journal()
       await retainMainJobSourceClosures(input.sql, journal)
       const used = [...options.keepImages ?? [],
-        ...(await journal.jobOperations()).map(receipt => receipt.execution.acceptedSpec.policy.imageDigest),
+        ...await retainedCiJobImages(journal),
         ...(await journal.pendingQualifications()).map(receipt => receipt.candidate.fingerprint.imageDigest)]
       const configurations = await retireCiRuntimeConfigurations(input.runtimeRoot, used)
       return prepareCiRuntime({ ...options, stateDirectory: input.runtimeRoot, keepImages: [...used, ...configurations.images],

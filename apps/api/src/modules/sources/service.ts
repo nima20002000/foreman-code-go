@@ -166,16 +166,21 @@ export class PostgresSourceService implements SourceAdmissionPort {
     requireAuthorization(principal, 'workspace_locations:read', input)
     return this.commands.execute({ principal, source, operation: 'source.approve', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}:source`, payload: input, dedicatedConnection: true,
+      ...(repository ? { resourceLock: `source-project:${input.workspaceId}:${input.commit}` } : {}),
       authorize: async sql => {
         await authorizeSource(sql, principal, 'sources:approve', input.workspaceId); await authorizeSource(sql, principal, 'sources:read', input.workspaceId); await this.host(sql)
         const prior = (await sql.query<{ availability: string }>(`select s.availability from source_approvals a join source_snapshots s on s.snapshot_id=a.snapshot_id
-          where a.requested_by=$1 and a.command_id=$2`, [principal.id, input.commandId])).rows[0]
+          where a.requested_by=$1 and a.command_id=$2
+          union all select s.availability from management_command_receipts c join source_snapshots s
+            on s.snapshot_id::text=c.result#>>'{manifest,snapshotId}'
+          where c.principal_id=$1 and c.operation='source.approve' and c.command_id=$2`,
+        [principal.id, input.commandId])).rows[0]
         if (prior && prior.availability !== 'retained') throw new DomainError('SOURCE_UNAVAILABLE', 'The original source approval no longer has retained bytes; command retry cannot resurrect it.', 410)
       },
       perform: async () => {
         // Existing workspace/host ownership is checked before location.snapshot
         // probes its persisted path; input has no filesystem selector.
-        let origin = await this.captureTransaction(async sql => {
+        const capturedOrigin = await this.captureTransaction<ApprovalRow | { reused: ApprovedSource }>(async sql => {
           const live = await authorizeSource(sql, principal, 'sources:approve', input.workspaceId)
           requireAuthorization(live.principal, 'workspace_locations:read', input)
           // The location snapshot locks the workspace for update; lock it first so concurrent captures queue
@@ -191,6 +196,26 @@ export class PostgresSourceService implements SourceAdmissionPort {
           const location = repository ? await this.repositoryOrigin(sql, input.workspaceId, input.expectedLocationRevision, repository)
             : await this.locations.snapshot(sql, input.workspaceId, input.expectedLocationRevision, 'read-only')
           const approvedPaths = input.approvedPaths ?? await approvedGitTreePaths(location.rootPath, input.commit)
+          if (repository) {
+            const reusable = (await sql.query<{ record: unknown }>(`select s.record from source_snapshots s
+              join source_approvals a on a.snapshot_id=s.snapshot_id
+              where s.workspace_id=$1 and s.availability='retained' and a.state='approved'
+                and s.record#>>'{manifest,git,commit}'=$2
+                and s.record#>>'{manifest,git,repository}'=$3
+                and s.record#>>'{manifest,capturePolicy}'='git-tree-v1'
+                and s.record->>'locationRevision'=$4
+                and s.record#>>'{manifest,executablePolicy}'=$5
+              order by a.created_at desc limit 1 for share of s`,
+            [input.workspaceId, input.commit, repository.repository, String(location.locationRevision),
+              input.executablePolicy])).rows[0]
+            if (reusable) {
+              const approved = ApprovedSourceSchema.parse(reusable.record)
+              const paths = approved.manifest.entries.map(entry => entry.path).sort()
+              if (isDeepStrictEqual(paths, [...approvedPaths].sort())) {
+                return { reused: await this.resolveApprovedSource(sql, principal, input.workspaceId, approved.manifest) }
+              }
+            }
+          }
           // Authorize first, then probe only the server-owned canonical namespace.
           const fs = await this.store.storageIdentity(), approvedSourceId = randomUUID(), snapshotId = randomUUID()
           const reservation = await this.reservations.reserve(sql, { scopeId: this.scope(null, null, fs), ownerKind: 'capture', ownerId: snapshotId,
@@ -205,6 +230,8 @@ export class PostgresSourceService implements SourceAdmissionPort {
             input.commandId, commandInputHash(input), JSON.stringify(origin), JSON.stringify(input)])
           return { approved_source_id: approvedSourceId, snapshot_id: snapshotId, input_hash: commandInputHash(input), state: 'capturing', origin, request: input }
         })
+        if ('reused' in capturedOrigin) return capturedOrigin.reused
+        let origin = capturedOrigin
         return this.store.withCaptureLock(origin.snapshot_id, async () => {
           let manifest: SourceManifest
           try {
@@ -630,6 +657,9 @@ export class PostgresSourceService implements SourceAdmissionPort {
         await this.reservations.reclaimed(sql, reservation, async () => quotaReclaimed
           && await this.closure.confirmedClosed(record))
       } else {
+        if (record.receipt.sharedTree && record.receipt.binding.deviceId === null) {
+          reservation.referenceReclaimed = true
+        }
         await this.reservations.retainMaterialization(sql, reservation, { ...footprint, retainedBytes })
       }
     })

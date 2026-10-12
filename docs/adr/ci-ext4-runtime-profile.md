@@ -35,9 +35,9 @@ permission. Never substitute the root device for `BACKING_FILE`.
 
 ```text
 Create protected backing directory (root:approved-worker-group, mode 0750).
-Create BACKING_FILE and fully allocate APPROVED_BYTES (no sparse truncation).
-Format BACKING_FILE with mkfs.ext4: -m 0, -E nodiscard,
-  lazy_itable_init=0,lazy_journal_init=0.
+Create a sparse BACKING_FILE with logical size APPROVED_BYTES.
+Format BACKING_FILE with mkfs.ext4 and project quotas. Physical allocation grows
+  as the volume is used; the installer defaults to a 32 GiB logical ceiling.
 Keep BACKING_FILE root-owned, one link, mode 0440; worker group may read it
   for metadata verification but cannot write, truncate or resize it.
 Associate the file with a loop device using offset 0 and sizelimit APPROVED_BYTES.
@@ -50,8 +50,8 @@ Register actual root-policy/binding/attestation facts and protected runtime
 
 The producer checks the actual findmnt result, `/sys/dev/block/7:N/loop`
 backing/offset/sizelimit, kernel block device sectors, backing file
-device/inode/size/allocation/permissions and ext4 statfs geometry. A sparse,
-worker-writable, resized, linked, ordinary-root or different mount fails.
+device/inode/size/permissions and ext4 statfs geometry. Sparse allocation is
+accepted; worker-writable, resized, linked, ordinary-root or different mounts fail.
 Source and retained logs must share the same finite filesystem. Neither a
 caller byte limit nor a saved `ready` JSON object proves these facts.
 

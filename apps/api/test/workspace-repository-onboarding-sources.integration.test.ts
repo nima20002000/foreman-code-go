@@ -10,6 +10,51 @@ import { fixtureGit, fixtureRepository, workspaceRepositoryFixture } from './hel
 import { workspace, httpAdd, add, get, clones } from './helpers/workspaceRepositoryOnboarding.js'
 
 describe('workspace repository onboarding: sources', () => {
+  it('reuses one retained workspace commit capture across new CI commands and concurrent callers', async () => {
+    const f = await workspaceRepositoryFixture()
+    try {
+      const input = await workspace(f)
+      const imported = await add(f, input)
+      const source = imported.value.approvedSource!
+      const operator = await f.issue([{ actions: ['sources:approve', 'sources:read', 'workspace_locations:read'],
+        scope: { workspaceIds: [input.workspaceId] } }])
+      const approvals = () => f.pool.query('select snapshot_id from source_approvals where workspace_id=$1',
+        [input.workspaceId])
+      const before = await approvals()
+      const requests = [f.owner.principal, operator.principal].map(principal => f.sources.approveProject(principal,
+        { workspaceId: input.workspaceId, commit: f.commit, commandId: randomUUID() }))
+      const captures = await Promise.all(requests)
+      expect(captures).toEqual([source, source])
+      expect((await approvals()).rows).toEqual(before.rows)
+      const read = await callWorkspaceTool(operator.client, 'source_get', ApprovedSourceSchema, {
+        workspaceId: input.workspaceId, approvedSourceId: source.manifest.approvedSourceId,
+        snapshotId: source.manifest.snapshotId, manifestDigest: source.manifest.manifestDigest,
+      })
+      expect(read).toEqual(source)
+      const denied = await f.issue([{ actions: ['sources:read'], scope: { workspaceIds: [input.workspaceId] } }])
+      await expect(f.sources.approveProject(denied.principal, { workspaceId: input.workspaceId,
+        commit: f.commit, commandId: randomUUID() })).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+      await writeFile(join(f.origin, 'content.txt'), 'changed commit\n')
+      fixtureGit(f.origin, 'commit', '-qam', 'advance source')
+      const nextCommit = fixtureGit(f.origin, 'rev-parse', 'HEAD')
+      const next = await f.sources.approveProject(f.owner.principal, { workspaceId: input.workspaceId,
+        commit: nextCommit, commandId: randomUUID() })
+      expect(next.manifest.snapshotId).not.toBe(source.manifest.snapshotId)
+      expect(next.manifest.git!.commit).toBe(nextCommit)
+      expect((await approvals()).rows).toHaveLength(before.rows.length + 1)
+      const replayInput = { workspaceId: input.workspaceId, commit: f.commit, commandId: randomUUID() }
+      expect(await f.sources.approveProject(f.owner.principal, replayInput)).toEqual(source)
+      await f.pool.query("update source_snapshots set availability='unavailable' where snapshot_id=$1",
+        [source.manifest.snapshotId])
+      await expect(f.sources.approveProject(f.owner.principal, replayInput))
+        .rejects.toMatchObject({ code: 'SOURCE_UNAVAILABLE' })
+      const replacement = await f.sources.approveProject(f.owner.principal,
+        { ...replayInput, commandId: randomUUID() })
+      expect(replacement.manifest.snapshotId).not.toBe(source.manifest.snapshotId)
+      expect(replacement.manifest.git!.commit).toBe(f.commit)
+    } finally { await f.close() }
+  }, 30_000)
+
   it('reports unsupported trees and a missing branch without publishing metadata or a root', async () => {
     const f = await workspaceRepositoryFixture()
     try {

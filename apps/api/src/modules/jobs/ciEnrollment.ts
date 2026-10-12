@@ -339,6 +339,13 @@ export class CiEnrollment {
     if (ready) return 'ready'
     if (await ciEnrollmentDisabled(this.pool, workspaceId, enrollment.target)) return 'pending'
     const progress = await this.preparation.get(principal, { workspaceId, profileId })
+    if (progress.state === 'failed') {
+      const retryAt = progress.retryAt ?? new Date(Date.parse(progress.updatedAt!) + 2 * 60_000).toISOString()
+      if (Date.now() < Date.parse(retryAt)) {
+        throw new DomainError('CI_RUNTIME_PREPARE_FAILED',
+          `${progress.message ?? 'CI runtime preparation failed.'} Next automatic retry at ${retryAt}.`, 409)
+      }
+    }
     if (['idle', 'qualified', 'failed'].includes(progress.state)) {
       const commandId = `enroll-prepare-${jobDigest({ workspaceId, id: profile.id, revision: profile.revision,
         measurement: profile.measurement, enrollmentRevision: enrollment.revision,

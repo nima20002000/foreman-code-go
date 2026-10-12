@@ -241,9 +241,64 @@ describe('CI runtime refresh', () => {
       drain: async () => {} })).rejects.toMatchObject({ code: 'CI_RUNTIME_RELOCATION_REQUIRED' })
     expect(commands.run).not.toHaveBeenCalled()
     expect(await readFile(configurationPath, 'utf8')).toBe(bytes)
+    expect(await readdir(join(directory, 'managed', 'ci'))).toEqual([])
+    expect(await readFile(prepared.seedReceiptPath, 'utf8')).toBe('{}')
     for (const slot of slots) {
       expect(await readFile(join(oldSource, slot.namespace, 'retained'), 'utf8')).toBe(slot.namespace)
     }
+  })
+
+  it.each(['installation', 'tools', 'submission'])('leaves no copied refresh inputs after %s failure', async failure => {
+    const { current, root, directory } = await quotaRelocationFixture()
+    const configurationPath = join(directory, 'job-runtime.json')
+    const bytes = JSON.stringify(current)
+    if (failure !== 'installation') await writeFile(configurationPath, bytes, { mode: 0o600 })
+    const prepared = { ...fixture().prepared, seedReceiptPath: join(directory, 'prepared-seed.json') }
+    await writeFile(prepared.seedReceiptPath, 'original prepared receipt')
+    const work = join(directory, 'managed', 'ci')
+    await mkdir(work, { recursive: true, mode: 0o700 })
+    await writeFile(join(work, 'installed-seed-receipt-leaked.json'), 'old leaked receipt')
+    const rejected = new Error(`${failure} rejected`)
+    commands.run.mockImplementation(async (file: string, args: string[]) => {
+      if (failure === 'tools' || file === 'systemd-run') throw rejected
+      if (args.includes('create')) return 'container'
+      if (args.includes('cp')) await writeFile(args.at(-1)!, 'image tool')
+      return 'tool version'
+    })
+    const scheduled = scheduleCiRuntimeRefresh({ operationId: randomUUID(), stateDirectory: directory,
+      prepared, root, manifest: current.qualificationSource.manifest, resources: current.machine.resources,
+      drain: async () => {} })
+    if (failure === 'installation') {
+      await expect(scheduled).rejects.toMatchObject({ code: 'CI_RUNTIME_INSTALLATION_MISSING' })
+    } else {
+      await expect(scheduled).rejects.toBe(rejected)
+      expect(await readFile(configurationPath, 'utf8')).toBe(bytes)
+    }
+    expect((await readdir(work)).filter(name => name.startsWith('installed-seed-receipt-')
+      || name.startsWith('reviewed-refresh-'))).toEqual([])
+    expect(await readFile(prepared.seedReceiptPath, 'utf8')).toBe('original prepared receipt')
+  })
+
+  it('preserves scheduled refresh inputs until the service consumes them', async () => {
+    const { current, root, directory } = await quotaRelocationFixture()
+    await writeFile(join(directory, 'job-runtime.json'), JSON.stringify(current), { mode: 0o600 })
+    const prepared = { ...fixture().prepared, seedReceiptPath: join(directory, 'prepared-seed.json') }
+    await writeFile(prepared.seedReceiptPath, 'prepared receipt')
+    commands.run.mockImplementation(async (_file: string, args: string[]) => {
+      if (args.includes('create')) return 'container'
+      if (args.includes('cp')) await writeFile(args.at(-1)!, 'image tool')
+      return 'tool version'
+    })
+    const operationId = randomUUID()
+    const result = await scheduleCiRuntimeRefresh({ operationId, stateDirectory: directory, prepared, root,
+      manifest: current.qualificationSource.manifest, resources: current.machine.resources, drain: async () => {} })
+    expect(result).toEqual({ unit: `foreman-ci-refresh-${operationId}`, workerUnit: 'worker.service' })
+    const work = join(directory, 'managed', 'ci')
+    const seedReceiptPath = join(work, `installed-seed-receipt-${operationId}.json`)
+    expect(await readFile(seedReceiptPath, 'utf8')).toBe('prepared receipt')
+    const reviewed = JSON.parse(await readFile(join(work, `reviewed-refresh-${operationId}.json`), 'utf8'))
+    expect(reviewed.captureInput.seedReceiptPath).toBe(seedReceiptPath)
+    expect(commands.run).toHaveBeenCalledWith('systemd-run', expect.any(Array))
   })
 
   it('captures the new pairing target from its fresh source binding without relabelling historical inputs', () => {

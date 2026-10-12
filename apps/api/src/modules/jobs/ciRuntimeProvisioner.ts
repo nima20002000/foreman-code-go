@@ -83,10 +83,14 @@ export class CiRuntimeProvisioner {
       perform: async sql => {
         const { profile, deviceId } = preparedTarget
         await this.requireEnabled(profile, sql)
+        const previous = await this.repository.latest(input.workspaceId, deviceId)
+        const sameCommit = !input.commit || input.commit === previous?.status.commit
+        const failureCount = previous?.status.state === 'failed' && sameCommit
+          ? previous.status.failureCount ?? 1 : 0
         const now = this.timing.now().toISOString()
         const record = CiPreparationRecordSchema.parse({ id: randomUUID(), input, principal, source, profile,
           status: { profileId: profile.id, deviceId, state: 'approving', commit: input.commit ?? null,
-            stage: null, message: null, profiles: [], startedAt: now, updatedAt: now } })
+            stage: null, message: null, profiles: [], startedAt: now, updatedAt: now, failureCount } })
         await this.repository.create(sql, record)
         return { operationId: record.id }
       },
@@ -193,7 +197,10 @@ export class CiRuntimeProvisioner {
         deviceImages: () => this.deviceImages(record.profile.root.selection.hostRef) })
     } catch (error) {
       if (signal.aborted || error instanceof DomainError && error.code === 'JOB_OWNERSHIP_LOST') return
+      const failureCount = (record.status.failureCount ?? 0) + 1
+      const retryDelay = Math.min(60 * 60_000, 60_000 * 2 ** Math.min(failureCount, 6))
       record.status = { ...record.status, state: 'failed',
+        failureCount, retryAt: new Date(this.timing.now().getTime() + retryDelay).toISOString(),
         message: (error instanceof Error ? error.message : 'Runtime preparation failed.').slice(0, 2000) }
       await checkpoint()
     } finally {

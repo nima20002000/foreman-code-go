@@ -63,6 +63,7 @@ import { CI_HOST_NAMESPACE, CI_RUNTIME_NAMESPACE } from '@foreman-code/contracts
 import { HostCiRunner } from '../ci-host/runner.js'
 import { CiRuntimeWorker } from '../jobs/ciRuntimeWorker.js'
 import { prepareCiRuntime } from '../jobs/ciRuntimePrepare.js'
+import { retainedCiJobImages } from '../jobs/ciRuntimeImages.js'
 import { currentCiRuntimePaths, lastCiRuntimeRefresh, retireCiRuntimeConfigurations } from '../jobs/ciRuntimeRefresh.js'
 import { systemGitWorktreePorts } from '../sources/gitWorktree.js'
 import { readInstalledWorkflowConfiguration } from '../runs/remote/installedWorkflowConfiguration.js'
@@ -330,10 +331,9 @@ export async function createInstalledWorkerDomains(input: {
     managedRuntimeRoot: async () => (await roots()).managedRuntimeRoot,
     prepare: async options => {
       const retained = await jobJournal()
-      const executions = await retained.jobOperations()
       const qualifications = await retained.pendingQualifications()
       const used = [...options.keepImages ?? [],
-        ...executions.map(receipt => receipt.execution.acceptedSpec.policy.imageDigest),
+        ...await retainedCiJobImages(retained),
         ...qualifications.map(receipt => receipt.candidate.fingerprint.imageDigest)]
       const configurations = await retireCiRuntimeConfigurations(input.stateDirectory, used)
       return prepareCiRuntime({ ...options, stateDirectory: input.stateDirectory, keepImages: [...used, ...configurations.images],

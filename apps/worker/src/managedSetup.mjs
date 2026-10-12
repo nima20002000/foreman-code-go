@@ -54,11 +54,14 @@ async function approveManagedRoots(state, stateDirectory, pairing, runtimeRoot) 
       await publishManagedJson(state, 'approved-roots.json', managed);
       return managed;
     }
-    await loadApprovedRoots(stateDirectory, pairing);
-    if (approved.bases.some(base => base.managedBy === 'worker-pairing')) return approved;
-    const managed = await qualifyApprovedRootAllowlist({ ...approved,
+    const verified = await loadApprovedRoots(stateDirectory, pairing);
+    if (!approved.runtimeFilesystemId || approved.bases.some(base => !base.filesystemId)) {
+      await publishManagedJson(state, 'approved-roots.json', verified);
+    }
+    if (verified.bases.some(base => base.managedBy === 'worker-pairing')) return verified;
+    const managed = await qualifyApprovedRootAllowlist({ ...verified,
       configurationRevision: String(BigInt(approved.configurationRevision) + 1n),
-      bases: [...approved.bases, { baseId: randomUUID(), canonicalPath: join(stateDirectory, 'managed/workspaces'),
+      bases: [...verified.bases, { baseId: randomUUID(), canonicalPath: join(stateDirectory, 'managed/workspaces'),
         accessModes: ['read-write'], managedBy: 'worker-pairing' }],
     });
     await publishManagedJson(state, 'approved-roots.json', managed);

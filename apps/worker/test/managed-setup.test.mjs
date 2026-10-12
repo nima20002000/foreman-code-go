@@ -2,7 +2,7 @@ import test, { before, after } from 'node:test';
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { randomUUID, createHash, generateKeyPairSync } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, writeFile, rm, chmod, stat, symlink, realpath } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, rm, chmod, stat, symlink, realpath, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readProductEnvironment } from '../../../packages/contracts/src/productEnvironment.mjs';
@@ -70,6 +70,73 @@ test('pairing prepares private managed roots and native journals without a roots
   const second = await f.worker.ensurePairedManagedSetup({ stateDirectory: f.state, pairing: f.pairing, home: f.home });
   assert.equal(second.state, 'runtime-unavailable');
   assert.deepEqual(JSON.parse(await readFile(join(f.state, 'approved-roots.json'), 'utf8')), approved);
+});
+
+test('managed setup survives remount and reboot identities while advertising current mounts', async t => {
+  const f = await fixture(t);
+  const options = { stateDirectory: f.state, pairing: f.pairing, home: f.home };
+  assert.equal((await f.worker.ensurePairedManagedSetup(options)).state, 'runtime-unavailable');
+  const path = join(f.state, 'approved-roots.json');
+  const current = JSON.parse(await readFile(path, 'utf8'));
+  assert.ok(current.runtimeFilesystemId);
+  assert.ok(current.bases.every(base => base.filesystemId));
+  const previousIdentity = filesystem => ({ ...filesystem,
+    device: String(BigInt(filesystem.device) + 1n), mountId: String(BigInt(filesystem.mountId) + 1000n) });
+  const previous = { ...current,
+    bases: current.bases.map(base => ({ ...base, filesystem: previousIdentity(base.filesystem) })),
+    runtimeFilesystem: previousIdentity(current.runtimeFilesystem) };
+  const bytes = JSON.stringify(previous);
+  await writeFile(path, bytes, { mode: 0o600 });
+  assert.equal((await f.worker.ensurePairedManagedSetup(options)).state, 'runtime-unavailable');
+  const bootId = randomUUID();
+  const [extension] = await f.worker.approvedRootExtensions(f.state, f.pairing, bootId);
+  const context = { binding: { ...f.pairing, bootId, connectionEpoch: randomUUID(), connectionGeneration: 1 },
+    signal: new AbortController().signal };
+  const { payload } = await extension.handle({ version: 1, operation: 'workspace-roots.configuration' }, context);
+  assert.deepEqual(payload, current);
+  await assert.rejects(extension.handle({ version: 1, operation: 'workspace-roots.configuration' },
+    { ...context, binding: { ...context.binding, bootId: randomUUID() } }), /workspace_root_authentication_required/);
+  assert.equal(await readFile(path, 'utf8'), bytes);
+});
+
+test('managed setup adds persistent IDs to legacy approvals only after verifying their original identities', async t => {
+  const f = await fixture(t);
+  const options = { stateDirectory: f.state, pairing: f.pairing, home: f.home };
+  await f.worker.ensurePairedManagedSetup(options);
+  const path = join(f.state, 'approved-roots.json');
+  const current = JSON.parse(await readFile(path, 'utf8'));
+  const legacy = structuredClone(current);
+  delete legacy.runtimeFilesystemId;
+  for (const base of legacy.bases) delete base.filesystemId;
+  await writeFile(path, JSON.stringify(legacy), { mode: 0o600 });
+  assert.equal((await f.worker.ensurePairedManagedSetup(options)).state, 'runtime-unavailable');
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), current);
+  legacy.runtimeFilesystem.mountId = String(BigInt(legacy.runtimeFilesystem.mountId) + 1n);
+  const bytes = JSON.stringify(legacy);
+  await writeFile(path, bytes, { mode: 0o600 });
+  assert.equal((await f.worker.ensurePairedManagedSetup(options)).state, 'failed');
+  await assert.rejects(f.worker.approvedRootExtensions(f.state, f.pairing, randomUUID()),
+    /approved_root_filesystem_mismatch/);
+  assert.equal(await readFile(path, 'utf8'), bytes);
+});
+
+test('managed setup rejects replaced directories and filesystems without refreshing approved facts', async t => {
+  const f = await fixture(t);
+  const options = { stateDirectory: f.state, pairing: f.pairing, home: f.home };
+  await f.worker.ensurePairedManagedSetup(options);
+  const path = join(f.state, 'approved-roots.json');
+  const current = JSON.parse(await readFile(path, 'utf8'));
+  const changed = { ...current, runtimeFilesystemId: current.runtimeFilesystemId === '1' ? '2' : '1' };
+  const bytes = JSON.stringify(changed);
+  await writeFile(path, bytes, { mode: 0o600 });
+  assert.equal((await f.worker.ensurePairedManagedSetup(options)).state, 'failed');
+  assert.equal(await readFile(path, 'utf8'), bytes);
+  const original = JSON.stringify(current);
+  await writeFile(path, original, { mode: 0o600 });
+  await rename(current.managedRuntimeRoot, `${current.managedRuntimeRoot}-old`);
+  await mkdir(current.managedRuntimeRoot, { mode: 0o700 });
+  assert.equal((await f.worker.ensurePairedManagedSetup(options)).state, 'failed');
+  assert.equal(await readFile(path, 'utf8'), original);
 });
 
 test('pairing persists canonical managed roots through a symlinked storage ancestor', async t => {

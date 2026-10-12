@@ -6,7 +6,7 @@ import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { BuildComputerPrepareStatusSchema, CI_RUNTIME_NAMESPACE, CiEnrollmentStateSchema, CiRuntimeWorkerStateSchema,
   type BuildComputerPrepareInput } from '@foreman-code/contracts'
 import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
-import { ApprovedSourceSchema } from '@foreman-code/contracts/source-admission'
+import { ApprovedSourceSchema, SourceRootBindResultSchema } from '@foreman-code/contracts/source-admission'
 import { describe, expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
@@ -192,7 +192,8 @@ async function fixture(options: { managedStorage: boolean }) {
       services.ciEnrollment = enrollment
     }
     return { db, app, access, owner, workspaceId, worker, workerAllowlist, rootRequests, roots, primary,
-      managedBase, arbitraryBase, managedSetup, runtimeState, saved, client, connect, read, restart, createInventory, close }
+      managedBase, arbitraryBase, managedSetup, runtimeState, saved, sources: sources.sources,
+      client, connect, read, restart, createInventory, close }
   } catch (error) {
     await close()
     throw error
@@ -200,6 +201,39 @@ async function fixture(options: { managedStorage: boolean }) {
 }
 
 describe.skipIf(!postgresEnabled)('pairing-managed CI root enrollment', () => {
+  it('lets a newly authorized Operator rebind a paired computer root created by another Operator', async () => {
+    const f = await fixture({ managedStorage: true })
+    try {
+      const root = await f.createInventory().root(f.owner.principal, f.workspaceId, f.saved.root, f.worker.target)
+      const operator = await f.access.issue({ name: 'Replacement CI Operator', audience: 'operator',
+        grants: [{ actions: [...ManagementActionSchema.options], scope: { workspaceIds: [f.workspaceId] } }],
+        expiresAt: new Date(Date.now() + 600_000) })
+      const client = await f.connect(operator.token)
+      const input = { workspaceId: f.workspaceId, commandId: randomUUID(), selection: root.selection,
+        source: root.source, accessMode: root.binding.accessMode,
+        expectedBindingRevision: root.binding.bindingRevision }
+      const reader = await f.access.issue({ name: 'Root reader', audience: 'operator',
+        grants: [{ actions: ['source_roots:read', 'sources:read', 'workspace_locations:read'],
+          scope: { workspaceIds: [f.workspaceId] } }], expiresAt: new Date(Date.now() + 600_000) })
+      const denied = await f.connect(reader.token)
+      expect((await denied.callTool({ name: 'source_root_bind', arguments: input })).isError).toBe(true)
+      const result = await client.callTool({ name: 'source_root_bind', arguments: input })
+      expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
+      const rebound = SourceRootBindResultSchema.parse(decodeMcpToolResult(result)).value
+      expect(rebound).toMatchObject({ ownerPrincipalId: operator.principal.id,
+        authorizedByPrincipalId: operator.principal.id, registration: root.registration,
+        binding: { rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision + 1 } })
+      expect(await f.sources.rootGet(operator.principal, 'mcp', { workspaceId: f.workspaceId,
+        rootId: rebound.binding.rootId, bindingRevision: rebound.binding.bindingRevision })).toEqual(rebound)
+      expect((await f.db.pool.query('select record from workspace_root_policies where root_policy_id=$1',
+        [root.selection.rootPolicyId])).rows[0]!.record.ownerPrincipalId).toBe(f.owner.principal.id)
+      const stale = await client.callTool({ name: 'source_root_bind', arguments: { ...input, commandId: randomUUID() } })
+      expect(stale.isError).toBe(true)
+      expect((await f.sources.rootList(operator.principal, 'mcp', { workspaceId: f.workspaceId })).items)
+        .toContainEqual(rebound)
+    } finally { await f.close() }
+  }, 120_000)
+
   it('adopts and binds through authenticated MCP, denies missing grants and persists setup/root readback', async () => {
     const f = await fixture({ managedStorage: true })
     try {
@@ -219,6 +253,11 @@ describe.skipIf(!postgresEnabled)('pairing-managed CI root enrollment', () => {
       expect(f.rootRequests).toContain('workspace-roots.prepare-managed')
       const choices = decodeMcpToolResult(await f.client.callTool({ name: 'workspace_root_choices_list',
         arguments: { workspaceId: f.workspaceId } })) as Awaited<ReturnType<typeof f.roots.choices>>
+      const approved = choices.allowlists.find(allowlist =>
+        allowlist.applicationInstallationId === f.worker.target.applicationInstallationId)!
+      expect(approved).toEqual(f.workerAllowlist)
+      expect(approved.runtimeFilesystemId).toMatch(/^[a-f0-9]{1,16}$/)
+      for (const base of approved.bases) expect(base.filesystemId).toMatch(/^[a-f0-9]{1,16}$/)
       const managed = choices.policies.find(policy => policy.bindingPurpose === 'ci-enrollment')!
       expect(managed).toMatchObject({ hostRef: f.worker.target.hostRef, accessMode: 'read-write',
         canonicalProjectRoot: join(f.managedBase, sourceSha256(Buffer.from(f.workspaceId))), locationRevision: '1' })
