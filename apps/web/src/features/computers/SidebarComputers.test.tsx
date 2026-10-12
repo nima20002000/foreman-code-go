@@ -151,14 +151,14 @@ it('shows cloud CI services by machines in use', async () => {
 
 it('counts Agents and CI jobs, caps the badge, and pulses on starts including a replacement at the same count', async () => {
   const f = computersFixture(inRouter().element)
-  const main = await screen.findByRole('link', { name: 'Main PC, Main, Plenty of capacity' })
+  const main = await screen.findByRole('button', { name: 'Main PC, Main, Plenty of capacity' })
   const computer = f.activity.computers[0]!
   expect(animate).not.toHaveBeenCalled()
   expect(within(main).queryByText('1')).not.toBeInTheDocument()
   computer.jobs.push({ id: 'job-1', name: 'Web build', workspaceId: 'workspace-1', workspaceName: 'Store',
     phase: 'running', startedAt: null })
   await act(() => f.client.invalidateQueries({ queryKey: ['computer-activity'] }))
-  expect(await screen.findByRole('link', { name: 'Main PC, Main, Some load, 1 running Agent or CI job' })).toBe(main)
+  expect(await screen.findByRole('button', { name: 'Main PC, Main, Some load, 1 running Agent or CI job' })).toBe(main)
   expect(within(main).getByText('1')).toBeInTheDocument()
   expect(animate).toHaveBeenCalledTimes(1)
   expect(animate).toHaveBeenLastCalledWith([
@@ -172,40 +172,40 @@ it('counts Agents and CI jobs, caps the badge, and pulses on starts including a 
   for (let index = 0; index < 9; index++) computer.agents.push({ id: `execution-${index}`, workspaceId: 'workspace-1',
     workflowId: 'workflow-1', workflowName: 'Release', runId: 'run-1', nodeId: `node-${index}`, agentName: `Agent ${index}`, state: 'running' })
   await act(() => f.client.invalidateQueries({ queryKey: ['computer-activity'] }))
-  expect(await screen.findByRole('link', { name: 'Main PC, Main, Heavy load, 10 running Agents and CI jobs' })).toBe(main)
+  expect(await screen.findByRole('button', { name: 'Main PC, Main, Heavy load, 10 running Agents and CI jobs' })).toBe(main)
   expect(within(main).getByText('9+')).toBeInTheDocument()
   expect(animate).toHaveBeenCalledTimes(3)
   computer.agents = []
   computer.jobs = []
   await act(() => f.client.invalidateQueries({ queryKey: ['computer-activity'] }))
-  expect(await screen.findByRole('link', { name: 'Main PC, Main, Plenty of capacity' })).toBe(main)
+  expect(await screen.findByRole('button', { name: 'Main PC, Main, Plenty of capacity' })).toBe(main)
   expect(within(main).queryByText('9+')).not.toBeInTheDocument()
   expect(animate).toHaveBeenCalledTimes(3)
 })
 it('hides activity indicators when offline or stale even if the last observation has running work', async () => {
   const f = computersFixture(inRouter().element)
-  await screen.findByRole('link', { name: 'Main PC, Main, Plenty of capacity' })
+  await screen.findByRole('button', { name: 'Main PC, Main, Plenty of capacity' })
   f.activity.computers[0]!.jobs.push({ id: 'job-1', name: 'Web build', workspaceId: 'workspace-1', workspaceName: 'Store',
     phase: 'running', startedAt: null })
   await act(() => f.client.invalidateQueries({ queryKey: ['computer-activity'] }))
-  const main = await screen.findByRole('link', { name: 'Main PC, Main, Some load, 1 running Agent or CI job' })
+  const main = await screen.findByRole('button', { name: 'Main PC, Main, Some load, 1 running Agent or CI job' })
   act(() => onlineManager.setOnline(false))
   expect(main).toHaveAccessibleName('Main PC, Main, Status unknown')
   expect(within(main).queryByText('1')).not.toBeInTheDocument()
   act(() => onlineManager.setOnline(true))
   f.activity.computers[0]!.online = false
   await act(() => f.client.invalidateQueries({ queryKey: ['computer-activity'] }))
-  expect(await screen.findByRole('link', { name: 'Main PC, Main, Offline' })).toBe(main)
+  expect(await screen.findByRole('button', { name: 'Main PC, Main, Offline' })).toBe(main)
   expect(within(main).queryByText('1')).not.toBeInTheDocument()
 })
 it('keeps the running badge and skips the start pulse when reduced motion is preferred', async () => {
   vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })))
   const f = computersFixture(inRouter().element)
-  await screen.findByRole('link', { name: 'Main PC, Main, Plenty of capacity' })
+  await screen.findByRole('button', { name: 'Main PC, Main, Plenty of capacity' })
   f.activity.computers[0]!.jobs.push({ id: 'job-1', name: 'Web build', workspaceId: 'workspace-1', workspaceName: 'Store',
     phase: 'running', startedAt: null })
   await act(() => f.client.invalidateQueries({ queryKey: ['computer-activity'] }))
-  const main = await screen.findByRole('link', { name: 'Main PC, Main, Some load, 1 running Agent or CI job' })
+  const main = await screen.findByRole('button', { name: 'Main PC, Main, Some load, 1 running Agent or CI job' })
   expect(within(main).getByText('1')).toBeInTheDocument()
   expect(animate).not.toHaveBeenCalled()
 })
