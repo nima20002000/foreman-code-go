@@ -7,6 +7,7 @@ import type { RegisteredSourceRootPort, AuthorizedSourceRoot } from './admission
 import type { WorkspaceRootHostPort } from './rootPolicyPorts.js'
 import type { WorkspaceRootPolicy } from '@foreman-code/contracts/workspace-root-policies'
 import type { PostgresWorkspaceRootPolicies } from './rootPolicies.js'
+import { authorizeSource } from './authority.js'
 
 /** Source linkage consumes the ONE generic workspace root authority. */
 export class RegisteredWorkspaceSourceRoots implements RegisteredSourceRootPort {
@@ -15,8 +16,9 @@ export class RegisteredWorkspaceSourceRoots implements RegisteredSourceRootPort 
   async authorize(sql: Pick<pg.PoolClient, 'query'>, principal: ManagementPrincipal,
     input: { workspaceId: string; selection: SourceRootSelection; accessMode: 'read-only' | 'exclusive-write' }): Promise<AuthorizedSourceRoot> {
     const policy = await this.policies.resolve(sql, principal, { workspaceId: input.workspaceId, ...input.selection })
+    const { ownerId } = await authorizeSource(sql, principal, 'source_roots:bind', input.workspaceId)
     if (input.accessMode === 'exclusive-write' && policy.accessMode !== 'read-write') throw new DomainError('ROOT_ACCESS_DENIED', 'The registered root policy permits only a read-only source view.', 403)
-    const root: AuthorizedSourceRoot = { workspaceId: input.workspaceId, selection: input.selection, ownerPrincipalId: policy.ownerPrincipalId,
+    const root: AuthorizedSourceRoot = { workspaceId: input.workspaceId, selection: input.selection, ownerPrincipalId: ownerId,
       mainId: policy.hostRef.mainId, deviceId: policy.hostRef.kind === 'device' ? policy.hostRef.deviceId : null,
       workerInstallationId: policy.registration?.workerInstallationId ?? null, keyRevision: policy.registration?.keyRevision ?? null,
       authorizationRevision: policy.registration?.authorizationRevision ?? null,
