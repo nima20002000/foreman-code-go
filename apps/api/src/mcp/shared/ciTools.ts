@@ -54,6 +54,7 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'Agent CI readback and cancellation are limited to tickets from that execution. '
   + 'Agent requests publish their persisted lifecycle into their Run’s activities and Board activity snapshot. '
   + '(group=true includes bounded pages and individual cursors for every part); ci_cancel stops one ticket. '
+  + 'run_stop cancels every non-terminal ticket created by that Run’s Agents and its remote provider run, with audit. '
   + 'Agents are restricted to their active Run workspace. Computers without a GitHub login report it in ci_computers_list.'
 
 export const CI_TOOLS = ['ci_run', 'ci_get', 'ci_computers_list', 'ci_cancel', 'ci_logs_read', 'ci_list'] as const
