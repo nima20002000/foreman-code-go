@@ -107,7 +107,7 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
   const saved = options.agent ? makeCurrentWorkflowFixture(randomUUID()) : undefined
   if (saved) {
     saved.configurations = saved.configurations.map(configuration => ({ ...configuration,
-      graphqlTools: ['context_get' as const, 'ci_run' as const, 'ci_get' as const] }))
+      graphqlTools: ['context_get' as const, 'ci_run' as const, 'ci_get' as const, 'ci_logs_read' as const] }))
   }
   const runtime = saved ? await codexApprovalRuntime('user', { fixture: saved }) : undefined
   const db = runtime?.db ?? database
@@ -450,15 +450,67 @@ it('shares split suite and group log readback between authenticated HTTP and MCP
     expect(result.group?.state).toBe('failed')
     expect(result.partitions!.map(run => run.part).sort()).toEqual(['build-api', 'build-other'])
     expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))).toEqual(result)
-    const httpLogs = await f.app.inject({ method: 'GET', url: `${url}/${started.ticketId}/logs?group=true&maxBytes=4096`, headers })
+    const httpLogs = await f.app.inject({ method: 'GET', url: `${url}/${started.ticketId}/logs?group=true&maxBytes=500000`, headers })
     expect(httpLogs.statusCode).toBe(200)
     const mcpLogs = CiLogsOutputSchema.parse(await f.value(f.operator, 'ci_logs_read', {
-      ticketId: started.ticketId, group: true, maxBytes: 4096,
+      ticketId: started.ticketId, group: true, maxBytes: 500_000,
     }))
+    expect(mcpLogs.maxBytes).toBe(65_536)
+    expect(mcpLogs.parts!.every(part => part.maxBytes === 32_768)).toBe(true)
     expect(CiLogsOutputSchema.parse(httpLogs.json())).toEqual(mcpLogs)
     expect(mcpLogs.parts!.map(part => part.text).sort()).toEqual(['result 0\n', 'result 1\n'])
   } finally { await f.close() }
 })
+
+it('clamps failed unit log pages for Agents, Operators and HTTP while preserving access checks', async () => {
+  const f = await fixture({ agent: true })
+  try {
+    const agent = f.agent!
+    const started = CiRunOutputSchema.parse(decodeMcpToolResult(await agent.callTool({ name: 'ci_run', arguments: {
+      suite: 'unit', commandId: 'log-pages', commit: 'a'.repeat(40), scope: 'affected',
+      files: ['apps/api/test/example.test.ts'],
+    } })))
+    await f.ci.dispatch()
+    const log = 'x'.repeat(70_000) + '\nunit failed\n'
+    f.finish(started.ticketId, 1, log)
+    const failed = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    expect(failed.run.state).toBe('failed')
+    expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
+      [started.ticketId])).rows[0]!.record).toEqual(failed.run)
+    const credential = await f.credential(CI_GET_ACTIONS)
+    const headers = { authorization: `Bearer ${credential.token}` }
+    const url = `/api/management/workspaces/${f.workspaceId}/ci/${started.ticketId}/logs`
+    const input = { ticketId: started.ticketId, afterOffset: 0, maxBytes: 500_000 }
+    const first = CiLogsOutputSchema.parse(await f.value(f.operator, 'ci_logs_read', input))
+    expect(first).toEqual({ text: log.slice(0, 65_536), maxBytes: 65_536, nextOffset: 65_536, logBytes: log.length })
+    const agentResult = await agent.callTool({ name: 'ci_logs_read', arguments: input })
+    expect(agentResult.isError).not.toBe(true)
+    expect(CiLogsOutputSchema.parse(decodeMcpToolResult(agentResult))).toEqual(first)
+    const http = await f.app.inject({ method: 'GET', url: `${url}?afterOffset=0&maxBytes=500000`, headers })
+    expect(http.statusCode).toBe(200)
+    expect(CiLogsOutputSchema.parse(http.json())).toEqual(first)
+    const next = CiLogsOutputSchema.parse(await f.value(f.operator, 'ci_logs_read', {
+      ...input, afterOffset: first.nextOffset,
+    }))
+    expect(first.text + next.text).toBe(log)
+    expect(next.nextOffset).toBe(log.length)
+    const tail = CiLogsOutputSchema.parse(await f.value(f.operator, 'ci_logs_read', {
+      ticketId: started.ticketId, maxBytes: 500_000,
+    }))
+    expect(tail).toEqual({ text: log.slice(-65_536), maxBytes: 65_536, nextOffset: log.length, logBytes: log.length })
+    const small = CiLogsOutputSchema.parse(await f.value(f.operator, 'ci_logs_read', { ...input, maxBytes: 10 }))
+    expect(small).toEqual({ text: log.slice(0, 10), maxBytes: 10, nextOffset: 10, logBytes: log.length })
+    const denied = await f.connect(CI_GET_ACTIONS, { workspaceIds: [randomUUID()] })
+    expect((await f.call(denied, 'ci_logs_read', input)).isError).toBe(true)
+    const deniedCredential = await f.credential(['jobs:cancel'])
+    expect((await f.app.inject({ method: 'GET', url: `${url}?maxBytes=500000`,
+      headers: { authorization: `Bearer ${deniedCredential.token}` } })).statusCode).toBe(403)
+    for (const maxBytes of [0, -1, 1.5]) {
+      expect((await f.call(f.operator, 'ci_logs_read', { ...input, maxBytes })).isError).toBe(true)
+      expect((await f.app.inject({ method: 'GET', url: `${url}?maxBytes=${maxBytes}`, headers })).statusCode).toBe(400)
+    }
+  } finally { await f.close() }
+}, 60_000)
 
 it('splits affected unit files without sending an empty part to a computer', async () => {
   const f = await fixture()
@@ -701,7 +753,7 @@ it('splits integration over two build computers, reports progress and logs, and 
     const failed = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.partitions![1]!.ticketId }))
     expect(failed.run).toMatchObject({ state: 'failed', exitCode: 1 })
     expect(CiLogsOutputSchema.parse(await f.value(f.operator, 'ci_logs_read', { ticketId: started.partitions![1]!.ticketId,
-      afterOffset: 5 }))).toEqual({ text: 'apps/api/test/b.integration.test.ts\n', nextOffset: 41, logBytes: 41 })
+      afterOffset: 5 }))).toEqual({ text: 'apps/api/test/b.integration.test.ts\n', nextOffset: 41, logBytes: 41, maxBytes: 65_536 })
   } finally { await f.close() }
 })
 

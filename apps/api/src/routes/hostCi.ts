@@ -34,7 +34,7 @@ export function registerHostCiRoutes(app: FastifyInstance, services: { ci?: Host
     CiGetOutputSchema.parse(await ci().get(requirePrincipal(request), request.params)))
   const logsQuery = CiLogsInputSchema.omit({ ticketId: true }).extend({
     afterOffset: z.coerce.number().int().nonnegative().optional(),
-    maxBytes: z.coerce.number().int().min(1).max(65_536).optional(),
+    maxBytes: z.coerce.number().pipe(CiLogsInputSchema.shape.maxBytes.unwrap()).optional(),
     group: z.enum(['true', 'false']).transform(value => value === 'true').optional(),
   })
   app.get<{ Params: { workspaceId: string; ticketId: string }; Querystring: unknown }>(`${root}/:ticketId/logs`, async request =>

@@ -2,7 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/server'
 import { CiRunInputSchema, OperatorCiRunInputSchema, CiRunOutputSchema,
   CiGetInputSchema, OperatorCiGetInputSchema, CiGetOutputSchema,
   CiCancelInputSchema, OperatorCiCancelInputSchema, CiCancelOutputSchema,
-  CiLogsInputSchema, OperatorCiLogsInputSchema, CiLogsOutputSchema, CiComputersOutputSchema,
+  CI_LOG_MAX_BYTES, CiLogsInputSchema, OperatorCiLogsInputSchema, CiLogsOutputSchema, CiComputersOutputSchema,
   OperatorCiListInputSchema, CiListOutputSchema } from '@foreman-code/contracts'
 import { z } from 'zod'
 import type { ManagementPrincipal, ManagementAction } from '@foreman-code/contracts/management'
@@ -43,7 +43,9 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'Poll every ticket in partitions. Retrying commandId returns the '
   + 'original tickets. ci_get returns state (queued, starting, running, passed, failed, canceled, lost), current step, '
   + 'computer, part, shard, exit code, group state and a 32 KiB log tail; ci_logs_read pages the full log '
-  + 'for authorized callers. '
+  + `for authorized callers. maxBytes defaults to ${CI_LOG_MAX_BYTES} bytes and larger requests are clamped to `
+  + `that maximum; responses report the applied maxBytes and nextOffset. group=true divides the capped budget `
+  + 'between parts and reports each part’s maxBytes and nextOffset. '
   + 'ci_get reads the persisted background refresh without waiting for dispatch or build computers. '
   + 'Status and the log tail update on the dispatcher cadence (normally five seconds). Pre-upgrade tickets '
   + 'can have an empty cached tail; ci_logs_read still reads their logs. '

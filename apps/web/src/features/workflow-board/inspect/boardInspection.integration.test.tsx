@@ -598,7 +598,7 @@ describe('CI server on the Board', () => {
           return tests.length ? [{ ...file, tests }] : []
         }) } })
       }),
-      http.get(`${ci}/${ticket}/logs`, () => { logReads++; return HttpResponse.json({ text: '::step unit-api\nTests  1 failed | 1 passed', nextOffset: 40, logBytes: 40 }) }),
+      http.get(`${ci}/${ticket}/logs`, () => { logReads++; return HttpResponse.json({ text: '::step unit-api\nTests  1 failed | 1 passed', nextOffset: 40, logBytes: 40, maxBytes: 65_536 }) }),
     )
     const { cache } = await mount(href(scope))
     const serverNode = async (label: RegExp) => (await within(pinnedCanvas()).findByRole('button', { name: label })).closest<HTMLElement>('.ci-server-node')!

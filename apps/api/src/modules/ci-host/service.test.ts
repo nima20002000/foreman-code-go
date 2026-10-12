@@ -148,7 +148,7 @@ it.each(['lint', 'integration'] as const)('serves authenticated MCP %s polling f
   }
 })
 
-it.each([10, 40_000])('persists a bounded %i-byte log with terminal status across service restart', async length => {
+it.each([10, 40_000, 70_000])('persists a bounded %i-byte log with terminal status across service restart', async length => {
   const f = fixture()
   const log = 'x'.repeat(length) + '\nfinished\n'
   const state: CiHostRun = {
@@ -167,6 +167,14 @@ it.each([10, 40_000])('persists a bounded %i-byte log with terminal status acros
   expect(result.run.state).toBe('passed')
   expect(result.logTail).toBe(log.slice(-32_768))
   expect(f.endpoint.request).not.toHaveBeenCalled()
+  const page = await f.create().logs(caller, {
+    workspaceId: 'workspace', ticketId: state.runId, afterOffset: 0, maxBytes: 500_000,
+  })
+  expect(page).toEqual({ text: log.slice(0, 65_536), maxBytes: 65_536,
+    nextOffset: Math.min(log.length, 65_536), logBytes: log.length })
+  expect(f.endpoint.request).toHaveBeenCalledWith(expect.anything(), {
+    operation: 'read', runId: state.runId, afterOffset: 0, maxBytes: 65_536,
+  })
 })
 
 it('checks worker ownership before returning cached logs or group data', async () => {
