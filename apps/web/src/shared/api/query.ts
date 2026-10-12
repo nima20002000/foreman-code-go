@@ -168,12 +168,6 @@ export function cachedWorkflowName(client: ReturnType<typeof useQueryClient>, wo
 export function usePrefetchBoard() {
   const client = useQueryClient()
   return {
-    board: (workspaceId: string, workflowId?: string) => {
-      void client.prefetchQuery({ queryKey: queryKeys.workspaceDetails(workspaceId), staleTime: 10_000,
-        queryFn: ({ signal }) => getWorkspaceDetails({ workspaceId }, { signal }) }).catch(() => undefined)
-      if (workflowId) void client.prefetchQuery({ queryKey: queryKeys.managedWorkflow(workspaceId, workflowId), staleTime: 10_000,
-        queryFn: ({ signal }) => apiClient.getManagedWorkflow(workspaceId, workflowId, { signal }) }).catch(() => undefined)
-    },
     workspace: (workspaceId: string) => {
       void client.prefetchQuery({ queryKey: queryKeys.managedWorkspace(workspaceId), staleTime: 10_000,
         queryFn: ({ signal }) => getManagedWorkspace(workspaceId, { signal }) }).catch(() => undefined)
