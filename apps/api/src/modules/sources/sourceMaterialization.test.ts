@@ -13,13 +13,24 @@ import { captureExplicitSource, captureGitSource, qualifiedGit, type SourceSnaps
 import type { SourceManifest, RootBinding } from '@foreman-code/contracts/source-materialization'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
 import type { MaterializationAttempt } from './ports.js'
-const diskState = vi.hoisted(() => ({ full: false }))
+const diskState = vi.hoisted(() => ({ full: false, syncFailure: false }))
+vi.mock('./sourceTreeSync.js', async original => {
+  const actual = await original<typeof import('./sourceTreeSync.js')>()
+  return { syncSourceTree: async (...args: Parameters<typeof actual.syncSourceTree>) => {
+    if (diskState.syncFailure) throw new Error('Filesystem flush failed')
+    return actual.syncSourceTree(...args)
+  } }
+})
 vi.mock('node:fs/promises', async (original) => {
   const actual = await original<typeof import('node:fs/promises')>()
   return { ...actual, statfs: async (...args: Parameters<typeof actual.statfs>) => diskState.full ? { bavail: 0n, bsize: 4096n } : actual.statfs(...args) }
 })
 const roots: string[] = []
-afterEach(async () => { diskState.full = false; for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
+afterEach(async () => {
+  diskState.full = false
+  diskState.syncFailure = false
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
+})
 async function fixture() {
   const root = await mkdtemp('/tmp/w09-source-'); roots.push(root); await chmod(root, 0o700)
   const bytes = Buffer.from('accepted source\n')
@@ -36,6 +47,18 @@ const sink = (): SourceSnapshotSink & { committed: SourceManifest[]; content: Ma
   const committed: SourceManifest[] = [], content = new Map<string, Buffer>()
   return { committed, content, async write(_id, entry, bytes) { content.set(entry.path, Buffer.from(bytes)) }, async commit(manifest) { committed.push(manifest) }, async abort() { content.clear() } }
 }
+it('retains an uncertain claim without activating a receipt when the filesystem flush fails', async () => {
+  const f = await fixture()
+  const materializer = new PrivateSourceMaterializer({ read: async () => f.bytes }, async () => {})
+  diskState.syncFailure = true
+  await expect(materializer.prepare(f)).rejects.toThrow('Filesystem flush failed')
+  const directories = await readdir(f.root, { withFileTypes: true })
+  const reservation = directories.find(entry => entry.isDirectory())!
+  expect(await readdir(join(f.root, reservation.name))).toEqual(['staging'])
+  expect(await readFile(join(f.root, reservation.name, 'staging/src/app.ts'))).toEqual(f.bytes)
+  diskState.syncFailure = false
+  await expect(materializer.prepare(f)).rejects.toMatchObject({ code: 'SOURCE_MATERIALIZATION_UNCERTAIN' })
+})
 describe('source manifest policy', () => {
   it('pins a deterministic manifest independent of caller property order', () => {
     const content = Buffer.from('source fixture\n')

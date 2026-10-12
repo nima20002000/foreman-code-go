@@ -9,6 +9,8 @@ import { readSourceStorageCapacity } from './storageCapacity.js'
 import { SourceError, sourcePath, verifySourceBytes, verifySourceManifest } from './manifest.js'
 import { measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
 import type { SourceSnapshotSink } from './capture.js'
+import { copySourceTree } from './copySourceTree.js'
+import { openSnapshotReference } from './snapshotReference.js'
 import type { SourceByteReader, SourceSnapshotPin } from './ports.js'
 
 async function removeSnapshotDirectory(parent: FileHandle, name: string): Promise<void> {
@@ -310,5 +312,32 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
         } finally { await parent.close() }
       } finally { await data.close() }
     } finally { await snapshot.close(); await root.close() }
+  }
+
+  async copyTo(input: SourceManifest, target: FileHandle, fileMode: 0o400 | 0o600, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
+    const { root, snapshot } = await this.directory(input.snapshotId, false)
+    try {
+      const stored = await this.readManifest(snapshot, input.snapshotId)
+      if (!isDeepStrictEqual(stored.manifest, input)) {
+        throw new SourceError('SOURCE_PIN_CONFLICT', 'Source copy requires the approved manifest.')
+      }
+      const source = await openChildDirectory(snapshot, 'bytes')
+      try {
+        await copySourceTree({ source, target, manifest: input, fileMode, signal })
+        if ((await this.readManifest(snapshot, input.snapshotId)).identity !== stored.identity) {
+          throw new SourceError('SOURCE_PIN_CONFLICT', 'Canonical source manifest changed during the copy.')
+        }
+      } finally { await source.close() }
+    } finally { await snapshot.close(); await root.close() }
+  }
+
+  async openReference(manifest: SourceManifest, signal: AbortSignal) {
+    signal.throwIfAborted()
+    const root = await openPrivateRoot(this.canonicalRoot)
+    try {
+      const snapshotReference = { canonicalStorePath: this.canonicalRoot, storeIdentity: await identity(root) }
+      return { tree: await openSnapshotReference(snapshotReference, manifest, signal), snapshotReference }
+    } finally { await root.close() }
   }
 }

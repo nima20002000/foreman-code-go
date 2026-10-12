@@ -32,11 +32,33 @@ const ObjectsSchema = z.array(z.object({
   bytes: z.string().max(3 * 1024 * 1024),
 }).strict()).min(2).max(SOURCE_LIMITS.entries * 32 + 1)
 
-/** Delivers only the approved commit, trees and blobs; repository history is not source approval. */
-export async function importGitSourceObjects(input: {
+type SourceObjectImport = {
   ports: GitWorktreePorts; repository: string; manifest: SourceManifest; metadata: Uint8Array;
   blobPath(path: string): Promise<string>; signal: AbortSignal;
-}): Promise<string> {
+}
+const imports = new Map<string, Promise<string>>()
+
+/** Concurrent preparations of one verified snapshot share its Git object import. */
+export async function importGitSourceObjects(input: SourceObjectImport): Promise<string> {
+  input.signal.throwIfAborted()
+  const metadata = input.manifest.git?.metadata
+  if (!metadata) throw new SourceError('SOURCE_GIT_OBJECT_UNAVAILABLE', 'Approved Git metadata is missing.')
+  verifySourceBytes({ ...metadata, path: 'git-objects.json', kind: 'file', executable: false }, input.metadata)
+  const key = JSON.stringify([input.ports.cloneDirectory(input.repository), input.repository, input.manifest.manifestDigest])
+  const existing = imports.get(key)
+  const pending = existing ?? importSourceObjects({ ...input, signal: AbortSignal.timeout(SOURCE_LIMITS.preparationMs) })
+  if (!existing) imports.set(key, pending)
+  try {
+    const clone = await pending
+    input.signal.throwIfAborted()
+    return clone
+  } finally {
+    if (!existing) imports.delete(key)
+  }
+}
+
+/** Delivers only the approved commit, trees and blobs; repository history is not source approval. */
+async function importSourceObjects(input: SourceObjectImport): Promise<string> {
   const { ports, manifest, signal } = input
   const provenance = manifest.git
   if (!provenance?.metadata) throw new SourceError('SOURCE_GIT_OBJECT_UNAVAILABLE', 'Approved Git metadata is missing.')
