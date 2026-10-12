@@ -680,5 +680,8 @@ export class RemoteExecutionHost {
     this.bindings.delete(operationId)
   }
   async drain() { await Promise.all([...this.residents.values()].flatMap(resident => resident.turn ? [resident.turn] : [])) }
+  async waitForSettlement(operationId: string): Promise<void> {
+    await this.residents.get(operationId)?.settlementTask
+  }
   status(operationId: string) { return this.ports.journal.status(operationId) }
 }
