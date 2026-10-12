@@ -59,12 +59,18 @@ describe('Persisted execution activity through HTTP and authenticated MCP', { ti
     await database.pool.query(`update harness_executions set record=record || $2::jsonb where id=$1`,
       [candidate.id, JSON.stringify({ state: 'running', nativeSessionId: 'thread' })])
     const transfers: unknown[][] = []
+    let queryFailure: string | undefined
     const observedPool = new Proxy(database.pool, {
       get(target, property) {
         if (property === 'query') return async (...args: unknown[]) => {
-          const result = await Reflect.apply(target.query, target, args) as pg.QueryResult
-          transfers.push(result.rows)
-          return result
+          try {
+            const result = await Reflect.apply(target.query, target, args) as pg.QueryResult
+            transfers.push(result.rows)
+            return result
+          } catch (error) {
+            queryFailure = error instanceof Error ? error.message : String(error)
+            throw error
+          }
         }
         const value: unknown = Reflect.get(target, property)
         return typeof value === 'function' ? value.bind(target) : value
@@ -101,7 +107,7 @@ describe('Persisted execution activity through HTTP and authenticated MCP', { ti
     })
     const http = async (request: ActivityRequest = {}) => {
       const response = await httpResponse(request)
-      expect(response.statusCode, response.body).toBe(200)
+      expect(response.statusCode, queryFailure ?? response.body).toBe(200)
       expect(Buffer.byteLength(response.body)).toBeLessThanOrEqual(256 * 1024)
       return AgentChatExecutionActivityPageSchema.parse(response.json())
     }
