@@ -6,7 +6,7 @@ import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type pg from 'pg'
 import { RunWorktreeSchema, type RunWorktree, type AcceptedWorkflowRunV3 } from '@foreman-code/contracts/wave25'
-import { systemGitWorktreePorts, type GitWorktreePorts } from '../sources/gitWorktree.js'
+import { ensureWorktreeGitIdentity, systemGitWorktreePorts, type GitWorktreePorts } from '../sources/gitWorktree.js'
 import { DomainError } from '../errors.js'
 
 type Sql = Pick<pg.PoolClient, 'query'>
@@ -81,6 +81,7 @@ export class RunWorktrees {
   async verify(tree: RunWorktree, signal = AbortSignal.timeout(10_000)): Promise<void> {
     const branch = await runWorkspaceGit(this.ports, ['symbolic-ref', '--quiet', '--short', 'HEAD'], tree.workingDirectory, signal)
     if (branch !== tree.branch) throw new DomainError('RUN_WORKTREE_CHANGED', 'The Run worktree is on another branch.', 409)
+    await ensureWorktreeGitIdentity(this.ports, tree.workingDirectory, signal)
   }
 
   private async read(sql: Sql, runId: string) {

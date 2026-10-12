@@ -1,5 +1,5 @@
 import type { MaterializationReceipt, SourceWorktreeRequest } from '@foreman-code/contracts/source-materialization'
-import { assertWorktreeRequest, systemGitWorktreePorts, type GitWorktreePorts } from './gitWorktree.js'
+import { assertWorktreeRequest, ensureWorktreeGitIdentity, systemGitWorktreePorts, type GitWorktreePorts } from './gitWorktree.js'
 import { SourceError } from './manifest.js'
 import { sourceWorkingTreePath } from './sourceTreePaths.js'
 
@@ -36,10 +36,12 @@ export async function verifyWorktreeBranch(receipt: MaterializationReceipt,
   options: { git?: GitWorktreePorts; signal?: AbortSignal | undefined } = {}): Promise<void> {
   if (!receipt.worktree) return
   const git = options.git ?? systemGitWorktreePorts()
+  const signal = options.signal ?? AbortSignal.timeout(10_000)
   const result = await git.git(['symbolic-ref', '--quiet', '--short', 'HEAD'], {
-    cwd: sourceWorkingTreePath(receipt), signal: options.signal ?? AbortSignal.timeout(10_000),
+    cwd: sourceWorkingTreePath(receipt), signal,
   })
   if (result.code !== 0 || result.stdout.trim() !== receipt.worktree.branch) {
     throw new SourceError('SOURCE_WORKTREE_CONFLICT', 'The retained Agent worktree is on another branch.')
   }
+  await ensureWorktreeGitIdentity(git, sourceWorkingTreePath(receipt), signal)
 }
