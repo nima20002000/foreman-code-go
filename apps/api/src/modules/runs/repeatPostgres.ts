@@ -33,6 +33,7 @@ import { finalizeRetainedRemoteReviewerLocked } from '../interactions/retainedRe
 import { visitRepeatNativeAttemptsLocked, type RepeatNativeAttemptSelection } from './repeatNativeAttempts.js'
 import { compileExecutionTopology } from './topology.js'
 import { assertWorkflowExecutionCapacityLocked } from './workflowExecutionBudget.js'
+import { nextIntervalCheckAt, readIntervalCheckFacts } from './intervalChecks.js'
 import { captureRepeatNativeEvidence, repeatLaunchClaim, repeatPossibleSubmissionLocked, requireRepeatNativeHooks,
   type RepeatLaunchPaths, type RepeatNativeBoundaryEvidence, type RepeatNativeChange,
   type RepeatNativeEvidence, type RepeatNativeLockedHooks } from './repeatNativeRepository.js'
@@ -904,32 +905,18 @@ export class RepeatRunRepository {
       this.active(context)
       const node = context.version.definition.nodes.find((item) => item.id === nodeId)
       if (!node || node.kind === 'job' || !node.interval || blockForNode(context.version, nodeId)) return repeatConflict('TICK_NODE_CONFLICT')
-      const facts = (await context.sql.query<{ open_id: string | null; open_tick: boolean | null; last_finished: string | null
-        last_tick: number; graph_open: boolean }>(`select
-          (select e.id from harness_executions e where e.run_id=$1 and e.workflow_node_id=$2
-            and e.record->>'state'<>'completed' order by e.tick_index nulls first,e.id limit 1) as open_id,
-          (select e.tick_index is not null from harness_executions e where e.run_id=$1 and e.workflow_node_id=$2
-            and e.record->>'state'<>'completed' order by e.tick_index nulls first,e.id limit 1) as open_tick,
-          (select max(e.record->>'finishedAt') from harness_executions e where e.run_id=$1 and e.workflow_node_id=$2
-            and e.record->>'state'='completed') as last_finished,
-          coalesce((select max(e.tick_index) from harness_executions e where e.run_id=$1 and e.workflow_node_id=$2),0) as last_tick,
-          case when $3 then exists(select 1 from run_work_activations a where a.run_id=$1 and a.workflow_node_id=$2
-              and a.state<>'completed')
-            else not exists(select 1 from run_repeat_resolutions r where r.run_id=$1 and r.occurrence_key=''
-              and r.workflow_node_id=$2) end as graph_open`,
-      [context.scope.runId, nodeId, Boolean(context.version.definition.handoffs)])).rows[0]!
-      if (facts.open_id) {
-        if (!facts.open_tick) return { kind: 'busy' }
-        await this.recordedEffect(context, 'input.bind', facts.open_id)
-        return { kind: 'busy', execution: (await this.execution(context, facts.open_id)).execution }
+      const facts = await readIntervalCheckFacts(context.sql, context.scope.runId, nodeId, Boolean(context.version.definition.handoffs))
+      if (facts.openId) {
+        if (!facts.openTick) return { kind: 'busy' }
+        await this.recordedEffect(context, 'input.bind', facts.openId)
+        return { kind: 'busy', execution: (await this.execution(context, facts.openId)).execution }
       }
-      if (facts.graph_open || !facts.last_finished) return { kind: 'wait', dueAt: null }
-      const dueAt = new Date(Date.parse(facts.last_finished) + node.interval.everySeconds * 1000).toISOString()
-      if (dueAt > context.now) return { kind: 'wait', dueAt }
+      const dueAt = nextIntervalCheckAt(facts, node.interval.everySeconds)
+      if (!dueAt || dueAt > context.now) return { kind: 'wait', dueAt }
       const ref: RepeatNodeRef = { nodeId, occurrence: null }
       const execution = HarnessExecutionSchema.parse(candidate())
       this.assertCandidate(context, ref, execution, 1)
-      const tickIndex = facts.last_tick + 1
+      const tickIndex = facts.lastTick + 1
       const input = { executionSemanticsVersion: 3, runInput: context.hooks.run.input, occurrence: null, entry: null,
         predecessors: [], tick: { index: tickIndex, everySeconds: node.interval.everySeconds } }
       const queued = HarnessExecutionSchema.parse({ ...execution, input })

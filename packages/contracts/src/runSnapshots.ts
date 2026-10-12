@@ -96,8 +96,17 @@ export const RunBoardSnapshotSchema = z.discriminatedUnion("kind", [
 ]).readonly();
 export type RunBoardSnapshot = z.infer<typeof RunBoardSnapshotSchema>;
 export const RunBoardSnapshotGetInputSchema = z.object({ ...Run }).strict();
+/** Live state of one Agent node's interval checks in this Run. nextCheckAt is null while a check or the
+ * node's graph work is running, before its first finished execution, and once the Run is not running. */
+export const RunIntervalCheckSchema = z.object({
+  nodeId: GraphIdSchema, everySeconds: z.number().int().positive(), checks: z.number().int().nonnegative(),
+  running: z.boolean(), nextCheckAt: TimestampSchema.nullable(),
+}).strict();
+export type RunIntervalCheck = z.infer<typeof RunIntervalCheckSchema>;
 export const RunBoardSnapshotGetResultSchema = z.object({ snapshot: RunBoardSnapshotSchema,
-  activitySnapshot: ActivitySnapshotV1Schema.optional() }).strict().superRefine((result, context) => {
+  activitySnapshot: ActivitySnapshotV1Schema.optional(),
+  /** Present when the pinned version has Agent nodes with interval checks. */
+  intervalChecks: z.array(RunIntervalCheckSchema).max(1_000).optional() }).strict().superRefine((result, context) => {
   const activity = result.activitySnapshot;
   if (!activity) return;
   const saved = result.snapshot;

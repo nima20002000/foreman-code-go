@@ -12,6 +12,7 @@ import { DomainError } from '../errors.js'
 import { decodeRunHistoryCursor, encodeRunHistoryCursor } from './historyCursor.js'
 import { WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { readRunActivitySnapshot } from './activitySnapshot.js'
+import { readRunIntervalChecks } from './intervalChecks.js'
 
 type WorkflowScope = { workspaceId: string; workflowId: string }
 
@@ -132,8 +133,9 @@ export class RunHistoryService {
     return this.read(principal, (candidate) => requireAuthorization(candidate, 'runs:read', resource), async (client) => {
       // Check ALL physical identifiers. An authorized workflow ID cannot be used
       // as a wrapper around an unrelated/forged Run ID, including legacy Runs.
-      const result = await client.query<{ workflow_version_id: string; snapshot_id: string | null; snapshot: unknown }>(`
-        select r.workflow_version_id, s.run_id as snapshot_id, s.record as snapshot
+      const result = await client.query<{ workflow_version_id: string; snapshot_id: string | null; snapshot: unknown
+        execution_state: string }>(`
+        select r.workflow_version_id, s.run_id as snapshot_id, s.record as snapshot, r.execution_state
         from runs r left join run_board_snapshots s on s.run_id=r.id
         where r.workspace_id=$1 and r.workflow_id=$2 and r.id=$3`,
       [input.workspaceId, input.workflowId, input.runId])
@@ -150,14 +152,16 @@ export class RunHistoryService {
       const ci = await client.query(`select 1 from ci_runs c join harness_executions e
         on e.id=c.record#>>'{initiator,executionId}'
         where e.run_id=$1 and c.workspace_id=$2 limit 1`, [input.runId, input.workspaceId])
-      if (!ci.rows.length) return RunBoardSnapshotGetResultSchema.parse({ snapshot })
       const versionRow = (await client.query<{ record: unknown }>(
         'select record from workflow_versions where id=$1 and workspace_id=$2 and workflow_id=$3',
         [snapshot.workflowVersionId, input.workspaceId, input.workflowId])).rows[0]
       const version = WorkflowVersionV3Schema.parse(versionRow?.record)
+      const intervalChecks = version.definition.nodes.some(node => node.kind !== 'job' && node.interval)
+        ? await readRunIntervalChecks(client, input.runId, row.execution_state, version) : undefined
+      if (!ci.rows.length) return RunBoardSnapshotGetResultSchema.parse({ snapshot, ...(intervalChecks ? { intervalChecks } : {}) })
       const activitySnapshot = await readRunActivitySnapshot(client,
         { ...input, workflowVersionId: snapshot.workflowVersionId }, version)
-      return RunBoardSnapshotGetResultSchema.parse({ snapshot, activitySnapshot })
+      return RunBoardSnapshotGetResultSchema.parse({ snapshot, activitySnapshot, ...(intervalChecks ? { intervalChecks } : {}) })
     })
   }
 }

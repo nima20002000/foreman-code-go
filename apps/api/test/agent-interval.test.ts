@@ -8,6 +8,7 @@ import { expect, it } from 'vitest'
 import { buildApp } from '../src/app.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
+import { RunHistoryService } from '../src/modules/runs/history.js'
 import { codexApprovalRuntime } from './helpers/codexApprovalRuntime.js'
 
 function deferred<T = void>() {
@@ -89,6 +90,13 @@ it('re-activates an interval node in its own session without routing and stops w
     ])
     expect(status.nodes[1]!.state).not.toBe('completed')
 
+    // The Board's live Run read shows the running check.
+    const history = new RunHistoryService(runtime.db.pool)
+    const viewer = (await runtime.access.issue({ name: 'Board viewer', audience: 'operator', expiresAt: new Date(Date.now() + 600_000),
+      grants: [{ actions: ['runs:read'], scope: { workspaceIds: [f.scope.workspaceId] } }] })).principal
+    const board = () => history.snapshot(viewer, { workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId, runId: f.run.id })
+    expect((await board()).intervalChecks).toEqual([{ nodeId: watcher.id, everySeconds: 10, checks: 1, running: true, nextCheckAt: null }])
+
     // A node without interval checks cannot read Run status, and the denial is audited.
     const denied = await connect(workerRun.id)
     expect((await denied.client.listTools()).tools.map(tool => tool.name)).not.toContain('run_status_get')
@@ -108,6 +116,7 @@ it('re-activates an interval node in its own session without routing and stops w
     expect(after.filter(row => row.tick !== null).every(row => row.state === 'completed')).toBe(true)
     expect((await runtime.db.pool.query(`select execution_state as state,record->>'outcome' as outcome from runs where id=$1`,
       [f.run.id])).rows[0]).toEqual({ state: 'completed', outcome: 'succeeded' })
+    expect((await board()).intervalChecks).toEqual([{ nodeId: watcher.id, everySeconds: 10, checks: 1, running: false, nextCheckAt: null }])
     const resolutions = (await runtime.db.pool.query('select workflow_node_id as node,execution_id as execution from run_repeat_resolutions where run_id=$1 order by workflow_node_id',
       [f.run.id])).rows
     expect(resolutions).toEqual(expect.arrayContaining([{ node: watcher.id, execution: graphWatcher.id },
