@@ -86,6 +86,11 @@ function isRestartCancellation(error: unknown, signal?: AbortSignal): boolean {
     && error.cleanup === 'confirmed' && error.cause === reason
 }
 
+function isCredentialAuthorityLost(error: unknown): boolean {
+  return error instanceof DomainError && ([401, 403].includes(error.status)
+    || error.code === 'WORKER_CREDENTIAL_NOT_RENEWABLE')
+}
+
 interface OwnedNativeSession {
   execution: HarnessExecution
   context: NativeManagerResolutionContext
@@ -1256,7 +1261,13 @@ export class ApprovalExecutionCoordinator {
     owner.assertOwned()
     for (const owned of active) await this.budgets.beginWait(owned.execution.id)
     owner.assertOwned()
-    for (const owned of active) await this.renewForRestart(owned, owner)
+    for (const owned of active) {
+      try { await this.renewForRestart(owned, owner) }
+      catch (error) {
+        if (isCredentialAuthorityLost(error)) return false
+        throw error
+      }
+    }
     owner.assertOwned()
     return true
   }
@@ -1327,7 +1338,16 @@ export class ApprovalExecutionCoordinator {
             await owned.manager.dispose()
             return
           }
-          if (snapshot.run.executionState !== 'completed') await this.renewForRestart(owned, owner)
+          if (snapshot.run.executionState !== 'completed') {
+            try { await this.renewForRestart(owned, owner) }
+            catch (error) {
+              if (!isCredentialAuthorityLost(error)) throw error
+              await this.runs.requestCleanup(owned.execution.runId, owner)
+              const cleanup = await this.cleanupSession(owned)
+              if (cleanup.length) throw new AggregateError(cleanup, 'Interrupted native cleanup remains unconfirmed.')
+              return
+            }
+          }
           await this.closeWorkflowSessionOwned(owned, true)
         })
         return failures.map((error) => safe.error(error) as Error)

@@ -162,20 +162,23 @@ describe.runIf(postgresEnabled)('restart credential safety', () => {
         if (authority === 'revoked') await runtime.access.revoke(runtime.writer.principal.id)
         else await runtime.db.pool.query("update management_principals set grants='[]'::jsonb where id=$1",
           [runtime.writer.principal.id])
-        await expect(runtime.engine.shutdown()).rejects.toBeInstanceOf(AggregateError)
-        expect(await lease(runtime, active.execution.id)).toEqual(original)
-        expect(await detachment(runtime, active.execution.id)).toEqual({ detached: false, closed: false })
+        await runtime.engine.shutdown()
+        const rejected = await lease(runtime, active.execution.id)
+        expect(rejected).toMatchObject({ principal_id: original.principal_id, token_hash: original.token_hash,
+          expires_at: original.expires_at, live: false })
+        expect(await detachment(runtime, active.execution.id)).toEqual({ detached: false, closed: true })
         expect((await active.read()).executions).toEqual([active.execution])
+        const cleanup = await runtime.db.pool.query('select run_id from run_cleanup_intents where run_id=$1 and pending',
+          [active.run.id])
+        expect(cleanup.rows).toEqual([{ run_id: active.run.id }])
       } finally {
-        await runtime.db.pool.query('update management_principals set revoked_at=null,grants=$2::jsonb where id=$1',
-          [runtime.writer.principal.id, JSON.stringify(runtime.writer.principal.grants)])
         await runtime.close()
       }
     }, 60_000,
   )
 
   it.each(['connection failure', 'revoked worker'] as const)(
-    'keeps a failed %s renewal attached and retries the original lease on shutdown retry', async failure => {
+    'does not preserve a Worker after a %s during renewal', async failure => {
       const runtime = await activeWorkflow()
       const renewal = vi.spyOn(Wave25WorkerCredentialService.prototype, 'renewForExecution')
       let principalId: string | undefined
@@ -186,13 +189,18 @@ describe.runIf(postgresEnabled)('restart credential safety', () => {
         if (failure === 'connection failure') {
           renewal.mockRejectedValueOnce(Object.assign(new Error('Connection terminated unexpectedly'), { code: 'ECONNRESET' }))
         } else await runtime.access.revoke(principalId)
+        if (failure === 'revoked worker') {
+          await runtime.engine.shutdown()
+          expect(await lease(runtime, active.execution.id)).toMatchObject({
+            principal_id: principalId, expires_at: original.expires_at, live: false,
+          })
+          expect(await detachment(runtime, active.execution.id)).toEqual({ detached: false, closed: true })
+          return
+        }
         await expect(runtime.engine.shutdown()).rejects.toBeInstanceOf(AggregateError)
         expect((await lease(runtime, active.execution.id)).expires_at).toEqual(original.expires_at)
         expect(await detachment(runtime, active.execution.id)).toEqual({ detached: false, closed: false })
         expect((await active.read()).executions).toEqual([active.execution])
-        if (failure === 'revoked worker') {
-          await runtime.db.pool.query('update management_principals set revoked_at=null where id=$1', [principalId])
-        }
         await runtime.engine.shutdown()
         expect(await detachment(runtime, active.execution.id)).toEqual({ detached: true, closed: false })
         const renewed = await lease(runtime, active.execution.id)
@@ -201,8 +209,6 @@ describe.runIf(postgresEnabled)('restart credential safety', () => {
         expect(runtime.provider.counts).toMatchObject({ sessions: 1, starts: 1 })
       } finally {
         renewal.mockRestore()
-        if (principalId) await runtime.db.pool.query('update management_principals set revoked_at=null where id=$1',
-          [principalId])
         await runtime.close()
       }
     }, 60_000,
