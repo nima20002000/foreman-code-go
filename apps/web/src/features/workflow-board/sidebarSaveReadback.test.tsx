@@ -26,10 +26,11 @@ async function mount(reply?: ReplyOverride) {
   await waitFor(() => expect(useGraphDraftStore.getState().nextDrafts[key]).toBeDefined())
   await waitFor(() => expect(view.cache.getQueryState(graphEditIntentKey(workspaceId, workflowId,
     useGraphDraftStore.getState().nextDrafts[key]!.context.draft.id))).toMatchObject({ status: 'success', fetchStatus: 'idle' }))
-  expect(await screen.findByRole('button', { name: /^First Board/ })).toHaveTextContent('Draft')
+  expect(await sidebar().findByRole('button', { name: /^First Board/ })).toHaveTextContent('Draft')
   return { ...view, wire, mock, key, workspaceId, workflowId }
 }
 const board = () => within(screen.getByRole('region', { name: 'Workflow authoring' }))
+const sidebar = () => within(screen.getByRole('complementary', { name: 'Primary navigation' }))
 function change(key: string, name = 'First Board') {
   act(() => useGraphDraftStore.getState().changeNextDraft(key, (graph) => ({ ...graph, name,
     nodes: graph.nodes.map((node, index) => index ? node : { ...node, initialPrompt: `${name} instructions` }) })))
@@ -56,14 +57,14 @@ describe('sidebar classification after confirmed Board publication', () => {
       expect(reconcile).toBeDisabled()
       await user.click(reconcile)
       expect(submitted).toBe(1)
-      expect(screen.getByRole('button', { name: /^First Board/ })).toHaveTextContent('Draft')
+      expect(sidebar().getByRole('button', { name: /^First Board/ })).toHaveTextContent('Draft')
       expect(f.mock.managed(f.workflowId).currentVersionId).toBeNull()
       expect(reads()).toBe(before)
     } finally { release() }
     await waitFor(() => expect(useGraphDraftStore.getState().nextDrafts[f.key]!.context.draft.baseWorkflowVersionId).not.toBeNull())
-    expect(await screen.findByRole('button', { name: 'Published first Board' })).toBeVisible()
-    expect(screen.queryByRole('button', { name: /^First Board/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /^Other Board/ })).toHaveTextContent('Draft')
+    expect(await sidebar().findByRole('button', { name: 'Published first Board' })).toBeVisible()
+    expect(sidebar().queryByRole('button', { name: /^First Board/ })).not.toBeInTheDocument()
+    expect(sidebar().getByRole('button', { name: /^Other Board/ })).toHaveTextContent('Draft')
     expect(reads()).toBeGreaterThan(before)
     expect(f.mock.versions.size).toBe(1)
     expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[f.key]!)).toBe(false)
@@ -76,7 +77,7 @@ describe('sidebar classification after confirmed Board publication', () => {
     change(f.key)
     await userEvent.click(board().getByRole('button', { name: 'Save changes' }))
     await screen.findByText('The workflow changed.')
-    expect(screen.getByRole('button', { name: /^First Board/ })).toHaveTextContent('Draft')
+    expect(sidebar().getByRole('button', { name: /^First Board/ })).toHaveTextContent('Draft')
     expect(f.mock.managed(f.workflowId).currentVersionId).toBeNull()
     expect(f.mock.versions.size).toBe(0)
     expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[f.key]!)).toBe(true)
@@ -94,13 +95,13 @@ describe('sidebar classification after confirmed Board publication', () => {
       act(() => useGraphDraftStore.getState().changeNextDraft(f.key, (graph) => ({ ...graph,
         nodes: graph.nodes.map((node, index) => index ? node : { ...node, initialPrompt: 'Keep the newer unsaved instructions' }) })))
     } finally { release() }
-    await waitFor(() => expect(screen.getByRole('button', { name: /^First Board/ })).not.toHaveTextContent('Draft'))
+    await waitFor(() => expect(sidebar().getByRole('button', { name: /^First Board/ })).not.toHaveTextContent('Draft'))
     const edit = useGraphDraftStore.getState().nextDrafts[f.key]!
     expect(edit.graph.nodes[0]).toMatchObject({ initialPrompt: 'Keep the newer unsaved instructions' })
     expect(nextDraftDirty(edit)).toBe(true)
     expect(edit.context.draft.baseWorkflowVersionId).toBe(f.mock.managed(f.workflowId).currentVersionId)
     expect(f.mock.versions.size).toBe(1)
-    expect(screen.getByRole('button', { name: /^Other Board/ })).toHaveTextContent('Draft')
+    expect(sidebar().getByRole('button', { name: /^Other Board/ })).toHaveTextContent('Draft')
   }, 20000)
 
   it('refreshes the saved head after repeated saves and retains classification across workflow navigation', async () => {
@@ -113,13 +114,13 @@ describe('sidebar classification after confirmed Board publication', () => {
     await user.click(board().getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(nextDraftDirty(useGraphDraftStore.getState().nextDrafts[f.key]!)).toBe(false))
     expect(f.mock.managed(f.workflowId).currentVersionId).not.toBe(firstVersion)
-    expect(await screen.findByRole('button', { name: 'Second saved Board' })).toBeVisible()
-    await user.click(screen.getByRole('button', { name: /^Other Board/ }))
+    expect(await sidebar().findByRole('button', { name: 'Second saved Board' })).toBeVisible()
+    await user.click(sidebar().getByRole('button', { name: /^Other Board/ }))
     await waitFor(() => expect(f.router.state.location.search.workflowId).toBe('other-workflow'))
-    await user.click(screen.getByRole('button', { name: 'Second saved Board' }))
+    await user.click(sidebar().getByRole('button', { name: 'Second saved Board' }))
     await waitFor(() => expect(f.router.state.location.search.workflowId).toBe(f.workflowId))
-    expect(screen.getByRole('button', { name: 'Second saved Board' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.getByRole('button', { name: /^Other Board/ })).toHaveTextContent('Draft')
+    expect(sidebar().getByRole('button', { name: 'Second saved Board' })).toHaveAttribute('aria-current', 'page')
+    expect(sidebar().getByRole('button', { name: /^Other Board/ })).toHaveTextContent('Draft')
     expect(f.mock.versions.size).toBe(2)
     expect(f.cache.getQueryData<{ currentVersionId: string }>(queryKeys.managedWorkflow(f.workspaceId, f.workflowId))?.currentVersionId)
       .toBe(f.mock.managed(f.workflowId).currentVersionId)

@@ -83,14 +83,14 @@ describe('workspace section routes', () => {
       'aria-expanded',
       'false',
     )
-    expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Agents' })).not.toBeInTheDocument()
   })
 
   it('keeps the temporarily hidden agents directory available by deep link', async () => {
     renderRoute('/workspaces/workspace-1/agents?agentId=agent-researcher')
 
     expect(await screen.findByRole('heading', { name: 'Agents', level: 1 })).toBeVisible()
-    expect(screen.queryByRole('link', { name: 'Agents' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Agents' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Researcher, researcher, Available/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('dialog', { name: 'Researcher' })).not.toBeInTheDocument()
 
@@ -116,14 +116,14 @@ describe('workspace section routes', () => {
 
     expect(await screen.findByRole('heading', { name: 'Terminal' })).toBeVisible()
     expect(screen.getByTestId('coming-soon')).toHaveTextContent('Coming soon')
-    expect(screen.queryByRole('link', { name: 'Terminal' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Terminal' })).not.toBeInTheDocument()
   })
 
-  it('opens the workflow directory from the Workflows sidebar link', async () => {
+  it('opens the workflow directory from the Workflows sidebar button', async () => {
     const user = userEvent.setup()
     const { router } = renderRoute('/workspaces/workspace-1/settings')
-    await user.click(await screen.findByTitle('Workflows'))
-    expect(router.state.location.pathname).toBe('/workspaces/workspace-1/workflows')
+    await user.click(await screen.findByRole('button', { name: 'Workflows', exact: true }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/workspaces/workspace-1/workflows'))
     expect(within(screen.getByRole('navigation', { name: 'Workspace sections' })).getByRole('link', { name: 'Workflows' })).toHaveAttribute('aria-current', 'page')
     expect(await screen.findByTestId('workflow-card-workflow-content-pipeline')).toBeVisible()
   })
@@ -150,7 +150,7 @@ describe('workspace section routes', () => {
     expect(await screen.findByRole('heading', { name: 'Project files', level: 1 })).toBeVisible()
     expect(screen.queryByTestId('coming-soon')).not.toBeInTheDocument()
     expect(within(await screen.findByRole('navigation', { name: 'Workspace sections' })).getByRole('link', { name: 'Project files' })).toHaveAttribute('aria-current', 'page')
-    expect(screen.queryByRole('link', { name: 'Files' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Files' })).not.toBeInTheDocument()
     expect(workspacesDestination()).toHaveClass('nav-item-active')
   })
 
@@ -181,10 +181,10 @@ describe('workspace section routes', () => {
       const { router } = renderRoute(path)
       expect(await screen.findByRole('heading', { name: 'General', level: 1 })).toBeVisible()
       expect(router.state.location.pathname).toBe('/settings/general')
-      expect(screen.queryByRole('link', { name: 'Account' })).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Account' })).not.toBeInTheDocument()
       expect(screen.queryByText('preview@example.test')).not.toBeInTheDocument()
       expect(screen.queryByRole('button', { name: /sign in|sign out|connect browser/i })).not.toBeInTheDocument()
-      expect(screen.getByRole('link', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
+      expect(screen.getByRole('button', { name: 'Settings' })).toHaveAttribute('aria-current', 'page')
     },
   )
 
@@ -228,14 +228,14 @@ describe('workspace section routes', () => {
     renderRoute('/settings/general')
     expect(await screen.findByRole('spinbutton', { name: 'Duration' })).toHaveValue(12)
     expect(screen.getByRole('combobox', { name: 'Unit' })).toHaveValue('hours')
-    expect(screen.queryByRole('link', { name: 'Account' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Account' })).not.toBeInTheDocument()
   })
 
   it('asks for workspace choice at the old global approval URL instead of opening a wider queue', async () => {
     renderRoute('/approvals?interactionId=unscoped-request')
     expect(await screen.findByRole('heading', { name: 'Workspaces', level: 1 })).toBeVisible()
     expect(screen.queryByRole('region', { name: 'Approval Inbox' })).not.toBeInTheDocument()
-    expect(screen.getByRole('link', { name: 'Settings' })).not.toHaveAttribute('aria-current')
+    expect(screen.getByRole('button', { name: 'Settings' })).not.toHaveAttribute('aria-current')
   })
 
   it('omits the approvals shortcut from workspace settings', async () => {
