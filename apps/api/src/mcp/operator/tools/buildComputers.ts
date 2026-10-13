@@ -146,7 +146,7 @@ export const buildComputerTools = [
   }),
   defineOperatorTool({
     name: 'computer_sync_status',
-    requires: [['settings:read', 'resource']],
+    requires: [['settings:read', 'global']],
     enabled: s => !!s.computerSync,
     description: 'Read Syncthing shared file status on Main or a paired computer: installed, running, connected peers, '
       + 'workspace participation, enabled preferences and revisions, local folder paths, idle/syncing/error and conflicts. '
@@ -157,7 +157,7 @@ export const buildComputerTools = [
   }),
   defineOperatorTool({
     name: 'computer_sync_update',
-    requires: [['settings:update', 'resource']],
+    requires: [['settings:update', 'global']],
     enabled: s => !!s.computerSync,
     description: 'Enable or disable one workspace shared folder on one computer. Requires global settings:update. '
       + 'Use expectedRevision from computer_sync_status and reuse commandId for uncertain saves. '

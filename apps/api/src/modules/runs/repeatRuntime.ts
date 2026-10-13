@@ -397,6 +397,7 @@ export async function executeRepeatRuntime(input: {
   jobs?: { store: import('../jobs/workflowNode.js').WorkflowJobNodeStore; driver: import('../jobs/workflowRuntimePorts.js').WorkflowJobDriver }
   runId: string; version: WorkflowVersionV3
   owner: Pick<RunOwnership, 'assertOwned'>; signal: AbortSignal
+  checkpointOwnerGeneration?: string | undefined
   store: Pick<RepeatRunRepository, 'admit' | 'acceptTerminal' | 'enterBlock' | 'readOccurrence' | 'transition'
     | 'resolveExcluded' | 'completeRun' | 'ensureWorkEntry' | 'admitWorkActivation' | 'acceptWorkTerminal'
     | 'admitWorkRequest' | 'returnWork' | 'recordWorkUnresolved' | 'resolveWaitingWorkJoins' | 'completeWorkRun'>
@@ -506,6 +507,9 @@ export async function executeRepeatRuntime(input: {
     },
   }) : null
   const repeat = work ? null : buildRepeatGraph({ ...input, signal, track, limiter })
+  const checkpointOwner = { checkpoint_owner_generation: input.checkpointOwnerGeneration }
+  if (work) Object.assign(work.config.configurable, checkpointOwner)
+  if (repeat) Object.assign(repeat.config.configurable, checkpointOwner)
   const readCheckpoint = (): Promise<import('./repeatGraph.js').RepeatCheckpoint> => bookkeeping(async () => work
     ? await work.graph.getState(work.config) as import('./repeatGraph.js').RepeatCheckpoint
     : await repeat!.graph.getState(repeat!.config))

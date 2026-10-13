@@ -23,6 +23,7 @@ export interface DatabaseOptions {
   maxConnections: number
   connectionTimeoutMs: number
   queryTimeoutMs?: number
+  lockTimeoutMs?: number
   onError?: (error: Error) => void
 }
 
@@ -41,6 +42,7 @@ export function createPool(options: DatabaseOptions, applicationName: string): p
     // acknowledgment) needs bounded delivery time before the client gives up.
     query_timeout: Math.min(queryTimeoutMs + 1000, 2_147_483_647),
     statement_timeout: queryTimeoutMs,
+    lock_timeout: options.lockTimeoutMs,
     application_name: applicationName,
   })
   pool.on('error', options.onError ?? ((error: Error) => {

@@ -176,6 +176,7 @@ export async function executeRepeatEngineStart(input: RepeatEngineStartContext):
     throw new DomainError('REPEAT_NATIVE_HOST_REQUIRED', 'Repeat lifecycle proof writers are required.', 409)
   }
   await executeRepeatRuntime({ runId: snapshot.run.id, version: snapshot.version, owner: input.owner,
+    checkpointOwnerGeneration: input.owner.checkpointGeneration,
     signal: input.signal, store, driver, ...(input.jobs ? { jobs: input.jobs(input.owner, snapshot.version) } : {}), checkpointer: input.checkpointer, configuredParallelism: input.configuredParallelism,
     lifecycle: {
       markRunning: () => lifecycle.markRunning(),
