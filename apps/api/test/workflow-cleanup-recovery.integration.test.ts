@@ -34,7 +34,7 @@ describe.skipIf(!postgresEnabled)('accepted workflow cleanup recovery', () => {
       expect(new Set(f.base.provider.startedExecutions).size).toBe(scenario.executedIndexes.length)
       expect(closes).toBeGreaterThan(4)
     } finally {
-      f.base.provider.beforeClose = undefined
+      delete f.base.provider.beforeClose
       await f.close()
     }
   }, 60_000)
