@@ -7,6 +7,38 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.97] - 2026-10-13
+
+### Fixes from the connection audit
+- 122 confirmed connection-audit findings fixed across CI host, runs, interactions, conversations, harnesses, sources, contracts, worker, scripts and the web Board, each with a regression test that fails before the fix.
+
+### CI
+- Gate mode: one complete typecheck, lint, unit and integration gate, planned from recorded durations; checks run ahead of integration overflow.
+- Idle build computers take unstarted gate parts (cloud-planned and other busy build computers' parts); gate check parts run on any free equivalent slot.
+- Cloud starts no longer wait for mirror pruning; each commit is published once per mirror.
+- Admission does slow commit resolution outside the command transaction; no statement timeouts under concurrency.
+- A failed gate releases the full-run barrier; lost build-computer starts and ended CircleCI runs are reconciled instead of holding slots.
+- CircleCI pipeline parameters match their declared types; config errors surface immediately.
+- NUL bytes in CI logs no longer stop dispatch.
+- The hang watchdog covers only test suites, with no deadline for unknown durations and a three-minute idle limit.
+- Warm runners, one Vitest coordinator per integration slot, reused Worker fixture releases and leaner cloud caches.
+
+### Production install
+- The post-deploy CI smoke authenticates with a short-lived, audited install credential.
+- Deploys back up the database only when migrations are pending, and before stopping the API.
+- API CPU hot spots removed (mirror pruning, process report calls, log slicing).
+
+### Faster CI and deploys
+- Full gates finish in about 9-10 minutes instead of 20-40: shard sizing respects each computer's build allowance, CI PostgreSQL is sized by shards, the planner learns each executor's speed, and cloud slots are reserved for non-gate CI.
+- Deploys take about a minute: persistent source tree, shared API dependency trees, background Worker artifact publishing and release pruning, and a faster pre-migration backup.
+- The API drains in-flight requests for up to 10 seconds on shutdown instead of being killed.
+- Affected CI runs over 2000 files fall back to a full run instead of failing; affected runs reuse passes of files whose inputs did not change.
+- Paired Workers download runtime updates before draining, so CI is no longer blocked while an update downloads.
+- Releases reuse the clean gate of the release commit instead of running a second round.
+
+### Product
+- Agent chat UI improvements; the 1000-lines-per-file lint rule is removed.
+
 ## [0.0.96] - 2026-10-12
 
 ### Fixed
