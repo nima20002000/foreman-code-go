@@ -20,9 +20,13 @@ it('waits for committed native changes without repeatedly requesting reconciliat
   expect(read).toHaveBeenCalledTimes(1)
   ready = true
   for (const changed of listeners) changed()
+  await vi.advanceTimersByTimeAsync(899)
+  expect(read).toHaveBeenCalledTimes(1)
+  await vi.advanceTimersByTimeAsync(1)
   await expect(pending).resolves.toBe(true)
   expect(read).toHaveBeenCalledTimes(2)
   expect(listeners.size).toBe(0)
+  expect(vi.getTimerCount()).toBe(0)
 })
 
 it('rechecks native progress without a commit notification at the polling deadline', async () => {
@@ -37,6 +41,10 @@ it('rechecks native progress without a commit notification at the polling deadli
   await vi.advanceTimersByTimeAsync(100)
   expect(read).toHaveBeenCalledTimes(1)
   ready = true
-  await vi.advanceTimersByTimeAsync(900)
+  await vi.advanceTimersByTimeAsync(899)
+  expect(read).toHaveBeenCalledTimes(1)
+  await vi.advanceTimersByTimeAsync(1)
   await expect(pending).resolves.toBe(true)
+  expect(read).toHaveBeenCalledTimes(2)
+  expect(vi.getTimerCount()).toBe(0)
 })
