@@ -62,3 +62,42 @@ it('caps learned unit sizing by free slots and persists the same plan through au
     expect(stored.map(row => row.record)).toEqual(expect.arrayContaining(read.partitions!))
   } finally { await f.close() }
 })
+
+it('reads persisted unit shards in numeric order through authenticated HTTP and MCP', async () => {
+  const files = Array.from({ length: 12 }, (_, index) => `apps/api/src/feature-${index}.test.ts`)
+  const durations = Object.fromEntries(files.map(file => [file, 150_000]))
+  const f = await fixture({ unitInventory: { files, durations, heavy: [] }, cloud: { github: 12, circleci: 0 } })
+  try {
+    const input = { suite: 'unit', scope: 'full', commit: 'a'.repeat(40), commandId: 'ordered-unit-shards' }
+    const result = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
+    // Reverse row timestamps so shard ordering cannot accidentally follow insertion order or random ticket IDs.
+    await f.pool.query(`update ci_runs set created_at=now() -
+      (record->'partition'->>'index')::integer * interval '1 second'
+      where id=any($1::uuid[]) and record->>'part'='unit-api'`,
+    [result.partitions!.map(part => part.ticketId)])
+
+    const denied = await f.connect(CI_RUN_ACTIONS)
+    expect((await f.call(denied, 'ci_get', { ticketId: result.ticketId })).isError).toBe(true)
+    const deniedCredential = await f.credential(CI_RUN_ACTIONS)
+    const url = `/api/management/workspaces/${f.workspaceId}/ci/${result.ticketId}`
+    const deniedResponse = await f.app.inject({ method: 'GET', url,
+      headers: { authorization: `Bearer ${deniedCredential.token}` } })
+    expect(deniedResponse.statusCode).toBe(403)
+
+    const mcp = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: result.ticketId }))
+    const credential = await f.credential(CI_GET_ACTIONS)
+    const response = await f.app.inject({ method: 'GET', url,
+      headers: { authorization: `Bearer ${credential.token}` } })
+    expect(response.statusCode, response.body).toBe(200)
+    const http = CiGetOutputSchema.parse(response.json())
+    const expected = Array.from({ length: 12 }, (_, index) => ({ index, count: 12 }))
+    for (const read of [mcp, http]) {
+      expect(read.partitions!.filter(part => part.part === 'unit-api').map(part => part.partition)).toEqual(expected)
+      const stored = (await f.pool.query('select record from ci_runs where group_id=$1', [read.run.groupId])).rows
+      expect(stored.map(row => row.record)).toEqual(expect.arrayContaining(read.partitions!))
+      expect(new Set(read.partitions!.map(part => part.id)))
+        .toEqual(new Set(result.partitions!.map(part => part.ticketId)))
+    }
+    expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(result)
+  } finally { await f.close() }
+})
