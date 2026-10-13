@@ -17,7 +17,7 @@ it.each([undefined, 221366])('sends declared CircleCI pipeline parameters with c
   }
   const commands: string[][] = []
   const provider = new CircleCiProvider({ ...systemHostCiPorts(), run: async (_file, args) => {
-    commands.push(args)
+    commands.push([...args])
     return { code: 0, stdout: JSON.stringify({ id: 'pipeline' }), stderr: '' }
   } })
   const input: CloudDispatchInput = {
