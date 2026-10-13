@@ -38,10 +38,14 @@ fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n')
 if (args[1] === 'install') {
   const storeIndex = args.indexOf('--store-dir')
   const store = storeIndex < 0 ? '.fixture-store' : args[storeIndex + 1]
+  const metadataIndex = args.indexOf('--cache-dir')
+  const metadata = path.join(metadataIndex < 0 ? '.fixture-metadata' : args[metadataIndex + 1], 'release-age')
   const seed = path.join(store, require('node:crypto').createHash('sha256').update(fs.readFileSync('pnpm-lock.yaml')).digest('hex'))
-  if (args.includes('--offline') && !fs.existsSync(seed)) process.exit(7)
+  if (args.includes('--offline') && (!fs.existsSync(seed) || !fs.existsSync(metadata))) process.exit(7)
   fs.mkdirSync(store, { recursive: true })
   fs.writeFileSync(seed, 'pristine')
+  fs.mkdirSync(path.dirname(metadata), { recursive: true })
+  fs.writeFileSync(metadata, 'verified package publication time')
   fs.mkdirSync('node_modules', { recursive: true })
   if (!fs.existsSync('node_modules/dependency')) fs.writeFileSync('node_modules/dependency', 'pristine')
 } else {
@@ -107,4 +111,12 @@ it('allows one online fill for a changed lockfile and then returns to offline in
   const installs = (await fixture.commands()).filter(args => args[1] === 'install')
   expect(installs.filter(args => !args.includes('--offline'))).toHaveLength(2)
   expect(installs.at(-1)).toEqual(expect.arrayContaining(['--offline', '--frozen-lockfile']))
+})
+
+it('retains release-age metadata for offline installs after the previous worktree is removed', async () => {
+  const fixture = await computer()
+  await expect(fixture.run()).resolves.toMatchObject({ run: { state: 'passed' } })
+  await expect(fixture.run()).resolves.toMatchObject({ run: { state: 'passed' } })
+  const installs = (await fixture.commands()).filter(args => args[1] === 'install')
+  expect(installs.filter(args => !args.includes('--offline'))).toHaveLength(1)
 })
