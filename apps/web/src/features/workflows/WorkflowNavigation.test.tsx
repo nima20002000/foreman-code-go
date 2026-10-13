@@ -70,7 +70,11 @@ describe('WorkflowNavigation', () => {
     expect(link).toHaveAttribute('aria-current', 'page')
     const open = vi.spyOn(window, 'open').mockReturnValue(null)
     fireEvent.click(link, { ctrlKey: true })
-    expect(open).toHaveBeenCalledWith('/workspaces/workspace-1?workflowId=workflow-content-pipeline', '_blank')
+    expect(open).toHaveBeenCalledWith(
+      '/workspaces/workspace-1?workflowId=workflow-content-pipeline',
+      '_blank',
+      'noopener',
+    )
     open.mockRestore()
     expect(screen.getByRole('button', { name: 'New workflow' })).toBeVisible()
   })

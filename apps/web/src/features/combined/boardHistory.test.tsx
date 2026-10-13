@@ -39,6 +39,7 @@ import { admitted, context, envelope, execution, historicalState, installSelecte
   scope as chatScope, selectedRoute, snapshot as chatSnapshot } from '../conversations/agentChat/sch10.testSupport'
 import boardStyles from '../workflow-board/workflowBoard.css?inline'
 import { deferred } from '../../test/deferred'
+import { installBrowserLocks } from '../../test/browserLocks'
 
 const scope = { workspaceId: 'workspace-1', workflowId: 'workflow-content-pipeline' }
 const snapshotRoute = '*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/snapshot'
@@ -147,6 +148,7 @@ function fileRow(state: AgentChatState, id: string, filename = 'shared.md', crea
 }
 
 beforeEach(() => {
+  installBrowserLocks()
   unhandled.length = 0; server.events.on('request:unhandled', recordUnhandled)
   localStorage.clear(); sessionStorage.clear(); bindMockInstallation(); useGraphDraftStore.getState().clearAllDrafts()
   installFlowLayout(320, 480); installChatSource()
