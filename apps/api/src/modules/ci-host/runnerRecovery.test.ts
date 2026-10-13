@@ -1,0 +1,120 @@
+import { randomUUID } from 'node:crypto'
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { afterEach, expect, it, vi } from 'vitest'
+import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
+import { HostCiRunner, type HostCiPorts } from './runner.js'
+
+const writes = vi.hoisted(() => ({ running: undefined as (() => Promise<void>) | undefined }))
+vi.mock('node:fs/promises', async original => {
+  const actual = await original<typeof import('node:fs/promises')>()
+  return { ...actual, writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
+    if (typeof args[1] === 'string' && args[1].startsWith('{') && JSON.parse(args[1]).state === 'running') {
+      const running = writes.running
+      writes.running = undefined
+      await running?.()
+    }
+    return actual.writeFile(...args)
+  } }
+})
+
+const roots: string[] = []
+afterEach(async () => {
+  writes.running = undefined
+  await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
+})
+
+async function fixture() {
+  const root = await privateFixtureDirectory('host-ci-recovery-')
+  roots.push(root)
+  const control = { state: 'active', code: 0, stopCode: 0, launches: 0 }
+  const ports: HostCiPorts = {
+    cpus: 8, memoryBytes: 16 * 2 ** 30, now: () => new Date(),
+    run: async (file, args) => {
+      if (file === 'git' && args.includes('worktree') && args.includes('add')) {
+        await mkdir(args.at(-2)!, { recursive: true })
+        await writeFile(join(args.at(-2)!, 'package.json'), JSON.stringify({ scripts: { lint: 'fixture' } }))
+      }
+      if (file === 'systemd-run') control.launches++
+      if (file === 'systemctl' && args.includes('stop')) {
+        if (control.stopCode === 0) control.state = 'inactive'
+        return { code: control.stopCode, stdout: '', stderr: control.stopCode ? 'Manager unavailable' : '' }
+      }
+      if (file === 'systemctl') return { code: control.code, stdout: control.state, stderr: '' }
+      return { code: 0, stdout: '', stderr: '' }
+    },
+  }
+  const runner = new HostCiRunner(root, ports, {})
+  const request = { operation: 'start', runId: randomUUID(), repository: 'fixture/site',
+    commit: 'a'.repeat(40), suite: 'lint', scope: 'full' }
+  const read = { operation: 'read', runId: request.runId, afterOffset: 0, maxBytes: 100 }
+  const source = join(root, 'runs', request.runId, 'src')
+  return { root, ports, runner, control, request, read, source }
+}
+
+it('recovers the original service after restart between native entry and the running metadata write', async () => {
+  const f = await fixture()
+  let release!: () => void
+  let entered!: () => void
+  const paused = new Promise<void>(resolve => { entered = resolve })
+  const gate = new Promise<void>(resolve => { release = resolve })
+  writes.running = async () => { entered(); await gate }
+  try {
+    await f.runner.handle(f.request)
+    await paused
+    const recovered = new HostCiRunner(f.root, f.ports, {})
+    await expect(recovered.handle(f.read)).resolves.toMatchObject({ run: { state: 'running' } })
+    await expect(access(f.source)).resolves.toBeUndefined()
+    await expect(recovered.handle(f.request)).resolves.toMatchObject({ run: { state: 'running' } })
+    expect(f.control.launches).toBe(1)
+    release()
+    await vi.waitFor(async () => {
+      await expect(f.runner.handle(f.read)).resolves.toMatchObject({ run: { state: 'running' } })
+    })
+    await writeFile(join(f.root, 'runs', f.request.runId, 'exit'), '0\n')
+    await expect(recovered.handle(f.read)).resolves.toMatchObject({ run: { state: 'passed', exitCode: 0 } })
+  } finally {
+    writes.running = undefined
+    release()
+    await vi.waitFor(async () => {
+      const reply = await f.runner.handle(f.read)
+      expect('run' in reply && reply.run.state).not.toBe('starting')
+    })
+  }
+})
+
+it.each([
+  { state: '', code: 1 },
+  { state: 'deactivating', code: 3 },
+  { state: 'inactive', code: 1 },
+])('retains the run and source when service status is unresolved: $state/$code', async control => {
+  const f = await fixture()
+  await f.runner.handle(f.request)
+  await vi.waitFor(async () => {
+    await expect(f.runner.handle(f.read)).resolves.toMatchObject({ run: { state: 'running' } })
+  })
+  Object.assign(f.control, control)
+  await expect(f.runner.handle(f.read)).resolves.toMatchObject({ run: { state: 'running' } })
+  await expect(access(f.source)).resolves.toBeUndefined()
+  await expect(f.runner.status()).resolves.toMatchObject({ slotsUsed: 1 })
+})
+
+it('persists failed cancellation, retains capacity after restart and retries before cleaning the source', async () => {
+  const f = await fixture()
+  await f.runner.handle(f.request)
+  await vi.waitFor(async () => {
+    await expect(f.runner.handle(f.read)).resolves.toMatchObject({ run: { state: 'running' } })
+  })
+  f.control.stopCode = 1
+  await expect(f.runner.handle({ operation: 'cancel', runId: f.request.runId }))
+    .resolves.toMatchObject({ run: { state: 'running', finishedAt: null } })
+  await expect(readFile(join(f.source, 'package.json'), 'utf8')).resolves.toContain('fixture')
+  const recovered = new HostCiRunner(f.root, f.ports, {})
+  await expect(recovered.status()).resolves.toMatchObject({ slotsUsed: 1 })
+  await expect(recovered.handle({ ...f.request, runId: randomUUID() }))
+    .rejects.toMatchObject({ code: 'CI_HOST_BUSY' })
+  f.control.stopCode = 0
+  await expect(recovered.handle(f.read)).resolves.toMatchObject({ run: { state: 'canceled' } })
+  await expect(access(f.source)).rejects.toMatchObject({ code: 'ENOENT' })
+  await expect(recovered.status()).resolves.toMatchObject({ slotsUsed: 0 })
+})
