@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { RunPlacementGetResultSchema } from '@foreman-code/contracts/placement-readback'
+import { ApprovedSourceSchema } from '@foreman-code/contracts/source-admission'
 import { installationUpdateFixture, profileReader, profiles, startWhenReady, pinnedPlacements, completedRun }
   from './helpers/harnessInstallationUpdate.js'
 
@@ -14,6 +16,35 @@ describe('installed harness updates', () => {
       await fixture.releaseWorkerDiscovery()
       const started = (await startWhenReady(fixture))!
       expect(fixture.sourceManifest.git?.repository).toBe(fixture.repositoryName)
+      const node = fixture.version.definition.nodes[0]!
+      const result = RunPlacementGetResultSchema.parse(await fixture.value('run_node_placement_get', {
+        workspaceId: fixture.version.workspaceId,
+        workflowId: fixture.version.workflowId,
+        runId: started.run.id,
+        nodeId: node.id,
+      }))
+      if (result.readback.evidence !== 'accepted') throw new Error('Expected accepted placement readback')
+      const placement = result.readback.placement
+      expect(await pinnedPlacements(fixture, started.run.id)).toEqual([placement])
+      expect(placement.hostRef).toEqual(fixture.hostRef)
+      const source = placement.source
+      if (source.kind !== 'pending') throw new Error('Expected Run-start source pins')
+      const approved = ApprovedSourceSchema.parse(await fixture.value('source_get', {
+        workspaceId: fixture.version.workspaceId,
+        approvedSourceId: source.approvedSourceId,
+        snapshotId: source.snapshotId,
+        manifestDigest: source.manifestDigest,
+      }))
+      expect(approved.manifest).toMatchObject({
+        approvedSourceId: source.approvedSourceId,
+        snapshotId: source.snapshotId,
+        manifestDigest: source.manifestDigest,
+        capturePolicy: fixture.sourceManifest.capturePolicy,
+        executablePolicy: fixture.sourceManifest.executablePolicy,
+        git: fixture.sourceManifest.git,
+        entries: fixture.sourceManifest.entries,
+        deletions: fixture.sourceManifest.deletions,
+      })
       expect(await pinnedPlacements(fixture, started.run.id)).toEqual([expect.objectContaining({
         hostRef: fixture.hostRef,
         source: expect.objectContaining({ manifestDigest: fixture.sourceManifest.manifestDigest }),
