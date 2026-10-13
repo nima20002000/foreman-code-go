@@ -88,6 +88,7 @@ export async function ciPreparationFixture(options: {
   /** A Main verification profile; 'installed' also gives Main its own CI runtime. */
   main?: 'installed' | 'absent'
   prepareFails?: boolean; disabled?: boolean; statusDrops?: number; loseRefreshAck?: boolean
+  workerStateDirectory?: string
   refreshGate?: Promise<void>
   /** Main's publication of the approved commit to GitHub; the computer then fetches it with its own clone. */
   publish?(repository: string, commit: string): Promise<void>
@@ -185,7 +186,8 @@ export async function ciPreparationFixture(options: {
     currentRuntimePaths: async () => ['/ci/managed/installer/qualification-source-aaaaaaaaaaaa'],
     now: () => new Date(),
   }
-  let worker = new CiRuntimeWorker('/ci/state', workerPorts as never, new AbortController().signal)
+  const workerStateDirectory = options.workerStateDirectory ?? '/ci/state'
+  let worker = new CiRuntimeWorker(workerStateDirectory, workerPorts as never, new AbortController().signal)
   let restartedOperation: string | undefined
   let statusDrops = options.statusDrops ?? 0
   let ackLost = false
@@ -194,8 +196,9 @@ export async function ciPreparationFixture(options: {
     request: async (_deviceId: string, _namespace: string, raw: unknown) => {
       const payload = raw as CiRuntimeRequest
       if (refreshRecord && restartedOperation !== refreshRecord.operationId) {
+        await worker.close()
         restartedOperation = refreshRecord.operationId
-        worker = new CiRuntimeWorker('/ci/state', workerPorts as never, new AbortController().signal)
+        worker = new CiRuntimeWorker(workerStateDirectory, workerPorts as never, new AbortController().signal)
       }
       if (payload.operation === 'status' && statusDrops-- > 0) throw new DeviceConnectionError('transport')
       const state = await worker.handle(payload)

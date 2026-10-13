@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { rm } from 'node:fs/promises'
 import type pg from 'pg'
 import { JobQueueTicketSchema } from '@foreman-code/contracts/job-admission'
 import { AutoVerificationJobSpecSchema, JobExecutionRecordSchema, ResolvedVerificationJobSpecSchema,
@@ -14,12 +15,14 @@ import { ciPreparationFixture, commit, oldImage, newImage } from './helpers/ciPr
 import { verificationFixture } from './helpers/jobVerificationFixture.js'
 import { verificationRuntimeFixture } from './helpers/verificationRuntimeFixture.js'
 import { jobExecution } from './helpers/jobFixture.js'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 
 afterEach(() => vi.restoreAllMocks())
 
 describe('CI preparation follows persisted queue state', () => {
   it('prepares after a delayed first scan, restarts the Worker and admits the original ticket with its resolved image', async () => {
-    const preparation = await ciPreparationFixture({ loseRefreshAck: true })
+    const workerStateDirectory = await privateFixtureDirectory('ci-queue-worker-')
+    const preparation = await ciPreparationFixture({ loseRefreshAck: true, workerStateDirectory })
     const ci = ciFixture({ initialWaitingReasons: [] })
     const before = preparation.profiles.get('p-unit')!
     const template = jobVerificationTemplate({ profileId: before.id, profileRevision: before.revision,
@@ -105,6 +108,10 @@ describe('CI preparation follows persisted queue state', () => {
       expect(ticket.definition.spec.policy.imageDigest).toBe(oldImage)
       expect(admitted).toHaveBeenCalledWith(expect.objectContaining({ policy: expect.objectContaining({ imageDigest: newImage }) }))
       expect(preparation.calls.refresh).toHaveLength(1)
-    } finally { await preparation.ciRuntime.close(); await preparation.app.close() }
+    } finally {
+      await preparation.ciRuntime.close()
+      await preparation.app.close()
+      await rm(workerStateDirectory, { recursive: true, force: true })
+    }
   })
 })
