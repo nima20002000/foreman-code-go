@@ -359,5 +359,13 @@
   "apps/api/src/modules/workspaces/locationAccess.ts",
   "apps/api/src/shared/errorMessage.ts",
   "apps/api/src/shared/pathExists.ts",
-  "apps/api/src/shared/records.ts"
+  "apps/api/src/shared/records.ts",
+  "apps/api/src/modules/runs/remote/preparationExtension.ts",
+  "apps/api/src/modules/ci-host/logPage.ts",
+  "apps/api/src/modules/byte-transfer/canonicalOwnership.ts",
+  "apps/api/src/modules/sources/materializationRecord.ts",
+  "apps/api/src/modules/sources/secondaryAllocation.ts",
+  "apps/api/src/modules/jobs/ciRuntimeState.ts",
+  "apps/api/src/modules/sources/sourceCleanupMetadata.ts",
+  "apps/api/src/modules/harnesses/claudeSdk/sessionFailure.ts"
 ]
