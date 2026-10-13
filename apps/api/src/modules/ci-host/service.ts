@@ -15,7 +15,8 @@ import { DomainError, databaseReadFailure } from '../errors.js'
 import { requireAuthorization } from '../access/policy.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { ciGroupState, planCiParts, runsOnCircleCi } from './parts.js'
-import { planIntegrationParts, type CiIntegrationSlots } from './integrationParts.js'
+import { planIntegrationParts } from './integrationParts.js'
+import { readCiSlots } from './planningCapacity.js'
 import { assertCiReadAccess } from './runAccess.js'
 import { RUN_CI_JOBS_SQL, runCiJob, storedCiTestResults, type RunCiJobRow } from './runJobs.js'
 import { fallbackOnError } from '../diagnostics/ignoredError.js'
@@ -277,9 +278,13 @@ export class HostCiService {
       }
       parts = [{ part: null, partition: null, files: input.files! }]
     } else if (input.gate) {
-      parts = await planCiGate(input, { ...integration!, durations: durations! }, inventory!, unitDurations, this.endpoint)
+      parts = await planCiGate(input, { ...integration!, durations: durations! }, inventory!, unitDurations, this.endpoint,
+        (await readCiSlots(this.pool, this.endpoint)).ordinary)
     } else if (integration) {
-      parts = planIntegrationParts(selection, { ...integration, durations: durations! }, await this.integrationSlots())
+      parts = planIntegrationParts(selection, { ...integration, durations: durations! }, await readCiSlots(this.pool, this.endpoint))
+    }
+    if (!input.gate && input.suite === 'unit' && split) {
+      parts = planCiParts(selection, unitDurations, inventory, (await readCiSlots(this.pool, this.endpoint)).ordinary)
     }
     const runs = parts.map(planned => CiRunRecordSchema.parse({
       ...planned,
@@ -314,26 +319,6 @@ export class HostCiService {
       where action='ci.priority' and details->>'groupId'=any($1::text[]) and details ? 'smokeComputer'`,
     [groups])).rows
     return new Map(rows.map(row => [row.group_id, CiComputerRefSchema.parse(row.target)]))
-  }
-
-  private async integrationSlots(): Promise<CiIntegrationSlots> {
-    const active = (await this.pool.query<{ host_key: string; count: number }>(`select host_key,count(*)::int as count
-      from ci_runs where state in ('starting','running') and host_key is not null group by host_key`)).rows
-    const used = new Map(active.map(row => [row.host_key, row.count]))
-    const slots = { host: 0, ordinary: 0 }
-    await inBatches(await this.endpoint.computers(), 8, async computer => {
-      const status = await this.endpoint.request(computer, { operation: 'status' }).catch(error => {
-        log.warn({ err: error, computer: computer.key }, 'CI capacity unavailable while sizing integration')
-        return null
-      })
-      if (status?.operation !== 'status' || !status.ready) return
-      const free = Math.max(0, (status.slotsTotal ?? 1) - Math.max(status.slotsUsed ?? 0, used.get(computer.key) ?? 0))
-      if (computer.hostRef.kind === 'cloud') slots.ordinary += free
-      else slots.host += free
-    })
-    // Build computers can also take ordinary work after reserving the host-only slices.
-    if (!slots.ordinary) slots.ordinary = Math.max(1, slots.host - 1)
-    return slots
   }
 
   /** The repository's learned test file durations, most recently measured first, within the start request's

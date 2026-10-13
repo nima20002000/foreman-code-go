@@ -9,18 +9,18 @@ export interface CiUnitInventory {
 }
 interface PlannedPart { part: CiPart | null; partition: CiPartition | null; files: string[] }
 
-/** Aim for two minutes of measured test time per unit shard; unknown repositories use the default counts. */
-function unitShardCount(part: 'unit-api' | 'unit-web', files: string[], durations: CiDurations) {
+/** Aim for 150 seconds of measured test time per unit shard; unknown repositories use the default counts. */
+function unitShardCount(part: 'unit-api' | 'unit-web', files: string[], durations: CiDurations, slots: number) {
   const measured = files.map(file => durations[file]).filter((value): value is number => value !== undefined)
   const fallback = part === 'unit-api' ? 5 : 3
-  if (!measured.length) return Math.min(fallback, files.length || fallback)
+  if (!measured.length) return Math.min(fallback, files.length || fallback, Math.max(1, slots))
   const sorted = [...measured].sort((left, right) => left - right)
   const median = sorted[Math.floor(sorted.length / 2)]!
   const total = files.reduce((sum, file) => sum + (durations[file] ?? median), 0)
-  return Math.min(CI_UNIT_SHARD_LIMIT, files.length, Math.max(1, Math.ceil(total / 120_000)))
+  return Math.min(CI_UNIT_SHARD_LIMIT, files.length, Math.max(1, slots), Math.max(1, Math.ceil(total / 150_000)))
 }
 
-export function planCiParts(input: CiRunInput, durations: CiDurations, inventory?: CiUnitInventory): PlannedPart[] {
+export function planCiParts(input: CiRunInput, durations: CiDurations, inventory?: CiUnitInventory, slots = CI_UNIT_SHARD_LIMIT): PlannedPart[] {
   const affected = (input.scope ?? 'affected') === 'affected' && input.files !== undefined
   const selected = affected ? [...new Set(input.files)].sort() : []
   if (affected && !selected.length) return [{ part: null, partition: null, files: [] }]
@@ -49,7 +49,7 @@ export function planCiParts(input: CiRunInput, durations: CiDurations, inventory
     const sharded = part === 'unit-api' || part === 'unit-web'
     if (!affected && inventory && sharded && !candidates.length) return []
     // The heavy web phase is one long Vitest run; Vitest splits it evenly across a fixed number of machines.
-    const count = sharded ? unitShardCount(part, candidates, durations) : part === 'unit-web-heavy' && !affected ? CI_HEAVY_WEB_SHARDS : 1
+    const count = sharded ? unitShardCount(part, candidates, durations, slots) : part === 'unit-web-heavy' && !affected ? CI_HEAVY_WEB_SHARDS : 1
     return Array.from({ length: count }, (_, index) => {
       const partition = count > 1 ? { index, count } : null
       const slice = affected && partition ? integrationPartition(files, durations, partition) : files
