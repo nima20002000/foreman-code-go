@@ -52,6 +52,35 @@ async function fixture() {
   return { root, ports, runner, control, request, read, source }
 }
 
+it('accepts start metadata from newer Main releases while still validating known fields', async () => {
+  const f = await fixture()
+  await expect(f.runner.handle({ ...f.request, workspaceId: 'fixture-workspace', ciMirror: 'fixture/mirror',
+    futureOptionalHint: { enabled: true } })).resolves.toMatchObject({ operation: 'start', run: { runId: f.request.runId } })
+  await vi.waitFor(async () => {
+    await expect(f.runner.handle(f.read)).resolves.toMatchObject({ run: { state: 'running' } })
+  })
+  await expect(f.runner.handle({ ...f.request, runId: randomUUID(), commit: 'invalid' })).rejects.toThrow()
+  await f.runner.cancel(f.request.runId)
+})
+
+it('reserves admissions for startup smoke and resumes them after validation', async () => {
+  const f = await fixture()
+  let pending = true
+  const runner = new HostCiRunner(f.root, f.ports, {}, () => pending)
+  await expect(runner.handle({ operation: 'status' })).resolves.toMatchObject({ ready: false,
+    reasons: ['Worker update CI smoke is pending; this computer is reserved for validation.'] })
+  await expect(runner.handle(f.request)).rejects.toMatchObject({ code: 'CI_HOST_BUSY' })
+  expect(f.control.launches).toBe(0)
+  pending = false
+  await expect(runner.handle({ operation: 'status' })).resolves.toMatchObject({ ready: true,
+    startProtocolVersion: 2 })
+  await expect(runner.handle(f.request)).resolves.toMatchObject({ operation: 'start' })
+  await vi.waitFor(async () => {
+    await expect(runner.handle(f.read)).resolves.toMatchObject({ run: { state: 'running' } })
+  })
+  await runner.cancel(f.request.runId)
+})
+
 it('recovers the original service after restart between native entry and the running metadata write', async () => {
   const f = await fixture()
   let release!: () => void

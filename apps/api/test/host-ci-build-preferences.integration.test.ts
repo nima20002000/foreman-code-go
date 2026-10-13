@@ -40,8 +40,10 @@ it('honors persisted MCP build participation and priority while retaining assign
       keyRevision: null, authorizationRevision: null }
     const runs = new Map<string, { computer: string; run: CiHostRun }>()
     const starts: string[] = []
+    const outdated = new Set<string>()
     const request = async (computer: string, input: CiHostRequest): Promise<CiHostReply> => {
       if (input.operation === 'status') return { operation: 'status', ready: true, reasons: [],
+        ...(!outdated.has(computer) ? { startProtocolVersion: 2 } : {}),
         cpuCount: 8, memoryBytes: 16 * 2 ** 30,
         runs: [...runs.values()].filter(entry => entry.computer === computer).map(entry => entry.run) }
       if (input.operation === 'start') {
@@ -129,6 +131,20 @@ it('honors persisted MCP build participation and priority while retaining assign
       workspaceId, suite: 'install', commandId: randomUUID(),
     } })).isError).toBe(true)
     expect((await db.pool.query('select count(*)::int as count from ci_runs')).rows[0]!.count).toBe(0)
+
+    outdated.add(devices[1]!.registration.deviceId)
+    const incompatible = (await list()).computers.find(computer => computer.hostRef.deviceId === devices[1]!.registration.deviceId)
+    expect(incompatible).toMatchObject({ ready: false, reasons: [expect.stringMatching(/CI start protocol.*update/i)] })
+    const protocolTicket = await start()
+    const protocolRead = await get(protocolTicket.ticketId)
+    expect(protocolRead.run.computer?.hostRef).toEqual(devices[0]!.target.hostRef)
+    expect((await db.pool.query('select record from ci_runs where id=$1', [protocolTicket.ticketId])).rows[0]!.record)
+      .toEqual(protocolRead.run)
+    const ungranted = await connect([])
+    expect((await ungranted.callTool({ name: 'ci_computers_list', arguments: { workspaceId } })).isError).toBe(true)
+    await call(writer, 'ci_cancel', { workspaceId, ticketId: protocolTicket.ticketId })
+    outdated.clear()
+    starts.length = 0
 
     const first = await start()
     const firstRead = await get(first.ticketId)
