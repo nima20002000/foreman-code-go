@@ -1202,3 +1202,10 @@ test('learned durations from the CI runner replace the committed ones as expecta
   assert.equal(integrationDurationsPath({ FOREMAN_CODE_INTEGRATION_DURATIONS: '/runs/x/durations.json' }),
     '/runs/x/durations.json')
 })
+
+test('reports each file startup as the time until its test module was collected', async () => {
+  const { startupText } = await import('./test-integration.mjs')
+  assert.equal(startupText([{ phase: 'worker-setup', elapsedMs: 3412 }, { phase: 'module-collected', elapsedMs: 8526 }]),
+    '; startup 8526 ms')
+  assert.equal(startupText([{ phase: 'worker-setup', elapsedMs: 3412 }]), '')
+})
