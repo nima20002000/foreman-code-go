@@ -59,7 +59,22 @@ jobs:
       TEST_RESULTS_OUTPUT: .logs/ci-durations/test-results.json
       CI_WATCHDOG_MESSAGE_FILE: .logs/ci-durations/watchdog-message.json
     steps:
-      - checkout
+      - run:
+          name: Checkout tested commit
+          command: |
+            started=$(date +%s%3N)
+            git init --quiet .
+            repository_url="$CIRCLE_REPOSITORY_URL"
+            # The mirror is public; checkout does not need an SSH deploy key.
+            case "$repository_url" in
+              git@github.com:*) repository_url="https://github.com/${repository_url#git@github.com:}" ;;
+            esac
+            git remote add origin "$repository_url"
+            depth=1
+            if [ -n "$BASE_COMMIT" ]; then depth=2; fi
+            git fetch --quiet --no-tags --depth="$depth" origin "$CIRCLE_SHA1"
+            git checkout --quiet --detach FETCH_HEAD
+            echo "[ci-setup] checkout completed in $(( $(date +%s%3N) - started )) ms"
       - run:
           name: Node and pnpm
           command: |

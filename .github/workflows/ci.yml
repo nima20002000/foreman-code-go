@@ -9,7 +9,7 @@ on:
         description: Main's CI run id
         required: true
       ref:
-        description: The mirror branch holding the commit's files
+        description: The published snapshot commit to test
         required: true
       suite:
         description: install, typecheck, lint, unit, build, integration or a check part (scripts/ci-suite.sh)
@@ -73,7 +73,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
-          fetch-depth: 0
+          fetch-depth: ${{ inputs.base_commit != '' && 2 || 1 }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22.23.2
