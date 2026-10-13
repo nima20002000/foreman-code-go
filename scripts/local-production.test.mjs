@@ -413,11 +413,107 @@ test('install keeps only the current and previous release', async () => {
 })
 
 async function installFixture(t) {
-  const parent = process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache')
+  const parent = process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(parent, { recursive: true })
   const directory = await mkdtemp(join(parent, 'production-install-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   return directory
 }
+
+const tableSchema = { key: 'table:public.records', definition: { kind: 'r' }, additive: true }
+const columnSchema = { key: 'column:public.records.id', parent: tableSchema.key,
+  definition: { type: 'text', nullable: false, default: null }, additive: false }
+
+for (const change of ['unchanged', 'nullable column', 'defaulted column', 'new table', 'removed column',
+  'changed column', 'required column', 'new constraint']) {
+  test(`smoke rollback restores the database only for incompatible schema changes: ${change}`, async t => {
+    const directory = await installFixture(t)
+    const current = join(directory, 'current')
+    const release = join(directory, 'candidate')
+    const previousRelease = join(directory, 'previous')
+    const stateFile = join(directory, 'deployment.json')
+    const backupFile = join(directory, 'database.dump')
+    await mkdir(release)
+    await mkdir(previousRelease)
+    await symlink(previousRelease, current)
+    const before = [tableSchema, columnSchema]
+    let after = structuredClone(before)
+    if (change === 'removed column') after.pop()
+    if (change === 'changed column') after[1].definition.type = 'integer'
+    if (change.includes('column') && !['removed column', 'changed column'].includes(change)) {
+      after.push({ key: 'column:public.records.description', parent: tableSchema.key,
+        definition: { type: 'text', nullable: change === 'nullable column',
+          default: change === 'defaulted column' ? 'empty' : null }, additive: change !== 'required column' })
+    }
+    if (change === 'new table') {
+      after.push({ key: 'table:public.notes', definition: { kind: 'r' }, additive: true },
+        { key: 'column:public.notes.id', parent: 'table:public.notes',
+          definition: { type: 'text', nullable: false, default: null }, additive: false })
+    }
+    if (change === 'new constraint') {
+      after.push({ key: 'constraint:public.records.required', parent: tableSchema.key,
+        definition: 'check description is present', additive: false })
+    }
+    let schema = before
+    const commands = []
+    let selected = previousRelease
+    let service = 'running'
+    const steps = {
+      stop: async () => { service = 'stopped' },
+      backup: async () => { await writeFile(backupFile, 'backup') },
+      schema: async () => schema,
+      migrate: async () => { schema = after },
+      upgradeLauncher: async () => {},
+      activate: async value => {
+        selected = value
+        await rm(current)
+        await symlink(value, current)
+      },
+      enable: async () => {},
+      start: async () => { service = 'running' },
+      ready: async value => { assert.equal(selected, value); assert.equal(service, 'running') },
+      checkReady: async (_release, { start, rollback }) => {
+        await start()
+        try { throw new Error('post-deploy smoke failed') }
+        catch (error) { await rollback(error); throw error }
+      },
+      restore: async archive => {
+        await production.restoreDatabase({ archive, run: async command => { commands.push(command) } })
+        schema = before
+      },
+    }
+    await assert.rejects(production.runReleaseCutover({ release, previousRelease, stateFile, backupFile, steps }),
+      /post-deploy smoke failed/)
+    const compatible = ['unchanged', 'nullable column', 'defaulted column', 'new table'].includes(change)
+    assert.deepEqual(commands, compatible ? [] : ['pg_restore'])
+    assert.deepEqual(schema, compatible ? after : before)
+    assert.equal(await production.readReleaseSelection(current), previousRelease)
+    assert.equal(service, 'running')
+    const state = JSON.parse(await readFile(stateFile, 'utf8'))
+    assert.equal(state.phase, 'recovered')
+    assert.equal(state.migrationComplete, true)
+    assert.equal(state.backwardCompatible, compatible)
+    assert.equal(state.failure, 'post-deploy smoke failed')
+  })
+}
+
+test('restart recovery preserves a successful compatible migration without invoking pg_restore', async t => {
+  const directory = await installFixture(t)
+  const stateFile = join(directory, 'deployment.json')
+  const previousRelease = join(directory, 'previous')
+  await writeFile(stateFile, JSON.stringify({ phase: 'checking-readiness', previousRelease,
+    backupComplete: true, schemaMayHaveChanged: true, migrationComplete: true, backwardCompatible: true }))
+  const calls = []
+  await production.recoverReleaseCutover({ stateFile, steps: {
+    stop: async () => { calls.push('stop') },
+    restore: async () => { calls.push('pg_restore') },
+    activate: async selected => { assert.equal(selected, previousRelease); calls.push('activate') },
+    start: async () => { calls.push('start') },
+    ready: async () => { calls.push('ready') },
+  } })
+  assert.deepEqual(calls, ['stop', 'activate', 'start', 'ready'])
+  assert.equal(JSON.parse(await readFile(stateFile, 'utf8')).phase, 'recovered')
+})
 
 for (const failure of ['stop', 'backup', 'application migration', 'checkpoint setup',
   'launcher upgrade', 'activation', 'enable', 'start', 'readiness']) {
