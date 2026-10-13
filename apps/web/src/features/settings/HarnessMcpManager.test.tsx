@@ -14,7 +14,7 @@ afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear(
 
 it.each([500, 503])('shows HTTP %s refresh failures and disables writes until an inspection succeeds', async (status) => {
   let unavailable = false
-  const message = status === 503 ? 'Updating — reconnecting…' : 'Native inspection unavailable'
+  const message = 'Native inspection unavailable'
   server.use(
     http.get('/api/management/harnesses/codex/mcp', () => unavailable
       ? HttpResponse.json({ error: { code: 'HARNESS_QUALIFICATION_FAILED', message: 'Native inspection unavailable' } }, { status })
@@ -193,7 +193,7 @@ it.each([500, 503])('adopts a plan settled by another session after HTTP %s whil
   }
   let decisions = 0
   let readbackFails = false
-  const message = status === 503 ? 'Updating — reconnecting…' : 'Plan refresh failed'
+  const message = 'Plan refresh failed'
   server.use(
     http.get('/api/management/harnesses/codex/mcp', () => HttpResponse.json({ harness: 'codex', revision, checkedAt,
       scope: 'native-user', servers: [], presets: { graphql: 'missing', linear: 'missing' } })),

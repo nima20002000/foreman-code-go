@@ -130,7 +130,7 @@ export function CodexPluginManager({ accessUnavailable = false }: { accessUnavai
       closeOnOutsideClick busy={change.busy}
       footer={<>
         <Button disabled={accessUnavailable || list.isFetching || detail.isFetching || change.busy}
-          onClick={() => void refresh()}>Refresh</Button>
+          onClick={() => void refresh()}>Refresh plugin</Button>
         {plugin && !plugin.installed && plugin.installPolicy === 'AVAILABLE' ? <Button variant="primary" disabled={busy || !snapshotReady || Boolean(plugin.unavailableReason) || catalog?.catalogStatus !== 'complete'} onClick={() => act('install')}>Install plugin</Button> : null}
         {plugin?.installed && plugin.verification !== 'unverified' && plugin.installPolicy !== 'INSTALLED_BY_DEFAULT' ? <Button variant="danger" leading={<Icon name="trash" size={16} />}
           disabled={busy || !snapshotReady || Boolean(plugin.unavailableReason)} onClick={() => act('remove')}>Remove plugin</Button> : null}

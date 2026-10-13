@@ -57,7 +57,8 @@ describe('browser peer verification', () => {
   it('requires successful initial verification before mounting the app', async () => {
     status = 503
     mount()
-    expect(await screen.findByText('Updating — reconnecting…')).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'Cannot reach the server' })).toBeInTheDocument()
+    expect(screen.getByText(message)).toBeInTheDocument()
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
     status = 200
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))

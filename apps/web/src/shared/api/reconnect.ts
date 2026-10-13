@@ -1,12 +1,8 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react'
 import { useQueryClient, type Query } from '@tanstack/react-query'
-import { ApiError } from './client'
+import { isApiRestartError } from './client'
 
 export const reconnectingMessage = 'Updating — reconnecting…'
-
-export function isApiRestartError(error: unknown): boolean {
-  return ApiError.is(error) && (error.code === 'NETWORK_ERROR' || error.status === 502 || error.status === 503)
-}
 
 function needsReconnect(query: Query): boolean {
   return query.isActive() && (isApiRestartError(query.state.error) || isApiRestartError(query.state.fetchFailureReason))

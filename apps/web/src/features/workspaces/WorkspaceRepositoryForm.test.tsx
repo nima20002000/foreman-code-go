@@ -136,7 +136,7 @@ describe('repository draft', () => {
   })
 
   it.each([
-    [503, 'Updating — reconnecting…'],
+    [503, 'Workspace refresh unavailable.'],
     [500, 'Workspace refresh unavailable.'],
   ] as const)('keeps the draft and navigation guard through a failed workspace refresh with HTTP %s', async (status, message) => {
     fixture()
@@ -165,7 +165,7 @@ describe('repository draft', () => {
   })
 
   it.each([
-    [503, 'Updating — reconnecting…'],
+    [503, 'Workspace refresh unavailable.'],
     [500, 'Workspace refresh unavailable.'],
   ] as const)('retains the original unconfirmed command through a failed workspace refresh with HTTP %s', async (status, message) => {
     const state = fixture()
@@ -217,10 +217,12 @@ describe('repository draft', () => {
     let status = 403
     server.use(http.get('/api/management/workspaces/workspace-1', () => status === 200
       ? undefined
-      : HttpResponse.json({ error: { code: 'READ_UNAVAILABLE', message: 'Workspace read unavailable.' } }, { status })))
+      : status === 503 ? new HttpResponse(null, { status })
+        : HttpResponse.json({ error: { code: 'READ_UNAVAILABLE', message: 'Workspace read unavailable.' } }, { status })))
     await act(async () => {
       await view.queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkspace('workspace-1') })
     })
+    expect(await screen.findByText('Workspace read unavailable.')).toBeVisible()
     expect(input).not.toBeVisible()
     status = 503
     await user.click(screen.getByRole('button', { name: 'Try again' }))

@@ -134,7 +134,7 @@ describe('workspace section routes', () => {
 
     const error = await screen.findByTestId('agents-error')
     expect(error).toHaveTextContent('Agents unavailable')
-    expect(error).toHaveTextContent('Updating — reconnecting…')
+    expect(error).toHaveTextContent('The selected mock scenario fails read requests.')
     expect(screen.queryByText('No agents yet')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Retry' })).toBeVisible()
   })
@@ -437,7 +437,7 @@ describe('workspace section routes', () => {
     await user.clear(input)
     await user.paste('Confirmed retry rename')
     await user.click(screen.getByRole('button', { name: 'Save name' }))
-    expect(await screen.findByText('Updating — reconnecting…')).toBeVisible()
+    expect(await screen.findByText('Rename acknowledgement lost.')).toBeVisible()
     expect(screen.getByText('The rename may have succeeded. Retry to confirm its outcome.')).toBeVisible()
     expect(input).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled()

@@ -132,7 +132,7 @@ it('uses a new Claude command after a completed install is removed in another se
   expect(inputs[1]!.commandId).not.toBe(inputs[0]!.commandId)
 })
 
-it.each([500, 502, 503])('retries uncertain Claude installation with its original command and payload after defaults advance (%s)', async status => {
+it.each([500, 502, 503, 'restart'] as const)('retries uncertain Claude installation with its original command and payload after defaults advance (%s)', async failure => {
   const inputs: DefaultsUpdate[] = []
   const defaults = { ...DEFAULT_HARNESS_DEFAULTS, claude: { ...savedClaudeConfiguration, mcpServers: {} } }
   server.use(
@@ -142,14 +142,15 @@ it.each([500, 502, 503])('retries uncertain Claude installation with its origina
     http.put('/api/management/harnesses/defaults', async ({ request }) => {
       const input = await request.json() as DefaultsUpdate
       inputs.push(input)
-      if (inputs.length === 1) return HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Response lost' } }, { status })
+      if (inputs.length === 1) return failure === 'restart' ? new HttpResponse(null, { status: 503 })
+        : HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Response lost' } }, { status: failure })
       return HttpResponse.json({ value: { defaults: input.defaults, revision: 4 }, replayed: true })
     }),
   )
   const mounted = mount(<OperatorMcpStatus harness="claude" defaults={defaults} revision={3} />)
   await waitFor(() => expect(screen.getByRole('button', { name: 'Install' })).toBeEnabled())
   fireEvent.click(screen.getByRole('button', { name: 'Install' }))
-  const expectedMessage = status === 500 ? 'Response lost' : 'Updating — reconnecting…'
+  const expectedMessage = failure === 'restart' ? 'Updating — reconnecting…' : 'Response lost'
   expect(await screen.findByRole('alert')).toHaveTextContent(expectedMessage)
   mounted.update(<OperatorMcpStatus harness="claude" defaults={defaults} revision={9} />)
   fireEvent.click(screen.getByRole('button', { name: 'Install' }))
@@ -195,8 +196,7 @@ it.each([500, 502, 503])('explains a failed Claude setup read and retries it wit
     : HttpResponse.json({ graphqlMcp: { type: 'http', url: 'http://127.0.0.1:3000/mcp' } })))
   mount(<OperatorMcpStatus harness="claude" revision={3}
     defaults={{ ...DEFAULT_HARNESS_DEFAULTS, claude: { ...savedClaudeConfiguration, mcpServers: {} } }} />)
-  const expectedMessage = status === 500 ? 'Setup could not load' : 'Updating — reconnecting…'
-  expect(await screen.findByRole('alert')).toHaveTextContent(expectedMessage)
+  expect(await screen.findByRole('alert')).toHaveTextContent('Setup could not load')
   expect(screen.getByText('Unavailable')).toBeVisible()
   unavailable = false
   fireEvent.click(screen.getByRole('button', { name: 'Retry setup' }))

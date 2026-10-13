@@ -340,8 +340,7 @@ it.each([500, 502, 503])('keeps a shortened answer visible during a failed expan
       mode: 'item', cursor: undefined })
   }))
   fireEvent.click(await screen.findByRole('button', { name: 'Show full message' }))
-  const expectedMessage = status === 500 ? 'Full message unavailable.' : 'Updating — reconnecting…'
-  expect(await screen.findByRole('alert')).toHaveTextContent(expectedMessage)
+  expect(await screen.findByRole('alert')).toHaveTextContent('Full message unavailable.')
   expect(screen.getByText('Visible preview')).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: 'Show full message' }))
   expect(await screen.findByRole('button', { name: 'Loading full message…' })).toBeDisabled()

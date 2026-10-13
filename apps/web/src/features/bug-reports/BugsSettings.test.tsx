@@ -291,7 +291,7 @@ it.each(['server failure', 'invalid acknowledgement'])('retries a save after %s 
   expect(screen.getByRole('combobox', { name: 'Report status' })).toHaveValue('triaged')
 })
 
-it.each([500, 502, 503])('recovers list and detail failures through refresh and API reconnect (%s)', async status => {
+it.each([500, 502, 503])('recovers list and detail request failures through their refresh actions (%s)', async status => {
   server.use(
     http.get('*/api/management/bug-reports', () => HttpResponse.json({
       error: { code: 'UNAVAILABLE', message: 'Reports are unavailable.' },
@@ -302,15 +302,14 @@ it.each([500, 502, 503])('recovers list and detail failures through refresh and 
   )
   mount('/settings/bugs?reportId=bug-report-missing')
   const reports = within(await screen.findByRole('region', { name: 'Bug reports' }))
-  const expectedMessage = status === 500 ? 'Reports are unavailable.' : 'Updating — reconnecting…'
-  expect(await reports.findByRole('alert')).toHaveTextContent(expectedMessage)
+  expect(await reports.findByRole('alert')).toHaveTextContent('Reports are unavailable.')
   expect(await screen.findByText('This bug report was not found.')).toBeVisible()
   expect(screen.getByRole('button', { name: 'Refresh bug reports' })).toBeEnabled()
   expect(screen.getByRole('button', { name: 'Refresh report' })).toBeEnabled()
   expect(screen.queryByRole('combobox', { name: 'Report status' })).not.toBeInTheDocument()
   serveReports([report({ id: 'bug-report-missing' })])
   await userEvent.click(screen.getByRole('button', { name: 'Refresh bug reports' }))
-  if (status === 500) await userEvent.click(screen.getByRole('button', { name: 'Refresh report' }))
+  await userEvent.click(screen.getByRole('button', { name: 'Refresh report' }))
   expect(await screen.findByRole('combobox', { name: 'Report status' })).toHaveValue('open')
   expect(screen.getByRole('button', { name: 'Read Workflow start fails' })).toBeVisible()
   expect(reports.queryByRole('alert')).not.toBeInTheDocument()

@@ -53,8 +53,7 @@ describe('mounted Board bounded-history wire budgets', () => {
     let restarting = false
     const wire = measureBoardWire(fixture.mock, (request) => {
       if (restarting && isCurrentRequest(request)) {
-        return HttpResponse.json({ error: { code: 'TEMPORARILY_UNAVAILABLE', message: 'Restarting' } },
-          { status: 503 })
+        return new HttpResponse(null, { status: 503 })
       }
       return undefined
     })

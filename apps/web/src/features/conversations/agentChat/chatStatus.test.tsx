@@ -63,15 +63,18 @@ it('keeps unfinished work as the chat status while live updates reconnect', asyn
 })
 
 it.each([
-  [503, 'Updating — reconnecting…'],
+  [503, 'The selected computer is disconnected.'],
   [500, 'The selected computer is disconnected.'],
-] as const)('shows the Board chat command error inline after HTTP %s', async (status, message) => {
+  ['restart', 'Updating — reconnecting…'],
+] as const)('shows the Board chat command error inline after HTTP %s', async (failure, message) => {
   const mounted = mountChat(agentChatFixtures.idleAfterCompletion)
   clients.push(mounted.client)
   await mounted.ready()
-  server.use(http.post('/api/workspaces/:workspaceId/agent-chat/messages', () => HttpResponse.json({
-    error: { code: 'HARNESS_UNAVAILABLE', message: 'The selected computer is disconnected.' },
-  }, { status })))
+  server.use(http.post('/api/workspaces/:workspaceId/agent-chat/messages', () => failure === 'restart'
+    ? new HttpResponse(null, { status: 502 })
+    : HttpResponse.json({
+      error: { code: 'HARNESS_UNAVAILABLE', message: 'The selected computer is disconnected.' },
+    }, { status: failure })))
   fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'A follow-up' } })
   fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
   expect(await screen.findByText(message)).toBeVisible()
