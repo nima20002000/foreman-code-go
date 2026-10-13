@@ -126,6 +126,23 @@ export async function consumeDeliveredApprovals(owner: RunOwnership, saver: Base
         and lease_token=any($3::text[]) and state='resuming'`,
     [currentRun.id, current.map((item) => item.id), [...claims.values()].map((claim) => claim.ownerToken)])
     const deadline = deadlines.rows[0]?.deadline
+    for (const item of current) {
+      if (claims.has(item.id)) continue
+      const consumed = await sql.query(`select 1 from run_graph_effects
+        where run_id=$1 and effect_kind='graph.resume' and entity_id=$2`, [currentRun.id, item.id])
+      if (consumed.rowCount === 1) continue
+      // Recovery waits for review completion or another callback's lease without consuming sibling interrupts.
+      if (!suppliedClaim) {
+        const pending = await sql.query(`select 1 from interaction_graph_resumes g
+          where g.interaction_id=$1 and g.state not in ('canceled','resumed')
+            and g.last_error is distinct from 'GRAPH_RESUME_RECEIPT_MISSING'
+            and (g.lease_expires_at>clock_timestamp() or ($2::text='orchestrator' and exists (
+              select 1 from review_jobs j where j.interaction_id=g.interaction_id
+                and j.state not in ('completed','failed'))))`, [item.id, item.approval.handler])
+        if (pending.rowCount === 1) return undefined
+      }
+      throw new DomainError('GRAPH_RESUME_OWNER_LOST', 'A delivered branch is still owned by another resume attempt.', 409)
+    }
     let ready = false
     for (const item of current) {
       const claim = claims.get(item.id)
@@ -133,20 +150,11 @@ export async function consumeDeliveredApprovals(owner: RunOwnership, saver: Base
         await consumeApprovalGraphResume(publication, claim, (transaction, actual) => saver.consumeApprovalInterrupt(transaction, actual))
         ready = true
       } else {
-        const consumed = await sql.query(`select 1 from run_graph_effects
-          where run_id=$1 and effect_kind='graph.resume' and entity_id=$2`, [currentRun.id, item.id])
-        if (consumed.rowCount === 1) {
-          // Reuse the receipt consumer's exact digest validation; presence alone
-          // is insufficient. An unclaimed path must NEVER write a checkpoint.
-          await consumeApprovalGraphResume(publication, { interaction: item, ownerToken: '' }, async () => {
-            throw new DomainError('GRAPH_RESUME_RECEIPT_MISSING', 'Unclaimed recovery cannot consume an interrupt.', 409)
-          })
-          ready = true
-        } else {
-          // A sibling may already be leased by another queued service callback.
-          // Do not advance its shared interrupt and strand that sibling's receipt.
-          throw new DomainError('GRAPH_RESUME_OWNER_LOST', 'A delivered branch is still owned by another resume attempt.', 409)
-        }
+        // A persisted receipt still needs digest validation; an unclaimed path cannot write a checkpoint.
+        await consumeApprovalGraphResume(publication, { interaction: item, ownerToken: '' }, async () => {
+          throw new DomainError('GRAPH_RESUME_RECEIPT_MISSING', 'Unclaimed recovery cannot consume an interrupt.', 409)
+        })
+        ready = true
       }
     }
     // The callback can release outbox leases before COMMIT; the existing
@@ -171,6 +179,12 @@ export async function consumeDeliveredApprovals(owner: RunOwnership, saver: Base
   owner.assertOwned()
   if (!transaction || !didGraphTransactionCommit(transaction) || owner.oneShotConnection().unusable) {
     throw new DomainError('GRAPH_RESUME_COMMIT_UNCERTAIN', 'No confirmed checkpoint commit permits graph continuation.', 409)
+  }
+  if (!committed) {
+    for (const claim of claims.values()) {
+      await repository.delivery.finishGraphResume(claim, 'GRAPH_RESUME_DEFERRED')
+    }
+    return undefined
   }
   return mintWorkflowResumePermit({ ...committed, owner, saver })
 }
