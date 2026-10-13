@@ -348,6 +348,55 @@ it.each([2, 3])('preserves direct cancellation during throughput planning with %
   }
 })
 
+it.each([2, 3])('persists one partition plan without changing concurrent cancellations for %i siblings', async partitions => {
+  const f = await fixture()
+  const entered = deferred()
+  const release = deferred()
+  let dispatch: Promise<void> | undefined
+  try {
+    const statuses = new Map<string, number>()
+    f.control.onStatus = async computer => {
+      const count = (statuses.get(computer.key) ?? 0) + 1
+      statuses.set(computer.key, count)
+      if (count === 2) {
+        entered.resolve()
+        await release.promise
+      }
+    }
+    f.control.available = true
+    const tickets = CiRunOutputSchema.parse(await f.value('ci_run', {
+      suite: 'integration', partitions, scope: 'full', commandId: randomUUID(),
+    }))
+    expect(tickets.partitions).toHaveLength(partitions)
+    dispatch = f.ci.dispatch()
+    await entered.promise
+    const canceled = []
+    for (const { ticketId } of tickets.partitions!) {
+      await f.value('ci_cancel', { ticketId })
+      canceled.push(await f.read(ticketId))
+    }
+    release.resolve()
+    await dispatch
+    const saved = (await f.pool.query<{ record: Record<string, unknown>; revision: string }>(
+      'select record,xmin::text as revision from ci_runs where group_id=$1', [canceled[0]!.groupId])).rows
+    expect(saved).toHaveLength(partitions)
+    expect(new Set(saved.map(row => row.revision)).size).toBe(1)
+    const planned = await Promise.all(canceled.map(run => f.read(run.id)))
+    for (const [index, run] of planned.entries()) {
+      expect(run).toMatchObject(canceled[index]!)
+      expect(run.partition?.weights).toHaveLength(partitions)
+      expect(run.partition).toMatchObject({ weights: planned[0]!.partition!.weights, hostIndexes: [0] })
+    }
+    await f.ci.dispatch()
+    expect(await Promise.all(canceled.map(run => f.read(run.id)))).toEqual(planned)
+    expect(f.starts).toEqual([])
+  } finally {
+    release.resolve()
+    await dispatch
+    await f.close()
+  }
+})
+
 it('pins each workspace mirror at admission and never borrows a duplicate repository workspace mirror', async () => {
   const f = await fixture()
   try {
