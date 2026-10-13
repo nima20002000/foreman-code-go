@@ -27,7 +27,7 @@ import { reconcileFailedCaptures } from '../src/modules/sources/failedCaptureCle
 import { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { WorkspaceManagementService } from '../src/modules/workspaces/management.js'
-import { agent3Database } from './helpers/wave25Agent3.js'
+import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { jobExecution, jobSpec } from './helpers/jobFixture.js'
 import { verificationCapacityFixture } from './helpers/verificationCapacityFixture.js'
 import { ownedTestDatabaseUrl } from './helpers/testResources.js'
@@ -43,7 +43,7 @@ afterEach(async () => {
 })
 
 async function setup() {
-  const database = await agent3Database()
+  const database = await migratedDatabase()
   const pool = database.pool
   const project = join(database.directory, 'project')
   const canonical = join(database.directory, 'snapshots')
