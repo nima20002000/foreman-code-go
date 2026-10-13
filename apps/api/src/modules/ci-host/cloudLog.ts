@@ -1,8 +1,17 @@
 import type { CircleJob, CircleStep } from './cloudCircle.js'
 
+const escape = String.fromCharCode(27)
+const bell = String.fromCharCode(7)
+const terminalToken = new RegExp(
+  String.raw`${escape}\](?:[^${bell}${escape}]|${escape}(?!\\))*(?:${bell}|${escape}\\)`
+    + String.raw`|${escape}\[[0-?]*[ -/]*[@-~]|${escape}.|[^${escape}]`,
+  'gsu',
+)
+const cursorSequence = new RegExp(String.raw`^${escape}\[([0-9;]*)([A-Za-z\x60])$`)
+
 /** Replays the cursor redraws used by CI progress output, retaining every completed line. */
 export function renderTerminal(input: string): string {
-  if (!/[\x1b\r\b\t\v\f]/.test(input)) {
+  if (!input.includes(escape) && !/[\r\b\t\v\f]/.test(input)) {
     const lines = input.split('\n').map(line => line.replace(/ +$/, ''))
     while (lines.at(-1) === '') lines.pop()
     return lines.length ? `${lines.join('\n')}\n` : ''
@@ -19,9 +28,9 @@ export function renderTerminal(input: string): string {
     while (rows.length <= row) rows.push([])
     column = Math.max(0, Math.min(column, Math.max(65536, rows[row]!.length)))
   }
-  const tokens = input.match(/\x1b\](?:[^\x07\x1b]|\x1b(?!\\))*(?:\x07|\x1b\\)|\x1b\[[0-?]*[ -/]*[@-~]|\x1b.|[^\x1b]/gsu) ?? []
+  const tokens = input.match(terminalToken) ?? []
   for (const token of tokens) {
-    const sequence = /^\x1b\[([0-9;]*)([A-Za-z`])$/.exec(token)
+    const sequence = cursorSequence.exec(token)
     if (sequence) {
       const values = sequence[1]!.split(';').map(value => Number(value))
       const distance = values[0] || 1

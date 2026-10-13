@@ -215,7 +215,9 @@ it('reads CircleCI workflows, steps and live output without polling subprocesses
 
 it('keeps transient CircleCI missing-run handling and expired lookup errors', async () => {
   const server = await http((_request, response) => json(response, { message: 'Not Found' }, 404))
-  const provider = new CircleCiProvider(ports().value, { ...server, circleToken: async () => 'circle-test-token' })
+  const cli = ports()
+  cli.value.now = () => new Date(Date.parse(finishedAt) + CLOUD_START_TIMEOUT_MS - 1)
+  const provider = new CircleCiProvider(cli.value, { ...server, circleToken: async () => 'circle-test-token' })
   expect(await provider.find({ ...run, startedAt: finishedAt })).toBeNull()
   await expect(provider.find(run)).rejects.toMatchObject({ code: 'CI_CLOUD_RUN_NOT_FOUND',
     message: 'CircleCI run is not visible.' })
