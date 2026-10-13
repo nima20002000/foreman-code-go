@@ -55,7 +55,7 @@ describe.skipIf(!postgresEnabled)('Historical Run-scoped chat repeat PostgreSQL 
     }
   }, 120_000)
 
-  it('[SCH-12-C02] real repeat executions require an explicit choice and retain separate conversations/sessions', async () => {
+  it('real repeat executions require an explicit choice and retain separate conversations/sessions', async () => {
     const f = await historicalFixture('repeat')
     let api: HistoricalApi | undefined
     try {
@@ -130,7 +130,8 @@ describe.skipIf(!postgresEnabled)('Historical Run-scoped chat repeat PostgreSQL 
       // Seed calls the production Save service without the runtime fixture's harness normalization.
       await expect(seedAgent3(db.pool, db.directory, fixture)).rejects.toMatchObject({
         code: 'WORKFLOW_HARNESS_APPROVAL_CONFLICT',
-        message: expect.stringContaining('Routed approval requires a resumable Codex session'),
+        status: 409,
+        message: expect.stringContaining('Routed approval requires a persistent Codex session'),
       })
       for (const configuration of fixture.configurations) {
         const stored = (await db.pool.query<{ record: unknown }>(

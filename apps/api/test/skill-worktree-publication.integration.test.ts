@@ -9,8 +9,14 @@ import { createOperatorExtensions } from '../src/mcp/operator/extensions.js'
 import { setup } from './helpers/workflowWorktreeMcp.js'
 import { postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 
-for (const source of ['http', 'mcp'] as const) {
-  it.skipIf(!postgresEnabled)(`republishes worktree workflows after a bulk skill update over ${source}`, async () => {
+for (const [source, worktree] of [
+  ['http', true],
+  ['mcp', true],
+  ['http', false],
+  ['mcp', false],
+] as const) {
+  const workflowKind = worktree ? 'worktree' : 'ordinary'
+  it.skipIf(!postgresEnabled)(`republishes ${workflowKind} workflows after a bulk skill update over ${source}`, async () => {
     const f = await setup()
     const input = { pool: f.base.db.pool, commands: f.base.commands, catalog: f.base.services.harnesses,
       locations: f.base.locations, workflows: f.base.services.workflows.current,
@@ -43,7 +49,7 @@ for (const source of ['http', 'mcp'] as const) {
         commandId: randomUUID(), name: 'Skill consumer', productRole: 'coder',
         configuration: f.base.f.configurations.find(value => value.agentId === previousAgentId)!.harness,
         assignedSkills: [{ skillId: skill.skill.skillId, version: skill.version.version }] })
-      const { saveInput } = await f.create()
+      const { saveInput } = await f.create(worktree ? undefined : null)
       saveInput.graph.nodes = saveInput.graph.nodes.map(node => node.kind !== 'job' && node.agentId === previousAgentId
         ? { ...node, agentId } : node)
       delete saveInput.expectedAgentConfigurationVersionIds[previousAgentId]
@@ -55,6 +61,9 @@ for (const source of ['http', 'mcp'] as const) {
       const reader = await connect((await f.base.access.issue({ name: 'Skill reader', audience: 'operator',
         expiresAt: new Date(Date.now() + 120_000), grants: [{ actions: ['skills:read'], scope: { workspaceIds: [workspaceId] } }] })).token)
       expect((await reader.callTool({ name: 'skill_users_update', arguments: update })).isError).toBe(true)
+      expect((await f.read(saveInput.workflowId)).version).toEqual(original.value.version)
+      expect((await f.base.services.agents.get(f.base.writer.principal, workspaceId, agentId)).agent.assignedSkills)
+        .toEqual([{ skillId: skill.skill.skillId, version: '1' }])
       const updateUsers = async () => {
         if (source === 'mcp') return call('skill_users_update', c.SkillUsersUpdateResultSchema, update)
         const response = await app.inject({ method: 'POST',
@@ -71,6 +80,8 @@ for (const source of ['http', 'mcp'] as const) {
       expect(readback.version.id).not.toBe(original.value.currentVersionId)
       expect(readback.version.definition.defaultWorktree).toEqual(original.value.version.definition.defaultWorktree)
       expect(readback.version.agentConfigurationVersionIds[agentId]).toBe(result.agents[0]!.configurationVersionId)
+      expect(await call('skill_usage_get', c.SkillUsageSchema, { workspaceId, skillId: skill.skill.skillId }))
+        .toMatchObject({ headVersion: '2', agents: [], workflows: [] })
       expect(await updateUsers()).toEqual(result)
       expect((await f.base.db.pool.query<{ record: unknown }>('select record from runs where id=$1', [f.base.f.run.id])).rows[0]!.record)
         .toMatchObject({ agentConfigurationVersionIds: f.base.f.run.agentConfigurationVersionIds })
