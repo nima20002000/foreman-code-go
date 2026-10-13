@@ -412,6 +412,24 @@ test('install keeps only the current and previous release', async () => {
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('background work after an install runs in its own systemd unit so it outlives the install unit', () => {
+  const calls = []
+  const spawnProcess = (file, args, options) => { calls.push({ file, args, options }); return { unref() {} } }
+  // A detached child still died with the install's systemd unit: the GitHub upload and old-release deletion never finished.
+  production.startBackground('foreman-worker-publish', '/release/node', ['publish.mjs', 'a b'],
+    { logFile: '/state/publish.log', systemdRun: '/usr/bin/systemd-run', spawnProcess })
+  assert.equal(calls[0].file, '/usr/bin/systemd-run')
+  const args = calls[0].args
+  assert.deepEqual(args.slice(0, 3), ['--user', '--collect', '--quiet'])
+  assert.match(args.find(arg => arg.startsWith('--unit=')), /^--unit=foreman-worker-publish-[0-9a-f]{8}$/)
+  assert.ok(args.includes('--property=StandardOutput=append:/state/publish.log'))
+  assert.ok(args.includes(`--setenv=PATH=${process.env.PATH}`))
+  assert.deepEqual(args.slice(-3), ['/release/node', 'publish.mjs', 'a b'])
+  production.startBackground('foreman-prune', 'rm', ['-rf', '--', '/x'], { systemdRun: null, spawnProcess })
+  assert.equal(calls[1].file, 'rm')
+  assert.equal(calls[1].options.detached, true)
+})
+
 test('install moves pruned releases aside and deletes them without waiting', async () => {
   const parent = await mkdtemp(join(tmpdir(), 'releases-'))
   const root = join(parent, 'releases')
