@@ -117,8 +117,13 @@ export async function remoteReviewProduction(options: {
     phaseStarted = performance.now()
   }
   const closes: Array<() => Promise<void>> = []
+  const mcpClients = new Set<Client>()
   const close = async () => {
-    const errors: unknown[] = []
+    // Client streams must release their HTTP requests before Main drains its listener.
+    const clientClosures = await Promise.allSettled([...mcpClients].map(client => client.close()))
+    mcpClients.clear()
+    const errors: unknown[] = clientClosures.flatMap(result =>
+      result.status === 'rejected' ? [result.reason] : [])
     while (closes.length) {
       try { await closes.pop()!() } catch (error) { errors.push(error) }
     }
@@ -383,7 +388,7 @@ export async function remoteReviewProduction(options: {
       if (!connected) {
         // One SDK counter per credential keeps parallel calls distinct on the stateless endpoint.
         const client = new Client({ name: 'Production remote review integration', version: '1' })
-        closes.push(() => client.close())
+        mcpClients.add(client)
         connected = client.connect(new StreamableHTTPClientTransport(new URL('/mcp', origin), {
           authProvider: { token: async () => token },
         })).then(() => client)
