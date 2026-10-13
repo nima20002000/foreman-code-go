@@ -75,8 +75,10 @@ export const CiGetOutputSchema = z.object({
   }).strict().optional(),
 }).strict()
 export type CiRunInput = z.infer<typeof CiRunInputSchema>
-export const CiCancelInputSchema = CiTicketInputSchema
-export const OperatorCiCancelInputSchema = CiTicketInputSchema.extend({ workspaceId: IdSchema }).strict()
+export const CiCancelInputSchema = CiTicketInputSchema.extend({
+  commandId: IdSchema.optional().describe('Optional caller request identity recorded with cancellation; generated when omitted.'),
+}).strict()
+export const OperatorCiCancelInputSchema = CiCancelInputSchema.extend({ workspaceId: IdSchema }).strict()
 export const CiCancelOutputSchema = z.object({ run: CiRunRecordSchema }).strict()
 export const CiTestsOutputSchema = z.object({ ticketId: IdSchema, tests: CiTestResultsSchema.nullable() }).strict()
 

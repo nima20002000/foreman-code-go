@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
-import { withTransaction } from '../../infrastructure/transaction.js'
+import { inTransaction, type SqlQuery } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
 import { CI_HOST_NAMESPACE, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiHostReplySchema, CiListOutputSchema, CiRunRecordSchema,
   WorkspaceSchema,
   requiresUserSystemd, userSystemdIntegrationFiles,
   type CiDurations, type CiHostRequest, type CiHostReply, type CiListOutput, type CiRunRecord, type CiRunInput,
-  type CiTestResults, type CiTestStatus, type CiUserSystemd } from '@foreman-code/contracts'
+  type CiTestResults, type CiTestStatus, type CiUserSystemd, type CiCancellation } from '@foreman-code/contracts'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { CiAuthority } from '../jobs/ciAuthority.js'
@@ -23,6 +23,7 @@ import { CI_QUEUE_ORDER, ciQueueReason, compareCiQueue } from './priority.js'
 import { supersedeCiRuns } from './supersession.js'
 import { gatePartStealer, gateQueueBlock, planCiGate } from './gate.js'
 import { ciGateReport } from './gateReport.js'
+import { claimCiDispatch, releaseCiDispatch, saveQueuedCiRun, ciMessages, rejectedCiStart, withCiTicketLock } from './dispatch.js'
 
 /** CI reads are idempotent: one retry after a lock or statement timeout, then a typed retryable error. */
 async function retryRead<T>(work: () => Promise<T>): Promise<T> {
@@ -190,6 +191,7 @@ export class HostCiService {
           expectedDurationMs: planned.expectedDurationMs ?? (input.suite === 'unit' ? 210_000 : 150_000),
           id: randomUUID(), workspaceId: scope.workspaceId,
           suite: planned.suite ?? input.suite, scope: selectionScope, commit, repository, groupId,
+          ciMirror: workspace.ciMirror ? `${workspace.ciMirror.owner}/${workspace.ciMirror.name}` : null,
           priority, priorityReason,
           ...(input.gate ? { gate: true, noSupersede: true } : {}),
           defaultBranch,
@@ -315,11 +317,11 @@ export class HostCiService {
         const next = CiRunRecordSchema.parse({ ...run, partition: { ...run.partition!, weights,
           ...(hostIndexes.length ? { hostIndexes } : {}) },
           plannedHostKey: planned[index]?.key ?? null })
-        await this.save(next, null)
-        replaced.set(run.id, next)
+        if (await saveQueuedCiRun(this.pool, run, next)) replaced.set(run.id, next)
+        else replaced.set(run.id, await this.read(run.id, run.workspaceId))
       }
     }
-    return queued.map(run => replaced.get(run.id) ?? run)
+    return queued.map(run => replaced.get(run.id) ?? run).filter(run => run.state === 'queued' && !run.computer)
   }
 
   private async throughput(computers: HostCiComputer[]): Promise<Map<string, number>> {
@@ -355,16 +357,11 @@ export class HostCiService {
     return speed
   }
 
-  private async read(id: string, workspaceId: string): Promise<CiRunRecord> {
-    const row = (await this.pool.query<{ record: unknown }>('select record from ci_runs where id=$1 and workspace_id=$2',
+  private async read(id: string, workspaceId: string, sql: SqlQuery = this.pool): Promise<CiRunRecord> {
+    const row = (await sql.query<{ record: unknown }>('select record from ci_runs where id=$1 and workspace_id=$2',
       [id, workspaceId])).rows[0]
     if (!row) throw new DomainError('CI_RUN_NOT_FOUND', 'No such CI run in this workspace.', 404)
     return CiRunRecordSchema.parse(row.record)
-  }
-
-  private async save(run: CiRunRecord, hostKey: string | null) {
-    await this.pool.query('update ci_runs set state=$2, host_key=$3, record=$4::jsonb where id=$1',
-      [run.id, run.state, hostKey, JSON.stringify(run)])
   }
 
   private async queuePosition(id: string): Promise<number | undefined> {
@@ -471,11 +468,14 @@ export class HostCiService {
   }
 
   async cancel(caller: ManagementPrincipal,
-    input: { workspaceId?: string | undefined; ticketId: string }): Promise<{ run: CiRunRecord }> {
+    input: { workspaceId?: string | undefined; ticketId: string; commandId?: string | undefined },
+    source: 'http' | 'mcp' = 'mcp'): Promise<{ run: CiRunRecord }> {
     const scope = await this.authority.resolve(caller, input.workspaceId, ['jobs:cancel'])
     const run = await this.read(input.ticketId, scope.workspaceId)
     assertCiReadAccess(caller, scope.executionId, run)
-    return this.cancelTicket(scope.workspaceId, run.id)
+    return this.cancelTicket(scope.workspaceId, run.id, {
+      principalId: caller.id, source, commandId: input.commandId ?? randomUUID(), reason: 'direct',
+    })
   }
 
   /** The persisted, authorized Stop intent authorizes cleanup of its Agents' tickets. */
@@ -493,7 +493,7 @@ export class HostCiService {
         where e.run_id=$1 and c.workspace_id=$2 and c.state in ('queued','starting','running')
         order by c.id`, [runId, intent.workspace_id])).rows
       const results = await Promise.allSettled(tickets.map(ticket =>
-        this.cancelTicket(intent.workspace_id, ticket.id, intent.record)))
+        this.cancelTicket(intent.workspace_id, ticket.id, { ...intent.record, reason: 'run_stop' })))
       const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
       if (errors.length) throw new AggregateError(errors, 'Run CI cancellation is incomplete.')
     } finally {
@@ -502,11 +502,13 @@ export class HostCiService {
   }
 
   private async cancelTicket(workspaceId: string, ticketId: string,
-    audit?: RunStopAudit): Promise<{ run: CiRunRecord }> {
-    const run = await this.read(ticketId, workspaceId)
+    audit?: CiCancellation): Promise<{ run: CiRunRecord }> {
+    let run = await this.read(ticketId, workspaceId)
+    audit = run.cancellation ?? audit
     if (run.state === 'queued') {
       const message = run.supersededBy ? `superseded by ${run.supersededBy}` : 'Canceled.'
-      const canceled = { ...run, state: 'canceled' as const, finishedAt: new Date().toISOString(), message }
+      const canceled = { ...run, state: 'canceled' as const, finishedAt: new Date().toISOString(), message,
+        cancellation: undefined, dispatchRequest: undefined }
       const saved = await this.saveCancellation(`update ci_runs set state='canceled', host_key=null, record=$2::jsonb
         where id=$1 and state='queued' and record->>'supersededBy' is not distinct from $3`,
       [run.id, JSON.stringify(canceled), run.supersededBy ?? null], canceled, audit)
@@ -514,12 +516,23 @@ export class HostCiService {
       return { run: canceled }
     }
     if (run.computer && ['starting', 'running'].includes(run.state)) {
-      const computer = await this.computer(run.computer.hostRef)
-      const reply = await this.endpoint.request(computer, { operation: 'cancel', runId: run.id })
-      if (reply.operation !== 'cancel') {
-        throw new DomainError('CI_HOST_REPLY_INVALID', 'The build computer replied out of order.', 502)
+      if (!run.cancellation) {
+        const cancellation = audit ?? { principalId: run.initiator.principalId, source: 'mcp' as const,
+          commandId: randomUUID(), reason: 'superseded' as const }
+        const pending = { ...run, cancellation }
+        const saved = await this.pool.query(`update ci_runs set record=$2::jsonb
+          where id=$1 and state in ('starting','running') and record=$3::jsonb`,
+        [run.id, JSON.stringify(pending), JSON.stringify(run)])
+        if (!saved.rowCount) return this.cancelTicket(workspaceId, ticketId, audit)
+        run = pending
+        audit = cancellation
       }
-      await this.settle(run, computer, reply.run, undefined, audit)
+      await withCiTicketLock(this.pool, run.id, async client => {
+        const current = await this.read(run.id, workspaceId, client)
+        if (current.computer && ['starting', 'running'].includes(current.state)) {
+          await this.cancelAssignedTicket(current, client, current.cancellation ?? audit)
+        }
+      })
     }
     const current = await this.read(run.id, workspaceId)
     const reassigned = ['starting', 'running'].includes(current.state)
@@ -529,6 +542,30 @@ export class HostCiService {
       throw new DomainError('CI_CANCEL_PENDING', 'The build computer has not canceled the CI ticket.', 409)
     }
     return { run: current }
+  }
+
+  private async cancelAssignedTicket(run: CiRunRecord, client: pg.PoolClient, audit?: CiCancellation) {
+    const computer = await this.computer(run.computer!.hostRef)
+    if (run.dispatchRequest) {
+      // A start with an unknown reply is retried on its owner before cancellation can confirm closure.
+      try {
+        const start = await this.endpoint.request(computer, run.dispatchRequest)
+        if (start.operation !== 'start') {
+          throw new DomainError('CI_HOST_REPLY_INVALID', 'The build computer replied out of order.', 502)
+        }
+      } catch (error) {
+        if (!rejectedCiStart(error)) throw error
+        const now = new Date().toISOString()
+        await this.settle(run, computer, { state: 'canceled', step: null, exitCode: null,
+          startedAt: now, finishedAt: now, message: 'Canceled before execution.' }, { client, audit })
+        return
+      }
+    }
+    const reply = await this.endpoint.request(computer, { operation: 'cancel', runId: run.id })
+    if (reply.operation !== 'cancel') {
+      throw new DomainError('CI_HOST_REPLY_INVALID', 'The build computer replied out of order.', 502)
+    }
+    await this.settle(run, computer, reply.run, { client, audit })
   }
 
   private async cancelSuperseded() {
@@ -544,16 +581,17 @@ export class HostCiService {
     })
   }
 
-  private async saveCancellation(sql: string, parameters: unknown[], run: CiRunRecord, audit?: RunStopAudit) {
-    if (!audit || run.state !== 'canceled') return this.pool.query(sql, parameters)
-    return withTransaction(this.pool, async (client) => {
+  private async saveCancellation(sql: string, parameters: unknown[], run: CiRunRecord,
+    audit?: CiCancellation, client?: pg.PoolClient) {
+    if (!audit || run.state !== 'canceled') return (client ?? this.pool).query(sql, parameters)
+    return inTransaction(this.pool, client, async client => {
       const saved = await client.query(sql, parameters)
       if (saved.rowCount) {
         await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
           values($1,$2,'ci.cancel',$3,'succeeded',$4::jsonb)`,
         [audit.principalId, audit.source, `ci:${run.id}`, JSON.stringify({
           commandId: audit.commandId, runId: audit.runId, ticketId: run.id,
-          executionId: run.initiator.executionId, reason: 'run_stop',
+          executionId: run.initiator.executionId, reason: audit.reason,
         })])
       }
       return saved
@@ -607,34 +645,40 @@ export class HostCiService {
       return { key: `${hostRef.mainId}:${hostRef.deviceId}`, hostRef,
         label: `Computer ${hostRef.deviceId.slice(0, 8)}`, priority: 0 }
     }
+    if (hostRef.kind === 'cloud' && hostRef.provider) {
+      return { key: `${hostRef.mainId}:cloud:${hostRef.provider}:${hostRef.slot ?? 0}`, hostRef,
+        label: hostRef.provider === 'github' ? 'GitHub Actions' : 'CircleCI', priority: 0 }
+    }
     throw new DomainError('CI_COMPUTER_OFFLINE', 'The build computer running this CI run is offline.', 409)
   }
 
   private async settle(run: CiRunRecord, computer: HostCiComputer, state: { state: string; step: string | null
     exitCode: number | null; startedAt: string; finishedAt: string | null; message: string | null },
-    logTail?: string, audit?: RunStopAudit) {
+    options: { logTail?: string | undefined; audit?: CiCancellation | undefined; client?: pg.PoolClient | undefined } = {}) {
+    const { logTail, audit, client } = options
     const requeued = state.state === 'queued' && computer.hostRef.kind === 'cloud'
     const unstartedProviders = new Set(run.unstartedProviders ?? [])
     if (requeued && computer.hostRef.provider) unstartedProviders.add(computer.hostRef.provider)
-    const previousMessage = run.state === 'queued' && state.state !== 'queued' ? null : run.message
-    const message = run.supersededBy ? `superseded by ${run.supersededBy}`
-      : [...new Set([previousMessage, state.message].filter(Boolean))].join(' ') || null
+    const messages = ciMessages(run, state.message)
+    const terminal = !['queued', 'starting', 'running'].includes(state.state)
     const next = CiRunRecordSchema.parse({ ...run, state: state.state, step: state.step, exitCode: state.exitCode,
       computer: requeued ? null : { hostRef: computer.hostRef, label: computer.label },
       startedAt: requeued ? null : run.startedAt ?? state.startedAt,
-      finishedAt: state.finishedAt, message,
+      finishedAt: state.finishedAt, ...messages, dispatchRequest: undefined,
+      cancellation: terminal ? undefined : run.cancellation,
       ...(unstartedProviders.size ? { unstartedProviders: [...unstartedProviders] } : {}) })
     const hostKey = ['starting', 'running'].includes(next.state) ? computer.key : null
     const saved = await this.saveCancellation(`update ci_runs set state=$2, host_key=$3, record=$4::jsonb,
         log_tail=coalesce($6,log_tail)
       where id=$1 and state in ('queued','starting','running') and host_key is not distinct from $5
         and record->>'supersededBy' is not distinct from $7
-        and ($6::text is null or state is distinct from $2 or host_key is distinct from $3
-          or record is distinct from $4::jsonb or log_tail is distinct from $6)`,
+        and record=$8::jsonb
+        and (state is distinct from $2 or host_key is distinct from $3
+          or record is distinct from $4::jsonb or ($6::text is not null and log_tail is distinct from $6))`,
       [run.id, next.state, hostKey, JSON.stringify(next), run.state === 'queued' ? null : computer.key,
-        logTail ?? null, run.supersededBy ?? null],
-      next, audit)
-    if (requeued && saved.rowCount) log.warn({ runId: run.id, provider: computer.hostRef.provider, message },
+        logTail ?? null, run.supersededBy ?? null, JSON.stringify(run)],
+      next, run.cancellation ?? audit, client)
+    if (requeued && saved.rowCount) log.warn({ runId: run.id, provider: computer.hostRef.provider, message: messages.message },
       'CI dispatch created no work; ticket queued for another computer')
     return Boolean(saved.rowCount)
   }
@@ -665,7 +709,7 @@ export class HostCiService {
         for (const run of deferred.filter(value => value.groupId === groupId)) {
           const skipped = { ...run, state: 'canceled' as const, finishedAt: now,
             message: 'Skipped: slow tests run only after every other test of this request passed, and some did not.' }
-          await this.save(skipped, null)
+          await saveQueuedCiRun(this.pool, run, skipped)
         }
         waiting.add(groupId)
       } else if (states.some(state => state !== 'passed')) waiting.add(groupId)
@@ -698,6 +742,45 @@ export class HostCiService {
     return { gate, reservedHosts }
   }
 
+  private async sendDispatch(run: CiRunRecord, computer: HostCiComputer) {
+    const outcome = await withCiTicketLock(this.pool, run.id, async client => {
+      const current = await this.read(run.id, run.workspaceId, client)
+      if (current.cancellation) return 'pending'
+      if (!current.dispatchRequest
+        || JSON.stringify(current.computer?.hostRef) !== JSON.stringify(computer.hostRef)) return 'settled'
+      return this.sendAssignedDispatch(current, computer, client)
+    })
+    return outcome ?? 'pending'
+  }
+
+  private async sendAssignedDispatch(run: CiRunRecord, computer: HostCiComputer, client: pg.PoolClient) {
+    if (!run.dispatchRequest) throw new Error('CI dispatch request is missing.')
+    let reply: Extract<CiHostReply, { operation: 'start' }>
+    try {
+      const response = CiHostReplySchema.parse(await this.endpoint.request(computer, run.dispatchRequest))
+      if (response.operation !== 'start') {
+        throw new DomainError('CI_HOST_REPLY_INVALID', 'The build computer replied out of order.', 502)
+      }
+      reply = response
+    } catch (error) {
+      if (!rejectedCiStart(error)) {
+        log.warn({ err: error, runId: run.id, computer: computer.key }, 'CI start reply unknown; retrying assigned executor')
+        return 'pending'
+      }
+      if ((error as DomainError).code === 'CI_MIRROR_PRIVATE_DATA') {
+        const now = new Date().toISOString()
+        await this.settle(run, computer, { state: 'failed', step: null, exitCode: null,
+          startedAt: now, finishedAt: now, message: (error as Error).message }, { client })
+        return 'settled'
+      }
+      if (!await releaseCiDispatch(client, run, computer, (error as Error).message)) return 'pending'
+      return (error as DomainError).code === 'CI_HOST_BUSY' ? 'busy' : 'rejected'
+    }
+    // A persistence failure keeps the pre-dispatch assignment for same-executor recovery.
+    await this.settle(run, computer, reply.run, { client })
+    return 'settled'
+  }
+
   private async dispatchOnce() {
     await this.cancelSuperseded()
     const computers = await this.endpoint.computers()
@@ -708,8 +791,17 @@ export class HostCiService {
     await inBatches(active, 8, async row => {
       const run = CiRunRecordSchema.parse(row.record)
       const computer = computers.find(value => value.key === row.host_key)
-        ?? (run.computer && run.computer.hostRef.kind !== 'cloud' ? await this.computer(run.computer.hostRef) : null)
+        ?? (run.computer ? await this.computer(run.computer.hostRef) : null)
       if (!computer) return
+      if (run.cancellation) {
+        await this.cancelTicket(run.workspaceId, run.id, run.cancellation)
+          .catch(error => log.warn({ err: error, runId: run.id }, 'CI cancellation pending; retrying assigned executor'))
+        return
+      }
+      if (run.dispatchRequest) {
+        await this.sendDispatch(run, computer)
+        return
+      }
       const reply = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 32_768,
         ...(['integration', 'unit'].includes(run.suite) ? { durations: true } : {}) })
         .catch(fallbackOnError(null, 'jobs', 'read CI run from computer', { runId: run.id }))
@@ -738,7 +830,7 @@ export class HostCiService {
           if (!saved) return
         }
       }
-      await this.settle(run, computer, reply.run, logTail)
+      await this.settle(run, computer, reply.run, { logTail })
       // A run is read here until it finishes, so its measured durations are learned once.
       if (reply.durations && !['starting', 'running'].includes(reply.run.state)) {
         await this.learnDurations(run.repository, reply.durations)
@@ -785,7 +877,7 @@ export class HostCiService {
     await Promise.all(queued.map(async run => {
       const blocked = gateQueueBlock(run, gate)
       if (blocked) {
-        if (run.message !== blocked) await this.save({ ...run, message: blocked }, null)
+        if (run.message !== blocked) await saveQueuedCiRun(this.pool, run, { ...run, message: blocked })
         return
       }
       if (run.suite === 'integration' && run.partition && !run.partition.weights) return
@@ -831,64 +923,32 @@ export class HostCiService {
         }
         used.set(computer.key, (used.get(computer.key) ?? 0) + (exclusiveGate ? totals.get(computer.key) ?? 1 : 1))
         if (usesGitHubIntegration) integrationOnGitHub.add(computer.key)
-        try {
-          // A build computer that takes a cloud-planned gate part runs it with every shard it can hold.
-          const shards = stealsGatePart(run, computer) ? { integrationShards: 64 } : {}
-          const reply = CiHostReplySchema.parse(await this.endpoint.request(computer, { operation: 'start', runId: run.id,
-            repository: run.repository, commit: run.commit, suite: run.suite, ...(run.part ? { part: run.part } : {}), ...(run.partition ? { partition: run.partition } : {}),
-            scope: run.scope, ...selection, ...shards,
-            ...(run.expectedDurationMs !== undefined ? { expectedDurationMs: run.expectedDurationMs } : {}),
-            ...(run.defaultBranch ? { defaultBranch: run.defaultBranch } : {}),
-            ...(run.baseCommit ? { baseCommit: run.baseCommit } : {}),
-            ...(durations.get(run.id) ? { durations: durations.get(run.id)! } : {}) }))
-          if (reply.operation !== 'start') {
-            releaseSlot(computer)
-            if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
-            reasons.push(`${computer.label}: no start reply`)
-            continue
-          }
-          const saved = await this.settle(run, computer, reply.run)
-          if (!saved) {
-            if (['starting', 'running'].includes(reply.run.state)) {
-              await this.endpoint.request(computer, { operation: 'cancel', runId: run.id })
-                .catch(error => log.warn({ err: error, runId: run.id }, 'CI canceled during dispatch; remote stop failed'))
-            }
-            return
-          }
-          if (reply.run.state === 'queued') {
-            releaseSlot(computer)
-            if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
-            run = await this.read(run.id, run.workspaceId)
-            if (run.state !== 'queued') return
-            reasons.push(`${computer.label}: ${reply.run.message ?? 'dispatch created no work'}`)
-            continue
-          }
-          if (!['starting', 'running'].includes(reply.run.state)) {
-            releaseSlot(computer)
-            if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
-          }
+        // A build computer that takes a cloud-planned gate part runs it with every shard it can hold.
+        const shards = stealsGatePart(run, computer) ? { integrationShards: 64 } : {}
+        const assigned = await claimCiDispatch(this.pool, run, computer, {
+          operation: 'start', runId: run.id, workspaceId: run.workspaceId, ciMirror: run.ciMirror ?? null,
+          repository: run.repository, commit: run.commit, suite: run.suite,
+          ...(run.part ? { part: run.part } : {}),
+          ...(run.partition ? { partition: run.partition } : {}),
+          scope: run.scope, ...selection, ...shards,
+          ...(run.expectedDurationMs !== undefined ? { expectedDurationMs: run.expectedDurationMs } : {}),
+          ...(run.defaultBranch ? { defaultBranch: run.defaultBranch } : {}),
+          ...(run.baseCommit ? { baseCommit: run.baseCommit } : {}),
+          ...(durations.get(run.id) ? { durations: durations.get(run.id)! } : {}),
+        })
+        if (!assigned) {
+          releaseSlot(computer)
+          if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
           return
-        } catch (error) {
-          // A busy or unready computer is skipped; the run stays queued for the next free one.
-          const code = (error as { code?: unknown } | null)?.code
-          reasons.push(`${computer.label}: ${(error as Error).message}`)
-          if (code === 'CI_HOST_BUSY') {
-            used.set(computer.key, totals.get(computer.key) ?? 1)
-          } else {
-            releaseSlot(computer)
-            if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
-          }
-          if (code === 'CI_HOST_BUSY' || code === 'COMPUTER_GITHUB_REQUIRED' || code === 'CI_CLOUD_UNAVAILABLE'
-            || code === 'BUILD_COMPUTER_DISABLED') continue
-          // The commit itself names private machines; no retry can publish it, so the caller learns why at once.
-          if (code === 'CI_MIRROR_PRIVATE_DATA') {
-            const now = new Date().toISOString()
-            await this.settle(run, computer, { state: 'failed', step: null, exitCode: null, startedAt: now, finishedAt: now,
-              message: (error as Error).message })
-            return
-          }
-          log.warn({ err: error, runId: run.id, computer: computer.key }, 'CI start failed')
         }
+        const outcome = await this.sendDispatch(assigned, computer)
+        if (outcome === 'pending') return
+        run = await this.read(run.id, run.workspaceId)
+        if (run.state !== 'queued') return
+        if (outcome === 'busy') used.set(computer.key, totals.get(computer.key) ?? 1)
+        else releaseSlot(computer)
+        if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
+        reasons.push(`${computer.label}: ${run.message ?? outcome}`)
       }
       const systemdCloud = computers.some(computer => computer.hostRef.kind === 'cloud' && supportsUserSystemd(computer))
       let prefix = `No ready computer for ${run.part ?? run.suite}`
@@ -897,12 +957,7 @@ export class HostCiService {
           : 'Waiting for a build computer: this integration slice needs one'
       }
       const message = `${prefix}; ${reasons.join('; ') || 'no eligible computers'}`.slice(0, 2000)
-      if (message !== run.message) {
-        await this.pool.query(`update ci_runs set record=$4::jsonb
-          where id=$1 and state=$2 and host_key is not distinct from $3
-            and record->>'message' is distinct from $5`,
-        [run.id, 'queued', null, JSON.stringify({ ...run, message }), message])
-      }
+      if (message !== run.message) await saveQueuedCiRun(this.pool, run, { ...run, message })
     }))
   }
 }
