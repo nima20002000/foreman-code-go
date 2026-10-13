@@ -24,6 +24,13 @@ if [ "${CI_HOST_RUNNER:-0}" = 1 ]; then
   pnpm() { corepack pnpm "$@"; }
 fi
 
+if [ -z "${1:-}" ] && [ -n "${FOREMAN_CODE_CI_TYPECHECK_CACHE:-}" ] \
+  && [ "${FOREMAN_CODE_CI_TYPECHECK_CACHE_ACTIVE:-}" != 1 ]; then
+  case "$SUITE" in
+    typecheck|typecheck-*) exec node "$(dirname "$0")/ci-typecheck-cache.mjs" -- bash "$0" ;;
+  esac
+fi
+
 if [ "${1:-}" = start ] || [ "${1:-}" = prepare ]; then
   case "$SUITE" in unit-web|unit-web-heavy) exit 0 ;; esac
   case "$SUITE" in unit|unit-*|integration) ;; *) exit 0 ;; esac

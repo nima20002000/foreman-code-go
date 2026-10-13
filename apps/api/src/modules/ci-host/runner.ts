@@ -603,6 +603,10 @@ export class HostCiRunner {
       await writeFile(selectedPath, JSON.stringify(meta.files ?? []), { mode: 0o600 })
       command = meta.files?.length ? `node scripts/ci-affected-run.mjs ${meta.suite} --files-from ${quote(selectedPath)}` : 'true'
     }
+    if (meta.suite === 'typecheck' && command !== 'true'
+      && existsSync(join(source, 'scripts/ci-typecheck-cache.mjs'))) {
+      command = `node scripts/ci-typecheck-cache.mjs -- bash -c ${quote(command)}`
+    }
     const apiUnit = meta.suite === 'unit' && (meta.part === 'unit-api'
       || (affected && meta.files?.some(file => file.startsWith('apps/api/'))))
     const prerequisiteSuite = apiUnit ? 'unit-api' : meta.part ?? meta.suite
@@ -649,6 +653,7 @@ export class HostCiRunner {
     return ['#!/bin/bash', 'set -o pipefail', `exec >>${quote(join(run, 'log'))} 2>&1`,
       `export TMPDIR=${quote(join(run, 'tmp'))} CI=true NODE_OPTIONS=--max-old-space-size=${heapMb}`
         + ` FOREMAN_CODE_CI_CONTRACTS_CACHE=${quote(join(cache, 'contracts'))}`
+        + ` FOREMAN_CODE_CI_TYPECHECK_CACHE=${quote(join(source, '..', 'typecheck-cache'))}`
         + ` FOREMAN_CODE_CI_CPU_COUNT=${Math.max(1, Math.floor(resources.cpuCount))}`
         + ` FOREMAN_CODE_CI_MEMORY_BYTES=${resources.memoryBytes}`
         + ` FOREMAN_CODE_VERIFICATION_UNIT_WORKERS=${workers}`
