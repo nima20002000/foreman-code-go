@@ -19,7 +19,7 @@ it('keeps browser connectivity and identity when installing Web Locks', async ()
   expect(navigator.onLine).toBe(online)
   expect(navigator.userAgent).toBe(userAgent)
   expect(navigator).toBe(browserNavigator)
-  await expect(navigator.locks.request('editor-command', lock => lock.name)).resolves.toBe('editor-command')
+  await expect(navigator.locks.request('editor-command', lock => lock?.name)).resolves.toBe('editor-command')
 })
 
 it('reads changes to native connectivity after installation', () => {
