@@ -114,14 +114,28 @@ export class ProjectionDatabase {
         observedTransaction = { readOnly: q.endsWith('read only'),
           isolation: q.includes('repeatable read') ? 'repeatable read' : 'other', outcome: 'pending' }
         this.transactions.push(observedTransaction)
-        initializedBefore = this.initialized; assert.equal(transaction, null); transaction = structuredClone(this.state); return result() }
+        initializedBefore = this.initialized
+        assert.equal(transaction, null)
+        transaction = structuredClone(this.state)
+        return result()
+      }
       if (q === 'commit') {
         if (observedTransaction) observedTransaction.outcome = 'committed'
-        assert.ok(transaction); this.state = transaction; transaction = null;
-        if (this.unknownCommit) { this.unknownCommit = false; throw new Error('COMMIT reply lost') } return result() }
+        assert.ok(transaction)
+        this.state = transaction
+        transaction = null
+        if (this.unknownCommit) {
+          this.unknownCommit = false
+          throw new Error('COMMIT reply lost')
+        }
+        return result()
+      }
       if (q === 'rollback') {
         if (observedTransaction) observedTransaction.outcome = 'rolled-back'
-        if (transaction) this.initialized = initializedBefore; transaction = null; return result() }
+        if (transaction) this.initialized = initializedBefore
+        transaction = null
+        return result()
+      }
       if (q === 'select projection_test_owner_fence') return result([{ owner_id: '42', fence: this.ownerFence }])
       if (q === 'update projection_test_domain set revision=revision+1') { s.domain++; return result() }
       if (q.startsWith('select effect_kind,entity_id,payload_digest from run_repeat_effects')) return result([])
@@ -208,7 +222,7 @@ export class ProjectionDatabase {
       for (const prefix of [
         'select distinct on (e.workflow_node_id) e.id',
         'select d.record from run_repeat_resolutions',
-        'select a.execution_id,a.workflow_node_id,a.attempt,a.work_kind',
+        'with latest_workflow_executions as materialized (',
         'with interactions as ( select e.workflow_node_id as node_id,count(*)::text,',
         'select b.record,b.bound_at from run_repeat_bindings',
         'select i.record from durable_interactions',

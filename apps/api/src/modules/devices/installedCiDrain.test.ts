@@ -95,6 +95,10 @@ async function updater(f: Awaited<ReturnType<typeof fixture>>) {
       operation: string; path: string; offset: number; manifestSha256: string;
     }) => {
       if (payload.operation === 'release') return { payload: { operation: 'release', release } }
+      if (payload.operation === 'ci-smoke') {
+        activity.push('ci-smoke')
+        return { payload: { operation: 'ci-smoke', ciSmoke: null } }
+      }
       activity.push('download')
       const content = payload.path === 'manifest.json' ? manifestBytes : bytes
       const chunk = content.subarray(payload.offset)
