@@ -6,7 +6,9 @@ import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveResultSchema, RunStartV3Resu
   SavedRunDetailsSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
+import { databaseCredentialDeadline } from '../src/modules/access/credentialLifetime.js'
 import { LOCAL_RUNNER_ID } from '../src/modules/workspaces/location.js'
+import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { readUntil } from './helpers/observableCondition.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
@@ -99,16 +101,18 @@ async function detachment(runtime: Runtime, executionId: string) {
 describe.runIf(postgresEnabled)('restart credential safety', () => {
   it('joins an in-flight heartbeat renewal without canceling or replacing the native execution', async () => {
     const runtime = await activeWorkflow()
-    const renewing = rejectableDeferred()
     const release = rejectableDeferred()
     const issue = Wave25WorkerCredentialService.prototype.issueForExecution
     const issued = vi.spyOn(Wave25WorkerCredentialService.prototype, 'issueForExecution')
       .mockImplementation(async function (this: Wave25WorkerCredentialService, id) {
         const credential = await issue.call(this, id)
-        const expiresAt = new Date(Date.now() + 45_000)
-        await runtime.db.pool.query('update management_principals set expires_at=$2 where id=$1',
-          [credential.principalId, expiresAt])
-        return { ...credential, expiresAt: expiresAt.toISOString() }
+        const requestedAt = performance.now()
+        const shortened = (await runtime.db.pool.query<{ expires_at: Date; database_now: Date }>(
+          `update management_principals set expires_at=clock_timestamp()+interval '45 seconds'
+           where id=$1 returning expires_at,clock_timestamp() as database_now`,
+          [credential.principalId])).rows[0]!
+        return { ...credential, expiresAt: shortened.expires_at.toISOString(),
+          renewalDeadline: databaseCredentialDeadline(shortened.expires_at, shortened.database_now, requestedAt) }
       })
     const renew = Wave25WorkerCredentialService.prototype.renewForExecution
     let calls = 0
@@ -116,7 +120,6 @@ describe.runIf(postgresEnabled)('restart credential safety', () => {
       .mockImplementation(async function (this: Wave25WorkerCredentialService, id, credential) {
         calls++
         if (calls === 1) {
-          renewing.resolve()
           await release.promise
         }
         return renew.call(this, id, credential)
@@ -124,7 +127,8 @@ describe.runIf(postgresEnabled)('restart credential safety', () => {
     let shutdown: Promise<void> | undefined
     try {
       const active = await start(runtime)
-      await renewing.promise
+      await readUntil(async () => calls, count => count > 0,
+        { timeoutMs: 10_000, description: 'the short-lived Worker heartbeat renewal' })
       const original = await lease(runtime, active.execution.id)
       shutdown = runtime.engine.shutdown()
       await readUntil(async () => (await runtime.db.pool.query<{ paused: boolean }>(`select
@@ -139,9 +143,11 @@ describe.runIf(postgresEnabled)('restart credential safety', () => {
       expect(preserved.executions).toEqual([active.execution])
       expect(preserved.run).toMatchObject({ id: active.run.id, outcome: 'pending' })
       expect(await detachment(runtime, active.execution.id)).toEqual({ detached: true, closed: false })
-      expect(await lease(runtime, active.execution.id)).toMatchObject({
+      const renewed = await lease(runtime, active.execution.id)
+      expect(renewed).toMatchObject({
         principal_id: original.principal_id, token_hash: original.token_hash, live: true,
       })
+      expect(renewed.expires_at.getTime()).toBeGreaterThan(original.expires_at.getTime())
       expect(runtime.provider.counts).toMatchObject({ sessions: 1, starts: 1, responses: 0 })
       const cleanup = await runtime.db.pool.query('select run_id from run_cleanup_intents where run_id=$1 and pending',
         [active.run.id])
@@ -181,23 +187,50 @@ describe.runIf(postgresEnabled)('restart credential safety', () => {
 
   it('waits for a competing owner before cleaning up a revoked waiting Worker', async () => {
     const runtime = await activeWorkflow('waiting')
+    let competitor: RunOwnership | undefined
+    let shutdown: Promise<void> | undefined
+    const acquireOwnership = runtime.runs.acquireOwnership.bind(runtime.runs)
+    let blocked = false
+    const acquire = vi.spyOn(runtime.runs, 'acquireOwnership').mockImplementation(async (runId, onLost) => {
+      const owner = await acquireOwnership(runId, onLost)
+      if (!owner) blocked = true
+      return owner
+    })
     try {
       const active = await start(runtime)
-      await readUntil(active.read, details => details.run.executionState === 'waiting',
+      const waiting = await readUntil(active.read, details => details.run.executionState === 'waiting',
         { timeoutMs: 30_000, description: 'the graph yielding for approval' })
+      await runtime.engine.start(active.run.id)
+      competitor = await acquireOwnership(active.run.id, () => undefined)
+      expect(competitor).toBeDefined()
       const original = await lease(runtime, active.execution.id)
       await runtime.access.revoke(runtime.writer.principal.id)
-      const acquire = vi.spyOn(runtime.runs, 'acquireOwnership').mockResolvedValueOnce(undefined)
-      await runtime.engine.shutdown()
-      expect(acquire).toHaveBeenCalledTimes(2)
+      shutdown = runtime.engine.shutdown()
+      await readUntil(async () => blocked, value => value,
+        { timeoutMs: 10_000, description: 'restart waiting for the competing Run owner' })
+      expect(await detachment(runtime, active.execution.id)).toEqual({ detached: false, closed: false })
+      expect((await lease(runtime, active.execution.id)).expires_at).toEqual(original.expires_at)
+      expect(runtime.provider.closedSessions.has(active.execution.nativeSessionId!)).toBe(false)
+      await competitor!.release()
+      competitor = undefined
+      await shutdown
       expect(await lease(runtime, active.execution.id)).toMatchObject({
         principal_id: original.principal_id, expires_at: original.expires_at, live: false,
       })
       expect(await detachment(runtime, active.execution.id)).toEqual({ detached: false, closed: true })
-      expect((await active.read()).run.outcome).toBe('pending')
+      const persisted = await active.read()
+      expect(persisted.run.outcome).toBe('pending')
+      expect(persisted.executions).toEqual(waiting.executions)
       expect(runtime.provider.counts).toMatchObject({ sessions: 1, starts: 1, responses: 0 })
+      expect(await runtime.runs.hasPendingCleanup(active.run.id)).toBe(true)
     } finally {
-      await runtime.close()
+      try {
+        await competitor?.release()
+        await shutdown
+      } finally {
+        acquire.mockRestore()
+        await runtime.close()
+      }
     }
   }, 60_000)
 
