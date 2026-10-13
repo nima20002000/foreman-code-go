@@ -80,6 +80,27 @@ describe.skipIf(!postgresEnabled)('Syncthing through authenticated Operator MCP'
         await main.close(); await worker.close() } }
   }
 
+  it('persists the last sync write without a revision while denying read-only callers', async () => {
+    const f = await fixture()
+    try {
+      const writer = await f.connect(f.writer.token)
+      const reader = await f.connect(f.reader.token)
+      const input = { target: f.target, workspaceId: f.workspaceId, enabled: false, commandId: randomUUID() }
+      expect((await reader.callTool({ name: 'computer_sync_update', arguments: input })).isError).toBe(true)
+      expect((await writer.callTool({ name: 'computer_sync_update', arguments: input })).isError).not.toBe(true)
+      const lastInput = { ...input, enabled: true, commandId: randomUUID() }
+      expect((await writer.callTool({ name: 'computer_sync_update', arguments: lastInput })).isError).not.toBe(true)
+      expect((await writer.callTool({ name: 'computer_sync_update', arguments: lastInput })).isError).not.toBe(true)
+      const readback = ComputerSyncStatusSchema.parse(decodeMcpToolResult(await reader.callTool({
+        name: 'computer_sync_status', arguments: { target: f.target },
+      })))
+      expect(readback.folders.find(folder => folder.workspaceId === f.workspaceId))
+        .toMatchObject({ enabled: true, revision: 2 })
+      expect((await f.createService().read(f.writer.principal, 'mcp', { target: f.target })).folders
+        .find(folder => folder.workspaceId === f.workspaceId)).toMatchObject({ enabled: true, revision: 2 })
+    } finally { await f.close() }
+  })
+
   it('hides global sync tools from workspace grants and audits denied HTTP and MCP writes', async () => {
     const f = await fixture()
     try {

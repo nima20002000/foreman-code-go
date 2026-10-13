@@ -172,6 +172,26 @@ describe.skipIf(!postgresEnabled)('FIL-40 retention persistence and transport pa
     return decoded.error.code
   }
 
+  it('saves without a revision through MCP, replays and reads back the last write', async () => {
+    const owner = await newOwner()
+    const reader = await newOwner([{ actions: ['settings:read'], scope: {} }])
+    const input = { commandId: randomUUID(), durationSeconds: 3600 }
+    assert.equal(failure(await call(reader, 'file_retention_save', input)), 'ACCESS_DENIED')
+    const first = FileRetentionSaveResultSchema.parse(success(await call(owner, 'file_retention_save', input)))
+    assert.equal(first.value.preference.revision, 1)
+    const lastInput = { commandId: randomUUID(), durationSeconds: 7200 }
+    const last = FileRetentionSaveResultSchema.parse(success(await call(owner, 'file_retention_save', lastInput)))
+    assert.equal(last.value.preference.revision, 2)
+    assert.deepEqual(FileRetentionSaveResultSchema.parse(success(await call(owner, 'file_retention_save', lastInput))),
+      { ...last, replayed: true })
+    assert.deepEqual(FileRetentionGetResultSchema.parse(success(await call(owner, 'file_retention_get'))).preference,
+      last.value.preference)
+    assert.equal(failure(await call(owner, 'file_retention_save', {
+      ...input, commandId: randomUUID(), expectedRevision: 1,
+    })), 'REVISION_CONFLICT')
+    assert.deepEqual(await get(owner), last.value.preference)
+  })
+
   it('returns default revision 0, allocates seven days, and snapshots a non-default for future files only', async () => {
     const owner = await newOwner(), requestId = randomUUID()
     assert.deepEqual(await get(owner), { ownerPrincipalId: owner.principal.id, durationSeconds: 604800, revision: 0 })
