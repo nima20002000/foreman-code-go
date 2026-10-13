@@ -75,8 +75,10 @@ describe('Persisted execution activity through HTTP and authenticated MCP', { ti
   })
 
   async function setup(harness?: ClaudeHarnessConfiguration) {
-    const graph = await graphFixture(database, { form: 'single', intervalEverySeconds: 10,
-      ...(harness ? { harness } : {}) })
+    const graph = await graphFixture(database, {
+      form: 'single',
+      ...(harness ? { harness } : { intervalEverySeconds: 10 }),
+    })
     const node = agentWorkflowNode(graph.version.definition.nodes[0])
     const workflows = new PostgresWorkflowRepository(database.pool)
     const locations = new WorkspaceLocationService(database.pool, graph.commands)
