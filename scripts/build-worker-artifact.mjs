@@ -23,16 +23,14 @@ const requestedCommit = readProductEnvironment(process.env, 'WORKER_BUILD_COMMIT
 if (requestedCommit && !/^[a-f0-9]{40}$/.test(requestedCommit)) throw new Error('Invalid captured commit');
 const commit = execFileSync('git', ['rev-parse', requestedCommit ? `${requestedCommit}^{commit}` : 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const allowedApiModules = new Set(JSON.parse(execFileSync('git', ['show', `${commit}:scripts/worker-api-allowlist.json`], { cwd: root, encoding: 'utf8' })));
 const snapshot = new Map();
 const verificationScripts = ['scripts/verification-runner.mjs', 'scripts/verify-repository.mjs', 'scripts/verification-reports.mjs', 'scripts/integration-process.mjs', 'scripts/integration-capabilities.mjs'];
 const forbiddenApiModule = path => /^apps\/api\/src\/(?:server|app|production)\.ts$/.test(path) || /^apps\/api\/src\/(?:infrastructure\/(?:db|database)|(?:db|migrations|bootstrap)\/)/.test(path);
-if ([...allowedApiModules].some(path => !path.startsWith('apps/api/src/') || forbiddenApiModule(path))) throw new Error('Invalid worker API allowlist');
 function snapshotSource(path) {
   if (forbiddenApiModule(path) || path.startsWith('/') || path.split('/').some((part) => !part || part === '.' || part === '..') || /\.(?:test|spec)\.[cm]?[jt]s$/.test(path) || /(?:^|\/)\.env(?:\.|$)|\.(?:pem|key)$|(?:^|\/)(?:credentials|secrets)\.json$/.test(path)
-    || !(allowedApiModules.has(path) || path.startsWith('apps/worker/src/') || path.startsWith('apps/worker/artifacts/') || path.startsWith('packages/contracts/src/')
+    || !(path.startsWith('apps/api/src/') || path.startsWith('apps/worker/src/') || path.startsWith('apps/worker/artifacts/') || path.startsWith('packages/contracts/src/')
       || verificationScripts.includes(path)
-      || ['apps/web/public/graphql.svg', 'scripts/build-worker-artifact.mjs', 'scripts/quota-helper-abi.mjs', 'scripts/worker-artifact-files.mjs', 'scripts/worker-api-allowlist.json', 'scripts/graphql-mcp.mjs', 'packages/contracts/package.json', 'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml'].includes(path))) throw new Error(`Forbidden snapshot source: ${path}`);
+      || ['apps/web/public/graphql.svg', 'scripts/build-worker-artifact.mjs', 'scripts/quota-helper-abi.mjs', 'scripts/worker-artifact-files.mjs', 'scripts/graphql-mcp.mjs', 'packages/contracts/package.json', 'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml'].includes(path))) throw new Error(`Forbidden snapshot source: ${path}`);
   if (!snapshot.has(path)) {
     const bytes = execFileSync('git', ['show', `${commit}:${path}`], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
     const gitBlobSha1 = execFileSync('git', ['rev-parse', `${commit}:${path}`], { cwd: root, encoding: 'utf8' }).trim();
@@ -43,7 +41,7 @@ function snapshotSource(path) {
 async function requirePinnedSource(path) {
   if (!snapshotSource(path).equals(await readFile(join(root, path)))) throw new Error(`Uncommitted build control input: ${path}`);
 }
-for (const path of ['scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs', 'scripts/worker-api-allowlist.json', 'packages/contracts/package.json', 'packages/contracts/src/productEnvironment.mjs', 'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml']) await requirePinnedSource(path);
+for (const path of ['scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs', 'packages/contracts/package.json', 'packages/contracts/src/productEnvironment.mjs', 'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml']) await requirePinnedSource(path);
 await requirePinnedSource('scripts/quota-helper-abi.mjs');
 function reviewedInput(input) {
   const path = committedWorkerInputPath(root, input);
@@ -90,7 +88,6 @@ const schemaWorker = await build({ ...buildOptions,
   entryPoints: { schemaWorker: 'apps/api/src/modules/harnesses/compatibility/schemaWorker.ts' } });
 for (const source of new Set([...Object.keys(built.metafile.inputs), ...Object.keys(writer.metafile.inputs), ...Object.keys(schemaWorker.metafile.inputs)])) {
   if (!source.startsWith('node_modules/') && !source.includes('/node_modules/')) snapshotSource(source);
-  if (source.startsWith('apps/api/') && !allowedApiModules.has(source)) throw new Error(`Forbidden control-plane import: ${source}`);
 }
 for (const entry of [...Object.values(built.metafile.outputs), ...Object.values(writer.metafile.outputs), ...Object.values(schemaWorker.metafile.outputs)]) for (const dependency of entry.imports) {
   if (dependency.external && !isBuiltin(dependency.path) && dependency.path !== 'sharp') throw new Error(`Unbundled dependency: ${dependency.path}`);

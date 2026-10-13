@@ -81,7 +81,7 @@ async function verifyWorkerSource(manifest: Record<string, unknown>, commit: str
     assert.ok(!path.startsWith('/') && [...path].every(character => character.charCodeAt(0) >= 32)
       && path.split('/').every(part => part && part !== '.' && part !== '..'))
   }
-  const required = ['scripts/build-worker-artifact.mjs', 'scripts/worker-api-allowlist.json', 'pnpm-lock.yaml',
+  const required = ['scripts/build-worker-artifact.mjs', 'pnpm-lock.yaml',
     'apps/worker/src/workerFactory.mjs', 'apps/worker/src/cli.mjs']
   assert.ok(required.every(path => paths.includes(path)))
   const hashes = (await execute('git', ['rev-parse', ...paths.map(path => `${commit}:${path}`)],
