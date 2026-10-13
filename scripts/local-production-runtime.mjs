@@ -47,7 +47,7 @@ export async function recordStartupConfiguration(stateFile) {
 const typeScriptOutputs = [['apps/api/dist', 'apps/api/src'], ['packages/contracts/dist', 'packages/contracts/src']]
 const outputSuffix = /(\.d)?\.(?:m?js|ts|mts)(\.map)?$/
 
-async function pruneStaleTypeScriptOutput(source) {
+async function pruneStaleTypeScriptOutput(source, trackedSources) {
   for (const [output, input] of typeScriptOutputs) {
     const visit = async relative => {
       let entries
@@ -65,9 +65,9 @@ async function pruneStaleTypeScriptOutput(source) {
         }
         if (!outputSuffix.test(entry.name)) continue
         const stem = path.replace(outputSuffix, '')
-        const sources = ['.ts', '.tsx', '.mts', '.mjs', '.js'].map(extension => join(source, input, stem + extension))
-        const exists = await Promise.all(sources.map(file => lstat(file).then(() => true, () => false)))
-        if (!exists.includes(true)) await rm(join(source, output, path), { force: true })
+        const hasSource = ['.ts', '.tsx', '.mts', '.mjs', '.js']
+          .some(extension => trackedSources.has(join(input, stem + extension)))
+        if (!hasSource) await rm(join(source, output, path), { force: true })
       }
     }
     await visit('')
@@ -81,7 +81,7 @@ export async function withProductionSourceSnapshot(repository, directory, action
   const source = join(directory, 'source')
   const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')))
   const execute = promisify(execFile)
-  const git = (args, cwd = repository) => execute('git', args, { cwd, env: environment })
+  const git = (args, cwd = repository) => execute('git', args, { cwd, env: environment, maxBuffer: 16 * 1024 * 1024 })
   const { stdout } = await git(['rev-parse', 'HEAD'])
   const commit = stdout.trim()
   const { stdout: origin } = await git(['remote', 'get-url', 'origin'])
@@ -91,11 +91,24 @@ export async function withProductionSourceSnapshot(repository, directory, action
     await git(['clone', '--quiet', '--shared', '--no-checkout', repository, source])
   }
   // The shared clone reads the repository's objects, so any commit it has is available without a fetch.
-  await git(['checkout', '--quiet', '--force', '--detach', commit], source)
+  if (reusable) {
+    const { stdout: changes } = await git(['diff', '--name-only', '-z', 'HEAD'], source)
+    if (changes) await git(['reset', '--hard', '--quiet', 'HEAD'], source)
+  }
   await git(['clean', '-ffdxq', '-e', 'node_modules', '-e', 'dist', '-e', '*.tsbuildinfo'], source)
+  // Forced checkout rewrites unchanged files and invalidates incremental build timestamps.
+  await git(['checkout', '--quiet', '--detach', commit], source)
   await git(['remote', 'set-url', 'origin', origin.trim()], source)
-  await pruneStaleTypeScriptOutput(source)
+  const { stdout: files } = await git(['ls-files', '-z', '--', ...typeScriptOutputs.map(([, input]) => input)], source)
+  await pruneStaleTypeScriptOutput(source, new Set(files.split('\0')))
   return action({ source, commit })
+}
+
+// CI owns the web typecheck; production needs only emitted server code and browser assets.
+export async function buildProductionSource(run) {
+  await run('corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build'])
+  await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'build'])
+  await run('corepack', ['pnpm', '--filter', '@foreman-code/web', 'exec', 'vite', 'build'])
 }
 
 export async function backupDatabase({ archive, database, run }) {
@@ -415,24 +428,48 @@ export function localProductionEnvironment(desktopHome, password) {
   }
 }
 
-// A release links to one immutable dependency tree per lockfile, manifests and contracts content instead of
-// copying ~800 MB per deploy (25-35 s, and minutes on a loaded computer). Changed inputs get a fresh tree.
+// Installed dependencies are immutable; contracts build output belongs to each release.
 async function apiDependencyKey(source) {
   const hash = createHash('sha256')
-  for (const path of ['pnpm-lock.yaml', 'apps/api/package.json', 'packages/contracts/package.json']) {
-    hash.update(`${path}\0`).update(await readFile(join(source, path)))
-  }
-  const visit = async relative => {
-    const entries = await readdir(join(source, 'packages/contracts', relative), { withFileTypes: true })
-    for (const entry of entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
-      if (entry.name === 'node_modules' || entry.name.endsWith('.tsbuildinfo')) continue
-      const path = join(relative, entry.name)
-      if (entry.isDirectory()) await visit(path)
-      else if (entry.isFile()) hash.update(`${path}\0`).update(await readFile(join(source, 'packages/contracts', path)))
+  hash.update(`${process.platform}\0${process.arch}\0${process.versions.modules}\0`)
+  const inputs = ['pnpm-lock.yaml', 'apps/api/package.json', 'packages/contracts/package.json',
+    'pnpm-workspace.yaml', '.npmrc']
+  for (const path of inputs) {
+    hash.update(`${path}\0`)
+    try {
+      const bytes = await readFile(join(source, path))
+      hash.update(`${bytes.length}\0`).update(bytes)
+    } catch (error) {
+      if (error.code !== 'ENOENT' || inputs.indexOf(path) < 3) throw error
+      hash.update('absent\0')
     }
   }
-  await visit('')
   return hash.digest('hex').slice(0, 32)
+}
+
+async function linkReleaseDependencies(shared, destination, source) {
+  const installed = join(shared, 'api/node_modules')
+  const modules = join(destination, 'node_modules')
+  await mkdir(join(modules, '@foreman-code'), { recursive: true })
+  for (const name of await readdir(installed)) {
+    if (name === '@foreman-code') continue
+    await symlink(join(installed, name), join(modules, name))
+  }
+  for (const name of await readdir(join(installed, '@foreman-code'))) {
+    if (name === 'contracts') continue
+    await symlink(join(installed, '@foreman-code', name), join(modules, '@foreman-code', name))
+  }
+  const contracts = await realpath(join(installed, '@foreman-code/contracts'))
+  const releaseContracts = join(modules, '@foreman-code/contracts')
+  await cp(contracts, releaseContracts, { recursive: true, verbatimSymlinks: true,
+    filter: path => path !== join(contracts, 'node_modules') && path !== join(contracts, 'dist') })
+  await copyFile(join(source, 'packages/contracts/package.json'), join(releaseContracts, 'package.json'))
+  await cp(join(source, 'packages/contracts/dist'), join(releaseContracts, 'dist'), { recursive: true })
+  // pnpm places a workspace package's dependencies beside its scope in the virtual store.
+  const nested = join(contracts, 'node_modules')
+  const dependencies = existsSync(nested) ? nested : dirname(dirname(contracts))
+  await symlink(dependencies, join(releaseContracts, 'node_modules'))
+  await symlink(installed, join(modules, '.production-dependencies'))
 }
 
 export async function deployProductionApi(run, destination, { dependencies } = {}) {
@@ -458,14 +495,25 @@ export async function deployProductionApi(run, destination, { dependencies } = {
   }
   // The API's own build output always comes from this build.
   await cp(join(dependencies.source, 'apps/api/dist'), join(destination, 'dist'), { recursive: true, verbatimSymlinks: true })
-  await symlink(join(shared, 'api/node_modules'), join(destination, 'node_modules'))
+  await linkReleaseDependencies(shared, destination, dependencies.source)
 }
 
 /** Removes shared dependency trees that none of `releases` (release directories) links to. */
 export async function pruneApiDependencies(root, releases, { removeInBackground = removeDetached } = {}) {
   const used = new Set()
   for (const release of releases) {
-    const link = await readlink(join(release, 'apps/api/node_modules')).catch(() => null)
+    const modules = join(release, 'apps/api/node_modules')
+    const info = await lstat(modules).catch(error => {
+      if (error.code === 'ENOENT') return undefined
+      throw error
+    })
+    if (!info) continue
+    const link = await readlink(info.isSymbolicLink() ? modules : join(modules, '.production-dependencies'))
+      .catch(error => {
+        // Older releases carry their own node_modules instead of using the shared cache.
+        if (error.code === 'ENOENT' && info.isDirectory()) return undefined
+        throw error
+      })
     if (link) used.add(dirname(dirname(link)))
   }
   let entries
