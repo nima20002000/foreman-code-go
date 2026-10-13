@@ -6,6 +6,7 @@ import { retainRemoteReviewerCredential } from '../src/modules/interactions/reta
 import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { approvalResponse } from './helpers/approvalResponse.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
+import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 
 afterEach(() => vi.restoreAllMocks())
 describe.skipIf(!postgresEnabled)('current durable approval orchestration', () => {
@@ -121,6 +122,23 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
     const f = await routedApprovalFixture()
     let busyLaneId: string | undefined
     try {
+      const workflows = new PostgresWorkflowRepository(f.db.pool)
+      const reviewerConfiguration = await workflows.getAgentConfiguration(f.reviewer.agentConfigurationVersionId)
+      const requesterConfiguration = await workflows.getAgentConfiguration(f.requester.agentConfigurationVersionId)
+      expect(reviewerConfiguration).toMatchObject({
+        productRole: 'orchestrator',
+        harness: {
+          sandbox: 'read-only',
+          advanced: { approvalPolicy: 'on-request', approvalsReviewer: 'auto_review' },
+        },
+      })
+      expect(requesterConfiguration).toMatchObject({
+        productRole: 'coder',
+        harness: {
+          sandbox: 'read-only',
+          advanced: { approvalPolicy: 'on-request', approvalsReviewer: 'user' },
+        },
+      })
       const lane = (await f.coordination.getLane('codex', f.reviewer.nativeSessionId!))!
       await f.coordination.claimLane(lane.id, lane.revision, f.reviewerId, 'busy-writer', new Date(Date.now() + 60000).toISOString(), 'active-turn')
       busyLaneId = lane.id
