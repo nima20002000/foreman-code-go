@@ -25,7 +25,7 @@ for (const outcome of ['passed', 'failed', 'no-tests', 'timeout']) {
     const start = requests.find(request => request.operation === 'start');
     assert.equal(start.suite, 'integration');
     assert.equal(start.gate, true);
-    assert.equal(start.integrationShards, 11);
+    assert.equal(start.integrationShards, 23);
     assert.deepEqual(start.files, ['apps/api/test/ci-smoke.integration.test.ts']);
     assert.equal(requests.some(request => request.operation === 'cancel'), outcome !== 'passed');
   });
