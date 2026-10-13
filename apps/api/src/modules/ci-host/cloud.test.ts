@@ -1,11 +1,70 @@
 import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
+import { parse } from 'yaml'
 import { selectByIndexes } from '../../../../../scripts/ci-files.mjs'
 import { affectedSnapshot } from '../../../../../scripts/ci-affected.mjs'
 import { executionSelection } from '../../../../../scripts/ci-selection.mjs'
 import { cloudService } from './cloudService.testSupport.js'
 
 import { fixture } from './cloud.testSupport.js'
+import { CircleCiProvider, type CloudDispatchInput } from './cloudProviders.js'
+import { systemHostCiPorts } from './runner.js'
+
+it.each([undefined, 221366])('sends declared CircleCI pipeline parameters with compatible types: %s', async duration => {
+  const config = parse(await readFile(new URL('../../../../../.circleci/config.yml', import.meta.url), 'utf8')) as {
+    parameters: Record<string, { type: string; enum?: unknown[] }>
+  }
+  const commands: string[][] = []
+  const provider = new CircleCiProvider({ ...systemHostCiPorts(), run: async (_file, args) => {
+    commands.push(args)
+    return { code: 0, stdout: JSON.stringify({ id: 'pipeline' }), stderr: '' }
+  } })
+  const input: CloudDispatchInput = {
+    mirror: 'octo/site-ci', branch: 'main', runId: 'ticket', suite: 'integration', slice: 's:1-2',
+    ...(duration === undefined ? {} : { expectedDurationMs: duration }),
+    scope: 'affected', files: 's:3-4', defaultBranch: 'main', baseCommit: 'a'.repeat(40),
+    partition: JSON.stringify({ index: 0, count: 2 }), durations: JSON.stringify({ 'sample.test.ts': 100 }),
+  }
+  await provider.dispatch(input)
+  const parameters = Object.fromEntries(commands[0]!.flatMap((argument, index, args) => {
+    if (argument !== '--parameter') return []
+    const parameter = args[index + 1]!
+    const separator = parameter.indexOf('=')
+    const name = parameter.slice(0, separator)
+    const text = parameter.slice(separator + 1)
+    // The CLI converts integer arguments to JSON numbers before triggering the pipeline.
+    const value = /^-?\d+$/.test(text) ? Number(text) : text
+    return [[name, value]]
+  }))
+  expect(Object.keys(parameters).sort()).toEqual(Object.keys(config.parameters).sort())
+  for (const [name, value] of Object.entries(parameters)) {
+    const declaration = config.parameters[name]!
+    const type = typeof value === 'number' && Number.isInteger(value) ? 'integer' : typeof value
+    expect(type, `CircleCI parameter ${name}`).toBe(declaration.type === 'enum' ? 'string' : declaration.type)
+    if (declaration.enum) expect(declaration.enum).toContain(value)
+  }
+  expect(parameters.expected_duration_ms).toBe(duration ?? 0)
+})
+
+it.each([false, true])('fails an ended CircleCI pipeline with errors on the next read, workflow started: %s', async started => {
+  const f = await fixture({}, { provider: 'circleci' })
+  f.circle.phantoms = started ? 0 : 1
+  const runId = randomUUID()
+  const start = { operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
+    suite: 'integration', scope: 'full' }
+  const reply = await f.cloud.handle(start)
+  if (reply.operation !== 'start') throw new Error('Expected a start reply')
+  const message = 'Type error for argument expected_duration_ms: expected type: string, actual value: "221366" (type integer)'
+  f.circle.runView = { phase: 'ended', current_outcome: 'not_run', errors: [{ type: 'config', message }], workflows: [] }
+  const main = cloudService(f.cloud, reply.run, f.commit)
+  await main.service.dispatch()
+  expect(await main.read()).toMatchObject({ run: { state: 'failed', exitCode: 1, message: expect.stringContaining(message) } })
+  expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 }))
+    .toMatchObject({ run: { state: 'failed', exitCode: 1, finishedAt: expect.any(String) },
+      text: expect.stringContaining(`config: ${message}`) })
+  expect(f.circle.triggered).toHaveLength(1)
+})
 
 function expectMirrorDispatch(provider: 'github' | 'circleci', command: string[] | undefined) {
   const option = provider === 'github' ? '-R' : '--project'

@@ -94,7 +94,15 @@ function guardianFixture(childAvailable = true, observationWriteFails = false,
     throw new Error(module)
   }
   runInNewContext(NATIVE_GUARDIAN_SOURCE, { require: requireFixture, process, Buffer,
-    setTimeout: (callback: () => void, delay: number) => timers.push({ callback, delay }) })
+    setTimeout: (callback: () => void, delay: number) => {
+      const timer = { callback, delay }
+      timers.push(timer)
+      return timer
+    },
+    clearTimeout: (timer: typeof timers[number]) => {
+      const index = timers.indexOf(timer)
+      if (index >= 0) timers.splice(index, 1)
+    } })
   process.emit('message', { operation: 'start', directory: '/private', binary: 'actual-cli', args: ['private-argument'],
     cwd: '/workspace', environment: { SECRET: 'private-secret',
       ...(options.reconnectableStdio ? { FOREMAN_CODE_MCP_TOKEN: 'fixture-token' } : {}) },
@@ -302,7 +310,7 @@ describe('guardian actual child observation receipts', () => {
     expect(f.signals).toEqual([])
     expect(f.kills).toEqual([])
   })
-  it('journals actual child PID/startTicks and positive CLI exit independently of wrapper termination', () => {
+  it('journals actual child PID/startTicks and positive CLI exit independently of wrapper termination', async () => {
     const f = guardianFixture()
     const birth = JSON.parse(f.records.get('/private/provider.json')!) as Record<string, unknown>
     expect(birth).toMatchObject({ owner: 'same-lease', guardian: { pid: 501, startTicks: '100' }, provider: { pid: 902, startTicks: '200' }, capture: 'captured' })
@@ -316,6 +324,7 @@ describe('guardian actual child observation receipts', () => {
     expect(f.signals).toEqual([])
     expect(f.kills).toEqual([])
     f.flushed[0]!()
+    await new Promise(resolve => setImmediate(resolve))
     expect(f.kills).toEqual(['1'])
     expect(f.timers).toEqual([])
   })
@@ -328,7 +337,7 @@ describe('guardian actual child observation receipts', () => {
     expect(JSON.parse(f.records.get('/private/provider-exit.json')!)).toMatchObject({ code: null, signal: 'SIGTERM' })
     expect(f.ipc[2]).toMatchObject({ operation: 'native_exit', nativePid: 902, exitCode: null, exitSignal: 'SIGTERM' })
   })
-  it('retains native outcome and defers cleanup until receipt flush when passive writes fail', () => {
+  it('retains native outcome and defers cleanup until receipt flush when passive writes fail', async () => {
     const f = guardianFixture(true, true)
     expect(f.records.has('/private/provider.json')).toBe(false)
     expect(f.signals).toEqual([])
@@ -339,6 +348,7 @@ describe('guardian actual child observation receipts', () => {
     expect(f.signals).toEqual([])
     expect(f.kills).toEqual([])
     f.flushed[0]!()
+    await new Promise(resolve => setImmediate(resolve))
     expect(f.kills).toEqual(['1'])
     expect(f.timers).toEqual([])
   })

@@ -3,6 +3,7 @@ import { execFileSync, spawn } from 'node:child_process'
 import { mkdir, mkdtemp, readFile, rm, writeFile, chmod, readdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
@@ -26,7 +27,9 @@ afterEach(async () => {
 async function computer(options: { github?: boolean; suiteExit?: number; watchdogReason?: string; pause?: boolean
   measured?: Record<string, number>; databaseExit?: number; selector?: boolean;
   change?: 'source' | 'infrastructure' | 'docs'; defaultBranch?: string; cpuCount?: number; hostSlots?: boolean } = {}) {
-  const root = await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT ?? '/tmp', 'host-ci-'))
+  const temporaryRoot = process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(temporaryRoot, { recursive: true })
+  const root = await mkdtemp(join(temporaryRoot, 'host-ci-'))
   roots.push(root)
   const environment = gitFixtureEnvironment()
   const origin = join(root, 'origin')
@@ -34,10 +37,15 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
   await mkdir(join(origin, 'apps/api/test'), { recursive: true })
   await writeFile(join(origin, 'package.json'), JSON.stringify({ name: 'fixture',
     ...(options.hostSlots ? { foremanCi: { hostSlots: 1 } } : {}), scripts: {
-    typecheck: 'tsc', lint: 'eslint', build: 'tsc -b', test: 'vitest', 'test:integration': 'node scripts/test-integration.mjs', 'db:up': 'node db.mjs' } }))
+    typecheck: 'tsc', lint: 'eslint', build: 'tsc -b', test: 'vitest',
+    'test:integration': 'node scripts/test-integration.mjs', 'db:up': 'node db.mjs',
+    'test:scripts': 'node --test scripts/fixture.test.mjs' } }))
   await writeFile(join(origin, 'pnpm-lock.yaml'), '')
   for (const name of ['a', 'b', 'c', 'd']) await writeFile(join(origin, `apps/api/test/${name}.integration.test.ts`), '')
   await mkdir(join(origin, 'scripts'))
+  await mkdir(join(origin, 'apps/worker/test'), { recursive: true })
+  await writeFile(join(origin, 'apps/worker/test/fixture.test.mjs'), '')
+  await writeFile(join(origin, 'scripts/fixture.test.mjs'), '')
   await writeFile(join(origin, 'scripts/integration-durations.json'), JSON.stringify({
     'apps/api/test/a.integration.test.ts': 400, 'apps/api/test/b.integration.test.ts': 300,
     'apps/api/test/c.integration.test.ts': 200, 'apps/api/test/d.integration.test.ts': 100 }))
@@ -45,7 +53,9 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
   await writeFile(join(origin, 'apps/web/heavy-tests.json'), JSON.stringify({ files: [] }))
   await writeFile(join(origin, 'scripts/ci-unit-files.mjs'),
     await readFile(new URL('../../../../../scripts/ci-unit-files.mjs', import.meta.url), 'utf8'))
-  for (const file of ['ci-affected-run.mjs', 'ci-files.mjs', 'ci-suite.sh', 'ci-test-results.mjs']) {
+  const suiteFiles = ['ci-affected-run.mjs', 'ci-files.mjs', 'ci-suite.sh',
+    'ci-test-results.mjs', 'ci-node-test-reporter.mjs']
+  for (const file of suiteFiles) {
     await writeFile(join(origin, 'scripts', file), await readFile(new URL(`../../../../../scripts/${file}`, import.meta.url), 'utf8'))
   }
   await writeFile(join(origin, 'scripts/test-command.mjs'),
@@ -270,6 +280,11 @@ describe('host CI runner', () => {
       suite, ...(part ? { part } : {}) })
     const done = await f.settle(runId)
     expect(done.run.state).toBe('passed')
+    if (part === 'unit-other') {
+      expect(done.text).toContain('corepack pnpm --filter @foreman-code/contracts test')
+      expect(done.text).toContain('--test-reporter=spec')
+      expect(done.text).toContain('scripts/fixture.test.mjs')
+    }
     const database = done.text.indexOf('corepack pnpm db:up')
     if (databaseRequired) {
       expect(database).toBeGreaterThan(done.text.indexOf('corepack pnpm install --frozen-lockfile'))

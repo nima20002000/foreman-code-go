@@ -22,7 +22,7 @@ import { RUN_CI_JOBS_SQL, runCiJob, storedCiTestResults, type RunCiJobRow } from
 import { fallbackOnError } from '../diagnostics/ignoredError.js'
 import { CI_QUEUE_ORDER, ciQueueReason, compareCiQueue } from './priority.js'
 import { prepareCiSupersession, validateCiSupersession, supersedeCiRuns } from './supersession.js'
-import { gatePartStealer, gateQueueBlock, planCiGate } from './gate.js'
+import { gatePartStealer, gateQueueBlock, planCiGate, readCiComputerStatus } from './gate.js'
 import { gateIntegrationShards } from './capacity.js'
 import { ciGateReport } from './gateReport.js'
 import { claimCiDispatch, releaseCiDispatch, saveQueuedCiRun, ciMessages, rejectedCiStart, withCiTicketLock } from './dispatch.js'
@@ -984,16 +984,22 @@ export class HostCiService {
     const used = new Map<string, number>()
     for (const row of busyRows) used.set(row.host_key, (used.get(row.host_key) ?? 0) + 1)
     const { gate, reservedHosts } = await this.gateReservation()
+    const { parsed, durations } = await this.queuedRuns()
+    const hasQueuedGate = parsed.some(run => run.gate)
     const totals = new Map<string, number>()
+    const gateShards = new Map<string, number>()
     await inBatches(computers, 8, async computer => {
-      if (computer.hostRef.kind === 'cloud') {
+      if (computer.hostRef.kind === 'cloud' && !hasQueuedGate) {
         totals.set(computer.key, 1)
         return
       }
-      const status = await this.endpoint.request(computer, { operation: 'status' }).catch(() => null)
-      totals.set(computer.key, status?.operation === 'status' ? status.slotsTotal ?? 1 : 1)
-      if (status?.operation === 'status') {
+      const status = await readCiComputerStatus(this.endpoint, computer)
+      totals.set(computer.key, computer.hostRef.kind === 'cloud' ? 1 : status?.slotsTotal ?? 1)
+      if (status) {
         used.set(computer.key, Math.max(used.get(computer.key) ?? 0, status.slotsUsed ?? 0))
+        if (status.ready) {
+          gateShards.set(computer.key, gateIntegrationShards(status.cpuCount, Math.floor(status.memoryBytes * 0.9)))
+        }
       }
     })
     const freeSlots = (computer: HostCiComputer) => Math.max(0,
@@ -1005,7 +1011,6 @@ export class HostCiService {
     const githubKeys = new Set(github.map(computer => computer.key))
     const integrationOnGitHub = new Set(busyRows.filter(row => githubKeys.has(row.host_key)
       && CiRunRecordSchema.parse(row.record).suite === 'integration').map(row => row.host_key))
-    const { parsed, durations } = await this.queuedRuns()
     const smokeTargets = await this.smokeTargets(parsed)
     let queued = await this.releaseSlowTier(parsed)
     // Reserve four GitHub slots while checks wait, including integration already using GitHub.
@@ -1038,11 +1043,13 @@ export class HostCiService {
       const affectedFiles = run.scope === 'affected' && !run.deriveFiles ? { files: run.files } : {}
       const selection = (run.gate || smokeTarget) && run.suite === 'integration'
         ? { gate: true, integrationShards: run.integrationShards!, files: run.files } : affectedFiles
+      const plannedGateReady = run.plannedHostKey && gateShards.has(run.plannedHostKey)
       const order = computers.filter(computer => runsOnCircleCi(run)
         || computer.hostRef.kind !== 'cloud' || computer.hostRef.provider !== 'circleci')
         .filter(computer => !hostRequired || supportsUserSystemd(computer))
         .filter(computer => !smokeTarget || isDeepStrictEqual(computer.hostRef, smokeTarget))
-        .filter(computer => !run.gate || computer.key === run.plannedHostKey || stealsGatePart(run, computer))
+        .filter(computer => !run.gate || gateShards.has(computer.key)
+          && (!plannedGateReady || computer.key === run.plannedHostKey || stealsGatePart(run, computer)))
         .filter(computer => run.gate || computer.hostRef.kind === 'cloud' || !reservedHosts.has(computer.key))
         .filter(computer => computer.hostRef.kind !== 'cloud' || !computer.hostRef.provider
           || !run.unstartedProviders?.includes(computer.hostRef.provider))
@@ -1068,8 +1075,8 @@ export class HostCiService {
         }
         used.set(computer.key, (used.get(computer.key) ?? 0) + (exclusiveGate ? totals.get(computer.key) ?? 1 : 1))
         if (usesGitHubIntegration) integrationOnGitHub.add(computer.key)
-        // A build computer that takes a cloud-planned gate part runs it with every shard it can hold.
-        const shards = stealsGatePart(run, computer) ? { integrationShards: 64 } : {}
+        const shards = run.gate && run.suite === 'integration' && computer.key !== run.plannedHostKey
+          ? { integrationShards: gateShards.get(computer.key)! } : {}
         const assigned = await claimCiDispatch(this.pool, run, computer, {
           operation: 'start', runId: run.id, workspaceId: run.workspaceId, ciMirror: run.ciMirror ?? null,
           repository: run.repository, commit: run.commit, suite: run.suite,

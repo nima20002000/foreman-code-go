@@ -19,7 +19,9 @@ function fixture() {
     getAgentDefaults: vi.fn(async () => ({ value: previous, revision: 1, versionId: 'v1' })),
     updateManagedAgentDefaults: write,
   } as unknown as PostgresFoundationSettingsRepository
-  const client = {} as pg.PoolClient
+  const client = { query: vi.fn(async () => ({ rows: [{
+    ...principal, expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null,
+  }] })) } as unknown as pg.PoolClient
   const execute = vi.fn(async (input: { perform(client: pg.PoolClient): Promise<unknown> }) => ({ value: await input.perform(client), replayed: false }))
   const commands = { execute } as unknown as PostgresCommandCoordinator
   const qualify = vi.fn(async () => ({}))
