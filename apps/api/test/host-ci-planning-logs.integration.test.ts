@@ -270,7 +270,7 @@ it('retains persisted host capacity through failed cancellation and unavailable 
     expect(unchanged.run).toMatchObject({ state: 'running', finishedAt: null })
     expect(unchanged.run.cancellation).toBeUndefined()
     expect(await f.stored(unchanged.run.groupId)).toEqual(expect.arrayContaining(unchanged.partitions!))
-    const cancellation = await f.call(await f.connect(['jobs:cancel']), 'ci_cancel', { ticketId: active.id })
+    const cancellation = await f.call(await f.connect(CI_RUN_ACTIONS), 'ci_cancel', { ticketId: active.id })
     expect(cancellation.isError).toBe(true)
     expect(decodeMcpToolResult(cancellation)).toMatchObject({ error: { code: 'CI_CANCEL_PENDING' } })
     await f.ci.dispatch()
