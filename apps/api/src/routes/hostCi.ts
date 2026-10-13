@@ -20,7 +20,7 @@ export function registerHostCiRoutes(app: FastifyInstance, services: { ci?: Host
   app.get<{ Params: { workspaceId: string } }>(`${root}/computers`, async request =>
     CiComputersOutputSchema.parse(await ci().computers(requirePrincipal(request), request.params)))
   app.delete<{ Params: { workspaceId: string; ticketId: string } }>(`${root}/:ticketId`, async request =>
-    CiCancelOutputSchema.parse(await ci().cancel(requirePrincipal(request), request.params)))
+    CiCancelOutputSchema.parse(await ci().cancel(requirePrincipal(request), request.params, 'http')))
   // The CI tickets of one Run, for the Board's CI component (the Operator uses ci_list).
   const listQuery = OperatorCiListInputSchema.pick({ runId: true }).strict()
   app.get<{ Params: { workspaceId: string }; Querystring: unknown }>(root, async request =>

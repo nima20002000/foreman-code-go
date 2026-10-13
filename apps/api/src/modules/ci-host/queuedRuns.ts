@@ -1,5 +1,6 @@
 import type pg from 'pg'
-import { CiRunRecordSchema, type CiDurations } from '@foreman-code/contracts'
+import { CiRunRecordSchema, type CiDurations, type CiRunRecord } from '@foreman-code/contracts'
+import { saveQueuedCiRun } from './dispatch.js'
 import { CI_QUEUE_ORDER } from './priority.js'
 
 export async function readQueuedCiRuns(pool: pg.Pool) {
@@ -14,4 +15,44 @@ export async function readQueuedCiRuns(pool: pg.Pool) {
   const parsed = queuedRows.map(row => CiRunRecordSchema.parse(row.record))
   const durations = new Map(queuedRows.map((row, index) => [parsed[index]!.id, row.durations]))
   return { parsed, durations }
+}
+
+export async function readCiGateReservation(pool: pg.Pool) {
+  const rows = (await pool.query<{ record: unknown }>(`select record from ci_runs
+    where state in ('queued','starting','running','failed','lost') and record->>'gate'='true'
+    order by record->>'queuedAt',group_id,id`)).rows
+  const runs = rows.map(row => CiRunRecordSchema.parse(row.record))
+  // A gate with a failed or lost part cannot pass, so it no longer holds the barrier or host reservations.
+  const doomed = new Set(runs.filter(run => run.state === 'failed' || run.state === 'lost').map(run => run.groupId))
+  const live = runs.filter(run => !doomed.has(run.groupId) && ['queued', 'starting', 'running'].includes(run.state))
+  const gate = live[0]
+  const reservedHosts = new Set(live.filter(run => run.groupId === gate?.groupId && run.suite === 'integration')
+    .map(run => run.plannedHostKey))
+  return { gate, reservedHosts }
+}
+
+/** Slow-tier parts wait until every other part of their request passed; if any of those did not pass, the slow
+ * tier is skipped (canceled with the reason) because its result could not make the request green. */
+export async function releaseCiSlowTier(pool: pg.Pool, queued: CiRunRecord[]): Promise<CiRunRecord[]> {
+  const deferred = queued.filter(run => run.deferred)
+  if (!deferred.length) return queued
+  const groups = [...new Set(deferred.map(run => run.groupId))]
+  const rows = (await pool.query<{ group_id: string; state: string }>(
+    `select record->>'groupId' as group_id, state from ci_runs
+      where record->>'groupId' = any($1::text[]) and coalesce((record->>'deferred')::boolean, false) = false`,
+    [groups])).rows
+  const waiting = new Set<string>()
+  for (const groupId of groups) {
+    const states = rows.filter(row => row.group_id === groupId).map(row => row.state)
+    if (states.some(state => ['failed', 'canceled', 'lost'].includes(state))) {
+      const now = new Date().toISOString()
+      for (const run of deferred.filter(value => value.groupId === groupId)) {
+        const skipped = { ...run, state: 'canceled' as const, finishedAt: now,
+          message: 'Skipped: slow tests run only after every other test of this request passed, and some did not.' }
+        await saveQueuedCiRun(pool, run, skipped)
+      }
+      waiting.add(groupId)
+    } else if (states.some(state => state !== 'passed')) waiting.add(groupId)
+  }
+  return queued.filter(run => !run.deferred || !waiting.has(run.groupId))
 }

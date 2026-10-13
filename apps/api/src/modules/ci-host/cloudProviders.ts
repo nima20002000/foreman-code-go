@@ -90,6 +90,13 @@ async function executeCommand(ports: HostCiPorts, label: string, file: string, a
     const missingRun = file === 'circleci' && args[0] === 'run' && args[1] === 'get'
       && /\brun\.not_found\b/.test(result.stderr)
     if (missingRun) throw new DomainError('CI_CLOUD_RUN_NOT_FOUND', 'CircleCI run is not visible.', 502)
+    const lookup = file === 'circleci' && args[1] === 'get' && (args[0] === 'run' || args[0] === 'job')
+    const denied = /permission denied|not authorized|unauthori[sz]ed|forbidden|authentication|invalid (?:api )?token|\b40[13]\b/i
+    if (lookup && denied.test(result.stderr)) {
+      throw new DomainError('CI_CLOUD_RUN_UNREADABLE', `${label} execution is not readable: `
+        + result.stderr.trim().slice(0, 300), 502)
+    }
+
     throw new DomainError('CI_CLOUD_FAILED', `${label} did not accept ${file} ${args[0]} ${args[1]}: `
       + `${result.stderr.trim().slice(0, 300)}`, 502)
   }

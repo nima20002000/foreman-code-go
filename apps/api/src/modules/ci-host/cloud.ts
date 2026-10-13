@@ -165,7 +165,9 @@ export class CloudCi {
       'jobs', 'read CI log', { runId: run.runId }, ['ENOENT'],
     ))
     if (!['starting', 'running', 'queued'].includes(run.state)) this.schedulePrune(run, run.runId)
-    return CiHostReplySchema.parse({ operation: 'read', run: this.view(run, page.logBytes),
+    const view = this.view(run, page.logBytes)
+    if (request.testResults && view.collection === 'complete' && !run.testResults) view.collection = 'unsupported'
+    return CiHostReplySchema.parse({ operation: 'read', run: view,
       text: sanitizeCiText(page.text), nextOffset: page.nextOffset,
       ...(request.durations && run.durations ? { durations: run.durations } : {}),
       ...(request.testResults && run.testResults ? { testResults: run.testResults } : {}) })
@@ -681,7 +683,7 @@ export class CloudCi {
       if (error instanceof DomainError && error.code === 'CI_CLOUD_PIPELINE_FAILED') {
         return this.failPipeline(run, { message: error.message, configError: error.details?.configError === true })
       }
-      if (error instanceof DomainError && error.code === 'CI_CLOUD_RUN_NOT_FOUND') {
+      if (error instanceof DomainError && ['CI_CLOUD_RUN_NOT_FOUND', 'CI_CLOUD_RUN_UNREADABLE'].includes(error.code)) {
         return this.reconcileLookupFailure(run, error)
       }
       if (!(error instanceof DomainError && error.code === 'CI_CLOUD_RATE_LIMITED')) throw error
@@ -766,7 +768,7 @@ export class CloudCi {
     try {
       discovered = await this.provider.find(run)
     } catch (error) {
-      if (!(error instanceof DomainError && error.code === 'CI_CLOUD_RUN_NOT_FOUND')) throw error
+      if (!(error instanceof DomainError && ['CI_CLOUD_RUN_NOT_FOUND', 'CI_CLOUD_RUN_UNREADABLE'].includes(error.code))) throw error
       log.warn({ err: error, runId: run.runId }, 'Cloud CI discovery unavailable; canceling known pipelines')
     }
     const attempts = run.dispatchHistory?.map(attempt => attempt.providerRunId) ?? []

@@ -119,6 +119,7 @@ export const CiHostRequestSchema = z.discriminatedUnion('operation', [
 export type CiHostRequest = z.infer<typeof CiHostRequestSchema>
 
 const CiHostRunStateSchema = z.enum(['queued', 'starting', 'running', 'passed', 'failed', 'canceled', 'lost'])
+/** Collection is independent of outcome: unreadable or invalid reports stay pending; unsupported records absent reporting. */
 export const CiCollectionSchema = z.enum(['pending', 'complete', 'unsupported'])
 export const CiProvenanceSchema = z.object({
   sourceCommit: CommitSchema, workflowCommit: CommitSchema, workflowRef: z.string().min(1).max(200),

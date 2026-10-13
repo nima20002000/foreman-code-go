@@ -16,6 +16,8 @@ import { gateIntegrationShards, hostCiCapacity } from './capacity.js'
 import { fallbackOnError } from '../diagnostics/ignoredError.js'
 import { warmPnpmInstall } from './warmSetup.js'
 import { ciLogPage } from './logPage.js'
+import { readCiReport } from './reports.js'
+import { withHostCiRunLock } from './runnerLock.js'
 
 type Command = { code: number; stdout: string; stderr: string }
 export interface HostCiPorts {
@@ -62,6 +64,7 @@ interface RunMeta {
   gate?: boolean; integrationShards?: number
   serviceUnit?: string
   cancellationRequested?: boolean
+  testResultsExpected?: boolean
 }
 
 type StartRequest = { runId: string; repository: string; commit: string; suite: CiSuite
@@ -112,15 +115,26 @@ export class HostCiRunner {
     }
     // A finished test run reports the file durations and test results it measured, so Main can learn and show them.
     const finished = !['starting', 'running'].includes(run.state)
-    const report = (name: string) => readFile(join(this.runDirectory(request.runId), name), 'utf8')
-      .then(text => JSON.parse(text) as unknown)
-      .catch(fallbackOnError(null, 'jobs', 'read CI report', { runId: request.runId, report: name }, ['ENOENT']))
-    const measured = request.durations && finished ? CiDurationsSchema.safeParse(await report('measured-durations.json')) : null
-    const tests = request.testResults && finished ? CiTestResultsSchema.safeParse(await report('test-results.json')) : null
+    const reportPath = (name: string) => join(this.runDirectory(request.runId), name)
+    const measured = request.durations && finished
+      ? await readCiReport(reportPath('measured-durations.json'), CiDurationsSchema) : null
+    const tests = request.testResults && finished
+      ? await readCiReport(reportPath('test-results.json'), CiTestResultsSchema) : null
+    if (tests) {
+      const meta = await this.readMeta(request.runId).catch(error => {
+        if (error instanceof DomainError && error.code === 'CI_RUN_UNKNOWN' && run.state === 'canceled') return null
+        throw error
+      })
+      const expected = meta?.testResultsExpected && (run.state === 'passed' || run.step === (meta.part ?? meta.suite))
+      let collection: CiHostRun['collection'] = tests.state === 'complete' ? 'complete' : 'unsupported'
+      if (tests.state === 'pending' || tests.state === 'absent' && expected || measured?.state === 'pending') {
+        collection = 'pending'
+      }
+      run.collection = collection
+    }
     return CiHostReplySchema.parse({ operation: 'read', run, text, nextOffset,
-      ...(request.testResults && finished ? { run: { ...run, collection: 'complete' } } : {}),
-      ...(measured?.success ? { durations: measured.data } : {}),
-      ...(tests?.success ? { testResults: tests.data } : {}) })
+      ...(measured?.state === 'complete' ? { durations: measured.data } : {}),
+      ...(tests?.state === 'complete' ? { testResults: tests.data } : {}) })
   }
 
   async beginDrain(): Promise<void> {
@@ -141,7 +155,12 @@ export class HostCiRunner {
       // Cancellation survives concurrent launch metadata writes and Worker restarts.
       return { ...meta, cancellationRequested: existsSync(join(this.runDirectory(runId), 'cancel-requested')) }
     }
-    catch { throw new DomainError('CI_RUN_UNKNOWN', 'This computer has no such CI run.', 404) }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new DomainError('CI_RUN_UNKNOWN', 'This computer has no such CI run.', 404)
+      }
+      throw error
+    }
   }
 
   private async writeMeta(meta: RunMeta) {
@@ -238,6 +257,7 @@ export class HostCiRunner {
   private async startRun(request: StartRequest) {
     const directory = this.runDirectory(request.runId)
     if (existsSync(join(directory, 'meta.json'))) return this.refresh(request.runId)
+    if (existsSync(join(directory, 'cancel-requested'))) return this.canceledBeforeStart(request.runId)
     this.startingRun = { runId: request.runId, state: 'starting', step: 'dispatch',
       startedAt: this.ports.now().toISOString(), finishedAt: null, exitCode: null, logBytes: 0, message: null }
     let active = await this.active()
@@ -252,32 +272,11 @@ export class HostCiRunner {
     const github = await this.github()
     if (!github.ready) throw new DomainError('COMPUTER_GITHUB_REQUIRED', github.reason!, 409)
     const startedAt = this.ports.now().toISOString()
-    await this.prepareRepository(request)
-    const databaseSuite = ['unit', 'integration'].includes(request.suite)
-    const isolatedDatabase = databaseSuite && await this.supportsDatabaseIsolation(request)
-    active = await this.active()
-    capacity = this.capacity(active)
-    if (request.gate) {
-      capacity = { ...capacity, slotsUsed: active.length, slotsTotal: 1, cpuCount: this.ports.cpus,
-        memoryBytes: Math.max(1, Math.min(capacity.memoryBudget,
-          this.ports.availableMemoryBytes?.() ?? capacity.memoryBudget)) }
-    }
-    if (databaseSuite && !isolatedDatabase) {
-      capacity = { slotsUsed: active.length, slotsTotal: 1, cpuCount: this.ports.cpus,
-        memoryBudget: capacity.memoryBudget,
-        memoryBytes: Math.min(this.ports.availableMemoryBytes?.() ?? this.ports.memoryBytes,
-          Math.floor(this.ports.memoryBytes - Math.max(2 ** 30, this.ports.memoryBytes * 0.1))) }
-    }
-    if (capacity.slotsUsed >= capacity.slotsTotal) {
-      throw new DomainError('CI_HOST_BUSY',
-        `All CI slots are in use (${capacity.slotsUsed}/${capacity.slotsTotal}); this commit needs exclusive database capacity.`, 409)
-    }
     await mkdir(directory, { recursive: true, mode: 0o700 })
     const meta: RunMeta = { runId: request.runId, repository: request.repository, commit: request.commit,
       suite: request.suite, partition: request.partition ?? null, startedAt,
       state: 'starting', finishedAt: null, exitCode: null, message: null, cleaned: false,
       resources: { cpuCount: capacity.cpuCount, memoryBytes: capacity.memoryBytes, memoryBudget: capacity.memoryBudget },
-      isolatedDatabase,
       ...(request.expectedDurationMs !== undefined ? { expectedDurationMs: request.expectedDurationMs } : {}),
       ...(request.gate ? { gate: true, integrationShards: Math.min(request.integrationShards!,
         gateIntegrationShards(capacity.cpuCount, capacity.memoryBytes)) } : {}),
@@ -288,6 +287,43 @@ export class HostCiRunner {
       ...(request.baseCommit ? { baseCommit: request.baseCommit } : {}),
       ...(request.durations ? { durations: request.durations } : {}) }
     await this.writeMeta(meta)
+    const ready = await withHostCiRunLock(directory, async () => {
+      try {
+        if (!await this.cancelPreparation(meta.runId)) await this.prepareRepository(request)
+        if (await this.cancelPreparation(meta.runId)) return false
+        const databaseSuite = ['unit', 'integration'].includes(request.suite)
+        const isolatedDatabase = databaseSuite && await this.supportsDatabaseIsolation(request)
+        active = (await this.active()).filter(run => run.runId !== request.runId)
+        capacity = this.capacity(active)
+        if (request.gate) {
+          capacity = { ...capacity, slotsUsed: active.length, slotsTotal: 1, cpuCount: this.ports.cpus,
+            memoryBytes: Math.max(1, Math.min(capacity.memoryBudget,
+              this.ports.availableMemoryBytes?.() ?? capacity.memoryBudget)) }
+        }
+        if (databaseSuite && !isolatedDatabase) {
+          capacity = { slotsUsed: active.length, slotsTotal: 1, cpuCount: this.ports.cpus,
+            memoryBudget: capacity.memoryBudget,
+            memoryBytes: Math.min(this.ports.availableMemoryBytes?.() ?? this.ports.memoryBytes,
+              Math.floor(this.ports.memoryBytes - Math.max(2 ** 30, this.ports.memoryBytes * 0.1))) }
+        }
+        if (capacity.slotsUsed >= capacity.slotsTotal) {
+          throw new DomainError('CI_HOST_BUSY',
+            `All CI slots are in use (${capacity.slotsUsed}/${capacity.slotsTotal}); this commit needs exclusive database capacity.`, 409)
+        }
+        meta.resources = { cpuCount: capacity.cpuCount, memoryBytes: capacity.memoryBytes, memoryBudget: capacity.memoryBudget }
+        meta.isolatedDatabase = isolatedDatabase
+        if (await this.cancelPreparation(meta.runId)) return false
+        await this.writeMeta(meta)
+        return true
+      } catch (error) {
+        const current = await this.readMeta(meta.runId)
+        await this.finish(meta.runId, current.cancellationRequested ? 'canceled' : 'failed', null,
+          error instanceof Error ? error.message : String(error))
+        if (current.cancellationRequested) return false
+        throw error
+      }
+    })
+    if (!ready) return this.refresh(meta.runId)
     const preparing = this.launch(meta).catch(async error => {
       const current = await this.readMeta(meta.runId)
       const message = (error instanceof Error ? error.message : String(error)).slice(0, 2000)
@@ -310,7 +346,11 @@ export class HostCiRunner {
   }
 
   /** Fetch the commit with this computer's GitHub login and start the suite in a private checkout. */
-  private async launch(meta: RunMeta) {
+  private launch(meta: RunMeta) {
+    return withHostCiRunLock(this.runDirectory(meta.runId), () => this.launchRun(meta))
+  }
+
+  private async launchRun(meta: RunMeta) {
     const previous = this.repositoryQueues.get(meta.repository) ?? Promise.resolve()
     let release!: () => void
     const pending = new Promise<void>(resolve => { release = resolve })
@@ -333,6 +373,7 @@ export class HostCiRunner {
     const serviceUnit = `${unitName(meta.runId)}.service`
     await this.writeMeta({ ...meta, ...current, serviceUnit,
       ...(meta.scope ? { scope: meta.scope } : {}), ...(meta.files ? { files: meta.files } : {}),
+      ...(meta.testResultsExpected !== undefined ? { testResultsExpected: meta.testResultsExpected } : {}),
       message: meta.message })
     const resources = this.suiteResources(meta)
     const environment = ['PATH', 'HOME', 'USER', 'LANG', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS']
@@ -546,6 +587,8 @@ export class HostCiRunner {
         command = slice.length ? `${command} --files ${slice.map(quote).join(' ')}` : 'true'
       }
     }
+    meta.testResultsExpected = command !== 'true' && (meta.suite === 'unit' && capabilities.parts
+      || meta.suite === 'integration' && capabilities.integrationPartitions)
     const sourceWatchdog = join(source, 'scripts/ci-watchdog.mjs')
     const watchdog = existsSync(sourceWatchdog) ? sourceWatchdog
       : fileURLToPath(new URL('../../../../../scripts/ci-watchdog.mjs', import.meta.url))
@@ -609,7 +652,8 @@ export class HostCiRunner {
   private async finish(runId: string, state: CiHostRun['state'], exitCode: number | null, message: string | null) {
     const meta = await this.readMeta(runId)
     if (!['starting', 'running'].includes(meta.state)) return
-    await this.writeMeta({ ...meta, state, exitCode, message, finishedAt: this.ports.now().toISOString() })
+    const outcome = meta.cancellationRequested ? 'canceled' : state
+    await this.writeMeta({ ...meta, state: outcome, exitCode, message, finishedAt: this.ports.now().toISOString() })
   }
 
   private async cleanDatabase(meta: RunMeta) {
@@ -678,10 +722,22 @@ export class HostCiRunner {
   async refresh(runId: string): Promise<CiHostRun> {
     // Launch can finish while the metadata read is awaiting I/O.
     const preparing = this.preparing.has(runId) || this.startingRun?.runId === runId
-    let meta = await this.readMeta(runId)
+    let meta = await this.readMeta(runId).catch(error => {
+      if (error instanceof DomainError && error.code === 'CI_RUN_UNKNOWN'
+        && existsSync(join(this.runDirectory(runId), 'cancel-requested'))) return null
+      throw error
+    })
+    if (!meta) return this.canceledBeforeStart(runId)
     const directory = this.runDirectory(runId)
-    await this.reconcile(meta, preparing)
+    const reconciled = await withHostCiRunLock(directory, async () => {
+      await this.reconcile(await this.readMeta(runId), preparing)
+      return true
+    }, { nonBlocking: true })
     meta = await this.readMeta(runId)
+    if (!reconciled && meta.state === 'starting' && meta.serviceUnit && await this.unitState(meta) === 'active') {
+      // A live launcher can still be writing metadata after systemd accepted the service.
+      meta = { ...meta, state: 'running' }
+    }
     if (!['starting', 'running'].includes(meta.state) && !meta.cleaned && !this.preparing.has(runId)) {
       const clone = join(this.root, 'git', ...meta.repository.split('/'))
       if (existsSync(join(directory, 'src'))) {
@@ -696,18 +752,52 @@ export class HostCiRunner {
       await this.writeMeta(meta)
     }
     const log = await stat(join(directory, 'log')).catch(fallbackOnError(null, 'jobs', 'stat CI log', { runId }, ['ENOENT']))
-    const step = (await readFile(join(directory, 'step'), 'utf8').catch(() => '')).trim() || null
+    const step = (await readFile(join(directory, 'step'), 'utf8').catch(() => '')).trim()
+      || (this.startingRun?.runId === runId ? 'dispatch' : null)
     return { runId, state: meta.state, step, exitCode: meta.exitCode, startedAt: meta.startedAt,
       finishedAt: meta.finishedAt, logBytes: log?.size ?? 0,
-      message: meta.message === null ? null : sanitizeCiText(meta.message) }
+      message: this.runMessage(meta) }
+  }
+
+  private runMessage(meta: RunMeta): string | null {
+    if (meta.cancellationRequested && ['starting', 'running'].includes(meta.state)) {
+      return 'Cancellation requested; waiting for preparation and the CI unit to stop.'
+    }
+    return meta.message === null ? null : sanitizeCiText(meta.message)
+  }
+
+  private async cancelPreparation(runId: string) {
+    const meta = await this.readMeta(runId)
+    if (!meta.cancellationRequested) return false
+    await this.finish(runId, 'canceled', null, 'Canceled before execution.')
+    return true
+  }
+
+  private async canceledBeforeStart(runId: string): Promise<CiHostRun> {
+    if (this.startingRun?.runId === runId) {
+      return { ...this.startingRun, message: 'Cancellation requested; waiting for preparation to stop.' }
+    }
+    const requested = await stat(join(this.runDirectory(runId), 'cancel-requested'))
+    return { runId, state: 'canceled', step: null, exitCode: null,
+      startedAt: requested.mtime.toISOString(), finishedAt: requested.mtime.toISOString(),
+      logBytes: 0, message: 'Canceled before execution.' }
   }
 
   async cancel(runId: string): Promise<CiHostRun> {
-    const meta = await this.readMeta(runId)
-    if (['starting', 'running'].includes(meta.state)) {
-      await writeFile(join(this.runDirectory(runId), 'cancel-requested'), '', { mode: 0o600 })
-      await this.writeMeta({ ...meta, cancellationRequested: true,
-        message: 'Cancellation requested; waiting for the CI unit to stop.' })
+    const meta = await this.readMeta(runId).catch(error => {
+      if (error instanceof DomainError && error.code === 'CI_RUN_UNKNOWN') return null
+      throw error
+    })
+    if (!meta || ['starting', 'running'].includes(meta.state)) {
+      const directory = this.runDirectory(runId)
+      await mkdir(directory, { recursive: true, mode: 0o700 })
+      try {
+        await writeFile(join(directory, 'cancel-requested'), '', { mode: 0o600, flag: 'wx' })
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+        // The first marker keeps the cancellation timestamp stable on retries.
+      }
+      if (!meta) return this.refresh(runId)
       await this.preparing.get(runId)
     }
     return this.refresh(runId)

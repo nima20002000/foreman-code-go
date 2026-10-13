@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { inTransaction, type SqlQuery } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
 import { withProviderPoll } from './providerPoll.js'
-import { CI_HOST_NAMESPACE, CI_HOST_START_PROTOCOL_VERSION, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiComputerRefSchema, CiHostReplySchema, CiListOutputSchema, CiRunRecordSchema, CiRunOutputSchema,
+import { CI_HOST_NAMESPACE, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiComputerRefSchema, CiListOutputSchema, CiRunRecordSchema, CiRunOutputSchema,
   WorkspaceSchema,
   type CiDurations, type CiHostRequest, type CiHostReply, type CiHostRun, type CiHostStatus, type CiListOutput, type CiRunRecord, type CiRunInput,
   type CiTestResults, type CiTestStatus, type CiUserSystemd, type CiCancellation, type Workspace } from '@foreman-code/contracts'
@@ -25,13 +25,13 @@ import { prepareCiSupersession, validateCiSupersession, supersedeCiRuns } from '
 import { gatePartStealer, gateQueueBlock, planCiGate, readCiComputerStatus } from './gate.js'
 import { gateIntegrationShards } from './capacity.js'
 import { ciGateReport } from './gateReport.js'
-import { claimCiDispatch, releaseCiDispatch, saveQueuedCiRun, ciMessages, rejectedCiStart, withCiTicketLock,
-  requestCiStart, CI_START_ACK_TIMEOUT_MS, CI_START_MAX_ATTEMPTS } from './dispatch.js'
+import { claimCiDispatch, saveQueuedCiRun, ciMessages, rejectedCiStart, withCiTicketLock } from './dispatch.js'
+import { reconcileCiHostStart, sendCiDispatch, type CiDispatchState } from './dispatchRecovery.js'
 import { collectCiResults } from './resultCollection.js'
 import { sanitizeCiText, serializeCiJson } from './text.js'
 import { isGitHubComputer, needsSystemdExecutor, supportsUserSystemd } from './computerCapabilities.js'
 import { weighCiPartitions } from './partitionPlanning.js'
-import { readQueuedCiRuns } from './queuedRuns.js'
+import { readCiGateReservation, readQueuedCiRuns, releaseCiSlowTier } from './queuedRuns.js'
 
 /** CI reads are idempotent: one retry after a lock or statement timeout, then a typed retryable error. */
 async function retryRead<T>(work: () => Promise<T>): Promise<T> {
@@ -586,7 +586,7 @@ export class HostCiService {
 
   private async cancelAssignedTicket(run: CiRunRecord, client: pg.PoolClient, audit?: CiCancellation) {
     const computer = await this.computer(run.computer!.hostRef)
-    if (run.dispatchRequest) {
+    if (run.dispatchRequest && computer.hostRef.kind === 'cloud') {
       // A start with an unknown reply is retried on its owner before cancellation can confirm closure.
       try {
         const start = await this.endpoint.request(computer, run.dispatchRequest)
@@ -743,128 +743,20 @@ export class HostCiService {
     return this.dispatching
   }
 
-  /** Slow-tier parts wait until every other part of their request passed; if any of those did not pass, the slow
-   * tier is skipped (canceled with the reason) because its result could not make the request green. */
-  private async releaseSlowTier(queued: CiRunRecord[]): Promise<CiRunRecord[]> {
-    const deferred = queued.filter(run => run.deferred)
-    if (!deferred.length) return queued
-    const groups = [...new Set(deferred.map(run => run.groupId))]
-    const rows = (await this.pool.query<{ group_id: string; state: string }>(
-      `select record->>'groupId' as group_id, state from ci_runs
-        where record->>'groupId' = any($1::text[]) and coalesce((record->>'deferred')::boolean, false) = false`,
-      [groups])).rows
-    const waiting = new Set<string>()
-    for (const groupId of groups) {
-      const states = rows.filter(row => row.group_id === groupId).map(row => row.state)
-      if (states.some(state => ['failed', 'canceled', 'lost'].includes(state))) {
-        const now = new Date().toISOString()
-        for (const run of deferred.filter(value => value.groupId === groupId)) {
-          const skipped = { ...run, state: 'canceled' as const, finishedAt: now,
-            message: 'Skipped: slow tests run only after every other test of this request passed, and some did not.' }
-          await saveQueuedCiRun(this.pool, run, skipped)
-        }
-        waiting.add(groupId)
-      } else if (states.some(state => state !== 'passed')) waiting.add(groupId)
+  private dispatchServices() {
+    return { pool: this.pool, endpoint: this.endpoint,
+      read: (id: string, workspaceId: string, client: pg.PoolClient) => this.read(id, workspaceId, client),
+      settle: (run: CiRunRecord, computer: HostCiComputer, state: CiDispatchState,
+        options: { client: pg.PoolClient }) => this.settle(run, computer, state, options),
     }
-    return queued.filter(run => !run.deferred || !waiting.has(run.groupId))
   }
 
-  private async gateReservation() {
-    const rows = (await this.pool.query<{ record: unknown }>(`select record from ci_runs
-      where state in ('queued','starting','running','failed','lost') and record->>'gate'='true'
-      order by record->>'queuedAt',group_id,id`)).rows
-    const runs = rows.map(row => CiRunRecordSchema.parse(row.record))
-    // A gate with a failed or lost part cannot pass, so it no longer holds the barrier or host reservations.
-    const doomed = new Set(runs.filter(run => run.state === 'failed' || run.state === 'lost').map(run => run.groupId))
-    const live = runs.filter(run => !doomed.has(run.groupId) && ['queued', 'starting', 'running'].includes(run.state))
-    const gate = live[0]
-    const reservedHosts = new Set(live.filter(run => run.groupId === gate?.groupId && run.suite === 'integration')
-      .map(run => run.plannedHostKey))
-    return { gate, reservedHosts }
+  private sendDispatch(run: CiRunRecord, computer: HostCiComputer) {
+    return sendCiDispatch(this.dispatchServices(), run, computer)
   }
 
-  private async sendDispatch(run: CiRunRecord, computer: HostCiComputer) {
-    const outcome = await withCiTicketLock(this.pool, run.id, async client => {
-      const current = await this.read(run.id, run.workspaceId, client)
-      if (current.cancellation) return 'pending'
-      if (!current.dispatchRequest
-        || JSON.stringify(current.computer?.hostRef) !== JSON.stringify(computer.hostRef)) return 'settled'
-      return this.sendAssignedDispatch(current, computer, client)
-    })
-    return outcome ?? 'pending'
-  }
-
-  private async sendAssignedDispatch(run: CiRunRecord, computer: HostCiComputer, client: pg.PoolClient) {
-    const request = run.dispatchRequest
-    if (!request) throw new Error('CI dispatch request is missing.')
-    let reply: Extract<CiHostReply, { operation: 'start' }>
-    try {
-      const start = () => this.endpoint.request(computer, request)
-      const response = CiHostReplySchema.parse(await (computer.hostRef.kind === 'cloud' ? start() : requestCiStart(start)))
-      if (response.operation !== 'start') {
-        throw new DomainError('CI_HOST_REPLY_INVALID', 'The build computer replied out of order.', 502)
-      }
-      reply = response
-    } catch (error) {
-      if (!rejectedCiStart(error)) {
-        log.warn({ err: error, runId: run.id, computer: computer.key }, 'CI start reply unknown; retrying assigned executor')
-        return 'pending'
-      }
-      if ((error as DomainError).code === 'CI_MIRROR_PRIVATE_DATA') {
-        const now = new Date().toISOString()
-        await this.settle(run, computer, { state: 'failed', step: null, exitCode: null,
-          startedAt: now, finishedAt: now, message: (error as Error).message }, { client })
-        return 'settled'
-      }
-      const attempts = run.dispatchAttempts ?? 1
-      const uncertainRetry = computer.hostRef.kind !== 'cloud' && attempts > 1
-      if (uncertainRetry && attempts >= CI_START_MAX_ATTEMPTS) {
-        const now = new Date().toISOString()
-        await this.settle(run, computer, { state: 'failed', step: 'dispatch', exitCode: null,
-          startedAt: null, finishedAt: now,
-          message: `CI start was not acknowledged after ${attempts} attempts. ${(error as Error).message}` },
-        { client })
-        return 'settled'
-      }
-      if (!await releaseCiDispatch(client, run, computer, (error as Error).message,
-        { clearRetry: !uncertainRetry })) return 'pending'
-      return (error as DomainError).code === 'CI_HOST_BUSY' ? 'busy' : 'rejected'
-    }
-    // A persistence failure keeps the pre-dispatch assignment for same-executor recovery.
-    await this.settle(run, computer, reply.run, { client })
-    return 'settled'
-  }
-
-  private async reconcileHostStart(run: CiRunRecord, computer: HostCiComputer, status: CiHostStatus | null) {
-    if (computer.hostRef.kind === 'cloud' || run.state !== 'starting' || run.startedAt || run.cancellation) return false
-    const outcome = await withCiTicketLock(this.pool, run.id, async client => {
-      const current = await this.read(run.id, run.workspaceId, client)
-      if (current.state !== 'starting' || current.startedAt || current.cancellation
-        || !isDeepStrictEqual(current.computer?.hostRef, computer.hostRef)
-        || current.dispatchedAt !== run.dispatchedAt || current.dispatchAttempts !== run.dispatchAttempts) return false
-      const observed = status?.runs.find(value => value.runId === current.id)
-      if (observed) {
-        // Preflight status acknowledges delivery before there is a persisted run to read.
-        if (observed.state === 'starting' && observed.step === 'dispatch') return false
-        return this.settle(current, computer, observed, { client })
-      }
-      if (computer.hostRef.kind === 'device' && status?.ready === false
-        && (status.startProtocolVersion ?? 0) < CI_HOST_START_PROTOCOL_VERSION) {
-        return releaseCiDispatch(client, current, computer, status.reasons.join('; '), { clearRetry: true })
-      }
-      const elapsed = Date.now() - Date.parse(current.dispatchedAt ?? current.queuedAt)
-      if (!status && elapsed < CI_START_ACK_TIMEOUT_MS) return false
-      const attempts = current.dispatchAttempts ?? 1
-      const reason = status ? 'The computer reports no such CI run.' : 'The start acknowledgement timed out.'
-      if (attempts >= CI_START_MAX_ATTEMPTS) {
-        const now = new Date().toISOString()
-        return this.settle(current, computer, { state: 'failed', step: 'dispatch', exitCode: null,
-          startedAt: null, finishedAt: now,
-          message: `CI start was not acknowledged after ${attempts} attempts. ${reason}` }, { client })
-      }
-      return releaseCiDispatch(client, current, computer, `${reason} Queued to retry on the same computer.`)
-    })
-    return outcome ?? false
+  private reconcileHostStart(run: CiRunRecord, computer: HostCiComputer, status: CiHostStatus | null) {
+    return reconcileCiHostStart(this.dispatchServices(), run, computer, status)
   }
 
   private async refreshRun(row: { record: unknown; host_key: string | null }, computers: HostCiComputer[]) {
@@ -938,7 +830,7 @@ export class HostCiService {
       `select host_key,record from ci_runs where state in ('starting','running')`)).rows
     const used = new Map<string, number>()
     for (const row of busyRows) used.set(row.host_key, (used.get(row.host_key) ?? 0) + 1)
-    const { gate, reservedHosts } = await this.gateReservation()
+    const { gate, reservedHosts } = await readCiGateReservation(this.pool)
     const { parsed, durations } = await readQueuedCiRuns(this.pool)
     const hasQueuedGate = parsed.some(run => run.gate)
     const totals = new Map<string, number>()
@@ -970,7 +862,7 @@ export class HostCiService {
     const integrationOnGitHub = new Set(busyRows.filter(row => githubKeys.has(row.host_key)
       && CiRunRecordSchema.parse(row.record).suite === 'integration').map(row => row.host_key))
     const smokeTargets = await this.smokeTargets(parsed)
-    let queued = await this.releaseSlowTier(parsed)
+    let queued = await releaseCiSlowTier(this.pool, parsed)
     // Reserve four GitHub slots while checks wait, including integration already using GitHub.
     const githubIntegrationLimit = Math.max(0, github.length - (queued.some(run => run.suite !== 'integration') ? 4 : 0))
     queued = await weighCiPartitions(this.pool, this.endpoint, queued, computers.flatMap(computer =>
