@@ -10,6 +10,7 @@ import { createPool } from '../src/infrastructure/pool.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { gateIntegrationShards } from '../src/modules/ci-host/capacity.js'
 import { HostCiService, type HostCiComputer } from '../src/modules/ci-host/service.js'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS, RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
 import { migratedDatabase } from './helpers/migratedDatabase.js'
@@ -174,7 +175,8 @@ it('admits one complete gate, denies a reader, and persists the plan and measure
     expect(read.partitions!.every(run => run.scope === 'full')).toBe(true)
     const hosts = f.started.filter(item => item.key.startsWith('builder-'))
     expect(hosts).toHaveLength(2)
-    for (const host of hosts) expect(host.request).toMatchObject({ suite: 'integration', gate: true, integrationShards: 12 })
+    for (const host of hosts) expect(host.request).toMatchObject({ suite: 'integration', gate: true,
+      integrationShards: gateIntegrationShards(16, Math.floor(16 * 2 ** 30 * 0.9)) })
     const integration = read.partitions!.filter(run => run.suite === 'integration')
     const assigned = integration.flatMap(run => run.files)
     expect(assigned.sort()).toEqual([...f.files].sort())
