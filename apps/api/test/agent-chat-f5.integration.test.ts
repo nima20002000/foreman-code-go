@@ -195,21 +195,45 @@ describe.skipIf(!postgresEnabled)('F5 approval and receipt PostgreSQL / HTTP / M
       const mcpState = await f.mcp.callTool({ name: 'agent_chat_read', arguments: { workspaceId: f.workspaceId, query: f.query } })
       assert.deepEqual(AgentChatStateSchema.parse(decodeMcpToolResult(mcpState)).turns, state.turns)
       const queued = state.turns.filter((turn) => turn.delivery === 'queued')
-      for (const [index, turn] of queued.entries()) {
+      await expectMcpAccessDenied(f.reader.callTool({ name: 'agent_chat_cancel_queued', arguments: {
+        workspaceId: f.workspaceId, conversationId: f.id, turnRequestId: queued[0]!.requestId,
+        requestId: 'denied-cancel',
+      } }))
+      assert.equal((await f.repository.turn(f.id, queued[0]!.requestId))?.delivery, 'queued')
+      const cancelTurn = async (turn: (typeof queued)[number], index: number) => {
         if (index % 2) {
           const result = await f.mcp.callTool({ name: 'agent_chat_cancel_queued', arguments: { workspaceId: f.workspaceId,
             conversationId: f.id, turnRequestId: turn.requestId, requestId: `cancel-${turn.requestId}` } })
           assert.notEqual(result.isError, true)
+          const response = decodeMcpToolResult(result) as { state: unknown }
+          assert.equal(AgentChatStateSchema.parse(response.state).turns
+            .some((entry) => entry.requestId === turn.requestId && entry.delivery === 'queued'), false)
         } else {
           const result = await f.app.inject({ method: 'POST', url: `${f.url}/conversations/${f.id}/turns/${turn.requestId}/cancel`,
             headers: f.headers, payload: { requestId: `cancel-${turn.requestId}` } })
           assert.equal(result.statusCode, 200, result.body)
+          assert.equal(AgentChatStateSchema.parse(result.json().state).turns
+            .some((entry) => entry.requestId === turn.requestId && entry.delivery === 'queued'), false)
         }
         assert.equal((await f.repository.turn(f.id, turn.requestId))?.delivery, 'canceled')
       }
-      const canceledRead = await f.mcp.callTool({ name: 'agent_chat_read',
-        arguments: { workspaceId: f.workspaceId, query: f.query } })
-      const canceledState = AgentChatStateSchema.parse(decodeMcpToolResult(canceledRead))
+      // Independent cancellations can overlap; bound concurrency below the fixture pool's capacity.
+      for (let offset = 0; offset < queued.length; offset += 4) {
+        const results = await Promise.allSettled(queued.slice(offset, offset + 4)
+          .map((turn, index) => cancelTurn(turn, offset + index)))
+        for (const result of results) {
+          if (result.status === 'rejected') throw result.reason
+        }
+      }
+      const canceledRead = await f.app.inject({ method: 'GET',
+        url: `${f.url}?${new URLSearchParams(f.query)}`, headers: f.headers })
+      assert.equal(canceledRead.statusCode, 200, canceledRead.body)
+      assert.equal(AgentChatStateSchema.parse(canceledRead.json()).turns
+        .some((turn) => turn.delivery === 'queued'), false)
+      const canceledMcpRead = await f.mcp.callTool({ name: 'agent_chat_read', arguments: {
+        workspaceId: f.workspaceId, query: f.query,
+      } })
+      const canceledState = AgentChatStateSchema.parse(decodeMcpToolResult(canceledMcpRead))
       assert.equal(canceledState.turns.some(turn => turn.delivery === 'queued'), false)
       assert.equal(canceledState.activeTurn?.requestId, 'active-f5')
       await admit(f.message('capacity-freed', f.id))
