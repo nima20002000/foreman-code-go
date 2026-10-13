@@ -123,7 +123,8 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
       if (args[0] === 'job' && args[1] === 'artifact' && circle.artifactError) {
         return { code: 1, stdout: '', stderr: circle.artifactError }
       }
-      if (args[0] === 'job' && args[1] === 'artifact' && args.includes('--json') && (circle.durations || circle.watchdogFailure)) {
+      if (args[0] === 'job' && args[1] === 'artifact' && args.includes('--json')) {
+        if (!circle.durations && !circle.watchdogFailure) return ok('[]')
         const listed = [...circle.watchdogFailure ? ['durations/watchdog-message.json'] : [], 'durations/durations.json', ...circle.testResults ? ['durations/test-results.json'] : [],
           'integration-logs/run/slot-1/a.integration.test.ts.log']
         return ok(JSON.stringify(listed.map(path => ({ path, url: `https://artifacts.example/${path}`, execution: 0 }))))
