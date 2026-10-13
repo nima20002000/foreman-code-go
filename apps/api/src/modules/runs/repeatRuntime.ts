@@ -568,7 +568,7 @@ export async function executeRepeatRuntime(input: {
         else await timeRuntimeOperation('engine', 'run.settle', () => bookkeeping(() => input.store.completeRun()))
         await bookkeeping(() => input.lifecycle.requestCleanup())
         await input.lifecycle.finishNative()
-        await input.lifecycle.finishCleanup()
+        await bookkeeping(() => input.lifecycle.finishCleanup())
         return
       } catch (error) {
         const databaseTimeout = isDatabaseTimeout(error)
