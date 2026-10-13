@@ -379,6 +379,7 @@ export async function retainedReviewRecovery(fixture: Fixture, recovery: 'crash'
   'periodic retained reviewer renewal with the original process credential')
   await fixture.provider.releaseReview()
   const decisionCall = await waitForRemoteReview(async () => {
+    await fixture.reconcile()
     const calls = await fixture.provider.calls()
     const denied = calls.find(call => call.reviewDecisionError !== undefined)
     expect(denied, 'the retained reviewer must remain authorized after Main recovery').toBeUndefined()

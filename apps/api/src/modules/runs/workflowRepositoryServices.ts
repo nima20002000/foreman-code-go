@@ -25,6 +25,7 @@ import { readWorkflowTerminalReceiptLocked } from './workflowTerminalReceipt.js'
 import type { ApprovalPostgresSaver } from '../../infrastructure/approvalCheckpointSaver.js'
 import { lockInteraction } from '../interactions/wave25/context.js'
 import { assertSavedPendingApprovalOriginalLocked } from '../interactions/nativeApprovalProof.js'
+import { readRetainedRemoteReviewer } from '../interactions/retainedRemoteReviewer.js'
 
 export interface WorkflowRestartApprovals {
   saver: ApprovalPostgresSaver
@@ -136,8 +137,20 @@ export async function assertWorkflowRunSettlementLocked(sql: GraphTransactionSql
   if (owner.runId !== run.id) return conflict('RUN_OWNERSHIP_LOST')
   if (approvals && intent !== 'restart') return conflict('GRAPH_INTERRUPT_INVALID')
   const retained = approvals ? await assertRestartApprovalsLocked(sql, run, approvals) : []
+  const retainedPrincipals: string[] = []
   await visitRepeatNativeAttemptsLocked(sql, run.id, { kind: 'run' }, async (ids) => {
-    if (intent !== 'restart') return assertSettlementLocked(sql, run, ids, owner)
+    if (intent !== 'restart') {
+      await assertSettlementLocked(sql, run, ids, owner)
+      if (intent === 'success') {
+        const snapshot = await readAcceptedRepeatRunLocked(sql, run.id)
+        for (const id of ids) {
+          const stored = await readRepeatExecutionLocked(sql, snapshot, id)
+          const reviewer = await readRetainedRemoteReviewer(sql, stored.execution)
+          if (reviewer) retainedPrincipals.push(reviewer.principalId)
+        }
+      }
+      return
+    }
     const settled: string[] = []
     for (const id of ids) {
       const snapshot = await readAcceptedRepeatRunLocked(sql, run.id)
@@ -182,11 +195,11 @@ export async function assertWorkflowRunSettlementLocked(sql: GraphTransactionSql
       where i.run_id=$1 and j.state not in ('completed','failed') and not (i.execution_id=any($2::text[])))
     or exists(select 1 from worker_credential_bindings b left join management_principals p on p.id=b.principal_id
       where b.run_id=$1 and (b.revoked_at is null or p.id is null or p.revoked_at is null)
-      and not (b.execution_id=any($2::text[])))
+      and not (b.execution_id=any($2::text[])) and not (b.principal_id=any($3::text[])))
     or exists(select 1 from approval_execution_state b join harness_executions e on e.id=b.execution_id
       where e.run_id=$1 and (b.active_started_at is not null or b.approval_wait_started_at is not null)
       and not (e.id=any($2::text[])))
-    ) as pending`, [run.id, retained])).rows[0]
+    ) as pending`, [run.id, retained, retainedPrincipals])).rows[0]
   if (pending?.pending !== false) return conflict('REPEAT_CLEANUP_PENDING')
 }
 
