@@ -5,14 +5,14 @@ import { componentLogger } from '../diagnostics/logger.js'
 import { DomainError } from '../errors.js'
 import { CLOUD_START_TIMEOUT_MS } from './cloudProviders.js'
 import { CI_START_MAX_ATTEMPTS, rejectedCiStart, releaseCiDispatch, requestCiStart } from './dispatch.js'
-import type { HostCiComputer, HostCiEndpoint } from './service.js'
+import type { CiRunSettlement, HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
 import { serializeCiJson } from './text.js'
 
 const log = componentLogger('jobs')
 type DispatchOutcome = { outcome: 'pending' | 'busy' | 'rejected' }
-  | { outcome: 'settled'; run: CiRunRecord; observed: CiHostRun }
+  | { outcome: 'settled'; run: CiRunRecord; observed: CiRunSettlement }
 
-function unstarted(run: CiRunRecord, state: 'queued' | 'lost' | 'failed', message: string): CiHostRun {
+function unstarted(run: CiRunRecord, state: 'queued' | 'lost' | 'failed', message: string): CiRunSettlement {
   return { runId: run.id, state, step: null, startedAt: null,
     finishedAt: state === 'queued' ? null : new Date().toISOString(), exitCode: null, logBytes: 0, message }
 }
@@ -23,7 +23,7 @@ export function requestCloud(endpoint: HostCiEndpoint, computer: HostCiComputer,
 }
 
 export async function expireCloudDispatch(endpoint: HostCiEndpoint, computer: HostCiComputer,
-  run: CiRunRecord, observed?: CiHostRun): Promise<CiHostRun | null> {
+  run: CiRunRecord, observed?: CiHostRun): Promise<CiRunSettlement | null> {
   const at = run.startedAt ?? run.dispatchedAt ?? run.queuedAt
   if ((observed?.state ?? run.state) !== 'starting'
     || Date.now() - Date.parse(at) < CLOUD_START_TIMEOUT_MS * CI_START_MAX_ATTEMPTS) return observed ?? null

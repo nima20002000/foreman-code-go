@@ -1,9 +1,9 @@
-import type { CiHostRun, CiRunRecord } from '@foreman-code/contracts'
+import type { CiRunRecord } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import { rejectedCiStart } from './dispatch.js'
-import type { HostCiComputer, HostCiEndpoint } from './service.js'
+import type { CiRunSettlement, HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
 
-function canceledBeforeExecution(run: CiRunRecord, computer: HostCiComputer): CiHostRun {
+function canceledBeforeExecution(run: CiRunRecord, computer: HostCiComputer): CiRunSettlement {
   const now = new Date().toISOString()
   return { runId: run.id, state: 'canceled', step: null, exitCode: null,
     startedAt: computer.hostRef.kind === 'cloud' ? null : now,
@@ -11,7 +11,7 @@ function canceledBeforeExecution(run: CiRunRecord, computer: HostCiComputer): Ci
 }
 
 export async function cancelAssignedCiTicket(endpoint: HostCiEndpoint, computer: HostCiComputer,
-  run: CiRunRecord): Promise<CiHostRun> {
+  run: CiRunRecord): Promise<CiRunSettlement> {
   if (run.dispatchRequest && computer.hostRef.kind !== 'cloud') {
     // Host delivery can still be in flight; recover its owner before confirming closure.
     try {

@@ -1,9 +1,11 @@
-import type { CiHostRequest, CiHostReply, CiRunRecord, CiUserSystemd } from '@foreman-code/contracts'
+import type { CiHostRequest, CiHostReply, CiHostRun, CiRunRecord, CiUserSystemd } from '@foreman-code/contracts'
 import type { CiRepositoryCapabilities } from './repository.js'
 import type { CiIntegrationInventory } from './integrationParts.js'
 import type { CiUnitInventory } from './parts.js'
 
 export type HostRef = CiRunRecord['computer'] extends infer C ? C extends { hostRef: infer H } ? H : never : never
+/** Local dispatch failures can settle before a host records a start. */
+export type CiRunSettlement = Omit<CiHostRun, 'startedAt'> & Pick<CiRunRecord, 'startedAt'>
 export interface HostCiComputer {
   key: string; hostRef: HostRef; label: string; priority: number; userSystemd?: CiUserSystemd
 }
@@ -24,4 +26,3 @@ export interface CiCommits {
     snapshot: { baseCommit: string; commit: string; bundle: Buffer | null } | null): Promise<string>
 }
 export type AgentSnapshots = (executionId: string) => Promise<{ baseCommit: string; commit: string; bundle: Buffer | null } | null>
-
