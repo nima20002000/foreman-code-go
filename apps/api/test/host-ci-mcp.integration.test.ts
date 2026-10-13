@@ -1630,10 +1630,15 @@ it('shows priority and global queue position through MCP and admits high tickets
     const denied = await f.connect(CI_GET_ACTIONS)
     expect((await f.call(denied, 'ci_run', { suite: 'install', commandId: 'denied-high', priority: 'high' })).isError)
       .toBe(true)
-    f.computers.push(...available)
+    f.computers.push(available[0]!)
     await f.ci.dispatch()
+    expect(f.started).toHaveLength(1)
     expect(f.started[0]?.request).toMatchObject({ runId: high.ticketId })
-    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: high.ticketId })).queue).toBeNull()
+    const admitted = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: high.ticketId }))
+    expect(admitted.run.state).toBe('running')
+    expect(admitted.queue).toBeNull()
+    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: older[0] })).run.state)
+      .toBe('queued')
   } finally { await f.close() }
 })
 
