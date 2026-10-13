@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { WorkerArtifactManifestSchema, WorkerArtifactReplySchema, WorkerUpdateStatusSchema,
   WORKER_UPDATE_NAMESPACE, WORKER_UPDATE_VERSION, WORKER_UPDATE_MAX_BINARY_BYTES,
   WORKER_UPDATE_MAX_JSON_BYTES } from '../../../packages/contracts/src/workerUpdate.ts';
+import { readWorkerSmokeConfiguration } from './ciInstallSmoke.mjs';
 import { WorkerError } from './diagnostics.mjs';
 import { validateManifest, stageRunningVersion } from './installation.mjs';
 import { readUpdateRecord, writeUpdateRecord, locateWorkerLaunch, launchUpdateSupervisor,
@@ -253,6 +254,7 @@ export class WorkerUpdater {
       downloading = await mkdtemp(join(stateDirectory, '.worker-download-'));
       await downloadWorkerArtifact({ release, request, directory: downloading, facts, signal: this.lifetime.signal });
       this.lifetime.signal.throwIfAborted();
+      const ciSmoke = await readWorkerSmokeConfiguration(request, release.manifestSha256);
       await this.save({ state: 'installing' });
       const installed = await (this.options.stage ?? stageRunningVersion)({ root: launch.root, stateDirectory,
         artifact: downloading, approvedManifestSha256: release.manifestSha256, facts, expected,
@@ -261,6 +263,7 @@ export class WorkerUpdater {
       assertStateOwnership();
       this.handoff = randomUUID();
       await this.save({ state: 'restarting' }, { restart: { ...launch, directory: installed.directory,
+        ...(ciSmoke ? { ciSmoke } : {}),
         requestId: this.handoff, restartAttempted: false, previousVersion: version,
         workerInstallationId: this.options.workerInstallationId } });
       await (this.options.launchSupervisor ?? launchUpdateSupervisor)(stateDirectory);

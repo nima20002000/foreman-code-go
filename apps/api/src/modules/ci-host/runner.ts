@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { sanitizeCiText, serializeCiJson } from './text.js'
 import { availableParallelism, freemem, homedir, totalmem } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { join, matchesGlob } from 'node:path'
@@ -94,7 +95,7 @@ export class HostCiRunner {
       try {
         const buffer = Buffer.alloc(request.maxBytes)
         const { bytesRead } = await handle.read(buffer, 0, request.maxBytes, request.afterOffset)
-        text = buffer.subarray(0, bytesRead).toString('utf8')
+        text = sanitizeCiText(buffer.subarray(0, bytesRead).toString('utf8'))
         nextOffset = request.afterOffset + bytesRead
       } finally { await handle.close() }
     }
@@ -122,7 +123,7 @@ export class HostCiRunner {
     const temporary = `${path}.${randomUUID()}.tmp`
     try {
       // Busy checks must see a complete record while launch updates the run state.
-      await writeFile(temporary, JSON.stringify(meta), { mode: 0o600, flag: 'wx' })
+      await writeFile(temporary, serializeCiJson(meta), { mode: 0o600, flag: 'wx' })
       await rename(temporary, path)
     } finally {
       await rm(temporary, { force: true })
@@ -295,15 +296,22 @@ export class HostCiRunner {
     await this.writeMeta({ ...meta, state: 'running' })
   }
 
-  private async prepareRepository(request: Pick<StartRequest, 'repository' | 'commit'>) {
+  private async prepareRepository(request: Pick<StartRequest, 'repository' | 'commit' | 'scope' | 'files'>) {
     const clone = join(this.root, 'git', ...request.repository.split('/'))
     if (!existsSync(join(clone, '.git'))) {
       await mkdir(join(clone, '..'), { recursive: true, mode: 0o700 })
-      await this.git(['clone', '--quiet', '--filter=blob:none', '--no-checkout',
-        `https://github.com/${request.repository}.git`, clone])
+      await mkdir(clone, { recursive: true, mode: 0o700 })
+      await this.git(['init', '--quiet', clone])
+      await this.git(['remote', 'add', 'origin', `https://github.com/${request.repository}.git`], clone)
     }
-    if ((await this.ports.run('git', ['cat-file', '-e', `${request.commit}^{commit}`], { cwd: clone, env: this.environment })).code !== 0) {
-      await this.git(['fetch', '--quiet', '--no-tags', 'origin', request.commit], clone)
+    const history = (request.scope ?? 'affected') === 'affected' && request.files === undefined
+    const missing = (await this.ports.run('git', ['cat-file', '-e', `${request.commit}^{commit}`],
+      { cwd: clone, env: this.environment })).code !== 0
+    if (missing || history) {
+      const shallow = history && (await this.git(['rev-parse', '--is-shallow-repository'], clone)).trim() === 'true'
+      let depth = ['--depth=1']
+      if (history) depth = shallow ? ['--unshallow'] : []
+      await this.git(['fetch', '--quiet', '--no-tags', ...depth, 'origin', request.commit], clone)
     }
   }
 
@@ -345,6 +353,13 @@ export class HostCiRunner {
     if (!existsSync(selector)) return full('The repository has no affected selector.')
     let baseCommit = meta.baseCommit
     if (baseCommit) {
+      const available = await this.ports.run('git', ['cat-file', '-e', `${baseCommit}^{commit}`],
+        { cwd: source, env: this.environment })
+      if (available.code !== 0) {
+        const fetched = await this.ports.run('git', ['fetch', '--quiet', '--no-tags', '--depth=1', 'origin', baseCommit],
+          { cwd: source, env: this.environment })
+        if (fetched.code !== 0) return full('baseCommit is unavailable or is not an ancestor of the resolved commit.')
+      }
       const ancestor = await this.ports.run('git', ['merge-base', '--is-ancestor', baseCommit, meta.commit],
         { cwd: source, env: this.environment })
       if (ancestor.code !== 0) return full('baseCommit is unavailable or is not an ancestor of the resolved commit.')
@@ -603,7 +618,8 @@ export class HostCiRunner {
     const log = await stat(join(directory, 'log')).catch(fallbackOnError(null, 'jobs', 'stat CI log', { runId }, ['ENOENT']))
     const step = (await readFile(join(directory, 'step'), 'utf8').catch(() => '')).trim() || null
     return { runId, state: meta.state, step, exitCode: meta.exitCode, startedAt: meta.startedAt,
-      finishedAt: meta.finishedAt, logBytes: log?.size ?? 0, message: meta.message }
+      finishedAt: meta.finishedAt, logBytes: log?.size ?? 0,
+      message: meta.message === null ? null : sanitizeCiText(meta.message) }
   }
 
   async cancel(runId: string): Promise<CiHostRun> {

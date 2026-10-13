@@ -43,7 +43,7 @@ if (process.argv.includes('test')) {
     cwd: repository, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, PATH: `${directory}/bin:${process.env.PATH}`, SUITE: 'unit-other', SCOPE: 'full',
       CI_HOST_RUNNER: '0', CI_USER_SYSTEMD: '0', CI_STATE: join(directory, 'state'),
-      CI_EXPECTED_DURATION_MS: '1000', CI_WATCHDOG_DIRECTORY: join(directory, 'watchdog'),
+      CI_EXPECTED_DURATION_MS: '1000', CI_WATCHDOG_IDLE_MS: '20000', CI_WATCHDOG_DIRECTORY: join(directory, 'watchdog'),
       CI_WATCHDOG_MESSAGE_FILE: join(directory, 'watchdog-message.json'), CI_WATCHDOG_ACTIVE: '', CI_PROGRESS_FILE: '',
       FIXTURE_ROOT: directory, FIXTURE_VITEST: join(repository, 'packages/contracts/node_modules/vitest/vitest.mjs') },
   })
@@ -71,9 +71,9 @@ if (process.argv.includes('test')) {
     child.once('close', resolve)
   })
   assert.equal(code, 1, output)
-  assert.match(output, /CI hang watchdog: no test progress for 60000 ms/)
+  assert.match(output, /CI hang watchdog: no test progress for 20000 ms/)
   assert.match(output, /loop\.test\.ts.*planner never returns/)
-  assert.ok(Date.now() - started < 70_000, output)
+  assert.ok(Date.now() - started < 60_000, output)
   const pid = Number(readFileSync(join(directory, 'descendant.pid'), 'utf8'))
   if (existsSync(`/proc/${pid}/stat`)) {
     assert.equal(readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' ')[0], 'Z')
@@ -121,9 +121,16 @@ async function watchdogFixture(t, source, overrides = {}) {
     results: existsSync(resultsFile) ? JSON.parse(readFileSync(resultsFile, 'utf8')) : null }
 }
 
-test('CI deadlines use three expected durations with a two minute minimum', async () => {
+test('a single quiet test may run three minutes before the idle watchdog stops it', async () => {
+  const { CI_IDLE_TIMEOUT_MS } = await import('./ci-watchdog.mjs')
+  // Slow unit tests on cold cloud machines legitimately stay quiet for over a minute.
+  assert.equal(CI_IDLE_TIMEOUT_MS, 180_000)
+})
+
+test('CI deadlines use three known expected durations with a two minute minimum', async () => {
   const { ciPartDeadlineMs } = await import('./ci-watchdog.mjs')
-  assert.equal(ciPartDeadlineMs(0), 120_000)
+  // An unknown expected duration must not turn into a two-minute deadline for a whole suite part.
+  assert.equal(ciPartDeadlineMs(0), Number.POSITIVE_INFINITY)
   assert.equal(ciPartDeadlineMs(30_000), 120_000)
   assert.equal(ciPartDeadlineMs(210_000), 630_000)
 })
