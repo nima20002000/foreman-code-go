@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import { afterEach, expect, it, vi } from 'vitest'
-import { ExclusiveGraphConnection, type GraphTransactionSql } from '../src/modules/run-graph/connection.js'
+import { didGraphTransactionCommit, ExclusiveGraphConnection, type GraphTransactionSql } from '../src/modules/run-graph/connection.js'
 import { workflowNativeReservation, type NativeEntryRow } from '../src/modules/runs/workflowNativeEntry.js'
 import * as snapshots from '../src/modules/runs/repeatStartRead.js'
 import * as executions from '../src/modules/runs/repeatPostgres.js'
@@ -101,4 +101,16 @@ it('rejects an expired lane at commit after the original boundary passed', async
     await f.check(sql)
     f.records.lane.held = false
   })).rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
+})
+
+it('commits an unchanged native boundary with its publication lease held', async () => {
+  const f = fixture()
+  let transaction: GraphTransactionSql | undefined
+  await f.connection.transaction(async sql => {
+    transaction = sql
+    await f.check(sql)
+  })
+  expect(didGraphTransactionCommit(transaction!)).toBe(true)
+  expect(f.reads).toHaveLength(2)
+  expect(f.additional).toHaveBeenCalledTimes(2)
 })
