@@ -140,6 +140,32 @@ One OS file lock serializes the complete installation, including migration,
 activation and readiness. Readiness verifies the database installation identity
 and selected compiled release before opening Chrome.
 
+The installer builds the API, browser, contracts and Worker artifacts from one
+captured committed checkout. Commit desired source edits before installing;
+uncommitted edits are not included. Each release records component commits in
+`source.json`. Startup defaults have a separate completion record in
+`installation.json`, so an incomplete first install can be retried while completed
+upgrades preserve disabled services and deleted autostart entries.
+
+During an update, a PostgreSQL maintenance lock closes new Run publication through
+HTTP, Operator MCP and schedules before the installer checks for active Runs.
+Existing Runs can finish, receive approvals or be stopped. New Starts return
+`RUN_START_MAINTENANCE`; retry with the same command after installation. Saved
+command receipts remain readable, and scheduled occurrences remain due for retry.
+`FOREMAN_INSTALL_RUN_WAIT_MINUTES` accepts finite nonnegative minutes (default
+120); zero checks once and aborts if Runs are active. Invalid values fail before
+building. `FOREMAN_INSTALL_INTERRUPT_RUNS=1` explicitly permits interruption.
+
+After stopping the API, the installer saves a private database archive before
+migration and records cutover phases in `deployment.json`. A failed cutover
+restores that archive before selecting and starting the previous release. Failed
+releases and diagnostics are retained. If recovery fails, the installer stops the
+API and retains the archive, recording any service-stop failure too. Rerunning
+the installer retries recovery before building. Do not start the API manually
+against an unresolved deployment.
+Installation and database restoration remain OS-owner operations; Operator MCP
+does not grant service control or database restoration access.
+
 Native Codex and Claude harnesses use the desktop user's configured login files.
 The service keeps that user's `HOME`; accepted harness permissions, native
 qualification and application file-tool grants still control each operation.

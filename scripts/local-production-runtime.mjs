@@ -1,10 +1,164 @@
-import { spawn } from 'node:child_process'
-import { chmod, copyFile, cp, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { execFile, spawn } from 'node:child_process'
+import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
+import { promisify } from 'node:util'
 import { readProductEnvironment, resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
+import { productionMaintenanceKey } from '../packages/contracts/src/productionMaintenance.mjs'
+
+export function parseRunWaitMinutes(value) {
+  const minutes = value === undefined ? 120 : Number(value)
+  const timeoutMs = minutes * 60_000
+  if ((value !== undefined && !value.trim()) || !Number.isFinite(timeoutMs) || minutes < 0) {
+    throw new Error('FOREMAN_INSTALL_RUN_WAIT_MINUTES must be a finite, nonnegative number of minutes.')
+  }
+  return timeoutMs
+}
+
+export async function readReleaseSelection(current) {
+  try {
+    return await realpath(current)
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+    return undefined
+  }
+}
+
+export async function needsStartupConfiguration(stateFile, { previousRelease } = {}) {
+  try {
+    return !JSON.parse(await readFile(stateFile, 'utf8')).startupConfigured
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+    await publish(stateFile, JSON.stringify({ startupConfigured: Boolean(previousRelease) }) + '\n')
+    return !previousRelease
+  }
+}
+
+export async function recordStartupConfiguration(stateFile) {
+  await publish(stateFile, JSON.stringify({ startupConfigured: true }) + '\n')
+}
+
+export async function withProductionSourceSnapshot(repository, directory, action) {
+  await mkdir(directory, { recursive: true, mode: 0o700 })
+  const source = await mkdtemp(join(directory, 'source-'))
+  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')))
+  const execute = promisify(execFile)
+  const git = (args, cwd = repository) => execute('git', args, { cwd, env: environment })
+  try {
+    const { stdout } = await git(['rev-parse', 'HEAD'])
+    const commit = stdout.trim()
+    const { stdout: origin } = await git(['remote', 'get-url', 'origin'])
+    await git(['clone', '--quiet', '--shared', '--no-checkout', repository, source])
+    await git(['checkout', '--quiet', '--detach', commit], source)
+    await git(['remote', 'set-url', 'origin', origin.trim()], source)
+    return await action({ source, commit })
+  } finally {
+    await rm(source, { recursive: true, force: true })
+  }
+}
+
+export async function backupDatabase({ archive, database, run }) {
+  const file = await open(archive, 'wx', 0o600)
+  try {
+    await run('pg_dump', ['--format=custom', '--create', '--dbname', database],
+      { stdio: ['ignore', file.fd, 'inherit'] })
+    await file.sync()
+  } finally {
+    await file.close()
+  }
+}
+
+export async function restoreDatabase({ archive, run }) {
+  const file = await open(archive, 'r')
+  try {
+    // Recreate the database so objects introduced by a failed migration are removed too.
+    await run('pg_restore', ['--clean', '--if-exists', '--create', '--exit-on-error', '--dbname', 'postgres'],
+      { stdio: [file.fd, 'inherit', 'inherit'] })
+  } finally {
+    await file.close()
+  }
+}
+
+async function readDeployment(stateFile) {
+  try {
+    return JSON.parse(await readFile(stateFile, 'utf8'))
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+    return undefined
+  }
+}
+
+async function saveDeployment(stateFile, state, phase) {
+  state.phase = phase
+  await publish(stateFile, JSON.stringify(state, null, 2) + '\n')
+}
+
+export async function recoverReleaseCutover({ stateFile, steps }) {
+  const state = await readDeployment(stateFile)
+  if (!state || ['ready', 'recovered'].includes(state.phase)) return
+  try {
+    await saveDeployment(stateFile, state, 'recovering')
+    await steps.stop()
+    if (state.schemaMayHaveChanged) {
+      if (!state.backupComplete) throw new Error('No complete pre-migration database backup is available.')
+      await steps.restore(state.backupFile)
+      state.schemaMayHaveChanged = false
+      await saveDeployment(stateFile, state, 'database-restored')
+    }
+    await steps.activate(state.previousRelease)
+    if (state.previousRelease) {
+      await steps.start()
+      await steps.ready(state.previousRelease)
+    }
+    await saveDeployment(stateFile, state, 'recovered')
+  } catch (error) {
+    state.recoveryFailure = error.message
+    let stopFailure
+    try {
+      await steps.stop()
+    } catch (stopError) {
+      stopFailure = stopError
+      state.stopFailure = stopError.message
+    }
+    await saveDeployment(stateFile, state, 'recovery-failed')
+    if (stopFailure) throw new AggregateError([error, stopFailure], 'Recovery and stopping the API failed.')
+    throw error
+  }
+}
+
+export async function runReleaseCutover({ release, previousRelease, stateFile, backupFile, steps }) {
+  const state = { release, previousRelease, backupFile, backupComplete: false, schemaMayHaveChanged: false }
+  const perform = async (phase, action) => {
+    await saveDeployment(stateFile, state, phase)
+    await action()
+  }
+  try {
+    await perform('stopping', steps.stop)
+    await perform('backing-up', () => steps.backup(backupFile))
+    state.backupComplete = true
+    state.schemaMayHaveChanged = true
+    await perform('migrating', () => steps.migrate(release))
+    await perform('upgrading-launcher', () => steps.upgradeLauncher(release))
+    await perform('activating', () => steps.activate(release))
+    await perform('configuring-startup', steps.enable)
+    await perform('starting', steps.start)
+    await perform('checking-readiness', () => steps.ready(release))
+    await saveDeployment(stateFile, state, 'ready')
+    await rm(backupFile, { force: true })
+  } catch (error) {
+    state.failure = error.message
+    await saveDeployment(stateFile, state, state.phase)
+    try {
+      await recoverReleaseCutover({ stateFile, steps })
+    } catch (recoveryError) {
+      throw new AggregateError([error, recoveryError],
+        `Release cutover and recovery failed. Retained deployment details: ${stateFile}`, { cause: error })
+    }
+    throw error
+  }
+}
 
 export function shouldOpenDashboardAfterInstall({ previousRelease, stdin, stdout }) {
   return !previousRelease && stdin.isTTY === true && stdout.isTTY === true
@@ -357,6 +511,7 @@ export function renderEnvironment(environment) {
  * Install therefore waits until no Run is queued, running or waiting, unless the operator accepts the interruption.
  */
 export async function waitForIdleRuns({ query, timeoutMs, pollMs = 15_000, interrupt = false, log = console.log, sleep = delay }) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) throw new Error('Run idle-wait timeout must be finite and nonnegative.')
   if (interrupt) return
   const deadline = Date.now() + timeoutMs
   for (;;) {
@@ -376,19 +531,61 @@ export async function readActiveRuns(release, databaseUrl, wait) {
   const { Pool } = require('pg')
   const pool = new Pool({ connectionString: databaseUrl, max: 1, connectionTimeoutMillis: 5000, query_timeout: 5000 })
   try {
-    await wait((text) => pool.query(text))
+    return await withRunStartMaintenance(pool, wait)
   } finally {
     await pool.end()
   }
 }
 
+export async function withRunStartMaintenance(pool, action, { timeoutMs = 30_000, pollMs = 100 } = {}) {
+  const client = await pool.connect()
+  const closed = new Promise(resolve => client.once('end', resolve))
+  let released = false
+  const release = () => {
+    if (released) return closed
+    released = true
+    // Destroy the session so database recreation is possible during recovery.
+    client.release(true)
+    return closed
+  }
+  try {
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
+      const result = await client.query(
+        'select pg_try_advisory_lock(hashtext($1), hashtext(current_schema())) as locked',
+        [productionMaintenanceKey],
+      )
+      if (result.rows[0]?.locked === true) break
+      if (Date.now() >= deadline) throw new Error('Run publication is still in progress. Retry installation later.')
+      await delay(Math.min(pollMs, Math.max(0, deadline - Date.now())))
+    }
+    return await action(text => client.query(text), release)
+  } finally {
+    await release()
+  }
+}
+
 /** Each install stages a full release (~1 GB). Keep the running one and the previous one for rollback; remove the rest. */
-export async function pruneReleases(releasesDirectory, keep) {
-  const kept = new Set(keep.filter(Boolean))
+export async function pruneReleases(releasesDirectory, keep, { current = join(dirname(releasesDirectory), 'current') } = {}) {
+  const directory = await realpath(releasesDirectory)
+  const retained = keep.filter(Boolean)
+  try {
+    // A missing selection is valid before first activation; a dangling link is not.
+    await lstat(current)
+    retained.push(current)
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
+  const kept = new Set(await Promise.all(retained.map(path => realpath(path))))
   const removed = []
-  for (const name of await readdir(releasesDirectory)) {
+  const candidates = []
+  for (const name of await readdir(directory)) {
+    if (!name.startsWith('release-')) continue
     const path = join(releasesDirectory, name)
-    if (!name.startsWith('release-') || kept.has(path)) continue
+    candidates.push({ path, identity: await realpath(path) })
+  }
+  for (const { path, identity } of candidates) {
+    if (kept.has(identity)) continue
     await rm(path, { recursive: true, force: true })
     removed.push(path)
   }

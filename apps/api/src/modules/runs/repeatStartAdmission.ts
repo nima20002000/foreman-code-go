@@ -36,6 +36,7 @@ import { RUN_START_LOCK_WAIT_MS, waitForRunStartLock, type RunStartLockWait } fr
 import type { AcceptedProviderAccountBindings } from '../provider-accounts/acceptedBindings.js'
 import type { AcceptedProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
 import { ignoreError } from '../diagnostics/ignoredError.js'
+import { requireRunStartAvailable } from './maintenance.js'
 
 /** Internal canonical producer, not a rollout flag or an admission capability.
  * The production management arm intentionally supplies no producer at this base.
@@ -232,6 +233,7 @@ export async function insertRepeatRun(sql: GraphTransactionSql, input: AcceptedR
   publication: RepeatStartPublication, admissionTrigger: RunDropdownTrigger = 'manual',
   placementAdmission?: PreparedRunPlacementAdmission): Promise<AcceptedWorkflowRunV3> {
   assertGraphTransaction(sql)
+  await requireRunStartAvailable(sql)
   const accepted = AcceptedRepeatStartV1Schema.parse(JSON.parse(canonicalGraphJson(input)))
   const run = acceptedReceipt(accepted.run, accepted.snapshot.request)
   const receipt = repeatStartReceipt(run)
