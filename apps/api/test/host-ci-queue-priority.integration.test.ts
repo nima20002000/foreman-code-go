@@ -111,42 +111,48 @@ it('dispatches queued typecheck parts beyond the first fifty integration partiti
   } finally { await f.close() }
 })
 
-it.each([false, true])('requires a high-priority grant for Agents (granted: %s)', async priorityGrant => {
-  const f = await fixture({ agent: true, priorityGrant })
+it('allows Agent high priority without a separate priority grant and rechecks CI revocation', async () => {
+  const f = await fixture({ agent: true })
   try {
     f.computers.splice(0)
     const input = { suite: 'install', priority: 'high', commandId: 'agent-high-priority' }
     const result = await f.call(f.agent!, 'ci_run', input)
-    if (!priorityGrant) {
-      expect(result.isError).toBe(true)
-      expect(JSON.stringify(result.content)).toContain('ACCESS_DENIED')
-      expect((await f.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
-      expect((await f.pool.query("select outcome from management_audit where action='ci_run'")).rows)
-        .toContainEqual({ outcome: 'denied' })
-      const normal = CiRunOutputSchema.parse(await f.value(f.agent!, 'ci_run', {
-        suite: 'install', commandId: 'agent-normal-priority',
-      }))
-      expect(CiGetOutputSchema.parse(await f.value(f.agent!, 'ci_get', { ticketId: normal.ticketId })).run)
-        .toMatchObject({ priority: 'normal', priorityReason: 'normal' })
-    } else {
-      expect(result.isError).not.toBe(true)
-      const started = CiRunOutputSchema.parse(decodeMcpToolResult(result))
-      expect(CiGetOutputSchema.parse(await f.value(f.agent!, 'ci_get', { ticketId: started.ticketId })).run)
-        .toMatchObject({ priority: 'high', priorityReason: 'requested' })
-      const replay = CiRunOutputSchema.parse(await f.value(f.agent!, 'ci_run', input))
-      expect(replay).toEqual(started)
-      expect((await f.pool.query("select details->>'priority' as priority from management_audit where action='ci.priority'"))
-        .rows).toEqual([{ priority: 'high' }])
-      await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'another-caller' })
-      const listed = CiComputersOutputSchema.parse(await f.value(f.agent!, 'ci_computers_list', {}))
-      expect(listed.queue).toEqual([{ ticketId: started.ticketId, priority: 'high', priorityReason: 'requested',
-        position: 1, reason: expect.any(String) }])
-      await f.pool.query(`update management_principals set grants=(select jsonb_agg(
-        jsonb_set(grant_entry,'{actions}',(select jsonb_agg(action) from jsonb_array_elements(grant_entry->'actions') action
-          where action <> '"jobs:prioritize"'::jsonb))) from jsonb_array_elements(grants) grant_entry) where id=$1`,
-      [f.authorizationPrincipalId])
-      expect((await f.call(f.agent!, 'ci_run', input)).isError).toBe(true)
-    }
+    expect(result.isError).not.toBe(true)
+    const started = CiRunOutputSchema.parse(decodeMcpToolResult(result))
+    expect(CiGetOutputSchema.parse(await f.value(f.agent!, 'ci_get', { ticketId: started.ticketId })).run)
+      .toMatchObject({ priority: 'high', priorityReason: 'requested' })
+    expect(CiRunOutputSchema.parse(await f.value(f.agent!, 'ci_run', input))).toEqual(started)
+    expect((await f.pool.query("select details->>'priority' as priority from management_audit where action='ci.priority'"))
+      .rows).toEqual([{ priority: 'high' }])
+    await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'another-caller' })
+    const listed = CiComputersOutputSchema.parse(await f.value(f.agent!, 'ci_computers_list', {}))
+    expect(listed.queue).toEqual([{ ticketId: started.ticketId, priority: 'high', priorityReason: 'requested',
+      position: 1, reason: expect.any(String) }])
+    await f.pool.query(`update management_principals set grants=(select jsonb_agg(
+      jsonb_set(grant_entry,'{actions}',(select jsonb_agg(action) from jsonb_array_elements(grant_entry->'actions') action
+        where action <> '"ci"'::jsonb))) from jsonb_array_elements(grants) grant_entry) where id=$1`,
+    [f.authorizationPrincipalId])
+    expect((await f.call(f.agent!, 'ci_run', input)).isError).toBe(true)
+  } finally { await f.close() }
+})
+
+it('starts and cancels CI with one workspace CI action while rejecting readers and foreign scopes', async () => {
+  const f = await fixture()
+  try {
+    f.computers.splice(0)
+    const caller = await f.connect(['ci', ...CI_GET_ACTIONS])
+    const input = { suite: 'install', priority: 'high', commandId: 'single-ci-action' }
+    const started = CiRunOutputSchema.parse(await f.value(caller, 'ci_run', input))
+    expect(CiGetOutputSchema.parse(await f.value(caller, 'ci_get', { ticketId: started.ticketId })).run)
+      .toMatchObject({ priority: 'high', state: 'queued' })
+    expect(CiRunOutputSchema.parse(await f.value(caller, 'ci_run', input))).toEqual(started)
+    await f.value(caller, 'ci_cancel', { ticketId: started.ticketId, commandId: 'cancel-single-ci' })
+    expect(CiGetOutputSchema.parse(await f.value(caller, 'ci_get', { ticketId: started.ticketId })).run.state)
+      .toBe('canceled')
+    const reader = await f.connect(CI_GET_ACTIONS)
+    expect((await f.call(reader, 'ci_run', { ...input, commandId: 'reader-denied' })).isError).toBe(true)
+    const foreign = await f.connect(['ci'], { workspaceIds: ['other-workspace'] })
+    expect((await f.call(foreign, 'ci_run', { ...input, commandId: 'foreign-denied' })).isError).toBe(true)
   } finally { await f.close() }
 })
 

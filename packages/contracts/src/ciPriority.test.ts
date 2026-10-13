@@ -13,8 +13,9 @@ it('accepts priority for Agent and Operator CI requests and rejects unknown valu
   expect(CiRunInputSchema.safeParse({ suite: 'lint', commandId: 'default-priority' }).success).toBe(true)
 })
 
-it('requires explicit selection of the priority grant in broad permission presets', () => {
-  expect(DEFAULT_MANAGEMENT_ACTIONS).not.toContain('jobs:prioritize')
+it('includes CI and priority in manage permission presets', () => {
+  expect(DEFAULT_MANAGEMENT_ACTIONS).toContain('jobs:prioritize')
+  expect(DEFAULT_MANAGEMENT_ACTIONS).toContain('ci')
   expect(ManagementGrantSchema.parse({ actions: ['jobs:prioritize'], scope: { workspaceIds: ['workspace'] } }).actions)
     .toEqual(['jobs:prioritize'])
 })

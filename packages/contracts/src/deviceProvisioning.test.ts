@@ -95,7 +95,7 @@ describe('single-use verified install/pair code and revocable device approval', 
   })
 })
 describe('Operator and W07 parity contracts', () => {
-  it('lists names/actions/global permissions for every tool and opts provisioning out of default grants', () => {
+  it('lists names/actions/global permissions for every tool and includes provisioning in default grants', () => {
     expect(DEVICE_PROVISIONING_OPERATOR_METADATA.map(value => value.name)).toEqual([...DEVICE_PROVISIONING_OPERATOR_TOOL_NAMES])
     for (const tool of DEVICE_PROVISIONING_OPERATOR_METADATA) {
       expect(OperatorToolNameSchema.parse(tool.name)).toBe(tool.name)
@@ -103,7 +103,7 @@ describe('Operator and W07 parity contracts', () => {
       expect(tool.action.length).toBeGreaterThan(0)
       for (const permission of tool.actions) expect(ManagementActionSchema.parse(permission)).toBe(permission)
     }
-    expect(DEFAULT_MANAGEMENT_ACTIONS).not.toContain('devices:provision')
+    expect(DEFAULT_MANAGEMENT_ACTIONS).toContain('devices:provision')
     expect(DEVICE_PROVISIONING_OPERATOR_TOOL_NAMES).not.toContain('device_runtime_approval_grant')
     expect(DEVICE_PROVISIONING_OPERATOR_CONDITIONAL_REQUIREMENTS[0].actions).toEqual(['jobs:cancel'])
   })

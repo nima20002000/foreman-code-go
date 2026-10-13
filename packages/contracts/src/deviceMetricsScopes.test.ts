@@ -35,17 +35,8 @@ describe('explicit telemetry grants', () => {
     }
   })
 
-  it('keeps host telemetry readable only through a separately selected management grant', () => {
+  it('includes owner telemetry, provisioning and provider actions in manage presets', () => {
     expect(ManagementActionSchema.parse('devices:metrics:read')).toBe('devices:metrics:read')
-    expect(DEFAULT_MANAGEMENT_ACTIONS).toContain('devices:read')
-    expect(DEFAULT_MANAGEMENT_ACTIONS).not.toContain('devices:metrics:read')
-    expect(DEFAULT_MANAGEMENT_ACTIONS).not.toContain('devices:provision')
-    expect(DEFAULT_MANAGEMENT_ACTIONS).not.toContain('provider_accounts:read')
-    expect(DEFAULT_MANAGEMENT_ACTIONS).not.toContain('provider_accounts:manage')
-    expect(DEFAULT_MANAGEMENT_ACTIONS).not.toContain('jobs:prioritize')
-    expect(DEFAULT_MANAGEMENT_ACTIONS).toEqual(ManagementActionSchema.options.filter(action =>
-      action !== 'devices:metrics:read' && action !== 'devices:provision'
-      && action !== 'provider_accounts:read' && action !== 'provider_accounts:manage'
-      && action !== 'jobs:prioritize'))
+    expect(DEFAULT_MANAGEMENT_ACTIONS).toEqual(ManagementActionSchema.options)
   })
 })
