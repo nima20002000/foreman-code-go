@@ -4,6 +4,7 @@ import type { CiDurations, CiExecutionSuite, CiHostRun, CiPart, CiScope, CiSuite
 import { DomainError } from '../errors.js'
 import type { HostCiPorts } from './runner.js'
 import { providerCommand } from './providerPoll.js'
+import { circleCiIntegrationResults } from './circleCiResults.js'
 
 export interface CloudRun {
   runId: string; repository: string; mirror: string; commit: string; suite: CiSuite; startedAt: string
@@ -107,7 +108,9 @@ async function findFile(directory: string, name: string): Promise<string | null>
   return null
 }
 
-export interface CloudArtifacts { durations: unknown; testResults: unknown; watchdogFailure?: unknown }
+export interface CloudArtifacts {
+  durations: unknown; testResults: unknown; watchdogFailure?: unknown; suiteLog?: string
+}
 const noArtifacts: CloudArtifacts = { durations: null, testResults: null }
 
 async function readArtifacts(directory: string): Promise<CloudArtifacts> {
@@ -115,8 +118,10 @@ async function readArtifacts(directory: string): Promise<CloudArtifacts> {
     const path = await findFile(directory, name)
     return path ? JSON.parse(await readFile(path, 'utf8')) as unknown : null
   }
+  const suiteLog = await findFile(directory, 'suite.log')
   return { durations: await read('durations.json'), testResults: await read('test-results.json'),
-    watchdogFailure: await read('watchdog-message.json') }
+    watchdogFailure: await read('watchdog-message.json'),
+    ...(suiteLog ? { suiteLog: await readFile(suiteLog, 'utf8') } : {}) }
 }
 
 const WORKFLOW = 'ci.yml'
@@ -342,25 +347,44 @@ export class CircleCiProvider implements CloudProvider {
 
   async log(run: CloudRun) {
     const view = await this.pipeline(run)
-    // Every line of every step: the default view keeps only each step's last 200 lines, which drops test failures.
-    const logs = await Promise.all((view.workflows ?? []).flatMap(workflow => workflow.jobs ?? []).map(job =>
-      this.circleci(['job', 'output', 'list', job.id, '--tail', '0'], 300_000)))
+    const logs = await Promise.all((view.workflows ?? []).flatMap(workflow => workflow.jobs ?? []).map(async job => {
+      const detail = JSON.parse(await this.circleci(['job', 'get', job.id, '--json'])) as {
+        executions?: { steps?: { num: number; name: string; outcome?: string }[] }[]
+      }
+      const suite = (detail.executions ?? []).flatMap((execution, index) => (execution.steps ?? [])
+        .filter(step => step.name === 'Suite' && step.outcome !== 'skipped')
+        .map(step => ({ ...step, execution: index })))
+      if (!suite.length) return this.circleci(['job', 'output', 'list', job.id, '--tail', '0'], 300_000)
+      // Terminal replay can erase stderr failure lines; raw output preserves both streams.
+      const output = await Promise.all(suite.map(step => this.circleci(['job', 'output', 'get', job.id,
+        '--step-num', String(step.num), '--execution', String(step.execution), '--strip-ansi=false'], 300_000)))
+      return `Suite\n${output.join('\n')}`
+    }))
     return logs.join('\n')
   }
 
   async artifacts(run: CloudRun, directory: string) {
     const { job } = await this.job(run)
     if (!job) return noArtifacts
-    // Only the durations artifact is read: downloading every integration log artifact outlasts any timeout.
+    // Read result metadata, not the per-slot logs and archives, which can outlast the download timeout.
     const listed = await this.circleci(['job', 'artifact', job.id, '--json'], 60_000)
     await rm(directory, { recursive: true, force: true })
     await mkdir(directory, { recursive: true })
+    const resultPaths = new Set(['durations/durations.json', 'durations/test-results.json',
+      'durations/watchdog-message.json', 'durations/suite.log'])
     for (const artifact of (JSON.parse(listed) as { path: string; url: string }[])
-      .filter(value => value.path.startsWith('durations/'))) {
+      .filter(value => resultPaths.has(value.path) || run.suite === 'integration'
+        && /^integration-logs\/[^/]+\/summary\.json$/.test(value.path))) {
       await command(this.ports, this.label, 'curl',
         ['-fsSL', '--max-time', '60', '-o', join(directory, basename(artifact.path)), artifact.url], 70_000)
     }
-    return readArtifacts(directory)
+    const artifacts = await readArtifacts(directory)
+    if (run.suite === 'integration') {
+      const summary = await findFile(directory, 'summary.json')
+      artifacts.testResults = circleCiIntegrationResults(artifacts.testResults,
+        summary ? JSON.parse(await readFile(summary, 'utf8')) as unknown : null)
+    }
+    return artifacts
   }
 
   async cancel(run: CloudRun) {

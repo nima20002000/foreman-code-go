@@ -790,6 +790,11 @@ export class CloudCi {
     if (!collection.artifacts) {
       try {
         const artifacts = await this.provider.artifacts(run, join(this.root, 'runs', run.runId, 'artifact'))
+        if (artifacts.suiteLog !== undefined) {
+          const contents = Buffer.from(artifacts.suiteLog).subarray(-LOG_LIMIT)
+          await writeFile(this.path(run.runId, 'log'), contents, { mode: 0o600 })
+          collection.log = true
+        }
         if (run.suite === 'integration' || run.suite === 'unit') {
           const durations = CiDurationsSchema.safeParse(artifacts.durations)
           if (durations.success && (run.suite === 'integration' || run.part === 'unit-api' || run.part === 'unit-web')) {
