@@ -10,6 +10,32 @@ afterEach(() => vi.restoreAllMocks())
 // d32a361 cold cleanup requires a scoped physical-disposal callback. The helper
 // simulates that external boundary, never SQL receipts, native ACKs or results.
 describe.skipIf(!postgresEnabled)('ENG06-D recovery readback over real HTTP and authenticated Operator MCP', () => {
+  it.each(forms)('%s: graceful restart closes an ephemeral turn before releasing its Run owner', async (form) => {
+    const f = await recoveryFixture(form, () => 'park')
+    try {
+      f.launch()
+      const before = await parked(f)
+      await f.restart()
+      const pending = await readback(f)
+      expect(pending.record).toEqual({ ...before.record, cleanupPending: true })
+      expect(pending.details[0]!.execution).toEqual(before.details[0]!.execution)
+      expect(pending.details[0]!.acceptedInput).toEqual(before.details[0]!.acceptedInput)
+      expect(pending.details[0]!.acceptedResult).toEqual({ status: 'not_accepted' })
+      expect(pending.details[0]).not.toHaveProperty('reportedResult')
+      expect(f.provider.counts).toMatchObject({ starts: 1, sessions: 1, cancels: 1, closes: 1, attaches: 0 })
+      expect(f.provider.recoveryCalls).toEqual([])
+      await f.settled()
+      const after = await readback(f)
+      expect(after.record).toMatchObject({ run: { executionState: 'completed', outcome: 'failed',
+        result: { error: { code: 'EXECUTION_INTERRUPTED', retryable: false } } }, cleanupPending: false })
+      expect(after.details[0]!.execution.executionId).toBe(before.details[0]!.execution.executionId)
+      expect(after.details[0]!.acceptedResult).toEqual({ status: 'not_accepted' })
+      expect(f.provider.recoveryCalls).toEqual([])
+      expect(f.provider.counts.starts).toBe(1)
+      expect(f.shutdownErrors).toEqual([])
+    } finally { await f.close() }
+  }, 90000)
+
   it.each(forms)('%s: a non-detachable native lifetime closes at restart without a terminal or replay', async (form) => {
     let first = true
     const f = await recoveryFixture(form, () => { if (first) { first = false; return 'park' } return 'success' })
