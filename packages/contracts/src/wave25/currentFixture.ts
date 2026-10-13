@@ -15,7 +15,7 @@ export function makeCurrentWorkflowFixture(suffix = 'current-fixture', form: Cur
     productRole: form === 'approval' && index === 0 ? 'orchestrator' : 'coder',
     harness: { harness: 'codex', model: 'contract-fixture-no-native-call', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard',
       // A designated Codex Orchestrator must review App MCP approvals without a person.
-      ...(form === 'approval' && index === 0 ? { advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalsReviewer: 'auto_review' as const } } : {}) },
+      ...(form === 'approval' && index === 0 ? { advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'on-request' as const, approvalsReviewer: 'auto_review' as const } } : {}) },
     prompt: {}, assignedSkills: [], contentHash: `sha256:${'0'.repeat(64)}`, createdAt,
   }))
   const nodes = configurations.map((config, index) => ({ id: `node-${suffix}-${index}`, agentId: config.agentId, name: `Worker ${index}` }))

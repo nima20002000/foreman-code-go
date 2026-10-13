@@ -78,6 +78,20 @@ endpoint. Read `claude_setup_options_get`, select the explicitly authorized
 Full access profile, and save through Harness Settings or the shared Operator
 MCP services. Credentials are issued for the accepted native process.
 
+## Workflow Agent approval defaults
+
+New Codex workflow Agents use `approvalPolicy: "never"`. Workflows can save and
+Start with native handling and no routed approval handler, through both the UI and Operator
+MCP. Omitted Codex advanced settings use this same default without rewriting
+saved configuration snapshots. Existing explicit approval policies are retained.
+An Agent explicitly configured with `on-request` and user review still needs a
+routed handler; automatic review remains an explicit alternative.
+
+`never` changes approval prompts only. The saved sandbox, sensitive-path
+rejection, credential protection, scoped MCP access and read-only Agent limits
+still apply. Operator tool schemas expose the shared approval-policy contract;
+`run_start` uses the same admission service as the UI.
+
 ## Tool catalog
 
 `computers_maintenance_start` with `sync-mcp` uses the same fleet service as

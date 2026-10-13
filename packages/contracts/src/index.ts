@@ -186,7 +186,7 @@ const CodexMcpServerSettingsSchema = z.object({
   }
 });
 const CodexAdvancedConfigurationSchema = z.object({
-  approvalPolicy: z.enum(["on-request", "never"]),
+  approvalPolicy: z.enum(["on-request", "never"]).describe("Defaults to never for workflow Agents; sandbox restrictions still apply."),
   approvalsReviewer: z.enum(["user", "auto_review"]),
   additionalWritableDirectories: z.array(WritableRootSchema),
   workspaceWrite: z.object({
@@ -204,7 +204,7 @@ const CodexAdvancedConfigurationSchema = z.object({
 }).strict();
 export type CodexAdvancedConfiguration = z.infer<typeof CodexAdvancedConfigurationSchema>;
 export const DEFAULT_CODEX_ADVANCED_CONFIGURATION: CodexAdvancedConfiguration = {
-  approvalPolicy: "on-request",
+  approvalPolicy: "never",
   approvalsReviewer: "user",
   additionalWritableDirectories: [],
   sessionPersistence: "persistent",
@@ -299,10 +299,11 @@ export const HarnessWorkflowCompatibilitySchema = z.object({
   if (!value.workflowApprovalHandler) return;
   if (value.workflowApprovalHandler === "native") {
     const configuration = value.configuration;
-    const native = configuration.harness === "codex" && (configuration.advanced?.approvalPolicy === "never"
-      || configuration.advanced?.approvalsReviewer === "auto_review");
+    const advanced = configuration.harness === "codex"
+      ? configuration.advanced ?? DEFAULT_CODEX_ADVANCED_CONFIGURATION : undefined;
+    const native = advanced?.approvalPolicy === "never" || advanced?.approvalsReviewer === "auto_review";
     if (!native) context.addIssue({ code: z.ZodIssueCode.custom, path: ["configuration"],
-      message: "native workflow handling requires explicit native approval settings on each Agent" });
+      message: "native workflow handling requires an Agent that does not ask for user approval" });
     return;
   }
   if (value.configuration.harness === "codex" && value.configuration.advanced?.approvalsReviewer === "auto_review"

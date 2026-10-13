@@ -40,7 +40,7 @@ describe.skipIf(!postgresEnabled)('ENG04-B unified current workflow HTTP/MCP', (
     if (form === 'approval') {
       const reviewer = configurations[0]!
       if (reviewer.harness.harness !== 'codex') throw new Error('Expected the Codex approval fixture')
-      reviewer.harness.advanced = { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalsReviewer: 'auto_review' }
+      reviewer.harness.advanced = { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'on-request' as const, approvalsReviewer: 'auto_review' }
     }
     // Only workspace/Agent configuration fixtures are seeded. No workflow or
     // immutable v3 version is inserted here; both travel through product HTTP/MCP.
