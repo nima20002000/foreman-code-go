@@ -408,14 +408,14 @@ test('a capable sixteen-CPU machine runs one integration shard per CPU and repor
   assert.equal(plan.shards, 16)
   assert.equal(plan.limit, 16)
   assert.match(plan.reason, /CPU limit 16/)
-  assert.match(plan.reason, /memory limit 64.*0.5 GiB\/shard/)
+  assert.match(plan.reason, /memory limit 21.*1.5 GiB\/shard/)
   assert.match(plan.reason, /PostgreSQL limit 49.*max_connections=800.*3 reserved.*1 occupied.*16 connections\/shard/)
 })
 
 test('each resource independently bounds integration parallelism', () => {
   for (const [resources, expected] of [
     [{ cpuCount: 4 }, 4],
-    [{ availableMemoryBytes: 3.5 * 1024 ** 3 }, 7],
+    [{ availableMemoryBytes: 3.5 * 1024 ** 3 }, 2],
     [{ maxConnections: 100 }, 6],
     [{ activeConnections: 556 }, 15],
     [{ reservedConnections: 560 }, 14],
@@ -427,13 +427,24 @@ test('each resource independently bounds integration parallelism', () => {
 test('integration shards use their CI slot CPU and memory shares rather than the whole computer', () => {
   const environment = { FOREMAN_CODE_CI_CPU_COUNT: '8', FOREMAN_CODE_CI_MEMORY_BYTES: String(6 * 1024 ** 3) }
   const plan = integrationShardPlan(environment, shardResources)
-  assert.equal(plan.shards, 8)
+  assert.equal(plan.shards, 4)
   assert.match(plan.reason, /CPU limit 8/)
-  assert.match(plan.reason, /memory limit 12/)
+  assert.match(plan.reason, /memory limit 4/)
   assert.match(plan.reason, /CI slot share/)
-  assert.equal(integrationShardPlan(environment, { ...shardResources, availableMemoryBytes: 3 * 1024 ** 3 }).shards, 6)
+  assert.equal(integrationShardPlan(environment, { ...shardResources, availableMemoryBytes: 3 * 1024 ** 3 }).shards, 2)
   assert.throws(() => integrationShardPlan({ ...environment, FOREMAN_CODE_CI_CPU_COUNT: '0' }, shardResources), /CPU count/)
-  assert.equal(integrationShardPlan({ ...environment, FOREMAN_CODE_INTEGRATION_SHARDS: '20' }, shardResources).shards, 8)
+  assert.equal(integrationShardPlan({ ...environment, FOREMAN_CODE_INTEGRATION_SHARDS: '20' }, shardResources).shards, 4)
+})
+
+test('a sixteen-CPU host with a 4.4 GiB CI slot runs two integration shards', () => {
+  const environment = {
+    FOREMAN_CODE_CI_CPU_COUNT: '6',
+    FOREMAN_CODE_CI_MEMORY_BYTES: String(Math.floor(4.4 * 1024 ** 3)),
+  }
+  const plan = integrationShardPlan(environment, shardResources)
+  assert.equal(plan.shards, 2)
+  assert.equal(plan.limit, 2)
+  assert.match(plan.reason, /memory limit 2.*1.5 GiB\/shard/)
 })
 
 test('CI shard ceilings respect database capacity without rejecting the run', () => {
@@ -474,7 +485,7 @@ test('explicit shard requests run at most at the computed resource cap', () => {
 
 test('resource-derived capacity can exceed the old explicit ceiling on larger machines', () => {
   const plan = integrationShardPlan({ GRAPHQL_INTEGRATION_SHARDS: '80' }, {
-    ...shardResources, cpuCount: 96, availableMemoryBytes: 96 * 1024 ** 3, maxConnections: 1600,
+    ...shardResources, cpuCount: 96, availableMemoryBytes: 144 * 1024 ** 3, maxConnections: 1600,
   })
   assert.equal(plan.limit, 96)
   assert.equal(plan.shards, 80)
@@ -491,7 +502,7 @@ test('runnable file count bounds chosen shards and appears in the explanation', 
 test('known resources that cannot support a shard fail before allocating databases', () => {
   for (const resources of [
     { availableMemoryBytes: 0 },
-    { availableMemoryBytes: 1024 ** 3 / 2 - 1 },
+    { availableMemoryBytes: 1.5 * 1024 ** 3 - 1 },
     { maxConnections: 19 },
     { activeConnections: 800 },
   ]) {

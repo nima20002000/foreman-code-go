@@ -37,10 +37,14 @@ it('does not reserve memory twice when a running job has not consumed its full a
 })
 
 it.each([
-  [16, 14, 16],
+  [16, 14, 8],
   [4, 8, 4],
-  [32, 3, 4],
+  [32, 3, 1],
   [128, 128, 64],
 ])('limits %i logical CPUs and %i GiB to %i integration shards', (cpuCount, memoryGiB, shards) => {
   expect(gateIntegrationShards(cpuCount, memoryGiB * 2 ** 30)).toBe(shards)
+})
+
+it('limits a sixteen-CPU host with 4.4 GiB of slot memory to two integration shards', () => {
+  expect(gateIntegrationShards(16, Math.floor(4.4 * 2 ** 30))).toBe(2)
 })

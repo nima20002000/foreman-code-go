@@ -180,10 +180,11 @@ describe('host CI runner', () => {
       ...(gate ? { gate: true, integrationShards: 32, files: ['apps/api/test/a.integration.test.ts'] } : {}) })
     const done = await f.settle(runId)
     expect(done.run.state).toBe('passed')
-    // Eight allowed CPUs: the shared database takes two CPUs and 2 GiB for its eight shards.
-    expect(done.text).toContain(`CI database 2 ${2 * 2 ** 30}`)
-    expect(done.text).toContain(`CI budget 6 ${5 * 2 ** 30} 5`)
-    if (gate) expect(done.text).toContain('CI shard ceiling 8')
+    const databaseCpus = gate ? 1 : 2
+    const suiteMemoryGiB = 7 - databaseCpus
+    expect(done.text).toContain(`CI database ${databaseCpus} ${databaseCpus * 2 ** 30}`)
+    expect(done.text).toContain(`CI budget ${8 - databaseCpus} ${suiteMemoryGiB * 2 ** 30} ${suiteMemoryGiB}`)
+    if (gate) expect(done.text).toContain('CI shard ceiling 4')
   })
 
   it('sizes the isolated integration database for the shards that share it', async () => {
@@ -193,9 +194,10 @@ describe('host CI runner', () => {
       suite: 'integration', scope: 'full', gate: true, integrationShards: 16, files: ['apps/api/test/a.integration.test.ts'] })
     const done = await f.settle(runId)
     expect(done.run.state).toBe('passed')
-    // Sixteen shards migrate and query one PostgreSQL: a single CPU and 1 GiB made every file time out.
-    expect(done.text).toContain(`CI database 4 ${4 * 2 ** 30}`)
-    expect(done.text).toContain('CI budget 12 ')
+    // Eight memory-limited shards share the database's unchanged per-shard CPU and memory limits.
+    expect(done.text).toContain(`CI database 2 ${2 * 2 ** 30}`)
+    expect(done.text).toContain('CI shard ceiling 8')
+    expect(done.text).toContain('CI budget 14 ')
   })
 
   it('keeps the exclusive database fallback within the saved build allowance', async () => {

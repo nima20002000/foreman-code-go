@@ -116,9 +116,9 @@ it('lets a build computer without a queued gate part take cloud parts and anothe
 })
 
 it.each([
-  [16, 14, 50, 8],
-  [32, 4, 50, 1],
-])('plans gate shards within the saved CPU and memory allowance', async (cpuCount, memoryGiB, allowance, shards) => {
+  [16, 14, 50, 3, 4],
+  [32, 4, 50, 1, 1],
+])('plans gate shards within the saved CPU and memory allowance', async (cpuCount, memoryGiB, allowance, shards, cloudShards) => {
   const endpoint = fleet(24)
   const computers = await endpoint.computers()
   for (const computer of computers.filter(computer => computer.hostRef.kind !== 'cloud')) {
@@ -138,7 +138,7 @@ it.each([
   for (const host of hosts) expect(host.integrationShards).toBe(shards)
   const clouds = parts.filter(part => part.suite === 'integration' && part.plannedHostKey.startsWith('cloud-'))
   expect(clouds.length).toBeGreaterThan(0)
-  for (const cloud of clouds) expect(cloud.integrationShards).toBe(4)
+  for (const cloud of clouds) expect(cloud.integrationShards).toBe(cloudShards)
   expect(parts.filter(part => part.suite === 'integration').flatMap(part => part.files).sort()).toEqual([...files].sort())
 })
 
