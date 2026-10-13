@@ -141,7 +141,8 @@ it.each([false, true])('moves a systemd gate integration part to a free provider
 it.each(gateChecks)('keeps a gate $suite check queued while the build computer starts its own exclusive gate part', async check => {
   const records = queuedRuns(2).map((run, index) => CiRunRecordSchema.parse({ ...run, gate: true,
     ...(index === 0 ? { ...check, plannedHostKey: cloud.key }
-      : { plannedHostKey: host.key, integrationShards: 16, requiresBuildComputer: false }),
+      : { plannedHostKey: host.key, integrationShards: 16, requiresBuildComputer: false,
+        files: ['apps/api/test/workflow.integration.test.ts'] }),
     partition: null }))
   const f = fleet(records, [cloud, host], new Map(), new Set([cloud.key]))
   await f.service.dispatch()
