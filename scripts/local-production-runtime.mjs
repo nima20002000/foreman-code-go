@@ -620,7 +620,13 @@ export async function withRunStartMaintenance(pool, action, { timeoutMs = 30_000
 }
 
 /** Each install stages a full release (~1 GB). Keep the running one and the previous one for rollback; remove the rest. */
-export async function pruneReleases(releasesDirectory, keep, { current = join(dirname(releasesDirectory), 'current') } = {}) {
+// Deleting a release's dependency tree takes ~20 s; installs move it aside and let a detached process delete it.
+function removeDetached(directory) {
+  spawn('rm', ['-rf', '--', directory], { detached: true, stdio: 'ignore' }).unref()
+}
+
+export async function pruneReleases(releasesDirectory, keep,
+  { current = join(dirname(releasesDirectory), 'current'), removeInBackground = removeDetached } = {}) {
   const directory = await realpath(releasesDirectory)
   const retained = keep.filter(Boolean)
   try {
@@ -638,11 +644,15 @@ export async function pruneReleases(releasesDirectory, keep, { current = join(di
     const path = join(releasesDirectory, name)
     candidates.push({ path, identity: await realpath(path) })
   }
+  let pruned
   for (const { path, identity } of candidates) {
     if (kept.has(identity)) continue
-    await rm(path, { recursive: true, force: true })
+    // A rename within the installation is atomic, so the releases directory never shows a half-deleted release.
+    pruned ??= await mkdtemp(join(dirname(directory), '.pruned-releases-'))
+    await rename(path, join(pruned, path.slice(path.lastIndexOf('/') + 1)))
     removed.push(path)
   }
+  if (pruned) removeInBackground(pruned)
   return removed
 }
 
