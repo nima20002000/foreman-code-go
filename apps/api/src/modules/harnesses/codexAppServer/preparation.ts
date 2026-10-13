@@ -217,7 +217,7 @@ export abstract class CodexManagerPreparation extends CodexManagerBase {
       undefined, { qualified, assertUnchanged: io.assertUnchanged,
         runCommand: io.runCommand,
         transportFactory: (...args) => {
-          args[9] = disabledMcpServerNames
+          args[9] = [...new Set([...(args[9] ?? []), ...disabledMcpServerNames])]
           args[11] = { ...args[11], nativeApps, mcpTransportOverrides }
           return this.ownTransport(this.dependencies.transport(...args))
         } })
