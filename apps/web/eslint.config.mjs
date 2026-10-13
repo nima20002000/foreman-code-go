@@ -3,6 +3,7 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 import globals from 'globals'
 import tseslint from 'typescript-eslint'
+import { foremanLint } from '../../scripts/eslint-plugin-foreman/index.mjs'
 
 export default tseslint.config(
   {
@@ -53,4 +54,5 @@ export default tseslint.config(
     files: ['src/features/jobs/model.ts'],
     rules: { 'no-control-regex': 'off' },
   },
+  ...foremanLint(import.meta.dirname),
 )

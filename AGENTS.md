@@ -88,6 +88,32 @@ behavior.
 Keep generated output, local environment files, caches, and credentials out of
 Git. Make focused changes and preserve unrelated worktree edits.
 
+## Lint rules
+
+Every package lint enforces these as errors (local rules live in
+`scripts/eslint-plugin-foreman`). Files, test names and cycles listed in
+`scripts/lint-allowlist.json` predate a rule; never add to that list, fix the
+code instead. `node scripts/lint-baseline.mjs` prunes entries that pass.
+
+- `max-lines` 1000 per file and `max-lines-per-function` 200 outside tests:
+  oversized modules hide unrelated responsibilities and merge conflicts.
+- `foreman/no-source-text-tests`: tests may not read repository source files
+  or `?raw` imports, or assert on SQL/query/statement text. See above.
+- `foreman/no-local-canonical-json`: one shared canonical JSON module
+  (`canonicalJson`), so hashes and comparisons agree everywhere.
+- `foreman/no-raw-transactions`: `BEGIN`/`COMMIT`/`ROLLBACK` only through the
+  shared transaction helper, which handles release and rollback failures.
+- `foreman/no-silent-catch`: no empty `catch` or `.catch(() => {})`; log or
+  handle the error, or explain with a comment starting `ignore:`.
+- `foreman/no-legacy-execution-semantics`: no branches on execution
+  semantics 1 or 2 (see above).
+- `foreman/test-timeout-limit`: unit test and hook timeouts in `src/` stay at
+  or below 30 s; slow work belongs in integration tests.
+- `scripts/check-import-cycles.mjs` (API lint): no runtime import cycles in
+  `apps/api/src`; move shared code into a module both sides import.
+- `scripts/check-test-names.mjs` (API lint): name test files after behavior,
+  not tickets, waves, lanes, rounds or agents (`eng04-`, `pr17-`, `w08-`).
+
 ======
 ## 1. Think Before Coding
 
