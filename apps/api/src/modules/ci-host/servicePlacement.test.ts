@@ -422,14 +422,45 @@ it('starts the slow tier only after every other part of its request passed', asy
     .toEqual([records[0]!.id, records[1]!.id])
 })
 
-it('skips the slow tier with a reason when another part of its request failed', async () => {
-  const records = tieredRuns()
+it('skips the slow tier of an affected request when another part failed', async () => {
+  const records = tieredRuns().map(run => CiRunRecordSchema.parse({ ...run, scope: 'affected' }))
   records[0] = CiRunRecordSchema.parse({ ...records[0]!, state: 'failed', finishedAt: '2026-10-12T00:05:00.000Z' })
   const f = fleet(records, [cloud])
   await f.service.dispatch()
   expect(f.started).toHaveLength(0)
   expect(records[1]).toMatchObject({ state: 'canceled',
     message: expect.stringContaining('slow tests run only after every other test of this request passed') })
+})
+
+it.each([false, true])('runs the slow tier after a fast failure in a full request with gate=%s', async gate => {
+  const records = tieredRuns().map(run => CiRunRecordSchema.parse({ ...run, gate }))
+  records[0] = CiRunRecordSchema.parse({ ...records[0]!, state: 'failed', exitCode: 1,
+    finishedAt: '2026-10-12T00:05:00.000Z' })
+  const failed = { ...records[0]! }
+  const f = fleet(records, [cloud])
+  await f.service.dispatch()
+  expect(f.started.map(item => item.request.operation === 'start' ? item.request.runId : null))
+    .toEqual([records[1]!.id])
+  expect(records[1]).toMatchObject({ state: 'running', deferred: true })
+  expect(records[0]).toEqual(failed)
+})
+
+it.each([false, true])('waits for remaining fast parts after a full request failure with gate=%s', async gate => {
+  const [fast, slow] = tieredRuns().map(run => CiRunRecordSchema.parse({ ...run, gate }))
+  const running = CiRunRecordSchema.parse({ ...fast!, id: randomUUID(), state: 'running',
+    computer: { hostRef: cloud.hostRef, label: cloud.label } })
+  const records = [CiRunRecordSchema.parse({ ...fast!, state: 'failed', exitCode: 1,
+    finishedAt: '2026-10-12T00:05:00.000Z' }), running, slow!]
+  const f = fleet(records, [cloud])
+  await f.service.dispatch()
+  expect(f.started).toEqual([])
+  expect(records[2]).toMatchObject({ state: 'queued', deferred: true, finishedAt: null })
+  records[1] = CiRunRecordSchema.parse({ ...running, state: 'passed', exitCode: 0,
+    finishedAt: '2026-10-12T00:06:00.000Z' })
+  await f.service.dispatch()
+  expect(f.started.map(item => item.request.operation === 'start' ? item.request.runId : null)).toEqual([slow!.id])
+  expect(records[2]).toMatchObject({ state: 'running', deferred: true })
+  expect(records[0]).toMatchObject({ state: 'failed', exitCode: 1 })
 })
 
 it('lets later full requests dispatch when the oldest gate already has a failed part', async () => {
