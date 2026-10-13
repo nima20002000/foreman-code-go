@@ -3,7 +3,6 @@ import { basename, join } from 'node:path'
 import type { CiDurations, CiExecutionSuite, CiHostRun, CiPart, CiScope, CiSuite, CiTestResults, CiUserSystemd } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { HostCiPorts } from './runner.js'
-import type { CloudRun } from './cloud.js'
 import { fallbackOnError } from '../diagnostics/ignoredError.js'
 
 export interface CloudRun {

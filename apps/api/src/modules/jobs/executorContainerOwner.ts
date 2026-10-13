@@ -4,7 +4,6 @@ import { normalize } from 'node:path'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import type { JobRuntimeNativeAdmissionRecord } from '@foreman-code/contracts/job-verification-runtime'
 import type { ChildProcess } from 'node:child_process'
-import type { PodmanCommandRunner } from './executorPodman.js'
 import { ignoreError, logIgnoredError } from '../diagnostics/ignoredError.js'
 
 export interface PodmanCommandRunner {

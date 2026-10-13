@@ -6,7 +6,7 @@ import { CI_HOST_NAMESPACE, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiHostReplySche
   requiresUserSystemd, userSystemdIntegrationFiles,
   type CiDurations, type CiHostRequest, type CiHostReply, type CiListOutput, type CiRunRecord, type CiRunInput,
   type CiTestResults, type CiTestStatus, type CiUserSystemd } from '@foreman-code/contracts'
-import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { CiAuthority } from '../jobs/ciAuthority.js'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../jobs/ciAuthority.js'
@@ -114,7 +114,7 @@ export class HostCiService {
     this.stoppingRuns += 1
     try {
       await this.dispatching
-      const result = await this.enqueue(caller, input, source, scope)
+      const result = await this.enqueue(caller, input, source, scope, actions)
       await this.cancelSuperseded()
       return result
     } finally {
@@ -125,7 +125,7 @@ export class HostCiService {
   }
 
   private async enqueue(caller: ManagementPrincipal, input: CiRunInput,
-    source: 'mcp' | 'http', scope: Awaited<ReturnType<CiAuthority['resolve']>>) {
+    source: 'mcp' | 'http', scope: Awaited<ReturnType<CiAuthority['resolve']>>, actions: ManagementAction[]) {
     const outcome = await this.commands.execute({ principal: caller, source, operation: 'ci.run',
       commandId: input.commandId, targetKey: scope.workspaceId, payload: input,
       resourceLock: `ci-admission:${scope.workspaceId}:${scope.executionId ?? caller.id}`,
