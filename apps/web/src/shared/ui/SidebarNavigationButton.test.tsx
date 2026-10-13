@@ -31,7 +31,7 @@ describe('SidebarNavigationButton', () => {
     if (activation === 'middle') fireEvent(button, new MouseEvent('auxclick', { bubbles: true, button: 1 }))
     else fireEvent.click(button, { [activation]: true })
     expect(open).toHaveBeenCalledExactlyOnceWith(
-      '/workspaces/workspace-example?workflowId=workflow-example', '_blank',
+      '/workspaces/workspace-example?workflowId=workflow-example', '_blank', 'noopener',
     )
     expect(router.state.location.pathname).toBe('/')
     fireEvent(button, new MouseEvent('auxclick', { bubbles: true, button: 2 }))

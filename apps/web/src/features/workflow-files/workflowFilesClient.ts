@@ -1,3 +1,4 @@
+import { installationHeaders, reloadChangedInstallation } from '../../shared/api/sessionBoundary'
 import { z } from 'zod'
 import { ApiErrorResponseSchema } from '@foreman-code/contracts'
 import {
@@ -96,7 +97,7 @@ async function rawRequest(path: string, context: ReturnType<typeof requestContex
   let response: Response
   try {
     response = await fetch(new URL(path, globalThis.location?.origin ?? 'http://localhost'), {
-      ...init, credentials: 'omit', cache: 'no-store', redirect: 'error', signal: context.signal,
+      ...init, headers: installationHeaders(init.headers), credentials: 'omit', cache: 'no-store', redirect: 'error', signal: context.signal,
     })
   } catch (error) {
     context.check()
@@ -107,6 +108,7 @@ async function rawRequest(path: string, context: ReturnType<typeof requestContex
   if (!response.ok) {
     const parsed = ApiErrorResponseSchema.safeParse(await response.json().catch(() => undefined))
     context.check()
+    if (parsed.success) reloadChangedInstallation(parsed.data.error.code)
     throw new ApiError(parsed.success ? parsed.data.error
       : { code: 'HTTP_ERROR', message: 'The file request failed.' }, response.status)
   }

@@ -17,6 +17,7 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
   readonly startedNodes: string[] = []
   readonly startedExecutions: string[] = []
   readonly closedSessions = new Set<string>()
+  private readonly environments = new Map<string, Record<string, string>>()
   private readonly requests = new Map<string, HarnessExecutionRequest>()
   private readonly waits = new Map<string, PendingNativeInteraction[]>()
   private readonly terminals = new Map<string, NonNullable<NativeHistory['terminalResult']>>()
@@ -50,6 +51,7 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
       createSession: async (input) => {
         if (disposed) throw new Error('The checkpoint connection is disposed')
         const session = await this.createSession(input)
+        if (input.environment) this.environments.set(session.nativeSessionId, { ...input.environment.variables })
         sessions.set(session.nativeSessionId, session)
         return session
       },
@@ -63,6 +65,7 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
         if (!ownsLiveSession(session)) throw new Error('The checkpoint connection does not own a live session')
         yield* startTurn(session, input)
       },
+      originalEnvironment: async session => this.environments.get(session.nativeSessionId),
       pending: this.pending.bind(this), respond: this.respond.bind(this),
       inspectResponseAvailability: this.inspectResponseAvailability.bind(this),
       history: this.history.bind(this), reconcile: this.reconcile.bind(this),

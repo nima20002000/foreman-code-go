@@ -51,7 +51,7 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
     acknowledgeStarts?: boolean; disconnectAfterStart?: boolean; fixture?: ReturnType<typeof makeCurrentWorkflowFixture>;
     nativeSourcePersisted?: Parameters<typeof createWorkflowRepositoryServices>[2];
     nativeCommitted?: ConstructorParameters<typeof PostgresRunRepository>[4];
-    approvalNodeIds?: string[]; insertRun?: boolean; workerParallelism?: number;
+    approvalNodeIds?: string[]; insertRun?: boolean; workerParallelism?: number; credentialTtlMs?: number;
     onRunTerminal?: ConstructorParameters<typeof LangGraphWorkflowEngine>[8];
     outputFor?: ConstructorParameters<typeof CheckpointTestProvider>[4];
     admitPlacementExecutionLocked?: RepeatRepositoryServices['admitPlacementExecutionLocked'];
@@ -115,7 +115,7 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
         options.nativeCommitted)
       const repository = new Wave25InteractionRepository(db.pool, new ReviewNativeProofServices(reviewCapture.verify)), budgets = new PostgresApprovalBudgetRepository(db.pool)
       const managers = new ExecutionScopedNativeSessionManagerResolver(() => provider.connection())
-      const credentials = new Wave25WorkerCredentialService(db.pool, access)
+      const credentials = new Wave25WorkerCredentialService(db.pool, access, options.credentialTtlMs)
       // This helper's external provider is deterministic. Its configuration
       // inspector is the same explicit synthetic boundary as its transport.
       const launchCredentials = providerLaunchCredentials(runs, locations, managers, credentials, () => ({
@@ -214,13 +214,14 @@ export function providerLaunchCredentials(runs: PostgresRunRepository, locations
         harness: input.harness, workingDirectory: input.workingDirectory, configuration,
         runId: execution.runId, attempt: execution.attempt, ...(input.purpose ? { purpose: input.purpose } : {}) })
       return new WorkerLaunchCredentialService(new McpDetectionService(inspector(manager), providerAppEndpoint),
-        credentials, run.executionLocation.runnerId).prepare(input)
+        credentials, run.executionLocation.runnerId, Math.min(300_000, credentials.ttlMs - 30_000)).prepare(input)
     },
     revoke: (credential) => credentials.revoke(credential),
     revokeForExecution: (id) => credentials.revokeForExecution(id),
     revokeForRun: (id, client) => credentials.revokeForRun(id, client),
     reconcileTerminalCredentials: () => credentials.reconcileTerminalCredentials(),
     renew: (id, credential) => credentials.renewForExecution(id, credential),
+    restore: (id, environment) => credentials.restoreForExecution(id, environment),
   }
 }
 

@@ -14,6 +14,14 @@ export const RunStartV3ResultSchema = z.object({
   run: WorkflowRunV3Schema, accepted: z.literal(true), replayed: z.boolean(),
 }).strict()
 
+export const RunStartCanceledResultSchema = z.object({ status: z.literal('canceled') }).strict()
+export type RunStartCanceledResult = z.infer<typeof RunStartCanceledResultSchema>
+export const RunStartResolutionResultSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('accepted'), run: WorkflowRunV3Schema }).strict(),
+  RunStartCanceledResultSchema,
+])
+export type RunStartResolutionResult = z.infer<typeof RunStartResolutionResultSchema>
+
 /** One current manual Start contract for every graph shape. Historical data is
  * not a selector for new execution. Parsing never qualifies native lifecycle. */
 export const ManualRunStartInputSchema = RunStartV3InputSchema

@@ -17,12 +17,14 @@ import { SyncRepository, type SyncWorkspace } from './syncRepository.js'
 export class ComputerSyncService {
   private readonly repository: SyncRepository
   private readonly identities = new Map<string, { target: DeviceProvisioningTarget; identity: SyncIdentity }>()
+  private readonly lifetime = new AbortController()
   private queued = 0
   private pending: Promise<unknown> = Promise.resolve()
   constructor(private readonly pool: pg.Pool, private readonly mainId: string,
     private readonly endpoint: () => ComputerAccountsEndpoint | undefined,
     private readonly commands: PostgresCommandCoordinator,
-    private readonly local: Pick<SyncthingComputer, 'handle'> = new SyncthingComputer()) {
+    private readonly local: Pick<SyncthingComputer, 'handle'> = new SyncthingComputer(),
+    private readonly assertCurrent: () => void = () => {}) {
     this.repository = new SyncRepository(pool, mainId)
   }
 
@@ -84,21 +86,37 @@ export class ComputerSyncService {
     return { ...status, message: message ?? status.message }
   }
 
-  async reconcile(): Promise<void> {
-    const failures = await this.synchronize()
+  stopAdmission(): void {
+    this.lifetime.abort(new DomainError('SYNC_CLOSING', 'Shared file sync is shutting down.', 503))
+  }
+
+  async join(): Promise<void> { await this.pending }
+
+  private assertOpen(): void {
+    this.lifetime.signal.throwIfAborted()
+    this.assertCurrent()
+  }
+
+  async reconcile(target?: DeviceProvisioningTarget): Promise<void> {
+    const failures = await this.synchronize(target)
     if (failures.length) throw new AggregateError(failures, 'Shared file setup is pending on an unavailable computer.')
   }
 
   poll(): Promise<void> {
-    return this.queued ? Promise.resolve() : this.reconcile()
+    return this.lifetime.signal.aborted || this.queued ? Promise.resolve() : this.reconcile()
   }
 
-  private synchronize(): Promise<unknown[]> {
+  private synchronize(target?: DeviceProvisioningTarget): Promise<unknown[]> {
+    this.assertOpen()
     this.queued++
     const task = this.pending.then(async () => {
+      this.assertOpen()
+      if (target) await this.assertTarget(this.pool, target)
+      this.assertOpen()
       const failures: unknown[] = []
       const workspaces = await this.repository.workspaces()
       for (const workspace of workspaces) {
+        this.assertOpen()
         failures.push(...await this.configureWorkspace(workspace))
       }
       return failures
@@ -108,8 +126,7 @@ export class ComputerSyncService {
   }
 
   async paired(target: DeviceProvisioningTarget): Promise<void> {
-    await this.assertTarget(this.pool, target)
-    await this.reconcile()
+    await this.reconcile(target)
   }
 
   async sharedFolder(workspaceId: string, host: { kind: 'main' } | { kind: 'device'; deviceId: string }): Promise<string | null> {
@@ -124,7 +141,7 @@ export class ComputerSyncService {
       const state = SyncComputerStateSchema.parse(await this.computer(target, { operation: 'status' }, bound))
       return state.folders.find(folder => folder.workspaceId === workspaceId)?.path ?? null
     } catch (error) {
-      if (bound.aborted) return null
+      if (bound.aborted || this.lifetime.signal.aborted) return null
       if (error instanceof DomainError && ['COMPUTER_OFFLINE', 'SYNC_UNAVAILABLE'].includes(error.code)) return null
       if (error instanceof DeviceApplicationError && error.retryable) return null
       throw error
@@ -132,6 +149,7 @@ export class ComputerSyncService {
   }
 
   private async configureWorkspace(workspace: SyncWorkspace) {
+    this.assertOpen()
     const main = this.repository.mainTarget
     const mainEnabled = workspace.active && (await this.repository.preference(this.pool, workspace.id, main)).enabled
     const members = await Promise.all((await this.repository.computers()).map(async target => ({ target,
@@ -140,6 +158,7 @@ export class ComputerSyncService {
     const peers: { target: DeviceProvisioningTarget; identity: SyncIdentity }[] = []
     const failures: unknown[] = []
     for (const member of members) {
+      this.assertOpen()
       if (!member.enabled) continue
       try { peers.push({ target: member.target, identity: await this.identity(member.target) }) } catch (error) {
         failures.push(error)
@@ -149,6 +168,7 @@ export class ComputerSyncService {
     const missingIdentity = members.some(member => member.enabled
       && !peers.some(peer => sameDeviceProvisioningTarget(peer.target, member.target)))
     for (const member of members) {
+      this.assertOpen()
       const selected = peers.find(peer => sameDeviceProvisioningTarget(peer.target, member.target))
       // Replacing an incomplete membership list would disconnect an enabled offline peer after restart.
       if (member.enabled && (!selected || !hub
@@ -180,9 +200,13 @@ export class ComputerSyncService {
   }
   private async computer(target: DeviceProvisioningTarget, request: SyncComputerRequest,
     signal = AbortSignal.timeout(150_000)): Promise<unknown> {
-    await this.assertTarget(this.pool, target)
+    this.assertOpen()
+    signal = AbortSignal.any([signal, this.lifetime.signal])
     signal.throwIfAborted()
-    if (target.hostRef.kind === 'main') return this.local.handle(request, { signal })
+    await this.assertTarget(this.pool, target)
+    this.assertOpen()
+    signal.throwIfAborted()
+    if (target.hostRef.kind === 'main') return this.local.handle(request, { signal, assertCurrent: () => this.assertOpen() })
     const endpoint = this.endpoint()
     if (!endpoint?.capabilities(target.hostRef.deviceId).some(value => value.namespace === COMPUTER_SYNC_NAMESPACE
       && value.mainCanRequest)) throw new DomainError('COMPUTER_OFFLINE', 'This computer is offline or needs an app update.', 409)

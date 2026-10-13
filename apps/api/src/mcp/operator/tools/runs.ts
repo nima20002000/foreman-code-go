@@ -5,7 +5,7 @@ import {
 } from '@foreman-code/contracts/management'
 import { OperatorRunListInputSchema, OperatorRunGetInputSchema, OperatorRunGetResultSchema } from '@foreman-code/contracts/operator-mcp'
 import { compactRunDetails } from '../runSummary.js'
-import { ManualRunStartInputSchema, ManualRunStartResultSchema, SavedRunPageSchema,
+import { ManualRunStartInputSchema, ManualRunStartResultSchema, RunStartResolutionResultSchema, SavedRunPageSchema,
   RunActivitiesInputSchema, RunActivitiesPageSchema, RunHandoffsReadInputSchema,
   RunHandoffsReadSchema } from '@foreman-code/contracts/wave25'
 import { defineOperatorTool } from '../definition.js'
@@ -84,10 +84,38 @@ export const runTools = [
     name: 'run_start',
     requires: [['runs:start', 'workflow'], ['workspace_locations:read', 'workspace']],
     enabled: s => !!s.runs,
-    description: 'Request one Run of the explicit saved version. Every new workflow uses semantics 3, with or without repeat. Pin 3 plus the current workflow revision, exact Agent configuration map and location revision. In mixed-computer workflows, Agents without a saved computer choice resolve to the authorized Main source, root and matching qualified harness; all accepted placements are persisted in the Run. For a GitHub workspace, Start fetches the configured default branch once, approves its tracked tree, and persists that source for every Agent in this Run. Unchanged commits reuse an approval. This additionally requires workspace-scoped sources:approve, sources:read, source_roots:bind and source_roots:read; it does not grant those permissions. Start refreshes only the Agent execution hosts required by this version. Installation recovery can return HARNESS_PROFILE_CHECK_PENDING; retry the same command after checks finish. Concurrent Starts share a 30-second deadline for command, runner and workspace locks; RUN_START_BUSY is retryable with the same commandId and input. Explicit invalid placements are rejected. New v3 Start remains unavailable until native lifecycle qualification; graph read support is not admission. Retry only the same command for verified receipt readback, never a blind restart.', inputSchema: ManualRunStartInputSchema,
+    description: 'Request one Run of the explicit saved version. Every new workflow uses semantics 3, with or without '
+      + 'repeat. Pin 3 plus the current workflow revision, exact Agent configuration map and location revision. In '
+      + 'mixed-computer workflows, Agents without a saved computer choice resolve to the authorized Main source, '
+      + 'root and matching qualified harness; all accepted placements are persisted in the Run. For a GitHub '
+      + 'workspace, Start fetches the configured default branch once, approves its tracked tree, and persists that '
+      + 'source for every Agent in this Run. Unchanged commits reuse an approval. This additionally requires '
+      + 'workspace-scoped sources:approve, sources:read, source_roots:bind and source_roots:read; it does not '
+      + 'grant those permissions. Start refreshes only the Agent execution hosts required by this version. '
+      + 'Installation recovery can return HARNESS_PROFILE_CHECK_PENDING; retry the same command after checks '
+      + 'finish. Production installation rejects new Starts with RUN_START_MAINTENANCE; retry the same command '
+      + 'after installation. Verified receipt readback remains available. Concurrent Starts share a 30-second '
+      + 'deadline for command, runner and workspace locks; RUN_START_BUSY is retryable with the same commandId and '
+      + 'input. Explicit invalid placements are rejected. New v3 Start remains unavailable until native lifecycle '
+      + 'qualification; graph read support is not admission. Retry only the same command for verified receipt '
+      + 'readback, never a blind restart.', inputSchema: ManualRunStartInputSchema,
     outputSchema: ManualRunStartResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: (context, input) => context.services.runs.start(context.principal, 'mcp', input),
+  }),
+  defineOperatorTool({
+    name: 'run_start_resolve',
+    requires: [['runs:start', 'workflow'], ['workspace_locations:read', 'workspace']],
+    enabled: s => !!s.runs,
+    description: 'Resolve the original Start using its unchanged commandId and complete input. Under the Start command lock, '
+      + 'returns the original accepted Run or permanently cancels a command that has no accepted receipt. '
+      + 'A canceled command can never admit a Run, including delayed submissions from another tab. '
+      + 'After cancellation, read current settings and require a new explicit Start with a new commandId. '
+      + 'Missing or contradictory success evidence remains an error; retain the original command and retry resolution. '
+      + 'Requires live workflow-scoped runs:start and workspace location read, including replay.',
+    inputSchema: ManualRunStartInputSchema, outputSchema: RunStartResolutionResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    run: (context, input) => context.services.runs.resolveStart(context.principal, 'mcp', input),
   }),
   defineOperatorTool({
     name: 'run_stop',

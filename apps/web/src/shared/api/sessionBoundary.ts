@@ -1,15 +1,39 @@
+import { RUNTIME_INSTALLATION_HEADER } from '@foreman-code/contracts'
 import { identityChangedEvent, identityEpochKey, rotateProtectedSession } from './protectedChatStorage'
 import { rotateSessionController, sessionControllerSignal } from './sessionController'
 
 /** A document-lifetime boundary. Old requests cannot enter a different app instance. */
 let generation = 0
 let switching = false
+let installation: { id: string; generation: number } | undefined
 
 export class SessionChangedError extends Error {
   constructor() {
     super('Operator access changed. Reload this view before continuing.')
     this.name = 'AbortError'
   }
+}
+
+export function documentInstallationId(): string | undefined {
+  return installation?.generation === generation ? installation.id : undefined
+}
+export function bindDocumentInstallation(id: string): boolean {
+  const previous = documentInstallationId()
+  if (previous && previous !== id) return false
+  installation = { id, generation }
+  return true
+}
+
+export function installationHeaders(input?: HeadersInit): Headers {
+  const headers = new Headers(input)
+  const id = documentInstallationId()
+  if (id) headers.set(RUNTIME_INSTALLATION_HEADER, id)
+  return headers
+}
+export function reloadChangedInstallation(code: string): void {
+  if (code !== 'INSTALLATION_CHANGED') return
+  beginSessionChange()
+  if (typeof window !== 'undefined') window.location.reload()
 }
 
 export function sessionGeneration(): number { return generation }

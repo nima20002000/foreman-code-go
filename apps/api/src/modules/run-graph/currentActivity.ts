@@ -10,19 +10,23 @@ export { selectCurrentNodeActivity, type CurrentNativeActivity, type CurrentActi
 
 /** Exported so disposable-DB qualification EXPLAINs the actual production query. */
 export const CURRENT_NATIVE_ACTIVITIES_SQL = `
+  with latest_workflow_executions as materialized (
+    select distinct on (x.workflow_node_id) x.execution_id,x.workflow_node_id
+    from run_repeat_executions x
+      join harness_executions xe on xe.id=x.execution_id and xe.record #> '{input,tick}' is null
+      left join run_repeat_occurrences o on o.occurrence_id=x.occurrence_id and o.run_id=x.run_id
+      left join run_work_activations w on w.activation_id=x.work_activation_id and w.run_id=x.run_id
+    where x.run_id=$1 and ($2::text[] is null or x.workflow_node_id=any($2))
+    order by x.workflow_node_id,w.activation_sequence desc nulls last,coalesce(o.occurrence_index,0) desc,
+      x.technical_attempt desc,x.execution_id desc
+  )
   select a.execution_id,a.workflow_node_id,a.attempt,a.work_kind,a.work_id,
     e.record->>'agentId' as agent_id,e.record->>'agentConfigurationVersionId' as configuration_id,
     a.activity,a.last_native_sequence::text,a.terminal_native_sequence::text,a.projection_revision::text,
     e.record->>'state'='completed' as work_closed
   from run_native_activity a join harness_executions e on e.id=a.execution_id and e.run_id=a.run_id
+    join latest_workflow_executions x on x.execution_id=a.execution_id and x.workflow_node_id=a.workflow_node_id
   where a.run_id=$1 and a.work_kind='workflow'
-    and a.execution_id=(select x.execution_id from run_repeat_executions x
-      join harness_executions xe on xe.id=x.execution_id and xe.record #> '{input,tick}' is null
-      left join run_repeat_occurrences o on o.occurrence_id=x.occurrence_id and o.run_id=x.run_id
-      left join run_work_activations w on w.activation_id=x.work_activation_id and w.run_id=x.run_id
-      where x.run_id=a.run_id and x.workflow_node_id=a.workflow_node_id
-      order by w.activation_sequence desc nulls last,coalesce(o.occurrence_index,0) desc,
-        x.technical_attempt desc,x.execution_id desc limit 1)
     and ($2::text[] is null or a.workflow_node_id=any($2))
   union all
   select a.execution_id,a.workflow_node_id,a.attempt,a.work_kind,a.work_id,

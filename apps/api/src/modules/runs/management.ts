@@ -18,6 +18,7 @@ import {
   readAcceptedRepeatRunLocked, readAcceptedRepeatRunSnapshot, readRecordedRepeatRunSnapshot,
 } from './repeatStartRead.js'
 import { admitRepeatRun } from './repeatStartAdmission.js'
+import { resolveRunStart } from './startResolution.js'
 import { hasAction, isAuthorized, requireAuthorization } from '../access/policy.js'
 import { intersectGrants } from '../access/operatorDelegation.js'
 import { authorizedPage } from '../access/authorizedPage.js'
@@ -213,6 +214,11 @@ export class RunManagementService {
         .catch((error: unknown) => production.reportDispatchFailure(execution.value.id, error)) })
     }
     return { run: this.visibleRun(principal, execution.value), accepted: true as const, replayed: execution.replayed }
+  }
+
+  async resolveStart(principal: ManagementPrincipal, source: 'http' | 'mcp', input: RunStartV3Input) {
+    const result = await resolveRunStart(this.pool, principal, source, input)
+    return result.status === 'accepted' ? { ...result, run: this.visibleRun(principal, result.run) } : result
   }
 
   async stop(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: { workspaceId: string; runId: string; commandId: string }) {

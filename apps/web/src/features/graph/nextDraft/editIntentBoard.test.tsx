@@ -65,7 +65,7 @@ function staged(request: GraphEditStageInputV3): GraphEditReadResultV3 {
 beforeEach(() => {
   useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); sessionStorage.clear()
   useGraphDraftStore.getState().installNextDraft(key, fixture())
-  vi.stubGlobal('navigator', { ...navigator, locks: { request: async (_name: string, work: () => Promise<unknown>) => work() } })
+  vi.stubGlobal('navigator', { ...navigator, locks: { request: async (_name: string, work: (() => Promise<unknown>) | LockOptions, claim?: (lock: { name: string }) => unknown) => typeof work === 'function' ? work() : claim!({ name: _name }) } })
   vi.spyOn(nextDraftApi, 'context').mockResolvedValue(fixture())
   vi.spyOn(nextDraftApi, 'editRead').mockResolvedValue(empty)
   vi.spyOn(nextDraftApi, 'pins').mockImplementation(async (_workspaceId, graph, _stagedAgents, agents) => ({

@@ -189,6 +189,27 @@ describe('Persisted execution activity through HTTP and authenticated MCP', { ti
     } finally { await fixture.close() }
   })
 
+  it.each(['http', 'mcpPage'] as const)('delivers the first sequence-zero event once through %s', async (endpoint) => {
+    const fixture = await setup()
+    try {
+      const empty = await fixture[endpoint]()
+      expect(empty.items).toEqual([])
+      await database.pool.query('select append_harness_native_event($1::jsonb)', [JSON.stringify({
+        executionId: fixture.executionId, connectionId: 'connection-first', sequence: 0, occurredAt: at,
+        type: 'item.completed', payload: { threadId: 'thread', turnId: 'turn',
+          item: { id: 'first-message', type: 'agentMessage', text: 'First native message' } },
+      })])
+      const changes = await fixture[endpoint]({ cursor: empty.cursor })
+      expect(changes.mode).toBe('changes')
+      expect(changes.items).toMatchObject([{ id: 'first-message', sequence: '0',
+        entry: { message: { content: 'First native message' } } }])
+      expect((await fixture[endpoint]({ cursor: changes.cursor })).items).toEqual([])
+      const legacy = JSON.stringify({ [fixture.executionId]: { n: '0', e: '0', t: false } })
+      expect((await fixture[endpoint]({ cursor: legacy })).items).toHaveLength(1)
+      await fixture.denied()
+    } finally { await fixture.close() }
+  })
+
   it('keeps Claude commands, streamed arguments, file changes and redacted tool results on persisted readback', async () => {
     const fixture = await setup(claudeConfiguration)
     const secret = `opm_${'a'.repeat(43)}`

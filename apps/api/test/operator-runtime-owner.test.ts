@@ -127,6 +127,29 @@ describe('runtime-owner connection lifetime', () => {
     expect(driver.end).toHaveBeenCalledTimes(1)
   })
 
+  it.each(['acquire', 'epoch', 'close'] as const)('bounds a stalled %s reply and closes its session', async (operation) => {
+    vi.useFakeTimers()
+    const { owner, driver, lost } = fixture()
+    if (operation !== 'acquire') await owner.acquire()
+    const pending = deferred<{ rows: Array<{ acquired: boolean }> }>()
+    driver.query.mockImplementationOnce(() => pending.promise)
+    const work = operation === 'acquire' ? owner.acquire()
+      : operation === 'epoch' ? owner.readRuntimeEpoch() : owner.close()
+    let result: unknown
+    const observed = work.then(() => { result = 'success' }, error => { result = error })
+    try {
+      await vi.advanceTimersByTimeAsync(5_001)
+      expect(result).toBeInstanceOf(Error)
+      expect(owner.active).toBe(false)
+      expect(driver.end).toHaveBeenCalledOnce()
+      expect(lost).toHaveBeenCalledTimes(operation === 'epoch' ? 1 : 0)
+    } finally {
+      pending.resolve({ rows: [{ acquired: true }] })
+      await observed
+      await owner.close().catch(() => { /* ignore: the failed close is asserted above. */ })
+    }
+  })
+
   for (const event of ['error', 'end'] as const) {
     it(`reports unexpected ${event} once and never reuses the lost connection`, async () => {
       const { owner, driver, lost } = fixture()

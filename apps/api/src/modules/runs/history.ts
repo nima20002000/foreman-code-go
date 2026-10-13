@@ -65,7 +65,7 @@ export class RunHistoryService {
       authorize(principal)
       authorize(live)
       return result
-    })
+    }, { isolation: 'repeatable read' })
   }
 
   async list(principal: ManagementPrincipal, raw: unknown): Promise<RunDropdownPage> {
