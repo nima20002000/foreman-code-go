@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { CiComputersOutputSchema, CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema, CiRunRecordSchema,
-  integrationPartition, type CiHostRequest, type CiHostReply, type CiHostRun } from '@foreman-code/contracts'
+  integrationPartition, userSystemdIntegrationFiles, type CiHostRequest, type CiHostReply, type CiHostRun } from '@foreman-code/contracts'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
@@ -39,7 +39,8 @@ beforeEach(() => { vi.stubEnv('BASH_ENV', '') })
 afterEach(() => { vi.unstubAllEnvs() })
 
 /** Two build computers that answer the host CI protocol from memory; tests finish their runs. */
-function fakeComputers(github: Record<string, boolean> = {}, cloud: boolean | { github: number; circleci: number } = false) {
+function fakeComputers(github: Record<string, boolean> = {}, cloud: boolean | { github: number; circleci: number } = false,
+  hostSlots = 1) {
   const mainId = randomUUID()
   const computers: HostCiComputer[] = ['laptop', 'builder'].map((name, index) => ({ key: `${mainId}:${name}`,
     hostRef: { kind: 'device', mainId, deviceId: randomUUID() }, label: name, priority: 60 - index }))
@@ -57,7 +58,10 @@ function fakeComputers(github: Record<string, boolean> = {}, cloud: boolean | { 
     computers: async () => computers,
     request: async (computer, request): Promise<CiHostReply> => {
       if (request.operation === 'status') {
+        const active = [...runs.values()].filter(value => value.computer === computer.label
+          && ['starting', 'running'].includes(value.run.state))
         return { operation: 'status', ready: github[computer.label] !== false, cpuCount: 16, memoryBytes: 14 * 2 ** 30,
+          slotsTotal: computer.hostRef.kind === 'cloud' ? 1 : hostSlots, slotsUsed: active.length,
           reasons: github[computer.label] === false ? ['Log in to GitHub on this computer (gh auth login).'] : [],
           runs: [...runs.values()].filter(value => value.computer === computer.label).map(value => value.run) }
       }
@@ -69,7 +73,9 @@ function fakeComputers(github: Record<string, boolean> = {}, cloud: boolean | { 
         if (github[computer.label] === false) throw new DomainError('COMPUTER_GITHUB_REQUIRED', 'Log in to GitHub.', 409)
         const existing = runs.get(request.runId)
         if (existing) return { operation: 'start', run: existing.run }
-        if ([...runs.values()].some(value => value.computer === computer.label && value.run.state === 'running')) {
+        const activeCount = [...runs.values()].filter(value => value.computer === computer.label
+          && value.run.state === 'running').length
+        if (activeCount >= (computer.hostRef.kind === 'cloud' ? 1 : hostSlots)) {
           throw new DomainError('CI_HOST_BUSY', 'Busy.', 409)
         }
         const run: CiHostRun = { runId: request.runId, state: 'running', step: 'install', exitCode: null,
@@ -102,7 +108,7 @@ function fakeComputers(github: Record<string, boolean> = {}, cloud: boolean | { 
 }
 
 async function fixture(options: { repository?: boolean; github?: Record<string, boolean>; unitInventory?: CiUnitInventory
-  cloud?: boolean | { github: number; circleci: number }; agent?: boolean
+  cloud?: boolean | { github: number; circleci: number }; agent?: boolean; hostSlots?: number
   repositoryRunner?: { commits: CiCommits; endpoint: HostCiEndpoint } } = {}) {
   const saved = options.agent ? makeCurrentWorkflowFixture(randomUUID()) : undefined
   if (saved) {
@@ -131,7 +137,7 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
     published.push(resolved)
     return resolved
   } }
-  const computers = fakeComputers(options.github, options.cloud)
+  const computers = fakeComputers(options.github, options.cloud, options.hostSlots)
   const commands = new PostgresCommandCoordinator(db.pool)
   const ci = new HostCiService(db.pool, commands, new RunCiAuthority(db.pool), commits,
     options.repositoryRunner?.endpoint ?? computers.endpoint)
@@ -1050,6 +1056,35 @@ it('fails a ticket at once with the reason when the public mirror refuses its co
     expect(read.run).toMatchObject({ state: 'failed', message: expect.stringContaining('test/example.test.ts:3') })
     await f.ci.dispatch()
     expect(f.started).toHaveLength(0)
+  } finally { await f.close() }
+})
+
+it('runs two host-only tickets on one computer and queues a third through authenticated MCP', async () => {
+  const f = await fixture({ hostSlots: 2, cloud: true })
+  f.computers.splice(1, 1)
+  try {
+    const request = { suite: 'integration', scope: 'affected', files: [[...userSystemdIntegrationFiles][0]!] }
+    const denied = await f.connect([...CI_GET_ACTIONS])
+    expect((await f.call(denied, 'ci_run', { ...request, commandId: randomUUID() })).isError).toBe(true)
+    const tickets = []
+    for (let index = 0; index < 3; index++) {
+      tickets.push(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run',
+        { ...request, commandId: randomUUID() })).ticketId)
+    }
+    await f.ci.dispatch()
+    expect(f.started).toHaveLength(2)
+    expect(f.started.every(start => start.computer === f.computers[0]!.label)).toBe(true)
+    const records = await Promise.all(tickets.map(ticketId => f.value(f.operator, 'ci_get', { ticketId })))
+    expect(records.map(record => CiGetOutputSchema.parse(record).run.state)).toEqual(['running', 'running', 'queued'])
+    expect(CiGetOutputSchema.parse(records[2]).run.message).toContain('all CI slots in use (2/2)')
+    const listed = CiComputersOutputSchema.parse(await f.value(f.operator, 'ci_computers_list', {}))
+    expect(listed.computers[0]).toMatchObject({ slotsUsed: 2, slotsTotal: 2, running: tickets.slice(0, 2) })
+    expect(listed.computers.find(computer => computer.hostRef.kind === 'cloud'))
+      .toMatchObject({ slotsUsed: 0, slotsTotal: 1 })
+    await f.value(f.operator, 'ci_cancel', { ticketId: tickets[0] })
+    await f.ci.dispatch()
+    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: tickets[2] })).run.state).toBe('running')
+    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: tickets[1] })).run.state).toBe('running')
   } finally { await f.close() }
 })
 

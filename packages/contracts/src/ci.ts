@@ -97,6 +97,8 @@ export const CiComputersOutputSchema = z.object({ computers: z.array(z.object({
   label: z.string(), hostRef: CiRunRecordSchema.shape.computer.unwrap().shape.hostRef,
   priority: z.number().int(), ready: z.boolean(), reasons: z.array(z.string()),
   cpuCount: z.number().int().positive().optional(), memoryBytes: z.number().int().positive().optional(),
+  availableMemoryBytes: z.number().int().nonnegative().optional(),
+  slotsUsed: z.number().int().nonnegative(), slotsTotal: z.number().int().positive(),
   running: z.array(z.string()).optional(),
 }).strict()) }).strict()
 export type CiCancelInput = z.infer<typeof CiCancelInputSchema>
