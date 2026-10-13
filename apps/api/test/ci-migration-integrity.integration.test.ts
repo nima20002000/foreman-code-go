@@ -2,6 +2,8 @@ import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { describe, expect, it } from 'vitest'
+import { CurrentWorkflowReadResultSchema } from '@foreman-code/contracts/wave25'
+import { withTransaction } from '../src/infrastructure/transaction.js'
 import { BuildComputerStatusSchema } from '@foreman-code/contracts/build-computers'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
@@ -38,6 +40,50 @@ function createPreparation(database: Awaited<ReturnType<typeof currentDatabase>>
 }
 
 describe.skipIf(!postgresEnabled)('CI migration integrity through fresh and historical databases', () => {
+  it('authors a workflow without location stamps while retaining the historical CI schema under test', async () => {
+    const database = await currentDatabase({ beforeMigration: 285905 })
+    try {
+      const seeded = await ciMigrationFixture(database)
+      try {
+        const workflow = seeded.workflow
+        const reader = await workflow.credential([{ actions: ['workflows:read', 'graph:read'],
+          scope: { workspaceIds: [seeded.workspaceId] } }])
+        const read = async () => {
+          const reply = await graphRpc(workflow.app, reader.token, 'tools/call', {
+            name: 'workflow_saved_get_v3', arguments: {
+              workspaceId: seeded.workspaceId, workflowId: workflow.scope.workflowId,
+            },
+          })
+          expect(reply.result?.isError).not.toBe(true)
+          return CurrentWorkflowReadResultSchema.parse(graphRpcValue(reply.result))
+        }
+        expect((await read()).version).toEqual(workflow.version)
+        const denied = await graphRpc(workflow.app, reader.token, 'tools/call', {
+          name: 'workflow_save_v3', arguments: {
+            workspaceId: seeded.workspaceId, workflowId: workflow.scope.workflowId,
+            commandId: randomUUID(), executionSemanticsVersion: 3,
+            expectedRevision: workflow.accepted.snapshot.workflow.revision,
+            expectedWorkflowVersionId: workflow.version.id,
+            expectedAgentConfigurationVersionIds: workflow.version.agentConfigurationVersionIds,
+            graph: workflow.version.definition,
+          },
+        })
+        expect(denied.result?.isError).toBe(true)
+        expect(graphRpcValue(denied.result)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+        await expect(database.pool.query('select * from ci_runtime_preparations'))
+          .rejects.toMatchObject({ code: '42P01' })
+        const before = await seeded.facts()
+        await applyApplicationMigrations(database.pool)
+        expect(await seeded.facts()).toEqual(before)
+        expect((await read()).version).toEqual(workflow.version)
+      } finally {
+        await seeded.workflow.app.close()
+      }
+    } finally {
+      await database.close()
+    }
+  }, 120_000)
+
   it('serializes fresh migration callers and makes repeated startup a data-preserving operation', async () => {
     const database = await currentDatabase({ beforeMigration: migrations[0].version })
     try {
@@ -72,18 +118,10 @@ describe.skipIf(!postgresEnabled)('CI migration integrity through fresh and hist
     try {
       if (scenario.release) {
         // The released schema includes activity backfill but predates source-capacity waiting.
-        const client = await database.pool.connect()
-        try {
-          await client.query('begin')
+        await withTransaction(database.pool, async client => {
           await client.query(agentCiActivityMigration.sql)
           await client.query('insert into application_migrations(version) values($1)', [agentCiActivityMigration.version])
-          await client.query('commit')
-        } catch (error) {
-          await client.query('rollback')
-          throw error
-        } finally {
-          client.release()
-        }
+        })
       }
       const seeded = await ciMigrationFixture(database)
       try {
