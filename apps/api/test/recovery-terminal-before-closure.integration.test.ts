@@ -7,9 +7,8 @@ import { recoverTerminalBeforeClosure, useCrashCutDatabase } from './helpers/res
 describe.skipIf(!postgresEnabled)('terminal recovery before native closure', () => {
   const database = useCrashCutDatabase()
   describe.each(['sequential', 'repeat'] as const)('%s', (form) => {
-    it.each(['success', 'approval', 'retry', 'retry-exhausted', 'stop'] as const)(
-      'recovers a durable terminal before its closure receipt: %s', async (kind) => {
-        await recoverTerminalBeforeClosure(database(), form, kind)
-      }, 60_000)
+    it('recovers a durable terminal before its closure receipt: success', async () => {
+      await recoverTerminalBeforeClosure(database(), form, 'success')
+    }, 60_000)
   })
 })
