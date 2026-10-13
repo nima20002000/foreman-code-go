@@ -6,6 +6,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
+import { runProductionCiSmoke } from './install-ci-smoke.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { renderUserService } from '../apps/worker/src/service.mjs'
 import { workerPath } from '../apps/worker/src/harnessPath.mjs'
@@ -85,7 +86,7 @@ async function stageRelease({ source: buildSource, commit }, runBuild) {
     await cp(join(buildSource, 'apps/web/dist'), join(release, 'apps/web/dist'), { recursive: true })
     await mkdir(join(release, 'scripts'), { recursive: true })
     for (const name of ['local-production.mjs', 'local-production-runtime.mjs', 'graphql-mcp.mjs',
-      'worker-release-artifacts.mjs', 'worker-artifact-files.mjs']) {
+      'worker-release-artifacts.mjs', 'worker-artifact-files.mjs', 'install-ci-smoke.mjs']) {
       await copyFile(join(buildSource, 'scripts', name), join(release, 'scripts', name))
     }
     await copyVerificationRuntime(buildSource, release)
@@ -98,6 +99,10 @@ async function stageRelease({ source: buildSource, commit }, runBuild) {
     for (const name of ['service.mjs', 'diagnostics.mjs', 'harnessPath.mjs']) {
       await copyFile(join(buildSource, 'apps/worker/src', name), join(release, 'apps/worker/src', name))
     }
+    const { stdout: remote } = await capture('git', ['remote', 'get-url', 'origin'], { cwd: buildSource })
+    const repository = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?\s*$/.exec(remote)?.[1]
+    if (!repository) throw new Error('Production CI smoke requires a GitHub origin repository.')
+    await publish(join(release, 'ci-smoke.json'), JSON.stringify({ commit, repository }))
     await copyFile(process.execPath, join(release, 'node'))
     await chmod(join(release, 'node'), 0o700)
     await buildWorkerReleaseArtifacts({ repository: buildSource, expectedCommit: commit,
@@ -173,12 +178,29 @@ X-GNOME-Autostart-enabled=true
 ` })
 }
 
-async function waitForReady(timeoutMs = 90_000, selectedRelease) {
+async function waitForReady({ timeoutMs = 90_000, selectedRelease, ...checks } = {}) {
   const environment = await readEnvironment(envFile)
   if (!environment) throw new Error('Production configuration is missing.')
   const release = selectedRelease ?? await realpath(current)
   const expected = await readProductionIdentity(release, environment.DATABASE_URL)
-  await waitForProductionReady({ origin, expected, timeoutMs })
+  await waitForProductionReady({ origin, expected, timeoutMs, ...checks })
+}
+
+async function runAuthenticatedCiSmoke(release, environment) {
+  if (process.env.FOREMAN_INSTALL_SKIP_CI_SMOKE === '1') {
+    await runProductionCiSmoke({ origin, release })
+    return
+  }
+  const api = join(release, 'apps/api/dist')
+  const { loadConfig } = await import(pathToFileURL(join(api, 'config.js')))
+  const { createDatabase } = await import(pathToFileURL(join(api, 'infrastructure/database.js')))
+  const { withInstallSmokeCredential } = await import(pathToFileURL(join(api, 'cli/installSmokeCredential.js')))
+  const database = createDatabase(loadConfig({ ...process.env, ...environment }).database)
+  try {
+    await withInstallSmokeCredential(database.pool, token => runProductionCiSmoke({ origin, release, token }))
+  } finally {
+    await database.close()
+  }
 }
 
 async function activateRelease(release) {
@@ -219,7 +241,9 @@ function cutoverSteps(environment, { firstInstall = false, releaseMaintenance = 
     activate: activateRelease,
     enable: () => enableProductionServices(run, [units.database, units.api], { firstInstall }),
     start: () => run('/usr/bin/systemctl', ['--user', 'start', units.api]),
-    ready: release => waitForReady(90_000, release),
+    ready: release => waitForReady({ selectedRelease: release }),
+    checkReady: (release, { start, rollback }) => waitForReady({ selectedRelease: release,
+      start, smoke: () => runAuthenticatedCiSmoke(release, environment), rollback }),
     restore: async archive => {
       // The API is stopped; close the maintenance connection before recreating its database.
       await releaseMaintenance()
@@ -294,7 +318,7 @@ async function launchDesktop() {
   await launchProduction({
     lockPath: join(config, 'install.lock'),
     start: () => capture('/usr/bin/systemctl', ['--user', 'start', '--no-block', units.api], { timeout: 5000 }),
-    ready: waitForReady,
+    ready: timeoutMs => waitForReady({ timeoutMs }),
     openDashboard: handoffDashboard,
   })
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -635,5 +635,38 @@ for (const value of ['-1', '2h', 'NaN', 'Infinity', '', ' ', '1e999']) {
     }), /FOREMAN_INSTALL_RUN_WAIT_MINUTES.*finite.*nonnegative/i)
     assert.equal(staged, false)
     assert.equal(await withInstallationLock(lock, async () => 'launcher acquired', { timeoutMs: 1000 }), 'launcher acquired')
+  })
+}
+
+for (const failure of ['CI setup: missing package metadata', 'API response timed out', 'second ci_run timed out', 'new API start failed']) {
+  test(`install rolls back a healthy release when smoke reports ${failure}`, async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'production-ci-rollback-'))
+    const current = join(directory, 'current')
+    const expected = { installationId: 'installation', checkoutId: 'release', databaseId: 'database' }
+    const server = createServer((request, response) => {
+      response.setHeader('content-type', 'application/json')
+      if (request.url === '/health/identity') response.end(JSON.stringify(expected))
+      else if (request.url === '/health/ready') response.end(JSON.stringify({ service: 'graphql-api',
+        checks: { database: 'ok', checkpoints: 'ok' } }))
+      else response.end('<html><script src="/assets/app.js"></script></html>')
+    })
+    try {
+      await symlink('previous-release', join(directory, 'previous'))
+      await symlink('broken-release', current)
+      server.listen(0, '127.0.0.1')
+      await once(server, 'listening')
+      const origin = `http://127.0.0.1:${server.address().port}`
+      let reported
+      try {
+        await waitForProductionReady({ origin, expected, timeoutMs: 1000,
+          [failure === 'new API start failed' ? 'start' : 'smoke']: async () => { throw new Error(failure) },
+          rollback: () => rename(join(directory, 'previous'), current) })
+      } catch (error) { reported = error.message }
+      assert.equal(await readlink(current), 'previous-release', 'A broken CI release must not stay active')
+      assert.equal(reported, failure)
+    } finally {
+      await new Promise(resolve => server.close(resolve))
+      await rm(directory, { recursive: true, force: true })
+    }
   })
 }

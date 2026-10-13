@@ -98,7 +98,8 @@ if [ "$scope" = affected ] && [ -z "${SELECTED_FILES:-}" ] && { [ "$SUITE" != in
     default_ref="refs/remotes/origin/$branch"
     if [ -n "${BASE_COMMIT:-}" ]; then
       if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
-        git fetch --quiet --no-tags --unshallow origin
+        git fetch --quiet --no-tags --depth=2 origin "$(git rev-parse HEAD)"
+        git fetch --quiet --no-tags --depth=1 origin "$BASE_COMMIT"
       fi
     else
       if [ "$(git rev-parse --is-shallow-repository)" = true ]; then

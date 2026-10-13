@@ -8,6 +8,7 @@ import {
   type WorkerArtifactManifest, type WorkerArtifactTarget,
 } from '@foreman-code/contracts/computer-maintenance'
 import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
 
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
@@ -129,7 +130,7 @@ async function artifactManifest(root: string, manifestSha256: string, version: s
 }
 
 /** Registered only on the paired, authenticated device channel. */
-export function createWorkerArtifactExtension(options: { directory: string; version: string }): DeviceExtensionRegistration {
+export function createWorkerArtifactExtension(options: { directory: string; version: string; buildEnabled?: (binding: DeviceSessionBinding) => Promise<boolean> }): DeviceExtensionRegistration {
   const verifiedFiles = new Map<string, VerifiedFile>()
   return {
     namespace: WORKER_UPDATE_NAMESPACE,
@@ -153,6 +154,12 @@ export function createWorkerArtifactExtension(options: { directory: string; vers
         root, artifact.manifestSha256, options.version,
       )
       if (!sameTarget(manifest.target, artifact.target)) throw new DeviceApplicationError('extension-rejected')
+      if (request.operation === 'ci-smoke') {
+        const enabled = await options.buildEnabled?.(context.binding) ?? false
+        if (enabled && !index.github) throw new DeviceApplicationError('extension-rejected')
+        return { payload: { operation: 'ci-smoke', ciSmoke: enabled
+          ? { repository: index.github!.repository, commit: manifest.commit } : null } }
+      }
       if (request.operation === 'release') {
         return { payload: { operation: 'release', release: {
           version: options.version, manifestSha256: artifact.manifestSha256, manifest,

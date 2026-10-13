@@ -1316,6 +1316,8 @@ export class ApprovalExecutionCoordinator {
     for await (const executions of this.runs.executionPages(owner.runId, owner)) {
       for (const execution of executions) {
         const owned = this.ownedSessions.get(execution.id)
+        // A published session can still be admitting its first turn.
+        await owned?.starting
         const current = await this.runs.getExecution(execution.id, owner)
         if (!current) return false
         if (current.state === 'completed' || current.state === 'queued') continue
@@ -1496,6 +1498,48 @@ export class ApprovalExecutionCoordinator {
     // may retry; no new generation or substitute session is admitted here.
     void task.catch(() => { if (this.restartClosure === task) this.restartClosure = undefined })
     return task
+  }
+
+  async finishIdleReviewers(runId: string, owner: RunOwnership, signal: AbortSignal): Promise<void> {
+    if (owner.runId !== runId) throw new DomainError('RUN_OWNERSHIP_LOST', 'The reviewer Run owner changed.', 409)
+    for (const owned of this.ownedSessions.values()) {
+      if (owned.execution.runId !== runId || owned.context.purpose !== 'reviewer'
+        || !owned.manager.retainsReviewerSession) continue
+      const session = owned.session
+      if (!session) throw new DomainError('REPEAT_CLEANUP_PENDING', 'The reviewer session is unavailable.', 409)
+      const check = () => {
+        owner.assertOwned()
+        signal.throwIfAborted()
+        if (this.ownedSessions.get(owned.execution.id) !== owned || owned.reviewFinishing) {
+          throw new DomainError('REPEAT_CLEANUP_PENDING', 'The reviewer lifetime is still settling.', 409)
+        }
+      }
+      check()
+      const savedLane = await this.interactions.coordination.getLane(session.harness, session.nativeSessionId)
+      check()
+      if (!savedLane) throw new DomainError('REPEAT_CLEANUP_PENDING', 'The reviewer writer lane is unavailable.', 409)
+      const correlationId = savedLane.correlationId ?? `execution:${owned.execution.id}`
+      try {
+        await owned.manager.withLane(session, correlationId,
+          signal, async (manager, lane) => {
+            check()
+            await lane.guard.check()
+            if (await this.interactions.coordination.hasUnsettledReview(owned.execution.id)) {
+              throw new DomainError('REPEAT_CLEANUP_PENDING', 'The reviewer still has unfinished reviews.', 409)
+            }
+            await owned.manager.requireIdle(manager, session, correlationId, lane, signal)
+            check()
+            await this.closeRepeatLifetime(owned, check)
+            lane.observedStatus = 'idle'
+            await lane.guard.check()
+          })
+      } catch (error) {
+        if (error instanceof DomainError && error.code === 'SESSION_LANE_BUSY') {
+          throw new DomainError('REPEAT_CLEANUP_PENDING', 'The reviewer writer is still active.', 409)
+        }
+        throw error
+      }
+    }
   }
 
   async finishRun(runId: string): Promise<void> {

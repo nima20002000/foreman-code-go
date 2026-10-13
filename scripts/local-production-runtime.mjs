@@ -130,9 +130,21 @@ export async function recoverReleaseCutover({ stateFile, steps }) {
 
 export async function runReleaseCutover({ release, previousRelease, stateFile, backupFile, steps }) {
   const state = { release, previousRelease, backupFile, backupComplete: false, schemaMayHaveChanged: false }
+  let recoveryAttempted = false
   const perform = async (phase, action) => {
     await saveDeployment(stateFile, state, phase)
     await action()
+  }
+  const rollback = async error => {
+    recoveryAttempted = true
+    state.failure = error.message
+    await saveDeployment(stateFile, state, state.phase)
+    try {
+      await recoverReleaseCutover({ stateFile, steps })
+    } catch (recoveryError) {
+      throw new AggregateError([error, recoveryError],
+        `Release cutover and recovery failed. Retained deployment details: ${stateFile}`, { cause: error })
+    }
   }
   try {
     await perform('stopping', steps.stop)
@@ -142,20 +154,21 @@ export async function runReleaseCutover({ release, previousRelease, stateFile, b
     await perform('migrating', () => steps.migrate(release))
     await perform('upgrading-launcher', () => steps.upgradeLauncher(release))
     await perform('activating', () => steps.activate(release))
-    await perform('configuring-startup', steps.enable)
-    await perform('starting', steps.start)
-    await perform('checking-readiness', () => steps.ready(release))
+    const start = async () => {
+      await perform('configuring-startup', steps.enable)
+      await perform('starting', steps.start)
+      await saveDeployment(stateFile, state, 'checking-readiness')
+    }
+    if (steps.checkReady) {
+      await steps.checkReady(release, { start, rollback })
+    } else {
+      await start()
+      await steps.ready(release)
+    }
     await saveDeployment(stateFile, state, 'ready')
     await rm(backupFile, { force: true })
   } catch (error) {
-    state.failure = error.message
-    await saveDeployment(stateFile, state, state.phase)
-    try {
-      await recoverReleaseCutover({ stateFile, steps })
-    } catch (recoveryError) {
-      throw new AggregateError([error, recoveryError],
-        `Release cutover and recovery failed. Retained deployment details: ${stateFile}`, { cause: error })
-    }
+    if (!recoveryAttempted) await rollback(error)
     throw error
   }
 }
@@ -605,7 +618,19 @@ export async function readProductionIdentity(release, databaseUrl) {
   }
 }
 
-export async function waitForProductionReady({ origin, expected, timeoutMs = 90_000 }) {
+export async function waitForProductionReady(options) {
+  try {
+    await options.start?.()
+    await pollProductionReady(options)
+    await options.smoke?.()
+  } catch (error) {
+    try { await options.rollback?.(error) }
+    catch (failure) { throw new Error(`${error.message}\nRollback failed: ${failure.message}`, { cause: error }) }
+    throw error
+  }
+}
+
+async function pollProductionReady({ origin, expected, timeoutMs = 90_000 }) {
   const deadline = Date.now() + timeoutMs
   let failure = 'API has not responded.'
   const identityMatches = async () => {
