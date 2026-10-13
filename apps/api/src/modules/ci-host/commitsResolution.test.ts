@@ -107,8 +107,8 @@ function fixture() {
     if (args[0] === 'rev-parse' && args.includes('--verify')) {
       return { code: 0, stdout: head, stderr: '' }
     }
-    if (args[0] === 'for-each-ref') {
-      return { code: 0, stdout: 'refs/remotes/origin/main\n', stderr: '' }
+    if (args[0] === 'ls-remote') {
+      return { code: 0, stdout: `${head}\trefs/heads/main\n`, stderr: '' }
     }
     return { code: 0, stdout: '', stderr: '' }
   })
@@ -123,16 +123,16 @@ it('shares publication of a known commit across concurrent resolution and later 
   const blocked = new Promise<void>(resolve => { release = resolve })
   const run = f.git.getMockImplementation()!
   f.git.mockImplementation(async (args, options) => {
-    if (args[0] === 'fetch') await blocked
+    if (args[0] === 'ls-remote') await blocked
     return run(args, options)
   })
   const requests = Array.from({ length: 4 }, () => f.commits.resolve('octo/site', 'main', commit, null))
   release()
   expect(await Promise.all(requests)).toEqual(Array(4).fill(commit))
   expect(await f.commits.resolve('octo/site', 'main', commit, null)).toBe(commit)
-  expect(f.git.mock.calls.filter(([args]) => args[0] === 'fetch')).toHaveLength(1)
+  expect(f.git.mock.calls.filter(([args]) => args[0] === 'ls-remote')).toHaveLength(1)
   await f.commits.resolve('octo/other', 'main', commit, null)
-  expect(f.git.mock.calls.filter(([args]) => args[0] === 'fetch')).toHaveLength(2)
+  expect(f.git.mock.calls.filter(([args]) => args[0] === 'ls-remote')).toHaveLength(2)
 })
 
 it('retries publication after a failed resolution instead of caching the failure', async () => {
@@ -140,7 +140,7 @@ it('retries publication after a failed resolution instead of caching the failure
   const run = f.git.getMockImplementation()!
   let fail = true
   f.git.mockImplementation(async (args, options) => {
-    if (args[0] === 'fetch' && fail) {
+    if (args[0] === 'ls-remote' && fail) {
       fail = false
       return { code: 1, stdout: '', stderr: 'remote unavailable' }
     }
@@ -149,7 +149,7 @@ it('retries publication after a failed resolution instead of caching the failure
   const resolve = () => f.commits.resolve('octo/site', 'main', 'a'.repeat(40), null)
   await expect(resolve()).rejects.toMatchObject({ code: 'SOURCE_GITHUB_PUSH_REQUIRED' })
   expect(await resolve()).toBe('a'.repeat(40))
-  expect(f.git.mock.calls.filter(([args]) => args[0] === 'fetch')).toHaveLength(2)
+  expect(f.git.mock.calls.filter(([args]) => args[0] === 'ls-remote')).toHaveLength(2)
 })
 
 it('refreshes a moving default branch while reusing publication of its resolved commit', async () => {
@@ -158,5 +158,6 @@ it('refreshes a moving default branch while reusing publication of its resolved 
   f.advance()
   expect(await f.commits.resolve('octo/site', 'main', undefined, null)).toBe('b'.repeat(40))
   expect(await f.commits.resolve('octo/site', 'main', 'a'.repeat(40), null)).toBe('a'.repeat(40))
-  expect(f.git.mock.calls.filter(([args]) => args[0] === 'fetch' && args.includes('--prune'))).toHaveLength(2)
+  expect(f.git.mock.calls.filter(([args]) => args[0] === 'fetch')).toHaveLength(2)
+  expect(f.git.mock.calls.filter(([args]) => args[0] === 'ls-remote')).toHaveLength(2)
 })
