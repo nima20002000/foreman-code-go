@@ -297,6 +297,8 @@ export async function dropTestDatabase(admin, resource) {
 
 export async function settleTestResources(admin, resource) {
   assertTestRoot(resource.directory, resource.token)
+  const { sweepRestartUnits } = await import('./test-restart-units.mjs')
+  await sweepRestartUnits(resource)
   const directory = assertTestPath(resource, join(resource.directory, cleanupDirectory))
   const pending = existsSync(directory) ? readdirSync(directory).map(name =>
     JSON.parse(readFileSync(assertTestPath(resource, join(directory, name)), 'utf8'))) : []
