@@ -30,7 +30,6 @@ type Mirrors = (repository: string) => Promise<string | null>
 /** Pushes to one mirror, across both services, run one at a time: concurrent force-pushes of the mirror's main fail
  * the remote's old-value check ("incorrect old value provided"), and concurrent fetches race on its local ref. */
 const mirrorPushes = new Map<string, Promise<unknown>>()
-const mirrorRevisions = new Map<string, number>()
 const publishingBranches = new Map<string, Set<string>>()
 
 /** The public mirror configured for a private repository's workspace, if any. */
@@ -269,7 +268,7 @@ export class CloudCi {
     const previous = mirrorPushes.get(run.mirror) ?? Promise.resolve()
     const cleanup = previous.then(async () => {
       const clone = await ensureClone(this.git, run.repository, AbortSignal.timeout(120_000))
-      const removed = await pruneMirrorBranches({ mirror: run.mirror,
+      const swept = await pruneMirrorBranches({ mirror: run.mirror,
         roots: [this.root, join(this.root, '..', 'github'), join(this.root, '..', 'circleci')],
         keep: [...(publishingBranches.get(run.mirror) ?? [])].flatMap(value => {
           const branch = value.split('\n')[1]!
@@ -280,7 +279,13 @@ export class CloudCi {
           if (result.code !== 0) throw new Error(`CI mirror branch cleanup failed: ${result.stderr.trim().slice(-500)}`)
           return result.stdout.trim()
         } })
-      if (removed.length) mirrorRevisions.set(run.mirror, (mirrorRevisions.get(run.mirror) ?? 0) + 1)
+      const retained = new Set(swept.retained)
+      for (const key of this.published.keys()) {
+        if (!key.startsWith(`${run.mirror}\n`)) continue
+        const [, commit, , baseCommit] = key.split('\n')
+        const branch = baseCommit ? `ci/${commit}-${baseCommit}` : `ci/${commit}`
+        if (!retained.has(branch)) this.published.delete(key)
+      }
     }, async () => { throw new Error('Previous CI mirror operation failed; cleanup will retry.') })
     mirrorPushes.set(run.mirror, cleanup)
     try {
@@ -294,7 +299,7 @@ export class CloudCi {
 
   /** Puts the commit's files on the mirror once: every partition of a run starting together shares one push. */
   private publish(repository: string, mirror: string, commit: string, defaultBranch?: string, baseCommit?: string) {
-    const key = `${mirror}\n${commit}\n${defaultBranch ?? ''}\n${baseCommit ?? ''}\n${mirrorRevisions.get(mirror) ?? 0}`
+    const key = `${mirror}\n${commit}\n${defaultBranch ?? ''}\n${baseCommit ?? ''}`
     let published = this.published.get(key)
     if (!published) {
       const queued = (mirrorPushes.get(mirror) ?? Promise.resolve()).catch(() => { /* ignore: the previous caller receives its failure; the queue must still admit the next operation. */ })

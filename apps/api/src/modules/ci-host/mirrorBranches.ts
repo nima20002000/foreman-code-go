@@ -59,7 +59,13 @@ export async function pruneMirrorBranches(options: {
     await options.git(['push', '--quiet', '--atomic', ...batch.map(({ sha, ref }) => `--force-with-lease=${ref}:${sha}`),
       remote, ...batch.map(({ ref }) => `:${ref}`)])
   }
-  return stale.map(({ ref }) => ref.slice('refs/heads/'.length))
+  const removed = stale.map(({ ref }) => ref.slice('refs/heads/'.length))
+  const removedRefs = new Set(stale.map(({ ref }) => ref))
+  const retained = listed.split('\n').flatMap(line => {
+    const ref = line.trim().split(/\s+/)[1]
+    return ref && ciBranch.test(ref) && !removedRefs.has(ref) ? [ref.slice('refs/heads/'.length)] : []
+  })
+  return { removed, retained }
 }
 
 // The maintenance command calls the same sweep used when cloud tickets finish.
@@ -73,5 +79,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     const result = await execute('git', args, { maxBuffer: 4 * 1024 * 1024 })
     return result.stdout.trim()
   } })
-  console.log(JSON.stringify({ removed: removed.length }))
+  console.log(JSON.stringify({ removed: removed.removed.length }))
 }
