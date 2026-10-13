@@ -8,7 +8,7 @@ import { fixture } from './helpers/hostCiMcpFixture.js'
 it.each([
   ['unit', 11], ['lint', 2], ['typecheck', 2], ['build', 2],
 ] as const)('persists and dispatches all %s parts through authenticated MCP', async (suite, count) => {
-  const f = await fixture()
+  const f = await fixture({ cloud: { github: suite === 'unit' ? 5 : 0, circleci: 0 } })
   try {
     const input = { suite, commandId: `parts-${suite}` }
     const reader = await f.connect(CI_GET_ACTIONS)
@@ -50,6 +50,13 @@ it.each([
     expect(done.group).toMatchObject({ groupId: read.run.groupId, state: 'passed' })
     expect(f.started).toHaveLength(count)
     expect(f.started.every(item => item.request.operation === 'start' && item.request.part)).toBe(true)
+    for (const run of done.partitions!) {
+      const dispatched = f.started.filter(item => item.request.operation === 'start' && item.request.runId === run.id)
+      expect(dispatched).toHaveLength(1)
+      const request = dispatched[0]!.request
+      expect(request).toMatchObject({ operation: 'start', suite, part: run.part })
+      if (request.operation === 'start') expect(request.partition ?? null).toEqual(run.partition)
+    }
     const logs = CiLogsOutputSchema.parse(await f.value(f.operator, 'ci_logs_read', {
       ticketId: started.ticketId, group: true, maxBytes: 4096,
     }))
