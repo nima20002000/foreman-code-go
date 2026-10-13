@@ -173,8 +173,8 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
       value: { supported: false, reason: 'Executor has no systemd user manager' },
     })
   }
-  const reopen = () => new CloudCi('main-1', provider, async repository => options.mirror === false ? null
-    : repository === 'octo/site' ? 'octo/site-ci' : null, join(root, 'ci-cloud'), ports, git,
+  const reopen = () => new CloudCi('main-1', provider, async workspaceId => options.mirror === false ? null
+    : workspaceId === 'ci-workspace' ? 'octo/site-ci' : null, join(root, 'ci-cloud'), ports, git,
     { home: '/home/owner', user: 'owner', host: 'owner-desktop' })
   const cloud = reopen()
   const mirrorGit = (...args: string[]) => run(mirror, ...args)

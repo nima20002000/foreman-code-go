@@ -88,6 +88,9 @@ const CiHostRunIdSchema = z.uuid()
 /** `durations` are Main's learned integration file durations; the commit's committed durations fill the gaps. */
 const CiHostStartSchema = z.object({
   operation: z.literal('start'), runId: CiHostRunIdSchema, repository: CiRepositorySchema, commit: CommitSchema,
+  workspaceId: IdSchema.optional(),
+  /** Publication destination approved in this ticket's workspace at admission; null disables cloud publication. */
+  ciMirror: CiRepositorySchema.nullable().optional(),
   suite: CiSuiteSchema, part: CiPartSchema.optional(), partition: CiPartitionSchema.optional(), durations: CiDurationsSchema.optional(),
   scope: CiScopeSchema.optional(), files: CiSelectedFilesSchema.optional(),
   expectedDurationMs: z.number().nonnegative().finite().optional(),
@@ -146,11 +149,23 @@ export type CiHostReply = z.infer<typeof CiHostReplySchema>
 /** What an Agent or the Operator sees for one CI run. */
 export const CiPrioritySchema = z.enum(['normal', 'high'])
 export const CiPriorityReasonSchema = z.enum(['normal', 'requested', 'ci-infrastructure', 'gate'])
+export const CiCancellationSchema = z.object({
+  principalId: IdSchema, source: z.enum(['http', 'mcp']), commandId: IdSchema,
+  runId: IdSchema.optional(), reason: z.enum(['direct', 'run_stop', 'superseded']),
+}).strict()
+export type CiCancellation = z.infer<typeof CiCancellationSchema>
 export const CiComputerRefSchema = z.object({ kind: z.enum(['main', 'device', 'cloud']), mainId: z.string(), deviceId: z.string().optional(),
     provider: z.enum(['github', 'circleci']).optional(), slot: z.number().int().nonnegative().optional() }).strict()
 
 export const CiRunRecordSchema = z.object({
   id: CiHostRunIdSchema, workspaceId: IdSchema, suite: CiSuiteSchema, commit: CommitSchema, repository: CiRepositorySchema,
+  ciMirror: CiRepositorySchema.nullable().optional(),
+  /** Kept until the assigned executor confirms start; retries use this same request and executor. */
+  dispatchRequest: CiHostStartSchema.optional(),
+  /** Kept until the assigned executor confirms cancellation or another terminal result. */
+  cancellation: CiCancellationSchema.optional(),
+  providerMessage: z.string().max(2000).nullable().optional(),
+  messageHistory: z.array(z.string().max(2000)).max(8).optional(),
   scope: CiScopeSchema.default('full'), files: CiSelectedFilesSchema.default([]),
   priority: CiPrioritySchema.default('normal'), priorityReason: CiPriorityReasonSchema.default('normal'),
   gate: z.boolean().optional(), integrationShards: z.number().int().min(1).max(64).optional(),

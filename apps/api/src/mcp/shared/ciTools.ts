@@ -66,6 +66,7 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'install for install and run <suite> for the others, failing clearly when that script is missing. '
   + 'Cloud CI requires the mirror’s provider workflow (.github/workflows/ci.yml or .circleci/config.yml); '
   + 'without it build computers take the work. '
+  + 'Publication uses the mirror approved in the requesting workspace when the ticket was admitted. '
   + 'A cloud dispatch must create a workflow within 75 seconds; Main retries twice, then queues the same ticket '
   + 'on another provider or build computer. The ticket message records recovery and unstartedProviders lists excluded providers. '
   + 'Caller selections omit empty parts and shard only selected tests; runner selections keep queued parts and pass empty shards. '
@@ -97,6 +98,8 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'Agent CI readback and cancellation are limited to tickets from that execution. '
   + 'Agent requests publish their persisted lifecycle into their Run’s activities and Board activity snapshot. '
   + '(group=true includes bounded pages and individual cursors for every part); ci_cancel stops one ticket. '
+  + 'Cancellation records the caller and optional commandId once; failed remote cleanup remains pending and retries '
+  + 'on the assigned executor. An unknown start reply retains that executor until reconciled. '
   + 'run_stop cancels every non-terminal ticket created by that Run’s Agents and its remote provider run, with audit. '
   + 'Agents are restricted to their active Run workspace. Computers without a GitHub login report it in ci_computers_list.'
 
@@ -163,7 +166,8 @@ export function registerCiTools(server: McpServer, context: CiContext) {
     outputSchema: CiComputersOutputSchema, annotations: read,
   }, input => invoke('ci_computers_list', () => ci.computers(context.principal, input)))
   if (available('ci_cancel')) server.registerTool('ci_cancel', {
-    description: 'Cancel a queued or running CI run by ticketId. Requires jobs:cancel. ' + CI_CAPABILITY_DETAIL,
+    description: 'Cancel a queued or running CI run by ticketId. Requires jobs:cancel. Optional commandId identifies '
+      + 'the audited request; replay does not duplicate the successful transition. ' + CI_CAPABILITY_DETAIL,
     inputSchema: operator ? OperatorCiCancelInputSchema : CiCancelInputSchema,
     outputSchema: CiCancelOutputSchema,
     annotations: { ...read, readOnlyHint: false, destructiveHint: true },

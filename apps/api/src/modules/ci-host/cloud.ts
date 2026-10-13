@@ -30,19 +30,17 @@ const POLL_CONCURRENCY = 3
 const log = componentLogger('jobs')
 
 export type { CloudRun }
-type Mirrors = (repository: string) => Promise<string | null>
+type Mirrors = (workspaceId: string) => Promise<string | null>
 /** Pushes to one mirror, across both services, run one at a time: concurrent force-pushes of the mirror's main fail
  * the remote's old-value check ("incorrect old value provided"), and concurrent fetches race on its local ref. */
 const mirrorPushes = new Map<string, Promise<unknown>>()
 const publishingBranches = new Map<string, Set<string>>()
 
-/** The public mirror configured for a private repository's workspace, if any. */
+/** The public mirror belonging to this workspace, if any. */
 export function workspaceMirrors(pool: pg.Pool): Mirrors {
-  return async repository => {
-    const [owner, name] = repository.split('/')
-    const row = (await pool.query<{ record: unknown }>(`select record from workspaces where archived_at is null
-      and record->'repository'->>'owner'=$1 and record->'repository'->>'name'=$2 and record ? 'ciMirror'
-      order by id limit 1`, [owner, name])).rows[0]
+  return async workspaceId => {
+    const row = (await pool.query<{ record: unknown }>(`select record from workspaces
+      where id=$1 and archived_at is null`, [workspaceId])).rows[0]
     const mirror = row ? WorkspaceSchema.parse(row.record).ciMirror : undefined
     return mirror ? `${mirror.owner}/${mirror.name}` : null
   }
@@ -173,6 +171,7 @@ export class CloudCi {
   }
 
   private async start(request: { runId: string; repository: string; commit: string; suite: CiSuite
+    workspaceId?: string | undefined; ciMirror?: string | null | undefined;
     part?: CiPart | undefined; partition?: CiPartition | undefined; durations?: CiDurations | undefined; scope?: CiScope | undefined;
     files?: string[] | undefined; defaultBranch?: string | undefined; baseCommit?: string | undefined;
     gate?: boolean | undefined; integrationShards?: number | undefined; expectedDurationMs?: number | undefined }): Promise<CiHostRun> {
@@ -187,7 +186,8 @@ export class CloudCi {
       throw new DomainError('CI_CLOUD_UNAVAILABLE',
         `${this.provider.label} cannot run user-systemd files: ${this.provider.userSystemd.reason ?? 'user systemd is unavailable'}.`, 409)
     }
-    const mirror = await this.mirrors(request.repository)
+    let mirror = request.ciMirror ?? null
+    if (request.ciMirror === undefined && request.workspaceId) mirror = await this.mirrors(request.workspaceId)
     // CircleCI's machine image has no podman, which the Worker unit tests (unit-other) use.
     if (this.provider.id === 'circleci' && !runsOnCircleCi(request)) {
       throw new DomainError('CI_CLOUD_UNAVAILABLE', `${this.provider.label} cannot run the Worker unit tests (no podman).`, 409)
