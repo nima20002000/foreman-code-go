@@ -115,7 +115,8 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
   const saved = options.agent ? makeCurrentWorkflowFixture(randomUUID()) : undefined
   if (saved) {
     saved.configurations = saved.configurations.map(configuration => ({ ...configuration,
-      graphqlTools: ['context_get' as const, 'ci_run' as const, 'ci_get' as const, 'ci_logs_read' as const] }))
+      graphqlTools: ['context_get' as const, 'ci_run' as const, 'ci_get' as const, 'ci_logs_read' as const,
+        'ci_computers_list' as const] }))
   }
   const runtime = saved ? await codexApprovalRuntime('user', { fixture: saved }) : undefined
   const db = runtime?.db ?? database
@@ -1335,6 +1336,7 @@ it('dispatches queued typecheck parts beyond the first fifty integration partiti
 it.each([false, true])('requires a high-priority grant for Agents (granted: %s)', async priorityGrant => {
   const f = await fixture({ agent: true, priorityGrant })
   try {
+    f.computers.splice(0)
     const input = { suite: 'install', priority: 'high', commandId: 'agent-high-priority' }
     const result = await f.call(f.agent!, 'ci_run', input)
     if (!priorityGrant) {
@@ -1357,6 +1359,10 @@ it.each([false, true])('requires a high-priority grant for Agents (granted: %s)'
       expect(replay).toEqual(started)
       expect((await f.pool.query("select details->>'priority' as priority from management_audit where action='ci.priority'"))
         .rows).toEqual([{ priority: 'high' }])
+      await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'another-caller' })
+      const listed = CiComputersOutputSchema.parse(await f.value(f.agent!, 'ci_computers_list', {}))
+      expect(listed.queue).toEqual([{ ticketId: started.ticketId, priority: 'high', priorityReason: 'requested',
+        position: 1, reason: expect.any(String) }])
       await f.pool.query(`update management_principals set grants=(select jsonb_agg(
         jsonb_set(grant_entry,'{actions}',(select jsonb_agg(action) from jsonb_array_elements(grant_entry->'actions') action
           where action <> '"jobs:prioritize"'::jsonb))) from jsonb_array_elements(grants) grant_entry) where id=$1`,
@@ -1374,7 +1380,7 @@ it.each([
   try {
     const started = CiRunOutputSchema.parse(await f.value(f.agent!, 'ci_run', {
       suite: 'lint', commandId: 'commit-priority', commit: 'b'.repeat(40), scope: 'affected',
-      files: ['apps/api/src/modules/ci-host/service.ts'],
+      files: ['apps/api/src/modules/ci-host/service.ts', 'packages/contracts/src/ciHost.ts'],
     }))
     const read = CiGetOutputSchema.parse(await f.value(f.agent!, 'ci_get', { ticketId: started.ticketId }))
     expect(read.run).toMatchObject({ priority: expected.priority, priorityReason: expected.priorityReason })
