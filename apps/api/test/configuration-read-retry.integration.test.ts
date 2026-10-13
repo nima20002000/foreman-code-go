@@ -45,6 +45,13 @@ describe.skipIf(!postgresEnabled)('configuration reads before native launch', ()
       try { return await workflows.getAgentConfiguration(id) }
       catch (error) {
         failures++
+        if (fault === 'acquisition') {
+          expect(error).toMatchObject({ message: 'timeout exceeded when trying to connect' })
+        } else {
+          expect(error).toMatchObject({ code: '57014' })
+        }
+        expect(f.provider.counts.sessions).toBe(0)
+        expect(f.provider.counts.starts).toBe(0)
         held?.release()
         releaseLock?.()
         await locking
@@ -60,6 +67,13 @@ describe.skipIf(!postgresEnabled)('configuration reads before native launch', ()
       const scope = { workspaceId: f.f.run.workspaceId, runId: f.f.run.id }
       expect(decodeMcpToolResult(await f.client.callTool({ name: 'run_get', arguments: scope })))
         .toMatchObject({ run: { outcome: 'succeeded' } })
+      const details = decodeMcpToolResult(await f.client.callTool({
+        name: 'run_get', arguments: { ...scope, detail: 'full' },
+      }))
+      expect(details).toMatchObject({ executions: expect.arrayContaining([
+        expect.objectContaining({ id: executionId, agentConfigurationVersionId: pinned[0],
+          attempt: 1, state: 'completed', result: expect.objectContaining({ outcome: 'succeeded' }) }),
+      ]) })
       const denied = await f.access.issue({ name: 'Unrelated reader', audience: 'operator',
         expiresAt: new Date(Date.now() + 60_000),
         grants: [{ actions: ['runs:read'], scope: { runIds: ['another-run'] } }] })
