@@ -29,6 +29,37 @@ describe.skipIf(!postgresEnabled)('PostgreSQL authenticated Run inspection: repe
       expect(local.items.map((item) => item.executionId)).toEqual([secondEntry.executionId])
       const across = RunExecutionsPageSchema.parse(await parity(f, r.client, r.token, RUN_INSPECTION_TOOLS.executions, { ...args, workflowNodeId: entry }))
       expect(across.items).toHaveLength(2)
+      const beforeReads = (await f.db.pool.query(
+        'select record from harness_executions where run_id=$1 order by id', [args.runId])).rows
+      for (const limit of [1, 25, 100]) {
+        for (const workflowNodeId of [undefined, entry]) {
+          for (const occurrenceId of [undefined, secondEntry.occurrence!.occurrenceId]) {
+            const filter = { ...args, limit, ...(workflowNodeId ? { workflowNodeId } : {}),
+              ...(occurrenceId ? { occurrenceId } : {}) }
+            const expected = items.filter(item => (!workflowNodeId || item.workflowNodeId === workflowNodeId)
+              && (!occurrenceId || item.occurrence?.occurrenceId === occurrenceId))
+            const received: typeof items = []
+            let cursor: string | undefined
+            do {
+              const page = RunExecutionsPageSchema.parse(await parity(f, r.client, r.token,
+                RUN_INSPECTION_TOOLS.executions, { ...filter, ...(cursor ? { cursor } : {}) }))
+              expect(page.items.length).toBeLessThanOrEqual(limit)
+              expect(page.items.length).toBeGreaterThan(0)
+              if (page.pageInfo.nextCursor) expect(page.items).toHaveLength(limit)
+              received.push(...page.items)
+              expect(received.length).toBeLessThanOrEqual(expected.length)
+              cursor = page.pageInfo.nextCursor ?? undefined
+            } while (cursor)
+            expect(received).toEqual(expected)
+          }
+        }
+      }
+      const unknownNode = RunExecutionsPageSchema.parse(await parity(f, r.client, r.token,
+        RUN_INSPECTION_TOOLS.executions, { ...args, workflowNodeId: "node' OR true --" }))
+      expect(unknownNode.items).toEqual([])
+      expect(unknownNode.pageInfo.nextCursor).toBeNull()
+      expect((await f.db.pool.query(
+        'select record from harness_executions where run_id=$1 order by id', [args.runId])).rows).toEqual(beforeReads)
       const detailArgs = { ...args, executionId: secondEntry.executionId }
       const detail = RunExecutionDetailSchema.parse(await parity(f, r.client, r.token, RUN_INSPECTION_TOOLS.execution, detailArgs))
       const bindings = RunExecutionBindingsPageSchema.parse(await parity(f, r.client, r.token, RUN_INSPECTION_TOOLS.bindings, { ...detailArgs, limit: 1 }))

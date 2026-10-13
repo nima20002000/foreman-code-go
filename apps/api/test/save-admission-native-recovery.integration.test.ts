@@ -5,7 +5,7 @@ import { editThrough, meaningfulInput, saveThrough, stageThrough,
   versionCount, type Transport } from './helpers/eng07SaveAdmission.testSupport.js'
 import { assertNewVersionOnly, nativeFacts, recoveredFixture } from './helpers/saveAdmissionTransport.js'
 
-describe.skipIf(!postgresEnabled)('ENG07 native Save admission', () => {
+describe.skipIf(!postgresEnabled)('workflow Save after native recovery', () => {
   describe.each(['http', 'mcp'] as Transport[])('over %s', (transport) => {
     for (const form of ['single', 'repeat'] as const) {
       it(`${form}: Save and Stop-and-save accept exact restart-recovery receipts without replay`, async () => {

@@ -4,7 +4,7 @@ import { retainedReviewRecovery, useRemoteReviewFixture } from './helpers/remote
 const withRemoteReviewFixture = useRemoteReviewFixture()
 
 describe('production remote review and native recovery through authenticated MCP', () => {
-  it.each(['graceful'] as const)(
+  it.each(['graceful', 'expired-receipt'] as const)(
     'continues the original retained review after Main recovery from %s with the Worker alive', async recovery => {
       await withRemoteReviewFixture(fixture => retainedReviewRecovery(fixture, recovery))
     // Two full agent startups (reviewer, then requester) and a Main restart: ~60 s under a full parallel run.

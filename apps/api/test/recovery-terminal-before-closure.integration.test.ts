@@ -4,10 +4,10 @@ import { recoverTerminalBeforeClosure, useCrashCutDatabase } from './helpers/res
 
 /** PostgreSQL, source captures, checkpoint, approval ACK and acceptance services
  * are real. Only provider transport and filesystem qualification are synthetic. */
-describe.skipIf(!postgresEnabled)('ENG06 exact restart crash cuts, semantics 3', () => {
+describe.skipIf(!postgresEnabled)('terminal recovery before native closure', () => {
   const database = useCrashCutDatabase()
   describe.each(['sequential', 'repeat'] as const)('%s', (form) => {
-    it.each(['retry'] as const)(
+    it.each(['success', 'approval', 'retry', 'retry-exhausted', 'stop'] as const)(
       'recovers a durable terminal before its closure receipt: %s', async (kind) => {
         await recoverTerminalBeforeClosure(database(), form, kind)
       }, 60_000)

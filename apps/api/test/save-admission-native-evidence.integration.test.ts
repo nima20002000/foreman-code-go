@@ -8,7 +8,7 @@ import { assertSettled, corruptProof, definitionUrl, editThrough, meaningfulInpu
   rpc, stageThrough, versionCount, type Transport } from './helpers/eng07SaveAdmission.testSupport.js'
 import { nativeFacts, recoveredFixture } from './helpers/saveAdmissionTransport.js'
 
-describe.skipIf(!postgresEnabled)('ENG07 native Save admission', () => {
+describe.skipIf(!postgresEnabled)('workflow Save after native recovery', () => {
   describe.each(['http', 'mcp'] as Transport[])('over %s', (transport) => {
     it.each(['missing', 'mismatched'] as const)('%s recovered evidence blocks both direct Save and a previously planned Stop-and-save', async (fault) => {
       const { f, executionId } = await recoveredFixture('single')

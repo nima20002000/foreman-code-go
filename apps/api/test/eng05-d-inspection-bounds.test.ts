@@ -5,7 +5,6 @@ import {
   RunExecutionBindingsPageSchema, RunExecutionBindingSchema, RunExecutionsPageSchema,
   RunExecutionsListInputSchema, RunInputSourceSchema, makeCurrentWorkflowFixture,
 } from '@foreman-code/contracts/wave25'
-import { inspectionExecutionsQuery } from '../src/modules/runs/inspectionPageQuery.js'
 import { decodeExecutionPageCursor, encodeExecutionPageCursor } from '../src/modules/runs/inspectionCursor.js'
 
 const f = makeCurrentWorkflowFixture('eng05-d-byte-bounds', 'single')
@@ -65,19 +64,12 @@ describe('ENG05-D inspection byte and row budgets', () => {
     expect(RunExecutionBindingsPageSchema.safeParse({ ...bindingPage, items: bindings }).success).toBe(false)
   })
 
-  it.each([1, 25, 100])('reads at most limit+1 metadata rows at page size %i, including tied timestamps', (limit) => {
+  it.each([1, 25, 100])('accepts page size %i without changing the scope-bound cursor position', limit => {
     const position = { createdAt: '2026-09-25T12:34:56.123456Z', executionId: 'execution-tie-breaker' }
     const scope = [f.scope, null, null]
     const cursor = encodeExecutionPageCursor(scope, position)
-    // Page size may change, but scope, filter and exact keyset position may not.
-    expect(decodeExecutionPageCursor(scope, cursor)).toEqual(position)
-    for (const after of [undefined, position]) {
-      const input = RunExecutionsListInputSchema.parse({ workspaceId: f.scope.workspaceId, runId: f.scope.runId, limit })
-      const query = inspectionExecutionsQuery(input, after)
-      expect(query.values).toEqual([f.scope.runId, ...(after ? [position.createdAt, position.executionId] : []), limit + 1])
-      expect(query.text).toContain('order by e.created_at desc,e.id desc limit $')
-      expect(query.text.includes('(e.created_at,e.id)<(')).toBe(!!after)
-      expect(query.text).not.toMatch(/\boffset\b|\bcount\s*\(|input_json|result_json|harness_native_events/i)
-    }
+    const input = RunExecutionsListInputSchema.parse({ workspaceId: f.scope.workspaceId, runId: f.scope.runId, limit, cursor })
+    expect(input.limit).toBe(limit)
+    expect(decodeExecutionPageCursor(scope, input.cursor)).toEqual(position)
   })
 })

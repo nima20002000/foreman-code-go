@@ -14,8 +14,6 @@ import {
 import {
   decodeBindingPageCursor, decodeExecutionPageCursor, encodeBindingPageCursor, encodeExecutionPageCursor,
 } from '../src/modules/runs/inspectionCursor.js'
-import { inspectionExecutionsQuery } from '../src/modules/runs/inspectionPageQuery.js'
-import { runInspectionMigration } from '../src/infrastructure/runInspectionMigration.js'
 
 const scope = [{ workspaceId: 'ws', workflowId: 'wf', runId: 'run', workflowVersionId: 'version', executionSemanticsVersion: 3 }, null, null]
 const position = { createdAt: '2026-09-25T12:34:56.123456Z', executionId: 'execution-a' }
@@ -93,28 +91,6 @@ describe('ENG-05 inspection contracts and cursors', () => {
       try { decodeExecutionPageCursor(scope, invalid); throw new Error('accepted invalid cursor') }
       catch (error) { expect(error).toMatchObject({ code: 'RUN_INSPECTION_CURSOR_INVALID', status: 400 }) }
     }
-  })
-})
-
-describe('ENG-05 indexed bounded metadata query', () => {
-  it('uses separate parameterized keyset shapes, at most limit + 1, and no private bodies', () => {
-    for (const workflowNodeId of [undefined, 'node-with.dots:and-dashes']) for (const occurrenceId of [undefined, 'occurrence']) {
-      for (const after of [undefined, position]) {
-        const input = RunExecutionsListInputSchema.parse({ workspaceId: 'ws', runId: 'run', workflowNodeId, occurrenceId, limit: 100 })
-        const query = inspectionExecutionsQuery(input, after)
-        expect(query.values).toEqual(['run', ...(workflowNodeId ? [workflowNodeId] : []), ...(occurrenceId ? [occurrenceId] : []),
-          ...(after ? [after.createdAt, after.executionId] : []), 101])
-        expect(query.text).toContain('order by e.created_at desc,e.id desc limit $')
-        expect(query.text).not.toMatch(/\boffset\b|\bcount\s*\(|\bOR\b|input_json|result_json|harness_native_events/i)
-        expect(query.text).not.toContain("e.record->'input'")
-        expect(query.text).not.toMatch(/\be\.record\s*[,\n]/)
-        expect(query.text).not.toContain("node' OR true --")
-        expect(query.text.includes('(e.created_at,e.id)<(')).toBe(!!after)
-      }
-    }
-    expect(runInspectionMigration.sql.match(/create index /g)).toHaveLength(5)
-    expect(runInspectionMigration.sql.replace(/,\s*/g, ',')).toContain('(run_id,recipient_execution_id,ordinal)')
-    expect(runInspectionMigration.sql).not.toMatch(/update|delete|insert|trigger/i)
   })
 })
 

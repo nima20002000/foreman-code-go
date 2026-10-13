@@ -4,6 +4,6 @@ import { terminalRecoveryReadback } from './helpers/terminalRecoveryReadback.js'
 
 afterEach(() => vi.restoreAllMocks())
 
-describe.skipIf(!postgresEnabled)('ENG06-D recovery readback over real HTTP and authenticated Operator MCP', () => {
+describe.skipIf(!postgresEnabled)('Run recovery readback through HTTP and authenticated MCP', () => {
   it.each(['repeat', 'sequential'] as const)('%s: terminal state, exact results, inputs and version pins survive two API rebuilds without native work', terminalRecoveryReadback, 90000)
 })

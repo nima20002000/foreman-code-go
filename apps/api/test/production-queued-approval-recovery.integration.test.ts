@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
 import { productionFixtures, response, checkpointCut, expireAbandonedClaims, recover } from './helpers/approvalCheckpointProduction.js'
 
-describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoint recovery: queued resume races', () => {
+describe.skipIf(!postgresEnabled)('approval checkpoint recovery during queued resume races', () => {
   const fixture = productionFixtures()
 
   it.each(['revoked_authority', 'closed_execution', 'lease_expiry', 'stop'] as const)(

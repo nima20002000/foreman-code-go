@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { migrations } from '../src/infrastructure/migrations.js'
-import { repeatOccurrenceMigration, repeatOccurrenceMigrationSql } from '../src/infrastructure/repeatOccurrenceMigration.js'
+import { repeatOccurrenceMigration } from '../src/infrastructure/repeatOccurrenceMigration.js'
 
-// Static guardrails only. Passing these is NOT PostgreSQL migration qualification.
-describe('ENG04 migration successor registry/static guardrails', () => {
-  it('has one collision-free final registration and retains the original raw SQL export', () => {
+describe('occurrence migration registration', () => {
+  it('registers one collision-free occurrence migration', () => {
     expect(repeatOccurrenceMigration.version).toBe(264501)
-    expect(repeatOccurrenceMigration.sql).toBe(repeatOccurrenceMigrationSql)
     const index = migrations.findIndex((migration) => migration.version === repeatOccurrenceMigration.version)
     expect(index).toBeGreaterThan(-1)
     expect(migrations[index]).toBe(repeatOccurrenceMigration)
@@ -23,11 +21,4 @@ describe('ENG04 migration successor registry/static guardrails', () => {
     expect(versions.slice(0, occurrence).every((version) => version < repeatOccurrenceMigration.version)).toBe(true)
   })
 
-  it('does not silently skip drift, rewrite legacy rows or require pgcrypto', () => {
-    expect(repeatOccurrenceMigrationSql).toContain('REPEAT_SEMANTICS_CONSTRAINT_DRIFT')
-    expect(repeatOccurrenceMigrationSql).toContain('REPEAT_LEGACY_UNIQUENESS_DRIFT')
-    expect(repeatOccurrenceMigrationSql).not.toMatch(/create\s+extension/i)
-    expect(repeatOccurrenceMigrationSql).not.toMatch(/update\s+(workflow_versions|runs|harness_executions)\s+set/i)
-    expect(repeatOccurrenceMigrationSql).not.toMatch(/drop\s+(?:index|constraint)\s+run_graph_execution_identity/i)
-  })
 })

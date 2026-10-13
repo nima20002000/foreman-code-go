@@ -5,7 +5,7 @@ import { assertWorkflowSessionContinuation } from './helpers/workflowSessionCont
 afterEach(() => vi.restoreAllMocks())
 
 describe.skipIf(!postgresEnabled)('same-node native session continuity', () => {
-  it('resumes persisted history and settles separate lifetimes (restart=true)', async () => {
-    await assertWorkflowSessionContinuation({ restart: true })
+  it.each([false, true])('resumes persisted history and settles separate lifetimes (restart=%s)', async restart => {
+    await assertWorkflowSessionContinuation({ restart })
   }, 120_000)
 })

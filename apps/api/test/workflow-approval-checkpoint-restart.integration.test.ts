@@ -5,7 +5,7 @@ import { assertJoinCheckpointRestart, restartCleanup } from './workflowApprovalR
 const closes = restartCleanup()
 
 describe.skipIf(!postgresEnabled)('pending workflow approval restart', () => {
-  it.each([false])('restores the original join checkpoint through a recomposed engine (active invocation: %s)', async (activeInvocation) => {
+  it.each([true, false])('restores the original join checkpoint through a recomposed engine (active invocation: %s)', async (activeInvocation) => {
     await assertJoinCheckpointRestart({ activeInvocation, closes })
   }, 90000)
 })

@@ -9,7 +9,7 @@ afterEach(() => vi.restoreAllMocks())
 // These are normal positive assertions, not expected-failure tests. In particular
 // d32a361 cold cleanup requires a scoped physical-disposal callback. The helper
 // simulates that external boundary, never SQL receipts, native ACKs or results.
-describe.skipIf(!postgresEnabled)('ENG06-D recovery readback over real HTTP and authenticated Operator MCP', () => {
+describe.skipIf(!postgresEnabled)('Run recovery readback through HTTP and authenticated MCP', () => {
   describe.each(forms)('%s Stop during restart recovery', (form) => {
     it.each(['http', 'mcp'] as Array<'http' | 'mcp'>)('%s accepts the exact Stop and settles cleanup rather than returning 409 forever', async (via) => {
       const f = await recoveryFixture(form, () => 'park')
