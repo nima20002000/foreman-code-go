@@ -46,7 +46,8 @@ export const GRAPHQL_AGENT_TOOLS = {
       + "Priority defaults to normal; high requires Operator role or jobs:prioritize. CI-only commits are automatically high. "
       + "caller files remain supported with an explicit commit. Missing selectors, shared infrastructure changes and "
       + "the default branch head run the full suite and report the reason. Scope full always runs everything. "
-      + "Retry the same commandId and payload. Integration supports 2–32 partitions on separate computers.",
+      + "Retry the same commandId and payload. Integration automatically sizes duration-balanced parts to free CI slots; "
+      + "partitions caps the count (2–64).",
     roles: ["operator", "orchestrator", "coder"],
   },
   ci_get: { label: "Read CI result", description: "Read CI run state, priority, queue position and waiting reason, current step, computer, exit code and bounded log tail by ticketId.", roles: ["operator", "orchestrator", "coder"] },

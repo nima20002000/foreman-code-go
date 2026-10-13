@@ -14,6 +14,7 @@ import { DomainError, databaseReadFailure } from '../errors.js'
 import { requireAuthorization } from '../access/policy.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { ciGroupState, planCiParts, runsOnCircleCi, type CiUnitInventory } from './parts.js'
+import { planIntegrationParts, type CiIntegrationInventory, type CiIntegrationSlots } from './integrationParts.js'
 import { assertCiReadAccess } from './runAccess.js'
 import type { CiRepositoryCapabilities } from './repository.js'
 import { RUN_CI_JOBS_SQL, runCiJob, storedCiTestResults, type RunCiJobRow } from './runJobs.js'
@@ -41,6 +42,7 @@ export interface HostCiEndpoint {
 export interface CiCommits {
   infrastructureOnly?(repository: string, commit: string): Promise<boolean>
   capabilities(repository: string, commit: string): Promise<CiRepositoryCapabilities>
+  integrationInventory?(repository: string, commit: string): Promise<CiIntegrationInventory>
   unitInventory?(repository: string, commit: string): Promise<CiUnitInventory>
   resolve(repository: string, defaultBranch: string, commit: string | undefined,
     snapshot: { baseCommit: string; commit: string; bundle: Buffer | null } | null): Promise<string>
@@ -65,6 +67,7 @@ function supportsUserSystemd(computer: HostCiComputer): boolean {
 }
 
 function needsSystemdExecutor(run: CiRunRecord): boolean {
+  if (run.requiresBuildComputer !== undefined) return run.requiresBuildComputer
   return run.suite === 'integration' && (run.partition
     ? run.partition.hostIndexes?.includes(run.partition.index) === true
     : run.scope === 'full' || Boolean(run.deriveFiles) || run.files.some(requiresUserSystemd))
@@ -127,7 +130,14 @@ export class HostCiService {
         const inventory = capabilities.parts && input.suite === 'unit'
           ? await this.commits.unitInventory?.(repository, commit) : undefined
         const learned = ['unit', 'integration'].includes(input.suite) ? await this.learnedDurations(repository) : null
-        const durations = input.suite === 'integration' ? learned : null
+        const integration = capabilities.integrationPartitions && input.suite === 'integration'
+          ? await this.commits.integrationInventory?.(repository, commit) : undefined
+        let durations = input.suite === 'integration' ? learned : null
+        if (integration) {
+          const merged = { ...integration.durations, ...learned }
+          durations = Object.fromEntries(integration.files.filter(file => merged[file] !== undefined)
+            .map(file => [file, merged[file]!]))
+        }
         const unitDurations = { ...inventory?.durations, ...learned }
         const supportsSelection = input.suite === 'integration' ? capabilities.integrationPartitions : capabilities.affected
         const selectionScope = supportsSelection ? input.scope ?? 'affected' : 'full'
@@ -135,11 +145,16 @@ export class HostCiService {
         const selection = { ...input, scope: selectionScope, files: selectionScope === 'affected' ? input.files : [] }
         const empty = selectionScope === 'affected' && input.files?.length === 0
         const split = input.suite === 'integration' ? capabilities.integrationPartitions : capabilities.parts
-        const parts = split ? planCiParts(selection, unitDurations, inventory)
+        let parts: { part: CiRunRecord['part']; partition: CiRunRecord['partition']; files: string[];
+          expectedDurationMs?: number }[] = split ? planCiParts(selection, unitDurations, inventory)
           : [{ part: null, partition: null, files: selection.files ?? [] }]
-        const runs = parts.map(({ part, partition, files }) => CiRunRecordSchema.parse({
+        if (integration) {
+          parts = planIntegrationParts(selection, { ...integration, durations: durations! }, await this.integrationSlots())
+        }
+        const runs = parts.map(planned => CiRunRecordSchema.parse({
+          ...planned,
           id: randomUUID(), workspaceId: scope.workspaceId,
-          suite: input.suite, part, scope: selectionScope, files, commit, repository, partition, groupId,
+          suite: input.suite, scope: selectionScope, commit, repository, groupId,
           priority, priorityReason,
           ...(input.baseCommit ? { baseCommit: input.baseCommit } : {}),
           ...(deriveFiles ? { deriveFiles, defaultBranch } : {}),
@@ -174,6 +189,26 @@ export class HostCiService {
     this.start()
     void this.dispatch()
     return outcome.value
+  }
+
+  private async integrationSlots(): Promise<CiIntegrationSlots> {
+    const active = (await this.pool.query<{ host_key: string; count: number }>(`select host_key,count(*)::int as count
+      from ci_runs where state in ('starting','running') and host_key is not null group by host_key`)).rows
+    const used = new Map(active.map(row => [row.host_key, row.count]))
+    const slots = { host: 0, ordinary: 0 }
+    await inBatches(await this.endpoint.computers(), 8, async computer => {
+      const status = await this.endpoint.request(computer, { operation: 'status' }).catch(error => {
+        log.warn({ err: error, computer: computer.key }, 'CI capacity unavailable while sizing integration')
+        return null
+      })
+      if (status?.operation !== 'status' || !status.ready) return
+      const free = Math.max(0, (status.slotsTotal ?? 1) - Math.max(status.slotsUsed ?? 0, used.get(computer.key) ?? 0))
+      if (computer.hostRef.kind === 'cloud') slots.ordinary += free
+      else slots.host += free
+    })
+    // Build computers can also take ordinary work after reserving the host-only slices.
+    if (!slots.ordinary) slots.ordinary = Math.max(1, slots.host - 1)
+    return slots
   }
 
   /** The repository's learned test file durations, most recently measured first, within the start request's

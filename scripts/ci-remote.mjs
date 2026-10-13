@@ -139,7 +139,8 @@ async function remote(suite, args) {
   }
   console.error(`[ci] ${selection.scope}: ${selection.reason} ${selection.files.length} selected files.`)
   await publish(commit)
-  const partitions = suite === 'integration' ? Number(environment.FOREMAN_CODE_CI_PARTITIONS ?? 32) : undefined
+  const partitions = suite === 'integration' && environment.FOREMAN_CODE_CI_PARTITIONS
+    ? Number(environment.FOREMAN_CODE_CI_PARTITIONS) : undefined
   const started = await call('ci_run', { workspaceId, suite, commit, scope: selection.scope,
     ...(selection.scope === 'affected' ? { files: selection.files } : {}),
     commandId: randomUUID(), ...(partitions ? { partitions } : {}) })

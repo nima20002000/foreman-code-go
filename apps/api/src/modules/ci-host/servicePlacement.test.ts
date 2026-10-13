@@ -141,4 +141,12 @@ it.each([host, cloud])('dispatches high priority then oldest tickets on $label',
     running.state = 'passed'
   }
   expect(f.started.map(item => item.request.operation === 'start' ? item.request.runId : null)).toEqual(expected)
+
+it('dispatches a duration-planned single ordinary full slice to cloud', async () => {
+  const records = queuedRuns(1).map(run => ({ ...run, expectedDurationMs: 210_000, requiresBuildComputer: false }))
+  const f = fleet(records, [cloud])
+  await f.service.dispatch()
+  expect(f.started).toHaveLength(1)
+  expect(f.started[0]!.computer.key).toBe(cloud.key)
+  expect(records[0]!.state).toBe('running')
 })
