@@ -1,6 +1,6 @@
 import { readUntil } from './helpers/observableCondition.js'
 import { expect, it, vi } from 'vitest'
-import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { respondWaitingApproval } from './helpers/respondWaitingApproval.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { approvalResponse } from './helpers/eng06ApprovalFaults.js'
 import { OperatorInteractionService } from '../src/modules/interactions/operator.js'
@@ -45,18 +45,7 @@ it.each(['http', 'mcp'] as const)('retains the same requester credential across 
       grants: [{ actions: ['interactions:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
     const denied = await f.connect(reader.token)
     expect((await denied.callTool({ name: 'interaction_respond', arguments: approvalResponse(pending) })).isError).toBe(true)
-    const input = approvalResponse(pending)
-    if (transport === 'http') {
-      const response = await f.app.inject({ method: 'POST',
-        url: `/api/management/interactions/${pending.id}/respond`,
-        headers: { authorization: `Bearer ${f.writer.token}` }, payload: input })
-      expect(response.statusCode, response.body).toBe(200)
-      expect(response.json()).toMatchObject({ interaction: { deliveryState: 'delivered' } })
-    } else {
-      const response = await f.client.callTool({ name: 'interaction_respond', arguments: input })
-      expect(response.isError).not.toBe(true)
-      expect(decodeMcpToolResult(response)).toMatchObject({ interaction: { deliveryState: 'delivered' } })
-    }
+    await respondWaitingApproval(f, pending, transport)
     await vi.waitFor(async () => {
       expect(await f.runs.get(f.f.run.id)).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
     }, { timeout: 10_000, interval: 10 })
