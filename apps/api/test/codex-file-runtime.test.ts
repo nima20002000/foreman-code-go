@@ -8,7 +8,8 @@ import type { CodexChatFileAdmission } from '../src/modules/harnesses/codexFiles
 import type { CodexChatFiles } from '../src/modules/harnesses/codexFiles/runtime.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { calls, collect, emit, finish, fixtureQualification, input, until, type Fixture } from './fixtures/codex-test-helpers.js'
-import { deferred, filePorts, fileRuntimeFixture, fileScope, publishedRef, sourceRef } from './fixtures/codex-file-runtime-helpers.js'
+import { filePorts, fileRuntimeFixture, fileScope, publishedRef, sourceRef } from './fixtures/codex-file-runtime-helpers.js'
+import { deferred } from './helpers/deferred.js'
 
 // Only qualification, FIL-05 storage/auth, and the execution-host ports are doubles.
 // The production adapter, FIL-08 bridge, session manager and stdio transport run.

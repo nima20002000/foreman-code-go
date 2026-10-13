@@ -5,6 +5,7 @@ import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { test, vi } from 'vitest'
 import { LangGraphWorkflowEngine } from '../src/modules/runs/engine.js'
 import type { RepeatEngineStartContext } from '../src/modules/runs/repeatStartComposition.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 const runtime = vi.hoisted(() => ({ work: async (context: RepeatEngineStartContext) => { void context } }))
 vi.mock('../src/modules/runs/repeatStartComposition.js', () => ({
@@ -15,12 +16,6 @@ vi.mock('../src/modules/runs/workflowLifecycle.js', async (importOriginal) => ({
   settleWorkForRestart: async () => false,
 }))
 
-function deferred() {
-  let resolve!: () => void, reject!: (reason: Error) => void
-  const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no })
-  return { promise, resolve, reject }
-}
-
 // Current engine and checkpoint inspection; recording repository/native ports.
 // This isolates shutdown ordering and does not claim database or provider proof.
 for (const preserving of [false, true]) for (const uncertain of [false, true])
@@ -29,7 +24,7 @@ for (const handoffs of preserving ? [false, true] : [false]) test(
     + `${uncertain ? 'succeeds on retry' : 'completes'}${handoffs ? ' with work handoffs' : ''}`, async () => {
   const f = makeCurrentWorkflowFixture('restart-order', 'single')
   if (handoffs) f.version.definition.handoffs = { contractVersion: 1 }
-  const entered = deferred(), closure = deferred(), events: string[] = []
+  const entered = rejectableDeferred(), closure = rejectableDeferred(), events: string[] = []
   let released = false
   const owner = {
     runId: f.run.id,
@@ -132,7 +127,7 @@ for (const handoffs of preserving ? [false, true] : [false]) test(
 
 test('restart retains the original owner when cleanup persistence fails and retries before abort', async () => {
   const f = makeCurrentWorkflowFixture('restart-intent-failure', 'single')
-  const entered = deferred(), events: string[] = []
+  const entered = rejectableDeferred(), events: string[] = []
   let fail = true
   const owner = { runId: f.run.id, assertOwned() {}, release: async () => { events.push('release') } }
   const runs = {
@@ -180,7 +175,7 @@ test('restart retains the original owner when cleanup persistence fails and retr
 
 for (const failFirst of [false, true]) test(`naturally completing drive holds its owner through restart persistence${failFirst ? ' and retries failed intent' : ''}`, async () => {
   const f = makeCurrentWorkflowFixture('restart-natural-finish', 'single')
-  const entered = deferred(), complete = deferred(), persisting = deferred(), persisted = deferred(), events: string[] = []
+  const entered = rejectableDeferred(), complete = rejectableDeferred(), persisting = rejectableDeferred(), persisted = rejectableDeferred(), events: string[] = []
   let released = false, attempt = 0
   const owner = { runId: f.run.id, assertOwned() { assert.equal(released, false) }, release: async () => { released = true; events.push('release') } }
   const runs = {

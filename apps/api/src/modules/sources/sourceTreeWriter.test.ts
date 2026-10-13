@@ -2,12 +2,12 @@ import { mkdtemp, open, readFile, rm, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
-import { deferred } from '../../../test/helpers/agentChatF1.js'
 import { withSourceTreeWriter } from './entryProcessing.js'
 import { sourceSha256 } from './manifest.js'
 import { anchored, openPrivateRoot } from './privateFilesystem.js'
 import { syncSourceTree } from './sourceTreeSync.js'
 import type { SourceFileWriter } from './sourceFileWriter.js'
+import { deferred } from '../../../test/helpers/deferred.js'
 
 function writer(tree: FileHandle, write: SourceFileWriter['write']) {
   return { write, finish: () => syncSourceTree(tree, AbortSignal.timeout(5000)) }

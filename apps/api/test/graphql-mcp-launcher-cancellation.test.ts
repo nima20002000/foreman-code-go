@@ -1,12 +1,12 @@
 import type { ServerResponse } from 'node:http'
 import { expect, it } from 'vitest'
-import { deferred } from './helpers/wave25Agent3.js'
 import { mcpLauncherFixture } from './support/mcpLauncher.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 it('aborts only the cancelled stdio HTTP call and suppresses its late result', async () => {
-  const started = deferred<void>()
-  const disconnected = deferred<void>()
-  const notification = deferred<void>()
+  const started = rejectableDeferred<void>()
+  const disconnected = rejectableDeferred<void>()
+  const notification = rejectableDeferred<void>()
   const responses = new Map<string | number, ServerResponse>()
   const f = await mcpLauncherFixture((message, response) => {
     if (message.method === 'notifications/cancelled') {

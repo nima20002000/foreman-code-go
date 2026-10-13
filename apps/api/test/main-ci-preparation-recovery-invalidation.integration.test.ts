@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { mainPreparationRecoverySuite } from './helpers/mainPreparationRecoverySuite.js'
 import { randomUUID } from 'node:crypto'
-import { deferred } from './helpers/wave25Agent3.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 describe.skipIf(!postgresEnabled)('Main CI preparation interruption and recovery', () => {
   const suite = mainPreparationRecoverySuite()
@@ -10,8 +10,8 @@ describe.skipIf(!postgresEnabled)('Main CI preparation interruption and recovery
 
   it.each(['builds disabled', 'Main changed', 'writer revoked'] as const)(
     'retains a failed pending preparation when recovery finds %s', async condition => {
-      const reached = deferred()
-      const paused = deferred()
+      const reached = rejectableDeferred()
+      const paused = rejectableDeferred()
       let interrupted = false
       const f = await suite.createFixture({ pause: async stage => {
         if (stage === 'source' && !interrupted) {

@@ -19,7 +19,7 @@ import type { ClaudeNativeSessionManager } from '../src/modules/harnesses/claude
 import type { ClaudeSdkClient, ClaudeSdkUserMessage } from '../src/modules/harnesses/claudeSdk/port.js'
 import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
-import { deferred } from './support/claudeProduction.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 /** Native transport frames are doubled; runner, normalizer, manager, callback authority, caller and PostgreSQL are real. */
 function runtime(pool: pg.Pool, repository: PostgresOperatorConversationRepository, configuration: OperatorConfigurationVersion,
@@ -28,7 +28,7 @@ function runtime(pool: pg.Pool, repository: PostgresOperatorConversationReposito
     binding: { kind: 'operator', conversationId, repository },
     manager: { nativeCallbackContext: (sessionId, toolId) => manager.nativeCallbackContext(sessionId, toolId) } })
   const frames = new ClaudeBoundedQueue<unknown>(64)
-  const ready = deferred<AsyncIterator<ClaudeSdkUserMessage>>()
+  const ready = rejectableDeferred<AsyncIterator<ClaudeSdkUserMessage>>()
   let options!: Options
   const client: ClaudeSdkClient = {
     sdkVersion: '0.3.284',
@@ -141,8 +141,8 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
         expect((await pool.query('select count(*)::int as n from management_command_receipts')).rows[0].n).toBe(0)
         const query = pool.query.bind(pool)
         const concurrentPoll = scenario.startsWith('concurrent-poll')
-        const journalEntered = deferred<void>()
-        const finishJournal = deferred<void>()
+        const journalEntered = rejectableDeferred<void>()
+        const finishJournal = rejectableDeferred<void>()
         let validations = 0
         const spy = vi.spyOn(pool, 'query').mockImplementation(((...args: unknown[]) => {
           const statement = String(args[0])

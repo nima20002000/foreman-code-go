@@ -1,12 +1,9 @@
+import { asRecord } from '../../shared/records.js'
 import { ExecutionResultSchema, type NativeHarnessEvent, type NativeSessionReference } from '@foreman-code/contracts'
 
 import type { NativeHistory } from '../harnesses/port.js'
 import { NativeDeliveryError } from '../harnesses/errors.js'
 
-function object(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown> : {}
-}
 
 export interface TurnEvidence {
   acknowledged: boolean
@@ -94,7 +91,7 @@ export class ReviewEvidenceTracker {
     }
     if ((typeof payload.threadId === 'string' && payload.threadId !== this.session.nativeSessionId)
       || (typeof payload.sessionID === 'string' && payload.sessionID !== this.session.nativeSessionId)) return
-    const turn = object(payload.turn)
+    const turn = asRecord(payload.turn)
     const turnId = typeof payload.turnId === 'string' ? payload.turnId : typeof turn.id === 'string' ? turn.id : undefined
     if (event.type === 'turn.started' || event.type === 'turn/started') {
       this.busy(turnId)
@@ -117,14 +114,14 @@ export class ReviewEvidenceTracker {
     if (event.type === 'thread.reconciled' || event.type === 'thread.attached') {
       if (payload.threadId === this.session.nativeSessionId && turnId && turnId === this.busyProviderId
         && ['succeeded', 'failed', 'canceled'].includes(String(payload.terminal))) this.idle()
-      const thread = object(payload.thread)
+      const thread = asRecord(payload.thread)
       if (thread.id !== this.session.nativeSessionId || !Array.isArray(thread.turns)) return
       // An outer correlationId is a query echo, never an acknowledgement.
       for (const value of thread.turns) {
-        const candidate = object(value)
+        const candidate = asRecord(value)
         const items = Array.isArray(candidate.items) ? candidate.items : []
         const correlated = candidate.clientUserMessageId === this.correlationId
-          || items.some((item) => object(item).clientUserMessageId === this.correlationId)
+          || items.some((item) => asRecord(item).clientUserMessageId === this.correlationId)
         const matches = correlated || (this.providerId !== undefined && candidate.id === this.providerId)
         if (!matches || typeof candidate.id !== 'string') continue
         if (typeof candidate.clientUserMessageId === 'string'
@@ -132,8 +129,8 @@ export class ReviewEvidenceTracker {
         this.acknowledge(candidate.id)
         if (candidate.id === this.providerId) this.terminal = ['completed', 'failed', 'interrupted'].includes(String(candidate.status))
       }
-      const last = object(thread.turns.at(-1))
-      const status = object(thread.status).type ?? thread.status
+      const last = asRecord(thread.turns.at(-1))
+      const status = asRecord(thread.status).type ?? thread.status
       this.busyProviderId = typeof last.id === 'string' ? last.id : undefined
       this.nativeBusy = status === 'active' || last.status === 'inProgress'
       this.nativeIdle = !this.nativeBusy && (status === 'idle' && (thread.turns.length === 0

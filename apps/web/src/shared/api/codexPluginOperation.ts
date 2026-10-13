@@ -1,3 +1,4 @@
+import { errorMessage } from '../errorMessage'
 import type { CodexPluginChangeInput, CodexPluginChangeResult, CodexPluginOperation } from '@foreman-code/contracts/management'
 
 export type PluginOperation = {
@@ -32,5 +33,5 @@ export function pluginOperationFailed(current: PluginOperation, error: unknown):
   // Once delivery is uncertain, no later 4xx can erase the original command.
   if (definite && !current.uncertainDelivery && !current.result) return null
   return { ...current, phase: 'retry', uncertainDelivery: true,
-    error: error instanceof Error ? error.message : 'The result is unknown. Retain the original request.' }
+    error: errorMessage(error, 'The result is unknown. Retain the original request.') }
 }

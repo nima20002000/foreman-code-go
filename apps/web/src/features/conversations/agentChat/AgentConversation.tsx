@@ -1,3 +1,4 @@
+import { errorMessage } from '../../../shared/errorMessage'
 import { useSessionControls } from '../sessionControls/useSessionControls'
 import { compactionBlocksSend, parseSessionCommand } from '@foreman-code/contracts'
 import { useMemo, type ReactNode } from 'react'
@@ -107,7 +108,7 @@ function AgentConversationContent({ context, name, role, activity, runLabel, onC
   let attention = controlError ?? chat.localError
   let attentionAction: ReactNode
   if (!attention && error) {
-    attention = error instanceof Error ? error.message : 'Delivery failed'
+    attention = errorMessage(error, 'Delivery failed')
     if (!retired && notActive) attentionAction = <Button size="sm" variant="ghost" disabled={!!nextReason || empty}
       title={nextReason} onClick={() => submit('next_turn')}>Send as next turn</Button>
     else if (stale) attentionAction = <Button size="sm" variant="ghost" onClick={chat.refresh}>Refresh</Button>

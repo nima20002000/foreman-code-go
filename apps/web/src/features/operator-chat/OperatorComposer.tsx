@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage'
 import { useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { parseSessionCommand, type SessionMode } from '@foreman-code/contracts'
 import { Icon, IconButton } from '../../shared/ui/nocturne'
@@ -48,7 +49,7 @@ export function OperatorComposer({ conversationId, context, attachmentControl, f
       else onSubmit(content)
     } catch (failure) {
       setCommandError({ conversationId, content,
-        message: failure instanceof Error ? failure.message : 'The native command could not be confirmed.' })
+        message: errorMessage(failure, 'The native command could not be confirmed.') })
     }
   }
   const feedback = sessionControls?.commandFeedback

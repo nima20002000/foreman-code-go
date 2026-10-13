@@ -2,10 +2,10 @@ import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { deferred } from '../../../test/helpers/agentChatF1.js'
 import { afterEach, expect, it } from 'vitest'
 import { captureGitSource, qualifiedGit, type SourceSnapshotSink } from './capture.js'
 import { sourceSha256 } from './manifest.js'
+import { deferred } from '../../../test/helpers/deferred.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })

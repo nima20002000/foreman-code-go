@@ -3,9 +3,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { buildRepeatGraph, compileWorkflowGraph } from '../src/modules/runs/repeatGraph.js'
 import { selectedTerminalResolutions } from '../src/modules/runs/topology.js'
 import { syntheticCurrentWorkflow } from './helpers/currentSynthetic.js'
+import { deferred } from './helpers/deferred.js'
 
 const signal = () => new AbortController().signal
-function latch() { let resolve!: () => void; const promise = new Promise<void>((done) => { resolve = done }); return { promise, resolve } }
 function build(f: ReturnType<typeof syntheticCurrentWorkflow>, driver = f.driver(), checkpointer = new MemorySaver()) {
   return buildRepeatGraph({ runId: f.runId, version: f.version, store: f.store, driver, signal: signal(), checkpointer, configuredParallelism: 4 })
 }
@@ -59,7 +59,7 @@ describe('Agent 3 real LangGraph current V3 wrappers with synthetic native work'
   it('does not complete a branch end while another selected path is still running', async () => {
     const f = syntheticCurrentWorkflow(['entry', 'end', 'slow', 'unused'], [['entry', 'end'], ['entry', 'slow'], ['end', 'unused']],
       { end: { outcomes: [{ outcome: 'stop', target: { kind: 'branch_end' } }, { outcome: 'go', target: { kind: 'edge', relationshipId: 'end-unused' } }] } })
-    const held = latch(), entered = latch()
+    const held = deferred(), entered = deferred()
     const { graph, config } = build(f, f.driver((id) => id === 'end' ? { routing: { outcome: 'stop' }, data: {} } : {}, async (id) => {
       if (id === 'slow') { entered.resolve(); await held.promise }
     }))

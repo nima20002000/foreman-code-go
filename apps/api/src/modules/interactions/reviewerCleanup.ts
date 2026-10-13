@@ -1,12 +1,9 @@
+import { asRecord } from '../../shared/records.js'
 import type { NativeSessionReference, PendingNativeInteraction, ReviewCleanup, ReviewJob } from '@foreman-code/contracts'
 
 import type { NativeHistory } from '../harnesses/port.js'
 import { reviewTurnEvidence } from './reviewerEvidence.js'
 
-function object(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown> : {}
-}
 
 /** A permission's message identity is not necessarily its root user turn identity. */
 export function reviewOwnsPermission(
@@ -15,7 +12,7 @@ export function reviewOwnsPermission(
   if (request.session.harness !== session.harness || request.session.providerVersion !== session.providerVersion
     || request.session.nativeSessionId !== session.nativeSessionId || !request.turn.nativeRequestId) return false
   if (session.harness === 'claude') {
-    const submission = history.nativeSubmission, callback = object(request.request)
+    const submission = history.nativeSubmission, callback = asRecord(request.request)
     return submission?.kind === 'message' && submission.nativeSessionId === session.nativeSessionId
       && submission.nativeMessageId === providerId && history.correlationId === submission.clientCorrelationId
       && request.nativeRequestType === 'can_use_tool' && request.turn.nativeMessageId === providerId

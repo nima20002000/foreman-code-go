@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage'
 import { useEffect, useRef, useState } from 'react'
 import { MAX_SKILL_INSTRUCTIONS_CHARS } from '@foreman-code/contracts'
 import { SkillCreateInputSchema, type SkillSummary, type SkillVersion } from '@foreman-code/contracts/management'
@@ -107,7 +108,7 @@ export function SkillEditor({ saved, workspaceOptions, initialWorkspace, onSaved
       }
       const fieldIssues = validationIssues(failure)
       if (fieldIssues.length) setIssues(fieldIssues)
-      setError(failure instanceof Error ? failure.message : 'The skill could not be saved.')
+      setError(errorMessage(failure, 'The skill could not be saved.'))
     }
   }
   const discard = () => { setDraft(baseline); setIssues([]); setError(undefined); setConflict(undefined) }

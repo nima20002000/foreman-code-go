@@ -6,9 +6,10 @@ import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { HarnessExecutionError } from '../../src/modules/harnesses/errors.js'
 import type { NativeHarnessSessionManager, NativeHistory } from '../../src/modules/harnesses/port.js'
 import { checkpointRuntimeFixture } from './wave25Br1003Runtime.js'
-import { deferred, readCurrentExecutions } from './wave25Agent3.js'
+import { readCurrentExecutions } from './wave25Agent3.js'
 import { graphParity } from './wave25R1GraphParity.js'
 import { FixtureProcessClosures } from './eng06ProcessClosures.js'
+import { rejectableDeferred } from './deferred.js'
 
 export type FaultForm = 'ordinary' | 'repeat'
 export type FaultRuntime = ReturnType<Awaited<ReturnType<typeof checkpointRuntimeFixture>>['compose']>
@@ -34,20 +35,20 @@ export class ApprovalTransportFaults {
     signal.throwIfAborted()
     return this.recoveryAvailable && this.processes.recover(executionId, signal)
   }
-  private hold: ReturnType<typeof deferred<void>> | undefined
-  private entered: ReturnType<typeof deferred<string>> | undefined
+  private hold: ReturnType<typeof rejectableDeferred<void>> | undefined
+  private entered: ReturnType<typeof rejectableDeferred<string>> | undefined
   private holdNext = false
-  private workerGate: { entered: ReturnType<typeof deferred<void>>; release: ReturnType<typeof deferred<void>>; deliveryObserved: Set<string> } | undefined
+  private workerGate: { entered: ReturnType<typeof rejectableDeferred<void>>; release: ReturnType<typeof rejectableDeferred<void>>; deliveryObserved: Set<string> } | undefined
 
   holdNextTurn() {
     if (this.hold) throw new Error('A native turn gate is already installed')
-    const release = deferred(), entered = deferred<string>()
+    const release = rejectableDeferred(), entered = rejectableDeferred<string>()
     this.hold = release; this.entered = entered; this.holdNext = true
     return { entered: entered.promise, release: () => release.resolve() }
   }
   holdWorkerAcknowledgement() {
     if (this.workerGate) throw new Error('A Worker acknowledgement gate is already installed')
-    const entered = deferred(), release = deferred()
+    const entered = rejectableDeferred(), release = rejectableDeferred()
     this.workerGate = { entered, release, deliveryObserved: new Set() }
     return { entered: entered.promise, release: () => release.resolve() }
   }

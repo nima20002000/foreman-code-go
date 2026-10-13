@@ -22,11 +22,6 @@ export const snapshotRoute = '*/api/management/workspaces/:workspaceId/workflows
 export const summariesRoute = '*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/summaries'
 export const activitiesRoute = '*/api/management/workspaces/:workspaceId/runs/:runId/activities'
 export const clients: QueryClient[] = []
-export const deferred = <T,>() => {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((accept) => { resolve = accept })
-  return { promise, resolve }
-}
 export const execution = (runId: string, executionId = `execution-${runId}`, workflowNodeId = nodeId): SelectedRunChatExecution =>
   ({ ...scope, runId, executionId, workflowNodeId })
 export const context = (runId?: string) => ({ ...scope, workflowNodeId: nodeId, agentId, ...(runId ? { runId } : {}) })

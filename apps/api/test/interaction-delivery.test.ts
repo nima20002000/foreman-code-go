@@ -15,6 +15,7 @@ import { SingleWriterSessionManager } from '../src/modules/interactions/sessionW
 import { nativeLanes } from './helpers/nativeLanes.js'
 import type { InteractionNativeRuntime } from '../src/modules/interactions/runtimePorts.js'
 import { InteractionService } from '../src/modules/interactions/service.js'
+import { deferred } from './helpers/deferred.js'
 
 function fixture(): DurableInteraction {
   return {
@@ -27,12 +28,6 @@ function fixture(): DurableInteraction {
       affectsOtherPendingRequests: false, interruptsCurrentTurn: false, mutatesPersistentPolicy: false }],
     status: 'pending', deliveryState: 'not_started', createdAt: '2026-09-16T00:00:00.000Z', updatedAt: '2026-09-16T00:00:00.000Z',
   }
-}
-
-function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
-  return { promise, resolve }
 }
 
 const userPrincipal: ManagementPrincipal = { id: 'unit-user', name: 'Unit User', audience: 'user',

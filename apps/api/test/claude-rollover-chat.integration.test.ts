@@ -11,17 +11,18 @@ import { AgentChatService } from '../src/modules/conversations/agentChat.js'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
-import { agent3Database, deferred, seedAgent3 } from './helpers/wave25Agent3.js'
+import { agent3Database, seedAgent3 } from './helpers/wave25Agent3.js'
 import { waitForDelivery } from './helpers/agentChatDelivery.js'
 import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { productionClaudeFixture } from './support/claudeProduction.js'
 import { claudeSdkToolTransport } from './support/claudeSdkToolTransport.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 it('settles an unoffered rollover failure and retries through authenticated Agent MCP without replaying earlier inputs', async () => {
   const db = await agent3Database()
-  const claimReady = deferred()
-  const resumeEntered = deferred()
-  const resumeReady = deferred()
+  const claimReady = rejectableDeferred()
+  const resumeEntered = rejectableDeferred()
+  const resumeReady = rejectableDeferred()
   let chat: AgentChatService | undefined
   let app: ReturnType<typeof buildApp> | undefined
   let manager: ReturnType<typeof productionClaudeFixture>['manager'] | undefined

@@ -1,15 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
-import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
+import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { publicationSignal } from './helpers/publicationSignal.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 const closes: Array<() => Promise<void>> = []
 afterEach(async () => { while (closes.length) await closes.pop()!() })
 
 describe.skipIf(!postgresEnabled)('native publication observation', () => {
   it('wakes only after committed native output is readable', async () => {
-    const held = deferred()
-    const release = deferred()
+    const held = rejectableDeferred()
+    const release = rejectableDeferred()
     const publications = publicationSignal()
     let blocked = false
     const f = await checkpointRuntimeFixture(1, 1, {

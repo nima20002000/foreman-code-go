@@ -5,8 +5,9 @@ import { graphRpc, graphRpcValue } from '../eng04-graph-composition-fixture.js'
 import { streamingOperator } from './streamingRunOperator.js'
 import { checkpointRuntimeFixture } from './wave25Br1003Runtime.js'
 import { approvalResponse } from './approvalResponse.js'
-import { deferred, readCurrentExecutions } from './wave25Agent3.js'
+import { readCurrentExecutions } from './wave25Agent3.js'
 import { graphParity } from './wave25R1GraphParity.js'
+import { rejectableDeferred } from './deferred.js'
 
 const closes: Array<() => Promise<void>> = []
 export function installApprovalCleanup() {
@@ -27,8 +28,8 @@ export async function approvalWithActiveSibling() {
   closes.push(f.close)
   const operator = await streamingOperator(f)
   closes.push(() => operator.app.close())
-  const entered = deferred()
-  const release = deferred()
+  const entered = rejectableDeferred()
+  const release = rejectableDeferred()
   closes.push(async () => { release.resolve() })
   const original = f.provider.startTurn.bind(f.provider)
   vi.spyOn(f.provider, 'startTurn').mockImplementation(async function* (session, input) {

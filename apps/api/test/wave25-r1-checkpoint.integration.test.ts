@@ -2,8 +2,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { RunOwnership } from '../src/modules/runs/ownership.js'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { approvalResponse } from './helpers/approvalResponse.js'
-import { agent3Database, deferred, postgresEnabled } from './helpers/wave25Agent3.js'
+import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 import type { DurableInteraction } from '@foreman-code/contracts'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 const closes: Array<() => Promise<void>> = []
 let database: Awaited<ReturnType<typeof agent3Database>>
@@ -78,7 +79,7 @@ describe.skipIf(!postgresEnabled)('BR1-003: actual current checkpoint and Run-ow
   }, 60000)
 
   it('excludes a competing Run owner while the real checkpoint consumer is active', async () => {
-    const f = await fixture(), entered = deferred(), release = deferred()
+    const f = await fixture(), entered = rejectableDeferred(), release = rejectableDeferred()
     const consume = f.saver.consumeApprovalInterrupt.bind(f.saver)
     vi.spyOn(f.saver, 'consumeApprovalInterrupt').mockImplementation(async (sql, interaction) => {
       entered.resolve(); await release.promise

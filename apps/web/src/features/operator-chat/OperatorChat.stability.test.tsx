@@ -17,6 +17,7 @@ import { useOperatorChatStore } from './operatorChatStore'
 import { configuredOperatorSetup } from './operatorSetupTestFixture'
 import { operatorDecision, operatorState } from './pr17-test-fixtures'
 import { summarizeOperatorConversation } from './operatorChatStatus'
+import { rejectableDeferred } from '../../test/deferred'
 
 const api = vi.hoisted(() => ({ get: vi.fn(), list: vi.fn(), create: vi.fn(), send: vi.fn(),
   remove: vi.fn(), restore: vi.fn(), cancel: vi.fn(), subscribe: vi.fn() }))
@@ -35,12 +36,6 @@ let originalLocks: PropertyDescriptor | undefined
 function state(id: string, title: string, revision = 1) {
   return operatorState({ conversation: { ...operatorState().conversation, id, title }, revision,
     messages: [], turnState: 'idle', activeRequestId: null, settings: operatorChatSettings(DEFAULT_HARNESS_DEFAULTS.codex) })
-}
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (error: Error) => void
-  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
-  return { promise, resolve, reject }
 }
 function mount() {
   return render(<QueryClientProvider client={client}>
@@ -130,8 +125,8 @@ it('shows a newer restoration from another client and fences pre-deletion histor
 it.each(['select', 'new', 'round-trip'] as const)('does not let delayed Undo overwrite a newer %s navigation', async navigation => {
   mount()
   await deleteFirst()
-  const response = deferred<{ conversationId: string; revision: number }>()
-  const history = deferred<void>()
+  const response = rejectableDeferred<{ conversationId: string; revision: number }>()
+  const history = rejectableDeferred<void>()
   api.restore.mockReturnValueOnce(response.promise)
   fireEvent.click(screen.getByRole('button', { name: 'Undo' }))
   await waitFor(() => expect(api.restore).toHaveBeenCalledOnce())
@@ -156,7 +151,7 @@ it.each(['select', 'new', 'round-trip'] as const)('does not let delayed Undo ove
 })
 
 it('recovers the original receipt after a send timeout even when completed GET readback arrived first', async () => {
-  const response = deferred<never>()
+  const response = rejectableDeferred<never>()
   api.send.mockReturnValueOnce(response.promise).mockImplementation(async (_id, command) => ({
     replayed: true, state: states.a, requestId: command.requestId,
   }))

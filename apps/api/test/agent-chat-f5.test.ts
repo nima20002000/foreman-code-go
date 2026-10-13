@@ -9,7 +9,8 @@ import { AgentChatService } from '../src/modules/conversations/agentChat.js'
 import {
   AGENT_CHAT_OPEN_TURN_LIMIT, agentChatInputHash, agentChatKey, PostgresAgentChatRepository, type AgentConversationRow,
 } from '../src/modules/conversations/agentChatRepository.js'
-import { AgentChatF5Native, approval, deferred, eventually } from './helpers/agentChatF5.js'
+import { AgentChatF5Native, approval, eventually } from './helpers/agentChatF5.js'
+import { deferred } from './helpers/deferred.js'
 
 const context = { workspaceId: 'ws-f5', workflowId: 'wf-f5', workflowNodeId: 'node-f5', agentId: 'agent-f5' }
 const { workspaceId, ...query } = context

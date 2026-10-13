@@ -1,14 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { postgresEnabled, deferred } from './helpers/wave25Agent3.js'
+import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { approvalResponse } from './helpers/eng06ApprovalFaults.js'
 import { createApprovalRecoverySetup, startWaiting } from './helpers/approvalRecovery.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 const setup = createApprovalRecoverySetup()
 
 for (const form of ['ordinary', 'repeat'] as const) {
   describe.skipIf(!postgresEnabled)(`Approval recovery ${form}: response stop`, () => {
     it('does not consume a late native ACK when Stop wins during an in-flight approval response', async () => {
-      const t = await setup(form), pending = await startWaiting(t), entered = deferred(), release = deferred()
+      const t = await setup(form), pending = await startWaiting(t), entered = rejectableDeferred(), release = rejectableDeferred()
       t.f.provider.beforeRespond = async () => { entered.resolve(); await release.promise }
       const response = t.runtime.service.respond(t.responder, approvalResponse(pending))
         .then((value) => ({ value }), (error: unknown) => ({ error }))

@@ -11,11 +11,11 @@ import { boundLocationKeys } from '../../shared/api/workspaceBoundLocation'
 import { WorkspaceExecutionLocationSettings } from './WorkspaceExecutionLocationSettings'
 import { useBoundLocationDraftStore } from './workspaceBoundLocationDraftStore'
 import { mainRoot, workerRoot, boundRootReadback } from './workspaceBoundLocation.fixtures'
+import { deferred } from '../../test/deferred'
 const clients: QueryClient[] = []
 function workspace(id: string): ManagedWorkspace { return { workspace: { id, name: id }, revision: 1, archivedAt: null,
   executionLocation: { runnerId: 'existing-server-runner', rootPath: `/previous/${id}` }, locationRevision: 1,
   locationValidation: { status: 'ready', checkedAt: '2026-10-01T00:00:00.000Z' } } }
-function pending() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done }); return { promise, resolve } }
 function mount(onSaved = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } }); clients.push(client)
   for (const id of ['workspace-a', 'workspace-b']) client.setQueryData(queryKeys.managedWorkspace(id), workspace(id))
@@ -37,7 +37,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); clients.splice(0).forEach(client => client.clear()) })
 describe('bound workspace location acknowledgement fences', () => {
   it('keeps a late workspace-A save out of workspace B and does not close B’s dialog', async () => {
-    const gate = pending(), started = pending()
+    const gate = deferred(), started = deferred()
     server.use(http.put('/api/management/workspaces/workspace-a/root-location', async ({ request }) => {
       const input = await request.json() as WorkspaceRootSelection; started.resolve(); await gate.promise
       return HttpResponse.json({ value: boundRootReadback(input, workerRoot), replayed: false })

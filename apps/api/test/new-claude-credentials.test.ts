@@ -19,8 +19,8 @@ import type { NativeSessionStart } from '../src/modules/harnesses/port.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
+import { deferred } from './helpers/deferred.js'
 
-const deferred = <T>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
 const createdAt = '2026-10-01T00:00:00.000Z'
 /** Synthetic installed/profile records and redacted SDK frames. Exercises actual
  * admission/domain/factory/manager classes without native or PostgreSQL claims. */

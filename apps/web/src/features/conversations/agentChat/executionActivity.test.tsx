@@ -7,9 +7,9 @@ import {
 } from '@foreman-code/contracts/agent-chat'
 import { server } from '../../../mocks/server'
 import { useConversationDraftStore } from '../conversationDraftStore'
-import { deferred } from '../../run-board/testFixtures'
 import { mergeExecutionActivity, type ExecutionActivityFeed } from './executionActivity'
 import { installChatSource, mountChat } from './testSupport'
+import { deferred } from '../../../test/deferred'
 
 const at = '2026-09-27T12:00:00.000Z'
 const message = (executionId: string, id: string, sequence: string, content: string, role: 'user' | 'assistant' = 'assistant'): AgentChatExecutionItem =>

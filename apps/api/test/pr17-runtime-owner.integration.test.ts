@@ -14,12 +14,7 @@ import { RuntimeShutdown } from '../src/infrastructure/runtimeShutdown.js'
 import { NativeProcessRegistry, type NativeRegistryChange } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { processIdentity } from '../src/modules/harnesses/recovery/linuxIdentity.js'
 import { writeRecord } from '../src/modules/harnesses/recovery/storage.js'
-
-function gate() {
-  let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
-  return { promise, resolve }
-}
+import { deferred } from './helpers/deferred.js'
 
 // Runtime-owner advisory locks are DATABASE scoped, not schema scoped. Use a
 // disposable database so parallel production integration files cannot collide.
@@ -83,7 +78,7 @@ describe('PR17 F7 PostgreSQL runtime ownership', () => {
       }))
       changes = registry.changes(initial.revision, watching.signal)[Symbol.asyncIterator]()
       const observed = changes.next()
-      const entered = gate()
+      const entered = deferred()
       const shutdown = new RuntimeShutdown({
         stop: [{ name: 'native process', run: () => {
           const closing = registry.closeOwner(recovery.owner)
@@ -129,7 +124,7 @@ describe('PR17 F7 PostgreSQL runtime ownership', () => {
     it(`rejects a second real owner while ${pendingStage} cleanup is pending, then allows handoff`, async () => {
       const first = owner()
       await first.acquire()
-      const pending = gate(); const entered = gate()
+      const pending = deferred(); const entered = deferred()
       const hold = () => { entered.resolve(); return pending.promise }
       const released = vi.fn(() => first.close())
       const shutdown = new RuntimeShutdown({

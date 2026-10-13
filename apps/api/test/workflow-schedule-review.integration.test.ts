@@ -3,9 +3,10 @@ import type pg from 'pg'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import type { RunStartV3Input } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../src/modules/errors.js'
-import { agent3Database, deferred, postgresEnabled } from './helpers/wave25Agent3.js'
+import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 import { sch11Minute, sch11Once } from './helpers/sch11ClockCases.js'
 import { sch11Fixture, type Sch11Database, type Sch11Fixture } from './helpers/sch11Fixture.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 async function reached<T>(signal: Promise<T>, work: Promise<void>): Promise<T> {
   return Promise.race([signal, work.then(() => { throw new Error('Dispatch completed before the expected barrier') })])
@@ -36,8 +37,8 @@ describe.skipIf(!postgresEnabled)('SCH-01/02 occurrence identity and final eligi
     const saved = await f.save(sch11Minute)
     expect(saved.nextOccurrenceAt).toBe('2030-01-07T10:00:00.000Z')
     f.time.now = saved.nextOccurrenceAt!
-    const failed = deferred(), releaseFailure = deferred()
-    const peerPrepared = deferred(), releasePeer = deferred()
+    const failed = rejectableDeferred(), releaseFailure = rejectableDeferred()
+    const peerPrepared = rejectableDeferred(), releasePeer = rejectableDeferred()
     const starts: RunStartV3Input[] = []
     let peer: Promise<void> | undefined
     const work = f.dispatcher(async (principal, input, guard) => {
@@ -114,8 +115,8 @@ describe.skipIf(!postgresEnabled)('SCH-01/02 occurrence identity and final eligi
     interface Artifacts extends pg.QueryResultRow {
       runs: number; snapshots: number; receipts: number; authorities: number; accepted: number
     }
-    const overlapRead = deferred<Artifacts>(), releaseOverlap = deferred()
-    const nextPrepared = deferred(), releaseNext = deferred()
+    const overlapRead = rejectableDeferred<Artifacts>(), releaseOverlap = rejectableDeferred()
+    const nextPrepared = rejectableDeferred(), releaseNext = rejectableDeferred()
     let failedRunId: string | undefined, failedAuthorityId: string | undefined
     let calls = 0
     const work = f.dispatcher(async (principal, input, guard) => {

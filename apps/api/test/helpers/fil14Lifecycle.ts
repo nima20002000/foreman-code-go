@@ -49,11 +49,6 @@ export const contentUrl = (owner: Owner, value: FileWithRevision) =>
   `${base(owner)}/${value.file.fileId}/revisions/${value.revision.revisionId}/content`
 export const headers = (owner: Owner) => ({ authorization: `Bearer ${owner.token}`, host: 'localhost' })
 
-export function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
-  return { promise, resolve }
-}
 /** Bounded observation, not an arbitrary sleep used to guess which transaction won. */
 export async function waitFor(check: () => Promise<boolean>, message: string, timeoutMs = 3000) {
   const deadline = performance.now() + timeoutMs

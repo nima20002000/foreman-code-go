@@ -1,3 +1,4 @@
+import { errorMessage } from '../../../shared/errorMessage'
 import { acknowledgeAgentEdits, hasAgentEdits } from './agentEdits'
 import type { WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { draftOperations, hasLocalChanges, mergeAcknowledgement, type AuthoringIssue } from './model'
@@ -26,7 +27,7 @@ export function draftFailure(error: unknown, commandMayHaveRun: boolean): DraftF
   const issues = issuesFrom(details.issues ?? value.issues)
   // A transport/parse failure cannot prove that a mutation was not committed.
   const uncertain = commandMayHaveRun && (status === 0 || status >= 500 || code === 'INVALID_RESPONSE')
-  return { code, uncertain, message: error instanceof Error ? error.message : 'The request failed.', ...(issues.length ? { issues } : {}) }
+  return { code, uncertain, message: errorMessage(error, 'The request failed.'), ...(issues.length ? { issues } : {}) }
 }
 
 /** One serial authoring owner per draft key, including remounts and ambiguous retries. */

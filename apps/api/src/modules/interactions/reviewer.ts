@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage.js'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 
@@ -430,7 +431,7 @@ export class ReviewerDispatcher {
             if (!busy) lane.observedStatus = 'disconnected'
             return await transition(busy ? 'blocked_busy' : 'blocked_disconnected', {
               error: { code: busy ? 'REVIEW_SESSION_BUSY' : 'REVIEW_SESSION_DISCONNECTED',
-                message: error instanceof Error ? error.message : 'The reviewer session could not begin its turn.' },
+                message: errorMessage(error, 'The reviewer session could not begin its turn.') },
               retryAfter: new Date(Date.now() + Math.min(60_000, 5_000 * 2 ** Math.min(job.attempt, 4))).toISOString(),
             })
           }
@@ -442,7 +443,7 @@ export class ReviewerDispatcher {
           lane.observedStatus = 'uncertain'
           return await transition('uncertain', {
             error: { code: 'REVIEW_DELIVERY_UNCERTAIN',
-              message: error instanceof Error ? error.message : 'The native review settlement is unknown.' },
+              message: errorMessage(error, 'The native review settlement is unknown.') },
             retryAfter: new Date(Date.now() + 5_000).toISOString(),
           })
         } finally { await maintenance?.stop() }

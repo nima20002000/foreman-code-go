@@ -24,7 +24,8 @@ import { registerProductionFileStorage } from '../src/modules/files/production.j
 import { productionFileTools } from '../src/modules/files/tools/production.js'
 import { PostgresFileConversationAuthorization } from '../src/modules/files/authorization.js'
 import { workerConversationFixture } from '../src/modules/conversations/workerFixtures.test-support.js'
-import { agent3Database, deferred, postgresEnabled } from './helpers/wave25Agent3.js'
+import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 // Native frames are recorded; PostgreSQL admission, SDK MCP and the file service are production code.
 async function fixture(readOnly: boolean) {
@@ -84,7 +85,7 @@ async function fixture(readOnly: boolean) {
     configurationHash: commandInputHash(selected.configuration) } }
   const source: WorkerConversationRpcRequest = { method: 'conversation.start-turn', binding, session,
     prompt: 'Read the attached document.', correlationId }
-  const fileCompleted = deferred()
+  const fileCompleted = rejectableDeferred()
   let fileSignal: AbortSignal | undefined
   const lease = bridge.capture({ request: source, channel: { binding: recorded.connection,
     request: async () => ({ payload: {} }) }, current: async () => { await authority.callbackAdmission() },
@@ -144,8 +145,8 @@ describe.skipIf(!postgresEnabled)('Claude worker file calls on admitted native m
   it('rejects cancellation during Main credential issuance and revokes the credential on closure', async () => {
     const f = await fixture(false)
     await f.acknowledge()
-    const entered = deferred()
-    const release = deferred()
+    const entered = rejectableDeferred()
+    const release = rejectableDeferred()
     const issue = f.service.sessions.issueForAcceptedSession.bind(f.service.sessions)
     const issuance = vi.spyOn(f.service.sessions, 'issueForAcceptedSession').mockImplementationOnce(async (...args) => {
       const token = await issue(...args)
@@ -182,8 +183,8 @@ describe.skipIf(!postgresEnabled)('Claude worker file calls on admitted native m
   it('reads back an accepted mutation after its SDK file request is cancelled', async () => {
     const f = await fixture(false)
     await f.acknowledge()
-    const entered = deferred()
-    const release = deferred()
+    const entered = rejectableDeferred()
+    const release = rejectableDeferred()
     const create = f.service.createWorkingCopy.bind(f.service)
     const accepted = vi.spyOn(f.service, 'createWorkingCopy').mockImplementationOnce(async (...args) => {
       const result = await create(...args)

@@ -10,6 +10,7 @@ import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { identity, openPrivateRoot } from './privateFilesystem.js'
 import type { RootBinding, MaterializationReceipt } from '@foreman-code/contracts/source-materialization'
 import type { MaterializationAttempt } from './ports.js'
+import { deferred } from '../../../test/helpers/deferred.js'
 
 const pauses = vi.hoisted(() => ({ beforeUnlink: null as null | (() => Promise<void>) }))
 vi.mock('node:fs/promises', async original => {
@@ -28,11 +29,6 @@ vi.mock('node:fs/promises', async original => {
 })
 const roots: string[] = []
 afterEach(async () => { pauses.beforeUnlink = null; for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
-function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>(done => { resolve = done })
-  return { promise, resolve }
-}
 async function fixture(accessMode: RootBinding['accessMode'] = 'exclusive-write') {
   const root = await mkdtemp('/tmp/source-claims-'); roots.push(root); await chmod(root, 0o700)
   const bytes = Buffer.from('accepted source\n')

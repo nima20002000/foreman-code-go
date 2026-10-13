@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage'
 import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'
 import { useRef, useState } from 'react'
 import { CommandAttempt } from '../../shared/api/commandAttempt'
@@ -82,7 +83,7 @@ export function NewWorkflowDialog({
       void queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkflows(workspaceId) }).catch(() => undefined)
     } catch (error) {
       attempt.current.failed(error)
-      if (sessionGeneration() === generation) setNameError(error instanceof Error ? error.message : 'The workflow could not be created.')
+      if (sessionGeneration() === generation) setNameError(errorMessage(error, 'The workflow could not be created.'))
     } finally { inFlight.current = false }
     if (workflow && created.current) await openCreated(workflow)
   }

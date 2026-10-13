@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage'
 import { useRef, useState } from 'react'
 import { useArchiveSkillMutation, useSkillQuery, useSkillUsageQuery, useSkillVersionsQuery, useUpdateSkillUsersMutation } from './skillsApi'
 import { Alert, Badge, Button, ConfirmDialog, Dialog, EmptyState, ErrorState, LoadingState } from '../../shared/ui/nocturne'
@@ -66,7 +67,7 @@ export function SkillDetailPage({ workspaceId, skillId, onCancel }: { workspaceI
       attempt.current.succeeded(); setConfirm(false)
     } catch (failure) {
       attempt.current.failed(failure)
-      setArchiveError(failure instanceof Error ? failure.message : 'The change was not saved.')
+      setArchiveError(errorMessage(failure, 'The change was not saved.'))
     }
   }
   return <section className="settings-editor-page skill-page" aria-label={skill.name}>

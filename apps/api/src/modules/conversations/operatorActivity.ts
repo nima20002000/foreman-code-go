@@ -1,11 +1,10 @@
+import { asRecord } from '../../shared/records.js'
 import { claudeConversationActivity } from '../harnesses/claudeSdk/conversationActivity.js'
 import { codexUnsupportedInteractionMessage,
   type RecordedAgentHarness, type NativeHarnessEvent, type OperatorActivity } from '@foreman-code/contracts'
 import type { NativeHistory } from '../harnesses/port.js'
 
-type RecordValue = Record<string, unknown>
 export type OperatorActivityChange = Omit<OperatorActivity, 'sequence' | 'revision'>
-const object = (value: unknown): RecordValue => value && typeof value === 'object' && !Array.isArray(value) ? value as RecordValue : {}
 const string = (value: unknown) => typeof value === 'string' ? value : ''
 const pretty = (value: unknown): string => typeof value === 'string' ? value : value == null ? '' : JSON.stringify(value, null, 2)
 function status(value: unknown, completed: boolean): OperatorActivity['status'] {
@@ -61,7 +60,7 @@ export function operatorActivity(event: NativeHarnessEvent, harness: RecordedAge
     return bounded({ id, requestId, kind: 'tool', status: 'failed', title: message, output: message })
   }
   if (harness === 'codex' && ['item.started', 'item.completed', 'item.snapshot'].includes(event.type)) {
-    const item = object(payload.item)
+    const item = asRecord(payload.item)
     const id = string(item.id)
     if (!id) return
     const base = { id, requestId, status: status(item.status, event.type === 'item.completed' || payload.nativeTurnStatus === 'completed') }
@@ -73,7 +72,7 @@ export function operatorActivity(event: NativeHarnessEvent, harness: RecordedAge
         return bounded({ ...base, kind: 'thinking', title: 'Thinking', ...(summary ? { output: summary } : {}) })
       }
       case 'commandExecution': {
-        const actions = Array.isArray(item.commandActions) ? item.commandActions.map(object) : []
+        const actions = Array.isArray(item.commandActions) ? item.commandActions.map(asRecord) : []
         const read = actions.find((action) => ['read', 'listFiles', 'search'].includes(String(action.type)))
         const title = read?.type === 'read' ? `Read ${string(read.name) || string(read.path) || 'file'}`
           : read?.type === 'search' ? 'Search files' : read?.type === 'listFiles' ? 'List files' : 'Run command'
@@ -85,7 +84,7 @@ export function operatorActivity(event: NativeHarnessEvent, harness: RecordedAge
       case 'mcpToolCall': return bounded({ ...base, kind: 'mcp', title: `${string(item.server)} · ${string(item.tool)}`,
         status: item.error ? 'failed' : base.status, input: pretty(item.arguments), ...(item.error != null || item.result != null ? { output: pretty(item.error ?? item.result) } : {}) })
       case 'webSearch': {
-        const action = object(item.action)
+        const action = asRecord(item.action)
         return bounded({ ...base, kind: 'web_search', title: action.type === 'openPage' ? 'Open webpage' : action.type === 'findInPage' ? 'Find in webpage' : 'Search the web',
           input: pretty(item.action ?? item.query), ...(item.results != null ? { output: pretty(item.results) } : {}) })
       }

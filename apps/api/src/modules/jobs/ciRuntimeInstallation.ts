@@ -1,4 +1,5 @@
-import { lstat, rename } from 'node:fs/promises'
+import { pathExists } from '../../shared/pathExists.js'
+import { rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
@@ -18,24 +19,17 @@ export const CiRuntimeInstallationSchema = z.object({
   runtime: InstalledVerificationRuntimeConfigurationSchema,
 }).strict()
 
-async function exists(path: string) {
-  try { await lstat(path); return true }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
-    throw error
-  }
-}
 
 export async function readCiRuntimeInstallation(stateDirectory: string) {
   const path = join(stateDirectory, 'ci-runtime-installation.json')
-  if (!await exists(path)) return null
+  if (!await pathExists(path)) return null
   return readProtectedRuntimeConfiguration({ path, ownerUid: process.getuid!() },
     CiRuntimeInstallationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES + 4096)
 }
 
 export async function readCiRuntimeTemplate(stateDirectory: string) {
   const path = join(stateDirectory, 'job-runtime.json')
-  if (await exists(path)) {
+  if (await pathExists(path)) {
     return readProtectedRuntimeConfiguration({ path, ownerUid: process.getuid!() },
       InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES)
   }
@@ -44,7 +38,7 @@ export async function readCiRuntimeTemplate(stateDirectory: string) {
 
 export async function readCiManagedSetup(stateDirectory: string) {
   const path = join(stateDirectory, 'managed-setup.json')
-  if (!await exists(path)) return undefined
+  if (!await pathExists(path)) return undefined
   const record = await readProtectedRuntimeConfiguration({ path, ownerUid: process.getuid!() },
     z.object({ status: CiManagedSetupSchema }).passthrough())
   return record.status
@@ -73,7 +67,7 @@ export async function relocateCiQuotaSlots(configuration: InstalledVerificationR
     const slots = []
     for (const slot of configuration.descriptor.quotaPool?.slots ?? []) {
       const to = anchored(destination, slot.namespace)
-      if (!await exists(to)) {
+      if (!await pathExists(to)) {
         const from = await openChildDirectory(previous, slot.namespace)
         try {
           const current = await identity(from)

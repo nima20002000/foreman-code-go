@@ -10,10 +10,8 @@ import { FileByteStorage } from '../src/modules/files/storage.js'
 import { readFileRetentionSnapshot } from '../src/modules/files/retentionSnapshot.js'
 import { fileFixtures, fileMetadata } from './helpers/fileFixtures.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
-import {
-  allocate, anotherChat, base, contentUrl, deferred, fil14Database, finalize, headers, markdown, owner,
-  ready, reread, upload, type Fil14Database, type Runtime,
-} from './helpers/fil14Lifecycle.js'
+import { allocate, anotherChat, base, contentUrl, fil14Database, finalize, headers, markdown, owner, ready, reread, upload, type Fil14Database, type Runtime } from './helpers/fil14Lifecycle.js'
+import { deferred } from './helpers/deferred.js'
 
 /** Real authenticated HTTP, PostgreSQL receipts and real disk. No product edits.
  * Missing TEST_DATABASE_URL skips this suite; that is not passed verification. */

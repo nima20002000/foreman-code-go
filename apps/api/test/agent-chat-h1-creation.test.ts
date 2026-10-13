@@ -15,7 +15,8 @@ import { CodexRpcError } from '../src/modules/harnesses/codexStdioTransport.js'
 import { HarnessExecutionError, NativeDeliveryError } from '../src/modules/harnesses/errors.js'
 import type { NativeSessionStart } from '../src/modules/harnesses/port.js'
 import type { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
-import { context, deferred, F1Native, F1Store } from './helpers/agentChatF1.js'
+import { context, F1Native, F1Store } from './helpers/agentChatF1.js'
+import { deferred } from './helpers/deferred.js'
 
 async function eventually(check: () => boolean | Promise<boolean>) {
   const end = Date.now() + 3_000

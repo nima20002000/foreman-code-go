@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { FleetMaintenanceService } from '../src/modules/computers/fleet.js'
 import { ComputerMaintenance, type MaintenancePorts } from '../src/modules/computers/maintenance.js'
+import { deferred } from './helpers/deferred.js'
 
 vi.mock('../src/modules/access/liveManagementPrincipal.js', () => ({
   readLiveManagementPrincipal: async () => principal,
@@ -11,12 +12,6 @@ const principal: ManagementPrincipal = {
   id: randomUUID(), name: 'Maintainer', audience: 'operator', revokedAt: null,
   expiresAt: new Date(Date.now() + 3600000).toISOString(),
   grants: [{ actions: ['settings:read', 'settings:update'], scope: {} }],
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>(done => { resolve = done })
-  return { promise, resolve }
 }
 
 function computer() {

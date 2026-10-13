@@ -6,12 +6,7 @@ import {
 import { planDueSchedule } from '../src/modules/schedules/dispatchPlan.js'
 import { WorkflowScheduleDispatcher } from '../src/modules/schedules/dispatcher.js'
 import { sch11ClockCases, sch11Minute, sch11Once, sch11Settings } from './helpers/sch11ClockCases.js'
-
-function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
-  return { promise, resolve }
-}
+import { deferred } from './helpers/deferred.js'
 
 const scope = { workspaceId: 'sch11-workspace', workflowId: 'sch11-workflow' }
 const request = (schedule: unknown) => ({ ...scope, commandId: 'sch11-clock-command', expectedRevision: 0, schedule })

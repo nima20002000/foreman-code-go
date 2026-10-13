@@ -2,12 +2,13 @@ import assert from 'node:assert/strict'
 import { SessionControlStateSchema, unavailableSessionControls, type CompactionState } from '@foreman-code/contracts'
 import { afterEach, describe, it } from 'vitest'
 import { agentChatCorrelation } from '../src/modules/conversations/agentChatRepository.js'
-import { context, deferred, eventually, fixture } from './helpers/agentChatF1.js'
+import { context, eventually, fixture } from './helpers/agentChatF1.js'
+import { deferred } from './helpers/deferred.js'
 
 // Production service/repository, scripted SQL and a controlled native port. This does not
 // establish PostgreSQL isolation or provider behavior; separate adapter/SQL tests cover those.
 const fixtures: ReturnType<typeof fixture>[] = []
-const gates: ReturnType<typeof deferred>[] = []
+const gates: ReturnType<typeof deferred<void>>[] = []
 const operations: Promise<unknown>[] = []
 function setup() { const f = fixture(); fixtures.push(f); return f }
 function gate() { const value = deferred(); gates.push(value); return value }

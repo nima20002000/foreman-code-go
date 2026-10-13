@@ -6,9 +6,9 @@ import { agentChatApi } from '../../../shared/api/agentChat'
 import { ApiError } from '../../../shared/api/client'
 import { agentChatFixtureFor } from '../../../shared/mocks/agentChatHandlers'
 import { useConversationDraftStore } from '../conversationDraftStore'
-import { deferred } from '../../run-board/testFixtures'
 import { AgentChatTestSource, installChatSource, mountChat } from './testSupport'
 import { agentChatStateKey } from './useAgentChat'
+import { deferred } from '../../../test/deferred'
 
 const clients: QueryClient[] = []
 const releases: (() => void)[] = []

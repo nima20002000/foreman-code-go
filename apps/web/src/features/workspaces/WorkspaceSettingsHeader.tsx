@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { createStore, useStore } from 'zustand'
@@ -58,7 +59,7 @@ export function WorkspaceSettingsHeader({ workspaceId, name, revision, title = '
     } catch (cause) {
       attempt.current.failed(cause)
       if (!attempt.current.unresolved) original.current = undefined
-      if (generation === sessionGeneration()) setError(cause instanceof Error ? cause.message : 'The workspace could not be renamed.')
+      if (generation === sessionGeneration()) setError(errorMessage(cause, 'The workspace could not be renamed.'))
       throw cause
     } finally { inFlight.current = false }
   }

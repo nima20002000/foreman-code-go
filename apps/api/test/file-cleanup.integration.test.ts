@@ -31,6 +31,7 @@ import { TemporaryFileService } from '../src/modules/files/service.js'
 import { FileByteStorage } from '../src/modules/files/storage.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
+import { deferred } from './helpers/deferred.js'
 
 type Credential = Awaited<ReturnType<PostgresAccessService['issue']>>
 type Owner = Credential & { conversationId: string }
@@ -40,11 +41,6 @@ const metadata = { filename: 'cleanup.md', mediaType: 'text/markdown' as const,
   byteSize: content.length, sha256: createHash('sha256').update(content).digest('hex') }
 const target = (owner: Owner) => ({ kind: 'operator' as const, conversationId: owner.conversationId })
 const pins = (stored: StoredFile) => ({ fileId: stored.value.file.fileId, revisionId: stored.value.revision.revisionId })
-function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
-  return { promise, resolve }
-}
 
 /** Real PostgreSQL sessions + existing retention/allocation/download services + real managed bytes.
  * No model/native harness, DATABASE_URL fallback, or shared-schema reset. Skipped != passed. */

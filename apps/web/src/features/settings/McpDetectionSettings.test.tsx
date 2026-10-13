@@ -14,6 +14,7 @@ import * as api from '../../shared/api/client'
 import { queryKeys } from '../../shared/api/query'
 import { renderWithRouter } from '../../test/renderWithRouter'
 import { McpDetectionSettings } from './McpDetectionSettings'
+import { deferred } from '../../test/deferred'
 
 // Keep the real Query observers, auth latch, router and Nocturne controls. Mock
 // only the existing HTTP-client boundary, not the component's request lifecycle.
@@ -65,11 +66,6 @@ function mount(value: QueryClient, initial: ComponentProps<typeof McpDetectionSe
   const rendered = renderWithRouter(<Host />)
   clients.push(rendered.queryClient)
   return { ...rendered, update: (next: ComponentProps<typeof McpDetectionSettings>) => act(() => update(next)) }
-}
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => { resolve = done })
-  return { promise, resolve }
 }
 
 beforeEach(() => {

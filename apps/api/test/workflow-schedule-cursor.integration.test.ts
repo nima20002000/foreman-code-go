@@ -9,11 +9,12 @@ import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { WorkflowScheduleDispatcher } from '../src/modules/schedules/dispatcher.js'
 import { ScheduleOccurrencePageSchema } from '../src/modules/schedules/transportSchemas.js'
-import { agent3Database, deferred, postgresEnabled } from './helpers/wave25Agent3.js'
+import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 import {
   sch11Actions, sch11DomainState, sch11Fixture,
   type Sch11Database, type Sch11Fixture,
 } from './helpers/sch11Fixture.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 type Mode = ScheduleConfiguration['mode']
 type Operation = 'save' | 'enable'
@@ -131,9 +132,9 @@ describe.skipIf(!postgresEnabled)('unchanged schedule cursor persistence and adm
       const replacement = await f.issue(sch11Actions)
       const caller = { token: replacement.token, client: await connect(replacement.token) }
       const reader = await connect(f.reader.token)
-      const prepared = deferred()
-      const release = deferred()
-      const accepted = deferred()
+      const prepared = rejectableDeferred()
+      const release = rejectableDeferred()
+      const accepted = rejectableDeferred()
       const principals: string[] = []
       const errors: unknown[] = []
       const port = f.dispatcher(async (principal, input, guard) => {

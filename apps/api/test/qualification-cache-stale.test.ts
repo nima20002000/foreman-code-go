@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { QualificationCache } from '../src/modules/harnesses/qualificationCache.js'
-
-function deferred<T>() {
-  let resolve!: (value: T) => void, reject!: (error: Error) => void
-  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
-  return { promise, resolve, reject }
-}
+import { rejectableDeferred } from './helpers/deferred.js'
 
 describe('qualification cache stale-while-revalidate', () => {
   it('serves an expired success while one refresh runs, then the refreshed value', async () => {
@@ -13,7 +8,7 @@ describe('qualification cache stale-while-revalidate', () => {
     const cache = new QualificationCache<string>(1_000, 8, () => now, true)
     expect(await cache.get('codex', async () => 'first')).toBe('first')
     now = 2_000
-    const refresh = deferred<string>()
+    const refresh = rejectableDeferred<string>()
     let loads = 0
     const load = () => { loads += 1; return refresh.promise }
     expect(await cache.get('codex', load)).toBe('first')
@@ -29,7 +24,7 @@ describe('qualification cache stale-while-revalidate', () => {
     const cache = new QualificationCache<string>(1_000, 8, () => now, true)
     await cache.get('codex', async () => 'first')
     now = 2_000
-    const refresh = deferred<string>()
+    const refresh = rejectableDeferred<string>()
     expect(await cache.get('codex', () => refresh.promise)).toBe('first')
     refresh.reject(new Error('signed out'))
     await new Promise(resolve => setTimeout(resolve, 0))
@@ -54,7 +49,7 @@ describe('qualification cache stale-while-revalidate', () => {
     const cache = new QualificationCache<string>(1_000, 8, () => now, true)
     await cache.get('codex', async () => 'first')
     now = 2_000
-    const refresh = deferred<string>()
+    const refresh = rejectableDeferred<string>()
     expect(await cache.get('codex', () => refresh.promise)).toBe('first')
     cache.clear()
     const waiting = cache.get('codex', async () => 'after-clear')

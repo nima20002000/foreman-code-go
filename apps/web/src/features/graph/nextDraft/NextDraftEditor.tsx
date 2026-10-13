@@ -58,7 +58,7 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext, update
       } else if (source.data && !source.isError) {
         useGraphDraftStore.getState().installNextDraft(draftKey, { draft: GraphDraftV3Schema.parse(source.data.draft), agents: source.data.agents, savedDraft: source.data.savedDraft })
       }
-    } catch (error) { setStorageError(error instanceof Error ? error.message : 'Retained edits are unavailable.') }
+    } catch (error) { setStorageError(errorMessage(error, 'Retained edits are unavailable.')) }
   }, [draftKey, initialContext, source.data, source.isError, source.isFetchedAfterMount])
   if (edit) return <EditorForm draftKey={draftKey} edit={edit} updateFailures={updateFailures} />
   if (storageError || source.isError) return <section className="workflow-graph-state" role="alert">

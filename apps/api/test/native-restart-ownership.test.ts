@@ -9,7 +9,7 @@ import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execut
 import { ExecutionScopedNativeSessionManagerResolver } from '../src/modules/interactions/runtimePorts.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import { nativeLanes } from './helpers/nativeLanes.js'
-import { deferred } from './helpers/reviewerAudit.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 vi.mock('../src/modules/interactions/retainedRemoteReviewer.js', () => {
   const retained = (_sql: unknown, execution: HarnessExecution) => ({
@@ -192,8 +192,8 @@ it.each([
 ] as const)(
   'drains reviewer renewal at $boundary before runtime release (drain times out=$timeout)', async ({ boundary, timeout }) => {
     vi.useFakeTimers()
-    const entered = deferred()
-    const finished = deferred()
+    const entered = rejectableDeferred()
+    const finished = rejectableDeferred()
     const releaseOwnership = vi.fn(async () => {})
     const f = restartOwnershipFixture({
       executionIds: ['reviewer'],

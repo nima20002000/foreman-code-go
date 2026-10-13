@@ -10,12 +10,7 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { RunHistoryService } from '../src/modules/runs/history.js'
 import { codexApprovalRuntime } from './helpers/codexApprovalRuntime.js'
-
-function deferred<T = void>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => { resolve = done })
-  return { promise, resolve }
-}
+import { deferred } from './helpers/deferred.js'
 
 /** One Agent on two sequential nodes; the entry node is re-activated every 10 seconds. */
 async function intervalRuntime() {

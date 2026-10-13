@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage.js'
 import { lstatSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -40,7 +41,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   process.once('SIGTERM', stop); process.once('SIGINT', stop)
   void runRsyncWriterCli(process.argv.slice(2), controller.signal).then(code => { process.exitCode = code })
     .catch(error => {
-      const reason = error instanceof Error ? error.message : 'Unknown writer failure'
+      const reason = errorMessage(error, 'Unknown writer failure')
       process.stderr.write(`Rsync writer failed: ${reason.slice(0, 2048)}; original ownership retained\n`)
       process.exitCode = 1
     })

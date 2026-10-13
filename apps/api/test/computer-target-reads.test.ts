@@ -17,14 +17,9 @@ import { ComputerMaintenance } from '../src/modules/computers/maintenance.js'
 import { FleetMaintenanceService, type FleetSources } from '../src/modules/computers/fleet.js'
 import { DomainError } from '../src/modules/errors.js'
 import { fakeComputer } from './helpers/fleetSync.js'
+import { deferred } from './helpers/deferred.js'
 
 afterEach(() => vi.restoreAllMocks())
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>(done => { resolve = done })
-  return { promise, resolve }
-}
 
 async function fixture() {
   const mainId = randomUUID()

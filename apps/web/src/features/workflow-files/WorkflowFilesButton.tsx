@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage'
 import { useEffect, useId, useMemo, useRef } from 'react'
 import { useStore } from 'zustand'
 import { Download, Files } from 'lucide-react'
@@ -180,5 +181,5 @@ function FileGroup({ query, scope, files, label, emptyLabel = 'No files', onRemo
 }
 
 function errorDetail(error: unknown): string {
-  return error instanceof Error ? error.message : 'Request failed.'
+  return errorMessage(error, 'Request failed.')
 }

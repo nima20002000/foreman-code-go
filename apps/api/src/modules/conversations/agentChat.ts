@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage.js'
 import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
 import { withInteractionResponse, isSessionNativeInteraction } from '@foreman-code/contracts'
@@ -132,7 +133,7 @@ const STEER_UNAVAILABLE_REASON = 'This harness cannot add input to a running tur
 function failure(error: unknown, code = 'AGENT_CHAT_TURN_FAILED'): ExecutionResult {
   const provider = error && typeof error === 'object' && 'result' in error ? (error as { result?: ExecutionResult }).result?.error : undefined
   return { outcome: 'failed', error: { code: nativeErrorCode(error) ?? code,
-    message: provider?.message ?? (error instanceof Error ? error.message : 'The native turn failed.'), retryable: true } }
+    message: provider?.message ?? (errorMessage(error, 'The native turn failed.')), retryable: true } }
 }
 function definiteRejection(error: unknown): boolean {
   if (error instanceof NativeDeliveryError) {
@@ -838,7 +839,7 @@ export class AgentChatService {
           await this.repository.discard(row.id, input.requestId)
           throw new DomainError('AGENT_CHAT_TURN_NOT_ACTIVE', 'The turn finished before the steer arrived. Send it as the next turn instead.', 409)
         }
-        await this.repository.unknown(row.id, input.requestId, error instanceof Error ? error.message : 'Steer delivery is unconfirmed.')
+        await this.repository.unknown(row.id, input.requestId, errorMessage(error, 'Steer delivery is unconfirmed.'))
         this.scheduleReconcile(row.id)
       }
       this.events.publish(row.id, 'turn', { requestId: input.requestId })
@@ -951,7 +952,7 @@ export class AgentChatService {
           AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(10_000)]), nativeId)
         if (acknowledged) runtime.acknowledgedCancel = { requestId: target.requestId, nativeId }
       } catch (error) {
-        this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Interrupt delivery failed.' })
+        this.events.publish(id, 'error', { message: errorMessage(error, 'Interrupt delivery failed.') })
       }
     }
     if (controlled) await interrupt()
@@ -983,7 +984,7 @@ export class AgentChatService {
         await this.runTurn(id, next)
       }
     })().catch((error: unknown) => {
-      this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Agent chat delivery failed.' })
+      this.events.publish(id, 'error', { message: errorMessage(error, 'Agent chat delivery failed.') })
     }).finally(() => {
       this.tasks.delete(id)
       this.scheduleReconcile(id)
@@ -1299,7 +1300,7 @@ export class AgentChatService {
         if (unavailable || error && typeof error === 'object'
           && 'deliveryState' in error && error.deliveryState === 'not-delivered') await this.release(id)
       } else {
-        await this.repository.abandon(id, turn.requestId, error instanceof Error ? error.message : 'Native delivery is unconfirmed.')
+        await this.repository.abandon(id, turn.requestId, errorMessage(error, 'Native delivery is unconfirmed.'))
         // Retain the manager: it may still own a late acknowledgement or a live native turn.
         this.scheduleReconcile(id)
         this.events.publish(id, 'state', { requestId: turn.requestId, delivery: 'unknown' })
@@ -1317,7 +1318,7 @@ export class AgentChatService {
     if (context) {
       const snapshot = structuredClone(context)
       void this.control(id, () => this.sessionControls.observeContext(id, snapshot, runtime.configuration.id)).catch(error => {
-        this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Context usage could not be saved.' })
+        this.events.publish(id, 'error', { message: errorMessage(error, 'Context usage could not be saved.') })
       })
     }
     const known = knownNativeActivity(event, runtime.manager.harness)
@@ -1436,7 +1437,7 @@ export class AgentChatService {
       this.reconciliationTimers.delete(id)
       // Own the complete repair, including its post-control SQL reads, until shutdown drains it.
       void this.command(() => this.repair(id)).catch((error: unknown) => {
-        this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Native reconciliation failed.' })
+        this.events.publish(id, 'error', { message: errorMessage(error, 'Native reconciliation failed.') })
         this.scheduleReconcile(id)
       })
     }, 1_000)
@@ -1540,7 +1541,7 @@ export class AgentChatService {
           const evidence = await runtime.manager.reconcileSteers?.(runtime.session!, identities,
             AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(30_000)])).catch((error: unknown) => {
               // Failure to read an OLD steer is not loss of the independently proven active turn.
-              this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Steer receipt lookup failed.' })
+              this.events.publish(id, 'error', { message: errorMessage(error, 'Steer receipt lookup failed.') })
               return []
             }) ?? []
           let unresolved = false
@@ -1562,7 +1563,7 @@ export class AgentChatService {
       } catch (error) {
         const unavailable = await this.markNativeUnavailable(id, error)
         if (requestId) await this.repository.abandon(id, requestId,
-          `Native delivery is not yet confirmed. ${error instanceof Error ? error.message : ''}`.trim())
+          `Native delivery is not yet confirmed. ${errorMessage(error, '')}`.trim())
         // Also convert a crash-left provisional steer; missing evidence never means acceptance.
         for (const steer of steers) await this.repository.unknown(id, steer.requestId, 'Steer delivery is not yet confirmed.')
         if (unavailable || error && typeof error === 'object'

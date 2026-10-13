@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage'
 import { useCallback, useContext, useEffect, useMemo, useReducer } from 'react'
 import { skipToken, useMutationState, useQueries, useQuery, type MutationState } from '@tanstack/react-query'
 import { useStore } from 'zustand'
@@ -83,7 +84,7 @@ export function useConversationAttachments(scope: TemporaryFileScope | null): Co
     if (selection.issue) return { ...base, status: 'error', statusLabel: selection.issue.label, error: selection.issue.message }
     if (state?.status === 'error') return {
       ...base, status: 'error', statusLabel: 'Upload failed', canRetry: available,
-      error: state.error instanceof Error ? state.error.message : 'The attachment could not be uploaded.',
+      error: errorMessage(state.error, 'The attachment could not be uploaded.'),
     }
     if (state?.status === 'success' && state.data) {
       const current = metadata.get(selection.id)

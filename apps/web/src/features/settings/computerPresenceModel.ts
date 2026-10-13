@@ -1,10 +1,7 @@
+import { sameComputer } from '../../shared/api/sameComputer'
 import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
 import type { HarnessHostInventoryMetadata } from '@foreman-code/contracts/harness-registry'
 
-function sameComputer(left: CanonicalMachineReference, right: CanonicalMachineReference) {
-  return left.mainId === right.mainId && left.kind === right.kind
-    && (left.kind === 'main' || (right.kind === 'device' && left.deviceId === right.deviceId))
-}
 /** Server observation only. A binding that is not this exact host/installation is treated as unavailable, never repaired. */
 export function presentationFor(host: CanonicalMachineReference, applicationInstallationId: string, metadata: HarnessHostInventoryMetadata | undefined) {
   if (!metadata || !sameComputer(metadata.hostRef, host) || metadata.applicationInstallationId !== applicationInstallationId) return { kind: 'unavailable' as const }

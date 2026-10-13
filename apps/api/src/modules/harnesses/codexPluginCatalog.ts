@@ -1,5 +1,7 @@
+import { asRecord } from '../../shared/records.js'
 import { pluginHash, pluginCanonical, pluginSourceIdentities, pluginCatalogRevision,
   type NativePluginCatalog, type PluginConfiguration } from './codexPluginIdentity.js'
+import { z } from 'zod'
 import { CodexPluginSummarySchema, type CodexPluginSummary } from '@foreman-code/contracts/management'
 
 export { pluginHash, pluginCanonical } from './codexPluginIdentity.js'
@@ -10,9 +12,8 @@ export type CodexPluginCatalog = {
   catalogStatus: 'complete' | 'partial'; inventoryStatus: 'complete' | 'unknown'
   evidence: Record<string, PluginEvidence>; configuration: PluginConfiguration
 }
-const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 export function unrelatedPluginConfiguration(config: PluginConfiguration, pluginId: string): string {
-  const plugins = { ...object(config.userConfig.plugins) }
+  const plugins = { ...asRecord(config.userConfig.plugins) }
   delete plugins[pluginId]
   const user = { ...config.userConfig }
   delete user.plugins
@@ -20,7 +21,7 @@ export function unrelatedPluginConfiguration(config: PluginConfiguration, plugin
   return pluginHash([config.file, { ...user, plugins }])
 }
 export function pluginConfigurationHas(config: PluginConfiguration, pluginId: string): boolean {
-  return Object.hasOwn(object(config.userConfig.plugins), pluginId)
+  return Object.hasOwn(asRecord(config.userConfig.plugins), pluginId)
 }
 
 /** Full source data stays private, but URL/path/ref/SHA/remote ID/marketplace changes remain significant. */
@@ -52,7 +53,7 @@ export function normalizeCodexPluginCatalog(native: NativePluginCatalog, configu
     })
     ;(item.installed ? installed : available).push(item)
   }
-  const configured = Object.keys(object(configuration.userConfig.plugins))
+  const configured = Object.keys(asRecord(configuration.userConfig.plugins))
   const hints = [...new Set([...configured, ...cachedIds])].sort()
   for (const pluginId of hints) {
     if (installed.some((item) => item.pluginId === pluginId)) continue

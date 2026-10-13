@@ -2,17 +2,13 @@ import pg from 'pg'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { deferred } from './helpers/deferred.js'
 
 const principal: ManagementPrincipal = { id: 'actor', name: 'Actor', audience: 'operator', grants: [],
   expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null }
 const command = { principal, source: 'device' as const, operation: 'job.start', commandId: 'start-1',
   targetKey: 'workspace', payload: { definitionId: 'definition', expectedRevision: 1 }, dedicatedConnection: true as const }
 afterEach(() => vi.restoreAllMocks())
-function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>(done => { resolve = done })
-  return { promise, resolve }
-}
 function fixture(options: { uncertainCommit?: boolean; failRollback?: boolean; failUnlock?: boolean } = {}) {
   const calls: string[] = [], releases = vi.fn(), end = vi.fn(async () => undefined)
   const secondLock = deferred()

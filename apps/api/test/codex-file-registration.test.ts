@@ -3,11 +3,11 @@ import { describe, it } from 'vitest'
 import { CodexRuntimeFileTurn } from '../src/modules/harnesses/codexFiles/runtime.js'
 import type { CodexFileTurn } from '../src/modules/harnesses/codexFiles/turn.js'
 import type { CodexFileCallResult } from '../src/modules/harnesses/codexFiles/port.js'
+import { deferred } from './helpers/deferred.js'
 
 const accepted = { threadId: 'thread-a', turnId: 'turn-a', callId: 'call-a', tool: 'files_publish_result',
   arguments: { commandId: 'command-a', artifactId: 'artifact-a' } }
 const success = (): CodexFileCallResult => ({ success: true, contentItems: [{ type: 'inputText', text: '{"ready":true}' }] })
-function gate() { let resolve!: () => void; const promise = new Promise<void>((done) => { resolve = done }); return { promise, resolve } }
 function stub(overrides: Partial<Pick<CodexFileTurn, 'activate' | 'call' | 'close'>> = {}) {
   return { activate: async () => undefined, call: async () => success(), close: async () => undefined, ...overrides } as unknown as CodexFileTurn
 }
@@ -38,7 +38,7 @@ describe('FIL-08a executable file registration', () => {
   })
 
   it('coalesces concurrent equivalent calls and rejects changed input under a call ID', async () => {
-    const release = gate()
+    const release = deferred()
     let calls = 0
     const turn = new CodexRuntimeFileTurn(stub({ call: async () => { calls++; await release.promise; return success() } }), 'thread-a')
     await turn.activate('turn-a')
@@ -53,7 +53,7 @@ describe('FIL-08a executable file registration', () => {
   })
 
   it('close racing token issuance never reopens registration', async () => {
-    const release = gate()
+    const release = deferred()
     let live = false, calls = 0
     const activation = release.promise.then(() => { live = true })
     const turn = new CodexRuntimeFileTurn(stub({

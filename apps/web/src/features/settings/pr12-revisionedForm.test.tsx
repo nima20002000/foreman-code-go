@@ -2,14 +2,9 @@ import { act, renderHook, waitFor, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { clearRevisionedFormPersistence, useRevisionedForm } from './revisionedForm'
 import { beginSessionChange, finishSessionChange } from '../../shared/api/sessionBoundary'
+import { rejectableDeferred } from '../../test/deferred'
 
 interface Value { name: string }
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (error: Error) => void
-  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
-  return { promise, resolve, reject }
-}
 const initial = { value: { name: 'original' }, revision: 1 }
 function mount() { return renderHook(() => useRevisionedForm<Value>(initial, 'pr12-test')) }
 beforeEach(clearRevisionedFormPersistence)
@@ -17,7 +12,7 @@ afterEach(() => { cleanup(); clearRevisionedFormPersistence() })
 
 describe('PR12 shared settings saves', () => {
   it('delivers an acknowledgment to a remounted form and retains newer edits', async () => {
-    const pending = deferred<{ value: Value; revision: number }>()
+    const pending = rejectableDeferred<{ value: Value; revision: number }>()
     const first = mount()
     await waitFor(() => expect(first.result.current.draft).toEqual(initial.value))
     act(() => first.result.current.setDraft({ name: 'submitted' }))
@@ -55,7 +50,7 @@ describe('PR12 shared settings saves', () => {
   it('blocks duplicate sends across two mounted instances', async () => {
     const first = mount(); const second = mount()
     await waitFor(() => expect(first.result.current.draft).toBeDefined())
-    const pending = deferred<{ value: Value; revision: number }>()
+    const pending = rejectableDeferred<{ value: Value; revision: number }>()
     const perform = vi.fn(() => pending.promise)
     let one!: Promise<boolean>; let two!: Promise<boolean>
     act(() => { one = first.result.current.save(perform); two = second.result.current.save(perform) })
@@ -76,7 +71,7 @@ describe('PR12 shared settings saves', () => {
   it('never lets old acknowledgments repopulate cleared or changed-access forms', async () => {
     const form = mount()
     await waitFor(() => expect(form.result.current.draft).toBeDefined())
-    const pending = deferred<{ value: Value; revision: number }>()
+    const pending = rejectableDeferred<{ value: Value; revision: number }>()
     let work!: Promise<boolean>
     act(() => { work = form.result.current.save(() => pending.promise) })
     act(() => { beginSessionChange(); clearRevisionedFormPersistence(); finishSessionChange() })

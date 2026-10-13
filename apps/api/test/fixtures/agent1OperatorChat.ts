@@ -8,12 +8,6 @@ import type { ConversationRow, OperatorTerminal, PostgresOperatorConversationRep
 import type { ActivityTextOperation } from '@foreman-code/contracts/activity-text'
 import type { NativeHarnessSessionManager, NativeHistory, NativeTurnInput } from '../../src/modules/harnesses/port.js'
 
-export function deferred<T = void>() {
-  let resolve!: (value: T | PromiseLike<T>) => void
-  let reject!: (reason: unknown) => void
-  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
-  return { promise, resolve, reject }
-}
 export async function eventually(check: () => boolean | Promise<boolean>): Promise<void> {
   for (let i = 0; i < 200; i++) {
     if (await check()) return

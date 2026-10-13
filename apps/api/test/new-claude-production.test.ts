@@ -21,8 +21,8 @@ import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { claudeCallbackDatabase } from './support/claudeCallbackDatabase.js'
+import { deferred } from './helpers/deferred.js'
 
-const deferred = <T>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
 const createdAt = '2026-10-01T00:00:00.000Z'
 let endpoint: Awaited<ReturnType<typeof managementEndpoint>>
 beforeAll(async () => { endpoint = await managementEndpoint('second-turn-token') })

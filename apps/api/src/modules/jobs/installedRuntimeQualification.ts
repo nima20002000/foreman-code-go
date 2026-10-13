@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage.js'
 import type { ChildProcess } from 'node:child_process'
 import { constants } from 'node:fs'
 import { open, readdir, lstat, realpath, statfs, rm } from 'node:fs/promises'
@@ -139,7 +140,7 @@ export async function runInstalledJobRuntimeQualification(input: InstalledJobQua
     await inspectInstalledJobRuntimeCandidate({ ...input, candidate })
   } catch (error) {
     await input.journal.qualificationConfirmNonEntry(input.admission.operationId)
-    const reason = error instanceof Error ? error.message : 'Qualification entry validation failed.'
+    const reason = errorMessage(error, 'Qualification entry validation failed.')
     const result = { outcome: 'denied' as const, closure: 'confirmed' as const, reasons: [reason.slice(0, 500)] }
     await input.journal.qualificationResult(input.admission.operationId, result)
     return result

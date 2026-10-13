@@ -1,3 +1,4 @@
+import { isRecord } from '../../../shared/records.js'
 import { constants, closeSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync,
   openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync, type Stats } from 'node:fs'
 import { basename, dirname, join, parse, resolve, sep } from 'node:path'
@@ -130,6 +131,6 @@ export function writeRecord(path: string, value: unknown, immutable = false): vo
 }
 
 export function recordObject(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Malformed recovery record.')
+  if (!isRecord(value)) throw new Error('Malformed recovery record.')
   return value as Record<string, unknown>
 }

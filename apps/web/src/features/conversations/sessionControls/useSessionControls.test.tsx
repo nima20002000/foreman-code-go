@@ -12,6 +12,7 @@ import { SessionControls } from './SessionControls'
 import { ApiError } from '../../../shared/api/client'
 import { OperatorComposer } from '../../operator-chat/OperatorComposer'
 import { ConversationComposer } from '../ConversationComposer'
+import { deferred } from '../../../test/deferred'
 
 const initial = SessionControlStateSchema.parse({ conversationId: 'chat', revision: 1, profileKey: 'profile',
   desiredMode: 'regular', appliedMode: 'regular', defaults: {}, desired: {}, applied: {}, applicability: 'applied',
@@ -223,12 +224,6 @@ it.each(['accepted', 'running', 'uncertain'] as const)('treats %s compaction as 
   await act(async () => { await mounted.result.current.query.refetch() })
   await waitFor(() => expect(useConversationDraftStore.getState().drafts.chat).toBeUndefined())
 })
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>(done => { resolve = done })
-  return { promise, resolve }
-}
 
 it('keeps newer GET settings when a delayed POST returns an older revision', async () => {
   let saved = initial

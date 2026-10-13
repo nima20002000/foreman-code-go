@@ -5,7 +5,7 @@ import { agentWorkflowVersion } from './helpers/agentWorkflowFixture.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { graphHarness } from './helpers/eng04A1GraphHarness.js'
 import { regressionAuthoringFixture } from './helpers/executionRegressions.js'
-import { deferred } from './helpers/agentChatF1.js'
+import { deferred } from './helpers/deferred.js'
 
 describe.skipIf(!postgresEnabled)('current execution parallel regressions', () => {
   const authoring = regressionAuthoringFixture()

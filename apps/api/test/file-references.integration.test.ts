@@ -31,7 +31,8 @@ import { registerGraphqlMcp } from '../src/mcp/unified/transport.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { FILE_REFERENCE_TOOL_NAMES } from '../src/mcp/operator/tools/fileReferences.js'
 import { FileReferenceReadResultSchema } from '../src/modules/files/references/requests.js'
-import { agent3Database, postgresEnabled, deferred } from './helpers/wave25Agent3.js'
+import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 /** Real credentials, PostgreSQL, disk storage and authenticated /mcp. No harness or paid model. */
 describe.skipIf(!postgresEnabled)('FIL-36 permanent reference HTTP + Operator MCP integration', () => {
@@ -307,7 +308,7 @@ describe.skipIf(!postgresEnabled)('FIL-36 permanent reference HTTP + Operator MC
   it('tombstones survive late finalize and cannot be resurrected through SQL', async () => {
     const { row, requestId } = await allocate(workflow)
     assert.equal((await upload(workflow, requestId)).statusCode, 200)
-    const entered = deferred(), release = deferred()
+    const entered = rejectableDeferred(), release = rejectableDeferred()
     class DelayedPublication extends FileByteStorage {
       override async finalize(...args: Parameters<FileByteStorage['finalize']>) {
         entered.resolve(); await release.promise; return super.finalize(...args)
@@ -331,7 +332,7 @@ describe.skipIf(!postgresEnabled)('FIL-36 permanent reference HTTP + Operator MC
       grants: [{ actions: ['workspaces:read', 'workspaces:update'], scope: { workspaceIds: [workspace.workspaceId] } }] })
     const requestId = randomUUID()
     const allocated = await references.allocate(delegated.principal, workspace, { requestId, ...metadata() })
-    const entered = deferred(), release = deferred()
+    const entered = rejectableDeferred(), release = rejectableDeferred()
     const source = Readable.from((async function* () {
       yield text.subarray(0, 2); entered.resolve(); await release.promise; yield text.subarray(2)
     })())

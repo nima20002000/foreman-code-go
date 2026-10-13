@@ -1,8 +1,7 @@
+import { asRecord } from '../../shared/records.js'
 import { TextTruncationSchema, type TextTruncation } from '@foreman-code/contracts/activity-text'
 import type { NativeHarnessEvent, RecordedAgentHarness } from '@foreman-code/contracts'
 
-type ObjectValue = Record<string, unknown>
-function object(value: unknown): ObjectValue { return value && typeof value === 'object' && !Array.isArray(value) ? value as ObjectValue : {} }
 /** Deltas are presentation-only; completed public message items are persisted separately. */
 export function nativeAssistantText(event: NativeHarnessEvent): Array<{ partId: string; text: string; mode: 'append' | 'replace' }> {
   const payload = event.payload
@@ -21,7 +20,7 @@ export function nativeAssistantText(event: NativeHarnessEvent): Array<{ partId: 
   if (event.type === 'assistant.delta' && typeof payload.text === 'string') {
     return [{ partId: String(payload.itemId ?? 'assistant'), text: payload.text, mode: 'append' }]
   }
-  const item = object(payload.item)
+  const item = asRecord(payload.item)
   if (event.type === 'item.completed' && item.type === 'agentMessage' && typeof item.text === 'string') {
     return [{ partId: String(item.id ?? 'assistant'), text: item.text, mode: 'replace' }]
   }
@@ -42,7 +41,7 @@ export function completedNativeAssistantMessage(event: NativeHarnessEvent, harne
       ...(parentMessageId ? { parentMessageId } : {}) }
   }
   if (harness === 'codex' && event.type === 'item.completed') {
-    const item = object(event.payload.item)
+    const item = asRecord(event.payload.item)
     if (item.type === 'agentMessage' && typeof item.id === 'string' && typeof item.text === 'string') {
       return { id: item.id, text: item.text }
     }

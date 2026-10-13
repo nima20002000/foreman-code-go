@@ -1,3 +1,4 @@
+import { sameComputer } from './sameComputer'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   WorkspaceRootListResultSchema, WorkspaceRootSelectionSchema,
@@ -27,9 +28,6 @@ export function sameRootSelection(left: WorkspaceRootSelection | undefined, righ
   return before.success && after.success && JSON.stringify(before.data) === JSON.stringify(after.data)
 }
 function invalid(message: string): never { throw new ApiError({ code: 'INVALID_RESPONSE', message }) }
-function checkHost(left: WorkspaceRootSelection['hostRef'], right: WorkspaceRootSelection['hostRef']) {
-  return left.kind === right.kind && left.mainId === right.mainId && (left.kind === 'main' || right.kind === 'device' && left.deviceId === right.deviceId)
-}
 export function useWorkspaceRootChoices(workspaceId: string, enabled = true) {
   useHarnessSessionEpoch()
   return useQuery({ queryKey: boundLocationKeys.choices(workspaceId), enabled: enabled && !sessionIsSwitching(), retry: false,
@@ -56,7 +54,7 @@ export function useBoundWorkspaceLocation(workspaceId: string, enabled = true) {
 type ReadRequest = { input: WorkspaceRootSelection; expectedHost: ApprovedRootAllowlist }
 export type BoundFolderBrowser = ReadRequest
 function checkRequestHost(input: WorkspaceRootSelection, host: ApprovedRootAllowlist, workspaceId: string) {
-  if (input.workspaceId !== workspaceId || !checkHost(input.hostRef, host.hostRef) || input.configurationRevision !== host.configurationRevision
+  if (input.workspaceId !== workspaceId || !sameComputer(input.hostRef, host.hostRef) || input.configurationRevision !== host.configurationRevision
     || !host.bases.some(base => base.baseId === input.allowedBaseId && base.accessModes.includes(input.accessMode)))
     throw new ApiError({ code: 'INVALID_REQUEST', message: 'Select a current approved root for this workspace and computer.' })
 }
@@ -65,7 +63,7 @@ export function useBrowseBoundWorkspaceLocation(workspaceId: string) {
     checkRequestHost(input, expectedHost, workspaceId)
     const result = await apiClient.request(`${path(workspaceId)}/root-location/browse`, WorkspaceBoundLocationBrowseResultSchema,
       { method: 'POST', body: WorkspaceRootSelectionSchema.parse(input) })
-    if (result.workspaceId !== workspaceId || !sameRootSelection(result.selection, input) || !checkHost(input.hostRef, expectedHost.hostRef)) invalid('Directory readback belongs to another root selection.')
+    if (result.workspaceId !== workspaceId || !sameRootSelection(result.selection, input) || !sameComputer(input.hostRef, expectedHost.hostRef)) invalid('Directory readback belongs to another root selection.')
     return result
   } })
 }
@@ -103,7 +101,7 @@ export function useValidateBoundWorkspaceLocation(workspaceId: string) {
     const result = await apiClient.request(`${path(workspaceId)}/root-location/validate`, WorkspaceBoundLocationValidationSchema,
       { method: 'POST', body: WorkspaceRootSelectionSchema.parse(input) })
     const proof = result.attestation
-    if (result.workspaceId !== workspaceId || !sameRootSelection(result.selection, input) || !checkHost(proof.hostRef, input.hostRef)
+    if (result.workspaceId !== workspaceId || !sameRootSelection(result.selection, input) || !sameComputer(proof.hostRef, input.hostRef)
       || proof.applicationInstallationId !== expectedHost.applicationInstallationId || proof.allowedBaseId !== input.allowedBaseId
       || proof.configurationRevision !== input.configurationRevision || proof.relativePath !== input.relativePath || proof.accessMode !== input.accessMode)
       invalid('Folder validation does not match the selected computer and approved root.')
@@ -122,7 +120,7 @@ export function useSetBoundWorkspaceLocation(workspaceId: string) {
       const value = result.value
       if (value.evidence !== 'bound' || value.workspaceId !== workspaceId || value.binding.workspaceId !== workspaceId) invalid('The submitted workspace root binding was not confirmed.')
       const binding = value.binding
-      if (!checkHost(binding.hostRef, input.hostRef) || binding.applicationInstallationId !== expectedHost.applicationInstallationId
+      if (!sameComputer(binding.hostRef, input.hostRef) || binding.applicationInstallationId !== expectedHost.applicationInstallationId
         || binding.allowedBaseId !== input.allowedBaseId || binding.configurationRevision !== input.configurationRevision
         || binding.relativePath !== input.relativePath || binding.accessMode !== input.accessMode
         || value.locationRevision !== input.expectedLocationRevision + 1 || binding.locationRevision !== String(value.locationRevision)

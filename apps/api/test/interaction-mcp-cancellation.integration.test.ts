@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { approvalDatabase } from './helpers/wave25ApprovalDatabase.js'
-import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
+import { postgresEnabled } from './helpers/wave25Agent3.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 const closes: Array<() => Promise<unknown>> = []
 afterEach(async () => {
@@ -55,7 +56,7 @@ describe.skipIf(!postgresEnabled)('authenticated interaction MCP cancellation', 
     const lock = await f.pool.connect()
     await lock.query('begin')
     await lock.query('select id from management_principals where id=$1 for update', [f.principal.id])
-    const entered = deferred<AbortSignal>()
+    const entered = rejectableDeferred<AbortSignal>()
     const decide = f.repository.decide.bind(f.repository)
     vi.spyOn(f.repository, 'decide').mockImplementation(async (input) => {
       entered.resolve(input.signal!)
@@ -87,8 +88,8 @@ describe.skipIf(!postgresEnabled)('authenticated interaction MCP cancellation', 
 
   it('preserves a committed decision and returns its recorded outcome after cancellation', async () => {
     const f = await setup()
-    const committed = deferred<AbortSignal>()
-    const release = deferred<void>()
+    const committed = rejectableDeferred<AbortSignal>()
+    const release = rejectableDeferred<void>()
     closes.push(async () => release.resolve())
     const decide = f.repository.decide.bind(f.repository)
     vi.spyOn(f.repository, 'decide').mockImplementation(async (input) => {

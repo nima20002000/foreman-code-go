@@ -8,7 +8,8 @@ import type { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { WorkerCredentialService, type IssuedWorkerCredential } from '../src/modules/access/workerCredentials.js'
 import { DomainError } from '../src/modules/errors.js'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
-import { deferred, historicalSecret, now, providerId, reviewerFixture, secret, session, until } from './helpers/reviewerAudit.js'
+import { historicalSecret, now, providerId, reviewerFixture, secret, session, until } from './helpers/reviewerAudit.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 it('F8: a silent 75-second review renews its one-minute credential without rotating token or native work', async () => {
   vi.useFakeTimers(); vi.setSystemTime(new Date(now))
@@ -156,7 +157,7 @@ it('F8: a delayed renewal cannot update the local credential after maintenance s
   try {
     const fixture = await reviewerFixture()
     const attached = await fixture.attach()
-    const renewal = deferred<string>()
+    const renewal = rejectableDeferred<string>()
     fixture.hooks.renew = () => renewal.promise
     const maintenance = await fixture.runtime.maintainReviewCredential(fixture.execution.id, session, new AbortController().signal, async () => {})
     await vi.advanceTimersByTimeAsync(1)
@@ -239,7 +240,7 @@ it('F8: hung initial authority validation fails before credential expiry instead
   try {
     const fixture = await reviewerFixture()
     await fixture.attach()
-    const blocked = deferred()
+    const blocked = rejectableDeferred()
     fixture.hooks.validate = () => blocked.promise
     const task = fixture.runtime.maintainReviewCredential(fixture.execution.id, session, new AbortController().signal, async () => {})
     await vi.advanceTimersByTimeAsync(55_001)

@@ -1,3 +1,4 @@
+import { errorMessage } from '../shared/errorMessage.js'
 import { loadProductEnvFile } from '@foreman-code/contracts/product-environment-node'
 
 import type { ManagementGrant } from '@foreman-code/contracts/management'
@@ -39,6 +40,6 @@ async function main() {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${error instanceof Error ? error.message : 'Credential command failed.'}\n`)
+  process.stderr.write(`${errorMessage(error, 'Credential command failed.')}\n`)
   process.exitCode = 1
 })

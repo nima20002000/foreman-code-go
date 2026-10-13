@@ -13,7 +13,8 @@ import { labelRuns, RUNS_MAX_PAGES, RUNS_PAGE_SIZE } from './presentation'
 import { runsSelectorKeys, useSelectedRunSnapshot } from './query'
 import { useSelectedRun, type SelectedRunState } from './useSelectedRun'
 import { useRunsSelectorUi } from './uiStore'
-import { deferred, page, runA, runB, runC, runsUrl, scope, snapshot } from './testFixtures'
+import { page, runA, runB, runC, runsUrl, scope, snapshot } from './testFixtures'
+import { deferred } from '../../test/deferred'
 
 const runsRoute = '*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs'
 const listRoute = `${runsRoute}/summaries`

@@ -1,17 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import { RunnerAdmission } from '../src/modules/runs/runnerAdmission.js'
 import { ExecutionLimiter } from '../src/modules/runs/limiter.js'
+import { deferred } from './helpers/deferred.js'
 
-function latch() {
-  let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
-  return { promise, resolve }
-}
 const signal = () => new AbortController().signal
 
 describe('Agent 3 bounded worker admission', () => {
   it('gives a later Run a turn before draining a wide earlier Run', async () => {
-    const gate = new RunnerAdmission(1, 8, 2), held = latch(), entered = latch(), order: string[] = []
+    const gate = new RunnerAdmission(1, 8, 2), held = deferred(), entered = deferred(), order: string[] = []
     const first = gate.run('wide', signal(), async () => { entered.resolve(); await held.promise })
     await entered.promise
     const pending = ['wide', 'wide', 'wide', 'later'].map((id) => gate.run(id, signal(), async () => { order.push(id) }))
@@ -21,7 +17,7 @@ describe('Agent 3 bounded worker admission', () => {
     expect(gate.inFlight).toBe(0); expect(gate.pending).toBe(0)
   })
   it('removes a stopped queued execution without invoking its launch callback', async () => {
-    const gate = new RunnerAdmission(1), held = latch(), entered = latch(), stop = new AbortController()
+    const gate = new RunnerAdmission(1), held = deferred(), entered = deferred(), stop = new AbortController()
     const first = gate.run('first', signal(), async () => { entered.resolve(); await held.promise })
     await entered.promise
     const launch = vi.fn(async () => undefined)
@@ -34,7 +30,7 @@ describe('Agent 3 bounded worker admission', () => {
     expect(launch).toHaveBeenCalledTimes(1); expect(gate.inFlight).toBe(0)
   })
   it('bounds waiting callbacks and queued Run identities without borrowing review capacity', async () => {
-    const gate = new RunnerAdmission(1, 2, 1), held = latch(), entered = latch()
+    const gate = new RunnerAdmission(1, 2, 1), held = deferred(), entered = deferred()
     const first = gate.run('active', signal(), async () => { entered.resolve(); await held.promise })
     await entered.promise
     const one = gate.run('queued', signal(), async () => undefined)
@@ -48,7 +44,7 @@ describe('Agent 3 bounded worker admission', () => {
     held.resolve(); await Promise.all([first, one, two])
   })
   it('releases slots after callback failure and abort immediately after wakeup', async () => {
-    const gate = new RunnerAdmission(1), held = latch(), stop = new AbortController(), entered = latch()
+    const gate = new RunnerAdmission(1), held = deferred(), stop = new AbortController(), entered = deferred()
     const first = gate.run('first', signal(), async () => { entered.resolve(); await held.promise; stop.abort() })
     await entered.promise
     const canceled = gate.run('canceled', stop.signal, async () => { throw new Error('must not start') })
@@ -60,7 +56,7 @@ describe('Agent 3 bounded worker admission', () => {
     expect(gate.inFlight).toBe(0)
   })
   it('keeps the run-local limit and waiting bound independent of board size', async () => {
-    const limiter = new ExecutionLimiter(1, 1), held = latch(), entered = latch()
+    const limiter = new ExecutionLimiter(1, 1), held = deferred(), entered = deferred()
     const first = limiter.run(signal(), async () => { entered.resolve(); await held.promise })
     await entered.promise
     const next = limiter.run(signal(), async () => 2)

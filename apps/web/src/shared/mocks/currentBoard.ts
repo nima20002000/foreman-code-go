@@ -1,3 +1,4 @@
+import { errorMessage } from '../errorMessage'
 import { nativeNode } from './nativeFixtureTypes'
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { inspectionFixturePage, runInspectionFixtureResponse, type RunInspectionFixture, type RunInspectionActivity } from './runInspection'
@@ -236,7 +237,7 @@ async function dispatchCurrentBoardRequest(request: Request, state: CurrentBoard
       }
       return undefined
     } catch (error) {
-      const code = error instanceof Error ? error.message : 'INVALID_INPUT'
+      const code = errorMessage(error, 'INVALID_INPUT')
       return failure(code.length < 100 ? code : 'INVALID_INPUT', 'Current V3 mock rejected the exact request; no fallback occurred.')
     }
   }

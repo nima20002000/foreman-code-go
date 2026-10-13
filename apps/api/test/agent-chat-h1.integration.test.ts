@@ -24,8 +24,8 @@ import { CodexRpcError, type CodexStdioTransport, type JsonObject } from '../src
 import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import { runCommand } from '../src/modules/harnesses/process.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
-import { deferred } from './helpers/agentChatF1.js'
 import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
+import { deferred } from './helpers/deferred.js'
 
 // The adapter's create/start/history/cleanup logic is real. Qualification and RPC I/O are test
 // substitutes: no executable, real provider, App credential, or workflow execution is used.
@@ -102,7 +102,7 @@ describe.skipIf(!postgresEnabled).each(APP_MCP_SERVER_NAMES)(
     const context = { workspaceId: saved.scope.workspaceId, workflowId: saved.scope.workflowId, workflowNodeId: node.id, agentId: node.agentId }
     const { workspaceId, ...query } = context
     const repository = new PostgresAgentChatRepository(pool)
-    const controls: { mode: Mode; closeGate?: ReturnType<typeof deferred> } = { mode: initial }
+    const controls: { mode: Mode; closeGate?: ReturnType<typeof deferred<void>> } = { mode: initial }
     const calls: Array<{ method: string; params: JsonObject }> = []
     const created: string[] = []
     const managers: CodexAppServerSessionManager[] = []

@@ -13,6 +13,7 @@ import { executeRepeatRuntime } from '../src/modules/runs/repeatRuntime.js'
 import { compileRepeatLayout } from '../src/modules/runs/repeatResolution.js'
 import { currentUnitSnapshot } from './helpers/currentUnitSnapshot.js'
 import { syntheticCurrentWorkflow } from './helpers/currentSynthetic.js'
+import { deferred } from './helpers/deferred.js'
 
 type EngineArguments = ConstructorParameters<typeof LangGraphWorkflowEngine>
 type Internals = {
@@ -58,11 +59,6 @@ vi.mock('../src/modules/runs/approvalCheckpointResume.js', async (original) => (
     const host = ports.owners.get(owner); assert.ok(host); return host.consume(items)
   },
 }))
-function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
-  return { promise, resolve }
-}
 function fixture() {
   const f = currentUnitSnapshot('run-lifecycle', 'parallel'), saver = new MemorySaver()
   const run = { ...f.run, executionState: 'waiting' as typeof f.run.executionState }

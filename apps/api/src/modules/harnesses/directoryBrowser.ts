@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage.js'
 import type pg from 'pg'
 import { mkdir, opendir, readdir, realpath, rename, rmdir, lstat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
@@ -176,7 +177,7 @@ export class HarnessDirectoryBrowser {
             const code = (error as NodeJS.ErrnoException).code
             failed.push({ path, message: ['ENOTEMPTY', 'EEXIST'].includes(code ?? '')
               ? 'This folder contains files. Only empty folders can be deleted.'
-              : code ? 'This folder could not be deleted.' : error instanceof Error ? error.message : 'This folder could not be deleted.' })
+              : code ? 'This folder could not be deleted.' : errorMessage(error, 'This folder could not be deleted.') })
           }
         }
         return { deleted, failed }

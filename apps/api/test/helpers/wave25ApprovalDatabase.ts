@@ -1,13 +1,13 @@
 import { vi } from 'vitest'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
 import { codexApprovalRuntime } from './codexApprovalRuntime.js'
-import { deferred } from './wave25Agent3.js'
+import { rejectableDeferred } from './deferred.js'
 
 /** Shared Save/Start and Codex adapter capture with replayed provider IO. */
 export async function approvalDatabase(options: { command?: string } = {}) {
   const runtime = await codexApprovalRuntime('orchestrator', options)
   const reconcile = vi.spyOn(runtime.native.reviewers, 'reconcile').mockResolvedValue(undefined)
-  const live = deferred<void>(), release = deferred<void>()
+  const live = rejectableDeferred<void>(), release = rejectableDeferred<void>()
   const issuance = vi.spyOn(runtime.credentials, 'issueForReviewer')
   let dispatch: Promise<unknown> | undefined
   const append = runtime.repository.coordination.appendReviewNativeEvent.bind(runtime.repository.coordination)

@@ -10,9 +10,9 @@ import { freezePlacement, deriveDispatch } from './binding.js'
 import Fastify from 'fastify'
 import { MainWorkerMcpRelay, selectedMainMcpForward, type SelectedMainMcpForward } from './workerMcpRelay.js'
 import { isAuthorized } from '../access/policy.js'
-import { deferred } from '../../../test/helpers/wave25Agent3.js'
 import { createWorkerMcpEndpoint } from '../runs/remote/workerMcpEndpoint.js'
 import { prepareWorkerApplicationAccess } from '../runs/remote/workerApplicationAccess.js'
+import { rejectableDeferred } from '../../../test/helpers/deferred.js'
 
 const ports = vi.hoisted(() => ({ intent: vi.fn(), placement: vi.fn(), host: vi.fn(), owner: vi.fn() }))
 vi.mock('../runs/remote/persistence.js', () => ({ readReconciledDispatchIntent: ports.intent }))
@@ -238,7 +238,7 @@ describe('Main worker MCP relay with original binding doubles and real worker sc
 
 it('passes cancellation of the authenticated worker request to the original Main call', async () => {
   const f = fixture()
-  const entered = deferred<AbortSignal>()
+  const entered = rejectableDeferred<AbortSignal>()
   f.forward.mockImplementation(async (_body, _token, _protocol, signal) => new Promise<never>((_resolve, reject) => {
     if (!signal) throw new Error('Missing original request signal')
     signal.addEventListener('abort', () => reject(signal.reason), { once: true })
@@ -266,8 +266,8 @@ it('rejects an already cancelled request before forwarding any worker effect', a
 describe('selected Main fixed artifact tool routing', () => {
   it('closes the authenticated Main HTTP request when its worker request is cancelled', async () => {
     const app = Fastify()
-    const entered = deferred<void>()
-    const disconnected = deferred<void>()
+    const entered = rejectableDeferred<void>()
+    const disconnected = rejectableDeferred<void>()
     app.post('/mcp', (request, reply) => {
       expect(request.headers.authorization).toBe('Bearer original-worker-bearer')
       reply.hijack()

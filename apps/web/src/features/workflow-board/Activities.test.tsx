@@ -10,6 +10,7 @@ import { server } from '../../mocks/server'
 import { RunsSelectorSearchSchema } from '../runs-selector/search'
 import { Activities } from './Activities'
 import { runActivitiesKey, type RunActivityFeed } from './runActivitiesQuery'
+import { deferred } from '../../test/deferred'
 
 const scope: RepeatGraphScopeV3 = { workspaceId: 'workspace-a', workflowId: 'workflow-a',
   workflowVersionId: 'version-a', runId: 'run-a', executionSemanticsVersion: 3 }
@@ -44,12 +45,6 @@ async function mount({ timed = false, expectedText = 'Job ran', focusAgentId = u
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
   await act(async () => { await vi.waitFor(() => expect(screen.getByText(expectedText)).toBeVisible()) })
   return router
-}
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => { resolve = done })
-  return { promise, resolve }
 }
 
 const activitiesPath = '*/api/management/workspaces/workspace-a/runs/run-a/activities'

@@ -14,11 +14,6 @@ export const snapshot = (runId: string, version = `version-${runId}`, target = s
   snapshot: { kind: 'available', ...target, runId, workflowVersionId: version,
     capturedAt: '2026-09-27T00:00:00.000Z', nodes: [], edges: [] },
 })
-export function deferred<T>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => { resolve = done })
-  return { promise, resolve }
-}
 export const runsUrl = (runId: string | null, target = scope) =>
   `/workspaces/${encodeURIComponent(target.workspaceId)}?${new URLSearchParams({ workflowId: target.workflowId,
     ...(runId === null ? {} : { selectedRunId: runId }) })}`

@@ -1,3 +1,4 @@
+import { asRecord } from '../records'
 import { useId, useState } from 'react'
 import { validateInteractionResponse, type ApprovalResponseOption, type InteractionResponseValue,
   type NativeInteractionInput } from '@foreman-code/contracts'
@@ -5,13 +6,10 @@ import { Button } from './nocturne'
 import { approvalOptionScope } from './approvalOptionScope'
 import './nativeInteractionResponse.css'
 
-function object(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
-}
 
 function editableFormProperties(input: Extract<NativeInteractionInput, { kind: 'form' }>) {
-  const schema = object(input.schema)
-  const properties = object(schema.properties)
+  const schema = asRecord(input.schema)
+  const properties = asRecord(schema.properties)
   const fieldKeywords = ['type', 'properties', 'required', 'additionalProperties', 'title', 'description', '$schema']
   const required = Array.isArray(schema.required) ? schema.required : []
   const canRender = Object.keys(properties).length > 0
@@ -26,14 +24,14 @@ function FormFields({ input, disabled, values, update }: {
   input: Extract<NativeInteractionInput, { kind: 'form' }>; disabled: boolean
   values: Record<string, unknown>; update(name: string, value: unknown): void
 }) {
-  const schema = object(input.schema)
+  const schema = asRecord(input.schema)
   const properties = editableFormProperties(input)
   if (!properties) return <label>Form response (JSON)
     <textarea disabled={disabled} value={String(values.json ?? '{}')} onChange={(event) => update('json', event.target.value)} />
     <small>Enter the complete response as JSON.</small>
   </label>
   return <>{Object.entries(properties).map(([name, property]) => {
-    const field = object(property)
+    const field = asRecord(property)
     const label = typeof field.title === 'string' ? field.title : name
     const value = Object.hasOwn(values, name) ? values[name] ?? '' : ''
     const choices = Array.isArray(field.enum) ? field.enum : undefined
@@ -80,7 +78,7 @@ function QuestionFields({ input, disabled, values, update }: {
   values: Record<string, unknown>; update(name: string, value: unknown): void
 }) {
   return <>{input.questions.map((question) => {
-    const answer = object(values[question.id])
+    const answer = asRecord(values[question.id])
     const selected = Array.isArray(answer.choices) ? answer.choices as string[] : []
     return <fieldset key={question.id} disabled={disabled}>
       <legend>{question.header}</legend><p>{question.question}</p>
@@ -101,7 +99,7 @@ function QuestionFields({ input, disabled, values, update }: {
 function responseValue(input: NativeInteractionInput, values: Record<string, unknown>): InteractionResponseValue {
   if (input.kind === 'questions') {
     return Object.fromEntries(input.questions.map((question) => {
-      const answer = object(values[question.id])
+      const answer = asRecord(values[question.id])
       const selected = Array.isArray(answer.choices) ? answer.choices as string[] : []
       const other = String(answer.other ?? '')
       return [question.id, { answers: typeof answer.other === 'string' ? [...selected, other] : selected }]
@@ -110,7 +108,7 @@ function responseValue(input: NativeInteractionInput, values: Record<string, unk
   const properties = editableFormProperties(input)
   if (!properties) return JSON.parse(String(values.json ?? '{}')) as InteractionResponseValue
   return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined).map(([name, value]) => {
-    const field = object(properties[name])
+    const field = asRecord(properties[name])
     const structured = !Array.isArray(field.enum) && !['string', 'number', 'integer', 'boolean'].includes(String(field.type))
     const parsed = structured ? JSON.parse(String(value)) as InteractionResponseValue : value as InteractionResponseValue
     return [name, parsed]

@@ -19,7 +19,8 @@ import { WorkflowScheduleService } from '../src/modules/schedules/service.js'
 import { ScheduleOccurrencePageSchema } from '../src/modules/schedules/transportSchemas.js'
 import { LOCAL_RUNNER_ID, WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
-import { agent3Database, deferred, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
+import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 const settings = { timezone: 'UTC', enabled: true, policy: 'latest_saved' as const }
 const once: ScheduleConfiguration = { ...settings, mode: 'once', localDate: '2030-01-07', time: '10:00' }
@@ -146,7 +147,7 @@ describe.skipIf(!postgresEnabled)('SCH-04 PostgreSQL dispatcher / common Start',
     const saved = await save(); now = saved.nextOccurrenceAt!
     const otherPool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL!, max: 4,
       options: `-c search_path=${database.schema} -c statement_timeout=10000 -c lock_timeout=5000` })
-    const ready = deferred(), release = deferred(); let arrivals = 0
+    const ready = rejectableDeferred(), release = rejectableDeferred(); let arrivals = 0
     const gated = (start: ScheduledStart): ScheduledStart => async (...args) => {
       arrivals++; if (arrivals === 2) ready.resolve()
       await release.promise; await start(...args)
@@ -198,7 +199,7 @@ describe.skipIf(!postgresEnabled)('SCH-04 PostgreSQL dispatcher / common Start',
 
   it.each(['disable', 'clear'] as const)('rechecks a %s racing between preparation and common Start', async (operation) => {
     const saved = await save(); now = saved.nextOccurrenceAt!
-    const prepared = deferred(), release = deferred()
+    const prepared = rejectableDeferred(), release = rejectableDeferred()
     const work = dispatcher(async (...args) => { prepared.resolve(); await release.promise; await realStart(...args) }).dispatch(saved)
     try {
       await reached(prepared.promise, work)
@@ -212,7 +213,7 @@ describe.skipIf(!postgresEnabled)('SCH-04 PostgreSQL dispatcher / common Start',
 
   it('rechecks permission loss after preparation and records only a safe rejection', async () => {
     const saved = await save(); now = saved.nextOccurrenceAt!
-    const prepared = deferred(), release = deferred()
+    const prepared = rejectableDeferred(), release = rejectableDeferred()
     const work = dispatcher(async (...args) => { prepared.resolve(); await release.promise; await realStart(...args) }).dispatch(saved)
     try {
       await reached(prepared.promise, work)

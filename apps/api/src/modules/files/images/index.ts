@@ -1,3 +1,4 @@
+import { errorMessage } from '../../../shared/errorMessage.js'
 import { MAX_FILE_BYTES, type FileMediaType } from "@foreman-code/contracts/files";
 import sharp, { type Metadata, type Sharp } from "sharp";
 
@@ -118,7 +119,7 @@ async function inspect(bytes: Buffer, mediaType: ImageMediaType, deadline: numbe
 async function guard<T>(work: () => Promise<T>): Promise<T> {
   try { return await work(); } catch (error) {
     if (error instanceof ImageHelperError) throw error;
-    const message = error instanceof Error ? error.message : "Image decoding failed";
+    const message = errorMessage(error, "Image decoding failed");
     const code = /timeout|time.?out/i.test(message) ? "timeout"
       : /pixel limit|memory|too large/i.test(message) ? "limit_exceeded" : "corrupt";
     throw new ImageHelperError(code, "Image could not be safely processed", { cause: error });

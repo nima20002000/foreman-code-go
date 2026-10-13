@@ -1,6 +1,6 @@
+import { sleep } from './sleep.mjs'
 import { createPressureSampler, timeoutScale } from './dense-resources.mjs'
 
-const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 const passed = result => result.code === 0 && result.complete !== false
 
 function validateQueue(items, maxConcurrency) {
