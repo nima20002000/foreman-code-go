@@ -153,6 +153,40 @@ test('packages every reviewed target from one committed release in private stora
   }
 })
 
+test('builds every reviewed target at once and keeps the reviewed order in the index', async t => {
+  const f = await fixture(t)
+  let active = 0
+  let peak = 0
+  const run = async (...args) => {
+    active++
+    peak = Math.max(peak, active)
+    // Each target takes ~10 s on a build computer; one after another made deploys wait for all of them.
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await f.run(...args)
+    active--
+  }
+  const index = await buildWorkerReleaseArtifacts({ ...f, run })
+  assert.equal(peak, 4)
+  const order = f.calls.map(call => call.args[1])
+  assert.deepEqual(index.artifacts.map(artifact => artifact.target.node + artifact.target.osRelease),
+    order.map(path => { const value = JSON.parse(execFileSync('git', ['show', `${f.commit}:${path}`], { cwd: f.repository }))
+      return value.node + value.osRelease }))
+})
+
+test('a failed target build waits for the others before removing artifact storage', async t => {
+  const f = await fixture(t)
+  let finished = 0
+  const run = async (...args) => {
+    if (args[1][1].includes('ubuntu-0')) throw new Error('Artifact build failed')
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await f.run(...args)
+    finished++
+  }
+  await assert.rejects(buildWorkerReleaseArtifacts({ ...f, run }), /Artifact build failed/)
+  assert.equal(finished, 3)
+  await assert.rejects(stat(f.directory), { code: 'ENOENT' })
+})
+
 test('rejects corrupted build output and removes incomplete artifact storage', async t => {
   const f = await fixture(t)
   const run = async (...args) => {
