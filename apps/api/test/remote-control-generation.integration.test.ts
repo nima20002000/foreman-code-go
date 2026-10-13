@@ -22,6 +22,11 @@ it('persists generation-zero remote admission and keeps its original snapshot im
     expect(stored).toEqual([{ remote_owner_control: command, generation: '0' }])
     await expect(f.pool.query(`update interaction_delivery_attempts set remote_owner_control_generation=1
       where interaction_id=$1`, [interaction.id])).rejects.toThrow('immutable')
+    const unchanged = (await f.pool.query(`select remote_owner_control,remote_owner_control_generation::text as generation
+      from interaction_delivery_attempts where interaction_id=$1`, [interaction.id])).rows
+    expect(unchanged).toEqual([{ remote_owner_control: command, generation: '0' }])
+    await expect(f.pool.query(`delete from interaction_delivery_attempts where interaction_id=$1`,
+      [interaction.id])).rejects.toThrow('retained')
     await expect(f.pool.query(`insert into interaction_delivery_attempts(interaction_id,attempt,state,native_session_id,
       native_request_id,correlation_id,remote_owner_control,remote_owner_control_token,
       remote_owner_control_fence,remote_owner_control_generation)
