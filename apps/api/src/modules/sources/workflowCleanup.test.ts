@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { HarnessExecutionSchema } from '@foreman-code/contracts'
@@ -8,6 +8,8 @@ import { readUnboundWorkflowClosure, readWorkflowClosure } from '../interactions
 import { hasRetainedRemoteReviewerSource, readRetainedRemoteReviewer } from '../interactions/retainedRemoteReviewer.js'
 import { closeCompletedWorkflowSources, localWorkflowSourceClosed } from './workflowCleanup.js'
 import { PostgresSourceService } from './service.js'
+import { DomainError } from '../errors.js'
+import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
 
 vi.mock('../interactions/workflowClosure.js', () => ({
   readWorkflowClosure: vi.fn(),
@@ -17,6 +19,7 @@ vi.mock('../interactions/retainedRemoteReviewer.js', () => ({
   readRetainedRemoteReviewer: vi.fn(), hasRetainedRemoteReviewerSource: vi.fn(),
 }))
 beforeEach(() => vi.resetAllMocks())
+afterEach(() => vi.useRealTimers())
 
 function fixture(bound: boolean, state: 'completed' | 'starting' = 'completed') {
   const execution = HarnessExecutionSchema.parse({
@@ -81,7 +84,8 @@ function remoteSourceFixture() {
     sourceBindingHash: hash, finalDispatchBindingHash: hash, state: 'prepared',
   })
   const settlement = { pending: false }
-  const pool = { query: async () => ({ rows: [{ record, execution, settlement_pending: settlement.pending }] }) } as unknown as Pick<pg.Pool, 'query'>
+  const pool = { query: async () => ({ rows: [{ materialization_id: record.receipt.materializationId,
+    record, execution, settlement_pending: settlement.pending }] }) } as unknown as Pick<pg.Pool, 'query'>
   const sources = { confirmClosed: vi.fn(async () => undefined) }
   const report = vi.fn()
   return { pool, sources, report, record, execution, settlement }
@@ -143,11 +147,12 @@ it('reports closure uncertainty when no verified retained reviewer owns the sour
   expect(f.report).toHaveBeenCalledWith(uncertainty)
 })
 
-it('reproduces unconfirmed physical closure and defers the actual source service only for verified retention', async () => {
+it('defers unconfirmed physical closure without releasing the original source claim', async () => {
   const f = remoteSourceFixture()
   const releaseClaim = vi.fn(async () => ({ retainedBytes: 0 }))
+  const confirmedClosed = vi.fn(async () => false)
   const dependencies = [f.pool, {}, {}, {}, f.record.receipt.binding.mainId, {}, { releaseClaim },
-    { confirmedClosed: async () => false }] as unknown as ConstructorParameters<typeof PostgresSourceService>
+    { confirmedClosed }] as unknown as ConstructorParameters<typeof PostgresSourceService>
   const sources = new PostgresSourceService(...dependencies)
   await expect(sources.confirmClosed(f.record)).rejects.toMatchObject({ code: 'SOURCE_EXECUTION_UNCERTAIN' })
   vi.mocked(hasRetainedRemoteReviewerSource).mockResolvedValue(true)
@@ -156,7 +161,11 @@ it('reproduces unconfirmed physical closure and defers the actual source service
   expect(releaseClaim).not.toHaveBeenCalled()
   vi.mocked(hasRetainedRemoteReviewerSource).mockResolvedValue(false)
   await closeCompletedWorkflowSources(f.pool, sources, f.report)
-  expect(f.report).toHaveBeenCalledWith(expect.objectContaining({ code: 'SOURCE_EXECUTION_UNCERTAIN' }))
+  const closureChecks = confirmedClosed.mock.calls.length
+  await closeCompletedWorkflowSources(f.pool, sources, f.report)
+  await closeCompletedWorkflowSources(f.pool, sources, f.report)
+  expect(confirmedClosed).toHaveBeenCalledTimes(closureChecks)
+  expect(f.report).not.toHaveBeenCalled()
   expect(releaseClaim).not.toHaveBeenCalled()
 })
 
@@ -178,7 +187,8 @@ it('defers a completed Main node while its original native lifetime is still set
 it.each([true, false])('visits a closed sessionless retained copy with reconciliation record=%s', async preparationClosed => {
   const f = remoteSourceFixture()
   delete f.execution.nativeSessionId
-  const pool = { query: async () => ({ rows: [{ record: f.record, execution: f.execution,
+  const pool = { query: async () => ({ rows: [{ materialization_id: f.record.receipt.materializationId,
+    record: f.record, execution: f.execution,
     settlement_pending: false, already_closed: true, preparation_closed: preparationClosed }] }) } as unknown as Pick<pg.Pool, 'query'>
   await closeCompletedWorkflowSources(pool, f.sources, f.report)
   expect(f.sources.confirmClosed).toHaveBeenCalledWith(f.record)
@@ -188,9 +198,165 @@ it.each([true, false])('visits a closed sessionless retained copy with reconcili
 it('keeps a sessionless copy when its preparation closure is still uncertain', async () => {
   const f = remoteSourceFixture()
   delete f.execution.nativeSessionId
-  const pool = { query: async () => ({ rows: [{ record: f.record, execution: f.execution,
+  const pool = { query: async () => ({ rows: [{ materialization_id: f.record.receipt.materializationId,
+    record: f.record, execution: f.execution,
     settlement_pending: false, preparation_closed: false }] }) } as unknown as Pick<pg.Pool, 'query'>
   await closeCompletedWorkflowSources(pool, f.sources, f.report)
   expect(f.sources.confirmClosed).not.toHaveBeenCalled()
   expect(f.report).not.toHaveBeenCalled()
+})
+
+function cleanupClock() {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  let now = Date.parse('2026-10-04T00:02:00Z')
+  vi.setSystemTime(now)
+  return (milliseconds: number) => {
+    now += milliseconds
+    vi.setSystemTime(now)
+  }
+}
+
+it.each([
+  new DomainError('SOURCE_EXECUTION_UNCERTAIN', 'Physical closure is unconfirmed.', 409),
+  new DeviceApplicationError('SOURCE_EXECUTION_UNCERTAIN'),
+])('backs off unconfirmed closure from the source service or device (%s)', async error => {
+  const advance = cleanupClock()
+  const f = remoteSourceFixture()
+  f.sources.confirmClosed.mockRejectedValue(error)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  for (let tick = 0; tick < 10; tick++) {
+    advance(1000)
+    await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  }
+  expect(f.sources.confirmClosed).toHaveBeenCalledTimes(1)
+  expect(f.report).not.toHaveBeenCalled()
+  advance(20_000)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).toHaveBeenCalledTimes(2)
+})
+
+it('increases closure retry delays up to five minutes while continuing to retry', async () => {
+  const advance = cleanupClock()
+  const f = remoteSourceFixture()
+  f.sources.confirmClosed.mockRejectedValue(new DeviceApplicationError('SOURCE_EXECUTION_UNCERTAIN'))
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  let attempts = 1
+  for (const interval of [30_000, 60_000, 120_000, 240_000, 300_000, 300_000]) {
+    advance(interval - 1)
+    await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+    expect(f.sources.confirmClosed).toHaveBeenCalledTimes(attempts)
+    advance(1)
+    await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+    expect(f.sources.confirmClosed).toHaveBeenCalledTimes(++attempts)
+  }
+  expect(f.report).not.toHaveBeenCalled()
+})
+
+it('closes a source after confirmation arrives and resets its retry delay after success', async () => {
+  const advance = cleanupClock()
+  const f = remoteSourceFixture()
+  const uncertainty = new DeviceApplicationError('SOURCE_EXECUTION_UNCERTAIN')
+  f.sources.confirmClosed.mockRejectedValue(uncertainty)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  advance(30_000)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  f.sources.confirmClosed.mockResolvedValue(undefined)
+  advance(60_000)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).toHaveBeenCalledTimes(3)
+  f.sources.confirmClosed.mockRejectedValue(uncertainty)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).toHaveBeenCalledTimes(4)
+  advance(30_000)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).toHaveBeenCalledTimes(5)
+  expect(f.report).not.toHaveBeenCalled()
+})
+
+it.each([
+  Object.assign(new Error('The original source receipt is missing.'), { code: 'ENOENT' }),
+  new DeviceApplicationError('ENOENT'),
+])('reports a missing source file once and keeps retrying without assuming completion (%s)', async error => {
+  const advance = cleanupClock()
+  const f = remoteSourceFixture()
+  f.sources.confirmClosed.mockRejectedValue(error)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  for (let tick = 0; tick < 10; tick++) {
+    advance(1000)
+    await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  }
+  expect(f.sources.confirmClosed).toHaveBeenCalledTimes(1)
+  expect(f.report).toHaveBeenCalledExactlyOnceWith(error)
+  advance(20_000)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  advance(60_000)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).toHaveBeenCalledTimes(3)
+  expect(f.report).toHaveBeenCalledTimes(1)
+  f.sources.confirmClosed.mockResolvedValue(undefined)
+  advance(120_000)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).toHaveBeenCalledTimes(4)
+  f.sources.confirmClosed.mockRejectedValue(error)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.report).toHaveBeenCalledTimes(2)
+})
+
+it('keeps retrying and reporting unrelated failures on each reconciliation tick', async () => {
+  const f = remoteSourceFixture()
+  const error = new Error('Closure database unavailable')
+  f.sources.confirmClosed.mockRejectedValue(error)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).toHaveBeenCalledTimes(2)
+  expect(f.report).toHaveBeenNthCalledWith(1, error)
+  expect(f.report).toHaveBeenNthCalledWith(2, error)
+})
+
+it('continues through a full page of deferred sources to clean up another source', async () => {
+  cleanupClock()
+  const deferred = remoteSourceFixture()
+  const ready = remoteSourceFixture()
+  const page = Array.from({ length: 100 }, () => {
+    const materializationId = randomUUID()
+    return {
+      materialization_id: materializationId,
+      record: SourceMaterializationRecordSchema.parse({ ...deferred.record,
+        receipt: { ...deferred.record.receipt, materializationId: materializationId } }),
+      execution: deferred.execution,
+    }
+  })
+  const lastPage = [{ materialization_id: ready.record.receipt.materializationId,
+    record: ready.record, execution: ready.execution }]
+  const query = vi.fn().mockResolvedValueOnce({ rows: page }).mockResolvedValueOnce({ rows: lastPage })
+    .mockResolvedValueOnce({ rows: page }).mockResolvedValueOnce({ rows: lastPage })
+  const pool = { query } as unknown as Pick<pg.Pool, 'query'>
+  const confirmClosed = vi.fn(async (record: typeof ready.record) => {
+    if (record.receipt.materializationId !== ready.record.receipt.materializationId) {
+      throw new DeviceApplicationError('SOURCE_EXECUTION_UNCERTAIN')
+    }
+  })
+  const sources = { confirmClosed }
+  await closeCompletedWorkflowSources(pool, sources, ready.report)
+  expect(confirmClosed).toHaveBeenCalledTimes(101)
+  await closeCompletedWorkflowSources(pool, sources, ready.report)
+  expect(confirmClosed).toHaveBeenCalledTimes(102)
+  expect(confirmClosed).toHaveBeenLastCalledWith(ready.record)
+  expect(ready.report).not.toHaveBeenCalled()
+})
+
+it('discards retry state when a source no longer appears in a completed scan', async () => {
+  cleanupClock()
+  const f = remoteSourceFixture()
+  const rows = [{ materialization_id: f.record.receipt.materializationId,
+    record: f.record, execution: f.execution }]
+  const query = vi.fn().mockResolvedValueOnce({ rows }).mockResolvedValueOnce({ rows: [] })
+    .mockResolvedValueOnce({ rows })
+  const pool = { query } as unknown as Pick<pg.Pool, 'query'>
+  f.sources.confirmClosed.mockRejectedValue(new DeviceApplicationError('ENOENT'))
+  await closeCompletedWorkflowSources(pool, f.sources, f.report)
+  await closeCompletedWorkflowSources(pool, f.sources, f.report)
+  await closeCompletedWorkflowSources(pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).toHaveBeenCalledTimes(2)
+  expect(f.report).toHaveBeenCalledTimes(2)
 })
