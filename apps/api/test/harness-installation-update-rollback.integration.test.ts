@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { placementDigest } from '../src/modules/placement/binding.js'
 import { waitForRemoteReview } from './helpers/remoteReviewProduction.js'
 import {
@@ -19,7 +20,15 @@ describe('installed harness updates', () => {
       await fixture.provider.blockWorkflowTurns()
       blocked = true
       const started = await fixture.start()
+      const active = await waitForRemoteReview(async () => SavedRunDetailsSchema.parse(
+        await fixture.value('run_get', {
+          detail: 'full', workspaceId: started.run.workspaceId, runId: started.run.id,
+        })), details => details.executions.some(execution => execution.state === 'running'
+          && execution.nativeSessionId !== undefined), 'active Worker execution through MCP')
+      expect(active.run.executionState).toBe('running')
+      expect(active.executions).toHaveLength(1)
       const turn = await runningTurn(fixture)
+      expect(active.executions[0]!.nativeSessionId).toBe(turn.sessionId)
       const pins = await pinnedPlacements(fixture, started.run.id)
       await fixture.provider.updatePayload()
       await waitForRemoteReview(() => profiles(fixture, reader), values =>
@@ -40,8 +49,13 @@ describe('installed harness updates', () => {
       expect(process.kill(turn.pid, 0)).toBe(true)
       await fixture.provider.releaseWorkflowTurns()
       blocked = false
-      await completedRun(fixture, started.run.id)
+      const finished = await completedRun(fixture, started.run.id)
       await completedRun(fixture, next.run.id)
+      expect(finished.executions).toHaveLength(1)
+      expect(finished.executions[0]).toMatchObject({
+        id: active.executions[0]!.id, attempt: active.executions[0]!.attempt,
+        nativeSessionId: turn.sessionId, state: 'completed',
+      })
       expect(await pinnedPlacements(fixture, started.run.id)).toEqual(pins)
       expect(await fixture.provider.calls()).toContainEqual({ workflowCompleted: turn })
     } finally {
