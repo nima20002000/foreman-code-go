@@ -27,6 +27,11 @@ describe.skipIf(!postgresEnabled)('Selected historical Run chat PostgreSQL / HTT
         expectedAgentConfigurationVersionIds: f.f.version.agentConfigurationVersionIds, input: {},
       } })))
       await eventually(() => dispatch.mock.calls.some(([runId]) => runId === started.run.id))
+      const dispatchIndex = dispatch.mock.calls.findIndex(([runId]) => runId === started.run.id)
+      const dispatched = dispatch.mock.results[dispatchIndex]!
+      expect(dispatched.type).toBe('return')
+      // Join the MCP dispatch just as the first Run joins its engine call before checking cleanup.
+      await dispatched.value
       await terminal(f, started.run.id)
       expect(dispatch.mock.calls.filter(([runId]) => runId === started.run.id)).toHaveLength(1)
       const b = (await executions(f, started.run.id)).find((entry) => entry.workflowNodeId === y.id)!

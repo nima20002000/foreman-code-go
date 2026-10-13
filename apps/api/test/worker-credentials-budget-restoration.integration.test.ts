@@ -36,7 +36,18 @@ it('restores the original native credential after service restart without alloca
   const before = (await pool.query('select id,token_hash,expires_at from management_principals where id=$1',
     [issued.principalId])).rows[0]
   const restarted = new WorkerCredentialService(pool, new PostgresAccessService(pool), 60_000)
-  expect(await restarted.restoreForExecution(execution.id, issued.environment)).toEqual(issued)
+  const restorationStartedAt = performance.now()
+  const restored = await restarted.restoreForExecution(execution.id, issued.environment)
+  expect(restored).toEqual({
+    principalId: issued.principalId,
+    environment: issued.environment,
+    expiresAt: issued.expiresAt,
+    renewalDeadline: expect.any(Number),
+  })
+  expect(restored.renewalDeadline).toBeGreaterThan(performance.now())
+  expect(restored.renewalDeadline).toBeLessThanOrEqual(restorationStartedAt + restarted.ttlMs)
+  expect((await access.authenticate(restored.environment.variables.GRAPHQL_MCP_TOKEN!, 'worker')).id)
+    .toBe(issued.principalId)
   expect((await pool.query('select id,token_hash,expires_at from management_principals where id=$1',
     [issued.principalId])).rows[0]).toEqual(before)
   expect((await pool.query('select principal_id from worker_credential_bindings where execution_id=$1',
