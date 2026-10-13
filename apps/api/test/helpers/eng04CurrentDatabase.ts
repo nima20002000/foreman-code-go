@@ -39,10 +39,10 @@ export async function currentDatabase(options: {
       const client = await pool.connect()
       try {
         await client.query('begin')
-        for (const migration of fixtureMigrations) {
-          await client.query(migration.sql)
-          await client.query('insert into application_migrations(version) values($1)', [migration.version])
-        }
+        // Fixture history is trusted SQL; send it together to avoid a round trip per statement.
+        const statements = fixtureMigrations.map(migration => `${migration.sql};
+          insert into application_migrations(version) values(${migration.version});`)
+        if (statements.length) await client.query(statements.join('\n'))
         await client.query('commit')
       } catch (error) {
         await client.query('rollback')
