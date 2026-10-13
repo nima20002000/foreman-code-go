@@ -1,14 +1,66 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { once } from 'node:events'
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import pg from 'pg'
 import { expect, it } from 'vitest'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 
 const execute = promisify(execFile)
+
+async function hostDatabaseClient(env: NodeJS.ProcessEnv) {
+  // Each job declares its own disposable server before the inherited connection guard loads.
+  const resources = new URL('../../../scripts/test-resources.mjs', import.meta.url)
+  const child = spawn(process.execPath, ['--input-type=module', '--eval', `
+    import { testAdminPool } from ${JSON.stringify(resources.href)}
+    const pool = await testAdminPool()
+    process.on('message', async statement => {
+      if (statement === null) {
+        await pool.end()
+        process.disconnect()
+        return
+      }
+      try {
+        process.send({ rows: (await pool.query(statement)).rows })
+      } catch (error) {
+        process.send({ error: error.message })
+      }
+    })
+    process.send({ rows: [] })
+  `], { env, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] })
+  let stderr = ''
+  child.stderr!.setEncoding('utf8').on('data', (text: string) => { stderr += text })
+  const closed = once(child, 'exit').then(([code]) => code as number | null)
+  const read = async () => {
+    const [message] = await Promise.race([
+      once(child, 'message'),
+      closed.then(code => { throw new Error(`Host database client exited (${code}): ${stderr}`) }),
+    ])
+    const reply = message as { rows: Record<string, unknown>[]; error?: string }
+    if (reply.error) throw new Error(reply.error)
+    return reply
+  }
+  try {
+    await read()
+  } catch (error) {
+    child.kill()
+    await closed
+    throw error
+  }
+  return {
+    async query(statement: string) {
+      child.send(statement)
+      return read()
+    },
+    async end() {
+      child.send(null)
+      const code = await closed
+      if (code !== 0) throw new Error(`Host database client exited (${code}): ${stderr}`)
+    },
+  }
+}
 
 it('keeps an active database session and its rows when another checkout starts the shared test server', async () => {
   const fixture = await currentDatabase()
@@ -55,8 +107,9 @@ it('refuses private database startup without the runtime-owned running server', 
 })
 
 // The verification runtime has no Docker; it owns one private PostgreSQL per job instead.
-it.skipIf(process.env.FOREMAN_CODE_VERIFICATION_ENVIRONMENT === 'isolated-job-v1')(
-  'starts separate initialized databases for concurrent host CI jobs from a private checkout', async () => {
+it.skipIf(process.env.FOREMAN_CODE_VERIFICATION_ENVIRONMENT === 'isolated-job-v1').each([0, 1])(
+  'starts separate initialized databases for concurrent host CI jobs from a private checkout, stopping job %i',
+  async stoppedIndex => {
     const checkout = await mkdtemp(join(tmpdir(), 'private-checkout-'))
     await mkdir(join(checkout, 'scripts'), { mode: 0o700 })
     // Host CI checkouts are private: the container user cannot read these files.
@@ -73,24 +126,27 @@ it.skipIf(process.env.FOREMAN_CODE_VERIFICATION_ENVIRONMENT === 'isolated-job-v1
     }))
     const database = (action: string, env: NodeJS.ProcessEnv) =>
       execute(process.execPath, [join(checkout, 'scripts', 'test-db.mjs'), action], { env, timeout: 60_000 })
-    const clients: pg.Client[] = []
+    const clients: Awaited<ReturnType<typeof hostDatabaseClient>>[] = []
     try {
       await Promise.all(jobs.map(job => database('up', job.env)))
       for (const job of jobs) {
-        const client = new pg.Client({ connectionString: await readFile(join(job.runDirectory, 'test-database-url'), 'utf8') })
-        await client.connect()
+        const client = await hostDatabaseClient({ ...job.env,
+          FOREMAN_CODE_CI_TEST_ADMIN_URL: await readFile(join(job.runDirectory, 'test-database-url'), 'utf8') })
         clients.push(client)
         expect((await client.query(`select shobj_description(oid, 'pg_database') as owner from pg_database
           where datname in ('postgres', 'graphql_test_control')`)).rows)
           .toEqual([{ owner: 'graphql-disposable-test-server' }, { owner: 'graphql-disposable-test-server' }])
       }
-      const first = clients.shift()!
-      const second = clients[0]!
+      const first = clients[stoppedIndex]!
+      const second = clients[1 - stoppedIndex]!
+      const pid = (await second.query('select pg_backend_pid() as pid')).rows[0]!.pid
       await first.query('create table first_job_only (value text)')
       expect((await second.query(`select to_regclass('first_job_only') as relation`)).rows).toEqual([{ relation: null }])
       await first.end()
-      await database('down', jobs[0]!.env)
+      clients.splice(stoppedIndex, 1)
+      await database('down', jobs[stoppedIndex]!.env)
       expect((await second.query('select 1 as alive')).rows).toEqual([{ alive: 1 }])
+      expect((await second.query('select pg_backend_pid() as pid')).rows).toEqual([{ pid }])
     } finally {
       for (const client of clients) await client.end()
       for (const job of jobs) await database('down', job.env)
