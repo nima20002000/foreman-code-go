@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
+import { createRequire } from 'node:module'
 import { test } from 'node:test'
 
 const script = fileURLToPath(new URL('./ci-suite.sh', import.meta.url))
@@ -270,3 +271,64 @@ for (const suite of ['typecheck', 'build']) {
     assert.deepEqual(calls, [[suite]])
   })
 }
+
+function runNodeBootstrap(t, failedAttempts) {
+  const directory = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'ci-node-bootstrap-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const callsFile = join(directory, 'calls')
+  const shellEnvironment = join(directory, 'shell-environment')
+  writeFileSync(callsFile, '')
+  writeFileSync(shellEnvironment, '')
+  const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
+  const { parse } = require('yaml')
+  const configuration = parse(readFileSync(new URL('../.circleci/config.yml', import.meta.url), 'utf8'))
+  const command = configuration.jobs.ci.steps.find(step => step.run?.name === 'Node and pnpm').run.command
+  const fixture = `
+    attempts=0
+    nvm() {
+      printf '%s\\n' "nvm $*" >> "$CALLS_FILE"
+      if [ "$1" = install ]; then
+        attempts=$((attempts + 1))
+        if [ "$attempts" -le "$FAILED_ATTEMPTS" ]; then
+          echo "Version '$2' not found" >&2
+          return 3
+        fi
+      elif [ "$1" = which ]; then
+        printf '%s\\n' "$NODE_BINARY"
+      fi
+    }
+    corepack() { printf '%s\\n' "corepack $*" >> "$CALLS_FILE"; }
+    node() { printf '%s\\n' "node $*" >> "$CALLS_FILE"; }
+    sleep() { printf '%s\\n' "sleep $*" >> "$CALLS_FILE"; }
+    chmod() { :; }
+    mkdir() { :; }
+    export -f nvm corepack node sleep chmod mkdir
+  `
+  const result = spawnSync('bash', ['-ec', fixture + command], {
+    cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8',
+    env: { ...process.env, CALLS_FILE: callsFile, FAILED_ATTEMPTS: String(failedAttempts),
+      NODE_BINARY: process.execPath, BASH_ENV: shellEnvironment },
+  })
+  return { result, calls: readFileSync(callsFile, 'utf8').trim().split('\n'),
+    shellEnvironment: readFileSync(shellEnvironment, 'utf8') }
+}
+
+test('cloud Node bootstrap recovers from a transient version lookup failure using the same pinned version', t => {
+  const { result, calls, shellEnvironment } = runNodeBootstrap(t, 1)
+  assert.equal(result.status, 0, result.stderr)
+  const installs = calls.filter(call => call.startsWith('nvm install '))
+  assert.deepEqual(installs, ['nvm install 22.23.2', 'nvm install 22.23.2'])
+  assert.ok(calls.includes('nvm which 22.23.2'))
+  assert.ok(calls.includes('corepack enable'))
+  assert.ok(calls.includes('node --version'))
+  assert.ok(shellEnvironment.includes(process.execPath.slice(0, process.execPath.lastIndexOf('/'))))
+})
+
+test('cloud Node bootstrap stops after three failed installs before enabling the package manager', t => {
+  const { result, calls, shellEnvironment } = runNodeBootstrap(t, 10)
+  assert.equal(result.status, 3)
+  assert.equal(calls.filter(call => call === 'nvm install 22.23.2').length, 3)
+  assert.equal(calls.some(call => call.startsWith('corepack ')), false)
+  assert.equal(shellEnvironment, '')
+  assert.match(result.stderr, /Version '22\.23\.2' not found/)
+})
