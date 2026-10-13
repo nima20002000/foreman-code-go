@@ -98,13 +98,11 @@ export function skillConsumerFixture() {
     const workflow = (await call('workflow_create', current.SavedManagedWorkflowCommandResultSchema, {
       workspaceId, commandId: randomUUID(), name,
     })).value
-    const located = await call('workspace_get', c.ManagedWorkspaceSchema, { workspaceId })
     const nodes = members.map((agent, index) => ({ id: `step-${index}`, agentId: agent.id, name: agent.name }))
     return (await call('workflow_save_v3', current.CurrentWorkflowSaveResultSchema, {
       workspaceId, workflowId: workflow.workflow.id, executionSemanticsVersion: 3, commandId: randomUUID(),
       expectedRevision: workflow.revision, expectedWorkflowVersionId: null,
       expectedAgentConfigurationVersionIds: Object.fromEntries(members.map(agent => [agent.id, agent.configurationVersionId])),
-      expectedLocationRevision: located.locationRevision,
       graph: { ...workflow.workflow, entryNodeId: nodes[0]!.id, nodes,
         edges: nodes.slice(1).map((node, index) => ({ id: `edge-${index}`, kind: 'execution',
           source: nodes[index]!.id, target: node.id })),

@@ -153,7 +153,7 @@ describe.skipIf(!postgresEnabled)('SCH-05 immutable Board/history authenticated 
       const saved = CurrentWorkflowSaveResultSchema.parse(value(await f.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: {
         workspaceId: args.workspaceId, workflowId: args.workflowId, commandId: randomUUID(), executionSemanticsVersion: 3,
         expectedRevision: revision, expectedWorkflowVersionId: f.f.version.id,
-        expectedLocationRevision: location.value.locationRevision, expectedAgentConfigurationVersionIds: pins, graph,
+        expectedAgentConfigurationVersionIds: pins, graph,
       } }))).value
       expect(saved.version.id).not.toBe(f.f.version.id)
       expect((await f.db.pool.query('select id from runs where workflow_id=$1', [args.workflowId])).rows).toHaveLength(1)
@@ -165,13 +165,12 @@ describe.skipIf(!postgresEnabled)('SCH-05 immutable Board/history authenticated 
       // later Run must capture this locked saved layout, not that version's old
       // geometry. Run A must remain unchanged after this second Save too.
       const layoutGraph = structuredClone(saved.version.definition)
-      const expectedGeometry = layoutGraph.nodes.map(({ id, position, width, height }) => ({ id, position, width, height }))
       layoutGraph.nodes[0]!.position = { x: 909, y: -33 }; layoutGraph.nodes[0]!.width = 480
       const layoutSaved = CurrentWorkflowSaveResultSchema.parse(value(await f.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: {
         workspaceId: args.workspaceId, workflowId: args.workflowId, commandId: randomUUID(), executionSemanticsVersion: 3,
         expectedRevision: saved.revision, expectedWorkflowVersionId: saved.version.id,
-        expectedLocationRevision: location.value.locationRevision, expectedAgentConfigurationVersionIds: pins,
-        expectedGeometry, graph: layoutGraph,
+        expectedAgentConfigurationVersionIds: pins,
+        graph: layoutGraph,
       } }))).value
       expect(layoutSaved.version.id).toBe(saved.version.id)
       expect(await parity(f, r.client, r.token, RUN_HISTORY_TOOLS.snapshot, args)).toEqual(before)

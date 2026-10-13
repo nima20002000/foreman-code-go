@@ -13,14 +13,13 @@ import { commandInputHash, type PostgresCommandCoordinator } from '../commands/p
 import { DomainError } from '../errors.js'
 import { lockAgentConfigurations } from '../workspaces/agentConfiguration.js'
 import { authorizeStagedAgents } from './currentStagedAgents.js'
-import { readCurrentEditLocationPins } from './currentLocationPins.js'
 import { DurableEditIntentService, type EditIntentSource } from './durableEditIntent.js'
 import { IMMUTABLE_WORKFLOW_VERSION_COLUMNS, readImmutableWorkflowVersion,
   type ImmutableWorkflowVersionRow } from '../workflows/immutableRead.js'
 
 async function requiresRunSettlement(client: pg.PoolClient, draft: CurrentEditDraft): Promise<boolean> {
   if (draft.presentationOnly) return false
-  if (draft.expectedNodePresentation || draft.stagedAgents?.length || !draft.baseWorkflowVersionId) return true
+  if (draft.stagedAgents?.length || !draft.baseWorkflowVersionId) return true
   const row = (await client.query<ImmutableWorkflowVersionRow>(`select ${IMMUTABLE_WORKFLOW_VERSION_COLUMNS}
     from workflow_versions where id=$1 and workspace_id=$2 and workflow_id=$3`,
   [draft.baseWorkflowVersionId, draft.workspaceId, draft.workflowId])).rows[0]
@@ -76,43 +75,28 @@ export function createCurrentEditIntentService(pool: pg.Pool, commands: Postgres
         if (!row && input.stagedAgents?.some((item) => item.agent.id === id && item.baseRevision === null)) {
           return { agentId: id, metadataRevision: null, configurationVersionId: null }
         }
-        if (!row || row.current_configuration_version_id !== input.expectedAgentConfigurationVersionIds[id]
-          || !Number.isSafeInteger(Number(row.metadata_revision)) || Number(row.metadata_revision) < 0) {
-          throw new DomainError('AGENT_REVISION_CONFLICT', 'Stage requires every exact live Agent head.', 409)
+        if (!row || !Number.isSafeInteger(Number(row.metadata_revision)) || Number(row.metadata_revision) < 0) {
+          throw new DomainError('AGENT_REVISION_CONFLICT', 'A referenced Agent is unavailable in this workspace.', 409)
         }
-        return { agentId: id, metadataRevision: Number(row.metadata_revision), configurationVersionId: row.current_configuration_version_id }
+        return { agentId: id, metadataRevision: Number(row.metadata_revision),
+          configurationVersionId: input.expectedAgentConfigurationVersionIds[id]! }
       })
-      const locations = await readCurrentEditLocationPins(client, principal, { ...input, presentationOnly,
-        stagedAgentIds: (input.stagedAgents ?? []).map((item) => item.agent.id) })
-      if (locations.locationRevision !== input.expectedLocationRevision) throw new DomainError('LOCATION_REVISION_CONFLICT', 'The displayed workspace location changed.', 409)
       const stagedDraft = CurrentEditDraftSchema.parse({ id: draftId, workspaceId: input.workspaceId,
         workflowId: input.workflowId, revision: input.expectedRevision, baseWorkflowVersionId: input.expectedWorkflowVersionId,
         graph: input.graph, agentConfigurationVersionIds: input.expectedAgentConfigurationVersionIds,
         ...(presentationOnly ? { presentationOnly: true } : {}),
-        ...(input.expectedNodePresentation ? { expectedNodePresentation: input.expectedNodePresentation } : {}),
         ...(input.stagedAgents ? { stagedAgents: input.stagedAgents } : {}),
         ...(input.stagedAgents?.length ? { resultantAgentConfigurationVersionIds: version.agentConfigurationVersionIds,
-          saveCommandId } : {}), ...locations })
+          saveCommandId } : {}) })
       return { stagedDraft, saveInput, savedWorkflowRevision: input.expectedRevision,
         agentPins }
-    },
-    assertDraft: async (client, principal, intent) => {
-      const settlementRequired = await requiresRunSettlement(client, intent.stagedDraft)
-      const pins = await readCurrentEditLocationPins(client, principal, { ...intent,
-        presentationOnly: !settlementRequired,
-        stagedAgentIds: (intent.stagedDraft.stagedAgents ?? []).map((item) => item.agent.id) })
-      if (pins.locationRevision !== intent.stagedDraft.locationRevision || pins.locationDigest !== intent.stagedDraft.locationDigest
-        || settlementRequired && !sameWorkflowValue(pins.runLocationPins, intent.stagedDraft.runLocationPins)) {
-        throw new DomainError('CURRENT_EDIT_LOCATION_CONFLICT', 'The workspace/Run location pins or exact affected set changed. The private payload is retained.', 409)
-      }
     },
     authorizePublication: async (client, principal, intent) => {
       const draft = intent.stagedDraft
       // Fresh complete validation and authority BEFORE each Stop and final Save.
       await writer.validate(client, principal, { workspaceId: draft.workspaceId, workflowId: draft.workflowId,
         executionSemanticsVersion: 3, expectedRevision: draft.revision, expectedWorkflowVersionId: draft.baseWorkflowVersionId,
-        expectedAgentConfigurationVersionIds: draft.agentConfigurationVersionIds, expectedLocationRevision: draft.locationRevision,
-        expectedNodePresentation: draft.expectedNodePresentation,
+        expectedAgentConfigurationVersionIds: draft.agentConfigurationVersionIds,
         graph: draft.graph, commandId: draft.saveCommandId ?? 'validate-current-draft', stagedAgents: draft.stagedAgents,
         resultantAgentConfigurationVersionIds: draft.resultantAgentConfigurationVersionIds }, { intentId: intent.id })
     },

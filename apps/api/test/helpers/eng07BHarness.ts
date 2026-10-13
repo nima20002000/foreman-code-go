@@ -181,7 +181,7 @@ export async function scenarioHarness(scenario: Scenario) {
         version: created!.workflow.version, createdAt: created!.workflow.createdAt, updatedAt: created!.workflow.updatedAt }
       const input = CurrentWorkflowSaveInputSchema.parse({ workspaceId: base.f.scope.workspaceId, workflowId,
         executionSemanticsVersion: 3, commandId: randomUUID(), expectedRevision: previous?.revision ?? created!.revision,
-        expectedWorkflowVersionId: previous?.currentVersionId ?? null, expectedLocationRevision: locationRevision,
+        expectedWorkflowVersionId: previous?.currentVersionId ?? null,
         expectedAgentConfigurationVersionIds: base.f.version.agentConfigurationVersionIds, graph: definition })
       const result = CurrentWorkflowSaveResultSchema.parse(await command(via, 'PUT',
         `${workflowPath(workflowId)}/definition`, CURRENT_WORKFLOW_TOOLS.save, input))

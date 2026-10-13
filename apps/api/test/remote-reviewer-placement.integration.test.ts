@@ -18,7 +18,7 @@ describe.skipIf(!postgresEnabled)('remote designated Orchestrator authoring over
       const read = await f.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.saved, arguments: scope })
       const before = CurrentWorkflowReadResultSchema.parse(graphRpcValue(read as Parameters<typeof graphRpcValue>[0]))
       const input = CurrentWorkflowSaveInputSchema.parse({ ...scope, commandId: randomUUID(), executionSemanticsVersion: 3,
-        expectedRevision: before.revision, expectedWorkflowVersionId: before.version.id, expectedLocationRevision: 1,
+        expectedRevision: before.revision, expectedWorkflowVersionId: before.version.id,
         expectedAgentConfigurationVersionIds: before.version.agentConfigurationVersionIds,
         graph: { ...remote.version.definition, id: scope.workflowId, version: before.version.version,
           createdAt: before.version.definition.createdAt, updatedAt: before.version.definition.updatedAt } })

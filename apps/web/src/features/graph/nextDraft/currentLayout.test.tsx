@@ -29,7 +29,7 @@ beforeEach(() => {
   useGraphDraftStore.getState().installNextDraft(key, structuredClone(context))
   vi.stubGlobal('navigator', { ...navigator, locks: { request: async (_key: string, work: (() => Promise<unknown>) | LockOptions, claim?: (lock: { name: string }) => unknown) => typeof work === 'function' ? work() : claim!({ name: _key }) } })
   vi.spyOn(nextDraftApi, 'layoutBase').mockResolvedValue({ draft: context.draft,
-    expectedAgentConfigurationVersionIds: pins, expectedLocationRevision: 1 })
+    expectedAgentConfigurationVersionIds: pins })
 })
 afterEach(() => {
   cleanup(); clients.splice(0).forEach((client) => client.clear()); clearCurrentLayoutJournals()
@@ -99,7 +99,7 @@ it('replays the exact command after a lost reply before sending a newer position
 })
 it('does not send positions against a different saved semantic revision', async () => {
   vi.mocked(nextDraftApi.layoutBase).mockResolvedValue({ draft: { ...context.draft, revision: 8 },
-    expectedAgentConfigurationVersionIds: pins, expectedLocationRevision: 1 })
+    expectedAgentConfigurationVersionIds: pins })
   const send = vi.spyOn(apiClient, 'request')
   const { result } = mount(); move(500)
   await act(async () => { await expect(result.current.mutateAsync()).rejects.toThrow('saved workflow changed') })
@@ -128,22 +128,21 @@ it('reloads stored geometry and current labels with immutable configuration pins
   expect(base.draft.graph.nodes[0]?.name).toBe('Current node name')
   expect(nativeNode(base.draft.graph.nodes[0])?.position).toEqual({ x: 81, y: 29 })
   expect(base.expectedAgentConfigurationVersionIds).toEqual(f.version.agentConfigurationVersionIds)
-  expect(base.expectedLocationRevision).toBe(5)
   expect(send.mock.calls.some(([url]) => String(url).endsWith('/agents'))).toBe(false)
 })
 
-it('rebases only a definitively rejected drag onto newer stored geometry', async () => {
+it('rebases only a definitively rejected drag onto newer stored geometry after a workflow revision rejection', async () => {
   const { ApiError } = await import('../../../shared/api/client')
-  const send = vi.spyOn(apiClient, 'request').mockRejectedValueOnce(new ApiError({ code: 'LAYOUT_REVISION_CONFLICT', message: 'Changed' }, 409))
+  const send = vi.spyOn(apiClient, 'request').mockRejectedValueOnce(new ApiError({ code: 'REVISION_CONFLICT', message: 'Changed' }, 409))
     .mockResolvedValue(acknowledged)
   const { result } = mount(); move(500)
-  await act(async () => { await expect(result.current.mutateAsync()).rejects.toMatchObject({ code: 'LAYOUT_REVISION_CONFLICT' }) })
+  await act(async () => { await expect(result.current.mutateAsync()).rejects.toMatchObject({ code: 'REVISION_CONFLICT' }) })
   const fresh = { ...context.draft, graph: { ...context.draft.graph, nodes: context.draft.graph.nodes.map((node, index) =>
     index === 1 ? { ...node, position: { x: 1000, y: 900 } } : node) } }
-  vi.mocked(nextDraftApi.layoutBase).mockResolvedValue({ draft: fresh, expectedAgentConfigurationVersionIds: pins, expectedLocationRevision: 1 })
+  vi.mocked(nextDraftApi.layoutBase).mockResolvedValue({ draft: fresh, expectedAgentConfigurationVersionIds: pins })
   await act(async () => { await result.current.mutateAsync() })
   expect(send).toHaveBeenCalledTimes(2)
   expect(send.mock.calls[1]![2]?.body).toMatchObject({ graph: { nodes: [
     { id: 'node-0', position: { x: 500, y: 20 } }, { id: 'node-1', position: { x: 1000, y: 900 } },
-  ] }, expectedGeometry: [{ id: 'node-0', position: { x: 0, y: 0 } }, { id: 'node-1', position: { x: 1000, y: 900 } }] })
+  ] } })
 })

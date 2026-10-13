@@ -61,7 +61,7 @@ async function saveInput(f: Pick<Awaited<ReturnType<typeof codexApprovalRuntime>
   return CurrentWorkflowSaveInputSchema.parse({
     workspaceId: f.f.scope.workspaceId, workflowId: f.f.scope.workflowId, commandId: randomUUID(),
     executionSemanticsVersion: 3, expectedRevision: saved.revision,
-    expectedWorkflowVersionId: saved.version.id, expectedLocationRevision: 1,
+    expectedWorkflowVersionId: saved.version.id,
     expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds, graph,
   })
 }

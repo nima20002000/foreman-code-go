@@ -101,7 +101,6 @@ export async function fixture(options: { gitSource?: boolean } = {}) {
     }
     const client = await connect(base.writer.token)
     const saveInput = await base.create()
-    saveInput.expectedLocationRevision = placement.locationRevision
     agentWorkflowNode(saveInput.graph.nodes[1]).placement = placement.remote
     const path = `/api/management/workspaces/${saveInput.workspaceId}/workflows/${saveInput.workflowId}`
     const headers = { authorization: `Bearer ${base.writer.token}` }

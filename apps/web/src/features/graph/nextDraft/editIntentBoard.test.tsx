@@ -73,7 +73,7 @@ beforeEach(() => {
       const pin = agents?.find((item) => item.agent.id === agentId)?.agent.configurationVersionId
       if (!pin) throw new Error(`Fixture lacks the displayed configuration for ${agentId}`)
       return [agentId, pin]
-    })), expectedLocationRevision: 1, agents: agents ?? [],
+    })), agents: agents ?? [],
   }))
 })
 afterEach(() => {

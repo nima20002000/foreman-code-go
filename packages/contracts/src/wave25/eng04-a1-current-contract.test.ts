@@ -19,7 +19,7 @@ describe('ENG04 A1: one directly validated current contract', () => {
       const executable = ExecutableWorkflowV3Schema.parse({ version: f.version, configurations: f.configurations })
       const save = CurrentWorkflowSaveInputSchema.parse({ workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId,
         executionSemanticsVersion: 3, expectedRevision: 1, expectedWorkflowVersionId: f.version.id,
-        expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds, expectedLocationRevision: 1,
+        expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds,
         commandId: `save-${form}`, graph: executable.version.definition })
       const read = CurrentWorkflowReadResultSchema.parse({ workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId,
         revision: 2, currentVersionId: f.version.id, version: f.version })

@@ -13,7 +13,7 @@ export function WorkflowSaveError({ error, pending, openField }: {
   const uncertain = pending && (!api || api.status === 0 || api.status >= 500 || api.code === 'INVALID_RESPONSE')
   const denied = api?.status === 403
   const conflict = !!api && ['REVISION_CONFLICT', 'WORKFLOW_BASE_CONFLICT', 'AGENT_CONFIGURATION_CONFLICT',
-    'AGENT_REVISION_CONFLICT', 'LAYOUT_REVISION_CONFLICT'].includes(api.code)
+    'AGENT_REVISION_CONFLICT'].includes(api.code)
   const title = uncertain ? 'Save not confirmed.' : denied ? 'You can’t save this workflow.'
     : conflict ? 'The workflow changed.' : issues.length ? `Can’t save — fix ${issues.length} ${issues.length === 1 ? 'setting' : 'settings'}` : 'Can’t save.'
   return <BoardNotice noticeKey={error} tone="danger" live title={title}>

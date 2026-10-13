@@ -671,7 +671,7 @@ export async function remoteReviewProduction(options: {
     }
     const version = CurrentWorkflowSaveResultSchema.parse(await value(CURRENT_WORKFLOW_TOOLS.save, {
       ...workflowScope, commandId: randomUUID(), executionSemanticsVersion: 3, expectedRevision: before.revision,
-      expectedWorkflowVersionId: before.version.id, expectedLocationRevision: location.locationRevision,
+      expectedWorkflowVersionId: before.version.id,
       expectedAgentConfigurationVersionIds: before.version.agentConfigurationVersionIds, graph,
     })).value.version
     async function start() {

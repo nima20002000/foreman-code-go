@@ -102,7 +102,7 @@ it.each(['Agent settings Save', 'Agent settings Save and run', 'one-pass Save'] 
     vi.spyOn(nextDraftApi, 'editRead').mockImplementation(async () => journal)
     vi.spyOn(nextDraftApi, 'pins').mockImplementation(async () => ({
       expectedAgentConfigurationVersionIds: Object.fromEntries(source.agents.map(({ agent }) =>
-        [agent.id, agent.configurationVersionId!])), expectedLocationRevision: 1, agents: source.agents,
+        [agent.id, agent.configurationVersionId!])), agents: source.agents,
     }))
     vi.spyOn(nextDraftApi, 'editStage').mockImplementation(async (input) => {
       journal = GraphEditReadResultV3Schema.parse({ ...empty, intent: journalIntent(input, source) })

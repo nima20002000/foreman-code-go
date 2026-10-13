@@ -14,7 +14,7 @@ export function foundationManagedAcceptance(source: 'http' | 'mcp') {
         const location = await f.locations.set(f.writer.principal, source, { workspaceId: f.f.scope.workspaceId,
           runnerId: f.f.run.executionLocation!.runnerId, rootPath: f.db.directory,
           expectedLocationRevision: 1, commandId: randomUUID() })
-        const input = { ...await f.create(), expectedLocationRevision: location.value.locationRevision }
+        const input = await f.create()
         async function save(value: typeof input) {
           if (source === 'mcp') {
             const response = await f.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: value })

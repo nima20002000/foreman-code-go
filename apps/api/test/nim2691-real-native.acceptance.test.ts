@@ -385,7 +385,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
           workflowId: managed.workflow.id, commandId: randomUUID(), executionSemanticsVersion: 3,
           expectedRevision: managed.revision, expectedWorkflowVersionId: null,
           expectedAgentConfigurationVersionIds: Object.fromEntries(configurations.map((configuration) => [configuration.agentId, configuration.id])),
-          expectedLocationRevision: 1, graph })
+          graph })
         const savedResponse = await app.inject({ method: 'PUT', headers,
           url: `/api/management/workspaces/${workspace.id}/workflows/${managed.workflow.id}/definition`,
           payload: saveInput })

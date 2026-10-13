@@ -11,7 +11,7 @@ function stage(form: CurrentFixtureForm) {
     action: 'stage_edits' as const, commandId: `stage-${form}`, expectedRevision: 1,
     expectedWorkflowVersionId: f.version.id, executionSemanticsVersion: 3 as const,
     expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds,
-    expectedLocationRevision: 1, graph: f.version.definition }
+    graph: f.version.definition }
 }
 describe('one current private edit journal', () => {
   it.each(forms)('stages the complete V3 graph for %s', (form) => {
@@ -34,7 +34,7 @@ describe('one current private edit journal', () => {
   })
   it('keeps Stop acceptance separate from process closure and exact Run pins', () => {
     const stop = { input: { workspaceId: 'workspace', runId: 'run', commandId: 'stop' },
-      inputHash: 'sha256:' + '1'.repeat(64), receipt: { runId: 'run', status: 'accepted', processStopped: false } }
+      receipt: { runId: 'run', status: 'accepted', processStopped: false } }
     expect(CurrentJournalStopSchema.parse(stop)).toEqual(stop)
     expect(CurrentJournalStopSchema.safeParse({ ...stop, receipt: { ...stop.receipt, processStopped: true } }).success).toBe(false)
     const pin = CurrentJournalRunPinSchema.parse({ workspaceId: 'workspace', workflowId: 'workflow',

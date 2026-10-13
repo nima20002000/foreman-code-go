@@ -54,7 +54,7 @@ beforeEach(() => {
   vi.spyOn(nextDraftApi, 'editRead').mockResolvedValue(empty)
   vi.spyOn(nextDraftApi, 'pins').mockResolvedValue({ expectedAgentConfigurationVersionIds: {
     'agent-0': 'configuration-0', 'agent-1': 'configuration-1',
-  }, expectedLocationRevision: 1, agents: fixture().agents })
+  }, agents: fixture().agents })
 })
 
 afterEach(() => {

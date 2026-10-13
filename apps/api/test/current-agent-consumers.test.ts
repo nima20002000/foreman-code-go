@@ -58,7 +58,7 @@ describe('current Agent-only consumer boundaries', () => {
     const f = fixture(), service = new CurrentWorkflowAuthoring(f.pool, new PostgresCommandCoordinator(f.pool))
     await expect(service.validate(f.principal, { workspaceId: f.graph.workspaceId, workflowId: f.graph.id,
       expectedRevision: 1, expectedWorkflowVersionId: null, executionSemanticsVersion: 3,
-      expectedAgentConfigurationVersionIds: f.pins, expectedLocationRevision: 1, graph: f.graph }))
+      expectedAgentConfigurationVersionIds: f.pins, graph: f.graph }))
       .resolves.toMatchObject({ valid: true, expectedAgentConfigurationVersionIds: f.pins })
     expect(f.query.mock.calls.at(-1)).toEqual(['commit'])
   })

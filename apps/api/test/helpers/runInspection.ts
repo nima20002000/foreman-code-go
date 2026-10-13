@@ -123,14 +123,10 @@ export async function resaveChangingRepeat(f: Fixture) {
     graph.executionPolicy = { maxParallelism: 2, maxNodeExecutions: graph.nodes.length * 2 }
   }
   const row = (await f.db.pool.query<{ revision: string }>('select revision::text from workflows where id=$1', [before.scope.workflowId])).rows[0]!
-  // Public location_set may have advanced the workspace since this Run was
-  // accepted. Save against the live workspace revision; leave the old Run pin alone.
-  const location = (await f.db.pool.query<{ revision: string }>(
-    'select location_revision::text as revision from workspaces where id=$1', [before.scope.workspaceId])).rows[0]!
   const saved = CurrentWorkflowSaveResultSchema.parse(value(await f.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: {
     workspaceId: before.scope.workspaceId, workflowId: before.scope.workflowId, executionSemanticsVersion: 3,
     commandId: randomUUID(), expectedRevision: Number(row.revision), expectedWorkflowVersionId: before.version.id,
-    expectedLocationRevision: Number(location.revision), expectedAgentConfigurationVersionIds: before.version.agentConfigurationVersionIds, graph,
+    expectedAgentConfigurationVersionIds: before.version.agentConfigurationVersionIds, graph,
   } })))
   expect(saved.value.version.id).not.toBe(before.version.id)
   expect(!!saved.value.version.definition.repeat).toBe(!before.version.definition.repeat)

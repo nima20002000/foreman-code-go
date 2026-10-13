@@ -37,7 +37,6 @@ describe('profile-scoped Start after Worker reconnect', () => {
         ...scope, commandId: randomUUID(), executionSemanticsVersion: 3, graph: definition,
         expectedRevision: current.revision, expectedWorkflowVersionId: current.version.id,
         expectedAgentConfigurationVersionIds: current.version.agentConfigurationVersionIds,
-        expectedLocationRevision: locationRevision,
       })).value.version
     }
     try {
@@ -133,7 +132,6 @@ describe('profile-scoped Start after Worker reconnect', () => {
         graph: fixture.version.definition,
         expectedRevision: pendingSaved.revision, expectedWorkflowVersionId: pendingVersion.id,
         expectedAgentConfigurationVersionIds: pendingVersion.agentConfigurationVersionIds,
-        expectedLocationRevision: locationRevision,
       })
       expect(staleSave.isError).toBe(true)
       expect(decodeMcpToolResult(staleSave)).toMatchObject({ error: { code: 'WORKFLOW_BASE_CONFLICT' } })

@@ -16,7 +16,7 @@ const forms: CurrentFixtureForm[] = ['single', 'sequential', 'parallel', 'condit
 function input() {
   return { workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId, commandId: randomUUID(), executionSemanticsVersion: 3,
     expectedRevision: 1, expectedWorkflowVersionId: null, expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds,
-    expectedLocationRevision: 1, graph: f.version.definition }
+    graph: f.version.definition }
 }
 function principal(grants: unknown) {
   return ManagementPrincipalSchema.parse({ id: 'current-principal', name: 'Contract caller', audience: 'operator',
@@ -59,7 +59,7 @@ describe('ENG-S3-ONLY current definition and shared authoring policy', () => {
   it.each([1, 2, 4, '3', null])('creation rejects an explicit retired/unknown tag %s', (executionSemanticsVersion) => {
     expect(CurrentWorkflowCreateInputSchema.safeParse({ workspaceId: f.scope.workspaceId, commandId: randomUUID(), name: 'Current', executionSemanticsVersion }).success).toBe(false)
   })
-  it.each(['expectedRevision', 'expectedWorkflowVersionId', 'expectedAgentConfigurationVersionIds', 'expectedLocationRevision', 'commandId'])(
+  it.each(['expectedRevision', 'expectedWorkflowVersionId', 'expectedAgentConfigurationVersionIds', 'commandId'])(
     'requires the explicit %s Save pin', (key) => {
       const value: Record<string, unknown> = input(); delete value[key]
       expect(CurrentWorkflowSaveInputSchema.safeParse(value).success).toBe(false)

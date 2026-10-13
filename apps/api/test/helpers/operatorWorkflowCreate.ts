@@ -28,5 +28,5 @@ export function initialSave(graph: WorkflowDefinitionV3, configurations: Record<
   void version
   void createdAt
   void updatedAt
-  return { graph: definition, expectedAgentConfigurationVersionIds: configurations, expectedLocationRevision: 1 }
+  return { graph: definition, expectedAgentConfigurationVersionIds: configurations }
 }

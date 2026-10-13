@@ -29,7 +29,7 @@ describe.runIf(postgresEnabled)('workflow worktrees through authenticated MCP: e
       expect(workspaceResult.isError).not.toBe(true)
       const workspace = ManagedWorkspaceCommandResultSchema.parse(decodeMcpToolResult(workspaceResult)).value
       const workspaceId = workspace.workspace.id
-      const location = await f.base.services.locations.set(f.base.writer.principal, 'http', {
+      await f.base.services.locations.set(f.base.writer.principal, 'http', {
         workspaceId, commandId: randomUUID(), expectedLocationRevision: workspace.locationRevision,
         runnerId: f.base.locations.runnerId, rootPath: f.placement.local.projectRoot,
       })
@@ -49,7 +49,6 @@ describe.runIf(postgresEnabled)('workflow worktrees through authenticated MCP: e
       const input: CurrentWorkflowSaveInput = {
         workspaceId, workflowId: created.workflow.id, commandId: randomUUID(), executionSemanticsVersion: 3,
         expectedRevision: created.revision, expectedWorkflowVersionId: null,
-        expectedLocationRevision: location.value.locationRevision,
         expectedAgentConfigurationVersionIds: { [agent.id]: agent.configurationVersionId! },
         graph: { ...created.workflow, entryNodeId: nodeId, approval: { handler: 'user' },
           executionPolicy: { maxParallelism: 1, maxNodeExecutions: 1 },

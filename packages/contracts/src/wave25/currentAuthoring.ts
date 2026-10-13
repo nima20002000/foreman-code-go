@@ -1,6 +1,6 @@
 import { WorkflowWorktreeSettingsSchema } from '../worktreeSettings.js'
 import { z } from 'zod'
-import { ApprovalHandlerSchema, CurrentAgentWorkflowNodeSchema,
+import { ApprovalHandlerSchema,
   DEFAULT_AGENT_ACTIVE_TIMEOUT_MS, MAX_AGENT_ACTIVE_TIMEOUT_MS,
   AGENT_INTERVAL_MIN_SECONDS, AGENT_INTERVAL_MAX_SECONDS, AGENT_INTERVAL_MAX_CHECKS_PER_RUN } from './workflowShape.js'
 import { CommandIdSchema, ExpectedRevisionSchema, WorkflowCreateInputSchema, ManagedAgentSchema } from '../management/index.js'
@@ -21,14 +21,13 @@ export const CurrentWorkflowCreateInputSchema = WorkflowCreateInputSchema.extend
   initialSave: z.object({
     graph: InitialWorkflowGraphSchema,
     expectedAgentConfigurationVersionIds: z.record(GraphIdSchema, GraphIdSchema),
-    expectedLocationRevision: ExpectedRevisionSchema,
   }).strict().optional(),
 }).strict()
 export type CurrentWorkflowCreateInput = z.infer<typeof CurrentWorkflowCreateInputSchema>
 
 /** One complete authored definition, not a complexity-selected mode, patch,
  * admission permit or caller-supplied WorkflowVersion. Shared by HTTP/MCP/Board.
- * Configurations are references to actual current immutable Agent rows; saving
+ * Configurations are references to immutable Agent rows; saving
  * this graph never edits a shared Agent or changes an accepted Run. */
 export const CurrentWorkflowValidateInputSchema = z.object({
   workspaceId: GraphIdSchema, workflowId: GraphIdSchema,
@@ -36,25 +35,10 @@ export const CurrentWorkflowValidateInputSchema = z.object({
   expectedRevision: ExpectedRevisionSchema,
   expectedWorkflowVersionId: GraphIdSchema.nullable(),
   expectedAgentConfigurationVersionIds: z.record(GraphIdSchema, GraphIdSchema),
-  expectedLocationRevision: ExpectedRevisionSchema,
   graph: WorkflowDefinitionV3Schema,
 }).strict()
 export const CurrentWorkflowSaveInputSchema = CurrentWorkflowValidateInputSchema.extend({
   commandId: CommandIdSchema,
-  // Compare names independently of immutable execution pins and geometry.
-  expectedNodePresentation: z.array(z.object({
-    id: GraphIdSchema,
-    name: CurrentAgentWorkflowNodeSchema.shape.name,
-    label: CurrentAgentWorkflowNodeSchema.shape.label,
-  }).strict()).optional(),
-  // Optional compare-and-swap for presentation-only Save. It never changes the
-  // executable revision and cannot accompany a meaningful publication.
-  expectedGeometry: z.array(z.object({
-    id: GraphIdSchema,
-    position: CurrentAgentWorkflowNodeSchema.shape.position,
-    width: CurrentAgentWorkflowNodeSchema.shape.width,
-    height: CurrentAgentWorkflowNodeSchema.shape.height,
-  }).strict()).optional(),
 }).strict()
 export type CurrentWorkflowSaveInput = z.infer<typeof CurrentWorkflowSaveInputSchema>
 export type CurrentWorkflowValidateInput = z.infer<typeof CurrentWorkflowValidateInputSchema>
@@ -84,7 +68,6 @@ export const CurrentWorkflowValidationSchema = z.object({
   valid: z.literal(true), executionSemanticsVersion: z.literal(3),
   expectedRevision: ExpectedRevisionSchema, expectedWorkflowVersionId: GraphIdSchema.nullable(),
   expectedAgentConfigurationVersionIds: z.record(GraphIdSchema, GraphIdSchema),
-  expectedLocationRevision: ExpectedRevisionSchema,
   // Validation is neither persistence nor native/Stop qualification.
   runtimeAdmission: z.boolean(), stopAvailable: z.boolean(),
 }).strict()

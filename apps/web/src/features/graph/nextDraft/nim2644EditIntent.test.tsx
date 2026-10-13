@@ -181,7 +181,7 @@ beforeEach(() => {
     expectedAgentConfigurationVersionIds: Object.fromEntries(graph.nodes.map(nativeNode).flatMap(({ agentId }) => {
       const pin = agents?.find((item) => item.agent.id === agentId)?.agent.configurationVersionId
       return pin ? [[agentId, pin]] : []
-    })), expectedLocationRevision: 1, agents: agents ?? [],
+    })), agents: agents ?? [],
   }))
   vi.spyOn(boardStartClient, 'start').mockRejectedValue(new Error('These regressions must not start a Run'))
 })
@@ -324,7 +324,6 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
       nodes: graph.nodes.map((node) => ({ ...node, name: 'Saved node name' })) })))
     await requestSave(user)
     await waitFor(() => expect(nextDraftDirty(edit())).toBe(false))
-    expect(stage.mock.calls[0]![0].expectedNodePresentation).toEqual([{ id: 'node-0', name: 'Node 0' }])
     expect(edit().graph.nodes[0]?.name).toBe('Saved node name')
     expect(edit().context.draft.baseWorkflowVersionId).toBe(original.draft.baseWorkflowVersionId)
     expect(edit().context.draft.publishedRevision).toBe(original.draft.publishedRevision)
@@ -434,7 +433,6 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     expect(persisted.intent!.stagedDraft.stagedAgents).toEqual(request.stagedAgents)
     expect(persisted.intent!.saveInput.stagedAgents).toEqual(request.stagedAgents)
     expect(request.expectedAgentConfigurationVersionIds).toEqual({})
-    expect(request.expectedLocationRevision).toBe(1)
     expect(advance.mock.calls[0]![0]).toMatchObject({ action: 'stop_and_save', commandId: persisted.intent!.advanceCommandId })
     expect(nextDraftDirty(edit())).toBe(false); expect(edit().agentEdits?.[nativeNode(node).agentId]).toBeUndefined()
     expect(editorAgents(edit()).find((agent) => agent.id === nativeNode(node).agentId)).toMatchObject({

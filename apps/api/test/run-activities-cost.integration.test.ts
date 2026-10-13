@@ -89,7 +89,7 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('public Activities respons
             workflowId: fixture.scope.workflowId, commandId: randomUUID(), executionSemanticsVersion: 3,
             expectedRevision: current.revision, expectedWorkflowVersionId: current.currentVersionId,
             expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds,
-            expectedLocationRevision: location.value.locationRevision, graph } })
+            graph } })
         expect(savedResponse.statusCode, savedResponse.body).toBe(200)
         const saved = CurrentWorkflowSaveResultSchema.parse(savedResponse.json()).value
         const started = await admitRepeatRun(pool, locations, fixture.writer.principal, 'http', {

@@ -1,4 +1,4 @@
-import { AgentMutationResultSchema, ManagedWorkspaceSchema, StagedAgentSchema, type GraphValidationResultSchema, type AgentCreateInputSchema, type AgentUpdateInput } from '@foreman-code/contracts/management'
+import { AgentMutationResultSchema, StagedAgentSchema, type GraphValidationResultSchema, type AgentCreateInputSchema, type AgentUpdateInput } from '@foreman-code/contracts/management'
 import { SupportedHarnessConfigurationSchema } from '@foreman-code/contracts'
 import {
   GraphEditReadResultV3Schema, GraphEditReadInputV3Schema, GraphEditStageInputV3Schema, GraphEditAdvanceInputV3Schema, GraphEditDiscardInputV3Schema,
@@ -6,7 +6,7 @@ import {
   GraphDraftV3Schema, WorkflowDefinitionV3Schema, CurrentManagedWorkflowSchema, CurrentWorkflowReadResultSchema,
   CurrentWorkflowSaveResultSchema, CurrentWorkflowValidationSchema, CURRENT_WORKFLOW_ROUTES,
   GraphDraftOperationV3Schema, CurrentRunPageSchema, sameAuthoredWorkflow, sameExecutableWorkflow,
-  preserveWorkflowPresentation, workflowNodeNames,
+  preserveWorkflowPresentation,
   type GraphDraftOperationV3, type WorkflowDefinitionV3,
 } from '@foreman-code/contracts/wave25'
 import { apiClient, ApiError, type ApiClient, type RequestOptions } from '../../../shared/api/client'
@@ -84,8 +84,7 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
     return draft
   }
   const expectedPins = async (workspaceId: string, graph: WorkflowDefinitionV3, stagedAgents: z.infer<typeof StagedAgentSchema>[] = [], displayedAgents?: NextDraftContext['agents']) => {
-    const [agents, workspace] = await Promise.all([client.listManagedAgents(workspaceId),
-      client.request(`/api/management/workspaces/${part(workspaceId)}`, ManagedWorkspaceSchema)])
+    const agents = await client.listManagedAgents(workspaceId)
     const configurations: Record<string, string> = {}
     for (const node of graph.nodes) {
       if(node.kind==='job')continue
@@ -95,7 +94,7 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
       if (!agent?.configurationVersionId) throw new ApiError({ code: 'AGENT_NOT_FOUND', message: 'A board Agent has no saved configuration. Reload before saving.' }, 409)
       configurations[node.agentId] = agent.configurationVersionId
     }
-    return { expectedAgentConfigurationVersionIds: configurations, expectedLocationRevision: workspace.locationRevision, agents: agents.items }
+    return { expectedAgentConfigurationVersionIds: configurations, agents: agents.items }
   }
   /** Agent operations use the shared Agent service; graph operations stay local. */
   const applyAgents = createDraftAgentWriter(client)
@@ -109,14 +108,12 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
     async layoutBase(workspaceId: string, workflowId: string) {
       const current = await load(workspaceId, workflowId)
       const saved = await client.request(route(CURRENT_WORKFLOW_ROUTES.saved, workspaceId, workflowId), CurrentWorkflowReadResultSchema)
-      const workspace = await client.request(`/api/management/workspaces/${part(workspaceId)}`, ManagedWorkspaceSchema)
       if (current.draft.revision !== saved.revision || current.draft.baseWorkflowVersionId !== saved.currentVersionId) {
         throw new ApiError({ code: 'REVISION_CONFLICT', message: 'The saved workflow changed while reading positions.' }, 409)
       }
-      return { draft: current.draft, expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds,
-        expectedLocationRevision: workspace.locationRevision }
+      return { draft: current.draft, expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds }
     },
-    /** Current Agent configuration and location pins for a complete-definition command. */
+    /** Agent configuration references for a complete-definition command. */
     pins: (workspaceId: string, graph: WorkflowDefinitionV3, stagedAgents?: z.infer<typeof StagedAgentSchema>[], displayedAgents?: NextDraftContext['agents']) =>
       expectedPins(workspaceId, graph, stagedAgents, displayedAgents),
     async editRead(raw: GraphEditReadInputV3, options?: RequestOptions) {
@@ -179,8 +176,7 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
         CurrentWorkflowSaveResultSchema, { method: 'PUT', body: {
           commandId: request.commandId, executionSemanticsVersion: 3, expectedRevision: entry.savedRevision,
           expectedWorkflowVersionId: base.baseWorkflowVersionId, expectedAgentConfigurationVersionIds: pins.expectedAgentConfigurationVersionIds,
-          expectedNodePresentation: workflowNodeNames(entry.savedDraft.graph),
-          expectedLocationRevision: pins.expectedLocationRevision, graph: base.graph } })
+          graph: base.graph } })
       const saved = result.value
       if (saved.workspaceId !== request.workspaceId || saved.workflowId !== request.workflowId
         || !sameAuthoredWorkflow(saved.presentation ?? saved.version.definition, base.graph)) {
@@ -200,7 +196,7 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
         const pins = await expectedPins(workspaceId, entry.draft.graph)
         await client.request(route(CURRENT_WORKFLOW_ROUTES.validate, workspaceId, workflowId), CurrentWorkflowValidationSchema, { method: 'POST', body: {
           executionSemanticsVersion: 3, expectedRevision: entry.savedRevision, expectedWorkflowVersionId: entry.draft.baseWorkflowVersionId,
-          expectedAgentConfigurationVersionIds: pins.expectedAgentConfigurationVersionIds, expectedLocationRevision: pins.expectedLocationRevision,
+          expectedAgentConfigurationVersionIds: pins.expectedAgentConfigurationVersionIds,
           graph: entry.draft.graph } })
         return { valid: true, issues: [] }
       } catch (error) {

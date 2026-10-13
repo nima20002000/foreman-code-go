@@ -19,7 +19,7 @@ export async function meaningfulInput(f: SaveFixture): Promise<CurrentWorkflowSa
     [f.f.scope.workflowId])).rows[0]!
   return CurrentWorkflowSaveInputSchema.parse({ workspaceId: f.f.scope.workspaceId, workflowId: f.f.scope.workflowId,
     commandId: randomUUID(), executionSemanticsVersion: 3, expectedRevision: Number(row.revision),
-    expectedWorkflowVersionId: row.current_version_id, expectedLocationRevision: 1,
+    expectedWorkflowVersionId: row.current_version_id,
     expectedAgentConfigurationVersionIds: f.f.version.agentConfigurationVersionIds,
     graph: { ...row.record, nodes: row.record.nodes.map((node: { id: string }) => ({ ...node, initialPrompt: `Meaningful edit for ${node.id}` })) } })
 }

@@ -73,7 +73,7 @@ describe.skipIf(!postgresEnabled)('Authenticated workflow management publication
     expect(await count(t, 'workflow_versions')).toBe(1)
     expect(t.cancel).not.toHaveBeenCalled()
   })
-  it('location drift blocks the private publication while preserving its original displayed location pin', async () => {
+  it('publishes staged Agent edits after the workspace location revision changes', async () => {
     const t = await fixture(), first = await save(t), stage = await agentStage(t, first)
     const intent = CurrentEditReadResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.edits, stage)).result)).intent!
     await context.db.pool.query('update workspaces set location_revision=location_revision+1 where id=$1', [stage.workspaceId])
@@ -82,11 +82,12 @@ describe.skipIf(!postgresEnabled)('Authenticated workflow management publication
     const response = await t.app.inject({ method: 'POST', url: `${t.url}/edits`, headers: graphHeaders(t.writer.token), payload: advance })
     expect(response.statusCode, response.body).toBe(200)
     const blocked = CurrentEditReadResultSchema.parse(response.json()).intent!
-    expect(blocked.state).toBe('blocked')
-    expect(blocked.error?.code).toBe('CURRENT_EDIT_LOCATION_CONFLICT')
+    expect(blocked.state).toBe('saved')
+    expect(blocked.result?.version.agentConfigurationVersionIds)
+      .toEqual(intent.saveInput.resultantAgentConfigurationVersionIds)
     expect(blocked.saveInput).toEqual(intent.saveInput)
     expect(blocked.stagedDraft).toEqual(intent.stagedDraft)
-    expect(await count(t, 'workflow_versions')).toBe(1)
+    expect(await count(t, 'workflow_versions')).toBe(2)
     expect(t.cancel).not.toHaveBeenCalled()
   })
 })

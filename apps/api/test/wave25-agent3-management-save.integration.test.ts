@@ -26,10 +26,10 @@ describe.skipIf(!postgresEnabled)('Authenticated workflow management save', () =
     expect(historical.json()).toMatchObject({ currentVersionId: second.value.currentVersionId, version: first.value.version })
     expect(CurrentWorkflowSaveResultSchema.parse((await httpSave(t)).json())).toEqual({ ...first, replayed: true })
   })
-  it('rejects stale revision/version/configuration/location pins without creating an immutable version', async () => {
+  it('rejects stale revision and version/configuration references without creating an immutable version', async () => {
     const t = await fixture()
     for (const changed of [{ expectedRevision: t.input.expectedRevision + 1 }, { expectedWorkflowVersionId: 'wrong-version' },
-      { expectedAgentConfigurationVersionIds: {} }, { expectedLocationRevision: 2 }]) {
+      { expectedAgentConfigurationVersionIds: {} }]) {
       const input = { ...t.input, ...changed, commandId: randomUUID() }
       const http = await httpSave(t, input)
       expect(http.statusCode).toBe(409)

@@ -23,7 +23,7 @@ describe.runIf(postgresEnabled)('authenticated Start command resolution', () => 
       fixture: makeCurrentWorkflowFixture(randomUUID(), 'single'), approvalNodeIds: [] })
     await call(runtime, 'workspace_location_set', { workspaceId: runtime.f.scope.workspaceId,
       commandId: randomUUID(), expectedLocationRevision: 1, runnerId: LOCAL_RUNNER_ID, rootPath: database.directory })
-    const save = { ...await runtime.create(), expectedLocationRevision: 2 }
+    const save = await runtime.create()
     const saved = CurrentWorkflowSaveResultSchema.parse(await call(runtime, 'workflow_save_v3', save)).value
     const input = RunStartV3InputSchema.parse({ workspaceId: saved.version.workspaceId, workflowId: saved.workflowId,
       workflowVersionId: saved.version.id, executionSemanticsVersion: 3, commandId: randomUUID(),
@@ -93,7 +93,7 @@ describe.runIf(postgresEnabled)('authenticated Start command resolution', () => 
         if (kind !== 'workflow') {
           latest = CurrentWorkflowSaveResultSchema.parse(await call(runtime, 'workflow_save_v3', { ...save,
             commandId: randomUUID(), expectedRevision: saved.revision, expectedWorkflowVersionId: saved.version.id,
-            expectedAgentConfigurationVersionIds: pins, expectedLocationRevision: locationRevision,
+            expectedAgentConfigurationVersionIds: pins,
             graph: saved.version.definition,
           })).value
         }

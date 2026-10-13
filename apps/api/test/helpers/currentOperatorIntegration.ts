@@ -68,7 +68,7 @@ export async function currentOperatorIntegration(options: Parameters<typeof chec
       async create() {
         const created = (await services.workflows.create(writer.principal, 'mcp', { workspaceId: f.f.scope.workspaceId, commandId: randomUUID(), name: 'Transport current workflow' })).value
         return { workspaceId: f.f.scope.workspaceId, workflowId: created.workflow.id, commandId: randomUUID(), executionSemanticsVersion: 3,
-          expectedRevision: created.revision, expectedWorkflowVersionId: null, expectedLocationRevision: 1,
+          expectedRevision: created.revision, expectedWorkflowVersionId: null,
           expectedAgentConfigurationVersionIds: f.f.version.agentConfigurationVersionIds,
           graph: { ...f.f.version.definition, id: created.workflow.id, version: created.workflow.version,
             createdAt: created.workflow.createdAt, updatedAt: created.workflow.updatedAt } }

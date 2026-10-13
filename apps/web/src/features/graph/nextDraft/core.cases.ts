@@ -68,7 +68,7 @@ function harness(context = fixture()) {
     committed.set(request.commandId, result)
     return result
   }
-  const api: NextDraftApi = { write, layoutBase: async () => ({ draft: server, expectedAgentConfigurationVersionIds: {}, expectedLocationRevision: 1 }), pins: async () => ({ expectedAgentConfigurationVersionIds: {}, expectedLocationRevision: 1, agents: context.agents }), discardLocal: () => { throw new Error('Authoring fixture does not discard local transport state') }, open: async () => server, get: async () => server,
+  const api: NextDraftApi = { write, layoutBase: async () => ({ draft: server, expectedAgentConfigurationVersionIds: {} }), pins: async () => ({ expectedAgentConfigurationVersionIds: {}, agents: context.agents }), discardLocal: () => { throw new Error('Authoring fixture does not discard local transport state') }, open: async () => server, get: async () => server,
     context: async () => ({ draft: server, agents: context.agents }), validate: async () => ({ valid: true, issues: [] }),
     editRead: async () => { throw new Error('Authoring fixture does not read edit intents') },
     editStage: async () => { throw new Error('Authoring fixture does not stage edit intents') },

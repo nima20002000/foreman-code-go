@@ -11,7 +11,7 @@ import {
   CurrentWorkflowCapabilitiesSchema, GraphDraftV3Schema, WorkflowDefinitionV3Schema,
   ExecutableWorkflowV3Schema, AcceptedWorkflowRunV3Schema, GraphEditStageInputV3Schema, GraphEditReadResultV3Schema,
   GraphEditAdvanceInputV3Schema, GraphEditDiscardInputV3Schema, CurrentWorkflowSaveInputSchema, CurrentWorkflowValidateInputSchema, CURRENT_WORKFLOW_CAPABILITIES, sameExecutableWorkflow,
-  RunStartV3InputSchema, RepeatGraphCurrentV3Schema, repeatGraphTopologyV3, sameWorkflowValue, workflowNodeNames,
+  RunStartV3InputSchema, RepeatGraphCurrentV3Schema, repeatGraphTopologyV3, sameWorkflowValue,
   preserveWorkflowGeometry,
   type WorkflowDefinitionV3, type WorkflowVersionV3, type GraphDraftV3,
   type GraphEditReadResultV3, type CurrentRunDetails, type RepeatGraphCurrentV3,
@@ -385,20 +385,16 @@ function dispatchCurrentBoardWorkflows({ url, path, method, prefix, publicPrefix
     if (tail === '/definition' && method === 'PUT' || tail === '/definition/validate' && method === 'POST') {
       const input = (method === 'PUT' ? CurrentWorkflowSaveInputSchema : CurrentWorkflowValidateInputSchema).parse({ ...(body as object), workspaceId, workflowId: id })
       const check = () => {
-        if (input.expectedRevision !== revisions.get(id) || input.expectedWorkflowVersionId !== draft.baseWorkflowVersionId || input.expectedLocationRevision !== controls.locationRevision) throw new Error('REVISION_CONFLICT')
-        for (const node of input.graph.nodes.filter(node=>node.kind!=='job')) if (catalog.find((a) => a.agent.id === nativeNode(node).agentId)?.agent.configurationVersionId !== input.expectedAgentConfigurationVersionIds[nativeNode(node).agentId]) throw new Error('CONFIGURATION_CONFLICT')
+        if (input.expectedRevision !== revisions.get(id) || input.expectedWorkflowVersionId !== draft.baseWorkflowVersionId) throw new Error('REVISION_CONFLICT')
+        for (const node of input.graph.nodes.filter(node=>node.kind!=='job')) if (!catalog.some((a) => a.agent.id === nativeNode(node).agentId)) throw new Error('CONFIGURATION_CONFLICT')
       }
-      if (method === 'POST') { check(); return HttpResponse.json({ valid: true, executionSemanticsVersion: 3, expectedRevision: input.expectedRevision, expectedWorkflowVersionId: input.expectedWorkflowVersionId, expectedAgentConfigurationVersionIds: input.expectedAgentConfigurationVersionIds, expectedLocationRevision: input.expectedLocationRevision, runtimeAdmission: controls.start, stopAvailable: controls.start }) }
+      if (method === 'POST') { check(); return HttpResponse.json({ valid: true, executionSemanticsVersion: 3, expectedRevision: input.expectedRevision, expectedWorkflowVersionId: input.expectedWorkflowVersionId, expectedAgentConfigurationVersionIds: input.expectedAgentConfigurationVersionIds, runtimeAdmission: controls.start, stopAvailable: controls.start }) }
       const save = CurrentWorkflowSaveInputSchema.parse(input)
       return HttpResponse.json(journal(`save:${save.commandId}`, save, () => {
         check()
-        if (save.expectedNodePresentation && !sameWorkflowValue(
-          save.expectedNodePresentation, workflowNodeNames(workflows.get(id)!))) throw new Error('PRESENTATION_REVISION_CONFLICT')
         const version = versions.get(draft.baseWorkflowVersionId!)
         if (version && sameExecutableWorkflow(workflows.get(id)!, save.graph)
           && sameWorkflowValue(version.agentConfigurationVersionIds, save.expectedAgentConfigurationVersionIds)) {
-          const geometry = (graph: WorkflowDefinitionV3) => graph.nodes.map(({ id, position, width, height }) => ({ id, position, width, height }))
-          if (save.expectedGeometry && !sameWorkflowValue(save.expectedGeometry, geometry(workflows.get(id)!))) throw new Error('GEOMETRY_CONFLICT')
           return savePresentation(id, save.graph)
         }
         // Mirror currentAuthoring.prepare -> assertMeaningfulSaveAdmitted.
@@ -418,29 +414,24 @@ function dispatchCurrentBoardWorkflows({ url, path, method, prefix, publicPrefix
           const input = GraphEditStageInputV3Schema.parse(body)
           const response = journal(`stage:${input.commandId}`, input, () => {
             if (input.expectedRevision !== revisions.get(id) || input.expectedWorkflowVersionId !== draft.baseWorkflowVersionId) throw new Error('REVISION_CONFLICT')
-            if (input.expectedNodePresentation && !sameWorkflowValue(
-              input.expectedNodePresentation, workflowNodeNames(workflows.get(id)!))) throw new Error('PRESENTATION_REVISION_CONFLICT')
             const version = versions.get(draft.baseWorkflowVersionId!)
             const presentationOnly = !!version && !input.stagedAgents?.length
               && sameExecutableWorkflow(workflows.get(id)!, input.graph)
               && sameWorkflowValue(version.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)
             const stagedDraft = { id: input.draftId, workspaceId, workflowId: id, revision: input.expectedRevision,
               baseWorkflowVersionId: input.expectedWorkflowVersionId, graph: input.graph,
-              expectedNodePresentation: input.expectedNodePresentation,
               ...(presentationOnly ? { presentationOnly: true as const } : {}),
-              agentConfigurationVersionIds: input.expectedAgentConfigurationVersionIds, locationRevision: input.expectedLocationRevision,
-              locationDigest: hash, runLocationPins: [] as Array<{ runId: string; digest: string }> }
+              agentConfigurationVersionIds: input.expectedAgentConfigurationVersionIds }
             const affected = (presentationOnly ? [] : [...runs.values()]).filter((r) => r.run.executionState !== 'completed' || r.cleanupPending).map(({ run }) => ({
               workspaceId, workflowId: run.workflowId, runId: run.id, workflowVersionId: run.workflowVersionId,
               executionSemanticsVersion: 3 as const, agentConfigurationVersionIds: run.agentConfigurationVersionIds }))
-            stagedDraft.runLocationPins = affected.map((pin) => ({ runId: pin.runId, digest: hash }))
             const intentId = `intent-${input.commandId}`
             const intent = { kind: 'current', id: intentId, ownerPrincipalId: 'principal-current-mock', workspaceId, workflowId: id, draftId: input.draftId,
               stageCommandId: input.commandId, stageInputHash: hash, expectedRevision: input.expectedRevision,
               expectedWorkflowVersionId: input.expectedWorkflowVersionId, savedWorkflowRevision: revisions.get(id)!, stagedDraft, agentPins: input.graph.nodes.filter(node=>node.kind!=='job').map((node) => ({ agentId: nativeNode(node).agentId, metadataRevision: catalog.find((a) => a.agent.id === nativeNode(node).agentId)!.metadataRevision, configurationVersionId: input.expectedAgentConfigurationVersionIds[nativeNode(node).agentId] })), affected,
               advanceCommandId: `advance-${input.commandId}`, advanceInputHash: hash, discardCommandId: `discard-${input.commandId}`, discardInputHash: hash,
-              stops: affected.map((pin) => ({ input: { workspaceId, runId: pin.runId, commandId: `stop-${intentId}-${pin.runId}` }, inputHash: hash })),
-              saveInput: { workspaceId, workflowId: id, commandId: `save-${input.commandId}`, executionSemanticsVersion: 3 as const, expectedRevision: input.expectedRevision, expectedWorkflowVersionId: input.expectedWorkflowVersionId, expectedAgentConfigurationVersionIds: input.expectedAgentConfigurationVersionIds, expectedLocationRevision: input.expectedLocationRevision, graph: input.graph, expectedNodePresentation: input.expectedNodePresentation },
+              stops: affected.map((pin) => ({ input: { workspaceId, runId: pin.runId, commandId: `stop-${intentId}-${pin.runId}` } })),
+              saveInput: { workspaceId, workflowId: id, commandId: `save-${input.commandId}`, executionSemanticsVersion: 3 as const, expectedRevision: input.expectedRevision, expectedWorkflowVersionId: input.expectedWorkflowVersionId, expectedAgentConfigurationVersionIds: input.expectedAgentConfigurationVersionIds, graph: input.graph },
               saveInputHash: hash, state: 'staged' as const, saveAttempted: false, createdAt: at, updatedAt: at }
             intents.set(id, GraphEditReadResultV3Schema.parse({ ...emptyIntent(), intent })); return record(id)
           })

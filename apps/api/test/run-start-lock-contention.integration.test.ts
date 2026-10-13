@@ -57,7 +57,7 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
       expect(location.isError).not.toBe(true)
       for (let workflow = 0; workflow < 2; workflow++) {
         const save = await runtime.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.save,
-          arguments: { ...await runtime.create(), expectedLocationRevision: 2 } })
+          arguments: await runtime.create() })
         expect(save.isError).not.toBe(true)
         const saved = CurrentWorkflowSaveResultSchema.parse(decodeMcpToolResult(save)).value
         const input = RunStartV3InputSchema.parse({ workspaceId: saved.version.workspaceId,

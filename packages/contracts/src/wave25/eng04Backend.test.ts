@@ -48,7 +48,7 @@ describe('ENG04 backend shared validation', () => {
   it('keeps the complete current graph, pins and nested value/replayed transport shape', () => {
     const f = fixture(), input = { workspaceId: f.version.workspaceId, workflowId: f.version.workflowId,
       commandId: 'repeat-save', expectedRevision: 1, expectedWorkflowVersionId: f.version.id,
-      expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds, expectedLocationRevision: 1,
+      expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds,
       executionSemanticsVersion: 3, graph: f.version.definition }
     expect(CurrentWorkflowSaveInputSchema.safeParse(input).success).toBe(true)
     expect(CurrentWorkflowSaveInputSchema.safeParse({ ...input, graph: { ...input.graph, repeat: null } }).success).toBe(false)

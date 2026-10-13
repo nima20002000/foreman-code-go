@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { ManagementActionSchema } from '@foreman-code/contracts/management'
 import { CURRENT_WORKFLOW_TOOLS, CurrentEditReadResultSchema, CurrentWorkflowSaveResultSchema,
-  workflowNodeNames } from '@foreman-code/contracts/wave25'
+  } from '@foreman-code/contracts/wave25'
 import { writerFixture } from './eng04-writer-fixtures.js'
 import { graphHeaders, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { insertCurrentRunFixture } from './helpers/eng04CurrentRunFixture.js'
@@ -51,7 +51,6 @@ describe.skipIf(!postgresEnabled)('workflow-wide edit staging reservation', () =
         scope: { workspaceIds: [f.input.workspaceId] } }])
       const stage = { ...f.input, action: 'stage_edits', commandId: randomUUID(), draftId: randomUUID(),
         expectedRevision: saved.revision, expectedWorkflowVersionId: saved.currentVersionId,
-        expectedNodePresentation: workflowNodeNames(saved.version.definition),
         graph: { ...saved.version.definition, name: 'Private staged workflow' } }
       const first = await f.call(CURRENT_WORKFLOW_TOOLS.edits, stage)
       expect(first.result?.isError, JSON.stringify(first.result)).not.toBe(true)

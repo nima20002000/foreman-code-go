@@ -67,7 +67,7 @@ export async function writerFixture(db: Awaited<ReturnType<typeof currentDatabas
     const input = CurrentWorkflowSaveInputSchema.parse({ workspaceId: f.scope.workspaceId, workflowId: managed.workflow.id,
       commandId: randomUUID(), executionSemanticsVersion: 3, expectedRevision: managed.revision,
       expectedWorkflowVersionId: null, expectedAgentConfigurationVersionIds: Object.fromEntries(configurations.map((config) => [config.agentId, config.id])),
-      expectedLocationRevision: 1, graph })
+      graph })
     const url = `/api/management/workspaces/${input.workspaceId}/workflows/${input.workflowId}/definition`
     const call = async (name: string, args: unknown, token = writer.token) => graphRpc(app, token, 'tools/call', { name, arguments: args })
     return { db, app, input, url, writer, access, credential, commands, workflows, call, f, configurations }

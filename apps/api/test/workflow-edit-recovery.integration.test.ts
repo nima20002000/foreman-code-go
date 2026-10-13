@@ -2,14 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { CURRENT_WORKFLOW_TOOLS, CurrentEditIntentSchema, CurrentEditReadResultSchema,
   CurrentEditStageInputSchema, CurrentWorkflowReadResultSchema, CurrentWorkflowSaveResultSchema,
-  workflowNodeNames } from '@foreman-code/contracts/wave25'
+} from '@foreman-code/contracts/wave25'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { buildApp } from '../src/app.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
-import { runPresentationMigration } from '../src/infrastructure/runPresentationMigration.js'
-import { runWorktreesMigration } from '../src/infrastructure/runWorktreesMigration.js'
 import { commandInputHash, PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
-import { readCurrentEditLocationPins } from '../src/modules/graph-drafts/currentLocationPins.js'
 import { readAffectedGraphRuns } from '../src/modules/graph-drafts/saveAdmission.js'
 import { WorkflowManagementService } from '../src/modules/workflows/management.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
@@ -17,19 +14,6 @@ import { graphHeaders, graphRpc, graphRpcValue } from './eng04-graph-composition
 import { writerFixture, type WriterFixture } from './eng04-writer-fixtures.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { insertCurrentRunFixture } from './helpers/eng04CurrentRunFixture.js'
-
-async function databaseBeforePresentationUpgrade() {
-  const db = await currentDatabase({ beforeMigration: runPresentationMigration.version })
-  try {
-    // Current save services require worktree storage even when presentation data is awaiting upgrade.
-    await db.pool.query(runWorktreesMigration.sql)
-    await db.pool.query('insert into application_migrations(version) values($1)', [runWorktreesMigration.version])
-    return db
-  } catch (error) {
-    await db.close()
-    throw error
-  }
-}
 
 async function seedRenameIntent(t: WriterFixture, principal: ManagementPrincipal,
   stage: ReturnType<typeof CurrentEditStageInputSchema.parse>, state: 'staged' | 'uncertain',
@@ -42,12 +26,10 @@ async function seedRenameIntent(t: WriterFixture, principal: ManagementPrincipal
   const { action, draftId, commandId, ...definition } = stage
   const saveInput = { ...definition, commandId: randomUUID() }
   const now = new Date().toISOString()
-  // Seed the persisted pre-upgrade journal format, including its Stage receipt.
-  // Recovery below uses the authenticated product endpoints and original hashes.
+  // Seed a retained command; recovery uses the authenticated product endpoints.
   await t.commands.execute({ principal, source: 'http', operation: 'graph.stage_edits', commandId,
     targetKey: `draft:${draftId}`, payload: stage, perform: async (client) => {
       const current = await readAffectedGraphRuns(client, { ...stage, stagedAgentIds: [] })
-      const locations = await readCurrentEditLocationPins(client, principal, stage)
       const heads = (await client.query<{ id: string; metadata_revision: string }>(
         'select id,metadata_revision::text from agents where workspace_id=$1 order by id', [stage.workspaceId])).rows
       const record = CurrentEditIntentSchema.parse({ kind: 'current', id, ownerPrincipalId: principal.id,
@@ -61,12 +43,12 @@ async function seedRenameIntent(t: WriterFixture, principal: ManagementPrincipal
         expectedWorkflowVersionId: stage.expectedWorkflowVersionId,
         stagedDraft: { id: draftId, workspaceId: stage.workspaceId, workflowId: stage.workflowId,
           revision: stage.expectedRevision, baseWorkflowVersionId: stage.expectedWorkflowVersionId,
-          graph: stage.graph, agentConfigurationVersionIds: stage.expectedAgentConfigurationVersionIds, ...locations },
+          graph: stage.graph, agentConfigurationVersionIds: stage.expectedAgentConfigurationVersionIds },
         agentPins: heads.map((head) => ({ agentId: head.id, metadataRevision: Number(head.metadata_revision),
           configurationVersionId: stage.expectedAgentConfigurationVersionIds[head.id] })),
         affected: current.map((run) => run.pin), stops: current.filter((run) => !run.settled).map((run) => {
           const input = { workspaceId: stage.workspaceId, runId: run.pin.runId, commandId: randomUUID() }
-          return { input, inputHash: commandInputHash(input) }
+          return { input }
         }), saveInput, saveInputHash: commandInputHash(saveInput), state,
         saveAttempted: options.saveAttempted ?? state === 'uncertain',
         ...(state === 'uncertain' ? { error: { code: 'COMMAND_UNCERTAIN', message: 'Save reply lost', uncertain: true } } : {}),
@@ -81,9 +63,9 @@ async function seedRenameIntent(t: WriterFixture, principal: ManagementPrincipal
     [id])).rows[0]!.record)
 }
 
-describe.skipIf(!postgresEnabled)('persisted rename upgrade and recovery', () => {
+describe.skipIf(!postgresEnabled)('persisted workflow edit recovery', () => {
   it.each(['staged', 'uncertain'] as const)('resumes a %s rename over HTTP and MCP without replacing commands', async (state) => {
-    const db = await databaseBeforePresentationUpgrade()
+    const db = await currentDatabase()
     let initial: WriterFixture | undefined
     let restarted: ReturnType<typeof buildApp> | undefined
     try {
@@ -107,7 +89,6 @@ describe.skipIf(!postgresEnabled)('persisted rename upgrade and recovery', () =>
       if (state === 'uncertain') await insertRun()
       const runBefore = (await db.pool.query('select record from runs where id=$1', [t.f.run.id])).rows[0]!.record
       expect(intent.stagedDraft.presentationOnly).toBeUndefined()
-      expect(intent.saveInput.expectedNodePresentation).toBeUndefined()
       await t.app.close()
       await applyApplicationMigrations(db.pool)
       expect((await db.pool.query('select record from graph_edit_intents where id=$1', [intent.id])).rows[0]!.record)
@@ -175,8 +156,8 @@ describe.skipIf(!postgresEnabled)('persisted rename upgrade and recovery', () =>
     }
   }, 60000)
 
-  it('keeps a staged command when another rename changes its immutable presentation baseline', async () => {
-    const db = await databaseBeforePresentationUpgrade()
+  it('publishes a retained rename after another rename at the same workflow revision', async () => {
+    const db = await currentDatabase()
     let t: WriterFixture | undefined
     try {
       t = await writerFixture(db)
@@ -189,7 +170,6 @@ describe.skipIf(!postgresEnabled)('persisted rename upgrade and recovery', () =>
       const intent = await seedRenameIntent(t, t.writer.principal, stage, 'staged')
       await applyApplicationMigrations(db.pool)
       const competing = { ...intent.saveInput, commandId: randomUUID(),
-        expectedNodePresentation: workflowNodeNames(saved.version.definition),
         graph: { ...saved.version.definition, nodes: saved.version.definition.nodes.map((node, index) =>
           index ? node : { ...node, name: 'Another saved name' }) } }
       const changed = await t.app.inject({ method: 'PUT', url: t.url, headers: graphHeaders(t.writer.token), payload: competing })
@@ -197,21 +177,20 @@ describe.skipIf(!postgresEnabled)('persisted rename upgrade and recovery', () =>
       const advance = { workspaceId: stage.workspaceId, workflowId: stage.workflowId, draftId: stage.draftId,
         intentId: intent.id, action: 'stop_and_save', commandId: intent.advanceCommandId }
       const response = await t.call(CURRENT_WORKFLOW_TOOLS.edits, advance)
-      const blocked = CurrentEditReadResultSchema.parse(graphRpcValue(response.result))
-      expect(blocked.intent).toMatchObject({ state: 'blocked', saveAttempted: false,
-        saveInput: intent.saveInput, saveInputHash: intent.saveInputHash,
-        error: { code: 'PRESENTATION_REVISION_CONFLICT', uncertain: false } })
-      expect(blocked.intent?.result).toBeUndefined()
+      const published = CurrentEditReadResultSchema.parse(graphRpcValue(response.result))
+      expect(published.intent).toMatchObject({ state: 'saved', saveAttempted: true,
+        saveInput: intent.saveInput, saveInputHash: intent.saveInputHash })
+      expect(published.intent?.result?.presentation?.nodes).toEqual(stage.graph.nodes)
       expect(graphRpcValue((await t.call('workflow_get', { workspaceId: stage.workspaceId,
-        workflowId: stage.workflowId })).result)).toMatchObject({ workflow: { nodes: competing.graph.nodes } })
+        workflowId: stage.workflowId })).result)).toMatchObject({ workflow: { nodes: stage.graph.nodes } })
     } finally {
       await t?.app.close()
       await db.close()
     }
   }, 60000)
 
-  it('retains an uncertain Stop across upgrade and denied retries', async () => {
-    const db = await databaseBeforePresentationUpgrade()
+  it('retains an uncertain Stop across restart and denied retries', async () => {
+    const db = await currentDatabase()
     let t: WriterFixture | undefined
     try {
       t = await writerFixture(db)
@@ -231,7 +210,7 @@ describe.skipIf(!postgresEnabled)('persisted rename upgrade and recovery', () =>
       const stop = intent.stops[0]!
       const targetKey = `edit-intent:${intent.id}`
       await t.commands.recordAudit(renamer.principal.id, 'http', 'graph.edit_stop_attempt', targetKey,
-        'uncertain', { commandId: stop.input.commandId, inputHash: stop.inputHash, targetKey: `run:${stop.input.runId}` })
+        'uncertain', { commandId: stop.input.commandId, targetKey: `run:${stop.input.runId}` })
       await applyApplicationMigrations(db.pool)
       const advance = { workspaceId: stage.workspaceId, workflowId: stage.workflowId, draftId: stage.draftId,
         intentId: intent.id, action: 'stop_and_save', commandId: intent.advanceCommandId }
@@ -248,8 +227,7 @@ describe.skipIf(!postgresEnabled)('persisted rename upgrade and recovery', () =>
       })
       expect((await db.pool.query(`select details from management_audit where principal_id=$1
         and action='graph.edit_stop_attempt' and target_key=$2`, [renamer.principal.id, targetKey])).rows)
-        .toEqual([{ details: { commandId: stop.input.commandId, inputHash: stop.inputHash,
-          targetKey: `run:${stop.input.runId}` } }])
+        .toEqual([{ details: { commandId: stop.input.commandId, targetKey: `run:${stop.input.runId}` } }])
       expect((await db.pool.query(`select 1 from management_command_receipts where principal_id=$1
         and operation in ('run.stop','workflow.save.v3')`, [renamer.principal.id])).rowCount).toBe(0)
     } finally {

@@ -64,7 +64,7 @@ describe('NIM-2646 current V3 authoring/read MCP boundaries', () => {
     const execute = vi.spyOn(c.context.services.commands, 'execute')
     const input = CurrentWorkflowSaveInputSchema.parse({ workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId,
       commandId: randomUUID(), expectedRevision: 1, expectedWorkflowVersionId: f.version.id, executionSemanticsVersion: 3,
-      expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds, expectedLocationRevision: 1, graph: f.version.definition })
+      expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds, graph: f.version.definition })
     await expect(c.context.services.workflows.current.save(c.context.principal, 'mcp', input))
       .rejects.toMatchObject({ code: 'ACCESS_DENIED', status: 403 })
     expect(execute).not.toHaveBeenCalled()

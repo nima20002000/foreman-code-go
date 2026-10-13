@@ -255,7 +255,7 @@ export async function sourceWorktreeMcpFixture() {
     const savedResponse = await client.callTool({ name: 'workflow_save_v3', arguments: {
       workspaceId: base.f.scope.workspaceId, workflowId: base.f.scope.workflowId, commandId: randomUUID(),
       executionSemanticsVersion: 3, expectedRevision: workflow.revision,
-      expectedWorkflowVersionId: base.f.version.id, expectedLocationRevision: located.locationRevision,
+      expectedWorkflowVersionId: base.f.version.id,
       expectedAgentConfigurationVersionIds: base.f.version.agentConfigurationVersionIds, graph,
     } })
     expect(savedResponse.isError, JSON.stringify(savedResponse)).not.toBe(true)

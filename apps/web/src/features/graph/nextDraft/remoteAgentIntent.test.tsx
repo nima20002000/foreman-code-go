@@ -24,7 +24,7 @@ function remote() {
   const hash = 'sha256:' + '1'.repeat(64), now = '2026-09-26T00:00:00.000Z'
   const saveInput = { workspaceId: 'workspace', workflowId: 'workflow', commandId: 'save-remote', executionSemanticsVersion: 3,
     expectedRevision: 7, expectedWorkflowVersionId: 'workflow-version-1', expectedAgentConfigurationVersionIds: originalPins,
-    resultantAgentConfigurationVersionIds: resultantPins, expectedLocationRevision: 1, graph, stagedAgents }
+    resultantAgentConfigurationVersionIds: resultantPins, graph, stagedAgents }
   // Exact private readback of an intent submitted elsewhere (e.g. authenticated
   // MCP by this principal). Transport is mocked; this is Board reconciliation,
   // not a second backend authentication or atomic-publication test.
@@ -36,7 +36,7 @@ function remote() {
     stagedDraft: { id: 'draft', workspaceId: 'workspace', workflowId: 'workflow', revision: 7,
       baseWorkflowVersionId: 'workflow-version-1', graph, agentConfigurationVersionIds: originalPins,
       resultantAgentConfigurationVersionIds: resultantPins, saveCommandId: 'save-remote', stagedAgents,
-      locationRevision: 1, locationDigest: hash, runLocationPins: [] },
+    },
     agentPins: context.agents.map((item) => ({ agentId: item.agent.id, metadataRevision: item.metadataRevision,
       configurationVersionId: item.agent.configurationVersionId })),
     affected: [], stops: [], state: 'staged', saveAttempted: false, createdAt: now, updatedAt: now })

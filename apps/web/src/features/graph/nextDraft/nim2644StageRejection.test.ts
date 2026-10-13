@@ -22,7 +22,6 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clea
 describe('NIM-2644-FE-001 exact no-effect Stage reservation rejection', () => {
   it.each(['REVISION_CONFLICT', 'WORKFLOW_BASE_CONFLICT', 'GRAPH_INVALID', 'AGENT_ID_CONFLICT',
     'AGENT_REVISION_CONFLICT', 'GRAPH_EDIT_INTENT_EXISTS', 'APPROVAL_CODEX_REVIEW_CONFIGURATION_REQUIRED',
-    'PRESENTATION_REVISION_CONFLICT', 'PRESENTATION_BASE_REQUIRED',
     'WORKTREE_BINDING_REQUIRED'])('recognizes pre-insert %s only with its domain status', (code) => {
     expect(isDefinitiveStageRejection(failure(code))).toBe(true)
     for (const status of [0, 200, 400, 401, 403, 408, 429, 500, 503]) expect(isDefinitiveStageRejection(failure(code, status))).toBe(false)
@@ -46,7 +45,7 @@ describe('NIM-2644-FE-001 exact no-effect Stage reservation rejection', () => {
       expect(reserveEditOutbox(key, candidate('replacement'))).toEqual(outbox)
     })
   })
-  it.each(['REVISION_CONFLICT', 'PRESENTATION_REVISION_CONFLICT', 'PRESENTATION_BASE_REQUIRED'])(
+  it.each(['REVISION_CONFLICT'])(
     'releases the %s reservation while preserving the local form and newer typing', async (code) => {
       const context = repairFixture()
       const edit = newNextDraft(context, 'instance')

@@ -75,7 +75,6 @@ describe.skipIf(!enabled)('ENG04 native proof accepted v3 PostgreSQL guard slice
     const save: CurrentWorkflowSaveInput = { workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId,
       commandId: randomUUID(), expectedRevision: revision, expectedWorkflowVersionId: f.version.id, executionSemanticsVersion: 3,
       expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds,
-      expectedLocationRevision: location.value.locationRevision,
       graph: { ...f.version.definition, repeat: { contractVersion: 1, blocks: [{ id: 'repair', nodeIds: [entry.id, exit.id], entryNodeId: entry.id,
         exitNodeId: exit.id, maxOccurrences: 2, repeatOutcome: 'issues', earlyExitOutcome: 'pass', limitExit: { kind: 'branch_end' } }] } } }
     const url = `/api/management/workspaces/${save.workspaceId}/workflows/${save.workflowId}/definition`

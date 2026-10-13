@@ -139,7 +139,7 @@ export async function inspectRepeatRun({ exit, maxOccurrences, expectedOccurrenc
     const saved = CurrentWorkflowSaveResultSchema.parse(value(await f.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: {
       workspaceId: args.workspaceId, workflowId: f.f.scope.workflowId, executionSemanticsVersion: 3,
       commandId: randomUUID(), expectedRevision: Number(revision), expectedWorkflowVersionId: original.version.id,
-      expectedLocationRevision: locationRevision, expectedAgentConfigurationVersionIds: original.version.agentConfigurationVersionIds, graph,
+      expectedAgentConfigurationVersionIds: original.version.agentConfigurationVersionIds, graph,
     } })))
     expect(saved.value.version.id).not.toBe(original.version.id)
     expect(saved.value.version.definition).not.toHaveProperty('repeat')
