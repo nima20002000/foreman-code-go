@@ -88,7 +88,11 @@ it.each([80_000, 120_000])('balances %i ms integration files against cloud check
     times.set(part.plannedHostKey, (times.get(part.plannedHostKey) ?? 0) + part.expectedDurationMs)
   }
   expect(times.size).toBe(parts.length)
-  expect(Math.max(...times.values())).toBeLessThanOrEqual(210_000)
+  // Heavy files reserve two CPU slots; check executors cannot also run integration in this wave.
+  const concurrentFiles = 2 * (16 / 2) + (24 - checks.length) * (4 / 2)
+  const integrationWaves = Math.ceil(files.length / concurrentFiles)
+  const maxGateDurationMs = Math.max(210_000, 90_000 + integrationWaves * durationMs)
+  expect(Math.max(...times.values())).toBeLessThanOrEqual(maxGateDurationMs)
 })
 
 it('lets a build computer without a queued gate part take cloud parts and another build computer integration part', () => {
