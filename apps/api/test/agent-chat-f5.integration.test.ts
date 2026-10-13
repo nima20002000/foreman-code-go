@@ -199,7 +199,7 @@ describe.skipIf(!postgresEnabled)('F5 approval and receipt PostgreSQL / HTTP / M
         requestId: 'denied-cancel',
       } }))
       assert.equal((await f.repository.turn(f.id, queued[0]!.requestId))?.delivery, 'queued')
-      for (const [index, turn] of queued.entries()) {
+      const cancelTurn = async (turn: (typeof queued)[number], index: number) => {
         if (index % 2) {
           const result = await f.mcp.callTool({ name: 'agent_chat_cancel_queued', arguments: { workspaceId: f.workspaceId,
             conversationId: f.id, turnRequestId: turn.requestId, requestId: `cancel-${turn.requestId}` } })
@@ -215,6 +215,14 @@ describe.skipIf(!postgresEnabled)('F5 approval and receipt PostgreSQL / HTTP / M
             .some((entry) => entry.requestId === turn.requestId && entry.delivery === 'queued'), false)
         }
         assert.equal((await f.repository.turn(f.id, turn.requestId))?.delivery, 'canceled')
+      }
+      // Independent cancellations can overlap; bound concurrency below the fixture pool's capacity.
+      for (let offset = 0; offset < queued.length; offset += 4) {
+        const results = await Promise.allSettled(queued.slice(offset, offset + 4)
+          .map((turn, index) => cancelTurn(turn, offset + index)))
+        for (const result of results) {
+          if (result.status === 'rejected') throw result.reason
+        }
       }
       const canceledRead = await f.app.inject({ method: 'GET',
         url: `${f.url}?${new URLSearchParams(f.query)}`, headers: f.headers })
