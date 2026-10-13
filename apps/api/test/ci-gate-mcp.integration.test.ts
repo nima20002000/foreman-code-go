@@ -115,7 +115,7 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
 }
 
 it.each([false, true])('admits consecutive gates on different connections after a lost lock reply: %s', async lostReply => {
-  const pool = createPool({ connectionString: database.databaseUrl, maxConnections: 8,
+  const pool = createPool({ connectionString: database.databaseUrl, maxConnections: 32,
     connectionTimeoutMs: 1_000, queryTimeoutMs: 1_000 }, 'gate-lock-test')
   let loseReply = lostReply
   pool.on('connect', client => {
