@@ -6,7 +6,7 @@ import { useCodexChatDelivery } from './codex-chat-delivery.helpers.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 
 describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP', { timeout: 60_000 }, () => {
-  const fixture = useCodexChatDelivery()
+  const fixture = useCodexChatDelivery({ manualLateReplies: true })
 
   for (const kind of ['agent', 'operator'] as const) {
     it(`${kind} retains a late definitive creation rejection, cleans up, and permits explicit retry`, async () => {
@@ -23,6 +23,7 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
         : (await readOperator(id)).turnState === 'uncertain' || undefined)
       if (kind === 'agent') assert.equal((await readAgent()).availability.canSend, false)
       else assert.equal((await readOperator(id)).activeRequestId, 'late-rejected')
+      await native.flag('release-late-creation-rejection')
       await until(async () => {
         if (kind === 'agent') {
           await fixture.agentChat.recover()
