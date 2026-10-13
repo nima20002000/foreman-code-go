@@ -850,6 +850,7 @@ test('reuses one build tree reset to the exact next commit with dependencies and
   const commitAll = message => { git(['add', '-A']); git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', message]) }
   await writeFile(join(repository, 'apps/api/src/kept.ts'), 'export const kept = 1\n')
   await writeFile(join(repository, 'apps/api/src/removed.ts'), 'export const removed = 1\n')
+  await writeFile(join(repository, '.gitignore'), 'node_modules/\ndist/\n*.tsbuildinfo\n')
   git(['init', '-q'])
   commitAll('first')
   git(['remote', 'add', 'origin', 'https://github.com/example/fixture.git'])

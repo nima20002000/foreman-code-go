@@ -41,23 +41,59 @@ export async function recordStartupConfiguration(stateFile) {
   await publish(stateFile, JSON.stringify({ startupConfigured: true }) + '\n')
 }
 
+// Compiled output whose source file no longer exists; tsc --incremental never removes it.
+const typeScriptOutputs = [['apps/api/dist', 'apps/api/src'], ['packages/contracts/dist', 'packages/contracts/src']]
+const outputSuffix = /(\.d)?\.(?:m?js|ts|mts)(\.map)?$/
+
+async function pruneStaleTypeScriptOutput(source) {
+  for (const [output, input] of typeScriptOutputs) {
+    const visit = async relative => {
+      let entries
+      try {
+        entries = await readdir(join(source, output, relative), { withFileTypes: true })
+      } catch (error) {
+        if (error.code === 'ENOENT') return
+        throw error
+      }
+      for (const entry of entries) {
+        const path = join(relative, entry.name)
+        if (entry.isDirectory()) {
+          await visit(path)
+          continue
+        }
+        if (!outputSuffix.test(entry.name)) continue
+        const stem = path.replace(outputSuffix, '')
+        const sources = ['.ts', '.tsx', '.mts', '.mjs', '.js'].map(extension => join(source, input, stem + extension))
+        const exists = await Promise.all(sources.map(file => lstat(file).then(() => true, () => false)))
+        if (!exists.includes(true)) await rm(join(source, output, path), { force: true })
+      }
+    }
+    await visit('')
+  }
+}
+
+// One persistent build tree per installation keeps installed dependencies and incremental TypeScript output
+// between installs; every tracked file is reset to the exact commit and every other untracked file is removed.
 export async function withProductionSourceSnapshot(repository, directory, action) {
   await mkdir(directory, { recursive: true, mode: 0o700 })
-  const source = await mkdtemp(join(directory, 'source-'))
+  const source = join(directory, 'source')
   const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')))
   const execute = promisify(execFile)
   const git = (args, cwd = repository) => execute('git', args, { cwd, env: environment })
-  try {
-    const { stdout } = await git(['rev-parse', 'HEAD'])
-    const commit = stdout.trim()
-    const { stdout: origin } = await git(['remote', 'get-url', 'origin'])
-    await git(['clone', '--quiet', '--shared', '--no-checkout', repository, source])
-    await git(['checkout', '--quiet', '--detach', commit], source)
-    await git(['remote', 'set-url', 'origin', origin.trim()], source)
-    return await action({ source, commit })
-  } finally {
+  const { stdout } = await git(['rev-parse', 'HEAD'])
+  const commit = stdout.trim()
+  const { stdout: origin } = await git(['remote', 'get-url', 'origin'])
+  const reusable = await git(['rev-parse', '--git-dir'], source).then(() => true, () => false)
+  if (!reusable) {
     await rm(source, { recursive: true, force: true })
+    await git(['clone', '--quiet', '--shared', '--no-checkout', repository, source])
   }
+  // The shared clone reads the repository's objects, so any commit it has is available without a fetch.
+  await git(['checkout', '--quiet', '--force', '--detach', commit], source)
+  await git(['clean', '-ffdxq', '-e', 'node_modules', '-e', 'dist', '-e', '*.tsbuildinfo'], source)
+  await git(['remote', 'set-url', 'origin', origin.trim()], source)
+  await pruneStaleTypeScriptOutput(source)
+  return action({ source, commit })
 }
 
 export async function backupDatabase({ archive, database, run }) {
