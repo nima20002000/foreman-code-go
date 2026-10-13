@@ -32,6 +32,8 @@ import { sanitizeCiText, serializeCiJson } from './text.js'
 import { isGitHubComputer, needsSystemdExecutor, supportsUserSystemd } from './computerCapabilities.js'
 import { weighCiPartitions } from './partitionPlanning.js'
 import { readQueuedCiRuns } from './queuedRuns.js'
+import { dispatchCloudTicket, expireCloudDispatch, requestCloud } from './cloudDispatch.js'
+import { cancelAssignedCiTicket } from './assignedCancellation.js'
 
 /** CI reads are idempotent: one retry after a lock or statement timeout, then a typed retryable error. */
 async function retryRead<T>(work: () => Promise<T>): Promise<T> {
@@ -586,26 +588,8 @@ export class HostCiService {
 
   private async cancelAssignedTicket(run: CiRunRecord, client: pg.PoolClient, audit?: CiCancellation) {
     const computer = await this.computer(run.computer!.hostRef)
-    if (run.dispatchRequest) {
-      // A start with an unknown reply is retried on its owner before cancellation can confirm closure.
-      try {
-        const start = await this.endpoint.request(computer, run.dispatchRequest)
-        if (start.operation !== 'start') {
-          throw new DomainError('CI_HOST_REPLY_INVALID', 'The build computer replied out of order.', 502)
-        }
-      } catch (error) {
-        if (!rejectedCiStart(error)) throw error
-        const now = new Date().toISOString()
-        await this.settle(run, computer, { state: 'canceled', step: null, exitCode: null,
-          startedAt: now, finishedAt: now, message: 'Canceled before execution.' }, { client, audit })
-        return
-      }
-    }
-    const reply = await this.endpoint.request(computer, { operation: 'cancel', runId: run.id })
-    if (reply.operation !== 'cancel') {
-      throw new DomainError('CI_HOST_REPLY_INVALID', 'The build computer replied out of order.', 502)
-    }
-    await this.settle(run, computer, reply.run, { client, audit })
+    const state = await cancelAssignedCiTicket(this.endpoint, computer, run)
+    await this.settle(run, computer, state, { client, audit })
   }
 
   private async cancelSuperseded() {
@@ -787,7 +771,7 @@ export class HostCiService {
     const outcome = await withCiTicketLock(this.pool, run.id, async client => {
       const current = await this.read(run.id, run.workspaceId, client)
       if (current.cancellation) return 'pending'
-      if (!current.dispatchRequest
+      if ((!current.dispatchRequest && !(computer.hostRef.kind === 'cloud' && current.state === 'starting'))
         || JSON.stringify(current.computer?.hostRef) !== JSON.stringify(computer.hostRef)) return 'settled'
       return this.sendAssignedDispatch(current, computer, client)
     })
@@ -795,12 +779,16 @@ export class HostCiService {
   }
 
   private async sendAssignedDispatch(run: CiRunRecord, computer: HostCiComputer, client: pg.PoolClient) {
+    if (computer.hostRef.kind === 'cloud') {
+      const result = await dispatchCloudTicket(client, this.endpoint, computer, run)
+      if (result.outcome === 'settled') await this.settle(result.run, computer, result.observed, { client })
+      return result.outcome
+    }
     const request = run.dispatchRequest
     if (!request) throw new Error('CI dispatch request is missing.')
     let reply: Extract<CiHostReply, { operation: 'start' }>
     try {
-      const start = () => this.endpoint.request(computer, request)
-      const response = CiHostReplySchema.parse(await (computer.hostRef.kind === 'cloud' ? start() : requestCiStart(start)))
+      const response = CiHostReplySchema.parse(await requestCiStart(() => this.endpoint.request(computer, request)))
       if (response.operation !== 'start') {
         throw new DomainError('CI_HOST_REPLY_INVALID', 'The build computer replied out of order.', 502)
       }
@@ -817,7 +805,7 @@ export class HostCiService {
         return 'settled'
       }
       const attempts = run.dispatchAttempts ?? 1
-      const uncertainRetry = computer.hostRef.kind !== 'cloud' && attempts > 1
+      const uncertainRetry = attempts > 1
       if (uncertainRetry && attempts >= CI_START_MAX_ATTEMPTS) {
         const now = new Date().toISOString()
         await this.settle(run, computer, { state: 'failed', step: 'dispatch', exitCode: null,
@@ -874,7 +862,7 @@ export class HostCiService {
         && value.hostRef.kind === run.computer.hostRef.kind && value.hostRef.mainId === run.computer.hostRef.mainId
         && value.hostRef.deviceId === run.computer.hostRef.deviceId && value.hostRef.provider === run.computer.hostRef.provider
         && value.hostRef.slot === run.computer.hostRef.slot)
-      ?? (run.computer && run.computer.hostRef.kind !== 'cloud' ? await this.computer(run.computer.hostRef) : null)
+      ?? (run.computer ? await this.computer(run.computer.hostRef) : null)
     if (!computer) return
     if (row.host_key) computer = { ...computer, key: row.host_key }
     if (run.cancellation) {
@@ -885,13 +873,23 @@ export class HostCiService {
       await readCiComputerStatus(this.endpoint, computer)
       return
     }
-    if (run.dispatchRequest) {
+    if (run.dispatchRequest || computer.hostRef.kind === 'cloud' && run.state === 'starting' && !run.startedAt) {
       await this.sendDispatch(run, computer)
       return
     }
-    const reply = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 32_768,
-      ...(['integration', 'unit'].includes(run.suite) ? { durations: true } : {}) })
+    const request: CiHostRequest = { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 32_768,
+      ...(['integration', 'unit'].includes(run.suite) ? { durations: true } : {}) }
+    const reply = await (computer.hostRef.kind === 'cloud'
+      ? requestCloud(this.endpoint, computer, request) : this.endpoint.request(computer, request))
       .catch(fallbackOnError(null, 'jobs', 'read CI run from computer', { runId: run.id }))
+    if (computer.hostRef.kind === 'cloud' && run.state === 'starting') {
+      const recovered = await expireCloudDispatch(this.endpoint, computer, run,
+        reply?.operation === 'read' ? reply.run : undefined)
+      if (recovered?.state === 'lost') {
+        await this.settle(run, computer, recovered)
+        return
+      }
+    }
     if (reply?.operation !== 'read') return
     let logTail = reply.text
     if (reply.run.logBytes > 32_768) {
