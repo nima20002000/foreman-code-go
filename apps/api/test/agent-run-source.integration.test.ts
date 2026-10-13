@@ -151,11 +151,14 @@ describe.runIf(postgresEnabled)('GitHub Run-start sources and Agent CI through a
       const baseCommit = git(origin, 'rev-parse', 'HEAD')
       const clone = join(f.db.directory, 'clone')
       const tree = join(f.db.directory, 'agent-tree')
-      git(f.db.directory, 'clone', '-q', '--no-checkout', origin, clone)
+      const system = systemGitWorktreePorts(environment)
+      const cloned = await system.git(['clone', '-q', '--no-checkout', '--template=', origin, clone], {
+        cwd: f.db.directory, signal: AbortSignal.timeout(30_000),
+      })
+      expect(cloned.code, cloned.stderr).toBe(0)
       git(clone, 'worktree', 'add', '-b', 'foreman/agent', tree, baseCommit)
       await writeFile(join(origin, 'source.txt'), 'Later default source')
       git(origin, 'commit', '-qam', 'Advance default')
-      const system = systemGitWorktreePorts(environment)
       const ports = { ...system, cloneDirectory: () => clone }
       const commands = new PostgresCommandCoordinator(f.db.pool)
       const snapshots = vi.fn(async (executionId: string) => {
