@@ -50,7 +50,8 @@ export async function rollbackAfterFailure(client: pg.ClientBase): Promise<Error
     await client.query('rollback')
     return undefined
   } catch (rollbackError) {
-    componentLogger('db').error({ err: rollbackError }, 'Transaction rollback failed; discarding its connection')
+    componentLogger('db').error({ operation: 'transaction rollback', err: rollbackError },
+      'Transaction rollback failed; discarding its connection')
     return rollbackError instanceof Error ? rollbackError : new Error('Transaction rollback failed.')
   }
 }
