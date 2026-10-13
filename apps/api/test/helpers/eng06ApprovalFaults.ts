@@ -177,6 +177,11 @@ export class ApprovalTransportFaults {
         alive(session)
         return raw.cancel(session, signal, turnId)
       },
+      canDetachForRestart(session) {
+        const original = attached.get(session.nativeSessionId)
+        return !disposed && !faults.deadSessions.has(session.nativeSessionId)
+          && original?.harness === session.harness && original.providerVersion === session.providerVersion
+      },
       close: (session) => close(session, false),
       closeForRestart: (session) => close(session, true),
       dispose() {

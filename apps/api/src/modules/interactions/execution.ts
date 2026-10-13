@@ -2597,9 +2597,11 @@ export class ApprovalExecutionCoordinator {
         componentLogger('harness').warn({ executionId: execution.id, code, err: error },
           'Workflow native execution failed before cleanup')
         let failure: ExecutionResult | undefined
+        const failedRestartAttachment = restartRecovery && ownedSession?.openingFailed
         if (activeTimeout) {
           failure = { outcome: 'failed', error: { code: error.code, message: error.message, retryable: false } }
-        } else if (!signal.aborted && error instanceof HarnessExecutionError && error.result.error) {
+        } else if (!signal.aborted && !failedRestartAttachment
+          && error instanceof HarnessExecutionError && error.result.error) {
           // A closed transport is a failed observation, not a retryable native terminal.
           failure = { outcome: 'failed', error: { ...error.result.error, retryable: false } }
         }
