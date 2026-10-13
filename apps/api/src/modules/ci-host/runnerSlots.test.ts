@@ -15,8 +15,7 @@ afterEach(async () => {
 
 /** A build computer with a real git origin standing in for GitHub and a corepack shim that records each install. */
 async function computer() {
-  const base = process.env.FOREMAN_CODE_TEST_ROOT ?? process.env.TMPDIR
-    ?? join(homedir(), '.cache/foreman-code/tests')
+  const base = join(homedir(), '.cache', 'foreman-tmp')
   await mkdir(base, { recursive: true })
   const root = await mkdtemp(join(base, 'slot-host-'))
   roots.push(root)
@@ -27,7 +26,7 @@ async function computer() {
   await mkdir(join(origin, 'src'), { recursive: true })
   await mkdir(bin)
   await mkdir(started)
-  await writeFile(join(origin, 'package.json'), JSON.stringify({ scripts: { lint: 'fixture' } }))
+  await writeFile(join(origin, 'package.json'), JSON.stringify({ scripts: { lint: 'fixture', typecheck: 'fixture' } }))
   await writeFile(join(origin, 'pnpm-lock.yaml'), 'fixture-lock')
   await writeFile(join(origin, '.gitignore'), 'node_modules/\ndist/\n')
   await writeFile(join(origin, 'src/kept.ts'), 'export const kept = 1\n')
@@ -48,6 +47,14 @@ if (args[1] === 'install') {
   fs.mkdirSync('node_modules', { recursive: true })
   fs.writeFileSync('node_modules/dependency', 'installed')
 } else {
+  if (args.includes('typecheck')) {
+    const cache = process.env.FOREMAN_CODE_CI_TYPECHECK_CACHE
+    if (!cache) throw new Error('No persistent typecheck cache')
+    fs.mkdirSync(cache, { recursive: true })
+    const info = path.join(cache, 'fixture.tsbuildinfo')
+    console.log('typecheck=' + (fs.existsSync(info) ? 'warm' : 'cold'))
+    fs.writeFileSync(info, 'incremental state')
+  }
   const parallel = Number(process.env.FIXTURE_PARALLEL ?? 1)
   fs.writeFileSync(path.join(${JSON.stringify(started)}, String(process.pid)), '')
   const deadline = Date.now() + 10000
@@ -80,10 +87,10 @@ if (args[1] === 'install') {
       return system.run(file, args, options)
     } }
   const runner = new HostCiRunner(join(root, 'runner'), ports, { ...environment, PATH: `${bin}:${process.env.PATH}` })
-  async function run() {
+  async function run(suite: 'lint' | 'typecheck' = 'lint') {
     const runId = randomUUID()
     await runner.handle({ operation: 'start', runId, repository: 'example/project', commit: git('rev-parse', 'HEAD'),
-      suite: 'lint', scope: 'affected', files: [] })
+      suite, scope: 'full' })
     const script = join(root, 'runner/runs', runId, 'run.sh')
     await vi.waitFor(() => expect(launched.has(script)).toBe(true), { timeout: 10_000 })
     await launched.get(script)!.done
@@ -144,4 +151,17 @@ it('gives concurrent parts different checkouts', async () => {
     expect(result).toMatchObject({ run: { state: 'passed' }, text: expect.stringContaining('dependency=installed') })
   }
   expect(results[0].checkout).not.toBe(results[1].checkout)
+})
+
+it('retains typecheck state per slot outside a replaced dependency directory', async () => {
+  const fixture = await computer()
+  const first = await fixture.run('typecheck')
+  expect(first).toMatchObject({ run: { state: 'passed' }, text: expect.stringContaining('typecheck=cold') })
+  await rm(join(first.checkout, 'node_modules'), { recursive: true, force: true })
+  const second = await fixture.run('typecheck')
+  expect(second).toMatchObject({ run: { state: 'passed' }, text: expect.stringContaining('typecheck=warm') })
+  await fixture.concurrently(2)
+  const results = await Promise.all([fixture.run('typecheck'), fixture.run('typecheck')])
+  expect(results.map(result => result.text.match(/typecheck=(warm|cold)/)?.[1]).sort()).toEqual(['cold', 'warm'])
+  for (const result of results) expect(result.run.state).toBe('passed')
 })
