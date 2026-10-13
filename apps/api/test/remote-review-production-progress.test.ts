@@ -101,3 +101,41 @@ it('recovers native delivery after the reviewer accepts its decision and complet
   expect(completed.job.state).toBe('completed')
   expect(completed.job.providerTurnOrMessageId).toBe('review-turn')
 })
+
+it('settles the reviewer before entering application recovery for its decision', async () => {
+  const pending = NATIVE_INTERACTION_FIXTURES.codex
+  const option = pending.responseOptions.find(value => value.semantic === 'approve_once')!
+  const time = '2026-10-01T00:00:00.000Z'
+  let interaction = DurableInteractionSchema.parse({ ...pending, revision: 1,
+    status: 'delivery_pending', deliveryState: 'pending', selectedOptionId: option.optionId,
+    selectedSemantic: option.semantic, nativeResponse: { decision: 'accept' }, decidedAt: time, updatedAt: time,
+  })
+  let job = ReviewJobSchema.parse({ id: 'review-original', interactionId: interaction.id,
+    reviewerAgentId: interaction.approval.designatedOrchestratorAgentId, attempt: 1, state: 'acknowledged',
+    provider: 'codex', nativeSessionId: 'review-session', providerTurnOrMessageId: 'review-turn',
+    correlationId: 'review-correlation', createdAt: time, acknowledgedAt: time, updatedAt: time,
+  })
+  const recovery = vi.fn(async () => {
+    // Delivery recovery cannot advance until the original review turn has settled.
+    if (job.state !== 'completed') throw new Error('Production Main reconciliation timed out.')
+    interaction = DurableInteractionSchema.parse({ ...interaction,
+      status: 'delivered', deliveryState: 'delivered', deliveredAt: time,
+    })
+  })
+  const fixture = {
+    provider: { calls: async () => [] },
+    async reconcileReviews() {
+      job = ReviewJobSchema.parse({ ...job, state: 'completed', completedAt: time })
+    },
+    reconcile: recovery,
+    async value() { return { interaction } },
+    db: { pool: { query: async () => ({ rows: [{ record: job }] }) } },
+  } as unknown as Parameters<typeof deliveredReview>[0]
+
+  const delivered = await deliveredReview(fixture, interaction.id)
+  expect(delivered.interaction).toMatchObject({ id: pending.id, deliveryState: 'delivered' })
+  expect(delivered.job).toMatchObject({
+    id: 'review-original', state: 'completed', providerTurnOrMessageId: 'review-turn',
+  })
+  expect(recovery).toHaveBeenCalledOnce()
+})

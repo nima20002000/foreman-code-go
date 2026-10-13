@@ -84,3 +84,22 @@ export async function assertRemoteReviewerReceipt(sql: GraphSqlClient, receipt: 
       || !sameWorkflowValue(policy!.session, turn.assignment.session)) denied()
   }
 }
+
+/** Closing the completed reviewer only releases its retained process; the Run continues. */
+export async function canCloseRetainedRemoteReviewer(sql: GraphSqlClient, receipt: RemoteOperationReceipt): Promise<boolean> {
+  const retained = receipt.retainedReviewer
+  if (!retained || !receipt.native) return false
+  const policy = await remoteReviewerPolicy(sql, receipt.intent)
+  if (!policy || !policy.finalized || policy.execution.state !== 'completed'
+    || policy.execution.result?.outcome !== 'succeeded'
+    || !['running', 'waiting'].includes(policy.run.executionState) || policy.run.outcome !== 'pending'
+    || policy.execution.agentId !== retained.agentId
+    || policy.execution.nativeSessionId !== receipt.native.sessionId
+    || !policy.session || policy.session.nativeSessionId !== receipt.native.sessionId
+    || policy.session.harness !== policy.configuration.harness.harness
+    || retained.workflowTurnId !== receipt.native.turnId
+    || !sameWorkflowValue(policy.execution.result, retained.result)) return false
+  const pending = await sql.query(`select 1 from review_jobs where execution_id=$1 and state<>'completed'
+    and (state<>'failed' or record->'cleanup'->>'completedAt' is null) limit 1`, [receipt.intent.executionId])
+  return pending.rowCount === 0
+}

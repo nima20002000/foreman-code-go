@@ -169,6 +169,14 @@ it('Run Stop cancels all Agent CI partitions and provider runs, audits them, and
     expect(f.cancellations).toHaveLength(0)
     expect((await f.runs.getRepeatSnapshot(input.runId)).stopRequested).toBe(false)
     expect(await f.value(f.writer.token, 'run_stop', input)).toMatchObject({ status: 'accepted', replayed: false })
+    await f.ci.dispatch()
+    for (const ticket of otherTickets) {
+      const read = CiGetOutputSchema.parse(await f.value(f.reader.token, 'ci_get', { ticketId: ticket.id }))
+      expect(['starting', 'running']).toContain(read.run.state)
+      expect(read.run).toMatchObject({ id: ticket.id, groupId: ticket.groupId,
+        commit: ticket.commit, initiator: ticket.initiator })
+      expect(f.remote.get(ticket.id)?.run.state).toBe(read.run.state)
+    }
     const canceled = [...active, queued[4]!]
     for (const ticket of canceled) {
       const read = CiGetOutputSchema.parse(await f.value(f.reader.token, 'ci_get', { ticketId: ticket.id }))
@@ -178,8 +186,10 @@ it('Run Stop cancels all Agent CI partitions and provider runs, audits them, and
         .toEqual({ record: read.run, state: 'canceled', host_key: null })
     }
     expect(f.cancellations.sort()).toEqual(active.map(ticket => ticket.id).sort())
-    expect([...f.remote.values()].every(entry => entry.run.state === 'canceled')).toBe(true)
-    for (const ticket of [...terminal, ...otherTickets]) {
+    for (const ticket of active) {
+      expect(f.remote.get(ticket.id)?.run.state).toBe('canceled')
+    }
+    for (const ticket of terminal) {
       expect(CiGetOutputSchema.parse(await f.value(f.reader.token, 'ci_get', { ticketId: ticket.id })).run).toEqual(ticket)
     }
     const audits = (await f.pool.query<{ principal_id: string; details: { ticketId: string; runId: string; commandId: string } }>(
@@ -218,6 +228,34 @@ it('retains pending cleanup after a provider cancellation fails and retries with
   } finally { await f.close() }
 }, 90_000)
 
+
+it('keeps a failed provider cancellation readable through MCP until the same Stop command succeeds', async () => {
+  const f = await fixture()
+  try {
+    const tickets = await f.createTickets(undefined, 5)
+    const ticket = tickets.find(candidate => candidate.computer?.hostRef.provider === 'github')!
+    f.fail(ticket.id)
+    const input = { runId: f.f.run.id, commandId: randomUUID() }
+    const denied = await f.call(f.reader.token, 'run_stop', input)
+    expect(denied.result?.isError).toBe(true)
+    expect(f.cancellations).toHaveLength(0)
+    const pending = await f.call(f.writer.token, 'run_stop', input)
+    expect(pending.result?.isError).toBe(true)
+    const read = CiGetOutputSchema.parse(await f.value(f.reader.token, 'ci_get', { ticketId: ticket.id }))
+    expect(read.run.cancellation).toEqual({
+      principalId: f.writer.principal.id, source: 'mcp', commandId: input.commandId,
+      runId: input.runId, reason: 'run_stop',
+    })
+    expect(read.run.state).toBe('starting')
+    f.fail()
+    expect(await f.value(f.writer.token, 'run_stop', input)).toMatchObject({ status: 'accepted' })
+    const settled = CiGetOutputSchema.parse(await f.value(f.reader.token, 'ci_get', { ticketId: ticket.id }))
+    expect(settled.run.state).toBe('canceled')
+    expect(settled.run.cancellation).toBeUndefined()
+    expect(await f.value(f.writer.token, 'run_stop', input)).toMatchObject({ replayed: true })
+    expect(f.cancellations.filter(id => id === ticket.id)).toHaveLength(1)
+  } finally { await f.close() }
+}, 90_000)
 
 it('rejects an Agent CI admission that finishes publishing after Run Stop', async () => {
   const f = await fixture()
