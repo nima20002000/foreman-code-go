@@ -15,6 +15,56 @@ vi.mock('node:fs/promises', async original => {
 const readRequest = (runId: string) => ({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 })
 const parameter = (args: string[], name: string) => args.find(value => value.startsWith(`${name}=`))?.slice(name.length + 1)
 
+it.each([{ phase: 'ended' }, { current_outcome: 'not_run' }])(
+  'settles CircleCI pipeline errors when the provider reports %j', async terminal => {
+    const f = await fixture({}, { provider: 'circleci' })
+    f.circle.phantoms = 1
+    const runId = randomUUID()
+    await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
+      suite: 'integration', scope: 'full' })
+    f.circle.runView = { ...terminal, errors: [{ type: 'system', message: 'Pipeline could not be processed' }], workflows: [] }
+    expect(await f.cloud.handle(readRequest(runId)))
+      .toMatchObject({ run: { state: 'failed', message: expect.stringContaining('Pipeline could not be processed') },
+        text: expect.stringContaining('system: Pipeline could not be processed') })
+    f.advance(225_000)
+    expect(await f.reopen().handle(readRequest(runId))).toMatchObject({ run: { state: 'failed' } })
+    expect(f.circle.triggered).toHaveLength(1)
+  })
+
+it('retains CircleCI config errors across restart and stops redispatching the failing commit', async () => {
+  const f = await fixture({}, { provider: 'circleci' })
+  f.circle.phantoms = 1
+  const runId = randomUUID()
+  const start = { operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
+    suite: 'integration', scope: 'full' }
+  await f.cloud.handle(start)
+  const message = 'Pipeline parameter expected_duration_ms has an incompatible type'
+  f.circle.runView = { phase: 'ended', current_outcome: 'not_run', errors: [{ type: 'config', message }], workflows: [] }
+  expect(await f.reopen().handle(readRequest(runId)))
+    .toMatchObject({ run: { state: 'failed', message: expect.stringContaining(message) }, text: expect.stringContaining(message) })
+  f.circle.lookupError = 'provider is temporarily unavailable'
+  f.advance(225_000)
+  const reopened = f.reopen()
+  expect(await reopened.handle(start)).toMatchObject({ run: { state: 'failed' } })
+  expect(await reopened.handle(readRequest(runId)))
+    .toMatchObject({ run: { state: 'failed', message: expect.stringContaining(message) }, text: expect.stringContaining(message) })
+  const anotherId = randomUUID()
+  expect(await reopened.handle({ ...start, runId: anotherId, partition: { index: 1, count: 2 } }))
+    .toMatchObject({ run: { state: 'failed', message: expect.stringContaining(message) } })
+  expect(await reopened.handle(readRequest(anotherId))).toMatchObject({ text: expect.stringContaining(message) })
+  expect(f.circle.triggered).toHaveLength(1)
+
+  await f.write('README.md', 'Updated pipeline configuration\n')
+  f.run('add', 'README.md')
+  f.run('commit', '-qm', 'update source snapshot')
+  const commit = f.run('rev-parse', 'HEAD')
+  f.push('main')
+  f.circle.lookupError = ''
+  f.circle.runView = null
+  expect(await f.reopen().handle({ ...start, runId: randomUUID(), commit })).toMatchObject({ run: { state: 'running' } })
+  expect(f.circle.triggered).toHaveLength(2)
+})
+
 it.each(['github', 'circleci'] as const)('decodes explicit files from the published %s tree with injected workflows', async provider => {
   const files = ['apps/api/test/alpha.test.ts', 'apps/api/test/beta.test.ts', 'apps/api/test/gamma.test.ts']
   const f = await fixture(Object.fromEntries(files.map(file => [file, 'export {}'])), { provider, sourceWorkflows: false })

@@ -3,7 +3,7 @@ import type { CiRunInput, CiRunRecord } from '@foreman-code/contracts'
 import { gatePartStealer, planCiGate } from './gate.js'
 import type { HostCiComputer, HostCiEndpoint } from './service.js'
 
-function fleet(clouds: number): HostCiEndpoint {
+function fleet(clouds: number, unavailable?: string): HostCiEndpoint {
   const computers: HostCiComputer[] = [
     { key: 'builder-main', label: 'Main builder', priority: 60, hostRef: { kind: 'main', mainId: 'main' } },
     { key: 'builder-paired', label: 'Paired builder', priority: 50,
@@ -14,11 +14,30 @@ function fleet(clouds: number): HostCiEndpoint {
   ]
   return {
     computers: async () => computers,
-    request: async computer => ({ operation: 'status', ready: true, reasons: [],
-      cpuCount: computer.hostRef.kind === 'cloud' ? 4 : 16, memoryBytes: 32 * 2 ** 30,
-      slotsUsed: 0, slotsTotal: computer.hostRef.kind === 'cloud' ? 1 : 2, runs: [] }),
+    request: async computer => {
+      if (computer.key === 'builder-paired' && unavailable) {
+        if (unavailable !== 'not-ready') throw new Error(unavailable)
+        return { operation: 'status', ready: false, reasons: ['Builds unavailable'],
+          cpuCount: 16, memoryBytes: 32 * 2 ** 30, runs: [] }
+      }
+      return { operation: 'status', ready: true, reasons: [],
+        cpuCount: computer.hostRef.kind === 'cloud' ? 4 : 16, memoryBytes: 32 * 2 ** 30,
+        slotsUsed: 0, slotsTotal: computer.hostRef.kind === 'cloud' ? 1 : 2, runs: [] }
+    },
   }
 }
+
+it.each(['not-ready', 'offline', 'extension-rejected'])('excludes a %s build computer from a requested gate',
+  async unavailable => {
+    const files = Array.from({ length: 48 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)
+    const parts = await planCiGate({ suite: 'integration', scope: 'full', gate: true, commandId: 'gate' },
+      { files, durations: Object.fromEntries(files.map(file => [file, 120_000])) },
+      { files: ['apps/api/src/site.test.ts'], durations: {}, heavy: [] }, {}, fleet(2, unavailable))
+    expect(parts.some(part => part.plannedHostKey === 'builder-paired')).toBe(false)
+    expect(parts.some(part => part.plannedHostKey === 'builder-main')).toBe(true)
+    expect(parts.filter(part => part.suite === 'integration').flatMap(part => part.files).sort())
+      .toEqual([...files].sort())
+  })
 
 it('plans a production-sized gate within a second', async () => {
   const files = Array.from({ length: 800 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)

@@ -34,6 +34,28 @@ function url(kind: 'current' | 'events' = 'current') {
 }
 
 describe('FE-R2-001 current V3 HTTP/MCP shared read boundaries', () => {
+  it('returns unactivated nodes without invented native work through Operator MCP', async () => {
+    const f = await currentGraphReadUnit()
+    const services = { runGraph: f.reads } as unknown as OperatorServices
+    const context = { principal: currentGraphPrincipal(), services }
+    const tool = tools(context, f.reads).get(CANONICAL_RUN_GRAPH_MCP_TOOLS.current)!
+    const response = await tool.invoke(f.request) as { structuredContent: unknown }
+    const current = CanonicalRunGraphCurrentSchema.parse(decodeMcpToolResult(response))
+
+    expect(current.asOfSequence).toBe('1')
+    expect(current.state.executions).toEqual([])
+    expect(current.state.nodes).toEqual(f.db.fixture.version.definition.nodes.map(({ id }) => ({
+      state: { workflowNodeId: id, lifecycle: 'not_activated' },
+      activity: { workflowNodeId: id, status: 'unknown' },
+      attention: {
+        workflowNodeId: id,
+        pendingInteractionCount: 0,
+        unsettledReviewCount: 0,
+        cleanupPending: false,
+        telemetry: 'unknown',
+      },
+    })))
+  })
   it('uses the authenticated canonical HTTP route and the same service/schema as Operator MCP', async () => {
     const f = await currentGraphReadUnit(), recordDenied = vi.fn(async () => undefined)
     const services = { runGraph: f.reads, commands: { recordDenied } } as unknown as OperatorServices

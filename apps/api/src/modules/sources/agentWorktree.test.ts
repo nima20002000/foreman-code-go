@@ -1,5 +1,5 @@
 import { closeSourceWorktree } from './worktreeCleanup.js'
-import { tmpdir } from 'node:os'
+import { homedir } from 'node:os'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
@@ -27,7 +27,10 @@ const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd,
   env: gitFixtureEnvironment() }).trim()
 
 async function fixture(options: { executablePolicy?: 'strip' | 'preserve-approved'; attributes?: boolean } = {}) {
-  const base = await mkdtemp(join(tmpdir(), 'agent-worktree-')); roots.push(base)
+  const temporaryRoot = process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(temporaryRoot, { recursive: true })
+  const base = await mkdtemp(join(temporaryRoot, 'agent-worktree-'))
+  roots.push(base)
   const origin = join(base, 'origin'); await mkdir(join(origin, 'src'), { recursive: true })
   const bytes = Buffer.from('accepted source\n')
   git(origin, 'init', '-q', '-b', 'main')
@@ -265,10 +268,19 @@ it('preserves a closed Agent Git worktree and reports its retained bytes during 
     owner: { identity: { operationId, ownerPrincipalId: root.ownerPrincipalId,
       expiresAt: new Date(Date.now() + 60_000).toISOString() }, root, source: root.source,
       attempt, record, physicalClosureConfirmed: false } })
-  const ports = { authorize: async () => {}, operationClosed: async () => true, nativeClosed: async () => true }
+  const ports = {
+    git: f.ports,
+    authorize: async () => {},
+    operationClosed: async () => true,
+    nativeClosed: async () => true,
+  }
   for (let replay = 0; replay < 2; replay++) {
     const result = await reclaimSourceReservation(grant, ports, AbortSignal.timeout(60_000))
-    expect(result.retained).toEqual(await measureRetainedMaterializationFootprint(receipt))
+    expect(result.retained?.worktree).toMatchObject({ state: 'retained', message: expect.any(String) })
+    expect(result.retained).toEqual({
+      ...await measureRetainedMaterializationFootprint(receipt),
+      worktree: { state: 'retained', message: expect.any(String) },
+    })
     expect(result.retained!.retainedBytes).toBeGreaterThan(0)
     expect(result.closures).toMatchObject([{ materializationId: receipt.materializationId, claimReleased: true }])
     expect(await readFile(output, 'utf8')).toBe('Keep the Agent changes')
