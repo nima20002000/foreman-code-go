@@ -4,7 +4,6 @@ import { HarnessCompatibilityService, compatibilityCacheKey } from '../src/modul
 import type { CompatibilityCache, CompatibilityCacheEntry } from '../src/modules/harnesses/compatibility/cache.js'
 import type { CompatibilityProbe, HarnessInstallation } from '../src/modules/harnesses/compatibility/probe.js'
 import { CompatibilityCheckError } from '../src/modules/harnesses/compatibility/errors.js'
-import { COMPATIBILITY_CHECKER_REVISION, QUALIFIED_RELEASES } from '../src/modules/harnesses/compatibility/releases.js'
 
 const now = Date.parse('2026-09-19T12:00:00.000Z')
 const sha = 'a'.repeat(64)
@@ -35,29 +34,30 @@ function create(options: ConstructorParameters<typeof HarnessCompatibilityServic
 afterEach(async () => { await Promise.allSettled(services.splice(0).map((service) => service.close())) })
 
 describe('harness compatibility diagnostics (not execution qualification)', () => {
-  it('records official provenance for the bundled native qualification versions', async () => {
-    const options = fixture(QUALIFIED_RELEASES.codex.version)
-    const result = await create(options).checkAll()
-    expect(result.map((row) => ({ harness: row.harness, status: row.status })))
-      .toEqual([{ harness: 'codex', status: 'probe-passed' }])
-    expect(result[0]?.knownRelease?.releaseUrl).toBe('https://github.com/openai/codex/releases/tag/rust-v0.154.0')
-    expect(options.probe.probe).toHaveBeenCalledExactlyOnceWith('codex', expect.any(Object), expect.any(AbortSignal))
-    expect(options.probe.inspect).toHaveBeenCalledTimes(1)
+  it('records the installed version and verification result without a release catalog', async () => {
+    const options = fixture('99.0.0')
+    const service = create(options)
+    const [report] = await service.checkAll()
+    expect(report).toMatchObject({ installedVersion: '99.0.0', status: 'probe-passed', schemaSha256: sha })
+    expect(report).not.toHaveProperty('qualifiedRelease')
+    expect(report).not.toHaveProperty('knownRelease')
+    expect(report).not.toHaveProperty('matchesQualifiedVersion')
+    expect(options.cache.entries.get('codex')).toMatchObject({
+      installedVersion: '99.0.0', status: 'probe-passed', schemaSha256: sha,
+    })
+    const [reloaded] = await create(options).checkAll()
+    expect(reloaded).toMatchObject({ installedVersion: '99.0.0', status: 'probe-passed', source: 'cache' })
+    expect(options.probe.probe).toHaveBeenCalledTimes(1)
   })
-  it('recognizes the separately qualified Codex 0.156.1 release', async () => {
-    const options = fixture('0.156.1')
-    const result = await create(options).checkAll()
-    expect(result[0]).toMatchObject({ status: 'probe-passed', matchesQualifiedVersion: true,
-      qualifiedRelease: { version: '0.156.1' }, knownRelease: { tag: 'rust-v0.156.1' } })
-    expect(options.probe.probe).toHaveBeenCalledExactlyOnceWith('codex', expect.any(Object), expect.any(AbortSignal))
-  })
-  it('caches an unknown version without qualifying it or changing the release manifest', async () => {
-    const options = fixture()
-    const first = await create(options).checkAll()
-    expect(first[0]).toMatchObject({ status: 'probe-passed', installedVersion: '99.0.0', matchesQualifiedVersion: false, knownRelease: null, schemaSha256: sha })
-    const second = await create(options).checkAll()
-    expect(second[0]).toMatchObject({ status: 'probe-passed', source: 'cache', checkedAt: first[0]?.checkedAt, matchesQualifiedVersion: false })
-    expect(vi.mocked(options.probe.probe).mock.calls.filter(([harness]) => harness === 'codex')).toHaveLength(1)
+  it('reports contract failures for any installed version', async () => {
+    const options = fixture('0.154.0')
+    vi.mocked(options.probe.probe).mockRejectedValue(
+      new CompatibilityCheckError('PROTOCOL_SETTINGS_UNSUPPORTED', 'Settings schema is unsupported.'),
+    )
+    const [report] = await create(options).checkAll()
+    expect(report).toMatchObject({ installedVersion: '0.154.0', status: 'probe-failed',
+      reason: { code: 'PROTOCOL_SETTINGS_UNSUPPORTED' } })
+    expect(options.cache.entries.get('codex')).toMatchObject({ installedVersion: '0.154.0', status: 'probe-failed' })
   })
   it('persists a safe failure reason briefly and reruns it on an explicit retry', async () => {
     const options = fixture()
@@ -83,8 +83,8 @@ describe('harness compatibility diagnostics (not execution qualification)', () =
     await create({ ...options, checkerRevision: 'next-review' }).checkAll()
     expect(vi.mocked(options.probe.probe).mock.calls.filter(([harness]) => harness === 'codex')).toHaveLength(3)
     const installed = { executable: '/fake/codex', identity: 'one', version: '99.0.0' }
-    expect(compatibilityCacheKey('codex', installed, COMPATIBILITY_CHECKER_REVISION))
-      .not.toBe(compatibilityCacheKey('codex', { ...installed, version: '99.0.1' }, COMPATIBILITY_CHECKER_REVISION))
+    expect(compatibilityCacheKey('codex', installed, 'diagnostic-revision'))
+      .not.toBe(compatibilityCacheKey('codex', { ...installed, version: '99.0.1' }, 'diagnostic-revision'))
   })
   it('reprobes a changed native payload when launcher bytes and reported version are unchanged', async () => {
     const options = fixture('0.160.0')

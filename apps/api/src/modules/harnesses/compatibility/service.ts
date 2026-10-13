@@ -9,8 +9,8 @@ import type { PostgresCommandCoordinator } from '../../commands/postgres.js'
 import { FileCompatibilityCache, type CompatibilityCache, type CompatibilityCacheEntry } from './cache.js'
 import { CompatibilityCheckError, compatibilityReason } from './errors.js'
 import { nativeCompatibilityProbe, type CompatibilityProbe, type HarnessInstallation } from './probe.js'
-import { COMPATIBILITY_CHECKER_REVISION, QUALIFIED_RELEASES, knownRelease } from './releases.js'
 
+const COMPATIBILITY_CHECKER_REVISION = 'runtime-contracts-v2'
 const HARNESSES = ['codex'] as const
 const CACHE_WARNING = 'This result is available now, but the compatibility cache could not be read or saved. A later startup may repeat the check.'
 export interface CompatibilityOptions {
@@ -20,7 +20,6 @@ export interface CompatibilityOptions {
   now?: () => number
   checkerRevision?: string
   timeoutMs?: number
-  onUnknownInstalled?: (harness: CompatibilityHarness) => void
 }
 export function compatibilityCacheKey(harness: CompatibilityHarness, installation: HarnessInstallation, revision: string): string {
   return createHash('sha256').update(JSON.stringify([
@@ -62,8 +61,7 @@ export class HarnessCompatibilityService {
     return {
       harness, checkId: randomUUID(), installedVersion: null, status: 'not-checked',
       checkedAt: null, source: 'none', checkerRevision: this.revision,
-      qualifiedRelease: QUALIFIED_RELEASES[harness], knownRelease: null,
-      matchesQualifiedVersion: false, reason: null, schemaSha256: null,
+      reason: null, schemaSha256: null,
       cacheWarning: null, scope: 'protocol-settings-diagnostic-only',
     }
   }
@@ -155,14 +153,10 @@ export class HarnessCompatibilityService {
     try {
       installation = await this.options.probe.inspect(harness, signal, attempt)
       signal.throwIfAborted()
-      const release = knownRelease(harness, installation.version)
       const base: HarnessCompatibility = {
         ...this.initial(harness), checkId, installedVersion: installation.version,
-        qualifiedRelease: release ?? QUALIFIED_RELEASES[harness],
-        knownRelease: release, matchesQualifiedVersion: release !== null,
       }
       this.reports[harness] = { ...base, status: 'checking' }
-      if (!release) this.options.onUnknownInstalled?.(harness)
       const key = compatibilityCacheKey(harness, installation, this.revision)
       let cached: CompatibilityCacheEntry | null = null
       if (!force) {
@@ -170,7 +164,7 @@ export class HarnessCompatibilityService {
         catch { warning = CACHE_WARNING }
       }
       signal.throwIfAborted()
-      if (cached) {
+      if (cached && cached.installedVersion === installation.version) {
         await this.options.probe.assertUnchanged(installation, signal)
         signal.throwIfAborted()
         this.reports[harness] = {
@@ -197,7 +191,7 @@ export class HarnessCompatibilityService {
       const checked = this.now()
       const checkedAt = new Date(checked).toISOString()
       const entry: CompatibilityCacheEntry = {
-        format: 1, harness, key, checkedAt, status, reason, schemaSha256,
+        format: 2, harness, installedVersion: installation.version, key, checkedAt, status, reason, schemaSha256,
         expiresAt: new Date(checked + (status === 'probe-passed' ? 7 * 86_400_000 : 60_000)).toISOString(),
       }
       try { await cacheOperation(this.options.cache.save(entry)) }
@@ -217,10 +211,9 @@ export class HarnessCompatibilityService {
     }
   }
 }
-export function createHarnessCompatibility(config: { codexBinary: string; workspaceRoot: string }, onUnknownInstalled?: (harness: CompatibilityHarness) => void): HarnessCompatibilityService {
+export function createHarnessCompatibility(config: { codexBinary: string; workspaceRoot: string }): HarnessCompatibilityService {
   return new HarnessCompatibilityService({
     probe: nativeCompatibilityProbe({ codex: config.codexBinary }, config.workspaceRoot),
     cache: new FileCompatibilityCache(),
-    ...(onUnknownInstalled ? { onUnknownInstalled } : {}),
   })
 }

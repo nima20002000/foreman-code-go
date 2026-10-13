@@ -8,7 +8,7 @@ const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))) })
 const now = Date.parse('2026-09-19T00:00:00.000Z')
 function entry(): CompatibilityCacheEntry {
-  return { format: 1, key: 'b'.repeat(64), harness: 'codex', status: 'probe-passed',
+  return { format: 2, key: 'b'.repeat(64), harness: 'codex', installedVersion: '99.0.0', status: 'probe-passed',
     checkedAt: new Date(now).toISOString(), expiresAt: new Date(now + 86_400_000).toISOString(), reason: null, schemaSha256: 'c'.repeat(64) }
 }
 async function fixture() {
