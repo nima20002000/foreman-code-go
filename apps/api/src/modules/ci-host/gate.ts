@@ -1,4 +1,4 @@
-import { exclusiveIntegrationFiles, requiresUserSystemd, type CiDurations, type CiRunInput,
+import { exclusiveIntegrationFiles, integrationCpuCost, requiresUserSystemd, type CiDurations, type CiRunInput,
   type CiRunRecord } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
@@ -32,17 +32,19 @@ export interface GatePart {
   speedFactor?: number
 }
 
-function integrationTime(files: string[], shards: number, duration: (file: string) => number) {
-  const lanes = Array.from({ length: shards }, () => 0)
-  let serial = 0
-  for (const file of [...files].sort((left, right) => duration(right) - duration(left))) {
-    if (exclusive.has(file)) serial += duration(file)
-    else {
-      const index = lanes.indexOf(Math.min(...lanes))
-      lanes[index] = lanes[index]! + duration(file)
-    }
-  }
-  return serial + Math.max(...lanes)
+interface IntegrationLoad {
+  lanes: number[]
+  serial: number
+}
+
+function addIntegrationFile(load: IntegrationLoad, file: string, durationMs: number): IntegrationLoad {
+  if (exclusive.has(file)) return { lanes: load.lanes, serial: load.serial + durationMs }
+  const lanes = [...load.lanes]
+  const cost = integrationCpuCost(file, lanes.length, durationMs)
+  const indexes = lanes.map((_, index) => index).sort((left, right) => lanes[left]! - lanes[right]!).slice(0, cost)
+  const finish = Math.max(...indexes.map(index => lanes[index]!)) + durationMs
+  for (const index of indexes) lanes[index] = finish
+  return { lanes, serial: load.serial }
 }
 
 export async function readCiComputerStatus(endpoint: HostCiEndpoint, computer: HostCiComputer) {
@@ -106,10 +108,8 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
   const load = new Map(integrationFleet.map(item => [item, { lanes: Array.from({ length: item.shards }, () => 0), serial: 0 }]))
   const factor = (item: GateComputer) => speeds.get(executorSpeedKey(item.computer)) ?? 1
   const finishWith = (item: GateComputer, file: string) => {
-    const state = load.get(item)!
-    const serial = exclusive.has(file) ? state.serial + duration(file) : state.serial
-    const lanes = exclusive.has(file) ? Math.max(...state.lanes) : Math.max(Math.max(...state.lanes), Math.min(...state.lanes) + duration(file))
-    return item.checkMs + factor(item) * (SETUP_MS + serial + lanes)
+    const state = addIntegrationFile(load.get(item)!, file, duration(file))
+    return item.checkMs + factor(item) * (SETUP_MS + state.serial + Math.max(...state.lanes))
   }
   const exclusiveCount = (item: GateComputer) => item.files.filter(file => exclusive.has(file) || requiresUserSystemd(file)).length
   for (const file of files) {
@@ -119,18 +119,14 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
     const target = eligible.map((item, order) => ({ item, order, finish: finishWith(item, file) }))
       .sort((left, right) => left.finish - right.finish
         || (serial ? exclusiveCount(left.item) - exclusiveCount(right.item) : 0) || left.order - right.order)[0]!.item
-    const state = load.get(target)!
-    if (exclusive.has(file)) state.serial += duration(file)
-    else {
-      const index = state.lanes.indexOf(Math.min(...state.lanes))
-      state.lanes[index] = state.lanes[index]! + duration(file)
-    }
+    load.set(target, addIntegrationFile(load.get(target)!, file, duration(file)))
     target.files.push(file)
   }
   for (const item of integrationFleet.filter(item => item.files.length)) {
+    const state = load.get(item)!
     result.push({ suite: 'integration', part: null, partition: null, files: item.files,
       plannedHostKey: item.computer.key, integrationShards: item.shards,
-      expectedDurationMs: Math.round(factor(item) * (SETUP_MS + integrationTime(item.files, item.shards, duration))),
+      expectedDurationMs: Math.round(factor(item) * (SETUP_MS + state.serial + Math.max(...state.lanes))),
       requiresBuildComputer: item.files.some(requiresUserSystemd),
       ...(factor(item) !== 1 ? { speedFactor: factor(item) } : {}) })
   }
