@@ -24,6 +24,28 @@ it('splits affected unit files without sending an empty part to a computer', asy
   } finally { await f.close() }
 })
 
+it('persists completed unit result reports for read-only MCP callers', async () => {
+  const f = await fixture()
+  try {
+    const reader = await f.connect(CI_GET_ACTIONS)
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+      suite: 'unit', scope: 'affected', files: ['apps/api/test/example.test.ts'], commandId: 'unit-report',
+    }))
+    await f.ci.dispatch()
+    f.finish(started.ticketId, 0, 'passed\n', { 'apps/api/test/example.test.ts': 60_000 })
+    const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
+      ticketId: started.ticketId, testStatus: ['passed'],
+    }))
+    expect(read.tests).toEqual({ summary: { passed: 0, failed: 0, skipped: 0 }, files: [], truncated: false })
+    expect(read.run).toMatchObject({ state: 'passed', collection: 'complete' })
+    const persisted = CiGetOutputSchema.parse(decodeMcpToolResult(await reader.callTool({
+      name: 'ci_get', arguments: { workspaceId: f.workspaceId, ticketId: started.ticketId, testStatus: ['passed'] },
+    })))
+    expect(persisted.tests).toEqual(read.tests)
+    expect(persisted.run).toEqual(read.run)
+  } finally { await f.close() }
+})
+
 it('sizes persisted unit parts from committed timings and then from learned unit timings', async () => {
   const files = Array.from({ length: 6 }, (_, index) => `apps/api/test/unit-${index}.test.ts`)
   const durations = Object.fromEntries(files.map(file => [file, 150_000]))
