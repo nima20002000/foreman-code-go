@@ -42,7 +42,7 @@ async function expectAppAccessFailure(status: number, editor: HTMLElement) {
   } else {
     const banner = await screen.findByRole('alert', { name: 'Server connection' })
     expect(banner).toBeVisible()
-    expect(banner).toHaveTextContent('Connection interrupted.')
+    expect(banner).toHaveTextContent('Updating — reconnecting…')
     expect(within(banner).getByRole('button', { name: 'Try again' })).toBeEnabled()
     expect(within(banner).queryByRole('button', { name: 'Close dialog' })).not.toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'Initial prompt' })).toBe(editor)
