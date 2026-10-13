@@ -127,7 +127,7 @@ describe('Operator tool registration permissions', () => {
   it('registers every supported tool for an unrestricted owner', () => {
     // These require more than one grant (respond also needs interactions:read).
     const expected = [...actionTools.flatMap(([, names]) => names), 'interaction_respond',
-      'run_handoffs_get_v1', 'run_start', 'workflow_reorder', 'bug_reports_close'].sort()
+      'run_handoffs_get_v1', 'run_start', 'run_start_resolve', 'workflow_reorder', 'bug_reports_close'].sort()
     expect(registered(context([{ actions: [...ManagementActionSchema.options], scope: {} }]))).toEqual(expected)
   })
 
@@ -202,21 +202,37 @@ describe('Operator tool registration permissions', () => {
       { actions: ['runs:start'], scope: { workspaceIds: ['a'] } },
       { actions: ['workspace_locations:read'], scope: { workspaceIds: ['b'] } },
     ],
+    [
+      { actions: ['runs:start'], scope: { workspaceIds: ['a'], workflowIds: [] } },
+      { actions: ['workspace_locations:read'], scope: { workspaceIds: ['a'] } },
+    ],
+    [
+      { actions: ['runs:start'], scope: { workspaceIds: ['a'] } },
+      { actions: ['workspace_locations:read'], scope: { workspaceIds: [] } },
+    ],
   ] satisfies ManagementGrant[][]).map((grants) => ({ grants })))('requires compatible run-start and location grants: $grants', ({ grants }) => {
     expect(registered(context(grants))).toEqual([])
   })
 
-  it('registers run-start when both grants cover the same workspace', () => {
+  it('registers Start and resolution when both grants cover the same workspace', () => {
     expect(registered(context([
       { actions: ['runs:start'], scope: { workspaceIds: ['a'], workflowIds: ['workflow-a'] } },
       { actions: ['workspace_locations:read'], scope: { workspaceIds: ['a'] } },
-    ]))).toEqual(['run_start'])
+    ]))).toEqual(['run_start', 'run_start_resolve'])
   })
 
   it('does not register tools for absent optional services', () => {
     const candidate = context([{ actions: ['settings:read', 'settings:update', 'interactions:read', 'interactions:respond'], scope: {} }])
     delete candidate.services.settings
     delete candidate.services.interactions
+    expect(registered(candidate)).toEqual([])
+  })
+
+  it('does not register Start or resolution when the run service is absent', () => {
+    const candidate = context([{
+      actions: ['runs:start', 'workspace_locations:read'], scope: {},
+    }])
+    Reflect.deleteProperty(candidate.services, 'runs')
     expect(registered(candidate)).toEqual([])
   })
 })

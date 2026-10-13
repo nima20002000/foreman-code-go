@@ -41,14 +41,19 @@ function integrationTime(files: string[], shards: number, duration: (file: strin
   return serial + Math.max(...lanes)
 }
 
+export async function readCiComputerStatus(endpoint: HostCiEndpoint, computer: HostCiComputer) {
+  const status = await endpoint.request(computer, { operation: 'status' }).catch(error => {
+    log.warn({ err: error, computer: computer.key }, 'CI computer status unavailable')
+    return null
+  })
+  return status?.operation === 'status' ? status : null
+}
+
 async function gateComputers(endpoint: HostCiEndpoint): Promise<GateComputer[]> {
   const computers = await endpoint.computers()
   const available = await Promise.all(computers.map(async computer => {
-    const status = await endpoint.request(computer, { operation: 'status' }).catch(error => {
-      log.warn({ err: error, computer: computer.key }, 'CI computer unavailable while planning gate')
-      return null
-    })
-    if (status?.operation !== 'status' || !status.ready) return null
+    const status = await readCiComputerStatus(endpoint, computer)
+    if (!status?.ready) return null
     const memory = Math.floor(status.memoryBytes * 0.9)
     const available: GateComputer = { computer, shards: gateIntegrationShards(status.cpuCount, memory), checkMs: 0, files: [] }
     return available

@@ -22,7 +22,7 @@ export function useExecutionActivityReads(context: AgentChatContext, key: readon
   merge: typeof mergeExecutionActivity) {
   const client = useQueryClient()
   const historyRequest = useRef(0)
-  const locks = useRef(new Set<string>())
+  const pendingReads = useRef(new Map<string, Promise<void>>())
   const mutationKey = [...key, 'detail']
   const identity = JSON.stringify(mutationKey)
   const selectedIdentity = useRef(identity)
@@ -50,14 +50,20 @@ export function useExecutionActivityReads(context: AgentChatContext, key: readon
       client.setQueryData<ExecutionActivityFeed>(request.key, previous =>
         merge(previous, result, active ? request.page : undefined))
     },
-    onSettled: (_result, _error, request) => { locks.current.delete(request.operation) },
+    onSettled: (_result, _error, request) => { pendingReads.current.delete(request.operation) },
   })
   const read = (page: ActivityRead) => {
     const operation = JSON.stringify([key, operationKey(page)])
-    if (locks.current.has(operation)) return
-    locks.current.add(operation)
-    mutation.mutate({ page, context, key, generation: sessionGeneration(), operation, identity,
+    const pending = pendingReads.current.get(operation)
+    if (pending) return pending
+    const promise = mutation.mutateAsync({ page, context, key, generation: sessionGeneration(), operation, identity,
       ...(page.itemId === undefined ? { historyRequest: ++historyRequest.current } : {}) })
+      .then(() => undefined)
+    pendingReads.current.set(operation, promise)
+    void promise.catch(() => {
+      // ignore: readState reports failures for callers that do not await; awaiting callers still receive the rejection.
+    })
+    return promise
   }
   const readState = (executionId: string, itemId?: string) => {
     const operation = operationKey({ executionId, ...(itemId !== undefined ? { itemId } : {}) })

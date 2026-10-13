@@ -40,8 +40,12 @@ async function fixture() {
   let receipts = new Map<string, ReceiptRow>()
   const audits: { principal: unknown; source: unknown; action: unknown; outcome: string }[] = []
   const readExternal = async (text: string, values: unknown[]) => {
-    if (text.includes('management_audit')) audits.push({ principal: values[0], source: values[1],
-      action: values[2], outcome: text.includes("'denied'") ? 'denied' : text.includes("'failed'") ? 'failed' : 'succeeded' })
+    if (text.includes('management_audit')) {
+      let outcome = 'succeeded'
+      if (values.length === 6) outcome = String(values[4])
+      else if (text.includes("'denied'")) outcome = 'denied'
+      audits.push({ principal: values[0], source: values[1], action: values[2], outcome })
+    }
     return { rows: [] }
   }
   vi.spyOn(pool, 'query').mockImplementation(readExternal as unknown as typeof pool.query)

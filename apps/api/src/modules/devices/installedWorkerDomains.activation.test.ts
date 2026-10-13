@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
@@ -82,7 +83,9 @@ it('activates first-installed workflow and profile domains on authenticated disc
     expect(mounted.workflowAvailable).toBe(true)
     const descriptors = mounted.extensions.map(extension => extension.namespace)
     expect(descriptors).toContain('execution-authority-v1')
-    expect(descriptors).toContain('worker-mcp-v1')
+    expect(mounted.extensions).toContainEqual(expect.objectContaining({
+      ...WORKER_MCP_EXTENSION, role: 'client',
+    }))
     const execution = mounted.extensions.find(extension => extension.namespace === 'execution-v1')!
     await expect(execution.handle!({ method: 'prepare', intent: f.intent, placement: f.placement,
       request: f.request, executionPlacement: f.nativePlacement }, context))
