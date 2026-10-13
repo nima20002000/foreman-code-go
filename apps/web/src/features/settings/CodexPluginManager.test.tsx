@@ -212,6 +212,7 @@ it('awaits a fresh catalog on Refresh before updating the reviewed detail snapsh
   let fresh = false
   let refreshRequested = false
   const detailReads: boolean[] = []
+  const changes: Array<Record<string, unknown>> = []
   let release!: () => void
   const gate = new Promise<void>(resolve => { release = resolve })
   const next = 'sha256:' + 'c'.repeat(64)
@@ -228,6 +229,11 @@ it('awaits a fresh catalog on Refresh before updating the reviewed detail snapsh
     http.get('/api/management/harnesses/codex/plugins/:pluginId', () => {
       detailReads.push(fresh)
       return HttpResponse.json(detailPayload(fresh, fresh ? next : revision))
+    }),
+    http.post('/api/management/harnesses/codex/plugins/change', async ({ request }) => {
+      changes.push(await request.json() as Record<string, unknown>)
+      return HttpResponse.json({ pluginId: base.pluginId, action: 'remove', status: 'applied',
+        message: 'Removed from Codex.' })
     }),
   )
   mount('/settings/harnesses?harness=codex&section=plugins&pluginView=available')
@@ -246,4 +252,8 @@ it('awaits a fresh catalog on Refresh before updating the reviewed detail snapsh
   await waitFor(() => expect(screen.getByRole('button', { name: 'Remove plugin' })).toBeEnabled())
   expect(screen.getByRole('dialog', { name: 'notes plugin' })).toHaveTextContent('summarize')
   expect(detailReads).toEqual([false, true])
+  await user.click(screen.getByRole('button', { name: 'Remove plugin' }))
+  await waitFor(() => expect(changes).toEqual([expect.objectContaining({
+    pluginId: base.pluginId, action: 'remove', expectedRevision: next, artifactIdentity,
+  })]))
 })
