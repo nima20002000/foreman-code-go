@@ -104,7 +104,12 @@ const CiRunJobSchema = z.object({
 }).strict()
 export type CiRunJob = z.infer<typeof CiRunJobSchema>
 export const CI_RUN_JOBS_LIMIT = 500
-export const OperatorCiListInputSchema = z.object({ workspaceId: IdSchema, runId: IdSchema }).strict()
+export const OperatorCiListInputSchema = z.object({
+  workspaceId: IdSchema, runId: IdSchema,
+  /** Filter before applying the ticket limit so other executions cannot hide this execution's jobs. */
+  executionId: IdSchema.optional(),
+}).strict()
+export type OperatorCiListInput = z.infer<typeof OperatorCiListInputSchema>
 export const CiListOutputSchema = z.object({ runId: IdSchema, jobs: z.array(CiRunJobSchema).max(CI_RUN_JOBS_LIMIT),
   /** Older tickets beyond the limit were left out. */
   truncated: z.boolean() }).strict()

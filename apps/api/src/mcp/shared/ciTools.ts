@@ -97,6 +97,7 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'each failure with its message and exact path:line:column location; '
   + 'finished unit and integration runs report them. The Operator lists every CI ticket of a Run, with the Agent node '
   + 'that requested it, placement (host, github, circleci) and test counts, with ci_list. '
+  + 'ci_list accepts executionId to filter before its 500-ticket limit, so other executions cannot hide older jobs. '
   + 'Agent CI readback and cancellation are limited to tickets from that execution. '
   + 'Agent requests publish their persisted lifecycle into their Run’s activities and Board activity snapshot. '
   + '(group=true includes bounded pages and individual cursors for every part); ci_cancel stops one ticket. '
@@ -182,7 +183,8 @@ export function registerCiTools(server: McpServer, context: CiContext) {
   }, input => invoke('ci_logs_read', () => ci.logs(context.principal, input)))
   // A Run's whole CI list is for the Operator; Agents read their own tickets with ci_get.
   if (operator && available('ci_list')) server.registerTool('ci_list', {
-    description: 'List every CI ticket the Agents of one Run requested, newest first (at most 500): suite, part, '
+    description: 'List CI tickets the Agents of one Run requested, newest first (at most 500). '
+      + 'Optional executionId filters before the limit. Each ticket includes suite, part, '
       + 'partition, scope, state, step, computer and placement (host, github or circleci), timing, the requesting '
       + 'Agent’s executionId, agentId and workflow node, and passed/failed/skipped test counts once reported. '
       + 'Read a ticket’s tests with ci_get testStatus and its log with ci_logs_read. Requires runs:read on the Run. '
