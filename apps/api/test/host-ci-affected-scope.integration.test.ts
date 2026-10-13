@@ -28,8 +28,15 @@ it('persists completed unit result reports for read-only MCP callers', async () 
   const f = await fixture()
   try {
     const reader = await f.connect(CI_GET_ACTIONS)
+    const denied = await f.call(reader, 'ci_run', {
+      suite: 'unit', scope: 'affected', files: ['apps/api/test/example.test.ts'],
+      commit: 'a'.repeat(40), commandId: 'reader-unit-report',
+    })
+    expect(denied.isError).toBe(true)
+    expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'unit', scope: 'affected', files: ['apps/api/test/example.test.ts'], commandId: 'unit-report',
+      commit: 'a'.repeat(40),
     }))
     await f.ci.dispatch()
     f.finish(started.ticketId, 0, 'passed\n', { 'apps/api/test/example.test.ts': 60_000 })
@@ -37,7 +44,8 @@ it('persists completed unit result reports for read-only MCP callers', async () 
       ticketId: started.ticketId, testStatus: ['passed'],
     }))
     expect(read.tests).toEqual({ summary: { passed: 0, failed: 0, skipped: 0 }, files: [], truncated: false })
-    expect(read.run).toMatchObject({ state: 'passed', collection: 'complete' })
+    expect(read.run).toMatchObject({ state: 'passed', collection: 'complete', commit: 'a'.repeat(40),
+      scope: 'affected', files: ['apps/api/test/example.test.ts'] })
     const persisted = CiGetOutputSchema.parse(decodeMcpToolResult(await reader.callTool({
       name: 'ci_get', arguments: { workspaceId: f.workspaceId, ticketId: started.ticketId, testStatus: ['passed'] },
     })))
@@ -239,10 +247,23 @@ it('defaults authenticated Agent MCP to affected scope, reads explicit full scop
         const read = await agent.callTool({ name: 'ci_get', arguments: { ticketId: started.ticketId } })
         expect(read.isError).not.toBe(true)
         const run = CiGetOutputSchema.parse(decodeMcpToolResult(read)).run
-        expect(run).toMatchObject({ scope: scope ?? 'affected', files: [] })
+        expect(run).toMatchObject({ id: started.ticketId, workspaceId: f.workspaceId,
+          commit: 'a'.repeat(40), scope: scope ?? 'affected', files: [] })
         expect(run.baseCommit).toBe(baseCommit)
-        expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1', [run.id])).rows[0]!.record)
-          .toEqual(run)
+        expect(run.deriveFiles).toBe(scope === undefined ? true : undefined)
+        await f.ci.dispatch()
+        f.finish(started.ticketId, 0, 'integration passed\n')
+        const completed = CiGetOutputSchema.parse(await f.value(agent, 'ci_get', {
+          ticketId: started.ticketId,
+        }))
+        expect(completed.run).toMatchObject({ id: started.ticketId, scope: scope ?? 'affected', files: [],
+          commit: 'a'.repeat(40), state: 'passed', exitCode: 0, collection: 'complete' })
+        expect(completed.run.baseCommit).toBe(baseCommit)
+        expect(completed.run.deriveFiles).toBe(scope === undefined ? true : undefined)
+        const persisted = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', {
+          ticketId: started.ticketId,
+        }))
+        expect(persisted.run).toEqual(completed.run)
       }
     }
     const stored = (await f.pool.query<{ grants: { actions: ManagementAction[]; scope: Record<string, unknown> }[] }>(
