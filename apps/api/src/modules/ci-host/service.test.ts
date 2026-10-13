@@ -34,7 +34,7 @@ function fixture(suite: 'lint' | 'integration' = 'lint') {
     initiator: { principalId: 'worker', executionId: 'execution' },
   })
   let logTail = 'persisted log\n'
-  const pool = { query: vi.fn(async (sql: string, parameters?: unknown[]) => {
+  const pool = { options: { max: 10 }, query: vi.fn(async (sql: string, parameters?: unknown[]) => {
     if (sql.startsWith('update ci_runs')) {
       record = CiRunRecordSchema.parse(JSON.parse(parameters![3] as string))
       if (typeof parameters![5] === 'string') logTail = parameters![5]
@@ -43,7 +43,7 @@ function fixture(suite: 'lint' | 'integration' = 'lint') {
     if (sql.includes('durations from ci_runs')) return { rows: [] }
     if (sql.startsWith('select id,host_key')) return { rows: [{ id: record.id, host_key: computer.key }] }
     return { rows: [{ record, log_tail: logTail, host_key: computer.key }] }
-  }) } as unknown as pg.Pool
+  }), connect: async () => ({ query: pool.query, release: () => {} }) } as unknown as pg.Pool
   const resolve = vi.fn(async (principal: ManagementPrincipal) => {
     if (!principal.grants.length) throw new DomainError('ACCESS_DENIED', 'CI read denied.', 403)
     return { principal, workspaceId: 'workspace', executionId: 'execution' }
@@ -70,6 +70,7 @@ function dispatchFixture(settlementError?: Error) {
   const records: CiRunRecord[] = [active, queued]
   const tails = new Map<string, string>()
   const query = async (sql: string, parameters?: unknown[]) => {
+    if (sql.startsWith('select pg_try_advisory_xact_lock')) return { rows: [{ acquired: true }] }
     if (sql.startsWith('update ci_runs')) {
       const next = CiRunRecordSchema.parse(JSON.parse(parameters![3] as string))
       if (next.id === active.id && settlementError) throw settlementError
@@ -148,7 +149,7 @@ it('persists sanitized dispatch errors on queued tickets', async () => {
   const f = dispatchFixture()
   const request = vi.mocked(f.endpoint.request).getMockImplementation()!
   vi.mocked(f.endpoint.request).mockImplementation(async (computer, input) => {
-    if (input.operation === 'start') throw new Error('Executor\0 unavailable\ud800')
+    if (input.operation === 'start') throw new DomainError('BUILD_COMPUTER_DISABLED', 'Executor\0 unavailable\ud800', 409)
     return request(computer, input)
   })
   await f.create().dispatch()

@@ -42,7 +42,7 @@ async function fixture() {
   const control: {
     available: boolean
     onStart(computer: HostCiComputer, request: CiHostRequest): Promise<void>
-    onStatus(): Promise<void>
+    onStatus(computer: HostCiComputer): Promise<void>
     onCancel(): Promise<void>
   } = {
     available: false,
@@ -54,7 +54,7 @@ async function fixture() {
     computers: async () => control.available ? computers : [],
     request: async (computer, request): Promise<CiHostReply> => {
       if (request.operation === 'status') {
-        await control.onStatus()
+        await control.onStatus(computer)
         return { operation: 'status', ready: true, reasons: [], cpuCount: 8, memoryBytes: 8 * 2 ** 30,
           slotsUsed: [...remote.entries()].filter(([key, run]) => key.startsWith(`${computer.key}:`)
             && ['starting', 'running'].includes(run.state)).length,
@@ -313,17 +313,21 @@ it.each([2, 3])('preserves direct cancellation during throughput planning with %
   const release = deferred()
   let dispatch: Promise<void> | undefined
   try {
-    const tickets = await f.enqueue({ suite: 'integration', partitions, scope: 'full' })
-    expect(tickets.partitions).toHaveLength(partitions)
-    let statuses = 0
-    f.control.onStatus = async () => {
-      statuses += 1
-      if (statuses === 3) {
+    const statuses = new Map<string, number>()
+    f.control.onStatus = async computer => {
+      const count = (statuses.get(computer.key) ?? 0) + 1
+      statuses.set(computer.key, count)
+      // Capacity is read first; the next status read measures partition throughput.
+      if (count === 2) {
         entered.resolve()
         await release.promise
       }
     }
     f.control.available = true
+    const tickets = CiRunOutputSchema.parse(await f.value('ci_run', {
+      suite: 'integration', partitions, scope: 'full', commandId: randomUUID(),
+    }))
+    expect(tickets.partitions).toHaveLength(partitions)
     dispatch = f.ci.dispatch()
     await entered.promise
     const ticketId = tickets.ticketId
