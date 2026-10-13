@@ -54,10 +54,15 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
   const commit = run(work, 'rev-parse', 'HEAD')
   const local = (value: string) => value === 'https://github.com/octo/site.git' ? origin
     : value === 'https://github.com/octo/site-ci.git' ? mirror : value
+  const cleanup = { unavailable: false }
   const git: GitWorktreePorts = {
     cloneDirectory: repository => join(root, 'clones', ...repository.split('/')),
     // Asynchronous like Main's git, so concurrent starts really overlap.
     git: (args, options) => new Promise(resolve => {
+      if (cleanup.unavailable && args[0] === 'push' && args.includes('--atomic')) {
+        resolve({ code: 1, stdout: '', stderr: 'fixture remote is unavailable for cleanup' })
+        return
+      }
       execFile('git', args.map(local), { cwd: options.cwd, env: { ...environment, ...options.env }, encoding: 'utf8' },
         (error, stdout, stderr) => {
           resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stdout, stderr })
@@ -160,7 +165,7 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
     { home: '/home/owner', user: 'owner', host: 'owner-desktop' })
   const cloud = reopen()
   const mirrorGit = (...args: string[]) => run(mirror, ...args)
-  return { cloud, reopen, commit, dispatched, github, circle, mirrorGit, run: (...args: string[]) => run(work, ...args),
+  return { cloud, reopen, commit, dispatched, github, circle, cleanup, mirrorGit, run: (...args: string[]) => run(work, ...args),
     advance: (milliseconds: number) => { now += milliseconds },
     write: (path: string, text: string) => writeFile(join(work, path), text),
     push: (...refs: string[]) => run(work, 'push', '-q', origin, ...refs),
@@ -819,4 +824,24 @@ it.each(['success', 'failure'] as const)('removes mirror branches after a %s res
   expect(await f.cloud.handle(read)).toMatchObject({ run: { state }, text: expect.stringContaining('all green') })
   expect(f.mirrorGit('for-each-ref', '--format=%(refname)', 'refs/heads/ci/')).toBe('')
   expect(await f.reopen().handle(read)).toMatchObject({ run: { state }, text: expect.stringContaining('all green') })
+})
+
+
+it('republishes a branch removed by maintenance after a previous automatic cleanup failed', async () => {
+  const f = await fixture({}, { provider: 'circleci' })
+  const request = { operation: 'start' as const, repository: 'octo/site', commit: f.commit,
+    suite: 'lint' as const, scope: 'affected' as const, files: [] }
+  const runId = randomUUID()
+  await f.cloud.handle({ ...request, runId })
+  f.cleanup.unavailable = true
+  f.circle.outcome = 'succeeded'
+  expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 }))
+    .toMatchObject({ run: { state: 'passed' } })
+  const branch = `refs/heads/ci/${f.commit}`
+  expect(f.mirrorGit('rev-parse', branch)).toMatch(/^[a-f0-9]{40}$/)
+  // Maintenance in another process deletes the ref without touching the live publisher's memory.
+  f.mirrorGit('update-ref', '-d', branch)
+  f.cleanup.unavailable = false
+  await f.cloud.handle({ ...request, runId: randomUUID() })
+  expect(f.mirrorGit('rev-parse', branch)).toMatch(/^[a-f0-9]{40}$/)
 })
