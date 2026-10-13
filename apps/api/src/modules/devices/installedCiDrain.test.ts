@@ -131,7 +131,8 @@ it.each(['ci-host-v1', 'ci-runtime-v1'])(
       .rejects.toMatchObject({ code: 'WORKER_RUNTIME_DRAINING' })
     f.release()
     await updating
-    expect(u.activity).toContain('restart')
+    expect(u.activity).toEqual(['download', 'download', 'ci-smoke', 'stage', 'restart'])
+    expect(await u.value.status()).toMatchObject({ state: 'restarting', targetVersion: '1.1.0', lastError: null })
     if (namespace === 'ci-host-v1') expect(preparation.launches).toBe(1)
     await f.mounted.close()
     const restarted = await createInstalledWorkerDomains(f.options)
