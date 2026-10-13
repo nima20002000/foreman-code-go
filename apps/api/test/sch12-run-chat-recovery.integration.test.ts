@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   allExecutions, conversationPages, historicalFixture, historicalRows, openHistoricalApi,
-  readSelected, runA, sendAndFinish, type HistoricalApi,
+  readSelected, runA, selectedPath, sendAndFinish, type HistoricalApi,
 } from './helpers/sch12HistoricalRuns.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { chatTarget, rejectedSend, retainedChatRows } from './helpers/historicalRunChat.js'
@@ -12,6 +12,49 @@ afterEach(() => vi.restoreAllMocks())
 // are existing deterministic port fixtures. No additional product/migration mocks
 // are introduced; inherited location/native qualification substitutes stay explicit.
 describe.skipIf(!postgresEnabled)('Historical Run-scoped chat recovery PostgreSQL / HTTP / MCP', () => {
+  it('reopens the isolated historical database with scoped HTTP and MCP authentication', async () => {
+    const f = await historicalFixture()
+    let api: HistoricalApi | undefined
+    try {
+      await runA(f)
+      const execution = (await allExecutions(f))[0]!
+      api = await openHistoricalApi(f)
+      const target = chatTarget(api, execution)
+      const before = await readSelected(api, target, execution.id)
+      expect(before).toMatchObject({ kind: 'selected', state: { availability: { canSend: true } } })
+      await api.close()
+      api = await openHistoricalApi(f)
+      expect(await readSelected(api, target, execution.id)).toEqual(before)
+
+      const denied = await api.access.issue({
+        name: 'Unrelated workspace reader',
+        audience: 'operator',
+        expiresAt: new Date(Date.now() + 600_000),
+        grants: [{ actions: ['agent_chat:read'], scope: { workspaceIds: ['unrelated-workspace'] } }],
+      })
+      const deniedClient = await api.connect(denied.token)
+      const http = await api.app.inject({
+        method: 'GET',
+        url: selectedPath(target),
+        headers: { authorization: `Bearer ${denied.token}` },
+      })
+      expect(http.statusCode, http.body).toBe(403)
+      expect(http.json()).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+      const { workspaceId, ...selection } = target
+      const mcp = await deniedClient.callTool({
+        name: 'agent_chat_read',
+        arguments: { workspaceId, selection: { ...selection, executionId: execution.id } },
+      })
+      expect(mcp.isError, JSON.stringify(mcp)).toBe(true)
+      expect(mcp.structuredContent).toBeUndefined()
+      expect(JSON.stringify(mcp)).toContain('ACCESS_DENIED')
+      expect(api.native.size).toBe(0)
+      expect(f.dispatchErrors).toEqual([])
+    } finally {
+      try { await api?.close() } finally { await f.close() }
+    }
+  }, 120_000)
+
   it.each(['missing-child', 'missing-provider'] as const)(
     '[SCH-12-C03] %s after restart stays unavailable with readable transcript/receipts and no replacement', async (kind) => {
       const f = await historicalFixture()

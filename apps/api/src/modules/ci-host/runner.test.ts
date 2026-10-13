@@ -26,7 +26,8 @@ afterEach(async () => {
  * unit's script as a child process the way the user manager would. */
 async function computer(options: { github?: boolean; suiteExit?: number; watchdogReason?: string; pause?: boolean
   measured?: Record<string, number>; databaseExit?: number; selector?: boolean;
-  change?: 'source' | 'infrastructure' | 'docs'; defaultBranch?: string; cpuCount?: number; hostSlots?: boolean } = {}) {
+  change?: 'source' | 'infrastructure' | 'docs'; defaultBranch?: string; cpuCount?: number; hostSlots?: boolean
+  affectedUnitTests?: number } = {}) {
   const temporaryRoot = process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp')
   await mkdir(temporaryRoot, { recursive: true })
   const root = await mkdtemp(join(temporaryRoot, 'host-ci-'))
@@ -71,6 +72,9 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
     await writeFile(join(origin, 'apps/api/src/feature.ts'), 'export const value = 1')
     await writeFile(join(origin, unitFiles[0]!), "import '../src/feature.js'")
     await writeFile(join(origin, 'apps/api/test/a.integration.test.ts'), "import '../src/feature.js'")
+    for (let index = 0; index < (options.affectedUnitTests ?? 0); index++) {
+      await writeFile(join(origin, `apps/api/test/many-${index}.test.ts`), "import '../src/feature.js'")
+    }
   }
   await writeFile(join(origin, 'scripts/unit-durations.json'), JSON.stringify(Object.fromEntries(
     unitFiles.map((file, index) => [file, 100 + index * 10]))))
@@ -257,6 +261,18 @@ describe('host CI runner', () => {
     expect(done.text).not.toContain('second.test.ts')
     expect(done.text).not.toContain('apps/web')
   })
+
+  it('runs a part whose affected selection exceeds the recordable file limit as its full suite', async () => {
+    // A typecheck-api part selected thousands of files and was rejected before running anything.
+    const f = await computer({ selector: true, change: 'source', affectedUnitTests: 2001 })
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
+      suite: 'unit', part: 'unit-api' })
+    const done = await f.settle(runId)
+    expect(done.run).toMatchObject({ state: 'passed' })
+    expect(done.run.message).toContain('more than the 2000')
+    expect(done.text).toContain('Running full suite:')
+  }, 30_000)
 
   it.each(['docs', 'source'] as const)('passes an empty affected unit shard after a %s change without running the suite', async change => {
     const f = await computer({ selector: true, change })

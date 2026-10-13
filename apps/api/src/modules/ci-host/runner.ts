@@ -9,7 +9,7 @@ import { join, matchesGlob } from 'node:path'
 import { CiWatchdogFailureSchema, CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, CiTestResultsSchema, integrationPartition,
   CiScopeSchema, CiSelectedFilesSchema, validCiSelection,
   CI_HOST_START_PROTOCOL_VERSION,
-  type CiDurations, type CiHostReply, type CiHostRun, type CiSuite, type CiPart, type CiPartition, type CiScope } from '@foreman-code/contracts'
+  type CiDurations, type CiHostReply, type CiHostRun, type CiSuite, type CiPart, type CiPartition, type CiScope, CI_SELECTED_FILES_MAX } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import { ciRepositoryCapabilities } from './repository.js'
 import { allowedCiResources, gateIntegrationShards, hostCiCapacity } from './capacity.js'
@@ -436,6 +436,9 @@ export class HostCiRunner {
     const selection = await this.repositorySelection(meta, source, selector, changed)
     if (selection.scope === 'full') return full(selection.reason)
     const files = await this.partFiles(meta, source, selection.files)
+    if (files.length > CI_SELECTED_FILES_MAX) {
+      return full(`The affected selection has ${files.length} files, more than the ${CI_SELECTED_FILES_MAX} one run records.`)
+    }
     meta.files = files
     meta.message = files.length ? `Selected ${files.length} affected files for ${meta.part ?? meta.suite}.`
       : 'No affected files for this suite part.'
@@ -463,6 +466,10 @@ export class HostCiRunner {
     if (result.code !== 0) throw new Error(`Affected selection failed: ${result.stderr.trim().slice(0, 500)}`)
     const selection = JSON.parse(result.stdout) as { scope: unknown; files: unknown; reason: string }
     const scope = CiScopeSchema.parse(selection.scope)
+    if (Array.isArray(selection.files) && selection.files.length > CI_SELECTED_FILES_MAX) {
+      return { scope: 'full' as const, files: [],
+        reason: `The affected selection has ${selection.files.length} files, more than the ${CI_SELECTED_FILES_MAX} one run records.` }
+    }
     const files = CiSelectedFilesSchema.parse(selection.files)
     if (!validCiSelection({ suite: meta.suite, scope, files })) throw new Error('The repository returned invalid affected files.')
     return { scope, files, reason: selection.reason }

@@ -882,6 +882,74 @@ test('reuses one build tree reset to the exact next commit with dependencies and
   })
 })
 
+/** A build source whose fake pnpm deploy writes the API package and a dependency tree like legacy pnpm deploy. */
+async function apiBuildSource(directory) {
+  const source = join(directory, 'source')
+  for (const path of ['apps/api/dist', 'packages/contracts/dist']) await mkdir(join(source, path), { recursive: true })
+  await writeFile(join(source, 'pnpm-lock.yaml'), 'lock: 1\n')
+  await writeFile(join(source, 'apps/api/package.json'), '{"name":"@foreman-code/api"}\n')
+  await writeFile(join(source, 'apps/api/README.md'), 'api\n')
+  await writeFile(join(source, 'apps/api/dist/server.js'), 'build 1\n')
+  await writeFile(join(source, 'packages/contracts/package.json'), '{"name":"@foreman-code/contracts"}\n')
+  await writeFile(join(source, 'packages/contracts/dist/index.js'), 'contracts 1\n')
+  const deploys = []
+  const run = async (command, args) => {
+    if (!args.includes('deploy')) return
+    const destination = args.at(-1)
+    deploys.push(destination)
+    const store = join(destination, 'node_modules/.pnpm/@foreman-code+contracts/node_modules/@foreman-code/contracts')
+    await mkdir(join(store, 'dist'), { recursive: true })
+    await writeFile(join(store, 'dist/index.js'), await readFile(join(source, 'packages/contracts/dist/index.js')))
+    await mkdir(join(destination, 'node_modules/@foreman-code'), { recursive: true })
+    await symlink('../.pnpm/@foreman-code+contracts/node_modules/@foreman-code/contracts', join(destination, 'node_modules/@foreman-code/contracts'))
+    await mkdir(join(destination, 'node_modules/fastify'), { recursive: true })
+    await writeFile(join(destination, 'node_modules/fastify/index.js'), 'fastify')
+    await mkdir(join(destination, 'dist'), { recursive: true })
+    await writeFile(join(destination, 'dist/server.js'), await readFile(join(source, 'apps/api/dist/server.js')))
+    await writeFile(join(destination, 'package.json'), '{"name":"@foreman-code/api","deployed":true}\n')
+    await writeFile(join(destination, 'README.md'), 'api\n')
+  }
+  return { source, run, deploys }
+}
+
+test('releases share one dependency tree per lockfile and contracts content instead of copying it', async t => {
+  const directory = await installFixture(t)
+  const { source, run, deploys } = await apiBuildSource(directory)
+  const dependencies = { root: join(directory, 'api-dependencies'), source }
+  const first = join(directory, 'releases/release-a/apps/api')
+  await production.deployProductionApi(run, first, { dependencies })
+  assert.equal(deploys.length, 1)
+  await writeFile(join(source, 'apps/api/dist/server.js'), 'build 2\n')
+  const second = join(directory, 'releases/release-b/apps/api')
+  // Copying ~800 MB of dependencies took 25-35 s per deploy, and 334 s on a loaded computer.
+  await production.deployProductionApi(run, second, { dependencies })
+  assert.equal(deploys.length, 1)
+  assert.equal(await readlink(join(second, 'node_modules')), await readlink(join(first, 'node_modules')))
+  assert.equal(await readFile(join(second, 'dist/server.js'), 'utf8'), 'build 2\n')
+  assert.equal(await readFile(join(first, 'dist/server.js'), 'utf8'), 'build 1\n')
+  assert.equal(await readFile(join(second, 'package.json'), 'utf8'), '{"name":"@foreman-code/api","deployed":true}\n')
+  assert.equal(await readFile(join(second, 'node_modules/fastify/index.js'), 'utf8'), 'fastify')
+
+  // Changed contracts output is part of the dependency tree, so it gets a fresh tree; the older release keeps its own.
+  await writeFile(join(source, 'packages/contracts/dist/index.js'), 'contracts 2\n')
+  const third = join(directory, 'releases/release-c/apps/api')
+  await production.deployProductionApi(run, third, { dependencies })
+  assert.equal(deploys.length, 2)
+  assert.notEqual(await readlink(join(third, 'node_modules')), await readlink(join(second, 'node_modules')))
+  assert.equal(await readFile(join(third, 'node_modules/@foreman-code/contracts/dist/index.js'), 'utf8'), 'contracts 2\n')
+  assert.equal(await readFile(join(second, 'node_modules/@foreman-code/contracts/dist/index.js'), 'utf8'), 'contracts 1\n')
+
+  // Trees no kept release links to are removed; the ones in use stay.
+  const removed = []
+  await production.pruneApiDependencies(dependencies.root, [first, third].map(path => join(path, '../..')),
+    { removeInBackground: path => removed.push(path) })
+  assert.equal(removed.length, 0)
+  await production.pruneApiDependencies(dependencies.root, [third].map(path => join(path, '../..')),
+    { removeInBackground: path => removed.push(path) })
+  assert.equal(removed.length, 1)
+  assert.equal(await readFile(join(third, 'node_modules/fastify/index.js'), 'utf8'), 'fastify')
+})
+
 test('pruning protects retained and selected releases through installation aliases', async t => {
   const directory = await installFixture(t)
   const physical = join(directory, 'physical')
