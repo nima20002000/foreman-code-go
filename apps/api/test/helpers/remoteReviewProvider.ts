@@ -181,7 +181,7 @@ export async function createRemoteReviewTls(directory: string) {
   return { certificateFile, privateKeyFile, trustCertificateFile: certificateFile }
 }
 
-/** Build the same committed, allowlisted artifact used by the installer. An
+/** Build the same committed artifact used by the installer. An
  * unsupported host fails the real packaging gate instead of substituting facts. */
 export async function buildRemoteReviewWorkerRelease(directory: string) {
   return measureIntegrationPhase('Worker artifact', () => cachedWorkerRelease(directory))
@@ -210,7 +210,7 @@ async function cachedWorkerRelease(directory: string) {
     const commit = (await execute('git', ['rev-parse', requestedCommit ?? 'HEAD'], { cwd: root })).stdout.trim()
     // Cache hits retain the builder's committed-control-input gate.
     await execute('git', ['diff', '--quiet', commit, '--',
-      'scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs', 'scripts/worker-api-allowlist.json',
+      'scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs',
       'scripts/quota-helper-abi.mjs', 'packages/contracts/package.json', 'packages/contracts/src/productEnvironment.mjs',
       'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml', targetFile], { cwd: root })
     const builder = fileURLToPath(new URL('../../../../scripts/build-worker-artifact.mjs', import.meta.url))

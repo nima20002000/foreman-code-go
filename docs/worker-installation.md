@@ -122,9 +122,13 @@ corepack pnpm --filter @foreman-code/worker build:artifact apps/worker/artifacts
 
 The fresh output includes the built worker, installer, service template and a
 manifest listing every shipped file's size/SHA-256, exact target/runtime,
-protocol/identity formats, commit and lockfile hashes. The builder rejects
-control-plane imports and external non-Node runtime imports. Review and approve
-the manifest SHA-256 through a trusted channel before transferring the artifact.
+protocol/identity formats, commit and lockfile hashes. API modules are discovered
+from the transitive import graphs of the Worker, rsync writer and schema Worker;
+new helpers and file splits need no manual registration. The builder retains
+the forbidden-module deny-list for API server entrypoints, database modules,
+migrations and bootstrap code, and rejects control-plane dependencies, sensitive
+paths, imports outside the source scope and external non-Node runtime imports.
+Review and approve the manifest SHA-256 through a trusted channel before transferring the artifact.
 An accompanying untrusted checksum file is insufficient.
 
 The manifest version is the captured product release version from the root

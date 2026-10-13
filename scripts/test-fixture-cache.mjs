@@ -15,13 +15,10 @@ export function testFixtureCacheRoot(environment = process.env) {
 
 /** Git blob identities let unchanged packaging inputs survive unrelated commits. */
 export async function workerFixtureInputs(repository, commit) {
-  const { stdout: allowlist } = await execute('git', ['show', `${commit}:scripts/worker-api-allowlist.json`], {
-    cwd: repository,
-  })
   const paths = [
-    ...JSON.parse(allowlist), 'apps/worker/src', 'apps/worker/artifacts', 'packages/contracts/src',
+    'apps/api/src', 'apps/worker/src', 'apps/worker/artifacts', 'packages/contracts/src',
     'apps/web/public/graphql.svg', 'scripts/build-worker-artifact.mjs', 'scripts/worker-artifact-files.mjs',
-    'scripts/worker-api-allowlist.json', 'scripts/quota-helper-abi.mjs', 'scripts/graphql-mcp.mjs',
+    'scripts/quota-helper-abi.mjs', 'scripts/graphql-mcp.mjs',
     'scripts/verification-runner.mjs', 'scripts/verify-repository.mjs', 'scripts/verification-reports.mjs',
     'scripts/integration-process.mjs', 'scripts/integration-capabilities.mjs',
     'packages/contracts/package.json', 'apps/worker/package.json', 'package.json',
