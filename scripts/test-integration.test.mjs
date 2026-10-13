@@ -989,6 +989,7 @@ test('integration and gate checks share the bounded queue and delay exclusive fi
 })
 
 for (const [name, reservedReview] of [
+  ['remote review decision delivery', 'apps/api/test/remote-review-production-delivery.integration.test.ts'],
   ['reserved remote review', 'apps/api/test/remote-review-production-reserved-decision.integration.test.ts'],
   ['remote review Worker crash recovery', 'apps/api/test/remote-review-production-worker-crash.integration.test.ts'],
   ['computer workflow directory save', 'apps/api/test/computer-workflow-save.regression-directories.integration.test.ts'],

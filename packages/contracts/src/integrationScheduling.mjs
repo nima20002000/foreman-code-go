@@ -56,6 +56,8 @@ export const exclusiveIntegrationFiles = [startupFile,
   'apps/api/test/eng03-b-durability-routing.integration.test.ts',
   // Two sequential native executions must settle within the fixed completion deadline.
   'apps/api/test/computer-workflow-save.regression-directories.integration.test.ts',
+  // Sequential native startup and decision delivery share the fixed file deadline.
+  'apps/api/test/remote-review-production-delivery.integration.test.ts',
   // Native review startup and reserved-decision recovery must fit the fixed file deadline.
   'apps/api/test/remote-review-production-reserved-decision.integration.test.ts',
   // Startup and original-owner recovery must finish within the same fixed file deadline.
