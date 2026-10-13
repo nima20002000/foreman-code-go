@@ -9,7 +9,7 @@ export const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | const
 export function anchored(handle: FileHandle, name = ''): string { return `/proc/self/fd/${handle.fd}${name ? `/${name}` : ''}` }
 
 /** Lock the pinned directory inode across processes, until the guard closes. */
-export async function withPrivateDirectoryLock<T>(root: FileHandle, work: () => Promise<T>,
+export async function withPrivateDirectoryLock<T>(root: FileHandle, work: (guard: FileHandle) => Promise<T>,
   options: { nonBlocking?: boolean; signal?: AbortSignal | undefined } = {}): Promise<T> {
   const guard = await open(anchored(root), constants.O_RDONLY | constants.O_DIRECTORY)
   try {
@@ -30,7 +30,7 @@ export async function withPrivateDirectoryLock<T>(root: FileHandle, work: () => 
       })
     })
     options.signal?.throwIfAborted()
-    return await work()
+    return await work(guard)
   } finally { await guard.close() }
 }
 // An open handle pins its device, inode and mount until it closes. Ownership

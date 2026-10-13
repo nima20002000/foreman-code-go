@@ -30,13 +30,25 @@ async function measureSourceDirectory(
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0
     throw error
   }
+  try {
+    return await measureRetainedDirectory(snapshot, rootFilesystem, countedInodes,
+      { depth: 34, entries: SOURCE_LIMITS.entries * 34 + 16 })
+  } finally {
+    await snapshot.close()
+    await root.close()
+  }
+}
+
+/** Count allocated bytes without following symlinks or crossing the pinned filesystem. */
+export async function measureRetainedDirectory(root: FileHandle, rootFilesystem: RootBinding['filesystem'],
+  countedInodes = new Set<string>(), limits = { depth: 64, entries: 300_000 }): Promise<number> {
   let entries = 0
   const measure = async (directory: FileHandle, depth: number): Promise<number> => {
-    if (depth > 34) throw new SourceError('SOURCE_CAPACITY', 'Retained source directory depth exceeds its bound.')
+    if (depth > limits.depth) throw new SourceError('SOURCE_CAPACITY', 'Retained source directory depth exceeds its bound.')
     let bytes = Math.max(4096, Number((await directory.stat()).blocks) * 512)
     for (const name of await readdir(anchored(directory))) {
       entries += 1
-      if (entries > SOURCE_LIMITS.entries * 34 + 16) {
+      if (entries > limits.entries) {
         throw new SourceError('SOURCE_CAPACITY', 'Retained source entry count exceeds its bound.')
       }
       const path = anchored(directory, name)
@@ -71,12 +83,7 @@ async function measureSourceDirectory(
     }
     return bytes
   }
-  try {
-    return await measure(snapshot, 0)
-  } finally {
-    await snapshot.close()
-    await root.close()
-  }
+  return measure(root, 0)
 }
 
 export async function measureRetainedMaterializationFootprint(

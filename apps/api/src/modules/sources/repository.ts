@@ -1,5 +1,5 @@
 import { materializationDirectory, type PrivateSourceMaterializer } from './materialization.js'
-import { sourceMaterializationParent } from '@foreman-code/contracts/source-materialization'
+import { SOURCE_MATERIALIZATION_RECORD_MAX_BYTES, sourceMaterializationParent } from '@foreman-code/contracts/source-materialization'
 import { isDeepStrictEqual } from 'node:util'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -197,7 +197,7 @@ export async function verifyPrivateSourceRepository(input: {
       let manifest: SourceManifest
       try {
         const stat = await record.stat()
-        if (!stat.isFile() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw new SourceError('SOURCE_RECEIPT_INVALID', 'Invalid original source receipt.')
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > SOURCE_MATERIALIZATION_RECORD_MAX_BYTES) throw new SourceError('SOURCE_RECEIPT_INVALID', 'Invalid original source receipt.')
         const stored = JSON.parse(await record.readFile('utf8')) as { receipt: MaterializationReceipt; manifest: SourceManifest }
         manifest = verifySourceManifest(stored.manifest)
         if (!isDeepStrictEqual(stored.receipt, receipt) || manifest.snapshotId !== receipt.binding.snapshotId

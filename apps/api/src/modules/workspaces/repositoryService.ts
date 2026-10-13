@@ -39,7 +39,8 @@ function importFailure(error: unknown): ImportFailure {
   const code = typeof candidate === 'string' && /^[A-Z][A-Z0-9_]{0,127}$/u.test(candidate)
     ? candidate : 'INTERNAL_ERROR'
   const conflict = /CONFLICT|CHANGED|REVISION|PENDING|EEXIST/u.test(code)
-  const unsupported = /UNSUPPORTED|SENSITIVE|SECRET|INVALID|INCLUSION|COLLISION|SOURCE_CAPTURE_FAILED|CAPACITY/u.test(code)
+  const unsupported = code !== 'SOURCE_GIT_CACHE_CAPACITY'
+    && /UNSUPPORTED|SENSITIVE|SECRET|INVALID|INCLUSION|COLLISION|SOURCE_CAPTURE_FAILED|CAPACITY/u.test(code)
   const newCommandRequired = conflict || unsupported
     || error instanceof DomainError && error.details?.newCommandRequired === true
   return { code, message: errorMessage(error, 'Repository preparation failed.'),

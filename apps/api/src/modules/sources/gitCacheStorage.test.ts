@@ -1,0 +1,131 @@
+import { execFileSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { afterEach, expect, it, vi } from 'vitest'
+import { addGitWorktree, ensureClone, ensureCommit, systemGitWorktreePorts,
+  type GitWorktreePorts } from './gitWorktree.js'
+import { identity, openPrivateRoot } from './privateFilesystem.js'
+import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
+import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
+
+const disk = vi.hoisted(() => ({ full: false }))
+vi.mock('node:fs/promises', async original => {
+  const actual = await original<typeof import('node:fs/promises')>()
+  return { ...actual, statfs: async (...args: Parameters<typeof actual.statfs>) => {
+    const value = await actual.statfs(...args)
+    return disk.full ? { ...value, bavail: typeof value.bavail === 'bigint' ? 0n : 0 } : value
+  } }
+})
+vi.mock('@foreman-code/contracts/source-materialization', async original => ({
+  ...await original<typeof import('@foreman-code/contracts/source-materialization')>(),
+  SOURCE_GIT_CACHE_LIMITS: { bytes: 16 * 2 ** 20, maximumFileBytes: 2 * 2 ** 20,
+    transferBytes: 8 * 2 ** 20, diskMarginBytes: 2 ** 20 },
+}))
+const roots: string[] = []
+afterEach(async () => {
+  disk.full = false
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
+})
+const git = (cwd: string, ...args: string[]) => execFileSync('git', args,
+  { cwd, encoding: 'utf8', env: gitFixtureEnvironment() }).trim()
+
+async function fixture() {
+  const root = await mkdtemp(join(persistentFixtureRoot, 'git-cache-storage-'))
+  roots.push(root)
+  const origin = join(root, 'origin')
+  const home = join(root, 'home')
+  await mkdir(origin, { mode: 0o700 })
+  await mkdir(home, { mode: 0o700 })
+  git(origin, 'init', '--template=', '-q', '-b', 'main')
+  await writeFile(join(origin, 'history.bin'), randomBytes(4 * 2 ** 20))
+  git(origin, 'add', '.')
+  git(origin, 'commit', '-qm', 'Large history')
+  await rm(join(origin, 'history.bin'))
+  await writeFile(join(origin, 'source.txt'), 'approved source')
+  git(origin, 'add', '-A')
+  git(origin, 'commit', '-qm', 'Small accepted tree')
+  const commit = git(origin, 'rev-parse', 'HEAD')
+  const system = systemGitWorktreePorts({ ...gitFixtureEnvironment(), HOME: home })
+  const transfers: string[][] = []
+  const ports: GitWorktreePorts = { cloneDirectory: system.cloneDirectory, git: (args, options) => {
+    if (['clone', 'fetch'].includes(args[0]!)) transfers.push(args)
+    return system.git(args.map(arg => arg === 'https://github.com/fixture/project.git'
+      ? `file://${origin}` : arg), options)
+  } }
+  const cache = join(home, '.local', 'share', 'foreman-code', 'git')
+  const storage = async () => JSON.parse(await readFile(join(cache, 'storage.json'), 'utf8')) as {
+    filesystem: { device: string; inode: string; mountId: string }
+    retainedBytes: number; reservedBytes: number; limitBytes: number
+  }
+  return { root, origin, commit, ports, cache, storage, transfers }
+}
+
+it('denies a first clone on the cache filesystem before Git writes any objects', async () => {
+  const f = await fixture()
+  disk.full = true
+  await expect(ensureClone(f.ports, 'fixture/project', AbortSignal.timeout(30_000)))
+    .rejects.toMatchObject({ code: 'SOURCE_GIT_CACHE_CAPACITY' })
+  expect((await readdir(f.cache)).filter(name => name !== 'storage.json')).toEqual(['fixture'])
+  expect(await readdir(join(f.cache, 'fixture'))).toEqual([])
+})
+
+it('acquires a tiny accepted tree without its large history and accounts retained objects', async () => {
+  const f = await fixture()
+  const clone = await ensureCommit(f.ports, 'fixture/project', f.commit, AbortSignal.timeout(30_000))
+  expect(git(clone, 'rev-parse', 'HEAD')).toBe(f.commit)
+  expect(git(clone, 'rev-list', '--count', 'HEAD')).toBe('1')
+  const stored = await f.storage()
+  expect(stored).toMatchObject({ reservedBytes: 0, limitBytes: 16 * 2 ** 20 })
+  expect(stored.retainedBytes).toBeGreaterThan(0)
+  expect(stored.retainedBytes).toBeLessThan(2 * 2 ** 20)
+  const handle = await openPrivateRoot(f.cache)
+  try { expect(stored.filesystem).toEqual(await identity(handle)) }
+  finally { await handle.close() }
+})
+
+it('bounds a later fetch, cleans its partial transfer, and preserves active work and result branches', async () => {
+  const f = await fixture()
+  const path = join(f.root, 'working')
+  const signal = AbortSignal.timeout(30_000)
+  const first = await addGitWorktree(f.ports, { repository: 'fixture/project', branch: 'foreman/result' },
+    f.commit, path, signal)
+  await writeFile(join(path, 'result.txt'), 'retained result')
+  git(path, 'add', '.')
+  git(path, 'commit', '-qm', 'Retained result')
+  const resultCommit = git(path, 'rev-parse', 'HEAD')
+  await writeFile(join(path, 'uncommitted.txt'), 'active work')
+  await writeFile(join(f.origin, 'expansion.bin'), randomBytes(3 * 2 ** 20))
+  git(f.origin, 'add', '.')
+  git(f.origin, 'commit', '-qm', 'Oversized transfer')
+  const expansion = git(f.origin, 'rev-parse', 'HEAD')
+  await expect(ensureCommit(f.ports, 'fixture/project', expansion, signal)).rejects.toThrow()
+  expect((await f.storage()).reservedBytes).toBe(0)
+  const clone = f.ports.cloneDirectory('fixture/project')
+  expect(git(clone, 'rev-parse', first.branch)).toBe(resultCommit)
+  expect(await readFile(join(path, 'uncommitted.txt'), 'utf8')).toBe('active work')
+  expect((await readdir(join(clone, '.git', 'objects', 'pack')))
+    .filter(name => name.startsWith('tmp_'))).toEqual([])
+  await rm(join(f.origin, 'expansion.bin'))
+  git(f.origin, 'add', '-A')
+  git(f.origin, 'commit', '-qm', 'Small successor')
+  const successor = git(f.origin, 'rev-parse', 'HEAD')
+  await expect(ensureCommit(f.ports, 'fixture/project', successor, signal)).resolves.toBe(clone)
+  expect(git(clone, 'rev-parse', first.branch)).toBe(resultCommit)
+  expect((await f.storage()).retainedBytes).toBeGreaterThan(0)
+})
+
+it('charges previously retained cache bytes before admitting another fetch', async () => {
+  const f = await fixture()
+  const signal = AbortSignal.timeout(30_000)
+  const clone = await ensureCommit(f.ports, 'fixture/project', f.commit, signal)
+  await writeFile(join(f.cache, 'retained-result.bin'), randomBytes(9 * 2 ** 20), { mode: 0o600 })
+  await writeFile(join(f.origin, 'source.txt'), 'updated source')
+  git(f.origin, 'add', '.')
+  git(f.origin, 'commit', '-qm', 'Updated source')
+  const successor = git(f.origin, 'rev-parse', 'HEAD')
+  await expect(ensureCommit(f.ports, 'fixture/project', successor, signal))
+    .rejects.toMatchObject({ code: 'SOURCE_GIT_CACHE_CAPACITY' })
+  expect(git(clone, 'rev-parse', 'HEAD')).toBe(f.commit)
+  expect((await f.storage()).retainedBytes).toBeGreaterThan(9 * 2 ** 20)
+})

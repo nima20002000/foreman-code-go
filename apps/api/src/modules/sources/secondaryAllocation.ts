@@ -6,7 +6,7 @@ import { SecondarySourceAllocationSchema, type SecondarySourceAllocation }
 import type { RootBinding } from '@foreman-code/contracts/source-materialization'
 import type { MaterializationAttempt } from './ports.js'
 import { anchored, identity, openChildDirectory } from './privateFilesystem.js'
-import { readCleanupRecord } from './sourceCleanupMetadata.js'
+import { readCleanupRecord, removeIncompleteCleanupRecord } from './sourceCleanupMetadata.js'
 import { writeSourceClaim } from './quotaClaims.js'
 import { removeSourceDirectory } from './quotaReclamation.js'
 import { SourceError } from './manifest.js'
@@ -89,8 +89,7 @@ export async function reconcileSecondaryAllocation(root: FileHandle, binding: Ro
     } else {
       await removeSourceDirectory(root, allocation.id, { binding }, signal)
       await writeSecondaryAllocation(parent, { ...allocation, state: 'reclaimed' }, signal)
-      const ready = await readCleanupRecord(root, `${name}.pending.ready`, signal)
-      if (ready) await unlink(anchored(root, `${name}.pending.ready`))
+      await removeIncompleteCleanupRecord(root, `${name}.pending.ready`, signal)
     }
     await unlink(anchored(root, `${name}.pending`))
     await root.sync()

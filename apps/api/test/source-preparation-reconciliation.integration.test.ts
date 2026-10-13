@@ -270,7 +270,8 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     await database.pool.query('update management_principals set revoked_at=now() where id=$1',[revoked.principal.id])
     await expect(sources.preparationGet(revoked.principal,'mcp',{workspaceId,operationId:rows[0]!.operation_id})).rejects.toMatchObject({code:'AUTH_REVOKED'})
   },60000)
-  it('recovers shared initialization through authenticated MCP and reads back the closed owner', async () => {
+  it.each([undefined, '', '{"version":1'])(
+    'recovers an incomplete readiness record %j through authenticated MCP and reads back the closed owner', async readiness => {
     const operator = await client(writer.token)
     const denied = await client(reader.token)
     const startCommand = randomUUID()
@@ -282,6 +283,10 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       const operationId = (await database.pool.query<{ operation_id: string }>(
         'select operation_id from job_preparations where workspace_id=$1 and command_id=$2',
         [workspaceId, startCommand])).rows[0]!.operation_id
+      if (readiness !== undefined) {
+        const pending = (await readdir(root.binding.canonicalPath)).find(name => name.endsWith('.json.pending'))!
+        await writeFile(join(root.binding.canonicalPath, `${pending}.ready`), readiness, { mode: 0o600 })
+      }
       const command = { workspaceId, operationId, commandId: randomUUID() }
       await expectMcpAccessDenied(denied.callTool({ name: 'source_preparation_reconcile', arguments: command }))
       const result = await operator.callTool({ name: 'source_preparation_reconcile', arguments: command })
