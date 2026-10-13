@@ -11,13 +11,30 @@ describe.skipIf(!postgresEnabled)('routing workflow cleanup', () => {
     const f = await scenarioHarness(scenario)
     const finishCleanup = f.base.runs.finishCleanup.bind(f.base.runs)
     const timeout = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' })
+    let recordAtTimeout: ReturnType<typeof RunRecordDetailSchema.parse> | undefined
     const cleanup = vi.spyOn(f.base.runs, 'finishCleanup')
-      .mockRejectedValueOnce(timeout)
+      .mockImplementationOnce(async (runId) => {
+        recordAtTimeout = RunRecordDetailSchema.parse(await f.http('GET', `${runPath({
+          workspaceId: f.base.f.scope.workspaceId,
+          runId,
+        })}/record`))
+        throw timeout
+      })
       .mockImplementation(finishCleanup)
     try {
       const { saved } = await f.save('mcp')
       const started = await f.start('mcp', saved)
       const record = await f.settled(started.scope)
+      expect(recordAtTimeout).toMatchObject({
+        run: { id: started.scope.runId, executionState: 'completed', outcome: 'succeeded' },
+        cleanupPending: true,
+        stopRequested: false,
+      })
+      expect(cleanup.mock.calls.length).toBeGreaterThanOrEqual(2)
+      for (const [runId, failed] of cleanup.mock.calls) {
+        expect(runId).toBe(started.scope.runId)
+        expect(failed).toBe(false)
+      }
       expect(record).toMatchObject({
         run: { executionState: 'completed', outcome: 'succeeded' },
         cleanupPending: false,
