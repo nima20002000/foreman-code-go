@@ -31,6 +31,7 @@ it('admits new transfers after retiring the record limit and preserves replay de
       expect((await service.inventory()).length).toBeLessThanOrEqual(BYTE_TRANSFER_POLICY.maxActiveGlobal)
       await service.finish(current.transferId, context)
       await service.retire(current.transferId)
+      if (index === 0) expect(await service.inventory()).toEqual([])
     }
     await service.close()
 

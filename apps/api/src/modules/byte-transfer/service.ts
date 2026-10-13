@@ -541,7 +541,16 @@ export class ResumableByteTransferService implements ByteTransferPort {
       await this.save(j)
       await unlink(this.path(id, 'part')).catch(error => { if (error.code !== 'ENOENT') throw error })
       await this.syncDirectory()
-      if (!await this.hasReaders(id)) { j.canonicalReclaimed = true; await this.save(j) }
+      if (!await this.hasReaders(id)) {
+        j.canonicalReclaimed = true
+        await this.save(j)
+        const holds = Object.values(j.external ?? {}).some(hold => hold && !hold.released)
+        if (!holds && await this.journalPath(id) !== this.archivePath(id)) {
+          await rename(this.path(id, 'json'), this.archivePath(id))
+          await this.retiredDirectory!.sync()
+          await this.syncDirectory()
+        }
+      }
     })
   }
   /** Cancelled bytes stay charged until their owner confirms deletion through retire(). */

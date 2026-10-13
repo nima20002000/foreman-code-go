@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto'
 import { expect } from 'vitest'
 import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
-import { installationUpdateFixture, startWhenReady, runningTurn, completedRun }
+import { startWhenReady, runningTurn, completedRun }
   from './harnessInstallationUpdate.js'
-import { waitForRemoteReview } from './remoteReviewProduction.js'
+import { remoteReviewProduction, waitForRemoteReview } from './remoteReviewProduction.js'
 import { expectMcpAccessDenied } from './deniedMcpTool.js'
 
 export async function assertActiveTurnRestart(options: {
@@ -13,7 +13,9 @@ export async function assertActiveTurnRestart(options: {
   completion: 'after reconnect' | 'while API is down'
 }): Promise<void> {
   const { executionHost, mode, completion } = options
-  const fixture = await installationUpdateFixture({ workflow: 'single', executionHost })
+  const fixture = await remoteReviewProduction({ workflow: 'single', executionHost,
+    installationRefreshIntervalMs: 60_000, parallelSetup: true, parallelProfileChecks: true,
+    includeNodeRuntimePayload: false })
   let blocked = false
   try {
     await fixture.provider.blockWorkflowTurns()
