@@ -152,12 +152,15 @@ export function startInput(f: Fixture, saved: Awaited<ReturnType<Fixture['save']
 
 export async function advanceMainSourceBinding(f: Fixture) {
   const rootId = f.placement.local.rootBinding!.rootId
-  const row = (await f.base.db.pool.query('select record from source_root_bindings where root_id=$1 and binding_revision=1',
+  const row = (await f.base.db.pool.query(`select b.record from source_root_catalog c
+    join source_root_bindings b on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision where c.root_id=$1`,
     [rootId])).rows[0]!
   const root = SourceRootRecordSchema.parse(row.record)
-  root.binding.bindingRevision = 2
+  root.binding.bindingRevision += 1
   await f.base.db.pool.query(`insert into source_root_bindings(root_id,binding_revision,workspace_id,snapshot_id,record)
-    values($1,2,$2,$3,$4::jsonb)`, [rootId, f.saveInput.workspaceId, root.source.snapshotId, JSON.stringify(root)])
-  await f.base.db.pool.query('update source_root_catalog set current_binding_revision=2 where root_id=$1', [rootId])
+    values($1,$2,$3,$4,$5::jsonb)`, [rootId, root.binding.bindingRevision, f.saveInput.workspaceId,
+    root.source.snapshotId, JSON.stringify(root)])
+  await f.base.db.pool.query('update source_root_catalog set current_binding_revision=$2 where root_id=$1',
+    [rootId, root.binding.bindingRevision])
 }
 
