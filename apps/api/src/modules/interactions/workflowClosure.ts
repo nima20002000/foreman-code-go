@@ -8,7 +8,6 @@ import type { RunOwnership } from '../runs/ownership.js'
 import { DomainError } from '../errors.js'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { readExecutionPlacement } from '../placement/persistence.js'
-import { ignoreError } from '../diagnostics/ignoredError.js'
 
 /** Private native-closure evidence, captured by the coordinator, never an API
  * input or an inference from a terminal business result. No secrets are stored. */

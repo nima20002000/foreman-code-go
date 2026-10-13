@@ -14,7 +14,6 @@ import { MessagePublicationRefsSchema } from '../../conversations/messagePublica
 import { codexChatFileTools } from './declarations.js'
 import type { CodexFileHostLease } from './port.js'
 import type { ProductionCodexChatFiles } from './production.js'
-import { ignoreError } from '../../diagnostics/ignoredError.js'
 
 interface AdmissionRow {
   request_id: string

@@ -3,7 +3,6 @@ import { withTransaction } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
-import { ignoreError } from '../diagnostics/ignoredError.js'
 
 /** Database-only ownership metadata, not a provider idempotency key or public interaction shape. */
 export interface InteractionLease {

@@ -126,6 +126,7 @@ it('plans systemd files on capable cloud capacity and keeps a build computer ava
     .toMatchObject({ partition: { index: 0, hostIndexes: [0] } })
   expect(f.started.find(item => item.computer.key === host.key)?.request)
     .toMatchObject({ partition: { index: 1, hostIndexes: [0] } })
+})
 
 it.each([host, cloud])('dispatches high priority then oldest tickets on $label', async computer => {
   const records = queuedRuns(4).map((record, index) => CiRunRecordSchema.parse({ ...record,
@@ -141,6 +142,7 @@ it.each([host, cloud])('dispatches high priority then oldest tickets on $label',
     running.state = 'passed'
   }
   expect(f.started.map(item => item.request.operation === 'start' ? item.request.runId : null)).toEqual(expected)
+})
 
 it('dispatches a duration-planned single ordinary full slice to cloud', async () => {
   const records = queuedRuns(1).map(run => ({ ...run, expectedDurationMs: 210_000, requiresBuildComputer: false }))

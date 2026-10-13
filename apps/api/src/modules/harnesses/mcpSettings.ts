@@ -293,10 +293,16 @@ export class HarnessMcpSettingsService {
         }
         throw qualificationError(error)
       } finally {
-        try { await unlockFile?.() } catch { destroyed = true }
+        try { await unlockFile?.() } catch (error) {
+          destroyed = true
+          ignoreError('db', 'release native configuration file lock', { planId: id })(error)
+        }
         if (locked) {
           try { await client.query("select pg_advisory_unlock(hashtext('graphql:harness-mcp-settings'))") }
-          catch { destroyed = true }
+          catch (error) {
+            destroyed = true
+            ignoreError('db', 'release harness MCP settings lock', { planId: id })(error)
+          }
         }
         client.release(destroyed)
       }

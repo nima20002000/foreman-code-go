@@ -13,7 +13,6 @@ import { harnessHostKey, type HarnessInstanceSettingsRepository } from './reposi
 import { nativeProfileCheckId } from './profileChecks.js'
 import type { HostHarnessOverrideAuthority } from './authority.js'
 import type { GraphSqlClient } from '../../run-graph/connection.js'
-import type { ProviderAccountConfigurationService } from '../providerAccountConfiguration.js'
 import { fallbackOnError } from '../../diagnostics/ignoredError.js'
 
 export type { HostHarnessOverrideAuthority }

@@ -68,6 +68,7 @@ it('classifies Git changes including deletions, mixed commits and renames into C
   git('rm', 'scripts/ci-example.mjs')
   git('commit', '-qm', 'Remove CI example')
   expect(await classify()).toBe(true)
+})
 
 it('resolves branch identity and ancestry from published Git commits while protecting main and ambiguous refs', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'ci-commit-lineage-'))

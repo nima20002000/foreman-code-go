@@ -1581,6 +1581,8 @@ it.each(['full', 'affected'] as const)('automatically sizes %s integration via M
     await f.ci.dispatch()
     expect(CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId })).group?.state)
       .toBe('passed')
+  } finally { await f.close() }
+})
 
 it('supersedes every queued and running part through MCP and preserves the replacement across retries', async () => {
   const oldCommit = 'a'.repeat(40)

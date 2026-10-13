@@ -7,7 +7,6 @@ import { settleKnownActivity } from './settleKnownActivity.js'
 import { conversationActivityKey } from './activityIdentity.js'
 import { assertConversationCursor, withConversationPageRead } from './activityCursor.js'
 import type { OperatorActivityChange } from './operatorActivity.js'
-import { ignoreError } from '../diagnostics/ignoredError.js'
 
 export interface ActivityMutationFence {
   connectionId?: string

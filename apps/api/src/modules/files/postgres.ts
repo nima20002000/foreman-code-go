@@ -256,7 +256,10 @@ export class PostgresFileRepository implements FileReferenceRepository {
     } finally {
       if (locked && !broken) {
         try { await client.query('select pg_advisory_unlock(hashtextextended($1,273601))', [lockKey]) }
-        catch { broken = true }
+        catch (error) {
+          broken = true
+          ignoreError('db', 'release file allocation lock', { ownerPrincipalId, requestId })(error)
+        }
       }
       client.removeListener('error', onError)
       client.release(broken)

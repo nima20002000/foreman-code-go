@@ -14,7 +14,6 @@ import { UnsavedChangesContext } from '../../shared/ui/unsavedChanges'
 import { ScheduleClockButton } from './ScheduleClockButton'
 import { schedulePath } from './client'
 import { scheduleKeys, useScheduleCommand } from './queries'
-import styles from './schedules.css?raw'
 import { deferred } from '../../test/deferred'
 
 const scope = { workspaceId: 'workspace-schedule', workflowId: 'workflow-schedule' }

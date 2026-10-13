@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { GraphDraftV3Schema, sameAuthoredWorkflow } from '@foreman-code/contracts/wave25'
+import { errorMessage } from '../../../shared/errorMessage'
 import { Button, LoadingState } from '../../../shared/ui/nocturne'
 import { GraphPresentationProvider } from '../GraphPresentation'
 import { useGraphDraftStore } from '../store'
