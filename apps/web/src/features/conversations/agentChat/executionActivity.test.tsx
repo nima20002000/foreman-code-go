@@ -1,5 +1,5 @@
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
-import type { QueryClient } from '@tanstack/react-query'
+import { act, fireEvent, renderHook, screen, waitFor, within } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -9,7 +9,8 @@ import { server } from '../../../mocks/server'
 import { useConversationDraftStore } from '../conversationDraftStore'
 import { mergeExecutionActivity, type ExecutionActivityFeed } from './executionActivity'
 import { installChatSource, mountChat } from './testSupport'
-import { deferred } from '../../../test/deferred'
+import { deferred, rejectableDeferred } from '../../../test/deferred'
+import { useExecutionActivityReads } from './executionActivityReads'
 import { agentChatApi } from '../../../shared/api/agentChat'
 import { ApiError } from '../../../shared/api/client'
 
@@ -469,4 +470,48 @@ it('keeps full details visible when a delayed live preview completes after expan
   await act(async () => { delayed.resolve(preview); await read })
   expect(within(check).getByText('Full arguments')).toBeInTheDocument()
   expect(within(check).getByText('Full output')).toBeInTheDocument()
+})
+
+
+it('shares pending read promises and propagates their failure while retaining retry state', async () => {
+  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+  const context = runState().context
+  const key = ['execution-detail-test'] as const
+  const pending = rejectableDeferred<AgentChatExecutionActivityPage>()
+  const error = new Error('Details unavailable')
+  const request = vi.spyOn(agentChatApi, 'executionActivity')
+    .mockImplementationOnce(() => pending.promise)
+    .mockResolvedValueOnce(snapshot('completed', []))
+  const { result, unmount } = renderHook(() => useExecutionActivityReads(context, key, mergeExecutionActivity), {
+    wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>,
+  })
+  const page = { executionId: 'execution-check', itemId: 'answer' }
+  let first!: ReturnType<typeof result.current.read>
+  let second!: ReturnType<typeof result.current.read>
+  act(() => {
+    first = result.current.read(page)
+    second = result.current.read(page)
+  })
+  expect(first).toBeInstanceOf(Promise)
+  expect(second).toBe(first)
+  await waitFor(() => expect(result.current.readState(page.executionId, page.itemId).pending).toBe(true))
+  expect(request).toHaveBeenCalledTimes(1)
+  const settled = Promise.allSettled([first, second])
+  await act(async () => {
+    pending.reject(error)
+    expect(await settled).toEqual([
+      { status: 'rejected', reason: error },
+      { status: 'rejected', reason: error },
+    ])
+  })
+  await waitFor(() => expect(result.current.readState(page.executionId, page.itemId)).toEqual({
+    pending: false, failed: true,
+  }))
+  await act(async () => { await result.current.read(page) })
+  expect(request).toHaveBeenCalledTimes(2)
+  await waitFor(() => expect(result.current.readState(page.executionId, page.itemId)).toEqual({
+    pending: false, failed: false,
+  }))
+  unmount()
+  client.clear()
 })
