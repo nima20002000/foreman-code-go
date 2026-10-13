@@ -7,7 +7,7 @@ import { currentRunGraphPublication, hasRunGraphPublication, graphSourceDigest, 
 import { requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatReceipts.js'
 import { normalizeNativeProducerEvent } from '../run-graph/nativeProducerNormalization.js'
 import { nativeGraphSource } from '../run-graph/nativeIngestion.js'
-import { readRepeatExecutionLocked } from '../runs/repeatPostgres.js'
+import { readRepeatExecutionLocked } from '../runs/repeatExecutionRead.js'
 import { readAcceptedRepeatRunLocked } from '../runs/repeatStartRead.js'
 import { repeatDigest, repeatExecutionIdentity, sameRepeatValue, type RepeatNodeRef, type RepeatScope } from '../runs/repeatResolution.js'
 import type { CapturedReviewNativeSource, ReviewNativeCapture, ReviewNativeVerificationPort } from './reviewNativeCapture.js'

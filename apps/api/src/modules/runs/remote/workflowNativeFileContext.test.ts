@@ -23,7 +23,8 @@ import { WorkflowNativeFileContextAdmission, WORKFLOW_NATIVE_FILE_CONTEXT_OPERAT
 vi.mock('../../placement/persistence.js', () => ({ readDispatchIntent: vi.fn(), readAcceptedPlacement: vi.fn(), readNativePlacement: vi.fn() }))
 vi.mock('./persistence.js', () => ({ readReconciledDispatchIntent: vi.fn() }))
 vi.mock('../../devices/hostAuthorization.js', () => ({ assertDeviceHostInstallation: vi.fn() }))
-vi.mock('../../run-graph/publication.js', () => ({ currentRunGraphPublication: vi.fn() }))
+vi.mock('../../run-graph/publication.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../run-graph/publication.js')>(), currentRunGraphPublication: vi.fn() }))
 beforeEach(() => vi.resetAllMocks())
 
 // Private UNIT capture channel and SQL/provider boundaries only. These fixtures

@@ -72,7 +72,7 @@ async function verifiedRepeatCut(sql: GraphTransactionSql, scope: RepeatGraphSco
     const results = await readRepeatGraphResultsLocked(sql, scope, executions)
     const decisions = await readRepeatGraphDecisionsLocked(sql, scope)
     const publicView = await readPublicProjectionLocked(sql, scope, version)
-    await assertPublicProjectionCommittedLocked(sql, scope, head.head_sequence, publicView)
+    await assertPublicProjectionCommittedLocked(sql, scope, head.head_sequence, readPublicProjectionLocked, publicView)
     const data = { ...publicView, run, occurrences, executions, bindings, resolutions, results, decisions }
     if (graphJsonBytes(data) > RUN_GRAPH_LIMITS.snapshotBytes) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
     const state = sortRepeatGraphState(RepeatGraphStateV3Schema.parse(data))

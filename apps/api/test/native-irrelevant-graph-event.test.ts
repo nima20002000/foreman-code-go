@@ -10,7 +10,8 @@ import * as rawEvents from '../src/modules/runs/nativeEvents.js'
 import * as records from '../src/modules/run-graph/records.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 
-vi.mock('../src/modules/run-graph/publication.js', () => ({ currentRunGraphPublication: () => ({}) }))
+vi.mock('../src/modules/run-graph/publication.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/modules/run-graph/publication.js')>(), currentRunGraphPublication: () => ({}) }))
 afterEach(() => vi.restoreAllMocks())
 
 // SQL-only composition model. Actual private-capture/physical proof checks are

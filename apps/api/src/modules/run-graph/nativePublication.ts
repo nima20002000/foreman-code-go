@@ -1,3 +1,4 @@
+import { readPublicProjectionLocked } from './compactSnapshot.js'
 import type { HarnessNativeEvent } from '@foreman-code/contracts'
 import type { RunGraphScope } from '@foreman-code/contracts/wave25'
 import type { ExclusiveGraphConnection } from './connection.js'
@@ -16,7 +17,7 @@ export async function publishNativeGraphEvent(connection: ExclusiveGraphConnecti
       const value = await appendNativeGraphEvent(publication, event, work)
       projectionMs = performance.now() - projectionStart
       return value
-    })
+    }, readPublicProjectionLocked)
     // Instrumentation runs AFTER COMMIT, outside the publication/ownership critical section.
     observeGraph(measurements, { stage: 'projection', outcome: result.value.rejected ? 'rejected' : result.value.projected ? 'ok' : 'ignored',
       durationMs: projectionMs, rows: result.value.projected })

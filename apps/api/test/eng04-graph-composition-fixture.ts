@@ -1,3 +1,4 @@
+import { readPublicProjectionLocked } from '../src/modules/run-graph/compactSnapshot.js'
 import { randomUUID } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import { AgentSchema, type AgentConfigurationVersion } from '@foreman-code/contracts'
@@ -97,7 +98,7 @@ export async function ownedGraph<T>(db: GraphTestDatabase, t: GraphFixture, work
 }
 export async function changeRunState(db: GraphTestDatabase, t: GraphFixture, state: 'running' | 'waiting') {
   return ownedGraph(db, t, (owner) => owner.oneShotConnection().transaction(async (sql) => {
-    const publication = await openRunGraphPublication(sql, t.scope)
+    const publication = await openRunGraphPublication(sql, t.scope, readPublicProjectionLocked)
     await sql.query(`update runs set execution_state=$2,record=jsonb_set(record,'{executionState}',to_jsonb($2::text)) where id=$1`, [t.run.id, state])
     await publishRepeatRunStateLocked(publication, owner)
   }))

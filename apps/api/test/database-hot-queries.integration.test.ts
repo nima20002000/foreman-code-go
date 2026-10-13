@@ -1,3 +1,4 @@
+import { readPublicProjectionLocked } from '../src/modules/run-graph/compactSnapshot.js'
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { CiGetOutputSchema, CiRunRecordSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
@@ -32,7 +33,7 @@ async function persistExecution(db: Awaited<ReturnType<typeof currentDatabase>>,
   const effect = { kind: 'input.bind' as const, entityId: queued.id,
     digest: repeatDigest({ ref, queued, inputDigest: bound.digest, bindings: bound.bindings }) }
   await ownedGraph(db, fixture, owner => owner.oneShotConnection().transaction(async sql => {
-    const publication = await openRunGraphPublication(sql, fixture.scope)
+    const publication = await openRunGraphPublication(sql, fixture.scope, readPublicProjectionLocked)
     await publishRepeatRunStateLocked(publication, owner)
     const canonical = await openRepeatCanonicalPublicationLocked(sql, fixture.scope, owner, publication)
     const fence = await owner.readOneShotFence(sql)

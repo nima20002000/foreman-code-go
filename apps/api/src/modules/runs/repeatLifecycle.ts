@@ -1,3 +1,4 @@
+import { readPublicProjectionLocked } from '../run-graph/compactSnapshot.js'
 import type pg from 'pg'
 import { AcceptedWorkflowRunV3Schema, RepeatGraphScopeV3Schema,
   type AcceptedWorkflowRunV3, type GraphEffectAuthority } from '@foreman-code/contracts/wave25'
@@ -29,7 +30,7 @@ export async function openWorkflowLifecycleLocked(sql: GraphTransactionSql, runI
   if (found.rows.length !== 1) throw new DomainError('RUN_NOT_FOUND', 'The exact Run was not found.', 404)
   const discovery = AcceptedWorkflowRunV3Schema.parse(found.rows[0]!.record)
   if (discovery.id !== runId) throw new DomainError('RUN_PIN_CONFLICT', 'Run identity changed during lifecycle discovery.', 409)
-  const publication = await openRunGraphPublication(sql, workflowRunScope(discovery))
+  const publication = await openRunGraphPublication(sql, workflowRunScope(discovery), readPublicProjectionLocked)
   const snapshot = await readAcceptedRepeatRunLocked(sql, runId)
   if (!sameRepeatValue(workflowRunScope(snapshot.run), publication.scope)) throw new DomainError('RUN_PIN_CONFLICT', 'The locked Run scope differs from its canonical head.', 409)
   return { publication, snapshot }

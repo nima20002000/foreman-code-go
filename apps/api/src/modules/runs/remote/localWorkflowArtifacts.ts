@@ -1,3 +1,4 @@
+import { readPublicProjectionLocked } from '../../run-graph/compactSnapshot.js'
 import { isDeepStrictEqual as same } from 'node:util'
 import type { Readable } from 'node:stream'
 import type pg from 'pg'
@@ -170,7 +171,7 @@ export class LocalWorkflowArtifacts {
     if (execution.state !== 'completed' || execution.result?.outcome !== 'succeeded') return
     const original = await owner.oneShotConnection().transaction(async sql => {
       const snapshot = await readAcceptedRepeatRunLocked(sql, owner.runId)
-      await openRunGraphPublication(sql, workflowRunScope(snapshot.run))
+      await openRunGraphPublication(sql, workflowRunScope(snapshot.run), readPublicProjectionLocked)
       const stored = await readRepeatExecutionLocked(sql, snapshot, execution.id)
       if (!same(stored.execution, execution) || snapshot.stopRequested || snapshot.cleanupPending) return conflict()
       const source = await readWorkflowTerminalReceiptLocked(sql, snapshot, stored)

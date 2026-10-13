@@ -1,3 +1,4 @@
+import { readPublicProjectionLocked } from '../src/modules/run-graph/compactSnapshot.js'
 import { randomUUID } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { HarnessExecutionSchema } from '@foreman-code/contracts'
@@ -60,7 +61,7 @@ describe.skipIf(!postgresEnabled)('ENG04 repository activation PostgreSQL bounda
     expect(bound.bindings).toEqual([])
     const queued = HarnessExecutionSchema.parse({ ...candidate, input: bound.input }), slot = repeatSlotId(t.run.id, ref)
     await owner.oneShotConnection().transaction(async (sql) => {
-      const publication = await openRunGraphPublication(sql, t.scope, { historyCoverage: 'from_snapshot' })
+      const publication = await openRunGraphPublication(sql, t.scope, readPublicProjectionLocked, { historyCoverage: 'from_snapshot' })
       await publishRepeatRunStateLocked(publication, owner)
       const canonical = await openRepeatCanonicalPublicationLocked(sql, t.scope, owner, publication)
       const fence = await owner.readOneShotFence(sql)

@@ -11,7 +11,8 @@ import { RUN_NATIVE_ACTIVITY_FACTS_SQL } from '../src/modules/runs/nativeActivit
 // The immutable publication readers are ports here; live grants, transaction
 // ownership, bounded queries and public redaction run their real implementations.
 vi.mock('../src/modules/runs/repeatStartRead.js', () => ({ readAcceptedRepeatRunLocked: vi.fn(), readRecordedRepeatRunSnapshot: vi.fn() }))
-vi.mock('../src/modules/runs/repeatPostgres.js', () => ({ readRepeatExecutionLocked: vi.fn() }))
+vi.mock('../src/modules/runs/repeatPostgres.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/modules/runs/repeatPostgres.js')>(), readRepeatExecutionLocked: vi.fn() }))
 beforeEach(() => vi.resetAllMocks())
 
 function fixture() {

@@ -1,3 +1,4 @@
+import { readPublicProjectionLocked } from '../run-graph/compactSnapshot.js'
 import { randomUUID } from 'node:crypto'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import type { DurableInteraction } from '@foreman-code/contracts'
@@ -76,7 +77,7 @@ export async function consumeDeliveredApprovals(owner: RunOwnership, saver: Base
     const discovery = WorkflowRunV3Schema.parse(row?.record)
     const scope = RunGraphScopeSchema.parse({ workspaceId: discovery.workspaceId, workflowId: discovery.workflowId,
       runId: discovery.id, workflowVersionId: discovery.workflowVersionId, executionSemanticsVersion: 3 })
-    const publication = await openRunGraphPublication(sql, scope)
+    const publication = await openRunGraphPublication(sql, scope, readPublicProjectionLocked)
     await owner.readOneShotFence(sql)
     // Match the shared publication hierarchy: parent/head, executions, then
     // interactions/outboxes, and finally checkpoint writes. Never lock a child

@@ -7,13 +7,11 @@ import {
   WorkflowRunV3Schema, WorkflowVersionV3Schema, canonicalGraphJson,
   type AgentGraphExecutionIdentity, type RunGraphScope,
 } from '@foreman-code/contracts/wave25'
-import type pg from 'pg'
 import { PostgresRepeatReviewerBindings } from '../repeatReviewer.js'
 import { DomainError } from '../../errors.js'
 import { resolveImmutableApprovalRoute, usesNativeSelfReview } from '../../workflows/approvalRoutes.js'
 import { validateReviewerBootstrap } from '../../workflows/reviewerBootstrap.js'
-import { withExclusiveGraphConnection, beforeGraphCommit, type GraphSqlClient, type GraphTransactionSql } from '../../run-graph/connection.js'
-import { openRunGraphPublication, type RunGraphPublication } from '../../run-graph/publication.js'
+import { beforeGraphCommit, type GraphSqlClient, type GraphTransactionSql } from '../../run-graph/connection.js'
 import { RUN_CLEANUP_BOUNDARY_SQL } from './cleanupAuthority.js'
 
 export function fail(code: string, message = 'The approval identity, authority or owner changed.'): never {
@@ -41,17 +39,6 @@ export async function runFor(sql: GraphSqlClient, kind: 'interaction' | 'review'
 }
 export async function isCurrentApprovalRun(sql: GraphSqlClient, runId: string): Promise<boolean> {
   return (await scopeForRun(sql, runId)).executionSemanticsVersion === 3
-}
-export async function transact<T>(pool: pg.Pool, runId: string, work: (publication: RunGraphPublication) => Promise<T>): Promise<T> {
-  return withExclusiveGraphConnection(pool, (connection) => connection.transaction(async (sql) => {
-    const scope = await scopeForRun(sql, runId)
-    if (scope.executionSemanticsVersion !== 3) return fail('APPROVAL_SEMANTICS_MISMATCH')
-    const publication = await openRunGraphPublication(sql, scope)
-    // The Run and graph head precede child locks; never upgrade the parent lock.
-    // The Run lock serializes its children. Exact writers lock only their
-    // requester/reviewer identities, never an unbounded whole-Run history.
-    return work(publication)
-  }))
 }
 export async function lockInteraction(sql: GraphTransactionSql, id: string): Promise<DurableInteraction> {
   const row = (await sql.query<{ record: unknown }>('select record from durable_interactions where id=$1 for update', [id])).rows[0]
