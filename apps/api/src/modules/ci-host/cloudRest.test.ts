@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { once } from 'node:events'
 import { afterEach, expect, it, vi } from 'vitest'
-import { GitHubActionsProvider, CircleCiProvider, type CloudRun } from './cloudProviders.js'
+import { CLOUD_START_TIMEOUT_MS, GitHubActionsProvider, CircleCiProvider, type CloudRun } from './cloudProviders.js'
 import type { HostCiPorts } from './runner.js'
 import { withProviderPoll } from './providerPoll.js'
 import { packEntries } from '../files/archives/zip.js'
@@ -219,6 +219,39 @@ it('keeps transient CircleCI missing-run handling and expired lookup errors', as
   expect(await provider.find({ ...run, startedAt: finishedAt })).toBeNull()
   await expect(provider.find(run)).rejects.toMatchObject({ code: 'CI_CLOUD_RUN_NOT_FOUND',
     message: 'CircleCI run is not visible.' })
+})
+
+it.each([CLOUD_START_TIMEOUT_MS - 1, CLOUD_START_TIMEOUT_MS, CLOUD_START_TIMEOUT_MS + 1])(
+  'applies the CircleCI missing-run deadline at %s ms after dispatch', async elapsed => {
+    const server = await http((_request, response) => json(response, { message: 'Not Found' }, 404))
+    const cli = ports()
+    cli.value.now = () => new Date(Date.parse(run.startedAt) + elapsed)
+    const provider = new CircleCiProvider(cli.value, { ...server, circleToken: async () => 'circle-test-token' })
+    if (elapsed < CLOUD_START_TIMEOUT_MS) {
+      expect(await provider.find(run)).toBeNull()
+    } else {
+      await expect(provider.find(run)).rejects.toMatchObject({
+        code: 'CI_CLOUD_RUN_NOT_FOUND', message: 'CircleCI run is not visible.',
+      })
+    }
+    expect(cli.calls).not.toHaveBeenCalled()
+  },
+)
+
+it.each(['\u0007', '\u001b\\'])('renders CircleCI terminal links ending with %j', async terminator => {
+  const server = await http((request, response) => {
+    if (request.url!.includes('/stdout')) {
+      response.end('\u001b]8;;https://example.test' + terminator + 'link'
+        + '\u001b]8;;' + terminator + '\t12\b3\n\u001b[31mfailure\u001b[0m\n')
+      return
+    }
+    if (request.url!.includes('/stderr')) return response.end('')
+    circleHandler(request, response)
+  })
+  const cli = ports()
+  const provider = new CircleCiProvider(cli.value, { ...server, circleToken: async () => 'circle-test-token' })
+  expect((await provider.status(run)).output).toEqual({ key: 'job:1', text: 'link    13\nfailure\n' })
+  expect(cli.calls).not.toHaveBeenCalled()
 })
 
 it('preserves CircleCI configuration failures', async () => {
