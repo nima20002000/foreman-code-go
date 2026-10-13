@@ -66,9 +66,10 @@ async function gateComputers(endpoint: HostCiEndpoint, reservedCloudSlots: numbe
   return available.filter((value): value is GateComputer => value !== null)
 }
 
-/** Hosts get one large job each. Cloud takes checks first, then work that extends the hosts' critical path.
- * Learned executor speeds scale each computer's integration time, so slower computers take less work.
- * Reserved cloud slots stay out of the plan so non-gate tickets can start while the gate runs. */
+/** One wave: every ready executor takes at most one part. Each build computer takes one integration part sized by
+ * its CPU, memory and build allowance (its shards); cloud slots take one check or one integration part each.
+ * Learned executor speeds scale each computer's integration time, so all parts end at about the same time.
+ * Not-ready computers and reserved cloud slots stay out of the plan, so no part waits on them. */
 export async function planCiGate(input: CiRunInput, integration: CiIntegrationInventory,
   unit: CiUnitInventory, durations: CiDurations, endpoint: HostCiEndpoint,
   speeds: ExecutorSpeeds = new Map(), reservedCloudSlots = 0, unitSlots?: number): Promise<GatePart[]> {
@@ -82,21 +83,27 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
   const slots = Math.min(unitSlots ?? availableSlots, availableSlots)
   const checks = (['typecheck', 'lint', 'unit'] as const).flatMap(suite =>
     planCiParts({ ...input, gate: false, suite, scope: 'full' }, durations, unit, slots).map(part => ({ ...part, suite })))
-  const result: GatePart[] = checks.map(part => {
+  // Checks that only some providers run are placed first, so they still find an empty slot of their own.
+  const placed = new Map<(typeof checks)[number], GatePart>()
+  for (const part of [...checks].sort((left, right) => Number(runsOnCircleCi(left)) - Number(runsOnCircleCi(right)))) {
     const eligible = clouds.filter(item => item.computer.hostRef.provider !== 'circleci' || runsOnCircleCi(part))
     const target = [...eligible].sort((left, right) => left.checkMs - right.checkMs)[0]
     if (!target) throw new DomainError('CI_GATE_CAPACITY_REQUIRED', `No cloud executor can run ${part.part ?? part.suite}.`, 409)
     const expectedDurationMs = part.suite === 'unit' ? 210_000 : 150_000
     target.checkMs += expectedDurationMs
-    return { ...part, plannedHostKey: target.computer.key, expectedDurationMs }
-  })
+    placed.set(part, { ...part, plannedHostKey: target.computer.key, expectedDurationMs })
+  }
+  const result: GatePart[] = checks.map(part => placed.get(part)!)
+  // A cloud slot runs one ticket per boot, so a second part on a slot waits for a new boot. Integration therefore goes
+  // only to build computers and cloud slots without a check: every executor gets at most one part.
+  const integrationFleet = fleet.filter(item => item.computer.hostRef.kind !== 'cloud' || item.checkMs === 0)
   const known = Object.values(integration.durations).sort((left, right) => left - right)
   const median = known[Math.floor(known.length / 2)] ?? 30_000
   const duration = (file: string) => integration.durations[file] ?? median
   const files = [...new Set(integration.files)].sort((left, right) => duration(right) - duration(left) || left.localeCompare(right))
   // Longest-first list scheduling over hosts and clouds with incremental shard loads: each file goes where it finishes
   // earliest (hosts win ties), so clouds only take integration that shortens the gate's critical path.
-  const load = new Map(fleet.map(item => [item, { lanes: Array.from({ length: item.shards }, () => 0), serial: 0 }]))
+  const load = new Map(integrationFleet.map(item => [item, { lanes: Array.from({ length: item.shards }, () => 0), serial: 0 }]))
   const factor = (item: GateComputer) => speeds.get(executorSpeedKey(item.computer)) ?? 1
   const finishWith = (item: GateComputer, file: string) => {
     const state = load.get(item)!
@@ -107,7 +114,8 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
   const exclusiveCount = (item: GateComputer) => item.files.filter(file => exclusive.has(file) || requiresUserSystemd(file)).length
   for (const file of files) {
     const serial = exclusive.has(file) || requiresUserSystemd(file)
-    const eligible = [...hosts, ...clouds.filter(cloud => !requiresUserSystemd(file) || cloud.computer.userSystemd?.supported)]
+    const eligible = integrationFleet.filter(item => item.computer.hostRef.kind !== 'cloud'
+      || !requiresUserSystemd(file) || item.computer.userSystemd?.supported)
     const target = eligible.map((item, order) => ({ item, order, finish: finishWith(item, file) }))
       .sort((left, right) => left.finish - right.finish
         || (serial ? exclusiveCount(left.item) - exclusiveCount(right.item) : 0) || left.order - right.order)[0]!.item
@@ -119,7 +127,7 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
     }
     target.files.push(file)
   }
-  for (const item of fleet.filter(item => item.files.length)) {
+  for (const item of integrationFleet.filter(item => item.files.length)) {
     result.push({ suite: 'integration', part: null, partition: null, files: item.files,
       plannedHostKey: item.computer.key, integrationShards: item.shards,
       expectedDurationMs: Math.round(factor(item) * (SETUP_MS + integrationTime(item.files, item.shards, duration))),
