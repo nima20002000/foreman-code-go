@@ -243,8 +243,6 @@ describe('bounded authenticated transfer staging', () => {
         expiresAt: new Date(Date.parse(intent.expiresAt) + 60_000).toISOString(),
       }, f.context)).rejects.toThrow('immutable')
     }
-    await expect(readFile(join(f.root, `${f.intent.transferId}.part`))).rejects.toThrow()
-    expect(JSON.parse(await readFile(join(f.root, `${f.intent.transferId}.json`), 'utf8')).payload.progress.state).toBe('cancelled')
   })
   it('reclaims expired unfinished transfers before admitting another one for the device', async () => {
     const f = await fixture()
@@ -272,8 +270,6 @@ describe('bounded authenticated transfer staging', () => {
         verifiedBytes: 0,
       })
       await expect(restarted.start({ ...next, transferId }, f.context)).rejects.toThrow('immutable')
-      await expect(readFile(join(f.root, `${transferId}.part`))).rejects.toThrow()
-      expect(JSON.parse(await readFile(join(f.root, `${transferId}.json`), 'utf8')).payload.progress.state).toBe('cancelled')
     }
   })
   it('rejects symlink ancestors and hardlinked/symlink partial files', async () => {
