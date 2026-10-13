@@ -19,6 +19,8 @@ it('renews only the bound reviewer principal and execution and persists the same
       .rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_NOT_RENEWABLE' })
     await expect(service.renewForExecution(f.reviewer.id, other))
       .rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_NOT_RENEWABLE' })
+    await expect(service.renewForExecution(f.reviewer.id, { principalId: 'unbound-principal' }))
+      .rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_NOT_RENEWABLE' })
     expect(await read()).toEqual(before)
     const expiry = await service.renewForExecution(f.reviewer.id, credential)
     const after = await read()
@@ -26,7 +28,11 @@ it('renews only the bound reviewer principal and execution and persists the same
     expect(after.expires_at.getTime()).toBeGreaterThanOrEqual(before.expires_at.getTime())
     expect(after.token_hash).toBe(before.token_hash)
     expect(after.revoked_at).toBeNull()
-    expect((await f.access.authenticate(token, 'worker')).id).toBe(credential.principalId)
+    expect(await f.access.authenticate(token, 'worker')).toMatchObject({
+      id: credential.principalId,
+      expiresAt: expiry,
+    })
+    expect(credential.renewalDeadline).toBeGreaterThan(performance.now())
   } finally { await f.close() }
 }, 60_000)
 
@@ -45,12 +51,26 @@ it('keeps the saved reviewer and its renewable credential after rejecting a revi
   } finally { await f.close() }
 }, 60_000)
 
-it.each(['expired', 'principal revoked', 'binding revoked', 'reviewer identity changed', 'session not finalized', 'run closed'])(
+it.each([
+  'expired',
+  'principal revoked',
+  'binding revoked',
+  'reviewer identity changed',
+  'binding identity changed',
+  'session not finalized',
+  'run closed',
+])(
   'refuses reviewer renewal when %s and leaves persisted expiry unchanged', async condition => {
     const f = await routedApprovalFixture()
     try {
       const service = new WorkerCredentialService(f.db.pool, f.access, 60_000)
       const credential = await f.credentials.issueForReviewer(f.reviewer.id)
+      const token = credential.environment.variables.GRAPHQL_MCP_TOKEN!
+      expect(await f.access.authenticate(token, 'worker')).toMatchObject({
+        id: credential.principalId,
+        agentId: f.reviewer.agentId,
+      })
+      const deadline = credential.renewalDeadline
       if (condition === 'expired') {
         await f.db.pool.query("update management_principals set expires_at=clock_timestamp()-interval '1 second' where id=$1",
           [credential.principalId])
@@ -62,6 +82,9 @@ it.each(['expired', 'principal revoked', 'binding revoked', 'reviewer identity c
           [credential.principalId])
       } else if (condition === 'reviewer identity changed') {
         await f.db.pool.query('update management_principals set agent_id=$2 where id=$1',
+          [credential.principalId, f.requester.agentId])
+      } else if (condition === 'binding identity changed') {
+        await f.db.pool.query('update worker_credential_bindings set agent_id=$2 where principal_id=$1',
           [credential.principalId, f.requester.agentId])
       } else if (condition === 'session not finalized') {
         await f.db.pool.query('update execution_native_sessions set workflow_finalized_at=null where execution_id=$1',
@@ -76,6 +99,7 @@ it.each(['expired', 'principal revoked', 'binding revoked', 'reviewer identity c
       await expect(service.renewForExecution(f.reviewer.id, credential))
         .rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_NOT_RENEWABLE' })
       expect(await readExpiry()).toEqual(before)
+      expect(credential.renewalDeadline).toBe(deadline)
       await expect(f.access.authenticate(credential.environment.variables.GRAPHQL_MCP_TOKEN!, 'worker'))
         .rejects.toMatchObject({ status: 401 })
     } finally { await f.close() }

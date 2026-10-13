@@ -237,6 +237,24 @@ it('credential renewal returns database expiry and a monotonic deadline despite 
   }
 })
 
+it('credential renewal returns the database expiry and a monotonic deadline', async () => {
+  const databaseNow = new Date('2026-09-16T00:00:00.000Z')
+  const expiresAt = new Date(databaseNow.getTime() + 60_000)
+  const pool = {
+    async query() {
+      return { rows: [{ expires_at: expiresAt, database_now: databaseNow }] }
+    },
+  } as unknown as pg.Pool
+  const service = new WorkerCredentialService(pool, {} as PostgresAccessService, 60_000)
+  const credential: Pick<IssuedWorkerCredential, 'principalId' | 'renewalDeadline'> = {
+    principalId: 'principal-reviewer',
+  }
+  const requestedAt = performance.now()
+  assert.equal(await service.renewForExecution('execution-reviewer', credential), expiresAt.toISOString())
+  assert.ok(credential.renewalDeadline! >= requestedAt + 59_999)
+  assert.ok(credential.renewalDeadline! <= performance.now() + 60_000)
+})
+
 it('F8: hung initial authority validation fails before credential expiry instead of waiting forever', async () => {
   vi.useFakeTimers(); vi.setSystemTime(new Date(now))
   try {

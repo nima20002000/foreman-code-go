@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
 import { readProductEnvironment, resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { productionMaintenanceKey } from '../packages/contracts/src/productionMaintenance.mjs'
+import { isBackwardCompatibleSchema } from './production-schema.mjs'
 
 export function parseRunWaitMinutes(value) {
   const minutes = value === undefined ? 120 : Number(value)
@@ -101,7 +102,7 @@ export async function recoverReleaseCutover({ stateFile, steps }) {
   try {
     await saveDeployment(stateFile, state, 'recovering')
     await steps.stop()
-    if (state.schemaMayHaveChanged) {
+    if (state.schemaMayHaveChanged && !(state.migrationComplete && state.backwardCompatible)) {
       if (!state.backupComplete) throw new Error('No complete pre-migration database backup is available.')
       await steps.restore(state.backupFile)
       state.schemaMayHaveChanged = false
@@ -129,7 +130,8 @@ export async function recoverReleaseCutover({ stateFile, steps }) {
 }
 
 export async function runReleaseCutover({ release, previousRelease, stateFile, backupFile, steps }) {
-  const state = { release, previousRelease, backupFile, backupComplete: false, schemaMayHaveChanged: false }
+  const state = { release, previousRelease, backupFile, backupComplete: false, schemaMayHaveChanged: false,
+    migrationComplete: false, backwardCompatible: false }
   let recoveryAttempted = false
   const perform = async (phase, action) => {
     await saveDeployment(stateFile, state, phase)
@@ -150,8 +152,14 @@ export async function runReleaseCutover({ release, previousRelease, stateFile, b
     await perform('stopping', steps.stop)
     await perform('backing-up', () => steps.backup(backupFile))
     state.backupComplete = true
+    const schemaBefore = await steps.schema?.(release)
     state.schemaMayHaveChanged = true
     await perform('migrating', () => steps.migrate(release))
+    state.migrationComplete = true
+    if (schemaBefore) {
+      state.backwardCompatible = isBackwardCompatibleSchema(schemaBefore, await steps.schema(release))
+    }
+    await saveDeployment(stateFile, state, 'migrated')
     await perform('upgrading-launcher', () => steps.upgradeLauncher(release))
     await perform('activating', () => steps.activate(release))
     const start = async () => {
