@@ -63,6 +63,7 @@ function fixture() {
     if (sql.includes('from ci_runs')) return { rows: [] }
     if (sql.includes('from durable_interactions')) { expect(values).toEqual([run.id, run.workspaceId, run.workflowId]); return { rows: [] } }
     if (sql === RUN_ACTIVITIES_BOUNDS_SQL) { expect(values).toEqual([run.id]); return { rows: [{ high_water: '0', retained_from: '0', observed: 0 }] } }
+    if (sql.startsWith('select record from harness_executions')) return { rows: [{ record: execution }] }
     if (sql.includes('from harness_executions')) return { rows: [{ id: execution.id }] }
     if (sql.includes('from run_activity')) return { rows: [] }
     if (sql.includes('from run_cleanup_intents')) return { rows: [{ pending: false }] }
