@@ -38,11 +38,11 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[]) {
     if (sql.includes('as group_id')) {
       return { rows: records.filter(record => !record.deferred).map(record => ({ group_id: record.groupId, state: record.state })) }
     }
-    if (sql.includes("'gate'='true'")) {
-      return { rows: records.filter(record => record.gate).map(record => ({ record })) }
-    }
     if (sql.includes("state='queued'")) {
       return { rows: records.filter(record => record.state === 'queued').map(record => ({ record, durations: null })) }
+    }
+    if (sql.includes("'gate'='true'")) {
+      return { rows: records.filter(record => record.gate).map(record => ({ record })) }
     }
     if (sql.includes("state in ('passed','failed')")) return { rows: [] }
     return { rows: records.filter(record => ['starting', 'running'].includes(record.state))
