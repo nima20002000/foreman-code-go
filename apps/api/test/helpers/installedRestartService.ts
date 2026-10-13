@@ -6,7 +6,7 @@ import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import ts from 'typescript'
-import { apiServiceTemplate, deployProductionApi }
+import { apiServiceTemplate, deployProductionApi, publish }
   from '../../../../scripts/local-production-runtime.mjs'
 import { renderUserService } from '../../../worker/src/service.mjs'
 import { copyApiRuntime } from '../../../../scripts/copy-api-runtime.mjs'
@@ -17,7 +17,7 @@ const repository = fileURLToPath(new URL('../../../..', import.meta.url))
 const serviceUser = userInfo()
 
 export async function publishRestartUnit(unitPath: string, service: string) {
-  await writeFile(unitPath, service, { mode: 0o600 })
+  await publish(unitPath, service, 0o600)
 }
 
 async function sources(directory: string): Promise<string[]> {
