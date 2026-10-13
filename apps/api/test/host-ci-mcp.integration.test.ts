@@ -1630,10 +1630,15 @@ it('shows priority and global queue position through MCP and admits high tickets
     const denied = await f.connect(CI_GET_ACTIONS)
     expect((await f.call(denied, 'ci_run', { suite: 'install', commandId: 'denied-high', priority: 'high' })).isError)
       .toBe(true)
-    f.computers.push(...available)
+    f.computers.push(available[0]!)
     await f.ci.dispatch()
+    expect(f.started).toHaveLength(1)
     expect(f.started[0]?.request).toMatchObject({ runId: high.ticketId })
-    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: high.ticketId })).queue).toBeNull()
+    const admitted = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: high.ticketId }))
+    expect(admitted.run.state).toBe('running')
+    expect(admitted.queue).toBeNull()
+    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: older[0] })).run.state)
+      .toBe('queued')
   } finally { await f.close() }
 })
 
@@ -1943,6 +1948,38 @@ it('persists a CI watchdog failure for authenticated MCP status and log readback
     for (const tool of ['ci_get', 'ci_logs_read']) {
       expect((await f.call(denied, tool, { ticketId: started.ticketId })).isError).toBe(true)
     }
+  } finally { await f.close() }
+})
+
+it.each(['mcp', 'http'] as const)('dispatches affected smoke selections with valid host scope through %s', async transport => {
+  const f = await fixture()
+  try {
+    const computer = f.computers[0]!
+    const input = { suite: 'integration', scope: 'affected', commit: 'a'.repeat(40),
+      files: ['apps/api/test/ci-smoke.integration.test.ts'], smokeComputer: computer.hostRef,
+      commandId: `smoke-scope-${transport}` }
+    let started
+    if (transport === 'mcp') {
+      started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
+    } else {
+      const token = await f.credential([...CI_RUN_ACTIONS, ...CI_GET_ACTIONS])
+      const response = await f.app.inject({ method: 'POST', url: `/api/management/workspaces/${f.workspaceId}/ci`,
+        headers: { authorization: `Bearer ${token.token}` }, payload: input })
+      expect(response.statusCode, response.body).toBe(200)
+      started = CiRunOutputSchema.parse(response.json())
+    }
+    await f.ci.dispatch()
+    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    expect(read.run).toMatchObject({ state: 'running', scope: 'affected', files: input.files,
+      smokeComputer: computer.hostRef, computer: { hostRef: computer.hostRef } })
+    expect(f.started).toEqual([{ computer: computer.label, request: expect.objectContaining({
+      operation: 'start', runId: started.ticketId, scope: 'full', gate: true,
+      files: input.files, integrationShards: 23,
+    }) }])
+    const stored = (await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
+      [started.ticketId])).rows[0]!.record
+    expect(CiRunRecordSchema.parse(stored)).toMatchObject({ state: 'running', scope: 'affected',
+      files: input.files, computer: { hostRef: computer.hostRef } })
   } finally { await f.close() }
 })
 
