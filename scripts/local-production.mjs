@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { runProductionCiSmoke } from './install-ci-smoke.mjs'
+import { readMigrationSchema } from './production-schema.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { renderUserService } from '../apps/worker/src/service.mjs'
 import { workerPath } from '../apps/worker/src/harnessPath.mjs'
@@ -86,7 +87,7 @@ async function stageRelease({ source: buildSource, commit }, runBuild) {
     await cp(join(buildSource, 'apps/web/dist'), join(release, 'apps/web/dist'), { recursive: true })
     await mkdir(join(release, 'scripts'), { recursive: true })
     for (const name of ['local-production.mjs', 'local-production-runtime.mjs', 'graphql-mcp.mjs',
-      'worker-release-artifacts.mjs', 'worker-artifact-files.mjs', 'install-ci-smoke.mjs']) {
+      'worker-release-artifacts.mjs', 'worker-artifact-files.mjs', 'install-ci-smoke.mjs', 'production-schema.mjs']) {
       await copyFile(join(buildSource, 'scripts', name), join(release, 'scripts', name))
     }
     await copyVerificationRuntime(buildSource, release)
@@ -230,6 +231,7 @@ function cutoverSteps(environment, { firstInstall = false, releaseMaintenance = 
   return {
     stop: () => run('/usr/bin/systemctl', ['--user', 'stop', units.api]),
     backup: archive => backupDatabase({ archive, database: 'graphql_production', run: databaseCommand }),
+    schema: release => readMigrationSchema(release, environment.DATABASE_URL),
     migrate: release => run(join(release, 'node'), ['dist/cli/migrate.js'], {
       cwd: join(release, 'apps/api'), env: { ...process.env, ...environment },
     }),

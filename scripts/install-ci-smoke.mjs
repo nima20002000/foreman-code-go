@@ -6,24 +6,31 @@ import { isDeepStrictEqual } from 'node:util'
 
 const smokeFile = 'apps/api/test/ci-smoke.integration.test.ts'
 
-function httpClient(origin, signal, timeoutMs, token) {
-  return async (path, options = {}) => {
+function httpClient(origin, signal, requestTimeoutMs, token, log = console.log) {
+  return async (path, { timeoutMs = requestTimeoutMs, step = 'request', ...options } = {}) => {
+    const started = Date.now()
+    const method = options.method ?? 'GET'
     const timeout = AbortSignal.timeout(timeoutMs)
     try {
       const response = await fetch(`${origin}${path}`, { ...options,
         headers: { origin, 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
         signal: AbortSignal.any([signal, timeout]) })
       const body = await response.text()
-      if (!response.ok) throw new Error(`${options.method ?? 'GET'} ${path}: HTTP ${response.status}: ${body}`)
-      return body ? JSON.parse(body) : {}
+      if (!response.ok) throw new Error(`${method} ${path}: HTTP ${response.status}: ${body}`)
+      const result = body ? JSON.parse(body) : {}
+      if (step.startsWith('admission')) {
+        log(`CI smoke ${step}: ${method} ${path} completed in ${Date.now() - started} ms (limit ${timeoutMs} ms).`)
+      }
+      return result
     } catch (error) {
       if (token && error.message.includes(token)) {
         error = new Error(error.message.replaceAll(token, '[redacted]'))
       }
       if (timeout.aborted || signal.reason?.name === 'TimeoutError') {
-        throw new Error(`${options.method ?? 'GET'} ${path} timed out: ${error.message}`)
+        throw new Error(`CI smoke ${step}: ${method} ${path} timed out after ${Date.now() - started} ms `
+          + `(request limit ${timeoutMs} ms): ${error.message}`)
       }
-      throw error
+      throw new Error(`CI smoke ${step}: ${error.message}`, { cause: error })
     }
   }
 }
@@ -44,22 +51,24 @@ function smokeTargets(computers) {
 }
 
 export async function runInstallCiSmoke({ origin, workspaceId, commit, token, probeDurationMs = 30_000,
-  timeoutMs = 165_000, requestTimeoutMs = 5000, pollMs = 1000 }) {
+  timeoutMs = 165_000, requestTimeoutMs = 5000, admissionTimeoutMs = 60_000, pollMs = 1000, log = console.log }) {
   const controller = new AbortController()
   const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)])
-  const request = httpClient(origin, signal, requestTimeoutMs, token)
+  const request = httpClient(origin, signal, requestTimeoutMs, token, log)
   const root = `/api/management/workspaces/${encodeURIComponent(workspaceId)}/ci`
   const tickets = new Set()
   let ciFinished = false
+  let admissionCount = 0
   const probes = async () => {
     const until = Date.now() + probeDurationMs
     do {
-      await request('/health/live')
+      await request('/health/live', { step: 'health probe' })
       await delay(pollMs, undefined, { signal })
     } while (Date.now() < until || !ciFinished)
   }
   const admit = async selection => {
-    const result = await request(root, { method: 'POST', body: JSON.stringify({
+    const result = await request(root, { method: 'POST', timeoutMs: admissionTimeoutMs,
+      step: `admission ${++admissionCount}`, body: JSON.stringify({
       suite: selection.smokeComputer ? 'integration' : 'unit', scope: 'affected', commit, commandId: randomUUID(), priority: 'high',
       noSupersede: true, ...selection }) })
     for (const part of result.partitions ?? [result]) tickets.add(part.ticketId)
@@ -68,13 +77,13 @@ export async function runInstallCiSmoke({ origin, workspaceId, commit, token, pr
   }
   const wait = async (ticketId, computer) => {
     while (true) {
-      const result = await request(`${root}/${ticketId}`)
+      const result = await request(`${root}/${ticketId}`, { step: `ticket ${ticketId}` })
       if (result.run.state === 'passed' && result.run.exitCode === 0) {
         if (computer) {
           if (!isDeepStrictEqual(result.run.computer?.hostRef, computer.hostRef)) {
             throw new Error(`CI smoke ${ticketId} ran on a different computer.`)
           }
-          const { tests } = await request(`${root}/${ticketId}/tests`)
+          const { tests } = await request(`${root}/${ticketId}/tests`, { step: `test results ${ticketId}` })
           const file = tests?.files.find(file => file.file === smokeFile)
           if (!file?.tests.some(test => test.status === 'passed') || tests.summary.failed !== 0) {
             throw new Error(`CI smoke ${ticketId} passed without running ${smokeFile}.`)
@@ -96,7 +105,7 @@ export async function runInstallCiSmoke({ origin, workspaceId, commit, token, pr
     const second = await admit({ files: [] })
     await wait(first)
     await wait(second)
-    const targets = smokeTargets((await request(`${root}/computers`)).computers)
+    const targets = smokeTargets((await request(`${root}/computers`, { step: 'computer discovery' })).computers)
     if (!targets.length) throw new Error('CI smoke has no ready executor. Configure CI or explicitly opt out.')
     const jobs = []
     for (const computer of targets) {
@@ -136,7 +145,7 @@ export async function runProductionCiSmoke({ origin, release, token, ...smokeOpt
   let workspace
   do {
     const query = new URLSearchParams({ limit: '100', ...(cursor ? { cursor } : {}) })
-    const page = await request(`/api/management/workspaces?${query}`)
+    const page = await request(`/api/management/workspaces?${query}`, { step: 'workspace discovery' })
     workspace = page.items.find(item => `${item.workspace.repository?.owner}/${item.workspace.repository?.name}` === repository)
     cursor = page.pageInfo.nextCursor
   } while (!workspace && cursor)
