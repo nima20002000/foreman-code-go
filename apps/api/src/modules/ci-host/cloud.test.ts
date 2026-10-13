@@ -520,6 +520,31 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(f.circle.canceled).toEqual([])
   })
 
+  it.each(['starting', 'running'] as const)(
+    'cancels the known CircleCI pipeline from %s when discovery is unavailable and persists the cancellation',
+    async state => {
+      const f = await fixture({}, { provider: 'circleci' })
+      if (state === 'starting') f.circle.phantoms = Number.POSITIVE_INFINITY
+      const runId = randomUUID()
+      expect(await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId,
+        repository: 'octo/site', commit: f.commit, suite: 'integration', scope: 'full' }))
+        .toMatchObject({ run: { state } })
+      f.circle.lookupError = 'run.not_found'
+      f.advance(75_000)
+      const read = { operation: 'read', runId, afterOffset: 0, maxBytes: 1024 }
+      expect(await f.reopen().handle(read)).toMatchObject({ run: { state, finishedAt: null } })
+      expect(await f.reopen().handle({ operation: 'cancel', runId }))
+        .toMatchObject({ operation: 'cancel', run: { state: 'canceled', message: 'Canceled.' } })
+      expect(f.circle.canceled).toEqual(['run-1'])
+      expect(await f.reopen().handle({ operation: 'cancel', runId }))
+        .toMatchObject({ run: { state: 'canceled' } })
+      f.advance(4_000)
+      expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'canceled' } })
+      expect(f.circle.canceled).toEqual(['run-1'])
+      expect(f.circle.triggered).toHaveLength(1)
+    },
+  )
+
   it('retains ownership and exposes bounded reconciliation when a started CircleCI pipeline disappears', async () => {
     const f = await fixture({}, { provider: 'circleci' })
     const runId = randomUUID()
