@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, writeFile, rm, readlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import { tmpdir } from 'node:os';
@@ -26,7 +26,8 @@ before(async () => {
   const output = join(bundleDirectory, 'drain.mjs');
   const domains = new URL('../../../apps/api/src/modules/devices/installedWorkerDomains.ts', import.meta.url);
   await build({ stdin: {
-    contents: `export { createWorkerRuntimeDrain } from ${JSON.stringify(domains.pathname)};`,
+    contents: `export { createWorkerRuntimeDrain } from ${JSON.stringify(fileURLToPath(domains))};`,
+    resolveDir: fileURLToPath(new URL('../../../', import.meta.url)),
   }, outfile: output, bundle: true, platform: 'node', format: 'esm', target: 'node22', external: ['sharp'],
   banner: { js: "import { createRequire as testCreateRequire } from 'node:module'; const require = testCreateRequire(import.meta.url);" } });
   ({ createWorkerRuntimeDrain } = await import(pathToFileURL(output).href));
