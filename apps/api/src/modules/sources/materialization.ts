@@ -12,7 +12,7 @@ import { sourceMaterializationBytes } from './footprint.js'
 import { SOURCE_LIMITS, SourceError, sourcePath, verifySourceBytes, verifySourceManifest } from './manifest.js'
 import { anchored, identity, openChildDirectory, openPrivateRoot,
   withPrivateDirectoryLock } from './privateFilesystem.js'
-import type { MaterializationAttempt, SourceByteReader, SourceMaterializationPort } from './ports.js'
+import type { MaterializationAttempt, SourceByteReader } from './ports.js'
 import { SourcePreparationClosureSchema, type SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 import type { JobVerificationQuotaPool } from '@foreman-code/contracts/job-verification-runtime'
 import { verifyJobQuotaOwnership, type JobQuotaReader } from '../jobs/quotaOwnership.js'
@@ -52,7 +52,7 @@ export async function materializationDirectory(root: FileHandle, receipt: Pick<M
   }
 }
 export type SourceQuotaPool = { pool: JobVerificationQuotaPool; read?: JobQuotaReader }
-export class PrivateSourceMaterializer implements SourceMaterializationPort {
+export class PrivateSourceMaterializer {
   private active = 0
   constructor(private readonly bytes: SourceByteReader | null,
     private readonly authorize: (binding: RootBinding, attempt: MaterializationAttempt) => Promise<void>,

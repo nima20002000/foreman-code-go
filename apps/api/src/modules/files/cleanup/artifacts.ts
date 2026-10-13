@@ -1,6 +1,6 @@
 import type pg from 'pg'
 
-import { cleanupBatchSize, type FileArtifactCleanupCandidate, type FileArtifactCleanupRepository,
+import { cleanupBatchSize, type FileArtifactCleanupCandidate,
   type FileCleanupOutcome } from './repository.js'
 
 // Sessions issued before storage tracking have no binding in their record. Conservatively
@@ -14,7 +14,7 @@ const ownsKey = `(coalesce(a.record->'storageKeys','[]'::jsonb) ? k.storage_key:
 /** Artifact records are the durable byte registry, including writes that never became snapshots.
  * Never infer ownership of an unknown disk key. The snapshot fallback also reclaims current
  * pre-upgrade artifacts; a later write registers that old snapshot before replacing its pointer. */
-export class PostgresFileArtifactCleanupRepository implements FileArtifactCleanupRepository {
+export class PostgresFileArtifactCleanupRepository {
   constructor(private readonly pool: pg.Pool) {}
 
   async findByStorageKeys(keys: readonly string[]): Promise<FileArtifactCleanupCandidate[]> {

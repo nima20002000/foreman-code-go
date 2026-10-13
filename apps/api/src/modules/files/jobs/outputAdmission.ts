@@ -22,12 +22,11 @@ import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
 import { sourceMaterializationDigest } from '../../sources/bindingHash.js'
 import { DomainError } from '../../errors.js'
 import type { FileMutationSource } from '../repository.js'
-import type { AcceptedJobTransferResolver } from './transferReader.js'
 
 import { JOB_OUTPUT_NAMESPACE, outputTransferContext } from './workerProtocol.js'
 export { JOB_OUTPUT_NAMESPACE, outputTransferContext } from './workerProtocol.js'
 const OPERATION = 'job.output.admit'
-export class PostgresJobOutputAdmission implements AcceptedJobTransferResolver {
+export class PostgresJobOutputAdmission {
   private readonly commands: PostgresCommandCoordinator
   private readonly frames = new AsyncLocalStorage<Readonly<DeviceSessionBinding>>()
   constructor(private readonly pool: pg.Pool, private readonly authority: JobPublicationAuthority,

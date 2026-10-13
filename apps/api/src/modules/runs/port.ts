@@ -28,16 +28,3 @@ export interface RunStateUpdate {
   startedAt?: Timestamp
   finishedAt?: Timestamp
 }
-
-/** Run writes must retain their immutable workflow and agent-configuration pins. */
-export interface RunRepository {
-  get(runId: string): Promise<RepositoryWorkflowRun | undefined>
-}
-
-/** ENG-04 maps a pinned run to LangGraph without coupling HTTP routes to graph internals. */
-export interface WorkflowOrchestrator {
-  start(runId: string): Promise<void>
-  resume(runId: string): Promise<void>
-  cancel(runId: string): Promise<boolean>
-  shutdown(): Promise<void>
-}

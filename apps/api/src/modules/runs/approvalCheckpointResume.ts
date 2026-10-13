@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import type { DurableInteraction } from '@foreman-code/contracts'
 import { WorkflowRunV3Schema, RunGraphScopeSchema } from '@foreman-code/contracts/wave25'
-import { isAtomicApprovalCheckpointSaver, type AtomicApprovalCheckpointSaver } from '../../infrastructure/approvalCheckpointSaver.js'
+import { isAtomicApprovalCheckpointSaver, type ApprovalPostgresSaver } from '../../infrastructure/approvalCheckpointSaver.js'
 import { DomainError } from '../errors.js'
 import { openRunGraphPublication, currentRunGraphPublication } from '../run-graph/publication.js'
 import { beforeGraphCommit, didGraphTransactionCommit, type GraphTransactionSql } from '../run-graph/connection.js'
@@ -178,7 +178,7 @@ export async function consumeDeliveredApprovals(owner: RunOwnership, saver: Base
  * Serialized IDs or an arbitrary Command can never move a waiting Run forward. */
 export interface WorkflowResumePermit { readonly runId: string; readonly checkpointId: string }
 const resumePermits = new WeakMap<object, {
-  owner: RunOwnership; saver: AtomicApprovalCheckpointSaver; runId: string; versionId: string; checkpointId: string;
+  owner: RunOwnership; saver: ApprovalPostgresSaver; runId: string; versionId: string; checkpointId: string;
   fence: { ownerId: string; fence: string }; interactions: DurableInteraction[]
 }>()
 export async function assertConsumedWorkflowResumeLocked(sql: GraphTransactionSql, owner: RunOwnership,

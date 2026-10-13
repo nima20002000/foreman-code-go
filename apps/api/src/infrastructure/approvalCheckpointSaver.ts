@@ -11,12 +11,7 @@ const INTERRUPT = '__interrupt__', RESUME = '__resume__'
 const MAX_WRITE_BYTES = 262144
 const MAX_CHECKPOINT_WRITE_BYTES = 2_000_000
 interface StoredWrite { task_id: string; channel: string; type: string; blob: Buffer }
-export interface AtomicApprovalCheckpointSaver extends BaseCheckpointSaver {
-  inspectApprovalInterrupt(sql: GraphTransactionSql, interaction: Pick<DurableInteraction, 'id' | 'runId' | 'graphThreadId' | 'graphInterruptId'>): Promise<string>
-  consumeApprovalInterrupt(sql: GraphTransactionSql, interaction: DurableInteraction): Promise<void>
-  observeApprovalInterrupts(runId: string, observer: () => Promise<void>): () => void
-}
-export function isAtomicApprovalCheckpointSaver(saver: BaseCheckpointSaver): saver is AtomicApprovalCheckpointSaver {
+export function isAtomicApprovalCheckpointSaver(saver: BaseCheckpointSaver): saver is ApprovalPostgresSaver {
   return saver instanceof ApprovalPostgresSaver
 }
 function denied(code = 'GRAPH_INTERRUPT_INVALID'): never {
@@ -32,7 +27,7 @@ function object(value: unknown): Record<string, unknown> {
  * persistence notifies the live Run owner after COMMIT. Approval consumption
  * uses the owner's transaction rather than the saver's private pool transaction.
  */
-export class ApprovalPostgresSaver extends PostgresSaver implements AtomicApprovalCheckpointSaver {
+export class ApprovalPostgresSaver extends PostgresSaver {
   private readonly approvalSchema: string
   // Bookkeeping for writes made by THIS saver in THIS live SQL transaction.
   // Publication stages receipts until its commit finalizer. This is not a
