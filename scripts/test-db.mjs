@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const action = process.argv[2]
@@ -33,8 +33,8 @@ function composeDatabase() {
   const environment = { ...process.env }
   for (const key of Object.keys(environment)) if (key.startsWith('COMPOSE_')) delete environment[key]
   if (runId) environment.FOREMAN_CODE_CI_DATABASE_PORT = '0'
-  function docker(args) {
-    const result = spawnSync('docker', args, { encoding: 'utf8', env: environment })
+  function docker(args, input) {
+    const result = spawnSync('docker', args, { encoding: 'utf8', env: environment, input })
     if (result.error) throw result.error
     if (result.status !== 0) throw new Error(result.stderr || `docker ${args[0]} failed`)
     return result.stdout.trim()
@@ -61,6 +61,12 @@ function composeDatabase() {
   else if (action === 'stop') args.push('stop', 'postgres')
   else args.push('down', '--volumes')
   process.stdout.write(`${docker(args)}\n`)
+  if (action === 'up') {
+    // Private checkouts are unreadable to the container user, so the idempotent init SQL goes through stdin.
+    docker(['compose', '--project-name', project, '--file', file, 'exec', '-T', '-e', 'PGPASSWORD=graphql_test_disposable_only',
+      'postgres', 'psql', '-h', '127.0.0.1', '-U', 'graphql_test_admin', '-d', 'postgres', '-v', 'ON_ERROR_STOP=1', '-q'],
+    readFileSync(fileURLToPath(new URL('./test-postgres-init.sql', import.meta.url)), 'utf8'))
+  }
   if (runId && action === 'up') {
     if (!environment.TMPDIR) throw new Error('Host CI database requires its private run directory')
     const binding = docker(['compose', '--project-name', project, '--file', file, 'port', 'postgres', '5432'])

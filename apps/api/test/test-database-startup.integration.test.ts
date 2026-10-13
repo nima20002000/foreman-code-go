@@ -1,7 +1,10 @@
 import { execFile } from 'node:child_process'
-import { copyFile, mkdir } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
+import pg from 'pg'
 import { expect, it } from 'vitest'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 
@@ -50,3 +53,47 @@ it('refuses private database startup without the runtime-owned running server', 
       FOREMAN_CODE_CI_TEST_DATABASE: '', PATH: '/no-docker' }, timeout: 10_000,
   })).rejects.toMatchObject({ stderr: expect.stringContaining('must start its private PostgreSQL') })
 })
+
+// The verification runtime has no Docker; it owns one private PostgreSQL per job instead.
+it.skipIf(process.env.FOREMAN_CODE_VERIFICATION_ENVIRONMENT === 'isolated-job-v1')(
+  'starts separate initialized databases for concurrent host CI jobs from a private checkout', async () => {
+    const checkout = await mkdtemp(join(tmpdir(), 'private-checkout-'))
+    await mkdir(join(checkout, 'scripts'), { mode: 0o700 })
+    // Host CI checkouts are private: the container user cannot read these files.
+    await copyFile(new URL('../../../compose.test.yaml', import.meta.url), join(checkout, 'compose.test.yaml'))
+    for (const name of ['test-db.mjs', 'test-postgres-init.sql']) {
+      await copyFile(new URL(`../../../scripts/${name}`, import.meta.url), join(checkout, 'scripts', name))
+      await chmod(join(checkout, 'scripts', name), 0o600)
+    }
+    const jobs = await Promise.all([0, 1].map(async index => {
+      const runDirectory = join(checkout, `run-${index}`)
+      await mkdir(runDirectory, { mode: 0o700 })
+      return { runDirectory, env: { ...process.env, FOREMAN_CODE_CI_HOST_RUN_ID: randomUUID(),
+        FOREMAN_CODE_VERIFICATION_ENVIRONMENT: '', TMPDIR: runDirectory } }
+    }))
+    const database = (action: string, env: NodeJS.ProcessEnv) =>
+      execute(process.execPath, [join(checkout, 'scripts', 'test-db.mjs'), action], { env, timeout: 60_000 })
+    const clients: pg.Client[] = []
+    try {
+      await Promise.all(jobs.map(job => database('up', job.env)))
+      for (const job of jobs) {
+        const client = new pg.Client({ connectionString: await readFile(join(job.runDirectory, 'test-database-url'), 'utf8') })
+        await client.connect()
+        clients.push(client)
+        expect((await client.query(`select shobj_description(oid, 'pg_database') as owner from pg_database
+          where datname in ('postgres', 'graphql_test_control')`)).rows)
+          .toEqual([{ owner: 'graphql-disposable-test-server' }, { owner: 'graphql-disposable-test-server' }])
+      }
+      const first = clients.shift()!
+      const second = clients[0]!
+      await first.query('create table first_job_only (value text)')
+      expect((await second.query(`select to_regclass('first_job_only') as relation`)).rows).toEqual([{ relation: null }])
+      await first.end()
+      await database('down', jobs[0]!.env)
+      expect((await second.query('select 1 as alive')).rows).toEqual([{ alive: 1 }])
+    } finally {
+      for (const client of clients) await client.end()
+      for (const job of jobs) await database('down', job.env)
+      await rm(checkout, { recursive: true, force: true })
+    }
+  }, 180_000)
