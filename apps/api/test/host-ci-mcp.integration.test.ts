@@ -291,11 +291,19 @@ it('joins in-flight host preparation before confirming direct MCP cancellation',
     const result = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run',
       { suite: 'install', commandId: 'preparing-cancel' }))
     await preparing
+    const reader = await f.connect(CI_GET_ACTIONS)
+    expect((await f.call(reader, 'ci_cancel', { ticketId: result.ticketId })).isError).toBe(true)
     let completed = false
     cancellation = f.value(f.operator, 'ci_cancel', { ticketId: result.ticketId }).then(value => {
       completed = true
       return value
     })
+    await expect.poll(async () => {
+      const response = await reader.callTool({ name: 'ci_get',
+        arguments: { workspaceId: f.workspaceId, ticketId: result.ticketId } })
+      expect(response.isError).not.toBe(true)
+      return CiGetOutputSchema.parse(decodeMcpToolResult(response)).run.cancellation
+    }).toMatchObject({ source: 'mcp', reason: 'direct' })
     // eslint-disable-next-line no-restricted-syntax -- Proves cancellation cannot finish during blocked dispatch.
     await new Promise(resolve => setTimeout(resolve, 100))
     expect(completed).toBe(false)
@@ -527,7 +535,12 @@ it.each([
       const running = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
       const active = running.partitions!.filter(run => run.state === 'running')
       if (!active.length) break
-      for (const run of active) f.finish(run.id, 0, `${run.part} passed\n`)
+      for (const run of active) {
+        const computer = f.computers.find(value => value.label === run.computer?.label)!
+        const status = await f.endpoint.request(computer, { operation: 'status' })
+        expect(status.operation === 'status' && status.runs.some(value => value.runId === run.id)).toBe(true)
+        f.finish(run.id, 0, `${run.part} passed\n`)
+      }
     }
     const done = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
     expect(done.group).toMatchObject({ groupId: read.run.groupId, state: 'passed' })
@@ -1447,6 +1460,12 @@ it('preserves MCP cancellation when an in-flight refresh returns an unstarted ti
     expect((await f.pool.query('select record,host_key from ci_runs where id=$1', [started.ticketId])).rows[0])
       .toEqual({ record: read.run, host_key: null })
     expect(f.started).toHaveLength(1)
+    for (const computer of f.computers) {
+      const status = await f.endpoint.request(computer, { operation: 'status' })
+      expect(status.operation === 'status' && status.runs.some(run => run.state === 'running')).toBe(false)
+    }
+    expect((await f.pool.query("select count(*)::int as count from management_audit where action='ci.cancel'")).rows)
+      .toEqual([{ count: 1 }])
   } finally { release(); await cancellation; await f.close() }
 })
 
