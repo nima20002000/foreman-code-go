@@ -3,6 +3,7 @@ import { CiActivitySchema } from './ciHost.js'
 import { GraphIdSchema, IdSchema, TimestampSchema } from './schemaPrimitives.js'
 
 export const RUN_STATUS_LIMITS = { ci: 20, errors: 10, messageLength: 500 } as const
+export const DEFAULT_STUCK_EXECUTION_IDLE_MS = 60 * 60_000
 
 /** Read-only, bounded view of an Agent's own Run for interval checks (Foreman Code MCP run_status_get). */
 export const AgentRunStatusSchema = z.object({
@@ -28,7 +29,7 @@ export const AgentRunStatusSchema = z.object({
   }).strict()).max(1000),
   /** The Run's most recent CI tickets, newest first. */
   ci: z.array(z.object({ nodeId: GraphIdSchema, ticket: CiActivitySchema }).strict()).max(RUN_STATUS_LIMITS.ci),
-  /** The most recent failed executions and CI tickets, newest first. */
+  /** Recent failed executions, CI tickets and stuck-execution warnings, newest first. */
   errors: z.array(z.object({
     nodeId: GraphIdSchema.nullable(),
     executionId: IdSchema.nullable(),

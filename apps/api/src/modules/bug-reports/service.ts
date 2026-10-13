@@ -27,6 +27,7 @@ import {
 } from './repository.js'
 import { redactBugReportText } from './redaction.js'
 import { replayCloseReceipt, replayReportReceipt } from './receipts.js'
+import { detectStuckExecutions } from './stuckExecutions.js'
 
 type CommandSource = 'http' | 'mcp'
 
@@ -75,6 +76,10 @@ function reportForCaller(
 
 export class BugReportService {
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator) {}
+
+  detectStuckExecutions(idleMs: number, now = new Date()): Promise<number> {
+    return detectStuckExecutions(this.pool, idleMs, now)
+  }
 
   async report(
     principal: ManagementPrincipal,

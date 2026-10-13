@@ -3,6 +3,7 @@ import { isAbsolute } from 'node:path'
 import { resolveLocalBrowserOrigin } from '@foreman-code/contracts/browser-origin'
 import { z } from 'zod'
 import { DEFAULT_AGENT_ACTIVE_TIMEOUT_MS } from '@foreman-code/contracts/wave25'
+import { DEFAULT_STUCK_EXECUTION_IDLE_MS } from '@foreman-code/contracts'
 import type { RemoteExecutionEnvironmentVariable, WorkerExecutionSettings } from '@foreman-code/contracts/management'
 import { RemoteExecutionEnvironmentVariableSchema } from '@foreman-code/contracts/management'
 import { defaultFileStorageRoot } from './modules/files/storage.js'
@@ -29,6 +30,8 @@ const EnvironmentSchema = z.object({
   WORKSPACE_STORAGE_ROOT: z.string().trim().min(1).refine(isAbsolute, 'Workspace storage requires an absolute directory').optional(),
   HARNESS_WORKSPACE_ROOT: z.string().trim().min(1).default('/tmp/graphql-harness-runs'),
   HARNESS_TIMEOUT_MS: z.coerce.number().int().positive().default(DEFAULT_AGENT_ACTIVE_TIMEOUT_MS),
+  FOREMAN_CODE_STUCK_EXECUTION_IDLE_MS: z.coerce.number().int().positive()
+    .default(DEFAULT_STUCK_EXECUTION_IDLE_MS),
   CODEX_BINARY: z.string().trim().min(1).default('codex'),
   FOREMAN_CODE_LAPTOP_EXECUTION_ENABLED: z.enum(['0', '1']).default('0'),
   FOREMAN_CODE_LOCAL_PRODUCTION: z.enum(['0', '1']).default('0'),
@@ -47,6 +50,8 @@ export interface ApiConfig {
   host: string
   port: number
   readinessTimeoutMs: number
+  /** FOREMAN_CODE_STUCK_EXECUTION_IDLE_MS; reports idle Agents without canceling them. */
+  stuckExecutionIdleMs?: number
   database: {
     connectionString: string
     maxConnections: number
@@ -85,6 +90,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv): ApiConfig {
     host: parsed.HOST,
     port: parsed.PORT,
     readinessTimeoutMs: parsed.READINESS_TIMEOUT_MS,
+    stuckExecutionIdleMs: parsed.FOREMAN_CODE_STUCK_EXECUTION_IDLE_MS,
     database: {
       connectionString: parsed.DATABASE_URL,
       maxConnections: parsed.DATABASE_POOL_MAX,

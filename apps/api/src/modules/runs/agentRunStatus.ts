@@ -34,11 +34,14 @@ export class AgentRunStatusService {
       throw new DomainError('TOOL_NOT_ENABLED', 'Run status is available only to workflow nodes with interval checks.', 403)
     }
     const executions = (await this.pool.query<{ id: string; node_id: string; state: string; outcome: string | null
-      started_at: string | null; finished_at: string | null; tick: boolean; error_code: string | null; error_message: string | null }>(
+      started_at: string | null; finished_at: string | null; tick: boolean; error_code: string | null; error_message: string | null
+      stuck_message: string | null; stuck_at: string | null }>(
       `select e.id,e.workflow_node_id as node_id,e.record->>'state' as state,e.record#>>'{result,outcome}' as outcome,
          e.record->>'startedAt' as started_at,e.record->>'finishedAt' as finished_at,e.tick_index is not null as tick,
-         e.record#>>'{result,error,code}' as error_code,e.record#>>'{result,error,message}' as error_message
-       from harness_executions e where e.run_id=$1 order by e.created_at,e.id limit 16001`, [binding.run_id])).rows
+         e.record#>>'{result,error,code}' as error_code,e.record#>>'{result,error,message}' as error_message,
+         b.record#>>'{happened,message}' as stuck_message,b.record->>'createdAt' as stuck_at
+       from harness_executions e left join bug_reports b on b.id='bug-report-stuck-'||e.id and b.run_id=e.run_id
+       where e.run_id=$1 order by e.created_at,e.id limit 16001`, [binding.run_id])).rows
     const jobs = (await this.pool.query<{ id: string; node_id: string; phase: string | null; outcome: string | null
       stopped: boolean | null; started_at: string | null; finished_at: string | null; publication: string | null
       result_issue: string | null }>(
@@ -54,7 +57,8 @@ export class AgentRunStatusService {
       const problem = job.outcome && job.outcome !== 'succeeded' ? job.outcome : job.result_issue
       executions.push({ id: job.id, node_id: job.node_id, state, outcome: resultOutcome, started_at: job.started_at,
         finished_at: job.finished_at, tick: false, error_code: problem ? `JOB_${problem.toUpperCase()}` : null,
-        error_message: problem ? `The Job ended with ${problem.replaceAll('_', ' ')}.` : null })
+        error_message: problem ? `The Job ended with ${problem.replaceAll('_', ' ')}.` : null,
+        stuck_message: null, stuck_at: null })
     }
     const nodes = version.definition.nodes.map(node => {
       const own = executions.filter(execution => execution.node_id === node.id)
@@ -75,6 +79,10 @@ export class AgentRunStatusService {
       nodeId: row.node_id, record: CiRunRecordSchema.parse(row.record),
     }))
     const errors = [
+      ...executions.filter(execution => execution.state === 'running' && execution.stuck_message).map(execution => ({
+        nodeId: execution.node_id, executionId: execution.id, ciTicketId: null,
+        code: 'AGENT_EXECUTION_STUCK', message: clip(execution.stuck_message!), at: execution.stuck_at,
+      })),
       ...executions.filter(execution => execution.outcome === 'failed').map(execution => ({
         nodeId: execution.node_id, executionId: execution.id, ciTicketId: null,
         code: clip(execution.error_code ?? 'EXECUTION_FAILED').slice(0, 100),

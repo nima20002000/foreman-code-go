@@ -59,7 +59,9 @@ export const GRAPHQL_AGENT_TOOLS = {
   run_status_get: {
     label: "Read own Run status",
     description: "Read-only, bounded status of this Agent's own Run: Run state, each node's latest execution state, "
-      + "the Run's latest CI tickets and recent errors. Available only on workflow nodes with interval checks enabled.",
+      + "the Run's latest CI tickets and recent errors, including AGENT_EXECUTION_STUCK warnings for idle running "
+      + "executions whose CI tickets are all terminal. Warnings do not stop executions. "
+      + "Available only on workflow nodes with interval checks enabled.",
     roles: ["orchestrator", "coder"],
   },
 } as const satisfies Record<string, { label: string; description: string; roles: readonly GraphqlMcpRole[] }>;

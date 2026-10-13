@@ -10,7 +10,7 @@ import { snapshotAgentWorktree } from './modules/sources/agentSnapshot.js'
 import { CiRuntimeProvisioner } from './modules/jobs/ciRuntimeProvisioner.js'
 import { CiEnrollment } from './modules/jobs/ciEnrollment.js'
 import { ProductionCiEnrollmentInventory } from './modules/jobs/ciEnrollmentInventory.js'
-import { CI_HOST_NAMESPACE, CI_RUNTIME_NAMESPACE } from '@foreman-code/contracts'
+import { CI_HOST_NAMESPACE, CI_RUNTIME_NAMESPACE, DEFAULT_STUCK_EXECUTION_IDLE_MS } from '@foreman-code/contracts'
 import { HostCiService } from './modules/ci-host/service.js'
 import { GitCiCommits } from './modules/ci-host/commits.js'
 import { RunCiAuthority } from './modules/jobs/ciAuthority.js'
@@ -2224,6 +2224,7 @@ export function buildProductionApp(
     if (closing) return Promise.resolve()
     if (reconciliation) return reconciliation
     reconciliation = (async () => {
+      await bugReports.detectStuckExecutions(config.stuckExecutionIdleMs ?? DEFAULT_STUCK_EXECUTION_IDLE_MS)
       if (jobRuntime) await jobRuntime.reconcileFailedCaptures(report)
       if (jobRuntime) await jobRuntime.reconcileMaterializationReservations(report)
       if (jobRuntime) await closeCompletedWorkflowSources(database.pool, jobRuntime.sources, report)
