@@ -3,7 +3,7 @@ import type { WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 
 /**
  * Board settings that save straight to the server (for example the schedule) join the draft's
- * undo history here. An action remembers how deep the draft history was when it happened, so
+ * undo history here. An action remembers the draft position including evicted steps, so
  * Ctrl+Z steps back through draft edits and settings changes in the order they were made.
  */
 export type BoardAction = { id: string; label: string; depth: number; undo(): Promise<void>; redo(): Promise<void> }
@@ -15,7 +15,7 @@ interface BoardUndoState {
   redo: Record<string, Redo[]>
   changes: Record<string, BoardChange[]>
   notice?: { scope: string; id: string; text: string }
-  /** Current draft history length per scope, published by the Board editor. */
+  /** Current draft history position per scope, including evicted steps. */
   depth: Record<string, number>
 }
 

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ManagedWorkspaceDefaultsSchema, WorkspaceDefaultsSchema, WorkspaceDefaultsUpdateInputSchema, WorkspaceDefaultsUpdateResultSchema,
   LocalHumanAccessSchema, type WorkspaceDefaultsUpdateInput } from '@foreman-code/contracts/management'
-import { apiClient } from './client'
+import { apiClient, type RequestOptions } from './client'
 import { useHarnessSessionEpoch } from './harnessSettings'
 import { sessionGeneration, sessionIsSwitching } from './sessionBoundary'
 
@@ -32,8 +32,11 @@ export function useUpdateWorkspaceDefaultsMutation() {
     },
   })
 }
+export function readLocalHumanAccess(options?: RequestOptions) {
+  return apiClient.request('/api/local-human', LocalHumanAccessSchema, options)
+}
 export function useLocalHumanAccessQuery() {
   useHarnessSessionEpoch()
   return useQuery({ queryKey: settingsExperienceKeys.access(), enabled: !sessionIsSwitching(), retry: false, staleTime: 0, refetchInterval: 60_000,
-    queryFn: ({ signal }) => apiClient.request('/api/local-human', LocalHumanAccessSchema, { signal }) })
+    queryFn: ({ signal }) => readLocalHumanAccess({ signal }) })
 }
