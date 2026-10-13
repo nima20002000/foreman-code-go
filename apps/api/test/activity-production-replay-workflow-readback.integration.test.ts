@@ -23,6 +23,37 @@ describe.skipIf(!postgresEnabled)('Production activity replay: workflow-readback
     expect(SavedRunDetailsSchema.parse(decodeMcpToolResult(readback)).run).toEqual(detail.run)
   })
 
+  it('waits for cleanup activity when a successful HTTP snapshot precedes final settlement', async () => {
+    const f = await setup()
+    let suppliedEarlySnapshot = false
+    const detail = await completedRun({
+      ...f,
+      http: async (...args) => {
+        const response = await f.http(...args)
+        if (args[0] !== 'GET' || suppliedEarlySnapshot) return response
+        const snapshot = SavedRunDetailsSchema.parse(response.json())
+        if (snapshot.run.outcome !== 'succeeded') return response
+        suppliedEarlySnapshot = true
+        // Success can be saved before the cleanup intent and its final activity.
+        snapshot.cleanupPending = false
+        snapshot.activity = snapshot.activity.filter((event) => event.kind !== 'run_cleanup_checked')
+        return { ...response, json: <T>() => snapshot as T }
+      },
+    })
+    expect(suppliedEarlySnapshot).toBe(true)
+    expect(detail.cleanupPending).toBe(false)
+    expect(detail.activity).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'run_cleanup_checked', payload: expect.objectContaining({ failed: false }) }),
+    ]))
+    const readback = await f.call('run_get', {
+      workspaceId: detail.run.workspaceId,
+      runId: detail.run.id,
+      detail: 'full',
+    })
+    expect(readback.isError).not.toBe(true)
+    expect(SavedRunDetailsSchema.parse(decodeMcpToolResult(readback)).activitySnapshot).toEqual(detail.activitySnapshot)
+  })
+
   it('Workflow: real Run snapshot/cursor and denied caller preserve original execution and delivery evidence', async () => {
     const f = await setup(), detail = await completedRun(f)
     expect(detail.activitySnapshot!.scope).toEqual({ kind: 'workflow_run', workspaceId: detail.run.workspaceId,
