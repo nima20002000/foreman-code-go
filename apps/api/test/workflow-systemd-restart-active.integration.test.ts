@@ -12,7 +12,7 @@ describe('installed Main-local workflows across systemd restart', () => {
       const pid = await fixture.mainService!.pid()
       expect(pid).toBeGreaterThan(0)
       expect(() => process.kill(pid, 0)).not.toThrow()
-      const health = await fetch(new URL('/health', fixture.origin()))
+      const health = await fetch(new URL('/health/live', fixture.origin()))
       expect(health.status).toBe(200)
     } finally {
       await fixture.close()
