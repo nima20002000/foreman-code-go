@@ -35,16 +35,21 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       expect(await f.repository.coordination.findReviewJob(f.interaction.id, f.reviewer.agentId)).toEqual(successor)
       const token = f.credential.environment.variables.GRAPHQL_MCP_TOKEN!
       await expect(f.access.authenticate(token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+      const bindingBefore = (await f.pool.query(`select approval_review_job_id,approval_review_lease_fence
+        from worker_credential_bindings where principal_id=$1`, [f.principal.id])).rows[0]
       const native = (await f.repository.coordination.workflowSession(f.reviewer.id))!
       await withExclusiveGraphConnection(f.pool, connection => connection.transaction(sql =>
         retainRemoteReviewerCredential(sql, f.reviewer, {
           generation: '1', principalId: f.principal.id, session: native.session,
         })))
+      await expect(f.access.authenticate(token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+      const binding = (await f.pool.query(`select approval_review_job_id,approval_review_lease_fence
+        from worker_credential_bindings where principal_id=$1`, [f.principal.id])).rows[0]
+      expect(binding).toEqual(bindingBefore)
+      expect(binding.approval_review_job_id).toBe(f.job.id)
+      await f.credentials.bindReviewerJob(f.reviewer.id, f.credential, successor)
       const recovered = await f.access.authenticate(token, 'worker')
       expect(recovered).toEqual(f.principal)
-      const binding = (await f.pool.query(`select approval_review_job_id,approval_review_lease_fence
-        from worker_credential_bindings where principal_id=$1`, [recovered.id])).rows[0]
-      expect(binding).toEqual({ approval_review_job_id: null, approval_review_lease_fence: null })
       const app = new PostgresAppInteractionService(f.pool, f.repository, f.commands, f.service)
       await expect(app.respond(recovered, approvalResponse(f.interaction)))
         .rejects.toMatchObject({ code: 'REVIEWER_AUTHORITY_LOST' })

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { HarnessExecutionContextSchema, HarnessExecutionRequestSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
 import { WorkActivationIdentitySchema, WorkActivationInputSchema, WorkReturnSchema } from '@foreman-code/contracts/wave25'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
+import { checkpointOwnerMigration } from '../src/infrastructure/checkpointOwnerMigration.js'
 import { workParentRequestMigration } from '../src/infrastructure/workParentRequestMigration.js'
 import { repeatExecutionIdentity, repeatId, workActivationSlotId } from '../src/modules/runs/repeatResolution.js'
 import { workflowNativeReservation } from '../src/modules/runs/workflowNativeEntry.js'
@@ -26,6 +27,11 @@ function nativeReturnFromPrompt(prompt: string) {
 describe.skipIf(!postgresEnabled)('saved continuation inputs across an upgrade', () => {
   it('reuses a populated pre-parent-request continuation and returns to its original caller', async () => {
     const db = await currentDatabase({ beforeMigration: workParentRequestMigration.version })
+    // Today's runtime needs ownership bookkeeping while the saved input keeps its historical schema.
+    await transaction(db.pool, async sql => {
+      await sql.query(checkpointOwnerMigration.sql)
+      await sql.query('insert into application_migrations(version) values($1)', [checkpointOwnerMigration.version])
+    })
     const t = await workHandoffFixture(db.pool, 'continuation-upgrade', (version) => ({ ...version,
       definition: { ...version.definition, handoffs: { contractVersion: 1 },
         executionPolicy: { maxParallelism: 1, maxNodeExecutions: 20 },
