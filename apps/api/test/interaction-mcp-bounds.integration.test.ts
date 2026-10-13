@@ -3,6 +3,7 @@ import { AppInteractionGetOutputSchema, AppInteractionListOutputSchema } from '@
 import { buildApp } from '../src/app.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { selectedMainMcpForward } from '../src/modules/placement/workerMcpRelay.js'
+import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { approvalDatabase } from './helpers/wave25ApprovalDatabase.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 
@@ -10,12 +11,32 @@ const closes: Array<() => Promise<unknown>> = []
 afterEach(async () => { while (closes.length) await closes.pop()!() })
 
 describe.skipIf(!postgresEnabled)('authenticated bounded interaction readback through selected Main', () => {
+  it('persists on-request approval configuration for a read-only routed reviewer', async () => {
+    const command = 'recorded readonly command'
+    const f = await approvalDatabase({ command })
+    closes.push(f.close)
+    const workflows = new PostgresWorkflowRepository(f.pool)
+    const configuration = await workflows.getAgentConfiguration(
+      f.version.agentConfigurationVersionIds[f.reviewer.agentId]!,
+    )
+    expect(configuration?.harness).toMatchObject({
+      harness: 'codex', sandbox: 'read-only',
+      advanced: { approvalPolicy: 'on-request', approvalsReviewer: 'auto_review' },
+    })
+    expect(await f.repository.get(f.interaction.id)).toMatchObject({
+      request: { command },
+      approval: { handler: 'orchestrator', designatedOrchestratorAgentId: f.reviewer.agentId },
+      status: 'pending',
+    })
+  })
+
   it('retrieves an oversized persisted list and individual request, and denies out-of-scope chunks', async () => {
     // Stay above the relay limit without multiplying full-record reads for dense escaping.
     const command = `${'x'.repeat(4_000)}😀"\\\n`.repeat(250)
     const f = await approvalDatabase({ command })
     closes.push(f.close)
     const interaction = f.interaction
+    expect(interaction.request).toMatchObject({ command })
     expect(Buffer.byteLength(JSON.stringify(interaction), 'utf8')).toBeGreaterThan(1_000_000)
     expect(await f.repository.get(interaction.id)).toEqual(interaction)
     const app = buildApp({
