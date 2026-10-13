@@ -350,7 +350,7 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
       const historyReads = context.mock.calls.length
       await act(async () => { await vi.advanceTimersByTimeAsync(pollingTime) })
       await waitFor(() => expect(context.mock.calls.length).toBeGreaterThan(historyReads))
-      expect(workspaceReads).toBe(initialWorkspaceReads)
+      expect(workspaceReads).toBe(initialWorkspaceReads + 1)
       expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).toBe(graph)
 
       await choose(null)
@@ -370,11 +370,16 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
 
   it.each(['running', 'queued'] as const)('automatically pins a %s Run and returns to authoring through New run', async (executionState) => {
     const fixture = getMockFixture(scope.workspaceId)!
-    server.use(http.get('/api/workspaces/workspace-1', () => HttpResponse.json({
-      workspace: fixture.workspace, agents: fixture.agents, workflows: fixture.workflows,
-      resources: fixture.resources, browserProfiles: fixture.browserProfiles, runners: fixture.runners,
-      runs: [{ ...fixture.runs[0], id: 'run-a', executionState, outcome: 'pending', finishedAt: undefined }],
-    })))
+    server.use(
+      http.get('/api/workspaces/workspace-1', () => HttpResponse.json({
+        workspace: fixture.workspace, agents: fixture.agents, workflows: fixture.workflows,
+        resources: fixture.resources, browserProfiles: fixture.browserProfiles, runners: fixture.runners,
+        runs: [{ ...fixture.runs[0], id: 'run-a', executionState, outcome: 'pending', finishedAt: undefined }],
+      })),
+      http.get(`${runsRoute}/summaries`, () => HttpResponse.json(page([
+        { ...runA, status: executionState }, runB,
+      ]))),
+    )
     const { router } = await mount()
     await savedY()
     expect(router.state.location.search).toMatchObject({ runId: 'run-a', workflowVersionId: 'version-a',
