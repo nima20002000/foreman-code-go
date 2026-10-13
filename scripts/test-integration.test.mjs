@@ -846,15 +846,15 @@ const measuredFiles = Array.from({ length: 9 }, (_, index) => `apps/api/test/mea
 const ordinaryFiles = Array.from({ length: 5 }, (_, index) => `apps/api/test/ordinary-${index}.integration.test.ts`)
 const cpuSchedulingCases = [
   {
-    name: 'four CPUs admit two installed-Worker files even with short measurements',
+    name: 'four CPUs admit two nonexclusive installed-Worker files even with short measurements',
     capacity: 4, files: installedWorkerFiles,
     durations: Object.fromEntries(installedWorkerFiles.map(file => [file, 1000])),
-    cost: () => 2, firstWave: installedWorkerFiles.slice(0, 2),
+    cost: () => 2, firstWave: [installedWorkerFiles[0], installedWorkerFiles[2]],
   },
   {
     name: 'failed heavy files release CPU capacity and retest on healthy database slots',
     capacity: 4, files: installedWorkerFiles, failFile: installedWorkerFiles[0],
-    cost: () => 2, firstWave: installedWorkerFiles.slice(0, 2),
+    cost: () => 2, firstWave: [installedWorkerFiles[0], installedWorkerFiles[2]],
   },
   {
     name: 'four CPUs admit long measured files in longest-first order',
@@ -990,6 +990,7 @@ test('integration and gate checks share the bounded queue and delay exclusive fi
 
 for (const [name, reservedReview] of [
   ['reserved remote review', 'apps/api/test/remote-review-production-reserved-decision.integration.test.ts'],
+  ['remote review Worker crash recovery', 'apps/api/test/remote-review-production-worker-crash.integration.test.ts'],
   ['computer workflow directory save', 'apps/api/test/computer-workflow-save.regression-directories.integration.test.ts'],
   ['six-node checkpoint routing', 'apps/api/test/eng03-b-durability-routing.integration.test.ts'],
 ]) test(`${name} runs without competing integration or gate processes`, async () => {
