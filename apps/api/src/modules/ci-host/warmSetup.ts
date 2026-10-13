@@ -22,7 +22,13 @@ export function warmPnpmInstall(source: string, cache: string, run: string): str
     `exec {cache_lock}>${shellQuote(join(cache, 'locks', `${lock}.lock`))}`,
     'flock "$cache_lock" || finish $?',
     `modules=${shellQuote(modules)}`,
-    'if [ -d "$modules" ]; then cp -a --reflink=auto "$modules/." . || finish $?; fi',
+    // Leftover dependency directories from an interrupted job would make the snapshot copy fail on existing paths.
+    'while IFS= read -r -d "" directory; do rm -rf "$directory"; done < <(find . -type d -name node_modules -prune -print0)',
+    'if [ -d "$modules" ] && ! cp -a --reflink=auto "$modules/." .; then',
+    "  echo '[ci-cache] dependency snapshot unusable; installing fresh'",
+    '  while IFS= read -r -d "" directory; do rm -rf "$directory"; done < <(find . -type d -name node_modules -prune -print0)',
+    '  rm -rf "$modules"',
+    'fi',
     `${install} --offline || {`,
     // A warmed store can still miss metadata (pruned or partial cache); refill it online instead of failing the job.
     `  echo '[ci-cache] filling store online'`,
