@@ -120,6 +120,26 @@ async function fixture(realLogs = false) {
   return { root, workspaceId, computers, ci, start, value, stored, close, connect, call, control, pauseDispatch }
 }
 
+it('admits selected-file CI with a pinned commit and persists the selection through MCP readback', async () => {
+  const f = await fixture()
+  try {
+    const caller = await f.connect(CI_RUN_ACTIONS)
+    const files = ['apps/api/test/one.integration.test.ts', 'apps/api/test/two.integration.test.ts',
+      'apps/api/test/three.integration.test.ts'].sort()
+    const unpinned = await f.call(caller, 'ci_run', {
+      commandId: randomUUID(), suite: 'integration', scope: 'affected', partitions: 3, files,
+    })
+    expect(unpinned.isError).toBe(true)
+    const started = await f.start()
+    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: started.ticketId }))
+    expect(read.partitions).toHaveLength(3)
+    for (const run of read.partitions!) {
+      expect(run).toMatchObject({ commit: 'a'.repeat(40), scope: 'affected', files })
+    }
+    expect(await f.stored(read.run.groupId)).toEqual(expect.arrayContaining(read.partitions!))
+  } finally { await f.close() }
+})
+
 it('plans all admitted slices after an early sibling cancellation and keeps the plan on readback', async () => {
   const f = await fixture()
   const release = f.pauseDispatch()
