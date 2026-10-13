@@ -4,7 +4,8 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 
 const root = resolve(new URL('..', import.meta.url).pathname)
-const commonResult = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: root, encoding: 'utf8' })
+const commonResult = spawnSync('git', ['rev-parse', '--path-format=absolute',
+  process.env.CI_HOST_RUNNER === '1' ? '--git-dir' : '--git-common-dir'], { cwd: root, encoding: 'utf8' })
 if (commonResult.status !== 0) throw new Error(commonResult.stderr || 'Cannot find Git common directory')
 const common = commonResult.stdout.trim()
 const activePath = join(common, 'graphql-heavy-jobs', 'active', 'owner.json')
