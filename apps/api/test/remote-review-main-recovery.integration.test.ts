@@ -9,7 +9,7 @@ import { graphSourceDigest, openRunGraphPublication } from '../src/modules/run-g
 it('keeps pending native settlement retryable and rolls back the incomplete Run publication', async () => {
   const db = await currentDatabase()
   try {
-    const fixture = await graphFixture(db, { form: 'linear', qualifiedReads: true })
+    const fixture = await graphFixture(db, { form: 'single', qualifiedReads: true })
     try {
       const before = await fixture.repeat.snapshot(fixture.writer.principal, fixture.readRequest)
       await expect(ownedGraph(db, fixture, owner => owner.oneShotConnection().transaction(async sql => {
