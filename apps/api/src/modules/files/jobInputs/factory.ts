@@ -15,6 +15,7 @@ export function createCanonicalJobInputPorts(input:{pool:pg.Pool;storageRoot:str
     admit: (execution, signal, context) => { signal.throwIfAborted(); return main.bind(execution, context) },
     accepted: async (execution, signal) => { signal.throwIfAborted(); return (await main.accepted(execution.id)).admission },
     recheck: (execution, admission, signal) => { signal.throwIfAborted(); return main.recheck(execution, admission) },
+    openRead: (execution, admission, path, signal) => main.openRead(execution, admission, path, signal),
     read: (execution, admission, path, offset, length, signal) => {
       signal.throwIfAborted(); return main.read(execution, admission, path, offset, length)
     },

@@ -1,3 +1,4 @@
+import { holdWorkflowNativePublicationLease, renewWorkflowNativePublicationLease } from './workflowNativeLease.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { assertOriginalWorkflowTerminal, workflowProviderId } from '../interactions/workflowTerminalSource.js'
 import { isDeepStrictEqual } from 'node:util'
@@ -86,6 +87,7 @@ export class WorkflowNativeProofServices {
     capture.assertCurrent(); owner.assertOwned()
     await this.assertAdditionalPhysical?.(sql, owner, capture)
     if (capture.owner !== owner || !isDeepStrictEqual(immutableExecution(capture.execution), immutableExecution(stored.execution))) return fail()
+    if (capture.lane) await renewWorkflowNativePublicationLease(sql, owner, capture.lane.id)
     const reservation = workflowNativeReservation(scope, stored.ref, stored.execution, stored.inputDigest)
     // The physical locks depend on the entered journal and receipt reads.
     // Every boundary, including precommit, reads fresh rows and database time.
@@ -161,6 +163,7 @@ export class WorkflowNativeProofServices {
         && capture.source.history.correlationId !== lane.correlation) return fail('NATIVE_TURN_IDENTITY_CONFLICT')
     } else if (capture.source.type === 'event' || capture.source.type === 'history') return fail('SESSION_LANE_LEASE_LOST')
     capture.assertCurrent()
+    if (capture.lane) await holdWorkflowNativePublicationLease(sql, owner, capture, capture.lane)
   }
 
   async assertNativeBoundaryLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3, execution: HarnessExecution,

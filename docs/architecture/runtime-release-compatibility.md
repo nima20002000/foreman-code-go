@@ -1,0 +1,9 @@
+# Runtime release compatibility
+
+`/api/runtime/identity` and `/health/identity` retain their shipped strict response shape. Installation ownership is independent of release identity. New runtime facts belong on separately versioned endpoints, so older open browsers can still verify their installation.
+
+`/api/runtime/build-identity/v1` reports content identities for the API/browser source build and shared contracts. Production embeds those identities in the browser bundle and API build output. Development embeds them in each served document and captures API facts at startup. Neither side learns its own build from the other side's first response. A new build reloads only after registered dirty, busy and uncertain editors are safe; a contract mismatch stops subsequent product requests while keeping editor and command state mounted. These endpoints support browser connection recovery, rather than an Operator authoring action; MCP domain tools retain their authenticated contracts and grants.
+
+Worker artifact format 1 remains qualified with `pnpm@11.27.0`. Both artifact construction and release publication reject a changed product toolchain pin. A future toolchain transition must first ship an old-pin bridge updater, then introduce an explicitly versioned manifest policy or device extension understood by that bridge. Changing the format-1 literal or removing the release guard is not a supported rolling upgrade.
+
+Source manifests retain their 2 MiB encoded metadata limit. Materialization files have an independent 2 MiB plus 64 KiB limit for the manifest, receipt and optional snapshot reference. Preparation checks the complete encoded file before acknowledging readiness, and verification, recovery and reclamation use that same file limit.

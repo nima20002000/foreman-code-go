@@ -20,6 +20,8 @@ export interface JobInputDeliverySource {
   /** Reads and reauthorizes the original admission without staging or starting transfers. */
   accepted?(execution:JobExecutionRecord,signal:AbortSignal):Promise<JobInputAdmission>
   recheck(execution:JobExecutionRecord,admission:JobInputAdmission,signal:AbortSignal):Promise<void>
+  openRead?(execution: JobExecutionRecord, admission: JobInputAdmission, path: string, signal: AbortSignal):
+    Promise<{ read(offset: number, length: number): Promise<Uint8Array>; close(): Promise<void> }>
   read(execution:JobExecutionRecord,admission:JobInputAdmission,path:string,offset:number,length:number,signal:AbortSignal):Promise<Uint8Array>
 }
 export interface VerifiedJobInputDeliverySource {
@@ -118,15 +120,17 @@ export class ReadonlyJobInputDelivery {
         try{
           for(const part of parts.slice(0,-1)){const child=`/proc/self/fd/${parent.fd}/${part}`;await mkdir(child,{mode:0o700}).catch(error=>{if(error.code!=='EEXIST')throw error});const next=await directory(child);const id=await identity(next);if(id.mountId!==destination.mountId||id.device!==destination.device){await next.close();throw new Error('Input directory crossed its approved volume.')}owned.push(next);parent=next}
           const handle=await open(`/proc/self/fd/${parent.fd}/${parts.at(-1)}`,constants.O_CREAT|constants.O_EXCL|constants.O_WRONLY|constants.O_NOFOLLOW,0o400),checksum=createHash('sha256')
+          let reader: Awaited<ReturnType<NonNullable<JobInputDeliverySource['openRead']>>> | undefined
           try{
+            reader = await this.source.openRead?.(execution, admission, descriptor.relativePath, signal)
             for (let offset = 0; offset < descriptor.byteSize; offset += 8192) {
               signal.throwIfAborted()
-              const rangeBytes = Math.min(8192, descriptor.byteSize - offset)
-              const bytes = Buffer.from(await this.source.read(
-                execution, admission, descriptor.relativePath, offset, rangeBytes, signal,
-              ))
+              const length = Math.min(8192, descriptor.byteSize - offset)
+              const range = reader ? await reader.read(offset, length)
+                : await this.source.read(execution, admission, descriptor.relativePath, offset, length, signal)
               signal.throwIfAborted()
-              if (bytes.length !== rangeBytes) {
+              const bytes = Buffer.from(range)
+              if (bytes.length !== length) {
                 throw new DomainError('JOB_INPUT_BYTES_UNAVAILABLE', 'Input stream ended before its exact pins.', 410)
               }
               checksum.update(bytes)
@@ -138,10 +142,15 @@ export class ReadonlyJobInputDelivery {
                 written += output.bytesWritten
               }
             }
-            if(checksum.digest('hex')!==descriptor.sha256)throw new DomainError('JOB_INPUT_HASH_CONFLICT','Delivered bytes differ from the immutable accepted pins.',410)
+            if (checksum.digest('hex') !== descriptor.sha256) {
+              throw new DomainError('JOB_INPUT_HASH_CONFLICT', 'Delivered bytes differ from the immutable accepted pins.', 410)
+            }
             signal.throwIfAborted()
             await handle.sync()
-          }finally{await handle.close()}
+          } finally {
+            try { await reader?.close() }
+            finally { await handle.close() }
+          }
           await parent.sync();if(descriptor.relativePath!=='verification.json')files.push(descriptor)
         }finally{for(const handle of owned.reverse())await handle.close()}
       }

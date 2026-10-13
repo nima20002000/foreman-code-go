@@ -16,7 +16,7 @@ import { nativeProjectionId, projectNativeEvidence, reconcileNativeEvidence, typ
 import { parseNativeCheckpoint } from './nativeCheckpoint.js'
 import { selectNativeGraphEvidence } from './nativeEvidence.js'
 import { normalizeNativeProducerEvent } from './nativeProducerNormalization.js'
-import { appendNormalizedNativeEvent } from '../runs/nativeEvents.js'
+import { appendNormalizedNativeEvent, readPersistedNativeSequence } from '../runs/nativeEvents.js'
 
 export interface NativeGraphWork {
   guard: NativeGraphProjectionGuard
@@ -69,15 +69,7 @@ async function ingest(publication: RunGraphPublication, input: HarnessNativeEven
   const published = await sql.query('select 1 from run_graph_sources where run_id=$1 and source_kind=$2 and source_id=$3 and source_revision=0',
     [scope.runId, evidence.sourceKind, evidence.sourceId])
   if (published.rowCount) { result.ignored = work.length; return result }
-  const native = event.connectionId
-    ? await sql.query<{ sequence: string }>(
-      'select sequence::text from harness_native_events where execution_id=$1 and connection_id=$2 and source_sequence=$3',
-      [event.executionId, event.connectionId, event.sequence])
-    : await sql.query<{ sequence: string }>(
-      'select sequence::text from harness_native_events where execution_id=$1 and connection_id is null and sequence=$2',
-      [event.executionId, event.sequence])
-  if (native.rows.length !== 1) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
-  const nativeSequence = native.rows[0]!.sequence
+  const nativeSequence = await readPersistedNativeSequence(sql, event)
   const selected = selectNativeGraphEvidence(event.type, event.payload)
   const claudeEvidence = ['message.submitted', 'interaction.pending', 'turn.completed'].includes(event.type)
     && event.payload.nativeMessageId !== undefined

@@ -11,6 +11,13 @@ export function committedWorkerInputPath(root, input) {
   return path;
 }
 
+/** Format 1 is shipped in older updaters. Changing this policy requires an old-pin bridge and a new protocol. */
+export function assertWorkerUpdateToolchain(product) {
+  if (product.packageManager !== 'pnpm@11.27.0') {
+    throw new Error('Worker toolchain changes require a bridge release before a versioned update policy can be advertised.');
+  }
+}
+
 export function workerReleaseVersion(product) {
   if (!/^\d+\.\d+\.\d+$/.test(product.version)) throw new Error('Product release version is invalid');
   return product.version;

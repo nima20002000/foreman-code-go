@@ -1,3 +1,4 @@
+import { encodeMaterializationRecord } from './materializationRecord.js'
 import { importGitSourceObjects } from './gitSourceObjects.js'
 import { processSourceDirectories } from './entryProcessing.js'
 import { sourceMaterializationClaimName, restoreQuotaMaterializationClaim, writeSourceClaim } from './quotaClaims.js'
@@ -11,7 +12,7 @@ import { randomUUID } from 'node:crypto'
 import { open, mkdir, rename, statfs, readdir, readlink, stat, readFile, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
-import { MaterializationReceiptSchema, RootBindingSchema, type MaterializationReceipt, type RootBinding, type SourceManifest, type SourceSnapshotReference, SourceMaterializationFileSchema, sourceMaterializationParent, type SourceProjectQuotaSlot } from '@foreman-code/contracts/source-materialization'
+import { SOURCE_MATERIALIZATION_RECORD_MAX_BYTES, MaterializationReceiptSchema, RootBindingSchema, type MaterializationReceipt, type RootBinding, type SourceManifest, type SourceSnapshotReference, SourceMaterializationFileSchema, sourceMaterializationParent, type SourceProjectQuotaSlot } from '@foreman-code/contracts/source-materialization'
 import { sourceMaterializationBytes } from './footprint.js'
 import { SOURCE_LIMITS, SourceError, verifySourceBytes, verifySourceManifest } from './manifest.js'
 import { anchored, identity, openChildDirectory, openPrivateRoot,
@@ -207,8 +208,9 @@ export class PrivateSourceMaterializer {
         ...(worktree ? { worktree: worktree.worktree } : {}),
         verifiedManifestDigest: manifest.manifestDigest, verifiedEntries: manifest.totalEntries,
         verifiedBytes: manifest.totalBytes, verifiedAt: new Date().toISOString(), localTreeIdentity: shared?.filesystem ?? referenceIdentity })
+      const encodedRecord = encodeMaterializationRecord({ receipt, manifest, ...(snapshotReference ? { snapshotReference } : {}) })
       const record = await open(anchored(reservation, 'receipt.json'), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-      try { await record.writeFile(JSON.stringify({ receipt, manifest, ...(snapshotReference ? { snapshotReference } : {}) })); await record.sync() } finally { await record.close() }
+      try { await record.writeFile(encodedRecord); await record.sync() } finally { await record.close() }
       if (!snapshotReference) await tree.sync()
       // The fresh UUID reservation is exclusively app-owned. Its tree name has
       // never existed; rename cannot overwrite a caller or an execution tree.
@@ -267,7 +269,7 @@ export class PrivateSourceMaterializer {
           const file = await open(anchored(directory, 'receipt.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
           try {
             const stat = await file.stat()
-            if (!stat.isFile() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) {
+            if (!stat.isFile() || stat.nlink !== 1 || stat.size > SOURCE_MATERIALIZATION_RECORD_MAX_BYTES) {
               throw new SourceError('SOURCE_RECEIPT_INVALID', 'Invalid source receipt record.')
             }
             receipt = MaterializationReceiptSchema.parse(
@@ -305,7 +307,7 @@ export class PrivateSourceMaterializer {
         let stored: ReturnType<typeof SourceMaterializationFileSchema.parse>
         try {
           const stat = await record.stat()
-          if (!stat.isFile() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw new SourceError('SOURCE_RECEIPT_INVALID', 'Invalid receipt record.')
+          if (!stat.isFile() || stat.nlink !== 1 || stat.size > SOURCE_MATERIALIZATION_RECORD_MAX_BYTES) throw new SourceError('SOURCE_RECEIPT_INVALID', 'Invalid receipt record.')
           stored = SourceMaterializationFileSchema.parse(JSON.parse(await record.readFile('utf8')))
         } finally { await record.close() }
         const manifest = verifySourceManifest(stored.manifest)

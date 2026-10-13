@@ -286,7 +286,7 @@ describe('lazy installed worker host qualification boundary',()=>{
       ], host.extensions)
       expect(negotiated).toEqual([
         expect.objectContaining({ namespace: 'execution-authority-v1', workerCanRequest: true, mainCanRequest: false }),
-        expect.objectContaining({ namespace: 'worker-mcp-v1', workerCanRequest: true, mainCanRequest: false }),
+        expect.objectContaining({ namespace: 'worker-mcp-v2', workerCanRequest: true, mainCanRequest: false }),
       ])
       const handler=host.extensions[0]!.handle!
       await expect(handler({method:'prepare',intent:f.intent,placement:f.placement,request:f.request,executionPlacement:f.nativePlacement},f.context)).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })

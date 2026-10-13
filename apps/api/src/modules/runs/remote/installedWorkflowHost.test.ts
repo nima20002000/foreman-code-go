@@ -302,14 +302,14 @@ describe('installed host resident execution continuity', () => {
         f.finish('succeeded')
         await f.retained
         f.denyMcp()
-        const appRequests = f.requests.filter(request => request.namespace === 'worker-mcp-v1').length
+        const appRequests = f.requests.filter(request => request.namespace === 'worker-mcp-v2').length
         const reply = await f.call(method, method === 'reattach'
           ? { request: f.request, session: { harness: 'codex', providerVersion: '0.132.0', nativeSessionId: 'original-session' } }
           : {})
         expect(reply.payload).toMatchObject(method === 'reattach'
           ? { session: { nativeSessionId: 'original-session' }, status: { receipt: { retainedReviewer: { agentId: 'agent' } } } }
           : { receipt: { retainedReviewer: { agentId: 'agent' } } })
-        expect(f.requests.filter(request => request.namespace === 'worker-mcp-v1')).toHaveLength(appRequests)
+        expect(f.requests.filter(request => request.namespace === 'worker-mcp-v2')).toHaveLength(appRequests)
         expect(f.create).toHaveBeenCalledOnce()
         expect(f.attach).not.toHaveBeenCalled()
         await expect(f.call('history')).rejects.toThrow('App binding requires recovery')
