@@ -14,6 +14,7 @@ import { CLOUD_START_TIMEOUT_MS, CircleCiProvider, GitHubActionsProvider,
   type CloudDispatchInput, type CloudProvider, type CloudRun, type CloudStatus } from './cloudProviders.js'
 import { runsOnCircleCi } from './parts.js'
 import { fallbackOnError } from '../diagnostics/ignoredError.js'
+import { ciLogPage } from './logPage.js'
 
 const LOG_LIMIT = 4 * 1024 * 1024
 const MAX_DISPATCH_ATTEMPTS = 3
@@ -114,9 +115,8 @@ export class CloudCi {
 
   private async answer(request: Extract<CiHostRequest, { operation: 'read' }>, run: CloudRun) {
     const log = await readFile(this.path(run.runId, 'log')).catch(() => Buffer.alloc(0))
-    const text = log.subarray(request.afterOffset, request.afterOffset + request.maxBytes)
-    return CiHostReplySchema.parse({ operation: 'read', run: this.view(run, log.length), text: text.toString('utf8'),
-      nextOffset: request.afterOffset + text.length,
+    return CiHostReplySchema.parse({ operation: 'read', run: this.view(run, log.length),
+      ...ciLogPage(log, request.afterOffset, request.maxBytes),
       ...(request.durations && run.durations ? { durations: run.durations } : {}),
       ...(request.testResults && run.testResults ? { testResults: run.testResults } : {}) })
   }

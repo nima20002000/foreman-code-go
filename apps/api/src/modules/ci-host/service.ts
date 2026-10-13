@@ -275,16 +275,28 @@ export class HostCiService {
    * together: each free computer takes one slice, weighted by its throughput; slices without a computer yet get the
    * mean. Throughput is share of the suite per wall second from that computer's last integration slice. */
   private async weighPartitions(queued: CiRunRecord[], free: HostCiComputer[]): Promise<CiRunRecord[]> {
+    const groupIds = [...new Set(queued.filter(run => run.suite === 'integration'
+      && run.partition && !run.partition.weights).map(run => run.groupId))]
+    if (!groupIds.length) return queued
+    const members = (await this.pool.query<{ record: unknown }>(
+      'select record from ci_runs where group_id=any($1::uuid[])', [groupIds])).rows
+      .map(row => CiRunRecordSchema.parse(row.record))
     const groups = new Map<string, CiRunRecord[]>()
-    for (const run of queued) {
-      if (run.suite === 'integration' && run.partition && !run.partition.weights) groups.set(run.groupId, [...groups.get(run.groupId) ?? [], run])
+    for (const run of members) {
+      if (run.suite === 'integration' && run.partition) groups.set(run.groupId, [...groups.get(run.groupId) ?? [], run])
     }
     if (!groups.size) return queued
     const speed = await this.throughput(free)
     const replaced = new Map<string, CiRunRecord>()
     for (const group of groups.values()) {
+      group.sort((left, right) => left.partition!.index - right.partition!.index)
       const count = group[0]!.partition!.count
       if (group.length !== count) continue
+      if (group.every(run => run.partition!.weights)) {
+        for (const run of group) replaced.set(run.id, run)
+        continue
+      }
+      const existing = group.find(run => run.partition!.weights)
       const ordered = [...free].sort((left, right) =>
         Number(isGitHubComputer(left)) - Number(isGitHubComputer(right))
         || right.priority - left.priority
@@ -297,7 +309,8 @@ export class HostCiService {
       const ordinaryFiles = knownFiles ? selection.files.length - hostFiles : count
       const hostCount = hostFiles ? Math.min(hostFiles, ordinaryFiles ? count - 1 : count,
         Math.max(1, systemdComputers.length, count - ordinaryFiles)) : 0
-      const hostIndexes = Array.from({ length: hostCount }, (_, index) => index)
+      const hostIndexes = existing ? existing.partition!.hostIndexes ?? []
+        : Array.from({ length: hostCount }, (_, index) => index)
       // Keep systemd files separate so executors without a user manager can take ordinary slices.
       const planned: (HostCiComputer | undefined)[] = [
         ...hostIndexes.map(index => systemdComputers[index]),
@@ -307,16 +320,23 @@ export class HostCiService {
       ]
       const known = ordered.map(computer => speed.get(computer.key)).filter((value): value is number => value !== undefined)
       const mean = known.length ? known.reduce((sum, value) => sum + value, 0) / known.length : 1
-      const weights = group.map((_, index) => {
+      const weights = existing?.partition!.weights ?? group.map((_, index) => {
         const computer = planned[index]
         return Number((computer ? speed.get(computer.key) ?? mean : mean).toPrecision(6))
       })
-      for (const [index, run] of group.sort((left, right) => left.partition!.index - right.partition!.index).entries()) {
-        const next = CiRunRecordSchema.parse({ ...run, partition: { ...run.partition!, weights,
+      const plan = group.map((run, index) => ({ id: run.id, patch: { partition: { ...run.partition!, weights,
           ...(hostIndexes.length ? { hostIndexes } : {}) },
-          plannedHostKey: planned[index]?.key ?? null })
-        await this.save(next, null)
-        replaced.set(run.id, next)
+        plannedHostKey: planned[index]?.key ?? null } }))
+      // One immutable plan includes canceled siblings; their slices remain reserved and their state stays terminal.
+      const saved = await this.pool.query<{ record: unknown }>(`update ci_runs
+        set record=ci_runs.record || plan.patch
+        from jsonb_to_recordset($1::jsonb) as plan(id text, patch jsonb)
+        where ci_runs.id=plan.id::uuid and ci_runs.group_id=$2
+          and ci_runs.record#>'{partition,weights}' is null
+        returning ci_runs.record`, [JSON.stringify(plan), group[0]!.groupId])
+      for (const row of saved.rows) {
+        const run = CiRunRecordSchema.parse(row.record)
+        replaced.set(run.id, run)
       }
     }
     return queued.map(run => replaced.get(run.id) ?? run)
@@ -445,9 +465,11 @@ export class HostCiService {
           `select record from ci_runs where group_id=$1 and workspace_id=$2
             and record->'initiator'=$3::jsonb order by created_at,id`,
           [run.groupId, scope.workspaceId, JSON.stringify(run.initiator)])).rows.map(row => CiRunRecordSchema.parse(row.record))
-        const partMaxBytes = Math.max(1, Math.floor(maxBytes / group.length))
-        const parts = await Promise.all(group.map(async part => ({ run: part,
-          ...await this.readLog(part, { afterOffset: input.afterOffset, maxBytes: partMaxBytes }) })))
+        const partMaxBytes = Math.floor(maxBytes / group.length)
+        const remainder = maxBytes % group.length
+        const parts = await Promise.all(group.map(async (part, index) => ({ run: part,
+          ...await this.readLog(part, { afterOffset: input.afterOffset,
+            maxBytes: partMaxBytes + Number(index < remainder) }) })))
         const own = parts.find(part => part.run.id === run.id)!
         return { text: own.text, nextOffset: own.nextOffset, logBytes: own.logBytes, maxBytes, parts }
       }
@@ -460,9 +482,14 @@ export class HostCiService {
     const maxBytes = input.maxBytes ?? CI_LOG_MAX_BYTES
     if (!run.computer) return { text: '', nextOffset: 0, logBytes: 0, maxBytes }
     const computer = await this.computer(run.computer.hostRef)
+    if (maxBytes === 0) {
+      const state = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 0 })
+      if (state.operation !== 'read') throw new DomainError('CI_HOST_REPLY_INVALID', 'The build computer replied out of order.', 502)
+      return { text: '', nextOffset: input.afterOffset ?? state.run.logBytes, logBytes: state.run.logBytes, maxBytes }
+    }
     let afterOffset = input.afterOffset
     if (afterOffset === undefined) {
-      const state = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 1 })
+      const state = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 0 })
       afterOffset = state.operation === 'read' ? Math.max(0, state.run.logBytes - maxBytes) : 0
     }
     const reply = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset, maxBytes })

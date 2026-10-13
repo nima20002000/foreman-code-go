@@ -70,7 +70,9 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'computer, part, shard, exit code, group state and a 32 KiB log tail; ci_logs_read pages the full log '
   + `for authorized callers. maxBytes defaults to ${CI_LOG_MAX_BYTES} bytes and larger requests are clamped to `
   + `that maximum; responses report the applied maxBytes and nextOffset. group=true divides the capped budget `
-  + 'between parts and reports each part’s maxBytes and nextOffset. '
+  + 'between parts, allowing zero-byte parts, and reports each part’s maxBytes and nextOffset. '
+  + 'Pages contain complete UTF-8 characters; offsets inside a character skip to the next character. '
+  + 'Increase maxBytes if the next character does not fit and nextOffset does not advance. '
   + 'ci_get reads the persisted background refresh without waiting for dispatch or build computers. '
   + 'Queued tickets include the dispatch waiting reason in message; it clears when they start. '
   + 'ci_computers_list shows readiness reasons, userSystemd support and its unavailable reason, used/total CI slots, assigned tickets and up to 500 authorized queued '
