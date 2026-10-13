@@ -12,6 +12,8 @@ import { openWorkflowLifecycleLocked } from '../runs/repeatLifecycle.js'
 import { repeatDigest, repeatExecutionIdentity } from '../runs/repeatResolution.js'
 import { nativeLanes } from '../../../test/helpers/nativeLanes.js'
 import { ApprovalExecutionCoordinator } from './execution.js'
+import { createWorkflowNativeCaptureChannel } from './workflowNativeCapture.js'
+import type { RepeatNativeObservationStore } from './repeatObservation.js'
 import { assertSavedPendingApprovalOriginalLocked } from './nativeApprovalProof.js'
 import { readDetachedWorkflowSession, readRemoteWorkflowContinuation } from './workflowClosure.js'
 
@@ -35,7 +37,7 @@ async function recoverRequester(detached: boolean, state: 'waiting' | 'running' 
   const base = makeCurrentWorkflowFixture('requester-recovery', 'approval')
   base.run.executionState = 'waiting'
   const configuration = base.configurations[1]!
-  const execution = HarnessExecutionSchema.parse({
+  let execution = HarnessExecutionSchema.parse({
     id: 'requester-execution', runId: base.run.id, workflowNodeId: base.version.definition.nodes[1]!.id,
     agentId: configuration.agentId, agentConfigurationVersionId: configuration.id,
     attempt: 1, state, createdAt: base.createdAt, input: {},
@@ -90,24 +92,36 @@ async function recoverRequester(detached: boolean, state: 'waiting' | 'running' 
   }
   type Args = ConstructorParameters<typeof ApprovalExecutionCoordinator>
   const coordination = nativeLanes()
+  const captures = createWorkflowNativeCaptureChannel()
+  const restore = vi.fn(async () => ({ principalId: continuation.principalId,
+    expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    environment: { agentId: execution.agentId, variables: {} } }))
+  const begin = vi.fn(async () => {
+    continuation.generation = '2'
+    continuation.detached = false
+    return continuation.generation
+  })
+  let resident = false
   const coordinator = new ApprovalExecutionCoordinator({
     getExecution: async () => execution, getExecutionConfiguration: async () => configuration,
     getRepeatVersion: async () => base.version, get: async () => base.run,
     getRepeatSnapshot: async () => ({ run: base.run, stopRequested: false, cleanupPending: false }),
     async *executionPages() { yield [execution] }, acquireOwnership, requestCleanup,
-  } as unknown as Args[0], { coordination } as Args[1], {} as Args[2], {
-    resolve: () => ({ manager, processState: 'needs_start', markResident() {} }),
+    updateExecution: async (next: typeof execution) => { execution = next },
+  } as unknown as Args[0], {
+    coordination, getForExecution: async () => undefined, getNativeRequest: async () => interaction,
+  } as unknown as Args[1], {
+    ensure: async () => {}, resume: async () => {}, remaining: async () => 60_000,
+    assertActive: async () => {}, beginWait: async () => {},
+  } as unknown as Args[2], {
+    resolve: () => ({ manager, get processState() { return resident ? 'resident' : 'needs_start' },
+      markResident() { resident = true } }),
   } as unknown as Args[3], 60_000, {
-    restore: async () => ({ principalId: continuation.principalId,
-      environment: { agentId: execution.agentId, variables: {} } }),
+    restore,
   } as unknown as Args[5], undefined, {
-    begin: async () => {
-      continuation.generation = '2'
-      continuation.detached = false
-      return continuation.generation
-    },
+    begin,
     recordDetached: async () => {},
-  } as unknown as Args[7], undefined, undefined, undefined, undefined, undefined,
+  } as unknown as Args[7], undefined, captures.capture, undefined, undefined, undefined,
   async context => ({ ...context, acceptedPlacement: { hostRef: { kind: 'device' } } as
     NonNullable<typeof context.acceptedPlacement> }))
   const stopSharing = coordinator.shareRunOwner(owner)
@@ -117,7 +131,20 @@ async function recoverRequester(detached: boolean, state: 'waiting' | 'running' 
   } finally {
     stopSharing()
   }
-  return { coordinator, interaction, owner, acquireOwnership, attach, releaseRetention, coordination }
+  const observeOriginal = () => coordinator.observeExact({
+    execution, owner, workflowId: base.run.workflowId, graphThreadId: base.run.id,
+    approval: { handler: 'user' }, signal: new AbortController().signal,
+    request: { executionId: execution.id, runId: execution.runId, workspaceId: base.run.workspaceId,
+      workflowNodeId: execution.workflowNodeId, configuration, workingDirectory: execution.workingDirectory!,
+      runtimeDirectory: execution.runtimeDirectory!, input: execution.input },
+    store: {
+      readExecution: async () => ({ execution, input: execution.input, inputDigest: repeatDigest(execution.input),
+        accepted: false, ref: { nodeId: execution.workflowNodeId, occurrence: null }, slotId: 'original-slot' }),
+      assertExecutionAdmission: async () => {}, assertNativeBoundary: async () => {}, exactSession: async () => session,
+    } as unknown as RepeatNativeObservationStore,
+  })
+  return { coordinator, interaction, owner, acquireOwnership, attach, releaseRetention, coordination,
+    observeOriginal, begin, restore, continuation }
 }
 
 it('keeps a live remote turn without a graceful detachment receipt after Main loses its owner', async () => {
@@ -125,6 +152,19 @@ it('keeps a live remote turn without a graceful detachment receipt after Main lo
   try {
     expect(f.attach).not.toHaveBeenCalled()
     expect(readRemoteWorkflowContinuation).toHaveBeenCalledWith(f.owner, expect.objectContaining({ state: 'running' }))
+  } finally {
+    await f.coordinator.closeForRestart()
+  }
+})
+
+it('observes the original running remote lifetime without reserving another generation or replaying its turn', async () => {
+  const f = await recoverRequester(false, 'running')
+  try {
+    expect(await f.observeOriginal()).toMatchObject({ state: 'waiting', execution: { nativeSessionId: 'requester-session' } })
+    expect(f.begin).not.toHaveBeenCalled()
+    expect(f.continuation.generation).toBe('1')
+    expect(f.restore).toHaveBeenCalledOnce()
+    expect(f.attach).toHaveBeenCalledOnce()
   } finally {
     await f.coordinator.closeForRestart()
   }

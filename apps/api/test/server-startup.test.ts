@@ -24,10 +24,12 @@ vi.mock('node:fs/promises', async original => ({
 }))
 // Native qualification belongs to buildProductionApp, which this lifecycle fixture replaces.
 vi.mock('../src/modules/harnesses/qualification/suites/codex.js', () => ({ codexQualificationSuite: {} }))
-vi.mock('../src/infrastructure/logger.js', () => ({
+vi.mock('../src/infrastructure/logger.js', async original => ({
+  ...(await original<typeof import('../src/infrastructure/logger.js')>()),
   enableFileLogging: async () => undefined,
   componentLogger: () => ({
     info: () => undefined,
+    warn: () => undefined,
     error: (context: { err: unknown }, message: string) => state.errors.push({ message, error: context.err }),
     fatal: (context: { err: unknown }, message: string) => state.errors.push({ message, error: context.err }),
   }),
@@ -53,7 +55,11 @@ vi.mock('../src/infrastructure/checkpoints.js', () => ({ createCheckpointStore: 
   setup: async () => undefined, ping: async () => undefined,
   close: async () => { state.calls.push('checkpoints closed') },
 }) }))
-vi.mock('../src/production.js', () => ({ buildProductionApp: () => {
+vi.mock('../src/production.js', () => ({ buildProductionApp: (...args: unknown[]) => {
+  const infrastructure = args[7] as { closeInfrastructure?: () => Promise<void> }
+  if (infrastructure.closeInfrastructure) {
+    state.app!.addHook('onClose', async () => { await infrastructure.closeInfrastructure!() })
+  }
   if (state.productionClose) {
     state.app!.addHook('onClose', async () => { await state.productionClose!() })
   }

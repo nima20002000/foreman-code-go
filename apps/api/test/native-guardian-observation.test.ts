@@ -169,6 +169,36 @@ describe('guardian actual child observation receipts', () => {
     f.process.emit('disconnect')
     expect(f.signals).toEqual([[-501, 'SIGTERM']])
   })
+  it('records restart detachment on original IPC loss before releasing a reconnectable daemon', () => {
+    const f = guardianFixture(true, false, { restartDetachable: true, reconnectableStdio: true })
+    const command = { id: f.id, owner: 'same-lease', controlKey: 'a'.repeat(64), startTicks: '100' }
+    f.process.stdin.write('{"id":"incomplete')
+    f.process.connected = false
+    f.process.emit('disconnect')
+    f.process.stdout.emit('error', { code: 'EPIPE' })
+    f.process.stderr.emit('error', { code: 'EPIPE' })
+    expect(JSON.parse(f.records.get('/private/restart-detached.json')!)).toMatchObject({
+      id: f.id, owner: 'same-lease', guardian: { pid: 501, startTicks: '100' },
+      provider: { pid: 902, startTicks: '200' }, reconnectableStdio: true,
+    })
+    expect(f.signals).toEqual([])
+    expect(f.kills).toEqual([])
+    const attached = f.control({ ...command, operation: 'attach', connectionId: 'replacement' })
+    expect(attached.destroyed).toBe(false)
+    expect(JSON.parse(attached.replies[0]!)).toMatchObject({ accepted: true })
+    expect(f.control({ ...command, operation: 'stop' }).replies).toHaveLength(1)
+    expect(f.signals).toEqual([[-501, 'SIGTERM']])
+  })
+  it.each([
+    { restartDetachable: true as const },
+    { reconnectableStdio: true as const },
+  ])('stops original IPC loss unless both crash recovery options are enabled: %j', options => {
+    const f = guardianFixture(true, false, options)
+    f.process.connected = false
+    f.process.emit('disconnect')
+    expect(f.records.has('/private/restart-detached.json')).toBe(false)
+    expect(f.signals).toEqual([[-501, 'SIGTERM']])
+  })
   it('reconnects one authenticated stdio observer after release and preserves pending native requests', () => {
     const f = guardianFixture(true, false, { restartDetachable: true, reconnectableStdio: true })
     const command = { id: f.id, owner: 'same-lease', controlKey: 'a'.repeat(64), startTicks: '100' }
@@ -210,7 +240,7 @@ describe('guardian actual child observation receipts', () => {
     expect(f.control({ ...command, operation: 'stop' }).replies).toHaveLength(1)
     expect(f.signals).toEqual([[-501, 'SIGTERM']])
   })
-  it('discards incomplete observer input only after authenticated release and rejects another owner cleanup', () => {
+  it('releases a lost observer and discards its partial input while rejecting another owner cleanup', () => {
     const f = guardianFixture(true, false, { restartDetachable: true, reconnectableStdio: true })
     const command = { id: f.id, owner: 'same-lease', controlKey: 'a'.repeat(64), startTicks: '100' }
     expect(f.control({ ...command, operation: 'detach' }).replies).toHaveLength(1)
@@ -219,8 +249,6 @@ describe('guardian actual child observation receipts', () => {
     initial.socket.emit('close')
     expect(f.control({ ...command, operation: 'stop', owner: 'settings:mcp:codex' }).destroyed).toBe(true)
     expect(f.control({ ...command, operation: 'detach', controlKey: 'b'.repeat(64) }).destroyed).toBe(true)
-    expect(f.control({ ...command, operation: 'attach', connectionId: 'replacement' }).destroyed).toBe(true)
-    expect(f.control({ ...command, operation: 'detach', connectionId: 'initial' }).replies).toHaveLength(1)
     const replacement = f.control({ ...command, operation: 'attach', connectionId: 'replacement' })
     expect(replacement.destroyed).toBe(false)
     const input: unknown[] = []
@@ -228,6 +256,33 @@ describe('guardian actual child observation receipts', () => {
     const read = { id: 'read', method: 'thread/read', params: { threadId: 'same-thread' } }
     replacement.socket.emit('data', Buffer.from(JSON.stringify(read) + '\n'))
     expect(input).toEqual([read])
+    expect(f.signals).toEqual([])
+    expect(f.kills).toEqual([])
+  })
+  it('preserves pending native requests and thread settings through repeated observer loss', () => {
+    const f = guardianFixture(true, false, { restartDetachable: true, reconnectableStdio: true })
+    const command = { id: f.id, owner: 'same-lease', controlKey: 'a'.repeat(64), startTicks: '100' }
+    const sent: unknown[] = []
+    f.native.stdin.on('data', chunk => sent.push(JSON.parse(String(chunk))))
+    f.process.stdin.write(JSON.stringify({ id: 'thread', method: 'thread/start' }) + '\n')
+    f.native.stdout.write(JSON.stringify({ id: 'thread', result: {
+      thread: { id: 'same-thread' }, model: 'fixture-model', sandbox: { type: 'readOnly' },
+    } }) + '\n')
+    expect(f.control({ ...command, operation: 'detach' }).replies).toHaveLength(1)
+    const marker = f.records.get('/private/restart-detached.json')
+    const request = { id: 7, method: 'item/tool/requestUserInput', params: { threadId: 'same-thread' } }
+    f.native.stdout.write(JSON.stringify(request) + '\n')
+    for (const connectionId of ['first', 'second', 'third']) {
+      const observer = f.control({ ...command, operation: 'attach', connectionId })
+      expect(observer.destroyed).toBe(false)
+      expect(JSON.parse(observer.replies[0]!)).toMatchObject({
+        threadSettings: { 'same-thread': { model: 'fixture-model', sandbox: { type: 'readOnly' } } },
+      })
+      expect(JSON.parse(observer.replies[1]!)).toEqual(request)
+      observer.socket.emit('close')
+      expect(f.records.get('/private/restart-detached.json')).toBe(marker)
+    }
+    expect(sent).toEqual([{ id: 'thread', method: 'thread/start' }])
     expect(f.signals).toEqual([])
     expect(f.kills).toEqual([])
   })

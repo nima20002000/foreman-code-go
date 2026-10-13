@@ -83,6 +83,42 @@ it('does not invent a source owner from a saved session without confirmed restar
   expect(f.state.turns).toBe(0)
 })
 
+it.each(['running', 'waiting'] as const)(
+  'repairs a missing Main detachment write from its guardian marker before observing a %s source', async state => {
+    const f = currentRestartUnit(false, { hostRef: { kind: 'main' } } as AcceptedNodePlacement)
+    connections.push(f.connection)
+    const first = f.cold()
+    await first.attachOriginal()
+    f.state.failCloseWrite = true
+    await expect(first.coordinator.closeForRestart()).rejects.toBeInstanceOf(AggregateError)
+    expect(f.state.restartDetached).toBe(true)
+    expect(f.rows().at(-1)?.detached).toBe(false)
+    f.state.failCloseWrite = false
+    f.execution().state = state
+    const execution = structuredClone(f.execution())
+    const originalGeneration = f.rows().at(-1)!.generation
+    const restarted = f.cold()
+    restarted.manager.originalEnvironment = async () => ({ ORIGINAL_PROCESS_TOKEN: 'retained-fixture-token' })
+    const observe = vi.fn(async () => {
+      expect(restarted.coordinator.passiveOwnedNativeSessions()).toHaveLength(1)
+      expect(f.rows().find(row => row.generation === originalGeneration)).toMatchObject({
+        detached: true, detached_reference: f.session, closed: false,
+      })
+      return 'observed original source'
+    })
+    expect(await restarted.coordinator.withSourceObservationLane(f.owner, execution, observe))
+      .toBe('observed original source')
+    expect(observe).toHaveBeenCalledOnce()
+    expect(f.execution()).toEqual(execution)
+    expect(f.state.attaches).toBe(2)
+    expect(f.state.restores).toBe(1)
+    expect(f.state.creates).toBe(0)
+    expect(f.state.turns).toBe(0)
+    expect(f.state.cleanup).toBe(false)
+    await restarted.coordinator.closeForRestart()
+  },
+)
+
 afterEach(async () => {
   await Promise.all(connections.splice(0).map((connection) => connection.close()))
 })
