@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, beforeAll, expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it } from 'vitest'
 import { routeTree } from '../app/router'
+import { installFlowLayout } from '../features/run-board/testFlowLayout'
 import { setMockScenario } from '../shared/mocks/scenarios'
 
-beforeAll(() => { globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver })
+beforeEach(() => { installFlowLayout(1000, 720) })
 afterEach(() => setMockScenario('normal'))
 
 it.each([
