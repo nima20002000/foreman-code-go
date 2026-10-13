@@ -390,7 +390,7 @@ it('omits slow local shared-folder status at the context budget and stops furthe
   expect(rest).not.toHaveBeenCalled()
 })
 
-it('forwards the same shared-folder budget to remote status requests', async () => {
+it('cancels remote shared-folder status requests when the context budget expires', async () => {
   const f = await fixture()
   const budget = new AbortController()
   const timeout = AbortSignal.timeout.bind(AbortSignal)
@@ -408,9 +408,12 @@ it('forwards the same shared-folder budget to remote status requests', async () 
   })
   const read = f.service.sharedFolder('workspace-a', { kind: 'device', deviceId: f.devices[0]!.deviceId })
   await started
-  expect(remoteSignal).toBe(budget.signal)
-  budget.abort(new DOMException('Context budget expired', 'TimeoutError'))
+  expect(remoteSignal?.aborted).toBe(false)
+  const reason = new DOMException('Context budget expired', 'TimeoutError')
+  budget.abort(reason)
   expect(await read).toBeNull()
+  expect(remoteSignal?.aborted).toBe(true)
+  expect(remoteSignal?.reason).toBe(reason)
 })
 
 for (const target of ['local', 'remote'] as const) {

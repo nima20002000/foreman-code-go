@@ -116,9 +116,14 @@ it('cancels queued local configuration before preparation or any folder write', 
 it('cancels configuration during preparation before publishing folders', async () => {
   const f = await fixture()
   const abort = new AbortController()
+  const reason = new Error('Sync closing')
   const prepare = f.ports.prepare.bind(f.ports)
-  f.ports.prepare = async () => { const identity = await prepare(); abort.abort(new Error('Sync closing')); return identity }
+  f.ports.prepare = async () => {
+    const identity = await prepare()
+    abort.abort(reason)
+    return identity
+  }
   await expect(f.computer.handle({ operation: 'configure', workspaceId: 'canceled', enabled: true, peers: [] },
-    { signal: abort.signal })).rejects.toBe(abort.signal.reason)
+    { signal: abort.signal })).rejects.toBe(reason)
   expect(await f.rest('GET', '/rest/config/folders')).toEqual([])
 })

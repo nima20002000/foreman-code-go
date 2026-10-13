@@ -65,10 +65,12 @@ it('joins a migration during shutdown before releasing ownership or starting che
   const closing = production.shutdown()
   try {
     expect(OperatorRuntimeOwner.prototype.close).not.toHaveBeenCalled()
+    expect(checkpoints.setup).not.toHaveBeenCalled()
     release.resolve()
-    expect(await preparing).toMatchObject({ code: 'NATIVE_RUNTIME_CLOSING' })
+    expect(await preparing).toMatchObject({ name: 'AbortError' })
     await closing
     expect(checkpoints.setup).not.toHaveBeenCalled()
+    expect(database.migrate).toHaveBeenCalledOnce()
     expect(OperatorRuntimeOwner.prototype.close).toHaveBeenCalledOnce()
   } finally { release.resolve(); await Promise.all([preparing, closing]) }
 })
