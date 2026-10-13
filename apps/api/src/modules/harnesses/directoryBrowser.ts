@@ -198,7 +198,7 @@ export class HarnessDirectoryBrowser {
       try { canonical = await realpath(path) } catch { throw new DomainError('DIRECTORY_ROOT_UNAVAILABLE', 'An allowed folder is unavailable. Ask the server administrator to check its configured roots.', 503) }
       return { id: String(index), label: this.configuredRoots.length === 1 ? 'Workspaces' : basename(canonical) || canonical, path: canonical }
     }))
-    if (!roots.length) return { roots, rootId: null, path: null, parent: null, directories: [], nextCursor: null }
+    if (!roots.length) return { roots, rootId: null, path: null, parent: null, directories: [], nextCursor: null, truncated: false }
     const root = input.rootId ? roots.find((item) => item.id === input.rootId) : roots[0]
     if (!root) throw new DomainError('DIRECTORY_ROOT_INVALID', 'Select one of the allowed server locations.', 400)
     const requested = input.path ?? root.path
@@ -211,8 +211,12 @@ export class HarnessDirectoryBrowser {
     try { directory = await opendir(path) } catch { throw new DomainError('DIRECTORY_UNAVAILABLE', 'That folder cannot be opened by this runner.', 403) }
     const candidates: { name: string; path: string }[] = []
     let scanned = 0
+    let truncated = false
     for await (const entry of directory) {
-      if (++scanned > 20_000) throw new DomainError('DIRECTORY_TOO_LARGE', 'This folder is too large to browse. Select a more specific approved root.', 422)
+      if (++scanned > 20_000) {
+        truncated = true
+        break
+      }
       // Symlink targets are not selectable. Native admission must still revalidate accepted roots.
       if (!entry.isDirectory() || entry.name.startsWith('.')) continue
       candidates.push({ name: entry.name, path: resolve(path, entry.name) })
@@ -221,6 +225,6 @@ export class HarnessDirectoryBrowser {
     const after = candidates.filter((item) => !input.cursor || item.name > input.cursor)
     const directories = after.slice(0, 100)
     return { roots, rootId: root.id, path, parent: path === root.path ? null : dirname(path), directories,
-      nextCursor: after.length > directories.length ? directories.at(-1)!.name : null }
+      nextCursor: after.length > directories.length ? directories.at(-1)!.name : null, truncated }
   }
 }

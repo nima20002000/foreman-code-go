@@ -184,3 +184,26 @@ layouts are accepted by the shared file-selection schema. Absolute paths, backsl
 NUL bytes, and empty, `.` or `..` path segments are rejected. Suite-specific file
 rules still apply. Large runner-derived selections remain affected selections rather
 than falling back to the full suite because of their size.
+
+## Cleanup and large local inputs
+
+Operators with workspace-scoped `jobs:cancel` can use
+`job_cancellation_recovery_propose`, `job_cancellation_recovery_approve`, and
+`job_cancellation_recovery_get`, then import the signed closure with `job_cancel`.
+Browser ownership and a separate human decision are not required. Authorization
+returns a five-minute signed grant tied to the original cancelled Job, revoked
+Worker installation, journal digest and source claim. Live scope checks, command
+retry identity and signed no-entry closure verification remain enforced; recovery
+cannot start a process or restore ordinary revoked Worker access.
+
+Native MCP configuration edits follow same-user configuration directory and file
+symlinks. Backups and native writes use the resolved target, preserving the link.
+Foreign-owned targets, credential storage, hard-linked files and nonregular files
+remain rejected; configuration values are not exposed in tool results.
+
+`agent_chat_send` accepts up to 1,048,576 characters of message text, including
+pasted logs, through the shared HTTP/MCP contract. `workspace_folders_list` returns
+100 folders per cursor page and scans at most 20,000 directory entries. Larger
+folders return a partial listing with `truncated: true`; cursor pages cover that
+scanned subset. Select a more specific folder to browse its contents. Allowed-root
+checks and the exclusion of hidden and symlink entries remain enforced.

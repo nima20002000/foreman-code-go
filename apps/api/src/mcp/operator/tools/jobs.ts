@@ -1,6 +1,6 @@
 import { WorkflowJobListInputSchema, WorkflowJobPageSchema } from '@foreman-code/contracts/job-verification'
 import { JobCancelInputSchema, JobCancellationProposalInputSchema, JobCancellationRecoveryGetSchema,
-  JobCancellationRecoveryReadSchema } from '@foreman-code/contracts/job-cancellation-recovery'
+  JobCancellationRecoveryReadSchema, JobCancellationRecoveryApproveSchema, SignedJobCancellationGrantSchema } from '@foreman-code/contracts/job-cancellation-recovery'
 import { JobWorkflowExecutionReferenceSchema } from '@foreman-code/contracts/job-workflow'
 import { JobAdmissionResultSchema, JobQueuedStartSchema, JobQueueCancelSchema,
   JobQueueTicketSchema, JobQueueListInputSchema, JobQueuePageSchema,
@@ -27,12 +27,13 @@ export const JOB_TOOLS = [
   'job_choices_get', 'job_workflow_execution_get', 'job_definition_list', 'job_definition_get',
   'job_definition_version_get', 'job_definition_save', 'job_validate', 'job_launch_validate', 'job_start',
   'job_queue_get', 'job_queue_list', 'job_queue_cancel', 'job_get', 'job_list', 'job_workflow_list', 'job_cancel',
-  'job_cancellation_recovery_propose', 'job_cancellation_recovery_get', 'job_logs_read',
+  'job_cancellation_recovery_propose', 'job_cancellation_recovery_get', 'job_cancellation_recovery_approve', 'job_logs_read',
   'job_artifacts_list', 'job_artifact_read',
 ] as const
 export type JobToolName = typeof JOB_TOOLS[number]
 const actions:Record<JobToolName,ManagementAction> = {
   job_launch_validate: 'jobs:start',
+  job_cancellation_recovery_approve: 'jobs:cancel',
   job_workflow_list: 'jobs:read',
   job_choices_get:'job_definitions:read',job_workflow_execution_get:'jobs:read',job_definition_list:'job_definitions:read',job_definition_get:'job_definitions:read',job_definition_version_get:'job_definitions:read',job_definition_save:'job_definitions:write',job_validate:'job_definitions:read',
   job_start:'jobs:start',job_get:'jobs:read',job_list:'jobs:read',job_cancel:'jobs:cancel',job_cancellation_recovery_propose:'jobs:cancel',job_cancellation_recovery_get:'jobs:cancel',job_logs_read:'job_logs:read',job_artifacts_list:'job_artifacts:read',job_artifact_read:'job_artifacts:read',
@@ -60,7 +61,7 @@ export function jobCapabilities(context:JobMcpContext,resource:AuthorizedResourc
     detail: name === 'job_workflow_list'
       ? 'Read workflow-node and Agent-triggered CI executions for one workflow, newest first, with cursor paging. Requires jobs:read for that workspace and workflow.'
       : name.startsWith('job_cancellation_recovery')
-      ? 'Cleanup requires jobs:cancel and separate local-human approval. MCP cannot approve itself or authorize execution.'
+      ? 'Cleanup requires scoped jobs:cancel. Operators can propose, authorize and import signed no-entry cleanup; this never authorizes execution.'
       : JOB_QUEUE_CAPABILITY_DETAIL + ' Accepted specifications and file revisions are immutable. '
         + 'No Agent, provider login or Operator credential enters the build.',
   }))
@@ -173,16 +174,21 @@ export function registerJobTools(server:McpServer,context:JobMcpContext):void {
     return service.listWorkflowExecutions(context.principal, workspaceId, workflowId, page, 'mcp')
   }))
   if (jobToolAvailable(context, 'job_cancel')) server.registerTool('job_cancel', {
-    description: 'Request cancellation of the original Job. Pending journal state does not prove physical closure. For a revoked Worker, recovery requires a fresh browser-owner-approved grant and the original installation signed no-entry/source-claim closure. Recovery never authorizes execution or publication.',
+    description: 'Request cancellation of the original Job. Pending journal state does not prove physical closure. For a revoked Worker, recovery requires a fresh jobs:cancel-authorized grant and the original installation signed no-entry/source-claim closure. Recovery never authorizes execution or publication.',
     inputSchema: JobCancelInputSchema.extend({ workspaceId: z.string().min(1), executionId: z.string().min(1) }),
     outputSchema: z.object({ execution: JobExecutionRecordSchema }), annotations: write,
   }, input => invoke(context, 'job_cancel', async () => ({ execution: await service.cancel(context.principal,
     'mcp', input.workspaceId, input.executionId, input.commandId, input.recovery) })))
   if (jobToolAvailable(context, 'job_cancellation_recovery_propose')) server.registerTool('job_cancellation_recovery_propose', {
-    description: 'Propose cleanup of one original manual Job on a revoked Worker, pinned to its retained journal digest. This creates no cleanup authority. Only the local human may approve the reviewed proposal in the browser.',
+    description: 'Propose cleanup of one original manual Job on a revoked Worker, pinned to its retained journal digest. Authorize the proposal with job_cancellation_recovery_approve using scoped jobs:cancel before importing its signed closure.',
     inputSchema: JobCancellationProposalInputSchema, outputSchema: JobCancellationRecoveryReadSchema, annotations: write,
   }, input => invoke(context, 'job_cancellation_recovery_propose', () =>
     service.proposeCancellationRecovery(context.principal, 'mcp', input)))
+  if (jobToolAvailable(context, 'job_cancellation_recovery_approve')) server.registerTool('job_cancellation_recovery_approve', {
+    description: 'Authorize the original cleanup proposal with scoped jobs:cancel. Returns a short-lived signed grant for no-entry cleanup and release of the original source claim. Reuse commandId and input for retries. Worker identity and cancellation are rechecked; this never permits execution.',
+    inputSchema: JobCancellationRecoveryApproveSchema, outputSchema: SignedJobCancellationGrantSchema, annotations: write,
+  }, input => invoke(context, 'job_cancellation_recovery_approve', () =>
+    service.approveCancellationRecovery(context.principal, 'mcp', input)))
   if (jobToolAvailable(context, 'job_cancellation_recovery_get')) server.registerTool('job_cancellation_recovery_get', {
     description: "Read this caller's original cleanup proposal, approved short-lived grant and persisted signed closure. A grant permits only no-entry fencing and release of its original source claim; ordinary revoked Worker authentication remains denied.",
     inputSchema: JobCancellationRecoveryGetSchema, outputSchema: JobCancellationRecoveryReadSchema, annotations: read,

@@ -693,9 +693,8 @@ export class JobService {
   getCancellationRecovery(principal: ManagementPrincipal, input: unknown) {
     return this.recovery().get(principal, input)
   }
-  approveCancellationRecovery(request: import('fastify').FastifyRequest, workspaceId: string, executionId: string,
-    recoveryId: string, commandId: string) {
-    return this.recovery().approveBrowser(request, workspaceId, executionId, recoveryId, commandId)
+  approveCancellationRecovery(principal: ManagementPrincipal, source: 'http' | 'mcp', input: unknown) {
+    return this.recovery().approve(principal, source, input)
   }
   async cancel(principal:ManagementPrincipal,source:'http'|'mcp',workspaceId:string,id:string,commandId:string,
     recovery?: JobCancellationRecoveryApply) {

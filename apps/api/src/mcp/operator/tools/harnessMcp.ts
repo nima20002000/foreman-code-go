@@ -40,7 +40,7 @@ export const harnessMcpTools = [
     name: 'harness_mcp_change_request',
     requires: [['harnesses:update', 'global'], ['harnesses:read', 'global']],
     enabled: s => !!s.harnessSettings,
-    description: 'Add, remove, or enable/disable a native MCP connection and apply it now, using the list revision and a stable commandId. Local programs must already be installed; this tool does not install packages. Do not put secrets in arguments. Protected App MCP entries are changed with harness_mcp_managed_request. Returns the applied plan; status uncertain means use harness_mcp_change_reconcile, never resubmit. Reuse the same commandId to retry a busy or lost response.',
+    description: 'Add, remove, or enable/disable a native MCP connection and apply it now, using the list revision and a stable commandId. Same-user configuration directory and file symlinks are written through without replacing the link; foreign-owned or sensitive targets remain rejected. Local programs must already be installed; this tool does not install packages. Do not put secrets in arguments. Protected App MCP entries are changed with harness_mcp_managed_request. Returns the applied plan; status uncertain means use harness_mcp_change_reconcile, never resubmit. Reuse the same commandId to retry a busy or lost response.',
     inputSchema: HarnessMcpPlanInputSchema, outputSchema: HarnessMcpPlanSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: (context, input) => context.services.harnessSettings!.mcp.applyChange(context.principal, 'mcp', input),

@@ -69,7 +69,7 @@ export const workspaceTools = [
     name: 'workspace_folders_list',
     requires: [['workspace_locations:read', 'global'], ['harnesses:read', 'global']],
     enabled: s => !!s.harnessSettings,
-    description: 'Browse folders within the app-managed Workspaces location. Never follows links outside an allowed root. Use the returned path as parentPath for workspace_folder_create or workspace_create.',
+    description: 'Browse folders within the app-managed Workspaces location, 100 per page. Pass nextCursor as cursor for more. Scans at most 20,000 entries; truncated signals a partial listing whose cursor pages cover only the scanned subset. Never follows links outside an allowed root. Use the returned path as parentPath for workspace_folder_create or workspace_create.',
     inputSchema: HarnessDirectoryBrowseInputSchema, outputSchema: HarnessDirectoryBrowseResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     run: (context, input) => context.services.harnessSettings!.directories.browse(context.principal, input),
