@@ -2,11 +2,17 @@ import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { expect, it } from 'vitest'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { HostCiRunner, systemHostCiPorts, type HostCiPorts } from './runner.js'
 
-it.each([false, true])('selects one heavy integration file per weighted build-computer partition (CI shell: %s)', async ciShell => {
+it.each([
+  { ciShell: false, preparationDelayMs: 0 },
+  { ciShell: true, preparationDelayMs: 0 },
+  { ciShell: false, preparationDelayMs: 1500 },
+])('selects one heavy integration file per weighted build-computer partition '
+  + '(CI shell: $ciShell, preparation delay: $preparationDelayMs ms)', async ({ ciShell, preparationDelayMs }) => {
   const base = process.env.FOREMAN_CODE_TEST_ROOT ?? process.env.TMPDIR
   if (!base) throw new Error('A disposable test root is required')
   const root = await mkdtemp(join(base, 'partition-host-'))
@@ -24,6 +30,8 @@ it.each([false, true])('selects one heavy integration file per weighted build-co
   const durations = Object.fromEntries(files.map((file, index) => [file, 1000 - index * 100]))
   const system = systemHostCiPorts()
   let launched = Promise.resolve()
+  let runner: HostCiRunner | undefined
+  const admittedRuns: string[] = []
   try {
     await mkdir(join(origin, 'apps/api/test'), { recursive: true })
     await mkdir(join(origin, 'scripts'))
@@ -52,6 +60,10 @@ it.each([false, true])('selects one heavy integration file per weighted build-co
     const ports: HostCiPorts = { ...system, run: async (file, args, options) => {
       if (file === 'gh') return { code: 0, stdout: '', stderr: '' }
       if (file === 'git' && args.includes('clone')) {
+        if (args.includes('--shared') && preparationDelayMs) {
+          await delay(preparationDelayMs)
+          preparationDelayMs = 0
+        }
         return system.run(file, args.map(value => value.startsWith('https://') ? origin : value), options)
       }
       if (file === 'systemd-run') {
@@ -69,17 +81,19 @@ it.each([false, true])('selects one heavy integration file per weighted build-co
       if (file === 'systemctl') return { code: 0, stdout: 'active', stderr: '' }
       return system.run(file, args, options)
     } }
-    const runner = new HostCiRunner(join(root, 'runner'), ports, environment)
+    runner = new HostCiRunner(join(root, 'runner'), ports, environment)
+    const host = runner
     for (const index of [0, 1, 2, 3]) {
       const runId = randomUUID()
-      await runner.handle({ operation: 'start', runId, repository: 'example/project', commit, suite: 'integration',
+      await host.handle({ operation: 'start', runId, repository: 'example/project', commit, suite: 'integration',
         partition: { index, count: 4, weights: [8, 1, 1, 1] } })
+      admittedRuns.push(runId)
       await expect.poll(async () => {
-        const reply = await runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 })
+        const reply = await host.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 })
         return reply.operation === 'read' ? reply.run.state : 'unexpected'
       }).not.toBe('starting')
       await launched
-      expect(await runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
+      expect(await host.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
         .toMatchObject({ run: { state: 'passed' } })
     }
     const commands = (await readFile(calls, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
@@ -91,6 +105,7 @@ it.each([false, true])('selects one heavy integration file per weighted build-co
     expect(slices[0]).toContain(heavy[0])
     expect(slices[1]).toContain(heavy[1])
   } finally {
+    for (const runId of admittedRuns) await runner!.handle({ operation: 'cancel', runId })
     try { await launched } finally { await rm(root, { recursive: true, force: true }) }
   }
 })
