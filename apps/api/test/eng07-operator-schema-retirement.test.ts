@@ -5,14 +5,17 @@ import {
   ManualRunStartInputSchema, makeCurrentWorkflowFixture,
 } from '@foreman-code/contracts/wave25'
 import { registerCurrentWorkflowTools } from '../src/mcp/operator/tools/currentWorkflow.js'
-import { registerRunTools } from '../src/mcp/operator/tools/runs.js'
+import { runTools } from '../src/mcp/operator/tools/runs.js'
+import { registerOperatorToolGroup } from '../src/mcp/operator/server.js'
 import { retiredExecutionToolCall } from '../src/mcp/operator/retiredExecutionTools.js'
 import type { OperatorRequestContext } from '../src/mcp/operator/types.js'
 
 // Registration/schema tests only. Authentication, scoped grants and denial audit
 // integration are not replaced by these visibility stubs.
 vi.mock('../src/modules/workflows/currentWorkflowPolicy.js', () => ({ currentWorkflowAvailable: () => true }))
-vi.mock('../src/mcp/operator/availability.js', () => ({ operatorToolAvailable: () => true }))
+vi.mock('../src/mcp/operator/definition.js', async (original) => ({
+  ...await original<typeof import('../src/mcp/operator/definition.js')>(), toolAvailable: () => true,
+}))
 
 function tools() {
   const declarations = new Map<string, { description: string; inputSchema: unknown; outputSchema: unknown }>()
@@ -25,7 +28,7 @@ function tools() {
     workflows: { current: { save, read } }, runs: { start }, commands: { recordAudit },
   } } as unknown as OperatorRequestContext
   registerCurrentWorkflowTools(server, context)
-  registerRunTools(server, context)
+  registerOperatorToolGroup(server, context, runTools)
   return { declarations, context, recordAudit, start, save, read }
 }
 

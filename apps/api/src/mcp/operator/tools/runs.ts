@@ -1,7 +1,3 @@
-import type { McpServer } from '@modelcontextprotocol/server'
-import { z } from 'zod'
-import { DomainError } from '../../../modules/errors.js'
-import { toolFailure } from '../../shared/results.js'
 
 import {
   RunEventsListInputSchema, RunStopInputSchema,
@@ -12,19 +8,24 @@ import { compactRunDetails } from '../runSummary.js'
 import { ManualRunStartInputSchema, ManualRunStartResultSchema, SavedRunPageSchema,
   RunActivitiesInputSchema, RunActivitiesPageSchema, RunHandoffsReadInputSchema,
   RunHandoffsReadSchema } from '@foreman-code/contracts/wave25'
-import { invokeOperatorTool } from '../invoke.js'
-import { operatorToolAvailable } from '../availability.js'
-import type { OperatorRequestContext } from '../types.js'
+import { defineOperatorTool } from '../definition.js'
 
-export function registerRunTools(server: McpServer, context: OperatorRequestContext): void {
-  if (operatorToolAvailable(context, 'run_list')) server.registerTool('run_list', {
+export const runTools = [
+  defineOperatorTool({
+    name: 'run_list',
+    requires: [['runs:read', 'resource']],
+    enabled: s => !!s.runs,
     description: 'List authorized execution-semantics-3 Runs newest-first by creation time and ID. '
       + 'Retained historical Runs remain readable through run_board_snapshot_get. '
       + 'Returns 10 by default. Pass nextCursor unchanged; it is scoped to this workspace and optional workflow filter.', inputSchema: OperatorRunListInputSchema,
     outputSchema: SavedRunPageSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'run_list', () => context.services.runs.list(context.principal, input)))
-  if (operatorToolAvailable(context, 'run_get')) server.registerTool('run_get', {
+    run: (context, input) => context.services.runs.list(context.principal, input),
+  }),
+  defineOperatorTool({
+    name: 'run_get',
+    requires: [['runs:read', 'resource']],
+    enabled: s => !!s.runs,
     description: 'Read an authorized Run, including Git worktree paths, branches and retained-change status when workspace location read is granted, from one backend snapshot. Defaults to compact status and the latest 25 executions and activities. '
       + 'Omission counts cover this snapshot; use run_activities_get_v1 for paged history. Pass detail: "full" for input, result, execution bodies and the full snapshot. '
       + 'Current execution semantics 3 only; compact metadata is available from run_graph_snapshot_v1 (graph protocol 1). '
@@ -37,23 +38,34 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
     inputSchema: OperatorRunGetInputSchema,
     outputSchema: OperatorRunGetResultSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'run_get', async () => {
+    run: async (context, input) => {
     const details = await context.services.runs.get(context.principal, input.workspaceId, input.runId)
     return input.detail === 'full' ? details : compactRunDetails(details)
-  }))
-  if (operatorToolAvailable(context, 'run_events_list')) server.registerTool('run_events_list', {
+  },
+  }),
+  defineOperatorTool({
+    name: 'run_events_list',
+    requires: [['runs:read', 'resource']],
+    enabled: s => !!s.runs,
     description: 'Read a bounded page of existing persisted run activity from a committed snapshot. '
       + 'DATABASE_READ_TIMEOUT is retryable.', inputSchema: RunEventsListInputSchema,
     outputSchema: RunEventsPageSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'run_events_list', () => context.services.runs.events(context.principal, input)))
-  if (operatorToolAvailable(context, 'run_handoffs_get_v1')) server.registerTool('run_handoffs_get_v1', {
+    run: (context, input) => context.services.runs.events(context.principal, input),
+  }),
+  defineOperatorTool({
+    name: 'run_handoffs_get_v1',
+    requires: [['runs:read', 'resource'], ['workflows:read', 'workflow']],
+    enabled: s => !!s.runs,
     description: 'Read the exact saved work connections, Run-wide usage, nullable limits, named route availability, notice delivery and unresolved work. Requires scoped runs:read and workflows:read. A listed route still requires live admission; this read grants no execution authority.',
     inputSchema: RunHandoffsReadInputSchema, outputSchema: RunHandoffsReadSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'run_handoffs_get_v1',
-    () => context.services.runs.handoffs.read(context.principal, input)))
-  if (operatorToolAvailable(context, 'run_activities_get_v1')) server.registerTool('run_activities_get_v1', {
+    run: (context, input) => context.services.runs.handoffs.read(context.principal, input),
+  }),
+  defineOperatorTool({
+    name: 'run_activities_get_v1',
+    requires: [['runs:read', 'resource']],
+    enabled: s => !!s.runs,
     description: 'Read a bounded, redacted public Activities page for an exact authorized Run. '
       + 'Execution references include continuedFromExecutionId for same-node session continuity. '
       + 'Includes persisted Host CI lifecycle states with ciTicketId, ciGroupId, originating Agent execution, part, partition and computer. '
@@ -66,39 +78,24 @@ export function registerRunTools(server: McpServer, context: OperatorRequestCont
       + 'Reads use a committed snapshot; DATABASE_READ_TIMEOUT is retryable.',
     inputSchema: RunActivitiesInputSchema, outputSchema: RunActivitiesPageSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'run_activities_get_v1',
-    () => context.services.runs.activities.read(context.principal, input)))
-  if (operatorToolAvailable(context, 'run_start')) server.registerTool('run_start', {
+    run: (context, input) => context.services.runs.activities.read(context.principal, input),
+  }),
+  defineOperatorTool({
+    name: 'run_start',
+    requires: [['runs:start', 'workflow'], ['workspace_locations:read', 'workspace']],
+    enabled: s => !!s.runs,
     description: 'Request one Run of the explicit saved version. Every new workflow uses semantics 3, with or without repeat. Pin 3 plus the current workflow revision, exact Agent configuration map and location revision. In mixed-computer workflows, Agents without a saved computer choice resolve to the authorized Main source, root and matching qualified harness; all accepted placements are persisted in the Run. For a GitHub workspace, Start fetches the configured default branch once, approves its tracked tree, and persists that source for every Agent in this Run. Unchanged commits reuse an approval. This additionally requires workspace-scoped sources:approve, sources:read, source_roots:bind and source_roots:read; it does not grant those permissions. Start refreshes only the Agent execution hosts required by this version. Installation recovery can return HARNESS_PROFILE_CHECK_PENDING; retry the same command after checks finish. Concurrent Starts share a 30-second deadline for command, runner and workspace locks; RUN_START_BUSY is retryable with the same commandId and input. Explicit invalid placements are rejected. New v3 Start remains unavailable until native lifecycle qualification; graph read support is not admission. Retry only the same command for verified receipt readback, never a blind restart.', inputSchema: ManualRunStartInputSchema,
     outputSchema: ManualRunStartResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'run_start', () => context.services.runs.start(context.principal, 'mcp', input)))
-  if (operatorToolAvailable(context, 'run_stop')) server.registerTool('run_stop', {
+    run: (context, input) => context.services.runs.start(context.principal, 'mcp', input),
+  }),
+  defineOperatorTool({
+    name: 'run_stop',
+    requires: [['runs:stop', 'resource']],
+    enabled: s => !!s.runs,
     description: 'Stop an authorized Run, including recovery after an API or worker restart when the original native lifetime has positive closure evidence. Live or unconfirmed owners remain fenced. If cleanup cannot be confirmed, retry the same commandId and input using the returned domain error. Every non-terminal CI ticket its Agents created and its assigned provider run is canceled with audit under runs:stop; failed CI cleanup remains pending for retry. A receipt or terminal record is not process-exit proof; processStopped remains false.', inputSchema: RunStopInputSchema,
     outputSchema: RunStopResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'run_stop', () => context.services.runs.stop(context.principal, 'mcp', input)))
-}
-
-const RunToolCallSchema = z.object({
-  jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
-  method: z.literal('tools/call'), params: z.object({ name: z.enum([
-    'run_start', 'run_stop', 'run_handoffs_get_v1', 'run_activities_get_v1', 'run_node_placement_get',
-    'run_subagents_list_v1', 'run_subagent_get_v1', 'run_subagent_messages_list_v1', 'run_subagent_tools_list_v1',
-    'run_subagent_input_v1', 'run_subagent_interrupt_v1', 'run_subagent_respond_v1',
-  ]) }).passthrough(),
-}).passthrough()
-
-/** Called only after existing HTTP host/origin and Operator authentication.
- * Hidden tools stay hidden. Their denied invocation cannot bypass audit by
- * falling into an SDK unknown-tool response; no extra grants are issued. */
-export async function unavailableRunToolCall(context: OperatorRequestContext, body: unknown) {
-  const request = RunToolCallSchema.safeParse(body)
-  if (!request.success || operatorToolAvailable(context, request.data.params.name)) return undefined
-  const name = request.data.params.name
-  const error = context.services.runs
-    ? new DomainError('ACCESS_DENIED', 'The Run tool is not permitted by compatible scoped grants.', 403)
-    : new DomainError('RUN_SERVICES_UNAVAILABLE', 'Run services are not composed in this application.', 503)
-  if (error.status === 403) await context.services.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)
-  return { jsonrpc: '2.0' as const, id: request.data.id, result: toolFailure(error) }
-}
+    run: (context, input) => context.services.runs.stop(context.principal, 'mcp', input),
+  }),
+]

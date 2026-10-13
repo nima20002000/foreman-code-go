@@ -11,6 +11,8 @@ import { DomainError } from '../errors.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { toolFailure, toolResult } from '../../mcp/shared/results.js'
 import type { WorkspaceBoundLocationService } from './service.js'
+import { defineOperatorTool, registerToolDefinition } from '../../mcp/operator/definition.js'
+import type { OperatorRequestContext } from '../../mcp/operator/types.js'
 
 const TOOLS = { adopt: 'workspace_root_configuration_adopt', choices: 'workspace_root_choices_list', get: 'workspace_root_location_get',
   validate: 'workspace_root_location_validate', browse: 'workspace_root_directories_list', set: 'workspace_root_location_set' } as const
@@ -39,30 +41,75 @@ export function registerWorkspaceRootRoutes(app: FastifyInstance, service: Works
   app.post<Request>(`${base}/root-location/browse`, request => service.browse(requirePrincipal(request), scoped(request.params.workspaceId, request.body)))
   app.put<Request>(`${base}/root-location`, request => service.set(requirePrincipal(request), 'http', scoped(request.params.workspaceId, request.body)))
 }
-export function registerWorkspaceRootTools(server: McpServer, service: WorkspaceBoundLocationService, principal: ManagementPrincipal,
-  commands: Pick<PostgresCommandCoordinator, 'recordDenied'>): void {
-  const read = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
-  const invoke = async (name: string, work: () => Promise<unknown>) => {
-    try { return toolResult(await work()) } catch (error) {
-      if (error instanceof DomainError && error.status === 403) await commands.recordDenied(principal.id, 'mcp', name, `mcp:${name}`)
-      return toolFailure(error)
-    }
+const read = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+type Commands = Pick<PostgresCommandCoordinator, 'recordDenied'>
+async function invoke(principal: ManagementPrincipal, commands: Commands, name: string, work: () => Promise<unknown>) {
+  try { return toolResult(await work()) } catch (error) {
+    if (error instanceof DomainError && error.status === 403) await commands.recordDenied(principal.id, 'mcp', name, `mcp:${name}`)
+    return toolFailure(error)
   }
-  server.registerTool(TOOLS.adopt, { description: 'Adopt the approved root configuration from the selected authenticated host installation, including product-managed storage approved by its current human pairing. Arbitrary user paths require explicit owner approval on that host. Requires scoped source_roots:read/bind and workspace_locations:read/validate/update. No caller paths or new approval; persists the configuration with an idempotent command receipt and audit. Then list, validate and bind its root choices. CI enrollment adopts and binds product-managed storage automatically.',
-    inputSchema: WorkspaceRootConfigurationAdoptSchema, outputSchema: WorkspaceRootConfigurationAdoptResultSchema,
-    annotations: { ...read, readOnlyHint: false } }, input => invoke(TOOLS.adopt, () => service.adopt(principal, 'mcp', input)))
-  server.registerTool(TOOLS.choices, { description: 'List persisted computer/base/root policies for an existing workspace, including Main app-managed Workspaces storage, pairing-approved product-managed Worker storage and explicitly owner-approved additional roots, without filesystem probing. managedBy identifies pairing-approved managed bases; bindingPurpose identifies CI enrollment roots that preserve the workspace’s primary location. Requires scoped source_roots:read and workspace_locations:read. No Agent or workflow is required; metadata-only is not worker readiness.',
+}
+const adoption = { description: 'Adopt the approved root configuration from the selected authenticated host installation, including product-managed storage approved by its current human pairing. Arbitrary user paths require explicit owner approval on that host. Requires scoped source_roots:read/bind and workspace_locations:read/validate/update. No caller paths or new approval; persists the configuration with an idempotent command receipt and audit. Then list, validate and bind its root choices. CI enrollment adopts and binds product-managed storage automatically.',
+  inputSchema: WorkspaceRootConfigurationAdoptSchema, outputSchema: WorkspaceRootConfigurationAdoptResultSchema, annotations: { ...read, readOnlyHint: false } }
 
-    inputSchema: WorkspaceRootListInputSchema, outputSchema: WorkspaceRootListResultSchema, annotations: read }, input => invoke(TOOLS.choices, () => service.choices(principal, input)))
-  server.registerTool(TOOLS.get, { description: 'Read the current exact workspace root binding and location revision. Requires scoped source_roots:read and workspace_locations:read. Legacy locations explicitly lack root evidence; never infer a host from a path.',
-    inputSchema: WorkspaceBoundLocationGetInputSchema, outputSchema: WorkspaceBoundLocationReadbackSchema, annotations: read }, input => invoke(TOOLS.get, () => service.get(principal, input)))
-  server.registerTool(TOOLS.validate, { description: 'Validate a relative directory through its approved computer/base configuration with native component-safe attestation. Correctable folder failures return stable domain codes such as ROOT_RELATIVE_PATH_INVALID. Requires scoped source_roots:read, workspace_locations:read and workspace_locations:validate. Does not set a location or launch a harness.',
-    inputSchema: WorkspaceBoundLocationValidateInputSchema, outputSchema: WorkspaceBoundLocationValidationSchema, annotations: read }, input => invoke(TOOLS.validate, () => service.validate(principal, 'mcp', input)))
-  server.registerTool(TOOLS.browse, { description: 'Browse directories only within the selected approved native base and current root/config/location revisions. Requires scoped source_roots:read and workspace_locations:read/validate. Never sends caller absolute paths or follows escaped components.',
-    inputSchema: WorkspaceBoundLocationBrowseInputSchema, outputSchema: WorkspaceBoundLocationBrowseResultSchema, annotations: read }, input => invoke(TOOLS.browse, () => service.browse(principal, input)))
-  server.registerTool(TOOLS.set, { description: 'Revision-check and save an approved native workspace root binding using the existing location command receipt/audit path. Selecting the same folder reattests its identity and can repair a replaced directory. Correctable native folder failures return stable domain codes. Requires scoped source_roots:read/bind plus workspace_locations:read/validate/update. The server derives canonical path and registered application runner identity. Existing source roots and runtime profiles keep their saved bindings across location changes while their host and policy remain authorized. Existing Runs retain accepted pins. Reuse commandId and exact input after unknown acknowledgment; never substitute another host.',
-    inputSchema: WorkspaceBoundLocationSetInputSchema, outputSchema: WorkspaceBoundLocationSetResultSchema,
-    annotations: { ...read, readOnlyHint: false } }, input => invoke(TOOLS.set, () => service.set(principal, 'mcp', input)))
+export const workspaceRootTools = [
+  defineOperatorTool({
+    name: TOOLS.choices,
+    requires: [['source_roots:read', 'workspace'], ['workspace_locations:read', 'workspace']],
+    enabled: s => !!s.workspaceRoots,
+    description: 'List persisted computer/base/root policies for an existing workspace, including Main app-managed Workspaces storage, pairing-approved product-managed Worker storage and explicitly owner-approved additional roots, without filesystem probing. managedBy identifies pairing-approved managed bases; bindingPurpose identifies CI enrollment roots that preserve the workspace’s primary location. Requires scoped source_roots:read and workspace_locations:read. No Agent or workflow is required; metadata-only is not worker readiness.',
+    inputSchema: WorkspaceRootListInputSchema, outputSchema: WorkspaceRootListResultSchema, annotations: read,
+    handle: (context, input) => invoke(context.principal, context.services.commands, TOOLS.choices,
+      () => context.services.workspaceRoots!.choices(context.principal, input)),
+  }),
+  defineOperatorTool({
+    name: TOOLS.get,
+    requires: [['workspace_locations:read', 'workspace'], ['source_roots:read', 'workspace']],
+    enabled: s => !!s.workspaceRoots,
+    description: 'Read the current exact workspace root binding and location revision. Requires scoped source_roots:read and workspace_locations:read. Legacy locations explicitly lack root evidence; never infer a host from a path.',
+    inputSchema: WorkspaceBoundLocationGetInputSchema, outputSchema: WorkspaceBoundLocationReadbackSchema, annotations: read,
+    handle: (context, input) => invoke(context.principal, context.services.commands, TOOLS.get,
+      () => context.services.workspaceRoots!.get(context.principal, input)),
+  }),
+  defineOperatorTool({
+    name: TOOLS.validate,
+    requires: [['workspace_locations:validate', 'workspace'], ['source_roots:read', 'workspace'], ['workspace_locations:read', 'workspace']],
+    enabled: s => !!s.workspaceRoots,
+    description: 'Validate a relative directory through its approved computer/base configuration with native component-safe attestation. Correctable folder failures return stable domain codes such as ROOT_RELATIVE_PATH_INVALID. Requires scoped source_roots:read, workspace_locations:read and workspace_locations:validate. Does not set a location or launch a harness.',
+    inputSchema: WorkspaceBoundLocationValidateInputSchema, outputSchema: WorkspaceBoundLocationValidationSchema, annotations: read,
+    handle: (context, input) => invoke(context.principal, context.services.commands, TOOLS.validate,
+      () => context.services.workspaceRoots!.validate(context.principal, 'mcp', input)),
+  }),
+  defineOperatorTool({
+    name: TOOLS.browse,
+    requires: [['workspace_locations:validate', 'workspace'], ['source_roots:read', 'workspace'], ['workspace_locations:read', 'workspace']],
+    enabled: s => !!s.workspaceRoots,
+    description: 'Browse directories only within the selected approved native base and current root/config/location revisions. Requires scoped source_roots:read and workspace_locations:read/validate. Never sends caller absolute paths or follows escaped components.',
+    inputSchema: WorkspaceBoundLocationBrowseInputSchema, outputSchema: WorkspaceBoundLocationBrowseResultSchema, annotations: read,
+    handle: (context, input) => invoke(context.principal, context.services.commands, TOOLS.browse,
+      () => context.services.workspaceRoots!.browse(context.principal, input)),
+  }),
+  defineOperatorTool({
+    name: TOOLS.set,
+    requires: [['workspace_locations:update', 'workspace'], ['source_roots:read', 'workspace'], ['workspace_locations:read', 'workspace'], ['source_roots:bind', 'workspace'], ['workspace_locations:validate', 'workspace']],
+    enabled: s => !!s.workspaceRoots,
+    description: 'Revision-check and save an approved native workspace root binding using the existing location command receipt/audit path. Selecting the same folder reattests its identity and can repair a replaced directory. Correctable native folder failures return stable domain codes. Requires scoped source_roots:read/bind plus workspace_locations:read/validate/update. The server derives canonical path and registered application runner identity. Existing source roots and runtime profiles keep their saved bindings across location changes while their host and policy remain authorized. Existing Runs retain accepted pins. Reuse commandId and exact input after unknown acknowledgment; never substitute another host.',
+    inputSchema: WorkspaceBoundLocationSetInputSchema, outputSchema: WorkspaceBoundLocationSetResultSchema, annotations: { ...read, readOnlyHint: false },
+    handle: (context, input) => invoke(context.principal, context.services.commands, TOOLS.set,
+      () => context.services.workspaceRoots!.set(context.principal, 'mcp', input)),
+  }),
+]
+
+/** Not a catalogued Operator tool: it is listed with the composed workspace-root service. */
+export function registerWorkspaceRootAdoptionTool(server: McpServer, service: WorkspaceBoundLocationService, principal: ManagementPrincipal,
+  commands: Commands): void {
+  server.registerTool(TOOLS.adopt, adoption, input => invoke(principal, commands, TOOLS.adopt, () => service.adopt(principal, 'mcp', input)))
+}
+export function registerWorkspaceRootTools(server: McpServer, service: WorkspaceBoundLocationService, principal: ManagementPrincipal,
+  commands: Commands): void {
+  registerWorkspaceRootAdoptionTool(server, service, principal, commands)
+  const context = { principal, services: { workspaceRoots: service, commands } } as unknown as OperatorRequestContext
+  for (const tool of workspaceRootTools) registerToolDefinition(server, context, tool)
 }
 export function workspaceRootCapabilityLimit(composed: boolean) {
   return { feature: 'workspace_registered_roots', state: composed ? 'limited' as const : 'unsupported' as const,

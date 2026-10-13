@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { DomainError } from '../../modules/errors.js'
+import { operatorTool } from './catalog.js'
 import { invokeOperatorTool } from './invoke.js'
 import type { OperatorRequestContext } from './types.js'
 
@@ -16,7 +17,7 @@ describe('Operator database read deadlines', () => {
       const { request } = context()
       const result = await invokeOperatorTool(request, name, async () => {
         throw Object.assign(new Error('private statement and stored payload'), { code: '57014' })
-      })
+      }, operatorTool(name)!.requires[0][0])
       expect(result.isError).toBe(true)
       expect(result.structuredContent).toBeUndefined()
       expect(result.content).toEqual([{ type: 'text', text: JSON.stringify({ error: {
@@ -30,7 +31,7 @@ describe('Operator database read deadlines', () => {
     const { request } = context()
     const result = await invokeOperatorTool(request, 'run_start', async () => {
       throw Object.assign(new Error('private statement'), { code: '57014' })
-    })
+    }, operatorTool('run_start')!.requires[0][0])
     expect(result.content).toEqual([{ type: 'text', text: JSON.stringify({ error: {
       code: 'INTERNAL_ERROR', message: 'The Operator service could not complete the request.',
     } }) }])
@@ -40,7 +41,7 @@ describe('Operator database read deadlines', () => {
     const { request, recordDenied } = context()
     const result = await invokeOperatorTool(request, 'run_get', async () => {
       throw new DomainError('ACCESS_DENIED', 'The Run is outside this caller’s scope.', 403)
-    })
+    }, operatorTool('run_get')!.requires[0][0])
     expect(recordDenied).toHaveBeenCalledWith('reader', 'mcp', 'run_get', 'mcp:run_get')
     expect(result.content).toEqual([{ type: 'text', text: JSON.stringify({ error: {
       code: 'ACCESS_DENIED', message: 'The Run is outside this caller’s scope.',

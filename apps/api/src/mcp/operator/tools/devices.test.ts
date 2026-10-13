@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { OperatorRequestContext } from '../types.js'
 import { operatorToolAvailable, operatorToolRequirements } from '../availability.js'
-import { unavailableDeviceOperatorToolCall } from './devices.js'
+import { unavailableDeviceOperatorToolCall } from '../unavailableTools.js'
 
 const principal: ManagementPrincipal = { id: 'device-reader', name: 'Reader', audience: 'operator', expiresAt: '2099-01-01T00:00:00Z', revokedAt: null,
   grants: [{ actions: ['settings:read'], scope: {} }] }

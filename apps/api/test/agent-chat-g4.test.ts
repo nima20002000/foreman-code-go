@@ -8,7 +8,8 @@ import {
   type AgentChatTurn,
 } from '@foreman-code/contracts/agent-chat'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
-import { registerAgentChatTools } from '../src/mcp/operator/tools/agentChat.js'
+import { agentChatTools } from '../src/mcp/operator/tools/agentChat.js'
+import { registerOperatorToolGroup } from '../src/mcp/operator/server.js'
 import type { OperatorRequestContext } from '../src/mcp/operator/types.js'
 import { AgentChatService } from '../src/modules/conversations/agentChat.js'
 import { PostgresAgentChatRepository, type AgentConversationRow } from '../src/modules/conversations/agentChatRepository.js'
@@ -154,7 +155,7 @@ describe('G4 readback and legacy receipt recovery', () => {
     const turns = vi.spyOn(chat, 'receipts').mockResolvedValue(receipts)
     const register = vi.fn()
     const operator = { principal, services: { agentChat: chat } } as unknown as OperatorRequestContext
-    registerAgentChatTools({ registerTool: register } as unknown as McpServer, operator)
+    registerOperatorToolGroup({ registerTool: register } as unknown as McpServer, operator, agentChatTools)
     const [name, options, handle] = register.mock.calls.find(([name]) => name === 'agent_chat_read')!
     assert.equal(name, 'agent_chat_read')
     assert.match(options.description, /history.nextCursor/)

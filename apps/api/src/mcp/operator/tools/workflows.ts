@@ -1,8 +1,6 @@
 import { CurrentWorkflowCreateInputSchema } from '@foreman-code/contracts/wave25'
-import { registerCurrentWorkflowTools } from './currentWorkflow.js'
 import { SavedManagedWorkflowCommandResultSchema as ManagedWorkflowCommandResultSchema,
   SavedManagedWorkflowPageSchema as ManagedWorkflowPageSchema, SavedManagedWorkflowSchema as ManagedWorkflowSchema } from '@foreman-code/contracts/wave25'
-import type { McpServer } from '@modelcontextprotocol/server'
 
 import {
   WorkflowBatchArchiveInputSchema, WorkflowBatchArchiveResultSchema,
@@ -11,13 +9,13 @@ import {
   WorkflowUpdateInputSchema,
 } from '@foreman-code/contracts/management'
 import { OperatorWorkflowListInputSchema, WorkflowSummaryPageSchema } from '@foreman-code/contracts/operator-mcp'
-import { invokeOperatorTool } from '../invoke.js'
-import { operatorToolAvailable } from '../availability.js'
-import type { OperatorRequestContext } from '../types.js'
+import { defineOperatorTool } from '../definition.js'
 
-export function registerWorkflowTools(server: McpServer, context: OperatorRequestContext): void {
-  registerCurrentWorkflowTools(server, context)
-  if (operatorToolAvailable(context, 'workflow_list')) server.registerTool('workflow_list', {
+export const workflowTools = [
+  defineOperatorTool({
+    name: 'workflow_list',
+    requires: [['workflows:read', 'resource']],
+    enabled: s => !!s.workflows,
     description: 'List authorized workflow summaries in saved workspace order, including empty workflows (10 by default). '
       + 'Use detail:full or workflow_get for the saved definition. Each page includes orderRevision for workflow_reorder. '
       + 'orderRevision is 0 when no read grant applies to this workspace. '
@@ -25,7 +23,7 @@ export function registerWorkflowTools(server: McpServer, context: OperatorReques
     inputSchema: OperatorWorkflowListInputSchema,
     outputSchema: WorkflowSummaryPageSchema.or(ManagedWorkflowPageSchema),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async ({ detail, ...input }) => invokeOperatorTool(context, 'workflow_list', async () => {
+    run: async (context, { detail, ...input }) => {
     const page = await context.services.workflows.list(context.principal, input)
     if (detail === 'full') return page
     return {
@@ -35,13 +33,21 @@ export function registerWorkflowTools(server: McpServer, context: OperatorReques
         detailsOmitted: true,
       })),
     }
-  }))
-  if (operatorToolAvailable(context, 'workflow_get')) server.registerTool('workflow_get', {
+  },
+  }),
+  defineOperatorTool({
+    name: 'workflow_get',
+    requires: [['workflows:read', 'resource']],
+    enabled: s => !!s.workflows,
     description: 'Read a workflow and its current saved version reference.', inputSchema: WorkflowGetInputSchema,
     outputSchema: ManagedWorkflowSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'workflow_get', () => context.services.workflows.get(context.principal, input.workspaceId, input.workflowId)))
-  if (operatorToolAvailable(context, 'workflow_create')) server.registerTool('workflow_create', {
+    run: (context, input) => context.services.workflows.get(context.principal, input.workspaceId, input.workflowId),
+  }),
+  defineOperatorTool({
+    name: 'workflow_create',
+    requires: [['workflows:create', 'workspace']],
+    enabled: s => !!s.workflows,
     description: 'Create a named semantics-3 workflow using global workflow defaults. '
       + 'Omit initialSave for an unsaved workflow, or provide initialSave '
       + '{graph, expectedAgentConfigurationVersionIds, expectedLocationRevision} to atomically create and save. '
@@ -60,13 +66,21 @@ export function registerWorkflowTools(server: McpServer, context: OperatorReques
     inputSchema: CurrentWorkflowCreateInputSchema,
     outputSchema: ManagedWorkflowCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'workflow_create', () => context.services.workflows.create(context.principal, 'mcp', input)))
-  if (operatorToolAvailable(context, 'workflow_update')) server.registerTool('workflow_update', {
+    run: (context, input) => context.services.workflows.create(context.principal, 'mcp', input),
+  }),
+  defineOperatorTool({
+    name: 'workflow_update',
+    requires: [['workflows:update', 'resource']],
+    enabled: s => !!s.workflows,
     description: 'Revision-check and rename or describe a workflow. For current graph and workflow settings use workflow_validate_v3 and workflow_save_v3 with exact pins; unresolved staged edits require their existing Stop-and-save/Discard protocol. Global workflow_defaults_update affects only future workflows.', inputSchema: WorkflowUpdateInputSchema,
     outputSchema: ManagedWorkflowCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'workflow_update', () => context.services.workflows.update(context.principal, 'mcp', input)))
-  if (operatorToolAvailable(context, 'workflow_reorder')) server.registerTool('workflow_reorder', {
+    run: (context, input) => context.services.workflows.update(context.principal, 'mcp', input),
+  }),
+  defineOperatorTool({
+    name: 'workflow_reorder',
+    requires: [['workflows:update', 'workflow'], ['workflows:read', 'workflow']],
+    enabled: s => !!s.workflows,
     description: 'Persist the order of at least two unique active workflows in one workspace. '
       + 'Pass workflow_list.orderRevision as expectedRevision; workflow revisions remain unchanged. '
       + 'The submitted IDs replace only their existing slots, preserving omitted workflows, including hidden or unloaded items. '
@@ -76,16 +90,24 @@ export function registerWorkflowTools(server: McpServer, context: OperatorReques
       + 'then restart workflow_list pagination to read the persisted result.',
     inputSchema: WorkflowReorderInputSchema, outputSchema: WorkflowReorderResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'workflow_reorder',
-    () => context.services.workflows.reorder(context.principal, 'mcp', input)))
-  if (operatorToolAvailable(context, 'workflow_batch_archive')) server.registerTool('workflow_batch_archive', {
+    run: (context, input) => context.services.workflows.reorder(context.principal, 'mcp', input),
+  }),
+  defineOperatorTool({
+    name: 'workflow_batch_archive',
+    requires: [['workflows:archive', 'resource']],
+    enabled: s => !!s.workflows,
     description: 'Atomically delete (archive) 1–100 selected workflows, retaining versions and runs. Requires archive permission for every workflow and its expected revision. Active runs or any conflict reject the entire batch. Retry an uncertain outcome with the same commandId and input.',
     inputSchema: WorkflowBatchArchiveInputSchema, outputSchema: WorkflowBatchArchiveResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'workflow_batch_archive', () => context.services.workflows.archiveBatch(context.principal, 'mcp', input)))
-  if (operatorToolAvailable(context, 'workflow_archive')) server.registerTool('workflow_archive', {
+    run: (context, input) => context.services.workflows.archiveBatch(context.principal, 'mcp', input),
+  }),
+  defineOperatorTool({
+    name: 'workflow_archive',
+    requires: [['workflows:archive', 'resource']],
+    enabled: s => !!s.workflows,
     description: 'Archive a settled workflow while retaining versions and runs.', inputSchema: WorkflowArchiveInputSchema,
     outputSchema: ManagedWorkflowCommandResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-  }, async (input) => invokeOperatorTool(context, 'workflow_archive', () => context.services.workflows.archive(context.principal, 'mcp', input)))
-}
+    run: (context, input) => context.services.workflows.archive(context.principal, 'mcp', input),
+  }),
+]

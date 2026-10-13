@@ -1,7 +1,6 @@
 import { RUN_HISTORY_TOOLS, runHistoryCapabilityLimit, runHistoryToolAvailable } from './runHistory.js'
 import { FILE_REFERENCE_TOOL_NAMES, fileReferenceToolAvailable } from './fileReferences.js'
 import { FILE_RETENTION_TOOL_NAMES, fileRetentionToolAvailable } from './fileRetention.js'
-import type { McpServer } from '@modelcontextprotocol/server'
 import { OperatorCompactCapabilitiesSchema } from '@foreman-code/contracts/operator-mcp'
 import { OperatorCapabilityInputSchema } from '@foreman-code/contracts/management'
 import { CURRENT_WORKFLOW_TOOLS, CANONICAL_RUN_GRAPH_MCP_TOOLS, RUN_INSPECTION_TOOLS } from '@foreman-code/contracts/wave25'
@@ -13,12 +12,9 @@ import { jobCapabilities, JOB_QUEUE_CAPABILITY_DETAIL } from './jobs.js'
 import { ciCapabilities } from '../../shared/ciTools.js'
 import { jobRuntimeCapabilities } from './jobRuntimeProfiles.js'
 import { hasAction, isAuthorized } from '../../../modules/access/policy.js'
-import { invokeOperatorTool } from '../invoke.js'
-import { OPERATOR_TOOL_ACTIONS } from '../catalog.js'
-import { operatorToolAvailable,operatorToolRequirements } from '../availability.js'
+import { defineOperatorTool, toolAvailable, toolRequirements, type OperatorToolDefinition } from '../definition.js'
 import type { OperatorRequestContext } from '../types.js'
 import { placementCapabilityLimit } from '../../../modules/placement/transports.js'
-import type { OperatorCatalog } from '../presentation.js'
 
 export const OPERATOR_RUNTIME_LIMITS = [
   { feature: 'native_tool_loading', state: 'protected',
@@ -89,19 +85,19 @@ export const OPERATOR_RUNTIME_LIMITS = [
   {feature:'skills',state:'limited',detail:'Skills are workspace-owned Markdown instruction text managed with skill_list/get/versions_list/create/update/archive. Every save creates an immutable version; Agents pin exact versions through agent_create/agent_update or the board and never follow later edits. Skill text is delivered as native Agent instructions, never as tool grants. Packages, folders, scripts, URLs and includes are not supported. Persistent instructions plus skills are limited to 512 KiB per Agent.'},
 ] as const
 
-export function registerContextTools(server: McpServer, context: OperatorRequestContext, catalog?: OperatorCatalog): void {
-  if (!operatorToolAvailable(context,'operator_get_capabilities')) return
-  server.registerTool('operator_get_capabilities', {
-    description: 'Inspect your grants, compatible tool permissions, optional resource scope, and explicit runtime limits. Supply a complete workspace/workflow/run hierarchy for resource checks. Defaults to compact; detail:full returns all requirements and runtime instructions. This is not a grant or a promise that a specific object exists.',
-    inputSchema: OperatorCapabilityInputSchema,
-    outputSchema: ScheduleOperatorCapabilitiesSchema.or(OperatorCompactCapabilitiesSchema),
-    annotations: {readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false},
-  }, async (input, callbackContext) => invokeOperatorTool(context, 'operator_get_capabilities', async () => {
-    const capabilities = operatorCapabilities(context, input)
+export const capabilityTools = [defineOperatorTool({
+  name: 'operator_get_capabilities',
+  requires: [['capabilities:read', 'caller']],
+  description: 'Inspect your grants, compatible tool permissions, optional resource scope, and explicit runtime limits. Supply a complete workspace/workflow/run hierarchy for resource checks. Defaults to compact; detail:full returns all requirements and runtime instructions. This is not a grant or a promise that a specific object exists.',
+  inputSchema: OperatorCapabilityInputSchema,
+  outputSchema: ScheduleOperatorCapabilitiesSchema.or(OperatorCompactCapabilitiesSchema),
+  annotations: {readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false},
+  run: async (context, input, { extra, catalog, tools: registry }) => {
+    const capabilities = operatorCapabilities(context, input, registry)
     if (input.detail === 'full') return capabilities
     const { requirements: _requirements, ...compact } = capabilities
     void _requirements
-    const tools = await catalog?.(callbackContext)
+    const tools = await catalog?.(extra)
     const selectedResource = input.workspaceId || input.workflowId || input.runId
     const names = tools?.map((tool) => tool.name) ?? capabilities.tools
     const scopedNames = new Set<string>(capabilities.tools)
@@ -123,14 +119,15 @@ export function registerContextTools(server: McpServer, context: OperatorRequest
         detail: compactRuntimeDetails[entry.feature] ?? entry.detail,
       })),
     }
-  }))
-}
+  },
+})]
 
+/** registry is the whole Operator tool registry (catalog.ts), passed in by the calling tool. */
 export function operatorCapabilities(context: OperatorRequestContext, input: {
   workspaceId?: string | undefined; workflowId?: string | undefined; runId?: string | undefined;
-}) {
+}, registry: readonly OperatorToolDefinition[]) {
     const resource={...(input.workspaceId?{workspaceId:input.workspaceId}:{}),...(input.workflowId?{workflowId:input.workflowId}:{}),...(input.runId?{runId:input.runId}:{})}
-    const ordinary=OPERATOR_TOOL_ACTIONS.filter((entry)=>operatorToolAvailable(context,entry.name,resource)).map((entry)=>entry.name)
+    const ordinary=registry.filter((tool)=>toolAvailable(context,tool,resource))
     const current = (Object.keys(CURRENT_WORKFLOW_TOOLS) as CurrentWorkflowOperation[]).filter((operation) =>
       !!context.services.workflows?.current && currentWorkflowAvailable(context.principal, operation, resource))
     const graph = context.services.runGraph && (Object.keys(resource).length
@@ -149,12 +146,12 @@ export function operatorCapabilities(context: OperatorRequestContext, input: {
             + (scheduleRuntime.runtimeAdmission ? 'Timed Run admission is available.'
               : 'Timed Run admission is paused until native runtime readiness returns.') }
         : limit)
-    const tools = [...ordinary, ...current.map((operation) => CURRENT_WORKFLOW_TOOLS[operation]), ...graph, ...inspection, ...schedules.map((entry) => entry.name), ...jobs.map((entry) => entry.name), ...ci.map((entry) => entry.name), ...jobRuntime.map((entry) => entry.name)]
+    const tools = [...ordinary.map((tool) => tool.name), ...current.map((operation) => CURRENT_WORKFLOW_TOOLS[operation]), ...graph, ...inspection, ...schedules.map((entry) => entry.name), ...jobs.map((entry) => entry.name), ...ci.map((entry) => entry.name), ...jobRuntime.map((entry) => entry.name)]
     return {endpoint:'/mcp',audience:'operator',protocol:'2026-07-28',tools,
       principal:{id:context.principal.id,name:context.principal.name,expiresAt:context.principal.expiresAt},
       grants:context.principal.grants,requestedResource:resource,
-      requirements:[...ordinary.map((name)=>({name,actions:operatorToolRequirements(name,resource).map((item)=>item.action),
-        detail:name.startsWith('resource_telemetry_') ? 'The listed actions are alternatives: computer reads require an explicit unscoped devices:metrics:read grant; owned reads require the relevant Run/Job/conversation grant. The same service rechecks the exact live resource, shared owners, attribution and collector generation on every call.' : name === 'workspace_create' ? 'Creating parentPath/name additionally requires global workspace_locations:provision, workspace_locations:update and workspace_locations:read grants. Read workspace_defaults_get for the default parentPath; omit parentPath only for an unconfigured workspace.' : 'Requirements are scoped independently. Staged/shared Agent writes, skill contents, and enabling triggers can require additional permissions; services revalidate every concrete operation.'})),
+      requirements:[...ordinary.map((tool)=>({name:tool.name,actions:toolRequirements(tool).map((item)=>item.action),
+        detail:tool.permissionDetail ?? 'Requirements are scoped independently. Staged/shared Agent writes, skill contents, and enabling triggers can require additional permissions; services revalidate every concrete operation.'})),
         ...current.map((operation) => ({ name: CURRENT_WORKFLOW_TOOLS[operation],
           actions: currentWorkflowRequirements[operation].map((item) => item.action),
           detail: 'Current V3 only. Concrete services recheck all scope, pin and settlement requirements; Stop also needs each affected Run grant.' })),

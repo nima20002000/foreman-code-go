@@ -13,15 +13,17 @@ import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { ManagedPromptSettingSchema, PromptSettingUpdateResultSchema } from '@foreman-code/contracts/management'
 import { reviewAuthMcpDatabase } from './helpers/reviewAuthMcpDatabase.js'
 
-import { registerAgentTools } from '../src/mcp/operator/tools/agents.js'
-import { registerBugReportTools } from '../src/mcp/operator/tools/bugReports.js'
-import { registerHarnessTools } from '../src/mcp/operator/tools/harnesses.js'
-import { registerInteractionTools } from '../src/mcp/operator/tools/interactions.js'
-import { registerRunTools } from '../src/mcp/operator/tools/runs.js'
-import { registerSettingsTools } from '../src/mcp/operator/tools/settings.js'
-import { registerWorkflowTools } from '../src/mcp/operator/tools/workflows.js'
-import { registerWorkspaceDefaultsTools } from '../src/mcp/operator/tools/workspaceDefaults.js'
-import { registerWorkspaceTools } from '../src/mcp/operator/tools/workspaces.js'
+import { agentTools } from '../src/mcp/operator/tools/agents.js'
+import { bugReportTools } from '../src/mcp/operator/tools/bugReports.js'
+import { harnessTools } from '../src/mcp/operator/tools/harnesses.js'
+import { interactionTools } from '../src/mcp/operator/tools/interactions.js'
+import { runTools } from '../src/mcp/operator/tools/runs.js'
+import { settingsTools } from '../src/mcp/operator/tools/settings.js'
+import { workflowTools } from '../src/mcp/operator/tools/workflows.js'
+import { workspaceDefaultsTools } from '../src/mcp/operator/tools/workspaceDefaults.js'
+import { workspaceTools } from '../src/mcp/operator/tools/workspaces.js'
+import { registerCurrentWorkflowTools } from '../src/mcp/operator/tools/currentWorkflow.js'
+import { registerOperatorToolGroup } from '../src/mcp/operator/server.js'
 import type { OperatorRequestContext } from '../src/mcp/operator/types.js'
 
 // Independent expectations, not generated from the production permission catalog.
@@ -72,10 +74,10 @@ function context(grants: ManagementGrant[] = []): OperatorRequestContext {
 function registered(context: OperatorRequestContext): string[] {
   const names: string[] = []
   const server = { registerTool: (name: string) => { names.push(name) } } as unknown as McpServer
-  for (const register of [registerAgentTools, registerBugReportTools, registerHarnessTools,
-    registerInteractionTools, registerRunTools, registerSettingsTools,
-    registerWorkflowTools, registerWorkspaceTools, registerWorkspaceDefaultsTools]) {
-    register(server, context)
+  registerCurrentWorkflowTools(server, context)
+  for (const tools of [agentTools, bugReportTools, harnessTools, interactionTools, runTools, settingsTools,
+    workflowTools, workspaceTools, workspaceDefaultsTools]) {
+    registerOperatorToolGroup(server, context, tools)
   }
   return names.sort()
 }
