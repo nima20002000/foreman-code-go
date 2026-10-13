@@ -8,7 +8,7 @@ import { CiWatchdogFailureSchema, CiDurationsSchema, CiHostReplySchema, CiHostRe
 import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
-import { ensureClone, fetchRepositoryBranch, systemGitWorktreePorts, type GitWorktreePorts } from '../sources/gitWorktree.js'
+import { ensureClone, ensureCommit, fetchRepositoryBranch, systemGitWorktreePorts, type GitWorktreePorts } from '../sources/gitWorktree.js'
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 import type { HostCiComputer } from './service.js'
 import { CLOUD_START_TIMEOUT_MS, CircleCiProvider, GitHubActionsProvider,
@@ -349,7 +349,7 @@ export class CloudCi {
   private async push(repository: string, mirror: string, commit: string, defaultBranch: string | undefined,
     baseCommit: string | undefined, durations: CiDurations) {
     const signal = AbortSignal.timeout(600_000)
-    const clone = await ensureClone(this.git, repository, signal)
+    const clone = await ensureCommit(this.git, repository, commit, signal)
     const git = async (args: string[], env?: Record<string, string>) => {
       const result = await this.git.git(args, { cwd: clone, signal: AbortSignal.timeout(600_000), ...(env ? { env } : {}) })
       if (result.code !== 0) {
