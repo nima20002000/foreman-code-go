@@ -18,7 +18,7 @@ import {
   shouldOpenDashboardAfterInstall,
   productionIntegrationPaths, publishDesktopIntegration, enableProductionServices, apiServiceTemplate,
   launchProduction, launchBrowser, parseRunWaitMinutes, readReleaseSelection,
-  needsStartupConfiguration, recordStartupConfiguration, withProductionSourceSnapshot,
+  needsStartupConfiguration, recordStartupConfiguration, withProductionSourceSnapshot, buildProductionSource,
   backupDatabase, restoreDatabase, readPendingMigrations, runReleaseCutover, recoverReleaseCutover,
 } from './local-production-runtime.mjs'
 
@@ -269,7 +269,7 @@ async function install(timeoutMs) {
   await withProductionSourceSnapshot(source, join(state, 'builds'), async snapshot => {
     const runBuild = (command, args, options = {}) => run(command, args, { cwd: snapshot.source, ...options })
     await runBuild('corepack', ['pnpm', 'install', '--frozen-lockfile'])
-    await runBuild('corepack', ['pnpm', 'build'])
+    await buildProductionSource(runBuild)
     const environment = await configureEnvironment(snapshot.source)
     const release = await stageRelease(snapshot, runBuild)
     await finishInstallation({ release, previousRelease, firstInstall, environment, snapshot, timeoutMs })
