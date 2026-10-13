@@ -96,6 +96,9 @@ async function executeCommand(ports: HostCiPorts, label: string, file: string, a
   if (result.code !== 0) {
     const limited = rateLimited(label, result.stderr)
     if (limited) throw limited
+    const noCircleArtifacts = file === 'circleci' && args[0] === 'job' && args[1] === 'artifact'
+      && /\bartifacts\.not_found\b/.test(result.stderr)
+    if (noCircleArtifacts) return '[]'
     const noActiveWorkflows = file === 'circleci' && args[0] === 'run'
       && (args[1] === 'get' || args[1] === 'cancel') && /\bno active workflows\b/i.test(result.stderr)
     if (noActiveWorkflows) {
