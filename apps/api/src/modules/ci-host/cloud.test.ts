@@ -465,7 +465,10 @@ describe('GitHub Actions CI on a public mirror', () => {
 
   it.each(['github', 'circleci'] as const)('runs installed Worker fixtures but excludes user-systemd files on %s', async provider => {
     const systemd = [
-      'apps/api/test/workflow-systemd-restart-active.integration.test.ts',
+      'apps/api/test/workflow-systemd-installed-service.integration.test.ts',
+      'apps/api/test/workflow-systemd-active-recovery.integration.test.ts',
+      'apps/api/test/workflow-systemd-writable-source-recovery.integration.test.ts',
+      'apps/api/test/workflow-systemd-restart-unit-cleanup.integration.test.ts',
       'apps/api/test/native-service-restart.integration.test.ts',
     ]
     const cloud = [
