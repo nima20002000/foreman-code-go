@@ -149,3 +149,21 @@ it.each([
       { files, durations, heavy: [] }, durations, fleet(4), new Map(), 1, reportedSlots)
     expect(parts.filter(part => part.part === 'unit-api')).toHaveLength(expectedShards)
   })
+
+it('plans one gate part per cloud executor so no part waits behind another on the same slot', async () => {
+  const files = Array.from({ length: 400 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)
+  const unit = Array.from({ length: 30 }, (_, index) => `apps/api/src/feature-${index}.test.ts`)
+  const unitDurations = Object.fromEntries(unit.map(file => [file, 30_000]))
+  const parts = await planCiGate({ suite: 'integration', scope: 'full', gate: true, commandId: 'one-wave' },
+    { files, durations: Object.fromEntries(files.map((file, index) => [file, 20_000 + (index % 10) * 20_000])) },
+    { files: unit, durations: unitDurations, heavy: [] }, unitDurations, fleet(24), new Map(), 2)
+  const clouds = parts.filter(part => part.plannedHostKey.startsWith('cloud-'))
+  expect(clouds.some(part => part.suite !== 'integration')).toBe(true)
+  const perCloud = new Map<string, number>()
+  for (const part of clouds) perCloud.set(part.plannedHostKey, (perCloud.get(part.plannedHostKey) ?? 0) + 1)
+  expect([...perCloud.values()].every(count => count === 1)).toBe(true)
+  expect(parts.length).toBeLessThanOrEqual(2 + 24 - 2)
+  expect(parts.filter(part => part.suite === 'integration').flatMap(part => part.files).sort()).toEqual([...files].sort())
+  const ends = parts.filter(part => part.suite === 'integration').map(part => part.expectedDurationMs)
+  expect(Math.max(...ends) - Math.min(...ends)).toBeLessThanOrEqual(200_000)
+})
