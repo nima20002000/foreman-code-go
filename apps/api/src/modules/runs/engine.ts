@@ -24,7 +24,6 @@ import { consumeDeliveredApprovals, type WorkflowResumePermit } from './approval
 import type { AuthorizeWorkflowStop } from './repeatLifecycle.js'
 import type { PostgresRunRepository } from './postgres.js'
 import type { RunOwnership } from './ownership.js'
-import type { WorkflowOrchestrator } from './port.js'
 import { RunnerAdmission } from './runnerAdmission.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { isAtomicApprovalCheckpointSaver } from '../../infrastructure/approvalCheckpointSaver.js'
@@ -35,7 +34,7 @@ import { readRunAcceptedPlacements } from '../placement/persistence.js'
  * graphs. Optional bounded blocks are compiled into this same LangGraph; an
  * ordinary graph has no block/round/carry/decision storage. There is no legacy
  * dispatcher, retagging, second scheduler, or caller-supplied runtime binding. */
-export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
+export class LangGraphWorkflowEngine {
   private readonly workerAdmission: RunnerAdmission
   private readonly configuredParallelism: number
   private readonly maximumActiveRuns: number

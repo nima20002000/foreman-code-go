@@ -22,12 +22,12 @@ import { visitRepeatNativeAttemptsLocked } from './repeatNativeAttempts.js'
 import { hasWorkflowExecutionCapacityLocked } from './workflowExecutionBudget.js'
 import { readWorkflowNativeEntryLocked, workflowNativeReservation } from './workflowNativeEntry.js'
 import { readWorkflowTerminalReceiptLocked } from './workflowTerminalReceipt.js'
-import type { AtomicApprovalCheckpointSaver } from '../../infrastructure/approvalCheckpointSaver.js'
+import type { ApprovalPostgresSaver } from '../../infrastructure/approvalCheckpointSaver.js'
 import { lockInteraction } from '../interactions/wave25/context.js'
 import { assertSavedPendingApprovalOriginalLocked } from '../interactions/nativeApprovalProof.js'
 
 export interface WorkflowRestartApprovals {
-  saver: AtomicApprovalCheckpointSaver
+  saver: ApprovalPostgresSaver
   interactions: readonly DurableInteraction[]
 }
 

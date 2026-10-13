@@ -11,7 +11,7 @@ import { assertSameRepeatExecution } from '../interactions/repeatObservation.js'
 import { beforeGraphCommit, withExclusiveGraphConnection, type GraphTransactionSql } from '../run-graph/connection.js'
 import { openRepeatCanonicalPublicationLocked } from '../run-graph/repeatPublication.js'
 import { RunOwnership } from './ownership.js'
-import type { RepeatRepositoryActivation, RepositoryExecutionSemantics, RepositoryWorkflowRun, RunRepository, RunStateUpdate } from './port.js'
+import type { RepeatRepositoryActivation, RepositoryExecutionSemantics, RepositoryWorkflowRun, RunStateUpdate } from './port.js'
 import { runStartSemantics } from './repeatStartDispatch.js'
 import { RepeatRepositoryFactory } from './repeatRepositoryHost.js'
 import { readRepeatExecutionLocked, readRepeatAcceptedResultLocked } from './repeatPostgres.js'
@@ -37,7 +37,7 @@ export function runRepositorySemantics(record: unknown): RepositoryExecutionSema
  * native source capture, input/result receipts, owner and lifecycle writers.
  * Run creation is intentionally absent: authenticated Start owns that atomic
  * command/authority/publication transaction, not an uncredentialed create(). */
-export class PostgresRunRepository implements RunRepository {
+export class PostgresRunRepository {
   private readonly factory: RepeatRepositoryFactory
   private readonly nativeProof: WorkflowNativeProofServices
   constructor(private readonly pool: pg.Pool, private readonly workflows: PostgresWorkflowRepository,

@@ -61,12 +61,6 @@ export interface NativeGraphProjectionGuard {
   expected: NativeGraphProjectionFence
   readCurrentLocked(sql: GraphTransactionSql, scope: RunGraphScope, key: NativeGraphProjectionKey): Promise<NativeGraphProjectionAuthority>
 }
-/** Agent 5 implements mapping/CAS, calls assertNativeGraphProjectionAuthority BEFORE any write,
- * and preserves terminal fences. It does not acquire a second runtime owner here. */
-export interface NativeGraphProjectionWriter {
-  persistActivity(sql: GraphTransactionSql, scope: RunGraphScope, previousRevision: string | null, next: NativeGraphActivityRecord, guard: NativeGraphProjectionGuard): Promise<void>
-  persistCorrelation(sql: GraphTransactionSql, scope: RunGraphScope, previousRevision: string | null, next: NativeGraphCorrelationRecord, guard: NativeGraphProjectionGuard): Promise<void>
-}
 
 async function assertNativeProjectionHost(sql: GraphTransactionSql, scope: RunGraphScope, key: NativeGraphProjectionKey): Promise<void> {
   const found = await sql.query(

@@ -15,12 +15,6 @@ export interface TransferAuthorization {
   authorize(intent: TransferIntent, context: TransferContext, operation: TransferOperation): Promise<void>
 }
 export type ExternalStagingKind = 'rsync-source' | 'rsync-receiver'
-/** Trusted local composition only. Release follows physical cleanup and stopped-writer/readers proof.
- * Reservation retries are idempotent; the existing transport runner owns POLICY.maxRetries. */
-export interface ExternalStagingQuota {
-  reserve(intent: TransferIntent, context: TransferContext, allocation: { kind: ExternalStagingKind; byteSize: number }): Promise<void>
-  release(intent: TransferIntent, kind: ExternalStagingKind): Promise<void>
-}
 const ExternalKindSchema = z.enum(['rsync-source', 'rsync-receiver'])
 const ExternalHoldSchema = z.object({ byteSize: z.number().int().nonnegative().max(POLICY.maxStagingBytes), released: z.boolean() }).strict()
 const JournalSchema = z.object({ intent: TransferIntentSchema, progress: TransferProgressSchema,
@@ -36,7 +30,7 @@ function key(id: string) { return z.uuid().parse(id) }
  * Root directory FD anchors all operations on Linux, so renamed/swapped ancestors cannot redirect writes.
  * Crash-left writer locks fail closed; supervisor must confirm the old owner stopped before removing them.
  */
-export class ResumableByteTransferService implements ByteTransferPort, ExternalStagingQuota {
+export class ResumableByteTransferService implements ByteTransferPort {
   private directory: FileHandle | undefined
   private initializing: Promise<void> | undefined
   private busy = new Set<string>()

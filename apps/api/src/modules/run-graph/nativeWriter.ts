@@ -9,11 +9,11 @@ import { RunGraphError } from './errors.js'
 import { assertRunGraphPublication } from './publication.js'
 import {
   readNativeGraphActivity, readNativeGraphCorrelation,
-  type NativeGraphProjectionGuard, type NativeGraphProjectionWriter,
+  type NativeGraphProjectionGuard,
 } from './records.js'
 
 /** The G1 writer port. All methods require the caller's Run -> head -> domain lock order. */
-export class PostgresNativeGraphProjectionWriter implements NativeGraphProjectionWriter {
+export class PostgresNativeGraphProjectionWriter {
   private async authorize(sql: GraphTransactionSql, scope: RunGraphScope, key: NativeGraphProjectionKey, guard: NativeGraphProjectionGuard): Promise<void> {
     assertGraphTransaction(sql)
     assertRunGraphPublication(sql, scope)

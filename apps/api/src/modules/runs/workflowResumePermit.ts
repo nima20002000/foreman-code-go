@@ -1,6 +1,6 @@
 import type { DurableInteraction } from '@foreman-code/contracts'
 import type { WorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
-import type { AtomicApprovalCheckpointSaver } from '../../infrastructure/approvalCheckpointSaver.js'
+import type { ApprovalPostgresSaver } from '../../infrastructure/approvalCheckpointSaver.js'
 import { DomainError } from '../errors.js'
 import { currentRunGraphPublication } from '../run-graph/publication.js'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
@@ -13,7 +13,7 @@ type WorkflowRunV3 = ReturnType<typeof WorkflowRunV3Schema.parse>
  * Serialized IDs or an arbitrary Command can never move a waiting Run forward. */
 export interface WorkflowResumePermit { readonly runId: string; readonly checkpointId: string }
 interface CapturedResume {
-  owner: RunOwnership; saver: AtomicApprovalCheckpointSaver; runId: string; versionId: string; checkpointId: string;
+  owner: RunOwnership; saver: ApprovalPostgresSaver; runId: string; versionId: string; checkpointId: string;
   fence: { ownerId: string; fence: string }; interactions: DurableInteraction[]
 }
 const resumePermits = new WeakMap<object, CapturedResume>()

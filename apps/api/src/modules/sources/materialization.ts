@@ -16,7 +16,7 @@ import { sourceMaterializationBytes } from './footprint.js'
 import { SOURCE_LIMITS, SourceError, verifySourceBytes, verifySourceManifest } from './manifest.js'
 import { anchored, identity, openChildDirectory, openPrivateRoot,
   withPrivateDirectoryLock } from './privateFilesystem.js'
-import type { MaterializationAttempt, SourceByteReader, SourceMaterializationPort } from './ports.js'
+import type { MaterializationAttempt, SourceByteReader } from './ports.js'
 import { SourcePreparationClosureSchema, type SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 import { verifyJobQuotaOwnership } from '../jobs/quotaOwnership.js'
 import { prepareAgentWorktree, prepareSharedWorkingTree, verifySharedWorkingTree } from './sharedWorkingTree.js'
@@ -28,7 +28,7 @@ import { componentLogger } from '../diagnostics/logger.js'
 import { openSnapshotReference } from './snapshotReference.js'
 
 const equal = isDeepStrictEqual
-export class PrivateSourceMaterializer implements SourceMaterializationPort {
+export class PrivateSourceMaterializer {
   private active = 0
   constructor(private readonly bytes: SourceByteReader | null,
     private readonly authorize: (binding: RootBinding, attempt: MaterializationAttempt) => Promise<void>,

@@ -9,7 +9,8 @@ import { projectJobReceiptLocked } from '../../jobs/receiptProjection.js'
 import type { JobPublicationAuthority } from '../../jobs/authority.js'
 import { createCanonicalJobArtifactPort } from '../../files/jobs/factory.js'
 import { createAdmittedJobOutputs } from '../../files/jobs/admittedFactory.js'
-import { VerifiedJobOutputReader, type AcceptedJobTransferResolver } from '../../files/jobs/transferReader.js'
+import type { PostgresJobOutputAdmission } from '../../files/jobs/outputAdmission.js'
+import { VerifiedJobOutputReader } from '../../files/jobs/transferReader.js'
 import type { JobOutputPublicationInput } from '../../files/jobs/port.js'
 import type { VerifiedArtifactReader } from '../../files/distributed/publication.js'
 import type { RemoteJobOperationReceiptRecord } from '@foreman-code/contracts/remote-job-execution'
@@ -18,7 +19,7 @@ import type { JobSql } from '../../jobs/repository.js'
 
 /** Concrete main canonical adapter + verified original transfer reader; no alternate byte store. */
 export function createJobCanonicalOutputs(input: { pool: pg.Pool; storageRoot: string; excludedRoots?: readonly string[];
-  authority: JobPublicationAuthority; transfers: VerifiedArtifactReader; accepted: AcceptedJobTransferResolver }) {
+  authority: JobPublicationAuthority; transfers: VerifiedArtifactReader; accepted: PostgresJobOutputAdmission }) {
   const artifacts = createCanonicalJobArtifactPort({ pool: input.pool, storageRoot: input.storageRoot,
     ...(input.excludedRoots ? { excludedRoots: input.excludedRoots } : {}), authority: input.authority,
     reader: new VerifiedJobOutputReader(input.transfers, input.accepted) })

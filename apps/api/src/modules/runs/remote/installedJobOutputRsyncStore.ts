@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { BYTE_TRANSFER_POLICY, TransferIntentSchema, type TransferIntent, type TransferContext } from '@foreman-code/contracts/byte-transfer'
 import { JobOutputPublicationInputSchema } from '@foreman-code/contracts/job-output-transfer'
 import { FileSha256Schema } from '@foreman-code/contracts/files'
-import type { ExternalStagingQuota } from '../../byte-transfer/service.js'
+import type { ResumableByteTransferService } from '../../byte-transfer/service.js'
 import { anchored, identity, openPrivateRoot } from '../../sources/privateFilesystem.js'
 import { DomainError } from '../../errors.js'
 import type { RetainedJobOutputRsyncRecord, RetainedJobOutputRsyncStore } from './jobOutputRsyncSource.js'
@@ -45,7 +45,7 @@ export interface InstalledJobOutputRsyncStorePorts {
   /** Explicit original approved immutable-store root. Never initialized or renamed here. */
   rootDirectory: string
   /** SAME original quota journal as the rsync snapshot; source hold covers both copies. */
-  quota: ExternalStagingQuota
+  quota: ResumableByteTransferService
   current(signal?: AbortSignal): Promise<TransferContext>
   authorize(intent: TransferIntent, context: TransferContext, signal?: AbortSignal): Promise<void>
   /** Actual original writer/reader closure, independent of canonical ACK. */

@@ -1,4 +1,4 @@
-import { materializationDirectory } from './materialization.js'
+import { materializationDirectory, type PrivateSourceMaterializer } from './materialization.js'
 import { sourceMaterializationParent } from '@foreman-code/contracts/source-materialization'
 import { isDeepStrictEqual } from 'node:util'
 import { execFile } from 'node:child_process'
@@ -17,7 +17,7 @@ import { sourceMaterializationDigest } from './bindingHash.js'
 import { qualifiedGit } from './capture.js'
 import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
 import { SOURCE_LIMITS, SourceError, sourceSha256, verifySourceBytes, verifySourceManifest } from './manifest.js'
-import type { MaterializationAttempt, SourceMaterializationPort } from './ports.js'
+import type { MaterializationAttempt } from './ports.js'
 import { DomainError } from '../errors.js'
 
 /** Drain bounded Git output while streaming input. Waiting for writes before
@@ -47,7 +47,7 @@ async function importSnapshot(gitDirectory: string, input: AsyncIterable<Buffer>
  * no shared .git and no implied approval to transfer repository history.
  */
 export async function createPrivateSourceRepository(input: {
-  receipt: MaterializationReceipt; manifest: SourceManifest; materializer: SourceMaterializationPort;
+  receipt: MaterializationReceipt; manifest: SourceManifest; materializer: PrivateSourceMaterializer;
   attempt: MaterializationAttempt; signal?: AbortSignal;
 }): Promise<{ workTree: string; gitDirectory: string; generatedCommit: string; sourceCommit: string | null }> {
   const deadline = AbortSignal.timeout(SOURCE_LIMITS.preparationMs)
@@ -60,7 +60,7 @@ export async function createPrivateSourceRepository(input: {
   }
 }
 async function buildPrivateSourceRepository(input: {
-  receipt: MaterializationReceipt; manifest: SourceManifest; materializer: SourceMaterializationPort;
+  receipt: MaterializationReceipt; manifest: SourceManifest; materializer: PrivateSourceMaterializer;
   attempt: MaterializationAttempt; signal: AbortSignal;
 }): Promise<{ workTree: string; gitDirectory: string; generatedCommit: string; sourceCommit: string | null }> {
   const signal = input.signal
@@ -184,7 +184,7 @@ async function protectGeneratedRepositoryEntries(directory: FileHandle, names: r
 /** Verify only the retained original repository. Missing receipts fail closed;
  * this path cannot initialize Git, write objects or replace source state. */
 export async function verifyPrivateSourceRepository(input: {
-  receipt: MaterializationReceipt; materializer: SourceMaterializationPort; attempt: MaterializationAttempt;
+  receipt: MaterializationReceipt; materializer: PrivateSourceMaterializer; attempt: MaterializationAttempt;
 }) {
   const receipt = input.receipt
   const workTree = await input.materializer.resolve(receipt, { binding: receipt.binding, attempt: input.attempt })
@@ -290,7 +290,7 @@ function requireJobRepositoryOwner(execution:JobExecutionRecord,mounts:PrivateJo
 /** Creates only exact app-owned mountpoint/state metadata under an already verified
  * original materialization. Incomplete claims persist; no aged-lock deletion or cleanup. */
 export async function preparePrivateJobRepositoryMounts(input:{record:SourceMaterializationRecord;execution:JobExecutionRecord;
-  attempt:MaterializationAttempt;materializer:SourceMaterializationPort;reauthorize:()=>Promise<void>}):Promise<PrivateJobRepositoryMounts> {
+  attempt:MaterializationAttempt;materializer:PrivateSourceMaterializer;reauthorize:()=>Promise<void>}):Promise<PrivateJobRepositoryMounts> {
   const {record,execution}=input,receipt=record.receipt
   if(record.operationId!==execution.operationId||receipt.executionId!==execution.id||receipt.attemptId!==execution.attemptId
     ||receipt.binding.workspaceId!==execution.workspaceId||receipt.materializationId!==execution.acceptedSpec.source.materializationId
