@@ -27,7 +27,9 @@ interface Fixture {
 }
 const shared = vi.hoisted(() => ({ current: undefined as Fixture | undefined }))
 const current = () => { assert.ok(shared.current); return shared.current }
-const digest = (value: unknown) => 'sha256:' + createHash('sha256').update(JSON.stringify(value)).digest('hex')
+function digest(value: unknown) {
+  return 'sha256:' + createHash('sha256').update(JSON.stringify(value)).digest('hex')
+}
 const stateDigest = (db: Database) => digest({ run: db.run, stopped: db.stopped })
 function readback() {
   const db = current().db()

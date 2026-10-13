@@ -47,7 +47,7 @@ import { markWorkNoticeDeliveredLocked, markWorkNoticePendingLocked,
   markWorkNoticeUnknownLocked } from './workHandoffNotice.js'
 import { assertWorkHandoffDeliveryLocked } from './workHandoffDelivery.js'
 import {
-  assertRepeatBodyComplete, assertRepeatRef, assertRepeatSource,
+  assertRepeatBodyComplete, assertRepeatExecution, assertRepeatRef, assertRepeatSource,
   bindRepeatNodeInput, blockForNode, decideRepeatAdmission, decideRepeatBlockEntry, decideRepeatExit, finalRepeatExport,
   freezeRepeatEntry, makeRepeatOccurrence, repeatBlock, repeatConflict, repeatDigest,
   repeatExecutionIdentity, repeatId, repeatSlotId, repeatSuccessorInput, sameRepeatValue,

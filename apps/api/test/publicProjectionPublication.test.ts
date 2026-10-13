@@ -25,18 +25,18 @@ describe('publication projection reader', () => {
 
   it.each([1, 2, 3])('rolls back when projection read %i fails', async (failureAt) => {
     let reads = 0
-    let rejectAt: number | undefined
+    let rejectReads = false
     const failure = new Error('projection read failed')
     const reader = vi.fn(async (...args: Parameters<typeof readPublicProjectionLocked>) => {
       reads++
-      if (reads === rejectAt) throw failure
+      if (rejectReads && reads === failureAt) throw failure
       return readPublicProjectionLocked(...args)
     })
     const db = new ProjectionDatabase(reader)
     await db.initialize()
     const before = structuredClone(db.state)
     reads = 0
-    rejectAt = failureAt
+    rejectReads = true
 
     await assert.rejects(db.changeRun({ cleanupPending: true }), failure)
 
