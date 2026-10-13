@@ -1,6 +1,7 @@
 import type pg from 'pg'
 import { CiRunRecordSchema, type CiRunRecord } from '@foreman-code/contracts'
 import type { CiCommits } from './service.js'
+import { serializeCiJson } from './text.js'
 
 /** Admission and the cancellation intent share a transaction; dispatch retries unfinished cleanup. */
 export async function supersedeCiRuns(client: pg.PoolClient, commits: CiCommits, replacement: CiRunRecord,
@@ -32,7 +33,7 @@ export async function supersedeCiRuns(client: pg.PoolClient, commits: CiCommits,
     }
     if (!ancestry.get(old.commit)) continue
     const next = { ...old, supersededBy: replacement.id, message: `superseded by ${replacement.id}` }
-    await client.query('update ci_runs set record=$2::jsonb where id=$1', [old.id, JSON.stringify(next)])
+    await client.query('update ci_runs set record=$2::jsonb where id=$1', [old.id, serializeCiJson(next)])
     await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
       values($1,$2,'ci.supersede',$3,'succeeded',$4::jsonb)`,
     [replacement.initiator.principalId, audit.source, `ci:${old.id}`, JSON.stringify({
