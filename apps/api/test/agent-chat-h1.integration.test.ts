@@ -86,7 +86,7 @@ describe.skipIf(!postgresEnabled).each(APP_MCP_SERVER_NAMES)(
     }
     vi.mocked(runCommand).mockReset().mockImplementation(async (_binary, args) => {
       assert.equal(args[0], 'mcp')
-      if (args[1] === 'list') return { exitCode: 0, stderr: '', stdout: JSON.stringify([{ name: serverName }]) }
+      if (args[1] === 'list') return { exitCode: 0, stderr: '', stdout: JSON.stringify([entry]) }
       assert.equal(args[1], 'get')
       if (args[2] !== serverName) return {
         exitCode: 1, stdout: '', stderr: `Error: No MCP server named '${args[2]}' found.`,
