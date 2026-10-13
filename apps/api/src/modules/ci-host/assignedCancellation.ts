@@ -1,6 +1,5 @@
 import type { CiRunRecord } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
-import { rejectedCiStart } from './dispatch.js'
 import type { CiRunSettlement, HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
 
 function canceledBeforeExecution(run: CiRunRecord, computer: HostCiComputer): CiRunSettlement {
@@ -12,18 +11,6 @@ function canceledBeforeExecution(run: CiRunRecord, computer: HostCiComputer): Ci
 
 export async function cancelAssignedCiTicket(endpoint: HostCiEndpoint, computer: HostCiComputer,
   run: CiRunRecord): Promise<CiRunSettlement> {
-  if (run.dispatchRequest && computer.hostRef.kind !== 'cloud') {
-    // Host delivery can still be in flight; recover its owner before confirming closure.
-    try {
-      const start = await endpoint.request(computer, run.dispatchRequest)
-      if (start.operation !== 'start') {
-        throw new DomainError('CI_HOST_REPLY_INVALID', 'The build computer replied out of order.', 502)
-      }
-    } catch (error) {
-      if (!rejectedCiStart(error)) throw error
-      return canceledBeforeExecution(run, computer)
-    }
-  }
   try {
     const reply = await endpoint.request(computer, { operation: 'cancel', runId: run.id })
     if (reply.operation !== 'cancel') {

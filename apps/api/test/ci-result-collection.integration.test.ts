@@ -17,7 +17,11 @@ let database: Awaited<ReturnType<typeof migratedDatabase>>
 beforeAll(async () => { database = await migratedDatabase() }, 60_000)
 afterAll(async () => { await database?.close() }, 60_000)
 
-it.each([false, true])('persists outcome, retries results after restart and enforces MCP access with provenance=%s', async includeProvenance => {
+it.each([
+  { includeProvenance: false, failure: 'endpoint-error' },
+  { includeProvenance: true, failure: 'endpoint-error' },
+  { includeProvenance: true, failure: 'empty-complete' },
+])('persists outcome and retries collection after $failure with provenance=$includeProvenance', async ({ includeProvenance, failure }) => {
   const pool = database.pool
   const workspaceId = randomUUID()
   await pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId, JSON.stringify({
@@ -54,7 +58,8 @@ it.each([false, true])('persists outcome, retries results after restart and enfo
       const run = finished ? { ...remote, state: 'passed' as const, exitCode: 0, finishedAt: new Date().toISOString() } : remote
       if (request.testResults && !failedRead) {
         failedRead = true
-        throw new Error('Temporary result endpoint failure')
+        if (failure === 'endpoint-error') throw new Error('Temporary result endpoint failure')
+        return { operation: 'read', run: { ...run, collection: 'complete' }, text: '', nextOffset: 0 }
       }
       return { operation: 'read', run, text: '', nextOffset: 0,
         ...(request.testResults ? { testResults: tests } : {}) }
