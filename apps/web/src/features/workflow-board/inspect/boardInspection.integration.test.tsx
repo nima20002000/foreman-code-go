@@ -73,6 +73,19 @@ async function mount(url: string) {
 const pinnedCanvas = () => screen.getByRole('region', { name: 'Selected Run pinned topology' })
 const inspector = () => screen.getByRole('region', { name: 'Exact execution inputs and results' })
 const eventCalls = () => fixture.mock.calls.filter((call) => call.method === 'GET' && call.path.endsWith('/events'))
+function clickCiServer(button: HTMLElement) {
+  const browserErrors: unknown[] = []
+  const recordBrowserError = (event: ErrorEvent) => browserErrors.push(event.error)
+  window.addEventListener('error', recordBrowserError)
+  try {
+    fireEvent.mouseDown(button, { view: window })
+    fireEvent.mouseUp(button, { view: window })
+    fireEvent.click(button, { view: window })
+  } finally {
+    window.removeEventListener('error', recordBrowserError)
+  }
+  expect(browserErrors).toEqual([])
+}
 async function openDetails() {
   const close = screen.queryByRole('button', { name: 'Close runs' })
   if (!close) await userEvent.setup().click(await screen.findByRole('button', { name: 'Activities' }))
@@ -105,6 +118,18 @@ afterEach(() => {
 })
 
 describe('Run inspection inside the one mounted Board', () => {
+  it('opens the idle CI server dialog without browser event errors', async () => {
+    const scope = fixture.runs.before.scope
+    server.use(http.get(`/api/management/workspaces/${scope.workspaceId}/ci`, () =>
+      HttpResponse.json({ runId: scope.runId, truncated: false, jobs: [] })))
+    await mount(href(scope))
+    clickCiServer(await screen.findByRole('button', { name: /^CI server, Idle/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'CI server' })
+    expect(within(dialog).getByText('No CI jobs in this Run yet')).toBeVisible()
+    expect(within(dialog).getByRole('tab', { name: 'Tests' })).toBeDisabled()
+    expect(within(dialog).getByRole('tab', { name: 'Log' })).toBeDisabled()
+  })
+
   it.each([401, 403])('removes cached CI jobs and node activity after CI-only HTTP %s denial', async status => {
     const scope = fixture.runs.before.scope
     const route = `/api/management/workspaces/${scope.workspaceId}/ci`
@@ -122,18 +147,7 @@ describe('Run inspection inside the one mounted Board', () => {
           startedAt: null, finishedAt: null } }] })))
     const { cache } = await mount(href(scope))
     expect(await within(pinnedCanvas()).findByText(/CI build-api · running/)).toBeVisible()
-    const browserErrors: unknown[] = []
-    const recordBrowserError = (event: ErrorEvent) => browserErrors.push(event.error)
-    window.addEventListener('error', recordBrowserError)
-    try {
-      const button = screen.getByRole('button', { name: /CI server, 1 running/ })
-      fireEvent.mouseDown(button, { view: window })
-      fireEvent.mouseUp(button, { view: window })
-      fireEvent.click(button, { view: window })
-    } finally {
-      window.removeEventListener('error', recordBrowserError)
-    }
-    expect(browserErrors).toEqual([])
+    clickCiServer(screen.getByRole('button', { name: /CI server, 1 running/ }))
     const dialog = await screen.findByRole('dialog', { name: 'CI server' })
     expect(within(dialog).getByRole('button', { name: /Show tests of build · build-api/ })).toBeVisible()
     responseStatus = 503
