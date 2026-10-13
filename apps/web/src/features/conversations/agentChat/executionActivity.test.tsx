@@ -322,7 +322,7 @@ it.each([20_480, 80_000])('expands a shortened Run answer through the scoped ite
   else expect(screen.queryByText(/shortened/i)).not.toBeInTheDocument()
 })
 
-it('keeps a shortened answer visible during a failed expansion and allows retry with loading feedback', async () => {
+it.each([500, 502, 503])('keeps a shortened answer visible during a failed expansion and allows retry with loading feedback (%s)', async status => {
   const state = runState()
   const mounted = mountChat(state)
   const preview = message('execution-check', 'answer', '1', 'Visible preview')
@@ -334,13 +334,14 @@ it('keeps a shortened answer visible during a failed expansion and allows retry 
   server.use(http.get('/api/workspaces/:workspaceId/agent-chat/execution-activity', async ({ request }) => {
     if (!new URL(request.url).searchParams.has('itemId')) return undefined
     attempts++
-    if (attempts === 1) return HttpResponse.json({ error: { code: 'READ_FAILED', message: 'Full message unavailable.' } }, { status: 503 })
+    if (attempts === 1) return HttpResponse.json({ error: { code: 'READ_FAILED', message: 'Full message unavailable.' } }, { status })
     await pending.promise
     return HttpResponse.json({ ...livePage([message('execution-check', 'answer', '1', 'Expanded answer')], '1'),
       mode: 'item', cursor: undefined })
   }))
   fireEvent.click(await screen.findByRole('button', { name: 'Show full message' }))
-  expect(await screen.findByRole('alert')).toHaveTextContent('Full message unavailable.')
+  const expectedMessage = status === 500 ? 'Full message unavailable.' : 'Updating — reconnecting…'
+  expect(await screen.findByRole('alert')).toHaveTextContent(expectedMessage)
   expect(screen.getByText('Visible preview')).toBeVisible()
   fireEvent.click(screen.getByRole('button', { name: 'Show full message' }))
   expect(await screen.findByRole('button', { name: 'Loading full message…' })).toBeDisabled()

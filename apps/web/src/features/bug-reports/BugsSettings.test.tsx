@@ -291,17 +291,19 @@ it.each(['server failure', 'invalid acknowledgement'])('retries a save after %s 
   expect(screen.getByRole('combobox', { name: 'Report status' })).toHaveValue('triaged')
 })
 
-it('recovers list and detail request failures through their refresh actions', async () => {
+it.each([500, 502, 503])('recovers list and detail request failures through their refresh actions (%s)', async status => {
   server.use(
     http.get('*/api/management/bug-reports', () => HttpResponse.json({
       error: { code: 'UNAVAILABLE', message: 'Reports are unavailable.' },
-    }, { status: 503 })),
+    }, { status })),
     http.get('*/api/management/bug-reports/:reportId', () => HttpResponse.json({
       error: { code: 'NOT_FOUND', message: 'This bug report was not found.' },
     }, { status: 404 })),
   )
   mount('/settings/bugs?reportId=bug-report-missing')
-  expect(await screen.findByText('Reports are unavailable.')).toBeVisible()
+  const reports = within(await screen.findByRole('region', { name: 'Bug reports' }))
+  const expectedMessage = status === 500 ? 'Reports are unavailable.' : 'Updating — reconnecting…'
+  expect(await reports.findByRole('alert')).toHaveTextContent(expectedMessage)
   expect(await screen.findByText('This bug report was not found.')).toBeVisible()
   expect(screen.getByRole('button', { name: 'Refresh bug reports' })).toBeEnabled()
   expect(screen.getByRole('button', { name: 'Refresh report' })).toBeEnabled()
@@ -311,7 +313,7 @@ it('recovers list and detail request failures through their refresh actions', as
   await userEvent.click(screen.getByRole('button', { name: 'Refresh report' }))
   expect(await screen.findByRole('combobox', { name: 'Report status' })).toHaveValue('open')
   expect(screen.getByRole('button', { name: 'Read Workflow start fails' })).toBeVisible()
-  expect(screen.queryByText('Reports are unavailable.')).not.toBeInTheDocument()
+  expect(reports.queryByRole('alert')).not.toBeInTheDocument()
   expect(screen.queryByText('This bug report was not found.')).not.toBeInTheDocument()
 })
 
