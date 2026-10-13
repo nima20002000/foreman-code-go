@@ -133,12 +133,19 @@ export class PostgresSourceReservations {
     const activeMaterializations = Number(capacity.verification ? totals.verification_materializations : totals.materializations)
     const pendingBytes = Number(totals.pending_bytes)
     const preparing = Number(totals.preparing)
+    const idle = preparing === 0 && Number(totals.materializations) === 0
+      && Number(totals.verification_materializations) === 0
+    // An idle scope gets one memory slot so low-memory hosts can make progress.
+    const minimumConcurrency = idle ? 1 : 0
+    const preparationLimit = Math.max(limits.preparing, minimumConcurrency)
+    const materializationLimit = capacity.verification ? capacity.materializations
+      : Math.max(capacity.materializations, minimumConcurrency)
     // Free space already excludes retained files. Outstanding writers remain fully charged in both pools.
     const exhausted: string[] = []
     if (usedBytes + request.reservedBytes > capacity.bytes) exhausted.push('retained_bytes')
     if (pendingBytes + request.reservedBytes > limits.availableBytes) exhausted.push('available_bytes')
-    if (preparing >= limits.preparing) exhausted.push('preparations')
-    if (request.ownerKind === 'materialization' && activeMaterializations >= capacity.materializations) {
+    if (preparing >= preparationLimit) exhausted.push('preparations')
+    if (request.ownerKind === 'materialization' && activeMaterializations >= materializationLimit) {
       exhausted.push('materializations')
     }
     if (exhausted.length) {
@@ -147,7 +154,7 @@ export class PostgresSourceReservations {
           exhausted,
           usage: { usedBytes, pendingBytes, preparing, activeMaterializations, requestedBytes: request.reservedBytes },
           limits: { bytes: capacity.bytes, availableBytes: limits.availableBytes,
-            preparing: limits.preparing, materializations: capacity.materializations },
+            preparing: preparationLimit, materializations: materializationLimit },
           measured: { cpuCount: measured.cpuCount, availableMemoryBytes: measured.availableMemoryBytes,
             observedAt: measured.observedAt },
         })
