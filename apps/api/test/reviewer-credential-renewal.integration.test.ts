@@ -41,8 +41,15 @@ it.each(invalidations)('refuses reviewer renewal after %s without extending expi
   const f = await routedApprovalFixture()
   try {
     const credential = await f.credentials.issueForReviewer(f.reviewer.id)
+    const token = credential.environment.variables.GRAPHQL_MCP_TOKEN!
+    expect(await f.access.authenticate(token, 'worker')).toMatchObject({
+      id: credential.principalId,
+      agentId: f.reviewer.agentId,
+    })
+    const deadline = credential.renewalDeadline
     const ids = { principal: credential.principalId, run: f.run.id, execution: f.reviewer.id }
     await f.db.pool.query(statement, [ids[target]])
+    expect((await f.runs.get(f.run.id))?.approval).toEqual(f.run.approval)
     const readExpiry = async () => (await f.db.pool.query<{ expires_at: Date }>(
       'select expires_at from management_principals where id=$1', [credential.principalId],
     )).rows[0]!.expires_at.toISOString()
@@ -51,6 +58,7 @@ it.each(invalidations)('refuses reviewer renewal after %s without extending expi
     await expect(service.renewForExecution(f.reviewer.id, credential))
       .rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_NOT_RENEWABLE' })
     expect(await readExpiry()).toBe(before)
+    expect(credential.renewalDeadline).toBe(deadline)
   } finally {
     await f.close()
   }
