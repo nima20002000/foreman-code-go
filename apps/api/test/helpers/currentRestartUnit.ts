@@ -340,7 +340,7 @@ export function currentRestartUnit(reviewer = false, acceptedPlacement?: Accepte
     // belongs to the repository. A returned cancel promise alone proves nothing.
     await repository.settleNativeExecution(execution.id)
   }
-  return { f, cold, state, session, owner, connection, context, stop, terminal, finalize, repository, statements,
+  return { f, cold, state, session, owner, connection, coordination, context, stop, terminal, finalize, repository, statements,
     execution: () => execution, rows: () => rows,
     beforePreflight: (fn: typeof beforePreflight) => { beforePreflight = fn }, beforeClose: (fn: typeof beforeClose) => { beforeClose = fn } }
 }

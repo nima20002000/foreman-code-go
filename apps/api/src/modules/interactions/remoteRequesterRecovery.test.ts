@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import {
   DurableInteractionSchema,
   HarnessExecutionSchema,
@@ -33,6 +33,7 @@ vi.mock('../runs/repeatLifecycle.js', async importOriginal => ({
 }))
 
 beforeEach(() => vi.resetAllMocks())
+afterEach(() => vi.useRealTimers())
 
 async function recoverRequester(detached: boolean, state: 'waiting' | 'running' = 'waiting',
   options: { observeWithoutCleanup?: boolean } = {}) {
@@ -177,6 +178,37 @@ it('observes the original running remote lifetime without reserving another gene
     expect(f.continuation.generation).toBe('1')
     expect(f.restore).toHaveBeenCalledOnce()
     expect(f.attach).toHaveBeenCalledOnce()
+    expect(f.create).not.toHaveBeenCalled()
+    expect(f.startTurn).not.toHaveBeenCalled()
+  } finally {
+    await f.coordinator.closeForRestart()
+  }
+})
+
+it('waits for the orphaned Main writer before observing the original remote turn', async () => {
+  vi.useFakeTimers()
+  const f = await recoverRequester(false, 'running', { observeWithoutCleanup: true })
+  await f.coordination.ensureLane({
+    id: 'original-remote-lane', harness: 'codex', nativeSessionId: f.interaction.nativeSessionId,
+    ownerAgentId: f.interaction.requestingAgentId, observedStatus: 'busy', connectionGeneration: 1,
+    correlationId: `execution:${f.interaction.executionId}`, currentTurnOrMessageId: 'original-turn',
+    leaseOwner: f.interaction.requestingAgentId, leaseToken: 'orphaned-main-writer',
+    leaseExpiresAt: new Date(Date.now() + 500).toISOString(), observedAt: f.interaction.createdAt, revision: 1,
+  })
+  let settled = false
+  const observed = f.observeOriginal().then(value => ({ value }), error => ({ error }))
+    .finally(() => { settled = true })
+  try {
+    await vi.advanceTimersByTimeAsync(499)
+    expect(settled).toBe(false)
+    expect(f.attach).not.toHaveBeenCalled()
+    expect(f.begin).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(await observed).toMatchObject({ value: { state: 'waiting' } })
+    expect(f.attach).toHaveBeenCalledOnce()
+    expect(f.restore).toHaveBeenCalledOnce()
+    expect(f.begin).not.toHaveBeenCalled()
+    expect(f.continuation.generation).toBe('1')
     expect(f.create).not.toHaveBeenCalled()
     expect(f.startTurn).not.toHaveBeenCalled()
   } finally {

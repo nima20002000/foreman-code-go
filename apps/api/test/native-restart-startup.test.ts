@@ -121,6 +121,71 @@ it.each(['running', 'waiting'] as const)(
 
 afterEach(async () => {
   await Promise.all(connections.splice(0).map((connection) => connection.close()))
+  vi.useRealTimers()
+})
+
+async function orphanedWriterFixture() {
+  const f = currentRestartUnit(false, { hostRef: { kind: 'main' } } as AcceptedNodePlacement)
+  connections.push(f.connection)
+  f.state.restartDetached = true
+  const restarted = f.cold()
+  await restarted.store.begin(f.execution())
+  const lane = await f.coordination.ensureLane({
+    id: 'original-writer-lane', harness: f.session.harness, nativeSessionId: f.session.nativeSessionId,
+    ownerAgentId: f.execution().agentId, observedStatus: 'busy', connectionGeneration: 2,
+    correlationId: `execution:${f.execution().id}`, currentTurnOrMessageId: 'original-turn',
+    leaseOwner: f.execution().agentId, leaseToken: 'orphaned-writer-token',
+    leaseExpiresAt: new Date(Date.now() + 500).toISOString(), observedAt: f.f.createdAt, revision: 1,
+  })
+  restarted.manager.originalEnvironment = async () => ({ ORIGINAL_PROCESS_TOKEN: 'retained-fixture-token' })
+  return { ...f, restarted, lane }
+}
+
+it('waits for the orphaned source writer lease to expire before attaching the original Main session', async () => {
+  vi.useFakeTimers()
+  const f = await orphanedWriterFixture()
+  let settled = false
+  const result = f.restarted.coordinator.withSourceObservationLane(f.owner, f.execution(), async () => 'original source')
+    .then(value => ({ value }), error => ({ error }))
+    .finally(() => { settled = true })
+  await vi.advanceTimersByTimeAsync(499)
+  expect(settled).toBe(false)
+  expect(f.state.resolutions).toBe(0)
+  expect(f.state.attaches).toBe(0)
+  await vi.advanceTimersByTimeAsync(1)
+  expect(await result).toEqual({ value: 'original source' })
+  const lane = await f.coordination.getLane(f.session.harness, f.session.nativeSessionId)
+  expect(lane?.leaseToken).toBeUndefined()
+  expect(lane?.connectionGeneration).toBeGreaterThan(f.lane.connectionGeneration)
+  expect(lane?.correlationId).toBe(f.lane.correlationId)
+  expect(lane?.currentTurnOrMessageId).toBe(f.lane.currentTurnOrMessageId)
+  expect(f.state.attaches).toBe(1)
+  expect(f.state.restores).toBe(1)
+  expect(f.state.creates).toBe(0)
+  expect(f.state.turns).toBe(0)
+  await f.restarted.coordinator.closeForRestart()
+})
+
+it.each(['writer', 'owner'] as const)('refuses cold source attachment when the %s changes while waiting', async changed => {
+  vi.useFakeTimers()
+  const f = await orphanedWriterFixture()
+  const observing = f.restarted.coordinator.withSourceObservationLane(f.owner, f.execution(), async () => 'source')
+  const rejected = changed === 'writer'
+    ? expect(observing).rejects.toMatchObject({ code: 'SESSION_LANE_BUSY' })
+    : expect(observing).rejects.toThrow('RUN_OWNERSHIP_LOST')
+  await vi.advanceTimersByTimeAsync(0)
+  expect(f.state.resolutions).toBe(0)
+  if (changed === 'writer') {
+    await f.coordination.renewLane(f.lane.id, f.lane.leaseToken!, 1_000)
+  } else {
+    f.state.owned = false
+  }
+  await vi.advanceTimersByTimeAsync(100)
+  await rejected
+  expect(f.state.attaches).toBe(0)
+  expect(f.state.beginCalls).toBe(1)
+  expect(f.state.creates).toBe(0)
+  expect(f.state.turns).toBe(0)
 })
 
 for (const { reviewer, wrapped } of [
