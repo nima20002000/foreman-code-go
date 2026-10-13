@@ -37,6 +37,7 @@ function fixture() {
   const journal: NativeEntryRow = { phase: 'entered', reservation, reservation_digest: repeatDigest(reservation),
     transition: { phase: 'entered' } as NativeEntryRow['transition'],
     source_id: 'original-source', source_digest: `sha256:${'2'.repeat(64)}` }
+  const lease = { lease_owner: 'original-owner', lease_ms: 30_000, expires_at: '2099-01-01T00:00:00.000Z' }
   const records = { entry: journal, entry_receipts: [{ workspace_id: scope.workspaceId,
     workflow_id: scope.workflowId, workflow_version_id: scope.workflowVersionId,
     execution_semantics_version: 3, protocol_version: 1, head_sequence: '2',
@@ -45,18 +46,11 @@ function fixture() {
     session: { reference: structuredClone(session) }, configuration: { harness: session.harness },
     closure: { generation: '1', expected_reference: structuredClone(session), closed: false },
     lane: { owner_agent_id: execution.agentId, harness: session.harness, native_session_id: session.nativeSessionId,
-      generation: '1', token: 'original-token', correlation: `execution:${execution.id}`, provider_id: 'original-turn', held: true } }
-  const lease = { lease_owner: 'original-owner', lease_ms: 30_000, expires_at: '2099-01-01T00:00:00.000Z' }
+      generation: '1', token: 'original-token', correlation: `execution:${execution.id}`, provider_id: 'original-turn',
+      held: true, ...lease } }
   const reads: unknown[][] = []
   const connection = new ExclusiveGraphConnection({ query: async (sql: string, values?: unknown[]) => {
     if (sql.startsWith('with current_entry')) { reads.push(values!); return { rows: [structuredClone(records)], rowCount: 1 } }
-    if (sql.startsWith("select record->>'leaseOwner'")) {
-      const matches = values?.[0] === capture.lane!.id && values[1] === records.lane.token
-        && values[2] === records.lane.generation && values[3] === records.lane.owner_agent_id
-        && values[4] === records.lane.harness && values[5] === records.lane.native_session_id
-        && records.lane.held
-      return { rows: matches ? [structuredClone(lease)] : [], rowCount: matches ? 1 : 0 }
-    }
     if (sql.startsWith('update native_session_lanes')) {
       const matches = values?.[0] === capture.lane!.id && values[1] === records.lane.token
         && values[2] === records.lane.generation && values[4] === lease.lease_owner

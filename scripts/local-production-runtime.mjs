@@ -176,14 +176,14 @@ export async function runReleaseCutover({ release, previousRelease, stateFile, b
     await saveDeployment(stateFile, state, 'checking-migrations')
     const pendingMigrations = await steps.pendingMigrations(release)
     let schemaBefore
+    state.apiMayHaveStopped = true
+    await perform('stopping', steps.stop)
     if (pendingMigrations.length) {
       await perform('backing-up', () => steps.backup(backupFile))
       state.backupComplete = true
       await saveDeployment(stateFile, state, 'backed-up')
       schemaBefore = await steps.schema?.(release)
     }
-    state.apiMayHaveStopped = true
-    await perform('stopping', steps.stop)
     if (pendingMigrations.length) {
       state.schemaMayHaveChanged = true
       await perform('migrating', () => steps.migrate(release))

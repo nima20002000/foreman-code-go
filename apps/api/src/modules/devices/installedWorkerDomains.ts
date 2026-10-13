@@ -19,6 +19,8 @@ import { createVerificationSystemInput } from '../jobs/verificationSystemInput.j
 import { WorkerJobApplicationSink } from '../runs/remote/workerJobApplicationSink.js'
 import { createInstalledJobSource } from '../runs/remote/installedJobSource.js'
 import { createRemoteExecutionHandler } from '../runs/remote/executionRouter.js'
+import { workflowPreparationExtension } from '../runs/remote/preparationExtension.js'
+import { REMOTE_PREPARATION_EXTENSION } from '@foreman-code/contracts/remote-execution-rpc'
 import { createWorkerJobInputPort } from '../files/jobInputs/workerFactory.js'
 import { JOB_INPUT_NAMESPACE } from '../files/jobInputs/protocol.js'
 import { createWorkerJobOutputCollector } from '../runs/remote/workerJobOutputs.js'
@@ -557,6 +559,10 @@ export async function createInstalledWorkerDomains(input: {
     }
     if (execution) extensions.splice(extensions.indexOf(execution), 1, handler)
     else extensions.push(handler)
+    const preparation = extensions.find(extension => extension.namespace === REMOTE_PREPARATION_EXTENSION.namespace)
+    const preparationHandler = workflowPreparationExtension(handler)
+    if (preparation) extensions.splice(extensions.indexOf(preparation), 1, preparationHandler)
+    else if (workflowSupport) extensions.push(preparationHandler)
   }
   if (profileChecks || workflowSupport) extensions.push({
     namespace: HARNESS_PROFILE_CHECK_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
@@ -679,6 +685,9 @@ export function createWorkerRuntimeDrain(ports: {
 function isWorkerAdmission(namespace: string, payload: unknown): boolean {
   if (namespace === 'harness-discovery-v1' || namespace === 'host-harness-check-v1') return true
   if (!payload || typeof payload !== 'object') return false
+  if (namespace === REMOTE_PREPARATION_EXTENSION.namespace && 'method' in payload) {
+    return payload.method === 'prepare'
+  }
   if (namespace === 'execution-v1' && 'method' in payload) {
     return ['job-dispatch', 'prepare', 'prepare-review', 'start-turn', 'session-compact', 'capabilities', 'inspect-mcp',
       'conversation.open', 'conversation.initial-turn', 'conversation.start-turn', 'conversation.compact',
