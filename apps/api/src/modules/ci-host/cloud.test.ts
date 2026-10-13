@@ -6,6 +6,14 @@ import { executionSelection } from '../../../../../scripts/ci-selection.mjs'
 
 import { fixture } from './cloud.testSupport.js'
 
+function expectMirrorDispatch(provider: 'github' | 'circleci', command: string[] | undefined) {
+  const option = provider === 'github' ? '-R' : '--project'
+  const target = provider === 'github' ? 'octo/site-ci' : 'gh/octo/site-ci'
+  const optionIndex = command?.indexOf(option) ?? -1
+  expect(optionIndex).toBeGreaterThanOrEqual(0)
+  expect(command?.[optionIndex + 1]).toBe(target)
+}
+
 describe('GitHub Actions CI on a public mirror', () => {
   it('uses the admitted mirror even when the workspace settings no longer provide one', async () => {
     const f = await fixture({}, { mirror: false })
@@ -675,9 +683,11 @@ it.each(['github', 'circleci'] as const)('prunes stale mirror branches and keeps
   const activeState = provider === 'circleci' ? 'running' : 'starting'
   expect(await f.cloud.handle({ ...request, runId: first }))
     .toMatchObject({ operation: 'start', run: { state: activeState } })
+  expectMirrorDispatch(provider, (provider === 'github' ? f.dispatched : f.circle.triggered)[0])
   expect((provider === 'github' ? f.dispatched : f.circle.triggered)[0]).toContain('octo/site-ci')
   expect(await f.cloud.handle({ ...request, runId: second }))
     .toMatchObject({ operation: 'start', run: { state: activeState } })
+  expectMirrorDispatch(provider, (provider === 'github' ? f.dispatched : f.circle.triggered).at(-1))
   expect(await f.reopen().handle({ operation: 'read', runId: second, afterOffset: 0, maxBytes: 1 }))
     .toMatchObject({ operation: 'read', run: { state: activeState } })
   expect(provider === 'github' ? f.dispatched : f.circle.triggered).toHaveLength(2)
@@ -690,6 +700,7 @@ it.each(['github', 'circleci'] as const)('prunes stale mirror branches and keeps
   await f.reopen().handle({ operation: 'cancel', runId: second })
   expect(refs()).not.toContain(`refs/heads/ci/${f.commit}`)
   await f.reopen().handle({ ...request, runId: randomUUID() })
+  expectMirrorDispatch(provider, (provider === 'github' ? f.dispatched : f.circle.triggered).at(-1))
   expect(refs()).toContain(`refs/heads/ci/${f.commit}`)
 })
 
@@ -711,13 +722,16 @@ it.each(['success', 'failure'] as const)('removes mirror branches after a %s res
 })
 
 
-it('republishes a branch removed by maintenance after a previous automatic cleanup failed', async () => {
-  const f = await fixture({}, { provider: 'circleci' })
+it.each(['configured', 'admitted'] as const)(
+  'republishes a branch removed by maintenance after cleanup failed using its %s CircleCI mirror', async mirrorSource => {
+  const f = await fixture({}, { provider: 'circleci', mirror: mirrorSource === 'configured' })
   const request = { operation: 'start' as const, workspaceId: 'ci-workspace', repository: 'octo/site', commit: f.commit,
+    ...(mirrorSource === 'admitted' ? { ciMirror: 'octo/site-ci' } : {}),
     suite: 'lint' as const, scope: 'affected' as const, files: [] }
   const runId = randomUUID()
   expect(await f.cloud.handle({ ...request, runId }))
     .toMatchObject({ operation: 'start', run: { state: 'running' } })
+  expectMirrorDispatch('circleci', f.circle.triggered[0])
   expect(f.circle.triggered[0]).toContain('octo/site-ci')
   f.cleanup.unavailable = true
   f.circle.outcome = 'succeeded'
@@ -735,6 +749,7 @@ it('republishes a branch removed by maintenance after a previous automatic clean
   expect(await f.reopen().handle({ operation: 'read', runId: replacement, afterOffset: 0, maxBytes: 1 }))
     .toMatchObject({ operation: 'read', run: { state: 'running' } })
   expect(f.circle.triggered).toHaveLength(2)
+  expectMirrorDispatch('circleci', f.circle.triggered.at(-1))
   expect(f.mirrorGit('rev-parse', branch)).toMatch(/^[a-f0-9]{40}$/)
 })
 
@@ -778,7 +793,10 @@ it.each(['github', 'circleci'] as const)('keeps publication scoped after cancell
     .toMatchObject({ operation: 'read', run: { state: 'canceled' } })
   const commands = provider === 'github' ? f.dispatched : f.circle.triggered
   expect(commands).toHaveLength(2)
-  for (const command of commands) expect(command).toContain('octo/site-ci')
+  for (const command of commands) {
+    expectMirrorDispatch(provider, command)
+    expect(command).toContain('octo/site-ci')
+  }
   expect(await f.reopen().handle({ operation: 'read', runId: second, afterOffset: 0, maxBytes: 1 }))
     .toMatchObject({ operation: 'read', run: { state: activeState, provenance: { sourceCommit: f.commit } } })
   expect(commands).toHaveLength(2)
