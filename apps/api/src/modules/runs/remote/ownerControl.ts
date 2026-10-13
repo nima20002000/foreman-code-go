@@ -7,6 +7,7 @@ import type { RunOwnership } from '../ownership.js'
 import type { AcceptedExecutionBinding } from '../../placement/nativeComposition.js'
 import type { RemoteNativeManagerOptions } from './nativeManagerProxy.js'
 import { DomainError } from '../../errors.js'
+import { canCloseRetainedRemoteReviewer } from '../../placement/remoteReviewerAuthority.js'
 import { selectedInteractionResponse } from '../../interactions/delivery.js'
 
 export type RemoteControlInput = Parameters<RemoteNativeManagerOptions['controlFor']>[0]
@@ -26,8 +27,15 @@ export async function prepareRemoteOwnerControl(sql: GraphTransactionSql, owner:
   let commandId: string, action: { kind: 'stop' } | { kind: 'respond'; interactionId: string; interactionRevision: string; nativeInteractionId: string; response: unknown }
   if (command.kind === 'stop') {
     const cleanup = (await sql.query<{ requested_at: Date }>('select requested_at from run_cleanup_intents where run_id=$1 and pending for share', [owner.runId])).rows[0]
-    if (!cleanup) throw new DomainError('REMOTE_CONTROL_UNAVAILABLE', 'The original accepted Run cleanup intent is required for remote Stop.', 409)
-    commandId = `stop:${binding.intent.operationId}:${cleanup.requested_at.toISOString()}`; action = { kind: 'stop' }
+    if (cleanup) {
+      commandId = `stop:${binding.intent.operationId}:${cleanup.requested_at.toISOString()}`
+    } else if (await canCloseRetainedRemoteReviewer(sql, receipt)) {
+      commandId = `close-reviewer:${binding.intent.operationId}`
+    } else {
+      throw new DomainError('REMOTE_CONTROL_UNAVAILABLE',
+        'The original accepted Run cleanup intent is required for remote Stop.', 409)
+    }
+    action = { kind: 'stop' }
   } else {
     const rows = await sql.query<{ record: unknown }>('select record from durable_interactions where execution_id=$1 and native_session_id=$2 and native_request_id=$3 for share', [binding.intent.executionId, command.native.sessionId, command.nativeRequestId])
     const interaction = rows.rows.length === 1 ? DurableInteractionSchema.parse(rows.rows[0]!.record) : undefined
