@@ -58,9 +58,9 @@ async function fixture() {
         reservation_id uuid, record jsonb, state text, worktree_cleanup jsonb);
       insert into runs values ('loop-run','running')`)
     const origin = join(base, 'origin')
-    const root = join(base, 'materializations')
+    const rootPath = join(base, 'materializations')
     await mkdir(origin, { mode: 0o700 })
-    await mkdir(root, { mode: 0o700 })
+    await mkdir(rootPath, { mode: 0o700 })
     const bytes = Buffer.from('approved source\n')
     await writeFile(join(origin, 'app.ts'), bytes)
     git(origin, 'init', '-q', '-b', 'main')
@@ -71,12 +71,12 @@ async function fixture() {
       capturePolicy: 'git-tree-v1', executablePolicy: 'preserve-approved', deletions: [],
       git: { commit, tree: git(origin, 'rev-parse', 'HEAD^{tree}'), objectFormat: 'sha1', repository: 'fixture/project' },
       entries: [{ path: 'app.ts', kind: 'file', byteSize: bytes.length, sha256: sourceSha256(bytes), executable: false }] })
-    const handle = await openPrivateRoot(root)
+    const handle = await openPrivateRoot(rootPath)
     const filesystem = await identity(handle)
     await handle.close()
     const binding = { version: 1 as const, mainId: randomUUID(), deviceId: null, workerInstallationId: null,
       workspaceId: 'workspace', rootId: randomUUID(), bindingRevision: 1, locationRevision: 1,
-      canonicalPath: root, filesystem, accessMode: 'exclusive-write' as const,
+      canonicalPath: rootPath, filesystem, accessMode: 'exclusive-write' as const,
       snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
     const system = systemGitWorktreePorts(gitFixtureEnvironment())
     const ports: GitWorktreePorts = {
