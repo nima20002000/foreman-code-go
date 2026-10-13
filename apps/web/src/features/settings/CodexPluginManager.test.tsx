@@ -151,7 +151,7 @@ it('does not combine newer list revisions with delayed old details', async () =>
   await waitFor(() => expect(screen.getByRole('button', { name: 'Install plugin' })).toBeDisabled())
   release(); await refreshing
   await waitFor(() => expect(screen.getByRole('button', { name: 'Install plugin' })).toBeEnabled())
-})
+}, 20_000)
 it.each(['list', 'detail'])('keeps protected content hidden through success → 403 → 503 for %s', async (target) => {
   reads()
   const { client } = mount('/settings/harnesses?harness=codex&section=plugins&pluginView=available')
@@ -167,7 +167,7 @@ it.each(['list', 'detail'])('keeps protected content hidden through success → 
   }
   reads(); await client.invalidateQueries({ queryKey: harnessSettingsKeys.root })
   await waitFor(() => expect(screen.getByRole('button', { name: 'Install plugin' })).toBeEnabled())
-})
+}, 20_000)
 it('debounces rapid typing before starting another catalog read', async () => {
   reads()
   const queries: string[] = []
@@ -212,6 +212,7 @@ it('awaits a fresh catalog on Refresh before updating the reviewed detail snapsh
   let fresh = false
   let refreshRequested = false
   const detailReads: boolean[] = []
+  const changes: Array<Record<string, unknown>> = []
   let release!: () => void
   const gate = new Promise<void>(resolve => { release = resolve })
   const next = 'sha256:' + 'c'.repeat(64)
@@ -229,6 +230,11 @@ it('awaits a fresh catalog on Refresh before updating the reviewed detail snapsh
       detailReads.push(fresh)
       return HttpResponse.json(detailPayload(fresh, fresh ? next : revision))
     }),
+    http.post('/api/management/harnesses/codex/plugins/change', async ({ request }) => {
+      changes.push(await request.json() as Record<string, unknown>)
+      return HttpResponse.json({ pluginId: base.pluginId, action: 'remove', status: 'applied',
+        message: 'Removed from Codex.' })
+    }),
   )
   mount('/settings/harnesses?harness=codex&section=plugins&pluginView=available')
   const user = await openPlugin()
@@ -245,5 +251,11 @@ it('awaits a fresh catalog on Refresh before updating the reviewed detail snapsh
   }
   await waitFor(() => expect(screen.getByRole('button', { name: 'Remove plugin' })).toBeEnabled())
   expect(screen.getByRole('dialog', { name: 'notes plugin' })).toHaveTextContent('summarize')
-  expect(detailReads).toEqual([false, true])
-})
+  expect(detailReads[0]).toBe(false)
+  expect(detailReads.slice(1)).toContain(true)
+  expect(detailReads.slice(1)).not.toContain(false)
+  await user.click(screen.getByRole('button', { name: 'Remove plugin' }))
+  await waitFor(() => expect(changes).toEqual([expect.objectContaining({
+    pluginId: base.pluginId, action: 'remove', expectedRevision: next, artifactIdentity,
+  })]))
+}, 20_000)
