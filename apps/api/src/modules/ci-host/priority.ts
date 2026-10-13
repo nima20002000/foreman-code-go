@@ -20,7 +20,8 @@ export function onlyCiInfrastructure(files: string[]): boolean {
 }
 
 export function compareCiQueue(left: CiRunRecord, right: CiRunRecord): number {
-  return Number(right.priority === 'high') - Number(left.priority === 'high')
+  return Number(!!right.gate) - Number(!!left.gate)
+    || Number(right.priority === 'high') - Number(left.priority === 'high')
     || Date.parse(left.queuedAt) - Date.parse(right.queuedAt)
     || left.id.localeCompare(right.id)
 }
@@ -29,4 +30,5 @@ export function ciQueueReason(run: CiRunRecord): string {
   return run.message ?? 'Waiting for an eligible CI slot; high priority tickets run before normal, oldest first.'
 }
 
-export const CI_QUEUE_ORDER = "case when record->>'priority'='high' then 0 else 1 end, record->>'queuedAt',id"
+export const CI_QUEUE_ORDER = "case when record->>'gate'='true' then 0 else 1 end, "
+  + "case when record->>'priority'='high' then 0 else 1 end, record->>'queuedAt',id"

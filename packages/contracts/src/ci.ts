@@ -8,6 +8,8 @@ import { SourceRootRecordSchema } from './sourceAdmission.js'
 import { SourceManifestSchema } from './sourceMaterialization.js'
 
 const CiRunInputObjectSchema = z.object({
+  gate: z.boolean().optional().describe('Operator/orchestrator only. With suite=integration and scope=full, '
+    + 'queue typecheck, lint, unit and duration-balanced integration as one gate. Gates run one at a time.'),
   priority: CiPrioritySchema.optional().describe('Defaults to normal. High requires Operator role or an explicit '
     + 'jobs:prioritize grant. Commits changing only CI infrastructure are automatically high priority.'),
   suite: CiSuiteSchema.describe('Repositories with the CI suite hook queue unit, lint, typecheck and build parts; '
@@ -36,11 +38,16 @@ const partitionIssue = { message: 'Only the integration suite can be partitioned
 const selectionIssue = { message: 'Selected files require an explicit commit, affected scope and a supported suite.', path: ['scope'] }
 const selectedSuite = (value: z.infer<typeof CiRunInputObjectSchema>) => validCiSelection(value)
   && ((value.scope ?? 'affected') !== 'affected' || value.files === undefined || value.commit !== undefined)
+const validGate = (value: z.infer<typeof CiRunInputObjectSchema>) => !value.gate
+  || (value.suite === 'integration' && value.scope === 'full' && value.files === undefined && value.partitions === undefined)
+const gateIssue = { message: 'A gate requires integration, full scope, and no files or partition limit.', path: ['gate'] }
 export const CiRunInputSchema = CiRunInputObjectSchema.refine(partitionedSuite, partitionIssue)
   .refine(selectedSuite, selectionIssue)
+  .refine(validGate, gateIssue)
 export const OperatorCiRunInputSchema = CiRunInputObjectSchema.extend({ workspaceId: IdSchema }).strict()
   .refine(partitionedSuite, partitionIssue)
   .refine(selectedSuite, selectionIssue)
+  .refine(validGate, gateIssue)
 const CiRunTicketSchema = z.object({ ticketId: IdSchema }).strict()
 /** `partitions` lists every part or integration partition; the first is also `ticketId`. Poll each with ci_get. */
 export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(CiRunTicketSchema).min(2).max(66).optional() }).strict()
@@ -57,6 +64,15 @@ export const CiGetOutputSchema = z.object({
   queue: z.object({ position: z.number().int().positive(), reason: z.string() }).strict().nullable().optional(),
   group: z.object({ groupId: CiRunRecordSchema.shape.groupId, state: CiRunRecordSchema.shape.state }).strict().optional(),
   tests: CiTestResultsSchema.nullable().optional(),
+  gate: z.object({
+    computers: z.array(z.object({ key: z.string(), ticketIds: z.array(IdSchema),
+      expectedDurationMs: z.number().nonnegative(), actualDurationMs: z.number().nonnegative().nullable() }).strict()),
+    suites: z.array(z.object({ suite: CiSuiteSchema, expectedDurationMs: z.number().nonnegative(),
+      actualDurationMs: z.number().nonnegative().nullable() }).strict()),
+    criticalPath: z.object({ computerKey: z.string().nullable(), expectedDurationMs: z.number().nonnegative(),
+      actualDurationMs: z.number().nonnegative().nullable() }).strict(),
+    wallTimeMs: z.number().nonnegative().nullable(),
+  }).strict().optional(),
 }).strict()
 export type CiRunInput = z.infer<typeof CiRunInputSchema>
 export const CiCancelInputSchema = CiTicketInputSchema
