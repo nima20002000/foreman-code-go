@@ -33,7 +33,9 @@ describe.skipIf(!postgresEnabled)('Run worktree allocation recovery', () => {
       const worktrees = new RunWorktrees(db.pool, join(db.directory, 'managed'), faulty)
       await expect(worktrees.prepare(AcceptedWorkflowRunV3Schema.parse(f.run))).rejects.toThrow('Allocation acknowledgement failed')
       expect(allocated).toBeDefined()
-      await db.pool.query("update runs set execution_state='interrupted' where id=$1", [f.run.id])
+      const interrupted = AcceptedWorkflowRunV3Schema.parse({ ...f.run, executionState: 'interrupted' })
+      await db.pool.query('update runs set execution_state=$2,record=$3::jsonb where id=$1',
+        [f.run.id, interrupted.executionState, JSON.stringify(interrupted)])
       const persisted = (await db.pool.query<{ execution_state: string; record: unknown }>(
         'select execution_state,record from runs where id=$1', [f.run.id])).rows[0]!
       expect(persisted.execution_state).toBe('interrupted')
