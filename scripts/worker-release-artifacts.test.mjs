@@ -5,10 +5,38 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { buildWorkerReleaseArtifacts, readCommittedWorkerTargets } from './worker-release-artifacts.mjs'
+import { buildWorkerReleaseArtifacts, publishWorkerArtifactsToGitHub,
+  readCommittedWorkerTargets } from './worker-release-artifacts.mjs'
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 const target = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.3' }
+
+test('retries asset upload when an existing empty release is not yet visible', async t => {
+  const f = await fixture(t)
+  execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/example/worker.git'], { cwd: f.repository })
+  await mkdir(f.directory)
+  const manifestSha256 = 'a'.repeat(64)
+  const calls = []
+  const waits = []
+  let uploads = 0
+  const run = async (command, args) => {
+    calls.push({ command, args })
+    if (command === 'gh' && args[1] === 'upload' && ++uploads === 1) {
+      throw new Error('release not found')
+    }
+    return { stdout: '', stderr: '' }
+  }
+  const result = await publishWorkerArtifactsToGitHub({ ...f, artifacts: [{ manifestSha256 }], run,
+    sleep: async milliseconds => { waits.push(milliseconds) } })
+  assert.deepEqual(result, { repository: 'example/worker', tag: `worker-${f.commit}` })
+  assert.equal(uploads, 2)
+  assert.deepEqual(waits, [5000])
+  assert.equal(calls.filter(call => call.command === 'tar').length, 1)
+  assert.equal(calls.filter(call => call.command === 'gh' && call.args[1] === 'create').length, 0)
+  const upload = calls.find(call => call.command === 'gh' && call.args[1] === 'upload')
+  assert.ok(upload.args.includes('--clobber'))
+  await assert.rejects(stat(upload.args[3]), { code: 'ENOENT' })
+})
 
 async function fixture(t) {
   const repository = await mkdtemp(join(tmpdir(), 'worker-release-artifacts-'))
