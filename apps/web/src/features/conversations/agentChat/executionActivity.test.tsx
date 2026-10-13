@@ -515,3 +515,44 @@ it('shares pending read promises and propagates their failure while retaining re
   unmount()
   client.clear()
 })
+
+
+it.each([20_480, 80_000])('keeps an expanded Run message after a delayed preview poll (%s bytes)', async size => {
+  const state = runState()
+  const mounted = mountChat(state)
+  const content = 'x'.repeat(size - 8) + 'THE END!'
+  const preview = message('execution-check', 'answer', '1', content.slice(0, 16_384))
+  if (preview.entry.kind !== 'message') throw new Error('Expected a message fixture')
+  preview.entry.message.truncation = { truncated: true, originalBytes: size }
+  mounted.mock.setExecutionActivity(state.context, livePage([preview], '1'))
+  await screen.findByRole('button', { name: 'Show full message' })
+  const delayed = deferred<AgentChatExecutionActivityPage>()
+  let polling = false
+  const expanded = message('execution-check', 'answer', '1', content.slice(0, 65_536))
+  if (expanded.entry.kind === 'message' && size > 65_536) {
+    expanded.entry.message.truncation = { truncated: true, originalBytes: size }
+  }
+  server.use(http.get('/api/workspaces/:workspaceId/agent-chat/execution-activity', async ({ request }) => {
+    if (new URL(request.url).searchParams.has('itemId')) {
+      return HttpResponse.json({ ...livePage([expanded], '1'), mode: 'item', cursor: undefined })
+    }
+    polling = true
+    return HttpResponse.json(await delayed.promise)
+  }))
+  let read: Promise<void> | undefined
+  act(() => { read = mounted.client.refetchQueries(activityQuery) })
+  await waitFor(() => expect(polling).toBe(true))
+  fireEvent.click(screen.getByRole('button', { name: 'Show full message' }))
+  await screen.findByText(content.slice(0, 65_536))
+  await act(async () => { delayed.resolve(livePage([preview], '1')); await read })
+  expect(screen.getByText(content.slice(0, 65_536))).toBeVisible()
+  if (size <= 65_536) expect(screen.queryByText(/shortened/i)).not.toBeInTheDocument()
+})
+
+it('replaces an expanded message when a newer content revision arrives', () => {
+  const full = message('execution-check', 'answer', '1', 'Expanded answer')
+  const initial = mergeExecutionActivity(undefined, livePage([full], '1'))
+  const updated = { ...message('execution-check', 'answer', '1', 'Changed answer'), revision: '2' }
+  const result = mergeExecutionActivity(initial, { ...livePage([updated], '2'), mode: 'changes' })
+  expect(result.items[0]?.entry).toMatchObject({ message: { content: 'Changed answer' } })
+})

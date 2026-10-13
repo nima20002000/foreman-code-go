@@ -288,6 +288,67 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
     } finally { await f.close() }
   }, 120000)
 
+  it('filters an execution before bounding persisted CI tickets through HTTP and authenticated MCP', async () => {
+    const f = await fixture()
+    try {
+      const ticket = await f.submit()
+      const workspaceId = f.request.workspaceId
+      const runId = f.request.runId
+      const otherExecution = randomUUID()
+      await f.database.pool.query(`insert into harness_executions
+        (id,run_id,workflow_node_id,agent_id,attempt,record)
+        select $1,run_id,workflow_node_id,agent_id,attempt+1,
+          record||jsonb_build_object('id',$1::text,'attempt',attempt+1)
+        from harness_executions where id=$2`, [otherExecution, f.executionId])
+      const stored = (await f.database.pool.query<{ record: unknown }>(
+        'select record from ci_runs where id=$1', [ticket.ticketId])).rows[0]!
+      const original = CiRunRecordSchema.parse(stored.record)
+      const newer = Array.from({ length: 500 }, () => {
+        const id = randomUUID()
+        return { ...original, id, groupId: id,
+          initiator: { ...original.initiator, executionId: otherExecution } }
+      })
+      await f.database.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record,created_at)
+        select (record->>'id')::uuid,record->>'workspaceId',(record->>'groupId')::uuid,
+          record->>'state',record,'2099-01-01T00:00:00Z'::timestamptz
+        from jsonb_array_elements($1::jsonb) record`, [JSON.stringify(newer)])
+      const operator = await f.graph.credential([{ actions: [...CI_GET_ACTIONS, 'runs:read'],
+        scope: { workspaceIds: [workspaceId] } }])
+      const unfiltered = CiListOutputSchema.parse(await f.value(operator.token, 'ci_list', { workspaceId, runId }))
+      expect(unfiltered.truncated).toBe(true)
+      expect(unfiltered.jobs).toHaveLength(500)
+      expect(unfiltered.jobs.some(job => job.ticketId === ticket.ticketId)).toBe(false)
+      const input = { workspaceId, runId, executionId: f.executionId }
+      const listed = CiListOutputSchema.parse(await f.value(operator.token, 'ci_list', input))
+      expect(listed.truncated).toBe(false)
+      expect(listed.jobs.map(job => job.ticketId)).toEqual([ticket.ticketId])
+      expect(listed.jobs[0]?.requester.executionId).toBe(f.executionId)
+      const base = `/api/management/workspaces/${workspaceId}/ci`
+      const headers = { authorization: `Bearer ${operator.token}` }
+      const url = `${base}?runId=${runId}&executionId=${f.executionId}`
+      const http = await f.app.inject({ method: 'GET', url, headers })
+      expect(http.statusCode).toBe(200)
+      expect(CiListOutputSchema.parse(http.json())).toEqual(listed)
+      expect(CiRunRecordSchema.parse((await f.database.pool.query<{ record: unknown }>(
+        'select record from ci_runs where id=$1', [ticket.ticketId])).rows[0]!.record)).toEqual(original)
+      const reread = CiListOutputSchema.parse(await f.value(operator.token, 'ci_list', input))
+      expect(reread).toEqual(listed)
+      const unknown = CiListOutputSchema.parse(await f.value(operator.token, 'ci_list',
+        { ...input, executionId: randomUUID() }))
+      expect(unknown.jobs).toEqual([])
+      const scopedReader = await f.graph.credential([{ actions: CI_GET_ACTIONS, scope: { workspaceIds: [workspaceId] } },
+        { actions: ['runs:read'], scope: { runIds: ['another-run'] } }])
+      for (const token of [f.reader.token, scopedReader.token, f.workerToken]) {
+        const blocked = await f.call(token, 'ci_list', input)
+        expect(blocked.error || blocked.result?.isError).toBeTruthy()
+        expect(JSON.stringify(blocked)).not.toContain(ticket.ticketId)
+      }
+      const denied = await f.app.inject({ method: 'GET', url,
+        headers: { authorization: `Bearer ${scopedReader.token}` } })
+      expect(denied.statusCode).toBe(403)
+    } finally { await f.close() }
+  }, 120000)
+
   it('settles CI on a Worker from before test results and retries results that could not be saved', async () => {
     const f = await fixture()
     try {
