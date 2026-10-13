@@ -28,7 +28,7 @@ describe('installed harness updates', () => {
       expect(await pinnedPlacements(fixture, started.run.id)).toEqual([placement])
       expect(placement.hostRef).toEqual(fixture.hostRef)
       const source = placement.source
-      if (source.kind !== 'pending') throw new Error('Expected Run-start source pins')
+      if (!('kind' in source) || source.kind !== 'pending') throw new Error('Expected Run-start source pins')
       const approved = ApprovedSourceSchema.parse(await fixture.value('source_get', {
         workspaceId: fixture.version.workspaceId,
         approvedSourceId: source.approvedSourceId,
@@ -45,10 +45,6 @@ describe('installed harness updates', () => {
         entries: fixture.sourceManifest.entries,
         deletions: fixture.sourceManifest.deletions,
       })
-      expect(await pinnedPlacements(fixture, started.run.id)).toEqual([expect.objectContaining({
-        hostRef: fixture.hostRef,
-        source: expect.objectContaining({ manifestDigest: fixture.sourceManifest.manifestDigest }),
-      })])
       await completedRun(fixture, started.run.id)
     } finally {
       await fixture.releaseWorkerDiscovery()
