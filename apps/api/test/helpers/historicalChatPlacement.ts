@@ -5,6 +5,7 @@ import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selec
 import { WorkerConversationBindingSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { remoteReviewProduction, waitForRemoteReview } from './remoteReviewProduction.js'
 import { measureIntegrationPhase } from './integrationPhase.js'
+import { readUntil } from './observableCondition.js'
 
 export async function historicalChatPlacement(
   scenario: (fixture: Awaited<ReturnType<typeof remoteReviewProduction>>) => Promise<void>,
@@ -71,6 +72,17 @@ export async function forkHistoricalChat(
 }
 
 export function waitForHistoricalChatTurn(read: () => Promise<AgentChatState>, requestId: string, description: string) {
-  return waitForRemoteReview(read,
-    state => state.turns.some(turn => turn.requestId === requestId && turn.delivery === 'completed'), description)
+  return readUntil(read, state => {
+    const turn = state.turns.find(turn => turn.requestId === requestId)
+    if (turn?.delivery === 'completed') return true
+    if (turn?.delivery === 'failed' || turn?.delivery === 'canceled') {
+      const detail = turn.error ? `${turn.error.code}: ${turn.error.message}` : 'The turn did not complete.'
+      throw new Error(`${description} ${turn.delivery}: ${detail}`)
+    }
+    if (state.sessionState === 'error' || state.sessionState === 'unavailable') {
+      throw new Error(`${description} ${state.sessionState}: ${state.availability.reason ?? 'native_session_missing'}: `
+        + (state.availability.message ?? 'The chat session cannot complete this turn.'))
+    }
+    return false
+  }, { timeoutMs: 15_000, description })
 }
