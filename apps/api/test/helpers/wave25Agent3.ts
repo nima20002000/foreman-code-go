@@ -58,7 +58,7 @@ export async function agent3Database(databaseUrl = process.env.TEST_DATABASE_URL
     })
   }
   return {
-    pool, schema, directory,
+    pool, databaseUrl: url, schema, directory,
     async close() {
       await pool.end()
       try {

@@ -15,6 +15,7 @@ import { RunCiAuthority } from './modules/jobs/ciAuthority.js'
 import { ProductionHostCiEndpoint } from './modules/ci-host/endpoint.js'
 import { HostCiRunner } from './modules/ci-host/runner.js'
 import { activeCiRuns, cloudCis, workspaceMirrors } from './modules/ci-host/cloud.js'
+import { configuredReservedCloudSlots } from './modules/ci-host/cloudSlots.js'
 import { agentSnapshots, type ReadAgentFiles } from './modules/ci-host/agentSnapshots.js'
 import { systemGitWorktreePorts } from './modules/sources/gitWorktree.js'
 import { registerComputerAccountsRoutes } from './routes/computerAccounts.js'
@@ -2109,7 +2110,7 @@ export function buildProductionApp(
       hostCi = new HostCiService(database.pool, commands, new RunCiAuthority(database.pool), new GitCiCommits(),
         new ProductionHostCiEndpoint(database.pool, machine.installationId, () => deviceRuntime.endpointForDomains(), new HostCiRunner(),
           clouds),
-        agentSnapshots(database.pool, readAgentFiles))
+        agentSnapshots(database.pool, readAgentFiles), { reservedCloudSlots: configuredReservedCloudSlots() })
       hostCi.start()
       app.addHook('onClose', async () => { await hostCi?.close() })
       runtimeServices.ci = hostCi

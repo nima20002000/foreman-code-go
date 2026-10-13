@@ -471,22 +471,6 @@
       "apps/api/src/modules/sources/agentWorktree.test.ts",
       "apps/api/src/modules/sources/footprint.test.ts"
     ],
-    "max-lines": [
-      "apps/api/src/modules/conversations/agentChat.ts",
-      "apps/api/src/modules/conversations/operatorChat.ts",
-      "apps/api/src/modules/harnesses/claudeSdk/sessionManager.ts",
-      "apps/api/src/modules/harnesses/codexAppServer.ts",
-      "apps/api/src/modules/interactions/execution.ts",
-      "apps/api/src/modules/runs/remote/installedWorkflowHost.ts",
-      "apps/api/src/modules/runs/remote/operationJournal.ts",
-      "apps/api/src/modules/runs/repeatPostgres.ts",
-      "apps/api/src/production.ts",
-      "apps/api/test/agent-chat.integration.test.ts",
-      "apps/api/test/host-ci-mcp.integration.test.ts",
-      "apps/api/test/reviewer-dispatch.test.ts",
-      "apps/api/test/source-snapshot-retention.integration.test.ts",
-      "packages/contracts/src/index.ts"
-    ],
     "max-lines-per-function": [
       "apps/api/src/modules/byte-transfer/rsyncProduction.ts",
       "apps/api/src/modules/conversations/installedWorkerClaude.ts",
