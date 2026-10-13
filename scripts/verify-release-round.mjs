@@ -4,10 +4,11 @@
 // non-zero. A release commit (written by scripts/release.mjs) changes only the version in package.json and
 // CHANGELOG.md on top of its parent, and records the round in 'Clean-Round: gate=<ticket ids>' (one gate group covering
 // typecheck, lint, unit and integration) or older 'Clean-Round: <suite>=<ticket ids>' trailers. Every recorded group
-// must have run on the parent commit with full scope, and every part must have passed.
+// must have run on the parent commit with full scope. A failed gate part can be replaced with a passed same-file,
+// same-suite ticket on that code commit or a descendant, recorded as 'Clean-Round-Rerun: <failed>=<replacement>'.
 // Main is reached like scripts/ci-remote.mjs: FOREMAN_CODE_MAIN_URL, FOREMAN_CODE_OPERATOR_TOKEN(_FILE) and
 // optionally FOREMAN_CODE_WORKSPACE_ID.
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mcpClient, workspaceFor } from './ci-remote.mjs'
 
 export const RELEASE_SUITES = ['typecheck', 'lint', 'unit', 'integration']
@@ -16,6 +17,20 @@ export const RELEASE_SUITES = ['typecheck', 'lint', 'unit', 'integration']
 export const gateCommandId = commit => `gate-${commit}`
 
 const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+
+/** Explicit substitutions for gate parts the owner identified as infrastructure failures. */
+export function parseReruns(values) {
+  const reruns = new Map()
+  for (const value of values) {
+    if (!/^[^\s=,]+=[^\s=,]+$/.test(value ?? '')) {
+      throw new Error('A rerun must be <failedTicket>=<replacementTicket>.')
+    }
+    const [failed, replacement] = value.split('=')
+    if (reruns.has(failed)) throw new Error(`More than one rerun is recorded for ticket ${failed}.`)
+    reruns.set(failed, replacement)
+  }
+  return reruns
+}
 
 /** Problems that keep the release commit from deploying; empty when its clean round is verified. */
 export async function releaseRoundProblems(call, workspaceId, commit, cwd = process.cwd()) {
@@ -33,10 +48,20 @@ export async function releaseRoundProblems(call, workspaceId, commit, cwd = proc
       const [suite, ids = ''] = value.split('=')
       return [suite.trim(), ids.split(',').map(id => id.trim()).filter(Boolean)]
     }))
-  if (recorded.has('gate')) {
-    problems.push(...await gateRoundProblems(call, workspaceId, recorded.get('gate'), parent))
+  const rerunValues = git(['log', '-1', '--format=%(trailers:key=Clean-Round-Rerun,separator=%x0a)', commit], cwd)
+    .split('\n').filter(Boolean).map(line => line.slice(line.indexOf(':') + 1).trim())
+  let reruns
+  try {
+    reruns = parseReruns(rerunValues)
+  } catch (error) {
+    problems.push(error.message)
     return problems
   }
+  if (recorded.has('gate')) {
+    problems.push(...await gateRoundProblems(call, workspaceId, recorded.get('gate'), parent, { reruns, cwd }))
+    return problems
+  }
+  if (reruns.size) problems.push('Clean-Round-Rerun requires a recorded gate round.')
   for (const suite of RELEASE_SUITES) {
     const tickets = recorded.get(suite) ?? []
     if (!tickets.length) { problems.push(`No clean ${suite} round is recorded.`); continue }
@@ -58,8 +83,8 @@ export async function releaseRoundProblems(call, workspaceId, commit, cwd = proc
   return problems
 }
 
-/** A gate round is one CI group whose parts cover every release suite; all of them must have passed. */
-async function gateRoundProblems(call, workspaceId, tickets, parent) {
+/** A full gate covers every release suite; each part passed or has a validated explicit rerun. */
+export async function gateRoundProblems(call, workspaceId, tickets, parent, { reruns = new Map(), cwd = process.cwd() } = {}) {
   if (!tickets.length) return ['No clean gate round is recorded.']
   const found = await call('ci_get', { workspaceId, ticketId: tickets[0] }).catch(error => ({ error }))
   if (found.error) return [`gate ticket ${tickets[0]} is unreadable: ${found.error.message}`]
@@ -69,17 +94,56 @@ async function gateRoundProblems(call, workspaceId, tickets, parent) {
   if (ids.length !== tickets.length || ids.some(id => !tickets.includes(id))) {
     problems.push(`gate: the recorded tickets are not the whole CI group (${ids.join(', ')}).`)
   }
+  for (const failed of reruns.keys()) {
+    if (!ids.includes(failed)) problems.push(`Rerun ticket ${failed} is not in the gate group.`)
+  }
   for (const run of group) {
     const label = `gate ${run.suite} ticket ${run.id}`
     if (run.gate !== true) problems.push(`${label} is not a gate run.`)
     if (run.scope !== 'full') problems.push(`${label} ran with ${run.scope} scope, not full.`)
     if (run.commit !== parent) problems.push(`${label} tested ${run.commit}, not the released code ${parent}.`)
-    if (run.state !== 'passed') problems.push(`${label} ${run.state}.`)
+    const replacement = reruns.get(run.id)
+    if (replacement) {
+      if (run.state !== 'failed') problems.push(`${label} ${run.state}, not failed; it cannot be replaced.`)
+      problems.push(...await rerunProblems(call, workspaceId, run, replacement, parent, cwd))
+    } else if (run.state !== 'passed') {
+      problems.push(`${label} ${run.state}.`)
+    }
   }
   for (const suite of RELEASE_SUITES) {
     if (!group.some(run => run.suite === suite)) problems.push(`The gate round has no ${suite} part.`)
   }
   return problems
+}
+
+async function rerunProblems(call, workspaceId, failed, ticketId, parent, cwd) {
+  const found = await call('ci_get', { workspaceId, ticketId }).catch(error => ({ error }))
+  if (found.error) return [`Rerun ticket ${ticketId} is unreadable: ${found.error.message}`]
+  const replacement = found.run
+  const problems = []
+  const label = `Rerun ticket ${ticketId} for ${failed.id}`
+  if (replacement.id !== ticketId) problems.push(`${label} returned a different ticket.`)
+  if (replacement.state !== 'passed') problems.push(`${label} ${replacement.state}.`)
+  if (replacement.suite !== failed.suite) problems.push(`${label} ran ${replacement.suite}, not ${failed.suite}.`)
+  const filesKnown = Array.isArray(failed.files) && Array.isArray(replacement.files)
+    && failed.deriveFiles !== true && replacement.deriveFiles !== true
+  const originalFiles = filesKnown ? [...failed.files].sort() : []
+  const replacementFiles = filesKnown ? [...replacement.files].sort() : []
+  if (!filesKnown || originalFiles.length !== replacementFiles.length
+    || originalFiles.some((file, index) => file !== replacementFiles[index])) {
+    problems.push(`${label} did not select exactly the failed part's files.`)
+  }
+  if (!isDescendant(parent, replacement.commit, cwd)) {
+    problems.push(`${label} tested ${replacement.commit}, not the released code ${parent} or a descendant.`)
+  }
+  return problems
+}
+
+function isDescendant(parent, commit, cwd) {
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(commit ?? '')) return false
+  const result = spawnSync('git', ['merge-base', '--is-ancestor', parent, commit], { cwd, encoding: 'utf8' })
+  if (result.error) throw result.error
+  return result.status === 0
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

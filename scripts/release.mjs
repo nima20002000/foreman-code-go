@@ -1,19 +1,24 @@
 // Releases main after one clean full round through Foreman CI:
-//   corepack pnpm release <X.Y.Z> [--notes-file <file>] [--gate-ticket <ticket of a clean gate on HEAD>]
+//   corepack pnpm release <X.Y.Z> [--notes-file <file>] [--gate-ticket <ticket>] [--rerun <failed>=<replacement>]...
 // Requires a clean main equal to origin/main. Gates HEAD on Main's CI (typecheck, lint, unit and integration, full
 // scope; see scripts/ci-remote.mjs for the connection settings), reusing the gate that already ran on HEAD, and waits
-// for every part. Any failed part prints its ticket and failures and stops without a release. Otherwise it writes the
+// for every part. With --gate-ticket, explicit --rerun substitutions identify infrastructure failures and must pass
+// the verifier's same-suite, same-files and commit ancestry checks. Any unreplaced failure stops the release. It writes the
 // 'Release vX.Y.Z' commit (package.json version and a CHANGELOG.md entry from --notes-file or the Unreleased section)
-// with a 'Clean-Round: gate=<ticket ids>' trailer, checks it with scripts/verify-release-round.mjs and pushes it.
+// with 'Clean-Round: gate=<ticket ids>' and any 'Clean-Round-Rerun: <failed>=<replacement>' trailers, verifies and pushes it.
 import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { awaitTickets, mcpClient, workspaceFor } from './ci-remote.mjs'
-import { gateCommandId, releaseRoundProblems } from './verify-release-round.mjs'
+import { gateCommandId, gateRoundProblems, parseReruns, releaseRoundProblems } from './verify-release-round.mjs'
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 
-async function release(version, notesFile, gateTicket) {
-  if (!/^\d+\.\d+\.\d+$/.test(version ?? '')) throw new Error('usage: corepack pnpm release <X.Y.Z> [--notes-file <file>] [--gate-ticket <id>]')
+async function release(version, notesFile, gateTicket, rerunValues) {
+  if (!/^\d+\.\d+\.\d+$/.test(version ?? '')) {
+    throw new Error('usage: corepack pnpm release <X.Y.Z> [--notes-file <file>] [--gate-ticket <id>] [--rerun <failed>=<replacement>]...')
+  }
+  const reruns = parseReruns(rerunValues)
+  if (reruns.size && !gateTicket) throw new Error('--rerun requires --gate-ticket.')
   if (git('branch', '--show-current') !== 'main') throw new Error('Releases are made from main.')
   if (git('status', '--porcelain')) throw new Error('The worktree has uncommitted changes.')
   git('fetch', '--quiet', 'origin', 'main')
@@ -37,18 +42,28 @@ async function release(version, notesFile, gateTicket) {
       priority: 'high', commandId: gateCommandId(commit) })
   const groups = [{ suite: 'gate', tickets: (started.partitions ?? [{ ticketId: started.ticketId }]).map(value => value.ticketId) }]
   console.error(`[release] Clean round for ${commit.slice(0, 12)}: ${groups.map(group => `${group.suite} (${group.tickets.length})`).join(', ')}`)
-  const failed = (await awaitTickets(call, workspaceId, groups.flatMap(group => group.tickets))).filter(run => run.state !== 'passed')
-  if (failed.length) {
-    console.error(`[release] No release: ${failed.map(run => `${run.suite} ticket ${run.id} ${run.state}`).join('; ')}`)
-    return 1
+  if (reruns.size) {
+    const problems = await gateRoundProblems(call, workspaceId, groups[0].tickets, commit, { reruns })
+    if (problems.length) {
+      console.error(`[release] No release: ${problems.join(' ')}`)
+      return 1
+    }
+  } else {
+    const failed = (await awaitTickets(call, workspaceId, groups.flatMap(group => group.tickets)))
+      .filter(run => run.state !== 'passed')
+    if (failed.length) {
+      console.error(`[release] No release: ${failed.map(run => `${run.suite} ticket ${run.id} ${run.state}`).join('; ')}`)
+      return 1
+    }
   }
 
   writeFileSync('package.json', manifest.replace(/"version": "[^"]*"/, `"version": "${version}"`))
   const entry = `## [Unreleased]\n\n## [${version}] - ${new Date().toISOString().slice(0, 10)}\n\n${notes}\n`
   writeFileSync('CHANGELOG.md', changelog.replace(unreleased[0], entry))
   git('add', 'package.json', 'CHANGELOG.md')
-  git('commit', '--quiet', '-m', `Release v${version}`,
-    '-m', groups.map(group => `Clean-Round: ${group.suite}=${group.tickets.join(',')}`).join('\n'))
+  const trailers = groups.map(group => `Clean-Round: ${group.suite}=${group.tickets.join(',')}`)
+  trailers.push(...[...reruns].map(([failed, replacement]) => `Clean-Round-Rerun: ${failed}=${replacement}`))
+  git('commit', '--quiet', '-m', `Release v${version}`, '-m', trailers.join('\n'))
   const problems = await releaseRoundProblems(call, workspaceId, git('rev-parse', 'HEAD'))
   if (problems.length) throw new Error(`The release commit does not verify: ${problems.join(' ')}`)
   git('push', '--quiet', 'origin', 'HEAD:main')
@@ -68,4 +83,9 @@ const notesIndex = args.indexOf('--notes-file')
 const notesFile = notesIndex >= 0 ? args.splice(notesIndex, 2)[1] : undefined
 const gateIndex = args.indexOf('--gate-ticket')
 const gateTicket = gateIndex >= 0 ? args.splice(gateIndex, 2)[1] : undefined
-process.exitCode = await release(args[0], notesFile, gateTicket).catch(error => { console.error(`[release] ${error.message}`); return 1 })
+const rerunValues = []
+while (args.includes('--rerun')) {
+  rerunValues.push(args.splice(args.indexOf('--rerun'), 2)[1])
+}
+process.exitCode = await release(args[0], notesFile, gateTicket, rerunValues)
+  .catch(error => { console.error(`[release] ${error.message}`); return 1 })
