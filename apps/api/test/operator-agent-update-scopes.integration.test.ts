@@ -17,7 +17,7 @@ import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 let fixture: Awaited<ReturnType<typeof workspaceMcpFixture>>
 
 beforeAll(async () => {
-  fixture = await workspaceMcpFixture({ configure: async ({ pool, commands, services }) => {
+  fixture = await workspaceMcpFixture({ configureServices: async ({ pool, commands, services }) => {
     services.agents = new AgentManagementService(pool)
     services.workflows = new WorkflowManagementService(pool, commands)
     services.extensions = {

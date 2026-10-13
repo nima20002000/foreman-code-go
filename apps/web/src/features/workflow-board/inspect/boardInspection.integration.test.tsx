@@ -126,7 +126,10 @@ describe('Run inspection inside the one mounted Board', () => {
     const recordBrowserError = (event: ErrorEvent) => browserErrors.push(event.error)
     window.addEventListener('error', recordBrowserError)
     try {
-      await userEvent.click(screen.getByRole('button', { name: /CI server, 1 running/ }))
+      const button = screen.getByRole('button', { name: /CI server, 1 running/ })
+      fireEvent.mouseDown(button, { view: window })
+      fireEvent.mouseUp(button, { view: window })
+      fireEvent.click(button, { view: window })
     } finally {
       window.removeEventListener('error', recordBrowserError)
     }
@@ -145,7 +148,9 @@ describe('Run inspection inside the one mounted Board', () => {
       expect(within(dialog).getByRole('tab', { name: 'Tests' })).toBeDisabled()
       expect(within(dialog).getByRole('tab', { name: 'Log' })).toBeDisabled()
       expect(screen.getByRole('button', { name: /CI server, CI unavailable/ })).toBeVisible()
-      expect(within(pinnedCanvas()).getByText('Before repeat')).toBeVisible()
+      expect(within(pinnedCanvas()).getByRole('heading', {
+        name: `Before repeat · Run ${scope.runId} · version ${scope.workflowVersionId}`,
+      })).toBeVisible()
     }
   })
 
