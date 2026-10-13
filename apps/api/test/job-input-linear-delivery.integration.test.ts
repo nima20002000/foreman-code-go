@@ -48,6 +48,7 @@ it('copies a real 20 MiB canonical input with linear hash work and verifies the 
     storageKey, value: { revision },
   } as never)
   vi.spyOn(ports.main, 'bind').mockResolvedValue(admission)
+  vi.spyOn(ports.main, 'accepted').mockResolvedValue({ execution, admission })
   const recheck = vi.spyOn(ports.main, 'recheck').mockResolvedValue(undefined)
   try {
     expect(FileDescriptionSchema.safeParse({
@@ -58,9 +59,10 @@ it('copies a real 20 MiB canonical input with linear hash work and verifies the 
     await stored.finalize(storageKey, revision)
     hashWork.bytes = 0
     hashWork.limit = bytes.length * 3
-    const receipt = await ports.local.prepare(execution, { privateRepositoryRoot: project,
+    const verified = { privateRepositoryRoot: project,
       directoryIdentityHash: execution.acceptedSpec.target.destination.directoryIdentityHash,
-      privateGit: true, diskQuotaBytes: bytes.length + 1024 * 1024 }, new AbortController().signal)
+      privateGit: true as const, diskQuotaBytes: bytes.length + 1024 * 1024 }
+    const receipt = await ports.local.prepare(execution, verified, new AbortController().signal)
     expect(receipt.files).toContainEqual({ relativePath: 'files/input.md', sha256, byteSize: bytes.length })
     expect(hashWork.bytes).toBeLessThan(bytes.length * 3)
     expect(recheck.mock.calls.length).toBeGreaterThan(bytes.length / 8192)
@@ -76,6 +78,16 @@ it('copies a real 20 MiB canonical input with linear hash work and verifies the 
       controller.abort(new Error('Delivery cancelled'))
       await expect(reader.read(8192, 8192)).rejects.toThrow('cancelled')
     } finally { await reader.close() }
+    const signal = new AbortController().signal
+    expect(await ports.local.verifyPrepared(execution, verified, receipt, signal)).toEqual(receipt)
+    const destination = join(project, '.graphql-job-inputs/files/input.md')
+    await chmod(destination, 0o600)
+    const changed = await open(destination, constants.O_WRONLY | constants.O_NOFOLLOW)
+    try {
+      await changed.write(Buffer.from([98]), 0, 1, bytes.length - 1)
+      await changed.sync()
+    } finally { await changed.close() }
+    await expect(ports.local.verifyPrepared(execution, verified, receipt, signal)).rejects.toThrow('hash differs')
   } finally {
     hashWork.limit = Infinity
     vi.restoreAllMocks()
