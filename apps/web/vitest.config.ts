@@ -16,6 +16,7 @@ const phase = process.env.FOREMAN_WEB_TEST_PHASE
 if (phase !== undefined && phase !== 'fast' && phase !== 'heavy') throw new Error('FOREMAN_WEB_TEST_PHASE must be fast or heavy')
 
 export default defineConfig({
+  define: { __RUNTIME_BUILD_IDENTITY__: JSON.stringify({ version: 1, buildId: 'a'.repeat(64), contractsId: 'b'.repeat(64) }) },
   plugins: [react(), tailwindcss()],
   test: {
     ...(process.env.CI_PROGRESS_FILE ? { runner: '../../packages/contracts/ci-test-runner.mjs', reporters: ['default', '../../scripts/ci-progress-reporter.mjs'] } : {}),

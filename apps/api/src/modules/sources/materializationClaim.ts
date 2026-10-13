@@ -2,7 +2,7 @@ import { constants } from 'node:fs'
 import { open, readdir, rename, type FileHandle } from 'node:fs/promises'
 import { isDeepStrictEqual } from 'node:util'
 import { scheduler } from 'node:timers/promises'
-import { MaterializationReceiptSchema, sourceMaterializationComponents, type MaterializationReceipt, type RootBinding,
+import { SOURCE_MATERIALIZATION_RECORD_MAX_BYTES, MaterializationReceiptSchema, sourceMaterializationComponents, type MaterializationReceipt, type RootBinding,
   type SourceManifest, type SourceProjectQuotaSlot } from '@foreman-code/contracts/source-materialization'
 import type { JobVerificationQuotaPool } from '@foreman-code/contracts/job-verification-runtime'
 import type { JobQuotaReader } from '../jobs/quotaOwnership.js'
@@ -110,7 +110,7 @@ export async function archiveMaterializationClaim(receipt: MaterializationReceip
           signal?.throwIfAborted()
           const stat = await record.stat()
           signal?.throwIfAborted()
-          if (!stat.isFile() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw new SourceError('SOURCE_RECEIPT_INVALID', 'Invalid receipt record.')
+          if (!stat.isFile() || stat.nlink !== 1 || stat.size > SOURCE_MATERIALIZATION_RECORD_MAX_BYTES) throw new SourceError('SOURCE_RECEIPT_INVALID', 'Invalid receipt record.')
           const stored = JSON.parse(await record.readFile(signal ? { encoding: 'utf8', signal } : 'utf8')) as { receipt: unknown; manifest: unknown }
           signal?.throwIfAborted()
           if (!equal(stored.receipt, receipt)) {

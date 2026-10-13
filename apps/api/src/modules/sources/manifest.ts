@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { DomainError } from '../errors.js'
-import { SOURCE_ENTRY_LIMIT, SourceManifestSchema, type SourceManifest, type SourceEntry } from '@foreman-code/contracts/source-materialization'
+import { SOURCE_ENTRY_LIMIT, SOURCE_MANIFEST_MAX_BYTES, SourceManifestSchema, type SourceManifest, type SourceEntry } from '@foreman-code/contracts/source-materialization'
 
 export class SourceError extends DomainError {
   constructor(code: string, message: string, options?: ErrorOptions) {
@@ -45,7 +45,7 @@ export function manifestDigest(manifest: Omit<SourceManifest, 'manifestDigest'>)
 }
 export function verifySourceManifest(input: unknown): SourceManifest {
   const manifest = SourceManifestSchema.parse(input)
-  if (Buffer.byteLength(JSON.stringify(manifest)) > 2 * 1024 * 1024) throw new SourceError('SOURCE_CAPACITY', 'Source manifest metadata exceeds its separate 2 MiB budget.')
+  if (Buffer.byteLength(JSON.stringify(manifest)) > SOURCE_MANIFEST_MAX_BYTES) throw new SourceError('SOURCE_CAPACITY', 'Source manifest metadata exceeds its separate 2 MiB budget.')
   const paths = new Set<string>()
   let previous = '', bytes = 0
   for (const entry of manifest.entries) {
