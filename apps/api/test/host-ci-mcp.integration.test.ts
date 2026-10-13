@@ -1765,7 +1765,8 @@ it('persists a CI watchdog failure for authenticated MCP status and log readback
   const f = await fixture()
   try {
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
-      commandId: randomUUID(), suite: 'unit', scope: 'affected', files: ['apps/api/test/loop.test.ts'],
+      commandId: randomUUID(), suite: 'unit', scope: 'affected', commit: 'a'.repeat(40),
+      files: ['apps/api/test/loop.test.ts'],
     }))
     await f.ci.dispatch()
     const reason = 'CI hang watchdog: no test progress for 60000 ms; running: apps/api/test/loop.test.ts > planner never returns'
