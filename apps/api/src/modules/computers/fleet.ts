@@ -33,6 +33,7 @@ export interface FleetSources {
   codexPlugins(): Promise<string[]>
   codexMarketplaces(): Promise<SyncedMarketplace[]>
   claudePlugins(): Promise<ClaudePluginCatalog>
+  workerManifestSha256s?(): Promise<readonly string[]>
 }
 
 const CACHE_MS = 20_000
@@ -196,6 +197,7 @@ export class FleetMaintenanceService {
 
   private async keepCurrentNow(): Promise<void> {
     const targets = await this.allTargets()
+    const manifests = await this.workerManifests()
     const sync = await Promise.allSettled([this.taskFor({ kind: 'sync-mcp' }), this.taskFor({ kind: 'sync-plugins' })])
     await Promise.all(targets.map(async target => {
       const status = await this.status(target, true)
@@ -204,6 +206,7 @@ export class FleetMaintenanceService {
       if (behind.length) await this.startOn(target, { kind: 'update-harnesses', harnesses: behind })
         .catch(ignoreError('lifecycle', 'start harness update on computer', { host: target.hostRef }))
       if (target.hostRef.kind === 'main') return
+      await this.syncWorkerUpdate(target, status, manifests)
       for (const task of sync) {
         if (task.status === 'fulfilled') await this.syncSource(target, task.value, status)
       }
@@ -216,6 +219,9 @@ export class FleetMaintenanceService {
     fingerprint: string; taskId: string; state: 'pending' | 'failed' | 'delivered'; retryAt: number
   }>()
   private readonly syncing = new Map<string, Promise<void>>()
+  private readonly workerUpdates = new Map<string, {
+    manifests: string; commandId: string; pending: boolean; retryAt: number
+  }>()
   /**
    * Pushes Main's current MCP servers and plugins to every connected computer that has not received this exact set yet.
    * Runs every minute on Main, so installs and removals on Main reach the other computers within about a minute, and a
@@ -228,14 +234,53 @@ export class FleetMaintenanceService {
   private async syncChangedSourcesNow(): Promise<void> {
     const sources = await Promise.allSettled([this.taskFor({ kind: 'sync-mcp' }), this.taskFor({ kind: 'sync-plugins' })])
     const targets = (await this.allTargets()).filter(target => target.hostRef.kind !== 'main')
+    const manifests = await this.workerManifests()
     await Promise.all(targets.map(async target => {
       const status = await this.status(target, true)
+      await this.syncWorkerUpdate(target, status, manifests)
       await Promise.all(sources.map(async source => {
         if (source.status === 'fulfilled') await this.syncSource(target, source.value, status)
       }))
     }))
     const failures = sources.filter(result => result.status === 'rejected').map(result => result.reason as unknown)
     if (failures.length) throw new AggregateError(failures, 'Some fleet settings could not be read.')
+  }
+
+  private syncWorkerUpdate(target: DeviceProvisioningTarget, status: MaintenanceStatus | null,
+    manifests: readonly string[]): Promise<void> {
+    const key = `${this.key(target)}:update-worker`
+    const active = this.syncing.get(key)
+    if (active) return active
+    const task = this.deliverWorkerUpdate(target, status, manifests).finally(() => this.syncing.delete(key))
+    this.syncing.set(key, task)
+    return task
+  }
+
+  private async workerManifests(): Promise<readonly string[]> {
+    return await this.sources.workerManifestSha256s?.()
+      .catch(fallbackOnError([], 'lifecycle', 'read available Worker manifests')) ?? []
+  }
+
+  private async deliverWorkerUpdate(target: DeviceProvisioningTarget, status: MaintenanceStatus | null,
+    manifests: readonly string[]): Promise<void> {
+    if (!status?.worker || !manifests.length || target.hostRef.kind !== 'device') return
+    if (!this.endpoint()?.capabilities(target.hostRef.deviceId).some(value => value.namespace === WORKER_UPDATE_NAMESPACE)) return
+    if (status.worker.manifestSha256 && manifests.includes(status.worker.manifestSha256)) return
+    if (!['current', 'rolled-back', 'failed'].includes(status.worker.state)
+      || status.tasks.some(task => task.kind === 'update-worker' && task.state === 'running')) return
+    const key = this.key(target)
+    const fingerprint = [...manifests].sort().join(':')
+    const previous = this.workerUpdates.get(key)
+    if (previous?.manifests === fingerprint && this.now() < previous.retryAt) return
+    const commandId = previous?.manifests === fingerprint && previous.pending ? previous.commandId : randomUUID()
+    const delivery = { manifests: fingerprint, commandId, pending: true, retryAt: this.now() + SYNC_RETRY_MS }
+    this.workerUpdates.set(key, delivery)
+    try {
+      await this.startOn(target, { kind: 'update-worker' }, commandId)
+      delivery.pending = false
+    } catch (error) {
+      ignoreError('lifecycle', 'prompt Worker manifest update', { host: target.hostRef })(error)
+    }
   }
 
   stopAdmission(): void {

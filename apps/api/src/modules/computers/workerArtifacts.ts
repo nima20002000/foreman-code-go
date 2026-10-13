@@ -130,6 +130,11 @@ async function artifactManifest(root: string, manifestSha256: string, version: s
 }
 
 /** Registered only on the paired, authenticated device channel. */
+export async function readWorkerManifestSha256s(options: { directory: string; version: string }): Promise<string[]> {
+  const { index } = await artifactIndex(options.directory, options.version)
+  return index.artifacts.map(artifact => artifact.manifestSha256)
+}
+
 export function createWorkerArtifactExtension(options: { directory: string; version: string; buildEnabled?: (binding: DeviceSessionBinding) => Promise<boolean> }): DeviceExtensionRegistration {
   const verifiedFiles = new Map<string, VerifiedFile>()
   return {

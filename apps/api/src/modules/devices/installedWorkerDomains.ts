@@ -62,7 +62,7 @@ import { GitHubLoginRunner } from '../computers/githubLogin.js'
 import { AGENT_SNAPSHOT_NAMESPACE, AgentSnapshotRequestSchema, AgentSnapshotResultSchema } from '@foreman-code/contracts/source-materialization'
 import { snapshotAgentWorktree } from '../sources/agentSnapshot.js'
 import { CI_HOST_NAMESPACE, CI_RUNTIME_NAMESPACE } from '@foreman-code/contracts'
-import { HostCiRunner } from '../ci-host/runner.js'
+import { HostCiRunner, hostCiDirectory, systemHostCiPorts } from '../ci-host/runner.js'
 import { CiRuntimeWorker } from '../jobs/ciRuntimeWorker.js'
 import { prepareCiRuntime } from '../jobs/ciRuntimePrepare.js'
 import { retainedCiJobImages } from '../jobs/ciRuntimeImages.js'
@@ -100,6 +100,7 @@ export async function createInstalledWorkerDomains(input: {
   /** Installed original source/output, canonical acknowledgement and stopped-writer ports. */
   rsync?: InstalledRsyncProviders
   workerUpdate?: NonNullable<MaintenancePorts['workerUpdate']>
+  ciStartupPending?: () => boolean | Promise<boolean>
 }) {
   const lifetime = new AbortController()
   let configuration = input.configuration
@@ -369,7 +370,7 @@ export async function createInstalledWorkerDomains(input: {
     },
   })
   // Host CI: this computer runs CI suites directly, fetching from GitHub with its own gh login.
-  const hostCi = new HostCiRunner()
+  const hostCi = new HostCiRunner(hostCiDirectory(), systemHostCiPorts(), process.env, input.ciStartupPending)
   extensions.push({ namespace: CI_HOST_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
     async handle(payload, context) {
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {

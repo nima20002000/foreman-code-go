@@ -2,17 +2,29 @@ import type pg from 'pg'
 import { join } from 'node:path'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { readProductVersion } from '../../infrastructure/productVersion.js'
-import { createWorkerArtifactExtension } from './workerArtifacts.js'
+import { createWorkerArtifactExtension, readWorkerManifestSha256s } from './workerArtifacts.js'
 
-export function createProductionWorkerArtifactExtension(options: {
+interface ProductionWorkerArtifactOptions {
   environment: NodeJS.ProcessEnv
   releaseDirectory: string
   pool?: pg.Pool
-}) {
-  return createWorkerArtifactExtension({
+}
+
+function artifactLocation(options: ProductionWorkerArtifactOptions) {
+  return {
     directory: readProductEnvironment(options.environment, 'WORKER_ARTIFACT_DIRECTORY')
       ?? join(options.releaseDirectory, 'worker-artifacts'),
     version: readProductVersion(options.releaseDirectory),
+  }
+}
+
+export function readProductionWorkerManifestSha256s(options: ProductionWorkerArtifactOptions) {
+  return readWorkerManifestSha256s(artifactLocation(options))
+}
+
+export function createProductionWorkerArtifactExtension(options: ProductionWorkerArtifactOptions) {
+  return createWorkerArtifactExtension({
+    ...artifactLocation(options),
     buildEnabled: async binding => {
       if (!options.pool) return false
       const result = await options.pool.query(`select 1 from build_computer_preferences

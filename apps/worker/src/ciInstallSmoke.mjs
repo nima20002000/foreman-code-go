@@ -2,14 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WorkerArtifactReplySchema } from '../../../packages/contracts/src/workerUpdate.ts';
 import { gateIntegrationShards } from '../../../apps/api/src/modules/ci-host/capacity.ts';
+import { WORKER_CI_CAPACITY_WAIT_MS, WORKER_CI_SMOKE_TIMEOUT_MS } from './ciSmokeTiming.mjs';
 
 export async function runCiInstallSmoke({ repository, commit }, { runner,
-  timeoutMs = 160_000, pollMs = 1000, signal } = {}) {
+  timeoutMs = WORKER_CI_SMOKE_TIMEOUT_MS, capacityTimeoutMs = WORKER_CI_CAPACITY_WAIT_MS,
+  pollMs = 1000, signal } = {}) {
   signal?.throwIfAborted();
   const runId = randomUUID();
   const controller = new AbortController();
   const deadline = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
-  const timer = setTimeout(() => controller.abort(new Error('Worker CI smoke timed out.')), timeoutMs);
+  let timer = setTimeout(() => controller.abort(new Error('Worker CI smoke capacity wait timed out.')), capacityTimeoutMs);
   const expired = new Promise((_, reject) => {
     deadline.addEventListener('abort', () => reject(deadline.reason), { once: true });
   });
@@ -18,8 +20,18 @@ export async function runCiInstallSmoke({ repository, commit }, { runner,
     const status = await bounded(() => runner.handle({ operation: 'status' }));
     if (!status.ready) throw new Error(`Worker CI smoke setup: ${status.reasons.join('; ')}`);
     const integrationShards = gateIntegrationShards(status.cpuCount, Math.floor(status.memoryBytes * 0.9));
-    await bounded(() => runner.handle({ operation: 'start', runId, repository, commit, suite: 'integration',
-      gate: true, integrationShards, scope: 'affected', files: ['apps/api/test/ci-smoke.integration.test.ts'] }));
+    while (true) {
+      try {
+        await bounded(() => runner.handle({ operation: 'start', runId, repository, commit, suite: 'integration',
+          gate: true, integrationShards, scope: 'full', files: ['apps/api/test/ci-smoke.integration.test.ts'] }));
+        break;
+      } catch (error) {
+        if (error.code !== 'CI_HOST_BUSY') throw error;
+        await delay(pollMs, undefined, { signal: deadline });
+      }
+    }
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(new Error('Worker CI smoke timed out.')), timeoutMs);
     while (true) {
       const reply = await bounded(() => runner.handle({ operation: 'read', runId, afterOffset: 0,
         maxBytes: 8192, testResults: true }));
@@ -36,11 +48,12 @@ export async function runCiInstallSmoke({ repository, commit }, { runner,
       await delay(pollMs, undefined, { signal: deadline });
     }
   } catch (error) {
+    const failure = deadline.aborted ? deadline.reason : error;
     const cancellation = runner.handle({ operation: 'cancel', runId });
     await Promise.race([cancellation.catch(failure => {
       process.stderr.write(`Worker CI smoke cancellation failed: ${failure.message}\n`);
     }), delay(5000)]);
-    throw error;
+    throw failure;
   } finally {
     clearTimeout(timer);
   }

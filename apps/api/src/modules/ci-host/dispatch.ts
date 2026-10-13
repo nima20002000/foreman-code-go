@@ -75,7 +75,7 @@ export function ciMessages(run: CiRunRecord, observed: string | null) {
 export function rejectedCiStart(error: unknown) {
   if (!error || typeof error !== 'object' || !('code' in error)) return false
   return ['CI_HOST_BUSY', 'COMPUTER_GITHUB_REQUIRED', 'CI_CLOUD_UNAVAILABLE',
-    'BUILD_COMPUTER_DISABLED', 'CI_MIRROR_PRIVATE_DATA'].includes(String(error.code))
+    'BUILD_COMPUTER_DISABLED', 'CI_HOST_PROTOCOL_UNSUPPORTED', 'CI_MIRROR_PRIVATE_DATA'].includes(String(error.code))
 }
 
 /** The request may finish later; its reply cannot settle a ticket after this deadline. */
