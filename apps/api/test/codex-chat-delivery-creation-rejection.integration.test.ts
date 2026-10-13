@@ -3,6 +3,7 @@ import { describe, it } from 'vitest'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { until } from './fixtures/codex-test-helpers.js'
 import { useCodexChatDelivery } from './codex-chat-delivery.helpers.js'
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 
 describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP', { timeout: 60_000 }, () => {
   const fixture = useCodexChatDelivery()
@@ -10,7 +11,8 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
   for (const kind of ['agent', 'operator'] as const) {
     it(`${kind} retains a late definitive creation rejection, cleans up, and permits explicit retry`, async () => {
       const {
-        native, repository, request, sendAgent, readAgent, createOperator, sendOperator, readOperator,
+        native, repository, denied, reader, workspaceId, request, sendAgent, readAgent,
+        createOperator, sendOperator, readOperator,
       } = fixture
       await native.flag('late-reject-thread-start')
       const id = kind === 'agent' ? (await sendAgent(request('late-rejected', null))).state.conversation!.id
@@ -19,6 +21,8 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
       await until(async () => kind === 'agent'
         ? (await repository.turn(id, 'late-rejected'))?.delivery === 'unknown' || undefined
         : (await readOperator(id)).turnState === 'uncertain' || undefined)
+      if (kind === 'agent') assert.equal((await readAgent()).availability.canSend, false)
+      else assert.equal((await readOperator(id)).activeRequestId, 'late-rejected')
       await until(async () => {
         if (kind === 'agent') {
           await fixture.agentChat.recover()
@@ -33,6 +37,22 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
         assert.equal((await repository.get(id))!.record.sessionCreation, undefined)
         assert.equal((await readAgent()).availability.canSend, true)
       } else assert.equal((await readOperator(id)).activeRequestId, null)
+      if (kind === 'agent') {
+        assert.equal((await sendAgent(request('late-rejected', id))).replayed, true)
+        const before = await readAgent()
+        await expectMcpAccessDenied(denied.callTool({ name: 'agent_chat_send', arguments: {
+          workspaceId, request: request('denied', id),
+        } }))
+        assert.deepEqual(await readAgent(), before)
+      } else {
+        const before = await readOperator(id)
+        await expectMcpAccessDenied(reader.callTool({ name: 'operator_chat_send', arguments: {
+          conversationId: id, request: { requestId: 'denied', content: 'Denied', settings: fixture.settings },
+        } }))
+        assert.deepEqual(await readOperator(id), before)
+      }
+      assert.equal((await native.wire('thread/start')).length, 1)
+      assert.equal((await native.wire('turn/start')).length, 0)
       await native.unflag('late-reject-thread-start')
       if (kind === 'agent') {
         await sendAgent(request('retry', id))
