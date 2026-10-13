@@ -147,7 +147,11 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     assert.equal((await manager.inspectResponseAvailability(session, query)).reason, 'response_in_flight')
     controller.abort(new Error('stop waiting for delivery confirmation'))
     await assert.rejects(response)
-    const before = await wire()
+    // The fake server records receipt after the manager's pipe write completes.
+    const before = await until(async () => {
+      const messages = await wire()
+      return messages.some((message) => message.id === 901 && message.result) && messages
+    })
     assert.deepEqual(before.filter((message) => message.id === 901 && message.result), [
       { id: 901, result: { decision: 'accept' } },
     ])
