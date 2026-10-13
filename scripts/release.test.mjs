@@ -13,17 +13,25 @@ const workspaceId = 'workspace-release-test'
 
 /** A Main whose CI finishes every run at once; `outcome(run)` picks each run's final state. */
 async function fakeMain(t, outcome = () => 'passed') {
-  const runs = new Map(), groups = new Map(), calls = []
+  const runs = new Map(), groups = new Map(), calls = [], commands = new Map()
   const tools = {
-    ci_run: ({ suite, commit, scope, partitions }) => {
+    ci_run: input => {
+      // Like Main, a repeated commandId returns the original tickets instead of starting new ones.
+      if (input.commandId && commands.has(input.commandId)) return commands.get(input.commandId)
+      const { suite, commit, scope, partitions, gate } = input
       const groupId = randomUUID()
-      const count = partitions ?? (suite === 'unit' ? 2 : 1)
-      const group = Array.from({ length: count }, (_, index) => ({ id: randomUUID(), workspaceId, suite, commit,
+      // A gate is one group with typecheck, lint, unit and integration parts.
+      const suites = gate ? ['typecheck', 'typecheck', 'lint', 'lint', 'unit', 'unit', 'unit', 'integration', 'integration', 'integration']
+        : Array.from({ length: partitions ?? (suite === 'unit' ? 2 : 1) }, () => suite)
+      const count = suites.length
+      const group = suites.map((value, index) => ({ id: randomUUID(), workspaceId, suite: value, commit,
         scope: scope ?? 'affected', groupId, part: null, partition: count > 1 ? { index, count } : null, computer: null,
-        message: null }))
+        message: null, ...(gate ? { gate: true } : {}) }))
       for (const run of group) runs.set(run.id, { ...run, state: outcome(run) })
       groups.set(groupId, group.map(run => run.id))
-      return count > 1 ? { ticketId: group[0].id, partitions: group.map(run => ({ ticketId: run.id })) } : { ticketId: group[0].id }
+      const reply = count > 1 ? { ticketId: group[0].id, partitions: group.map(run => ({ ticketId: run.id })) } : { ticketId: group[0].id }
+      if (input.commandId) commands.set(input.commandId, reply)
+      return reply
     },
     ci_get: ({ ticketId, testStatus }) => {
       const run = runs.get(ticketId)
@@ -50,7 +58,7 @@ async function fakeMain(t, outcome = () => 'passed') {
   })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   t.after(() => server.close())
-  return { url: `http://127.0.0.1:${server.address().port}`, runs, calls }
+  return { url: `http://127.0.0.1:${server.address().port}`, runs, calls, groups }
 }
 
 function repository(t) {
@@ -78,30 +86,74 @@ function run(script, args, cwd, main, env) {
   })
 }
 
-test('a clean full round releases HEAD with the passing tickets recorded and pushes it', async t => {
+test('a clean gate releases HEAD with every gate ticket recorded and pushes it', async t => {
   const main = await fakeMain(t)
   const { work, git, env } = repository(t)
   const tested = git('rev-parse', 'HEAD')
   const result = await run(releaseScript, ['1.1.0'], work, main, env)
   assert.equal(result.status, 0, result.output)
   const started = main.calls.filter(call => call.name === 'ci_run').map(call => call.arguments)
-  assert.deepEqual(started.map(value => [value.suite, value.scope, value.commit]),
-    [['typecheck', 'full', tested], ['lint', 'full', tested], ['unit', 'full', tested], ['integration', 'full', tested]])
+  assert.deepEqual(started.map(value => [value.suite, value.scope, value.commit, value.gate, value.priority, value.commandId]),
+    [['integration', 'full', tested, true, 'high', `gate-${tested}`]])
   assert.equal(git('log', '-1', '--format=%s'), 'Release v1.1.0')
   assert.equal(git('rev-parse', 'HEAD^'), tested)
   assert.equal(git('rev-parse', 'origin/main'), git('rev-parse', 'HEAD'))
   const trailers = git('log', '-1', '--format=%(trailers:key=Clean-Round,valueonly,separator=%x0a)').split('\n')
-  const bySuite = Object.fromEntries(trailers.map(value => value.split('=')).map(([suite, ids]) => [suite, ids.split(',')]))
-  for (const [suite, ids] of Object.entries(bySuite)) {
-    for (const id of ids) assert.equal(main.runs.get(id).suite, suite)
-  }
-  assert.deepEqual(Object.keys(bySuite), ['typecheck', 'lint', 'unit', 'integration'])
-  assert.equal(bySuite.integration.length, 3)
+  assert.equal(trailers.length, 1)
+  const [label, ids] = trailers[0].split('=')
+  assert.equal(label, 'gate')
+  assert.deepEqual(new Set(ids.split(',').map(id => main.runs.get(id).suite)), new Set(['typecheck', 'lint', 'unit', 'integration']))
+  assert.equal(ids.split(',').length, 10)
   assert.equal(JSON.parse(readFileSync(join(work, 'package.json'), 'utf8')).version, '1.1.0')
   assert.match(readFileSync(join(work, 'CHANGELOG.md'), 'utf8'), /## \[Unreleased\]\n\n## \[1\.1\.0\] - \d{4}-\d{2}-\d{2}\n\n### Fixed\n\n- A fix\.\n\n## \[1\.0\.0\]/)
 
   const verified = await run(verifyScript, ['HEAD'], work, main, env)
   assert.equal(verified.status, 0, verified.output)
+})
+
+test('a release reuses the gate that already passed on HEAD instead of running another round', async t => {
+  const main = await fakeMain(t)
+  const { work, git, env } = repository(t)
+  const tested = git('rev-parse', 'HEAD')
+  // The gate line already gated this commit with the canonical commandId.
+  const response = await fetch(`${main.url}/mcp`, { method: 'POST', headers: { authorization: 'Bearer release-test-token' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'ci_run', arguments: {
+      workspaceId, commit: tested, suite: 'integration', scope: 'full', gate: true, priority: 'high', commandId: `gate-${tested}` } } }) })
+  const earlier = JSON.parse((await response.json()).result.content[0].text)
+  const groupsBefore = main.groups.size
+  const result = await run(releaseScript, ['1.1.0'], work, main, env)
+  assert.equal(result.status, 0, result.output)
+  assert.equal(main.groups.size, groupsBefore)
+  const trailer = git('log', '-1', '--format=%(trailers:key=Clean-Round,valueonly)')
+  assert.deepEqual(trailer.split('=')[1].split(',').sort(), earlier.partitions.map(value => value.ticketId).sort())
+  const verified = await run(verifyScript, ['HEAD'], work, main, env)
+  assert.equal(verified.status, 0, verified.output)
+})
+
+test('the verifier rejects a gate round with a missing ticket, a missing suite or a non-gate part', async t => {
+  const main = await fakeMain(t)
+  const { work, git, env } = repository(t)
+  const tested = git('rev-parse', 'HEAD')
+  const start = async input => {
+    const response = await fetch(`${main.url}/mcp`, { method: 'POST', headers: { authorization: 'Bearer release-test-token' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'ci_run', arguments: {
+        workspaceId, commit: tested, scope: 'full', ...input } } }) })
+    const started = JSON.parse((await response.json()).result.content[0].text)
+    return (started.partitions ?? [{ ticketId: started.ticketId }]).map(value => value.ticketId)
+  }
+  const gate = await start({ suite: 'integration', gate: true, commandId: `gate-${tested}` })
+  releaseCommit(git, work, [['gate', gate.slice(1)]])
+  let result = await run(verifyScript, ['HEAD'], work, main, env)
+  assert.equal(result.status, 1)
+  assert.match(result.output, /gate: the recorded tickets are not the whole CI group/)
+
+  git('reset', '-q', '--hard', tested)
+  const integration = await start({ suite: 'integration', partitions: 2 })
+  releaseCommit(git, work, [['gate', integration]])
+  result = await run(verifyScript, ['HEAD'], work, main, env)
+  assert.equal(result.status, 1)
+  assert.match(result.output, /is not a gate run/)
+  assert.match(result.output, /gate round has no typecheck part/)
 })
 
 test('one failed partition prints its ticket and test and creates no release', async t => {
