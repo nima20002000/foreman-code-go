@@ -15,19 +15,18 @@ export const RunActivitiesInputSchema = z.object({
   cursor: z.string().min(1).max(1024).optional(),
   limit: z.number().int().min(1).max(100).default(50),
 }).strict()
-export type RunActivitiesInput = z.infer<typeof RunActivitiesInputSchema>
 
 export const RunActivityPublicKindSchema = z.enum([
   'run', 'stop', 'recovery', 'agent_work', 'job_work', 'tool_action', 'tool_log',
   'work_request', 'work_return', 'work_notice', 'reroute', 'needs_direction',
   'approval', 'review', 'error',
 ])
-export const RunActivityPublicStatusSchema = z.enum([
+const RunActivityPublicStatusSchema = z.enum([
   'recorded', 'queued', 'starting', 'running', 'completed', 'accepted',
   'needs_changes', 'denied', 'pending', 'delivery_failed', 'delivered',
   'acknowledged', 'unknown', 'needs_direction', 'canceled', 'failed',
 ])
-export const RunActivityReferenceSchema = z.object({
+const RunActivityReferenceSchema = z.object({
   executionId: GraphIdSchema.optional(), activationId: GraphIdSchema.optional(),
   continuedFromExecutionId: GraphIdSchema.optional(),
   ciTicketId: CiActivitySchema.shape.id.optional(), ciGroupId: CiActivitySchema.shape.groupId.optional(),
@@ -43,16 +42,16 @@ export const RunActivityReferenceSchema = z.object({
   technicalAttempt: z.number().int().positive().optional(),
   nativeEventSequence: z.number().int().nonnegative().optional(),
 }).strict()
-export const RunActivityAgentSchema = z.object({
+const RunActivityAgentSchema = z.object({
   agentId: GraphIdSchema, agentName: z.string().min(1).max(100),
   nodeId: GraphIdSchema, nodeName: z.string().min(1).max(100),
 }).strict()
-export const RunActivityJobSchema = z.object({
+const RunActivityJobSchema = z.object({
   kind: z.literal('job'), nodeId: GraphIdSchema, nodeName: z.string().min(1).max(200),
   jobDefinitionId: GraphIdSchema, jobDefinitionRevision: z.number().int().positive(),
   jobDefinitionVersionId: GraphIdSchema,
 }).strict()
-export const RunActivityWorkResultSchema = z.object({
+const RunActivityWorkResultSchema = z.object({
   outcome: z.string().min(1).max(48),
   latestDeliverable: z.json(),
   remainingFindings: z.array(z.json()).max(1000),
@@ -106,22 +105,22 @@ export type RunActivitiesPage = z.infer<typeof RunActivitiesPageSchema>
 
 export const RunHandoffsReadInputSchema = z.object({ workspaceId: GraphIdSchema,
   runId: GraphIdSchema }).strict()
-export const RunHandoffEndpointSchema = z.object({ nodeId: GraphIdSchema,
+const RunHandoffEndpointSchema = z.object({ nodeId: GraphIdSchema,
   nodeName: z.string().min(1).max(100), agentId: GraphIdSchema,
   agentName: z.string().min(1).max(100) }).strict()
-export const RunHandoffConnectionStateSchema = z.object({
+const RunHandoffConnectionStateSchema = z.object({
   relationshipId: GraphIdSchema, source: RunHandoffEndpointSchema,
   target: RunHandoffEndpointSchema,
   workRequestDirection: z.enum(['source_to_target', 'both']),
   used: z.number().int().nonnegative(), limit: z.number().int().positive().nullable(),
   remaining: z.number().int().nonnegative().nullable(),
 }).strict()
-export const RunHandoffRouteSchema = z.object({
+const RunHandoffRouteSchema = z.object({
   requesterNodeId: GraphIdSchema, outcome: z.string().regex(/^[a-z][a-z0-9_]{0,47}$/),
   relationshipId: GraphIdSchema, destinationNodeId: GraphIdSchema,
   available: z.boolean(),
 }).strict()
-export const RunHandoffNoticeStateSchema = z.object({
+const RunHandoffNoticeStateSchema = z.object({
   noticeId: GraphIdSchema, cause: z.enum(['last_return', 'limit_denial']),
   requesterActivationId: GraphIdSchema, continuationActivationId: GraphIdSchema,
   relationshipId: GraphIdSchema, destinationNodeId: GraphIdSchema,
@@ -130,7 +129,7 @@ export const RunHandoffNoticeStateSchema = z.object({
   remainingFindingsCount: z.number().int().nonnegative(),
   createdAt: TimestampSchema,
 }).strict()
-export const RunHandoffUnresolvedStateSchema = z.object({
+const RunHandoffUnresolvedStateSchema = z.object({
   unresolvedId: GraphIdSchema, activationId: GraphIdSchema,
   executionId: GraphIdSchema, reason: z.enum(['finish_with_findings', 'repeated_exhausted_route']),
   relationshipId: GraphIdSchema.optional(), createdAt: TimestampSchema,

@@ -6,7 +6,7 @@ import { TransferIntentSchema } from './byteTransfer.js'
 import { JobVerificationRepositoryContextSchema } from './jobVerificationRuntime.js'
 const Relative=z.string().min(1).max(2048).refine(path=>!path.startsWith('/')&&!path.includes('\\')&&!path.includes('\0')&&!path.split('/').some(part=>!part||part==='.'||part==='..'),'Safe relative input path required.')
 export const JOB_INPUT_DIRECTORY='.graphql-job-inputs' as const
-export const JobInputRecipientSchema=z.object({workspaceId:JobExecutionSchema.shape.workspaceId,executionId:JobExecutionSchema.shape.id,
+const JobInputRecipientSchema=z.object({workspaceId:JobExecutionSchema.shape.workspaceId,executionId:JobExecutionSchema.shape.id,
   attemptId:JobExecutionSchema.shape.attemptId,operationId:JobExecutionSchema.shape.operationId,owner:JobExecutionSchema.shape.owner,
   bindingHash:FileSha256Schema,specDigest:FileSha256Schema,materializationId:z.uuid(),materializationDigest:FileSha256Schema}).strict()
 export const JobInputEntrySchema=z.object({relativePath:Relative,pin:JobInputRevisionSchema.omit({path:true}),scope:FileScopeSchema,
@@ -27,7 +27,6 @@ export const JobInputDeliveryReceiptSchema=z.object({version:z.literal(1),recipi
   verificationContext: z.object({ relativePath: z.literal('verification.json'), sha256: FileSha256Schema,
     byteSize: z.number().int().positive().max(1024*1024) }).strict().optional(),
   readonlyMountRequired:z.literal(true)}).strict()
-export type JobInputRecipient=z.infer<typeof JobInputRecipientSchema>
 export type JobInputEntry=z.infer<typeof JobInputEntrySchema>
 export type JobInputManifest=z.infer<typeof JobInputManifestSchema>
 export type JobInputAdmission=z.infer<typeof JobInputAdmissionSchema>
@@ -36,7 +35,6 @@ export type JobInputDeliveryReceipt=z.infer<typeof JobInputDeliveryReceiptSchema
 export const JobBuildInputManifestSchema=z.object({version:z.literal(1),inputSnapshotDigest:FileSha256Schema,workflowInput:RunInputSchema.nullable(),
   files:z.array(z.object({relativePath:Relative,...JobInputRevisionSchema.omit({path:true}).shape}).strict()).max(256),
   verificationContext: JobInputDeliveryReceiptSchema.shape.verificationContext }).strict()
-export type JobBuildInputManifest=z.infer<typeof JobBuildInputManifestSchema>
 export const JobInputDeviceRequestSchema=z.discriminatedUnion('method',[
  z.object({method:z.literal('bind'),recipient:JobInputRecipientSchema,
    verificationContext: z.lazy(() => JobVerificationRepositoryContextSchema).optional() }).strict(),
@@ -50,9 +48,6 @@ export const JobInputStageRequestSchema=z.object({method:z.literal('stage'),tran
  * the exact receipt and returns JobInputDeliveryReceipt; this DTO grants nothing. */
 export const JobInputDeliveryAckRequestSchema=z.object({method:z.literal('delivery-ack'),transferId:z.uuid(),
   receipt:JobInputDeliveryReceiptSchema}).strict()
-export type JobInputStageRequest=z.infer<typeof JobInputStageRequestSchema>
-export type JobInputDeliveryAckRequest=z.infer<typeof JobInputDeliveryAckRequestSchema>
 /** Read the original durable detached-delivery ACK on job-inputs-v1. Response:
  * JobInputDeliveryReceiptSchema. Authorize alone is not delivery readback. */
 export const JobInputDeliveryStatusRequestSchema=z.object({method:z.literal('delivery-status'),transferId:z.uuid()}).strict()
-export type JobInputDeliveryStatusRequest=z.infer<typeof JobInputDeliveryStatusRequestSchema>

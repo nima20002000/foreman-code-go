@@ -31,9 +31,8 @@ export const FILE_EXTENSIONS_BY_MEDIA_TYPE: Readonly<Record<FileMediaType, reado
   "application/zip": Object.freeze(["zip"]),
 });
 export const FileSha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
-export const FileOriginSchema = z.enum(["upload", "agent_output", "agent_copy"]);
-export type FileOrigin = z.infer<typeof FileOriginSchema>;
-export const FileStateSchema = z.enum(["pending", "ready", "expired", "removed"]);
+const FileOriginSchema = z.enum(["upload", "agent_output", "agent_copy"]);
+const FileStateSchema = z.enum(["pending", "ready", "expired", "removed"]);
 export type FileState = z.infer<typeof FileStateSchema>;
 export const FileRetentionDurationSchema = z.number().int()
   .min(MIN_FILE_RETENTION_SECONDS).max(MAX_FILE_RETENTION_SECONDS);
@@ -46,11 +45,11 @@ const Page = {
 };
 const PageInfo = z.object({ nextCursor: z.string().min(1).nullable() }).strict();
 
-export const OperatorFileChatScopeSchema = z.object({
+const OperatorFileChatScopeSchema = z.object({
   kind: z.literal("operator"),
   ownerPrincipalId: IdSchema, operatorId: IdSchema, conversationId: IdSchema,
 }).strict();
-export const AgentFileChatScopeSchema = z.object({
+const AgentFileChatScopeSchema = z.object({
   kind: z.literal("agent"),
   conversationId: IdSchema, agentId: IdSchema, workspaceId: IdSchema, workflowId: IdSchema,
   runId: IdSchema.optional(), executionId: IdSchema.optional(),
@@ -72,8 +71,6 @@ export const PermanentFileScopeSchema = z.discriminatedUnion("kind", [
 export const FileScopeSchema = z.discriminatedUnion("kind", [
   TemporaryFileScopeSchema, WorkflowReferenceFileScopeSchema, WorkspaceReferenceFileScopeSchema, JobExecutionFileScopeSchema,
 ]);
-export type OperatorFileChatScope = z.infer<typeof OperatorFileChatScopeSchema>;
-export type AgentFileChatScope = z.infer<typeof AgentFileChatScopeSchema>;
 export type WorkflowReferenceFileScope = z.infer<typeof WorkflowReferenceFileScopeSchema>;
 export type WorkspaceReferenceFileScope = z.infer<typeof WorkspaceReferenceFileScopeSchema>;
 export type TemporaryFileScope = z.infer<typeof TemporaryFileScopeSchema>;
@@ -98,7 +95,7 @@ export const TemporaryFileSchema = z.object({
   retentionDurationSeconds: FileRetentionDurationSchema, expiresAt: UtcTimestamp,
 }).strict().refine((file) => Date.parse(file.expiresAt) - Date.parse(file.createdAt)
   === file.retentionDurationSeconds * 1_000, "expiresAt must equal createdAt plus the retention snapshot");
-export const PermanentFileSchema = z.object({
+const PermanentFileSchema = z.object({
   ...FileIdentity, scope: PermanentFileScopeSchema,
   state: z.enum(["pending", "ready", "removed"]),
 }).strict();
@@ -192,7 +189,6 @@ export const FileRetentionPreviewResultSchema = z.object({
   expireNowCount: z.number().int().nonnegative(),
 }).strict();
 export type FileRetentionPreference = z.infer<typeof FileRetentionPreferenceSchema>;
-export type FileRetentionGetInput = z.infer<typeof FileRetentionGetInputSchema>;
 export type FileRetentionGetResult = z.infer<typeof FileRetentionGetResultSchema>;
 export type FileRetentionSaveInput = z.infer<typeof FileRetentionSaveInputSchema>;
 export type FileRetentionSaveResult = z.infer<typeof FileRetentionSaveResultSchema>;
@@ -205,10 +201,8 @@ export const MessageAttachmentRefsSchema = z.array(MessageAttachmentRefSchema).m
     "Attach a logical file at most once per message");
 /** Compose these fields into BOTH chat send contracts; no send contracts are edited in this lane. */
 export const MessageAttachmentFields = { attachments: MessageAttachmentRefsSchema.default([]) };
-export const MessageFileIdentitySchema = z.object({ requestId: IdSchema, ...MessageAttachmentFields }).strict();
+const MessageFileIdentitySchema = z.object({ requestId: IdSchema, ...MessageAttachmentFields }).strict();
 export type MessageAttachmentRef = z.infer<typeof MessageAttachmentRefSchema>;
-export type MessageAttachmentRefs = z.infer<typeof MessageAttachmentRefsSchema>;
-export type MessageFileIdentity = z.infer<typeof MessageFileIdentitySchema>;
 
 /** Canonical identity component, NOT a replacement for the existing text/intent/target input hash.
  * Attachment order matters. Add this component to both chat receipt hashes before accepting sends. */
@@ -227,13 +221,11 @@ export function hasMessageAttachmentConflict(
 /** Small metadata-only rows: no paths, signed URLs, inline bytes, or inferred latest-version reads. */
 export const FileRowSchema = FileWithRevisionSchema.refine(
   (row) => row.file.currentRevisionId === row.revision.revisionId, "List rows must describe the current revision");
-export const FileManifestEntrySchema = FileRowSchema;
 export const FilePageSchema = z.object({
   items: z.array(FileRowSchema).max(MAX_FILE_PAGE_SIZE), pageInfo: PageInfo,
 }).strict().refine((page) => new Set(page.items.map((row) => row.file.fileId)).size === page.items.length,
   "A file may appear only once on a page");
 export type FileRow = z.infer<typeof FileRowSchema>;
-export type FileManifestEntry = z.infer<typeof FileManifestEntrySchema>;
 export type FilePage = z.infer<typeof FilePageSchema>;
 
 export const AgentFileListInputSchema = z.object({ scope: FileScopeSchema, ...Page }).strict();
@@ -265,8 +257,6 @@ export const AgentFileReadResultSchema = z.discriminatedUnion("status", [
     reason: z.enum(["pending", "expired", "removed", "not_found", "forbidden"]),
   }).strict(),
 ]);
-export type AgentFileListInput = z.infer<typeof AgentFileListInputSchema>;
-export type AgentFileListResult = z.infer<typeof AgentFileListResultSchema>;
 export type AgentFileReadInput = z.infer<typeof AgentFileReadInputSchema>;
 export type AgentFileReadResult = z.infer<typeof AgentFileReadResultSchema>;
 
@@ -305,7 +295,6 @@ export const AgentFilePublishResultSchema = z.object({
     "Agent results must be ready temporary files with the exact published revision"),
   replayed: z.boolean(),
 }).strict();
-export type AgentFileCreateWorkingCopyInput = z.infer<typeof AgentFileCreateWorkingCopyInputSchema>;
 export type AgentFileCreateWorkingCopyResult = z.infer<typeof AgentFileCreateWorkingCopyResultSchema>;
 export type AgentFilePublishInput = z.infer<typeof AgentFilePublishInputSchema>;
 export type AgentFilePublishResult = z.infer<typeof AgentFilePublishResultSchema>;
@@ -335,9 +324,6 @@ export const WorkspaceProjectFilesListSchema = z.object({ workspaceId: IdSchema,
   .refine((list) => list.files.items.every(({ file }) => file.scope.kind === "workspace_reference"
     && file.scope.workspaceId === list.workspaceId), "Project files must belong to this workspace");
 export type BoardFilesListInput = z.infer<typeof BoardFilesListInputSchema>;
-export type BoardFilesList = z.infer<typeof BoardFilesListSchema>;
-export type WorkspaceProjectFilesListInput = z.infer<typeof WorkspaceProjectFilesListInputSchema>;
-export type WorkspaceProjectFilesList = z.infer<typeof WorkspaceProjectFilesListSchema>;
 
 /** FIL-05b. Additive working-copy tools; never accept file/reference IDs or host paths as targets. */
 export const MAX_FILE_WRITE_BYTES = MAX_FILE_BYTES;
@@ -357,7 +343,7 @@ export const AgentFileWriteWorkingCopyInputSchema = z.object({
   ...WorkingCopyEditTarget, contentBase64: FileWorkingCopyBytesSchema,
 }).strict();
 /** Only the existing helpers' supported edits; media type is derived from the owned artifact. */
-export const AgentFileFormatEditSchema = z.discriminatedUnion("kind", [
+const AgentFileFormatEditSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("append_text"), text: z.string().max(MAX_FILE_READ_BYTES)
     .refine((text) => text.length <= MAX_FILE_READ_BYTES
       && new TextEncoder().encode(text).byteLength <= MAX_FILE_READ_BYTES,
@@ -378,8 +364,3 @@ export const AgentFileWorkingCopyEditResultSchema = z.object({
 export const AgentFileWriteWorkingCopyResultSchema = AgentFileWorkingCopyEditResultSchema;
 export const AgentFileApplyFormatEditResultSchema = AgentFileWorkingCopyEditResultSchema;
 export type AgentFileFormatEdit = z.infer<typeof AgentFileFormatEditSchema>;
-export type AgentFileWriteWorkingCopyInput = z.infer<typeof AgentFileWriteWorkingCopyInputSchema>;
-export type AgentFileWriteWorkingCopyResult = z.infer<typeof AgentFileWriteWorkingCopyResultSchema>;
-export type AgentFileApplyFormatEditInput = z.infer<typeof AgentFileApplyFormatEditInputSchema>;
-export type AgentFileApplyFormatEditResult = z.infer<typeof AgentFileApplyFormatEditResultSchema>;
-export type AgentFileWorkingCopyEditResult = z.infer<typeof AgentFileWorkingCopyEditResultSchema>;

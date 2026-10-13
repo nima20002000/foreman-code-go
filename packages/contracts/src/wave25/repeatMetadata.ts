@@ -18,7 +18,6 @@ const Item = z.object({
     context.addIssue({ code: 'custom', message: 'REPEAT_METADATA_OCCURRENCE_MISMATCH' })
   }
 })
-export const RepeatMetadataItemV1Schema = Item
 const projectionShape = {
   contractVersion: z.literal(1), scope: RepeatMetadataScopeV1Schema,
   throughSequence: GraphSequenceSchema, headSequence: GraphSequenceSchema, retentionFloor: GraphSequenceSchema,
@@ -48,7 +47,7 @@ const Projection = z.object(projectionShape).strict().superRefine((value, contex
 })
 export const RepeatMetadataCurrentV1Schema = Projection.safeExtend({ kind: z.literal('current') })
 export const RepeatMetadataSnapshotV1Schema = Projection.safeExtend({ kind: z.literal('snapshot') })
-export type RepeatMetadataSnapshotV1 = z.infer<typeof RepeatMetadataSnapshotV1Schema>
+type RepeatMetadataSnapshotV1 = z.infer<typeof RepeatMetadataSnapshotV1Schema>
 
 export const RepeatMetadataEventV1Schema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('repeat.occurrence'), occurrence: RepeatOccurrenceV1Schema }).strict(),
@@ -56,7 +55,7 @@ export const RepeatMetadataEventV1Schema = z.discriminatedUnion('type', [
 ]).superRefine((value, context) => {
   if (graphJsonBytes(value) > RUN_GRAPH_LIMITS.eventBytes) context.addIssue({ code: 'custom', message: 'REPEAT_METADATA_EVENT_TOO_LARGE' })
 })
-export const RepeatMetadataBatchV1Schema = z.object({
+const RepeatMetadataBatchV1Schema = z.object({
   scope: RepeatMetadataScopeV1Schema, previousSequence: GraphSequenceSchema, sequence: GraphSequenceSchema,
   // This is a projection of a COMPLETE existing publication batch. Empty means
   // that batch changed only non-repeat facts; it does not skip a journal position.
@@ -102,8 +101,8 @@ export const RepeatMetadataDeltaV1Schema = z.object({
   if (previous !== value.throughSequence || (value.hasMore && value.batches.length === 0)) fail('REPEAT_METADATA_INCOMPLETE_PAGE')
   if (graphJsonBytes(value) > RUN_GRAPH_LIMITS.pageBytes) fail('REPEAT_METADATA_PAGE_TOO_LARGE')
 })
-export type RepeatMetadataDeltaV1 = z.infer<typeof RepeatMetadataDeltaV1Schema>
-export const RepeatMetadataResetV1Schema = z.object({
+type RepeatMetadataDeltaV1 = z.infer<typeof RepeatMetadataDeltaV1Schema>
+const RepeatMetadataResetV1Schema = z.object({
   kind: z.literal('reset'), contractVersion: z.literal(1), scope: RepeatMetadataScopeV1Schema,
   reason: z.enum(['retention', 'snapshot_required', 'capacity']),
   retentionFloor: GraphSequenceSchema, headSequence: GraphSequenceSchema,
@@ -153,13 +152,8 @@ export function validateRepeatMetadataSnapshotV1(versionValue: unknown, snapshot
   return snapshot
 }
 
-export type RepeatMetadataScopeV1 = z.infer<typeof RepeatMetadataScopeV1Schema>
-export type RepeatMetadataItemV1 = z.infer<typeof RepeatMetadataItemV1Schema>
-export type RepeatMetadataCurrentV1 = z.infer<typeof RepeatMetadataCurrentV1Schema>
-export type RepeatMetadataEventV1 = z.infer<typeof RepeatMetadataEventV1Schema>
-export type RepeatMetadataBatchV1 = z.infer<typeof RepeatMetadataBatchV1Schema>
-export type RepeatMetadataResetV1 = z.infer<typeof RepeatMetadataResetV1Schema>
-export type RepeatMetadataReadV1 = z.infer<typeof RepeatMetadataReadV1Schema>
+type RepeatMetadataCurrentV1 = z.infer<typeof RepeatMetadataCurrentV1Schema>
+type RepeatMetadataResetV1 = z.infer<typeof RepeatMetadataResetV1Schema>
 
 // Explicit v3 arm. Do not widen or retag the legacy protocol schemas.
 export * from './repeatGraphMetadata.js'

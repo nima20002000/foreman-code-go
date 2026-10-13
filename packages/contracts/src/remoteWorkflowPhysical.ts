@@ -23,7 +23,7 @@ export const RemoteResultDictionarySchema = z.object({
     index: z.number().int().nonnegative().max(63) }).strict()).max(128),
 }).strict()
 export type RemoteResultDictionary = z.infer<typeof RemoteResultDictionarySchema>
-export const RemotePhysicalJsonContinuationSchema = DeviceJsonContinuationSchema.extend({
+const RemotePhysicalJsonContinuationSchema = DeviceJsonContinuationSchema.extend({
   byteSize: z.number().int().safe().positive().max(REMOTE_PHYSICAL_CONTINUATION_LIMIT),
 })
 
@@ -36,7 +36,7 @@ export const RemoteNativeLaunchObservationSchema = z.object({ owner: z.string().
   closureEvidence: z.enum(['linux_boot_changed', 'native_not_started', 'cgroup_v2_empty',
     'native_exit_removed_cgroup', 'cgroup_v2_removed']).optional(),
 }).strict()
-export const RemoteRuntimeLeafAttestationSchema = z.object({ executionId: z.string().min(1), attemptId: z.string().min(1),
+const RemoteRuntimeLeafAttestationSchema = z.object({ executionId: z.string().min(1), attemptId: z.string().min(1),
   operationId: z.string().min(1), bindingHash: PlacementDigestSchema, canonicalRuntimeDirectory: z.string().startsWith('/'),
   directoryIdentityHash: PlacementDigestSchema, materializationId: z.string().min(1), materializationDigest: PlacementDigestSchema }).strict()
 /** The same bounded real NativeHistory contract used by the native proxy. */

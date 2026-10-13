@@ -11,11 +11,11 @@ export const CI_LOG_MAX_BYTES = 65_536
 
 export const CiSuiteSchema = z.enum(['install', 'typecheck', 'lint', 'unit', 'build', 'integration'])
 export type CiSuite = z.infer<typeof CiSuiteSchema>
-export const CiPartSchema = z.enum(['unit-api', 'unit-web', 'unit-web-heavy', 'unit-other',
+const CiPartSchema = z.enum(['unit-api', 'unit-web', 'unit-web-heavy', 'unit-other',
   'lint-api', 'lint-other', 'typecheck-api', 'typecheck-other', 'build-api', 'build-other'])
 export type CiPart = z.infer<typeof CiPartSchema>
 export type CiExecutionSuite = CiSuite | CiPart
-export function validCiPart(value: { suite: CiSuite; part?: CiPart | null | undefined; partition?: CiPartition | null | undefined }) {
+function validCiPart(value: { suite: CiSuite; part?: CiPart | null | undefined; partition?: CiPartition | null | undefined }) {
   if (!value.part) return !value.partition || value.suite === 'integration'
   if (!value.part.startsWith(`${value.suite}-`)) return false
   return !value.partition || value.part === 'unit-api' || value.part === 'unit-web' || value.part === 'unit-web-heavy'
@@ -36,7 +36,7 @@ export function validCiSelection(value: { suite: CiSuite; scope?: CiScope | unde
   return value.files.every(file => /\.[cm]?[jt]sx?$/.test(file) && !file.startsWith('scripts/'))
 }
 const CommitSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
-export const CiRepositorySchema = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/)
+const CiRepositorySchema = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/)
 /** `weights` gives each slice's relative speed (its computer's measured throughput), so slices finish together. */
 export const CiPartitionSchema = z.object({ index: z.number().int().nonnegative(), count: z.number().int().min(2).max(32),
   weights: z.array(z.number().positive().finite()).optional(),
@@ -61,11 +61,11 @@ export const CI_TEST_RESULT_LIMITS = { tests: 600, files: 300, name: 200, file: 
 export const CiTestStatusSchema = z.enum(['passed', 'failed', 'skipped'])
 export type CiTestStatus = z.infer<typeof CiTestStatusSchema>
 const CiTestDurationSchema = z.number().nonnegative().finite().max(24 * 3_600_000).nullable()
-export const CiTestCaseSchema = z.object({ name: z.string().min(1).max(CI_TEST_RESULT_LIMITS.name), status: CiTestStatusSchema,
+const CiTestCaseSchema = z.object({ name: z.string().min(1).max(CI_TEST_RESULT_LIMITS.name), status: CiTestStatusSchema,
   durationMs: CiTestDurationSchema, message: z.string().max(CI_TEST_RESULT_LIMITS.message).optional(),
   /** A failure's `path:line:column` in the repository, read from its full stack. */
   location: z.string().max(CI_TEST_RESULT_LIMITS.location).optional() }).strict()
-export const CiTestFileSchema = z.object({ file: z.string().min(1).max(CI_TEST_RESULT_LIMITS.file), status: CiTestStatusSchema,
+const CiTestFileSchema = z.object({ file: z.string().min(1).max(CI_TEST_RESULT_LIMITS.file), status: CiTestStatusSchema,
   durationMs: CiTestDurationSchema, tests: z.array(CiTestCaseSchema).max(CI_TEST_RESULT_LIMITS.tests) }).strict()
 export const CiTestSummarySchema = z.object({ passed: z.number().int().nonnegative(), failed: z.number().int().nonnegative(),
   skipped: z.number().int().nonnegative() }).strict()
@@ -77,9 +77,9 @@ export const CiTestResultsSchema = z.object({ summary: CiTestSummarySchema,
     `Give at most ${CI_TEST_RESULT_LIMITS.tests} tests.`)
 export type CiTestResults = z.infer<typeof CiTestResultsSchema>
 
-export const CiHostRunIdSchema = z.uuid()
+const CiHostRunIdSchema = z.uuid()
 /** `durations` are Main's learned integration file durations; the commit's committed durations fill the gaps. */
-export const CiHostStartSchema = z.object({
+const CiHostStartSchema = z.object({
   operation: z.literal('start'), runId: CiHostRunIdSchema, repository: CiRepositorySchema, commit: CommitSchema,
   suite: CiSuiteSchema, part: CiPartSchema.optional(), partition: CiPartitionSchema.optional(), durations: CiDurationsSchema.optional(),
   scope: CiScopeSchema.optional(), files: CiSelectedFilesSchema.optional(),
@@ -98,8 +98,8 @@ export const CiHostRequestSchema = z.discriminatedUnion('operation', [
 ])
 export type CiHostRequest = z.infer<typeof CiHostRequestSchema>
 
-export const CiHostRunStateSchema = z.enum(['queued', 'starting', 'running', 'passed', 'failed', 'canceled', 'lost'])
-export const CiHostRunSchema = z.object({
+const CiHostRunStateSchema = z.enum(['queued', 'starting', 'running', 'passed', 'failed', 'canceled', 'lost'])
+const CiHostRunSchema = z.object({
   runId: CiHostRunIdSchema, state: CiHostRunStateSchema, step: z.string().max(80).nullable(),
   exitCode: z.number().int().nullable(), startedAt: TimestampSchema, finishedAt: TimestampSchema.nullable(),
   logBytes: z.number().int().nonnegative(), message: z.string().max(2000).nullable(),

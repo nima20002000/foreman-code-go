@@ -90,8 +90,6 @@ export const RemoteOperationReceiptSchema = z.object({
     || new Set(value.reviewTurns?.map(turn => turn.assignment.correlationId)).size !== (value.reviewTurns?.length ?? 0))
     context.addIssue({ code: 'custom', message: 'Review turns retain distinct assignments on the original session.' })
 })
-export const CurrentRemoteOperationReceiptSchema = RemoteOperationReceiptSchema.safeExtend(DeviceExecutionAdmissionFields)
-export type CurrentRemoteOperationReceipt = z.infer<typeof CurrentRemoteOperationReceiptSchema>
 export type RemoteOperationReceipt = z.infer<typeof RemoteOperationReceiptSchema>
 export function remoteActiveNative(receipt: RemoteOperationReceipt): RemoteNativeIdentity | undefined {
   const turn = receipt.reviewTurns?.at(-1)

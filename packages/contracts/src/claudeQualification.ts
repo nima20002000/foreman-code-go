@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 /** Provider evidence extends the existing HRT host-profile proof; it carries no authority of its own. */
-export const ClaudeQualificationCheckSchema = z.object({
+const ClaudeQualificationCheckSchema = z.object({
   state: z.enum(['unverified', 'passed', 'failed']),
   source: z.enum(['root_init_probe', 'native_scenario']).optional(),
   evidenceId: z.string().min(1).max(500).optional(),

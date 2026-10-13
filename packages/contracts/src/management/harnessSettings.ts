@@ -35,7 +35,7 @@ export const HarnessMcpChangeSchema = z.discriminatedUnion('kind', [
 ])
 export type HarnessMcpChange = z.infer<typeof HarnessMcpChangeSchema>
 /** `graphql` is the one app connection for every role; the credential decides what a caller may use. */
-export const HarnessMcpManagedPresetSchema = z.enum(['graphql', 'linear'])
+const HarnessMcpManagedPresetSchema = z.enum(['graphql', 'linear'])
 export type HarnessMcpManagedPreset = z.infer<typeof HarnessMcpManagedPresetSchema>
 /** Plan history keeps the pre-unification `operator` and `worker` presets readable. */
 const HarnessMcpPlanPresetSchema = z.enum(['graphql', 'linear', 'operator', 'worker'])
@@ -49,7 +49,7 @@ export const HarnessMcpManagedInputSchema = z.union([
 ])
 export type HarnessMcpManagedInput = z.infer<typeof HarnessMcpManagedInputSchema>
 export const HarnessMcpListInputSchema = z.object({ harness: Harness }).strict()
-export const HarnessMcpServerSummarySchema = z.object({
+const HarnessMcpServerSummarySchema = z.object({
   name: z.string(), transport: z.enum(['remote', 'stdio', 'unknown']), label: z.string(), enabled: z.boolean(),
   endpoint: z.string().url().optional(),
   origin: z.enum(['user', 'inherited']), protected: z.boolean(), editable: z.boolean(),

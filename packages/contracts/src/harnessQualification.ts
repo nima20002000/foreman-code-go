@@ -7,13 +7,12 @@ import { CompatibilityHarnessSchema } from './harnessCompatibility.js'
  * qualification suite passed against that exact binary. Each usable version runs
  * with the behavior profile of the baseline it was qualified against.
  */
-export const HarnessProfileIdSchema = z.enum(['codex-0.154', 'codex-0.156'])
+const HarnessProfileIdSchema = z.enum(['codex-0.154', 'codex-0.156'])
 export type HarnessProfileId = z.infer<typeof HarnessProfileIdSchema>
 
-export const HarnessQualificationStatusSchema = z.enum(['baseline', 'qualified', 'qualifying', 'failed', 'unqualified'])
-export type HarnessQualificationStatus = z.infer<typeof HarnessQualificationStatusSchema>
+const HarnessQualificationStatusSchema = z.enum(['baseline', 'qualified', 'qualifying', 'failed', 'unqualified'])
 
-export const HarnessQualificationCheckSchema = z.object({
+const HarnessQualificationCheckSchema = z.object({
   id: z.string().min(1).max(80),
   passed: z.boolean(),
   detail: z.string().max(500).nullable(),

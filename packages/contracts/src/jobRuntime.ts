@@ -122,7 +122,6 @@ export function validateJobRuntimeNativeContext(
     ctx.addIssue({code:'custom',message:'Admission must retain the exact authenticated worker binding.'})
 }
 export const CurrentJobRuntimeNativeAdmissionSchema=JobRuntimeNativeAdmissionSchema.safeExtend({schemaVersion:z.literal(2),...DeviceExecutionAdmissionFields})
-export type CurrentJobRuntimeNativeAdmission=z.infer<typeof CurrentJobRuntimeNativeAdmissionSchema>
 export type JobRuntimeNativeAdmission=z.infer<typeof JobRuntimeNativeAdmissionSchema>
 /** A host producer supplies actual measured evidence. Public save input admits no ready/approval/proof fields. */
 export const JobRuntimeMeasurementSchema=z.object({schemaVersion:z.literal(1),qualificationId:z.uuid(),profileId:IdSchema,profileRevision:z.number().int().positive(),specDigest:Digest,
@@ -152,18 +151,13 @@ export const JobRuntimeProfileListSchema = z.object({
   profiles: z.array(z.object({ profile: JobRuntimeProfileSchema, ready: z.boolean(), reasons: z.array(z.string()), sideEffects: z.literal(false) }).strict()),
   approvals: z.array(JobRuntimeApprovalSchema),
 }).strict()
-export type JobRuntimeProfileList = z.infer<typeof JobRuntimeProfileListSchema>
 export const JobRuntimeProfileSaveSchema=z.object({commandId:IdSchema,id:IdSchema.optional(),expectedRevision:z.number().int().positive().nullable(),name:z.string().trim().min(1).max(200),spec:JobRuntimeProfileInputSchema}).strict()
 export const JobRuntimeQualificationRequestSchema=z.object({commandId:IdSchema,profileId:IdSchema,expectedRevision:z.number().int().positive()}).strict()
 export type JobRuntimeProfile=z.infer<typeof JobRuntimeProfileSchema>
-export type JobRuntimeProfileSave=z.infer<typeof JobRuntimeProfileSaveSchema>
 export type JobRuntimeMeasurement=z.infer<typeof JobRuntimeMeasurementSchema>
-export type QualifiedJobRuntime=z.infer<typeof QualifiedJobRuntimeSchema>
-export type CurrentQualifiedJobRuntime=z.infer<typeof CurrentQualifiedJobRuntimeSchema>
-export type CurrentJobRuntimeMeasurement=z.infer<typeof CurrentJobRuntimeMeasurementSchema>
+type QualifiedJobRuntime=z.infer<typeof QualifiedJobRuntimeSchema>
 
 export type JobRuntimeFingerprint=z.infer<typeof JobRuntimeFingerprintSchema>
-export type CurrentJobRuntimeFingerprint=z.infer<typeof CurrentJobRuntimeFingerprintSchema>
 export type JobRuntimeApproval=z.infer<typeof JobRuntimeApprovalSchema>
 /** Readiness/admission can explain stale history without reparsing it as a new layout or mutating saved facts. */
 export function jobRuntimeWorkspaceLayoutIssue(runtime:Pick<QualifiedJobRuntime,'workspaceLayout'>,
@@ -208,8 +202,6 @@ export const JobRuntimeQualificationRpcResponseSchema=z.discriminatedUnion('oper
     approval:z.object({status:z.literal('approved'),fingerprint:Digest,expiresAt:TimestampSchema}).strict()}).strict(),
 ])
 export const JOB_RUNTIME_QUALIFICATION_EXTENSION=Object.freeze({namespace:'job-runtime-qualification-v1',version:1 as const,maxJsonBytes:1048576,maxBinaryBytes:1048576})
-export type JobRuntimeQualificationRpcRequest=z.infer<typeof JobRuntimeQualificationRpcRequestSchema>
-export type JobRuntimeQualificationRpcResponse=z.infer<typeof JobRuntimeQualificationRpcResponseSchema>
 
 /** Current layout schemas above also parse saved v2 history. New provisioned entry uses these required v3 schemas. */
 export const ProvisionedQualifiedJobRuntimeSchema = CurrentQualifiedJobRuntimeSchema.safeExtend(ProvisionedRuntimeFields)
@@ -244,7 +236,7 @@ export const ProvisionedJobQualificationCandidateSchema = z.object({ ...JobQuali
     || value.backingBytes !== null && value.backingBytes !== value.volumeCapacityBytes)
     ctx.addIssue({ code: 'custom', message: 'Quota-v3 geometry validates volume capacity independently from the Job disk reservation.' })
 })
-export const ProvisionedJobRuntimeQualificationResultSchema = z.discriminatedUnion('outcome', [
+const ProvisionedJobRuntimeQualificationResultSchema = z.discriminatedUnion('outcome', [
   z.object({ outcome: z.literal('qualified'), measurement: ProvisionedJobRuntimeMeasurementSchema }).strict(),
   JobRuntimeQualificationResultSchema.options[1],
 ])
@@ -271,10 +263,3 @@ export const ProvisionedJobRuntimeQualificationRpcResponseSchema = z.discriminat
 ])
 export const JOB_RUNTIME_PROVISIONED_QUALIFICATION_EXTENSION = Object.freeze({ namespace: 'job-runtime-qualification-v2',
   version: 2 as const, maxJsonBytes: 1048576, maxBinaryBytes: 0 })
-export type ProvisionedQualifiedJobRuntime = z.infer<typeof ProvisionedQualifiedJobRuntimeSchema>
-export type ProvisionedJobRuntimeFingerprint = z.infer<typeof ProvisionedJobRuntimeFingerprintSchema>
-export type ProvisionedJobRuntimeMeasurement = z.infer<typeof ProvisionedJobRuntimeMeasurementSchema>
-export type ProvisionedInstalledJobRuntimeDescriptor = z.infer<typeof ProvisionedInstalledJobRuntimeDescriptorSchema>
-export type ProvisionedJobQualificationCandidate = z.infer<typeof ProvisionedJobQualificationCandidateSchema>
-export type ProvisionedJobRuntimeQualificationRpcRequest = z.infer<typeof ProvisionedJobRuntimeQualificationRpcRequestSchema>
-export type ProvisionedJobRuntimeQualificationRpcResponse = z.infer<typeof ProvisionedJobRuntimeQualificationRpcResponseSchema>

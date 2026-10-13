@@ -2,9 +2,9 @@ import { z } from 'zod'
 import { DeviceProvisioningTargetSchema } from './deviceResources.js'
 
 export const COMPUTER_ACCOUNTS_NAMESPACE = 'computer-accounts-v1'
-export const ComputerAccountToolSchema = z.enum(['codex', 'claude', 'github'])
+const ComputerAccountToolSchema = z.enum(['codex', 'claude', 'github'])
 /** Identity facts only: never tokens, keys or credential paths. */
-export const ComputerAccountSchema = z.object({
+const ComputerAccountSchema = z.object({
   tool: ComputerAccountToolSchema,
   installed: z.boolean(),
   /** null when the tool is installed but its sign-in state could not be read. */
@@ -20,7 +20,7 @@ export const ComputerAccountsSchema = z.object({
 export const ComputerAccountsRequestSchema = z.object({
   operation: z.literal('read'), refresh: z.boolean().optional(),
 }).strict()
-export const ComputerAccountsEntrySchema = z.object({
+const ComputerAccountsEntrySchema = z.object({
   target: DeviceProvisioningTargetSchema,
   /** null when the computer is offline or did not answer in time. */
   accounts: ComputerAccountsSchema.nullable(),
@@ -39,7 +39,6 @@ export const ComputerAccountsReadInputSchema = z.object({
   target: DeviceProvisioningTargetSchema,
   refresh: z.boolean().optional(),
 }).strict()
-export type ComputerAccountTool = z.infer<typeof ComputerAccountToolSchema>
 export type ComputerAccount = z.infer<typeof ComputerAccountSchema>
 export type ComputerAccounts = z.infer<typeof ComputerAccountsSchema>
 export type ComputerAccountsList = z.infer<typeof ComputerAccountsListSchema>

@@ -1,11 +1,9 @@
-import type { JobWorkflowExecutionReference } from './jobWorkflow.js'
 import { z } from 'zod'
 import { HistoricalDeviceExecutionAdmissionFields, DeviceExecutionAdmissionFields, validateHistoricalDeviceExecutionAdmission } from './deviceResources.js'
 import { AcceptedNodePlacementSchema, PlacementDigestSchema } from './nodePlacement.js'
 import { JobArtifactMediaTypeSchema, JobArtifactRetentionSchema } from './jobArtifacts.js'
 import { IdSchema, TimestampSchema, RunInputSchema } from './schemaPrimitives.js'
 
-export const JOB_CONTRACT_VERSION = 1 as const
 const Revision = z.number().int().positive()
 const RelativePath = z.string().min(1).max(1024).refine(path =>
   !path.startsWith('/') && !path.split('/').some(part => part === '..' || part === '.' || part === '') && !path.includes('\\') && !path.includes('\0'), 'Expected a bounded relative path.')
@@ -24,7 +22,7 @@ export const JobDefinitionSourceSchema = z.object({
   approvedSourceId: z.uuid(), snapshotId: z.uuid(), commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
   manifestDigest: PlacementDigestSchema,
 }).strict()
-export const JobSourceSchema=JobDefinitionSourceSchema.extend({materializationId:z.uuid(),materializationDigest:PlacementDigestSchema}).strict()
+const JobSourceSchema=JobDefinitionSourceSchema.extend({materializationId:z.uuid(),materializationDigest:PlacementDigestSchema}).strict()
 export const JobInputRevisionSchema = z.object({
   path:RelativePath, fileId: IdSchema, revisionId: IdSchema, sha256: PlacementDigestSchema, byteSize: z.number().int().nonnegative(),
 }).strict()
@@ -76,7 +74,7 @@ export const AutoJobDefinitionSpecSchema = z.object({
 }).strict().superRefine(validateJobDefinitionPaths)
 export const JobDefinitionSpecSchema = z.union([ResolvedJobDefinitionSpecSchema, AutoJobDefinitionSpecSchema])
 export type ResolvedJobDefinitionSpec = z.infer<typeof ResolvedJobDefinitionSpecSchema>
-export type AutoJobDefinitionSpec = z.infer<typeof AutoJobDefinitionSpecSchema>
+type AutoJobDefinitionSpec = z.infer<typeof AutoJobDefinitionSpecSchema>
 export function isAutoJobSpec(spec: JobDefinitionSpec): spec is AutoJobDefinitionSpec {
   return 'kind' in spec.target && spec.target.kind === 'auto'
 }
@@ -103,7 +101,6 @@ export const AcceptedJobSpecSchema = PreparedJobSpecSchema.safeExtend({
   scriptDigest: PlacementDigestSchema, outputSpecDigest: PlacementDigestSchema, specDigest: PlacementDigestSchema, bindingHash: PlacementDigestSchema,
 }).strict().superRefine(validateHistoricalDeviceExecutionAdmission)
 export const CurrentAcceptedJobSpecSchema = AcceptedJobSpecSchema.safeExtend(DeviceExecutionAdmissionFields)
-export type CurrentAcceptedJobSpec = z.infer<typeof CurrentAcceptedJobSpecSchema>
 export const JobProcessStateSchema = z.object({
   phase: z.enum(['queued', 'preparing', 'running', 'terminal']),
   outcome: z.enum(['succeeded', 'build_failed', 'cancelled', 'timed_out', 'preparation_failed', 'spawn_failed']).nullable(),
@@ -136,7 +133,6 @@ export const JobExecutionSchema = z.object({
   cancelRequestedAt: TimestampSchema.nullable(), createdAt: TimestampSchema, updatedAt: TimestampSchema,
 }).strict()
 export const CurrentJobExecutionSchema = JobExecutionSchema.safeExtend({ acceptedSpec: CurrentAcceptedJobSpecSchema })
-export type CurrentJobExecution = z.infer<typeof CurrentJobExecutionSchema>
 export const JobLogChunkSchema = z.object({
   executionId: IdSchema, attemptId: IdSchema, sequence: z.number().int().positive(), stream: z.enum(['stdout', 'stderr']),
   text: z.string().max(65536), byteSize: z.number().int().nonnegative().max(65536), createdAt: TimestampSchema,
@@ -165,7 +161,6 @@ export const JobArtifactReadOutputSchema = z.object({
 export const JobValidationSchema = z.object({ valid: z.boolean(), reasons: z.array(z.string()), sideEffects: z.literal(false) }).strict()
 export type JobDefinition = z.infer<typeof JobDefinitionSchema>
 export type JobDefinitionSpec = z.infer<typeof JobDefinitionSpecSchema>
-export type JobDefinitionSave = z.infer<typeof JobDefinitionSaveSchema>
 export type JobStart = z.infer<typeof JobStartSchema>
 export type AcceptedJobSpec = z.infer<typeof AcceptedJobSpecSchema>
 export type JobExecution = z.infer<typeof JobExecutionSchema>
@@ -173,24 +168,8 @@ export type JobLogChunk = z.infer<typeof JobLogChunkSchema>
 export type JobLogPage = z.infer<typeof JobLogPageSchema>
 export type JobArtifact = z.infer<typeof JobArtifactSchema>
 export type JobValidation = z.infer<typeof JobValidationSchema>
-/** HTTP, MCP and workflow admission share this authority boundary. */
-export interface JobsService {
-  listDefinitions(workspaceId: string): Promise<JobDefinition[]>
-  getDefinition(workspaceId: string, id: string): Promise<JobDefinition>
-  getWorkflowExecutionReference(workspaceId:string,runId:string,nodeExecutionId:string):Promise<JobWorkflowExecutionReference>
-  getDefinitionVersion(workspaceId:string,id:string,versionId:string):Promise<JobDefinition>
-  saveDefinition(workspaceId: string, input: JobDefinitionSave): Promise<JobDefinition>
-  validate(workspaceId: string, spec: JobDefinitionSpec): Promise<JobValidation>
-  start(workspaceId: string, input: JobStart): Promise<JobExecution>
-  getExecution(workspaceId: string, id: string): Promise<JobExecution>
-  listExecutions(workspaceId: string): Promise<JobExecution[]>
-  cancel(workspaceId: string, id: string, commandId: string): Promise<JobExecution>
-  readLogs(workspaceId: string, id: string, afterSequence: number, limit: number): Promise<JobLogPage>
-  listArtifacts(workspaceId: string, id: string): Promise<JobArtifact[]>
-}
 export const JobAuthoringChoicesSchema = z.object({
   targets: z.array(z.object({id:IdSchema,label:z.string(),target:JobTargetSchema,ready:z.boolean(),reasons:z.array(z.string())}).strict()),
   sources: z.array(JobDefinitionSourceSchema), policies: z.array(JobPolicySchema),
   autoPolicies: z.array(z.object({ policy: JobPolicyRequirementsSchema, limits: JobRuntimeLimitsSchema }).strict()).optional(),
 }).strict()
-export type JobAuthoringChoices = z.infer<typeof JobAuthoringChoicesSchema>

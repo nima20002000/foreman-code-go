@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { DeviceProvisioningTargetSchema, DeviceCommandIdSchema, DeviceSafeIntegerSchema } from './deviceResources.js'
 
 /** Share (percent) of the computer's CPU and memory that builds may use together. */
-export const BuildComputerAllowanceSchema = z.number().int().min(10).max(100)
+const BuildComputerAllowanceSchema = z.number().int().min(10).max(100)
 export const BuildComputerPreferenceSchema = z.object({
   target: DeviceProvisioningTargetSchema,
   revision: DeviceSafeIntegerSchema,
@@ -19,7 +19,7 @@ export const BuildComputerUpdateSchema = BuildComputerReadSchema.extend({
   /** Omitted fields keep their saved values. */
   buildAllowancePercent: BuildComputerAllowanceSchema.optional(),
 }).strict()
-export const BuildComputerChangeSchema = BuildComputerUpdateSchema.omit({ commandId: true })
+const BuildComputerChangeSchema = BuildComputerUpdateSchema.omit({ commandId: true })
 export const BuildComputerBatchUpdateSchema = z.object({
   commandId: DeviceCommandIdSchema,
   updates: z.array(BuildComputerChangeSchema).min(1),
@@ -43,8 +43,6 @@ export const BuildComputerStatusSchema = z.object({
 }).strict()
 export const BuildComputerBatchResultSchema = z.object({ computers: z.array(BuildComputerStatusSchema).min(1) }).strict()
 export type BuildComputerPreference = z.infer<typeof BuildComputerPreferenceSchema>
-export type BuildComputerUpdate = z.infer<typeof BuildComputerUpdateSchema>
 export type BuildComputerStatus = z.infer<typeof BuildComputerStatusSchema>
 export type BuildComputerChange = z.infer<typeof BuildComputerChangeSchema>
-export type BuildComputerBatchUpdate = z.infer<typeof BuildComputerBatchUpdateSchema>
 export type BuildComputerBatchResult = z.infer<typeof BuildComputerBatchResultSchema>

@@ -7,7 +7,7 @@ export const NativeInteractionSupportSchema = z.object({
   supported: z.string().min(1),
   unsupported: z.string().min(1),
 }).strict()
-export type NativeInteractionSupport = z.infer<typeof NativeInteractionSupportSchema>
+type NativeInteractionSupport = z.infer<typeof NativeInteractionSupportSchema>
 
 /** Application response support, independent of native installation readiness. */
 export const CODEX_INTERACTION_SUPPORT: NativeInteractionSupport[] = [
@@ -34,7 +34,7 @@ export const CODEX_UNSUPPORTED_INTERACTION_ERRORS = {
   CODEX_STANDALONE_ELICITATION_UNSUPPORTED: 'Standalone MCP elicitations are unsupported. '
     + 'Confirmations must belong to the active Codex turn; no data was supplied.',
 } as const
-export type CodexUnsupportedInteractionCode = keyof typeof CODEX_UNSUPPORTED_INTERACTION_ERRORS
+type CodexUnsupportedInteractionCode = keyof typeof CODEX_UNSUPPORTED_INTERACTION_ERRORS
 
 export function codexUnsupportedInteractionMessage(code: unknown): string | undefined {
   if (typeof code !== 'string' || !Object.hasOwn(CODEX_UNSUPPORTED_INTERACTION_ERRORS, code)) return undefined

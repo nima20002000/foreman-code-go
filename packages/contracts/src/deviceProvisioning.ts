@@ -10,15 +10,14 @@ export * from './deviceResources.js'
 
 export const DEVICE_PROVISIONING_EXTENSION = Object.freeze({ namespace: 'device-provisioning-v1', version: 1 as const,
   role: 'duplex' as const, maxJsonBytes: 65536, maxBinaryBytes: 0 })
-export const DEVICE_READINESS_SAMPLE_SECONDS = 30
-export const DEVICE_READINESS_EXPIRY_SECONDS = 90
-export const DeviceProvisioningManagementActionSchema = z.enum(['settings:read', 'settings:update', 'devices:provision',
+const DEVICE_READINESS_EXPIRY_SECONDS = 90
+const DeviceProvisioningManagementActionSchema = z.enum(['settings:read', 'settings:update', 'devices:provision',
   'jobs:cancel', 'workspace_locations:update', 'source_roots:bind', 'harnesses:update']) satisfies z.ZodType<ManagementAction>
 const Actions = z.array(DeviceProvisioningManagementActionSchema).max(7).refine(value => new Set(value).size === value.length, 'Actions must be unique.')
-export const DeviceReadinessCheckIdSchema = z.enum(['runtime', 'toolchain', 'container-runtime', 'ci-image',
+const DeviceReadinessCheckIdSchema = z.enum(['runtime', 'toolchain', 'container-runtime', 'ci-image',
   'cgroup-cpu', 'cgroup-memory', 'cgroup-pids', 'storage', 'resource-policy', 'execution-authorization',
   'runtime-approval', 'workspace-roots', 'harness-dependencies'])
-export const DeviceReadinessCheckStateSchema = z.enum(['unknown', 'checking', 'ready', 'missing', 'blocked', 'repairing', 'failed', 'stale', 'unsupported'])
+const DeviceReadinessCheckStateSchema = z.enum(['unknown', 'checking', 'ready', 'missing', 'blocked', 'repairing', 'failed', 'stale', 'unsupported'])
 export const DeviceFixActionIdSchema = z.enum(['check', 'restore-toolchain', 'prepare-ci-image', 'repair-user-service',
   'capture-runtime', 'apply-resource-policy', 'apply-resource-policy-now', 'install-system-prerequisites', 'enable-storage-quota',
   'approve-execution', 'approve-runtime', 'select-workspace-root', 'prepare-harness'])
@@ -37,18 +36,18 @@ export const DeviceFixActionSchema = z.object({ id: DeviceFixActionIdSchema, exe
     || !value.requiredActions.includes('settings:update') || !value.requiredActions.includes('jobs:cancel')))
     ctx.addIssue({ code: 'custom', message: 'Apply now requires confirmation and the exact update/cancel permissions.' })
 })
-export const DeviceReadinessCheckSchema = z.object({ id: DeviceReadinessCheckIdSchema, state: DeviceReadinessCheckStateSchema,
+const DeviceReadinessCheckSchema = z.object({ id: DeviceReadinessCheckIdSchema, state: DeviceReadinessCheckStateSchema,
   requiredFor: z.array(z.enum(['jobs', 'agents', 'files'])).max(3).refine(value => new Set(value).size === value.length),
   reasonCode: DeviceReasonCodeSchema.nullable(), checkedAt: TimestampSchema.nullable(), evidenceDigest: DeviceDigestSchema.nullable(),
   actions: z.array(DeviceFixActionSchema).max(13).refine(value => new Set(value.map(action => action.id)).size === value.length),
 }).strict()
-export const DeviceCapabilityStateSchema = z.object({ state: z.enum(['ready', 'preparing', 'blocked', 'unknown', 'unsupported']),
+const DeviceCapabilityStateSchema = z.object({ state: z.enum(['ready', 'preparing', 'blocked', 'unknown', 'unsupported']),
   reasons: z.array(DeviceReasonCodeSchema).max(32), workspaceQualificationRequired: z.boolean(),
 }).strict().superRefine((value, ctx) => {
   if (value.state === 'ready' && (value.reasons.length || value.workspaceQualificationRequired))
     ctx.addIssue({ code: 'custom', message: 'Ready cannot claim missing authority or workspace qualification.' })
 })
-export const DeviceReadinessSummarySchema = z.discriminatedUnion('state', [
+const DeviceReadinessSummarySchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('ready'), label: z.literal('Ready'), remainingSteps: z.literal(0), primaryAction: z.null() }).strict(),
   z.object({ state: z.literal('needs-steps'), label: z.string().regex(/^Needs [1-9][0-9]? steps?$/),
     remainingSteps: DeviceSafeIntegerSchema.min(1).max(32), primaryAction: DeviceFixActionSchema,
@@ -57,11 +56,11 @@ export const DeviceReadinessSummarySchema = z.discriminatedUnion('state', [
       ctx.addIssue({ code: 'custom', path: ['label'], message: 'The one-line status must match its step count.' })
   }),
 ])
-export const DeviceProvisioningStepIdSchema = z.enum(['verify-release', 'install-runtime', 'restore-toolchain',
+const DeviceProvisioningStepIdSchema = z.enum(['verify-release', 'install-runtime', 'restore-toolchain',
   'install-system-prerequisites', 'repair-user-service', 'prepare-ci-image', 'enable-storage-quota', 'capture-runtime',
   'drain-work', 'stop-jobs', 'apply-resource-policy', 'verify-resource-policy', 'verify-readiness', 'pair-device'])
-export const DeviceApprovalRequirementSchema = z.enum(['none', 'local-admin', 'human', 'local-admin-and-human'])
-export const DeviceProvisioningPlanStepSchema = z.object({ id: DeviceProvisioningStepIdSchema,
+const DeviceApprovalRequirementSchema = z.enum(['none', 'local-admin', 'human', 'local-admin-and-human'])
+const DeviceProvisioningPlanStepSchema = z.object({ id: DeviceProvisioningStepIdSchema,
   executor: z.enum(['worker', 'local-admin', 'human']), approvalRequirement: DeviceApprovalRequirementSchema,
 }).strict().superRefine((value, ctx) => {
   if (['install-system-prerequisites', 'enable-storage-quota'].includes(value.id) && value.executor !== 'local-admin'
@@ -81,7 +80,7 @@ export const DeviceRepairPlanSchema = z.object({ planId: z.uuid(), target: Devic
     || value.steps.some(step => step.executor === 'human') && !['human', 'local-admin-and-human'].includes(value.approvalRequirement))
     ctx.addIssue({ code: 'custom', message: 'The plan must disclose its local/human approval requirement.' })
 })
-export const DeviceProvisioningOperationStateSchema = z.enum(['planned', 'awaiting-local-admin', 'awaiting-human-approval',
+const DeviceProvisioningOperationStateSchema = z.enum(['planned', 'awaiting-local-admin', 'awaiting-human-approval',
   'queued', 'running', 'verifying', 'succeeded', 'failed', 'recovery-required'])
 export const DeviceProvisioningOperationSchema = z.object({ operationId: z.uuid(), target: DeviceProvisioningTargetSchema,
   commandId: DeviceCommandIdSchema, planId: z.uuid().nullable(), state: DeviceProvisioningOperationStateSchema,
@@ -159,34 +158,21 @@ export const DeviceReadinessSchema = z.object({ schemaVersion: z.literal(1), tar
     ctx.addIssue({ code: 'custom', path: ['summary', 'primaryAction'], message: 'The primary fix must be an advertised action.' })
 })
 export type DeviceReadiness = z.infer<typeof DeviceReadinessSchema>
-export type DeviceFixAction = z.infer<typeof DeviceFixActionSchema>
-export type DeviceRepairPlan = z.infer<typeof DeviceRepairPlanSchema>
-export type DeviceProvisioningOperation = z.infer<typeof DeviceProvisioningOperationSchema>
-export type DeviceRuntimeApproval = z.infer<typeof DeviceRuntimeApprovalSchema>
-export const DeviceReadinessReadRequestSchema = z.object({ target: DeviceProvisioningTargetSchema }).strict()
 export const DeviceReadinessReadResultSchema = z.object({ readiness: DeviceReadinessSchema }).strict()
 export const DeviceReadinessCheckRequestSchema = z.object({ target: DeviceProvisioningTargetSchema, commandId: DeviceCommandIdSchema,
   expectedGeneration: DeviceSafeIntegerSchema }).strict()
-export const DeviceReadinessCheckResultSchema = z.object({ operation: DeviceProvisioningOperationSchema }).strict()
 export const DeviceRepairPlanRequestSchema = z.object({ target: DeviceProvisioningTargetSchema,
   actionIds: DeviceRepairPlanSchema.shape.actionIds, expectedGeneration: DeviceSafeIntegerSchema }).strict()
-export const DeviceRepairPlanResultSchema = z.object({ plan: DeviceRepairPlanSchema }).strict()
 export const DeviceRepairStartRequestSchema = z.object({ target: DeviceProvisioningTargetSchema, commandId: DeviceCommandIdSchema,
   planId: z.uuid(), planDigest: DeviceDigestSchema, expectedGeneration: DeviceSafeIntegerSchema }).strict()
-export const DeviceRepairStartResultSchema = z.object({ operation: DeviceProvisioningOperationSchema }).strict()
-export const DeviceProvisioningOperationReadRequestSchema = z.object({ target: DeviceProvisioningTargetSchema, operationId: z.uuid() }).strict()
-export const DeviceProvisioningOperationReadResultSchema = z.object({ operation: DeviceProvisioningOperationSchema }).strict()
-export const DeviceRuntimeApprovalReadRequestSchema = DeviceReadinessReadRequestSchema
-export const DeviceRuntimeApprovalReadResultSchema = z.object({ approval: DeviceRuntimeApprovalSchema.nullable() }).strict()
-export const DeviceRuntimeApprovalRequestSchema = z.object({ target: DeviceProvisioningTargetSchema, commandId: DeviceCommandIdSchema,
+const DeviceRuntimeApprovalRequestSchema = z.object({ target: DeviceProvisioningTargetSchema, commandId: DeviceCommandIdSchema,
   expectedRevision: DeviceSafeIntegerSchema }).strict()
 /** Human browser only: this schema is deliberately not an Operator grant tool. */
 export const DeviceRuntimeApprovalGrantSchema = DeviceRuntimeApprovalRequestSchema.safeExtend({ approvalId: z.uuid(), approved: z.literal(true) })
 export const DeviceRuntimeApprovalRevokeSchema = DeviceRuntimeApprovalRequestSchema.safeExtend({ expectedRevision: DeviceRevisionSchema, approvalId: z.uuid() })
-export const DeviceRuntimeApprovalCommandResultSchema = z.object({ approval: DeviceRuntimeApprovalSchema }).strict()
 
-export const DEVICE_PAIRING_CODE_TTL_SECONDS = 900
-export const DevicePairingCodeSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
+const DEVICE_PAIRING_CODE_TTL_SECONDS = 900
+const DevicePairingCodeSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
 export const DevicePairingInstallCodeSchema = z.object({ schemaVersion: z.literal(1), pairingId: z.uuid(), mainId: z.uuid(),
   code: DevicePairingCodeSchema, issuedAt: TimestampSchema, expiresAt: TimestampSchema, singleUse: z.literal(true),
 }).strict().superRefine((value, ctx) => {
@@ -194,7 +180,7 @@ export const DevicePairingInstallCodeSchema = z.object({ schemaVersion: z.litera
   if (ttl <= 0 || ttl > DEVICE_PAIRING_CODE_TTL_SECONDS * 1000)
     ctx.addIssue({ code: 'custom', path: ['expiresAt'], message: 'Install pairing codes expire within fifteen minutes.' })
 })
-export const DeviceProvisioningReleaseSchema = z.object({ releaseId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
+const DeviceProvisioningReleaseSchema = z.object({ releaseId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
   installerUrl: z.string().regex(/^https:\/\/[A-Za-z0-9.-]+(?::[0-9]{1,5})?\/[A-Za-z0-9/._~-]+$/).refine(value => {
     try { const url = new URL(value); return !url.username && !url.password && !url.search && !url.hash } catch { return false }
   }), installerSha256: DeviceDigestSchema,
@@ -216,9 +202,6 @@ export const DevicePairingInstallRedeemSchema = z.object({ pairingId: z.uuid(), 
   identity: WorkerIdentityRequestSchema, releaseId: DeviceProvisioningReleaseSchema.shape.releaseId,
   installerSha256: DeviceDigestSchema,
 }).strict()
-/** Return private pairing credentials through the existing approved enrollment mechanism, outside public readiness/audit. */
-export const DevicePairingInstallRedeemResultSchema = z.object({ target: DeviceProvisioningTargetSchema,
-  pairingId: z.uuid(), consumedAt: TimestampSchema }).strict()
 
 /** Trusted observations contain measured checks/capacity, never caller capability-ready flags or runtime approval. */
 const WireBinding = { version: z.literal(1), target: DeviceProvisioningTargetSchema, binding: DeviceSessionBindingSchema, bootId: z.uuid() }
@@ -246,39 +229,3 @@ export const DeviceProvisioningWireRequestSchema = z.discriminatedUnion('method'
   if (value.method === 'observe' && new Set(value.checks.map(check => check.id)).size !== value.checks.length)
     ctx.addIssue({ code: 'custom', message: 'Observation check IDs must be unique.' })
 })
-export const DeviceProvisioningWireResultSchema = z.discriminatedUnion('method', [
-  z.object({ ...WireBinding, method: z.enum(['observe', 'resource-ack']), accepted: z.literal(true), generation: DeviceRevisionSchema }).strict(),
-  z.object({ ...WireBinding, method: z.enum(['check', 'repair-start', 'operation-status', 'resource-apply']), operation: DeviceProvisioningOperationSchema }).strict(),
-]).superRefine((value, ctx) => {
-  const host = value.target.hostRef, binding = value.binding
-  if (host.kind !== 'device' || host.mainId !== binding.mainId || host.deviceId !== binding.deviceId
-    || value.target.applicationInstallationId !== binding.workerInstallationId || value.target.keyRevision !== binding.keyRevision
-    || value.target.authorizationRevision !== binding.authorizationRevision || value.bootId !== binding.bootId
-    || 'operation' in value && !sameDeviceProvisioningTarget(value.operation.target, value.target))
-    ctx.addIssue({ code: 'custom', message: 'Wire response must retain the exact request binding and target.' })
-})
-export type DeviceProvisioningWireRequest = z.infer<typeof DeviceProvisioningWireRequestSchema>
-export type DeviceProvisioningWireResult = z.infer<typeof DeviceProvisioningWireResultSchema>
-
-export type DeviceReadinessReadRequest = z.infer<typeof DeviceReadinessReadRequestSchema>
-export type DeviceReadinessReadResult = z.infer<typeof DeviceReadinessReadResultSchema>
-export type DeviceReadinessCheckRequest = z.infer<typeof DeviceReadinessCheckRequestSchema>
-export type DeviceReadinessCheckResult = z.infer<typeof DeviceReadinessCheckResultSchema>
-export type DeviceRepairPlanRequest = z.infer<typeof DeviceRepairPlanRequestSchema>
-export type DeviceRepairPlanResult = z.infer<typeof DeviceRepairPlanResultSchema>
-export type DeviceRepairStartRequest = z.infer<typeof DeviceRepairStartRequestSchema>
-export type DeviceRepairStartResult = z.infer<typeof DeviceRepairStartResultSchema>
-export type DeviceProvisioningOperationReadRequest = z.infer<typeof DeviceProvisioningOperationReadRequestSchema>
-export type DeviceProvisioningOperationReadResult = z.infer<typeof DeviceProvisioningOperationReadResultSchema>
-export type DeviceRuntimeApprovalReadRequest = z.infer<typeof DeviceRuntimeApprovalReadRequestSchema>
-export type DeviceRuntimeApprovalReadResult = z.infer<typeof DeviceRuntimeApprovalReadResultSchema>
-export type DeviceRuntimeApprovalRequest = z.infer<typeof DeviceRuntimeApprovalRequestSchema>
-export type DeviceRuntimeApprovalGrant = z.infer<typeof DeviceRuntimeApprovalGrantSchema>
-export type DeviceRuntimeApprovalRevoke = z.infer<typeof DeviceRuntimeApprovalRevokeSchema>
-export type DeviceRuntimeApprovalCommandResult = z.infer<typeof DeviceRuntimeApprovalCommandResultSchema>
-export type DevicePairingInstallCode = z.infer<typeof DevicePairingInstallCodeSchema>
-export type DeviceProvisioningRelease = z.infer<typeof DeviceProvisioningReleaseSchema>
-export type DevicePairingInstallCreate = z.infer<typeof DevicePairingInstallCreateSchema>
-export type DevicePairingInstallCreateResult = z.infer<typeof DevicePairingInstallCreateResultSchema>
-export type DevicePairingInstallRedeem = z.infer<typeof DevicePairingInstallRedeemSchema>
-export type DevicePairingInstallRedeemResult = z.infer<typeof DevicePairingInstallRedeemResultSchema>

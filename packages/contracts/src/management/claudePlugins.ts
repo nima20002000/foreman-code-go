@@ -20,13 +20,13 @@ export const PluginMarketplaceSourceSchema = z.string().trim().min(3).max(500).r
 }, 'Use owner/repo or a Git URL without credentials, query parameters or fragments.')
 
 /** One Claude Code plugin from the user's configured marketplaces. Native Claude Code is the source of truth. */
-export const ClaudePluginSummarySchema = z.object({
+const ClaudePluginSummarySchema = z.object({
   pluginId: PluginId, name: z.string(), marketplaceName: z.string(), description: z.string().nullable(),
   version: z.string().nullable(), installed: z.boolean(), enabled: z.boolean(), installCount: z.number().int().nonnegative().nullable(),
 }).strict()
 export type ClaudePluginSummary = z.infer<typeof ClaudePluginSummarySchema>
 
-export const ClaudePluginMarketplaceSchema = z.object({ name: z.string(), source: z.string().nullable() }).strict()
+const ClaudePluginMarketplaceSchema = z.object({ name: z.string(), source: z.string().nullable() }).strict()
 export type ClaudePluginMarketplace = z.infer<typeof ClaudePluginMarketplaceSchema>
 
 export const ClaudePluginListInputSchema = z.object({
@@ -40,10 +40,8 @@ export const ClaudePluginListResultSchema = z.object({
   marketplaces: z.array(ClaudePluginMarketplaceSchema).max(100), checkedAt: z.string().datetime({ offset: true }),
   revision: Revision,
 }).strict()
-export type ClaudePluginListResult = z.infer<typeof ClaudePluginListResultSchema>
 
-export const ClaudePluginActionSchema = z.enum(['install', 'uninstall', 'enable', 'disable'])
-export type ClaudePluginAction = z.infer<typeof ClaudePluginActionSchema>
+const ClaudePluginActionSchema = z.enum(['install', 'uninstall', 'enable', 'disable'])
 export const ClaudePluginChangeInputSchema = z.object({
   pluginId: PluginId, action: ClaudePluginActionSchema, commandId: CommandId, expectedRevision: Revision,
   /** sha256 of a marketplace-declared install command that Claude Code showed in a previous result. */
@@ -57,7 +55,6 @@ export const ClaudePluginChangeResultSchema = z.object({
   command: z.object({ text: z.string().max(4000), sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(),
   plugin: ClaudePluginSummarySchema.nullable(),
 }).strict()
-export type ClaudePluginChangeResult = z.infer<typeof ClaudePluginChangeResultSchema>
 
 export const ClaudePluginMarketplaceAddInputSchema = z.object({
   /** owner/repo, a Git or HTTPS URL. Local paths stay machine-specific and are not accepted here. */
@@ -69,4 +66,3 @@ export const ClaudePluginMarketplaceAddResultSchema = z.object({
   marketplaces: z.array(ClaudePluginMarketplaceSchema).max(100),
   status: z.enum(['applied', 'uncertain']), message: z.string().max(2000),
 }).strict()
-export type ClaudePluginMarketplaceAddResult = z.infer<typeof ClaudePluginMarketplaceAddResultSchema>

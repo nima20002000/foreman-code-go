@@ -4,7 +4,7 @@ import { GraphIdSchema } from './protocol.js'
 import { RepeatGraphScopeV3Schema, sameCanonicalGraphScope, type RepeatGraphScopeV3 } from './repeatGraphMetadata.js'
 import { RunActivityPublicKindSchema } from './runActivities.js'
 
-export const WorkspaceBoardInspectionSchema = z.object({
+const WorkspaceBoardInspectionSchema = z.object({
   runNodeId: GraphIdSchema.optional(), runRelationshipId: GraphIdSchema.optional(),
   runExchangeKey: z.string().min(1).max(2048).optional(),
 }).strict()
@@ -16,7 +16,7 @@ export type WorkspaceBoardInspection = z.infer<typeof WorkspaceBoardInspectionSc
  * exchange keys retain their meaning. IDs cannot contain '/', and '-' is not an ID.
  * No additional route-local mirror of this linkable state is needed.
  */
-export const WorkspaceBoardExecutionSelectionSchema = z.object({
+const WorkspaceBoardExecutionSelectionSchema = z.object({
   occurrenceId: GraphIdSchema.optional(), executionId: GraphIdSchema.optional(),
 }).strict()
 export type WorkspaceBoardExecutionSelection = z.infer<typeof WorkspaceBoardExecutionSelectionSchema>
@@ -55,7 +55,7 @@ export const WorkspaceBoardSearchSchema = UrlSearchSelectionSchema.extend({
     context.addIssue({ code: 'custom', message: 'A Run selection needs its workflow, Run, immutable version and execution semantics.' })
   }
 })
-export type WorkspaceBoardSearch = z.infer<typeof WorkspaceBoardSearchSchema>
+type WorkspaceBoardSearch = z.infer<typeof WorkspaceBoardSearchSchema>
 export type WorkflowBoardLocation = {
   workspaceId: string; workflowId?: string; search: WorkspaceBoardSearch
   run?: RepeatGraphScopeV3; draftAlias: boolean

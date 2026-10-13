@@ -10,15 +10,14 @@ export const COMPUTER_MAINTENANCE_NAMESPACE = 'computer-maintenance-v2'
 export const COMPUTER_MAINTENANCE_VERSION = 2
 
 /** Harnesses kept installed and current on every computer: Codex and Claude. */
-export const MaintainedHarnessSchema = z.enum(['codex', 'claude'])
+const MaintainedHarnessSchema = z.enum(['codex', 'claude'])
 export type MaintainedHarness = z.infer<typeof MaintainedHarnessSchema>
 const HarnessSelectionSchema = z.array(MaintainedHarnessSchema).min(1).max(2)
   .refine(harnesses => new Set(harnesses).size === harnesses.length, 'Choose each harness once.')
 
-export const MaintenanceTaskKindSchema = z.enum([
+const MaintenanceTaskKindSchema = z.enum([
   'update-harnesses', 'update-worker', 'update-system', 'restart', 'sync-mcp', 'sync-plugins',
 ])
-export type MaintenanceTaskKind = z.infer<typeof MaintenanceTaskKindSchema>
 
 /** A user-level MCP server definition. Secret values are never copied: only environment variable names and URLs. */
 export const SyncedMcpServerSchema = z.discriminatedUnion('transport', [
@@ -66,7 +65,6 @@ export const MaintenanceRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('status') }).strict(),
   z.object({ operation: z.literal('start'), commandId: z.uuid(), task: MaintenanceTaskStartSchema }).strict(),
 ])
-export type MaintenanceRequest = z.infer<typeof MaintenanceRequestSchema>
 
 export const MaintenanceTaskSchema = z.object({
   id: z.uuid(),
@@ -97,7 +95,7 @@ export const ComputerMaintenanceDispatchSchema = z.object({
   task: MaintenanceTaskStartSchema,
 }).strict()
 
-export const HarnessVersionSchema = z.object({
+const HarnessVersionSchema = z.object({
   harness: MaintainedHarnessSchema,
   installed: z.boolean(),
   version: z.string().max(100).nullable(),
@@ -122,7 +120,7 @@ export const MaintenanceStatusSchema = z.object({
 export type MaintenanceStatus = z.infer<typeof MaintenanceStatusSchema>
 
 export const DEFAULT_MAINTENANCE_TASK_LIMIT = 5
-export const MaintenanceTaskLimitSchema = z.number().int().min(1).max(50)
+const MaintenanceTaskLimitSchema = z.number().int().min(1).max(50)
 
 export const MaintenanceReplySchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('status'), status: MaintenanceStatusSchema }).strict(),
@@ -140,10 +138,10 @@ export const ComputerMaintenanceListInputSchema = z.object({
   taskLimit: MaintenanceTaskLimitSchema.optional(),
 }).strict()
 /** Operator summaries omit diagnostic output; full reads use the same history selection with diagnostic output. */
-export const MaintenanceTaskSummarySchema = MaintenanceTaskSchema.omit({ outputTail: true }).extend({
+const MaintenanceTaskSummarySchema = MaintenanceTaskSchema.omit({ outputTail: true }).extend({
   summary: z.string().max(300),
 })
-export const CompactMaintenanceStatusSchema = MaintenanceStatusSchema.extend({
+const CompactMaintenanceStatusSchema = MaintenanceStatusSchema.extend({
   tasks: z.array(MaintenanceTaskSummarySchema).max(20),
 })
 export const ComputerMaintenanceOperatorListSchema = z.object({

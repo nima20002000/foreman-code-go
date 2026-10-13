@@ -16,7 +16,7 @@ export const WorkspaceLocationIdentitySchema = z.union([
     }
   }),
 ])
-export const RootAccessSchema = z.enum(['read-only', 'read-write'])
+const RootAccessSchema = z.enum(['read-only', 'read-write'])
 const FilesystemIdSchema = z.string().regex(/^[a-f0-9]{1,16}$/)
 export const ApprovedRootAllowlistSchema = z.object({ schemaVersion: z.literal(1), hostRef: WorkspaceRootHostSchema,
   applicationInstallationId: z.uuid(), configurationRevision: Revision,

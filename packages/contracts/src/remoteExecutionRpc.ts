@@ -63,4 +63,3 @@ export const CurrentRemoteExecutionRpcRequestSchema = RemoteExecutionRpcRequestS
     value.intent[field as keyof typeof DeviceExecutionAdmissionFields] !== value.placement[field as keyof typeof DeviceExecutionAdmissionFields]))
     ctx.addIssue({ code: 'custom', message: 'Native entry requires the identical original resource policy and device approval.' })
 })
-export type CurrentRemoteExecutionRpcRequest = z.infer<typeof CurrentRemoteExecutionRpcRequestSchema>

@@ -56,7 +56,6 @@ export const CurrentWorkflowSaveInputSchema = CurrentWorkflowValidateInputSchema
     height: CurrentAgentWorkflowNodeSchema.shape.height,
   }).strict()).optional(),
 }).strict()
-export type CurrentWorkflowSaveRequest = z.input<typeof CurrentWorkflowSaveInputSchema>
 export type CurrentWorkflowSaveInput = z.infer<typeof CurrentWorkflowSaveInputSchema>
 export type CurrentWorkflowValidateInput = z.infer<typeof CurrentWorkflowValidateInputSchema>
 export const CurrentWorkflowSavedSchema = z.object({

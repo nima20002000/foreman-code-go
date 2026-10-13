@@ -31,8 +31,7 @@ export {
   CurrentManagedWorkflowSchema, CurrentManagedWorkflowPageSchema, CurrentManagedWorkflowCommandResultSchema,
   CurrentWorkspaceDetailsSchema, CurrentGetWorkflowResponseSchema, CurrentWorkflowVersionDetailSchema,
   CurrentWorkflowVersionPageSchema, CurrentRunPageSchema, CurrentRunDetailsSchema,
-  CurrentRunVersionSnapshotSchema,
-  type CurrentManagedWorkflow, type CurrentWorkspaceDetails, type CurrentGetWorkflowResponse,
+  CurrentRunVersionSnapshotSchema, type CurrentWorkspaceDetails, type CurrentGetWorkflowResponse,
   type CurrentRunDetails,
 } from './currentRead.js'
 

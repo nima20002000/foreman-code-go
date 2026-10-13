@@ -23,7 +23,7 @@ const id = z.string().min(1).max(1024)
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/)
 const directory = z.string().startsWith('/').max(4096).refine(value => !value.includes('\0'))
 const owner = { conversationId: id, configurationVersionId: id, configurationHash: digest }
-export const WorkerConversationOwnerSchema = z.discriminatedUnion('kind', [
+const WorkerConversationOwnerSchema = z.discriminatedUnion('kind', [
   z.object({ ...owner, kind: z.literal('operator'), operatorId: id }).strict(),
   z.object({ ...owner, kind: z.literal('agent'), agentId: id, workspaceId: id,
     workflowId: id, workflowNodeId: id }).strict(),
@@ -73,7 +73,7 @@ export const WorkerConversationBindingSchema = z.object({
   }
 })
 export type WorkerConversationBinding = z.infer<typeof WorkerConversationBindingSchema>
-export const WorkerConversationConfigurationSchema = z.union([
+const WorkerConversationConfigurationSchema = z.union([
   z.lazy(() => OperatorConfigurationVersionSchema), z.lazy(() => AgentConfigurationVersionSchema),
 ])
 export type WorkerConversationConfiguration = z.infer<typeof WorkerConversationConfigurationSchema>
@@ -85,7 +85,7 @@ export function workerConversationProfileSelection(binding: WorkerConversationBi
   return parsed.sourceExecution ? parsed.profile : configuration.harnessProfileSelection
 }
 
-export const WorkerConversationTurnSchema = z.object({
+const WorkerConversationTurnSchema = z.object({
   correlationId: id, inputHash: digest,
   status: z.enum(['reserved', 'submitted', 'completed', 'uncertain', 'rejected']),
   nativeTurnId: id.nullable(), nativeSubmission: NativeMessageSubmissionSchema.optional(),
@@ -104,7 +104,6 @@ export const WorkerClaudeCallbackRecordSchema = z.object({
   selectedOptionId: id.optional(), state: z.enum(['submitted', 'uncertain']),
   acknowledged: z.boolean(), retired: z.boolean().optional(),
 }).strict()
-export type WorkerClaudeCallbackRecord = z.infer<typeof WorkerClaudeCallbackRecordSchema>
 export const WorkerConversationReceiptSchema = z.object({
   binding: WorkerConversationBindingSchema,
   connection: DeviceSessionBindingSchema,
@@ -175,7 +174,7 @@ export const WorkerConversationRegisteredCopySchema = z.object({ registrationId:
   executionPath: directory, writable: z.literal(false), byteSize: z.number().int().min(0).max(MAX_FILE_BYTES),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict()
-export const WorkerConversationFileActionSchema = z.discriminatedUnion('phase', [
+const WorkerConversationFileActionSchema = z.discriminatedUnion('phase', [
   z.object({ phase: z.literal('prepare'), executionHostId: id }).strict(),
   z.object({ phase: z.literal('input'), prompt: z.string().max(1_000_000) }).strict(),
   z.object({ phase: z.literal('activate'), nativeTurnId: id }).strict(),
@@ -197,7 +196,7 @@ export const WorkerConversationFileResultSchema = z.object({ success: z.boolean(
   contentItems: z.array(z.object({ type: z.literal('inputText'), text: z.string() }).strict()),
 }).strict()
 export const WorkerConversationFilePublicationsSchema = MessageAttachmentRefsSchema
-export const WorkerResponseAvailabilityQuerySchema = z.object({
+const WorkerResponseAvailabilityQuerySchema = z.object({
   nativeRequestId: id, nativeRequestType: id, expectedNativeTurnId: id.optional(),
   expectedNativeMessageId: id.optional(), expectedGeneration: id.optional(),
 }).strict()
@@ -280,7 +279,7 @@ export const WorkerConversationProfileFactsSchema = z.object({
 export type WorkerConversationProfileFacts = z.infer<typeof WorkerConversationProfileFactsSchema>
 
 const callback = { admissionId: z.uuid(), binding: WorkerConversationBindingSchema }
-export const WorkerClaudeAuthorityRequestSchema = z.discriminatedUnion('phase', [
+const WorkerClaudeAuthorityRequestSchema = z.discriminatedUnion('phase', [
   z.object({ phase: z.literal('admission') }).strict(),
   z.object({ phase: z.literal('file'), identity: WorkerClaudeCallbackIdentitySchema,
     operation: z.enum(['files.list', 'files.read', 'files.create_working_copy', 'files.write_working_copy',
@@ -315,7 +314,6 @@ export const WorkerConversationCallbackSchema = z.discriminatedUnion('method', [
       result: z.lazy(() => ExecutionResultSchema), nativeMessageId: id.optional(),
       history: WorkerConversationHistorySchema.optional() }).strict() }).strict(),
 ])
-export type WorkerConversationCallback = z.infer<typeof WorkerConversationCallbackSchema>
 
 export const WorkerMcpInspectionSchema = z.object({
   harness: z.lazy(() => AgentHarnessSchema), providerVersion: id, runnerId: id,

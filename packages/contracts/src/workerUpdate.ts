@@ -13,7 +13,7 @@ export const WorkerUpdateStatusSchema = z.object({
 }).strict()
 export type WorkerUpdateStatus = z.infer<typeof WorkerUpdateStatusSchema>
 
-export const WorkerArtifactTargetSchema = z.object({
+const WorkerArtifactTargetSchema = z.object({
   os: z.string().min(1).max(100),
   osRelease: z.string().min(1).max(100),
   arch: z.string().min(1).max(100),
@@ -48,7 +48,7 @@ export const WorkerArtifactManifestSchema = z.object({
 export type WorkerArtifactManifest = z.infer<typeof WorkerArtifactManifestSchema>
 
 /** Where Workers download a release: a GitHub release asset per artifact, named <manifestSha256>.tar.gz. */
-export const WorkerArtifactGitHubSchema = z.object({
+const WorkerArtifactGitHubSchema = z.object({
   repository: z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/u),
   tag: z.string().regex(/^worker-[a-f0-9]{12,64}$/u),
 }).strict()
@@ -66,7 +66,6 @@ export const WorkerArtifactRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('release'), target: WorkerArtifactTargetSchema }).strict(),
   z.object({ operation: z.literal('chunk'), manifestSha256: digest, path: artifactPath, offset }).strict(),
 ])
-export type WorkerArtifactRequest = z.infer<typeof WorkerArtifactRequestSchema>
 
 export const WorkerArtifactReplySchema = z.discriminatedUnion('operation', [
   z.object({
@@ -86,4 +85,3 @@ export const WorkerArtifactReplySchema = z.discriminatedUnion('operation', [
     byteSize: z.number().int().nonnegative().max(WORKER_UPDATE_MAX_BINARY_BYTES),
   }).strict(),
 ])
-export type WorkerArtifactReply = z.infer<typeof WorkerArtifactReplySchema>

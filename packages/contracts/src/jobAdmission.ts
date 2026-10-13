@@ -9,7 +9,7 @@ import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 import { ManagementPrincipalSchema } from './management/principals.js'
 
 const PositiveInteger = DeviceSafeIntegerSchema.positive()
-export const JobPlacementIntentSchema = z.discriminatedUnion('kind', [
+const JobPlacementIntentSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('auto') }).strict(),
   z.object({ kind: z.literal('explicit'), target: JobTargetSchema }).strict(),
   /** Auto placement that tries this computer first (an Agent's own computer), then the others in build order. */
@@ -25,7 +25,6 @@ export const JobQueuedStartSchema = z.object({
 export const JobLaunchValidationInputSchema = JobQueuedStartSchema.omit({ commandId: true })
 /** A request can wait in the queue even when no computer can run it now. */
 export const JobLaunchValidationSchema = JobValidationSchema.extend({ canQueue: z.boolean() }).strict()
-export type JobLaunchValidation = z.infer<typeof JobLaunchValidationSchema>
 
 /** Priority belongs to computers. Tickets are FIFO among eligible requests, with bounded backfill. */
 export const JOB_QUEUE_ORDER = 'fifo-among-eligible' as const
@@ -239,7 +238,7 @@ export const JobQueueLimitsSchema = z.object({
   maxBackfillClaims: DeviceSafeIntegerSchema,
 }).strict()
 /** Installer/owner configuration only. HTTP/MCP callers cannot submit reviewed envelopes or review metadata. */
-export const JobBuildQueuePolicySchema = z.object({
+const JobBuildQueuePolicySchema = z.object({
   schemaVersion: z.literal(1),
   mainId: z.uuid(),
   revision: PositiveInteger,
@@ -263,7 +262,6 @@ export type JobQueueTicket = z.infer<typeof JobQueueTicketSchema>
 export function jobQueueHasExecution(ticket: JobQueueTicket): boolean {
   return ticket.state === 'accepted' || ticket.state === 'terminal' && ticket.terminalReason === 'completed'
 }
-export type JobResourceReservation = z.infer<typeof JobResourceReservationSchema>
 export type JobComputerEligibility = z.infer<typeof JobComputerEligibilitySchema>
 
 /** Reuses the measured allowance after control headroom; consumers must not subtract it again. */

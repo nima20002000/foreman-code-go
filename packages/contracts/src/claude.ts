@@ -13,7 +13,6 @@ export const ClaudeMcpServerSchema = z.object({
 }).strict();
 /** Supplied by the owning API; browser origins are not MCP endpoint authorities. */
 export const ClaudeSetupOptionsSchema = z.object({ graphqlMcp: ClaudeMcpServerSchema.nullable() }).strict();
-export type ClaudeSetupOptions = z.infer<typeof ClaudeSetupOptionsSchema>;
 export const ClaudeEffortSchema = z.enum(['low', 'medium', 'high', 'xhigh', 'max']);
 /** Explicit accepted policy. Ambient Claude settings and launch flags are never inputs. */
 export const ClaudeHarnessConfigurationSchema = z.object({
@@ -63,9 +62,7 @@ export const ClaudeQuestionInputSchema = z.object({ questions: z.array(z.object(
     questions.add(question.question);
   });
 });
-export type ClaudeQuestionInput = z.infer<typeof ClaudeQuestionInputSchema>;
 export const ClaudeQuestionAnswersSchema = z.record(z.string(), z.object({ selected: z.array(z.string()).max(20), freeText: z.string().max(10_000).optional() }).strict());
-export type ClaudeQuestionAnswers = z.infer<typeof ClaudeQuestionAnswersSchema>;
 
 /** Positive native input identity; never a substitute native turn or assistant output identity. */
 export const NativeMessageSubmissionSchema = z.object({

@@ -8,4 +8,3 @@ export const RunStopCauseSchema = z.object({
   error: z.object({ code: z.string().min(1).max(100), message: z.string().min(1).max(500) }).strict(),
   recordedAt: z.string().datetime({ offset: true }),
 }).strict()
-export type RunStopCause = z.infer<typeof RunStopCauseSchema>

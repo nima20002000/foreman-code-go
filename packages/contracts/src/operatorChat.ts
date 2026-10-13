@@ -16,13 +16,12 @@ export type OperatorConversationHistoryQuery = z.infer<typeof OperatorConversati
  * Durable acceptance identity, not permission to resubmit.
  * Null outcome means no terminal result was stored at the page's revision.
  */
-export const OperatorMessageReceiptSchema = z.object({
+const OperatorMessageReceiptSchema = z.object({
   requestId: IdSchema,
   inputHash: z.union([z.literal("legacy"), z.string().regex(/^[a-f0-9]{64}$/)]),
   outcome: z.enum(["succeeded", "failed", "canceled"]).nullable(),
   retryable: z.boolean(),
 }).strict();
-export type OperatorMessageReceipt = z.infer<typeof OperatorMessageReceiptSchema>;
 
 export const OperatorConversationHistoryPageSchema = z.object({
   conversationId: IdSchema,
@@ -45,4 +44,3 @@ export const OperatorHandoffHistoryPageSchema = z.object({
     role: z.enum(['user', 'assistant']), content: z.string() }).strict()).max(50),
   nextCursor: OperatorHistoryCursorSchema.nullable(),
 }).strict();
-export type OperatorHandoffHistoryPage = z.infer<typeof OperatorHandoffHistoryPageSchema>;

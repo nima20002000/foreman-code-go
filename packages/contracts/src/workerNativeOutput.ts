@@ -8,14 +8,13 @@ export const MAX_NATIVE_OUTPUT_APPEND_BYTES = MAX_FILE_READ_BYTES
 const commandId = AgentFilePublishInputSchema.shape.commandId
 const artifactId = AgentFilePublishInputSchema.shape.artifactId
 export const WorkerNativeOutputOperationSchema = z.enum(['create', 'append', 'seal', 'publish'])
-export type WorkerNativeOutputOperation = z.infer<typeof WorkerNativeOutputOperationSchema>
 export const WorkerNativeOutputBytesSchema = z.string().max(4 * Math.ceil(MAX_FILE_READ_BYTES / 3))
   .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$/)
   .refine(value => value.length / 4 * 3 - (value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0)
     <= MAX_FILE_READ_BYTES, 'Expected at most 64 KiB of canonical base64')
-export const WorkerNativeOutputPublicationInputSchema = FileDescriptionSchema.safeExtend({ commandId, artifactId })
+const WorkerNativeOutputPublicationInputSchema = FileDescriptionSchema.safeExtend({ commandId, artifactId })
 export type WorkerNativeOutputPublicationInput = z.infer<typeof WorkerNativeOutputPublicationInputSchema>
-export const WorkerNativeOutputToolInputSchemas = {
+const WorkerNativeOutputToolInputSchemas = {
   create: FileDescriptionSchema.safeExtend({ commandId }),
   append: z.object({ commandId, artifactId, offset: z.number().int().min(0).max(MAX_FILE_BYTES),
     contentBase64: WorkerNativeOutputBytesSchema }).strict(),

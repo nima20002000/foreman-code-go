@@ -128,7 +128,7 @@ export const SkillVersionSchema = z.object({
 export type SkillVersion = z.infer<typeof SkillVersionSchema>;
 export const SkillVersionSummarySchema = SkillVersionSchema.omit({ instructions: true });
 /** One row per logical skill. Summaries never carry instruction bodies. */
-export const SkillSummarySchema = z.object({
+const SkillSummarySchema = z.object({
   ...SkillId, name: z.string().min(1), description: z.string().optional(),
   version: SkillVersionLabel, contentHash: SkillVersionSchema.shape.contentHash,
   revision: z.number().int().positive(), versionCount: z.number().int().positive(),
@@ -202,29 +202,7 @@ export const WorkflowTriggerUpdateInputSchema = z.object({
   ...Workflow, ...Mutation, workflowVersionId: IdSchema, expectedLocationRevision: Revision,
   trigger: WorkflowTriggerSchema, enabled: z.boolean(),
 }).strict();
-export type WorkflowTriggerUpdateInput = z.infer<typeof WorkflowTriggerUpdateInputSchema>;
-export const WorkflowTriggerDisableInputSchema = z.object({ ...Workflow, ...Mutation }).strict();
-export const WorkflowTriggerGetInputSchema = z.object({ ...Workflow }).strict();
-export const WorkflowTriggerRecordSchema = z.object({
-  ...Workflow, revision: Revision, workflowVersionId: IdSchema, locationRevision: Revision,
-  trigger: WorkflowTriggerSchema, enabled: z.boolean(), nextFireAt: TimestampSchema.nullable(),
-  lastError: z.string().nullable(),
-}).strict();
-export const WorkflowTriggerGetResultSchema = z.object({ trigger: WorkflowTriggerRecordSchema.nullable() }).strict();
-export const WorkflowTriggerUpdateResultSchema = z.object({ value: WorkflowTriggerRecordSchema, replayed: z.boolean() }).strict();
-export const WorkflowTriggerFireInputSchema = z.object({
-  ...Workflow, commandId: Command, expectedRevision: Revision,
-  eventType: z.string().trim().min(1).max(200).optional(),
-  input: z.record(z.string(), z.json()),
-}).strict();
-export const WorkflowTriggerFireResultSchema = z.object({ value: z.object({ jobId: IdSchema, status: z.literal("queued") }).strict(), replayed: z.boolean() }).strict();
-export const TriggerJobListInputSchema = z.object({ ...Workflow, ...Page }).strict();
-export const TriggerJobPageSchema = z.object({ items: z.array(z.object({
-  jobId: IdSchema, status: z.enum(["queued", "leased", "started", "blocked"]), runId: IdSchema.nullable(), errorCode: z.string().nullable(),
-}).strict()), pageInfo: z.object({ nextCursor: z.string().nullable() }).strict() }).strict();
 
-export const RunResumeInputSchema = z.object({ ...Workspace, runId: IdSchema, commandId: Command }).strict();
-export const RunResumeResultSchema = z.object({ value: z.object({ runId: IdSchema, status: z.literal("reconciled") }).strict(), replayed: z.boolean() }).strict();
 export const RunRetryInputSchema = z.object({ ...Workspace, runId: IdSchema, commandId: Command,
   workflowVersionId: IdSchema, expectedLocationRevision: Revision,
 }).strict();

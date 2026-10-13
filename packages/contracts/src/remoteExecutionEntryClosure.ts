@@ -2,10 +2,10 @@ import { z } from 'zod'
 import { DispatchIntentSchema } from './nodePlacement.js'
 import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
 
-export const NativeProcessIdentitySchema = z.object({
+const NativeProcessIdentitySchema = z.object({
   pid: z.number().int().safe().gt(1), startTicks: z.string().regex(/^\d+$/),
 }).strict()
-export const NativeCgroupBoundarySchema = z.object({
+const NativeCgroupBoundarySchema = z.object({
   kind: z.literal('cgroup-v2'), path: z.string().startsWith('/'),
   device: z.string().regex(/^\d+$/), inode: z.string().regex(/^\d+$/),
 }).strict()

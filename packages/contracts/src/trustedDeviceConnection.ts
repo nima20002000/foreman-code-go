@@ -8,7 +8,7 @@ const Fingerprint = z.string().regex(/^SHA256:[A-Za-z0-9+/]{43}$/)
 export const TrustedEndpointSchema = z.object({ transport: z.enum(['lan', 'tailscale']), host: Address,
   port: z.number().int().min(1).max(65535), osUser: z.string().regex(/^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$/) }).strict()
 export type TrustedEndpoint = z.infer<typeof TrustedEndpointSchema>
-export const ExecutableReadinessSchema = z.object({ state: z.enum(['installed', 'missing', 'unavailable']), version: z.string().max(256).nullable() }).strict()
+const ExecutableReadinessSchema = z.object({ state: z.enum(['installed', 'missing', 'unavailable']), version: z.string().max(256).nullable() }).strict()
 export const HostDiscoverySchema = z.object({ osUser: z.string(), uid: z.number().int(), platform: z.string(),
   lanAddresses: z.array(Address), tailscaleAddresses: z.array(Address),
   tailscaleState: z.enum(['running', 'authentication-required', 'stopped', 'unavailable', 'missing']),

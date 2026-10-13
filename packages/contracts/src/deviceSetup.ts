@@ -1,8 +1,8 @@
 import { z } from 'zod'
 import { WorkerEnrollmentInputSchema,DeviceRegistrationSchema,DeviceScopeSchema,DeviceTlsTrustSchema } from './deviceIdentity.js'
-export const DEVICE_SETUP_CODE_MAX=8192
+const DEVICE_SETUP_CODE_MAX=8192
 export const WorkerIdentityRequestSchema=z.object({version:z.literal(1),kind:z.literal('identity-request'),workerInstallationId:z.uuid(),publicKey:z.string().min(1).max(1024),publicKeyFingerprint:z.string().regex(/^[a-f0-9]{64}$/)}).strict()
-export const WorkerEnrollmentCodeSchema=z.object({version:z.literal(1),kind:z.literal('enrollment'),workerInstallationId:z.uuid(),publicKeyFingerprint:z.string().regex(/^[a-f0-9]{64}$/),enrollment:WorkerEnrollmentInputSchema.refine(value=>{const endpoint=new URL(value.endpoint);return endpoint.protocol==='wss:'&&endpoint.pathname==='/device/connect'},'Use the approved WSS device endpoint.'),expiresAt:z.string().datetime(),tlsTrust:DeviceTlsTrustSchema.optional()}).strict()
+const WorkerEnrollmentCodeSchema=z.object({version:z.literal(1),kind:z.literal('enrollment'),workerInstallationId:z.uuid(),publicKeyFingerprint:z.string().regex(/^[a-f0-9]{64}$/),enrollment:WorkerEnrollmentInputSchema.refine(value=>{const endpoint=new URL(value.endpoint);return endpoint.protocol==='wss:'&&endpoint.pathname==='/device/connect'},'Use the approved WSS device endpoint.'),expiresAt:z.string().datetime(),tlsTrust:DeviceTlsTrustSchema.optional()}).strict()
 export type WorkerIdentityRequest=z.infer<typeof WorkerIdentityRequestSchema>
 export type WorkerEnrollmentCode=z.infer<typeof WorkerEnrollmentCodeSchema>
 function encode(prefix:string,value:unknown):string {const bytes=new TextEncoder().encode(JSON.stringify(value));let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);const code=prefix+btoa(binary).replaceAll('+','-').replaceAll('/','_').replace(/=+$/,'');if(code.length>DEVICE_SETUP_CODE_MAX)throw new Error('DEVICE_SETUP_CODE_INVALID');return code}

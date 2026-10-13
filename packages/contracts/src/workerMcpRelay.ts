@@ -35,14 +35,12 @@ export const WorkerNativeOutputAuthorizationSchema = WorkerMcpRelayAuthorization
 }).strict().refine(value => value.scope.chat.kind === 'agent' && value.scope.chat.agentId === value.agentId
   && value.scope.chat.executionId === value.executionId && value.scope.chat.runId !== undefined,
   'Native output requires the original workflow Agent file scope')
-export type WorkerNativeOutputAuthorization = z.infer<typeof WorkerNativeOutputAuthorizationSchema>
 /** Permission to declare tools, before a native turn exists. This is not host qualification or mutation authority. */
 export const WorkerNativeOutputDeclarationsPolicySchema = z.object({ agentConfigurationVersionId: z.string().min(1),
   outputOperations: z.tuple([z.literal('create'), z.literal('append'), z.literal('seal'), z.literal('publish')]) }).strict()
 export const WorkerNativeOutputDeclarationsAuthorizationSchema = WorkerMcpRelayAuthorizationSchema
   .extend(WorkerNativeOutputDeclarationsPolicySchema.shape).strict()
 export type WorkerNativeOutputDeclarationsPolicy = z.infer<typeof WorkerNativeOutputDeclarationsPolicySchema>
-export type WorkerNativeOutputDeclarationsAuthorization = z.infer<typeof WorkerNativeOutputDeclarationsAuthorizationSchema>
 /** Readiness never grants a mutation or substitutes for operation authorization. */
 export const WorkerNativeOutputReadinessSchema = WorkerMcpRelayAuthorizationSchema.extend({
   nativeSessionId: z.string().min(1).max(500), turnId: z.string().min(1).max(500), ready: z.boolean(),

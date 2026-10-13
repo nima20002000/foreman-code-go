@@ -5,7 +5,7 @@ import {
   validateHistoricalDeviceExecutionAdmission,
 } from './deviceResources.js'
 import { JobExecutionSchema, CurrentJobExecutionSchema, JobLogChunkSchema, type JobExecution } from './jobs.js'
-import { MachineReferenceSchema, PlacementDigestSchema } from './nodePlacement.js'
+import { PlacementDigestSchema } from './nodePlacement.js'
 import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
 import { DeviceSessionBindingSchema } from './deviceConnection.js'
 import { RemoteOperationPhaseSchema } from './remoteOperationPhase.js'
@@ -13,12 +13,11 @@ import { SourceMaterializationRecordSchema, SourceRootRecordSchema } from './sou
 import { JobExecutionRecordSchema, VerificationJobExecutionSchema, type JobExecutionRecord } from './jobVerification.js'
 
 /** New job envelopes use genuine subjects; existing workflow dispatch contracts are unchanged. */
-export const RemoteExecutionSubjectSchema = z.discriminatedUnion('kind', [
+const RemoteExecutionSubjectSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('workflow-node'), workspaceId: z.string().min(1), workflowId: z.string().min(1),
     runId: z.string().min(1), nodeId: z.string().min(1), nodeExecutionId: z.string().min(1) }).strict(),
   z.object({ kind: z.literal('manual-job'), workspaceId: z.string().min(1), jobExecutionId: z.string().min(1), definitionId: z.string().min(1) }).strict(),
 ])
-export type RemoteExecutionSubject = z.infer<typeof RemoteExecutionSubjectSchema>
 export const RemoteJobDispatchIntentSchema = z.object({
   schemaVersion: z.literal(1), protocolVersion: z.literal(1), mainId: z.uuid(), subject: RemoteExecutionSubjectSchema,
   executionId: z.string().min(1), attemptId: z.string().min(1), operationId: z.string().min(1),
@@ -30,7 +29,6 @@ export const RemoteJobDispatchIntentSchema = z.object({
   if (intent.subject.kind === 'manual-job' && intent.subject.jobExecutionId !== intent.executionId) context.addIssue({ code: 'custom', message: 'Manual job subject must name its actual execution.' })
 })
 export const CurrentRemoteJobDispatchIntentSchema = RemoteJobDispatchIntentSchema.safeExtend(DeviceExecutionAdmissionFields)
-export type CurrentRemoteJobDispatchIntent = z.infer<typeof CurrentRemoteJobDispatchIntentSchema>
 export type RemoteJobDispatchIntent = z.infer<typeof RemoteJobDispatchIntentSchema>
 export const RemoteJobNativeIdentitySchema = z.object({
   containerId: z.string().min(1), supervisorIdentity: z.string().min(1), processIdentityDigest: PlacementDigestSchema, startedAt: z.string().datetime().optional(),
@@ -67,10 +65,8 @@ export interface RemoteJobDispatchPort {
   reconcile(intent: RemoteJobDispatchIntent): Promise<RemoteJobOperationStatus>
   control(command: RemoteJobOwnerControl): Promise<RemoteJobOperationStatus>
 }
-/** Host facts for job dispatch are CI's AcceptedJobSpec.target, never a fabricated node placement. */
-export const RemoteJobHostReferenceSchema = MachineReferenceSchema
 
-export const RemoteJobExecutionRpcRequestSchema = z.discriminatedUnion('method', [
+const RemoteJobExecutionRpcRequestSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('job-dispatch'), intent: RemoteJobDispatchIntentSchema, execution: z.lazy(() => JobExecutionSchema) }).strict(),
   z.object({ method: z.literal('job-status'), intent: RemoteJobDispatchIntentSchema }).strict(),
   z.object({ method: z.literal('job-control'), intent: RemoteJobDispatchIntentSchema, command: RemoteJobOwnerControlSchema }).strict(),
@@ -84,7 +80,7 @@ export const RemoteJobMainRpcRequestSchema = z.discriminatedUnion('method', [
 ])
 
 /** Original accepted Main metadata; this is not physical source or host qualification. */
-export const RemoteJobAcceptedSourceReadoutSchema = z.object({
+const RemoteJobAcceptedSourceReadoutSchema = z.object({
  execution: z.lazy(() => JobExecutionSchema), materialization: SourceMaterializationRecordSchema,
  root: SourceRootRecordSchema, diskQuotaBytes: z.number().int().positive(),
 }).strict()
@@ -145,9 +141,6 @@ export const RemoteVerificationJobDispatchRequestSchema = z.object({
     context.addIssue({ code: 'custom', message: 'Verification dispatch retains its complete original subject and admission.' })
   }
 })
-export const RemoteJobDispatchRequestRecordSchema = z.union([
-  CurrentRemoteJobDispatchRequestSchema, RemoteVerificationJobDispatchRequestSchema,
-])
 export interface RemoteJobDispatchRecordPort {
   deliver(intent: RemoteJobDispatchIntent, execution: JobExecutionRecord): Promise<
     { status: 'known'; receipt: RemoteJobOperationReceiptRecord }

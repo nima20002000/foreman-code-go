@@ -1,8 +1,8 @@
 import { z } from "zod";
 
-export const SettingsAgentRoleSchema = z.enum(["operator", "orchestrator", "coder"]);
+const SettingsAgentRoleSchema = z.enum(["operator", "orchestrator", "coder"]);
 export type SettingsAgentRole = z.infer<typeof SettingsAgentRoleSchema>;
-export const HarnessSettingsSectionSchema = z.enum(["model", "permissions", "session", "tools", "connections", "plugins", "workspace"]);
+const HarnessSettingsSectionSchema = z.enum(["model", "permissions", "session", "tools", "connections", "plugins", "workspace"]);
 export type HarnessSettingsSection = z.infer<typeof HarnessSettingsSectionSchema>;
 export const AgentSettingsSearchSchema = z.object({
   role: SettingsAgentRoleSchema.optional().catch(undefined),

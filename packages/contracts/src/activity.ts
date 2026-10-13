@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { CiActivitySchema } from './ciHost.js'
 
 /** Decimal revisions compare only inside the exact same scope. Ordering keys are separate. */
-export const ActivityRevisionSchema = z.string().regex(/^(0|[1-9][0-9]*)$/)
+const ActivityRevisionSchema = z.string().regex(/^(0|[1-9][0-9]*)$/)
 const id = z.string().min(1)
 const timestamp = z.iso.datetime()
 export const ActivityNativeIdentitySchema = z.object({ harness: id, sessionId: id, turnId: id.optional(), messageId: id.optional(), requestId: id.optional(), itemId: id.optional(), partId: id.optional(), parentItemId: id.optional(), generation: id.optional() }).strict()
@@ -42,7 +42,7 @@ export const WorkSummarySchema = z.object({
 export type WorkSummary = z.infer<typeof WorkSummarySchema>
 export const ActivitySourceSchema = z.object({ schemaVersion: z.literal(1), system: id, eventId: id.optional(), sequence: ActivityRevisionSchema.optional(), observedAt: timestamp.nullable() }).strict()
 export type ActivitySource = z.infer<typeof ActivitySourceSchema>
-export const ActivitySourceRevisionSchema = z.object({
+const ActivitySourceRevisionSchema = z.object({
   source: z.enum(['scope', 'execution', 'ci_run', 'run_activity', 'native_events', 'message', 'interaction', 'file', 'publication', 'command']), id, revision: ActivityRevisionSchema,
 }).strict()
 export type ActivitySourceRevision = z.infer<typeof ActivitySourceRevisionSchema>

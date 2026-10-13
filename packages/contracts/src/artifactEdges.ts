@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { FileScopeSchema, MAX_FILE_READ_BYTES, type AgentFileReadResult } from './files.js'
+import { FileScopeSchema, MAX_FILE_READ_BYTES} from './files.js'
 
 const Id = z.string().min(1).max(500)
 const Hash = z.string().regex(/^[a-f0-9]{64}$/)
@@ -7,7 +7,7 @@ export const ArtifactAttemptSchema = z.object({
   workspaceId: Id, workflowId: Id, runId: Id, nodeId: Id, executionId: Id, attemptId: Id,
   placementHash: Hash,
 }).strict()
-export const ArtifactAuthoritySchema = z.object({
+const ArtifactAuthoritySchema = z.object({
   principalId: Id, grantId: Id, grantRevision: z.string().regex(/^[1-9][0-9]*$/),
 }).strict()
 /** Issued by main admission, never accepted from a worker as delegation authority. */
@@ -29,8 +29,3 @@ export type ArtifactAuthority = z.infer<typeof ArtifactAuthoritySchema>
 export type ArtifactEdgeBinding = z.infer<typeof ArtifactEdgeBindingSchema>
 export const ArtifactEdgeReadSchema = z.object({ edgeId: Id, offset: z.number().int().nonnegative(),
   length: z.number().int().positive().max(MAX_FILE_READ_BYTES) }).strict()
-export interface ArtifactEdgePort {
-  pinAccepted(binding: ArtifactEdgeBinding): Promise<ArtifactEdgeBinding>
-  readAccepted(edgeId: string, consumer: ArtifactAttempt, authority: ArtifactAuthority,
-    offset: number, length: number): Promise<AgentFileReadResult>
-}

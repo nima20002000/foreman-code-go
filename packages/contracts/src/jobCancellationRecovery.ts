@@ -12,11 +12,11 @@ const BackingJobCancellationFilesystemSchema = z.object({
   backingFile: z.object({ path: z.string().startsWith('/'), device: z.string().regex(/^\d+$/),
     inode: z.string().regex(/^\d+$/), bytes: z.string().regex(/^[1-9]\d*$/) }).strict(),
 }).strict()
-export const ProjectJobCancellationFilesystemSchema = z.object({
+const ProjectJobCancellationFilesystemSchema = z.object({
   kind: z.literal('restored-original-project-quota'), blockDevice: z.string().startsWith('/dev/').max(2048), bootId: z.uuid(), filesystemUuid: z.uuid(), volumeId: z.uuid(),
   filesystem: SourceRootRecordSchema.shape.binding.shape.filesystem,
 }).strict()
-export const JobCancellationFilesystemSchema = z.union([
+const JobCancellationFilesystemSchema = z.union([
   BackingJobCancellationFilesystemSchema, ProjectJobCancellationFilesystemSchema,
 ])
 export const JobCancellationProposalInputSchema = z.object({
@@ -38,7 +38,7 @@ export const SignedJobCancellationGrantSchema = z.object({
   grant: JobCancellationGrantSchema, mainPublicKey: z.string().max(1024),
   signature: z.string().regex(/^[A-Za-z0-9_-]{86}$/),
 }).strict()
-export const JobCancellationClosureSchema = z.object({
+const JobCancellationClosureSchema = z.object({
   schemaVersion: z.literal(1), grantId: z.uuid(), receipt: RemoteJobOperationReceiptRecordSchema,
   sourceClaim: z.object({ materializationId: z.uuid(), reservationId: z.uuid(),
     released: z.literal(true), quotaReclaimed: z.literal(true).optional(), archiveSha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
@@ -64,10 +64,8 @@ export const JobCancellationRecoveryApplySchema = z.object({
 export const JobCancelInputSchema = z.object({
   commandId: z.string().min(1), recovery: JobCancellationRecoveryApplySchema.optional(),
 }).strict()
-export type JobCancellationGrant = z.infer<typeof JobCancellationGrantSchema>
-export type JobCancellationFilesystem = z.infer<typeof JobCancellationFilesystemSchema>
-export type SignedJobCancellationGrant = z.infer<typeof SignedJobCancellationGrantSchema>
-export type JobCancellationClosure = z.infer<typeof JobCancellationClosureSchema>
+type JobCancellationGrant = z.infer<typeof JobCancellationGrantSchema>
+type JobCancellationClosure = z.infer<typeof JobCancellationClosureSchema>
 export type SignedJobCancellationClosure = z.infer<typeof SignedJobCancellationClosureSchema>
 export type JobCancellationRecoveryRead = z.infer<typeof JobCancellationRecoveryReadSchema>
 export type JobCancellationRecoveryApply = z.infer<typeof JobCancellationRecoveryApplySchema>

@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 import { FileNameSchema } from './filePrimitives.js'
 /** CI bytes form an explicit class. Chat/document input schemas remain unchanged. */
-export const JOB_ARTIFACT_MEDIA_TYPES=['text/plain','application/json','application/xml','text/html','application/zip','application/gzip','application/octet-stream'] as const
+const JOB_ARTIFACT_MEDIA_TYPES=['text/plain','application/json','application/xml','text/html','application/zip','application/gzip','application/octet-stream'] as const
 export const JobArtifactMediaTypeSchema=z.enum(JOB_ARTIFACT_MEDIA_TYPES)
 export const JobArtifactRetentionSchema=z.number().int().min(3600).max(365*24*3600)
 export const JobExecutionFileScopeSchema=z.object({kind:z.literal('job_execution'),workspaceId:IdSchema,jobExecutionId:IdSchema}).strict()

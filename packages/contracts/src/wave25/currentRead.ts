@@ -38,8 +38,6 @@ export const CurrentWorkflowCapabilitiesSchema = RepeatCapabilitiesResultSchema.
     runtimeAdmission: z.boolean(), meaningfulEdit: z.boolean(), reasons: z.array(z.string().min(1)),
   }).strict(),
 }).strict()
-export type CurrentManagedWorkflow = z.infer<typeof CurrentManagedWorkflowSchema>
 export type CurrentWorkspaceDetails = z.infer<typeof CurrentWorkspaceDetailsSchema>
 export type CurrentGetWorkflowResponse = z.infer<typeof CurrentGetWorkflowResponseSchema>
 export type CurrentRunDetails = z.infer<typeof CurrentRunDetailsSchema>
-export type CurrentWorkflowCapabilities = z.infer<typeof CurrentWorkflowCapabilitiesSchema>
