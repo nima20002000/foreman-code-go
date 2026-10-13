@@ -1409,12 +1409,6 @@ export const GetHarnessDefaultsResponseSchema = z
   .object({ defaults: HarnessDefaultsSchema })
   .strict();
 export type GetHarnessDefaultsResponse = z.infer<typeof GetHarnessDefaultsResponseSchema>;
-export const SaveHarnessDefaultsRequestSchema = z
-  .object({ defaults: HarnessDefaultsSchema })
-  .strict();
-export type SaveHarnessDefaultsRequest = z.infer<typeof SaveHarnessDefaultsRequestSchema>;
-export const SaveHarnessDefaultsResponseSchema = GetHarnessDefaultsResponseSchema;
-export type SaveHarnessDefaultsResponse = GetHarnessDefaultsResponse;
 export const ReadWorkflowDefinitionRequestSchema = GetWorkflowRequestSchema;
 export const ReadWorkflowDefinitionResponseSchema = GetWorkflowResponseSchema;
 export const SaveWorkflowDefinitionRequestSchema = SaveWorkflowRequestSchema;

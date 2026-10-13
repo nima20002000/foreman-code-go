@@ -6,7 +6,6 @@ import {
   RUN_INSPECTION_TOOLS,
 } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
-import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 
@@ -20,7 +19,6 @@ describe('retired public execution transports', () => {
         workspaces: new PostgresWorkspaceRepository(f.db.pool, f.workflows, f.runs),
         workflows: f.workflows,
         runs: f.runs,
-        settings: new PostgresSettingsRepository(f.db.pool),
         engine: f.engine,
       },
     })

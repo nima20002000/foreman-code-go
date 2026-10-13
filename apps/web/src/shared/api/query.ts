@@ -7,14 +7,9 @@ import {
   useQuery,
   useQueryClient,
   type InfiniteData,
-  type UseMutationOptions,
   type UseQueryOptions,
 } from '@tanstack/react-query'
-import type {
-  GetHarnessDefaultsResponse,
-  SaveHarnessDefaultsRequest,
-  SaveHarnessDefaultsResponse,
-} from '@foreman-code/contracts'
+import type { GetHarnessDefaultsResponse } from '@foreman-code/contracts'
 import type {
   ManagedWorkspace, WorkspaceArchiveInput, WorkspaceCreateInput, WorkspaceUpdateInput,
   WorkflowArchiveInput, WorkflowUpdateInput,
@@ -28,7 +23,6 @@ import {
   getWorkspaceDetails,
   listAgents,
   listVisibleResources,
-  saveHarnessDefaults,
   listManagedWorkspaces, createManagedWorkspace, updateManagedWorkspace, archiveManagedWorkspace,
   getManagedWorkspace, validateWorkspaceLocation, setWorkspaceLocation,
   createManagedWorkflow, updateManagedWorkflow, archiveManagedWorkflow,
@@ -459,18 +453,6 @@ export function useHarnessDefaultsQuery(options?: Omit<QueryOptions<Awaited<Retu
       if (codex?.harness !== 'codex') throw new Error('Harness defaults are unavailable.')
       return { defaults: { codex, ...(claude?.harness === 'claude' ? { claude } : {}) } }
     },
-  })
-}
-
-type SaveHarnessDefaultsMutationOptions = Omit<
-  UseMutationOptions<SaveHarnessDefaultsResponse, Error, SaveHarnessDefaultsRequest>,
-  'mutationFn'
->
-
-export function useSaveHarnessDefaultsMutation(options?: SaveHarnessDefaultsMutationOptions) {
-  return useMutation({
-    ...options,
-    mutationFn: (input) => saveHarnessDefaults(input),
   })
 }
 

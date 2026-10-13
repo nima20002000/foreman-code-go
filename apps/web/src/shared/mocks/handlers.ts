@@ -5,8 +5,7 @@ import { ComputerMaintenanceReadInputSchema } from '@foreman-code/contracts/comp
 import { http, HttpResponse, type RequestHandler } from 'msw'
 import { settingsExperienceHandlers, resetSettingsExperienceFixtures, getMockWorkspaceCreationDefaults } from './settingsExperienceHandlers'
 import { resetSkillFixtures, skillsHandlers } from './skillsHandlers'
-import { ApiErrorResponseSchema, SessionControlStateSchema, unavailableSessionControls,
-  SaveHarnessDefaultsRequestSchema } from '@foreman-code/contracts'
+import { ApiErrorResponseSchema, SessionControlStateSchema, unavailableSessionControls } from '@foreman-code/contracts'
 import { CURRENT_WORKFLOW_CAPABILITIES, type WorkflowDefinitionV3 as WorkflowDefinition, type WorkflowRunV3 as WorkflowRun } from '@foreman-code/contracts/wave25'
 import {
   AgentDefaultsUpdateInputSchema,
@@ -24,7 +23,6 @@ import {
   getMockFixture,
   getMockAgentDefaults,
   getMockHarnessCatalog,
-  getMockHarnessDefaults,
   getMockScenarioRevision,
   getMockScenarioState,
   getMockWorkflowDefaults,
@@ -33,7 +31,6 @@ import {
   shouldFailMutation,
   updateMockWorkflow,
   updateMockAgentDefaults,
-  updateMockHarnessDefaults,
   updateMockManagedHarnessDefaults,
   updateMockWorkflowDefaults,
 } from './scenarios'
@@ -560,15 +557,6 @@ export const handlers: RequestHandler[] = [
       replayed: false,
     })
   }),
-  http.get('/api/settings/harnesses', () => HttpResponse.json({
-    defaults: getMockHarnessDefaults(),
-  })),
-  http.put('/api/settings/harnesses', async ({ request }) => {
-    const parsed = SaveHarnessDefaultsRequestSchema.safeParse(await readJson(request))
-    if (!parsed.success) return apiError('INVALID_HARNESS_DEFAULTS', 'Review the harness defaults.', 400)
-    return HttpResponse.json({ defaults: updateMockHarnessDefaults(parsed.data.defaults) })
-  }),
-
   http.post('/api/workspaces/:workspaceId/workflows/:workflowId/runs', () =>
     apiError('EXECUTION_SEMANTICS_UNSUPPORTED', 'Use the current authenticated managed Start service.', 409)),
   http.get('/api/workspaces/:workspaceId/runs/:runId', ({ params }) => HttpResponse.json({

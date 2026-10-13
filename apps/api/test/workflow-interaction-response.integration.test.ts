@@ -11,7 +11,6 @@ import { OperatorInteractionService } from '../src/modules/interactions/operator
 import { registerApprovalCheckpointResume } from '../src/modules/runs/approvalCheckpointRegistration.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
-import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { codexApprovalRuntime } from './helpers/codexApprovalRuntime.js'
 import { approvalResponse } from './helpers/approvalResponse.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
@@ -21,7 +20,7 @@ it.skipIf(!postgresEnabled)('authorizes workflow Operator responses, persists re
   const workflows = new PostgresWorkflowRepository(f.db.pool)
   const app = buildApp({
     product: { workspaces: new PostgresWorkspaceRepository(f.db.pool, workflows, f.runs), workflows,
-      runs: f.runs, settings: new PostgresSettingsRepository(f.db.pool), engine: f.engine, interactions: f.service },
+      runs: f.runs, engine: f.engine, interactions: f.service },
     readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
     operator: { access: f.access, services: {
       commands: new PostgresCommandCoordinator(f.db.pool), interactions: new OperatorInteractionService(f.service),
