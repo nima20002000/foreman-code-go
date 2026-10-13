@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
-import { cachedTestFixture, testFixtureCacheRoot, workerFixtureInputs } from './test-fixture-cache.mjs'
+import { cachedTestFixture, cachedWorkerRelease, testFixtureCacheRoot, workerFixtureInputs } from './test-fixture-cache.mjs'
 
 const execute = promisify(execFile)
 
@@ -60,6 +60,50 @@ test('Worker output survives unrelated commits and rebuilds when packaging input
   const dependencies = await output()
   assert.notEqual(dependencies, changed)
   assert.equal(await readFile(join(dependencies, 'payload'), 'utf8'), 'build 3')
+})
+
+test('a release is reused when only files it did not bundle changed, and rebuilt when a bundled file changes', async t => {
+  const root = await fixtureCache(t)
+  const repository = join(root, 'repository')
+  await mkdir(join(repository, 'scripts'), { recursive: true })
+  await mkdir(join(repository, 'packages/contracts/src'), { recursive: true })
+  await writeFile(join(repository, 'scripts/worker-api-allowlist.json'), '[]')
+  await writeFile(join(repository, 'packages/contracts/src/used.ts'), 'export const used = 1\n')
+  await writeFile(join(repository, 'packages/contracts/src/unused.ts'), 'export const unused = 1\n')
+  const git = async args => (await execute('git', args, { cwd: repository,
+    env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' } })).stdout.trim()
+  await git(['init', '--quiet'])
+  const commit = async () => {
+    await git(['add', '.'])
+    await git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      '-c', 'commit.gpgsign=false', 'commit', '--quiet', '--allow-empty', '-m', 'Fixture input'])
+    return git(['rev-parse', 'HEAD'])
+  }
+  let builds = 0
+  const release = async (...identity) => {
+    const head = await commit()
+    const entry = await cachedWorkerRelease(join(root, 'cache'), repository, head, identity, async directory => {
+      builds++
+      await mkdir(join(directory, 'release'))
+      const blob = await git(['rev-parse', `${head}:packages/contracts/src/used.ts`])
+      await writeFile(join(directory, 'release', 'manifest.json'), JSON.stringify({
+        sourceSnapshot: { files: [{ path: 'packages/contracts/src/used.ts', gitBlobSha1: blob }] },
+      }))
+    })
+    return entry
+  }
+  const first = await release('target', 'linux')
+  await writeFile(join(repository, 'packages/contracts/src/unused.ts'), 'export const unused = 2\n')
+  const reused = await release('target', 'linux')
+  assert.notEqual(reused, first)
+  assert.equal(builds, 1)
+  assert.equal(await release('target', 'linux'), reused)
+  assert.equal(builds, 1)
+  await release('other-target', 'linux')
+  assert.equal(builds, 2)
+  await writeFile(join(repository, 'packages/contracts/src/used.ts'), 'export const used = 2\n')
+  await release('target', 'linux')
+  assert.equal(builds, 3)
 })
 
 test('unchanged inputs reuse complete output and changed inputs populate separately', async t => {
