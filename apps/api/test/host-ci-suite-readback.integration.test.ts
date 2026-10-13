@@ -8,7 +8,7 @@ import { fixture } from './helpers/hostCiMcpFixture.js'
 it.each([
   ['unit', 11], ['lint', 2], ['typecheck', 2], ['build', 2],
 ] as const)('persists and dispatches all %s parts through authenticated MCP', async (suite, count) => {
-  const f = await fixture()
+  const f = await fixture({ cloud: { github: suite === 'unit' ? 5 : 0, circleci: 0 } })
   try {
     const input = { suite, commandId: `parts-${suite}` }
     const reader = await f.connect(CI_GET_ACTIONS)
