@@ -67,11 +67,11 @@ it('publishes a missing non-tip commit by reading it from origin at depth one', 
   expect(f.git.mock.calls.filter(([args]) => args[0] === 'push')).toHaveLength(0)
 })
 
-it('checks advertised branches without fetching when their ancestry is already local', async () => {
+it('resolves a published commit Main already holds without pushing it', async () => {
   const f = await shallowFixture()
   f.run(f.clone, 'fetch', '--quiet', '--depth=2', 'origin', 'main')
   expect(await f.commits.resolve('octo/site', 'main', f.commit, null)).toBe(f.commit)
-  expect(f.git.mock.calls.filter(([args]) => args[0] === 'fetch' || args[0] === 'push')).toHaveLength(0)
+  expect(f.git.mock.calls.filter(([args]) => args[0] === 'push')).toHaveLength(0)
   expect(f.run(f.origin, 'for-each-ref', '--format=%(refname)', 'refs/heads/')).toBe('refs/heads/main')
 })
 
@@ -87,10 +87,11 @@ it('pushes an unpublished local commit so origin can serve it', async () => {
 
 it('does not treat a stale remote-tracking branch as published', async () => {
   const f = await shallowFixture()
-  f.run(f.origin, 'update-ref', '-d', 'refs/heads/main')
-  expect(f.run(f.clone, 'rev-parse', 'refs/remotes/origin/main')).toBe(f.tip)
-  expect(await f.commits.resolve('octo/site', 'main', f.tip, null)).toBe(f.tip)
-  expect(f.run(f.origin, 'rev-parse', `refs/heads/foreman/ci/${f.tip}`)).toBe(f.tip)
+  f.run(f.clone, 'commit', '--quiet', '--allow-empty', '-m', 'local')
+  const local = f.run(f.clone, 'rev-parse', 'HEAD')
+  f.run(f.clone, 'update-ref', 'refs/remotes/origin/main', local)
+  expect(await f.commits.resolve('octo/site', 'main', local, null)).toBe(local)
+  expect(f.run(f.origin, 'rev-parse', `refs/heads/foreman/ci/${local}`)).toBe(local)
 })
 
 it('reports a commit absent from both the shallow clone and origin without attempting a push', async () => {
@@ -107,9 +108,6 @@ function fixture() {
     if (args[0] === 'rev-parse' && args.includes('--verify')) {
       return { code: 0, stdout: head, stderr: '' }
     }
-    if (args[0] === 'ls-remote') {
-      return { code: 0, stdout: `${head}\trefs/heads/main\n`, stderr: '' }
-    }
     return { code: 0, stdout: '', stderr: '' }
   })
   const commits = new GitCiCommits({ git, cloneDirectory: () => '/repository' })
@@ -123,16 +121,16 @@ it('shares publication of a known commit across concurrent resolution and later 
   const blocked = new Promise<void>(resolve => { release = resolve })
   const run = f.git.getMockImplementation()!
   f.git.mockImplementation(async (args, options) => {
-    if (args[0] === 'ls-remote') await blocked
+    if (args[0] === 'push') await blocked
     return run(args, options)
   })
   const requests = Array.from({ length: 4 }, () => f.commits.resolve('octo/site', 'main', commit, null))
   release()
   expect(await Promise.all(requests)).toEqual(Array(4).fill(commit))
   expect(await f.commits.resolve('octo/site', 'main', commit, null)).toBe(commit)
-  expect(f.git.mock.calls.filter(([args]) => args[0] === 'ls-remote')).toHaveLength(1)
+  expect(f.git.mock.calls.filter(([args]) => args[0] === 'push')).toHaveLength(1)
   await f.commits.resolve('octo/other', 'main', commit, null)
-  expect(f.git.mock.calls.filter(([args]) => args[0] === 'ls-remote')).toHaveLength(2)
+  expect(f.git.mock.calls.filter(([args]) => args[0] === 'push')).toHaveLength(2)
 })
 
 it('retries publication after a failed resolution instead of caching the failure', async () => {
@@ -140,7 +138,7 @@ it('retries publication after a failed resolution instead of caching the failure
   const run = f.git.getMockImplementation()!
   let fail = true
   f.git.mockImplementation(async (args, options) => {
-    if (args[0] === 'ls-remote' && fail) {
+    if (args[0] === 'push' && fail) {
       fail = false
       return { code: 1, stdout: '', stderr: 'remote unavailable' }
     }
@@ -149,7 +147,7 @@ it('retries publication after a failed resolution instead of caching the failure
   const resolve = () => f.commits.resolve('octo/site', 'main', 'a'.repeat(40), null)
   await expect(resolve()).rejects.toMatchObject({ code: 'SOURCE_GITHUB_PUSH_REQUIRED' })
   expect(await resolve()).toBe('a'.repeat(40))
-  expect(f.git.mock.calls.filter(([args]) => args[0] === 'ls-remote')).toHaveLength(2)
+  expect(f.git.mock.calls.filter(([args]) => args[0] === 'push')).toHaveLength(2)
 })
 
 it('refreshes a moving default branch while reusing publication of its resolved commit', async () => {
@@ -159,5 +157,5 @@ it('refreshes a moving default branch while reusing publication of its resolved 
   expect(await f.commits.resolve('octo/site', 'main', undefined, null)).toBe('b'.repeat(40))
   expect(await f.commits.resolve('octo/site', 'main', 'a'.repeat(40), null)).toBe('a'.repeat(40))
   expect(f.git.mock.calls.filter(([args]) => args[0] === 'fetch')).toHaveLength(2)
-  expect(f.git.mock.calls.filter(([args]) => args[0] === 'ls-remote')).toHaveLength(2)
+  expect(f.git.mock.calls.filter(([args]) => args[0] === 'push')).toHaveLength(2)
 })

@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto'
+import { rm } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
 import type { SourceGitHubReferenceSchema } from '@foreman-code/contracts/source-operations'
 import type { z } from 'zod'
@@ -17,7 +20,7 @@ export async function publishCommit(ports: GitWorktreePorts, repository: string,
     if (fetched.code !== 0) throw githubReadFailure(repository)
     return
   }
-  if (await remoteContainsCommit(ports, clone, repository, commit, signal)) return
+  if (await originServes(ports, clone, commit, signal)) return
   const pushed = await ports.git(['push', '--quiet', 'origin', `${commit}:refs/heads/foreman/ci/${commit}`], { cwd: clone, signal })
   if (pushed.code !== 0) {
     throw new SourceError('SOURCE_GITHUB_PUSH_REQUIRED', `Main could not publish commit ${commit.slice(0, 12)} to ${repository}. `
@@ -25,31 +28,20 @@ export async function publishCommit(ports: GitWorktreePorts, repository: string,
   }
 }
 
-async function remoteContainsCommit(ports: GitWorktreePorts, clone: string, repository: string,
-  commit: string, signal: AbortSignal): Promise<boolean> {
-  const read = (args: string[]) => ports.git(args, { cwd: clone, signal })
-  const advertised = await read(['ls-remote', '--heads', 'origin'])
-  if (advertised.code !== 0) throw githubReadFailure(repository)
-  const tips = new Set(advertised.stdout.trim().split('\n').filter(Boolean).map(line => line.split('\t')[0]!))
-  if (tips.has(commit)) return true
-  const missing: string[] = []
-  for (const tip of tips) {
-    const local = await read(['cat-file', '-e', `${tip}^{commit}`])
-    if (local.code !== 0) {
-      missing.push(tip)
-      continue
-    }
-    if ((await read(['merge-base', '--is-ancestor', commit, tip])).code === 0) return true
+/** Main's clone is shallow and its remote-tracking refs can be stale, so neither proves what origin serves. A fetch
+ * of the commit into an empty repository does: nothing there can satisfy it locally. */
+async function originServes(ports: GitWorktreePorts, clone: string, commit: string, signal: AbortSignal) {
+  const url = await ports.git(['remote', 'get-url', 'origin'], { cwd: clone, signal })
+  if (url.code !== 0 || !url.stdout.trim()) return false
+  const probe = `${clone}-probe-${randomUUID()}`
+  try {
+    if ((await ports.git(['init', '--quiet', '--bare', probe], { cwd: dirname(clone), signal })).code !== 0) return false
+    const fetched = await ports.git(['fetch', '--quiet', '--no-tags', '--depth=1', '--filter=blob:none',
+      '--no-write-fetch-head', url.stdout.trim(), commit], { cwd: probe, signal })
+    return fetched.code === 0
+  } finally {
+    await rm(probe, { recursive: true, force: true })
   }
-  if (missing.length === 0) return false
-  // Fetch only unknown advertised tips; known ancestry needs no transfer or cache lock.
-  const fetched = await read(['fetch', '--quiet', '--no-tags', '--depth=1', '--no-write-fetch-head',
-    'origin', ...missing])
-  if (fetched.code !== 0) throw githubReadFailure(repository)
-  for (const tip of missing) {
-    if ((await read(['merge-base', '--is-ancestor', commit, tip])).code === 0) return true
-  }
-  return false
 }
 
 function githubReadFailure(repository: string): SourceError {
