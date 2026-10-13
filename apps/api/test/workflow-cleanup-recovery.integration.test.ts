@@ -28,6 +28,8 @@ describe.skipIf(!postgresEnabled)('accepted workflow cleanup recovery', () => {
         },
       ))
       expect(readback).toEqual(record)
+      expect(readback.run.workflowVersionId).toBe(saved.currentVersionId)
+      expect(readback.cleanupPending).toBe(false)
       expect(f.base.provider.startedExecutions).toHaveLength(scenario.executedIndexes.length)
       expect(new Set(f.base.provider.startedExecutions).size).toBe(scenario.executedIndexes.length)
       expect(closes).toBeGreaterThan(4)

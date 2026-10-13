@@ -35,14 +35,20 @@ it('retains the owned database when a reset cannot create its replacement', asyn
   const admin = await testAdminPool()
   const root = createTestRoot(process.env.FOREMAN_CODE_TEST_ROOT)
   let database: Awaited<ReturnType<typeof createTestDatabase>> | undefined
+  let pool: pg.Pool | undefined
   try {
     database = await createTestDatabase(admin, root)
+    pool = new pg.Pool({ connectionString: database.databaseUrl, max: 1 })
+    await pool.query('create table reset_sentinel(value text)')
+    await pool.query('insert into reset_sentinel values ($1)', ['retained'])
     const name = `graphql_test_template_${'1'.repeat(12)}_${root.token.replaceAll('-', '').slice(0, 12)}`
     const template = { ...root, name, hash: '0'.repeat(64), databaseUrl: new URL(`/${name}`, testAdminUrl).href }
     await expect(resetTestDatabase(admin, { ...database, template })).rejects.toThrow('identity mismatch')
     expect((await admin.query('select datname from pg_database where datname=$1', [database.name])).rows)
       .toEqual([{ datname: database.name }])
+    expect((await pool.query('select value from reset_sentinel')).rows).toEqual([{ value: 'retained' }])
   } finally {
+    await pool?.end()
     if (database) {
       const exists = await admin.query('select datname from pg_database where datname=$1', [database.name])
       if (exists.rows.length) await dropTestDatabase(admin, database)
