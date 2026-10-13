@@ -27,7 +27,7 @@ function queuedRuns(count: number) {
 
 function fleet(records: CiRunRecord[], available: HostCiComputer[],
   unavailable = new Map<string, string>(), occupied = new Set<string>(), slots = new Map<string, number>()) {
-  const started: { computer: HostCiComputer; request: CiHostRequest }[] = []
+  const started: { computer: HostCiComputer; request: CiHostRequest; assigned: CiRunRecord }[] = []
   let writes = 0
   const pool = { options: { max: 10 }, query: async (sql: string, parameters?: unknown[]) => {
     if (sql.startsWith('select pg_try_advisory_xact_lock')) return { rows: [{ acquired: true }] }
@@ -77,7 +77,8 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
       }
       if (request.operation !== 'start') throw new Error('Unexpected fixture request')
       if (unavailable.has(computer.key)) throw new Error('Unavailable executor cannot start work')
-      started.push({ computer, request })
+      const assigned = CiRunRecordSchema.parse(records.find(record => record.id === request.runId))
+      started.push({ computer, request, assigned })
       return { operation: 'start', run: { runId: request.runId, state: 'running', step: 'integration',
         exitCode: null, startedAt: '2026-10-12T00:00:01.000Z', finishedAt: null, logBytes: 0, message: null } }
     },
@@ -191,6 +192,10 @@ it.each([
     expect(f.started[0]?.computer.key).toBe(replacement.key)
     expect(f.started[0]?.request).toMatchObject({ operation: 'start', runId: records[0]!.id,
       suite: 'integration', gate: true, scope: 'full', files: records[0]!.files, integrationShards: 16 })
+    expect(f.started[0]?.assigned).toMatchObject({ state: 'starting', step: 'dispatch',
+      plannedHostKey: host.key, integrationShards: 32, expectedDurationMs: 120_000,
+      computer: { hostRef: replacement.hostRef }, dispatchHostKey: replacement.key,
+      dispatchedAt: expect.any(String), dispatchAttempts: 1, dispatchRequest: f.started[0]!.request })
     expect(records[0]).toMatchObject({ state: 'running', plannedHostKey: host.key, integrationShards: 32,
       expectedDurationMs: 120_000, computer: { hostRef: replacement.hostRef },
       dispatchRequest: { integrationShards: 16, files: records[0]!.files } })
