@@ -15,7 +15,7 @@ import type { DeviceExtensionRegistration } from '../devices/deviceApplicationCh
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import type { AgentPlacementProducer } from './agentProducer.js'
 import { DomainError } from '../errors.js'
-import { assertRemoteReviewAssignment, remoteReviewerPolicy } from './remoteReviewerAuthority.js'
+import { assertRemoteReviewAssignment, canCloseRetainedRemoteReviewer, remoteReviewerPolicy } from './remoteReviewerAuthority.js'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 
 const denied = (): never => { throw new DomainError('REMOTE_AUTHORITY_DENIED', 'Exact original execution authority is unavailable or revoked.', 403) }
@@ -41,7 +41,6 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
       from runs r join harness_executions e on e.run_id=r.id where r.id=$1 and e.id=$2 for share of r,e`,
     [current!.runId, current!.executionId])).rows[0]
   if (!row) denied()
-  if (input.action === 'stop' && !row!.cleanup) denied()
   const cleanup = row!.cleanup && (input.action === 'stop' || input.action === 'read')
   const grant = await sql.query(`select 1 from execution_dispatch_owner_grants
     where execution_id=$1 and operation_id=$2 and grant_id=$3 and epoch=$4 and not revoked for share`,
@@ -65,6 +64,8 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
     if (stored && (!receipt.success || !sameWorkflowValue(receipt.data.intent, current)
       || !sameWorkflowValue(receipt.data.connection, connection))) denied()
     resident = receipt.success && receipt.data.native !== undefined
+    if (input.action === 'stop' && !row!.cleanup
+      && (!receipt.success || !await canCloseRetainedRemoteReviewer(sql, receipt.data))) denied()
     if ((reconnected || changedBoot)
       && (input.action === 'start' || !['read', 'stop'].includes(input.action) && !resident)) denied()
   }

@@ -7,6 +7,7 @@ import type { RunOwnership } from '../ownership.js'
 import type { AcceptedExecutionBinding } from '../../placement/nativeComposition.js'
 import type { RemoteNativeManagerOptions } from './nativeManagerProxy.js'
 import { DomainError } from '../../errors.js'
+import { canCloseRetainedRemoteReviewer } from '../../placement/remoteReviewerAuthority.js'
 import { selectedInteractionResponse } from '../../interactions/delivery.js'
 
 export type RemoteControlInput = Parameters<RemoteNativeManagerOptions['controlFor']>[0]
@@ -28,20 +29,12 @@ export async function prepareRemoteOwnerControl(sql: GraphTransactionSql, owner:
     const cleanup = (await sql.query<{ requested_at: Date }>('select requested_at from run_cleanup_intents where run_id=$1 and pending for share', [owner.runId])).rows[0]
     if (cleanup) {
       commandId = `stop:${binding.intent.operationId}:${cleanup.requested_at.toISOString()}`
-    } else {
-      if (!receipt.retainedReviewer || receipt.reviewTurns?.some(turn => !turn.settled)) {
-        throw new DomainError('REMOTE_CONTROL_UNAVAILABLE',
-          'The original accepted Run cleanup intent is required for remote Stop.', 409)
-      }
-      // A completed reviewer closes at the workflow boundary while its Run still owns the session.
-      const completed = await sql.query(`select 1 from harness_executions e
-        where e.id=$1 and e.run_id=$2 and e.state='completed'
-          and not exists(select 1 from review_jobs j where j.execution_id=e.id and j.state<>'completed'
-            and (j.state<>'failed' or j.record->'cleanup'->>'completedAt' is null)) for share of e`,
-      [binding.intent.executionId, owner.runId])
-      if (completed.rowCount !== 1) throw new DomainError('REMOTE_CONTROL_UNAVAILABLE',
-        'The original retained reviewer has not finished its workflow and reviews.', 409)
+    } else if (!receipt.reviewTurns?.some(turn => !turn.settled)
+      && await canCloseRetainedRemoteReviewer(sql, receipt)) {
       commandId = `close-reviewer:${binding.intent.operationId}`
+    } else {
+      throw new DomainError('REMOTE_CONTROL_UNAVAILABLE',
+        'The original accepted Run cleanup intent is required for remote Stop.', 409)
     }
     action = { kind: 'stop' }
   } else {
