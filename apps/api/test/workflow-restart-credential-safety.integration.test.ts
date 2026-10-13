@@ -6,6 +6,7 @@ import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveResultSchema, RunStartV3Resu
   SavedRunDetailsSchema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
+import { databaseCredentialDeadline } from '../src/modules/access/credentialLifetime.js'
 import { LOCAL_RUNNER_ID } from '../src/modules/workspaces/location.js'
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
@@ -105,10 +106,13 @@ describe.runIf(postgresEnabled)('restart credential safety', () => {
     const issued = vi.spyOn(Wave25WorkerCredentialService.prototype, 'issueForExecution')
       .mockImplementation(async function (this: Wave25WorkerCredentialService, id) {
         const credential = await issue.call(this, id)
-        const expiresAt = new Date(Date.now() + 45_000)
-        await runtime.db.pool.query('update management_principals set expires_at=$2 where id=$1',
-          [credential.principalId, expiresAt])
-        return { ...credential, expiresAt: expiresAt.toISOString() }
+        const requestedAt = performance.now()
+        const shortened = (await runtime.db.pool.query<{ expires_at: Date; database_now: Date }>(
+          `update management_principals set expires_at=clock_timestamp()+interval '45 seconds'
+           where id=$1 returning expires_at,clock_timestamp() as database_now`,
+          [credential.principalId])).rows[0]!
+        return { ...credential, expiresAt: shortened.expires_at.toISOString(),
+          renewalDeadline: databaseCredentialDeadline(shortened.expires_at, shortened.database_now, requestedAt) }
       })
     const renew = Wave25WorkerCredentialService.prototype.renewForExecution
     let calls = 0
