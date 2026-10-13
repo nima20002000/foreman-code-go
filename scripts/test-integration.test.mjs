@@ -991,6 +991,7 @@ test('integration and gate checks share the bounded queue and delay exclusive fi
 for (const [name, reservedReview] of [
   ['reserved remote review', 'apps/api/test/remote-review-production-reserved-decision.integration.test.ts'],
   ['computer workflow directory save', 'apps/api/test/computer-workflow-save.regression-directories.integration.test.ts'],
+  ['six-node checkpoint routing', 'apps/api/test/eng03-b-durability-routing.integration.test.ts'],
 ]) test(`${name} runs without competing integration or gate processes`, async () => {
   const ordinary = 'apps/api/test/ordinary.integration.test.ts'
   const active = new Set()

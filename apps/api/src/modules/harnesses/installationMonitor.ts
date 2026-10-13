@@ -6,11 +6,20 @@ import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connec
 import { commandInputHash } from '../commands/postgres.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
+import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
 import { DomainError } from '../errors.js'
 import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
 import { harnessHostKey } from './instanceSettings/repository.js'
 import type { HostHarnessInstanceProfileChecks } from './instanceSettings/profileChecks.js'
 import type { ProductionHarnessRegistry } from './productionRegistry.js'
+
+function staleQualification(error: unknown): boolean {
+  if (error instanceof AggregateError) {
+    return error.errors.length > 0 && error.errors.every(staleQualification)
+  }
+  return (error instanceof DomainError || error instanceof DeviceApplicationError)
+    && ['HARNESS_INVENTORY_STALE', 'HARNESS_QUALIFICATION_TARGET_CHANGED'].includes(error.code)
+}
 
 /** Passive inventory changes schedule owned qualification; they never qualify an installation themselves. */
 export class HarnessInstallationMonitor {
@@ -86,7 +95,15 @@ export class HarnessInstallationMonitor {
       signal, authorize,
       installation: value => this.registry.currentInstallation(value),
       ...(host.kind === 'main' && driverId === 'codex' ? { beforeChecks: this.qualifyMain } : {}),
-    }).catch(error => { if (!this.stopping.signal.aborted) this.report(error) })
+    }).catch(error => {
+      if (this.stopping.signal.aborted) return
+      const generations = this.generations.get(harnessHostKey(host))
+      if (staleQualification(error) && generations?.get(driverId) === generation) {
+        // A stale check did not qualify this generation; let the next inventory refresh retry it.
+        generations.delete(driverId)
+      }
+      this.report(error)
+    })
     return true
   }
   refresh(): Promise<void> {

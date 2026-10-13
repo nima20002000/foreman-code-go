@@ -4,10 +4,14 @@ import { ownedTestDatabaseUrl, removeFixtureDirectory } from './testResources.js
 import { join } from 'node:path'
 import { openPrivateRoot } from '../../src/modules/sources/privateFilesystem.js'
 import { NativeProcessRegistry } from '../../src/modules/harnesses/recovery/processRegistry.js'
+import { sweepRestartUnits } from '../../../../scripts/test-restart-units.mjs'
 
 const directories = new AsyncLocalStorage<Set<string>>()
 
 async function closeAndRemoveFixtureDirectory(directory: string): Promise<void> {
+  await sweepRestartUnits({
+    directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER!,
+  }, directory)
   const registryPath = join(directory, 'runtime', 'native-process-registry')
   let nativeRegistryExists = false
   try {

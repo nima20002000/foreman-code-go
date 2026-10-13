@@ -2,6 +2,59 @@ import { expect, it, vi } from 'vitest'
 import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
 import { HarnessInstallationMonitor } from './installationMonitor.js'
 import type { AutomaticHostProfileCheck } from './instanceSettings/profileChecks.js'
+import { DomainError } from '../errors.js'
+import { DeviceApplicationError, deviceApplicationFailure } from '../devices/deviceApplicationError.js'
+
+it.each(['HARNESS_INVENTORY_STALE', 'HARNESS_QUALIFICATION_TARGET_CHANGED'])(
+  'preserves the retryable Worker qualification failure %s across the application channel', code => {
+    expect(deviceApplicationFailure(new DomainError(code, 'Installation changed.', 409)))
+      .toEqual({ code, retryable: true })
+  },
+)
+
+it.each([
+  [new DomainError('HARNESS_INVENTORY_STALE', 'Installation changed.', 409), 3],
+  [new DeviceApplicationError('HARNESS_QUALIFICATION_TARGET_CHANGED'), 3],
+  [new DomainError('HARNESS_INSTALLATION_UNAVAILABLE', 'Installation unavailable.', 409), 2],
+  [new DomainError('HARNESS_QUALIFICATION_FAILED', 'Qualification failed.', 503), 2],
+] as const)('retries only stale payload checks on the next refresh (%s)', async (failure, expectedChecks) => {
+  const hostRef = { kind: 'main' as const, mainId: 'main' }
+  let fingerprint = 'original-payload'
+  let listener: ((host: CanonicalMachineReference, installationId: string) => void) | undefined
+  const recheckInstallation = vi.fn<(input: AutomaticHostProfileCheck) => Promise<void>>(async () => {})
+  const registry = {
+    observeInstallations: (value: typeof listener) => { listener = value },
+    installations: { list: () => [{ hostRef, harnessInstallationId: 'launcher',
+      installationFingerprint: fingerprint, driverId: 'codex', driverRevision: '1',
+      protocolRevision: 'protocol', environmentGeneration: 'environment', connectionGeneration: 'connection',
+      installed: true }] },
+    refreshMain: async () => { listener?.(hostRef, 'main') },
+  }
+  let reported!: () => void
+  const failed = new Promise<void>(resolve => { reported = resolve })
+  const report = vi.fn(() => { reported() })
+  const monitor = new HarnessInstallationMonitor(registry as never, { recheckInstallation } as never,
+    () => ({} as never), async () => {}, async () => {}, report)
+  try {
+    monitor.start('main')
+    await monitor.refresh()
+    expect(recheckInstallation).toHaveBeenCalledTimes(1)
+    recheckInstallation.mockRejectedValueOnce(new AggregateError([failure], 'Automatic check failed.'))
+    fingerprint = 'updated-payload'
+    await monitor.refresh()
+    await failed
+    expect(recheckInstallation).toHaveBeenCalledTimes(2)
+    await monitor.refresh()
+    expect(recheckInstallation).toHaveBeenCalledTimes(expectedChecks)
+    if (expectedChecks === 3) {
+      expect(recheckInstallation.mock.calls[2]![0].generation)
+        .toBe(recheckInstallation.mock.calls[1]![0].generation)
+    }
+    await monitor.refresh()
+    expect(recheckInstallation).toHaveBeenCalledTimes(expectedChecks)
+    expect(report).toHaveBeenCalledOnce()
+  } finally { await monitor.close() }
+})
 
 it('detects a new payload at the same launcher and schedules one automatic check per inventory generation', async () => {
   const hostRef = { kind: 'main' as const, mainId: 'main' }

@@ -4,7 +4,7 @@ import { expect, it } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import type { ProviderAccount } from '@foreman-code/contracts/provider-accounts'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
-import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
+import { applyApplicationMigrations, migrations } from '../src/infrastructure/migrations.js'
 import { inTransaction } from '../src/infrastructure/transaction.js'
 import { providerAccountsMigration } from '../src/modules/provider-accounts/migration.js'
 import { LocalProviderCredentials } from '../src/modules/provider-accounts/localCredentials.js'
@@ -16,6 +16,10 @@ import { PostgresCommandCoordinator, commandInputHash } from '../src/modules/com
 it('migrates account metadata additively and retains legacy profiles, historical hashes, tombstones and original operations', async () => {
   const db = await currentDatabase({ beforeMigration: providerAccountsMigration.version })
   try {
+    const migrationIndex = migrations.findIndex(migration => migration.version === providerAccountsMigration.version)
+    const appliedBefore = await db.pool.query<{ version: number }>('select version from application_migrations')
+    expect(appliedBefore.rows.map(row => row.version).sort((a, b) => a - b))
+      .toEqual(migrations.slice(0, migrationIndex).map(migration => migration.version).sort((a, b) => a - b))
     const credentials = new LocalProviderCredentials(join(db.directory, 'accounts'))
     const repository = new ProviderAccountsRepository(db.pool, () => credentials.hostId())
     const account: ProviderAccount = { id: randomUUID(), provider: 'codex', name: 'Legacy account', authMode: 'subscription',
@@ -75,5 +79,12 @@ it('migrates account metadata additively and retains legacy profiles, historical
       'select input_hash from management_command_receipts where principal_id=$1 and command_id=$2',
       [owner.principal.id, historicalCommand.commandId])).rows[0]!
     expect(receipt.input_hash).toBe(commandInputHash(historicalCommand))
+    await applyApplicationMigrations(db.pool)
+    expect(await service().runtimeBinding('run-node', 'accepted-run:node', DEFAULT_HARNESS_DEFAULTS.codex))
+      .toEqual(pinned)
+    expect(await commands.execute({ principal: owner.principal, source: 'mcp', operation: 'saved-profile',
+      commandId: historicalCommand.commandId, targetKey: 'legacy-configuration', payload: historicalCommand,
+      perform: async () => { throw new Error('Migration retry must preserve the original result') } }))
+      .toEqual({ value: historicalReceipt.value, replayed: true })
   } finally { await db.close() }
 }, 30_000)

@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, withAdvancedDefaults } from '@foreman-code/contracts'
-import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
+import { applyApplicationMigrations, migrations } from '../src/infrastructure/migrations.js'
 import { retiredHarnessCredentialsMigration } from '../src/infrastructure/retiredHarnessCredentialsMigration.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
@@ -29,6 +29,10 @@ it.skipIf(!postgresEnabled)(
   async () => {
     const database = await currentDatabase({ deferMigration: retiredHarnessCredentialsMigration.version })
     try {
+      const appliedBefore = await database.pool.query<{ version: number }>('select version from application_migrations')
+      expect(appliedBefore.rows.map(row => row.version).sort((a, b) => a - b))
+        .toEqual(migrations.filter(migration => migration.version !== retiredHarnessCredentialsMigration.version)
+          .map(migration => migration.version).sort((a, b) => a - b))
       const fixture = await seedAgent3(database.pool, database.directory)
       const operators = new PostgresOperatorRepository(database.pool)
       const operator = await operators.ensure()

@@ -364,7 +364,10 @@ describe('workspace section routes', () => {
     const user = userEvent.setup()
     const { router } = renderRoute('/workspaces/workspace-1/settings')
 
-    await user.click(await screen.findByRole('button', { name: 'Execution location' }))
+    expect(await screen.findByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
+    const executionLocation = await screen.findByLabelText('Execution location', { selector: 'button' })
+    expect(executionLocation).toBe(screen.getByRole('button', { name: 'Execution location' }))
+    await user.click(executionLocation)
     const dialog = await screen.findByRole('dialog', { name: 'Choose folder' })
     await waitFor(() => expect(browseRequests).toHaveLength(1))
     expect(browseRequests[0]).toMatchObject({
@@ -381,6 +384,13 @@ describe('workspace section routes', () => {
     await user.click(screen.getByRole('button', { name: 'Rename workspace Website' }))
     expect(screen.getByRole('textbox', { name: 'Workspace name' })).toHaveFocus()
     expect(screen.getByRole('textbox', { name: 'Workspace name' })).toHaveValue('Website')
+    await user.clear(screen.getByRole('textbox', { name: 'Workspace name' }))
+    await user.paste('Renamed after folder cancellation')
+    await user.click(screen.getByRole('button', { name: 'Save name' }))
+    expect(await screen.findByRole('button', { name: 'Rename workspace Renamed after folder cancellation' }))
+      .toBeVisible()
+    await waitFor(() => expect(screen.getByTestId('workspace-entry-workspace-1'))
+      .toHaveTextContent('Renamed after folder cancellation'))
   })
 
   it('uses the same inline rename from the workspace name and settings, with a nearby removal control', async () => {
