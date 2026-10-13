@@ -6,18 +6,19 @@ import { withConversationPageRead } from '../conversations/activityCursor.js'
 
 afterEach(() => { vi.restoreAllMocks() })
 
-function captureWarnings() {
+function captureLogs() {
   const lines: Array<{ fields: Record<string, unknown>; message: string }> = []
-  vi.spyOn(logger, 'child').mockImplementation((bindings) => ({
-    warn: (fields: Record<string, unknown>, message: string) => {
+  vi.spyOn(logger, 'child').mockImplementation((bindings) => {
+    const record = (fields: Record<string, unknown>, message: string) => {
       lines.push({ fields: { ...bindings, ...fields }, message })
-    },
-  }) as ReturnType<typeof logger.child>)
+    }
+    return { warn: record, error: record } as ReturnType<typeof logger.child>
+  })
   return lines
 }
 
 it('logs an ignored failure with component, operation, ids and error, then resolves to undefined', async () => {
-  const lines = captureWarnings()
+  const lines = captureLogs()
   const failure = new Error('rollback refused')
   await expect(Promise.reject(failure).catch(ignoreError('db', 'transaction rollback', { commandId: 'command-1' }))).resolves.toBeUndefined()
   expect(lines).toHaveLength(1)
@@ -28,7 +29,7 @@ it('logs an ignored failure with component, operation, ids and error, then resol
 })
 
 it('keeps expected error codes silent and resolves to the fallback', async () => {
-  const lines = captureWarnings()
+  const lines = captureLogs()
   const missing = Object.assign(new Error('gone'), { code: 'ENOENT' })
   await expect(Promise.reject(missing).catch(fallbackOnError(null, 'jobs', 'read exit file', {}, ['ENOENT']))).resolves.toBeNull()
   expect(lines).toHaveLength(0)
@@ -37,7 +38,7 @@ it('keeps expected error codes silent and resolves to the fallback', async () =>
 })
 
 it('does not suppress other cleanup failures or change the fallback object', async () => {
-  const lines = captureWarnings()
+  const lines = captureLogs()
   const fallback = { stopped: false }
   const failure = Object.assign(new Error('permission denied'), { code: 'EPERM' })
   await expect(Promise.reject(failure).catch(fallbackOnError(
@@ -47,14 +48,14 @@ it('does not suppress other cleanup failures or change the fallback object', asy
 })
 
 it('reports non-Error rejections without throwing from the cleanup handler', () => {
-  const lines = captureWarnings()
+  const lines = captureLogs()
   logIgnoredError('jobs', 'close helper', null)
   logIgnoredError('jobs', 'close helper', 'close failed')
   expect(lines.map(line => line.fields.err)).toEqual([null, 'close failed'])
 })
 
 it('reports failed rollback, releases the client and preserves the original read error', async () => {
-  const lines = captureWarnings()
+  const lines = captureLogs()
   const readFailure = new Error('read failed')
   const rollbackFailure = new Error('connection closed')
   const release = vi.fn()
@@ -65,6 +66,9 @@ it('reports failed rollback, releases the client and preserves the original read
   const pool = { connect: async () => client } as unknown as pg.Pool
   await expect(withConversationPageRead(pool, async () => { throw readFailure })).rejects.toBe(readFailure)
   expect(release).toHaveBeenCalledOnce()
+  expect(release).toHaveBeenCalledWith(rollbackFailure)
+  expect(lines).toHaveLength(1)
+  expect(lines[0]!.message).toBe('Transaction rollback failed; discarding its connection')
   expect(lines[0]!.fields).toMatchObject({
     component: 'db', operation: 'transaction rollback', err: rollbackFailure,
   })
