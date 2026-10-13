@@ -85,7 +85,7 @@ describe('PostgreSQL probe cleanup', () => {
     }
   })
 
-  it('discards a lease acquired after cancellation without executing a query', async () => {
+  it('returns a healthy lease acquired after cancellation without executing a query', async () => {
     const client = Object.assign(new EventEmitter(), {
       query: vi.fn(), release: vi.fn(),
     })
@@ -103,7 +103,7 @@ describe('PostgreSQL probe cleanup', () => {
     acquire(client as unknown as pg.PoolClient)
     await expect(work).rejects.toThrow('probe aborted')
     expect(client.query).not.toHaveBeenCalled()
-    expect(client.release).toHaveBeenCalledExactlyOnceWith(true)
+    expect(client.release).toHaveBeenCalledExactlyOnceWith(false)
     expect(client.listenerCount('error')).toBe(0)
   })
 
