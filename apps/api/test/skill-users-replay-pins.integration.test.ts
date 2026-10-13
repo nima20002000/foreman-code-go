@@ -55,14 +55,24 @@ describe.skipIf(!postgresEnabled)('Skill consumer update plans over authenticate
     const result = await call('skill_users_update', c.SkillUsersUpdateResultSchema, {
       workspaceId: f.workspaceId, skillId: f.skillId, commandId: randomUUID(),
     })
-    expect(result.failed).toHaveLength(1)
-    expect(result.failed[0]).toMatchObject({ kind: 'workflow', id: mixed.workflowId, code: 'AGENT_CONFIGURATION_CONFLICT' })
+    expect(result.failed).toEqual([])
+    expect(result.agents.map(agent => agent.agentId)).toEqual([f.consumer.agent.id])
+    expect(result.workflows.map(workflow => workflow.workflowId).sort())
+      .toEqual([f.workflow.workflowId, mixed.workflowId].sort())
     const read = await call('workflow_saved_get_v3', current.CurrentWorkflowReadResultSchema, {
       workspaceId: f.workspaceId, workflowId: mixed.workflowId,
     })
-    expect(read.currentVersionId).toBe(mixed.currentVersionId)
-    expect(read.revision).toBe(mixed.revision)
-    expect(read.version).toEqual(mixed.version)
+    const savedMixed = result.workflows.find(workflow => workflow.workflowId === mixed.workflowId)!
+    expect(read.currentVersionId).toBe(savedMixed.workflowVersionId)
+    expect(read.currentVersionId).not.toBe(mixed.currentVersionId)
+    expect(read.revision).toBe(mixed.revision + 1)
+    expect(read.version.agentConfigurationVersionIds).toEqual({
+      [f.consumer.agent.id]: result.agents[0]!.configurationVersionId,
+      [unrelated.agent.id]: unrelated.agent.configurationVersionId,
+    })
+    expect(await call('workflow_saved_get_v3', current.CurrentWorkflowReadResultSchema, {
+      workspaceId: f.workspaceId, workflowId: mixed.workflowId, workflowVersionId: mixed.currentVersionId,
+    })).toMatchObject({ version: mixed.version })
   })
 
   it('recovers workflow pins when its consumer Agent already has the current skill version', async () => {
