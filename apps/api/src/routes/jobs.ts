@@ -5,7 +5,7 @@ import { JobQueuedStartSchema, JobQueueCancelSchema, JobQueueListInputSchema,
   JobLaunchValidationInputSchema } from '@foreman-code/contracts/job-admission'
 import { requirePrincipal } from '../modules/access/http.js'
 import type { JobService } from '../modules/jobs/service.js'
-import { JobCancelInputSchema, JobCancellationProposalInputSchema } from '@foreman-code/contracts/job-cancellation-recovery'
+import { JobCancelInputSchema, JobCancellationProposalInputSchema, JobCancellationRecoveryApproveSchema } from '@foreman-code/contracts/job-cancellation-recovery'
 interface Scope {
   workspaceId: string; workflowId: string; runId: string; nodeExecutionId: string; definitionId: string; versionId: string;
   executionId: string; ticketId: string; fileId: string; revisionId: string; recoveryId: string
@@ -56,9 +56,10 @@ export function registerJobRoutes(app:FastifyInstance,service:JobService):void {
     service.getCancellationRecovery(requirePrincipal(request), { workspaceId: request.params.workspaceId,
       executionId: request.params.executionId, recoveryId: request.params.recoveryId }))
   app.post<{Params:Scope;Body:unknown}>(`${root}/executions/:executionId/cancellation-recovery/:recoveryId/approve`, request => {
-    const input = JobCancellationProposalInputSchema.pick({ commandId: true }).parse(request.body)
-    return service.approveCancellationRecovery(request, request.params.workspaceId, request.params.executionId,
-      request.params.recoveryId, input.commandId)
+    const input = JobCancellationRecoveryApproveSchema.pick({ commandId: true }).parse(request.body)
+    return service.approveCancellationRecovery(requirePrincipal(request), 'http', { ...input,
+      workspaceId: request.params.workspaceId, executionId: request.params.executionId,
+      recoveryId: request.params.recoveryId })
   })
   app.get<{Params:Scope;Querystring:unknown}>(`${root}/executions/:executionId/logs`,async request=>{
     const query=z.object({afterSequence:z.coerce.number().int().nonnegative().default(0),limit:z.coerce.number().int().min(1).max(100).default(50)}).strict().parse(request.query)

@@ -58,6 +58,9 @@ export const JobCancellationRecoveryReadSchema = z.object({
 export const JobCancellationRecoveryGetSchema = z.object({
   workspaceId: z.string().min(1), executionId: z.string().min(1), recoveryId: z.uuid(),
 }).strict()
+export const JobCancellationRecoveryApproveSchema = JobCancellationRecoveryGetSchema.extend({
+  commandId: JobCancellationProposalInputSchema.shape.commandId,
+}).strict()
 export const JobCancellationRecoveryApplySchema = z.object({
   recoveryId: z.uuid(), closure: SignedJobCancellationClosureSchema,
 }).strict()

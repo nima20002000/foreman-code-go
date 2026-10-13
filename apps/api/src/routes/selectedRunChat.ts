@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify'
-import { AgentChatStateResponseSchema, SendAgentChatMessageResponseSchema } from '@foreman-code/contracts/agent-chat'
+import { AGENT_CHAT_MESSAGE_BODY_LIMIT_BYTES, AgentChatStateResponseSchema, SendAgentChatMessageResponseSchema } from '@foreman-code/contracts/agent-chat'
 import {
   ReadSelectedRunChatResponseSchema, SelectedRunChatSelectionSchema, SelectedRunChatTargetSchema,
   SendSelectedRunChatRequestSchema, InterruptSelectedRunChatRequestSchema,
@@ -28,7 +28,7 @@ export function registerSelectedRunChatRoutes(app: FastifyInstance, chat: AgentC
       selection: { ...target, ...query },
     }))
   })
-  app.post<{ Params: unknown; Body: unknown }>(`${root}/messages`, async (request, reply) => {
+  app.post<{ Params: unknown; Body: unknown }>(`${root}/messages`, { bodyLimit: AGENT_CHAT_MESSAGE_BODY_LIMIT_BYTES }, async (request, reply) => {
     const target = SelectedRunChatTargetSchema.parse(request.params)
     const { executionId, ...message } = messageSchema.parse(request.body)
     const result = await chat.sendSelectedRun(requirePrincipal(request), { selection: { ...target, executionId }, message })

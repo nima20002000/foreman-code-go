@@ -59,7 +59,7 @@ still require nonempty trimmed `content`:
 - `packages/contracts/src/index.ts`: `SendOperatorMessageRequestSchema` uses
   `z.string().trim().min(1)`.
 - `packages/contracts/src/agentChat.ts`: `SendAgentChatMessageRequestSchema` uses
-  `z.string().trim().min(1).max(32000)`.
+  `z.string().trim().max(1_048_576)`.
 - `docs/FIL-10-BACKEND.md` explicitly excludes attachment-only sending in FIL-10.
 
 The composers allow an empty text submit when ready files are selected, but those

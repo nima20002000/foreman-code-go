@@ -3,7 +3,7 @@ import { SessionControlRequestSchema, SessionControlStateSchema } from '@foreman
 import type { FastifyInstance } from 'fastify'
 
 import {
-  AgentChatExecutionActivityPageSchema, AgentChatExecutionActivityQuerySchema, AgentChatHistoryPageSchema, AgentChatTurnPageSchema, AgentChatReadbackQuerySchema, AgentChatQuerySchema, AgentChatStateResponseSchema, AgentChatStateSchema, CancelQueuedAgentChatTurnRequestSchema,
+  AGENT_CHAT_MESSAGE_BODY_LIMIT_BYTES, AgentChatExecutionActivityPageSchema, AgentChatExecutionActivityQuerySchema, AgentChatHistoryPageSchema, AgentChatTurnPageSchema, AgentChatReadbackQuerySchema, AgentChatQuerySchema, AgentChatStateResponseSchema, AgentChatStateSchema, CancelQueuedAgentChatTurnRequestSchema,
   InterruptAgentChatRequestSchema, RespondAgentChatInteractionRequestSchema, SendAgentChatMessageRequestSchema,
   SendAgentChatMessageResponseSchema, type AgentChatStreamEvent,
 } from '@foreman-code/contracts/agent-chat'
@@ -54,7 +54,7 @@ export function registerAgentChatRoutes(app: FastifyInstance, chat: AgentChatSer
     return AgentChatExecutionActivityPageSchema.parse(await chat.executionActivity(requirePrincipal(request), request.params.workspaceId,
       query, { cursor, executionId, before, itemId, limit }))
   })
-  app.post<{ Params: WorkspaceParams; Body: unknown }>(`${root}/messages`, async (request, reply) => {
+  app.post<{ Params: WorkspaceParams; Body: unknown }>(`${root}/messages`, { bodyLimit: AGENT_CHAT_MESSAGE_BODY_LIMIT_BYTES }, async (request, reply) => {
     const result = await chat.send(requirePrincipal(request), request.params.workspaceId, SendAgentChatMessageRequestSchema.parse(request.body))
     reply.code(result.replayed ? 200 : 202)
     return SendAgentChatMessageResponseSchema.parse(result)

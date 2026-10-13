@@ -1,6 +1,6 @@
 import { installAppLauncher } from './appMcpLauncher.js'
 import type { NativeProcessRecovery } from './recovery/processRegistry.js'
-import { backupNativeUserFile, readNativeUserFile } from './nativeConfigFiles.js'
+import { backupNativeUserFile, readNativeUserFile, resolveNativeUserFile } from './nativeConfigFiles.js'
 import { runCommand } from './process.js'
 import type { HarnessMcpChange, HarnessMcpManagedPreset } from '@foreman-code/contracts/management'
 import { DomainError } from '../errors.js'
@@ -71,15 +71,16 @@ export class CodexMcpConnections implements NativeMcpAdapter {
       await this.control(async (transport, binary, environment) => {
         const current = await this.inspect(transport, binary, environment, signal)
         if (current.revision !== snapshot.revision) throw new DomainError('REVISION_CONFLICT', 'Native MCP configuration changed. Refresh and review a new change.', 409)
-        const source = await readNativeUserFile(current.file, { whenMissing: '', requireDirectory: true })
-        await backupNativeUserFile(current.file, source)
+        const file = await resolveNativeUserFile(current.file)
+        const source = await readNativeUserFile(file, { whenMissing: '', requireDirectory: true })
+        await backupNativeUserFile(file, source)
         signal.throwIfAborted()
         if (managed?.preset === 'graphql' && change.kind === 'add') await installAppLauncher(signal)
         signal.throwIfAborted()
         // A later error cannot establish whether the native write was delivered.
         writing()
         await transport.request('config/batchWrite', { edits: edits.map((edit) => ({ keyPath: `mcp_servers.${edit.name}`, value: edit.value ?? null, mergeStrategy: 'replace' })),
-          expectedVersion: current.version, filePath: current.file, reloadUserConfig: true }, signal)
+          expectedVersion: current.version, filePath: file, reloadUserConfig: true }, signal)
         const after = await this.inspect(transport, binary, environment, signal)
         const expected = applyMcpEdits(current.user, edits)
         if (fingerprint({ ...current.userConfig, mcp_servers: expected }) !== fingerprint({ ...after.userConfig, mcp_servers: after.user })) throw new DomainError('MCP_WRITE_UNCONFIRMED', 'The native write could not be confirmed. Do not retry it automatically.', 409)

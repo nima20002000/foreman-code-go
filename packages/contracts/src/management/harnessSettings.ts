@@ -86,6 +86,7 @@ export const HarnessDirectoryBrowseResultSchema = z.object({
   roots: z.array(z.object({ id: z.string(), label: z.string(), path: z.string() }).strict()),
   rootId: z.string().nullable(), path: z.string().nullable(), parent: z.string().nullable(),
   directories: z.array(z.object({ name: z.string(), path: z.string() }).strict()), nextCursor: z.string().nullable(),
+  truncated: z.boolean().optional().describe('True when scanning stopped after 20,000 entries; cursor pages cover only the scanned subset.'),
 }).strict()
 
 export const WorkspaceFolderNameSchema = z.string().trim().min(1).max(200)
