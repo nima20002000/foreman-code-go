@@ -301,7 +301,9 @@ it.each([500, 502, 503])('recovers list and detail request failures through thei
     }, { status: 404 })),
   )
   mount('/settings/bugs?reportId=bug-report-missing')
-  expect(await screen.findByText('Reports are unavailable.')).toBeVisible()
+  const reports = within(await screen.findByRole('region', { name: 'Bug reports' }))
+  const expectedMessage = status === 500 ? 'Reports are unavailable.' : 'Updating — reconnecting…'
+  expect(await reports.findByRole('alert')).toHaveTextContent(expectedMessage)
   expect(await screen.findByText('This bug report was not found.')).toBeVisible()
   expect(screen.getByRole('button', { name: 'Refresh bug reports' })).toBeEnabled()
   expect(screen.getByRole('button', { name: 'Refresh report' })).toBeEnabled()
@@ -311,7 +313,7 @@ it.each([500, 502, 503])('recovers list and detail request failures through thei
   await userEvent.click(screen.getByRole('button', { name: 'Refresh report' }))
   expect(await screen.findByRole('combobox', { name: 'Report status' })).toHaveValue('open')
   expect(screen.getByRole('button', { name: 'Read Workflow start fails' })).toBeVisible()
-  expect(screen.queryByText('Reports are unavailable.')).not.toBeInTheDocument()
+  expect(reports.queryByRole('alert')).not.toBeInTheDocument()
   expect(screen.queryByText('This bug report was not found.')).not.toBeInTheDocument()
 })
 
