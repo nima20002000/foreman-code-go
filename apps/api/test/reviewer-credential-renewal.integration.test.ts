@@ -61,9 +61,8 @@ it.each(['expired', 'principal revoked', 'binding revoked', 'reviewer identity c
         await f.db.pool.query('update worker_credential_bindings set revoked_at=clock_timestamp() where principal_id=$1',
           [credential.principalId])
       } else if (condition === 'reviewer identity changed') {
-        await f.db.pool.query(`update runs set record=jsonb_set(record,
-          '{approval,designatedOrchestratorAgentId}',to_jsonb($2::text)) where id=$1`,
-        [f.run.id, f.requester.agentId])
+        await f.db.pool.query('update management_principals set agent_id=$2 where id=$1',
+          [credential.principalId, f.requester.agentId])
       } else if (condition === 'session not finalized') {
         await f.db.pool.query('update execution_native_sessions set workflow_finalized_at=null where execution_id=$1',
           [f.reviewer.id])
