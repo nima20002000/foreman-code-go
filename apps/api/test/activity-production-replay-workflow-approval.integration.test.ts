@@ -1,4 +1,5 @@
 import { GetInteractionResponseSchema } from '@foreman-code/contracts'
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { afterEach, describe, expect, it } from 'vitest'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
@@ -7,6 +8,32 @@ import { closeActivityReplay, setup, admittedRun, eventually } from './helpers/a
 afterEach(closeActivityReplay)
 
 describe.skipIf(!postgresEnabled)('Production activity replay: workflow-approval', { timeout: 120000 }, () => {
+  it('publishes a checkpoint-bound approval wait through HTTP and authenticated MCP', async () => {
+    const f = await setup()
+    const started = await admittedRun(f, 'approval')
+    const workspaceId = started.run.workspaceId
+    const runId = started.run.id
+    const detail = await eventually(async () => {
+      const response = await f.http('GET', `/api/management/workspaces/${workspaceId}/runs/${runId}`)
+      expect(response.statusCode, response.body).toBe(200)
+      return SavedRunDetailsSchema.parse(response.json())
+    }, value => value.run.executionState === 'waiting')
+    expect(detail.activitySnapshot!.pendingInteractions).toHaveLength(1)
+    const interactionId = detail.activitySnapshot!.pendingInteractions[0]!.id
+    const interaction = await f.http('GET', `/api/user/interactions/${interactionId}`, undefined, '')
+    expect(interaction.statusCode, interaction.body).toBe(200)
+    expect(GetInteractionResponseSchema.parse(interaction.json()).interaction.graphInterruptId).toBeTruthy()
+
+    const readback = await f.call('run_get', { workspaceId, runId, detail: 'full' })
+    expect(readback.isError).not.toBe(true)
+    const persisted = SavedRunDetailsSchema.parse(decodeMcpToolResult(readback))
+    expect(persisted.run).toEqual(detail.run)
+    expect(persisted.activitySnapshot!.pendingInteractions).toEqual(detail.activitySnapshot!.pendingInteractions)
+    const denied = await f.call('run_get', { workspaceId, runId }, f.denied.token)
+    expect(denied.isError).toBe(true)
+    expect(f.replay.responses).toHaveLength(0)
+  })
+
   it('Workflow approval: live callback is qualified; recorded choice and provider/worker acknowledgment remain distinct', async () => {
     const f = await setup(), started = await admittedRun(f, 'approval'), workspaceId = started.run.workspaceId
     const detail = await eventually(async () => SavedRunDetailsSchema.parse((await f.http('GET',

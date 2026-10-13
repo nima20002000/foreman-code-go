@@ -28,6 +28,7 @@ const POLL_MS = 4_000
 const MAX_BACKOFF_MS = 10 * 60_000
 /** Provider CLI polls run on Main, which also runs Agents: at most this many follow runs at once per service. */
 const POLL_CONCURRENCY = 3
+const PRUNE_INTERVAL_MS = 5 * 60_000
 const log = componentLogger('jobs')
 
 export type { CloudRun }
@@ -36,6 +37,23 @@ type Mirrors = (workspaceId: string) => Promise<string | null>
  * the remote's old-value check ("incorrect old value provided"), and concurrent fetches race on its local ref. */
 const mirrorPushes = new Map<string, Promise<unknown>>()
 const publishingBranches = new Map<string, Set<string>>()
+interface Publication {
+  git: (args: string[]) => Promise<string>
+  branch: string
+  snapshot: string
+  workflowRef: string
+  workflows: string[]
+  defaultBranch?: string
+  baseCommit?: string
+}
+interface MirrorMaintenance {
+  at: number
+  cleanup: Promise<void> | undefined
+  afterFinish: (() => void) | undefined
+  keep: Set<string>
+}
+const mirrorPublications = new Map<string, Map<string, Promise<Publication>>>()
+const mirrorMaintenance = new Map<string, MirrorMaintenance>()
 
 /** The public mirror belonging to this workspace, if any. */
 export function workspaceMirrors(pool: pg.Pool): Mirrors {
@@ -68,9 +86,6 @@ export class CloudCi {
   private readonly waiting: (() => void)[] = []
   private readonly operations = new Map<string, Promise<unknown>>()
   private readonly reading = new Set<string>()
-  private readonly published = new Map<string, Promise<{
-    git: (args: string[]) => Promise<string>; branch: string; snapshot: string; workflowRef: string; defaultBranch?: string; baseCommit?: string
-  }>>()
 
   constructor(private readonly mainId: string, readonly provider: CloudProvider, private readonly mirrors: Mirrors,
     private readonly root = join(homedir(), '.local/share/foreman-code/ci-cloud', provider.id),
@@ -121,7 +136,7 @@ export class CloudCi {
           cancellation: run.cancellation ?? { at: this.ports.now().toISOString(), canceledIds: [] } })
       }
       const canceled = run.cancellation ? await this.cancelAttempts(run) : run
-      await this.prune(canceled, canceled.runId)
+      this.schedulePrune(canceled, canceled.runId)
       return CiHostReplySchema.parse({ operation: 'cancel', run: this.view(canceled, 0) })
     }
     this.reading.add(request.runId)
@@ -134,7 +149,7 @@ export class CloudCi {
 
   private async answer(request: Extract<CiHostRequest, { operation: 'read' }>, run: CloudRun) {
     const log = await readFile(this.path(run.runId, 'log')).catch(() => Buffer.alloc(0))
-    if (!['starting', 'running', 'queued'].includes(run.state)) await this.prune(run, run.runId)
+    if (!['starting', 'running', 'queued'].includes(run.state)) this.schedulePrune(run, run.runId)
     const page = ciLogPage(log, request.afterOffset, request.maxBytes)
     return CiHostReplySchema.parse({ operation: 'read', run: this.view(run, log.length),
       text: sanitizeCiText(page.text), nextOffset: page.nextOffset,
@@ -205,12 +220,16 @@ export class CloudCi {
     const reservation = `${request.runId}\n${branchName}`
     reservations.add(reservation)
     publishingBranches.set(mirror, reservations)
+    const maintenance = mirrorMaintenance.get(this.mirrorKey(request.repository, mirror))
+    if (maintenance?.cleanup) {
+      maintenance.keep.add(branchName)
+      maintenance.keep.add(`ci-default/${request.commit}`)
+    }
     try {
-      await this.prune({ repository: request.repository, mirror })
-
       const { git, branch, snapshot, workflowRef, defaultBranch, baseCommit } = await this.publish(request.repository, mirror, request.commit,
         deriveFiles && !request.baseCommit ? request.defaultBranch ?? 'main' : undefined,
         deriveFiles ? request.baseCommit : undefined, request.durations ?? {})
+      this.schedulePrune({ repository: request.repository, mirror })
       const selectOnRunner = deriveFiles && (defaultBranch !== undefined || baseCommit !== undefined)
       const message = deriveFiles && !selectOnRunner
         ? 'Running full suite: ' + (request.baseCommit
@@ -323,9 +342,61 @@ export class CloudCi {
       cancellation: { at: this.ports.now().toISOString(), canceledIds: [] } })
   }
 
+  private mirrorKey(repository: string, mirror: string) {
+    return `${this.git.cloneDirectory(repository)}\n${mirror}`
+  }
+
+  private publications(repository: string, mirror: string) {
+    const key = this.mirrorKey(repository, mirror)
+    let publications = mirrorPublications.get(key)
+    if (!publications) {
+      publications = new Map<string, Promise<Publication>>()
+      mirrorPublications.set(key, publications)
+    }
+    return publications
+  }
+
+  private schedulePrune(run: Pick<CloudRun, 'repository' | 'mirror'>, finishedRunId?: string) {
+    const key = this.mirrorKey(run.repository, run.mirror)
+    const maintenance: MirrorMaintenance = mirrorMaintenance.get(key)
+      ?? { at: -Infinity, cleanup: undefined, afterFinish: undefined, keep: new Set<string>() }
+    mirrorMaintenance.set(key, maintenance)
+    const now = this.ports.now().getTime()
+    if (maintenance.cleanup) {
+      // Coalesce completions during a sweep into one more pass over the finished tickets.
+      if (finishedRunId) maintenance.afterFinish = () => this.schedulePrune(run, finishedRunId)
+      return
+    }
+    if (!finishedRunId && now - maintenance.at < PRUNE_INTERVAL_MS) return
+    maintenance.keep.clear()
+    for (const reservation of publishingBranches.get(run.mirror) ?? []) {
+      const branch = reservation.split('\n')[1]!
+      maintenance.keep.add(branch)
+      maintenance.keep.add(`ci-default/${branch.slice('ci/'.length).split('-')[0]}`)
+    }
+    const cleanup = this.prune(run, finishedRunId)
+    maintenance.at = now
+    maintenance.cleanup = cleanup
+    void cleanup.then(() => {
+      maintenance.cleanup = undefined
+      const afterFinish = maintenance.afterFinish
+      maintenance.afterFinish = undefined
+      afterFinish?.()
+    })
+  }
+
+  private forgetBranches(run: Pick<CloudRun, 'repository' | 'mirror'>, branches: string[]) {
+    const publications = this.publications(run.repository, run.mirror)
+    const removed = new Set(branches)
+    for (const key of publications.keys()) {
+      const [commit, , baseCommit] = key.split('\n')
+      const branch = baseCommit ? `ci/${commit}-${baseCommit}` : `ci/${commit}`
+      if (removed.has(branch)) publications.delete(key)
+    }
+  }
+
   private async prune(run: Pick<CloudRun, 'repository' | 'mirror'>, finishedRunId?: string) {
-    const previous = mirrorPushes.get(run.mirror) ?? Promise.resolve()
-    const cleanup = previous.then(async () => {
+    try {
       const clone = await ensureClone(this.git, run.repository, AbortSignal.timeout(120_000))
       let activeRuns = await this.activeRuns?.()
       if (activeRuns && finishedRunId) {
@@ -333,52 +404,45 @@ export class CloudCi {
         ids.delete(finishedRunId)
         activeRuns = { ...activeRuns, ids }
       }
-      const swept = await pruneMirrorBranches({ mirror: run.mirror, activeRuns,
+      await pruneMirrorBranches({ mirror: run.mirror, activeRuns,
         roots: [this.root, join(this.root, '..', 'github'), join(this.root, '..', 'circleci')],
-        keep: [...(publishingBranches.get(run.mirror) ?? [])].flatMap(value => {
-          const branch = value.split('\n')[1]!
-          return [branch, `ci-default/${branch.slice('ci/'.length).split('-')[0]}`]
-        }),
+        // Starts during this sweep stay protected even after their reservation becomes a persisted ticket.
+        keep: () => [...(mirrorMaintenance.get(this.mirrorKey(run.repository, run.mirror))?.keep ?? [])],
+        beforeRemove: branches => this.forgetBranches(run, branches),
         git: async args => {
           const result = await this.git.git(args, { cwd: clone, signal: AbortSignal.timeout(120_000) })
           if (result.code !== 0) throw new Error(`CI mirror branch cleanup failed: ${result.stderr.trim().slice(-500)}`)
           return result.stdout.trim()
         } })
-      const retained = new Set(swept.retained)
-      for (const key of this.published.keys()) {
-        if (!key.startsWith(`${run.mirror}\n`)) continue
-        const [, commit, , baseCommit] = key.split('\n')
-        const branch = baseCommit ? `ci/${commit}-${baseCommit}` : `ci/${commit}`
-        if (!retained.has(branch)) this.published.delete(key)
-      }
-    }, async () => { throw new Error('Previous CI mirror operation failed; cleanup will retry.') })
-    mirrorPushes.set(run.mirror, cleanup)
-    try {
-      await cleanup
     } catch (error) {
       log.warn({ err: error, mirror: run.mirror }, 'CI mirror branch cleanup failed; next ticket read will retry')
-    } finally {
-      if (mirrorPushes.get(run.mirror) === cleanup) mirrorPushes.delete(run.mirror)
     }
   }
 
   /** Puts the commit's files on the mirror once: every partition of a run starting together shares one push. */
-  private publish(repository: string, mirror: string, commit: string, defaultBranch: string | undefined,
+  private async publish(repository: string, mirror: string, commit: string, defaultBranch: string | undefined,
     baseCommit: string | undefined, durations: CiDurations) {
-    const key = `${mirror}\n${commit}\n${defaultBranch ?? ''}\n${baseCommit ?? ''}\n${canonicalJson(durations)}`
-    let published = this.published.get(key)
+    const key = `${commit}\n${defaultBranch ?? ''}\n${baseCommit ?? ''}\n${canonicalJson(durations)}`
+    const publications = this.publications(repository, mirror)
+    let published = publications.get(key)
     if (!published) {
       const queued = (mirrorPushes.get(mirror) ?? Promise.resolve()).catch(() => { /* ignore: the previous caller receives its failure; the queue must still admit the next operation. */ })
       const pushed = queued.then(() => this.push(repository, mirror, commit, defaultBranch, baseCommit, durations))
       published = pushed
       mirrorPushes.set(mirror, pushed)
       void pushed.catch(() => { /* ignore: the push failure is reported to the caller awaiting it; this only clears the queue entry */ }).then(() => { if (mirrorPushes.get(mirror) === pushed) mirrorPushes.delete(mirror) })
-      this.published.set(key, published)
+      publications.set(key, published)
       // A failed push is retried by the next start; a done one is kept for the run's later partitions.
-      published.catch(() => { this.published.delete(key) })
-      if (this.published.size > 50) this.published.delete(this.published.keys().next().value!)
+      published.catch(() => { publications.delete(key) })
+      if (publications.size > 50) publications.delete(publications.keys().next().value!)
     }
-    return published
+    const publication = await published
+    const workflow = this.provider.id === 'github' ? '.github/workflows/ci.yml' : '.circleci/config.yml'
+    if (!publication.workflows.includes(workflow)) {
+      throw new DomainError('CI_CLOUD_UNAVAILABLE',
+        `The CI mirror has no ${workflow} workflow for ${this.provider.label}. Use a build computer or configure the mirror.`, 409)
+    }
+    return publication
   }
 
   private async push(repository: string, mirror: string, commit: string, defaultBranch: string | undefined,
@@ -471,7 +535,8 @@ export class CloudCi {
     const workflowRef = `ci-snapshot/${snapshot}`
     await git(['push', '--quiet', '--force', `https://github.com/${mirror}.git`, `${snapshot}:refs/heads/${branch}`,
       `${snapshot}:refs/heads/main`, `${snapshot}:refs/heads/${workflowRef}`, ...(comparison ? [`${comparison.commit}:refs/heads/${comparison.branch}`] : [])])
-    return { git, branch, snapshot, workflowRef, ...(comparison ? { defaultBranch: comparison.branch } : {}),
+    return { git, branch, snapshot, workflowRef, workflows: entries.map(entry => entry.split('\t')[1]!),
+      ...(comparison ? { defaultBranch: comparison.branch } : {}),
       ...(runnerBaseCommit ? { baseCommit: runnerBaseCommit } : {}) }
   }
 
