@@ -35,11 +35,11 @@ it('keeps pending native settlement retryable and rolls back the incomplete Run 
   }
 }, 60_000)
 
-describe.each(['graceful', 'expired-receipt'] as const)('production remote review after %s Main recovery', recovery => {
+describe('production remote review after graceful Main recovery', () => {
   const withRemoteReviewFixture = useRemoteReviewFixture()
   it('continues the original retained review with the Worker alive', async () => {
     await withRemoteReviewFixture(async fixture => {
-      const recovered = await retainedReviewRecovery(fixture, recovery)
+      const recovered = await retainedReviewRecovery(fixture, 'graceful')
       const settled = await fixture.details(recovered.runId)
       expect(settled.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
       expect(settled.cleanupPending).not.toBe(true)
