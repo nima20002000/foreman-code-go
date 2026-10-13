@@ -1,3 +1,4 @@
+import { deferred } from '../../../test/helpers/deferred.js'
 import { afterEach, expect, it } from 'vitest'
 import { SyncComputerStateSchema, SyncIdentitySchema } from '@foreman-code/contracts/computer-accounts'
 import { SyncthingComputer, sharedFolderId } from './syncthingComputer.js'
@@ -91,4 +92,33 @@ it('refuses arbitrary network addresses and path traversal workspace ids at the 
   // IDs are hashed before they form paths, even when punctuation is allowed by the domain ID contract.
   await f.computer.handle({ operation: 'configure', workspaceId: '../same/name', enabled: true, peers: [] })
   expect([...f.directories]).toEqual([`/main/shared/${sharedFolderId('../same/name')}`])
+})
+
+it('cancels queued local configuration before preparation or any folder write', async () => {
+  const f = await fixture()
+  const entered = deferred(), release = deferred()
+  const prepare = f.ports.prepare.bind(f.ports)
+  let preparations = 0
+  f.ports.prepare = async () => { preparations++; entered.resolve(); await release.promise; return prepare() }
+  const first = f.computer.handle({ operation: 'identity' })
+  await entered.promise
+  const abort = new AbortController()
+  const queued = f.computer.handle({ operation: 'configure', workspaceId: 'canceled', enabled: true, peers: [] },
+    { signal: abort.signal }).then(() => undefined, error => error)
+  abort.abort(new Error('Sync closing'))
+  release.resolve()
+  await first
+  expect(await queued).toBe(abort.signal.reason)
+  expect(preparations).toBe(1)
+  expect(await f.rest('GET', '/rest/config/folders')).toEqual([])
+})
+
+it('cancels configuration during preparation before publishing folders', async () => {
+  const f = await fixture()
+  const abort = new AbortController()
+  const prepare = f.ports.prepare.bind(f.ports)
+  f.ports.prepare = async () => { const identity = await prepare(); abort.abort(new Error('Sync closing')); return identity }
+  await expect(f.computer.handle({ operation: 'configure', workspaceId: 'canceled', enabled: true, peers: [] },
+    { signal: abort.signal })).rejects.toBe(abort.signal.reason)
+  expect(await f.rest('GET', '/rest/config/folders')).toEqual([])
 })
