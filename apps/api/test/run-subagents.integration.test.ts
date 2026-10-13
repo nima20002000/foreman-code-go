@@ -31,6 +31,7 @@ import { productionSubagentControls } from '../src/modules/subagents/productionC
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import { NativeResponseJournal } from '../src/modules/harnesses/recovery/responseJournal.js'
 import { join } from 'node:path'
+import { CodexStdioTransport } from '../src/modules/harnesses/codexStdioTransport.js'
 
 // Explicit loopback admin connection and a random OWNED schema. Never read TEST_DATABASE_URL or migrate public.
 describe('durable per-Run children over SQL and authenticated MCP', () => {
@@ -79,7 +80,9 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
     const f = await fixture('codex')
     const native = await deliveryFixture()
     const journal = new NativeResponseJournal(join(native.directory, 'response-journal'))
-    const manager = native.makeManager(undefined, {}, { appMcpAccess: 'scoped', responseJournal: journal })
+    // Success-path MCP tests use the production RPC deadline; fault tests retain the short deadline.
+    const transport = (...args: ConstructorParameters<typeof CodexStdioTransport>) => new CodexStdioTransport(...args)
+    const manager = native.makeManager(undefined, { transport }, { appMcpAccess: 'scoped', responseJournal: journal })
     const source = codexInput(native.directory, f.versionRecord.definition.nodes[0]!.agentId)
     source.request.executionId = f.executionId
     source.request.runId = f.input.runId
@@ -98,6 +101,7 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
     } })
     const saved = (await f.service.list(f.reader.principal, f.input)).items[0]!.subagent
     await seedCodexChild(native.directory, root, source, { ...saved, status: 'completed' })
+    await native.json('resume-delay-ms.json', 750)
     const managers = new ExecutionScopedNativeSessionManagerResolver(() => manager)
     const context = { executionId: f.executionId, runId: f.input.runId,
       agentId: source.request.configuration.agentId, harness: 'codex' as const, workingDirectory: native.directory,
@@ -160,7 +164,7 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
         response: { option: { response: command.response } } })
       await until(async () => journal.read(detail.pendingInteraction!.session, receipt.response!))
       await manager.shutdown()
-      const replacement = native.makeManager(undefined, {}, { appMcpAccess: 'scoped', responseJournal: journal })
+      const replacement = native.makeManager(undefined, { transport }, { appMcpAccess: 'scoped', responseJournal: journal })
       await replacement.attachSession(root, source)
       const replacementManagers = new ExecutionScopedNativeSessionManagerResolver(() => replacement)
       const reattached = replacementManagers.resolve(context,

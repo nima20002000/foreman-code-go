@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { setTimeout as delay } from 'node:timers/promises'
 import type { Options } from '@anthropic-ai/claude-agent-sdk'
 import { expect, it, vi } from 'vitest'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
@@ -97,7 +98,11 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
       }
       const closeRecoveredRuntime = vi.fn(async () => true)
       const createChat = () => new OperatorChatService(repository, new PostgresOperatorRepository(pool),
-        Object.assign(resolver, { closeRecoveredRuntime }), directory, { current: id => access.currentOperator(id), assertConfiguration() {},
+        Object.assign(resolver, { closeRecoveredRuntime,
+          prepareAccountBinding: async () => {
+            if (scenario === 'restart-after-terminal') await delay(1500)
+          },
+        }), directory, { current: id => access.currentOperator(id), assertConfiguration() {},
         setup: async () => ({ harness: 'claude', status: 'configured', endpoint: 'http://127.0.0.1/mcp', checkedAt: new Date().toISOString() }),
         prepare: async (_manager, configuration) => ({ agentId: configuration.operatorId, variables: {} }), release: async () => {} })
       let chat = createChat()
@@ -112,7 +117,7 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
         const conversation = await chat.create(owner.principal)
         const id = conversation.id
         await chat.send(id, { requestId: 'model-request', content: 'Read an admitted file' }, owner.principal)
-        await vi.waitFor(() => expect(runtimes).toHaveLength(1))
+        await vi.waitFor(() => expect(runtimes).toHaveLength(1), { timeout: 20_000, interval: 50 })
         const owned = runtimes[0]!
         const message = (await (await owned.ready.promise).next()).value!
         nativeHistory.push({ type: 'user', uuid: message.uuid, session_id: session.nativeSessionId,
@@ -127,7 +132,8 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
         const permission = callbacks.canUseTool!('Read', hook.tool_input, {
           toolUseID: 'read-tool', requestId: 'permission-request', signal: controller.signal,
         }).then(decision => { responses++; return decision })
-        await vi.waitFor(async () => expect((await repository.get(id))?.pendingInteraction).toBeDefined())
+        await vi.waitFor(async () => expect((await repository.get(id))?.pendingInteraction).toBeDefined(),
+          { timeout: 20_000, interval: 50 })
         const admitted = await graphRpc(app, owner.token, 'tools/call', {
           name: 'operator_chat_get', arguments: { conversationId: id },
         })
@@ -215,7 +221,8 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
             message: { id: 'after-approval', content: [{ type: 'text', text: 'Tool completed after approval.' }] } })
           void owned.frames.offer({ type: 'result', uuid: 'after-approval-terminal', session_id: session.nativeSessionId,
             user_message_uuid: message.uuid, subtype: 'success', is_error: false, result: 'done' })
-          await vi.waitFor(async () => expect(await repository.terminal(id, 'model-request')).toBeDefined())
+          await vi.waitFor(async () => expect(await repository.terminal(id, 'model-request')).toBeDefined(),
+            { timeout: 20_000, interval: 50 })
         }
         if (scenario === 'restart-after-terminal') {
           const terminal = await repository.terminal(id, 'model-request')

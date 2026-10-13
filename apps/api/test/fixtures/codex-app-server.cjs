@@ -285,7 +285,8 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
   } else if (message.method === 'thread/resume') {
     if (flag('fail-resume')) { fail(message.id); return }
     const owner = read(`state-${params.threadId}.json`, thread('not-the-requested-thread', params))
-    if (flag('resume-delay')) setTimeout(() => replyThread(owner, message.id, params), 250)
+    const resumeDelayMs = read('resume-delay-ms.json', flag('resume-delay') ? 250 : 0)
+    if (resumeDelayMs) setTimeout(() => replyThread(owner, message.id, params), resumeDelayMs)
     else replyThread(owner, message.id, params)
   } else if (message.method === 'thread/read') {
     const persisted = loadThread(params.threadId)
