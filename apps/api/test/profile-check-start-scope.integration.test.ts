@@ -120,7 +120,27 @@ describe('profile-scoped Start after Worker reconnect', () => {
       expect((await profiles(fixture, reader)).find(profile => profile.instanceId === pending.instanceId)
         ?.qualification).toBe('qualifying')
 
+      const pendingSaved = CurrentWorkflowReadResultSchema.parse(
+        await fixture.value(CURRENT_WORKFLOW_TOOLS.saved, scope))
+      expect(pendingSaved.version.id).toBe(pendingVersion.id)
+      const staleSave = await fixture.call(CURRENT_WORKFLOW_TOOLS.save, {
+        ...scope, commandId: randomUUID(), executionSemanticsVersion: 3,
+        graph: fixture.version.definition,
+        expectedRevision: pendingSaved.revision, expectedWorkflowVersionId: pendingVersion.id,
+        expectedAgentConfigurationVersionIds: pendingVersion.agentConfigurationVersionIds,
+        expectedLocationRevision: locationRevision,
+      })
+      expect(staleSave.isError).toBe(true)
+      expect(decodeMcpToolResult(staleSave)).toMatchObject({ error: { code: 'WORKFLOW_BASE_CONFLICT' } })
+      expect(CurrentWorkflowReadResultSchema.parse(
+        await fixture.value(CURRENT_WORKFLOW_TOOLS.saved, scope))).toEqual(pendingSaved)
+
       const readyVersion = await saveGraph(fixture.version.definition)
+      const readySaved = CurrentWorkflowReadResultSchema.parse(
+        await fixture.value(CURRENT_WORKFLOW_TOOLS.saved, scope))
+      expect(readySaved.version).toEqual(readyVersion)
+      expect(readyVersion.definition.nodes).toEqual(fixture.version.definition.nodes)
+      expect(readyVersion.version).toBe(pendingVersion.version + 1)
       const readyInput = await startInput(readyVersion)
       const started = ManualRunStartResultSchema.parse(await fixture.value('run_start', readyInput))
       expect((await fixture.details(started.run.id)).run.workflowVersionId).toBe(readyVersion.id)

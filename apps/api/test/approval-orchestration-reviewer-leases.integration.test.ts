@@ -47,6 +47,8 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       const app = new PostgresAppInteractionService(f.pool, f.repository, f.commands, f.service)
       const retainedPrincipal = await f.access.authenticate(token, 'worker')
       expect(retainedPrincipal).toEqual(f.principal)
+      const retainedSession = await f.repository.coordination.workflowSession(f.reviewer.id)
+      expect(retainedSession).toEqual({ ...native, reviewerActive: true })
       await expect(app.respond(retainedPrincipal, approvalResponse(f.interaction)))
         .rejects.toMatchObject({ code: 'REVIEWER_AUTHORITY_LOST' })
       expect(await f.repository.get(f.interaction.id)).toEqual(f.interaction)
