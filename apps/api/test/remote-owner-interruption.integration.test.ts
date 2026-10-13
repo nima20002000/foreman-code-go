@@ -83,5 +83,12 @@ it('closes an unbound attempt after owner restarts, records interruption, and ad
     'later Run native session')
     expect(launched.some(execution => execution.nativeSessionId)).toBe(true)
     await fixture.value('run_stop', { workspaceId: later.run.workspaceId, runId: later.run.id, commandId: randomUUID() })
+    const stopped = SavedRunDetailsSchema.parse(await fixture.value('run_get', {
+      workspaceId: later.run.workspaceId, runId: later.run.id, detail: 'full',
+    }))
+    expect(stopped.run.executionState).toBe('completed')
+    expect(stopped.cleanupPending).not.toBe(true)
+    expect(stopped.run.workflowVersionId).toBe(later.run.workflowVersionId)
+    expect(stopped.run.input).toEqual(later.run.input)
   })
 }, 240_000)
