@@ -798,7 +798,9 @@ export class HostCiRunner {
     if (!['starting', 'running'].includes(meta.state) && !meta.cleaned && !this.preparing.has(runId)) {
       const clone = join(this.root, 'git', ...meta.repository.split('/'))
       if (existsSync(join(directory, 'src'))) {
-        if (!(await stat(join(directory, 'src/.git')).catch(() => null))?.isDirectory()) {
+        if (!(await stat(join(directory, 'src/.git')).catch(
+          fallbackOnError(null, 'jobs', 'stat CI checkout metadata', { runId }, ['ENOENT']),
+        ))?.isDirectory()) {
           await this.ports.run('git', ['worktree', 'remove', '--force', join(directory, 'src')], { cwd: clone, env: this.environment })
         }
         await rm(join(directory, 'src'), { recursive: true, force: true })
