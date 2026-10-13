@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
@@ -22,7 +22,8 @@ it('admits new transfers after retiring the record limit and preserves replay de
     async point => { if (point === 'directory-sync') admissionSyncs++ })
   let service = createService()
   try {
-    for (let index = 0; index < BYTE_TRANSFER_POLICY.maxRecords; index++) {
+    const lifecycleCount = BYTE_TRANSFER_POLICY.maxActiveGlobal * 2 + 1
+    for (let index = 0; index < lifecycleCount; index++) {
       const current = { ...intent, transferId: index === 0 ? intent.transferId : randomUUID() }
       admissionSyncs = 0
       await service.start(current, context)
@@ -32,11 +33,35 @@ it('admits new transfers after retiring the record limit and preserves replay de
       await service.retire(current.transferId)
     }
     await service.close()
+
+    // Clone a service-created tombstone so the record-limit fixture avoids thousands of fsync-heavy lifecycles.
+    const retired = join(root, 'retired')
+    const template = JSON.parse(await readFile(join(retired, `${intent.transferId}.json`), 'utf8')).payload
+    const replayIntents = [intent]
+    for (let index = lifecycleCount; index < BYTE_TRANSFER_POLICY.maxRecords; index++) {
+      const current = { ...intent, transferId: randomUUID() }
+      const payload = {
+        ...template,
+        intent: current,
+        progress: { ...template.progress, transferId: current.transferId },
+      }
+      const checksum = createHash('sha256').update(JSON.stringify(payload)).digest('hex')
+      await writeFile(join(retired, `${current.transferId}.json`), JSON.stringify({ checksum, payload }), { mode: 0o600 })
+      if (index === Math.floor(BYTE_TRANSFER_POLICY.maxRecords / 2) || index === BYTE_TRANSFER_POLICY.maxRecords - 1) {
+        replayIntents.push(current)
+      }
+    }
+
     service = createService()
     const next = { ...intent, transferId: randomUUID() }
+    admissionSyncs = 0
     expect((await service.start(next, context)).state).toBe('allocated')
-    await expect(service.start(intent, context)).rejects.toThrow('cancelled')
-    await expect(service.start({ ...intent, sha256: 'c'.repeat(64) }, context)).rejects.toThrow('immutable')
+    expect(admissionSyncs).toBeLessThanOrEqual(BYTE_TRANSFER_POLICY.maxActiveGlobal + 2)
+    expect((await service.inventory()).length).toBeLessThanOrEqual(BYTE_TRANSFER_POLICY.maxActiveGlobal)
+    for (const replay of replayIntents) {
+      await expect(service.start(replay, context)).rejects.toThrow('cancelled')
+      await expect(service.start({ ...replay, sha256: 'c'.repeat(64) }, context)).rejects.toThrow('immutable')
+    }
   } finally {
     await service.close()
     await rm(root, { recursive: true, force: true })
