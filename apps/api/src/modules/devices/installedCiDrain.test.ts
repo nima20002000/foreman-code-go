@@ -30,15 +30,17 @@ vi.mock('../jobs/ciRuntimeWorker.js', async original => {
     constructor(...[directory, ports, signal]: ConstructorParameters<typeof actual.CiRuntimeWorker>) {
       super(directory, { ...ports,
         git: { cloneDirectory: () => preparation.root, git: async args => {
-          await preparation.pause()
           const failed = preparation.failSource && ['cat-file', 'fetch'].includes(args[0]!)
           return { code: failed ? 1 : 0, stdout: '', stderr: failed ? 'Fixture source is unavailable.' : '' }
         } },
         managedRuntimeRoot: async () => preparation.root,
         currentRuntimePaths: async () => [],
-        prepare: async request => ({ commit: request.commit, imageId: `sha256:${'a'.repeat(64)}`,
-          imageManifestDigest: `sha256:${'b'.repeat(64)}`, qualificationSource: join(preparation.root, 'source'),
-          seedReceiptPath: join(preparation.root, 'seed.json'), contextReceiptPath: join(preparation.root, 'context.json') }),
+        prepare: async request => {
+          await preparation.pause()
+          return { commit: request.commit, imageId: `sha256:${'a'.repeat(64)}`,
+            imageManifestDigest: `sha256:${'b'.repeat(64)}`, qualificationSource: join(preparation.root, 'source'),
+            seedReceiptPath: join(preparation.root, 'seed.json'), contextReceiptPath: join(preparation.root, 'context.json') }
+        },
       }, signal)
     }
   } }
@@ -55,11 +57,10 @@ async function fixture() {
   preparation.root = root
   preparation.launches = 0
   preparation.failSource = false
-  let enter!: () => void
+  let entered = false
   let release!: () => void
-  const entered = new Promise<void>(resolve => { enter = resolve })
   const released = new Promise<void>(resolve => { release = resolve })
-  preparation.pause = async () => { enter(); await released }
+  preparation.pause = async () => { entered = true; await released }
   const pairing = WorkerPairingConfigurationSchema.parse({ formatVersion: 1, mainId: randomUUID(),
     deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1,
     endpoint: 'wss://fixture.example/device/connect', mainPublicKeyFingerprint: 'a'.repeat(64),
@@ -74,7 +75,7 @@ async function fixture() {
   const context = { binding, signal: AbortSignal.timeout(10_000) }
   const handle = (namespace: string, payload: unknown) =>
     mounted.extensions.find(extension => extension.namespace === namespace)!.handle!(payload, context)
-  return { root, pairing, mounted, options, context, handle, entered, release }
+  return { root, pairing, mounted, options, context, handle, preparationEntered: () => entered, release }
 }
 
 async function updater(f: Awaited<ReturnType<typeof fixture>>) {
@@ -126,7 +127,11 @@ it.each(['ci-host-v1', 'ci-runtime-v1'])(
   let updating: Promise<unknown> | undefined
   try {
     await f.handle(namespace, request)
-    await f.entered
+    await vi.waitFor(() => expect(f.preparationEntered()).toBe(true))
+    if (namespace === 'ci-runtime-v1') {
+      const status = await f.handle(namespace, { operation: 'status' })
+      expect(status.payload).toMatchObject({ operationId, commit: request.commit, state: 'preparing' })
+    }
     updating = u.value.start()
     await vi.waitFor(async () => expect((await u.value.status()).state).toBe('draining'))
     await new Promise<void>(resolve => setImmediate(resolve))
@@ -159,7 +164,6 @@ it.each(['ci-host-v1', 'ci-runtime-v1'])(
   }
 })
 
-
 it('allows an installed update after CI source fetching fails without entering runtime preparation', async () => {
   const f = await fixture()
   preparation.failSource = true
@@ -178,6 +182,7 @@ it('allows an installed update after CI source fetching fails without entering r
       expect(status.payload).toMatchObject({ operationId, commit, state: 'failed', prepared: null,
         message: expect.stringContaining('could not fetch fixture/site from GitHub') })
     })
+    expect(f.preparationEntered()).toBe(false)
     updating = u.value.start()
     await updating
     expect(u.activity).toEqual(['download', 'download', 'ci-smoke', 'stage', 'restart'])
