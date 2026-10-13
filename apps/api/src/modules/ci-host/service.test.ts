@@ -188,7 +188,7 @@ it.each(['unready', 'offline'])('keeps ordinary CI queued when the computer is %
     .toMatchObject({ ready: false })
 })
 
-it('releases an incompatible Worker assignment when status confirms the ticket never started', async () => {
+it('retains an unacknowledged Worker assignment when incompatible status omits the ticket', async () => {
   const f = dispatchFixture()
   const worker: HostCiComputer = { ...computer, hostRef: { kind: 'device', mainId: 'fixture-main', deviceId: 'fixture-worker' } }
   f.records.splice(0, 2, CiRunRecordSchema.parse({ ...f.queued, state: 'starting', step: 'dispatch',
@@ -202,10 +202,37 @@ it('releases an incompatible Worker assignment when status confirms the ticket n
     return { operation: 'status', ready: false, reasons: ['Worker CI start protocol is unsupported; update the Worker.'],
       cpuCount: 8, memoryBytes: 16 * 2 ** 30, runs: [] }
   })
-  await f.create().dispatch()
-  expect(f.records[0]).toMatchObject({ state: 'queued', computer: null })
-  expect(f.records[0]?.dispatchHostKey).toBeUndefined()
-  expect(f.records[0]?.dispatchAttempts).toBeUndefined()
+  const service = f.create()
+  await service.dispatch()
+  const result = await service.get(caller, { ticketId: f.queued.id })
+  expect(result.run).toMatchObject({ state: 'starting', computer: { hostRef: worker.hostRef },
+    dispatchHostKey: worker.key, dispatchAttempts: 3, dispatchRequest: { runId: f.queued.id },
+    startedAt: null, finishedAt: null, message: expect.stringContaining('Operator cancellation is required') })
+  expect(vi.mocked(f.endpoint.request).mock.calls.every(([, input]) => input.operation === 'status')).toBe(true)
+})
+
+it('releases a first start rejected by an incompatible Worker before execution', async () => {
+  const f = dispatchFixture()
+  f.records.splice(0, 1)
+  const worker: HostCiComputer = { ...computer,
+    hostRef: { kind: 'device', mainId: 'fixture-main', deviceId: 'fixture-worker' } }
+  vi.mocked(f.endpoint.computers).mockResolvedValue([worker])
+  const request = vi.mocked(f.endpoint.request).getMockImplementation()!
+  vi.mocked(f.endpoint.request).mockImplementation(async (target, input) => {
+    if (input.operation === 'start') {
+      throw new DomainError('CI_HOST_PROTOCOL_UNSUPPORTED', 'Update the Worker CI protocol.', 409)
+    }
+    return request(target, input)
+  })
+  const service = f.create()
+  await service.dispatch()
+  const result = await service.get(caller, { ticketId: f.queued.id })
+  expect(result.run).toMatchObject({ state: 'queued', computer: null, startedAt: null,
+    message: expect.stringContaining('Update the Worker CI protocol.') })
+  expect(result.run.dispatchHostKey).toBeUndefined()
+  expect(result.run.dispatchAttempts).toBeUndefined()
+  expect(result.run.dispatchRequest).toBeUndefined()
+  expect(vi.mocked(f.endpoint.request).mock.calls.filter(([, input]) => input.operation === 'start')).toHaveLength(1)
 })
 
 it.each(['lint', 'typecheck'] as const)('dispatches an ordinary queued $suite check without a gate ticket', async suite => {
@@ -469,7 +496,11 @@ it('retries an unacknowledged gate on its assigned computer without releasing ow
     label: 'Replacement builder', priority: 100,
   }])
   await f.create().dispatch()
-  expect((await f.create().get(caller, { ticketId: f.queued.id })).run).toMatchObject({ state: 'running' })
+  expect((await f.create().get(caller, { ticketId: f.queued.id })).run).toMatchObject({
+    state: 'passed', exitCode: 0, computer: { hostRef: computer.hostRef },
+  })
+  expect(f.endpoint.request).toHaveBeenCalledWith(computer,
+    expect.objectContaining({ operation: 'read', runId: f.queued.id }))
   expect(starts).toEqual([
     { hostKey: computer.key, runId: f.queued.id }, { hostKey: computer.key, runId: f.queued.id },
   ])
