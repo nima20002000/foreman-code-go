@@ -152,7 +152,12 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
     const handleRequest = toNodeHandler({
       fetch: (webRequest, options) => transport.handleRequest(webRequest, options),
     }, { onerror: error => request.log.error({ err: error }, 'MCP request adapter failed') })
-    await handleRequest(request.raw, reply.raw, request.body)
+    await handleRequest({
+      method: request.method,
+      url: request.url,
+      headers: request.raw.headers,
+      [Symbol.asyncIterator]: () => request.raw[Symbol.asyncIterator](),
+    }, reply.raw, request.body)
   })
   for (const method of ['GET', 'DELETE'] as const) {
     app.route({ method, url: GRAPHQL_MCP_PATH, handler: async (request, reply) => {
