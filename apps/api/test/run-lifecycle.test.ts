@@ -27,6 +27,7 @@ interface EnginePorts {
   consume(items: readonly DurableInteraction[]): Promise<object | undefined>
   enter(context: RepeatEngineStartContext): Promise<void>
   settle(): Promise<boolean>
+  settleForRestart(): Promise<boolean>
 }
 const ports = vi.hoisted(() => ({ owners: new WeakMap<object, EnginePorts>(), savers: new WeakMap<object, EnginePorts>() }))
 // Real engine scheduling/ownership, recording SQL-composition ports. Never patch
@@ -51,6 +52,12 @@ vi.mock('../src/modules/runs/workflowLifecycle.js', async (original) => ({
   },
   settleWorkflowRun: async (owner: RunOwnership) => {
     const host = ports.owners.get(owner); assert.ok(host); return host.settle()
+  },
+  settleWorkForRestart: async (owner: RunOwnership) => {
+    owner.assertOwned()
+    const host = ports.owners.get(owner)
+    assert.ok(host)
+    return host.settleForRestart()
   },
 }))
 vi.mock('../src/modules/runs/approvalCheckpointResume.js', async (original) => ({
@@ -104,6 +111,8 @@ function fixture() {
       return {}
     },
     enter: async (context) => { calls.entries.push(context); await control.work(context) },
+    // Active fixture work requires restart cleanup rather than being preserved as settled.
+    settleForRestart: async () => false,
     settle: async () => {
       assert.ok(control.stopRequested || control.cleanupPending)
       calls.settled++
@@ -412,6 +421,42 @@ it('shutdown drains the active resume and rejects queued work without another ow
   await f.engine.shutdown(); await Promise.all([first, second])
   assert.equal(f.calls.entries.length, 1); assert.equal(f.calls.owners, 0); assert.equal(f.calls.cancel, 0); assert.equal(f.calls.settled, 0)
   assert.equal(f.internals.activeRuns.size, 0); assert.equal(f.internals.resumeTasks.size, 0)
+})
+it('shutdown records restart cleanup before closing unsettled work and retains the pending result', async () => {
+  const f = fixture()
+  const entered = deferred()
+  f.run.executionState = 'queued'
+  f.control.work = async (context) => {
+    entered.resolve()
+    await new Promise<void>((_resolve, reject) => {
+      context.signal.addEventListener('abort', () => reject(context.signal.reason), { once: true })
+    })
+  }
+  let cleanupRequested = false
+  let closedForRestart = false
+  f.runs.requestCleanup = async () => {
+    assert.equal(f.calls.owners, 1)
+    cleanupRequested = true
+    f.control.cleanupPending = true
+  }
+  f.native.closeForRestart = async () => {
+    assert.equal(cleanupRequested, true)
+    assert.equal(f.control.cleanupPending, true)
+    assert.equal(f.calls.owners, 1)
+    closedForRestart = true
+  }
+  const start = assert.rejects(f.engine.start(f.run.id), { code: 'ENGINE_RESTART' })
+  await entered.promise
+  await f.engine.shutdown()
+  await start
+  assert.equal(cleanupRequested, true)
+  assert.equal(closedForRestart, true)
+  assert.equal(f.run.outcome, 'pending')
+  assert.equal(f.control.stopRequested, false)
+  assert.equal(f.calls.cancel, 0)
+  assert.equal(f.calls.settled, 0)
+  assert.equal(f.calls.releases, 1)
+  assert.equal(f.calls.owners, 0)
 })
 it('a checkpoint identity rejection propagates before consumption without replacing saved native IDs', async () => {
   const f = fixture(), item = f.addInteraction(1, true); f.waiting(item)
