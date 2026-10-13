@@ -23,6 +23,7 @@ import {
   type ExclusiveGraphConnection, type GraphTransactionSql,
 } from './connection.js'
 import { RunGraphError } from './errors.js'
+import { DomainError } from '../errors.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import { workflowJobGraphSourceChangesLocked } from './workflowJobProjection.js'
 
@@ -647,7 +648,7 @@ export class RunGraphPublication<S extends CanonicalRunGraphScope = RunGraphScop
       return { replayed, semanticDigest, ...(!replayed && value !== undefined ? { value } : {}) }
     } catch (error) {
       poisonGraphTransaction(this.sql)
-      if (error instanceof RunGraphError) throw error
+      if (error instanceof RunGraphError || error instanceof DomainError) throw error
       if (error instanceof Error && error.message === 'GRAPH_JSON_LIMIT') throw new RunGraphError('GRAPH_TRANSACTION_LIMIT')
       throw new RunGraphError('GRAPH_INVALID_FACT')
     } finally { if (entered) this.#busy = false }
