@@ -21,6 +21,9 @@ async function fixture(t, failure) {
       probes++
       if (failure === 'stall' && admissions.length) return
       response.end('{}')
+    } else if (request.url.endsWith('/tests')) {
+      response.end(JSON.stringify({ tests: { summary: { passed: 1, failed: 0, skipped: 0 },
+        files: [{ file: 'apps/api/src/modules/ci-host/ciSmoke.integration.test.ts', tests: [{ status: 'passed' }] }] } }))
     } else if (request.url.endsWith('/computers')) response.end(JSON.stringify({ computers }))
     else if (request.method === 'POST') {
       let body = ''

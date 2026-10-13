@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { lstat, readFile, realpath, open, rename, rm, symlink } from 'node:fs/promises';
 import { basename, dirname, join, relative } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WorkerError, requirePrivateDirectory } from './diagnostics.mjs';
 import { readWorkerStatus } from './runtime.mjs';
 
@@ -170,7 +170,16 @@ export async function superviseWorkerUpdate(record, ports = {}) {
     await execute('/usr/bin/systemctl', ['--user', 'restart', service],
       { timeout: 30_000, maxBuffer: 4096, env: environment() });
   }, ready = waitForWorkerReady, switchPointer = switchWorkerPointer,
-  prepareService = migrateWorkerService, persist = writeUpdateRecord } = ports;
+  prepareService = migrateWorkerService, persist = writeUpdateRecord,
+  smoke = async plan => {
+    if (!plan.ciSmoke) return;
+    if (process.env.FOREMAN_INSTALL_SKIP_CI_SMOKE === '1') {
+      process.stderr.write('Worker CI smoke explicitly skipped (FOREMAN_INSTALL_SKIP_CI_SMOKE=1).\n');
+      return;
+    }
+    const { runInstalledCiSmoke } = await import(pathToFileURL(join(plan.directory, 'src/worker.mjs')));
+    await runInstalledCiSmoke(plan.ciSmoke);
+  } } = ports;
   const plan = record.restart;
   if (!plan || !services.includes(plan.service)) throw new WorkerError('worker_update_state_invalid');
   const save = async (state, currentVersion, lastError) => {
@@ -188,15 +197,17 @@ export async function superviseWorkerUpdate(record, ports = {}) {
     await restart(plan.service);
     await ready({ stateDirectory: plan.stateDirectory, version: record.status.targetVersion,
       workerInstallationId: plan.workerInstallationId });
+    await smoke(plan);
     await save('current', record.status.targetVersion, null);
   } catch (error) {
-    const failure = error instanceof WorkerError ? error.code : 'worker_update_start_failed';
+    const failure = error instanceof WorkerError ? error.code : error.message;
+    process.stderr.write(`Worker update failed: ${failure}\n`);
     try {
       await switchPointer(plan.pointer, plan.previousDirectory);
       await restart(plan.service);
       await ready({ stateDirectory: plan.stateDirectory, version: plan.previousVersion,
         workerInstallationId: plan.workerInstallationId });
-      await save('rolled-back', plan.previousVersion, failure);
+      await save('rolled-back', plan.previousVersion, failure.slice(0, 2000));
     } catch (rollbackError) {
       const reason = rollbackError instanceof WorkerError ? rollbackError.code : 'worker_update_rollback_start_failed';
       await save('failed', plan.previousVersion, `${failure}; ${reason}`);

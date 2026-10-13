@@ -408,7 +408,18 @@ export async function readProductionIdentity(release, databaseUrl) {
   }
 }
 
-export async function waitForProductionReady({ origin, expected, timeoutMs = 90_000 }) {
+export async function waitForProductionReady(options) {
+  try {
+    await pollProductionReady(options)
+    await options.smoke?.()
+  } catch (error) {
+    try { await options.rollback?.() }
+    catch (failure) { throw new Error(`${error.message}\nRollback failed: ${failure.message}`, { cause: error }) }
+    throw error
+  }
+}
+
+async function pollProductionReady({ origin, expected, timeoutMs = 90_000 }) {
   const deadline = Date.now() + timeoutMs
   let failure = 'API has not responded.'
   const identityMatches = async () => {

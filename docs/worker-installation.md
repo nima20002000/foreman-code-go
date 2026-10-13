@@ -266,3 +266,14 @@ changed boot/connection IDs, service survival after browser/SSH closure,
 reconnect and persisted revocation while SSH remains usable. Logout/reboot/power
 and local provider login remain separate human gates. W08/W09 must independently
 qualify remote execution and exact source transfer before advertising them.
+
+Paired build computers run a small integration smoke after an automatic Worker
+update becomes ready. Main attaches the artifact repository and commit only for
+the authenticated computer whose build preference is enabled and whose identity
+and authority revisions still match. The updated Worker uses normal Host CI
+setup and measured shard limits and requires one reported passing test within
+160 seconds. A failure restores the previous Worker pointer, restarts it, and
+persists the original smoke failure. `FOREMAN_INSTALL_SKIP_CI_SMOKE=1` on the
+update supervisor explicitly skips this check. Initial manual setup remains
+stopped until pairing and service activation; CI is checked on enabled paired
+computers during production installation and subsequent automatic updates.

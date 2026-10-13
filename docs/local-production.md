@@ -236,3 +236,20 @@ systemctl --user disable --now graphql-operator-api.service graphql-production-d
 These actions retain production data.
 
 Installed production verification is an administrative operation. `production:verify` writes temporary workflow/chat records to the installed production database and restarts its live services. Run it deliberately in a quiet maintenance window. It replaces `test:production:installed`; ordinary `test:*` commands use disposable resources and do not invoke this operation.
+
+After API readiness, installation runs a CI smoke with a 165-second deadline:
+responsiveness probes for at least 30 seconds, two consecutive CI admissions,
+and one small integration test on every ready build computer and each ready
+cloud executor provider. Integration smoke also exercises gate planning without
+queuing the full gate and uses the measured integration shard limit. The
+installer reads its repository and commit from staged release metadata and
+requires an existing workspace configured for that repository. Each job must
+report a passing smoke test; setup failures and empty test results fail closed.
+Failures restore and restart the retained release and print the original error.
+On a first install without a retained release, the rejected API is stopped.
+`FOREMAN_INSTALL_SKIP_CI_SMOKE=1` explicitly opts out and prints that choice.
+
+Operators can use `ci_run.smokeComputer` (or the workspace CI HTTP endpoint) to
+pin one affected unit/integration test to an enabled computer, with an explicit
+commit. Normal CI start/cancel grants and workspace scope checks apply. The
+persisted target appears in `ci_get`; unavailable targets never use a fallback.

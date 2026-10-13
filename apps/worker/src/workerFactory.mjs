@@ -21,6 +21,7 @@ import { ensurePairedManagedSetup } from './managedSetup.mjs';
 import { refreshWorkflowSelection } from './workflowSelection.mjs';
 import { registerWorkerMcpInstallation } from '../../../apps/api/src/modules/harnesses/workerMcpInstallation.ts';
 
+export { runInstalledCiSmoke } from './ciInstallSmoke.mjs';
 export { ensurePairedManagedSetup };
 export { refreshWorkflowSelection };
 export { inspectManagedInstallation } from './managedInstallation.mjs';

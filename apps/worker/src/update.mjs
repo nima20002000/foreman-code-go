@@ -252,6 +252,7 @@ export class WorkerUpdater {
       this.lifetime.signal.throwIfAborted();
       assertStateOwnership();
       await this.save({ state: 'restarting' }, { restart: { ...launch, directory: installed.directory,
+        ...(release.ciSmoke ? { ciSmoke: release.ciSmoke } : {}),
         requestId: randomUUID(), previousVersion: version, workerInstallationId: this.options.workerInstallationId } });
       await (this.options.launchSupervisor ?? launchUpdateSupervisor)(stateDirectory);
       return `Worker ${release.version} restart is scheduled.`;

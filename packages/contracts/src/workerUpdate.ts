@@ -75,6 +75,8 @@ export const WorkerArtifactReplySchema = z.discriminatedUnion('operation', [
       manifestSha256: digest,
       manifest: z.unknown(),
       github: WorkerArtifactGitHubSchema.optional(),
+      ciSmoke: z.object({ repository: WorkerArtifactGitHubSchema.shape.repository,
+        commit: z.string().regex(/^[a-f0-9]{40}$/u) }).strict().optional(),
     }).strict().nullable(),
   }).strict(),
   z.object({

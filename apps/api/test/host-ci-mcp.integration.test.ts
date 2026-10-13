@@ -1764,8 +1764,8 @@ it('targets one smoke computer through authenticated MCP and HTTP with grants, r
   const f = await fixture({ cloud: { github: 1, circleci: 1 } })
   try {
     const reader = await f.connect(CI_GET_ACTIONS)
-    const input = { suite: 'unit', scope: 'affected', commit: 'a'.repeat(40),
-      files: ['apps/api/src/modules/ci-host/ciSmoke.test.ts'], noSupersede: true }
+    const input = { suite: 'integration', scope: 'affected', commit: 'a'.repeat(40),
+      files: ['apps/api/src/modules/ci-host/ciSmoke.integration.test.ts'], noSupersede: true }
     for (const [index, computer] of f.computers.entries()) {
       const request = { ...input, smokeComputer: computer.hostRef, commandId: `smoke-${index}` }
       expect((await f.call(reader, 'ci_run', request)).isError).toBe(true)
@@ -1774,7 +1774,7 @@ it('targets one smoke computer through authenticated MCP and HTTP with grants, r
       expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', request))).toEqual(started)
       const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
       expect(read.run.computer?.hostRef).toEqual(computer.hostRef)
-      expect(read.run).toMatchObject({ smokeComputer: computer.hostRef })
+      expect(read.run).toMatchObject({ smokeComputer: computer.hostRef, integrationShards: 11 })
       f.finish(started.ticketId, 0, 'one test passed')
       expect(CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId })).run.state)
         .toBe('passed')
@@ -1796,8 +1796,8 @@ it('targets one smoke computer through authenticated MCP and HTTP with grants, r
 it('rejects Agent smoke targeting and never falls back to another computer when a target is unavailable', async () => {
   const f = await fixture({ agent: true })
   try {
-    const request = { suite: 'unit', scope: 'affected', commit: 'a'.repeat(40),
-      files: ['apps/api/src/modules/ci-host/ciSmoke.test.ts'], commandId: 'smoke-denied',
+    const request = { suite: 'integration', scope: 'affected', commit: 'a'.repeat(40),
+      files: ['apps/api/src/modules/ci-host/ciSmoke.integration.test.ts'], commandId: 'smoke-denied',
       smokeComputer: f.computers[0]!.hostRef }
     expect((await f.agent!.callTool({ name: 'ci_run', arguments: request })).isError).toBe(true)
     const computer = f.computers.shift()!

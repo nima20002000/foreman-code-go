@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { withTransaction } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
@@ -22,6 +23,7 @@ import { fallbackOnError } from '../diagnostics/ignoredError.js'
 import { CI_QUEUE_ORDER, ciQueueReason, compareCiQueue } from './priority.js'
 import { supersedeCiRuns } from './supersession.js'
 import { gateQueueBlock, planCiGate } from './gate.js'
+import { gateIntegrationShards } from './capacity.js'
 import { ciGateReport } from './gateReport.js'
 
 /** CI reads are idempotent: one retry after a lock or statement timeout, then a typed retryable error. */
@@ -104,9 +106,9 @@ export class HostCiService {
   close() { clearInterval(this.timer); this.timer = undefined; return this.dispatching }
 
   async run(caller: ManagementPrincipal, input: CiRunInput & { workspaceId?: string | undefined }, source: 'mcp' | 'http' = 'mcp') {
-    if (input.gate && caller.audience !== 'operator') {
+    if ((input.gate || input.smokeComputer) && caller.audience !== 'operator') {
       if (source === 'http') await this.commands.recordDenied(caller.id, source, 'ci.run', input.workspaceId ?? 'ci')
-      throw new DomainError('ACCESS_DENIED', 'Only an Operator or an orchestrator using Operator credentials can request a CI gate.', 403)
+      throw new DomainError('ACCESS_DENIED', 'Only an Operator can request a CI gate or target a smoke computer.', 403)
     }
     const actions = input.priority === 'high' && caller.audience !== 'operator'
       ? [...CI_RUN_ACTIONS, 'jobs:prioritize' as const] : CI_RUN_ACTIONS
@@ -141,6 +143,12 @@ export class HostCiService {
           'select record from workspaces where id=$1', [scope.workspaceId])).rows[0]?.record)
         if (!workspace.repository) throw new DomainError('SOURCE_REPOSITORY_REQUIRED',
           'CI runs on build computers from GitHub. Set the workspace GitHub repository (workspace_update).', 409)
+        const smokeTarget = input.smokeComputer
+          ? (await this.endpoint.computers()).find(computer => isDeepStrictEqual(computer.hostRef, input.smokeComputer))
+          : undefined
+        if (input.smokeComputer && !smokeTarget) {
+          throw new DomainError('CI_SMOKE_COMPUTER_UNAVAILABLE', 'The smoke computer is disabled or unavailable.', 409)
+        }
         const repository = `${workspace.repository.owner}/${workspace.repository.name}`
         const defaultBranch = workspace.repository.defaultBranch
         // An Agent's CI tests its current files; they are published to GitHub so build computers can fetch them.
@@ -171,6 +179,9 @@ export class HostCiService {
         }
         const unitDurations = { ...inventory?.durations, ...learned }
         const supportsSelection = input.suite === 'integration' ? capabilities.integrationPartitions : capabilities.affected
+        if (smokeTarget && !supportsSelection) {
+          throw new DomainError('CI_SMOKE_UNSUPPORTED', 'CI smoke requires a repository with affected test selection.', 409)
+        }
         const selectionScope = supportsSelection ? input.scope ?? 'affected' : 'full'
         const deriveFiles = selectionScope === 'affected' && input.files === undefined
         const selection = { ...input, scope: selectionScope, files: selectionScope === 'affected' ? input.files : [] }
@@ -180,13 +191,35 @@ export class HostCiService {
           expectedDurationMs?: number; suite?: CiRunRecord['suite']; plannedHostKey?: string;
           integrationShards?: number; requiresBuildComputer?: boolean }[] = split ? planCiParts(selection, unitDurations, inventory)
           : [{ part: null, partition: null, files: selection.files ?? [] }]
-        if (input.gate) {
+        let smokeShards: number | undefined
+        if (smokeTarget && input.suite === 'integration') {
+          const status = await this.endpoint.request(smokeTarget, { operation: 'status' })
+          if (status.operation !== 'status' || !status.ready) {
+            throw new DomainError('CI_SMOKE_COMPUTER_UNAVAILABLE', 'The smoke computer is not ready.', 409)
+          }
+          smokeShards = gateIntegrationShards(status.cpuCount, Math.floor(status.memoryBytes * 0.9))
+          const fleet = await this.endpoint.computers()
+          if (integration && fleet.some(computer => computer.hostRef.kind !== 'cloud')
+            && fleet.some(computer => computer.hostRef.kind === 'cloud')) {
+            const smokeUnit = await this.commits.unitInventory?.(repository, commit)
+            if (smokeUnit) {
+              try { await planCiGate(input, integration, smokeUnit, unitDurations, this.endpoint) }
+              catch (error) {
+                if (!(error instanceof DomainError) || error.code !== 'CI_GATE_CAPACITY_REQUIRED') throw error
+                log.info({ reason: error.message }, 'CI smoke has no complete ready gate fleet')
+              }
+            }
+          }
+          parts = [{ part: null, partition: null, files: input.files! }]
+        } else if (input.gate) {
           parts = await planCiGate(input, { ...integration!, durations: durations! }, inventory!, unitDurations, this.endpoint)
         } else if (integration) {
           parts = planIntegrationParts(selection, { ...integration, durations: durations! }, await this.integrationSlots())
         }
         const runs = parts.map(planned => CiRunRecordSchema.parse({
           ...planned,
+          ...(smokeTarget ? { smokeComputer: input.smokeComputer, plannedHostKey: smokeTarget.key,
+            ...(smokeShards !== undefined ? { integrationShards: smokeShards } : {}) } : {}),
           id: randomUUID(), workspaceId: scope.workspaceId,
           suite: planned.suite ?? input.suite, scope: selectionScope, commit, repository, groupId,
           priority, priorityReason,
@@ -798,11 +831,12 @@ export class HostCiService {
         return isGitHubComputer(computer) ? 1 : 2
       }
       const affectedFiles = run.scope === 'affected' && !run.deriveFiles ? { files: run.files } : {}
-      const selection = run.gate && run.suite === 'integration'
+      const selection = (run.gate || run.smokeComputer) && run.suite === 'integration'
         ? { gate: true, integrationShards: run.integrationShards!, files: run.files } : affectedFiles
       const order = computers.filter(computer => runsOnCircleCi(run)
         || computer.hostRef.kind !== 'cloud' || computer.hostRef.provider !== 'circleci')
         .filter(computer => !hostRequired || supportsUserSystemd(computer))
+        .filter(computer => !run.smokeComputer || isDeepStrictEqual(computer.hostRef, run.smokeComputer))
         .filter(computer => !run.gate || computer.key === run.plannedHostKey)
         .filter(computer => run.gate || computer.hostRef.kind === 'cloud' || !reservedHosts.has(computer.key))
         .filter(computer => computer.hostRef.kind !== 'cloud' || !computer.hostRef.provider

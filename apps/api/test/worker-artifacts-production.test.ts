@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WorkerArtifactReplySchema } from '@foreman-code/contracts/computer-maintenance'
+import { createWorkerArtifactExtension } from '../src/modules/computers/workerArtifacts.js'
 import { createProductionWorkerArtifactExtension } from '../src/modules/computers/workerArtifactsProduction.js'
 
 const target = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.3' }
@@ -75,4 +76,21 @@ describe('production Worker artifact composition', () => {
     await writeFile(join(f.directory, 'package.json'), JSON.stringify({ name: '@foreman-code/api', version: '0.1.0' }))
     expect(() => createProductionWorkerArtifactExtension({ environment: {}, releaseDirectory: f.directory })).toThrow()
   })
+})
+
+it('only includes CI smoke for an enabled authenticated build computer and pins the artifact commit', async () => {
+  const f = await release()
+  const github = { repository: 'octo/project', tag: 'worker-' + 'a'.repeat(12) }
+  await writeFile(join(f.artifacts, 'index.json'), JSON.stringify({ ...f.index, github }))
+  for (const enabled of [false, true]) {
+    const extension = createWorkerArtifactExtension({ directory: f.artifacts, version: f.manifest.version,
+      buildEnabled: async binding => {
+        expect(binding).toEqual(context.binding)
+        return enabled
+      } })
+    const reply = WorkerArtifactReplySchema.parse((await extension.handle!({ operation: 'release', target }, context)).payload)
+    expect(reply.operation).toBe('release')
+    if (reply.operation !== 'release') throw new Error('Expected release')
+    expect(reply.release?.ciSmoke).toEqual(enabled ? { repository: github.repository, commit: f.manifest.commit } : undefined)
+  }
 })
