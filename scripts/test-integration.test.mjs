@@ -1264,3 +1264,16 @@ test('reports each file startup as the time until its test module was collected'
     '; startup 8526 ms')
   assert.equal(startupText([{ phase: 'worker-setup', elapsedMs: 3412 }]), '')
 })
+
+
+test('database benchmarks and cold qualification restarts run without competing fixtures', () => {
+  const measured = [
+    'apps/api/test/ci-postgres-setup.integration.test.ts',
+    'apps/api/test/main-codex-qualification-restart.integration.test.ts',
+    'apps/api/test/main-codex-qualification-partial-version.integration.test.ts',
+  ]
+  const ordinary = 'apps/api/test/operator-context.integration.test.ts'
+  const plan = partitionIntegrationFiles([...measured, ordinary])
+  assert.deepEqual(new Set(plan.exclusive), new Set(measured))
+  assert.deepEqual(plan.parallel, [ordinary])
+})

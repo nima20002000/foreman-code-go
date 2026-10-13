@@ -19,6 +19,8 @@ describe('workspace mutation authority through authenticated MCP', () => {
     const revoker = await f.pool.connect()
     let pending: ReturnType<typeof f.owner.client.callTool> | undefined
     try {
+      const database = await f.pool.query<{ name: string }>('select current_database() as name')
+      expect(database.rows[0]!.name).not.toBe(new URL(process.env.TEST_DATABASE_URL!).pathname.slice(1))
       const created = await callWorkspaceTool(f.owner.client, 'workspace_create',
         contracts.ManagedWorkspaceCommandResultSchema, { commandId: randomUUID(), name: 'Original' })
       const workspaceId = created.value.workspace.id
