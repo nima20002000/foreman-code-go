@@ -26,6 +26,22 @@ it('renews an expired scoped token while its exact execution lease is still owne
   expect(after.revoked_at).toBe(null)
 })
 
+it('cannot revive an expired credential while its execution is still waiting', async () => {
+  const issued = await credentials.issueForExecution(execution.id)
+  const token = issued.environment.variables.GRAPHQL_MCP_TOKEN!
+  await pool.query("update management_principals set expires_at=clock_timestamp()-interval '1 second' where id=$1",
+    [issued.principalId])
+  const before = (await pool.query('select token_hash,expires_at,revoked_at from management_principals where id=$1',
+    [issued.principalId])).rows[0]
+  const deadline = issued.renewalDeadline
+  await expect(credentials.renewForExecution(execution.id, issued))
+    .rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_NOT_RENEWABLE' })
+  await expect(access.authenticate(token, 'worker')).rejects.toMatchObject({ code: 'AUTH_EXPIRED' })
+  expect(issued.renewalDeadline).toBe(deadline)
+  expect((await pool.query('select token_hash,expires_at,revoked_at from management_principals where id=$1',
+    [issued.principalId])).rows[0]).toEqual(before)
+})
+
 for (const revokedTable of ['management_principals', 'worker_credential_bindings'] as const) {
   it(`cannot revive a credential revoked in ${revokedTable}`, async () => {
     const issued = await credentials.issueForExecution(execution.id)

@@ -24,6 +24,9 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
   const claimReady = rejectableDeferred()
   const resumeEntered = rejectableDeferred()
   const resumeReady = rejectableDeferred()
+  const completionHeld = rejectableDeferred()
+  const completionReleased = rejectableDeferred()
+  let completionTimer: ReturnType<typeof setTimeout> | undefined
   let chat: AgentChatService | undefined
   let app: ReturnType<typeof buildApp> | undefined
   let manager: ReturnType<typeof productionClaudeFixture>['manager'] | undefined
@@ -41,6 +44,14 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
     const reader = await access.issue({ name: 'rollover reader', audience: 'operator', expiresAt: new Date(Date.now() + 600_000),
       grants: [{ actions: ['agent_chat:read'], scope: {} }] })
     const repository = new PostgresAgentChatRepository(db.pool)
+    const finish = repository.finish.bind(repository)
+    vi.spyOn(repository, 'finish').mockImplementation(async (...args) => {
+      if (args[1] === 'completed-7') {
+        completionHeld.resolve()
+        await completionReleased.promise
+      }
+      return finish(...args)
+    })
     const messages = new PostgresOperatorConversationRepository(db.pool)
     let transport: ReturnType<typeof claudeSdkToolTransport> | undefined
     chat = new AgentChatService(db.pool, repository, messages, new PostgresWorkflowRepository(db.pool), {
@@ -72,6 +83,11 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
         })
         id = admitted.state.conversation!.id
         requestIds.push(requestId)
+      }
+      if (offset === 0) {
+        await completionHeld.promise
+        // A delayed completion commit is not a failed delivery or a rollover failure.
+        completionTimer = setTimeout(() => completionReleased.resolve(), 1_100)
       }
       await Promise.all(requestIds.map(async requestId => {
         await waitForDelivery(chat!, repository, id!, requestId, 'completed', { timeoutMs: 1_000 })
@@ -156,6 +172,8 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
     })
     expect(transport!.offers).toHaveLength(257)
   } finally {
+    clearTimeout(completionTimer)
+    completionReleased.resolve()
     claimReady.resolve()
     resumeReady.resolve()
     resumeEntered.resolve()
