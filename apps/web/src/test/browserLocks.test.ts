@@ -1,38 +1,40 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { installBrowserLocks } from './browserLocks'
+
+const browserNavigator = navigator
+const originalLocks = Object.getOwnPropertyDescriptor(browserNavigator, 'locks')
 
 afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  if (originalLocks) Object.defineProperty(browserNavigator, 'locks', originalLocks)
+  else Reflect.deleteProperty(browserNavigator, 'locks')
 })
 
-describe('browser locks fixture', () => {
-  it.each(['userAgent', 'onLine'] as const)('preserves the native %s getter while providing locks', async (property) => {
-    const expected = navigator[property]
+it('keeps browser connectivity and identity when installing Web Locks', async () => {
+  const online = navigator.onLine
+  const userAgent = navigator.userAgent
+  installBrowserLocks()
 
-    installBrowserLocks()
+  expect(navigator.onLine).toBe(online)
+  expect(navigator.userAgent).toBe(userAgent)
+  expect(navigator).toBe(browserNavigator)
+  await expect(navigator.locks.request('editor-command', lock => lock.name)).resolves.toBe('editor-command')
+})
 
-    expect(navigator[property]).toBe(expected)
-    await expect(navigator.locks.request('browser-command', (lock) => lock?.name)).resolves.toBe('browser-command')
-  })
+it('reads changes to native connectivity after installation', () => {
+  installBrowserLocks()
+  vi.spyOn(browserNavigator, 'onLine', 'get').mockReturnValue(false)
 
-  it('reads changes to native connectivity after installation', () => {
-    const browserNavigator = navigator
-    installBrowserLocks()
+  expect(navigator.onLine).toBe(false)
+})
 
-    vi.spyOn(browserNavigator, 'onLine', 'get').mockReturnValue(false)
+it('preserves native methods and restores the original locks', () => {
+  const expected = browserNavigator.javaEnabled()
+  const restore = installBrowserLocks()
 
-    expect(navigator.onLine).toBe(false)
-  })
-
-  it('preserves native methods and restores the original navigator', () => {
-    const browserNavigator = navigator
-    const expected = browserNavigator.javaEnabled()
-
-    installBrowserLocks()
-
-    expect(navigator.javaEnabled()).toBe(expected)
-    vi.unstubAllGlobals()
-    expect(navigator).toBe(browserNavigator)
-  })
+  expect(navigator.javaEnabled()).toBe(expected)
+  restore()
+  expect(navigator).toBe(browserNavigator)
+  expect(Object.getOwnPropertyDescriptor(navigator, 'locks')).toEqual(originalLocks)
 })

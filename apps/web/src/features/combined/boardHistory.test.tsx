@@ -1,3 +1,4 @@
+import { installBrowserLocks } from '../../test/browserLocks'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { webcrypto } from 'node:crypto'
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router'
@@ -39,7 +40,6 @@ import { admitted, context, envelope, execution, historicalState, installSelecte
   scope as chatScope, selectedRoute, snapshot as chatSnapshot } from '../conversations/agentChat/sch10.testSupport'
 import boardStyles from '../workflow-board/workflowBoard.css?inline'
 import { deferred } from '../../test/deferred'
-import { installBrowserLocks } from '../../test/browserLocks'
 
 const scope = { workspaceId: 'workspace-1', workflowId: 'workflow-content-pipeline' }
 const snapshotRoute = '*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/snapshot'
@@ -48,6 +48,7 @@ const selectedChatUnavailable = http.get(selectedRoute, ({ params }) => HttpResp
     runId: String(params.runId), workflowNodeId: String(params.workflowNodeId) }, reason: 'execution_missing',
 })))
 const clients: QueryClient[] = []
+let restoreBrowserLocks: () => void
 const unhandled: string[] = []
 const recordUnhandled = ({ request }: { request: Request }) => unhandled.push(`${request.method} ${request.url}`)
 let selected: SelectedRunState
@@ -148,7 +149,7 @@ function fileRow(state: AgentChatState, id: string, filename = 'shared.md', crea
 }
 
 beforeEach(() => {
-  installBrowserLocks()
+  restoreBrowserLocks = installBrowserLocks()
   unhandled.length = 0; server.events.on('request:unhandled', recordUnhandled)
   localStorage.clear(); sessionStorage.clear(); bindMockInstallation(); useGraphDraftStore.getState().clearAllDrafts()
   installFlowLayout(320, 480); installChatSource()
@@ -191,7 +192,9 @@ beforeEach(() => {
   )
 })
 afterEach(() => {
-  cleanup(); clients.splice(0).forEach((client) => client.clear())
+  cleanup(); window.dispatchEvent(new Event('pagehide'))
+  restoreBrowserLocks()
+  clients.splice(0).forEach((client) => client.clear())
   server.events.removeListener('request:unhandled', recordUnhandled)
   expect(unhandled, 'No selected Board request may bypass MSW').toEqual([])
   useGraphDraftStore.getState().clearAllDrafts(); setMockScenario('normal')
@@ -424,6 +427,7 @@ describe('Selected Board history', { timeout: 20_000 }, () => {
     )
     await mountSelected()
     await screen.findByText('Reply execution-run-a')
+    expect(screen.getByRole('button', { name: 'Attach files' })).toBeEnabled()
     await userEvent.setup().upload(screen.getByLabelText('Choose attachments'), new File(['late'], 'late.md', { type: 'text/markdown' }))
     await waitFor(() => expect(staged.size).toBe(1))
     await act(async () => { await selected.selectRun('run-b') })

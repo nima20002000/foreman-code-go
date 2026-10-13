@@ -1,3 +1,4 @@
+import { installBrowserLocks } from '../test/browserLocks'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -14,7 +15,7 @@ import { boardDraftContextKey } from '../features/workflow-board/keys'
 import { pinnedRunHandlers, reply, runsUrl, versionReply } from '../features/run-board/testFixtures'
 import { installFlowLayout } from '../features/run-board/testFlowLayout'
 import { page, runA, runB } from '../features/runs-selector/testFixtures'
-import { installBrowserLocks } from '../test/browserLocks'
+import { runsSelectorApi } from '../features/runs-selector/client'
 import { bindMockInstallation } from '../shared/mocks/handlers'
 import { getMockFixture, setMockScenario } from '../shared/mocks/scenarios'
 import { server } from '../mocks/server'
@@ -25,6 +26,7 @@ const scope = { workspaceId: 'workspace-1', workflowId: 'workflow-content-pipeli
 const key = nextDraftKey(scope.workspaceId, scope.workflowId)
 const runsRoute = '*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs'
 const clients: QueryClient[] = []
+let restoreBrowserLocks: () => void
 const unhandled: string[] = []
 const writes: string[] = [], scheduleReads: string[] = []
 const recordUnhandled = ({ request }: { request: Request }) => unhandled.push(`${request.method} ${request.url}`)
@@ -89,7 +91,7 @@ function installNodeInspection() {
 }
 
 beforeEach(() => {
-  installBrowserLocks()
+  restoreBrowserLocks = installBrowserLocks()
   unhandled.length = 0; server.events.on('request:unhandled', recordUnhandled)
   useGraphDraftStore.getState().clearAllDrafts()
   localStorage.clear(); sessionStorage.clear(); bindMockInstallation()
@@ -150,7 +152,9 @@ beforeEach(() => {
   )
 })
 afterEach(() => {
-  cleanup(); clients.splice(0).forEach((client) => client.clear())
+  cleanup(); window.dispatchEvent(new Event('pagehide'))
+  restoreBrowserLocks()
+  clients.splice(0).forEach((client) => client.clear())
   server.events.removeListener('request:unhandled', recordUnhandled)
   expect(unhandled, 'No selected Board request may bypass MSW').toEqual([])
   server.events.removeListener('request:start', recordWrite)
@@ -160,6 +164,15 @@ afterEach(() => {
 })
 
 describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 }, () => {
+  it.each([null, 'run-a'])('opens the Board after claiming browser tab ownership for Run %s', async (runId) => {
+    await mount(runsUrl(runId, scope))
+    const name = runId ? 'Selected Run pinned topology' : 'Workflow authoring'
+    expect(await screen.findByRole('region', { name })).toBeVisible()
+    expect(screen.queryByText('This browser cannot safely recover independent tab edits.')).not.toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Board controls' })).toBeVisible()
+    expect(writes).toEqual([])
+  })
+
   it('opens a cold draft, inspects a saved Run and returns without sending a write', async () => {
     const { router } = await mount()
     const editor = await authoring()
@@ -344,13 +357,14 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
 
       await choose('run-a')
       await savedY()
-      // The first current-state read refreshes the workspace projection once.
       await waitFor(() => expect(workspaceReads).toBe(initialWorkspaceReads + 1))
+      expect(within(editor).getByRole('heading', { name: 'Retained local name' })).toBeVisible()
       await waitFor(() => expect(client.isFetching({ queryKey: boardDraftContextKey(scope.workspaceId, scope.workflowId) })).toBe(0))
+      const selectedWorkspaceReads = workspaceReads
       const historyReads = context.mock.calls.length
       await act(async () => { await vi.advanceTimersByTimeAsync(pollingTime) })
       await waitFor(() => expect(context.mock.calls.length).toBeGreaterThan(historyReads))
-      expect(workspaceReads).toBe(initialWorkspaceReads + 1)
+      expect(workspaceReads).toBe(selectedWorkspaceReads)
       expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).toBe(graph)
 
       await choose(null)
@@ -389,6 +403,8 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
         return HttpResponse.json(reply(String(params.runId), scope))
       }),
     )
+    const listed = await runsSelectorApi.list({ ...scope, limit: 20 })
+    expect(listed.items.find(run => run.runId === 'run-a')).toMatchObject({ status: executionState })
     const { router } = await mount()
     await waitFor(() => expect(router.state.location.search).toMatchObject({
       runId: 'run-a', workflowVersionId: 'version-a', executionSemanticsVersion: 3,
