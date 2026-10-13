@@ -19,8 +19,14 @@ import type { OperatorConfigurationVersion } from '@foreman-code/contracts'
 const mainId = randomUUID()
 const selection = { instanceId: randomUUID(), instanceRevision: '3', target: { hostRef: { kind: 'main' as const, mainId },
   applicationInstallationId: mainId, harnessInstallationId: 'codex-install', installationFingerprint: 'actual-install' } }
-const principal: ManagementPrincipal = { id: 'owner', name: 'Owner', audience: 'operator', revokedAt: null, expiresAt: '9999-01-01T00:00:00Z', grants: [{ actions: ['harnesses:read'], scope: {} }] }
+const principal: ManagementPrincipal = { id: 'owner', name: 'Owner', audience: 'operator', revokedAt: null, expiresAt: '9999-01-01T00:00:00.000Z', grants: [{ actions: ['harnesses:read'], scope: {} }] }
 const configuration = DEFAULT_HARNESS_DEFAULTS.codex
+function principalRow(subject: ManagementPrincipal) {
+  return {
+    id: subject.id, name: subject.name, audience: subject.audience, grants: subject.grants,
+    expires_at: new Date(subject.expiresAt), revoked_at: null, delegated_from: null,
+  }
+}
 function selectionService() {
   const value: HostHarnessOverride = { ...selection, revision: 3, presetId: 'preset', enabled: true, driverId: 'codex', configuration: withAdvancedDefaults(configuration),
     configurationFingerprint: commandInputHash(withAdvancedDefaults(configuration)), qualification: 'unqualified' }
@@ -49,18 +55,27 @@ describe('explicit chat profile configuration producer', () => {
   })
   it('executes the actual MCP Agent create producer with authorized selected-profile validation and no API-host native probe', async () => {
     const versions: unknown[] = []
+    const creator = { ...principal, grants: [{
+      actions: ['agents:create' as const, 'agents:read' as const, 'harnesses:read' as const], scope: {},
+    }] }
     const client = { query: vi.fn(async (sql: string, args?: unknown[]) => {
+      if (sql.includes('from management_principals')) return { rows: [principalRow(creator)] }
       if (sql.includes('insert into agent_configuration_versions')) versions.push(JSON.parse(String(args![4])))
       return { rows: sql.includes('select archived_at from workspaces') ? [{ archived_at: null }]
         : sql.startsWith('select metadata_revision') ? [{ metadata_revision: '1' }]
         : sql.includes('coalesce(max(version)') ? [{ next_version: 1 }] : [] }
     }) } as unknown as pg.PoolClient
-    const execute = vi.fn(async (command: { perform: (client: pg.PoolClient) => Promise<unknown> }) => ({ value: await command.perform(client), replayed: false }))
+    const execute = vi.fn(async (command: {
+      authorize: (client: pg.PoolClient) => Promise<void>
+      perform: (client: pg.PoolClient) => Promise<unknown>
+    }) => {
+      await command.authorize(client)
+      return { value: await command.perform(client), replayed: false }
+    })
     const qualifyConfiguration = vi.fn(async () => { throw new Error('local probe forbidden') })
     const validateSelection = vi.fn(async () => {})
     const service = new OperatorAgentMutationService({} as pg.Pool, { execute } as unknown as PostgresCommandCoordinator,
       { qualifyConfiguration } as never, { validateSelection })
-    const creator = { ...principal, grants: [{ actions: ['agents:create' as const, 'agents:read' as const, 'harnesses:read' as const], scope: {} }] }
     const input = { workspaceId: 'workspace', commandId: 'create-command', agentId: 'agent', name: 'A', configuration,
       productRole: 'coder' as const, harnessProfileSelection: selection }
     const saved = await service.create(creator, input)
@@ -71,6 +86,10 @@ describe('explicit chat profile configuration producer', () => {
     expect(qualifyConfiguration).not.toHaveBeenCalled()
     validateSelection.mockRejectedValue(new Error('revoked host'))
     await expect(service.create(creator, { ...input, commandId: 'denied-command', agentId: 'denied' })).rejects.toThrow('revoked host')
+    expect(versions).toHaveLength(1)
+    vi.mocked(client.query).mockResolvedValueOnce({ rows: [] } as never)
+    await expect(service.create(creator, { ...input, commandId: 'revoked-command', agentId: 'revoked' }))
+      .rejects.toMatchObject({ code: 'AUTH_REVOKED' })
     expect(versions).toHaveLength(1)
   })
   it('stores and reads profile metadata in the actual immutable Agent record and includes it in content hash', async () => {
@@ -93,21 +112,35 @@ describe('explicit chat profile configuration producer', () => {
     await expect(saveAgentConfiguration(client, 'workspace', input)).rejects.toMatchObject({ code: 'HARNESS_PROFILE_SELECTION_UNAVAILABLE' })
   })
   it('validates and persists selected role defaults through the shared management command without local qualification', async () => {
-    const client = {} as pg.PoolClient
+    const writer = { ...principal, grants: [{ actions: ['settings:update' as const, 'harnesses:read' as const], scope: {} }] }
+    const client = { query: vi.fn(async (sql: string) => ({
+      rows: sql.includes('from management_principals') ? [principalRow(writer)] : [],
+    })) } as unknown as pg.PoolClient
     const value = { ...DEFAULT_AGENT_DEFAULTS, operator: { ...DEFAULT_AGENT_DEFAULTS.operator, harnessProfileSelection: selection } }
     const update = vi.fn(async (_client: pg.PoolClient, next: unknown) => ({ value: next, revision: 2 }))
     const settings = { getAgentDefaults: async () => ({ value: DEFAULT_AGENT_DEFAULTS, revision: 1 }), updateManagedAgentDefaults: update } as unknown as PostgresFoundationSettingsRepository
-    const commands = { execute: async (command: { perform: (client: pg.PoolClient) => Promise<unknown> }) => ({ value: await command.perform(client), replayed: false }) } as unknown as PostgresCommandCoordinator
+    const commands = { execute: async (command: {
+      authorize: (client: pg.PoolClient) => Promise<void>
+      perform: (client: pg.PoolClient) => Promise<unknown>
+    }) => {
+      await command.authorize(client)
+      return { value: await command.perform(client), replayed: false }
+    } } as unknown as PostgresCommandCoordinator
     const qualifyConfiguration = vi.fn(async () => { throw new Error('unexpected local probe') })
     const validateSelection = vi.fn(async () => {})
     const service = new FoundationSettingsManagementService(settings, commands, { qualifyConfiguration } as never, undefined, { validateSelection })
-    const writer = { ...principal, grants: [{ actions: ['settings:update' as const, 'harnesses:read' as const], scope: {} }] }
     const result = await service.updateAgentDefaults(writer, 'mcp', { commandId: 'command-default', expectedRevision: 1, value })
     expect(result.value).toMatchObject({ value: { operator: { harnessProfileSelection: selection } } })
     expect(validateSelection).toHaveBeenCalledWith(writer, selection, value.operator.harness, client)
     expect(qualifyConfiguration).not.toHaveBeenCalled()
     validateSelection.mockRejectedValue(new Error('foreign installation'))
     await expect(service.updateAgentDefaults(writer, 'mcp', { commandId: 'command-denied', expectedRevision: 1, value })).rejects.toThrow('foreign installation')
+    expect(update).toHaveBeenCalledTimes(1)
+    validateSelection.mockResolvedValue(undefined)
+    vi.mocked(client.query).mockResolvedValueOnce({ rows: [] } as never)
+    await expect(service.updateAgentDefaults(writer, 'mcp', {
+      commandId: 'revoked-defaults', expectedRevision: 1, value,
+    })).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
     expect(update).toHaveBeenCalledTimes(1)
   })
   it('publishes selected Operator defaults into the existing immutable record and inspection readback', async () => {
