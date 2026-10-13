@@ -9,18 +9,18 @@ export async function respondWaitingApproval(
   pending: DurableInteraction,
   transport: 'http' | 'mcp',
 ): Promise<void> {
-  const input = approvalResponse(pending)
+  const { interactionId, optionId, expectedRevision } = approvalResponse(pending)
+  const input = { interactionId, optionId, expectedRevision }
   if (transport === 'http') {
-    const { interactionId, optionId, expectedRevision } = input
     const response = await fixture.app.inject({ method: 'POST',
       url: `/api/management/interactions/${pending.id}/respond`,
       headers: { authorization: `Bearer ${fixture.writer.token}` },
-      payload: { interactionId, optionId, expectedRevision } })
+      payload: input })
     expect(response.statusCode, response.body).toBe(200)
     expect(response.json()).toMatchObject({ interaction: { deliveryState: 'delivered' } })
     return
   }
   const response = await fixture.client.callTool({ name: 'interaction_respond', arguments: input })
-  expect(response.isError).not.toBe(true)
+  expect(response.isError, JSON.stringify(response)).not.toBe(true)
   expect(decodeMcpToolResult(response)).toMatchObject({ interaction: { deliveryState: 'delivered' } })
 }
