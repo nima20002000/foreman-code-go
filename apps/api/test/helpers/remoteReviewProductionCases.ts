@@ -388,4 +388,10 @@ export async function retainedReviewRecovery(fixture: Fixture, recovery: 'crash'
   expect(fixture.registry.snapshot().launches.filter(owner => originalLaunches.some(
     original => original.owner === owner.owner)).map(owner => owner.launchId).sort())
     .toEqual(ownerLaunchIds)
+  const settled = await waitForRemoteReview(async () => {
+    await fixture.reconcile()
+    return fixture.details(active.run.id)
+  }, value => value.run.executionState === 'completed' && value.cleanupPending !== true,
+  'completed Run and native cleanup after recovered review delivery')
+  expect(settled.run.outcome).toBe('succeeded')
 }

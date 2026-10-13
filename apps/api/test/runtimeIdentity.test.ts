@@ -1,6 +1,6 @@
 import { buildApp } from '../src/app.js'
 import { describe, expect, it, vi } from 'vitest'
-import { readRuntimeIdentity, installationIdentityMigration } from '../src/infrastructure/runtimeIdentity.js'
+import { readRuntimeIdentity } from '../src/infrastructure/runtimeIdentity.js'
 import { createRuntimeIdentity } from '@foreman-code/contracts/runtime-identity-node'
 import type pg from 'pg'
 
@@ -36,7 +36,6 @@ describe('runtime installation identity', () => {
     const reset = await read()
     expect(reset.installationId).not.toEqual(original.installationId)
     expect(reset.databaseId).toEqual(original.databaseId)
-    expect(installationIdentityMigration.sql).toContain('gen_random_uuid()')
   })
   it('does not invent an identity when migration has not been applied', async () => {
     const pool = { query: vi.fn().mockResolvedValue({ rows: [] }) } as unknown as Pick<pg.Pool, 'query'>

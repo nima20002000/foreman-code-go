@@ -22,7 +22,6 @@ import {
 import { executeRepeatRuntime, repeatExecutionDirectoryKey, startIntervalChecks } from '../src/modules/runs/repeatRuntime.js'
 import { compileExecutionTopology } from '../src/modules/runs/topology.js'
 import { workflowNativeReservation, type WorkflowNativeReservation } from '../src/modules/runs/workflowNativeEntry.js'
-import { repeatOccurrenceMigrationSql } from '../src/infrastructure/repeatOccurrenceMigration.js'
 
 const at = '2026-09-25T00:00:00.000Z'
 const edge = (source: string, target: string) => ({ id: `${source}-${target}`, kind: 'execution' as const, source, target })
@@ -642,17 +641,5 @@ describe('ENG04-A real repository with PostgreSQL-shaped scripted transactions (
     expect(db.state().results.size).toBe(0)
     expect(db.state().native.get(work.id)!.finalized).toBe(false)
     expect(db.state().occurrences.size).toBe(1)
-  })
-  it('historical occurrence migration preserves outside-attempt uniqueness and enforces exact block membership', () => {
-    expect(repeatOccurrenceMigrationSql).toContain("pg_get_constraintdef(oid)='UNIQUE (run_id, workflow_node_id, attempt)'")
-    expect(repeatOccurrenceMigrationSql).toContain('where repeat_occurrence_id is null')
-    expect(repeatOccurrenceMigrationSql).toContain('where repeat_occurrence_id is not null')
-    // The registered migration uses the symmetric membership guard: outside
-    // nodes require NULL; block members require their exact occurrence.
-    expect(repeatOccurrenceMigrationSql).toContain('(member_count=0)<>(target_occurrence_id is null)')
-    expect(repeatOccurrenceMigrationSql).toContain("raise exception 'REPEAT_EXECUTION_SCOPE_CONFLICT'")
-    expect(repeatOccurrenceMigrationSql).toContain('perform repeat_node_scope(current_execution.run_id,current_execution.workflow_node_id,current_execution.repeat_occurrence_id)')
-    expect(repeatOccurrenceMigrationSql).toContain('repeat_predecessor_decision_fk')
-    expect(repeatOccurrenceMigrationSql).not.toContain('update workflow_versions')
   })
 })

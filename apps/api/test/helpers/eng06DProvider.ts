@@ -7,7 +7,8 @@ import {
 import { RunAcceptedInputValueSchema, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import type { NativeHarnessSessionManager, NativeHistory } from '../../src/modules/harnesses/port.js'
 
-export type Fault = 'success' | 'retryable_failure' | 'permanent_failure' | 'park' | 'durable_reply_gap' | 'durable_failure_gap'
+export type Fault = 'success' | 'retryable_failure' | 'permanent_failure' | 'park'
+  | 'durable_reply_gap' | 'durable_failure_gap'
 export interface Submission {
   request: HarnessExecutionRequest
   /** Provider-observed submissions within one Run/node/occurrence, NOT a database counter. */
@@ -184,6 +185,9 @@ export class RecoveryProvider {
         provider.finish(session, { outcome: 'canceled' }); session.wake?.(); return true
       },
       async close(reference) { provider.close(reference) },
+      canDetachForRestart(reference) {
+        return owned?.nativeSessionId === reference.nativeSessionId && provider.lookup(reference).alive
+      },
       async closeForRestart(reference) { provider.close(reference) },
       async dispose() { if (owned) provider.close(owned) },
     }

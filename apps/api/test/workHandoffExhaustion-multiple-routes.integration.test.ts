@@ -6,8 +6,7 @@ import { postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { finished } from './helpers/workHandoffFixture.js'
 
 describe.skipIf(!postgresEnabled)('exhausted saved work routes: multiple-routes', () => {
-  const recover = false
-  it(`preserves both exhausted routes (${recover ? 'restart after acceptance' : 'normal'})`, async () => {
+  for (const recover of [false, true]) it(`preserves both exhausted routes (${recover ? 'restart after acceptance' : 'normal'})`, async () => {
     const definition = makeCurrentWorkflowFixture(`multiple-exhausted-${recover}`, 'parallel')
     const sourceId = definition.version.entryNodeId
     const targets = definition.version.definition.nodes.slice(1, 3)

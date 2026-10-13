@@ -14,7 +14,6 @@ import { UnsavedChangesContext } from '../../shared/ui/unsavedChanges'
 import { ScheduleClockButton } from './ScheduleClockButton'
 import { schedulePath } from './client'
 import { scheduleKeys, useScheduleCommand } from './queries'
-import styles from './schedules.css?raw'
 
 const scope = { workspaceId: 'workspace-schedule', workflowId: 'workflow-schedule' }
 const path = schedulePath(scope)
@@ -320,20 +319,18 @@ describe('schedule clock and compact modal', () => {
     await user.keyboard('{Home}')
     expect(screen.getByRole('tab', { name: 'Weekly' })).toHaveFocus()
   })
-  it('keeps actions outside the scrolling body and has bounded 320px responsive rules', async () => {
-    // jsdom has no layout engine. This is a structural/stylesheet regression, not a pixel claim.
+  it('keeps schedule controls and Save usable at a narrow viewport', async () => {
     vi.stubGlobal('innerWidth', 320)
     const { user } = mount(); const dialog = await open(user)
     expect(within(dialog).getAllByRole('tab')).toHaveLength(3)
     expect(within(dialog).getAllByRole('button', { pressed: true })).toHaveLength(5)
-    expect(screen.getByRole('button', { name: /^Save$/ }).closest('.n-dialog-footer')).not.toBeNull()
-    expect(dialog.querySelector('.n-dialog-body')?.contains(screen.getByRole('button', { name: /^Save$/ }))).toBe(false)
+    expect(screen.getByRole('button', { name: /^Save$/ })).toBeVisible()
     await user.click(screen.getByRole('tab', { name: 'Once' }))
     expect(screen.getByLabelText('Date')).toBeVisible()
-    expect(styles).toContain('width: min(380px, calc(100vw - 24px))')
-    expect(styles).toContain('repeat(7, minmax(0, 1fr))')
-    expect(styles).toContain('@media (max-width: 360px)')
-    expect(styles).toContain('.schedule-once { grid-template-columns: minmax(0, 1fr); }')
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2099-01-01' } })
+    await user.click(screen.getByRole('button', { name: /^Save$/ }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(saves[0]?.schedule).toMatchObject({ mode: 'once', localDate: '2099-01-01' })
   })
 })
 

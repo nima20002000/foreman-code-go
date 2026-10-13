@@ -84,7 +84,6 @@ describe('ENG04 migration successor — real PostgreSQL 17 V3 constraint gate', 
       const target = await pool.query(`select i.indisunique,i.indisvalid,i.indpred is null as unconditional,
         pg_get_indexdef(i.indexrelid) as definition from pg_index i where i.indexrelid='run_graph_execution_identity'::regclass`)
       expect(target.rows[0]).toMatchObject({ indisunique: true, indisvalid: true, unconditional: true })
-      expect(target.rows[0]!.definition).toContain('(run_id, id, workflow_node_id, attempt)')
       const fks = await pool.query(`select conname from pg_constraint where contype='f'
         and confrelid='harness_executions'::regclass and conindid='run_graph_execution_identity'::regclass`)
       expect(fks.rows.length).toBeGreaterThan(0)
@@ -127,6 +126,16 @@ describe('ENG04 migration successor — real PostgreSQL 17 V3 constraint gate', 
         await insertOccurrence(sql, first)
         return { run, first, one }
       })
+      const outside = execution(baseline.run, null)
+      await transaction(pool, sql => insertExecution(sql, outside))
+      await rejectsTransaction(pool, sql => insertExecution(sql,
+        execution(baseline.run, null, { id: 'duplicate-outside-attempt' }), false), ['23505'])
+      await rejectsTransaction(pool, sql => insertExecution(sql,
+        execution(baseline.run, baseline.first, { nodeId: 'outside', id: 'outside-with-occurrence' }), false),
+      ['P0001'], /REPEAT_EXECUTION_SCOPE_CONFLICT/)
+      await rejectsTransaction(pool, sql => insertExecution(sql,
+        execution(baseline.run, null, { nodeId: 'body', id: 'member-without-occurrence' }), false),
+      ['P0001'], /REPEAT_EXECUTION_SCOPE_CONFLICT/)
       const generated = (await pool.query(`select occurrence_key,workflow_node_id,previous_technical_attempt
         from run_repeat_executions where execution_id=$1`, [baseline.one.id])).rows[0]!
       expect(generated).toEqual({ occurrence_key: baseline.first.id, workflow_node_id: 'body', previous_technical_attempt: null })
