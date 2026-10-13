@@ -1,4 +1,5 @@
 import type { OperatorActivity } from '@foreman-code/contracts'
+import { useState } from 'react'
 import { ChevronRight, Terminal } from 'lucide-react'
 import { Button, CodeBlock } from '../../../shared/ui/nocturne'
 
@@ -16,18 +17,23 @@ export function AgentChatActivity({ entry, onBrowse, onExpand, expandState }: {
   onExpand?(): void
   expandState?: { pending: boolean; failed: boolean }
 }) {
+  const [expanded, setExpanded] = useState(false)
   const verb = verbs[entry.kind]
   const title = entry.title.toLowerCase().startsWith(`${verb.toLowerCase()} `)
     ? entry.title : `${verb} ${entry.title}`
   return <details className="agent-chat-tool" data-activity-kind={entry.kind} data-status={entry.status}
-    onClickCapture={event => { if ((event.target as HTMLElement).closest('summary')) onBrowse() }}>
-    <summary>
+    open={expanded}>
+    <summary onClick={event => {
+      event.preventDefault()
+      onBrowse()
+      setExpanded(open => !open)
+    }}>
       <Terminal size={13} aria-hidden="true" />
       <span title={title}>{title}</span>
       {statuses[entry.status] ? <small>{statuses[entry.status]}</small> : null}
       <ChevronRight size={13} className="agent-chat-tool-chevron" aria-hidden="true" />
     </summary>
-    <div className="agent-chat-tool-content">
+    {expanded ? <div className="agent-chat-tool-content">
       {entry.input ? <CodeBlock code={entry.input} label="Input" /> : null}
       {entry.output ? <CodeBlock code={entry.output} label="Output" /> : null}
       {!entry.input && !entry.output ? <p>Details unavailable.</p> : null}
@@ -38,6 +44,6 @@ export function AgentChatActivity({ entry, onBrowse, onExpand, expandState }: {
       {expandState?.failed ? <p role="alert">Full details could not be loaded.{' '}
         <Button size="sm" variant="ghost" onClick={onExpand}>Retry full details</Button>
       </p> : null}
-    </div>
+    </div> : null}
   </details>
 }

@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, waitFor } from '@testing-library/react'
 import { expect, vi } from 'vitest'
+import userEvent from '@testing-library/user-event'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import type { AgentChatContext, AgentChatState, AgentChatStreamEvent } from '@foreman-code/contracts/agent-chat'
 import { agentChatFixtures } from '@foreman-code/contracts/agent-chat'
@@ -60,4 +61,15 @@ export function mountChat(initial: AgentChatState = agentChatFixtures.empty, act
     switchContext: (context: AgentChatContext) => rendered.rerender(renderPanel(context)),
     refresh: () => client.invalidateQueries({ queryKey: agentChatStateKey(initial.context) }),
   }
+}
+
+/** Hovers a control and returns the tooltip it describes, not any other open tooltip. */
+export async function chatTooltip(control: HTMLElement) {
+  await userEvent.hover(control)
+  return waitFor(() => {
+    const id = control.getAttribute('aria-describedby')?.split(' ').at(-1)
+    const tooltip = id ? document.getElementById(id) : null
+    expect(tooltip).toHaveAttribute('role', 'tooltip')
+    return tooltip!
+  })
 }

@@ -44,6 +44,24 @@ it('keeps readable chat quiet while polling is available', async () => {
   expect(screen.getByText('It is a workflow engine.', { selector: '.conversation-message-content, .conversation-message-content p' })).toBeVisible()
 })
 
+it('keeps unfinished work as the chat status while live updates reconnect', async () => {
+  const state: AgentChatState = structuredClone(agentChatFixtures.idleAfterCompletion)
+  state.activitySnapshot = { schemaVersion: 1, scope: { kind: 'agent_chat', conversationId: state.conversation!.id,
+    workspaceId: state.context.workspaceId, workflowId: state.context.workflowId, nodeId: state.context.workflowNodeId,
+    agentId: state.context.agentId }, revision: String(state.revision),
+  active: [{ ref: { kind: 'tool', itemId: 'running-tool' }, phase: 'active', outcome: null, delivery: null, evidence: 'confirmed', startedAt: null }],
+  queued: [], latest: null, pendingInteractions: [], activities: [], page: { before: null, nextCursor: null, hasMore: false } }
+  const mounted = mountChat(state)
+  clients.push(mounted.client)
+  await mounted.ready()
+  await waitFor(() => expect(AgentChatTestSource.instances).toHaveLength(1))
+  const stream = AgentChatTestSource.instances[0]!
+  act(() => stream.open())
+  act(() => stream.fail())
+  expect(await screen.findByText('Background work continues')).toBeVisible()
+  expect(screen.queryByText('Reconnecting to live updates')).not.toBeInTheDocument()
+})
+
 it('shows the Board chat command error inline', async () => {
   const mounted = mountChat(agentChatFixtures.idleAfterCompletion)
   clients.push(mounted.client)

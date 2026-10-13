@@ -5,7 +5,7 @@ import type { SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-
 import { useConversationDraftStore } from '../conversationDraftStore'
 import { intentUnavailable } from './model'
 import { completedFixture, ephemeralFixture, startedFixture } from './f7.testSupport'
-import { mountChat } from './testSupport'
+import { chatTooltip, mountChat } from './testSupport'
 
 const clients: ReturnType<typeof mountChat>['client'][] = []
 afterEach(() => { clients.splice(0).forEach((client) => client.clear()); useConversationDraftStore.getState().clearAllDrafts(); vi.unstubAllGlobals() })
@@ -37,8 +37,8 @@ describe('F7 B-R06 terminal-decided ephemeral Codex facts', () => {
     await screen.findByText('Original session unavailable')
     fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'Keep after restart' } })
     expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled()
-    await userEvent.hover(screen.getByRole('status', { name: 'Agent state' }))
-    expect((await screen.findAllByText(/ephemeral Codex session was lost/, { selector: '[role=tooltip]' })).length).toBeGreaterThan(0)
+    expect(await chatTooltip(screen.getByRole('status', { name: 'Agent state' })))
+      .toHaveTextContent('ephemeral Codex session was lost')
     expect(screen.queryByRole('button', { name: /resume/i })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Choose another Agent for a new conversation' })).toBeInTheDocument()
     fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message' }), { key: 'Enter' })
