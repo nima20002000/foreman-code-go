@@ -111,7 +111,7 @@ export async function seed({ apiUrl, webUrl, projectRoot, codexModel, schemas,
     const draftId = `eng07-draft-${randomUUID()}`
     const stage = schemas.CurrentEditStageInputSchema.parse({ action: 'stage_edits', commandId: randomUUID(), draftId,
       workspaceId, workflowId: created.workflow.id, executionSemanticsVersion: 3,
-      expectedRevision: created.revision, expectedWorkflowVersionId: null, expectedLocationRevision: workspace.locationRevision,
+      expectedRevision: created.revision, expectedWorkflowVersionId: null,
       expectedAgentConfigurationVersionIds: {}, graph, stagedAgents: agents })
     await request(`${path}/edits`, 'POST', stage)
     // Read the authoritative intent, including its reserved advance command ID.

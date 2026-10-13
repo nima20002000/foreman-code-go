@@ -147,7 +147,7 @@ async function saveNode(subject, profile, ports) {
   await tool('workflow_edit_v3', workflows.CurrentEditStageInputSchema.parse({ action: 'stage_edits',
     commandId: randomUUID(), draftId, workspaceId, workflowId: graph.id, executionSemanticsVersion: 3,
     expectedRevision: created.revision, expectedWorkflowVersionId: null,
-    expectedLocationRevision: location.locationRevision, expectedAgentConfigurationVersionIds: {}, graph,
+    expectedAgentConfigurationVersionIds: {}, graph,
     stagedAgents: [{ agent, baseRevision: null }] }))
   const staged = workflows.CurrentEditReadResultSchema.parse(await tool('workflow_edits_get_v3', {
     action: 'read_edits', workspaceId, workflowId: graph.id, draftId,
