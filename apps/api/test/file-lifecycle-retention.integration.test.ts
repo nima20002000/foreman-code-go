@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, it } from 'vitest'
 import { FilePageSchema, MAX_FILE_BYTES, TemporaryFileSchema, temporaryFileExpiresAt } from '@foreman-code/contracts/files'
 import type { StoredFile } from '../src/modules/files/repository.js'
-import type { FileRetentionService } from '../src/modules/files/retention.js'
+import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { FileRetentionService } from '../src/modules/files/retention.js'
 import { FileByteStorage } from '../src/modules/files/storage.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { absent, allocate, base, candidate, collect, contentUrl, fil14Database, headers, historical, hour, markdown, owner, pins, reread, save, sweep, target, waitFor, type Fil14Database, type Owner, type Runtime } from './helpers/fil14Lifecycle.js'
@@ -18,6 +19,22 @@ describe.skipIf(!postgresEnabled)('FIL-14 retention, expiry and sweeper lifecycl
   let database: Fil14Database, runtime: Runtime
   beforeAll(async () => { database = await fil14Database(); runtime = await database.open() }, 60_000)
   afterAll(async () => { await database?.close() })
+
+  it('persists retention saves in the fixture database for independent service readback', async () => {
+    const who = await owner(runtime)
+    const saved = await save(runtime, who, 7200)
+    const persistedRetention = new FileRetentionService(database.pool, new PostgresCommandCoordinator(database.pool))
+
+    const persisted = await persistedRetention.get(who.principal, 'http')
+    assert.deepEqual(persisted.preference, saved.value.preference)
+
+    const restarted = await database.open()
+    try {
+      assert.deepEqual((await restarted.retention.get(who.principal, 'http')).preference, persisted.preference)
+    } finally {
+      await restarted.close()
+    }
+  })
 
   async function pausedSave(who: Owner, durationSeconds: number, work: (pending: {
     result: ReturnType<FileRetentionService['save']>; release: () => Promise<void>
