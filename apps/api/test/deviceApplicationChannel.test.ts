@@ -61,10 +61,10 @@ function stopRequest() {
   return { method: 'control' as const, intent, placement, command }
 }
 const flush = async () => { for (let i = 0; i < 160; i++) await Promise.resolve() }
-function setup(handler: NonNullable<DeviceExtensionRegistration['handle']>, limits = { maxJsonBytes: 1_048_576, maxBinaryBytes: 1_048_576 }, heartbeatMs = 1000, mainHandler?: NonNullable<DeviceExtensionRegistration['handle']>) {
+function setup(handler: NonNullable<DeviceExtensionRegistration['handle']>, limits = { maxJsonBytes: 1_048_576, maxBinaryBytes: 1_048_576 }, heartbeatMs = 1000, mainHandler?: NonNullable<DeviceExtensionRegistration['handle']>, namespace = 'execution-v1') {
   const rawMain = new Socket(), rawWorker = new Socket(); rawMain.peer = rawWorker; rawWorker.peer = rawMain
   const mainSocket = adaptDeviceSocket(rawMain), workerSocket = adaptDeviceSocket(rawWorker)
-  const mainRegistration: DeviceExtensionRegistration = { namespace: 'execution-v1', version: 1, role: mainHandler ? 'duplex' : 'client', ...limits, ...(mainHandler ? { handle: mainHandler } : {}) }
+  const mainRegistration: DeviceExtensionRegistration = { namespace, version: 1, role: mainHandler ? 'duplex' : 'client', ...limits, ...(mainHandler ? { handle: mainHandler } : {}) }
   const workerRegistration: DeviceExtensionRegistration = { ...mainRegistration, role: mainHandler ? 'duplex' : 'server', handle: handler }
   const extensions = negotiateDeviceExtensions(extensionDescriptors([mainRegistration]), extensionDescriptors([workerRegistration]))
   const parent = new AbortController(), revalidate = vi.fn(async () => {})
@@ -76,6 +76,19 @@ function setup(handler: NonNullable<DeviceExtensionRegistration['handle']>, limi
 }
 afterEach(() => vi.useRealTimers())
 describe('authenticated namespace carrier mechanics', () => {
+  it('transfers multi-megabyte agent snapshots without enlarging other namespace limits', async () => {
+    const maxJsonBytes = Math.ceil(32 * 1024 * 1024 / 3) * 4 + 1024
+    const limits = { maxJsonBytes, maxBinaryBytes: 0 }
+    expect(() => extensionDescriptors([{ namespace: 'execution-v1', version: 1, role: 'client', ...limits }]))
+      .toThrow('Invalid device extension')
+    const payload = { commit: 'a'.repeat(40), bundleBase64: Buffer.alloc(8 * 1024 * 1024).toString('base64') }
+    const pair = setup(async () => ({ payload }), limits, 1000, undefined, 'agent-snapshot-v1')
+    try {
+      const response = await pair.main.request('agent-snapshot-v1', { path: '/project/tree', baseCommit: 'b'.repeat(40) })
+      expect(response.payload).toEqual(payload)
+      expect(pair.rawWorker.frames.every(frame => Buffer.byteLength(frame) <= 16_384)).toBe(true)
+    } finally { await pair.close() }
+  })
   it('requires actual server handler and exact role/version-compatible negotiation', () => {
     expect(() => extensionDescriptors([{ namespace: 'execution-v1', version: 1, role: 'server', maxJsonBytes: 1024, maxBinaryBytes: 0 }])).toThrow('actual domain handler')
     const client = { namespace: 'execution-v1', version: 1, role: 'client' as const, maxJsonBytes: 1024, maxBinaryBytes: 0 }

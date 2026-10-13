@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SourceMaterializationFileSchema } from './sourceMaterialization.js'
+import { AgentSnapshotResultSchema, SourceMaterializationFileSchema } from './sourceMaterialization.js'
 
 const id = '11111111-1111-4111-8111-111111111111'
 const filesystem = { device: '8', inode: '100', mountId: '44' }
@@ -27,5 +27,17 @@ describe('private source materialization records', () => {
     const quota = { namespace: id, projectId: 1, hardLimitBytes: 4096, hardInodes: 16, filesystem }
     expect(SourceMaterializationFileSchema.safeParse({ receipt: { ...receipt, quota }, manifest, snapshotReference }).success)
       .toBe(false)
+  })
+})
+
+describe('agent snapshot response size', () => {
+  it('accepts a base64 bundle containing 32 MiB of changed files', () => {
+    const bundleBase64 = Buffer.alloc(32 * 1024 * 1024).toString('base64')
+    expect(AgentSnapshotResultSchema.safeParse({ commit: 'a'.repeat(40), bundleBase64 }).success).toBe(true)
+  })
+
+  it('rejects a base64 bundle above 32 MiB', () => {
+    const bundleBase64 = Buffer.alloc(32 * 1024 * 1024 + 3).toString('base64')
+    expect(AgentSnapshotResultSchema.safeParse({ commit: 'a'.repeat(40), bundleBase64 }).success).toBe(false)
   })
 })

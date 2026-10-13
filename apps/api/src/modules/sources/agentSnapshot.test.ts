@@ -2,7 +2,7 @@ import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { execFileSync } from 'node:child_process'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { importAgentSnapshot, snapshotAgentWorktree } from './agentSnapshot.js'
@@ -27,7 +27,47 @@ it('returns the base commit without a bundle for an unchanged large Agent worktr
   expect(await snapshotAgentWorktree(ports, { path: root, baseCommit }, AbortSignal.timeout(30_000)))
     .toEqual({ commit: baseCommit, bundle: null })
   expect(git(root, 'status', '--porcelain')).toBe('')
-  await writeFile(join(root, 'large.bin'), randomBytes(900 * 1024))
+})
+
+it('captures and imports a multi-megabyte changed-file bundle without moving the branch', async () => {
+  const cache = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(cache, { recursive: true })
+  const root = await mkdtemp(join(cache, 'agent-snapshot-large-'))
+  roots.push(root)
+  git(root, 'init', '-q', '-b', 'main')
+  await writeFile(join(root, 'app.ts'), 'base\n')
+  git(root, 'add', '.')
+  git(root, 'commit', '-qm', 'base')
+  const baseCommit = git(root, 'rev-parse', 'HEAD')
+  const receiver = join(root, 'receiver')
+  git(root, 'clone', '-q', '--no-checkout', root, receiver)
+  await writeFile(join(root, '.gitignore'), 'receiver/\n')
+  const bytes = randomBytes(8 * 1024 * 1024)
+  await writeFile(join(root, 'changed.bin'), bytes)
+  const ports = systemGitWorktreePorts(gitFixtureEnvironment())
+  const signal = AbortSignal.timeout(30_000)
+  const snapshot = await snapshotAgentWorktree(ports, { path: root, baseCommit }, signal)
+  expect(snapshot.bundle!.length).toBeGreaterThan(1024 * 1024)
+  expect(git(root, 'rev-parse', 'HEAD')).toBe(baseCommit)
+  await importAgentSnapshot(ports, receiver, snapshot, signal)
+  const imported = execFileSync('git', ['show', `${snapshot.commit}:changed.bin`], {
+    cwd: receiver, env: gitFixtureEnvironment(), maxBuffer: 16 * 1024 * 1024,
+  })
+  expect(imported.equals(bytes)).toBe(true)
+})
+
+it('rejects changed-file bundles above 32 MiB', async () => {
+  const cache = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(cache, { recursive: true })
+  const root = await mkdtemp(join(cache, 'agent-snapshot-oversized-'))
+  roots.push(root)
+  git(root, 'init', '-q', '-b', 'main')
+  await writeFile(join(root, 'app.ts'), 'base\n')
+  git(root, 'add', '.')
+  git(root, 'commit', '-qm', 'base')
+  const baseCommit = git(root, 'rev-parse', 'HEAD')
+  await writeFile(join(root, 'large.bin'), randomBytes(33 * 1024 * 1024))
+  const ports = systemGitWorktreePorts(gitFixtureEnvironment())
   await expect(snapshotAgentWorktree(ports, { path: root, baseCommit }, AbortSignal.timeout(30_000)))
     .rejects.toMatchObject({ code: 'SOURCE_SNAPSHOT_TOO_LARGE' })
 })
