@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { installationUpdateFixture, startWhenReady, runningTurn, completedRun }
+import { randomUUID } from 'node:crypto'
+import { HostHarnessInstanceCheckResultSchema } from '@foreman-code/contracts/harness-registry'
+import { installationUpdateFixture, startWhenReady, runningTurn, completedRun, profileReader, profiles }
   from './helpers/harnessInstallationUpdate.js'
 import { waitForRemoteReview } from './helpers/remoteReviewProduction.js'
 
@@ -18,6 +20,17 @@ describe('planned API restart near a worker credential expiry', () => {
       await waitForRemoteReview(() => fixture.details(started.run.id), details =>
         details.activity.some(activity => activity.harnessExecutionId === execution!.id
           && activity.payload.nativeEventType === 'turn.started'), 'persisted native turn admission')
+      const reader = await profileReader(fixture)
+      const profile = (await profiles(fixture, reader))[0]!
+      // Requalification can finish between native admission and restart recovery.
+      const checked = HostHarnessInstanceCheckResultSchema.parse(await fixture.value('harness_instance_check', {
+        commandId: randomUUID(), instanceId: profile.instanceId,
+        expectedRevision: profile.revision, target: profile.target,
+      }))
+      expect(checked.proof.qualified).toBe(true)
+      expect((await profiles(fixture, reader))[0]).toMatchObject({
+        instanceRevision: profile.instanceRevision, target: profile.target, qualification: 'qualified',
+      })
       // The deploy begins shortly before the persisted lease would expire, outside the in-process renewal window.
       const shortened = await fixture.db.pool.query(`update management_principals p
         set expires_at=clock_timestamp()+interval '10 seconds' from worker_credential_bindings b

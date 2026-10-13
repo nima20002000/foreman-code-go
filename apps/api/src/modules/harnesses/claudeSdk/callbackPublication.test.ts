@@ -14,7 +14,7 @@ it.each(['eof', 'failure'] as const)('owns full-queue callback publication on SD
       nativeSessionId: frame.session_id, messageId: 'assistant-message', toolUseId: `tool-${index}`,
     } }))
   }, { pendingInteractions: session => bridge.pendingInteractions(session) })
-  const bridge = new ClaudeInteractionBridge({ harness: 'claude', model: 'fixture', authMode: 'subscription',
+  const bridge: ClaudeInteractionBridge = new ClaudeInteractionBridge({ harness: 'claude', model: 'fixture', authMode: 'subscription',
     configDirectory: '/profile', permissionMode: 'default', sandbox: 'danger-full-access',
     tools: ['Read'], permissionRules: [{ tool: 'Read', effect: 'ask' }], instructions: '', mcpServers: {} },
   { callbackJournal: memoryClaudeCallbackJournal(), validate: async () => undefined,

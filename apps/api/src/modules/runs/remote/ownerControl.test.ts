@@ -25,9 +25,14 @@ function fixture() {
     graphThreadId: 'run', request: {}, approval: { handler: 'user' }, responseOptions: [option], status: 'decided', selectedOptionId: option.optionId,
     selectedSemantic: option.semantic, nativeResponse: { decision: 'approved' }, deliveryState: 'not_started', decidedAt: now, createdAt: now, updatedAt: now }
   const state = { receipt: receipt as RemoteOperationReceipt | undefined, interaction: interaction as DurableInteraction | undefined,
-    cleanup: new Date(now) as Date | undefined, owned: true, queries: [] as string[], control: undefined as unknown }
+    cleanup: new Date(now) as Date | undefined, reviewerCompleted: true, unsettledReview: false, owned: true, queries: [] as string[], control: undefined as unknown }
   const raw = { query: async (text: string) => {
     state.queries.push(text)
+    if (text.startsWith('select 1 from harness_executions')) {
+      const completed = state.reviewerCompleted && !state.unsettledReview
+      const rows = completed ? [{ id: 'execution' }] : []
+      return { rows, rowCount: rows.length }
+    }
     const rows = text.startsWith('select receipt') ? state.receipt ? [{ receipt: state.receipt }] : []
       : text.startsWith('select record') ? state.interaction ? [{ record: state.interaction }] : []
         : text.startsWith('select requested_at') ? state.cleanup ? [{ requested_at: state.cleanup }] : []
@@ -76,6 +81,29 @@ describe('SQL-only admitted remote control preparation', () => {
     f.state.cleanup = undefined
     await expect(f.prepare('stop')).rejects.toThrow('cleanup intent')
     await f.db.close()
+  })
+  it('closes a completed retained reviewer under its Run owner without requesting Run Stop', async () => {
+    const f = fixture()
+    f.state.cleanup = undefined
+    f.state.receipt!.turnInput = { correlationId: 'execution:execution', promptDigest: 'a'.repeat(64), sessionMode: 'regular' }
+    f.state.receipt!.retainedReviewer = {
+      agentId: 'agent', workflowTurnId: 'turn', result: { outcome: 'succeeded' },
+      expiresAt: '2026-10-01T01:00:00.000Z',
+    }
+    try {
+      const command = await f.prepare('stop')
+      expect(command).toMatchObject({ commandId: 'close-reviewer:operation', native,
+        action: { kind: 'stop' }, owner: intent.owner })
+      expect(await f.prepare('stop')).toEqual(command)
+      f.state.unsettledReview = true
+      await expect(f.prepare('stop')).rejects.toThrow('reviewer')
+      f.state.unsettledReview = false
+      f.state.reviewerCompleted = false
+      await expect(f.prepare('stop')).rejects.toThrow('reviewer')
+      f.state.reviewerCompleted = true
+      f.state.owned = false
+      await expect(f.prepare('stop')).rejects.toThrow('owner lost')
+    } finally { await f.db.close() }
   })
   it.each(['native', 'owner', 'terminal', 'absent'] as const)('rejects %s ownership before producing a command', async kind => {
     const f = fixture()

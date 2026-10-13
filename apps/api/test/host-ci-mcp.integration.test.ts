@@ -287,6 +287,7 @@ it('persists pending MCP cancellation during host preparation and confirms clean
     return request(computer, input)
   }
   let dispatch: Promise<void> | undefined
+  let cancellation: ReturnType<typeof f.call> | undefined
   try {
     const reader = await f.connect(CI_GET_ACTIONS)
     const result = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run',
@@ -295,9 +296,16 @@ it('persists pending MCP cancellation during host preparation and confirms clean
     dispatch = f.ci.dispatch()
     const commandId = randomUUID()
     expect((await f.call(reader, 'ci_cancel', { ticketId: result.ticketId })).isError).toBe(true)
-    const cancellation = await f.call(f.operator, 'ci_cancel', { ticketId: result.ticketId, commandId })
-    expect(cancellation.isError).toBe(true)
-    expect(decodeMcpToolResult(cancellation)).toMatchObject({ error: { code: 'CI_CANCEL_PENDING' } })
+    cancellation = f.call(f.operator, 'ci_cancel', { ticketId: result.ticketId, commandId })
+    await expect.poll(async () => {
+      const response = await reader.callTool({ name: 'ci_get',
+        arguments: { workspaceId: f.workspaceId, ticketId: result.ticketId } })
+      expect(response.isError).not.toBe(true)
+      return CiGetOutputSchema.parse(decodeMcpToolResult(response)).run.cancellation
+    }).toMatchObject({ source: 'mcp', commandId, reason: 'direct' })
+    const cancellationResult = await cancellation
+    expect(cancellationResult.isError).toBe(true)
+    expect(decodeMcpToolResult(cancellationResult)).toMatchObject({ error: { code: 'CI_CANCEL_PENDING' } })
     const pending = await reader.callTool({ name: 'ci_get',
       arguments: { workspaceId: f.workspaceId, ticketId: result.ticketId } })
     expect(pending.isError).not.toBe(true)
@@ -320,7 +328,18 @@ it('persists pending MCP cancellation during host preparation and confirms clean
       const reply = await f.endpoint.request(computer, { operation: 'status' })
       expect(reply.operation === 'status' && reply.runs.some(run => ['starting', 'running'].includes(run.state))).toBe(false)
     }
-  } finally { release(); await dispatch; await f.close() }
+  } finally {
+    release()
+    try {
+      await cancellation
+    } finally {
+      try {
+        await dispatch
+      } finally {
+        await f.close()
+      }
+    }
+  }
 })
 
 it.each([
@@ -543,7 +562,12 @@ it.each([
       const running = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
       const active = running.partitions!.filter(run => run.state === 'running')
       if (!active.length) break
-      for (const run of active) f.finish(run.id, 0, `${run.part} passed\n`)
+      for (const run of active) {
+        const computer = f.computers.find(value => value.label === run.computer?.label)!
+        const status = await f.endpoint.request(computer, { operation: 'status' })
+        expect(status.operation === 'status' && status.runs.some(value => value.runId === run.id)).toBe(true)
+        f.finish(run.id, 0, `${run.part} passed\n`)
+      }
     }
     const done = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
     expect(done.group).toMatchObject({ groupId: read.run.groupId, state: 'passed' })
@@ -1424,12 +1448,22 @@ it('preserves MCP cancellation when an in-flight refresh returns an unstarted ti
   const blocked = new Promise<void>(resolve => { release = resolve })
   const reading = new Promise<void>(resolve => { entered = resolve })
   let dispatch: Promise<void> | undefined
+  let cancellation: ReturnType<typeof f.value> | undefined
   try {
     const tickets = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'integration', scope: 'full', partitions: 2, commandId: 'cancel-unstarted',
     }))
-    const started = { ticketId: tickets.partitions![1]!.ticketId }
     await f.ci.dispatch()
+    const running = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: tickets.ticketId }))
+    const active = running.partitions!.find(run => run.state === 'running')
+    expect(active).toBeDefined()
+    const started = { ticketId: active!.id }
+    const queued = running.partitions!.filter(run => run.state === 'queued')
+    expect(queued).toHaveLength(1)
+    for (const run of queued) {
+      expect(await f.value(f.operator, 'ci_cancel', { ticketId: run.id }))
+        .toMatchObject({ run: { state: 'canceled' } })
+    }
     const reader = await f.connect(CI_GET_ACTIONS)
     expect((await f.call(reader, 'ci_cancel', { ticketId: started.ticketId })).isError).toBe(true)
     const request = f.endpoint.request.bind(f.endpoint)
@@ -1444,7 +1478,8 @@ it('preserves MCP cancellation when an in-flight refresh returns an unstarted ti
     dispatch = f.ci.dispatch()
     await reading
     const commandId = randomUUID()
-    expect(await f.value(f.operator, 'ci_cancel', { ticketId: started.ticketId, commandId }))
+    cancellation = f.value(f.operator, 'ci_cancel', { ticketId: started.ticketId, commandId })
+    expect(await cancellation)
       .toMatchObject({ run: { state: 'canceled' } })
     const pending = await reader.callTool({ name: 'ci_get',
       arguments: { workspaceId: f.workspaceId, ticketId: started.ticketId } })
@@ -1460,7 +1495,25 @@ it('preserves MCP cancellation when an in-flight refresh returns an unstarted ti
     expect((await f.pool.query('select record,host_key from ci_runs where id=$1', [started.ticketId])).rows[0])
       .toEqual({ record: read.run, host_key: null })
     expect(f.started).toHaveLength(1)
-  } finally { release(); await dispatch; await f.close() }
+    for (const computer of f.computers) {
+      const status = await f.endpoint.request(computer, { operation: 'status' })
+      expect(status.operation === 'status' && status.runs.some(run => run.state === 'running')).toBe(false)
+    }
+    expect((await f.pool.query(
+      "select count(*)::int as count from management_audit where action='ci.cancel' and target_key=$1",
+      [`ci:${started.ticketId}`])).rows).toEqual([{ count: 1 }])
+  } finally {
+    release()
+    try {
+      await cancellation
+    } finally {
+      try {
+        await dispatch
+      } finally {
+        await f.close()
+      }
+    }
+  }
 })
 
 it('prefers build computers and CircleCI over higher-priority GitHub slots for integration', async () => {

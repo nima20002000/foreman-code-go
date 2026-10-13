@@ -55,10 +55,12 @@ async function fixture() {
     request: async (computer, request): Promise<CiHostReply> => {
       if (request.operation === 'status') {
         await control.onStatus(computer)
+        const runs = [...remote.entries()]
+          .filter(([key]) => key.startsWith(`${computer.key}:`))
+          .map(([, run]) => run)
         return { operation: 'status', ready: true, reasons: [], cpuCount: 8, memoryBytes: 8 * 2 ** 30,
-          slotsUsed: [...remote.entries()].filter(([key, run]) => key.startsWith(`${computer.key}:`)
-            && ['starting', 'running'].includes(run.state)).length,
-          slotsTotal: 1, runs: [] }
+          slotsUsed: runs.filter(run => ['starting', 'running'].includes(run.state)).length,
+          slotsTotal: 1, runs }
       }
       const key = `${computer.key}:${request.runId}`
       if (request.operation === 'start') {
@@ -191,7 +193,14 @@ it('retains one executor after an accepted start loses its reply and reconciles 
     restarted = f.createService()
     await restarted.dispatch()
     expect(f.starts).toHaveLength(1)
-    expect((await f.read(ticket.ticketId)).state).toBe('running')
+    const recovered = await f.read(ticket.ticketId)
+    const accepted = f.starts[0]!
+    expect(recovered).toMatchObject({ state: 'running', computer: {
+      hostRef: accepted.computer.hostRef },
+      startedAt: f.remote.get(`${accepted.computer.key}:${ticket.ticketId}`)!.startedAt })
+    await restarted.dispatch()
+    expect(await f.read(ticket.ticketId)).toEqual(recovered)
+    expect(f.starts).toHaveLength(1)
   } finally {
     await restarted?.close()
     await f.close()
@@ -213,7 +222,14 @@ it('preserves the assignment when the database rejects settlement after an accep
     await f.pool.query('drop trigger reject_ci_running on ci_runs')
     await f.ci.dispatch()
     expect(f.starts).toHaveLength(1)
-    expect((await f.read(ticket.ticketId)).state).toBe('running')
+    const recovered = await f.read(ticket.ticketId)
+    const accepted = f.starts[0]!
+    expect(recovered).toMatchObject({ state: 'running', computer: {
+      hostRef: accepted.computer.hostRef },
+      startedAt: f.remote.get(`${accepted.computer.key}:${ticket.ticketId}`)!.startedAt })
+    await f.ci.dispatch()
+    expect(await f.read(ticket.ticketId)).toEqual(recovered)
+    expect(f.starts).toHaveLength(1)
   } finally {
     await f.pool.query('drop trigger if exists reject_ci_running on ci_runs')
     await f.pool.query('drop function if exists reject_ci_running()')
