@@ -5,6 +5,7 @@ import type { NativeSessionReference } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
+import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { deferred } from './helpers/deferred.js'
 import { DomainError } from '../src/modules/errors.js'
 
@@ -12,9 +13,16 @@ import { DomainError } from '../src/modules/errors.js'
 describe.runIf(postgresEnabled)('workflow startup preservation', () => {
   it('reloads a starting execution after its original session and first native batch commit', async () => {
     const fixture = makeCurrentWorkflowFixture(randomUUID(), 'single')
-    const runtime = await checkpointRuntimeFixture(1, 1, {
-      fixture, approvalNodeIds: [fixture.version.entryNodeId],
-    })
+    const database = await migratedDatabase()
+    let runtime: Awaited<ReturnType<typeof checkpointRuntimeFixture>>
+    try {
+      runtime = await checkpointRuntimeFixture(1, 1, {
+        database, fixture, approvalNodeIds: [fixture.version.entryNodeId],
+      })
+    } catch (error) {
+      await database.close()
+      throw error
+    }
     const opening = deferred()
     const publish = deferred()
     const captured = deferred()
@@ -101,7 +109,7 @@ describe.runIf(postgresEnabled)('workflow startup preservation', () => {
       await Promise.allSettled([startup, shutdown])
       restorePages()
       connections.mockRestore()
-      await runtime.close()
+      try { await runtime.close() } finally { await database.close() }
     }
   }, 60_000)
 })

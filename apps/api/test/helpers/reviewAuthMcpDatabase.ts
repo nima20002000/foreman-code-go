@@ -1,10 +1,7 @@
-import { createFixtureSchema, dropFixtureSchema } from './testResources.js'
-import { randomUUID } from 'node:crypto'
-import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { buildApp } from '../../src/app.js'
 import type { OperatorServices } from '../../src/mcp/operator/types.js'
-import { applyApplicationMigrations } from '../../src/infrastructure/migrations.js'
+import { migratedDatabase } from './migratedDatabase.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
 import { authorizeDeviceHost } from '../../src/modules/devices/hostAuthorization.js'
@@ -15,18 +12,15 @@ import { FoundationSettingsManagementService } from '../../src/modules/settings/
 import { PostgresOperatorRepository } from '../../src/modules/operators/postgres.js'
 
 export async function reviewAuthMcpDatabase(options: { hostProfiles?: boolean } = {}) {
-  const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL! })
-  const schema = `auth_mcp_${randomUUID().replaceAll('-', '')}`
-  await createFixtureSchema(admin, schema)
-  const pool = new pg.Pool({ ...admin.options, options: `-c search_path=${schema}` })
+  const database = await migratedDatabase()
+  const { pool } = database
   let app: ReturnType<typeof buildApp> | undefined
   const clients: Client[] = []
   const close = async () => {
-    await Promise.all(clients.map(client => client.close())); await app?.close(); await pool.end()
-    await dropFixtureSchema(admin, schema); await admin.end()
+    await Promise.all(clients.map(client => client.close())); await app?.close()
+    await database.close()
   }
   try {
-    await applyApplicationMigrations(pool)
     const access = new PostgresAccessService(pool), commands = new PostgresCommandCoordinator(pool)
     const profiles = new HostHarnessOverrideService(new HarnessInstanceSettingsRepository(pool), commands, {
       authorize: async (principal, action, host, installation, client) => {

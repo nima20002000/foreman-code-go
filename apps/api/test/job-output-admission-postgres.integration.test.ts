@@ -127,6 +127,12 @@ describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer rec
     app=Fastify();app.setErrorHandler((error,_request,reply)=>{void reply.code(error instanceof DomainError?error.status:500).send({error:error instanceof DomainError?error.code:'ERROR'})})
     registerJobOutputMetadataEndpoints(app,{access,endpoint,admission:actual.admission,artifacts:actual.artifacts})
     address=await app.listen({host:'127.0.0.1',port:0})
+    const clients = await Promise.all(Array.from({ length: 3 }, () => pool.connect()))
+    for (const client of clients) client.release()
+    mcpClient = new Client({ name: 'job-output-fixture', version: '1.0.0' })
+    await mcpClient.connect(new StreamableHTTPClientTransport(new URL('/device/mcp/job-outputs', address), {
+      authProvider: { token: async () => credential },
+    }))
   },60000)
   afterAll(async()=>{await mcpClient?.close();await app?.close();endpoint?.close();incoming?.end();await endpointTask?.catch(()=>{});await actual?.receiver.close();await ownership?.release();await pool?.end();if(storage)await removeFixtureDirectory(storage);if(staging)await removeFixtureDirectory(staging);if(admin){try{await dropFixtureSchema(admin, schema)}finally{await admin.end()}}})
   it('issues persisted original main transfer through HTTP/MCP, denies Operator and publishes actual sender bytes once',async()=>{
@@ -134,9 +140,7 @@ describe.skipIf(!databaseUrl)('main-issued authenticated job output transfer rec
     expect((await app.inject({method:'POST',url:'/device/job-outputs/admit',headers:{authorization:`Bearer ${operatorToken}`},payload:input})).statusCode).toBe(403)
     expect((await app.inject({method:'POST',url:'/device/mcp/job-outputs',headers:{authorization:`Bearer ${operatorToken}`,accept:'application/json, text/event-stream'},payload:{jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'job_output_admit',arguments:input}}})).statusCode).toBe(403)
     const first=await app.inject({method:'POST',url:'/device/job-outputs/admit',headers:{authorization:`Bearer ${credential}`},payload:input});expect(first.statusCode).toBe(200);const intent=first.json()
-    mcpClient=new Client({name:'job-output-fixture',version:'1.0.0'})
-    await mcpClient.connect(new StreamableHTTPClientTransport(new URL('/device/mcp/job-outputs',address),{authProvider:{token:async()=>credential}}))
-    const mcp=await mcpClient.callTool({name:'job_output_admit',arguments:input})
+    const mcp=await mcpClient!.callTool({name:'job_output_admit',arguments:input})
     expect(mcp.isError,JSON.stringify(mcp)).not.toBe(true);expect(decodeMcpToolResult(mcp)).toEqual(intent)
     const channel={request:async(_namespace:string,payload:unknown,options?:{bytes?:Uint8Array})=>actual.extension.handle!(payload,{binding,signal:AbortSignal.timeout(10000),...(options?.bytes?{bytes:options.bytes}:{})})}
     const sender=new ResumableByteTransferSender(new WorkerJobOutputReceiver(channel),{read:async(_intent,offset,length)=>body.subarray(offset,offset+length)},{current:async()=>outputTransferContext(binding),retryable:()=>false})
