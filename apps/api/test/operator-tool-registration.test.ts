@@ -127,7 +127,7 @@ describe('Operator tool registration permissions', () => {
   it('registers every supported tool for an unrestricted owner', () => {
     // These require more than one grant (respond also needs interactions:read).
     const expected = [...actionTools.flatMap(([, names]) => names), 'interaction_respond',
-      'run_handoffs_get_v1', 'run_start', 'workflow_reorder', 'bug_reports_close'].sort()
+      'run_handoffs_get_v1', 'run_start', 'run_start_resolve', 'workflow_reorder', 'bug_reports_close'].sort()
     expect(registered(context([{ actions: [...ManagementActionSchema.options], scope: {} }]))).toEqual(expected)
   })
 
@@ -214,11 +214,11 @@ describe('Operator tool registration permissions', () => {
     expect(registered(context(grants))).toEqual([])
   })
 
-  it('registers run-start when both grants cover the same workspace', () => {
+  it('registers Start and resolution when both grants cover the same workspace', () => {
     expect(registered(context([
       { actions: ['runs:start'], scope: { workspaceIds: ['a'], workflowIds: ['workflow-a'] } },
       { actions: ['workspace_locations:read'], scope: { workspaceIds: ['a'] } },
-    ]))).toEqual(['run_start'])
+    ]))).toEqual(['run_start', 'run_start_resolve'])
   })
 
   it('does not register tools for absent optional services', () => {
