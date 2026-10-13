@@ -221,6 +221,7 @@ it('marks an unpublished workflow and removes it in one click without another di
 })
 
 it.each([500, 503])('keeps an HTTP %s removal failure visible and retries the same command', async (status) => {
+  const message = status === 503 ? 'Updating — reconnecting…' : 'Could not remove workflow.'
   const requests: unknown[] = []
   server.use(http.delete('/api/management/workspaces/workspace-1/workflows/workflow-content-pipeline', async ({ request }) => {
     requests.push(await request.json())
@@ -231,7 +232,7 @@ it.each([500, 503])('keeps an HTTP %s removal failure visible and retries the sa
   const remove = await screen.findByRole('button', { name: 'Remove Research to review' })
   remove.focus()
   await user.keyboard('{Enter}')
-  expect(await screen.findByRole('alert')).toHaveTextContent('Could not remove workflow.')
+  expect(await screen.findByRole('alert')).toHaveTextContent(message)
   expect(screen.getByRole('button', { name: 'Research to review' })).toBeVisible()
   screen.getByRole('button', { name: 'Retry removing Research to review' }).focus()
   await user.keyboard('{Enter}')
