@@ -48,6 +48,7 @@ function jobRuntimeCapabilityDetail(name: JobRuntimeToolName): string {
   }
   if (name === 'ci_enrollment_update') {
     return 'Enable, retry or disable workspace CI enrollment with revision checks and idempotent commands. '
+      + 'commandId is optional and generated server-side when omitted. '
       + 'Host CI checks runner readiness without preparing legacy runtimes; globally disabled builds remain disabled. '
       + 'For protected runtimes, enabling adopts pairing-approved product-managed storage and binds a writable root, '
       + 'preserves verification templates’ resource envelopes and prepares installed runtimes. Arbitrary user paths '
@@ -55,6 +56,7 @@ function jobRuntimeCapabilityDetail(name: JobRuntimeToolName): string {
   }
   if (name === 'build_computer_prepare') {
     return 'Prepare and refresh Main’s legacy CI runtime using approved workspace roots. '
+      + 'commandId is optional and generated server-side when omitted. '
       + 'Paired Workers use Host CI through ci_run and reject legacy runtime refresh. '
       + 'Requires all preparation grants; installer paths are selected by the installed runtime.'
   }

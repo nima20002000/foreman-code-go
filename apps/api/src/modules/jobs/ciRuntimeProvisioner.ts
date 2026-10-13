@@ -68,7 +68,8 @@ export class CiRuntimeProvisioner {
   }
 
   async start(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: BuildComputerPrepareInput): Promise<BuildComputerPrepareStatus> {
-    const input = BuildComputerPrepareInputSchema.parse(raw)
+    const parsed = BuildComputerPrepareInputSchema.parse(raw)
+    const input = { ...parsed, commandId: parsed.commandId ?? randomUUID() }
     try {
       this.requireActions(principal, input.workspaceId)
     } catch (error) {

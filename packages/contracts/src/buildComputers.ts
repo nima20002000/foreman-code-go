@@ -12,7 +12,7 @@ export const BuildComputerPreferenceSchema = z.object({
 }).strict()
 export const BuildComputerReadSchema = z.object({ target: DeviceProvisioningTargetSchema }).strict()
 export const BuildComputerUpdateSchema = BuildComputerReadSchema.extend({
-  commandId: DeviceCommandIdSchema,
+  commandId: DeviceCommandIdSchema.optional().describe('Optional retry identity; generated server-side when omitted.'),
   expectedRevision: DeviceSafeIntegerSchema,
   buildEnabled: z.boolean(),
   buildPriority: z.number().int().min(0).max(100),
@@ -21,7 +21,7 @@ export const BuildComputerUpdateSchema = BuildComputerReadSchema.extend({
 }).strict()
 const BuildComputerChangeSchema = BuildComputerUpdateSchema.omit({ commandId: true })
 export const BuildComputerBatchUpdateSchema = z.object({
-  commandId: DeviceCommandIdSchema,
+  commandId: DeviceCommandIdSchema.optional().describe('Optional retry identity; generated server-side when omitted.'),
   updates: z.array(BuildComputerChangeSchema).min(1),
 }).strict().superRefine(({ updates }, context) => {
   const keys = new Set<string>()

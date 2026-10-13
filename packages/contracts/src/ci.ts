@@ -21,7 +21,7 @@ const CiRunInputObjectSchema = z.object({
   baseCommit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/).optional()
     .describe('Optional full SHA for runner-selected affected scope. Compare against this ancestor of the resolved '
       + 'commit; an unavailable or non-ancestor base falls back to the full suite with a reason.'),
-  commandId: IdSchema,
+  commandId: IdSchema.optional().describe('Optional retry identity; generated server-side when omitted.'),
   noSupersede: z.boolean().optional().describe('Keep this request’s tickets when newer commits arrive. '
     + 'By default, newer descendant commits supersede active tickets of the same suite and requester '
     + 'on the same branch or Agent execution. Main tickets are always kept.'),
@@ -191,7 +191,9 @@ export const CiRuntimeWorkerStateSchema = z.object({
   message: z.string().max(2000).nullable(), updatedAt: z.string().datetime(),
 }).strict()
 export const BuildComputerPrepareInputSchema = z.object({ workspaceId: IdSchema, profileId: IdSchema,
-  commit: CommitSchema.optional(), commandId: IdSchema }).strict()
+  commit: CommitSchema.optional(),
+  commandId: IdSchema.optional().describe('Optional retry identity; generated server-side when omitted.'),
+}).strict()
 export const BuildComputerPrepareGetInputSchema = z.object({ workspaceId: IdSchema, profileId: IdSchema }).strict()
 export const BuildComputerPrepareStatusSchema = z.object({
   preparationLimits: CiPreparationLimitsSchema.optional(),

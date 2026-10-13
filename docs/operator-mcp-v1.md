@@ -39,6 +39,11 @@ corepack pnpm dev
 
 ## Client configuration
 
+`ci_run`, `ci_cancel`, `ci_enrollment_update`, `build_computer_prepare`, `build_computer_update`, and
+`build_computers_update` accept an optional `commandId`. Omit it for a new operation; the server generates
+an ID. Supply the same ID and unchanged input to replay an uncertain request. Explicit IDs reused with
+different input still reject with `COMMAND_ID_CONFLICT`; omit the ID when changing the request.
+
 `ci_enrollment_get` returns persisted enrollment controls and per-template results for each build computer.
 An enabled, connected computer in a workspace without active runtime profiles reports `templates-required`,
 including before enrollment has been enabled explicitly. Save a verification profile with

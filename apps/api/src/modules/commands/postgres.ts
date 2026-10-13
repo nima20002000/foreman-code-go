@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { beginTransaction, commitTransaction, rollbackTransaction } from '../../infrastructure/transaction.js'
 export { commandInputHash } from '@foreman-code/contracts/command-identity-node'
@@ -41,7 +42,7 @@ export class PostgresCommandCoordinator {
     principal: ManagementPrincipal
     source: 'http' | 'mcp' | 'device'
     operation: string
-    commandId: string
+    commandId?: string | undefined
     targetKey: string
     payload: unknown
     /** Serialize local external effects through transaction rollback and compensation. */
@@ -63,6 +64,7 @@ export class PostgresCommandCoordinator {
     /** Resume an unfinished external operation under its original command lock. */
     shouldResumeReceipt?(client: pg.PoolClient): Promise<boolean>
   }): Promise<{ value: T; replayed: boolean }> {
+    const commandId = input.commandId ?? randomUUID()
     const inputHash = commandInputHash(input.payload)
     const dedicatedConnection = input.dedicatedConnection || input.prepare !== undefined
     const commandPool = dedicatedConnection
@@ -77,7 +79,7 @@ export class PostgresCommandCoordinator {
     let resourceLockRequested = false
     let committing = false
     let performing = false
-    const commandLock = `command:${input.principal.id}:${input.operation}:${input.commandId}`
+    const commandLock = `command:${input.principal.id}:${input.operation}:${commandId}`
     const resourceLock = input.preparedMutation?.resourceLock ?? input.resourceLock
     try {
       if (input.preparedMutation) {
@@ -101,7 +103,7 @@ export class PostgresCommandCoordinator {
       const existing = await client.query<{ input_hash: string; target_key: string; result: unknown }>(
         `select input_hash, target_key, result from management_command_receipts
          where principal_id = $1 and operation = $2 and command_id = $3`,
-        [input.principal.id, input.operation, input.commandId],
+        [input.principal.id, input.operation, commandId],
       )
       const receipt = existing.rows[0]
       let resumingReceipt = false
@@ -156,20 +158,20 @@ export class PostgresCommandCoordinator {
         await client.query(
           `update management_command_receipts set result=$4::jsonb
            where principal_id=$1 and operation=$2 and command_id=$3`,
-          [input.principal.id, input.operation, input.commandId, JSON.stringify(value)],
+          [input.principal.id, input.operation, commandId, JSON.stringify(value)],
         )
       } else {
         await client.query(
           `insert into management_command_receipts
           (principal_id, operation, command_id, target_key, input_hash, result)
          values ($1, $2, $3, $4, $5, $6::jsonb)`,
-          [input.principal.id, input.operation, input.commandId, input.targetKey, inputHash, JSON.stringify(value)],
+          [input.principal.id, input.operation, commandId, input.targetKey, inputHash, JSON.stringify(value)],
         )
       }
       await client.query(
         `insert into management_audit (principal_id, source, action, target_key, outcome, details)
          values ($1, $2, $3, $4, 'succeeded', $5::jsonb)`,
-        [input.principal.id, input.source, input.operation, input.targetKey, JSON.stringify({ commandId: input.commandId })],
+        [input.principal.id, input.source, input.operation, input.targetKey, JSON.stringify({ commandId })],
       )
       committing = true
       await commitTransaction(client)
@@ -211,11 +213,11 @@ export class PostgresCommandCoordinator {
           `insert into management_audit (principal_id, source, action, target_key, outcome, details)
            values ($1, $2, $3, $4, $5, $6::jsonb)`,
           [input.principal.id, input.source, input.operation, input.targetKey, commitUncertain ? 'uncertain' : 'failed', JSON.stringify({
-            commandId: input.commandId,
+            commandId,
             code: failureCode,
             ...(failure !== error ? { cleanupFailed: true } : {}),
           })],
-        ).catch(ignoreError('db', 'record failed command audit', { commandId: input.commandId, command: input.operation }))
+        ).catch(ignoreError('db', 'record failed command audit', { commandId, command: input.operation }))
       }
       throw failure
     } finally {

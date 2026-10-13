@@ -19,6 +19,7 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'branch head. A build computer fetches it with its own GitHub CLI login, installs packages and runs the repository’s '
   + 'own script in an isolated worktree. Build computers retain repository, pnpm store and dependency caches; '
   + 'pnpm installs offline after warming a lockfile, and contracts builds are reused for unchanged inputs. '
+  + 'commandId is optional; the server generates it when omitted. Supply the same ID and input for retry replay. '
   + 'The log reports setup milliseconds before the suite. '
   + 'gate=true with suite=integration, scope=full and no file or partition selection requests a complete '
   + 'typecheck+lint+unit+integration gate. Only Operators, including orchestrators using Operator credentials, can request gates; '

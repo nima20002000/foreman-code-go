@@ -182,7 +182,7 @@ export const buildComputerTools = [
     name: 'build_computer_update',
     requires: [['settings:update', 'global']],
     enabled: s => !!s.buildComputers,
-    description: 'Revision-check build participation, priority (0–100; after a preferred computer, builds try computers from the highest priority down) and build allowance (10–100 percent of the computer CPU and memory that builds may use; an omitted allowance keeps its saved value). Requires global settings:update. Edits affect future launches; running Jobs retain cancellation/recovery and artifacts. Reuse commandId for an uncertain save. Does not install, pair, approve a runtime or enable the Main startup execution gate.',
+    description: 'Revision-check build participation, priority (0–100; after a preferred computer, builds try computers from the highest priority down) and build allowance (10–100 percent of the computer CPU and memory that builds may use; an omitted allowance keeps its saved value). Requires global settings:update. Edits affect future launches; running Jobs retain cancellation/recovery and artifacts. commandId is optional and generated server-side when omitted. Supply the same commandId and input for an uncertain save. Does not install, pair, approve a runtime or enable the Main startup execution gate.',
     inputSchema: BuildComputerUpdateSchema, outputSchema: BuildComputerStatusSchema,
     annotations: { ...annotations, readOnlyHint: false },
     run: (context, input) => context.services.buildComputers!.update(context.principal, 'mcp', input),
@@ -193,6 +193,7 @@ export const buildComputerTools = [
     enabled: s => !!s.buildComputers,
     description: 'Atomically update build participation, priority and allowance for one or more computers on Main. '
       + 'Checks every expectedRevision before changing any computer. Requires global settings:update. '
+      + 'commandId is optional and generated server-side when omitted. '
       + 'Reuse the same commandId and updates to resolve an uncertain save; replay returns the original result. '
       + 'Read build_computer_get afterwards for current settings. Changes affect future placement; running Jobs keep their computer.',
     inputSchema: BuildComputerBatchUpdateSchema, outputSchema: BuildComputerBatchResultSchema,

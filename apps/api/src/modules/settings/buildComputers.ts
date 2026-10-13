@@ -131,7 +131,7 @@ export class BuildComputerSettings {
       async sql => ({ computers: await this.savePreferences(sql, principal, input.updates) }))
   }
   private async save<T>(principal: ManagementPrincipal, source: 'http' | 'mcp',
-    input: { commandId: string; updates: BuildComputerChange[] }, operation: string, targetKey: string,
+    input: { commandId?: string | undefined; updates: BuildComputerChange[] }, operation: string, targetKey: string,
     payload: unknown, perform: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
     try { requireAuthorization(principal, 'settings:update') } catch (error) {
       await this.commands.recordDenied(principal.id, source, operation, targetKey)
