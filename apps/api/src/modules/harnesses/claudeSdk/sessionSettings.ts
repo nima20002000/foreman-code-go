@@ -6,6 +6,7 @@ import { SessionPreferencesSchema, type CompactionState, type SessionPreferences
 import { claudeSessionEnvironment, claudeContextProfiles, ClaudePreferenceError } from './sessionControls.js'
 import { randomUUID } from 'node:crypto'
 import { HarnessExecutionError } from '../errors.js'
+import { ClaudeInputNotDeliveredError } from './port.js'
 import type { NativeCompactInput } from '../port.js'
 import { claudePromptUuid, type ClaudeManagerContext, type Runtime } from './sessionTypes.js'
 import { startupSignal, queryOptions, runtimeFor } from './sessionState.js'
@@ -137,27 +138,60 @@ export async function compactSession(ctx: ClaudeManagerContext, session: NativeS
   if (!before) throw new HarnessExecutionError('CLAUDE_COMPACTION_HISTORY_UNAVAILABLE', 'Native compaction requires its persisted session boundary reader.')
   runtime.controlPending = true
   let finish!: () => void
-  let fail!: (error: unknown) => void
-  const completed = new Promise<void>((resolve, reject) => { finish = resolve; fail = reject })
-  const control = { state: { requestId: input.requestId, nativeSessionId: session.nativeSessionId,
-    nativeOperationId: null, nativeRequestId: claudePromptUuid(input.clientCorrelationId),
-    claudeSession: { ...ctx.options.scope }, claudeCursor: before.cursor, status: 'running' as CompactionState['status'], message: 'Compacting context.',
-    beforeTokens: runtime.context?.usedTokens ?? null, observedAt: ctx.now() },
-    promptUuid: claudePromptUuid(input.clientCorrelationId), boundary: false, progress: input.onProgress, finish, fail }
+  let rejectCompletion!: (error: unknown) => void
+  let completionFailure: { error: unknown } | undefined
+  const completed = new Promise<void>((resolve, reject) => { finish = resolve; rejectCompletion = reject })
+  // Persistence and SDK admission may still be pending when the output pump or cancellation rejects completion.
+  void completed.catch(() => { /* ignore: the control lifetime below awaits and reports the original rejection. */ })
+  const fail = (error: unknown): void => {
+    completionFailure ??= { error }
+    rejectCompletion(error)
+  }
+  let publication: Promise<void> = Promise.resolve()
+  const progress: NativeCompactInput['onProgress'] = state => {
+    const snapshot = structuredClone(state)
+    const next = publication.then(() => input.onProgress(snapshot))
+    publication = next
+    void next.catch(fail)
+    return next
+  }
+  const control: NonNullable<Runtime['compaction']> = {
+    state: { requestId: input.requestId, nativeSessionId: session.nativeSessionId,
+      nativeOperationId: null, nativeRequestId: claudePromptUuid(input.clientCorrelationId),
+      claudeSession: { ...ctx.options.scope }, claudeCursor: before.cursor, status: 'running',
+      message: 'Compacting context.', beforeTokens: runtime.context?.usedTokens ?? null, observedAt: ctx.now() },
+    promptUuid: claudePromptUuid(input.clientCorrelationId), boundary: false, progress, finish, fail,
+  }
   runtime.compaction = control
   const waitSignal = AbortSignal.any([AbortSignal.timeout(120000), ...(signal ? [signal] : [])])
   const abort = () => fail(waitSignal.reason)
   waitSignal.addEventListener('abort', abort, { once: true })
+  if (waitSignal.aborted) abort()
   let dispatched = false
+  const assertPending = (): void => {
+    if (!completionFailure) return
+    const error = completionFailure.error
+    if (!dispatched) {
+      throw new ClaudeInputNotDeliveredError(error instanceof Error ? error.message : 'Compaction stopped before delivery.')
+    }
+    throw error
+  }
   try {
-    await input.onProgress(control.state)
+    assertPending()
+    await progress(control.state)
+    assertPending()
     await input.onDispatch?.()
+    assertPending()
     dispatched = true
     await runtime.sdk.offer({ promptUuid: control.promptUuid, content: '/compact' }, signal)
-    await input.onProgress(control.state)
+    assertPending()
+    await progress(control.state)
     await completed
+    await publication
     return control.state
   } catch (error) {
+    // Join any pump-side save before the caller persists its failed or uncertain outcome.
+    await publication.then(() => undefined, () => undefined)
     const definite = !dispatched || !!error && typeof error === 'object' && (
       'deliveryState' in error && error.deliveryState === 'not-delivered'
       || 'certainty' in error && error.certainty === 'definite')
@@ -166,7 +200,7 @@ export async function compactSession(ctx: ClaudeManagerContext, session: NativeS
     throw error
   } finally {
     waitSignal.removeEventListener('abort', abort)
-    if (control.state.status !== 'uncertain') runtime.compaction = undefined
+    if (control.state.status !== 'uncertain' && runtime.compaction === control) runtime.compaction = undefined
     runtime.controlPending = control.state.status === 'uncertain'
   }
 }
