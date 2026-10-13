@@ -177,11 +177,18 @@ export async function recoveryFixture(form: Form, plan: (input: Submission) => F
       errors: errors.map((item) => describeError(item)), shutdownErrors: shutdownErrors.map((item) => describeError(item)) } },
     get runtime() { return runtime }, get transport() { return transport },
     launch(runId = base.f.run.id) { void runtime.engine.start(runId).catch((error: unknown) => errors.push(error)) },
-    async restart() {
+    async restart(options: { mode?: 'crash' | 'graceful' } = {}) {
       await transport.close()
+      // A dead API cannot publish its original manager's close or detach callback.
+      const crashClose = options.mode === 'crash'
+        ? vi.spyOn(runtime.native, 'closeForRestart').mockResolvedValue(undefined) : undefined
       // Continue through a reported shutdown failure so a separate Stop/readback
       // assertion still exercises the recovery path. Tests assert this array too.
       try { await runtime.engine.shutdown() } catch (error) { shutdownErrors.push(error) }
+      finally {
+        crashClose?.mockRestore()
+        if (options.mode === 'crash') provider.killAll()
+      }
       runtime = composeRuntime(base, provider, errors, activeStarts); runtimes.push(runtime)
       transport = await openTransport(base, runtime, errors)
     },
@@ -318,7 +325,9 @@ export async function assertOriginalFailure(f: RecoveryFixture, executionId: str
 
 /** Reads actual coordinator-created recovery receipts. No fixture INSERT or
  * UPDATE is permitted for closures, recoveries, results, attempts or Run state. */
-export async function assertRecoveryReceipts(f: RecoveryFixture, executionIds: readonly string[]) {
+export async function assertRecoveryReceipts(f: RecoveryFixture, executionIds: readonly string[],
+  options: { detached?: boolean } = {}) {
+  const detached = options.detached ?? true
   const rows = (await f.base.db.pool.query<{
     execution_id: string; generation: string; latest_generation: string;
     execution_identity: { id: string; runId: string }; reference: unknown; native_reference: unknown;
@@ -335,10 +344,10 @@ export async function assertRecoveryReceipts(f: RecoveryFixture, executionIds: r
     expect(row.execution_identity).toMatchObject({ id: row.execution_id, runId: f.base.f.run.id })
     expect(row.generation).toBe(row.latest_generation)
     expect(row.reference).toEqual(row.native_reference)
-    expect(row.detached_reference).toEqual(row.reference)
+    expect(row.detached_reference).toEqual(detached ? row.reference : null)
     // Recovery adds a separate receipt. It cannot rewrite an original detach
     // as a close, create a new native generation, or invent a provider terminal.
-    expect(row.detached).toBe(true); expect(row.closed).toBe(false)
+    expect(row.detached).toBe(detached); expect(row.closed).toBe(false)
     expect(row.owner_id).toMatch(/^\d+$/); expect(row.owner_fence).toMatch(/^\d+$/)
   }
   expect(new Set(f.provider.recoveryCalls)).toEqual(new Set(executionIds))

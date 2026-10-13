@@ -13,7 +13,7 @@ describe.skipIf(!postgresEnabled)('ENG06-D recovery readback over real HTTP and 
     const f = await recoveryFixture(form, () => 'park')
     try {
       f.launch(); const before = await parked(f), id = before.details[0]!.execution.executionId
-      await f.restart()
+      await f.restart({ mode: 'crash' })
       f.provider.recoveryProofAvailable = false
       await expect(f.runtime.engine.start(f.base.f.run.id)).rejects.toThrow()
       const pending = await readback(f)
@@ -27,7 +27,7 @@ describe.skipIf(!postgresEnabled)('ENG06-D recovery readback over real HTTP and 
       const settled = await readback(f)
       expect(settled.record).toMatchObject({ run: { executionState: 'completed', outcome: 'failed',
         result: { error: { code: 'EXECUTION_INTERRUPTED', retryable: false } } }, cleanupPending: false })
-      await assertRecoveryReceipts(f, [id])
+      await assertRecoveryReceipts(f, [id], { detached: false })
       expect(f.shutdownErrors).toEqual([])
     } finally { await f.close() }
   }, 90000)
