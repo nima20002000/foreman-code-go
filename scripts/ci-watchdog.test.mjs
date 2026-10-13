@@ -80,6 +80,34 @@ if (process.argv.includes('test')) {
   }
 })
 
+test('CI suite leaves silent check commands such as typecheck outside the test-progress watchdog', async t => {
+  const directory = mkdtempSync(join(temporary, 'ci-check-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  mkdirSync(join(directory, 'bin'))
+  writeFileSync(join(directory, 'bin/pnpm'), `#!${process.execPath}
+require('node:fs').appendFileSync(process.env.FIXTURE_CALLS, process.argv.slice(2).join(' ') + '\\n')
+`, { mode: 0o755 })
+  for (const suite of ['typecheck-api', 'lint-other', 'build']) {
+    const watchdog = join(directory, `watchdog-${suite}`)
+    const calls = join(directory, `calls-${suite}`)
+    const child = spawn('bash', [join(repository, 'scripts/ci-suite.sh')], {
+      cwd: repository, stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, PATH: `${directory}/bin:${process.env.PATH}`, SUITE: suite, SCOPE: 'full',
+        CI_HOST_RUNNER: '0', CI_USER_SYSTEMD: '0', CI_STATE: join(directory, 'state'),
+        CI_EXPECTED_DURATION_MS: '1000', CI_WATCHDOG_DIRECTORY: watchdog, CI_WATCHDOG_ACTIVE: '', CI_PROGRESS_FILE: '',
+        FIXTURE_CALLS: calls },
+    })
+    let output = ''
+    child.stdout.on('data', bytes => { output += bytes })
+    child.stderr.on('data', bytes => { output += bytes })
+    const code = await new Promise((resolve, reject) => { child.once('error', reject); child.once('close', resolve) })
+    assert.equal(code, 0, output)
+    assert.ok(existsSync(calls), output)
+    // A wrapped command would get a progress file and be killed after a minute without test events.
+    assert.equal(existsSync(join(watchdog, 'progress.jsonl')), false, `${suite} ran under the test watchdog`)
+  }
+})
+
 async function watchdogFixture(t, source, overrides = {}) {
   const { runCiPart } = await import('./ci-watchdog.mjs')
   const directory = mkdtempSync(join(temporary, 'ci-progress-'))
