@@ -1,15 +1,14 @@
 // Releases main after one clean full round through Foreman CI:
 //   corepack pnpm release <X.Y.Z> [--notes-file <file>]
-// Requires a clean main equal to origin/main. Runs typecheck, lint, unit and integration with full scope for HEAD
-// on Main's CI (see scripts/ci-remote.mjs for the connection settings) and waits for every part. Any failed part
-// prints its ticket and failures and stops without a release. Otherwise it writes the 'Release vX.Y.Z' commit
-// (package.json version and a CHANGELOG.md entry from --notes-file or the Unreleased section) with
-// 'Clean-Round: <suite>=<ticket ids>' trailers, checks it with scripts/verify-release-round.mjs and pushes it.
+// Requires a clean main equal to origin/main. Gates HEAD on Main's CI (typecheck, lint, unit and integration, full
+// scope; see scripts/ci-remote.mjs for the connection settings), reusing the gate that already ran on HEAD, and waits
+// for every part. Any failed part prints its ticket and failures and stops without a release. Otherwise it writes the
+// 'Release vX.Y.Z' commit (package.json version and a CHANGELOG.md entry from --notes-file or the Unreleased section)
+// with a 'Clean-Round: gate=<ticket ids>' trailer, checks it with scripts/verify-release-round.mjs and pushes it.
 import { execFileSync } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { awaitTickets, mcpClient, workspaceFor } from './ci-remote.mjs'
-import { RELEASE_SUITES, releaseRoundProblems } from './verify-release-round.mjs'
+import { gateCommandId, releaseRoundProblems } from './verify-release-round.mjs'
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 
@@ -30,13 +29,11 @@ async function release(version, notesFile) {
 
   const call = await mcpClient('release')
   const workspaceId = await workspaceFor(call)
-  const groups = []
-  for (const suite of RELEASE_SUITES) {
-    const partitions = suite === 'integration' ? Number(process.env.FOREMAN_CODE_CI_PARTITIONS ?? 32) : undefined
-    const started = await call('ci_run', { workspaceId, suite, commit, scope: 'full', commandId: randomUUID(),
-      ...(partitions ? { partitions } : {}) })
-    groups.push({ suite, tickets: (started.partitions ?? [{ ticketId: started.ticketId }]).map(value => value.ticketId) })
-  }
+  // One gate covers typecheck, lint, unit and integration. Its canonical commandId returns the gate that already
+  // ran on this exact commit (for example from the gate line) instead of starting a second full round.
+  const started = await call('ci_run', { workspaceId, commit, suite: 'integration', scope: 'full', gate: true,
+    priority: 'high', commandId: gateCommandId(commit) })
+  const groups = [{ suite: 'gate', tickets: (started.partitions ?? [{ ticketId: started.ticketId }]).map(value => value.ticketId) }]
   console.error(`[release] Clean round for ${commit.slice(0, 12)}: ${groups.map(group => `${group.suite} (${group.tickets.length})`).join(', ')}`)
   const failed = (await awaitTickets(call, workspaceId, groups.flatMap(group => group.tickets))).filter(run => run.state !== 'passed')
   if (failed.length) {
