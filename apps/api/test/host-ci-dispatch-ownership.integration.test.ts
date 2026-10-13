@@ -471,7 +471,7 @@ it.each([2, 3])('persists one partition plan without changing concurrent cancell
     for (const [index, run] of planned.entries()) {
       expect(run).toMatchObject(canceled[index]!)
       expect(run.partition?.weights).toHaveLength(partitions)
-      expect(run.partition).toMatchObject({ weights: planned[0]!.partition!.weights, hostIndexes: [0] })
+      expect(run.partition).toMatchObject({ weights: planned[0]!.partition!.weights, hostIndexes })
     }
     await f.ci.dispatch()
     expect(await Promise.all(canceled.map(run => f.read(run.id)))).toEqual(planned)
