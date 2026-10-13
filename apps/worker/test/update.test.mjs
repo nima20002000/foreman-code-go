@@ -271,6 +271,18 @@ test('supervisor launch failure keeps the old pointer and resumes admissions wit
   assert.equal((await updater.status()).lastError, 'worker_update_supervisor_unavailable');
 });
 
+test('runtime drain blocks maintenance starts until recovery resumes admission', async () => {
+  const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal,
+    active: () => [], drainJobs: async () => {}, drainQualifications: async () => {},
+    drainMaintenance: async () => {}, quiescent: async () => true });
+  await drain.run();
+  assert.throws(() => drain.assertAdmission('computer-maintenance-v1', { operation: 'start' }),
+    { code: 'WORKER_RUNTIME_DRAINING' });
+  assert.doesNotThrow(() => drain.assertAdmission('computer-maintenance-v1', { operation: 'status' }));
+  drain.resume();
+  assert.doesNotThrow(() => drain.assertAdmission('computer-maintenance-v1', { operation: 'start' }));
+});
+
 test('terminal supervisor failure resumes maintenance Retry only for the unchanged original release', async t => {
   const f = await fixture(t);
   const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal,

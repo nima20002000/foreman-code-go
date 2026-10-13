@@ -100,6 +100,11 @@ it('activates first-installed workflow and profile domains on authenticated disc
       .rejects.toMatchObject({ code: 'HARNESS_QUALIFICATION_TARGET_CHANGED' })
     await rpc('inventory-reader')
     expect(mounted.extensions.map(extension => extension.namespace)).toEqual(descriptors)
+    const refreshCount = refresh.mock.calls.length
+    expect((await rpc('denied-reader')).isError).toBe(true)
+    expect(refresh).toHaveBeenCalledTimes(refreshCount)
+    expect(mounted.workflowAvailable).toBe(true)
+    expect(JSON.parse(await readFile(location.path, 'utf8'))).toEqual(selection)
   } finally {
     await app.close()
     await mounted.close()
