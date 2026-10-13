@@ -52,8 +52,8 @@ it('activates first-installed workflow and profile domains on authenticated disc
     requireAuthorization(caller, 'harnesses:read')
     return (await discovery.handle!(discover, context)).payload
   }
-  const services = { harnessRegistry: { get }, commands: { recordDenied: vi.fn(async () => {}) } }
-    as unknown as OperatorServices
+  const services = { harnessRegistry: { get },
+    commands: { recordDenied: vi.fn(async () => {}) } } as unknown as OperatorServices
   const app = buildApp({ logger: false,
     readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access, services } })

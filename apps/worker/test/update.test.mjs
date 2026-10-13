@@ -1,8 +1,11 @@
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, writeFile, rm, readlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { build } from 'esbuild';
+import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { setTimeout as wait } from 'node:timers/promises';
@@ -16,7 +19,21 @@ import { recoverPendingWorkerUpdate, writeUpdateRecord, migrateWorkerService } f
 import { renderUserService } from '../src/service.mjs';
 import { DeviceConnectionError } from '../../../apps/api/src/modules/devices/deviceWire.ts';
 import { DeviceApplicationError } from '../../../apps/api/src/modules/devices/deviceApplicationError.ts';
-import { createWorkerRuntimeDrain } from '../../../apps/api/src/modules/devices/installedWorkerDomains.ts';
+let bundleDirectory;
+let createWorkerRuntimeDrain;
+before(async () => {
+  bundleDirectory = await mkdtemp(join(persistentFixtureRoot, 'worker-update-module-'));
+  const output = join(bundleDirectory, 'drain.mjs');
+  const domains = new URL('../../../apps/api/src/modules/devices/installedWorkerDomains.ts', import.meta.url);
+  await build({ stdin: {
+    contents: `export { createWorkerRuntimeDrain } from ${JSON.stringify(domains.pathname)};`,
+  }, outfile: output, bundle: true, platform: 'node', format: 'esm', target: 'node22', external: ['sharp'],
+  banner: { js: "import { createRequire as testCreateRequire } from 'node:module'; const require = testCreateRequire(import.meta.url);" } });
+  ({ createWorkerRuntimeDrain } = await import(pathToFileURL(output).href));
+});
+after(async () => {
+  if (bundleDirectory) await rm(bundleDirectory, { recursive: true, force: true });
+});
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const facts = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.2',
