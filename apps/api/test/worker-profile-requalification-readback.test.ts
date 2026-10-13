@@ -4,7 +4,8 @@ import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { HostHarnessOverrideSchema, HostHarnessProfileEvidenceSchema } from '@foreman-code/contracts/harness-registry'
 import { assertMcpReadback } from './helpers/workerProfileRequalification.js'
 
-it.each([0, 1])('reads the retained check after pending checks finish, regardless of evidence order (%s)', async retainedIndex => {
+it.each([0, 1, 'main'] as const)(
+  'reads persisted Worker checks after pending checks finish when the shared suite row belongs to %s', async retainedIndex => {
   const binding = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
     bootId: randomUUID(), connectionEpoch: randomUUID(), connectionGeneration: 2,
     keyRevision: 1, authorizationRevision: 1 }
@@ -30,7 +31,9 @@ it.each([0, 1])('reads the retained check after pending checks finish, regardles
       completedNativeQualification: { purpose: 'explicit-host-qualification', checkId: randomUUID(),
         binding, target, binarySha256: record.binarySha256, record } })
   })
-  const retained = evidence[retainedIndex]!.completedNativeQualification!
+  const sharedRecord = retainedIndex === 'main'
+    ? { ...evidence[0]!.completedNativeQualification!.record, checkedAt: new Date(3).toISOString() }
+    : evidence[retainedIndex]!.completedNativeQualification!.record
   let finishChecks!: () => void
   const checking = new Promise<void>(resolve => { finishChecks = resolve })
   let beginRead!: () => void
@@ -41,13 +44,19 @@ it.each([0, 1])('reads the retained check after pending checks finish, regardles
       await checking
       return { overrides: profiles }
     }
-    if (name === 'harness_qualifications_list') return { qualifications: [retained.record] }
+    if (name === 'harness_qualifications_list') return { qualifications: [sharedRecord] }
     throw new Error(`Unexpected MCP tool: ${name}`)
   })
   const inventory = vi.fn(async () => ({ installations: [
-    { driverId: 'codex', connectionGeneration: 'fixture-generation' },
+    { driverId: 'codex', connectionGeneration: 'fixture-generation', qualified: true, observedVersion: '0.154.0' },
   ] }))
-  const query = vi.fn(async () => ({ rows: [{ check_id: retained.checkId }] }))
+  const query = vi.fn(async (_statement: string, parameters?: unknown[]) => {
+    if (parameters) {
+      if (retainedIndex === 'main') return { rows: [] }
+      return { rows: [{ check_id: evidence[retainedIndex]!.completedNativeQualification!.checkId }] }
+    }
+    return { rows: evidence.map(record => ({ record })) }
+  })
   const fixture = {
     hostRef, profiles, value, inventory, db: { pool: { query } },
   } as unknown as Parameters<typeof assertMcpReadback>[0]
