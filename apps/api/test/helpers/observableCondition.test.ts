@@ -47,12 +47,14 @@ it('rechecks subscribed conditions when progress has no commit notification', as
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
   let ready = false
   const unsubscribe = vi.fn()
-  const result = readUntil(async () => ready, Boolean, {
+  const read = vi.fn(async () => ready)
+  const result = readUntil(read, Boolean, {
     timeoutMs: 1_000, description: 'native retry readiness', subscribe: () => unsubscribe,
   })
   await vi.advanceTimersByTimeAsync(0)
   ready = true
   await vi.advanceTimersByTimeAsync(25)
+  expect(read).toHaveBeenCalledTimes(2)
   await expect(result).resolves.toBe(true)
   expect(unsubscribe).toHaveBeenCalledTimes(2)
   expect(vi.getTimerCount()).toBe(0)
