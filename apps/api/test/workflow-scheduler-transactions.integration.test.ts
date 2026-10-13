@@ -26,6 +26,17 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL transaction ordering and co
   afterAll(async () => { await database?.close() })
   beforeEach(async () => { f = await sch11Fixture(database) }, 60_000)
 
+  it('a peer session reads the schedule persisted in the fixture database', async () => {
+    const saved = await f.save()
+    const peer = sch11Pool(database)
+    const peerService = new WorkflowScheduleService(peer.pool, new PostgresCommandCoordinator(peer.pool), f.clock)
+    try {
+      expect(await peerService.get(f.reader.principal, f.scope)).toEqual({ schedule: saved })
+    } finally {
+      await peer.pool.end()
+    }
+  })
+
   it('an edit winning after preparation fences the old revision and retains only the new cursor', async () => {
     const saved = await f.save(); f.time.now = saved.nextOccurrenceAt!
     const prepared = rejectableDeferred(), release = rejectableDeferred()
