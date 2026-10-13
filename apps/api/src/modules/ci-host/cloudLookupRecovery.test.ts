@@ -1,6 +1,28 @@
 import { expect, it } from 'vitest'
 import { cloudCiLookupFixture } from '../../../test/helpers/cloudCiLookupFixture.js'
 
+it.each(['starting', 'running'] as const)('cancels a known CircleCI pipeline after denied lookup from %s', async state => {
+  const errors = ['permission denied', 'authentication required', 'HTTP 401 Unauthorized', 'HTTP 403 Forbidden']
+  for (const error of errors) {
+    const f = await cloudCiLookupFixture(state)
+    try {
+      f.control.operation = 'run'
+      f.control.error = error
+      const request = { operation: 'cancel', runId: f.run.runId }
+      await expect(f.reopen().handle(request)).resolves.toMatchObject({
+        run: { state: 'canceled', finishedAt: expect.any(String), message: 'Canceled.' },
+      })
+      await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state: 'canceled' } })
+      f.advance(4_001)
+      await expect(f.reopen().handle({ operation: 'read', runId: f.run.runId, afterOffset: 0, maxBytes: 1 }))
+        .resolves.toMatchObject({ run: { state: 'canceled', message: 'Canceled.' } })
+      expect(f.control.canceled).toEqual(['pipeline-1'])
+    } finally {
+      await f.close()
+    }
+  }
+})
+
 it.each(['starting', 'running'] as const)('persists and bounds permanent CircleCI lookup failures from %s', async state => {
   const f = await cloudCiLookupFixture(state)
   try {
