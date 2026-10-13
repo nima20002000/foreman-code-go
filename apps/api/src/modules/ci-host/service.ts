@@ -737,7 +737,7 @@ export class HostCiService {
     queued = await this.weighPartitions(queued, computers.flatMap(computer =>
       Array.from({ length: freeSlots(computer) }, () => computer)))
     queued.sort((left, right) => (left.priority === right.priority
-      && !!left.gate === !!right.gate
+      && !left.gate && !right.gate
       ? Number(needsSystemdExecutor(right)) - Number(needsSystemdExecutor(left)) : 0) || compareCiQueue(left, right))
     const reservedHosts = new Set(gateRows.map(row => CiRunRecordSchema.parse(row.record))
       .filter(run => run.groupId === gate?.groupId && run.suite === 'integration')
@@ -783,7 +783,7 @@ export class HostCiService {
           continue
         }
         const usesGitHubIntegration = run.suite === 'integration' && isGitHubComputer(computer)
-        if (usesGitHubIntegration && integrationOnGitHub.size >= integrationLimit) {
+        if (usesGitHubIntegration && !run.gate && integrationOnGitHub.size >= integrationLimit) {
           reasons.push(`${computer.label}: slots reserved for queued checks`)
           continue
         }

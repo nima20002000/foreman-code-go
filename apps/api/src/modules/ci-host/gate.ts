@@ -1,6 +1,7 @@
 import { exclusiveIntegrationFiles, requiresUserSystemd, type CiDurations, type CiRunInput,
   type CiRunRecord } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
+import { componentLogger } from '../diagnostics/logger.js'
 import type { HostCiComputer, HostCiEndpoint } from './service.js'
 import type { CiIntegrationInventory } from './integrationParts.js'
 import { planCiParts, runsOnCircleCi, type CiUnitInventory } from './parts.js'
@@ -9,6 +10,7 @@ import { gateIntegrationShards } from './capacity.js'
 const SETUP_MS = 90_000
 const TARGET_MS = 300_000
 const exclusive = new Set(exclusiveIntegrationFiles)
+const log = componentLogger('jobs')
 
 interface GateComputer {
   computer: HostCiComputer
@@ -43,8 +45,11 @@ function integrationTime(files: string[], shards: number, duration: (file: strin
 async function gateComputers(endpoint: HostCiEndpoint): Promise<GateComputer[]> {
   const computers = await endpoint.computers()
   const available = await Promise.all(computers.map(async computer => {
-    const status = await endpoint.request(computer, { operation: 'status' })
-    if (status.operation !== 'status' || !status.ready) return null
+    const status = await endpoint.request(computer, { operation: 'status' }).catch(error => {
+      log.warn({ err: error, computer: computer.key }, 'CI computer unavailable while planning gate')
+      return null
+    })
+    if (status?.operation !== 'status' || !status.ready) return null
     const memory = Math.floor(status.memoryBytes * 0.9)
     const available: GateComputer = { computer, shards: gateIntegrationShards(status.cpuCount, memory), checkMs: 0, files: [] }
     return available

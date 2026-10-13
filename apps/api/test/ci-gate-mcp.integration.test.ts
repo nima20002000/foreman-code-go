@@ -36,6 +36,7 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
   const files = options.files ?? [...userSystemdIntegrationFiles,
     ...Array.from({ length: 48 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)]
   const runs = new Map<string, CiHostRun>()
+  const startedAt = new Date().toISOString()
   const started: { key: string; request: CiHostRequest }[] = []
   const commands = new PostgresCommandCoordinator(database.pool)
   const ci = new HostCiService(database.pool, commands, new RunCiAuthority(database.pool), {
@@ -54,7 +55,7 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
       if (request.operation === 'start') {
         started.push({ key: computer.key, request })
         const run: CiHostRun = { runId: request.runId, state: 'running', step: request.suite,
-          exitCode: null, message: null, startedAt: new Date().toISOString(), finishedAt: null, logBytes: 0 }
+          exitCode: null, message: null, startedAt, finishedAt: null, logBytes: 0 }
         runs.set(request.runId, run)
         return { operation: 'start', run }
       }
@@ -89,10 +90,6 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
     expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
     return decodeMcpToolResult(result)
   }
-  const finish = () => {
-    for (const [id, run] of runs) runs.set(id, { ...run, state: 'passed', exitCode: 0,
-      finishedAt: new Date(Date.parse(run.startedAt) + 1000).toISOString() })
-  }
   const finishGate = async (ticketId: string) => {
     const initial = CiGetOutputSchema.parse(await value('ci_get', { ticketId }))
     const ids = new Set(initial.partitions!.map(run => run.id))
@@ -107,7 +104,7 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
     }
     throw new Error('The gate did not finish every assigned job')
   }
-  return { ci, started, files, connect, call, value, operator, finish, finishGate, close: async () => {
+  return { ci, started, files, connect, call, value, operator, finishGate, close: async () => {
     await Promise.all(clients.map(client => client.close()))
     await ci.close()
     await app.close()

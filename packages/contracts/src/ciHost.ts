@@ -88,8 +88,8 @@ const CiHostStartSchema = z.object({
   gate: z.boolean().optional(), integrationShards: z.number().int().min(1).max(64).optional(),
   defaultBranch: WorkspaceRepositorySchema.shape.defaultBranch.optional(),
   baseCommit: CommitSchema.optional(),
-}).strict().refine(value => value.gate && value.suite === 'integration'
-  ? value.scope === 'full' && !!value.files?.length && !value.partition && !value.part
+}).strict().refine(value => value.gate
+  ? value.suite === 'integration' && value.scope === 'full' && !!value.files?.length && !value.partition && !value.part
     && value.integrationShards !== undefined && value.files.every(file => /^apps\/api\/test\/[^/]+\.integration\.test\.ts$/.test(file))
   : validCiSelection(value) && value.integrationShards === undefined,
   'Gate jobs require full integration scope, assigned files and a shard count; other selections require affected scope.')
