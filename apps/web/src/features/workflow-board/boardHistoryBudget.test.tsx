@@ -85,8 +85,10 @@ describe('mounted Board bounded-history wire budgets', () => {
     await intervalTick(1000)
     await waitFor(() => expect(cache.getQueryState(currentRunKey(scope)))
       .toMatchObject({ status: 'success', fetchStatus: 'idle' }))
-    await waitFor(() => expect(screen.queryByRole('alert', { name: 'Server connection' }))
-      .not.toBeInTheDocument())
+    await waitFor(async () => {
+      await intervalTick(1000)
+      expect(screen.queryByRole('alert', { name: 'Server connection' })).not.toBeInTheDocument()
+    })
     await waitFor(() => expect(cache.isFetching()).toBe(0))
     expect(wire.current().length).toBeGreaterThan(currentBefore)
     expect(wire.executions()).toHaveLength(2)
