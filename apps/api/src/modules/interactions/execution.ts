@@ -1308,6 +1308,25 @@ export class ApprovalExecutionCoordinator {
     }
   }
 
+  private async awaitWorkflowStartup(owned: OwnedNativeSession, owner: RunOwnership): Promise<boolean> {
+    const starting = owned.starting
+    if (!starting || !owned.opening && !owned.session) return true
+    const manager = owned.manager
+    const generation = owned.generation + (owned.opening ? 1 : 0)
+    const closureGeneration = owned.closureGeneration
+    const failures: Error[] = []
+    await attemptCleanup(failures, 'Await original workflow startup', async () => { await starting })
+    owner.assertOwned()
+    if (failures.length) {
+      componentLogger('engine').warn({ executionId: owned.execution.id },
+        'Workflow startup wait timed out; checking the published session for restart preservation')
+    }
+    return this.ownedSessions.get(owned.execution.id) === owned && owned.runOwner === owner
+      && owned.starting === starting && owned.manager === manager && owned.generation === generation
+      && owned.closureGeneration === closureGeneration
+      && !owned.openingFailed && !owned.failed && !owned.cleanup
+  }
+
   async preserveActiveForRestart(owner: RunOwnership): Promise<boolean> {
     const snapshot = await this.runs.getRepeatSnapshot(owner.runId, owner)
     if (snapshot.stopRequested || snapshot.cleanupPending || snapshot.run.executionState === 'completed') return false
@@ -1316,8 +1335,17 @@ export class ApprovalExecutionCoordinator {
     for await (const executions of this.runs.executionPages(owner.runId, owner)) {
       for (const execution of executions) {
         const owned = this.ownedSessions.get(execution.id)
+        if (owned && !await this.awaitWorkflowStartup(owned, owner)) return false
+        owner.assertOwned()
+        const manager = owned?.manager
+        const generation = owned?.generation
+        const closureGeneration = owned?.closureGeneration
         const current = await this.runs.getExecution(execution.id, owner)
-        if (!current) return false
+        owner.assertOwned()
+        if (!current || this.ownedSessions.get(execution.id) !== owned
+          || owned?.manager !== manager || owned?.generation !== generation
+          || owned?.closureGeneration !== closureGeneration) return false
+        assertSameRepeatExecution(execution, current)
         if (current.state === 'completed' || current.state === 'queued') continue
         if (!current.nativeSessionId) return false
         if (!owned) {
