@@ -34,11 +34,11 @@ async function computer() {
 const fs = require('node:fs')
 const path = require('node:path')
 const args = process.argv.slice(2)
-fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\n')
+fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n')
 if (args[1] === 'install') {
   const storeIndex = args.indexOf('--store-dir')
   const store = storeIndex < 0 ? '.fixture-store' : args[storeIndex + 1]
-  const seed = path.join(store, 'seed')
+  const seed = path.join(store, require('node:crypto').createHash('sha256').update(fs.readFileSync('pnpm-lock.yaml')).digest('hex'))
   if (args.includes('--offline') && !fs.existsSync(seed)) process.exit(7)
   fs.mkdirSync(store, { recursive: true })
   fs.writeFileSync(seed, 'pristine')

@@ -19,6 +19,7 @@ function fixture(t) {
   mkdirSync(join(root, 'apps/api'), { recursive: true })
   writeFileSync(join(root, 'packages/contracts/src/index.ts'), 'export const value = 1')
   writeFileSync(join(root, 'pnpm-lock.yaml'), 'dependencies-one')
+  writeFileSync(join(root, '.gitignore'), 'packages/contracts/dist/\n')
   const env = { ...process.env, GIT_AUTHOR_NAME: 'Test Author', GIT_COMMITTER_NAME: 'Test Author',
     GIT_AUTHOR_EMAIL: 'author@example.test', GIT_COMMITTER_EMAIL: 'author@example.test' }
   const git = (...args) => {
@@ -31,7 +32,7 @@ function fixture(t) {
   const compiler = join(directory, 'compiler.cjs')
   const count = join(directory, 'compilations')
   writeFileSync(compiler, `const fs = require('node:fs');
-fs.appendFileSync(${JSON.stringify(count)}, 'build\n');
+fs.appendFileSync(${JSON.stringify(count)}, 'build\\n');
 fs.mkdirSync('packages/contracts/dist', { recursive: true });
 fs.writeFileSync('packages/contracts/dist/index.js', fs.readFileSync('packages/contracts/src/index.ts'));
 process.exit(Number(process.env.COMPILER_EXIT || 0));
