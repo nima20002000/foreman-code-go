@@ -102,6 +102,7 @@ it('upgrades hot query access while preserving native facts, CI revisions and au
     scope: 'full', files: [], partition: null, repository: 'example/project', commit: 'a'.repeat(40),
     state: 'running', computer: { hostRef: computer.hostRef, label: computer.label }, step: 'lint',
     exitCode: null, message: null, queuedAt: fixture.run.createdAt, startedAt: fixture.run.createdAt, finishedAt: null,
+    providerMessage: null, messageHistory: [],
     initiator: { principalId: fixture.writer.principal.id, executionId: null },
   })
   let logTail = 'Saved log'
