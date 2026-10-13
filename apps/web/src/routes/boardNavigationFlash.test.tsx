@@ -9,6 +9,24 @@ import { setMockScenario } from '../shared/mocks/scenarios'
 beforeEach(() => { installFlowLayout(1000, 720) })
 afterEach(() => setMockScenario('normal'))
 
+it('opens the saved workflow for authoring before any departure', async () => {
+  const history = createMemoryHistory({
+    initialEntries: ['/workspaces/workspace-1?workflowId=workflow-content-pipeline'],
+  })
+  const router = createRouter({ routeTree, history })
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
+
+  const authoring = await screen.findByRole('region', { name: 'Workflow authoring' }, { timeout: 8000 })
+  expect(within(authoring).getByRole('heading', { name: 'Research to review' })).toBeVisible()
+  expect(await within(authoring).findByRole('button', {
+    name: /^Researcher, .*starts the workflow.*Draft$/,
+  }, { timeout: 8000 })).toBeVisible()
+  expect(screen.queryByRole('heading', { name: 'Authoring unavailable' })).not.toBeInTheDocument()
+  expect(router.state.location.search.workflowId).toBe('workflow-content-pipeline')
+  client.clear()
+})
+
 it.each([
   ['/workspaces/workspace-1/workflows', 'Workflows'],
   ['/workspaces/workspace-1/agents', 'Agents'],
