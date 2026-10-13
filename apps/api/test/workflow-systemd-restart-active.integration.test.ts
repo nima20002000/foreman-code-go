@@ -7,6 +7,8 @@ import { assertInstalledWorkflowRestart } from './helpers/installedWorkflowResta
 
 describe('installed Main-local workflows across systemd restart', () => {
   let fixture: Awaited<ReturnType<typeof installationUpdateFixture>> | undefined
+  const repository = fileURLToPath(new URL('../../../', import.meta.url))
+  const readBuildIdentity = () => fetch(new URL('/api/runtime/build-identity/v1', fixture!.origin()))
 
   beforeAll(async () => {
     fixture = await installationUpdateFixture({
@@ -25,15 +27,28 @@ describe('installed Main-local workflows across systemd restart', () => {
     expect(health.status).toBe(200)
   })
 
+  it('rejects an invalid credential when reading the packaged build identity', async () => {
+    const response = await fetch(new URL('/api/runtime/build-identity/v1', fixture!.origin()), {
+      headers: { authorization: 'Bearer invalid-fixture-credential' },
+    })
+    expect(response.status).toBe(401)
+  })
+
   it('serves its packaged build identity without requiring a source checkout', async () => {
-    const response = await fetch(new URL('/api/runtime/build-identity/v1', fixture!.origin()))
+    const response = await readBuildIdentity()
     expect(response.status).toBe(200)
     const identity = RuntimeBuildIdentitySchema.parse(await response.json())
-    const repository = fileURLToPath(new URL('../../../', import.meta.url))
     expect(identity).toEqual(createRuntimeBuildIdentity(repository))
   })
 
   it('reattaches graph work and its active check, then closes their processes', async () => {
     await assertInstalledWorkflowRestart('active', fixture!)
   }, 600_000)
+
+  it('serves the packaged build identity after workflow recovery', async () => {
+    const response = await readBuildIdentity()
+    expect(response.status).toBe(200)
+    const identity = RuntimeBuildIdentitySchema.parse(await response.json())
+    expect(identity).toEqual(createRuntimeBuildIdentity(repository))
+  })
 })
