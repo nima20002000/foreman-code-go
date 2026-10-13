@@ -83,7 +83,7 @@ function dispatchFixture(settlementError?: Error) {
       if (typeof tail === 'string') tails.set(next.id, tail)
       return { rows: [], rowCount: 1 }
     }
-    if (sql.includes("'supersededBy' is not null") || sql.includes("'gate'='true'")) return { rows: [] }
+    if (sql.includes("'supersededBy' is not null")) return { rows: [] }
     if (sql.includes("state='queued'")) {
       return { rows: records.filter(record => record.state === 'queued').map(record => ({ record, durations: null })) }
     }
@@ -91,6 +91,7 @@ function dispatchFixture(settlementError?: Error) {
       return { rows: records.filter(record => ['starting', 'running'].includes(record.state))
         .map(record => ({ id: record.id, record, host_key: computer.key })) }
     }
+    if (sql.includes("'gate'='true'")) return { rows: [] }
     return { rows: records.filter(record => record.id === parameters?.[0] || record.groupId === parameters?.[0])
       .map(record => ({ record, log_tail: tails.get(record.id) ?? '' })) }
   }
