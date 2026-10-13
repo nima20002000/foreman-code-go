@@ -415,6 +415,7 @@ test('integration shards use their CI slot CPU and memory shares rather than the
   assert.match(plan.reason, /CI slot share/)
   assert.equal(integrationShardPlan(environment, { ...shardResources, availableMemoryBytes: 3 * 1024 ** 3 }).shards, 3)
   assert.throws(() => integrationShardPlan({ ...environment, FOREMAN_CODE_CI_CPU_COUNT: '0' }, shardResources), /CPU count/)
+  assert.equal(integrationShardPlan({ ...environment, FOREMAN_CODE_INTEGRATION_SHARDS: '12' }, shardResources).shards, 6)
 })
 
 test('unknown or invalid resource measurements retain twelve without ignoring known smaller limits', () => {
