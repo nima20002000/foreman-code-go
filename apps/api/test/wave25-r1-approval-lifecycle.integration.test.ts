@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { approvalDatabase } from './helpers/wave25ApprovalDatabase.js'
 import { graphParity } from './helpers/wave25R1GraphParity.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
@@ -8,19 +8,25 @@ import { lifecycleParityFixture } from './helpers/lifecycleParityFixture.js'
  * no provider process, no synthetic checkpoint consumer, no closure claim. */
 describe.skipIf(!postgresEnabled)('BR1-004: approval failure lifecycle publication', () => {
   const fixtures = lifecycleParityFixture()
+  let f: Awaited<ReturnType<typeof approvalDatabase>>
+  let compare: Awaited<ReturnType<typeof graphParity>>['compare']
 
-  it('replays actual review-failure Stop and cannot hide review cleanup by clearing only the Run intent', async () => {
+  // Workflow startup and reviewer admission precede the lifecycle assertion deadline.
+  beforeEach(async () => {
     const url = new URL(process.env.TEST_DATABASE_URL ?? '')
     if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) || !url.pathname.toLowerCase().includes('test')) {
       throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
     }
     const database = fixtures.database()
-    const f = await approvalDatabase({ database })
+    f = await approvalDatabase({ database })
     fixtures.closeAfterEach(f.close)
     // Read through the suite's database to catch a runtime that creates another database.
-    const { compare } = await graphParity(database.pool, f.scope)
+    compare = (await graphParity(database.pool, f.scope)).compare
     const initial = await compare()
     expect(initial.state.nodes.find((node) => node.state.workflowNodeId === f.reviewer.workflowNodeId)!.state.lifecycle).toBe('succeeded')
+  }, 60000)
+
+  it('replays actual review-failure Stop and cannot hide review cleanup by clearing only the Run intent', async () => {
     await f.repository.coordination.transitionReviewJob(f.job.id, f.job.leaseToken!, 'failed', {
       error: { code: 'SYNTHETIC_REVIEW_LOSS', message: 'Review loss without a native closure claim.' },
     })
