@@ -1,5 +1,4 @@
 import type { NativeSessionReference, PendingNativeInteraction } from '@foreman-code/contracts'
-import type { NativeHarnessSessionManager } from './port.js'
 
 /** Read-only exact-request inquiry. Inspection must not attach, start, auto-reply or reconcile a response. */
 export interface NativeResponseAvailabilityQuery {
@@ -36,7 +35,7 @@ export function unavailableNativeResponse(session: NativeSessionReference, query
 }
 
 /** A persistence row is provenance, not proof of an available callback. Missing inspectors fail closed. */
-export async function inspectNativeResponse(manager: NativeHarnessSessionManager & ResponseAvailabilityInspector,
+export async function inspectNativeResponse(manager: ResponseAvailabilityInspector,
   session: NativeSessionReference, query: NativeResponseAvailabilityQuery, input: { signal?: AbortSignal; isCurrent(): boolean }): Promise<NativeResponseAvailability> {
   if (!input.isCurrent() || input.signal?.aborted) return unavailableNativeResponse(session, query, 'session_closed')
   if (!manager.inspectResponseAvailability) return unavailableNativeResponse(session, query, 'unsupported')

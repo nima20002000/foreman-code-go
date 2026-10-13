@@ -7,7 +7,7 @@ import type { TemporaryFileService } from './service.js'
 import type { ArtifactPublicationAuthority, VerifiedArtifactReader } from './distributed/publication.js'
 import type { AcceptedArtifactAttemptFence } from './distributed/authorization.js'
 vi.mock('../../routes/files.js', () => ({ registerFileRoutes: vi.fn() }))
-vi.mock('./references/routes.js', () => ({ registerFileReferenceRoutes: vi.fn() }))
+vi.mock('../../routes/fileReferences.js', () => ({ registerFileReferenceRoutes: vi.fn() }))
 vi.mock('./tools/production.js', () => ({ registerProductionFileTools: vi.fn() }))
 import { registerProductionFileStorage, createProductionDistributedArtifacts } from './production.js'
 function ports() {

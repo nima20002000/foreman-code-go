@@ -4,7 +4,7 @@ import { open, readdir, unlink, rmdir, rename, type FileHandle } from 'node:fs/p
 import { isDeepStrictEqual } from 'node:util'
 import { MaterializationReceiptSchema, type MaterializationReceipt }
   from '@foreman-code/contracts/source-materialization'
-import { archiveMaterializationClaim, withClaimLock, type SourceQuotaPool } from './materialization.js'
+import { archiveMaterializationClaim, withClaimLock, type SourceQuotaPool } from './materializationClaim.js'
 import { anchored, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
 import { verifyJobQuotaOwnership } from '../jobs/quotaOwnership.js'
 import { SourceError } from './manifest.js'

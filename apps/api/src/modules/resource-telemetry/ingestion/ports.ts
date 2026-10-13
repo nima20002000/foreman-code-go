@@ -1,6 +1,6 @@
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { DeviceExtensionDescriptor } from '@foreman-code/contracts/device-application'
-import type { TelemetrySelector, TelemetryOwner, TrustedTelemetryContext } from '@foreman-code/contracts/resource-telemetry'
+import type { TelemetrySelector, TelemetryOwner, TrustedTelemetryContext, TelemetryHost, TelemetrySelectorTarget } from '@foreman-code/contracts/resource-telemetry'
 export interface TelemetryClock { monotonicMs(): number; unixMs(): number }
 /** Implemented by existing W07/session and HRT local runtime owners. */
 export interface TelemetrySessionAuthority {
@@ -26,4 +26,20 @@ export interface TelemetryReadAuthority {
 /** W07 chunks this extension on its existing authenticated prioritized carrier. */
 export const resourceTelemetryExtension: DeviceExtensionDescriptor = {
   namespace: 'resource-telemetry', version: 1, role: 'duplex', maxJsonBytes: 65_536, maxBinaryBytes: 0,
+}
+
+export type OwnedTelemetryTarget = Extract<TelemetrySelectorTarget, { scope: 'owned' }>
+/** Existing accepted ownership/lease facts; collector generation belongs to the authenticated handshake. */
+export interface TelemetryOwnedTargetFacts {
+  owner: TelemetryOwner
+  attributionRef: string
+  attributionRevision: string
+  host: Omit<TelemetryHost, 'collectorGeneration'>
+}
+export type TelemetryOwnedTargetResolution = { kind: 'owned'; facts: TelemetryOwnedTargetFacts }
+  | { kind: 'denied' } | { kind: 'unavailable' }
+/** Reuses existing role-specific scoped authority before retrieving private ownership facts. */
+export interface TelemetryTargetAuthority {
+  allowTarget(principal: ManagementPrincipal, target: TelemetrySelectorTarget, signal: AbortSignal): Promise<boolean>
+  resolveOwned(principal: ManagementPrincipal, target: OwnedTelemetryTarget, signal: AbortSignal): Promise<TelemetryOwnedTargetResolution>
 }

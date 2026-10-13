@@ -10,7 +10,7 @@ import { anchored, identity, openChildDirectory, openPrivateRoot } from './priva
 import { SourceError, sourcePath, sourceSha256 } from './manifest.js'
 import { verifiedSourceWorkingTree } from './nativeStamp.js'
 import { SourceActiveNativeSessionSchema, type SourceActiveNativeSession } from '@foreman-code/contracts/source-operations'
-import type { SourceNativeSessionCapture } from './executionHosts.js'
+import type { SourceNativeSessionCapture } from './ports.js'
 import { verifyWorktreeBranch } from './worktreeRequest.js'
 
 export async function assertSourceNativeSession(record: SourceMaterializationRecord, capture: SourceNativeSessionCapture): Promise<void> {

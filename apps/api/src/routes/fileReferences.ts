@@ -1,10 +1,10 @@
 import type { FastifyInstance } from 'fastify'
 import type { PermanentFileScope } from '@foreman-code/contracts/files'
 
-import { registerFileScopeRoutes, type FileRouteParams, type FileScopeRoute } from '../../../routes/files.js'
-import { requirePrincipal } from '../../access/http.js'
-import { FileReferenceRemoveBodySchema } from './requests.js'
-import type { FileReferenceService } from './service.js'
+import { registerFileScopeRoutes, type FileRouteParams, type FileScopeRoute } from './files.js'
+import { requirePrincipal } from '../modules/access/http.js'
+import { FileReferenceRemoveBodySchema } from '../modules/files/references/requests.js'
+import type { FileReferenceService } from '../modules/files/references/service.js'
 
 export function registerFileReferenceRoutes(app: FastifyInstance, service: FileReferenceService): void {
   const routes: FileScopeRoute<PermanentFileScope>[] = [

@@ -7,7 +7,7 @@ import { messageAttachmentIdentity } from '@foreman-code/contracts/files'
 
 import { validateMessageAttachments, withMessageAttachmentRefs, hydrateMessageAttachments } from './messageAttachments.js'
 
-import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type ActivitySourceRevision, type AgentHarness, type RecordedAgentHarness, type Message, type NativeSessionReference, type PendingNativeInteraction, type PromptSettingSnapshot } from '@foreman-code/contracts'
+import { ExecutionResultSchema, MessageSchema, PendingNativeInteractionSchema, type ExecutionResult, type ActivitySourceRevision, type AgentHarness, type RecordedAgentHarness, type Message, type NativeSessionReference, type PendingNativeInteraction, type PromptSettingSnapshot, type ActivityScope } from '@foreman-code/contracts'
 import {
   AgentChatTurnSchema, AgentConversationSchema, type AgentChatContext, type AgentChatIntent, type AgentChatOrigin,
   type AgentChatTurn, type AgentConversation, type AgentChatReplayWarning, type SendAgentChatMessageRequest,
@@ -18,7 +18,6 @@ import { DomainError } from '../errors.js'
 import { readSystemPromptSetting } from '../settings/foundation.js'
 import { assertConversationCursor, withConversationPageRead } from './activityCursor.js'
 import { readActivityCommands } from './activityCommands.js'
-import { agentActivityScope } from './activitySnapshot.js'
 import { readConversationPublicationReceipts, type ConversationPublicationReceipt } from './messagePublications.js'
 import { PostgresOperatorActivityRepository } from './operatorActivityRepository.js'
 import { OPERATOR_SNAPSHOT_MESSAGE_BYTES, OPERATOR_HISTORY_PAGE_BYTES } from './operatorChatRepository.js'
@@ -28,6 +27,17 @@ import { legacyProviderAccountBinding, readProviderAccountBinding, type Accepted
 import type { AcceptedProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
 
 type Queryable = Pick<pg.PoolClient, 'query'>
+type State = NonNullable<Awaited<ReturnType<PostgresAgentChatRepository['state']>>>
+export function agentActivityScope(loaded: Pick<State, 'row' | 'selection'>): ActivityScope {
+  const { row } = loaded
+  const scope: ActivityScope = row.origin_run_id && row.origin_execution_id && loaded.selection
+    ? { kind: 'selected_run_chat', conversationId: row.id, workspaceId: row.workspace_id, workflowId: row.workflow_id,
+      nodeId: row.workflow_node_id, agentId: row.agent_id, selection: { workspaceId: row.workspace_id, workflowId: row.workflow_id,
+        runId: row.origin_run_id, workflowVersionId: loaded.selection.workflowVersionId, executionId: row.origin_execution_id, attemptKey: loaded.selection.attemptKey } }
+    : { kind: 'agent_chat', conversationId: row.id, workspaceId: row.workspace_id, workflowId: row.workflow_id, nodeId: row.workflow_node_id, agentId: row.agent_id }
+  if (row.origin_run_id && !loaded.selection) throw new Error('Selected Run chat lost its exact persisted origin.')
+  return scope
+}
 
 /** Agent rows in the shared conversation table. Operator columns stay null. */
 export interface AgentConversationRow {

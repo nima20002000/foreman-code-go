@@ -1,30 +1,17 @@
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
   TelemetrySelectorResultSchema, TelemetrySelectorTargetSchema, telemetryCanonical,
-  type TelemetryHost, type TelemetryOwner, type TelemetrySelectorResult, type TelemetrySelectorService,
+  type TelemetrySelectorResult, type TelemetrySelectorService,
   type TelemetrySelectorTarget,
 } from '@foreman-code/contracts/resource-telemetry'
 import { DomainError } from '../../errors.js'
 import type { ResourceTelemetryService } from '../ingestion/service.js'
 import type { TelemetryDenialAudit } from './adapters.js'
+import type { OwnedTelemetryTarget, TelemetryOwnedTargetFacts, TelemetryOwnedTargetResolution, TelemetryTargetAuthority } from '../ingestion/ports.js'
 
 export const RESOURCE_TELEMETRY_SELECTOR_ROUTE = '/api/management/resource-telemetry/selector' as const
 export const RESOURCE_TELEMETRY_SELECTOR_TOOL = 'resource_telemetry_selector_get' as const
-export type OwnedTelemetryTarget = Extract<TelemetrySelectorTarget, { scope: 'owned' }>
-/** Existing accepted ownership/lease facts; collector generation belongs to the authenticated handshake. */
-export interface TelemetryOwnedTargetFacts {
-  owner: TelemetryOwner
-  attributionRef: string
-  attributionRevision: string
-  host: Omit<TelemetryHost, 'collectorGeneration'>
-}
-export type TelemetryOwnedTargetResolution = { kind: 'owned'; facts: TelemetryOwnedTargetFacts }
-  | { kind: 'denied' } | { kind: 'unavailable' }
-/** Reuses existing role-specific scoped authority before retrieving private ownership facts. */
-export interface TelemetryTargetAuthority {
-  allowTarget(principal: ManagementPrincipal, target: TelemetrySelectorTarget, signal: AbortSignal): Promise<boolean>
-  resolveOwned(principal: ManagementPrincipal, target: OwnedTelemetryTarget, signal: AbortSignal): Promise<TelemetryOwnedTargetResolution>
-}
+export type { OwnedTelemetryTarget, TelemetryOwnedTargetFacts, TelemetryOwnedTargetResolution, TelemetryTargetAuthority }
 export class ResourceTelemetrySelectors implements TelemetrySelectorService<ManagementPrincipal> {
   constructor(private readonly service: ResourceTelemetryService, private readonly authority: TelemetryTargetAuthority) {}
   resolve(principal: ManagementPrincipal, target: TelemetrySelectorTarget, signal: AbortSignal): Promise<TelemetrySelectorResult> {

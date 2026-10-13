@@ -15,7 +15,30 @@ import { createChannelTransferClient } from '../../byte-transfer/carrier.js'
 import { DomainError } from '../../errors.js'
 import { createNativeOutputBudgetLedger, assertNativeOutputRootExcluded } from './installedNativeOutputStorage.js'
 import type { InstalledNativeOutputProviders } from './installedNativeOutput.js'
-import type { InstalledWorkflowHostOptions, InstalledWorkflowNativeOutputContext } from './installedWorkflowHost.js'
+import type { DispatchIntent, AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
+import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
+import type { SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
+import type { RemoteApplicationAccess } from '@foreman-code/contracts/remote-execution'
+import type { AgentFilePublishInput, AgentFilePublishResult } from '@foreman-code/contracts/files'
+import type { CodexNativeOutputTurnPin } from '../../harnesses/codexNativeOutput.js'
+import type { DeviceApplicationRequestOptions } from '../../devices/deviceApplicationChannel.js'
+
+export interface CapturedWorkflowMainRequest {
+  readonly binding:Readonly<DeviceSessionBinding>
+  request(payload:unknown,options?:DeviceApplicationRequestOptions):Promise<DeviceApplicationResult>
+}
+export interface InstalledWorkflowNativeOutputContext {
+  intent: DispatchIntent
+  placement: AcceptedNodePlacement
+  binding: Readonly<DeviceSessionBinding>
+  materialization: SourceMaterializationRecord
+  applicationAccess(): RemoteApplicationAccess
+  publicationCompleted(publication: AgentFilePublishInput, result: AgentFilePublishResult): void
+  /** Real original registry/ACK evidence; deliberately does not inspect passive
+   * originalSessionLifetime while the producer's starting gate is active. */
+  assertCurrent(pin?: CodexNativeOutputTurnPin, signal?: AbortSignal): Promise<void>
+}
 
 const unavailable = () => new DomainError('WORKER_NATIVE_OUTPUT_UNAVAILABLE',
   'The original native output owner, protected store or Main authorization changed.', 409)
@@ -41,7 +64,7 @@ export function createInstalledWorkflowNativeOutputProviders(input: {
   context: InstalledWorkflowNativeOutputContext
   registry: NativeProcessRegistry
   qualification: Pick<Parameters<typeof qualifyCodexOutputProtection>[0], 'qualify' | 'command'>
-  captureRequest: InstalledWorkflowHostOptions['captureRequest']
+  captureRequest(namespace: string): CapturedWorkflowMainRequest | undefined
 }): InstalledNativeOutputProviders {
   const { context } = input
   // Storage and transfers retain the launch identity while relay authorization follows the live resident.

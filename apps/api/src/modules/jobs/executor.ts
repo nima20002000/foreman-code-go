@@ -1,4 +1,4 @@
-import { JOB_GIT_ENVIRONMENT, JOB_PRIVATE_GIT_LAYOUT, requireJobGitMounts, type VerifiedJobGitMounts } from './privateGitMounts.js'
+import { JOB_GIT_ENVIRONMENT, JOB_PRIVATE_GIT_LAYOUT, requireJobGitMounts } from './privateGitMounts.js'
 import { requireJobInputReceipt,JOB_INPUT_MANIFEST_CONTAINER_PATH,type VerifiedJobSource } from './inputs.js'
 import type { JobInputDeliveryReceipt } from '@foreman-code/contracts/job-inputs'
 import { createHash } from 'node:crypto'
@@ -25,7 +25,7 @@ export interface JobLaunchAuthority<Execution extends RuntimeJobExecution = JobE
   launched(execution: Execution, supervisorIdentity: string, containerId?: string): Promise<void>
 }
 export interface JobSourcePort<Spec extends RuntimeJobExecution['acceptedSpec'] = AcceptedJobSpec> {
-  verify(spec: Spec, signal: AbortSignal): Promise<{ privateRepositoryRoot: string; directoryIdentityHash: string; privateGit: true; diskQuotaBytes: number; gitMounts?:VerifiedJobGitMounts }>
+  verify(spec: Spec, signal: AbortSignal): Promise<VerifiedJobSource>
 }
 export interface QualifiedJobProfile {
   workspaceLayout?:string|undefined

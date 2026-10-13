@@ -1,15 +1,9 @@
-import { pluginHash, pluginCanonical, pluginSourceIdentities, pluginCatalogRevision } from './codexPluginIdentity.js'
-import { z } from 'zod'
+import { pluginHash, pluginCanonical, pluginSourceIdentities, pluginCatalogRevision,
+  type NativePluginCatalog, type PluginConfiguration } from './codexPluginIdentity.js'
 import { CodexPluginSummarySchema, type CodexPluginSummary } from '@foreman-code/contracts/management'
 
 export { pluginHash, pluginCanonical } from './codexPluginIdentity.js'
-const NativeEntry = z.object({ pluginId: z.string(), name: z.string(), marketplaceName: z.string(),
-  version: z.string().nullable().optional(), installed: z.boolean(), enabled: z.boolean(),
-  source: z.object({ source: z.string() }).passthrough(), marketplaceSource: z.unknown().optional(),
-  installPolicy: z.string(), authPolicy: z.string() }).passthrough()
-export const NativePluginCatalogSchema = z.object({ installed: z.array(NativeEntry).max(10_000), available: z.array(NativeEntry).max(10_000) }).passthrough()
-export type NativePluginCatalog = z.infer<typeof NativePluginCatalogSchema>
-export type PluginConfiguration = { file: string; userConfig: Record<string, unknown>; verified?: boolean }
+export { NativePluginCatalogSchema, type NativePluginCatalog, type PluginConfiguration } from './codexPluginIdentity.js'
 export type PluginEvidence = { artifactIdentity: string; sourceIdentity: string }
 export type CodexPluginCatalog = {
   installed: CodexPluginSummary[]; available: CodexPluginSummary[]; revision: string

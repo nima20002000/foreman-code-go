@@ -7,7 +7,7 @@ import { JobVerificationInstalledRuntimeDescriptorSchema } from '@foreman-code/c
 import type { SourceRootRecord } from '@foreman-code/contracts/source-admission'
 import { anchored, identity, openPrivateRoot, openChildDirectory } from '../sources/privateFilesystem.js'
 import { DomainError } from '../errors.js'
-import { readProtectedRuntimeConfiguration } from './installedRuntimeHost.js'
+import { readProtectedRuntimeConfiguration } from './installedRuntimeConfiguration.js'
 import { InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES,
   type InstalledVerificationRuntimeConfiguration } from './installedVerificationConfiguration.js'
 

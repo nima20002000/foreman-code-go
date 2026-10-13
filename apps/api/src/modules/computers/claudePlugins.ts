@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type { ClaudePluginMarketplace, ClaudePluginSummary } from '@foreman-code/contracts/management'
-import type { MaintenancePorts } from './maintenance.js'
+import type { MaintenancePorts } from './maintenancePorts.js'
 import { DomainError } from '../errors.js'
 
 const InstalledSchema = z.array(z.object({

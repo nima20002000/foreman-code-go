@@ -1,5 +1,5 @@
 import { jobPlacementRequest } from './placementRequest.js'
-import { ciEnrollmentDisabled } from './ciEnrollmentInventory.js'
+import { ciEnrollmentDisabled } from './ciEnrollmentState.js'
 import { jobRuntimeProfileLimits, type JobRuntimeProfileRecord, type JobVerificationProfile } from '@foreman-code/contracts/job-verification-runtime'
 import { JOB_VERIFICATION_OWNER_CONFIGURATION } from '@foreman-code/contracts/job-verification-policy'
 import { JobComputerSelectionSchema } from '@foreman-code/contracts/jobs'

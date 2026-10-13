@@ -1,20 +1,9 @@
-import { ActivitySnapshotV1Schema, projectActivityStatus, type ActivitySnapshotV1, type ActivityScope, type WorkRef, type WorkSummary } from '@foreman-code/contracts'
+import { ActivitySnapshotV1Schema, projectActivityStatus, type ActivitySnapshotV1, type WorkRef, type WorkSummary } from '@foreman-code/contracts'
 import { conversationActivityId, conversationActivityKey, publicActivityProvenance } from './activityIdentity.js'
 import { chatInteractionSummary, conversationPublicationItems, conversationTextItems, messageSourceRevisions } from './activityItems.js'
-import type { PostgresAgentChatRepository } from './agentChatRepository.js'
+import { agentActivityScope, type PostgresAgentChatRepository } from './agentChatRepository.js'
 
 type State = NonNullable<Awaited<ReturnType<PostgresAgentChatRepository['state']>>>
-export function agentActivityScope(loaded: Pick<State, 'row' | 'selection'>): ActivityScope {
-  const { row } = loaded
-  const scope: ActivityScope = row.origin_run_id && row.origin_execution_id && loaded.selection
-    ? { kind: 'selected_run_chat', conversationId: row.id, workspaceId: row.workspace_id, workflowId: row.workflow_id,
-      nodeId: row.workflow_node_id, agentId: row.agent_id, selection: { workspaceId: row.workspace_id, workflowId: row.workflow_id,
-        runId: row.origin_run_id, workflowVersionId: loaded.selection.workflowVersionId, executionId: row.origin_execution_id, attemptKey: loaded.selection.attemptKey } }
-    : { kind: 'agent_chat', conversationId: row.id, workspaceId: row.workspace_id, workflowId: row.workflow_id, nodeId: row.workflow_node_id, agentId: row.agent_id }
-  if (row.origin_run_id && !loaded.selection) throw new Error('Selected Run chat lost its exact persisted origin.')
-  return scope
-}
-
 /** Adapt existing receipt ownership; neither latest message nor provider session confers ownership. */
 export function agentActivitySnapshot(loaded: State): ActivitySnapshotV1 {
   const { row, turns } = loaded

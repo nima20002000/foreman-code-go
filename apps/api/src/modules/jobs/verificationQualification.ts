@@ -17,7 +17,7 @@ import { JobVerificationQualificationCandidateSchema, JobVerificationRepositoryC
   from '@foreman-code/contracts/job-verification-runtime'
 import { readInstalledVerificationConfiguration } from './installedVerificationRuntime.js'
 import { readProtectedRuntimeFile,
-  type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
+  type InstalledRuntimeConfigurationLocation } from './installedRuntimeConfiguration.js'
 import { podmanIsolationCreateArgv, ensureEmptyPodmanHooks, type PodmanIsolationInput } from './executorPodman.js'
 import { assertJobRuntimeEntryContext, jobQualificationFingerprint, runQualificationCommand,
   validateVerificationIsolationObservation, type JobQualificationAuthority, type QualificationNativeOwner }

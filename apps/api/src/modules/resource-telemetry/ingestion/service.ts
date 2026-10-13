@@ -8,7 +8,7 @@ import {
   type TelemetrySelectorResult, type TelemetrySelectorTarget,
   type TrustedTelemetryContext, type TelemetryReadService,
 } from '@foreman-code/contracts/resource-telemetry'
-import type { TelemetryOwnedTargetFacts, TelemetryTargetAuthority } from '../readback/selector.js'
+import type { TelemetryOwnedTargetFacts, TelemetryTargetAuthority } from './ports.js'
 import type { TelemetryClock, TelemetryOwnershipAuthority, TelemetryOwnershipView, TelemetryReadAuthority, TelemetrySessionAuthority } from './ports.js'
 
 export type IngestReceipt = { status: 'accepted' | 'duplicate'; sampleId: string; gaps: string }

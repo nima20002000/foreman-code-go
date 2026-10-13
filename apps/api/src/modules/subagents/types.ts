@@ -1,4 +1,8 @@
+import type pg from 'pg'
+import type { z } from 'zod'
 import type { HarnessNativeEvent } from '@foreman-code/contracts'
+import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { RunSubagentGetInputSchema } from '@foreman-code/contracts/subagents'
 import type { RunSubagent, RunSubagentCommandReceipt, RunSubagentMessage, RunSubagentTool,
   SubagentCapabilities, SubagentNativeMode } from '@foreman-code/contracts/subagents'
 
@@ -39,3 +43,25 @@ export type SubagentNativeHistoryReader = (child: RunSubagent, cursor?: string) 
 export type SubagentStoredItem = RunSubagentMessage | RunSubagentTool
 
 export type SubagentNativeRecoverySource = (executionId: string, session: import('@foreman-code/contracts').NativeSessionReference, cursor: string | undefined, signal: AbortSignal) => Promise<import('../harnesses/port.js').NativeSubagentHistoryPage>
+
+export interface SubagentRecoveryFailure {
+  workspaceId: string; runId: string; executionId?: string; code: string
+}
+export interface SubagentReadScope {
+  sql: pg.PoolClient
+  principal: ManagementPrincipal
+  stopped: boolean
+  workflowId: string
+  workflowVersionId: string
+  projectionLocked: boolean
+}
+/** The RunSubagentService surface used by command dispatch and recovery. */
+export interface SubagentServicePort {
+  readonly pool: pg.Pool
+  readonly controls: SubagentControlResolver
+  readonly nativeRecovery?: SubagentNativeRecoverySource
+  reportRecoveryFailure(failure: SubagentRecoveryFailure): void
+  scoped<T>(principal: ManagementPrincipal, input: { workspaceId: string; runId: string }, action: ManagementAction,
+    work: (scope: SubagentReadScope) => Promise<T>, options?: { projectionLock?: 'if-available' }): Promise<T>
+  child(scope: SubagentReadScope, input: z.infer<typeof RunSubagentGetInputSchema>): Promise<RunSubagent>
+}

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
-import { requirePrincipal } from '../access/http.js'
-import { DomainError } from '../errors.js'
-import type { WorkspaceRepositoryService } from './repositoryService.js'
+import { requirePrincipal } from '../modules/access/http.js'
+import { DomainError } from '../modules/errors.js'
+import type { WorkspaceRepositoryService } from '../modules/workspaces/repositoryService.js'
 
 function scoped(workspaceId: string, raw: unknown) {
   if (raw === undefined) return { workspaceId }

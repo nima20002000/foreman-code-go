@@ -3,6 +3,7 @@ import { isCodexStagingRenameError, removeCodexStagingDirectories } from './npmS
 import { syncFingerprint } from './syncFingerprint.js'
 import { MaintenanceTaskStore } from './maintenanceTaskStore.js'
 import { MaintenanceCommandStore } from './maintenanceCommandStore.js'
+import type { MaintenancePorts } from './maintenancePorts.js'
 import { DomainError } from '../errors.js'
 import { z } from 'zod'
 import { execFile } from 'node:child_process'
@@ -19,27 +20,7 @@ import {
   type WorkerUpdateStatus,
 } from '@foreman-code/contracts/computer-maintenance'
 
-export interface MaintenancePorts {
-  environment: NodeJS.ProcessEnv
-  /** Absolute executable path, or null when not installed. */
-  find(name: string): Promise<string | null>
-  run(binary: string, args: string[], options: { signal: AbortSignal; timeoutMs: number }): Promise<{ code: number | null; stdout: string; stderr: string }>
-  exists(path: string): Promise<boolean>
-  readText(path: string): Promise<string | null>
-  /** Writes a private (0600) file atomically, creating its directory. */
-  writePrivateText(path: string, text: string): Promise<void>
-  disk(path: string): Promise<{ freeBytes: number; totalBytes: number } | null>
-  /** Runs fn after ms; restart uses it so the reply reaches Main before the computer goes down. */
-  later(fn: () => void, ms: number): void
-  now(): Date
-  /** Moves this computer's runtime selection to the installed update. Qualification still checks the selected binary. */
-  selectInstalledCodex?(signal: AbortSignal): Promise<string | null>
-  workerUpdate?: {
-    status(): Promise<WorkerUpdateStatus>
-    start(): Promise<string>
-    outcome?(task: MaintenanceTask): Promise<WorkerUpdateStatus | null>
-  }
-}
+export type { MaintenancePorts }
 
 type FleetLedger = { mcp: Record<MaintainedHarness, string[]>; codexPlugins: string[]; claudePlugins: string[] }
 const PACKAGES: Record<MaintainedHarness, string> = { codex: '@openai/codex', claude: '@anthropic-ai/claude-code' }

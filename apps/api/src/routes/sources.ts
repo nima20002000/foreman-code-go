@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
-import { requirePrincipal } from '../access/http.js'
-import { DomainError } from '../errors.js'
-import type { PostgresSourceService } from './service.js'
+import { requirePrincipal } from '../modules/access/http.js'
+import { DomainError } from '../modules/errors.js'
+import type { PostgresSourceService } from '../modules/sources/service.js'
 
 /** Authenticated management routes share the exact Operator domain service. */
 export function registerSourceRoutes(app: FastifyInstance, service: PostgresSourceService): void {

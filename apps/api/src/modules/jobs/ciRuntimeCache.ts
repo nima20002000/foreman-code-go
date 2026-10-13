@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import { PreparedCiRuntimeSchema, type PreparedCiRuntime } from '@foreman-code/contracts'
 import { anchored, openPrivateRoot } from '../sources/privateFilesystem.js'
-import { readProtectedRuntimeFile } from './installedRuntimeHost.js'
+import { readProtectedRuntimeFile } from './installedRuntimeConfiguration.js'
 import { fingerprintQualificationPath } from './qualification.js'
 
 const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/u)

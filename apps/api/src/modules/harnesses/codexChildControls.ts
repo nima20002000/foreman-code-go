@@ -3,16 +3,15 @@ import type { RunSubagent, RunSubagentCommandReceipt } from '@foreman-code/contr
 import { SubagentDispatchRejectedError } from '../subagents/controlErrors.js'
 import type { SubagentControlLease } from '../subagents/types.js'
 import { codexRequest, type QualifiedCodex } from './codexProtocol.js'
-import { CodexRpcError, isObject, type JsonObject } from './codexStdioTransport.js'
+import { CodexRpcError, isObject, type CodexStdioTransport, type JsonObject } from './codexStdioTransport.js'
 import { HarnessExecutionError } from './errors.js'
-import type { CodexTransport } from './codexAppServer.js'
 import type { Thread, Turn, ThreadTurnsListResponse, ThreadItemsListResponse } from './codexMethodTypes.js'
 
 export interface CodexChildControlHost {
   rootThreadId: string
   generation: string
   qualified: Pick<QualifiedCodex, 'protocol' | 'providerVersion' | 'schemaManifestSha256'>
-  transport: Pick<CodexTransport, 'request'>
+  transport: Pick<CodexStdioTransport, 'request'>
   assertCurrent(): void
   exclusive<T>(work: () => Promise<T>): Promise<T>
   observeThread?(thread: Thread): void

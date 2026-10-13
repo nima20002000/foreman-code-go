@@ -16,7 +16,7 @@ import { DomainError } from '../errors.js'
 import { captureJobRuntimeConfiguration, fingerprintQualificationPath, qualificationMountId } from './qualification.js'
 import { readFile } from 'node:fs/promises'
 import { readProtectedRuntimeFile, type InstalledRuntimeConfigurationLocation,
-  type InstalledRuntimeObservedHost } from './installedRuntimeHost.js'
+  type InstalledRuntimeObservedHost } from './installedRuntimeConfiguration.js'
 import { findRetainedRuntimeConfiguration } from './retainedRuntimeConfiguration.js'
 
 const hash = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')

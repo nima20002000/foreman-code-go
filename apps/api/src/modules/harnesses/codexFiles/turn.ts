@@ -4,7 +4,7 @@ import { FileRevisionSchema, type FileRevision, type FileWithRevision, type Mess
 import type { FileToolOperation } from '../../files/tools/types.js'
 import { markdownReadText } from '../../files/tools/markdownReadText.js'
 import { assertRegisteredCodexCopy, CodexFileDeliveryError, collectCodexFileBytes, fail, sha256 } from './bytes.js'
-import { warnCodexFileError } from './runtime.js'
+import { warnCodexFileError } from './errorLog.js'
 import type {
   AcceptedCodexFileTurn, CodexAttachmentSource, CodexFileCall, CodexFileCallResult,
   CodexFileHostLease, CodexFileInput, CodexFileLimits, CodexFileServices,

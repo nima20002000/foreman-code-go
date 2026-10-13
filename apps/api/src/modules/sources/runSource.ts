@@ -1,16 +1,26 @@
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
-import { SourceRootRecordSchema, type SourceRootRecord } from '@foreman-code/contracts/source-admission'
+import { SourceRootRecordSchema, type ApprovedSource, type SourceRootRecord } from '@foreman-code/contracts/source-admission'
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { commandInputHash } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
-import type { PostgresSourceService } from './service.js'
 import { requireAuthorization } from '../access/policy.js'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
 
+type Transport = 'http' | 'mcp'
+/** The PostgresSourceService reads and commands that Run Start source preparation uses. */
+export interface RunSourcePort {
+  get(principal: ManagementPrincipal, source: Transport, raw: unknown): Promise<ApprovedSource>
+  approveProject(principal: ManagementPrincipal, input: {
+    workspaceId: string; commandId: string; executablePolicy?: SourceManifest['executablePolicy']
+  }, options: { source?: Transport }): Promise<ApprovedSource>
+  rootGet(principal: ManagementPrincipal, source: Transport, raw: unknown): Promise<SourceRootRecord>
+  bindRoot(principal: ManagementPrincipal, source: Transport, raw: unknown): Promise<{ value: SourceRootRecord }>
+}
+
 /** Run Start captures one branch head; all selected computers use that approval. */
 export async function prepareRunSources(pool: pg.Pool,
-  sources: Pick<PostgresSourceService, 'approveProject' | 'get' | 'rootGet' | 'bindRoot'>,
+  sources: RunSourcePort,
   principal: ManagementPrincipal,
   input: { workspaceId: string; commandId: string; source: 'http' | 'mcp'; roots: readonly SourceRootRecord[] },
 ): Promise<readonly SourceRootRecord[]> {

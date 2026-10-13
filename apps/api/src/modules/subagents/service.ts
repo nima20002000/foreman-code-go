@@ -9,13 +9,11 @@ import { DomainError } from '../errors.js'
 import { subagentAvailableActions } from './capabilities.js'
 import { reconcileRunSubagents } from './projection.js'
 import { backfillRunSubagents } from './recovery.js'
-import type { SubagentNativeRecoverySource, SubagentControlResolver } from './types.js'
+import type { SubagentNativeRecoverySource, SubagentControlResolver, SubagentReadScope, SubagentRecoveryFailure } from './types.js'
 import { executeSubagentCommand } from './commands.js'
 import { componentLogger } from '../diagnostics/logger.js'
 
-export interface SubagentRecoveryFailure {
-  workspaceId: string; runId: string; executionId?: string; code: string
-}
+export type { SubagentReadScope, SubagentRecoveryFailure }
 const recoveryLogger = componentLogger('harness')
 
 function readSubagent(record: unknown) {
@@ -28,14 +26,6 @@ function readSubagent(record: unknown) {
   } }
 }
 
-export interface SubagentReadScope {
-  sql: pg.PoolClient
-  principal: ManagementPrincipal
-  stopped: boolean
-  workflowId: string
-  workflowVersionId: string
-  projectionLocked: boolean
-}
 export class RunSubagentService {
   private readonly backfills = new Map<string, Promise<void>>()
   constructor(readonly pool: pg.Pool, readonly controls: SubagentControlResolver = () => undefined, readonly nativeRecovery?: SubagentNativeRecoverySource,

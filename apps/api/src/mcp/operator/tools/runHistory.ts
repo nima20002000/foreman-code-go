@@ -9,9 +9,9 @@ import { DomainError } from '../../../modules/errors.js'
 import { toolFailure } from '../../shared/results.js'
 import { invokeOperatorTool } from '../invoke.js'
 import type { OperatorRequestContext } from '../types.js'
+import { RUN_HISTORY_TOOLS, type RunHistoryToolName } from '../toolNames.js'
 
-export const RUN_HISTORY_TOOLS = { list: 'run_summaries_list', snapshot: 'run_board_snapshot_get' } as const
-export type RunHistoryToolName = typeof RUN_HISTORY_TOOLS[keyof typeof RUN_HISTORY_TOOLS]
+export { RUN_HISTORY_TOOLS, type RunHistoryToolName }
 
 /** Discovery is not authorization: RunHistoryService locks/rechecks live grants
  * and validates the persisted hierarchy on every HTTP and MCP read. */

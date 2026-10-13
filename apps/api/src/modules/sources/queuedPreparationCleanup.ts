@@ -4,7 +4,7 @@ import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
 import { SourceOperationOwnerSchema, type SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 import { SourcePreparationClosureSchema } from '@foreman-code/contracts/source-admission'
 import { DomainError } from '../errors.js'
-import type { SourceExecutionHostPort } from './service.js'
+import type { SourceExecutionHostPort } from './ports.js'
 import { loadSourcePreparation, requireSourcePreparationHost, resolvePreparationReconciliationOwner,
   validateSourcePreparationClosure, validateQueuedSourcePreparation } from './preparationReconciliation.js'
 import { requireQueuedPreparationClosed } from './queuedPreparationAuthority.js'

@@ -11,7 +11,7 @@ import { JobVerificationQuotaPoolSchema } from '@foreman-code/contracts/job-veri
 import { z } from 'zod'
 import { pruneCiRuntimeCache, readCiRuntimeCache, writeCiRuntimeCache } from './ciRuntimeCache.js'
 import { readJobProjectQuota } from './quotaOwnership.js'
-import { readProtectedRuntimeConfiguration, readProtectedRuntimeFile } from './installedRuntimeHost.js'
+import { readProtectedRuntimeConfiguration, readProtectedRuntimeFile } from './installedRuntimeConfiguration.js'
 import { MAX_VERIFICATION_CONFIGURATION_BYTES } from './installedVerificationConfiguration.js'
 import { closeCiRuntimeCommand, runCiRuntimeCommand } from './ciRuntimeCommands.js'
 import { pruneCiImages } from './ciRuntimeImages.js'

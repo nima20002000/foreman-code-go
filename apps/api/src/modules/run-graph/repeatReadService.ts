@@ -3,7 +3,6 @@ import { ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-co
 import { CanonicalRunGraphScopeSchema, CanonicalRunGraphReadCapabilitiesSchema, type CanonicalRunGraphReadCapabilities,
   type RepeatGraphSnapshotV3, type RepeatGraphPageV3, type RepeatGraphResetV3, type RepeatGraphCurrentV3 } from '@foreman-code/contracts/wave25'
 import { hasAction, requireAuthorization } from '../access/policy.js'
-import type { RunGraphReadApi } from './readService.js'
 import { readRepeatGraphSnapshot, readRepeatGraphPage, readRepeatGraphCurrent, type AuthorizeRepeatGraphRead } from './repeatReader.js'
 import { RunGraphError } from './errors.js'
 
@@ -57,6 +56,13 @@ export class RepeatGraphReadService {
     return this.checked(() => readRepeatGraphPage(this.primaryPool, request, this.authorize(principal)))
   }
 }
+export interface RunGraphReadApi {
+  capabilities(principal: ManagementPrincipal): CanonicalRunGraphReadCapabilities
+  current(principal: ManagementPrincipal, request: unknown): Promise<RepeatGraphCurrentV3>
+  snapshot(principal: ManagementPrincipal, request: unknown): Promise<RepeatGraphSnapshotV3>
+  events(principal: ManagementPrincipal, request: unknown): Promise<RepeatGraphPageV3 | RepeatGraphResetV3>
+}
+
 export interface CanonicalRunGraphReadApi {
   capabilities: RunGraphReadApi['capabilities']
   readCapabilities(principal: ManagementPrincipal): CanonicalRunGraphReadCapabilities

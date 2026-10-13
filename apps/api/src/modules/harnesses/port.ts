@@ -18,12 +18,31 @@ import type {
   ReviewJob,
   AgentConfigurationVersion,
   PromptSettingSnapshot,
+  DurableInteraction,
 } from '@foreman-code/contracts'
+import type { ChatResponseIdentity } from '@foreman-code/contracts/interaction-activity'
 
-import type { NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
 import type { ResponseAvailabilityInspector } from './responseAvailability.js'
 import type { RunSubagent } from '@foreman-code/contracts/subagents'
 import type { SubagentControlLease } from '../subagents/types.js'
+
+/**
+ * Only a qualified adapter may produce these receipts from provider acknowledgements
+ * or provider history. Local pending-list eviction and generic terminal events are
+ * not evidence. Identity and the exact durable response must survive reconnects.
+ */
+export interface NativeResponseDeliveryEvidence {
+  source: 'provider_acknowledgement' | 'provider_history'
+  harness: DurableInteraction['harness']
+  providerVersion: string
+  nativeSessionId: string
+  nativeRequestId: string
+  nativeRequestType: string
+  optionId: string
+  semantic: NonNullable<DurableInteraction['selectedSemantic']>
+  responseDigest?: string | undefined
+  nativeIdentity?: ChatResponseIdentity
+}
 
 export interface NativeEventInput {
   type: string

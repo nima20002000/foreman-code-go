@@ -3,7 +3,7 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { DeviceRegistrationSchema, type CanonicalMachineReference, type DeviceRegistration } from '@foreman-code/contracts/device-identity'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
-import { DeviceAccessError } from './access.js'
+import { DeviceAccessError } from './accessError.js'
 
 /** Identity only: the caller checks its domain grants first and retains this command transaction's locks.
  * Returns current key/auth revisions for the caller's pin checks; null denotes the original main. */

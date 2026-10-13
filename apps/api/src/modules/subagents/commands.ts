@@ -8,7 +8,7 @@ import { subagentAvailableActions } from './capabilities.js'
 import { reconcileRunSubagents } from './projection.js'
 import { reconcileSubagentCommand } from './recovery.js'
 import { SubagentDispatchRejectedError } from './controlErrors.js'
-import type { RunSubagentService, SubagentReadScope } from './service.js'
+import type { SubagentServicePort, SubagentReadScope } from './types.js'
 import { withInteractionResponse } from '@foreman-code/contracts'
 import type { z } from 'zod'
 
@@ -18,7 +18,7 @@ type SubagentCommandInput = z.infer<typeof RunSubagentInputSchema> | z.infer<typ
 async function updateReceipt(scope: SubagentReadScope, receipt: RunSubagentCommandReceipt) {
   await scope.sql.query('update run_subagent_command_receipts set record=$2::jsonb where id=$1', [receipt.id, JSON.stringify(RunSubagentCommandReceiptSchema.parse(receipt))])
 }
-export async function executeSubagentCommand(service: RunSubagentService, principal: ManagementPrincipal, source: 'http' | 'mcp',
+export async function executeSubagentCommand(service: SubagentServicePort, principal: ManagementPrincipal, source: 'http' | 'mcp',
   operation: RunSubagentCommandReceipt['operation'], raw: unknown): Promise<RunSubagentCommandReceipt> {
   let input: SubagentCommandInput
   let action: 'runs:subagents:input' | 'runs:stop' | 'interactions:respond'

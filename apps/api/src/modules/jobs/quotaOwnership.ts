@@ -11,7 +11,7 @@ import { RootBindingSchema, type RootBinding, type SourceProjectQuotaSlot }
   from '@foreman-code/contracts/source-materialization'
 import { DomainError } from '../errors.js'
 import { MAX_VERIFICATION_CONFIGURATION_BYTES } from './installedVerificationConfiguration.js'
-import { type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
+import { type InstalledRuntimeConfigurationLocation } from './installedRuntimeConfiguration.js'
 import { findRetainedRuntimeConfiguration } from './retainedRuntimeConfiguration.js'
 
 export const JobProjectQuotaReadbackSchema = z.object({

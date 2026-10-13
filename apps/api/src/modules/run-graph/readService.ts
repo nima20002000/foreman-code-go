@@ -1,17 +1,11 @@
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
-import { graphJsonBytes, type CanonicalRunGraphReadCapabilities,
-  type RepeatGraphCurrentV3, type RepeatGraphSnapshotV3, type RepeatGraphPageV3, type RepeatGraphResetV3 } from '@foreman-code/contracts/wave25'
-import { RepeatGraphReadService } from './repeatReadService.js'
+import { graphJsonBytes } from '@foreman-code/contracts/wave25'
+import { RepeatGraphReadService, type RunGraphReadApi } from './repeatReadService.js'
 import { RunGraphError } from './errors.js'
 import { observeGraph, type GraphMeasurementSink } from './measurements.js'
 
-export interface RunGraphReadApi {
-  capabilities(principal: ManagementPrincipal): CanonicalRunGraphReadCapabilities
-  current(principal: ManagementPrincipal, request: unknown): Promise<RepeatGraphCurrentV3>
-  snapshot(principal: ManagementPrincipal, request: unknown): Promise<RepeatGraphSnapshotV3>
-  events(principal: ManagementPrincipal, request: unknown): Promise<RepeatGraphPageV3 | RepeatGraphResetV3>
-}
+export type { RunGraphReadApi }
 
 /** One canonical current reader through the PRIMARY pool. Read qualification
  * never enables native admission, Stop settlement or executable edits. */

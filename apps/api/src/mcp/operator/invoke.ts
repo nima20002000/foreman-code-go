@@ -1,8 +1,6 @@
-import type { FileReferenceToolName } from './tools/fileReferences.js'
-import type { RunHistoryToolName } from './tools/runHistory.js'
+import type { FileReferenceToolName, RunHistoryToolName, WorkflowScheduleToolName } from './toolNames.js'
 import type { RunInspectionToolName } from '@foreman-code/contracts/wave25'
 import type { ManagementAction, OperatorToolName } from '@foreman-code/contracts/management'
-import type { WorkflowScheduleToolName } from './tools/workflowSchedules.js'
 
 import { DomainError, databaseReadFailure } from '../../modules/errors.js'
 import { componentLogger } from '../../infrastructure/logger.js'

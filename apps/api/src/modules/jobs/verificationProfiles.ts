@@ -5,7 +5,7 @@ import { JobVerificationApprovalConfigSchema, JOB_VERIFICATION_APPROVAL_LIFETIME
   from '@foreman-code/contracts/job-verification-policy'
 import type { SourceRootRecord } from '@foreman-code/contracts/source-admission'
 import { DomainError } from '../errors.js'
-import { jobDigest } from './service.js'
+import { jobDigest } from './digest.js'
 
 export function createVerificationProfile(input: {
   id: string

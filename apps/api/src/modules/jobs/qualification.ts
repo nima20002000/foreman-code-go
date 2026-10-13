@@ -1,20 +1,20 @@
 import { deflateSync } from 'node:zlib'
 import { JOB_PRIVATE_GIT_LAYOUT, JOB_GIT_ENVIRONMENT, JOB_GIT_CONTAINER_DIRECTORY } from './privateGitMounts.js'
 import { createHash } from 'node:crypto'
-import type { ChildProcess, SpawnOptions } from 'node:child_process'
 import { constants } from 'node:fs'
 import { mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, rm, stat, statfs, writeFile } from 'node:fs/promises'
 import { release, userInfo } from 'node:os'
 import { join } from 'node:path'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { CurrentJobRuntimeFingerprintSchema, CurrentJobRuntimeMeasurementSchema, JobQualificationCandidateSchema, JobRuntimeQualificationSpoolBytesSchema, type InstalledJobRuntimeDescriptor, type JobQualificationCandidate, type JobRuntimeApproval, type JobRuntimeFingerprint, type JobRuntimeMeasurement, type JobRuntimeProfile } from '@foreman-code/contracts/job-runtime'
-import { JobQualificationCandidateRecordSchema, type JobQualificationCandidateRecord, type JobRuntimeQualificationResultRecord }
+import { JobQualificationCandidateRecordSchema, type JobQualificationCandidateRecord }
   from '@foreman-code/contracts/job-verification-runtime'
 import type { JobSql } from './repository.js'
 import { JOB_INPUT_DIRECTORY, JobBuildInputManifestSchema } from '@foreman-code/contracts/job-inputs'
 import { OwnedOCIContainer, type OCIContainerOwnership } from './executorContainerOwner.js'
 import { ensureEmptyPodmanHooks, podmanIsolationCreateArgv } from './executorPodman.js'
 import type { QualifiedJobProfile } from './executor.js'
+import type { QualificationNativeOwner, JobQualificationAuthority } from './qualificationPorts.js'
 import { JobResourceRequestSchema, type JobResourceRequest } from '@foreman-code/contracts/job-verification-policy'
 
 export const CI_QUALIFICATION_SUITE = 'rootless-podman-ext4-private-git-v2' as const
@@ -35,35 +35,7 @@ export interface JobQualificationRecord {
   measurements: Record<string, unknown> | null
   profile: QualifiedJobProfile | null
 }
-export interface QualificationNativeOwner {
-  completedResult?: JobRuntimeQualificationResultRecord
-  originalResult?: JobRuntimeQualificationResultRecord
-  recoveryRequired?: boolean
-  originalContainer?: { identity: string; fingerprint: string; containerId?: string | null }
-  reserveCleanupProcess?(binary: string, argv: string[]): Promise<string>
-  spawnCleanupProcess?(reservationId: string, binary: string, argv: string[], options: SpawnOptions): ChildProcess
-  recordQuotaClaim?(claim: { path: string; namespace: string; device: number; inode: number }): Promise<void>
-  recordResult?(result: JobRuntimeQualificationResultRecord): Promise<void>
-  readClosure?(): Promise<import('@foreman-code/contracts/job-verification-runtime').JobQualificationReport['closure']>
-  /** Existing admission journals the exact native launch before the physical Node spawn. */
-  reserveProcess(binary: string, argv: string[]): Promise<string>
-  /** HRT's guarded spawn primitive receives original reserved scope BEFORE native entry. */
-  spawnProcess(reservationId: string, binary: string, argv: string[], options: SpawnOptions): ChildProcess
-  readNativeExit(reservationId: string, child: ChildProcess, wrapperExit: { exitCode: number | null; signal: string | null }): Promise<{ confirmed: boolean; exitCode: number | null }>
-  stopProcess(reservationId: string): Promise<boolean>
-  registerContainer(identity: string, fingerprint: string): Promise<void>
-  /** Bind ID only after validating the original reserved identity/fingerprint labels. */
-  observeContainer(identity: string, containerId: string): Promise<void>
-  enterContainer(identity: string, containerId: string): Promise<void>
-  /** True only after all registered controller processes AND owned container descendants stopped. */
-  closeContainer?(): Promise<boolean>
-  close(): Promise<boolean>
-}
-export interface JobQualificationAuthority {
-  readApproval(id: string): Promise<{ status: 'approved' | 'denied' | 'revoked'; fingerprint: string; expiresAt: string } | null>
-  assertCurrent(candidate: JobQualificationCandidateRecord): Promise<void>
-  reserve(candidate: JobQualificationCandidateRecord, signal: AbortSignal): Promise<QualificationNativeOwner>
-}
+export type { QualificationNativeOwner, JobQualificationAuthority }
 
 /** Compose real existing guarded process ownership with exact OCI/cgroup ownership. */
 export function createQualificationNativeOwner(candidate: JobQualificationCandidateRecord,

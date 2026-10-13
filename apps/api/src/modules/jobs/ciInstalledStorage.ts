@@ -5,7 +5,7 @@ import { DEVICE_RESOURCE_CONTROL_RESERVE } from '@foreman-code/contracts/device-
 import { InstalledVerificationRuntimeConfigurationSchema, MAX_VERIFICATION_CONFIGURATION_BYTES }
   from './installedVerificationConfiguration.js'
 import type { InstalledVerificationRuntimeConfiguration } from './installedVerificationConfiguration.js'
-import { readProtectedRuntimeFile } from './installedRuntimeHost.js'
+import { readProtectedRuntimeFile } from './installedRuntimeConfiguration.js'
 import { readCiRuntimeInstallation } from './ciRuntimeInstallation.js'
 
 export async function readCiInstalledStorage(stateDirectory: string): Promise<CiInstalledStorage | null> {
