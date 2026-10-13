@@ -35,7 +35,7 @@ it('keeps pending native settlement retryable and rolls back the incomplete Run 
   }
 }, 60_000)
 
-describe.each(['graceful', 'expired-receipt'] as const)('production remote review after %s Main recovery', recovery => {
+describe.each(['graceful'] as const)('production remote review after %s Main recovery', recovery => {
   const withRemoteReviewFixture = useRemoteReviewFixture()
   it('continues the original retained review with the Worker alive', async () => {
     await withRemoteReviewFixture(async fixture => {

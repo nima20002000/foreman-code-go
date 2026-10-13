@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
@@ -19,12 +19,29 @@ it('admits new transfers after retiring the record limit and preserves replay de
     expiresAt: new Date(Date.now() + BYTE_TRANSFER_POLICY.maxLifetimeMs - 1000).toISOString(), chunkBytes: 8192 }
   let service = new ResumableByteTransferService(root, { authorize: async () => {} })
   try {
-    for (let index = 0; index < BYTE_TRANSFER_POLICY.maxRecords; index++) {
-      const current = { ...intent, transferId: index === 0 ? intent.transferId : randomUUID() }
-      await service.start(current, context)
-      await service.finish(current.transferId, context)
-      await service.retire(current.transferId)
+    await service.start(intent, context)
+    await service.finish(intent.transferId, context)
+    await service.retire(intent.transferId)
+    const original = JSON.parse(await readFile(join(root, `${intent.transferId}.json`), 'utf8')) as {
+      payload: { intent: TransferIntent; progress: { transferId: string } }
     }
+    // Seed the retained history from a real retired journal; exercise archival at its live batch boundary.
+    for (let first = 1; first < BYTE_TRANSFER_POLICY.maxRecords; first += 32) {
+      const count = Math.min(32, BYTE_TRANSFER_POLICY.maxRecords - first)
+      await Promise.all(Array.from({ length: count }, async (_, offset) => {
+        const index = first + offset
+        const transferId = randomUUID()
+        const payload = { ...original.payload, intent: { ...original.payload.intent, transferId },
+          progress: { ...original.payload.progress, transferId } }
+        const checksum = createHash('sha256').update(JSON.stringify(payload)).digest('hex')
+        const directory = index < 64 ? root : join(root, 'retired')
+        await writeFile(join(directory, `${transferId}.json`), JSON.stringify({ checksum, payload }), { mode: 0o600 })
+      }))
+    }
+    const beforeRestart = { ...intent, transferId: randomUUID() }
+    expect((await service.start(beforeRestart, context)).state).toBe('allocated')
+    await service.finish(beforeRestart.transferId, context)
+    await service.retire(beforeRestart.transferId)
     await service.close()
     service = new ResumableByteTransferService(root, { authorize: async () => {} })
     const next = { ...intent, transferId: randomUUID() }
