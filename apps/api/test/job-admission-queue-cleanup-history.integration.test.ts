@@ -80,15 +80,20 @@ describe.skipIf(!postgresEnabled)('durable build admission queue: cleanup-histor
       resume()
       await pending
     }
-    for (let index = 0; index < 105; index++) {
-      const submitted = await submit(f, definition)
-      await f.jobs.wakeQueue()
-      const newer = await f.jobs.getQueueTicket(reader.principal, f.workspaceId, submitted.id)
-      expect(newer).toMatchObject({ state: 'waiting', selectedComputer: null, cleanupStatus: 'none' })
-      await f.jobs.cancelQueued(writer.principal, 'mcp', f.workspaceId, { commandId: randomUUID(),
-        ticketId: newer.id, expectedRevision: newer.revision })
-    }
+    // History fillers are cancelled before admission; only the original request needs cleanup.
     await f.jobs.closeQueue()
+    for (let index = 0; index < 105; index += 8) {
+      await Promise.all(Array.from({ length: Math.min(8, 105 - index) }, async () => {
+        const admission = await f.jobs.enqueue(f.principal, 'http', f.workspaceId, queue.command(definition))
+        if (admission.kind !== 'pending-admission') throw new Error('History fillers must remain queued')
+        const newer = admission.ticket
+        expect(newer).toMatchObject({ state: 'waiting', selectedComputer: null, cleanupStatus: 'none' })
+        const cancelled = await f.jobs.cancelQueued(writer.principal, 'mcp', f.workspaceId, {
+          commandId: randomUUID(), ticketId: newer.id, expectedRevision: newer.revision,
+        })
+        expect(cancelled).toMatchObject({ state: 'terminal', terminalReason: 'cancelled', cleanupStatus: 'none' })
+      }))
+    }
     const restarted = f.createService()
     services.push(restarted)
     const ticket = await restarted.getQueueTicket(reader.principal, f.workspaceId, original.id)
