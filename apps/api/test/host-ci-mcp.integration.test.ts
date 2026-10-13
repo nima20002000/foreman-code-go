@@ -1173,13 +1173,17 @@ it.each([
     }))
     await f.ci.dispatch()
     expect(first.partitions).toBeUndefined()
-    expect((await read(first.ticketId)).run.state).toBe('running')
+    expect((await read(first.ticketId)).run).toMatchObject({
+      state: 'running', commit: 'a'.repeat(40), scope: 'affected', files: ['apps/api/src/example.ts'],
+    })
     const second = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'lint', scope: 'affected', files: ['apps/api/src/example.ts'],
       commandId: 'after-nul-log', noSupersede: true,
     }))
     await f.ci.close()
-    expect((await read(second.ticketId)).run.state).toBe('queued')
+    expect((await read(second.ticketId)).run).toMatchObject({
+      state: 'queued', commit: 'a'.repeat(40), scope: 'affected', files: ['apps/api/src/example.ts'],
+    })
     f.finish(first.ticketId, 0, output.text, undefined, output.message)
     await f.ci.dispatch()
     const finished = await read(first.ticketId)
