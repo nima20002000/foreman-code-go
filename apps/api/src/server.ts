@@ -5,18 +5,12 @@ import { mkdir, realpath } from 'node:fs/promises'
 import { workspaceStorageRoot } from './modules/workspaces/storage.js'
 import { pathsOverlap } from './modules/workspaces/filesystem.js'
 import { loadConfig } from './config.js'
-import { createCheckpointStore } from './infrastructure/checkpoints.js'
-import { createDatabase } from './infrastructure/database.js'
 import { componentLogger, enableFileLogging } from './infrastructure/logger.js'
 import { trackInFlightRequests } from './infrastructure/inFlightRequests.js'
 import { installProcessLifecycleLogging } from './infrastructure/processLifecycle.js'
 import { retryStartupDatabase } from './infrastructure/startupDatabase.js'
 import { readTestResourcesIdentity } from './infrastructure/testRuntimeResources.js'
-import { buildProductionApp } from './production.js'
-import { registerBuiltWeb } from './builtWeb.js'
-import { codexQualificationSuite } from './modules/harnesses/qualification/suites/codex.js'
 import { join } from 'node:path'
-import { readMainRsyncEntrypoint } from './modules/byte-transfer/installedEntrypoints.js'
 
 const lifecycle = componentLogger('lifecycle')
 // First, before configuration or infrastructure can fail: nothing may end silently.
@@ -38,6 +32,20 @@ async function main() {
   await enableFileLogging(process.env)
   lifecycle.info({ node: process.version }, 'api starting')
   const config = loadConfig(process.env)
+  // Invalid resource ownership must fail before loading the database and native workflow runtime.
+  const [
+    { createDatabase },
+    { createCheckpointStore },
+    { buildProductionApp },
+    { codexQualificationSuite },
+    { readMainRsyncEntrypoint },
+  ] = await Promise.all([
+    import('./infrastructure/database.js'),
+    import('./infrastructure/checkpoints.js'),
+    import('./production.js'),
+    import('./modules/harnesses/qualification/suites/codex.js'),
+    import('./modules/byte-transfer/installedEntrypoints.js'),
+  ])
   const database = createDatabase(config.database)
   const rsyncInstallation = await readMainRsyncEntrypoint(join(config.harnesses.workspaceRoot, 'rsync-selection.json'))
   if (rsyncInstallation.kind === 'unavailable') lifecycle.info({ reason: rsyncInstallation.reason }, 'rsync unavailable')
@@ -105,7 +113,10 @@ async function main() {
 
   try {
     const webRoot = readProductEnvironment(process.env, 'WEB_DIST')
-    if (webRoot) await registerBuiltWeb(app, webRoot)
+    if (webRoot) {
+      const { registerBuiltWeb } = await import('./builtWeb.js')
+      await registerBuiltWeb(app, webRoot)
+    }
     registerFileStorage()
     await retryStartupDatabase(() => database.ping(startup.signal), { signal: startup.signal })
     stopIfClosing()
