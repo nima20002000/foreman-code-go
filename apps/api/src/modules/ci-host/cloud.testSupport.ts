@@ -54,12 +54,13 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
   const commit = run(work, 'rev-parse', 'HEAD')
   const local = (value: string) => value === 'https://github.com/octo/site.git' ? origin
     : value === 'https://github.com/octo/site-ci.git' ? mirror : value
-  const cleanup = { unavailable: false }
+  const cleanup = { unavailable: false, failures: 0 }
   const git: GitWorktreePorts = {
     cloneDirectory: repository => join(root, 'clones', ...repository.split('/')),
     // Asynchronous like Main's git, so concurrent starts really overlap.
     git: (args, options) => new Promise(resolve => {
       if (cleanup.unavailable && args[0] === 'push' && args.includes('--atomic')) {
+        cleanup.failures++
         resolve({ code: 1, stdout: '', stderr: 'fixture remote is unavailable for cleanup' })
         return
       }
@@ -180,7 +181,7 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
     { home: '/home/owner', user: 'owner', host: 'owner-desktop' })
   const cloud = reopen()
   const mirrorGit = (...args: string[]) => run(mirror, ...args)
-  return { cloud, reopen, root, commit, dispatched, github, circle, cleanup, mirrorGit, run: (...args: string[]) => run(work, ...args),
+  return { cloud, reopen, root, commit, dispatched, github, circle, cleanup, git, mirrorGit, run: (...args: string[]) => run(work, ...args),
     async prune(activeIds: Set<string>) {
       return pruneMirrorBranches({ mirror: 'octo/site-ci', roots: [join(root, 'ci-cloud')],
         activeRuns: { ids: activeIds, readAt: Date.now() },
