@@ -3,7 +3,7 @@ import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/rea
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { http, HttpResponse } from 'msw'
+import { delay, http, HttpResponse } from 'msw'
 import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selected-run-chat'
 import { RunActivitiesPageSchema } from '@foreman-code/contracts/wave25'
 import { routeTree } from '../app/router'
@@ -368,7 +368,12 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
     }
   }, 15_000)
 
-  it.each(['running', 'queued'] as const)('automatically pins a %s Run and returns to authoring through New run', async (executionState) => {
+  it.each([
+    { executionState: 'running', snapshotDelay: 0 },
+    { executionState: 'queued', snapshotDelay: 0 },
+    { executionState: 'running', snapshotDelay: 1_500 },
+    { executionState: 'queued', snapshotDelay: 1_500 },
+  ] as const)('automatically pins a $executionState Run with a $snapshotDelay ms snapshot delay and returns to authoring through New run', async ({ executionState, snapshotDelay }) => {
     const fixture = getMockFixture(scope.workspaceId)!
     server.use(
       http.get('/api/workspaces/workspace-1', () => HttpResponse.json({
@@ -379,6 +384,10 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
       http.get(`${runsRoute}/summaries`, () => HttpResponse.json(page([
         { ...runA, status: executionState }, runB,
       ]))),
+      http.get(`${runsRoute}/:runId/snapshot`, async ({ params }) => {
+        if (snapshotDelay) await delay(snapshotDelay)
+        return HttpResponse.json(reply(String(params.runId), scope))
+      }),
     )
     const { router } = await mount()
     await savedY()
