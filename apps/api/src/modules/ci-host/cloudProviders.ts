@@ -14,6 +14,7 @@ export interface CloudRun {
   reconciliation?: { attempts: number; at: string; previousMessage: string | null }
   mirrorBranch?: string
   workflowStarted?: boolean
+  lastProgressAt?: string
   provenance?: CiHostRun['provenance']
   collection?: { log: boolean; artifacts: boolean }
   cancellation?: { at: string; canceledIds: string[] }
@@ -28,8 +29,9 @@ export const CLOUD_START_TIMEOUT_MS = 75_000
 export interface CloudStep { key: string; name: string; state: 'running' | 'passed' | 'failed' | 'skipped' }
 /** The run's state with its live progress: the job's steps and, where the provider streams it, the running step's
  * output so far. */
-export type CloudStatus = ({ done: false } | { done: true; conclusion: 'success' | 'failure' | 'cancelled'; finishedAt: string })
-  & { steps?: CloudStep[]; output?: { key: string; text: string } }
+export type CloudStatus = ({ done: false } | {
+  done: true; conclusion: 'success' | 'failure' | 'cancelled'; finishedAt: string; message?: string
+}) & { steps?: CloudStep[]; output?: { key: string; text: string } }
 export interface CloudDispatchInput {
   mirror: string; branch: string; snapshotCommit?: string; runId: string; suite: CiExecutionSuite; slice: string
   expectedDurationMs?: number
@@ -87,6 +89,13 @@ async function executeCommand(ports: HostCiPorts, label: string, file: string, a
   if (result.code !== 0) {
     const limited = rateLimited(label, result.stderr)
     if (limited) throw limited
+    const noActiveWorkflows = file === 'circleci' && args[0] === 'run'
+      && (args[1] === 'get' || args[1] === 'cancel') && /\bno active workflows\b/i.test(result.stderr)
+    if (noActiveWorkflows) {
+      if (args[1] === 'cancel') return ''
+      throw new DomainError('CI_CLOUD_RUN_ENDED',
+        'CircleCI reports no active workflows; the final outcome is unknown.', 502)
+    }
     const missingRun = file === 'circleci' && args[0] === 'run' && args[1] === 'get'
       && /\brun\.not_found\b/.test(result.stderr)
     if (missingRun) throw new DomainError('CI_CLOUD_RUN_NOT_FOUND', 'CircleCI run is not visible.', 502)
@@ -268,7 +277,8 @@ export class CircleCiProvider implements CloudProvider {
     if (!run.providerRunId) return null
     try {
       const view = await this.pipeline(run, 15_000)
-      return view.workflows?.length ? run.providerRunId : null
+      return view.workflows?.length || view.phase === 'ended' || view.current_outcome === 'not_run'
+        ? run.providerRunId : null
     } catch (error) {
       const elapsed = this.ports.now().getTime() - Date.parse(run.dispatch?.at ?? run.startedAt)
       // Accepted pipelines can take a few polls to appear in CircleCI's run lookup.
@@ -300,6 +310,20 @@ export class CircleCiProvider implements CloudProvider {
   async status(run: CloudRun): Promise<CloudStatus> {
     const view = await this.pipeline(run)
     const workflows = view.workflows ?? []
+    const pipelineEnded = view.phase === 'ended' || view.current_outcome === 'not_run'
+    const workflowsEnded = workflows.length > 0 && workflows.every(workflow => workflow.phase === 'ended')
+    const ended = pipelineEnded || workflowsEnded
+    let finalOutcomes: (string | undefined)[] = []
+    const pipelineOutcome = view.outcome ?? view.current_outcome
+    if (pipelineEnded && pipelineOutcome !== undefined) finalOutcomes = [pipelineOutcome]
+    else if (ended) finalOutcomes = workflows.map(workflow => workflow.outcome)
+    const stopped = [view.stopped_at, ...workflows.map(workflow => workflow.stopped_at)]
+      .filter((value): value is string => value !== undefined).sort().at(-1)
+    const hasFinalOutcome = finalOutcomes.some(outcome => outcome !== undefined)
+    // Terminal parent status wins over child records that CircleCI has not updated yet.
+    if (ended && (hasFinalOutcome || workflows.every(workflow => !workflow.jobs?.length))) {
+      return this.completed(finalOutcomes, stopped, [])
+    }
     const jobs = await Promise.all(workflows.flatMap(workflow => workflow.jobs ?? []).map(async job => ({
       id: job.id,
       detail: JSON.parse(await this.circleci(['job', 'get', job.id, '--json'])) as {
@@ -312,10 +336,10 @@ export class CircleCiProvider implements CloudProvider {
     const key = (step: { jobId: string; num: number }) => `${step.jobId}:${step.num}`
     const steps = raw.map(step => ({ key: key(step), name: step.name, state: step.phase !== 'ended' ? 'running' as const
       : step.outcome === 'succeeded' ? 'passed' as const : step.outcome === 'skipped' ? 'skipped' as const : 'failed' as const }))
-    const pending = view.phase !== undefined && view.phase !== 'ended'
+    const pending = !ended && (view.phase !== undefined && view.phase !== 'ended'
       || workflows.some(workflow => workflow.phase !== undefined && workflow.phase !== 'ended'
         || !workflow.jobs?.length && workflow.phase !== 'ended' && view.phase !== 'ended')
-      || jobs.some(job => job.detail.phase !== 'ended') || !workflows.length
+      || jobs.some(job => job.detail.phase !== 'ended') || !workflows.length)
     if (pending) {
       // CircleCI serves a running step's output so far; it is read whole, so only the running step is read.
       const current = raw.findLast(step => step.phase !== 'ended')
@@ -329,15 +353,22 @@ export class CircleCiProvider implements CloudProvider {
       }
       return { done: false, steps, output: { key: key(current), text: result.stdout } }
     }
-    const outcomes = [view.outcome, ...workflows.map(workflow => workflow.outcome), ...jobs.map(job => job.detail.outcome)]
+    const outcomes = [view.outcome, ...workflows.map(workflow => workflow.outcome),
+      ...jobs.filter(job => job.detail.phase === 'ended').map(job => job.detail.outcome)]
       .filter((outcome): outcome is string => outcome !== undefined)
-    const failed = !outcomes.length || outcomes.some(outcome => !['succeeded', 'canceled'].includes(outcome))
-    const stopped = [view.stopped_at, ...workflows.map(workflow => workflow.stopped_at),
-      ...jobs.map(job => job.detail.stopped_at)].filter((value): value is string => value !== undefined).sort().at(-1)
+    const finishedAt = [stopped, ...jobs.map(job => job.detail.stopped_at)]
+      .filter((value): value is string => value !== undefined).sort().at(-1)
+    return this.completed(outcomes, finishedAt, steps)
+  }
+
+  private completed(outcomes: (string | undefined)[], stopped: string | undefined, steps: CloudStep[]): CloudStatus {
+    const unknown = !outcomes.length || outcomes.some(outcome => outcome === undefined)
+    const failed = unknown || outcomes.some(outcome => !['succeeded', 'canceled'].includes(outcome ?? ''))
     let conclusion: 'success' | 'failure' | 'cancelled' = 'success'
     if (failed) conclusion = 'failure'
     else if (outcomes.includes('canceled')) conclusion = 'cancelled'
-    return { done: true, finishedAt: stopped ?? this.ports.now().toISOString(), steps, conclusion }
+    return { done: true, finishedAt: stopped ?? this.ports.now().toISOString(), steps, conclusion,
+      ...(unknown ? { message: 'CircleCI execution ended, but its final outcome is unknown.' } : {}) }
   }
 
   async log(run: CloudRun) {
@@ -368,6 +399,7 @@ export class CircleCiProvider implements CloudProvider {
     try {
       view = JSON.parse(await this.circleci(['run', 'get', run.providerRunId!, '--json'])) as typeof view
     } catch (error) {
+      if (error instanceof DomainError && error.code === 'CI_CLOUD_RUN_ENDED') return
       if (!(error instanceof DomainError && error.code === 'CI_CLOUD_RUN_NOT_FOUND')) throw error
       view = null
     }

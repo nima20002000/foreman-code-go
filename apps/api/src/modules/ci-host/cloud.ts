@@ -27,6 +27,8 @@ const MAX_DISPATCH_ATTEMPTS = 3
 /** A running run asks its service at most this often; reads in between answer from the kept state and log. */
 const POLL_MS = 4_000
 const MAX_BACKOFF_MS = 10 * 60_000
+const MIN_STALL_MS = 15 * 60_000
+const EXPECTED_DURATION_MULTIPLIER = 3
 /** Provider CLI polls run on Main, which also runs Agents: at most this many follow runs at once per service. */
 const POLL_CONCURRENCY = 3
 const PRUNE_INTERVAL_MS = 5 * 60_000
@@ -299,7 +301,8 @@ export class CloudCi {
         try {
           if (await this.provider.find(run)) run = await this.save({ ...run, state: 'running', workflowStarted: true })
         } catch (error) {
-          if (error instanceof DomainError && error.code === 'CI_CLOUD_PIPELINE_FAILED') {
+          if (error instanceof DomainError
+            && ['CI_CLOUD_PIPELINE_FAILED', 'CI_CLOUD_RUN_ENDED'].includes(error.code)) {
             run = await this.failPipeline(run, { message: error.message, configError: error.details?.configError === true })
           } else {
             // The trigger was accepted, so a lookup failure must not dispatch the ticket to another computer.
@@ -645,7 +648,7 @@ export class CloudCi {
     const pendingCollection = run.collection && (!run.collection.log || !run.collection.artifacts)
     if (!['starting', 'running'].includes(run.state) && !run.cancellation && !pendingCollection) return run
     const now = this.ports.now().getTime()
-    if (run.reconciliation && (run.reconciliation.attempts >= MAX_DISPATCH_ATTEMPTS
+    if (run.reconciliation && (run.reconciliation.attempts >= MAX_DISPATCH_ATTEMPTS && !this.stalled(run)
       || now - Date.parse(run.reconciliation.at) < POLL_MS)) return run
     if (now < this.backoff.until) return run
     if ((run.cancellation || pendingCollection || run.state === 'running' && run.workflowStarted)
@@ -669,7 +672,8 @@ export class CloudCi {
       }
       return next
     } catch (error) {
-      if (error instanceof DomainError && error.code === 'CI_CLOUD_PIPELINE_FAILED') {
+      if (error instanceof DomainError
+        && ['CI_CLOUD_PIPELINE_FAILED', 'CI_CLOUD_RUN_ENDED'].includes(error.code)) {
         return this.failPipeline(run, { message: error.message, configError: error.details?.configError === true })
       }
       if (error instanceof DomainError && error.code === 'CI_CLOUD_RUN_NOT_FOUND') {
@@ -727,10 +731,19 @@ export class CloudCi {
     const text = sanitizeCiText(chunk.toString('utf8'))
     if (text.length) await writeFile(this.path(run.runId, 'log'), text, { flag: 'a', mode: 0o600 })
     bytes += Buffer.byteLength(text)
-    return this.save({ ...run, live: { step, seen: [...seen], ...(output ? { output } : {}), bytes } })
+    return this.save({ ...run, lastProgressAt: this.ports.now().toISOString(),
+      live: { step, seen: [...seen], ...(output ? { output } : {}), bytes } })
   }
 
-  /** Reconcile retained terminal work in bounded batches, even when Main no longer polls the ticket. */
+  private stalled(run: CloudRun): boolean {
+    if (run.state !== 'running') return false
+    const timeout = Math.max(MIN_STALL_MS,
+      (run.dispatch?.input.expectedDurationMs ?? 0) * EXPECTED_DURATION_MULTIPLIER)
+    const lastProgress = Date.parse(run.lastProgressAt ?? run.dispatch?.at ?? run.startedAt)
+    return this.ports.now().getTime() - lastProgress >= timeout
+  }
+
+  /** Reconcile overdue runs and retained terminal work in bounded batches. */
   async reconcile(): Promise<void> {
     const entries = await readdir(join(this.root, 'runs'), { withFileTypes: true }).catch(error => {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
@@ -741,7 +754,7 @@ export class CloudCi {
       const runId = ids[(this.reconcileCursor + offset) % ids.length]!
       try {
         const run = await this.read(runId)
-        if (run.cancellation || run.collection && (!run.collection.log || !run.collection.artifacts)) {
+        if (this.stalled(run) || run.cancellation || run.collection && (!run.collection.log || !run.collection.artifacts)) {
           await this.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 })
         }
       } catch (error) {
@@ -757,7 +770,8 @@ export class CloudCi {
     try {
       discovered = await this.provider.find(run)
     } catch (error) {
-      if (!(error instanceof DomainError && error.code === 'CI_CLOUD_RUN_NOT_FOUND')) throw error
+      if (!(error instanceof DomainError
+        && ['CI_CLOUD_RUN_NOT_FOUND', 'CI_CLOUD_RUN_ENDED'].includes(error.code))) throw error
       log.warn({ err: error, runId: run.runId }, 'Cloud CI discovery unavailable; canceling known pipelines')
     }
     const attempts = run.dispatchHistory?.map(attempt => attempt.providerRunId) ?? []
@@ -830,7 +844,8 @@ export class CloudCi {
     const passed = status.conclusion === 'success'
     const terminal = await this.save({ ...run, state: passed ? 'passed' : status.conclusion === 'cancelled' ? 'canceled' : 'failed',
       exitCode: passed ? 0 : 1, finishedAt: status.finishedAt, collection: { log: false, artifacts: false },
-      message: passed ? run.message : [run.message, `${this.provider.label}: ${status.conclusion}.`].filter(Boolean).join(' ') })
+      message: passed ? run.message
+        : [run.message, status.message ?? `${this.provider.label}: ${status.conclusion}.`].filter(Boolean).join(' ') })
     return this.collect(terminal)
   }
 }
