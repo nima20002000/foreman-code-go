@@ -14,6 +14,7 @@ const nativeUnitFiles = new Set([
   'apps/api/test/pr17-native-process-runtime.test.ts',
   'apps/api/test/pr17-recovery.test.ts',
   'apps/api/test/codex-idle-recovery.test.ts',
+  'apps/api/test/codex-pending-turn-restart.test.ts',
   'apps/api/test/native-qualification-command-lifecycle.test.ts',
   'apps/api/test/codex-protocol.test.ts',
 ])
