@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, it } from 'vitest'
+import { checkpointOwnerMigration } from '../src/infrastructure/checkpointOwnerMigration.js'
 import { workflowRestartRecoveryMigration } from '../src/infrastructure/workflowRestartRecoveryMigration.js'
 import { recoverWorkflowNativeClosure, readWorkflowClosure, readUnboundWorkflowClosure } from '../src/modules/interactions/workflowClosure.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
@@ -38,6 +39,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('ENG06-A PostgreSQL recovery rec
         detached_at timestamptz,detached_reference jsonb,closed_without_session boolean not null default false);
       create index execution_native_closures_latest_idx on execution_native_closures(execution_id,generation desc);
     `)
+    await pool.query(checkpointOwnerMigration.sql)
     await pool.query(workflowRestartRecoveryMigration.sql)
   }, 30_000)
   afterAll(async () => {
