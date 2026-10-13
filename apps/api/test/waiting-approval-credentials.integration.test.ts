@@ -68,6 +68,8 @@ it('stops renewing the waiting requester after its accepted Run authority is rev
     const [pending] = (await f.pending()).filter(item => item.status === 'pending')
     if (!pending?.executionId) throw new Error('Expected a pending requester')
     let renewalRejected = false
+    expect((await f.native.inspectInteractionActivity(pending)).response)
+      .toMatchObject({ qualified: true, usable: true })
     const renew = Wave25WorkerCredentialService.prototype.renewForExecution
     const renewal = vi.spyOn(Wave25WorkerCredentialService.prototype, 'renewForExecution')
       .mockImplementation(async function (this: Wave25WorkerCredentialService, ...args) {
@@ -81,6 +83,8 @@ it('stops renewing the waiting requester after its accepted Run authority is rev
     try {
       await vi.waitFor(() => expect(renewalRejected).toBe(true), { timeout: 10_000, interval: 10 })
     } finally { renewal.mockRestore() }
+    expect((await f.native.inspectInteractionActivity(pending)).response)
+      .toMatchObject({ qualified: false, usable: false, path: null })
     const readExpiry = async () => (await f.db.pool.query<{ expires_at: Date }>(
       'select p.expires_at from management_principals p join worker_credential_bindings b on b.principal_id=p.id where b.execution_id=$1',
       [pending.executionId])).rows[0]!.expires_at.toISOString()
@@ -88,6 +92,7 @@ it('stops renewing the waiting requester after its accepted Run authority is rev
     // eslint-disable-next-line no-restricted-syntax -- Proves no further renewal occurs after authority loss.
     await new Promise<void>(resolve => setTimeout(resolve, 2_000))
     expect(await readExpiry()).toBe(stopped)
+    expect(await f.repository.get(pending.id)).toMatchObject({ status: 'pending', deliveryState: 'not_started' })
     expect(f.provider.counts.responses).toBe(0)
     expect(f.provider.counts.starts).toBe(2)
   } finally { await f.close() }

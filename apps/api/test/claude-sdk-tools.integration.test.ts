@@ -95,11 +95,17 @@ it.each([
         const ready = await files.finalize(owner.principal, target, uploadId)
         arguments_ = { fileId: ready.value.file.fileId, revisionId: ready.value.revision.revisionId }
       }
+      const gatePermission = scenario === 'management' && serverName === 'graphql'
+      let releasePermission!: () => void
+      const permissionReady = new Promise<void>(resolve => { releasePermission = resolve })
+      let permissionWaiting = false
       const transport = claudeSdkToolTransport(directory, () => [{ name: scenario === 'files' ? 'files.read' : 'workspace_create',
         arguments: arguments_, server: serverName, source: scenario === 'files' ? 'sdk' : 'dynamic' }], {
         beforePermission: async () => {
-          if (scenario === 'management' && serverName === 'graphql') {
+          if (gatePermission) {
+            permissionWaiting = true
             await new Promise(resolve => setTimeout(resolve, 1250))
+            await permissionReady
           }
         },
       })
@@ -136,6 +142,18 @@ it.each([
       })
       try {
         await chat.send(conversation.id, { requestId, content: 'Call the configured tool' }, owner.principal)
+        if (gatePermission) {
+          await readUntil(async () => permissionWaiting, Boolean, {
+            timeoutMs: 15_000, description: 'native tool waiting before permission',
+          })
+          const waiting = await chat.get(conversation.id, owner.principal)
+          expect(waiting.activeRequestId).toBe(requestId)
+          expect(waiting.pendingInteraction).toBeUndefined()
+          expect(transport.results).toEqual([])
+          expect((await pool.query("select count(*)::int as n from workspaces where record->>'name'=$1",
+            [arguments_.name])).rows[0]?.n).toBe(0)
+          releasePermission()
+        }
         if (scenario !== 'denied-management') {
           const state = await readUntil(async () => {
             const current = await chat.get(conversation.id, owner.principal)
@@ -148,6 +166,7 @@ it.each([
             timeoutMs: 15_000, description: 'SDK tool approval',
           })
           const pending = state.pendingInteraction!
+          expect(transport.results).toEqual([])
           const input = { commandId: randomUUID(), requestId, nativeRequestId: pending.turn.nativeRequestId,
             optionId: pending.responseOptions[0]!.optionId }
           const denied = await graphRpc(app, reader.token, 'tools/call', { name: 'operator_chat_respond',
@@ -201,6 +220,7 @@ it.each([
         expect(credentials).toHaveLength(scenario === 'files' ? 0 : 1)
         expect(credentials.every(row => row.revoked_at !== null)).toBe(true)
       } finally {
+        releasePermission()
         try { await chat.shutdown() } finally { await app.close() }
       }
     }).finally(() => rm(vault, { recursive: true, force: true }))
