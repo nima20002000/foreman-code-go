@@ -35,7 +35,8 @@ it('defers reservation cleanup without waiting on a locked completed Run', async
         await releaseRetained()
         return owner
       }
-      const owner = await acquireOwner()
+      const owner = await waitForRemoteReview(acquireOwner, value => value !== undefined,
+        'retained completed Run ownership release')
       try { expect(owner).toBeDefined() } finally { await owner?.release() }
     } finally {
       await releaseRetained()
