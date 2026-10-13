@@ -841,7 +841,7 @@ describe('GitHub Actions CI on a public mirror', () => {
     const workflowRef = `ci-snapshot/${f.mirrorGit('rev-parse', branch)}`
     expect(f.dispatched).toEqual([['workflow', 'run', 'ci.yml', '-R', 'octo/site-ci', '--ref', workflowRef, '-f', `ref=${workflowRef}`,
       '-f', `run_id=${runId}`, '-f', 'suite=integration',
-      '-f', 'slice=s:0,3', '-f', 'expected_duration_ms=0', '-f', 'scope=full']])
+      '-f', 'slice=s:0,2', '-f', 'expected_duration_ms=0', '-f', 'scope=full']])
     // A retried start returns the same run without dispatching again.
     await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit, suite: 'integration', scope: 'full',
       partition: { index: 0, count: 2 } })

@@ -120,3 +120,32 @@ it('resolves branch identity and ancestry from published Git commits while prote
   git(clone, 'update-ref', 'refs/remotes/origin/ambiguous', second)
   expect(await commits.branch('octo/site', 'main', first)).toBeNull()
 })
+
+it('discovers CI test inventories without loading committed duration snapshots', async () => {
+  const cache = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(cache, { recursive: true })
+  const directory = await mkdtemp(join(cache, 'ci-inventory-'))
+  directories.push(directory)
+  const environment = gitFixtureEnvironment()
+  const git = (...args: string[]) => execFileSync('git', args, {
+    cwd: directory, env: environment, encoding: 'utf8',
+  }).trim()
+  await mkdir(join(directory, 'scripts'))
+  await mkdir(join(directory, 'apps/api/test'), { recursive: true })
+  await writeFile(join(directory, 'apps/api/test/workflow.test.ts'), 'export {}')
+  await writeFile(join(directory, 'apps/api/test/workflow.integration.test.ts'), 'export {}')
+  for (const suite of ['unit', 'integration']) {
+    await writeFile(join(directory, `scripts/${suite}-durations.json`), JSON.stringify({ obsolete: 999 }))
+  }
+  git('init', '-q', '-b', 'main')
+  git('add', '.')
+  git('commit', '-qm', 'Inventory')
+  const commits = new GitCiCommits({ ...systemGitWorktreePorts(environment), cloneDirectory: () => directory })
+  const commit = git('rev-parse', 'HEAD')
+  expect(await commits.unitInventory('example/project', commit)).toEqual({
+    files: ['apps/api/test/workflow.test.ts'], durations: {}, heavy: [],
+  })
+  expect(await commits.integrationInventory('example/project', commit)).toEqual({
+    files: ['apps/api/test/workflow.integration.test.ts'], durations: {},
+  })
+})

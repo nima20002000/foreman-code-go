@@ -458,7 +458,9 @@ describe('host CI runner', () => {
     for (const index of [0, 1]) {
       const runId = randomUUID()
       await f.runner.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit, suite: 'integration',
-        partition: { index, count: 2 } })
+        partition: { index, count: 2 }, durations: {
+          'apps/api/test/a.integration.test.ts': 400, 'apps/api/test/b.integration.test.ts': 300,
+          'apps/api/test/c.integration.test.ts': 200, 'apps/api/test/d.integration.test.ts': 100 } })
       const done = await f.settle(runId)
       expect(done.run.state).toBe('passed')
       expect(done.text).toContain('corepack pnpm db:up')
@@ -471,9 +473,9 @@ describe('host CI runner', () => {
   it('splits and times integration files by Main\'s learned durations and reports the durations it measured', async () => {
     const measured = { 'apps/api/test/d.integration.test.ts': 870 }
     const f = await computer({ measured })
-    // Learned: d became the slowest file and a the fastest; c keeps its committed duration.
+    // The database snapshot makes d the slowest file and a the fastest.
     const durations = { 'apps/api/test/a.integration.test.ts': 50, 'apps/api/test/b.integration.test.ts': 300,
-      'apps/api/test/d.integration.test.ts': 900 }
+      'apps/api/test/c.integration.test.ts': 200, 'apps/api/test/d.integration.test.ts': 900 }
     const slices: string[][] = []
     for (const index of [0, 1]) {
       const runId = randomUUID()
@@ -485,7 +487,7 @@ describe('host CI runner', () => {
       const command = done.text.split('\n').find(line => line.startsWith('corepack pnpm test:integration'))!
       slices.push([...command.matchAll(/apps\/api\/test\/(\w)\.integration/g)].map(match => match[1]!).sort())
       const expected = JSON.parse(done.text.split('\n').find(line => line.startsWith('expected '))!.slice('expected '.length))
-      expect(expected).toEqual({ ...durations, 'apps/api/test/c.integration.test.ts': 200 })
+      expect(expected).toEqual(durations)
       expect(await f.runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1, durations: true }))
         .toMatchObject({ operation: 'read', durations: measured })
     }
