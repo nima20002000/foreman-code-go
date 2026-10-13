@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event'
 import { HttpResponse, http } from 'msw'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { WorkspaceRootSelectionSchema, type WorkspaceRootSelection } from '@foreman-code/contracts/workspace-root-policies'
 import { FileRetentionSaveInputSchema, type FileRetentionPreference } from '@foreman-code/contracts/files'
 import { clearRevisionedFormPersistence } from '../features/settings/revisionedForm'
 import { clearRetentionCommandMemory } from '../features/retention-settings/retentionCommand'
@@ -12,7 +13,7 @@ import { clearRetentionCommandMemory } from '../features/retention-settings/rete
 import { routeTree } from '../app/router'
 import { server } from '../mocks/server'
 import { setMockScenario } from '../shared/mocks/scenarios'
-import { mainRoot, rootMainId } from '../features/settings/workspaceBoundLocation.fixtures'
+import { mainRoot } from '../features/settings/workspaceBoundLocation.fixtures'
 import { mockRuntimeIdentity } from '../shared/mocks/handlers'
 
 function renderRoute(path: string) {
@@ -39,6 +40,30 @@ afterEach(() => {
 function workspacesDestination() {
   return screen.getAllByRole('button', { name: 'Workspaces' })
     .find(button => !button.hasAttribute('aria-expanded'))!
+}
+
+function mockApprovedMainFolderBrowser() {
+  const browseRequests: WorkspaceRootSelection[] = []
+  const approvedRoot = {
+    ...mainRoot,
+    hostRef: { kind: 'main' as const, mainId: mockRuntimeIdentity.installationId },
+    applicationInstallationId: mockRuntimeIdentity.installationId,
+  }
+  server.use(
+    http.get('/api/management/workspaces/workspace-1/root-location', () => HttpResponse.json({ evidence: 'legacy_missing', workspaceId: 'workspace-1', locationRevision: 0, executionLocation: { runnerId: 'original-runner', rootPath: '/previous' } })),
+    http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({ workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [approvedRoot] })),
+    http.get('/api/management/harnesses/directories', () => HttpResponse.json({
+      roots: [{ id: 'workspaces', label: 'Workspaces', path: mainRoot.bases[0]!.canonicalPath }],
+      rootId: null, path: null, parent: null, directories: [], nextCursor: null,
+    })),
+    http.post('/api/management/workspaces/workspace-1/root-location/browse', async ({ request }) => {
+      const selection = WorkspaceRootSelectionSchema.parse(await request.json())
+      browseRequests.push(selection)
+      return HttpResponse.json({ workspaceId: 'workspace-1', selection,
+        browse: { relativePath: '', directories: [], truncated: false } })
+    }),
+  )
+  return browseRequests
 }
 
 describe('workspace section routes', () => {
@@ -316,18 +341,7 @@ describe('workspace section routes', () => {
   })
 
   it('opens the approved Main folder browser without navigating away from Settings', async () => {
-    localStorage.setItem('graphql.chat-instance-binding', `${mockRuntimeIdentity.checkoutId}:${rootMainId}`)
-    server.use(
-      http.get('/api/runtime/identity', () => HttpResponse.json({ ...mockRuntimeIdentity, installationId: rootMainId })),
-      http.get('/api/management/workspaces/workspace-1/root-location', () => HttpResponse.json({ evidence: 'legacy_missing', workspaceId: 'workspace-1', locationRevision: 0, executionLocation: { runnerId: 'original-runner', rootPath: '/previous' } })),
-      http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({ workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [mainRoot] })),
-      http.get('/api/management/harnesses/directories', () => HttpResponse.json({
-        roots: [{ id: 'workspaces', label: 'Workspaces', path: mainRoot.bases[0]!.canonicalPath }],
-        rootId: null, path: null, parent: null, directories: [], nextCursor: null,
-      })),
-      http.post('/api/management/workspaces/workspace-1/root-location/browse', async ({ request }) => HttpResponse.json({ workspaceId: 'workspace-1', selection: await request.json(),
-        browse: { relativePath: '', directories: [], truncated: false } })),
-    )
+    mockApprovedMainFolderBrowser()
     const user = userEvent.setup()
     const { router } = renderRoute('/workspaces/workspace-1/settings')
 
@@ -343,6 +357,30 @@ describe('workspace section routes', () => {
     expect(await within(dialog).findByRole('button', { name: 'New folder' })).toBeVisible()
     expect(within(dialog).queryByRole('combobox')).not.toBeInTheDocument()
     expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings')
+  })
+
+  it('keeps workspace rename available after closing the approved Main folder browser', async () => {
+    const browseRequests = mockApprovedMainFolderBrowser()
+    const user = userEvent.setup()
+    const { router } = renderRoute('/workspaces/workspace-1/settings')
+
+    await user.click(await screen.findByRole('button', { name: 'Execution location' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Choose folder' })
+    await waitFor(() => expect(browseRequests).toHaveLength(1))
+    expect(browseRequests[0]).toMatchObject({
+      workspaceId: 'workspace-1',
+      hostRef: { kind: 'main', mainId: mockRuntimeIdentity.installationId },
+      allowedBaseId: mainRoot.bases[0]!.baseId,
+      relativePath: '',
+    })
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+
+    expect(screen.queryByRole('dialog', { name: 'Choose folder' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Settings', level: 1 })).toBeVisible()
+    expect(router.state.location.pathname).toBe('/workspaces/workspace-1/settings')
+    await user.click(screen.getByRole('button', { name: 'Rename workspace Website' }))
+    expect(screen.getByRole('textbox', { name: 'Workspace name' })).toHaveFocus()
+    expect(screen.getByRole('textbox', { name: 'Workspace name' })).toHaveValue('Website')
   })
 
   it('uses the same inline rename from the workspace name and settings, with a nearby removal control', async () => {

@@ -19,7 +19,7 @@ import {
   productionIntegrationPaths, publishDesktopIntegration, enableProductionServices, apiServiceTemplate,
   launchProduction, launchBrowser, parseRunWaitMinutes, readReleaseSelection,
   needsStartupConfiguration, recordStartupConfiguration, withProductionSourceSnapshot,
-  backupDatabase, restoreDatabase, runReleaseCutover, recoverReleaseCutover,
+  backupDatabase, restoreDatabase, readPendingMigrations, runReleaseCutover, recoverReleaseCutover,
 } from './local-production-runtime.mjs'
 
 const source = fileURLToPath(new URL('../', import.meta.url))
@@ -229,6 +229,7 @@ function cutoverSteps(environment, { firstInstall = false, releaseMaintenance = 
     })
   }
   return {
+    pendingMigrations: release => readPendingMigrations(release, environment.DATABASE_URL),
     stop: () => run('/usr/bin/systemctl', ['--user', 'stop', units.api]),
     backup: archive => backupDatabase({ archive, database: 'graphql_production', run: databaseCommand }),
     schema: release => readMigrationSchema(release, environment.DATABASE_URL),

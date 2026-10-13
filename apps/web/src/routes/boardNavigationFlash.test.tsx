@@ -8,6 +8,7 @@ import { useGraphDraftStore } from '../features/graph/store'
 import { installFlowLayout } from '../features/run-board/testFlowLayout'
 import { bindMockInstallation } from '../shared/mocks/handlers'
 import { setMockScenario } from '../shared/mocks/scenarios'
+import { installBrowserLocks } from '../test/browserLocks'
 
 const clients: QueryClient[] = []
 
@@ -17,14 +18,7 @@ beforeEach(() => {
   sessionStorage.clear()
   bindMockInstallation()
   installFlowLayout(1000, 720)
-  // JSDOM has no Web Locks; the mounted editor still claims tab ownership.
-  vi.stubGlobal('navigator', { ...navigator, locks: {
-    request: async (name: string, optionsOrWork: LockOptions | ((lock: Lock) => Promise<unknown>),
-      work?: (lock: Lock) => Promise<unknown>) => {
-      const callback = typeof optionsOrWork === 'function' ? optionsOrWork : work!
-      return callback({ name, mode: 'exclusive' })
-    },
-  } })
+  installBrowserLocks()
 })
 
 afterEach(() => {
@@ -73,6 +67,9 @@ it.each([
     })
     render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
     const authoring = await screen.findByRole('region', { name: 'Workflow authoring' }, { timeout: 8000 })
+    expect(within(authoring).getByRole('heading', { name: 'Research to review' })).toBeVisible()
+    const canvas = within(authoring).getByLabelText('Editable workflow graph')
+    expect(await within(canvas).findByRole('button', { name: /^Researcher,/ }, { timeout: 8000 })).toBeVisible()
     expect(await within(authoring).findByRole('button', {
       name: /^Researcher, .*starts the workflow.*Draft$/,
     }, { timeout: 8000 })).toBeVisible()

@@ -143,7 +143,7 @@ describe.skipIf(!postgresEnabled)('CI migration integrity through fresh and hist
                 for each row execute function reject_fixture_migration()`)
           }
           await expect(applyApplicationMigrations(database.pool))
-            .rejects.toMatchObject({ code: fault === 'SQL' ? '42P07' : 'P0001' })
+            .rejects.toMatchObject(fault === 'SQL' ? { cause: { code: '42P07' } } : { code: 'P0001' })
           expect(await ledger(database)).toEqual(applied)
           expect(await seeded.facts()).toEqual(before)
           expect((await database.pool.query(`select to_regclass('ci_enrollment_workspaces') as table_name`)).rows)
@@ -153,6 +153,8 @@ describe.skipIf(!postgresEnabled)('CI migration integrity through fresh and hist
           if (fault === 'SQL') await database.pool.query('drop table ci_enrollment_computers')
           else await database.pool.query('drop trigger reject_fixture_migration on application_migrations')
           await applyApplicationMigrations(database.pool)
+          expect((await ledger(database)).map(row => row.version))
+            .toEqual(migrations.map(migration => migration.version).sort((left, right) => left - right))
           const onMain = seeded.record(seeded.main)
           await createPreparation(database, onMain)
           expect(await new PostgresCiPreparationRepository(database.pool).get(onMain.id)).toEqual(onMain)

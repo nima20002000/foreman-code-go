@@ -32,16 +32,24 @@ async function physicalStoragePath(path) {
   }
 }
 
+let libc;
+function processLibc() {
+  if (libc === undefined) {
+    const version = process.report.getReport().header.glibcVersionRuntime;
+    libc = version ? `glibc-${version}` : 'unknown';
+  }
+  return libc;
+}
+
 export async function hostFacts(home, storagePaths = []) {
   const os = await readFile('/etc/os-release', 'utf8');
   const values = Object.fromEntries(os.split('\n').filter((line) => /^[A-Z_]+=/.test(line)).map((line) => { const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1).replace(/^"|"$/g, '')]; }));
-  const libc = process.report.getReport().header.glibcVersionRuntime;
   const mounts = await readFile('/proc/self/mountinfo', 'utf8');
   const [homePersistent, ...storagePersistent] = await Promise.all([home, ...storagePaths].map(async (path) => {
     try { return persistentFilesystems(mounts, await physicalStoragePath(path)).homePersistent; }
     catch { return false; }
   }));
-  return { os: values.ID, osRelease: values.VERSION_ID, arch: process.arch, libc: libc ? `glibc-${libc}` : 'unknown', node: process.version, ...persistentFilesystems(mounts, '/'), homePersistent, storagePersistent: storagePersistent.every(Boolean) };
+  return { os: values.ID, osRelease: values.VERSION_ID, arch: process.arch, libc: processLibc(), node: process.version, ...persistentFilesystems(mounts, '/'), homePersistent, storagePersistent: storagePersistent.every(Boolean) };
 }
 
 export async function requirePrivateDirectory(path) {

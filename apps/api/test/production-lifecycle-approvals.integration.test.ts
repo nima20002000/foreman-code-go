@@ -56,6 +56,19 @@ it('updates and reads Operator defaults through authenticated MCP with a one-slo
   }
 })
 
+it('persists a User approval wait when application and checkpoint schemas are separate', async () => {
+  const { run, pending } = await start('user')
+
+  expect(await runs.get(run.id)).toMatchObject({ executionState: 'waiting', outcome: 'pending' })
+  expect(pending.graphInterruptId).toEqual(expect.any(String))
+  const response = await production.app.inject({
+    method: 'GET', url: `/api/user/interactions?runId=${run.id}`,
+  })
+  expect(response.statusCode, response.body).toBe(200)
+  expect(response.json().items).toEqual([expect.objectContaining({ id: pending.id, status: 'pending' })])
+  expect(native.responses).toBe(0)
+})
+
 it('answers a production User approval through the local API while excluding Operator and App authority', async () => {
   const { run, issuer, pending } = await start('user')
 

@@ -82,6 +82,26 @@ export async function restoreDatabase({ archive, run }) {
   }
 }
 
+export async function findPendingMigrations({ migrations, query }) {
+  const { rows } = await query("select to_regclass('application_migrations') is not null as present")
+  if (!rows[0].present) return migrations.map(migration => migration.version)
+  const applied = await query('select version from application_migrations')
+  const appliedVersions = new Set(applied.rows.map(row => row.version))
+  return migrations.filter(migration => !appliedVersions.has(migration.version)).map(migration => migration.version)
+}
+
+export async function readPendingMigrations(release, databaseUrl) {
+  const { migrations } = await import(pathToFileURL(join(release, 'apps/api/dist/infrastructure/migrations.js')))
+  const require = createRequire(join(release, 'apps/api/package.json'))
+  const { Pool } = require('pg')
+  const pool = new Pool({ connectionString: databaseUrl, max: 1, connectionTimeoutMillis: 5000, query_timeout: 5000 })
+  try {
+    return await findPendingMigrations({ migrations, query: text => pool.query(text) })
+  } finally {
+    await pool.end()
+  }
+}
+
 async function readDeployment(stateFile) {
   try {
     return JSON.parse(await readFile(stateFile, 'utf8'))
@@ -99,6 +119,10 @@ async function saveDeployment(stateFile, state, phase) {
 export async function recoverReleaseCutover({ stateFile, steps }) {
   const state = await readDeployment(stateFile)
   if (!state || ['ready', 'recovered'].includes(state.phase)) return
+  if (state.apiMayHaveStopped === false && !state.schemaMayHaveChanged) {
+    await saveDeployment(stateFile, state, 'recovered')
+    return
+  }
   try {
     await saveDeployment(stateFile, state, 'recovering')
     await steps.stop()
@@ -131,7 +155,7 @@ export async function recoverReleaseCutover({ stateFile, steps }) {
 
 export async function runReleaseCutover({ release, previousRelease, stateFile, backupFile, steps }) {
   const state = { release, previousRelease, backupFile, backupComplete: false, schemaMayHaveChanged: false,
-    migrationComplete: false, backwardCompatible: false }
+    migrationComplete: false, backwardCompatible: false, apiMayHaveStopped: false }
   let recoveryAttempted = false
   const perform = async (phase, action) => {
     await saveDeployment(stateFile, state, phase)
@@ -149,17 +173,26 @@ export async function runReleaseCutover({ release, previousRelease, stateFile, b
     }
   }
   try {
-    await perform('stopping', steps.stop)
-    await perform('backing-up', () => steps.backup(backupFile))
-    state.backupComplete = true
-    const schemaBefore = await steps.schema?.(release)
-    state.schemaMayHaveChanged = true
-    await perform('migrating', () => steps.migrate(release))
-    state.migrationComplete = true
-    if (schemaBefore) {
-      state.backwardCompatible = isBackwardCompatibleSchema(schemaBefore, await steps.schema(release))
+    await saveDeployment(stateFile, state, 'checking-migrations')
+    const pendingMigrations = await steps.pendingMigrations(release)
+    let schemaBefore
+    if (pendingMigrations.length) {
+      await perform('backing-up', () => steps.backup(backupFile))
+      state.backupComplete = true
+      await saveDeployment(stateFile, state, 'backed-up')
+      schemaBefore = await steps.schema?.(release)
     }
-    await saveDeployment(stateFile, state, 'migrated')
+    state.apiMayHaveStopped = true
+    await perform('stopping', steps.stop)
+    if (pendingMigrations.length) {
+      state.schemaMayHaveChanged = true
+      await perform('migrating', () => steps.migrate(release))
+      state.migrationComplete = true
+      if (schemaBefore) {
+        state.backwardCompatible = isBackwardCompatibleSchema(schemaBefore, await steps.schema(release))
+      }
+      await saveDeployment(stateFile, state, 'migrated')
+    }
     await perform('upgrading-launcher', () => steps.upgradeLauncher(release))
     await perform('activating', () => steps.activate(release))
     const start = async () => {
