@@ -5,14 +5,20 @@ import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
 
 it.each([
-  ['typecheck', 0], ['typecheck', 1250], ['integration', 0], ['integration', 1250],
+  ['typecheck', 0, 'checkout'], ['typecheck', 1250, 'checkout'],
+  ['integration', 0, 'checkout'], ['integration', 1250, 'checkout'],
+  ['typecheck', 0, 'launch'], ['typecheck', 1250, 'launch'],
+  ['integration', 0, 'launch'], ['integration', 1250, 'launch'],
 ] as const)(
-  'reports a missing generic %s script through MCP and persisted readback after a %i ms launch delay',
-  async (suite, launchDelayMs) => {
-  const repository = await genericCiRepository({ beforeLaunch: async () => {
+  'reports a missing generic %s script through MCP and persisted readback after a %i ms %s delay',
+  async (suite, delayMs, stage) => {
+  const delay = async () => {
     // eslint-disable-next-line no-restricted-syntax
-    await new Promise(resolve => setTimeout(resolve, launchDelayMs))
-  } })
+    await new Promise(resolve => setTimeout(resolve, delayMs))
+  }
+  const repository = await genericCiRepository(stage === 'checkout'
+    ? { beforeCheckout: delay }
+    : { beforeLaunch: delay })
   const f = await fixture({ repositoryRunner: repository })
   try {
     const input = { suite, commandId: `missing-${suite}` }
