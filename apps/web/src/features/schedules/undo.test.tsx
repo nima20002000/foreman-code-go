@@ -230,14 +230,21 @@ it('stops consecutive Undo at an external edit between two local schedule change
 it('allows the newer action’s Redo after Undo stops at an external schedule edit', async () => {
   const view = owner()
   try {
-    await executeBoardAction(historyScope, 'undo', 0)
-    const external = { ...previous, enabled: false, revision: 4 }
-    const local = { ...external, time: '11:00', revision: 5 }
+    const earlier = pendingBoardAction(historyScope, 0)!
+    const external = { ...next, enabled: false, revision: 3 }
+    const local = { ...external, time: '11:00', revision: 4 }
     persisted = local
     recordScheduleUndo(scope, external, local, view.client)
-    await executeBoardAction(historyScope, 'undo', 0)
+    await expect(executeBoardAction(historyScope, 'undo', 0)).resolves.toBe(true)
+    expect(persisted).toMatchObject({ enabled: false, time: '10:00', revision: 5 })
+    expect(pendingBoardAction(historyScope, 0)).toBe(earlier)
     await expect(executeBoardAction(historyScope, 'undo', 0)).rejects.toThrow(/Schedule changed/)
+    expect(pendingBoardAction(historyScope, 0)).toBe(earlier)
+    expect(useBoardUndo.getState().redo[historyScope]).toHaveLength(1)
+    expect(inputs).toHaveLength(1)
     await expect(executeBoardAction(historyScope, 'redo', 0)).resolves.toBe(true)
-    expect(persisted).toMatchObject({ enabled: false, time: '11:00', revision: 7 })
+    expect(persisted).toMatchObject({ enabled: false, time: '11:00', revision: 6 })
+    expect(inputs.map(input => input.expectedRevision)).toEqual([4, 5])
+    expect(useBoardUndo.getState().redo[historyScope]).toHaveLength(0)
   } finally { view.close() }
 })
