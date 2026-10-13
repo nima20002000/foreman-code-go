@@ -107,7 +107,7 @@ describe('SQL-only admitted remote control preparation', () => {
     f.state.reviewsPending = true
     await expect(f.prepare('stop')).rejects.toThrow('cleanup intent')
     f.state.reviewsPending = false
-    f.state.receipt!.retainedReviewer.result = { outcome: 'succeeded', output: { text: 'Different answer' } }
+    f.state.receipt!.retainedReviewer!.result = { outcome: 'succeeded', output: { text: 'Different answer' } }
     await expect(f.prepare('stop')).rejects.toThrow('cleanup intent')
     await f.db.close()
   })
