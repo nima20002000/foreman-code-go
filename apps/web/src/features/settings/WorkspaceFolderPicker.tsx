@@ -13,7 +13,7 @@ type Props = { disabled: boolean; onSelect(path: string): void | Promise<void>; 
 type Location = Parameters<typeof useHarnessDirectories>[0]
 type HistoryEntry = { location: Location; selectedPath?: string; locationsOpen: boolean }
 
-function FolderPicker({ disabled, onSelect, value, label = 'Project folder', selectionUnconfirmed = false, copyValue, description, directoryBinding, onReloadSavedLocation, presentation, triggerRef }: Props) {
+function useFolderPicker({ disabled, onSelect, selectionUnconfirmed = false, directoryBinding }: Props) {
   const [open, setOpen] = useState(false)
   const toasts = useContext(ToastContext)
   const id = useId()
@@ -64,17 +64,8 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
   const canSelect = !markedPaths.length && !remove.isPending && !deleteAttempt.current.unresolved && !undo.isPending && !undoAttempt.current.unresolved && !selecting && !create.isPending && !attempt.current.unresolved && !disabled
     && destinationAllowed && (selectionUnconfirmed || (!query.isFetching && !query.isError))
 
-  useEffect(() => {
-    if (open && creating) { nameRef.current?.focus(); nameRef.current?.select() }
-  }, [open, creating])
-  useEffect(() => { if (error && !locked) nameRef.current?.focus() }, [error, locked])
-  useEffect(() => {
-    // Deliberate navigation restores focus; background refreshes do not.
-    if (!open || creating || !pendingFocus.current) return
-    if (pendingFocus.current === 'new-folder' && newFolderRef.current?.disabled) return
-    const target = pendingFocus.current === 'new-folder' ? newFolderRef.current : pathRef.current
-    if (target) { target.focus(); pendingFocus.current = null }
-  }, [open, creating, location, locationsOpen, data?.path, query.isFetching, query.isError, locked])
+  useFolderPickerFocus({ open, creating, error, locked, location, locationsOpen, path: data?.path,
+    fetching: query.isFetching, failed: query.isError, nameRef, newFolderRef, pathRef, pendingFocus })
 
   const openPicker = () => {
     pendingFocus.current = 'path'
@@ -208,6 +199,30 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
     : listedEntries
 
 
+  return {
+    open, setOpen, toasts, id, creating, setCreating, name, setName, error, setError, selecting,
+    setSelecting, selectionError, setSelectionError, setSelectedPath, locationsOpen, location, setLocation,
+    history, setHistory, create, rename, undo, remove, deleteAttempt, markedPaths, setMarkedPaths,
+    setEditingFolder, closeAfterName, undoAttempt, newFolder, attempt, renameAttempt, inFlight, nameRef,
+    newFolderRef, pathRef, locked, boundQuery, query, data, canMutatePath, currentPath, namingFolder,
+    destination, canBrowse, canSelect, openPicker, navigateFolder, goBack, selectPath, creationParent,
+    createFolder, finishName, deleteFolders, undoCreation, entries,
+  }
+}
+
+function FolderPicker({ disabled, onSelect, value, label = 'Project folder', selectionUnconfirmed = false, copyValue, description, directoryBinding, onReloadSavedLocation, presentation, triggerRef }: Props) {
+  const {
+    open, setOpen, toasts, id, creating, setCreating, name, setName, error, setError, selecting,
+    setSelecting, selectionError, setSelectionError, setSelectedPath, locationsOpen, location, setLocation,
+    history, setHistory, create, rename, undo, remove, deleteAttempt, markedPaths, setMarkedPaths,
+    setEditingFolder, closeAfterName, undoAttempt, newFolder, attempt, renameAttempt, inFlight, nameRef,
+    newFolderRef, pathRef, locked, boundQuery, query, data, canMutatePath, currentPath, namingFolder,
+    destination, canBrowse, canSelect, openPicker, navigateFolder, goBack, selectPath, creationParent,
+    createFolder, finishName, deleteFolders, undoCreation, entries,
+  } = useFolderPicker({
+    disabled, onSelect, value, label, selectionUnconfirmed, copyValue, description, directoryBinding,
+    onReloadSavedLocation, presentation, triggerRef,
+  })
   return <>
     {value !== undefined ? <WorkspaceLocationCard label={label} path={value} description={description} presentation={presentation} triggerRef={triggerRef}
       disabled={disabled} onChoose={openPicker} onCopy={copyValue ? async () => {
@@ -336,4 +351,36 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
 export function WorkspaceFolderPicker(props: Props) {
   const epoch = useHarnessSessionEpoch()
   return <FolderPicker key={epoch} {...props} />
+}
+
+type FolderPickerFocus = {
+  open: boolean
+  creating: boolean
+  error: string | undefined
+  locked: boolean
+  location: Location
+  locationsOpen: boolean
+  path: string | null | undefined
+  fetching: boolean
+  failed: boolean
+  nameRef: RefObject<HTMLInputElement | null>
+  newFolderRef: RefObject<HTMLButtonElement | null>
+  pathRef: RefObject<HTMLInputElement | null>
+  pendingFocus: RefObject<'path' | 'new-folder' | null>
+}
+
+function useFolderPickerFocus({ open, creating, error, locked, location, locationsOpen, path,
+  fetching, failed, nameRef, newFolderRef, pathRef, pendingFocus }: FolderPickerFocus) {
+  useEffect(() => {
+    if (open && creating) { nameRef.current?.focus(); nameRef.current?.select() }
+  }, [open, creating, nameRef])
+  useEffect(() => { if (error && !locked) nameRef.current?.focus() }, [error, locked, nameRef])
+  useEffect(() => {
+    // Deliberate navigation restores focus; background refreshes do not.
+    if (!open || creating || !pendingFocus.current) return
+    if (pendingFocus.current === 'new-folder' && newFolderRef.current?.disabled) return
+    const target = pendingFocus.current === 'new-folder' ? newFolderRef.current : pathRef.current
+    if (target) { target.focus(); pendingFocus.current = null }
+  }, [open, creating, location, locationsOpen, path, fetching, failed, locked, pendingFocus, newFolderRef, pathRef])
+
 }

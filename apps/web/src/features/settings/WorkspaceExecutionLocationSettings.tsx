@@ -33,7 +33,7 @@ function revision(value: string | undefined) {
   if (!Number.isSafeInteger(result) || result < 0) throw new Error('This root policy revision cannot be represented by the location API.')
   return result
 }
-function LocationSettings({ workspaceId, presentation = 'field', onSaved, triggerRef }: Props) {
+function useLocationSettings({ workspaceId, presentation = 'field', onSaved }: Props) {
   const epoch = useHarnessSessionEpoch(), scope = `${epoch}:${workspaceId}`
   const toasts = useContext(ToastContext)
   const workspace = useManagedWorkspaceQuery(workspaceId)
@@ -177,6 +177,21 @@ function LocationSettings({ workspaceId, presentation = 'field', onSaved, trigge
   }
   const runBrowse = async () => { if (selection && chosen) try { await browse.mutateAsync({ input: selection, expectedHost: chosen.host }) } catch { /* Mutation exposes the scoped error. */ } }
   const runValidate = async () => { if (selection && chosen) try { await validate.mutateAsync({ input: selection, expectedHost: chosen.host }) } catch { /* Mutation exposes the scoped error. */ } }
+  return {
+    scope, toasts, workspace, identity, defaults, current, saved, choices, browse, validate, save, operation,
+    busy, picker, update, records, chosen, candidate, selection, locked, setPickerOpen, archived, conflict,
+    choose, savedBinding, mainRecord, changeCandidate, reload, submit, runBrowse, runValidate,
+  }
+}
+
+function LocationSettings({ workspaceId, presentation = 'field', onSaved, triggerRef }: Props) {
+  const {
+    scope, toasts, workspace, identity, defaults, current, saved, choices, browse, validate, save, operation,
+    busy, picker, update, records, chosen, candidate, selection, locked, setPickerOpen, archived, conflict,
+    choose, savedBinding, mainRecord, changeCandidate, reload, submit, runBrowse, runValidate,
+  } = useLocationSettings({
+    workspaceId, presentation, onSaved, triggerRef,
+  })
   const guard = <UnsavedEditorGuard editor={{ label: 'execution folder command', dirty: operation.attempt.unresolved, busy, uncertain: operation.attempt.unresolved,
     save: submit, discard: () => { if (!operation.attempt.unresolved) update(scope, () => empty()) }, error: save.error?.message }} />
   const recovery = operation.attempt.unresolved ? <><Alert tone="warning" title="A submitted folder command has an unknown outcome. Its original selection is retained." />

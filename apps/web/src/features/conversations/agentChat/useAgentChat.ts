@@ -1,3 +1,4 @@
+import type { Dispatch, RefObject, SetStateAction } from 'react'
 import type { SessionMode } from '@foreman-code/contracts'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useInfiniteQuery, useIsMutating, useMutation, useMutationState, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
@@ -146,18 +147,7 @@ export function useAgentChat(inputContext: AgentChatContext) {
     : receiptForCommand(state, latestCommand?.command)
   const confirmedReceipt = confirmedCommandReceipt(latestCommand, state)
   const latestReceipt = currentReceipt ?? latestCommand?.result?.turn ?? confirmedReceipt
-  useEffect(() => {
-    if (generation !== sessionGeneration() || sessionIsSwitching()) return
-    if (reconcileDraftReadback(state, commands, draftKey)) setLocalError(undefined)
-    for (const record of commands) {
-      if (record.command?.kind !== 'send') continue
-      const receipt = confirmedCommandReceipt(record, state) ?? receiptForCommand(state, record.command)
-      if (receipt && ['completed', 'failed', 'canceled'].includes(receipt.delivery)) {
-        forgetPendingCommand(draftKey, record.command.input.requestId)
-      }
-    }
-  }, [state, commands, draftKey, generation])
-  useEffect(() => { retireAgentChatAcknowledgements(client) }, [client, state])
+  useAgentChatReceiptReadback({ generation, state, commands, draftKey, setLocalError, client })
   const accept = useCallback((incoming: AgentChatState, source: 'read' | 'receipt' = 'receipt') => {
     assertSession(generation)
     if (sessionIsSwitching() || !matches(incoming)) return
@@ -198,71 +188,8 @@ export function useAgentChat(inputContext: AgentChatContext) {
     return () => { disposed = true; readback.dispose(); close() }
   }, [client, key, context.workspaceId, conversationId, canRead, denial, accept, matches])
 
-  const mutation = useMutation<Result, Error, Command>({ mutationKey: commandKey, retry: false, gcTime: Infinity,
-    // Never park a write offline and send it later to a potentially changed native turn.
-    networkMode: 'always',
-    mutationFn: async (command) => {
-      assertSession(generation)
-      if (!isOnline()) throw new ApiError({ code: 'OFFLINE', message: 'You are offline. No request was sent.' }, 400)
-      const workspaceId = context.workspaceId
-      let result
-      switch (command.kind) {
-        case 'send':
-          result = await agentChatApi.send(workspaceId, command.input)
-          break
-        case 'stop':
-          result = await agentChatApi.interrupt(workspaceId, command.conversationId, {
-            requestId: command.requestId,
-            ...(command.expectedNativeTurnId ? { expectedNativeTurnId: command.expectedNativeTurnId } : {}),
-          })
-          break
-        case 'cancel':
-          result = await agentChatApi.cancelQueued(workspaceId, command.conversationId, command.turnRequestId, {
-            requestId: command.requestId,
-          })
-          break
-        case 'respond':
-          result = await agentChatApi.respond(workspaceId, command.conversationId, {
-            requestId: command.requestId,
-            nativeRequestId: command.nativeRequestId,
-            optionId: command.optionId,
-            ...(command.response !== undefined ? { response: command.response } : {}),
-          })
-          break
-      }
-      if (!matches(result.state)
-        || command.kind !== 'send' && result.state.conversation?.id !== command.conversationId
-        || command.kind === 'send' && (!('turn' in result) || (result as { turn: { requestId: string } }).turn.requestId !== command.input.requestId
-          || command.input.expectedConversationId !== null && result.state.conversation?.id !== command.input.expectedConversationId)) {
-        throw new ApiError({ code: 'INVALID_RESPONSE', message: 'The response did not confirm this command in this conversation.' })
-      }
-      if (generation === sessionGeneration() && !sessionIsSwitching()) accept(result.state)
-      return compactAgentChatResult(result)
-    },
-    onSuccess: (result, command) => {
-      if (generation !== sessionGeneration() || sessionIsSwitching()) return
-      // State was accepted in mutationFn; the stored result is compact.
-      if (command.kind === 'send' && claimDraftReadback(command, result.turn)) {
-        setLocalError(undefined)
-        useConversationDraftStore.getState().clearDraft(draftKey, command.input.content)
-        command.attachmentAttempt?.acknowledge?.()
-      }
-      refresh()
-    },
-    onError: async (error, command) => {
-      if (generation !== sessionGeneration() || sessionIsSwitching()) return
-      if (command.kind === 'send' && !commandMayHaveBeenAccepted(error)) {
-        forgetPendingCommand(draftKey, command.input.requestId)
-      }
-      if (isApiAccessError(error)) {
-        // Only a GET begun after this denial can restore protected chat state.
-        commandDenial.current = error
-        readGeneration.current++
-        await client.cancelQueries({ queryKey: key, exact: true })
-      }
-      refresh()
-    },
-  })
+  const mutation = useAgentChatMutation({ commandKey, generation, context, matches, accept, draftKey,
+    setLocalError, refresh, commandDenial, readGeneration, client, key })
   const runCommand = (build: () => Command): boolean => {
     const release = acquire(client, JSON.stringify(commandKey))
     if (!release) return false
@@ -331,4 +258,111 @@ export function useAgentChat(inputContext: AgentChatContext) {
   }
   return { state, query, history, access, canRead, denial, online, pending, connection, commands, latestCommand, latestReceipt, currentReceipt, confirmedReceipt, localError, blocked,
     send, stop, cancelQueued, respond, refresh, draftKey }
+}
+
+type AgentChatMutationOptions = {
+  commandKey: readonly ['agent-chat', number, string, 'command']
+  generation: number
+  context: AgentChatContext
+  matches: (state: AgentChatState) => boolean
+  accept: (state: AgentChatState, source?: 'read' | 'receipt') => void
+  draftKey: string
+  setLocalError: Dispatch<SetStateAction<string | undefined>>
+  refresh: () => void
+  commandDenial: RefObject<ApiError | undefined>
+  readGeneration: RefObject<number>
+  client: QueryClient
+  key: ReturnType<typeof agentChatStateKey>
+}
+
+function useAgentChatMutation({ commandKey, generation, context, matches, accept, draftKey,
+  setLocalError, refresh, commandDenial, readGeneration, client, key }: AgentChatMutationOptions) {
+  const mutation = useMutation<Result, Error, Command>({ mutationKey: commandKey, retry: false, gcTime: Infinity,
+    // Never park a write offline and send it later to a potentially changed native turn.
+    networkMode: 'always',
+    mutationFn: async (command) => {
+      assertSession(generation)
+      if (!isOnline()) throw new ApiError({ code: 'OFFLINE', message: 'You are offline. No request was sent.' }, 400)
+      const workspaceId = context.workspaceId
+      let result
+      switch (command.kind) {
+        case 'send':
+          result = await agentChatApi.send(workspaceId, command.input)
+          break
+        case 'stop':
+          result = await agentChatApi.interrupt(workspaceId, command.conversationId, {
+            requestId: command.requestId,
+            ...(command.expectedNativeTurnId ? { expectedNativeTurnId: command.expectedNativeTurnId } : {}),
+          })
+          break
+        case 'cancel':
+          result = await agentChatApi.cancelQueued(workspaceId, command.conversationId, command.turnRequestId, {
+            requestId: command.requestId,
+          })
+          break
+        case 'respond':
+          result = await agentChatApi.respond(workspaceId, command.conversationId, {
+            requestId: command.requestId,
+            nativeRequestId: command.nativeRequestId,
+            optionId: command.optionId,
+            ...(command.response !== undefined ? { response: command.response } : {}),
+          })
+          break
+      }
+      if (!matches(result.state)
+        || command.kind !== 'send' && result.state.conversation?.id !== command.conversationId
+        || command.kind === 'send' && (!('turn' in result) || (result as { turn: { requestId: string } }).turn.requestId !== command.input.requestId
+          || command.input.expectedConversationId !== null && result.state.conversation?.id !== command.input.expectedConversationId)) {
+        throw new ApiError({ code: 'INVALID_RESPONSE', message: 'The response did not confirm this command in this conversation.' })
+      }
+      if (generation === sessionGeneration() && !sessionIsSwitching()) accept(result.state)
+      return compactAgentChatResult(result)
+    },
+    onSuccess: (result, command) => {
+      if (generation !== sessionGeneration() || sessionIsSwitching()) return
+      // State was accepted in mutationFn; the stored result is compact.
+      if (command.kind === 'send' && claimDraftReadback(command, result.turn)) {
+        setLocalError(undefined)
+        useConversationDraftStore.getState().clearDraft(draftKey, command.input.content)
+        command.attachmentAttempt?.acknowledge?.()
+      }
+      refresh()
+    },
+    onError: async (error, command) => {
+      if (generation !== sessionGeneration() || sessionIsSwitching()) return
+      if (command.kind === 'send' && !commandMayHaveBeenAccepted(error)) {
+        forgetPendingCommand(draftKey, command.input.requestId)
+      }
+      if (isApiAccessError(error)) {
+        // Only a GET begun after this denial can restore protected chat state.
+        commandDenial.current = error
+        readGeneration.current++
+        await client.cancelQueries({ queryKey: key, exact: true })
+      }
+      refresh()
+    },
+  })
+  return mutation
+}
+
+function useAgentChatReceiptReadback({ generation, state, commands, draftKey, setLocalError, client }: {
+  generation: number
+  state: AgentChatState | undefined
+  commands: AgentChatCommandRecord[]
+  draftKey: string
+  setLocalError: Dispatch<SetStateAction<string | undefined>>
+  client: QueryClient
+}) {
+  useEffect(() => {
+    if (generation !== sessionGeneration() || sessionIsSwitching()) return
+    if (reconcileDraftReadback(state, commands, draftKey)) setLocalError(undefined)
+    for (const record of commands) {
+      if (record.command?.kind !== 'send') continue
+      const receipt = confirmedCommandReceipt(record, state) ?? receiptForCommand(state, record.command)
+      if (receipt && ['completed', 'failed', 'canceled'].includes(receipt.delivery)) {
+        forgetPendingCommand(draftKey, record.command.input.requestId)
+      }
+    }
+  }, [state, commands, draftKey, generation, setLocalError])
+  useEffect(() => { retireAgentChatAcknowledgements(client) }, [client, state])
 }

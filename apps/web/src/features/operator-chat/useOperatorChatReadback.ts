@@ -1,0 +1,71 @@
+import { useCallback, useRef } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import type { OperatorConversationState } from '@foreman-code/contracts'
+import { newerOperatorConversationState as newer } from './operatorConversationReadback'
+import { ApiError, getOperatorConversation } from '../../shared/api/client'
+import { listOperatorConversationSummaries } from '../../shared/api/operatorChatSummaries'
+import { useAccessFailureLatch } from '../../shared/api/useAccessFailureLatch'
+import { SessionChangedError } from '../../shared/api/sessionBoundary'
+import { newerOperatorSummaries, summarizeOperatorConversation } from './operatorChatStatus'
+import { useOperatorChatStore } from './operatorChatStore'
+import { detailKey, listKey, type Summaries } from './operatorChatShared'
+
+/** Query-owned conversation list and selected-conversation readback. */
+export function useOperatorChatReadback(enabled: boolean, open: boolean, selectedId: string | undefined) {
+  const queryClient = useQueryClient()
+  const historyLimit = useRef(10)
+  const deletedRevisions = useRef(new Map<string, number>())
+  const readGeneration = useRef(0)
+  const list = useQuery({ queryKey: listKey, enabled, refetchInterval: 5_000,
+    queryFn: async ({ signal }) => {
+      const next = await listOperatorConversationSummaries({ signal }, historyLimit.current)
+      const current = queryClient.getQueryData<Summaries>(listKey)
+      const visible = next.conversations.flatMap(item => {
+        const deletedRevision = deletedRevisions.current.get(item.conversationId)
+        if (deletedRevision === undefined || item.revision > deletedRevision) return [item]
+        const restored = current?.conversations.find(entry => entry.conversationId === item.conversationId
+          && entry.revision > deletedRevision)
+        return restored ? [restored] : []
+      })
+      const conversations = newerOperatorSummaries(current?.conversations, visible).map((item) => {
+        const detail = queryClient.getQueryData<OperatorConversationState>(detailKey(item.conversationId))
+        return detail && detail.revision > item.revision ? summarizeOperatorConversation(detail) : item
+      })
+      return { ...next, conversations }
+    } })
+  const listDenied = useAccessFailureLatch(list)
+  const selected = useQuery({ queryKey: detailKey(selectedId ?? ''), enabled: enabled && open && !listDenied && Boolean(selectedId),
+    queryFn: async ({ signal }) => {
+      const read = ++readGeneration.current
+      const state = await getOperatorConversation(selectedId ?? '', { signal })
+      signal.throwIfAborted()
+      if (read !== readGeneration.current) throw new DOMException('Newer readback required', 'AbortError')
+      if (state.conversation.id !== selectedId) throw new SessionChangedError()
+      return newer(queryClient.getQueryData<OperatorConversationState>(detailKey(selectedId ?? '')), state, 'read')
+    }, retry: false, refetchInterval: 3_000 })
+  const selectedDenied = useAccessFailureLatch(selected)
+  const accessDenied = listDenied || selectedDenied
+  const acceptState = useCallback((id: string, state: OperatorConversationState) => {
+    if (state.revision <= (deletedRevisions.current.get(id) ?? -1) || state.conversation.id !== id) return
+    const denial = queryClient.getQueryState(detailKey(id))?.error
+    if (ApiError.is(denial) && [401, 403].includes(denial.status)) return
+    if (useOperatorChatStore.getState().selectedConversationId === id) readGeneration.current++
+    const accepted = newer(queryClient.getQueryData<OperatorConversationState>(detailKey(id)), state)
+    queryClient.setQueryData(detailKey(id), accepted)
+    const summary = summarizeOperatorConversation(accepted)
+    queryClient.setQueryData<Summaries>(listKey, (current) => current ? {
+      ...current, conversations: current.conversations.some((item) => item.conversationId === id)
+        ? current.conversations.map((item) => item.conversationId === id && summary.revision >= item.revision ? summary : item)
+        : [summary, ...current.conversations],
+    } : current)
+  }, [queryClient])
+  const invalidate = async (id: string) => { await Promise.all([
+    queryClient.invalidateQueries({ queryKey: detailKey(id) }), queryClient.invalidateQueries({ queryKey: listKey }),
+  ]) }
+  function loadOlderChats() {
+    if (!list.data?.hasMore || list.isFetching || accessDenied) return
+    historyLimit.current += 10
+    void list.refetch()
+  }
+  return { list, selected, accessDenied, acceptState, invalidate, loadOlderChats, deletedRevisions, readGeneration }
+}

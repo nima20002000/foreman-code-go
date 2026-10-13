@@ -81,20 +81,110 @@ export function WorkspaceShell({
 }: WorkspaceShellProps) {
   const workspacesQuery = useWorkspacePages(workspaces === undefined)
   const navigationWorkspaces = workspaces ?? workspacesQuery.data?.pages.flatMap((page) => page.items.map((item) => item.workspace))
+  const { navigationCollapsed, navigationWidth, resizeWidth, navigationMotion,
+    startResize, resizeWithKeyboard, resetWidth } = useNavigationResize()
+  const rememberedWorkspaceId = useNavigationUiStore((state) => state.activeWorkspaceId)
+  const navigationWorkspaceId = activeGlobalSection
+    ? rememberedWorkspaceId ?? workspaceId
+    : workspaceId
+
+
+  return (
+    <div
+      className={`workspace-shell${navigationCollapsed ? ' workspace-shell-navigation-collapsed' : ''}`}
+      data-testid="workspace-shell"
+      data-navigation-motion={navigationMotion}
+      style={{ '--navigation-width': `${resizeWidth ?? navigationWidth}px` } as CSSProperties}
+    >
+      <aside
+        className="shell-sidebar"
+        aria-label="Primary navigation"
+        data-collapsed={navigationCollapsed}
+      >
+        <div
+          className="sidebar-resize-handle"
+          role="separator"
+          aria-label="Resize navigation"
+          aria-orientation="vertical"
+          aria-valuemin={navigationCollapsed || resizeWidth !== null ? COLLAPSED_NAVIGATION_WIDTH : MIN_NAVIGATION_WIDTH}
+          aria-valuemax={MAX_NAVIGATION_WIDTH}
+          aria-valuenow={navigationCollapsed ? COLLAPSED_NAVIGATION_WIDTH : resizeWidth ?? navigationWidth}
+          aria-valuetext={navigationCollapsed ? 'Navigation collapsed. Drag right to expand.' : `${resizeWidth ?? navigationWidth} pixels`}
+          aria-controls="workspace-primary-navigation"
+          aria-keyshortcuts="Control+b Meta+b Enter Space ArrowLeft ArrowRight Home End"
+          tabIndex={0}
+          title="Drag to resize navigation. Ctrl/Cmd+B or Enter toggles navigation. Arrow keys resize."
+          onPointerDown={startResize}
+          onKeyDown={resizeWithKeyboard}
+          onDoubleClick={resetWidth}
+        />
+
+        <nav className="shell-navigation" id="workspace-primary-navigation">
+          <p className="sidebar-brand" data-testid="sidebar-brand" role="img" aria-label={PRODUCT_NAME}>
+            <span aria-hidden="true" className="sidebar-brand-mark">
+              F
+            </span>
+            <span className="sidebar-brand-name">{PRODUCT_NAME}</span>
+          </p>
+
+          <WorkspaceNavigation
+            workspaceId={navigationWorkspaceId}
+            activeSection={activeSection}
+            activeWorkflowId={activeWorkflowId}
+            activeGlobalSection={activeGlobalSection}
+            workspaceOverviewActive={workspaceOverviewActive}
+            workspaces={navigationWorkspaces}
+            workspacePagination={workspaces === undefined ? workspacesQuery : undefined}
+            navigationCollapsed={navigationCollapsed}
+          />
+        </nav>
+
+        <div className="sidebar-footer">
+          <SidebarComputers />
+          <HarnessStatusMenu />
+          <div className="sidebar-preferences-row">
+            <SidebarNavigationButton
+              to="/settings"
+              className={`sidebar-settings-link${activeGlobalSection === 'settings' ? ' sidebar-settings-link-active' : ''}`}
+              aria-current={activeGlobalSection === 'settings' ? 'page' : undefined}
+              aria-label="Settings"
+              title="Settings"
+            >
+              <Settings aria-hidden="true" size={16} />
+            </SidebarNavigationButton>
+            <ThemeToggle />
+          </div>
+        </div>
+      </aside>
+
+      <main className="shell-main">
+        <AppNavigationTrail activeWorkflowId={activeWorkflowId} />
+        {slots.main ? (
+          <section className="shell-content" data-slot="main" aria-label="Workspace content">
+            {slots.main}
+          </section>
+        ) : (
+          <>
+            <section className="graph-surface" data-slot="graph" aria-label="Workflow graph">
+              {slots.graph ?? <DefaultGraph workspaceId={workspaceId} />}
+            </section>
+          </>
+        )}
+      </main>
+    </div>
+  )
+}
+
+function useNavigationResize() {
   const navigationCollapsed = useNavigationUiStore((state) => state.collapsed)
   const navigationWidth = useNavigationUiStore((state) => state.width)
   const resizeWidth = useNavigationUiStore((state) => state.resizeWidth)
   const navigationMotion = useNavigationUiStore((state) => state.motion)
-  const rememberedWorkspaceId = useNavigationUiStore((state) => state.activeWorkspaceId)
   const setCollapsed = useNavigationUiStore((state) => state.setCollapsed)
   const setNavigationWidth = useNavigationUiStore((state) => state.setWidth)
   const setResizeWidth = useNavigationUiStore((state) => state.setResizeWidth)
   const stopResizeRef = useRef<(() => void) | null>(null)
   const resizeCollapsedRef = useRef<boolean | null>(null)
-
-  const navigationWorkspaceId = activeGlobalSection
-    ? rememberedWorkspaceId ?? workspaceId
-    : workspaceId
 
   useEffect(() => () => stopResizeRef.current?.(), [])
 
@@ -202,92 +292,11 @@ export function WorkspaceShell({
     setNavigationWidth(nextWidth)
   }
 
-  return (
-    <div
-      className={`workspace-shell${navigationCollapsed ? ' workspace-shell-navigation-collapsed' : ''}`}
-      data-testid="workspace-shell"
-      data-navigation-motion={navigationMotion}
-      style={{ '--navigation-width': `${resizeWidth ?? navigationWidth}px` } as CSSProperties}
-    >
-      <aside
-        className="shell-sidebar"
-        aria-label="Primary navigation"
-        data-collapsed={navigationCollapsed}
-      >
-        <div
-          className="sidebar-resize-handle"
-          role="separator"
-          aria-label="Resize navigation"
-          aria-orientation="vertical"
-          aria-valuemin={navigationCollapsed || resizeWidth !== null ? COLLAPSED_NAVIGATION_WIDTH : MIN_NAVIGATION_WIDTH}
-          aria-valuemax={MAX_NAVIGATION_WIDTH}
-          aria-valuenow={navigationCollapsed ? COLLAPSED_NAVIGATION_WIDTH : resizeWidth ?? navigationWidth}
-          aria-valuetext={navigationCollapsed ? 'Navigation collapsed. Drag right to expand.' : `${resizeWidth ?? navigationWidth} pixels`}
-          aria-controls="workspace-primary-navigation"
-          aria-keyshortcuts="Control+b Meta+b Enter Space ArrowLeft ArrowRight Home End"
-          tabIndex={0}
-          title="Drag to resize navigation. Ctrl/Cmd+B or Enter toggles navigation. Arrow keys resize."
-          onPointerDown={startResize}
-          onKeyDown={resizeWithKeyboard}
-          onDoubleClick={() => {
-            stopResizeRef.current?.()
-            setNavigationWidth(DEFAULT_NAVIGATION_WIDTH, 'manual')
-            setCollapsed(false, 'manual')
-          }}
-        />
-
-        <nav className="shell-navigation" id="workspace-primary-navigation">
-          <p className="sidebar-brand" data-testid="sidebar-brand" role="img" aria-label={PRODUCT_NAME}>
-            <span aria-hidden="true" className="sidebar-brand-mark">
-              F
-            </span>
-            <span className="sidebar-brand-name">{PRODUCT_NAME}</span>
-          </p>
-
-          <WorkspaceNavigation
-            workspaceId={navigationWorkspaceId}
-            activeSection={activeSection}
-            activeWorkflowId={activeWorkflowId}
-            activeGlobalSection={activeGlobalSection}
-            workspaceOverviewActive={workspaceOverviewActive}
-            workspaces={navigationWorkspaces}
-            workspacePagination={workspaces === undefined ? workspacesQuery : undefined}
-            navigationCollapsed={navigationCollapsed}
-          />
-        </nav>
-
-        <div className="sidebar-footer">
-          <SidebarComputers />
-          <HarnessStatusMenu />
-          <div className="sidebar-preferences-row">
-            <SidebarNavigationButton
-              to="/settings"
-              className={`sidebar-settings-link${activeGlobalSection === 'settings' ? ' sidebar-settings-link-active' : ''}`}
-              aria-current={activeGlobalSection === 'settings' ? 'page' : undefined}
-              aria-label="Settings"
-              title="Settings"
-            >
-              <Settings aria-hidden="true" size={16} />
-            </SidebarNavigationButton>
-            <ThemeToggle />
-          </div>
-        </div>
-      </aside>
-
-      <main className="shell-main">
-        <AppNavigationTrail activeWorkflowId={activeWorkflowId} />
-        {slots.main ? (
-          <section className="shell-content" data-slot="main" aria-label="Workspace content">
-            {slots.main}
-          </section>
-        ) : (
-          <>
-            <section className="graph-surface" data-slot="graph" aria-label="Workflow graph">
-              {slots.graph ?? <DefaultGraph workspaceId={workspaceId} />}
-            </section>
-          </>
-        )}
-      </main>
-    </div>
-  )
+  const resetWidth = () => {
+    stopResizeRef.current?.()
+    setNavigationWidth(DEFAULT_NAVIGATION_WIDTH, 'manual')
+    setCollapsed(false, 'manual')
+  }
+  return { navigationCollapsed, navigationWidth, resizeWidth, navigationMotion,
+    startResize, resizeWithKeyboard, resetWidth }
 }

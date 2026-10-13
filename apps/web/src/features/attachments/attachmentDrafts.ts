@@ -1,5 +1,5 @@
 import { type Mutation, type QueryClient } from '@tanstack/react-query'
-import { createStore } from 'zustand/vanilla'
+import { createStore, type StoreApi } from 'zustand/vanilla'
 import {
   MAX_MESSAGE_ATTACHMENTS, MessageAttachmentRefsSchema, TemporaryFileScopeSchema, fileStateAt,
   type File as FileMetadata, type FileMediaType, type FileWithRevision, type MessageAttachmentRef, type TemporaryFileScope,
@@ -62,7 +62,6 @@ export function createAttachmentDrafts(queryClient: QueryClient, client: Attachm
   const boundarySignal = sessionControllerSignal()
   const store = createStore<AttachmentDraftState>(() => ({ available: !sessionIsSwitching(), drafts: {} }))
   const active = new Map<string, ActiveUpload>()
-  const snapshots = new WeakMap<AttachmentSendSnapshot, SnapshotPins>()
   let disposed = false
   let mounts = 0
   let lifetime = 0
@@ -104,15 +103,8 @@ export function createAttachmentDrafts(queryClient: QueryClient, client: Attachm
     return store.getState().drafts[key]?.selections.find((selection) => selection.id === selectionId)
   }
 
-  function clearProgress(key: string, selectionId: string) {
-    // Avoid creating a new cache record while disposing an already-removed draft.
-    if (!queryClient.getQueryData(progressKey(key))) return
-    queryClient.setQueryData<AttachmentProgressMap>(progressKey(key), (old) => {
-      const next = { ...old }
-      delete next[selectionId]
-      return next
-    })
-  }
+  const clearProgress = (key: string, selectionId: string) =>
+    clearAttachmentProgress(queryClient, progressKey(key), selectionId)
 
   function start(key: string, selection: AttachmentSelection) {
     assertAvailable()
@@ -211,38 +203,8 @@ export function createAttachmentDrafts(queryClient: QueryClient, client: Attachm
     }
   }
 
-  function prepareSend(key: string): AttachmentSendSnapshot | null {
-    assertAvailable()
-    const selections = store.getState().drafts[key]?.selections ?? []
-    const pins: SnapshotPins['pins'][number][] = []
-    for (const selection of selections) {
-      const state = active.get(selection.id)?.mutation.state
-      if (selection.issue || state?.status !== 'success' || !state.data) return null
-      const file = queryClient.getQueryData<FileMetadata>(lifecycleKey(key, selection.id)) ?? state.data.file
-      if (fileStateAt(file, new Date().toISOString()) !== 'ready') return null
-      pins.push({ selectionId: selection.id, fileId: state.data.revision.fileId, revisionId: state.data.revision.revisionId })
-    }
-    const parsed = MessageAttachmentRefsSchema.safeParse(pins.map(({ fileId, revisionId }) => ({ fileId, revisionId })))
-    if (!parsed.success) return null
-    const snapshot: AttachmentSendSnapshot = Object.freeze({
-      attachments: Object.freeze(parsed.data.map((ref) => Object.freeze(ref))),
-    })
-    snapshots.set(snapshot, { draftKey: key, pins })
-    return snapshot
-  }
-
-  function acknowledgeSent(snapshot: AttachmentSendSnapshot) {
-    const saved = snapshots.get(snapshot)
-    snapshots.delete(snapshot)
-    if (!saved || disposed || boundarySignal.aborted || sessionGeneration() !== generation) return
-    for (const pin of saved.pins) {
-      const revision = active.get(pin.selectionId)?.mutation.state.data?.revision
-      if (revision?.fileId === pin.fileId && revision.revisionId === pin.revisionId) {
-        // Only the accepted snapshot is removed. Never cancel now-sent server files.
-        forget(saved.draftKey, pin.selectionId, false)
-      }
-    }
-  }
+  const { prepareSend, acknowledgeSent } = createAttachmentSendSnapshots({ queryClient, store, active,
+    assertAvailable, lifecycleKey, forget, boundarySignal, generation, isDisposed: () => disposed })
 
   function reset() {
     store.setState({ available: false, drafts: {} })
@@ -290,3 +252,62 @@ export function createAttachmentDrafts(queryClient: QueryClient, client: Attachm
 }
 
 export type AttachmentDrafts = ReturnType<typeof createAttachmentDrafts>
+
+function createAttachmentSendSnapshots({ queryClient, store, active, assertAvailable, lifecycleKey,
+  forget, boundarySignal, generation, isDisposed }: {
+  queryClient: QueryClient
+  store: StoreApi<AttachmentDraftState>
+  active: Map<string, ActiveUpload>
+  assertAvailable: () => void
+  lifecycleKey: (key: string, selectionId: string) => readonly string[]
+  forget: (key: string, selectionId: string, cancel: boolean) => void
+  boundarySignal: AbortSignal
+  generation: number
+  isDisposed: () => boolean
+}) {
+  const snapshots = new WeakMap<AttachmentSendSnapshot, SnapshotPins>()
+  function prepareSend(key: string): AttachmentSendSnapshot | null {
+    assertAvailable()
+    const selections = store.getState().drafts[key]?.selections ?? []
+    const pins: SnapshotPins['pins'][number][] = []
+    for (const selection of selections) {
+      const state = active.get(selection.id)?.mutation.state
+      if (selection.issue || state?.status !== 'success' || !state.data) return null
+      const file = queryClient.getQueryData<FileMetadata>(lifecycleKey(key, selection.id)) ?? state.data.file
+      if (fileStateAt(file, new Date().toISOString()) !== 'ready') return null
+      pins.push({ selectionId: selection.id, fileId: state.data.revision.fileId, revisionId: state.data.revision.revisionId })
+    }
+    const parsed = MessageAttachmentRefsSchema.safeParse(pins.map(({ fileId, revisionId }) => ({ fileId, revisionId })))
+    if (!parsed.success) return null
+    const snapshot: AttachmentSendSnapshot = Object.freeze({
+      attachments: Object.freeze(parsed.data.map((ref) => Object.freeze(ref))),
+    })
+    snapshots.set(snapshot, { draftKey: key, pins })
+    return snapshot
+  }
+
+  function acknowledgeSent(snapshot: AttachmentSendSnapshot) {
+    const saved = snapshots.get(snapshot)
+    snapshots.delete(snapshot)
+    if (!saved || isDisposed() || boundarySignal.aborted || sessionGeneration() !== generation) return
+    for (const pin of saved.pins) {
+      const revision = active.get(pin.selectionId)?.mutation.state.data?.revision
+      if (revision?.fileId === pin.fileId && revision.revisionId === pin.revisionId) {
+        // Only the accepted snapshot is removed. Never cancel now-sent server files.
+        forget(saved.draftKey, pin.selectionId, false)
+      }
+    }
+  }
+
+  return { prepareSend, acknowledgeSent }
+}
+
+function clearAttachmentProgress(queryClient: QueryClient, queryKey: readonly string[], selectionId: string) {
+  // Avoid creating a new cache record while disposing an already-removed draft.
+  if (!queryClient.getQueryData(queryKey)) return
+  queryClient.setQueryData<AttachmentProgressMap>(queryKey, (old) => {
+    const next = { ...old }
+    delete next[selectionId]
+    return next
+  })
+}

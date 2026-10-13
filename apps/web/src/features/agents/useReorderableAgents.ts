@@ -1,3 +1,4 @@
+import type { Dispatch, RefObject, SetStateAction } from 'react'
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type {
   DragEvent as ReactDragEvent,
@@ -167,6 +168,61 @@ export function useReorderableAgents(
     [containerRef, onClickCapture, onDragStart, workspaceId],
   )
 
+  const beginDrag = useAgentPointerDrag({ workspaceId, items, orderedIds, listRef, dragRef, suppressClickRef,
+    setPreviewIds, setOrder, announce })
+
+  const moveByKeyboard = useCallback(
+    (id: string, direction: -1 | 1) => {
+      const index = orderedIds.indexOf(id)
+      const targetIndex = index + direction
+      if (index === -1 || targetIndex < 0 || targetIndex >= orderedIds.length) return
+      const next = moveAgentToIndex(orderedIds, id, targetIndex)
+      if (sameOrder(next, orderedIds)) return
+      setOrder(workspaceId, next)
+      const label = items.find((item) => item.id === id)?.label ?? id
+      announce(`Moved ${label} to position ${targetIndex + 1} of ${next.length}`)
+    },
+    [announce, items, orderedIds, setOrder, workspaceId],
+  )
+
+  const getCardProps = useCallback(
+    (id: string): AgentReorderCardProps => ({
+      ref: (card) => setCardRef(id, card),
+      'data-agent-id': id,
+      'aria-keyshortcuts': AGENT_REORDER_KEY_SHORTCUTS,
+      onPointerDown: (event) => beginDrag(event, id),
+      onKeyDown: (event) => {
+        if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+        event.preventDefault()
+        moveByKeyboard(id, event.key === 'ArrowUp' ? -1 : 1)
+      },
+    }),
+    [beginDrag, moveByKeyboard, setCardRef],
+  )
+
+  return {
+    orderedIds: previewIds ?? orderedIds,
+    containerProps,
+    getCardProps,
+  }
+}
+
+type AgentPointerDrag = {
+  workspaceId: string
+  items: readonly ReorderableAgent[]
+  orderedIds: readonly string[]
+  listRef: RefObject<HTMLDivElement | null>
+  dragRef: RefObject<DragSession | null>
+  suppressClickRef: RefObject<boolean>
+  setPreviewIds: Dispatch<SetStateAction<readonly string[] | null>>
+  setOrder: ReturnType<typeof useAgentDirectoryStore.getState>['setOrder']
+  announce: ReturnType<typeof useAgentDirectoryStore.getState>['announce']
+}
+
+function useAgentPointerDrag(options: AgentPointerDrag) {
+  const { workspaceId, items, orderedIds, listRef, dragRef, suppressClickRef,
+    setPreviewIds, setOrder, announce } = options
   const beginDrag = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>, id: string) => {
       if (event.button !== 0 || dragRef.current) return
@@ -329,42 +385,7 @@ export function useReorderableAgents(
         session.holdTimer = window.setTimeout(activate, TOUCH_HOLD_MS)
       }
     },
-    [announce, items, orderedIds, setOrder, workspaceId],
+    [announce, items, orderedIds, setOrder, workspaceId, dragRef, listRef, setPreviewIds, suppressClickRef],
   )
-
-  const moveByKeyboard = useCallback(
-    (id: string, direction: -1 | 1) => {
-      const index = orderedIds.indexOf(id)
-      const targetIndex = index + direction
-      if (index === -1 || targetIndex < 0 || targetIndex >= orderedIds.length) return
-      const next = moveAgentToIndex(orderedIds, id, targetIndex)
-      if (sameOrder(next, orderedIds)) return
-      setOrder(workspaceId, next)
-      const label = items.find((item) => item.id === id)?.label ?? id
-      announce(`Moved ${label} to position ${targetIndex + 1} of ${next.length}`)
-    },
-    [announce, items, orderedIds, setOrder, workspaceId],
-  )
-
-  const getCardProps = useCallback(
-    (id: string): AgentReorderCardProps => ({
-      ref: (card) => setCardRef(id, card),
-      'data-agent-id': id,
-      'aria-keyshortcuts': AGENT_REORDER_KEY_SHORTCUTS,
-      onPointerDown: (event) => beginDrag(event, id),
-      onKeyDown: (event) => {
-        if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
-        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
-        event.preventDefault()
-        moveByKeyboard(id, event.key === 'ArrowUp' ? -1 : 1)
-      },
-    }),
-    [beginDrag, moveByKeyboard, setCardRef],
-  )
-
-  return {
-    orderedIds: previewIds ?? orderedIds,
-    containerProps,
-    getCardProps,
-  }
+  return beginDrag
 }
