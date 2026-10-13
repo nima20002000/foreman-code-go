@@ -270,7 +270,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     await database.pool.query('update management_principals set revoked_at=now() where id=$1',[revoked.principal.id])
     await expect(sources.preparationGet(revoked.principal,'mcp',{workspaceId,operationId:rows[0]!.operation_id})).rejects.toMatchObject({code:'AUTH_REVOKED'})
   },60000)
-  it.each([undefined, '', '{"version":1'])(
+  it.each([undefined, '', '{"version":1', '{"version":1,"id":false}'])(
     'recovers an incomplete readiness record %j through authenticated MCP and reads back the closed owner', async readiness => {
     const operator = await client(writer.token)
     const denied = await client(reader.token)
@@ -562,6 +562,8 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       expect(head.manifest.git?.commit).toBe(advancedCommit)
       expect(head.manifest.git?.commit).not.toBe(f.definition.spec.source.commit)
       await f.jobs.wakeQueue()
+      expect(await f.jobs.getQueueTicket(f.principal, workspaceId, ticket.id))
+        .toMatchObject({ state: 'accepted', executionId: ticket.executionId })
       const execution = await f.jobs.getExecution(f.principal, workspaceId, ticket.executionId)
       expect(execution.acceptedSpec.source.commit).toBe(f.definition.spec.source.commit)
       expect(execution.acceptedSpec.source.snapshotId).toBe(root.source.snapshotId)
@@ -683,7 +685,11 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
       f.pausePreparation(async () => { entered(); await paused })
       const ticket = await f.enqueue()
       const pending = f.jobs.wakeQueue()
-      await preparing
+      await Promise.race([preparing, pending.then(() => {
+        throw new Error('Queue settled before source preparation entered')
+      })])
+      expect(await f.jobs.getQueueTicket(f.principal, workspaceId, ticket.id))
+        .toMatchObject({ state: 'claimed', executionId: ticket.executionId })
       allowPreparationClosure = false
       try {
         await expect(sources.closeQueuedPreparation(ticket)).rejects.toMatchObject({ code: 'SOURCE_PREPARATION_ACTIVE' })
