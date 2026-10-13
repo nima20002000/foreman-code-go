@@ -101,7 +101,8 @@ export async function withProductionSourceSnapshot(repository, directory, action
 export async function backupDatabase({ archive, database, run }) {
   const file = await open(archive, 'wx', 0o600)
   try {
-    await run('pg_dump', ['--format=custom', '--create', '--dbname', database],
+    // lz4 halves the stopped-API window against the default gzip level, which is CPU-bound on large tables.
+    await run('pg_dump', ['--format=custom', '--compress=lz4', '--create', '--dbname', database],
       { stdio: ['ignore', file.fd, 'inherit'] })
     await file.sync()
   } finally {
