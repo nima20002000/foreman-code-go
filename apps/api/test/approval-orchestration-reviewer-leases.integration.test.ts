@@ -52,7 +52,7 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       await expect(app.respond(recovered, approvalResponse(f.interaction)))
         .rejects.toMatchObject({ code: 'REVIEWER_AUTHORITY_LOST' })
       expect(await f.repository.get(f.interaction.id)).toEqual(f.interaction)
-      expect(await f.repository.coordination.workflowSession(f.reviewer.id)).toEqual(native)
+      expect(await f.repository.coordination.workflowSession(f.reviewer.id)).toEqual(rebound)
       expect(await f.repository.coordination.findReviewJob(f.interaction.id, f.reviewer.agentId)).toEqual(successor)
     } finally {
       await f.close()
