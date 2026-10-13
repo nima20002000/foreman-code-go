@@ -23,7 +23,10 @@ export function useApiReconnect(): boolean {
   const wasReconnecting = useRef(false)
   useEffect(() => {
     if (!reconnecting) {
-      if (wasReconnecting.current) void client.invalidateQueries({ refetchType: 'active' })
+      if (wasReconnecting.current) void client.invalidateQueries({
+        refetchType: 'active',
+        predicate: query => query.meta?.refetchOnApiReconnect !== false,
+      })
       wasReconnecting.current = false
       return
     }

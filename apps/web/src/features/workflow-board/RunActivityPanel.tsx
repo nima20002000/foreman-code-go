@@ -59,6 +59,7 @@ export function RunActivityPanel({ summaries, summariesReadAt = 0 }: {
   const reading = latestDiscovery && discovery.isPending ? discovery.variables?.runId : undefined
   const error = latestDiscovery && discovery.isError ? discovery.error.message : undefined
   const runs = useInfiniteQuery({ queryKey: boardRunListKey(workspaceId, workflowId),
+    meta: { refetchOnApiReconnect: false },
     initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) => readBoardRuns(workspaceId, workflowId, pageParam, { signal }),
     getNextPageParam: (page, _pages, _param, params) => page.pageInfo.nextCursor && !params.includes(page.pageInfo.nextCursor) ? page.pageInfo.nextCursor : undefined,

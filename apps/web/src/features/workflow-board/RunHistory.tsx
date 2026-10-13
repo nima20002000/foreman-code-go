@@ -15,6 +15,7 @@ export function RunHistory({ scope }: { scope: RepeatGraphScopeV3 }) {
   const disclosure = JSON.stringify(key)
   const open = useInspectionPresentation((state) => !!state.open[disclosure])
   const history = useInfiniteQuery({
+    meta: { refetchOnApiReconnect: false },
     queryKey: key, enabled: open, initialPageParam: null as string | null,
     queryFn: ({ pageParam, signal }) => readBoardHistory(scope, pageParam, { signal }),
     getNextPageParam: (page, _pages, _param, params) =>
