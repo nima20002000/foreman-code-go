@@ -1,3 +1,4 @@
+import { RuntimeIdentitySchema } from '@foreman-code/contracts'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -7,16 +8,22 @@ import { server } from '../mocks/server'
 import { bindProtectedChatInstance } from '../shared/api/protectedChatStorage'
 import { ApiError, apiClient } from '../shared/api/client'
 import { ReleaseAutoReload, RuntimeInstanceBoundary } from './RuntimeInstanceBoundary'
-import { UnsavedChangesContext } from '../shared/ui/unsavedChanges'
+import { useState } from 'react'
+import { UnsavedChangesContext, useUnsavedChanges } from '../shared/ui/unsavedChanges'
 
 vi.mock('../shared/api/protectedChatStorage', async (original) => ({
   ...await original<typeof import('../shared/api/protectedChatStorage')>(), bindProtectedChatInstance: vi.fn(() => false),
 }))
+vi.mock('../shared/api/documentBuildIdentity', () => ({
+  documentBuildIdentity: { version: 1, buildId: 'a'.repeat(64), contractsId: 'b'.repeat(64) },
+}))
+const buildIdentity = { version: 1, buildId: 'a'.repeat(64), contractsId: 'b'.repeat(64) }
 const identity = { installationId: 'd95abeb8-598a-49a4-8c3c-c6e3533053e8', checkoutId: 'a'.repeat(64), databaseId: 'b'.repeat(64) }
 const clients: QueryClient[] = []
 beforeEach(() => {
   vi.mocked(bindProtectedChatInstance).mockReset().mockReturnValue(false)
-  server.use(http.get('*/api/runtime/identity', () => HttpResponse.json(identity)))
+  server.use(http.get('*/api/runtime/identity', () => HttpResponse.json(identity)),
+    http.get('*/api/runtime/build-identity/v1', () => HttpResponse.json(buildIdentity)))
 })
 afterEach(() => {
   cleanup()
@@ -57,19 +64,21 @@ it.each(['network', 502, 503] as const)('automatically recovers from an initial 
 })
 it('backs off automatic retries and caps the delay at ten seconds', async () => {
   vi.useFakeTimers()
-  const request = vi.spyOn(apiClient, 'request').mockRejectedValue(
-    new ApiError({ code: 'NETWORK_ERROR', message: 'Disconnected' }),
-  )
+  const request = vi.spyOn(apiClient, 'request').mockImplementation(async (path) => {
+    if (path === '/api/runtime/build-identity/v1') return buildIdentity as never
+    throw new ApiError({ code: 'NETWORK_ERROR', message: 'Disconnected' })
+  })
+  const identityRequests = () => request.mock.calls.filter(([path]) => path === '/api/runtime/identity').length
   mount()
   await act(() => vi.advanceTimersByTimeAsync(0))
-  expect(request).toHaveBeenCalledTimes(1)
+  expect(identityRequests()).toBe(1)
   let attempts = 1
   for (const delay of [1_000, 2_000, 4_000, 8_000, 10_000, 10_000]) {
     await act(() => vi.advanceTimersByTimeAsync(delay - 1))
-    expect(request).toHaveBeenCalledTimes(attempts)
+    expect(identityRequests()).toBe(attempts)
     await act(() => vi.advanceTimersByTimeAsync(1))
     attempts += 1
-    expect(request).toHaveBeenCalledTimes(attempts)
+    expect(identityRequests()).toBe(attempts)
   }
   expect(screen.getByText('Reconnecting…')).toBeVisible()
   expect(screen.queryByRole('heading', { name: 'Could not verify this app' })).not.toBeInTheDocument()
@@ -140,8 +149,8 @@ it('reloads silently after a release when nothing is unsaved', async () => {
   const client = mountReleaseWatcher(() => false)
   await screen.findByRole('textbox', { name: 'Draft' })
   expect(reload).not.toHaveBeenCalled()
-  server.use(http.get('*/api/runtime/identity', () => HttpResponse.json({ ...identity, checkoutId: 'c'.repeat(64) })))
-  await act(async () => { await client.invalidateQueries({ queryKey: ['workbench', 'runtime-identity'] }) })
+  server.use(http.get('*/api/runtime/build-identity/v1', () => HttpResponse.json({ ...buildIdentity, buildId: 'c'.repeat(64) })))
+  await act(async () => { await client.invalidateQueries({ queryKey: ['workbench', 'runtime-build-identity'] }) })
   await waitFor(() => expect(reload).toHaveBeenCalledOnce())
   expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   vi.unstubAllGlobals()
@@ -154,8 +163,8 @@ it('waits for unsaved edits to settle before reloading an updated app', async ()
   const draft = await screen.findByRole('textbox', { name: 'Draft' })
   await userEvent.setup().type(draft, 'Unsaved draft')
   vi.useFakeTimers({ shouldAdvanceTime: true })
-  server.use(http.get('*/api/runtime/identity', () => HttpResponse.json({ ...identity, checkoutId: 'c'.repeat(64) })))
-  await act(async () => { await client.invalidateQueries({ queryKey: ['workbench', 'runtime-identity'] }) })
+  server.use(http.get('*/api/runtime/build-identity/v1', () => HttpResponse.json({ ...buildIdentity, buildId: 'c'.repeat(64) })))
+  await act(async () => { await client.invalidateQueries({ queryKey: ['workbench', 'runtime-build-identity'] }) })
   await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
   expect(reload).not.toHaveBeenCalled()
   expect(screen.queryByRole('alert')).not.toBeInTheDocument()
@@ -179,4 +188,65 @@ it('hides the previous document state when the database installation changes', a
   expect(screen.queryByText('Protected content')).not.toBeInTheDocument()
   expect(screen.queryByRole('textbox', { name: 'Draft' })).not.toBeInTheDocument()
   expect(await screen.findByRole('heading', { name: 'Could not verify this app' })).toBeVisible()
+})
+
+it('detects a changed build at first contact before mounting protected operations', async () => {
+  const reload = stubReload()
+  server.use(http.get('*/api/runtime/build-identity/v1', () => HttpResponse.json({
+    ...buildIdentity, buildId: 'c'.repeat(64), contractsId: 'd'.repeat(64),
+  })))
+  mountReleaseWatcher(() => false)
+  await waitFor(() => expect(reload).toHaveBeenCalled())
+  expect(screen.queryByRole('textbox', { name: 'Draft' })).not.toBeInTheDocument()
+  vi.unstubAllGlobals()
+})
+
+function RegisteredDraft() {
+  const [value, setValue] = useState('Unsaved draft')
+  useUnsavedChanges({ label: 'Workflow draft', dirty: value.length > 0, save: () => undefined,
+    discard: () => setValue('') })
+  return <input aria-label="Registered draft" value={value} onChange={event => setValue(event.target.value)} />
+}
+
+it('keeps a registered dirty editor mounted when a new build arrives and reloads only after it is clean', async () => {
+  const reload = stubReload()
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  clients.push(client)
+  const editors = new Map<string, import('../shared/ui/unsavedChanges').EditorRegistration>()
+  const guard = { request: async () => true, surfaces: async () => true, changed: vi.fn(),
+    register: (id: string, editor: import('../shared/ui/unsavedChanges').EditorRegistration) => {
+      editors.set(id, editor)
+      return () => { editors.delete(id) }
+    }, unsaved: () => [...editors.values()].some(({ current }) => current.dirty || current.busy || current.uncertain) }
+  render(<QueryClientProvider client={client}><RuntimeInstanceBoundary>
+    <UnsavedChangesContext.Provider value={guard}><ReleaseAutoReload /><RegisteredDraft /></UnsavedChangesContext.Provider>
+  </RuntimeInstanceBoundary></QueryClientProvider>)
+  const draft = await screen.findByRole('textbox', { name: 'Registered draft' })
+  server.use(http.get('*/api/runtime/build-identity/v1', () => HttpResponse.json({ ...buildIdentity, buildId: 'c'.repeat(64), contractsId: 'd'.repeat(64) })))
+  await act(async () => { await client.invalidateQueries({ queryKey: ['workbench', 'runtime-build-identity'] }) })
+  expect(reload).not.toHaveBeenCalled()
+  expect(screen.getByRole('textbox', { name: 'Registered draft' })).toBe(draft)
+  expect(draft).toHaveValue('Unsaved draft')
+  await expect(apiClient.request('/api/workspaces', RuntimeIdentitySchema)).rejects.toMatchObject({ code: 'APP_UPDATED' })
+  await userEvent.setup().clear(draft)
+  vi.useFakeTimers({ shouldAdvanceTime: true })
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+  expect(reload).toHaveBeenCalledOnce()
+  vi.unstubAllGlobals()
+})
+
+it('compares the loaded bundle when its first identity response is delayed until after a release', async () => {
+  const reload = stubReload()
+  let releaseIdentity: (() => void) | undefined
+  const delayed = new Promise<void>(resolve => { releaseIdentity = resolve })
+  server.use(http.get('*/api/runtime/identity', async () => {
+    await delayed
+    return HttpResponse.json(identity)
+  }), http.get('*/api/runtime/build-identity/v1', () => HttpResponse.json({ ...buildIdentity, buildId: 'c'.repeat(64) })))
+  mountReleaseWatcher(() => false)
+  expect(screen.queryByRole('textbox', { name: 'Draft' })).not.toBeInTheDocument()
+  await act(async () => { releaseIdentity?.() })
+  await waitFor(() => expect(reload).toHaveBeenCalled())
+  expect(screen.queryByRole('textbox', { name: 'Draft' })).not.toBeInTheDocument()
+  vi.unstubAllGlobals()
 })

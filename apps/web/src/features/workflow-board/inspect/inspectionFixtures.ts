@@ -12,8 +12,24 @@ import { digestCurrentValue } from '../runDetailsClient'
 /** Contract/MSW fixtures only. No native provider, SQL or acceptance receipt is
  * simulated as production evidence. The compact current cut is intentionally
  * empty: recorded executions must come from the authenticated history endpoints. */
-export async function inspectionBoardFixture(suffix = 'inspect') {
+export async function inspectionBoardFixture(suffix = 'inspect', firstNodeId?: string) {
   const source = makeCurrentWorkflowFixture(suffix, 'repeat')
+  if (firstNodeId) {
+    const original = source.version.definition.nodes[0]!.id
+    source.version.definition.nodes[0]!.id = firstNodeId
+    source.version.definition.entryNodeId = firstNodeId
+    source.version.entryNodeId = firstNodeId
+    source.run.entryNodeId = firstNodeId
+    if (source.version.definition.repeat) {
+      source.version.definition.repeat.blocks = source.version.definition.repeat.blocks.map(block => ({ ...block,
+        nodeIds: block.nodeIds.map(id => id === original ? firstNodeId : id),
+        entryNodeId: block.entryNodeId === original ? firstNodeId : block.entryNodeId,
+        exitNodeId: block.exitNodeId === original ? firstNodeId : block.exitNodeId }))
+    }
+    source.version.definition.edges = source.version.definition.edges.map(edge => ({ ...edge,
+      source: edge.source === original ? firstNodeId : edge.source,
+      target: edge.target === original ? firstNodeId : edge.target }))
+  }
   const first = nativeNode(source.version.definition.nodes[0]!), second = nativeNode(source.version.definition.nodes[1]!)
   const { repeat: _repeat, ...ordinary } = source.version.definition
   void _repeat
