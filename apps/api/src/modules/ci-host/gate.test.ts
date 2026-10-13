@@ -92,6 +92,6 @@ it('lets a build computer whose own gate part started take unstarted cloud gate 
   expect(steals(queued[0]!, host)).toBe(true)
   expect(steals(queued[0]!, paired)).toBe(false)
   expect(steals(queued[0]!, cloud)).toBe(false)
-  expect(steals(queued[2]!, host)).toBe(false)
+  expect(steals(queued[2]!, host)).toBe(true)
   expect(steals(queued[1]!, host)).toBe(false)
 })

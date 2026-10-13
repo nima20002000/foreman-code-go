@@ -22,7 +22,8 @@ beforeEach(async () => {
   await database.pool.query('truncate ci_runs, ci_file_durations, management_command_receipts, management_audit')
 })
 
-async function fixture(options: { cloudSlots?: number; files?: string[]; offlineKey?: string; pool?: pg.Pool } = {}) {
+async function fixture(options: { cloudSlots?: number; files?: string[]; offlineKey?: string; pool?: pg.Pool;
+  occupiedKeys?: Set<string> } = {}) {
   const pool = options.pool ?? database.pool
   const workspaceId = randomUUID()
   await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId,
@@ -55,7 +56,8 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
       if (computer.key === options.offlineKey) throw new Error('Computer disconnected')
       if (request.operation === 'status') return { operation: 'status', ready: true, reasons: [],
         cpuCount: computer.hostRef.kind === 'cloud' ? 4 : 16, memoryBytes: 16 * 2 ** 30,
-        slotsTotal: computer.hostRef.kind === 'cloud' ? 1 : 2, slotsUsed: 0, runs: [] }
+        slotsTotal: computer.hostRef.kind === 'cloud' ? 1 : 2,
+        slotsUsed: options.occupiedKeys?.has(computer.key) ? 1 : 0, runs: [] }
       if (request.operation === 'start') {
         started.push({ key: computer.key, request })
         const run: CiHostRun = { runId: request.runId, state: 'running', step: request.suite,
@@ -114,6 +116,31 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
     await app.close()
   } }
 }
+
+it('persists gate check reassignment to an idle build computer through MCP when cloud slots are busy', async () => {
+  const occupiedKeys = new Set(['cloud-0', 'cloud-1'])
+  const f = await fixture({ cloudSlots: 2, occupiedKeys, files: ['apps/api/test/feature.integration.test.ts'] })
+  try {
+    const input = { suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40), commandId: randomUUID() }
+    const reader = await f.connect(true)
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    expect((await database.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
+    const admitted = CiRunOutputSchema.parse(await f.value('ci_run', input))
+    expect(CiRunOutputSchema.parse(await f.value('ci_run', input))).toEqual(admitted)
+    await f.ci.dispatch()
+    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
+    const check = read.partitions!.find(run => run.suite !== 'integration' && run.state === 'running')!
+    expect(check).toMatchObject({ state: 'running', plannedHostKey: expect.stringMatching(/^cloud-/),
+      expectedDurationMs: expect.any(Number),
+      computer: { hostRef: { kind: 'device', mainId: 'main', deviceId: 'paired' } } })
+    expect(f.started.find(item => item.request.operation === 'start' && item.request.runId === check.id)?.key)
+      .toBe('builder-paired')
+    expect(read.gate?.computers.find(computer => computer.key === check.plannedHostKey)?.ticketIds).toContain(check.id)
+    expect(read.gate?.criticalPath.expectedDurationMs).toBeGreaterThan(0)
+    const stored = (await database.pool.query('select record from ci_runs where id=$1', [check.id])).rows[0].record
+    expect(stored).toEqual(check)
+  } finally { await f.close() }
+})
 
 it.each([false, true])('admits consecutive gates on different connections after a lost lock reply: %s', async lostReply => {
   const pool = createPool({ connectionString: database.databaseUrl, maxConnections: 32,

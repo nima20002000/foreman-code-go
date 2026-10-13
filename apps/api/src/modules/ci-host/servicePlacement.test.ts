@@ -86,6 +86,79 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
   return { service, started, writes: () => writes }
 }
 
+const gateChecks = [
+  { suite: 'typecheck', part: 'typecheck-api' },
+  { suite: 'lint', part: 'lint-api' },
+  { suite: 'unit', part: 'unit-api' },
+] as const
+
+it.each(gateChecks)('runs a gate $suite part on another free slot of its planned provider', async check => {
+  const planned: HostCiComputer = { ...cloud, key: 'cloud:github:0', label: 'GitHub slot 0',
+    hostRef: { kind: 'cloud', mainId: 'main', provider: 'github', slot: 0 } }
+  const replacement: HostCiComputer = { ...planned, key: 'cloud:github:1', label: 'GitHub slot 1',
+    hostRef: { ...planned.hostRef, slot: 1 } }
+  const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, ...check, gate: true,
+    plannedHostKey: planned.key, expectedDurationMs: 150_000, partition: null }))
+  const f = fleet(records, [planned, cloud, host, replacement], new Map(), new Set([planned.key]))
+  await f.service.dispatch()
+  expect(f.started).toHaveLength(1)
+  expect(f.started[0]?.computer.key).toBe(replacement.key)
+  expect(f.started[0]?.request).toMatchObject({ operation: 'start', runId: records[0]!.id, ...check })
+  expect(records[0]).toMatchObject({ state: 'running', plannedHostKey: planned.key,
+    expectedDurationMs: 150_000, computer: { hostRef: replacement.hostRef } })
+})
+
+it.each(gateChecks)('runs a gate $suite part on an idle build computer when cloud slots are busy', async check => {
+  const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, ...check, gate: true,
+    plannedHostKey: cloud.key, partition: null }))
+  const f = fleet(records, [cloud, host], new Map(), new Set([cloud.key]))
+  await f.service.dispatch()
+  expect(f.started).toHaveLength(1)
+  expect(f.started[0]?.computer.key).toBe(host.key)
+  expect(f.started[0]?.request).toMatchObject({ operation: 'start', runId: records[0]!.id, ...check })
+  expect(records[0]).toMatchObject({ state: 'running', plannedHostKey: cloud.key,
+    computer: { hostRef: host.hostRef } })
+})
+
+it.each([false, true])('moves a systemd gate integration part to a free provider slot only with support: %s',
+  async supported => {
+    const replacement = { ...cloud, key: 'cloud:circleci:1', hostRef: { ...cloud.hostRef, slot: 1 },
+      userSystemd: { supported, reason: supported ? null : 'No user manager' } }
+    const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, gate: true,
+      plannedHostKey: cloud.key, partition: null, integrationShards: 32, requiresBuildComputer: true,
+      files: ['apps/api/test/native-service-restart.integration.test.ts'] }))
+    const f = fleet(records, [cloud, replacement], new Map(), new Set([cloud.key]))
+    await f.service.dispatch()
+    expect(f.started).toHaveLength(supported ? 1 : 0)
+    expect(records[0]?.state).toBe(supported ? 'running' : 'queued')
+    if (supported) {
+      expect(f.started[0]?.computer.key).toBe(replacement.key)
+      expect(f.started[0]?.request).toMatchObject({ gate: true, files: records[0]!.files, integrationShards: 16 })
+      expect(records[0]?.plannedHostKey).toBe(cloud.key)
+    }
+  })
+
+it('keeps a gate check queued while the build computer starts its own exclusive gate part', async () => {
+  const records = queuedRuns(2).map((run, index) => CiRunRecordSchema.parse({ ...run, gate: true,
+    ...(index === 0 ? { suite: 'typecheck', part: 'typecheck-api', plannedHostKey: cloud.key }
+      : { plannedHostKey: host.key, integrationShards: 16, requiresBuildComputer: false }),
+    partition: null }))
+  const f = fleet(records, [cloud, host], new Map(), new Set([cloud.key]))
+  await f.service.dispatch()
+  expect(f.started).toHaveLength(1)
+  expect(f.started[0]?.request).toMatchObject({ runId: records[1]!.id, suite: 'integration' })
+  expect(records[0]).toMatchObject({ state: 'queued', computer: null })
+})
+
+it('does not start a gate check on a build computer with an occupied CI slot', async () => {
+  const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, suite: 'typecheck',
+    part: 'typecheck-api', gate: true, plannedHostKey: cloud.key, partition: null }))
+  const f = fleet(records, [cloud, host], new Map(), new Set([cloud.key, host.key]))
+  await f.service.dispatch()
+  expect(f.started).toEqual([])
+  expect(records[0]).toMatchObject({ state: 'queued', computer: null })
+})
+
 it.each(['not-ready', 'offline', 'extension-rejected', 'disabled'])
   ('dispatches a queued gate part elsewhere after its planned computer becomes %s', async reason => {
     const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, gate: true,
