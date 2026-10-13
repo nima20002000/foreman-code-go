@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { join, matchesGlob } from 'node:path'
 import { CiWatchdogFailureSchema, CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, CiTestResultsSchema, integrationPartition,
   CiScopeSchema, CiSelectedFilesSchema, validCiSelection,
+  CI_HOST_START_PROTOCOL_VERSION,
   type CiDurations, type CiHostReply, type CiHostRun, type CiSuite, type CiPart, type CiPartition, type CiScope } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import { ciRepositoryCapabilities } from './repository.js'
@@ -72,6 +73,10 @@ const unitName = (runId: string) => `foreman-ci-${runId}`
 // GitHub CLI's own credential helper: a computer that is logged in to gh fetches without any app setup.
 const gitAuth = ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential']
 
+export function hostCiDirectory() {
+  return join(homedir(), '.local/share/foreman-code/ci-host')
+}
+
 /** Runs CI suites directly on this computer, like a self-hosted runner. Each run is a transient
  * systemd user service, so it outlives a Worker restart, and its CPU and memory stay below the host reserve. */
 export class HostCiRunner {
@@ -82,9 +87,10 @@ export class HostCiRunner {
   private githubChecked: { at: number; ready: boolean; reason: string | null } | undefined
   private draining = false
 
-  constructor(private readonly root = join(homedir(), '.local/share/foreman-code/ci-host'),
+  constructor(private readonly root = hostCiDirectory(),
     private readonly ports: HostCiPorts = systemHostCiPorts(),
-    private readonly environment: NodeJS.ProcessEnv = process.env) {}
+    private readonly environment: NodeJS.ProcessEnv = process.env,
+    private readonly startupSmokePending: () => boolean | Promise<boolean> = () => false) {}
 
   async handle(raw: unknown): Promise<CiHostReply> {
     const request = CiHostRequestSchema.parse(raw)
@@ -164,6 +170,8 @@ export class HostCiRunner {
     const startingRun = this.startingRun
     const github = await this.github()
     const reasons = github.reason ? [github.reason] : []
+    if (await this.startupSmokePending()) reasons.push('Worker update CI smoke is pending; this computer is reserved for validation.')
+    if (this.draining) reasons.push('Worker runtime update is draining CI preparation.')
     for (const tool of ['git', 'corepack']) {
       if ((await this.ports.run(tool, ['--version'], { env: this.environment, timeoutMs: 15_000 })).code !== 0) {
         reasons.push(`${tool} is not installed for the Worker.`)
@@ -187,6 +195,7 @@ export class HostCiRunner {
     const activeRuns = runs.filter(run => run && ['starting', 'running'].includes(run.state))
     const finishedRuns = runs.filter(run => run && !['starting', 'running'].includes(run.state))
     return CiHostReplySchema.parse({ operation: 'status', ready: !reasons.length, reasons,
+      startProtocolVersion: CI_HOST_START_PROTOCOL_VERSION,
       cpuCount: this.ports.cpus, memoryBytes: this.ports.memoryBytes, availableMemoryBytes,
       slotsUsed: capacity.slotsUsed + Number(Boolean(pendingStart)), slotsTotal: capacity.slotsTotal,
       runs: [...activeRuns, ...finishedRuns.slice(-Math.max(0, 50 - activeRuns.length))].slice(0, 50) })
@@ -209,6 +218,8 @@ export class HostCiRunner {
   }
 
   private async start(request: StartRequest) {
+    if (await this.startupSmokePending()) throw new DomainError('CI_HOST_BUSY',
+      'Worker update CI smoke is pending; this computer is reserved for validation.', 409)
     if (this.draining) throw new DomainError('WORKER_RUNTIME_DRAINING',
       'This computer is waiting for CI preparation to finish before updating its runtime.', 409)
     // Keep the busy check and initial persistence together, including same-run retries.

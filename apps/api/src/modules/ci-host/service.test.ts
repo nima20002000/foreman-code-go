@@ -114,6 +114,45 @@ function dispatchFixture(settlementError?: Error) {
   return { ...f, active, queued, records, output }
 }
 
+it.each(['unready', 'offline'])('keeps ordinary CI queued when the computer is %s', async state => {
+  const f = dispatchFixture()
+  f.records.splice(0, 1)
+  const request = vi.mocked(f.endpoint.request).getMockImplementation()!
+  vi.mocked(f.endpoint.request).mockImplementation(async (target, input) => {
+    if (input.operation === 'status') {
+      if (state === 'offline') throw new Error('Worker status unavailable')
+      return { operation: 'status', ready: false, reasons: ['Worker CI start protocol is unsupported; update the Worker.'],
+        cpuCount: 8, memoryBytes: 16 * 2 ** 30, runs: [], slotsTotal: 2, slotsUsed: 0 }
+    }
+    return request(target, input)
+  })
+  await f.create().dispatch()
+  expect(f.records[0]).toMatchObject({ state: 'queued', computer: null })
+  expect(f.endpoint.request).not.toHaveBeenCalledWith(computer, expect.objectContaining({ operation: 'start' }))
+  expect((await f.create().computers(caller, { workspaceId: 'workspace' })).computers[0])
+    .toMatchObject({ ready: false })
+})
+
+it('releases an incompatible Worker assignment when status confirms the ticket never started', async () => {
+  const f = dispatchFixture()
+  const worker: HostCiComputer = { ...computer, hostRef: { kind: 'device', mainId: 'fixture-main', deviceId: 'fixture-worker' } }
+  f.records.splice(0, 2, CiRunRecordSchema.parse({ ...f.queued, state: 'starting', step: 'dispatch',
+    computer: { hostRef: worker.hostRef, label: worker.label }, dispatchHostKey: worker.key, dispatchAttempts: 3,
+    dispatchedAt: new Date().toISOString(), dispatchRequest: { operation: 'start', runId: f.queued.id,
+      repository: f.queued.repository, commit: f.queued.commit, suite: f.queued.suite,
+      workspaceId: f.queued.workspaceId, ciMirror: null } }))
+  vi.mocked(f.endpoint.computers).mockResolvedValue([worker])
+  vi.mocked(f.endpoint.request).mockImplementation(async (_computer, input) => {
+    if (input.operation !== 'status') throw new Error('An incompatible Worker must not receive another start.')
+    return { operation: 'status', ready: false, reasons: ['Worker CI start protocol is unsupported; update the Worker.'],
+      cpuCount: 8, memoryBytes: 16 * 2 ** 30, runs: [] }
+  })
+  await f.create().dispatch()
+  expect(f.records[0]).toMatchObject({ state: 'queued', computer: null })
+  expect(f.records[0]?.dispatchHostKey).toBeUndefined()
+  expect(f.records[0]?.dispatchAttempts).toBeUndefined()
+})
+
 it.each(['lint', 'typecheck'] as const)('dispatches an ordinary queued $suite check without a gate ticket', async suite => {
   const f = dispatchFixture()
   f.records.splice(0, 1)

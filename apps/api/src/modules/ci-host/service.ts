@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { inTransaction, type SqlQuery } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
 import { withProviderPoll } from './providerPoll.js'
-import { CI_HOST_NAMESPACE, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiComputerRefSchema, CiHostReplySchema, CiListOutputSchema, CiRunRecordSchema, CiRunOutputSchema,
+import { CI_HOST_NAMESPACE, CI_HOST_START_PROTOCOL_VERSION, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiComputerRefSchema, CiHostReplySchema, CiListOutputSchema, CiRunRecordSchema, CiRunOutputSchema,
   WorkspaceSchema,
   type CiDurations, type CiHostRequest, type CiHostReply, type CiHostRun, type CiHostStatus, type CiListOutput, type CiRunRecord, type CiRunInput,
   type CiTestResults, type CiTestStatus, type CiUserSystemd, type CiCancellation, type Workspace } from '@foreman-code/contracts'
@@ -848,6 +848,10 @@ export class HostCiService {
         if (observed.state === 'starting' && observed.step === 'dispatch') return false
         return this.settle(current, computer, observed, { client })
       }
+      if (computer.hostRef.kind === 'device' && status?.ready === false
+        && (status.startProtocolVersion ?? 0) < CI_HOST_START_PROTOCOL_VERSION) {
+        return releaseCiDispatch(client, current, computer, status.reasons.join('; '), { clearRetry: true })
+      }
       const elapsed = Date.now() - Date.parse(current.dispatchedAt ?? current.queuedAt)
       if (!status && elapsed < CI_START_ACK_TIMEOUT_MS) return false
       const attempts = current.dispatchAttempts ?? 1
@@ -938,6 +942,7 @@ export class HostCiService {
     const { parsed, durations } = await readQueuedCiRuns(this.pool)
     const hasQueuedGate = parsed.some(run => run.gate)
     const totals = new Map<string, number>()
+    const unavailable = new Map<string, string>()
     const gateShards = new Map<string, number>()
     await inBatches(computers, 8, async computer => {
       if (computer.hostRef.kind === 'cloud' && !hasQueuedGate) {
@@ -945,7 +950,9 @@ export class HostCiService {
         return
       }
       const status = await readCiComputerStatus(this.endpoint, computer)
-      totals.set(computer.key, computer.hostRef.kind === 'cloud' ? 1 : status?.slotsTotal ?? 1)
+      const slots = computer.hostRef.kind === 'cloud' ? 1 : status?.slotsTotal ?? 1
+      totals.set(computer.key, status?.ready ? slots : 0)
+      if (!status?.ready) unavailable.set(computer.key, status?.reasons.join('; ') || 'Worker CI status unavailable')
       if (status) {
         used.set(computer.key, Math.max(used.get(computer.key) ?? 0, status.slotsUsed ?? 0))
         if (status.ready) {
@@ -1011,6 +1018,11 @@ export class HostCiService {
           || preferred(right) - preferred(left)
           || right.priority - left.priority)
       for (const computer of order) {
+        const reason = unavailable.get(computer.key)
+        if (reason) {
+          reasons.push(`${computer.label}: ${reason}`)
+          continue
+        }
         const exclusiveGate = run.gate && computer.hostRef.kind !== 'cloud'
         if (exclusiveGate && (used.get(computer.key) ?? 0) > 0) {
           reasons.push(`${computer.label}: gate waits for exclusive use of this build computer`)

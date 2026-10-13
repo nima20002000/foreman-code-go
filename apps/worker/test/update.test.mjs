@@ -58,7 +58,7 @@ async function artifact(base, version) {
 }
 
 async function fixture(t, targetVersion = '1.1.0') {
-  const base = await mkdtemp(join(tmpdir(), 'worker-update-'));
+  const base = await mkdtemp(join(persistentFixtureRoot, 'worker-update-'));
   const root = join(base, 'app');
   const stateDirectory = join(base, 'state');
   await mkdir(stateDirectory, { mode: 0o700 });
@@ -134,6 +134,32 @@ async function until(predicate) {
   throw new Error('Worker update did not reach the expected state.');
 }
 
+test('Worker status advertises the running manifest even after a failed target update', async t => {
+  const f = await fixture(t);
+  const updater = await new WorkerUpdater(f.options).initialize();
+  t.after(() => updater.close());
+  await updater.save({ state: 'rolled-back', lastError: 'worker_update_startup_timeout' },
+    { manifestSha256: f.incoming.release.manifestSha256 });
+  assert.equal((await updater.status()).manifestSha256, f.previous.release.manifestSha256);
+});
+
+test('update supervision allows bounded capacity drain and smoke before rolling back', async t => {
+  const f = await fixture(t);
+  const updater = await new WorkerUpdater({ ...f.options, launchSupervisor: async () => {
+    await superviseWorkerUpdate(await readUpdateRecord(f.stateDirectory), {
+      prepareService: f.prepareService, restart: () => f.restart('ready'),
+      ready: async options => {
+        assert.ok(options.timeoutMs >= 30 * 60_000 + 160_000,
+          'Startup supervision must include the capacity wait and smoke execution budgets.');
+        await waitForWorkerReady({ ...options, timeoutMs: 1000, pollMs: 1 });
+      },
+    });
+  } }).initialize();
+  t.after(() => updater.close());
+  await updater.start();
+  assert.equal((await readUpdateRecord(f.stateDirectory)).status.state, 'current');
+});
+
 test('downloads a release from its GitHub release asset and still verifies every byte against the manifest', async t => {
   const base = await mkdtemp(join(tmpdir(), 'worker-github-'));
   t.after(() => rm(base, { recursive: true, force: true }));
@@ -180,6 +206,7 @@ test('authenticated-ready check detects Main version mismatch, installs and reco
   const restarted = await new WorkerUpdater({ ...f.options, version: '1.1.0',
     manifestSha256: f.incoming.release.manifestSha256 }).initialize();
   assert.deepEqual(await restarted.status(), { currentVersion: '1.1.0', targetVersion: '1.1.0',
+    manifestSha256: f.incoming.release.manifestSha256,
     state: 'current', lastError: null });
   restarted.close();
 });
@@ -195,9 +222,11 @@ test('concurrent status polling preserves saved update transitions and metadata'
   const drainingStatus = updater.status();
   await Promise.all([pending, draining]);
   assert.deepEqual(await pendingStatus, { currentVersion: '1.0.0', targetVersion: '1.1.0',
+    manifestSha256: f.previous.release.manifestSha256,
     state: 'pending', lastError: null });
   const status = await drainingStatus;
   assert.deepEqual(status, { currentVersion: '1.0.0', targetVersion: '1.1.0',
+    manifestSha256: f.previous.release.manifestSha256,
     state: 'draining', lastError: null });
   const retained = await readUpdateRecord(f.stateDirectory);
   assert.deepEqual(retained.status, status);
@@ -261,6 +290,7 @@ test('failed new startup restores the previous pointer and persists rollback acr
   assert.equal((await readInstalledRelease({ root: f.root, facts, expected })).manifest.version, '1.0.0');
   const restarted = await new WorkerUpdater(f.options).initialize();
   assert.deepEqual(await restarted.status(), { currentVersion: '1.0.0', targetVersion: '1.1.0',
+    manifestSha256: f.previous.release.manifestSha256,
     state: 'rolled-back', lastError: 'worker_update_startup_timeout' });
   await restarted.start();
   assert.equal(restarts, 2);
@@ -426,6 +456,7 @@ test('manual retry clears an earlier failure when Main now serves the already ru
   f.incoming.release = f.previous.release;
   assert.equal(await updater.start({ retry: true }), 'Worker 1.0.0 is current.');
   assert.deepEqual(await updater.status(), { currentVersion: '1.0.0', targetVersion: '1.0.0',
+    manifestSha256: f.previous.release.manifestSha256,
     state: 'current', lastError: null });
 });
 
@@ -632,6 +663,34 @@ test('shutdown waits for an active staging operation and prevents a restart afte
   await releaseOwnership();
 });
 
+test('terminal maintenance outcomes identify the release running after success or rollback', async t => {
+  for (const rollback of [false, true]) {
+    await t.test(rollback ? 'rollback' : 'success', async t => {
+      const f = await fixture(t);
+      const startedAt = new Date().toISOString();
+      const updater = await new WorkerUpdater({ ...f.options, launchSupervisor: async () => {
+        await superviseWorkerUpdate(await readUpdateRecord(f.stateDirectory), {
+          prepareService: f.prepareService,
+          restart: () => f.restart('ready'),
+          smoke: async () => {
+            if (rollback) throw new Error('CI smoke failed');
+          },
+        });
+      } }).initialize();
+      t.after(() => updater.close());
+      await updater.start();
+      const installed = await readInstalledRelease({ root: f.root, facts, expected });
+      assert.deepEqual(await updater.maintenanceOutcome({ workerTargetVersion: '1.1.0', startedAt }), {
+        currentVersion: installed.manifest.version,
+        manifestSha256: installed.manifestSha256,
+        targetVersion: '1.1.0',
+        state: rollback ? 'rolled-back' : 'current',
+        lastError: rollback ? 'CI smoke failed' : null,
+      });
+    });
+  }
+});
+
 test('consecutive releases retain the first terminal maintenance outcome without an intermediate poll', async t => {
   const f = await fixture(t);
   const startedAt = new Date().toISOString();
@@ -652,7 +711,8 @@ test('consecutive releases retain the first terminal maintenance outcome without
   await second.start();
   assert.equal((await readUpdateRecord(f.stateDirectory)).status.currentVersion, '1.2.0');
   assert.deepEqual(await second.maintenanceOutcome({ workerTargetVersion: '1.1.0', startedAt }), {
-    currentVersion: '1.1.0', targetVersion: '1.1.0', state: 'current', lastError: null,
+    currentVersion: '1.1.0', manifestSha256: release.manifestSha256,
+    targetVersion: '1.1.0', state: 'current', lastError: null,
   });
   await second.close();
 });

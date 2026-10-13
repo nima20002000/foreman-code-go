@@ -7,6 +7,8 @@ export const WORKER_UPDATE_MAX_BINARY_BYTES = 262_144
 
 export const WorkerUpdateStatusSchema = z.object({
   currentVersion: z.string().min(1).max(128),
+  /** Hash of the running release, independently of a pending or failed update target. */
+  manifestSha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
   targetVersion: z.string().min(1).max(128).nullable(),
   state: z.enum(['current', 'pending', 'draining', 'downloading', 'installing', 'restarting', 'rolled-back', 'failed']),
   lastError: z.string().max(2000).nullable(),

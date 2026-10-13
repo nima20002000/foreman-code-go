@@ -1,6 +1,44 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { CiHostRequestSchema } from '@foreman-code/contracts';
 import { runCiInstallSmoke } from '../src/ciInstallSmoke.mjs';
+
+test('update smoke waits for busy capacity and uses a valid exclusive integration start', async () => {
+  const requests = [];
+  let starts = 0;
+  const runner = { handle: async request => {
+    requests.push(request);
+    if (request.operation === 'status') return { ready: true, cpuCount: 8, memoryBytes: 16 * 2 ** 30 };
+    if (request.operation === 'start') {
+      CiHostRequestSchema.parse(request);
+      if (++starts < 3) throw Object.assign(new Error('Existing CI is still running.'), { code: 'CI_HOST_BUSY' });
+      assert.equal(request.scope, 'full');
+      assert.equal(request.gate, true);
+      return {};
+    }
+    if (request.operation === 'cancel') return {};
+    return { run: { state: 'passed', exitCode: 0 }, text: '', testResults: {
+      summary: { passed: 1, failed: 0 }, files: [{ file: 'apps/api/test/ci-smoke.integration.test.ts',
+        tests: [{ status: 'passed' }] }] } };
+  } };
+  await runCiInstallSmoke({ repository: 'fixture/project', commit: 'a'.repeat(40) },
+    { runner, timeoutMs: 50, capacityTimeoutMs: 100, pollMs: 1 });
+  assert.equal(starts, 3);
+  assert.equal(new Set(requests.filter(request => request.operation === 'start').map(request => request.runId)).size, 1);
+  assert.equal(requests.some(request => request.operation === 'cancel'), false);
+});
+
+test('update smoke bounds busy capacity waits and cancels its own ticket', async () => {
+  let canceled = false;
+  const runner = { handle: async request => {
+    if (request.operation === 'status') return { ready: true, cpuCount: 8, memoryBytes: 16 * 2 ** 30 };
+    if (request.operation === 'cancel') { canceled = true; return {}; }
+    throw Object.assign(new Error('Existing CI is still running.'), { code: 'CI_HOST_BUSY' });
+  } };
+  await assert.rejects(runCiInstallSmoke({ repository: 'fixture/project', commit: 'a'.repeat(40) },
+    { runner, timeoutMs: 50, capacityTimeoutMs: 10, pollMs: 1 }), /capacity wait timed out/);
+  assert.equal(canceled, true);
+});
 
 for (const outcome of ['passed', 'failed', 'no-tests', 'timeout']) {
   test(`Worker install CI smoke uses normal setup and handles ${outcome}`, async () => {
