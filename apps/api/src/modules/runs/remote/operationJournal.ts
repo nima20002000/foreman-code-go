@@ -21,6 +21,8 @@ import { WorkerConversationReceiptSchema } from '@foreman-code/contracts/remote-
 import { DomainError } from '../../errors.js'
 import { WorkerConversationArchive } from '../../conversations/workerConversationArchive.js'
 import { WorkerConversationJournal } from '../../conversations/workerJournal.js'
+import { workerConversationProcessDigest } from '../../conversations/workerNativeOwner.js'
+import type { NativeLaunchObservation } from '../../harnesses/recovery/processRegistry.js'
 import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema, RemoteTerminalEvidenceSchema, RemoteNativeIdentitySchema, RemoteInteractionTargetSchema, RemoteOwnerReconciliationSchema,
   type RemoteOperationReceipt, type RemoteOperationStatus, type RemoteOwnerControl,
   type RemoteInteractionTarget, type RemoteNativeIdentity, type RemoteTerminalEvidence, type RemoteOwnerReconciliation } from '@foreman-code/contracts/remote-execution'
@@ -796,10 +798,11 @@ export class RemoteOperationJournal {
   async isRuntimeQuiescent(): Promise<boolean> {
     return this.runtimeQuiescent('closed')
   }
-  async isWorkerUpdateIdle(): Promise<boolean> {
-    return this.runtimeQuiescent('settled')
+  async isWorkerUpdateIdle(launches: readonly NativeLaunchObservation[] = []): Promise<boolean> {
+    return this.runtimeQuiescent('settled', launches)
   }
-  private async runtimeQuiescent(conversations: 'closed' | 'settled'): Promise<boolean> {
+  private async runtimeQuiescent(conversations: 'closed' | 'settled',
+    launches: readonly NativeLaunchObservation[] = []): Promise<boolean> {
     await this.tail
     if (this.faulted) throw new Error('Journal durability uncertain: recovery required')
     const qualificationPending = this.data.qualificationReceipts.some(receipt =>
@@ -815,9 +818,18 @@ export class RemoteOperationJournal {
     const conversationPending = this.data.conversations.some(receipt => {
       if (receipt.closed) return false
       if (conversations === 'closed') return true
-      return receipt.closing || receipt.applicationAccessChange?.state === 'reserved'
+      const pending = receipt.closing || receipt.applicationAccessChange?.state === 'reserved'
         || receipt.turns.some(turn => !['completed', 'rejected'].includes(turn.status))
         || receipt.compactions.some(control => ['accepted', 'running', 'uncertain'].includes(control.state.status))
+      if (!pending) return false
+      const nativeOwner = receipt.nativeOwner
+      if (!nativeOwner) return true
+      const owned = launches.filter(launch => launch.owner === `conversation:${receipt.binding.owner.conversationId}`)
+      // Recovery facts survive an update; only the original process closure can make them idle.
+      const nativeClosed = owned.every(launch =>
+        launch.lifecycle === 'closed' && launch.closureEvidence) && owned.some(launch =>
+        workerConversationProcessDigest(receipt.binding, launch) === nativeOwner.processIdentityDigest)
+      return !nativeClosed
     })
     return !qualificationPending && !executionPending && !nativePending && !conversationPending
   }
