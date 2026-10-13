@@ -235,8 +235,14 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
           }
           const live = await readLiveManagementPrincipal(transaction, principal.id)
           await assertRepository(transaction)
-          if (saved.implicit && !sameWorkflowValue(saved.saved, await resolveInherited(transaction, live, saved.configuration))) {
-            this.conflict()
+          if (saved.implicit) {
+            const current = version.definition.defaultWorktree
+              ? await resolveInherited(transaction, live, saved.configuration)
+              : await resolveLocalMainPlacement({ sql: transaction, principal: live,
+                configuration: saved.configuration, mainId: this.mainId, workspaceId: input.workspaceId,
+                roots: this.roots, installations: this.registry.installations,
+                qualificationSuites: this.qualificationSuites })
+            if (!sameWorkflowValue(saved.saved, current)) this.conflict()
           }
           await this.assertPinsCurrent(transaction, pin, live, input.workspaceId)
         } }) }
