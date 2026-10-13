@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { access, chmod, copyFile, cp, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, symlink } from 'node:fs/promises'
+import { access, chmod, copyFile, cp, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -14,7 +14,7 @@ import { workerPath } from '../apps/worker/src/harnessPath.mjs'
 import { buildWorkerReleaseArtifacts } from './worker-release-artifacts.mjs'
 import {
   copyVerificationRuntime, deployProductionApi, desktopLaunchEnvironment, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
-  pruneApiDependencies, pruneReleases, removeUninstalledRelease, readActiveRuns, readProductionIdentity, waitForIdleRuns, renderEnvironment, waitForProductionReady, withInstallationLock,
+  pruneApiDependencies, pruneReleases, startBackground, removeUninstalledRelease, readActiveRuns, readProductionIdentity, waitForIdleRuns, renderEnvironment, waitForProductionReady, withInstallationLock,
   shouldOpenDashboardAfterInstall,
   productionIntegrationPaths, publishDesktopIntegration, enableProductionServices, apiServiceTemplate,
   launchProduction, launchBrowser, parseRunWaitMinutes, readReleaseSelection,
@@ -317,13 +317,9 @@ async function finishInstallation({ release, previousRelease, firstInstall, envi
 // Paired Workers download through Main until this detached upload records the GitHub release in the index.
 async function publishWorkerArtifactsLater(release) {
   const { commit, repository } = JSON.parse(await readFile(join(release, 'ci-smoke.json'), 'utf8'))
-  const log = await open(join(state, 'logs', 'worker-artifact-publish.log'), 'a', 0o600)
-  try {
-    spawn(join(release, 'node'), [join(release, 'scripts/worker-release-artifacts.mjs'), 'publish',
-      join(release, 'worker-artifacts'), repository, commit], { detached: true, stdio: ['ignore', log.fd, log.fd] }).unref()
-  } finally {
-    await log.close()
-  }
+  startBackground('foreman-worker-publish', join(release, 'node'), [join(release, 'scripts/worker-release-artifacts.mjs'),
+    'publish', join(release, 'worker-artifacts'), repository, commit],
+  { logFile: join(state, 'logs', 'worker-artifact-publish.log') })
   console.log(`Publishing Worker artifacts to GitHub in the background (log: ${state}/logs/worker-artifact-publish.log).`)
 }
 

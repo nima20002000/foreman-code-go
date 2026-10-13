@@ -1,6 +1,7 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
 import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
@@ -725,8 +726,24 @@ export async function withRunStartMaintenance(pool, action, { timeoutMs = 30_000
 
 /** Each install stages a full release (~1 GB). Keep the running one and the previous one for rollback; remove the rest. */
 // Deleting a release's dependency tree takes ~20 s; installs move it aside and let a detached process delete it.
+/**
+ * Starts work that must outlive this install. A detached child still dies with the install's systemd unit (the
+ * unit's control group is killed when it ends), so the work gets its own transient user unit when systemd-run exists.
+ */
+export function startBackground(name, command, args, { logFile, systemdRun = existsSync('/usr/bin/systemd-run')
+  ? '/usr/bin/systemd-run' : null, spawnProcess = spawn } = {}) {
+  if (!systemdRun) {
+    spawnProcess(command, args, { detached: true, stdio: 'ignore' }).unref()
+    return
+  }
+  spawnProcess(systemdRun, ['--user', '--collect', '--quiet', `--unit=${name}-${randomBytes(4).toString('hex')}`,
+    `--setenv=PATH=${process.env.PATH}`,
+    ...(logFile ? [`--property=StandardOutput=append:${logFile}`, `--property=StandardError=append:${logFile}`] : []),
+    command, ...args], { detached: true, stdio: 'ignore' }).unref()
+}
+
 function removeDetached(directory) {
-  spawn('rm', ['-rf', '--', directory], { detached: true, stdio: 'ignore' }).unref()
+  startBackground('foreman-remove-release', 'rm', ['-rf', '--', directory])
 }
 
 export async function pruneReleases(releasesDirectory, keep,
