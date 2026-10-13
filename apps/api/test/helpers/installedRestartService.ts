@@ -178,7 +178,7 @@ export async function installedRestartService(directory: string, configuration: 
   } catch (error) {
     try { await removeRestartUnit(unit) }
     catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], 'Restart fixture installation and cleanup failed.')
+      throw new AggregateError([error, cleanupError], 'Restart fixture installation and cleanup failed.', { cause: error })
     }
     throw error
   }
