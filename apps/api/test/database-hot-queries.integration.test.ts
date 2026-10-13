@@ -15,7 +15,43 @@ import { openRunGraphPublication } from '../src/modules/run-graph/publication.js
 import { openRepeatCanonicalPublicationLocked, publishRepeatRunStateLocked } from '../src/modules/run-graph/repeatPublication.js'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
-import { changeRunState, graphFixture, graphRpc, graphRpcValue, ownedGraph } from './eng04-graph-composition-fixture.js'
+import {
+  changeRunState, graphFixture, graphHeaders, graphRpc, graphRpcValue, graphUrl, ownedGraph,
+} from './eng04-graph-composition-fixture.js'
+
+function databaseBeforeHotQueryUpgrade() {
+  return currentDatabase({ deferMigration: databaseHotQueriesMigration.version })
+}
+
+it('publishes owned run updates through authenticated reads before and after the hot query upgrade', async () => {
+  const db = await databaseBeforeHotQueryUpgrade()
+  try {
+    const fixture = await graphFixture(db, { form: 'single', qualifiedReads: true })
+    try {
+      const read = () => fixture.app.inject({
+        method: 'GET', url: graphUrl(fixture, 'current'), headers: graphHeaders(fixture.writer.token),
+      })
+      await changeRunState(db, fixture, 'running')
+      const before = await read()
+      expect(before.statusCode, before.body).toBe(200)
+      expect(before.json()).toMatchObject({ scope: fixture.scope, state: { run: { executionState: 'running' } } })
+
+      await applyApplicationMigrations(db.pool)
+      const upgraded = await read()
+      expect(upgraded.statusCode, upgraded.body).toBe(200)
+      expect(upgraded.json()).toEqual(before.json())
+
+      await changeRunState(db, fixture, 'waiting')
+      const after = await read()
+      expect(after.statusCode, after.body).toBe(200)
+      expect(after.json()).toMatchObject({ scope: fixture.scope, state: { run: { executionState: 'waiting' } } })
+    } finally {
+      await fixture.app.close()
+    }
+  } finally {
+    await db.close()
+  }
+}, 120_000)
 
 async function persistExecution(db: Awaited<ReturnType<typeof currentDatabase>>,
   fixture: Awaited<ReturnType<typeof graphFixture>>, executionId: string) {
@@ -55,7 +91,7 @@ async function persistExecution(db: Awaited<ReturnType<typeof currentDatabase>>,
 }
 
 it('upgrades hot query access while preserving native facts, CI revisions and authenticated reads', async () => {
-  const db = await currentDatabase({ beforeMigration: databaseHotQueriesMigration.version })
+  const db = await databaseBeforeHotQueryUpgrade()
   const fixture = await graphFixture(db, { form: 'single', qualifiedReads: true })
   const executionId = randomUUID()
   const computer: HostCiComputer = {
@@ -66,6 +102,7 @@ it('upgrades hot query access while preserving native facts, CI revisions and au
     scope: 'full', files: [], partition: null, repository: 'example/project', commit: 'a'.repeat(40),
     state: 'running', computer: { hostRef: computer.hostRef, label: computer.label }, step: 'lint',
     exitCode: null, message: null, queuedAt: fixture.run.createdAt, startedAt: fixture.run.createdAt, finishedAt: null,
+    providerMessage: null, messageHistory: [],
     initiator: { principalId: fixture.writer.principal.id, executionId: null },
   })
   let logTail = 'Saved log'
@@ -133,14 +170,27 @@ it('upgrades hot query access while preserving native facts, CI revisions and au
     expect(nativeBefore.find(row => row.sequence === '7')).toMatchObject({ item_id: 'dynamic', item_error: true })
     expect(nativeBefore.find(row => row.sequence === '6')).toMatchObject({ item_type: 'subagent', status: 'failed' })
 
+    const poll = (token: string, name: string, args: unknown) => graphRpc(app, token, 'tools/call', { name, arguments: args })
+    const readCi = async () => {
+      const result = await poll(fixture.writer.token, 'ci_get', {
+        workspaceId: ticket.workspaceId, ticketId: ticket.id,
+      })
+      expect(result.result?.isError, JSON.stringify(result)).not.toBe(true)
+      return CiGetOutputSchema.parse(graphRpcValue(result.result))
+    }
+    const ciBefore = await readCi()
     await ci.dispatch()
+    expect(await readCi()).toEqual(ciBefore)
     expect(await stored()).toEqual(before)
     logTail = 'Refreshed log'
     await ci.dispatch()
     expect(await stored()).toMatchObject({ record: ticket, log_tail: logTail,
       revision: String(BigInt(before.revision) + 1n), test_results: before.test_results })
     const refreshed = await stored()
+    const ciRefreshed = await readCi()
+    expect(ciRefreshed).toMatchObject({ run: ticket, logTail })
     await ci.dispatch()
+    expect(await readCi()).toEqual(ciRefreshed)
     expect(await stored()).toEqual(refreshed)
     await db.pool.query('update ci_runs set durations=$2::jsonb where id=$1', [ticket.id, '{"unit":5}'])
     await db.pool.query('update ci_runs set test_results=$2::jsonb where id=$1', [ticket.id, '{"retained":"changed"}'])
@@ -149,7 +199,6 @@ it('upgrades hot query access while preserving native facts, CI revisions and au
     await db.pool.query('update ci_runs set record=record,activity_record_revision=9999 where id=$1', [ticket.id])
     expect((await stored()).revision).toBe(changed.revision)
 
-    const poll = (token: string, name: string, args: unknown) => graphRpc(app, token, 'tools/call', { name, arguments: args })
     const result = await poll(fixture.writer.token, 'ci_get', { workspaceId: ticket.workspaceId, ticketId: ticket.id })
     expect(result.result?.isError).not.toBe(true)
     expect(CiGetOutputSchema.parse(graphRpcValue(result.result))).toMatchObject({ run: ticket, logTail })
