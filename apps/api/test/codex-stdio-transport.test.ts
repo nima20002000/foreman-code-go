@@ -184,10 +184,36 @@ void (async () => {
     await value.close()
   })
 
-  it('F14: an oversized unterminated stdout frame disconnects instead of growing unbounded', async () => {
-    const value = await transport()
-    await assert.rejects(value.request('test/frame'))
-    await assert.rejects(value.request('test/echo', {}))
+  it('an oversized unterminated stdout frame disconnects after delayed initialization', async () => {
+    await writeFile(f.binary, `#!${process.execPath}
+const { createInterface } = require('node:readline')
+const lines = createInterface({ input: process.stdin })
+lines.on('line', (line) => {
+  const request = JSON.parse(line)
+  if (request.method === 'initialize') {
+    setTimeout(() => {
+      process.stdout.write(JSON.stringify({ id: request.id, result: {} }) + '\\n')
+    }, 300)
+  } else if (request.method === 'test/frame') {
+    process.stdout.write('x'.repeat(5 * 1024 * 1024))
+  }
+})
+`)
+    const disconnected: Error[] = []
+    const value = await transport({ onDisconnect: error => { disconnected.push(error) } })
+    const controller = new AbortController()
+    await assert.rejects(value.request('test/frame', {}, controller.signal), (error: unknown) => {
+      assert(error instanceof CodexRpcError)
+      assert.equal(error.method, 'test/frame')
+      assert.equal(error.uncertain, true)
+      assert.equal(errorCode(error), 'CODEX_APP_SERVER_DISCONNECTED')
+      return true
+    })
+    assert.equal(disconnected.length, 1)
+    assert.equal(value.isConnected(), false)
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0)
+    await assert.rejects(value.request('test/echo', {}), (error: unknown) =>
+      error instanceof CodexRpcError && !error.uncertain && errorCode(error) === 'CODEX_APP_SERVER_DISCONNECTED')
     await value.close()
   })
 
