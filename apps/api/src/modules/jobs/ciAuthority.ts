@@ -10,7 +10,7 @@ import { DomainError } from '../errors.js'
 
 export const CI_RUN_ACTIONS: ManagementAction[] = [
   'sources:approve', 'sources:read', 'source_roots:read', 'source_roots:bind', 'workspace_locations:read',
-  'job_definitions:read', 'job_definitions:write', 'jobs:start',
+  'job_definitions:read', 'job_definitions:write', 'jobs:start', 'jobs:cancel',
 ]
 export const CI_GET_ACTIONS: ManagementAction[] = ['jobs:read', 'job_logs:read', 'job_artifacts:read']
 export const CI_PREPARATION_ACTIONS: ManagementAction[] = [

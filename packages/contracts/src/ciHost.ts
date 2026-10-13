@@ -129,6 +129,9 @@ export const CiRunRecordSchema = z.object({
   /** An omitted caller selection is computed on the runner; an explicit empty list is already complete. */
   deriveFiles: z.boolean().optional(), defaultBranch: WorkspaceRepositorySchema.shape.defaultBranch.optional(),
   baseCommit: CommitSchema.optional(),
+  branch: WorkspaceRepositorySchema.shape.defaultBranch.nullable().optional(),
+  noSupersede: z.boolean().optional(),
+  supersededBy: CiHostRunIdSchema.optional(),
   partition: CiPartitionSchema.nullable(), groupId: CiHostRunIdSchema,
   part: CiPartSchema.nullable().default(null),
   state: z.enum(['queued', 'starting', 'running', 'passed', 'failed', 'canceled', 'lost']),

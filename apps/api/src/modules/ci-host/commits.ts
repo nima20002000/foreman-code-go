@@ -4,11 +4,36 @@ import { publishCommit } from '../sources/githubPublisher.js'
 import type { CiCommits } from './service.js'
 import { CiDurationsSchema } from '@foreman-code/contracts'
 import { ciRepositoryCapabilities } from './repository.js'
+import { gitFailure } from '../sources/gitErrors.js'
 
 /** Main's clone of the workspace repository: the requested commit, an Agent's files as a commit on its base, or the
  * default branch head; whatever GitHub lacks is pushed so build computers can fetch it. */
 export class GitCiCommits implements CiCommits {
   constructor(private readonly git: GitWorktreePorts = systemGitWorktreePorts()) {}
+
+  async branch(repository: string, defaultBranch: string, commit: string): Promise<string | null> {
+    const signal = AbortSignal.timeout(30_000)
+    const clone = await ensureCommit(this.git, repository, commit, signal)
+    const result = await this.git.git(['for-each-ref', '--contains', commit, '--format=%(refname)',
+      'refs/remotes/origin/'], { cwd: clone, signal })
+    if (result.code !== 0) throw gitFailure('SOURCE_WORKTREE_FAILED', 'for-each-ref')
+    const branches = result.stdout.trim().split('\n')
+      .filter(ref => ref.startsWith('refs/remotes/origin/'))
+      .map(ref => ref.slice('refs/remotes/origin/'.length))
+      .filter(branch => branch !== 'HEAD' && !branch.startsWith('foreman/ci/'))
+    if (branches.includes(defaultBranch)) return defaultBranch
+    return branches.length === 1 ? branches[0]! : null
+  }
+
+  async isAncestor(repository: string, ancestor: string, commit: string): Promise<boolean> {
+    const signal = AbortSignal.timeout(30_000)
+    const clone = await ensureCommit(this.git, repository, commit, signal)
+    await ensureCommit(this.git, repository, ancestor, signal)
+    const result = await this.git.git(['merge-base', '--is-ancestor', ancestor, commit], { cwd: clone, signal })
+    if (result.code === 0) return true
+    if (result.code === 1) return false
+    throw gitFailure('SOURCE_WORKTREE_FAILED', 'merge-base')
+  }
 
   async capabilities(repository: string, commit: string) {
     const signal = AbortSignal.timeout(30_000)
