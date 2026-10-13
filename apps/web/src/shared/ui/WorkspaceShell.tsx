@@ -81,38 +81,14 @@ export function WorkspaceShell({
 }: WorkspaceShellProps) {
   const workspacesQuery = useWorkspacePages(workspaces === undefined)
   const navigationWorkspaces = workspaces ?? workspacesQuery.data?.pages.flatMap((page) => page.items.map((item) => item.workspace))
-  const navigationCollapsed = useNavigationUiStore((state) => state.collapsed)
-  const navigationWidth = useNavigationUiStore((state) => state.width)
-  const resizeWidth = useNavigationUiStore((state) => state.resizeWidth)
-  const navigationMotion = useNavigationUiStore((state) => state.motion)
+  const { navigationCollapsed, navigationWidth, resizeWidth, navigationMotion, setCollapsed,
+    startResize, resizeWithKeyboard } = useNavigationResize()
   const rememberedWorkspaceId = useNavigationUiStore((state) => state.activeWorkspaceId)
-  const setCollapsed = useNavigationUiStore((state) => state.setCollapsed)
-  const setNavigationWidth = useNavigationUiStore((state) => state.setWidth)
-  const setResizeWidth = useNavigationUiStore((state) => state.setResizeWidth)
-  const stopResizeRef = useRef<(() => void) | null>(null)
-  const resizeCollapsedRef = useRef<boolean | null>(null)
-
   const navigationWorkspaceId = activeGlobalSection
     ? rememberedWorkspaceId ?? workspaceId
     : workspaceId
 
-  useEffect(() => () => stopResizeRef.current?.(), [])
-
-  useEffect(() => {
-    if (stopResizeRef.current && navigationCollapsed !== resizeCollapsedRef.current) stopResizeRef.current()
-  }, [navigationCollapsed])
-
-  useEffect(() => {
-    const toggleNavigation = (event: globalThis.KeyboardEvent) => {
-      if (event.defaultPrevented || event.repeat || event.isComposing || event.altKey || event.shiftKey
-        || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'b') return
-      if (event.target instanceof Element && event.target.closest('input, textarea, select, [role="textbox"], [contenteditable]:not([contenteditable="false"])')) return
-      event.preventDefault()
-      stopResizeRef.current?.()
-      setCollapsed(!useNavigationUiStore.getState().collapsed)
-    }
-    window.addEventListener('keydown', toggleNavigation)
-    return () => window.removeEventListener('keydown', toggleNavigation)
+  return () => window.removeEventListener('keydown', toggleNavigation)
   }, [setCollapsed])
 
   useEffect(() => {
@@ -290,4 +266,35 @@ export function WorkspaceShell({
       </main>
     </div>
   )
+}
+
+function useNavigationResize() {
+  const navigationCollapsed = useNavigationUiStore((state) => state.collapsed)
+  const navigationWidth = useNavigationUiStore((state) => state.width)
+  const resizeWidth = useNavigationUiStore((state) => state.resizeWidth)
+  const navigationMotion = useNavigationUiStore((state) => state.motion)
+  const setCollapsed = useNavigationUiStore((state) => state.setCollapsed)
+  const setNavigationWidth = useNavigationUiStore((state) => state.setWidth)
+  const setResizeWidth = useNavigationUiStore((state) => state.setResizeWidth)
+  const stopResizeRef = useRef<(() => void) | null>(null)
+  const resizeCollapsedRef = useRef<boolean | null>(null)
+
+  useEffect(() => () => stopResizeRef.current?.(), [])
+
+  useEffect(() => {
+    if (stopResizeRef.current && navigationCollapsed !== resizeCollapsedRef.current) stopResizeRef.current()
+  }, [navigationCollapsed])
+
+  useEffect(() => {
+    const toggleNavigation = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat || event.isComposing || event.altKey || event.shiftKey
+        || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'b') return
+      if (event.target instanceof Element && event.target.closest('input, textarea, select, [role="textbox"], [contenteditable]:not([contenteditable="false"])')) return
+      event.preventDefault()
+      stopResizeRef.current?.()
+      setCollapsed(!useNavigationUiStore.getState().collapsed)
+    }
+    window.addEventListener('keydown', toggleNavigation)
+    return { navigationCollapsed, navigationWidth, resizeWidth, navigationMotion, setCollapsed,
+    startResize, resizeWithKeyboard }
 }

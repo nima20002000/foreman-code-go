@@ -46,10 +46,6 @@ type Opened = { draft: CurrentDraft; savedDraft: CurrentDraft; savedRevision: nu
 /** Uses the existing session-generation-fenced, same-origin HTTP boundary. No bearer fallback. */
 export function createNextDraftApi(client: ApiClient = apiClient) {
   const opened = new Map<string, Opened>()
-  const pendingAgentCommands = new Map<string, {
-    path: string; method: 'POST' | 'PATCH';
-    body: Omit<z.input<typeof AgentCreateInputSchema>, 'workspaceId'> | Omit<AgentUpdateInput, 'workspaceId' | 'agentId'>;
-  }>()
   const key = (workspaceId: string, workflowId: string) => JSON.stringify([workspaceId, workflowId])
 
   const load = async (workspaceId: string, workflowId: string, options?: RequestOptions): Promise<Opened> => {
@@ -102,61 +98,7 @@ export function createNextDraftApi(client: ApiClient = apiClient) {
     return { expectedAgentConfigurationVersionIds: configurations, expectedLocationRevision: workspace.locationRevision, agents: agents.items }
   }
   /** Agent operations use the shared Agent service; graph operations stay local. */
-  const applyAgents = async (workspaceId: string, operations: readonly GraphDraftOperationV3[], commandId: string) => {
-    const created = new Set<string>()
-    const edits = coalesceAgentEdits(operations)
-    const agentsPath = `/api/management/workspaces/${part(workspaceId)}/agents`
-    let index = 0
-    const catalog = async () => (await client.listManagedAgents(workspaceId)).items
-    for (const operation of operations) {
-      const command = `${commandId}:${index++}`
-      if ((operation.type === 'agent.configure' || operation.type === 'agent.rename')
-        && (created.has(operation.agentId) || edits.get(operation.agentId)!.index !== index - 1)) continue
-      const pendingKey = JSON.stringify([workspaceId, command])
-      const pending = pendingAgentCommands.get(pendingKey)
-      if (pending) {
-        // A lost response can follow a committed mutation. Reconcile its receipt
-        // with the original pins before reading the now-changed catalog.
-        await client.request(pending.path, AgentMutationResultSchema, { method: pending.method, body: pending.body })
-        if (operation.type === 'agent.add') created.add(operation.agentId)
-      } else if (operation.type === 'agent.add') {
-        const configure = operations.find((item) => item.type === 'agent.configure' && item.agentId === operation.agentId)
-        const content = configure?.type === 'agent.configure' ? {
-          prompt: configure.prompt, assignedSkills: configure.assignedSkills,
-          ...(configure.graphqlTools ? { graphqlTools: configure.graphqlTools } : {}),
-          ...(configure.nativeTools ? { nativeTools: configure.nativeTools } : {}),
-          ...(configure.description ? { description: configure.description } : {}), ...(configure.role ? { role: configure.role } : {}),
-        } : { prompt: {}, assignedSkills: [] }
-        const configuration = configure?.type === 'agent.configure' ? configure.configuration : operation.configuration
-        const pending = structuredClone({ path: agentsPath, method: 'POST' as const, body: {
-          commandId: command, agentId: operation.agentId, name: operation.name, productRole: operation.productRole,
-          configuration: configuration ? SupportedHarnessConfigurationSchema.parse(configuration) : undefined, ...content } })
-        pendingAgentCommands.set(pendingKey, pending)
-        await client.request(pending.path, AgentMutationResultSchema, { method: pending.method, body: pending.body })
-        created.add(operation.agentId)
-      } else if ((operation.type === 'agent.configure' || operation.type === 'agent.rename') && !created.has(operation.agentId)) {
-        const edit = edits.get(operation.agentId)!
-        const agent = (await catalog()).find((item) => item.agent.id === operation.agentId)
-        if (!agent?.agent.configurationVersionId) throw new ApiError({ code: 'AGENT_NOT_FOUND', message: 'The edited Agent is unavailable. Reload before saving.' }, 409)
-        const body = {
-          ...(edit.rename ? { name: edit.rename.name } : {}),
-          ...(edit.configure ? { configuration: SupportedHarnessConfigurationSchema.parse(edit.configure.configuration), prompt: edit.configure.prompt,
-            assignedSkills: edit.configure.assignedSkills, description: edit.configure.description ?? null,
-            ...(edit.configure.graphqlTools ? { graphqlTools: edit.configure.graphqlTools } : {}),
-            ...(edit.configure.nativeTools ? { nativeTools: edit.configure.nativeTools } : {}),
-            role: edit.configure.role ?? null } : {}),
-        }
-        const pending = structuredClone({ path: `${agentsPath}/${part(operation.agentId)}`, method: 'PATCH' as const, body: {
-          commandId: command, expectedRevision: operation.expectedAgentRevision,
-          expectedConfigurationVersionId: agent.agent.configurationVersionId, ...body } })
-        pendingAgentCommands.set(pendingKey, pending)
-        await client.request(pending.path, AgentMutationResultSchema, { method: pending.method, body: pending.body })
-      }
-    }
-    const agents = created.size || operations.some((item) => item.type === 'agent.configure' || item.type === 'agent.rename') ? await catalog() : undefined
-    for (let index = 0; index < operations.length; index++) pendingAgentCommands.delete(JSON.stringify([workspaceId, `${commandId}:${index}`]))
-    return agents
-  }
+  const applyAgents = createDraftAgentWriter(client)
   return {
     open, get,
     discardLocal(workspaceId: string, workflowId: string) {
@@ -290,4 +232,67 @@ export type NextDraftApi = ReturnType<typeof createNextDraftApi>
 export function assertDraftSubmission(graph: NextDraftContext['draft']['graph'], operations: unknown[]) {
   WorkflowDefinitionV3Schema.parse(graph)
   for (const operation of operations) GraphDraftOperationV3Schema.parse(operation)
+}
+
+function createDraftAgentWriter(client: ApiClient) {
+  const pendingAgentCommands = new Map<string, {
+    path: string; method: 'POST' | 'PATCH';
+    body: Omit<z.input<typeof AgentCreateInputSchema>, 'workspaceId'> | Omit<AgentUpdateInput, 'workspaceId' | 'agentId'>;
+  }>()
+  const applyAgents = async (workspaceId: string, operations: readonly GraphDraftOperationV3[], commandId: string) => {
+    const created = new Set<string>()
+    const edits = coalesceAgentEdits(operations)
+    const agentsPath = `/api/management/workspaces/${part(workspaceId)}/agents`
+    let index = 0
+    const catalog = async () => (await client.listManagedAgents(workspaceId)).items
+    for (const operation of operations) {
+      const command = `${commandId}:${index++}`
+      if ((operation.type === 'agent.configure' || operation.type === 'agent.rename')
+        && (created.has(operation.agentId) || edits.get(operation.agentId)!.index !== index - 1)) continue
+      const pendingKey = JSON.stringify([workspaceId, command])
+      const pending = pendingAgentCommands.get(pendingKey)
+      if (pending) {
+        // A lost response can follow a committed mutation. Reconcile its receipt
+        // with the original pins before reading the now-changed catalog.
+        await client.request(pending.path, AgentMutationResultSchema, { method: pending.method, body: pending.body })
+        if (operation.type === 'agent.add') created.add(operation.agentId)
+      } else if (operation.type === 'agent.add') {
+        const configure = operations.find((item) => item.type === 'agent.configure' && item.agentId === operation.agentId)
+        const content = configure?.type === 'agent.configure' ? {
+          prompt: configure.prompt, assignedSkills: configure.assignedSkills,
+          ...(configure.graphqlTools ? { graphqlTools: configure.graphqlTools } : {}),
+          ...(configure.nativeTools ? { nativeTools: configure.nativeTools } : {}),
+          ...(configure.description ? { description: configure.description } : {}), ...(configure.role ? { role: configure.role } : {}),
+        } : { prompt: {}, assignedSkills: [] }
+        const configuration = configure?.type === 'agent.configure' ? configure.configuration : operation.configuration
+        const pending = structuredClone({ path: agentsPath, method: 'POST' as const, body: {
+          commandId: command, agentId: operation.agentId, name: operation.name, productRole: operation.productRole,
+          configuration: configuration ? SupportedHarnessConfigurationSchema.parse(configuration) : undefined, ...content } })
+        pendingAgentCommands.set(pendingKey, pending)
+        await client.request(pending.path, AgentMutationResultSchema, { method: pending.method, body: pending.body })
+        created.add(operation.agentId)
+      } else if ((operation.type === 'agent.configure' || operation.type === 'agent.rename') && !created.has(operation.agentId)) {
+        const edit = edits.get(operation.agentId)!
+        const agent = (await catalog()).find((item) => item.agent.id === operation.agentId)
+        if (!agent?.agent.configurationVersionId) throw new ApiError({ code: 'AGENT_NOT_FOUND', message: 'The edited Agent is unavailable. Reload before saving.' }, 409)
+        const body = {
+          ...(edit.rename ? { name: edit.rename.name } : {}),
+          ...(edit.configure ? { configuration: SupportedHarnessConfigurationSchema.parse(edit.configure.configuration), prompt: edit.configure.prompt,
+            assignedSkills: edit.configure.assignedSkills, description: edit.configure.description ?? null,
+            ...(edit.configure.graphqlTools ? { graphqlTools: edit.configure.graphqlTools } : {}),
+            ...(edit.configure.nativeTools ? { nativeTools: edit.configure.nativeTools } : {}),
+            role: edit.configure.role ?? null } : {}),
+        }
+        const pending = structuredClone({ path: `${agentsPath}/${part(operation.agentId)}`, method: 'PATCH' as const, body: {
+          commandId: command, expectedRevision: operation.expectedAgentRevision,
+          expectedConfigurationVersionId: agent.agent.configurationVersionId, ...body } })
+        pendingAgentCommands.set(pendingKey, pending)
+        await client.request(pending.path, AgentMutationResultSchema, { method: pending.method, body: pending.body })
+      }
+    }
+    const agents = created.size || operations.some((item) => item.type === 'agent.configure' || item.type === 'agent.rename') ? await catalog() : undefined
+    for (let index = 0; index < operations.length; index++) pendingAgentCommands.delete(JSON.stringify([workspaceId, `${commandId}:${index}`]))
+    return agents
+  }
+  return applyAgents
 }

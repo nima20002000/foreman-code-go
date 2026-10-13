@@ -94,8 +94,6 @@ function WorkspaceCardActions({ workspaceId, name, revision = 0, disabled, onCom
 export function WorkspaceDirectory() {
   const queryClient = useQueryClient()
   const managedQuery = useWorkspacePages(true, 'directory')
-  const updateWorkspace = useUpdateManagedWorkspaceMutation()
-  const archiveWorkspace = useArchiveManagedWorkspaceMutation()
 
   const failed = managedQuery.isError && !managedQuery.isFetchNextPageError
   const loading = managedQuery.isPending
@@ -203,23 +201,7 @@ export function WorkspaceDirectory() {
     : confirmationTargets.current.every((target) => target.kind === 'folder') ? 'folder' : 'item'
   const confirmationLabel = `${confirmationTargets.current.length} ${confirmationNoun}${confirmationTargets.current.length === 1 ? '' : 's'}`
 
-  const execute = async (input: CardCommand & { commandId: string }) => {
-    const { workspaceId, commandId, expectedRevision } = input
-    const response = input.type === 'rename'
-      ? await updateWorkspace.mutateAsync({ workspaceId, commandId, expectedRevision, name: input.name! })
-      : await archiveWorkspace.mutateAsync({ workspaceId, commandId, expectedRevision })
-    // The write has committed. Cache refresh failure must not turn it into a retryable write.
-    queryClient.setQueriesData<InfiniteData<{ items: ManagedWorkspace[]; pageInfo: { nextCursor: string | null } }>>({ queryKey: [...queryKeys.managedWorkspaces, 'pages'] }, (current) => current ? {
-      ...current,
-      pages: current.pages.map((page) => ({ ...page, items: input.type === 'archive' ? page.items.filter((item) => item.workspace.id !== workspaceId)
-        : page.items.map((item) => item.workspace.id === workspaceId ? response.value : item) })),
-    } : current)
-    void Promise.all([
-      queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkspaces }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.workspaceStorageFolders }),
-      queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) }),
-    ]).catch(() => undefined)
-  }
+  const execute = useWorkspaceCardCommands(queryClient)
   return (
     <section className="workspace-directory resource-directory" aria-label="Workspaces">
       <PageHeader
@@ -291,4 +273,27 @@ export function WorkspaceDirectory() {
       </Dialog>
     </section>
   )
+}
+
+function useWorkspaceCardCommands(queryClient: ReturnType<typeof useQueryClient>) {
+  const updateWorkspace = useUpdateManagedWorkspaceMutation()
+  const archiveWorkspace = useArchiveManagedWorkspaceMutation()
+  const execute = async (input: CardCommand & { commandId: string }) => {
+    const { workspaceId, commandId, expectedRevision } = input
+    const response = input.type === 'rename'
+      ? await updateWorkspace.mutateAsync({ workspaceId, commandId, expectedRevision, name: input.name! })
+      : await archiveWorkspace.mutateAsync({ workspaceId, commandId, expectedRevision })
+    // The write has committed. Cache refresh failure must not turn it into a retryable write.
+    queryClient.setQueriesData<InfiniteData<{ items: ManagedWorkspace[]; pageInfo: { nextCursor: string | null } }>>({ queryKey: [...queryKeys.managedWorkspaces, 'pages'] }, (current) => current ? {
+      ...current,
+      pages: current.pages.map((page) => ({ ...page, items: input.type === 'archive' ? page.items.filter((item) => item.workspace.id !== workspaceId)
+        : page.items.map((item) => item.workspace.id === workspaceId ? response.value : item) })),
+    } : current)
+    void Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.managedWorkspaces }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaceStorageFolders }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDetails(workspaceId) }),
+    ]).catch(() => undefined)
+  }
+  return execute
 }

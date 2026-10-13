@@ -115,10 +115,6 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
   scope: RepeatGraphScopeV3; panels?: AgentPanelRenderer
   layout?: readonly Pick<WorkflowNodeV3, 'id' | 'position' | 'width' | 'height'>[]; geometry?: (changes: GraphGeometryChange[]) => void
 }) {
-  const [adapter] = useState(() => createGraphGeometryAdapter<RunNode>([]))
-  const [canvasNodes, setCanvasNodes] = useState<RunNode[]>([])
-  // Node selection is local presentation, like the draft canvas; it never changes the Run.
-  const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set())
   const [open, setOpen] = useState<OpenAgentPanel>()
   const board = useWorkflowBoard()!
   const query = useRunVersionQuery(scope)
@@ -254,61 +250,11 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
     previous.current = next
     return result
   }, [topology, states, record, recordLoading, facts, jobExecutions, board.inspection.runNodeId, choreography.nodes, cis, waits, checks, checking])
-  const layoutById = useMemo(() => new Map(layout?.map((node) => [node.id, node])), [layout])
-  const pinnedById = useMemo(() => new Map(version?.definition.nodes.map((node) => [node.id, node])), [version])
-  const presented = useRef(new Map<string, { source: RunNode; node: RunNode }>())
-  const presentedNodes = useMemo(() => nodes.map((node) => {
-    const saved = layoutById.get(node.id)
-    const pinned = pinnedById.get(node.id)
-    const placement = saved ?? pinned
-    const width = placement?.width ?? 212
-    const height = placement?.height ?? 212
-    const position = placement?.position ?? node.position
-    const resizable = Boolean(saved && geometry)
-    const cached = presented.current.get(node.id)
-    if (cached && cached.source === node && cached.node.width === width && cached.node.height === height
-      && cached.node.position.x === position.x && cached.node.position.y === position.y
-      && cached.node.data.resizable === resizable) return cached.node
-    const result = { ...node, draggable: resizable, position, width, height, style: { width, height },
-      data: { ...node.data, resizable } }
-    presented.current.set(node.id, { source: node, node: result })
-    return result
-  }), [nodes, layoutById, pinnedById, geometry])
-  useLayoutEffect(() => {
-    const selected = new Set([...picked, ...presentedNodes.filter((node) => node.data.selected).map((node) => node.id)])
-    setCanvasNodes(adapter.reconcile(presentedNodes, selected))
-  }, [adapter, presentedNodes, picked])
-  const flushGeometry = () => {
-    const changes = adapter.flush()
-    if (changes.length) geometry?.(changes)
-  }
-  const onNodesChange = (changes: NodeChange<RunNode | CiServerFlowNode>[]) => {
-    const selections = changes.filter((change) => change.type === 'select' && change.id !== CI_SERVER_NODE_ID)
-    if (selections.length) setPicked((current) => {
-      const next = new Set(current)
-      for (const change of selections) if (change.type === 'select') { if (change.selected) next.add(change.id); else next.delete(change.id) }
-      return next
-    })
-    const editable = changes.filter((change): change is NodeChange<RunNode> =>
-      change.type === 'position' && Boolean(layoutById.has(change.id) && geometry))
-    const result = adapter.update(editable)
-    setCanvasNodes(result.nodes)
-    if (result.finished) flushGeometry()
-  }
-  const resize = (change: GraphGeometryChange) => {
-    const result = adapter.update([
-      { id: change.id, type: 'dimensions', dimensions: { width: change.width!, height: change.height! }, resizing: true },
-      { id: change.id, type: 'position', position: change.position },
-    ])
-    setCanvasNodes(result.nodes)
-  }
+  const { canvasNodes, presentedNodes, onNodesChange, flushGeometry, resize, finishResize } =
+    useRunCanvasGeometry({ nodes, layout, version, geometry })
   const ciServerNode = useMemo(() => ciServerFlowNode(canvasNodes, ciSummary,
     () => useInspectionPresentation.getState().setOpen(ciDialogKey, true)), [ciSummary, canvasNodes, ciDialogKey])
   const flowNodes = useMemo(() => ciServerNode ? [...canvasNodes, ciServerNode] : canvasNodes, [canvasNodes, ciServerNode])
-  const finishResize = (change: GraphGeometryChange) => {
-    setCanvasNodes(adapter.finishResize(change.id, change.width!, change.height!, change.position))
-    flushGeometry()
-  }
   const edges = useMemo<RunEdge[]>(() => {
     const counts = new Map<string, number>()
     return lines.lines.map((edge) => {
@@ -371,4 +317,69 @@ function SelectedRunSubagents({ scope, nodes: flowNodes }: { scope: RepeatGraphS
     return [{ id: node.id, kind: node.data.kind, position: node.position, size: { width, height } }]
   })
   return <RunSubagentsOverlay scope={scope} nodes={nodes} />
+}
+
+function useRunCanvasGeometry({ nodes, layout, version, geometry }: {
+  nodes: RunNode[]
+  layout: Parameters<typeof SelectedRunCanvas>[0]['layout']
+  version: NonNullable<ReturnType<typeof useRunVersionQuery>['data']>['version'] | undefined
+  geometry: Parameters<typeof SelectedRunCanvas>[0]['geometry']
+}) {
+  const [adapter] = useState(() => createGraphGeometryAdapter<RunNode>([]))
+  const [canvasNodes, setCanvasNodes] = useState<RunNode[]>([])
+  // Node selection is local presentation, like the draft canvas; it never changes the Run.
+  const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set())
+  const layoutById = useMemo(() => new Map(layout?.map((node) => [node.id, node])), [layout])
+  const pinnedById = useMemo(() => new Map(version?.definition.nodes.map((node) => [node.id, node])), [version])
+  const presented = useRef(new Map<string, { source: RunNode; node: RunNode }>())
+  const presentedNodes = useMemo(() => nodes.map((node) => {
+    const saved = layoutById.get(node.id)
+    const pinned = pinnedById.get(node.id)
+    const placement = saved ?? pinned
+    const width = placement?.width ?? 212
+    const height = placement?.height ?? 212
+    const position = placement?.position ?? node.position
+    const resizable = Boolean(saved && geometry)
+    const cached = presented.current.get(node.id)
+    if (cached && cached.source === node && cached.node.width === width && cached.node.height === height
+      && cached.node.position.x === position.x && cached.node.position.y === position.y
+      && cached.node.data.resizable === resizable) return cached.node
+    const result = { ...node, draggable: resizable, position, width, height, style: { width, height },
+      data: { ...node.data, resizable } }
+    presented.current.set(node.id, { source: node, node: result })
+    return result
+  }), [nodes, layoutById, pinnedById, geometry])
+  useLayoutEffect(() => {
+    const selected = new Set([...picked, ...presentedNodes.filter((node) => node.data.selected).map((node) => node.id)])
+    setCanvasNodes(adapter.reconcile(presentedNodes, selected))
+  }, [adapter, presentedNodes, picked])
+  const flushGeometry = () => {
+    const changes = adapter.flush()
+    if (changes.length) geometry?.(changes)
+  }
+  const onNodesChange = (changes: NodeChange<RunNode | CiServerFlowNode>[]) => {
+    const selections = changes.filter((change) => change.type === 'select' && change.id !== CI_SERVER_NODE_ID)
+    if (selections.length) setPicked((current) => {
+      const next = new Set(current)
+      for (const change of selections) if (change.type === 'select') { if (change.selected) next.add(change.id); else next.delete(change.id) }
+      return next
+    })
+    const editable = changes.filter((change): change is NodeChange<RunNode> =>
+      change.type === 'position' && Boolean(layoutById.has(change.id) && geometry))
+    const result = adapter.update(editable)
+    setCanvasNodes(result.nodes)
+    if (result.finished) flushGeometry()
+  }
+  const resize = (change: GraphGeometryChange) => {
+    const result = adapter.update([
+      { id: change.id, type: 'dimensions', dimensions: { width: change.width!, height: change.height! }, resizing: true },
+      { id: change.id, type: 'position', position: change.position },
+    ])
+    setCanvasNodes(result.nodes)
+  }
+  const finishResize = (change: GraphGeometryChange) => {
+    setCanvasNodes(adapter.finishResize(change.id, change.width!, change.height!, change.position))
+    flushGeometry()
+  }
+  return { canvasNodes, presentedNodes, onNodesChange, flushGeometry, resize, finishResize }
 }

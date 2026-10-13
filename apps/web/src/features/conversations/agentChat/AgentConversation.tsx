@@ -1,10 +1,10 @@
 import { useSessionControls } from '../sessionControls/useSessionControls'
-import { compactionBlocksSend, parseSessionCommand, type SessionMode } from '@foreman-code/contracts'
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { AgentChatContext, AgentChatIntent, SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
+import { compactionBlocksSend, parseSessionCommand } from '@foreman-code/contracts'
+import { useMemo, type ReactNode } from 'react'
+import type { AgentChatContext } from '@foreman-code/contracts/agent-chat'
 import { ChatAttachmentControl, useConversationAttachments } from '../../attachments'
 import { ChatAttachmentBoundary } from '../ChatAttachmentBoundary'
-import { prepareChatAttachments } from '../chatAttachmentAttempt'
+
 import { Alert, Button, CodeBlock, Dialog, IconButton, LoadingState, Select, Tooltip } from '../../../shared/ui/nocturne'
 import { createFileCardHttpClient, MessageFileCards } from '../../file-cards'
 import { ApiError } from '../../../shared/api/client'
@@ -20,6 +20,7 @@ import { AgentChatTranscript } from './AgentChatTranscript'
 import { chatBusy, intentUnavailable } from './model'
 import { useAgentChat } from './useAgentChat'
 import { PinnedProviderAccount } from '../../provider-accounts/PinnedProviderAccount'
+import { useAgentConversationComposer } from './useAgentConversationComposer'
 import './agentChat.css'
 import '../chatAttachments.css'
 
@@ -52,49 +53,8 @@ function AgentConversationContent({ context, name, role, activity, runLabel, onC
   const writeReason = retired ? 'Retired harness (OpenCode): read-only' : chat.blocked('agent_chat:write')
   const drop = useFileDrop({ disabled: !!writeReason || !attachments.canAdd, onFiles: attachments.addFiles })
   const draft = useConversationDraftStore((store) => store.drafts[chat.draftKey] ?? '')
-  const composer = useRef<HTMLTextAreaElement>(null), focused = useRef(false)
-  const [sendAgainDraft, setSendAgain] = useState<Pick<SendAgentChatMessageRequest,
-    'content' | 'attachments' | 'sessionMode'> & { draftKey: string }>()
-  const sendAgain = sendAgainDraft?.draftKey === chat.draftKey ? sendAgainDraft : undefined
-  const resendCommand = parseSessionCommand(sendAgain?.content ?? '')
-  const resendControl = resendCommand.kind === 'compact' || resendCommand.kind === 'mode'
-  const resendPending = chat.pending || resendControl && sessionControls.mutation.isPending
-  const [commandError, setCommandError] = useState<{ draftKey: string; content: string; message: string }>()
-  const commandCompaction = sessionControls.commandFeedback?.draft.content === commandError?.content
-    ? sessionControls.commandFeedback?.compaction : undefined
-  useEffect(() => {
-    if (!state || focused.current || !composer.current) return
-    const active = document.activeElement, popover = composer.current.closest('.n-agent-popover')
-    if (!active || active === document.body || active.matches('.n-agent-action--chat[aria-expanded="true"]')
-      || active.getAttribute('role') === 'tab' && popover?.contains(active)) {
-      focused.current = true
-      composer.current.focus({ preventScroll: true })
-    }
-  }, [state])
-  const focus = () => composer.current?.focus({ preventScroll: true })
-  const submit = async (intent: AgentChatIntent, content = draft, sessionMode?: SessionMode,
-    resend?: Pick<SendAgentChatMessageRequest, 'attachments'>) => {
-    const command = parseSessionCommand(content)
-    setCommandError(undefined)
-    try {
-      if (command.kind === 'invalid') throw new Error(command.message)
-      if (command.kind === 'compact' || command.kind === 'mode') {
-        return await sessionControls.command(content, resend ? `${chat.draftKey}:resend` : chat.draftKey)
-      }
-      if (command.kind === 'new') throw new Error('/new is available in Operator chat.')
-      const mode = command.kind === 'plan-task' ? 'plan' : sessionMode ?? sessionControls.state?.desiredMode
-      if (intent === 'steer' && mode === 'plan') return false
-      if (compactionBlocksSend(sessionControls.state?.compaction ?? null)) return false
-      const attempt = resend ? { attachments: resend.attachments ?? [] } : prepareChatAttachments(attachments)
-      return !!attempt && chat.send(content, intent, !resend, !!resend, attempt, mode)
-    } catch (failure) {
-      setCommandError({ draftKey: chat.draftKey, content,
-        message: failure instanceof Error ? failure.message : 'The native command could not be confirmed.' })
-      return false
-    } finally {
-      focus()
-    }
-  }
+  const { composer, sendAgain, setSendAgain, resendCommand, resendControl, resendPending,
+    commandError, commandCompaction, focus, submit } = useAgentConversationComposer({ chat, state, sessionControls, attachments, draft })
   const header = <AgentChatHeader name={name} role={role} state={agentChatStateLabel(state, runLabel)}
     detail={[activity, state?.availability.message, state ? chatBackgroundWork(state.activitySnapshot)?.message : undefined]
       .filter(Boolean).join(' · ')} onClose={onClose} />

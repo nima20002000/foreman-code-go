@@ -1,3 +1,4 @@
+import type { Dispatch, RefObject, SetStateAction } from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   DragEvent as ReactDragEvent,
@@ -157,6 +158,75 @@ export function useReorderableNavigation(
     [containerRef, onClickCapture, onDragStart, parentKey],
   )
 
+  const beginDrag = useNavigationPointerDrag({ items, orderedIds, listRef, dragRef, suppressClickRef, suppressClickTimerRef,
+    cancelDragRef, setPreviewIds, commitOrder, announce, disabled, revision })
+
+  const getItemProps = useCallback(
+    (id: string): ReorderItemProps => ({
+      'data-reorder-id': id,
+      onPointerDown: (event) => beginDrag(event, id),
+    }),
+    [beginDrag],
+  )
+
+  const moveByKeyboard = useCallback(
+    (id: string, direction: -1 | 1) => {
+      if (disabled) return
+      const index = orderedIds.indexOf(id)
+      if (index === -1) return
+      const targetIndex = index + direction
+      if (targetIndex < 0 || targetIndex >= orderedIds.length) return
+      const next = moveItemToIndex(orderedIds, id, targetIndex)
+      if (sameOrder(next, orderedIds)) return
+      commitOrder(next)
+      const label = items.find((item) => item.id === id)?.label ?? id
+      announce(`Moved ${label} to position ${targetIndex + 1} of ${next.length}`)
+    },
+    [announce, commitOrder, disabled, items, orderedIds],
+  )
+
+  const getKeyboardProps = useCallback(
+    (id: string): ReorderKeyboardProps => ({
+      'aria-keyshortcuts': REORDER_KEY_SHORTCUTS,
+      onKeyDown: (event) => {
+        if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
+        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+        event.preventDefault()
+        moveByKeyboard(id, event.key === 'ArrowUp' ? -1 : 1)
+      },
+    }),
+    [moveByKeyboard],
+  )
+
+  const previewIsCurrent = !disabled && dragRef.current?.revision === revision
+    && dragRef.current !== null && sameOrder(dragRef.current.originIds, orderedIds)
+  return {
+    orderedIds: previewIsCurrent ? previewIds ?? orderedIds : orderedIds,
+    containerProps,
+    getItemProps,
+    getKeyboardProps,
+    move: moveByKeyboard,
+  }
+}
+
+type NavigationPointerDrag = {
+  items: readonly ReorderableNavigationItem[]
+  orderedIds: readonly string[]
+  listRef: RefObject<HTMLUListElement | null>
+  dragRef: RefObject<DragSession | null>
+  suppressClickRef: RefObject<boolean>
+  suppressClickTimerRef: RefObject<number | null>
+  cancelDragRef: RefObject<(() => void) | null>
+  setPreviewIds: Dispatch<SetStateAction<readonly string[] | null>>
+  commitOrder: (ids: readonly string[]) => void
+  announce: ReturnType<typeof useNavigationOrderStore.getState>['announce']
+  disabled: boolean
+  revision: number | undefined
+}
+
+function useNavigationPointerDrag(options: NavigationPointerDrag) {
+  const { items, orderedIds, listRef, dragRef, suppressClickRef, suppressClickTimerRef,
+    cancelDragRef, setPreviewIds, commitOrder, announce, disabled, revision } = options
   const beginDrag = useCallback(
     (event: ReactPointerEvent<HTMLElement>, id: string) => {
       if (disabled || event.button !== 0 || dragRef.current) return
@@ -346,53 +416,8 @@ export function useReorderableNavigation(
         session.holdTimer = window.setTimeout(activate, TOUCH_HOLD_MS)
       }
     },
-    [announce, commitOrder, disabled, items, orderedIds, revision],
+    [announce, commitOrder, disabled, items, orderedIds, revision, dragRef, listRef, setPreviewIds,
+      cancelDragRef, suppressClickRef, suppressClickTimerRef],
   )
-
-  const getItemProps = useCallback(
-    (id: string): ReorderItemProps => ({
-      'data-reorder-id': id,
-      onPointerDown: (event) => beginDrag(event, id),
-    }),
-    [beginDrag],
-  )
-
-  const moveByKeyboard = useCallback(
-    (id: string, direction: -1 | 1) => {
-      if (disabled) return
-      const index = orderedIds.indexOf(id)
-      if (index === -1) return
-      const targetIndex = index + direction
-      if (targetIndex < 0 || targetIndex >= orderedIds.length) return
-      const next = moveItemToIndex(orderedIds, id, targetIndex)
-      if (sameOrder(next, orderedIds)) return
-      commitOrder(next)
-      const label = items.find((item) => item.id === id)?.label ?? id
-      announce(`Moved ${label} to position ${targetIndex + 1} of ${next.length}`)
-    },
-    [announce, commitOrder, disabled, items, orderedIds],
-  )
-
-  const getKeyboardProps = useCallback(
-    (id: string): ReorderKeyboardProps => ({
-      'aria-keyshortcuts': REORDER_KEY_SHORTCUTS,
-      onKeyDown: (event) => {
-        if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return
-        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
-        event.preventDefault()
-        moveByKeyboard(id, event.key === 'ArrowUp' ? -1 : 1)
-      },
-    }),
-    [moveByKeyboard],
-  )
-
-  const previewIsCurrent = !disabled && dragRef.current?.revision === revision
-    && dragRef.current !== null && sameOrder(dragRef.current.originIds, orderedIds)
-  return {
-    orderedIds: previewIsCurrent ? previewIds ?? orderedIds : orderedIds,
-    containerProps,
-    getItemProps,
-    getKeyboardProps,
-    move: moveByKeyboard,
-  }
+  return beginDrag
 }
