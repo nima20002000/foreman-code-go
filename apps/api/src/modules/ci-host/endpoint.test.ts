@@ -17,7 +17,7 @@ it.each([undefined, 1, 2, 3])('derives Worker readiness from start protocol %s',
 })
 
 it('lists computers without waiting for a slow cloud recovery sweep', async () => {
-  const cloud = { reconcile: () => new Promise<void>(() => {}),
+  const cloud = { provider: { id: 'circleci' }, reconcile: () => new Promise<void>(() => {}),
     computers: () => [{ key: 'fixture:cloud:0', hostRef: { kind: 'cloud', mainId: 'fixture-main', provider: 'circleci', slot: 0 },
       label: 'Cloud 1', priority: 30 }] }
   const pool = { query: async () => ({ rows: [] }) } as unknown as pg.Pool

@@ -8,6 +8,9 @@ import { DomainError } from '../errors.js'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import { assertBuildComputerTarget } from '../settings/buildComputers.js'
 import { DeviceAccessError } from '../devices/access.js'
+import { componentLogger } from '../diagnostics/logger.js'
+
+const log = componentLogger('jobs')
 
 interface DeviceRequests {
   capabilities(deviceId: string): readonly { namespace: string; mainCanRequest?: boolean }[]
@@ -22,7 +25,10 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
     private readonly clouds: CloudCi[] = []) {}
 
   async computers(): Promise<HostCiComputer[]> {
-    await Promise.all(this.clouds.map(cloud => cloud.reconcile()))
+    // Recovery sweeps make provider calls; planning and listing must not wait for them.
+    for (const cloud of this.clouds) {
+      void cloud.reconcile().catch(error => { log.warn({ err: error, provider: cloud.provider.id }, 'Cloud CI recovery sweep failed') })
+    }
     const rows = (await this.pool.query<{ host_key: string; target: DeviceProvisioningTarget
       build_enabled: boolean; build_priority: number; build_allowance_percent: number }>(
       'select host_key,target,build_enabled,build_priority,build_allowance_percent from build_computer_preferences')).rows
