@@ -39,7 +39,6 @@ import { coordinateSessionManager, isLeaseLost, type SingleWriterSessionManager 
 import { HarnessExecutionError, NativeDeliveryError } from '../harnesses/errors.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import { attemptCleanup, withCleanupDeadline } from './cleanup.js'
-import type { ClosedWorkflowSession } from './stoppedWorkflowFinalization.js'
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
 import { maintainCredential } from '../harnesses/credentialHeartbeat.js'
 import { componentLogger } from '../diagnostics/logger.js'
@@ -61,7 +60,7 @@ import type {
 } from './runtimePorts.js'
 import type { ExecutionCredentialProvider } from '../harnesses/mcpDetection.js'
 import { readDetachedWorkflowSession, readRemoteWorkflowContinuation, recoverWorkflowNativeClosure,
-  type WorkflowClosureStore } from './workflowClosure.js'
+  type ClosedWorkflowSession, type WorkflowClosureStore } from './workflowClosure.js'
 import { finishRecoveredWorkflowCredentials } from './workflowTerminalRecovery.js'
 import { assertSavedPendingApprovalOriginalLocked } from './nativeApprovalProof.js'
 import { openWorkflowLifecycleLocked } from '../runs/repeatLifecycle.js'

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { HarnessExecution, NativeSessionReference } from '@foreman-code/contracts'
-import type { ClosedWorkflowSession } from '../src/modules/interactions/stoppedWorkflowFinalization.js'
+import type { ClosedWorkflowSession } from '../src/modules/interactions/workflowClosure.js'
 import { assertRepeatNativeClosure, assertRepeatNativeUpdate } from '../src/modules/interactions/repeatNativeEvidence.js'
 import { prepareRepeatNativeUpdate } from '../src/modules/runs/repeatNode.js'
 import { nativeAt, nativeCompleted, nativeFixture } from './eng04-native-fixtures.js'

@@ -34,10 +34,8 @@ export interface RepeatNativeSettlementCheckpoint {
  * finishRun, Stop, timeout, process absence or in-memory Set can satisfy it.
  *
  * Positive repeat routing calls this from RepeatRunRepository after its Run/head
- * lock and exact occurrence/slot/input receipt checks. Terminal Run cleanup calls
- * it from finalizeStoppedWorkflowSessions after strict Run/version validation;
- * that path grants no routing authority. Private workflow-finalization updates
- * roll back with the enclosing owner transaction in either case.
+ * lock and exact occurrence/slot/input receipt checks. Private
+ * workflow-finalization updates roll back with the enclosing owner transaction.
  */
 export async function settleRepeatNativeExecutionLocked(sql: GraphTransactionSql, runId: string,
   supplied: HarnessExecution): Promise<void> {
