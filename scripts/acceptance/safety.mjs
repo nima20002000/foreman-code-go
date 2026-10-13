@@ -48,6 +48,7 @@ export function environment(source) {
     'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_BINARY',
     'FILE_STORAGE_ROOT', 'HARNESS_WORKSPACE_ROOT', 'LOG_DIR', 'COREPACK_HOME',
     'FOREMAN_CODE_TEST_ROOT', 'FOREMAN_CODE_TEST_OWNER', 'TEST_DATABASE_URL',
+    'FOREMAN_CODE_CI_TEST_ADMIN_URL', 'FOREMAN_CODE_CI_HOST_RUN_ID',
     'OPENAI_API_KEY', 'ANTHROPIC_API_KEY']
   return Object.fromEntries(keys.filter((key) => source[key] !== undefined).map((key) => [key, source[key]]))
 }
