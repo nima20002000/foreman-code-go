@@ -31,9 +31,21 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[]) {
   const pool = { query: async (sql: string, parameters?: unknown[]) => {
     if (sql.startsWith('update ci_runs')) {
       writes++
+      if (parameters?.length === 2) {
+        const plans = JSON.parse(parameters[0] as string) as { id: string; patch: Partial<CiRunRecord> }[]
+        const rows = plans.map(plan => {
+          const index = records.findIndex(item => item.id === plan.id)
+          records[index] = CiRunRecordSchema.parse({ ...records[index], ...plan.patch })
+          return { record: records[index] }
+        })
+        return { rows, rowCount: rows.length }
+      }
       const record = CiRunRecordSchema.parse(JSON.parse(parameters![3] as string))
       records[records.findIndex(item => item.id === record.id)] = record
       return { rows: [], rowCount: 1 }
+    }
+    if (sql.includes('where group_id=any')) {
+      return { rows: records.map(record => ({ record })) }
     }
     if (sql.includes('as group_id')) {
       return { rows: records.filter(record => !record.deferred).map(record => ({ group_id: record.groupId, state: record.state })) }
