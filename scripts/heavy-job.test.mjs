@@ -635,7 +635,7 @@ test('Vitest setup uses the private admission queue in a host CI worktree', { ti
   }
 })
 
-test('host CI worktrees remove abandoned temporary directories after a crashed job', { timeout: 6000 }, () => {
+test('host CI worktrees remove abandoned temporary directories after a crashed job', { timeout: 20000 }, async () => {
   const f = fixture()
   try {
     const env = { ...jobEnv(f.second), CI_HOST_RUNNER: '1' }
@@ -645,7 +645,16 @@ test('host CI worktrees remove abandoned temporary directories after a crashed j
     assert.equal(crash.signal, 'SIGKILL', crash.stderr)
     const abandoned = crash.stdout.split('\n').find(line => line.startsWith('temporary=')).slice('temporary='.length)
     utimesSync(abandoned, new Date(0), new Date(0))
-    const next = spawnSync(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e', 'process.exit(0)'],
+    // Stale running reservations have a ten-second recovery delay.
+    await new Promise(resolve => setTimeout(resolve, 10100))
+    const idleNamespace = join(f.home, 'idle-namespace.mjs')
+    writeFileSync(idleNamespace, `import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      const readDirectory = fs.readdirSync;
+      fs.readdirSync = (path, ...args) => path === '/proc' ? [] : readDirectory(path, ...args);
+      syncBuiltinESMExports();`)
+    const next = spawnSync(process.execPath, ['--import', idleNamespace,
+      'scripts/heavy-job.mjs', '--', process.execPath, '-e', 'process.exit(0)'],
       { cwd: f.second, env, encoding: 'utf8', timeout: 3000 })
     assert.equal(next.status, 0, next.stdout + next.stderr)
     assert.equal(existsSync(abandoned), false)
