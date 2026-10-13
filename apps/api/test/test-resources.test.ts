@@ -1,11 +1,40 @@
 import { chmod, mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { assertTestPath, assertTestRoot, createTestRoot, removeTestRoot, requireTestServerUrl,
   completeTestResourceCleanup, registerTestResourceCleanup, testAdminUrl, testEnvironment } from '../../../scripts/test-resources.mjs'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 
 describe('disposable test resources', () => {
+  it('retains the validated host CI database identity in a minimal child environment', async () => {
+    const runId = randomUUID()
+    const adminUrl = new URL(testAdminUrl)
+    adminUrl.port = '55440'
+    vi.stubEnv('FOREMAN_CODE_CI_HOST_RUN_ID', runId)
+    vi.stubEnv('FOREMAN_CODE_CI_TEST_ADMIN_URL', adminUrl.toString())
+    vi.resetModules()
+    const resources = await import('../../../scripts/test-resources.mjs')
+    const resource = resources.createTestRoot()
+    try {
+      const databaseUrl = new URL('/graphql_test_child', resources.testAdminUrl).toString()
+      const environment = resources.testEnvironment({ PATH: process.env.PATH }, {
+        ...resource, name: 'graphql_test_child', databaseUrl,
+      })
+      expect(environment.FOREMAN_CODE_CI_TEST_ADMIN_URL).toBe(adminUrl.toString())
+      expect(environment.FOREMAN_CODE_CI_HOST_RUN_ID).toBe(runId)
+      vi.stubEnv('FOREMAN_CODE_CI_TEST_ADMIN_URL', environment.FOREMAN_CODE_CI_TEST_ADMIN_URL!)
+      vi.stubEnv('FOREMAN_CODE_CI_HOST_RUN_ID', environment.FOREMAN_CODE_CI_HOST_RUN_ID!)
+      vi.resetModules()
+      const childResources = await import('../../../scripts/test-resources.mjs')
+      expect(childResources.requireTestServerUrl(environment.TEST_DATABASE_URL!).port).toBe('55440')
+    } finally {
+      resources.removeTestRoot(resource)
+      vi.unstubAllEnvs()
+      vi.resetModules()
+    }
+  })
+
   it('rejects alternate servers, credentials and socket or search-path overrides', () => {
     expect(requireTestServerUrl(testAdminUrl).port).toBe('55439')
     for (const value of [
