@@ -129,6 +129,7 @@ export async function assertInstalledWorkflowRestart(phase: RestartPhase,
     for (const original of launches) {
       if (original.provider) expect(() => process.kill(original.provider!.pid, 0)).toThrow()
     }
+    return recovered
   } finally {
     try {
       await fixture.provider.releaseWorkflowAdmission()

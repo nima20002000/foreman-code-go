@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 import { promisify } from 'node:util'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
-import { cachedTestFixture, testFixtureCacheRoot, workerFixtureInputs } from '../../../../scripts/test-fixture-cache.mjs'
+import { cachedTestFixture, cachedWorkerRelease as cachedWorkerReleaseEntry, testFixtureCacheRoot } from '../../../../scripts/test-fixture-cache.mjs'
 import { measureIntegrationPhase } from './integrationPhase.js'
 import { diagnosticEnvironment } from '../../src/modules/harnesses/compatibility/probe.js'
 import { passiveDriverPayloads } from '../../src/modules/harnesses/payloadDiscovery.js'
@@ -206,9 +206,8 @@ async function cachedWorkerRelease(directory: string) {
       'scripts/quota-helper-abi.mjs', 'packages/contracts/package.json', 'packages/contracts/src/productEnvironment.mjs',
       'apps/worker/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml', targetFile], { cwd: root })
     const builder = fileURLToPath(new URL('../../../../scripts/build-worker-artifact.mjs', import.meta.url))
-    const inputs = await workerFixtureInputs(root, commit)
-    const cached = await cachedTestFixture(testFixtureCacheRoot(), 'worker-artifacts',
-      [inputs, targetBytes, process.platform, process.arch, process.version], async temporary => {
+    const cached = await cachedWorkerReleaseEntry(testFixtureCacheRoot(), root, commit,
+      [targetBytes, process.platform, process.arch, process.version], async temporary => {
         await execute(process.execPath, [builder, targetFile, join(temporary, 'release')], {
           maxBuffer: 4 * 1024 * 1024,
           env: { ...process.env, FOREMAN_CODE_WORKER_BUILD_COMMIT: commit },

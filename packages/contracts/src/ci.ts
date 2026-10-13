@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { CI_LOG_MAX_BYTES, CiActivitySchema, CiRunRecordSchema, CiSuiteSchema, CiScopeSchema, CiSelectedFilesSchema,
+import { CI_LOG_MAX_BYTES, CiComputerRefSchema, CiActivitySchema, CiRunRecordSchema, CiSuiteSchema, CiScopeSchema, CiSelectedFilesSchema,
   CiTestResultsSchema, CiPrioritySchema, CiPriorityReasonSchema,
   CiTestStatusSchema, CiTestSummarySchema, CiUserSystemdSchema, validCiSelection } from './ciHost.js'
 import { IdSchema } from './schemaPrimitives.js'
@@ -8,6 +8,9 @@ import { SourceRootRecordSchema } from './sourceAdmission.js'
 import { SourceManifestSchema } from './sourceMaterialization.js'
 
 const CiRunInputObjectSchema = z.object({
+  smokeComputer: CiComputerRefSchema.optional().describe('Operator-only deployment smoke target. Requires unit or integration, '
+    + 'affected scope, an explicit commit and exactly one test file. Uses normal CI grants, setup and execution; '
+    + 'never falls back to a different computer.'),
   gate: z.boolean().optional().describe('Operator/orchestrator only. With suite=integration and scope=full, '
     + 'queue typecheck, lint, unit and duration-balanced integration as one gate. Gates run one at a time.'),
   priority: CiPrioritySchema.optional().describe('Defaults to normal. High requires Operator role or an explicit '
@@ -40,14 +43,20 @@ const selectedSuite = (value: z.infer<typeof CiRunInputObjectSchema>) => validCi
   && ((value.scope ?? 'affected') !== 'affected' || value.files === undefined || value.commit !== undefined)
 const validGate = (value: z.infer<typeof CiRunInputObjectSchema>) => !value.gate
   || (value.suite === 'integration' && value.scope === 'full' && value.files === undefined && value.partitions === undefined)
+const validSmoke = (value: z.infer<typeof CiRunInputObjectSchema>) => !value.smokeComputer
+  || (['unit', 'integration'].includes(value.suite) && value.scope === 'affected' && value.commit !== undefined
+    && value.files?.length === 1 && !value.gate && value.partitions === undefined)
+const smokeIssue = { message: 'Computer smoke requires unit/integration, affected scope, commit and one file.', path: ['smokeComputer'] }
 const gateIssue = { message: 'A gate requires integration, full scope, and no files or partition limit.', path: ['gate'] }
 export const CiRunInputSchema = CiRunInputObjectSchema.refine(partitionedSuite, partitionIssue)
   .refine(selectedSuite, selectionIssue)
   .refine(validGate, gateIssue)
+  .refine(validSmoke, smokeIssue)
 export const OperatorCiRunInputSchema = CiRunInputObjectSchema.extend({ workspaceId: IdSchema }).strict()
   .refine(partitionedSuite, partitionIssue)
   .refine(selectedSuite, selectionIssue)
   .refine(validGate, gateIssue)
+  .refine(validSmoke, smokeIssue)
 const CiRunTicketSchema = z.object({ ticketId: IdSchema }).strict()
 /** `partitions` lists every part or integration partition; the first is also `ticketId`. Poll each with ci_get. */
 export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(CiRunTicketSchema).min(2).max(66).optional() }).strict()

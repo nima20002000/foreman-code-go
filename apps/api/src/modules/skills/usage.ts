@@ -94,7 +94,7 @@ export class SkillUsageService {
           expectedConfigurationVersionId: agent.configurationVersionId,
           assignedSkills: agent.assignedSkills.map(skill => skill.skillId === input.skillId
             ? { ...skill, version: plan.head } : skill),
-        })
+        }, source)
         result.agents.push({ agentId: agent.id, configurationVersionId: updated.value.agent.configurationVersionId! })
       } catch (error) {
         result.failed.push(failure('agent', agent.id, error))

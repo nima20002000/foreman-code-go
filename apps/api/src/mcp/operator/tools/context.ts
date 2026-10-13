@@ -34,6 +34,10 @@ export const OPERATOR_RUNTIME_LIMITS = [
     detail: 'Concurrent run_start calls serialize on the command, runner and workspace locks. '
       + 'Each Start shares a 30-second deadline for those locks; RUN_START_BUSY means '
       + 'retry the same commandId and input. Ordinary SQL query deadlines and scoped Start grants still apply.' },
+  { feature: 'run_start_recovery', state: 'protected',
+    detail: 'run_start_resolve serializes with Start using the original commandId and complete input. '
+      + 'It returns the accepted Run, or permanently cancels an unaccepted command before a new explicit Start. '
+      + 'Uncertain or contradictory persisted success evidence blocks cancellation. Live Start and location read grants apply.' },
   {feature:'provider_accounts',state:'limited',detail:'Named account slots belong to one computer/application installation. Read/page/get/status/models require explicit provider_accounts:read; registration/rename/default/removal/auth prepare/cancel require provider_accounts:manage as well. Defaults apply only to new work without a saved account/profile. Accepted Runs and chats retain their original binding; removal preserves history. Authentication is reserved before native dispatch and reconciles the same operation after an unknown response. Only qualified native installations support authentication/models; browser authorization is human-only. MCP receives no credentials or challenges. Existing API-key provisioning remains local-human-only. Foreign installations are unavailable unless their owning Worker account service and advertised narrow transport are explicitly composed.'},
   { feature: 'agent_profile_placements', state: 'protected',
     detail: 'agent_update returns affectedWorkflowIds. Re-save each workflow with the returned configuration version IDs; '
