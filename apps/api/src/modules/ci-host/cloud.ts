@@ -633,7 +633,13 @@ export class CloudCi {
 
   private async cancelAttempts(run: CloudRun): Promise<CloudRun> {
     const canceled = new Set(run.cancellation!.canceledIds)
-    const discovered = await this.provider.find(run)
+    let discovered: string | null = null
+    try {
+      discovered = await this.provider.find(run)
+    } catch (error) {
+      if (!(error instanceof DomainError && error.code === 'CI_CLOUD_RUN_NOT_FOUND')) throw error
+      log.warn({ err: error, runId: run.runId }, 'Cloud CI discovery unavailable; canceling known pipelines')
+    }
     const attempts = run.dispatchHistory?.map(attempt => attempt.providerRunId) ?? []
     const ids = new Set([discovered, run.providerRunId, ...attempts])
     for (const providerRunId of ids) {
