@@ -201,6 +201,8 @@ export const CiRunRecordSchema = z.object({
   smokeComputer: CiComputerRefSchema.optional(),
   /** Measured test time plus a fixed setup allowance; runner-derived selections use a full-suite upper estimate. */
   expectedDurationMs: z.number().nonnegative().finite().optional(),
+  /** The learned executor slowdown applied to expectedDurationMs, so later estimates measure the executor itself. */
+  speedFactor: z.number().positive().finite().optional(),
   /** The planned slice contains files requiring a build computer. */
   requiresBuildComputer: z.boolean().optional(),
   /** A slow-tier part: it starts only after every other part of its request passed, and is skipped otherwise. */

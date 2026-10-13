@@ -30,6 +30,7 @@ import { collectCiResults } from './resultCollection.js'
 import { sanitizeCiText, serializeCiJson } from './text.js'
 import { isGitHubComputer, needsSystemdExecutor, supportsUserSystemd } from './computerCapabilities.js'
 import { weighCiPartitions } from './partitionPlanning.js'
+import { readExecutorSpeeds } from './executorSpeed.js'
 import { readQueuedCiRuns } from './queuedRuns.js'
 import { dispatchCloudTicket, expireCloudDispatch, requestCloud } from './cloudDispatch.js'
 import { cancelAssignedCiTicket } from './assignedCancellation.js'
@@ -277,7 +278,8 @@ export class HostCiService {
       }
       parts = [{ part: null, partition: null, files: input.files! }]
     } else if (input.gate) {
-      parts = await planCiGate(input, { ...integration!, durations: durations! }, inventory!, unitDurations, this.endpoint)
+      parts = await planCiGate(input, { ...integration!, durations: durations! }, inventory!, unitDurations, this.endpoint,
+        await readExecutorSpeeds(this.pool, this.endpoint))
     } else if (integration) {
       parts = planIntegrationParts(selection, { ...integration, durations: durations! }, await this.integrationSlots())
     }
