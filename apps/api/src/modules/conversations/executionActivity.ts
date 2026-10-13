@@ -40,6 +40,7 @@ const executionsSql = `select e.id,e.attempt,e.tick_index,e.record#>>'{input,occ
   e.activity_record_revision::text as record_revision
   from harness_executions e join runs r on r.id=e.run_id
   where e.run_id=$1 and e.workflow_node_id=$2 and e.agent_id=$3 and r.workspace_id=$4 and r.workflow_id=$5
+  and ($6::text is null or e.id=$6)
   order by e.created_at desc,e.id desc limit ${MAX_EXECUTIONS + 1}`
 
 const RevisionSchema = z.string().regex(/^(0|[1-9][0-9]{0,18})$/)
@@ -352,7 +353,8 @@ export class ExecutionActivityReader {
   async read(scope: ExecutionActivityScope, request: ExecutionActivityRequest): Promise<AgentChatExecutionActivityPage> {
     const limit = request.limit ?? 200
     const rows = (await this.sql.query<ExecutionRow>(executionsSql,
-      [scope.runId, scope.workflowNodeId, scope.agentId, scope.workspaceId, scope.workflowId])).rows
+      [scope.runId, scope.workflowNodeId, scope.agentId, scope.workspaceId, scope.workflowId,
+        request.executionId ?? null])).rows
     const hasEarlierExecutions = rows.length > MAX_EXECUTIONS
     const newest = rows.slice(0, MAX_EXECUTIONS)
     const summaries = new Map<string, AgentChatExecutionSummary>(newest.map((row) => [row.id, {

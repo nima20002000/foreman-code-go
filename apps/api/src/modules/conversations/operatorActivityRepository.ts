@@ -116,13 +116,15 @@ export class PostgresOperatorActivityRepository {
   }
 
   async page(conversationId: string, input: Partial<OperatorActivityQuery> = {}, query: Queryable = this.pool): Promise<{ activities: OperatorActivity[]; nextCursor: string | null; itemRevisions: Record<string, string> }> {
-    const { before, limit } = OperatorActivityQuerySchema.parse(input)
+    const { before, limit, requestId, activityId } = OperatorActivityQuerySchema.parse(input)
     if (query === this.pool && before !== undefined) return withConversationPageRead(this.pool, (sql) => this.page(conversationId, input, sql))
     await assertConversationCursor(query, conversationId, before, 'activity')
     const result = await query.query<{ record: unknown; sequence: string; revision: string }>(`
       select record,sequence::text,revision::text from operator_conversation_activity
       where conversation_id=$1 and ($2::bigint is null or sequence<$2::bigint)
-      order by operator_conversation_activity.sequence desc limit $3`, [conversationId, before ?? null, limit + 1])
+        and ($4::text is null or request_id=$4) and ($5::text is null or activity_id=$5)
+      order by operator_conversation_activity.sequence desc limit $3`,
+    [conversationId, before ?? null, limit + 1, requestId ?? null, activityId ?? null])
     const rows = result.rows.slice(0, limit)
     const page = OperatorActivityPageSchema.parse({
       activities: rows.reverse().map((row) => ({ ...(row.record as object), sequence: row.sequence, revision: Number(row.revision) })),

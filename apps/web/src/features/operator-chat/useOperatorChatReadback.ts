@@ -8,6 +8,9 @@ import { useAccessFailureLatch } from '../../shared/api/useAccessFailureLatch'
 import { SessionChangedError } from '../../shared/api/sessionBoundary'
 import { newerOperatorSummaries, summarizeOperatorConversation } from './operatorChatStatus'
 import { useOperatorChatStore } from './operatorChatStore'
+import { identityEpoch } from '../../shared/api/protectedChatStorage'
+import { mergeOperatorActivity } from '../../shared/api/operatorActivity'
+import { readObservedOperatorActivity, updateObservedOperatorActivity, type OperatorActivityHistory } from './operatorActivityReadback'
 import { detailKey, listKey, type Summaries } from './operatorChatShared'
 
 /** Query-owned conversation list and selected-conversation readback. */
@@ -37,11 +40,18 @@ export function useOperatorChatReadback(enabled: boolean, open: boolean, selecte
   const selected = useQuery({ queryKey: detailKey(selectedId ?? ''), enabled: enabled && open && !listDenied && Boolean(selectedId),
     queryFn: async ({ signal }) => {
       const read = ++readGeneration.current
-      const state = await getOperatorConversation(selectedId ?? '', { signal })
+      const id = selectedId ?? ''
+      const state = await getOperatorConversation(id, { signal })
+      if (state.conversation.id !== selectedId) throw new SessionChangedError()
+      const current = queryClient.getQueryData<OperatorConversationState>(detailKey(id))
+      const activityKey = ['operator-chat', 'activity', id, identityEpoch()]
+      const history = queryClient.getQueryData<OperatorActivityHistory>(activityKey)
+      const updates = await readObservedOperatorActivity(current, state, history, signal)
       signal.throwIfAborted()
       if (read !== readGeneration.current) throw new DOMException('Newer readback required', 'AbortError')
-      if (state.conversation.id !== selectedId) throw new SessionChangedError()
-      return newer(queryClient.getQueryData<OperatorConversationState>(detailKey(selectedId ?? '')), state, 'read')
+      queryClient.setQueryData<OperatorActivityHistory>(activityKey, previous =>
+        updateObservedOperatorActivity(previous, updates))
+      return newer(current, { ...state, activities: mergeOperatorActivity(state.activities ?? [], updates) }, 'read')
     }, retry: false, refetchInterval: 3_000 })
   const selectedDenied = useAccessFailureLatch(selected)
   const accessDenied = listDenied || selectedDenied

@@ -1408,7 +1408,10 @@ export type OperatorActivity = z.infer<typeof OperatorActivitySchema>;
 export const OperatorActivityPageSchema = z.object({
   activities: z.array(OperatorActivitySchema), nextCursor: OperatorActivityCursorSchema.nullable(),
 }).strict();
+export type OperatorActivityPage = z.infer<typeof OperatorActivityPageSchema>;
 export const OperatorActivityQuerySchema = z.object({
+  requestId: IdSchema.optional(),
+  activityId: IdSchema.optional(),
   before: OperatorActivityCursorSchema.optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
 }).strict();

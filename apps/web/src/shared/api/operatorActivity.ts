@@ -5,6 +5,8 @@ export function getOperatorActivity(conversationId: string, query: Partial<Opera
   const input = OperatorActivityQuerySchema.parse(query)
   const params = new URLSearchParams({ limit: String(input.limit) })
   if (input.before) params.set('before', input.before)
+  if (input.requestId) params.set('requestId', input.requestId)
+  if (input.activityId) params.set('activityId', input.activityId)
   return apiClient.request(`/api/operator/conversations/${encodeURIComponent(conversationId)}/activity?${params}`, OperatorActivityPageSchema, options)
 }
 

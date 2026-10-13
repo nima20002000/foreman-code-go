@@ -118,13 +118,16 @@ export function useAgentChat(inputContext: AgentChatContext) {
     },
   })
   const historyId = query.data?.conversation?.id
-  const historyKey = ['agent-chat', generation, context, historyId, 'history']
+  const historyKey = useMemo(() => ['agent-chat', generation, context, historyId, 'history'],
+    [context, generation, historyId])
   const history = useInfiniteQuery({ queryKey: historyKey, maxPages: 5,
     queryFn: async ({ pageParam, signal }) => {
       try {
         const result = await readEarlierChatHistory(async (before) => {
           return agentChatApi.history(context.workspaceId, historyId!, before, { signal })
         }, pageParam, query.data?.messages[0]?.id)
+        signal.throwIfAborted()
+        assertSession(generation)
         return result
       } catch (error) {
         // A state GET started before a known denial cannot clear it with a stale response.
@@ -143,6 +146,18 @@ export function useAgentChat(inputContext: AgentChatContext) {
   const denial = useProtectedAccessError(query, commandDenial.current ?? historyDenial
     ?? (latestCommand && latestCommand.submittedAt > query.dataUpdatedAt ? latestCommand.error : undefined))
   const state = canRead && !denial && query.data && matches(query.data) ? query.data : undefined
+  const historyRevision = useRef<{ identity: string; revision: number } | undefined>(undefined)
+  useEffect(() => {
+    const identity = JSON.stringify(historyKey)
+    const revision = state?.revision
+    if (revision === undefined) return
+    const previous = historyRevision.current
+    historyRevision.current = { identity, revision }
+    const advanced = previous?.identity === identity && revision > previous.revision
+    const mutable = history.data?.pages.some(batch => batch.pages.some(page =>
+      page.messages.some(message => message.role === 'assistant' && message.nativeMessageComplete === false)))
+    if (advanced && mutable) void history.refetch()
+  }, [historyKey, state?.revision, history.data, history.refetch])
   const currentReceipt = latestCommand?.result
     ? currentCommandReceipt(latestCommand.result, state)
     : receiptForCommand(state, latestCommand?.command)

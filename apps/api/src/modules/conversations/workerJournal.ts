@@ -12,8 +12,8 @@ import type { ClaudeCallbackJournal } from '../harnesses/claudeSdk/callbackJourn
 import { definedProperties } from '../definedProperties.js'
 
 interface ConversationStore {
-  read(): Promise<WorkerConversationReceipt[]>
-  change<T>(apply: (records: WorkerConversationReceipt[]) => T): Promise<T>
+  read(conversationId: string): Promise<WorkerConversationReceipt[]>
+  change<T>(conversationId: string, apply: (records: WorkerConversationReceipt[]) => T): Promise<T>
 }
 function conflict(message: string): never {
   throw new DomainError('WORKER_CONVERSATION_CONFLICT', message, 409)
@@ -34,17 +34,19 @@ function unsettled(record: WorkerConversationReceipt) {
 
 /** Stores chat ownership in the worker's existing fsynced operation journal. */
 export class WorkerConversationJournal {
-  constructor(private readonly store: ConversationStore, private readonly capacity: number) {}
+  constructor(private readonly store: ConversationStore, private readonly capacity: number,
+    private readonly now: () => number = Date.now) {}
 
   async read(binding: WorkerConversationBinding) {
-    const record = (await this.store.read()).find(value =>
+    const record = (await this.store.read(binding.owner.conversationId)).find(value =>
       value.binding.owner.conversationId === binding.owner.conversationId)
     if (record && !isDeepStrictEqual(record.binding, binding)) conflict('The original conversation binding changed.')
     return record
   }
 
   async inspectBinding(binding: WorkerConversationBinding) {
-    const record = (await this.store.read()).find(value => value.binding.owner.conversationId === binding.owner.conversationId)
+    const record = (await this.store.read(binding.owner.conversationId)).find(value =>
+      value.binding.owner.conversationId === binding.owner.conversationId)
     if (record && !isDeepStrictEqual(record.binding, binding)
       && !sameConversationForAppAccess(record.binding, binding)) conflict('The original conversation binding changed.')
     return record
@@ -87,7 +89,7 @@ export class WorkerConversationJournal {
   reserveApplicationAccess(previous: WorkerConversationBinding, next: WorkerConversationBinding, operationId: string,
     session: NativeSessionReference) {
     const inputHash = commandInputHash({ previous, next })
-    return this.store.change(records => {
+    return this.store.change(previous.owner.conversationId, records => {
       const record = records.find(value => value.binding.owner.conversationId === previous.owner.conversationId)
       if (!record || !sameConversationForAppAccess(previous, next) || previous.appMcpAccess === next.appMcpAccess
         || record.closed || record.closing || !isDeepStrictEqual(record.session, session) || !record.nativeOwner || unsettled(record)) {
@@ -111,7 +113,7 @@ export class WorkerConversationJournal {
   }
 
   receive(binding: WorkerConversationBinding, connection: DeviceSessionBinding) {
-    return this.store.change(records => {
+    return this.store.change(binding.owner.conversationId, records => {
       const original = records.find(value => value.binding.owner.conversationId === binding.owner.conversationId)
       if (original) {
         if (!isDeepStrictEqual(original.binding, binding)) conflict('The conversation already has another owner.')
@@ -126,7 +128,7 @@ export class WorkerConversationJournal {
   }
 
   private change<T>(binding: WorkerConversationBinding, apply: (record: WorkerConversationReceipt) => T) {
-    return this.store.change(records => {
+    return this.store.change(binding.owner.conversationId, records => {
       const record = addressed(records, binding)
       const result = apply(record)
       record.revision++
@@ -357,6 +359,10 @@ export class WorkerConversationJournal {
   }
 
   closeConfirmed(binding: WorkerConversationBinding) {
-    return this.change(binding, record => { record.closed = true; return record })
+    return this.change(binding, record => {
+      record.closed = true
+      record.closedAt ??= new Date(this.now()).toISOString()
+      return record
+    })
   }
 }
