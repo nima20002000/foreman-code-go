@@ -85,6 +85,34 @@ it('shares a CircleCI pipeline read across discovery, status and final collectio
     .toHaveLength(1)
 })
 
+it.each(['succeeded', 'failed'])('completes and persists CircleCI collection without artifacts: %s', async outcome => {
+  const f = await fixture({}, { provider: 'circleci' })
+  const runId = randomUUID()
+  await f.cloud.handle({
+    operation: 'start',
+    workspaceId: 'ci-workspace',
+    runId,
+    repository: 'octo/site',
+    commit: f.commit,
+    suite: 'lint',
+    scope: 'full',
+  })
+  f.circle.outcome = outcome
+  f.advance(4_000)
+  const read = { operation: 'read', runId, afterOffset: 0, maxBytes: 100 }
+  const state = outcome === 'succeeded' ? 'passed' : 'failed'
+  expect(await f.cloud.handle(read)).toMatchObject({
+    run: { state, collection: 'complete' },
+    text: 'Suite\nall green\n',
+  })
+  expect(f.circle.downloaded).toEqual([])
+  f.circle.artifactError = 'artifact service is unavailable'
+  expect(await f.reopen().handle(read)).toMatchObject({
+    run: { state, collection: 'complete' },
+    text: 'Suite\nall green\n',
+  })
+})
+
 it('shares concurrent GitHub branch listings while keeping each ticket match and refreshing the next poll', async () => {
   let reads = 0
   const records = [{ databaseId: 1, displayTitle: 'ci first', headSha: 'a'.repeat(40) },
