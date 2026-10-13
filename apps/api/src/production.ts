@@ -1689,7 +1689,7 @@ export function buildProductionApp(
     ...(config.browserOrigin ? { browserOrigin: config.browserOrigin } : {}),
     readiness: { database, checkpoints },
     readinessTimeoutMs: config.readinessTimeoutMs,
-    product: { workspaces, workflows, runs, foundationSettings, engine, interactions, chat },
+    product: { workspaces, workflows, runs, engine, interactions, chat },
     operator: { access, services: runtimeServices },
     appMcp: { access, commands, bugReports, interactions: Object.assign(new PostgresAppInteractionService(database.pool, repository, commands, interactions), {
       syncedFolder: (workspaceId: string, hostRef: { kind: 'main' } | { kind: 'device'; deviceId: string }) =>

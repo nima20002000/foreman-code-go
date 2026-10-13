@@ -25,14 +25,15 @@ import {
   AcceptedWorkflowApprovalConfigurationSchema,
   CodexHarnessConfigurationSchema,
   CodexSessionCompatibilitySchema,
-  UpdateAgentDefaultsRequestSchema,
-  UpdateWorkflowDefaultsRequestSchema,
-  VersionedAgentDefaultsSchema,
-  VersionedWorkflowDefaultsSchema,
   DEFAULT_AGENT_DEFAULTS,
   validateHarnessWorkflowCompatibility,
   ScopedMcpDetectionSchema,
 } from "../src/index.js";
+
+import {
+  AgentDefaultsUpdateInputSchema, WorkflowDefaultsUpdateInputSchema,
+  ManagedAgentDefaultsSchema, ManagedWorkflowDefaultsSchema,
+} from "../src/management/index.js";
 
 import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema } from "../src/wave25/saved.js";
 import { makeCurrentWorkflowFixture } from "../src/wave25/currentFixture.js";
@@ -130,10 +131,16 @@ describe("neutral product contracts", () => {
   });
 
   it("validates versioned Settings DTOs and ephemeral Codex limitations", () => {
-    const agents = VersionedAgentDefaultsSchema.parse({ value: DEFAULT_AGENT_DEFAULTS, versionId: "agent-defaults-v1", revision: 1 });
-    expect(UpdateAgentDefaultsRequestSchema.parse({ value: agents.value, expectedRevision: agents.revision }).value.operator.uiEnabled).toBe(true);
-    const workflows = VersionedWorkflowDefaultsSchema.parse({ value: { approvalHandler: "orchestrator" }, versionId: null, revision: 0 });
-    expect(UpdateWorkflowDefaultsRequestSchema.parse({ value: workflows.value, expectedRevision: 0 })).toEqual({ value: workflows.value, expectedRevision: 0 });
+    const agents = ManagedAgentDefaultsSchema.parse({
+      value: DEFAULT_AGENT_DEFAULTS, versionId: "agent-defaults-v1", revision: 1,
+    });
+    const agentInput = { commandId: "update-agents", value: agents.value, expectedRevision: agents.revision };
+    expect(AgentDefaultsUpdateInputSchema.parse(agentInput).value.operator.uiEnabled).toBe(true);
+    const workflows = ManagedWorkflowDefaultsSchema.parse({
+      value: { approvalHandler: "orchestrator" }, versionId: null, revision: 0,
+    });
+    const workflowInput = { commandId: "update-workflows", value: workflows.value, expectedRevision: 0 };
+    expect(WorkflowDefaultsUpdateInputSchema.parse(workflowInput)).toEqual(workflowInput);
     const ephemeral = CodexHarnessConfigurationSchema.parse({
       harness: "codex", model: "m", reasoningEffort: "medium", sandbox: "read-only", serviceTier: "standard",
       advanced: { approvalPolicy: "on-request", approvalsReviewer: "user", additionalWritableDirectories: [], sessionPersistence: "ephemeral", shellEnvironment: { inherit: "all", ignoreDefaultExcludes: false, filters: {}, set: {} }, webSearch: "cached", mcpServers: {} },
