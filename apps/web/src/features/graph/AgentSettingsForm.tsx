@@ -60,9 +60,8 @@ type EditableAgentSettingsFormProps = {
   designatedOrchestrator?: boolean
 }
 
-function useAgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, creationDefaults, onClose,  onSave, retainedForm, onFormChange, onDiscardForm, canResume,
+function useAgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, creationDefaults, onClose, onSave, retainedForm, onFormChange, onDiscardForm, canResume,
   nodePlacement, nodeWorktree,
-
   executionPolicy = { maxNodeExecutions: 1, maxParallelism: 1 },
   workflowApprovalHandler, designatedOrchestrator = false,
 }: EditableAgentSettingsFormProps) {

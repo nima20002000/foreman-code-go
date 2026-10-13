@@ -42,7 +42,12 @@ export function useOperatorChatStream({ enabled, open, selectedId, accessDenied,
       reconnect: () => { setPartial((current) => current?.conversationId === selectedId ? undefined : current); refresh() },
       connection: (state) => setConnection((current) => current?.id === selectedId && current.state === state ? current : { id: selectedId, state }),
       event: (event) => {
-        if (event.type !== 'delta') { readGeneration.current++; void queryClient.cancelQueries({ queryKey: detailKey(selectedId), exact: true }).catch(() => undefined) }
+        if (event.type !== 'delta') {
+          readGeneration.current++
+          void queryClient.cancelQueries({ queryKey: detailKey(selectedId), exact: true }).catch(() => {
+            // ignore: The stream schedules fresh readback even if cancellation is already complete.
+          })
+        }
         const state = queryClient.getQueryData<OperatorConversationState>(detailKey(selectedId))
         if (event.type === 'activity') {
           const activity = OperatorActivitySchema.safeParse(event.data.activity)

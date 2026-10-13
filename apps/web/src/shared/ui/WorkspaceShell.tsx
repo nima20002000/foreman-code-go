@@ -88,95 +88,6 @@ export function WorkspaceShell({
     ? rememberedWorkspaceId ?? workspaceId
     : workspaceId
 
-  return () => window.removeEventListener('keydown', toggleNavigation)
-  }, [setCollapsed])
-
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return
-    const phone = window.matchMedia('(max-width: 640px)')
-    const collapseForPhone = (event: MediaQueryListEvent | MediaQueryList) => {
-      if (event.matches) setCollapsed(true)
-    }
-    collapseForPhone(phone)
-    phone.addEventListener('change', collapseForPhone)
-    return () => phone.removeEventListener('change', collapseForPhone)
-  }, [setCollapsed])
-
-  const startResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || stopResizeRef.current) return
-    event.preventDefault()
-
-    const pointerId = event.pointerId
-    const startX = event.clientX
-    const startWidth = event.currentTarget.parentElement?.getBoundingClientRect().width
-      || (navigationCollapsed ? COLLAPSED_NAVIGATION_WIDTH : navigationWidth)
-    const rememberedWidth = navigationCollapsed ? navigationWidth : startWidth
-    let finalWidth = navigationWidth
-    let moved = false
-    let collapsed = navigationCollapsed
-
-    const stop = () => {
-      window.removeEventListener('pointermove', resize)
-      window.removeEventListener('pointerup', finish)
-      window.removeEventListener('pointercancel', finish)
-      window.removeEventListener('blur', stop)
-      stopResizeRef.current = null
-      resizeCollapsedRef.current = null
-      if (moved) setNavigationWidth(collapsed ? rememberedWidth : finalWidth, useNavigationUiStore.getState().motion)
-    }
-    const resize = (moveEvent: PointerEvent) => {
-      if (moveEvent.pointerId !== pointerId) return
-      const rawWidth = startWidth + moveEvent.clientX - startX
-      if (collapsed) {
-        if (navigationCollapsed ? rawWidth <= startWidth : rawWidth < startWidth / 2) return
-        collapsed = false
-        resizeCollapsedRef.current = false
-        setCollapsed(false, 'manual')
-      }
-      if (rawWidth < startWidth / 2) {
-        collapsed = true
-        resizeCollapsedRef.current = true
-        moved = true
-        setCollapsed(true, 'manual')
-        return
-      }
-      finalWidth = Math.min(MAX_NAVIGATION_WIDTH, Math.max(COLLAPSED_NAVIGATION_WIDTH, window.innerWidth - COLLAPSED_NAVIGATION_WIDTH), rawWidth)
-      finalWidth = Math.max(COLLAPSED_NAVIGATION_WIDTH, finalWidth)
-      moved = true
-      setResizeWidth(finalWidth)
-    }
-    const finish = (endEvent: PointerEvent) => {
-      if (endEvent.pointerId === pointerId) stop()
-    }
-
-    stopResizeRef.current = stop
-    resizeCollapsedRef.current = collapsed
-    window.addEventListener('pointermove', resize)
-    window.addEventListener('pointerup', finish)
-    window.addEventListener('pointercancel', finish)
-    window.addEventListener('blur', stop)
-  }, [navigationCollapsed, navigationWidth, setCollapsed, setNavigationWidth, setResizeWidth])
-
-  const resizeWithKeyboard = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault()
-      stopResizeRef.current?.()
-      setCollapsed(!navigationCollapsed)
-      return
-    }
-    const step = event.shiftKey ? 32 : 8
-    let nextWidth: number | undefined
-    if (event.key === 'ArrowLeft') nextWidth = navigationWidth - step
-    if (event.key === 'ArrowRight') nextWidth = navigationWidth + step
-    if (event.key === 'Home') nextWidth = MIN_NAVIGATION_WIDTH
-    if (event.key === 'End') nextWidth = MAX_NAVIGATION_WIDTH
-    if (nextWidth === undefined) return
-    event.preventDefault()
-    stopResizeRef.current?.()
-    if (navigationCollapsed && event.key === 'ArrowLeft') return
-    setCollapsed(false)
-    setNavigationWidth(nextWidth)
-  }
 
   return (
     <div
@@ -295,6 +206,96 @@ function useNavigationResize() {
       setCollapsed(!useNavigationUiStore.getState().collapsed)
     }
     window.addEventListener('keydown', toggleNavigation)
-    return { navigationCollapsed, navigationWidth, resizeWidth, navigationMotion, setCollapsed,
+    return () => window.removeEventListener('keydown', toggleNavigation)
+  }, [setCollapsed])
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const phone = window.matchMedia('(max-width: 640px)')
+    const collapseForPhone = (event: MediaQueryListEvent | MediaQueryList) => {
+      if (event.matches) setCollapsed(true)
+    }
+    collapseForPhone(phone)
+    phone.addEventListener('change', collapseForPhone)
+    return () => phone.removeEventListener('change', collapseForPhone)
+  }, [setCollapsed])
+
+  const startResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0 || stopResizeRef.current) return
+    event.preventDefault()
+
+    const pointerId = event.pointerId
+    const startX = event.clientX
+    const startWidth = event.currentTarget.parentElement?.getBoundingClientRect().width
+      || (navigationCollapsed ? COLLAPSED_NAVIGATION_WIDTH : navigationWidth)
+    const rememberedWidth = navigationCollapsed ? navigationWidth : startWidth
+    let finalWidth = navigationWidth
+    let moved = false
+    let collapsed = navigationCollapsed
+
+    const stop = () => {
+      window.removeEventListener('pointermove', resize)
+      window.removeEventListener('pointerup', finish)
+      window.removeEventListener('pointercancel', finish)
+      window.removeEventListener('blur', stop)
+      stopResizeRef.current = null
+      resizeCollapsedRef.current = null
+      if (moved) setNavigationWidth(collapsed ? rememberedWidth : finalWidth, useNavigationUiStore.getState().motion)
+    }
+    const resize = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return
+      const rawWidth = startWidth + moveEvent.clientX - startX
+      if (collapsed) {
+        if (navigationCollapsed ? rawWidth <= startWidth : rawWidth < startWidth / 2) return
+        collapsed = false
+        resizeCollapsedRef.current = false
+        setCollapsed(false, 'manual')
+      }
+      if (rawWidth < startWidth / 2) {
+        collapsed = true
+        resizeCollapsedRef.current = true
+        moved = true
+        setCollapsed(true, 'manual')
+        return
+      }
+      finalWidth = Math.min(MAX_NAVIGATION_WIDTH, Math.max(COLLAPSED_NAVIGATION_WIDTH, window.innerWidth - COLLAPSED_NAVIGATION_WIDTH), rawWidth)
+      finalWidth = Math.max(COLLAPSED_NAVIGATION_WIDTH, finalWidth)
+      moved = true
+      setResizeWidth(finalWidth)
+    }
+    const finish = (endEvent: PointerEvent) => {
+      if (endEvent.pointerId === pointerId) stop()
+    }
+
+    stopResizeRef.current = stop
+    resizeCollapsedRef.current = collapsed
+    window.addEventListener('pointermove', resize)
+    window.addEventListener('pointerup', finish)
+    window.addEventListener('pointercancel', finish)
+    window.addEventListener('blur', stop)
+  }, [navigationCollapsed, navigationWidth, setCollapsed, setNavigationWidth, setResizeWidth])
+
+  const resizeWithKeyboard = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault()
+      stopResizeRef.current?.()
+      setCollapsed(!navigationCollapsed)
+      return
+    }
+    const step = event.shiftKey ? 32 : 8
+    let nextWidth: number | undefined
+    if (event.key === 'ArrowLeft') nextWidth = navigationWidth - step
+    if (event.key === 'ArrowRight') nextWidth = navigationWidth + step
+    if (event.key === 'Home') nextWidth = MIN_NAVIGATION_WIDTH
+    if (event.key === 'End') nextWidth = MAX_NAVIGATION_WIDTH
+    if (nextWidth === undefined) return
+    event.preventDefault()
+    stopResizeRef.current?.()
+    if (navigationCollapsed && event.key === 'ArrowLeft') return
+    setCollapsed(false)
+    setNavigationWidth(nextWidth)
+  }
+
+  return { navigationCollapsed, navigationWidth, resizeWidth, navigationMotion, setCollapsed,
     startResize, resizeWithKeyboard }
 }

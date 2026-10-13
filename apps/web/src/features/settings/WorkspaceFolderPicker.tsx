@@ -13,7 +13,7 @@ type Props = { disabled: boolean; onSelect(path: string): void | Promise<void>; 
 type Location = Parameters<typeof useHarnessDirectories>[0]
 type HistoryEntry = { location: Location; selectedPath?: string; locationsOpen: boolean }
 
-function useFolderPicker({ disabled, onSelect,   selectionUnconfirmed = false,   directoryBinding,  }: Props) {
+function useFolderPicker({ disabled, onSelect, selectionUnconfirmed = false, directoryBinding }: Props) {
   const [open, setOpen] = useState(false)
   const toasts = useContext(ToastContext)
   const id = useId()
