@@ -90,6 +90,9 @@ it('checks persisted execution destinations again after reconnecting to the prep
       [selection.workspaceId, JSON.stringify({ runnerId: 'local', rootPath: outside.directory })])
     restarted = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL,
       options: `-c search_path=${fixture.schema}`, max: 1 })
+    const persisted = await restarted.query('select execution_location from workspaces where id=$1',
+      [selection.workspaceId])
+    expect(persisted.rows).toEqual([{ execution_location: { runnerId: 'local', rootPath: outside.directory } }])
     await expect(assertOwnedExecutionDestinations(restarted, selection)).rejects.toThrow('owned root')
     expect((await restarted.query('select count(*)::int as count from runs')).rows[0].count).toBe(0)
     await restarted.query('update workspaces set execution_location=$2::jsonb where id=$1',
