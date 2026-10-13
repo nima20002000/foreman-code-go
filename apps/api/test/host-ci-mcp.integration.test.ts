@@ -1160,16 +1160,22 @@ it('settles NUL log output and dispatches the next queued ticket with persisted 
     const first = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'lint', commandId: 'nul-log', noSupersede: true,
     }))
+    expect(first.partitions).toBeUndefined()
     await f.ci.dispatch()
+    expect((await read(first.ticketId)).run.state).toBe('running')
     const second = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'lint', commandId: 'after-nul-log', noSupersede: true,
     }))
+    expect(second.partitions).toBeUndefined()
     await f.ci.close()
     expect((await read(second.ticketId)).run.state).toBe('queued')
     f.finish(first.ticketId, 0, 'finished\0 café\n', undefined, 'Done.\0\ud800')
     await f.ci.dispatch()
     const finished = await read(first.ticketId)
     expect(finished).toMatchObject({ run: { state: 'passed', message: 'Done.\ufffd' }, logTail: 'finished café\n' })
+    const stored = (await f.pool.query<{ record: unknown; log_tail: string }>(
+      'select record,log_tail from ci_runs where id=$1', [first.ticketId])).rows[0]!
+    expect(stored).toEqual({ record: finished.run, log_tail: finished.logTail })
     expect((await read(second.ticketId)).run.state).toBe('running')
     const denied = await f.connect(['workflows:read'])
     expect((await denied.callTool({ name: 'ci_get',
