@@ -127,17 +127,20 @@ it('admits one complete gate, denies a reader, and persists the plan and measure
     const hosts = f.started.filter(item => item.key.startsWith('builder-'))
     expect(hosts).toHaveLength(2)
     for (const host of hosts) expect(host.request).toMatchObject({ suite: 'integration', gate: true, integrationShards: 12 })
-    const integration = f.started.filter(item => item.request.operation === 'start' && item.request.suite === 'integration')
-    const assigned = integration.flatMap(item => item.request.operation === 'start' ? item.request.files ?? [] : [])
+    const integration = read.partitions!.filter(run => run.suite === 'integration')
+    const assigned = integration.flatMap(run => run.files)
     expect(assigned.sort()).toEqual([...f.files].sort())
     expect(new Set(assigned).size).toBe(assigned.length)
-    expect(integration.some(item => item.key.startsWith('cloud-'))).toBe(true)
+    expect(integration.some(run => run.plannedHostKey?.startsWith('cloud-'))).toBe(true)
     expect(read).toMatchObject({ gate: { computers: expect.any(Array), criticalPath: {
       expectedDurationMs: expect.any(Number), actualDurationMs: null,
     } } })
     await f.finishGate(admitted.ticketId)
     const finished = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     expect(finished.group?.state).toBe('passed')
+    const launched = f.started.flatMap(item => item.request.operation === 'start'
+      && item.request.suite === 'integration' ? item.request.files ?? [] : [])
+    expect(launched.sort()).toEqual([...f.files].sort())
     expect(finished).toMatchObject({ gate: { suites: expect.arrayContaining([
       expect.objectContaining({ suite: 'integration', actualDurationMs: 1000 }),
     ]), criticalPath: { actualDurationMs: expect.any(Number) } } })

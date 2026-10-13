@@ -94,10 +94,10 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
   while (Math.max(...hosts.map(item => finish(item))) > targetMs) {
     const host = [...hosts].sort((left, right) => finish(right) - finish(left))[0]!
     const critical = Math.max(...fleet.map(item => finish(item)))
-    let move: { file: string; cloud: GateComputer; score: number } | undefined
+    let move: { file: string; cloud: GateComputer; score: number; cloudMs: number } | undefined
     for (const file of host.files) {
       const remaining = host.files.filter(candidate => candidate !== file)
-      if (!remaining.length || finish(host, remaining) >= finish(host)) continue
+      if (!remaining.length || finish(host, remaining) > finish(host)) continue
       for (const cloud of clouds) {
         if (requiresUserSystemd(file) && !cloud.computer.userSystemd?.supported) continue
         const score = Math.max(...fleet.map(item => {
@@ -105,8 +105,10 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
           if (item === cloud) return finish(cloud, [...cloud.files, file])
           return finish(item)
         }))
-        if (score > critical || move && score >= move.score) continue
-        move = { file, cloud, score }
+        const cloudMs = finish(cloud, [...cloud.files, file])
+        const improvesPlacement = !move || score < move.score || score === move.score && cloudMs < move.cloudMs
+        if (score > critical || !improvesPlacement) continue
+        move = { file, cloud, score, cloudMs }
       }
     }
     if (!move) break
