@@ -1,50 +1,33 @@
 import pg from 'pg'
-import { createServer, createConnection, type Socket } from 'node:net'
-import { once } from 'node:events'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { OperatorRuntimeOwner } from '../src/infrastructure/operatorRuntimeOwner.js'
 import { DomainError } from '../src/modules/errors.js'
 import { readUntil } from './helpers/observableCondition.js'
 import { postgresEnabled } from './helpers/eng04CurrentDatabase.js'
+import { deferred } from './helpers/deferred.js'
 
 async function stalledReplies(afterReady: number) {
-  const upstream = new URL(process.env.TEST_DATABASE_URL!)
-  const sockets = new Set<Socket>()
-  const server = createServer(socket => {
-    const backend = createConnection({ host: upstream.hostname, port: Number(upstream.port || 5432) })
-    sockets.add(socket)
-    sockets.add(backend)
-    const close = () => { socket.destroy(); backend.destroy() }
-    socket.on('error', close)
-    backend.on('error', close)
-    socket.on('close', close)
-    backend.on('close', close)
-    socket.pipe(backend)
-    let ready = 0
-    let pending = Buffer.alloc(0)
-    backend.on('data', chunk => {
-      pending = Buffer.concat([pending, chunk])
-      while (pending.length >= 5) {
-        const length = pending.readInt32BE(1) + 1
-        if (pending.length < length) break
-        const frame = pending.subarray(0, length)
-        pending = pending.subarray(length)
-        if (ready < afterReady) socket.write(frame)
-        if (frame[0] === 90) ready += 1
-      }
+  const query = pg.Client.prototype.query as unknown as
+    (this: pg.Client, ...args: unknown[]) => Promise<pg.QueryResult>
+  const release = deferred()
+  let ownerClient: pg.Client | undefined
+  let replies = 0
+  // Keep the guarded disposable endpoint; suppress delivery after PostgreSQL executes the query.
+  const spy = vi.spyOn(pg.Client.prototype, 'query').mockImplementation((function (
+    this: pg.Client, ...args: unknown[]
+  ) {
+    const response = query.apply(this, args)
+    if (!ownerClient && args[0] !== 'select pg_try_advisory_lock($1) as acquired') return response
+    ownerClient ??= this
+    if (this !== ownerClient || ++replies < afterReady) return response
+    return response.then(async result => {
+      await release.promise
+      return result
     })
-  })
-  server.listen(0, '127.0.0.1')
-  await once(server, 'listening')
-  const address = server.address()
-  if (!address || typeof address === 'string') throw new Error('Expected the fault proxy TCP address')
-  const url = new URL(upstream)
-  url.hostname = '127.0.0.1'
-  url.port = String(address.port)
-  url.searchParams.set('sslmode', 'disable')
-  return { url: url.toString(), async close() {
-    for (const socket of sockets) socket.destroy()
-    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+  }) as typeof pg.Client.prototype.query)
+  return { url: process.env.TEST_DATABASE_URL!, async close() {
+    spy.mockRestore()
+    release.resolve()
   } }
 }
 
@@ -58,7 +41,7 @@ describe.skipIf(!postgresEnabled)('runtime owner with PostgreSQL reply loss', ()
       expect(await owner.readRuntimeEpoch()).toMatch(/^\d+$/)
     } finally {
       await proxy.close()
-      await owner.close().catch(() => { /* ignore: the fault fixture is already closed. */ })
+      await owner.close().catch(() => { /* ignore: cleanup after a failed acquisition reports its original failure. */ })
     }
   })
 

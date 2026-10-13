@@ -10,7 +10,13 @@ import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase
 
 async function insertActiveRun(f: Awaited<ReturnType<typeof writerFixture>>,
   saved: ReturnType<typeof CurrentWorkflowSaveResultSchema.parse>['value']) {
-  return insertCurrentRunFixture(f.db.pool, f.f, saved, f.writer.principal.id)
+  const fixture = { ...f.f, run: { ...f.f.run, executionLocation: {
+    runnerId: 'runner-local',
+    rootPath: f.db.directory,
+    locationRevision: 1,
+    identityHash: `sha256:${'1'.repeat(64)}`,
+  } } }
+  return insertCurrentRunFixture(f.db.pool, fixture, saved, f.writer.principal.id)
 }
 
 describe.skipIf(!postgresEnabled)('workflow-wide edit staging reservation', () => {
