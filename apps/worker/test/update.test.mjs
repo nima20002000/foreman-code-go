@@ -711,7 +711,8 @@ test('consecutive releases retain the first terminal maintenance outcome without
   await second.start();
   assert.equal((await readUpdateRecord(f.stateDirectory)).status.currentVersion, '1.2.0');
   assert.deepEqual(await second.maintenanceOutcome({ workerTargetVersion: '1.1.0', startedAt }), {
-    currentVersion: '1.1.0', targetVersion: '1.1.0', state: 'current', lastError: null,
+    currentVersion: '1.1.0', manifestSha256: release.manifestSha256,
+    targetVersion: '1.1.0', state: 'current', lastError: null,
   });
   await second.close();
 });

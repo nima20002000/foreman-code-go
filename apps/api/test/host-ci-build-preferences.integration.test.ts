@@ -79,7 +79,7 @@ it('honors persisted MCP build participation and priority while retaining assign
     const address = await app.listen({ port: 0 })
     const connect = async (actions: ManagementAction[]) => {
       const issued = await access.issue({ name: 'CI preferences caller', audience: 'operator',
-        expiresAt: new Date(Date.now() + 600_000), grants: [{ actions, scope: {} }] })
+        expiresAt: new Date(Date.now() + 600_000), grants: actions.length ? [{ actions, scope: {} }] : [] })
       const client = new Client({ name: 'ci-preferences-test', version: '1' })
       clients.push(client)
       await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
