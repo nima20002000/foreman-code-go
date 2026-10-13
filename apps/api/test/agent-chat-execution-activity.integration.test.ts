@@ -8,6 +8,9 @@ import {
 } from '@foreman-code/contracts/agent-chat'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
+import {
+  CURRENT_WORKFLOW_ROUTES, CURRENT_WORKFLOW_TOOLS, CurrentWorkflowReadResultSchema,
+} from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { AgentChatService } from '../src/modules/conversations/agentChat.js'
@@ -19,7 +22,7 @@ import { repeatTerminalResolution } from '../src/modules/runs/repeatNode.js'
 import { createWorkflowRepositoryServices } from '../src/modules/runs/workflowRepositoryServices.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
-import { graphFixture, ownedGraph } from './eng04-graph-composition-fixture.js'
+import { graphFixture, graphHeaders, graphRpc, graphRpcValue, ownedGraph } from './eng04-graph-composition-fixture.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
@@ -38,6 +41,38 @@ describe('Persisted execution activity through HTTP and authenticated MCP', { ti
   let database: Awaited<ReturnType<typeof currentDatabase>>
   beforeAll(async () => { database = await currentDatabase() }, 60_000)
   afterAll(async () => { await database?.close() })
+
+  it.each(['codex', 'claude'] as const)('persists an activity fixture for %s through HTTP and MCP', async harness => {
+    const fixture = await setup(harness === 'claude' ? claudeConfiguration : undefined)
+    const { graph } = fixture
+    try {
+      const { workspaceId, workflowId, workflowVersionId } = graph.scope
+      const url = CURRENT_WORKFLOW_ROUTES.saved.replace(':workspaceId', workspaceId).replace(':workflowId', workflowId)
+      const response = await graph.app.inject({
+        method: 'GET', url, headers: graphHeaders(graph.writer.token),
+      })
+      expect(response.statusCode, response.body).toBe(200)
+      const saved = CurrentWorkflowReadResultSchema.parse(response.json())
+      expect(saved.version).toEqual(graph.version)
+      expect(saved.version.approval).toEqual({ handler: 'user' })
+      expect(saved.version.definition.approval).toEqual(saved.version.approval)
+      if (harness === 'codex') {
+        expect(saved.version.definition.nodes[0]).toMatchObject({ interval: { everySeconds: 10 } })
+      } else {
+        expect(saved.version.definition.nodes[0]).not.toHaveProperty('interval')
+      }
+      const remote = await graphRpc(graph.app, graph.writer.token, 'tools/call', {
+        name: CURRENT_WORKFLOW_TOOLS.saved, arguments: { workspaceId, workflowId, workflowVersionId },
+      })
+      expect(remote.result?.isError).not.toBe(true)
+      expect(CurrentWorkflowReadResultSchema.parse(graphRpcValue(remote.result))).toEqual(saved)
+      expect(await fixture.mcpPage()).toEqual(await fixture.http())
+      await fixture.denied()
+      expect(fixture.managers).not.toHaveBeenCalled()
+    } finally {
+      await fixture.close()
+    }
+  })
 
   async function setup(harness?: ClaudeHarnessConfiguration) {
     const graph = await graphFixture(database, { form: 'single', intervalEverySeconds: 10,
@@ -147,7 +182,7 @@ describe('Persisted execution activity through HTTP and authenticated MCP', { ti
       await database.pool.query('update harness_executions set record=$2::jsonb where id=$1',
         [candidate.id, JSON.stringify(terminal)])
     }
-    return { executionId: candidate.id, transfers, managers, append, state, http, mcpPage,
+    return { graph, executionId: candidate.id, transfers, managers, append, state, http, mcpPage,
       seedNewerExecutions: async () => {
         const stored = (await database.pool.query<{ created_at: Date }>(
           'select created_at from harness_executions where id=$1', [candidate.id])).rows[0]!
