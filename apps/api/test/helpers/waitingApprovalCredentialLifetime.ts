@@ -1,6 +1,7 @@
 import { expect, vi } from 'vitest'
 import { readUntil } from './observableCondition.js'
 import { currentOperatorIntegration } from './currentOperatorIntegration.js'
+import { expectMcpAccessDenied } from './deniedMcpTool.js'
 import { approvalResponse } from './eng06ApprovalFaults.js'
 import { respondWaitingApproval } from './respondWaitingApproval.js'
 import { OperatorInteractionService } from '../../src/modules/interactions/operator.js'
@@ -43,8 +44,8 @@ export async function assertWaitingApprovalCredentialLifetime(transport: 'http' 
       grants: [{ actions: ['interactions:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
     const denied = await f.connect(reader.token)
     const { interactionId, optionId, expectedRevision } = approvalResponse(pending)
-    expect((await denied.callTool({ name: 'interaction_respond',
-      arguments: { interactionId, optionId, expectedRevision } })).isError).toBe(true)
+    await expectMcpAccessDenied(denied.callTool({ name: 'interaction_respond',
+      arguments: { interactionId, optionId, expectedRevision } }))
     await respondWaitingApproval(f, pending, transport)
     await vi.waitFor(async () => {
       expect(await f.runs.get(f.f.run.id)).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
