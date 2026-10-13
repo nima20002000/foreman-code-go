@@ -11,9 +11,11 @@ export async function respondWaitingApproval(
 ): Promise<void> {
   const input = approvalResponse(pending)
   if (transport === 'http') {
+    const { interactionId, optionId, expectedRevision } = input
     const response = await fixture.app.inject({ method: 'POST',
       url: `/api/management/interactions/${pending.id}/respond`,
-      headers: { authorization: `Bearer ${fixture.writer.token}` }, payload: input })
+      headers: { authorization: `Bearer ${fixture.writer.token}` },
+      payload: { interactionId, optionId, expectedRevision } })
     expect(response.statusCode, response.body).toBe(200)
     expect(response.json()).toMatchObject({ interaction: { deliveryState: 'delivered' } })
     return
