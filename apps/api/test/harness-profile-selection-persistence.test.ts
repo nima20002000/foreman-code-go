@@ -72,6 +72,10 @@ describe('explicit chat profile configuration producer', () => {
     validateSelection.mockRejectedValue(new Error('revoked host'))
     await expect(service.create(creator, { ...input, commandId: 'denied-command', agentId: 'denied' })).rejects.toThrow('revoked host')
     expect(versions).toHaveLength(1)
+    vi.mocked(client.query).mockResolvedValueOnce({ rows: [] } as never)
+    await expect(service.create(creator, { ...input, commandId: 'revoked-command', agentId: 'revoked' }))
+      .rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+    expect(versions).toHaveLength(1)
   })
   it('stores and reads profile metadata in the actual immutable Agent record and includes it in content hash', async () => {
     const inserted: unknown[] = []; const agents: unknown[] = []
@@ -108,6 +112,12 @@ describe('explicit chat profile configuration producer', () => {
     expect(qualifyConfiguration).not.toHaveBeenCalled()
     validateSelection.mockRejectedValue(new Error('foreign installation'))
     await expect(service.updateAgentDefaults(writer, 'mcp', { commandId: 'command-denied', expectedRevision: 1, value })).rejects.toThrow('foreign installation')
+    expect(update).toHaveBeenCalledTimes(1)
+    validateSelection.mockResolvedValue(undefined)
+    vi.mocked(client.query).mockResolvedValueOnce({ rows: [] } as never)
+    await expect(service.updateAgentDefaults(writer, 'mcp', {
+      commandId: 'revoked-defaults', expectedRevision: 1, value,
+    })).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
     expect(update).toHaveBeenCalledTimes(1)
   })
   it('publishes selected Operator defaults into the existing immutable record and inspection readback', async () => {

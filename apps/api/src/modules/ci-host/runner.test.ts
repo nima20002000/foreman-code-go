@@ -270,6 +270,11 @@ describe('host CI runner', () => {
       suite, ...(part ? { part } : {}) })
     const done = await f.settle(runId)
     expect(done.run.state).toBe('passed')
+    if (part === 'unit-other') {
+      expect(done.text).toContain('corepack pnpm --filter @foreman-code/contracts test')
+      expect(done.text).toContain('--test-reporter=spec')
+      expect(done.text).toContain('scripts/fixture.test.mjs')
+    }
     const database = done.text.indexOf('corepack pnpm db:up')
     if (databaseRequired) {
       expect(database).toBeGreaterThan(done.text.indexOf('corepack pnpm install --frozen-lockfile'))

@@ -31,14 +31,16 @@ describe('actual worker-private HTTP relay with Main authorization double, no pa
     const parent = join(root, 'occupied')
     await writeFile(parent, '')
     const token = 'registration-test-credential'
+    const request = vi.fn(async () => { throw new Error('Unregistered route cannot forward') })
     await expect(createWorkerMcpEndpoint({ launcher: join(parent, 'launcher.mjs'),
       signal: new AbortController().signal, relay: {
         environment: { agentId: 'agent', variables: { GRAPHQL_MCP_TOKEN: token } },
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        request: async () => { throw new Error('Unregistered route cannot forward') },
+        request,
       } })).rejects.toMatchObject({ code: 'ENOTDIR' })
     expect(error).toHaveBeenCalledWith(expect.objectContaining({ operation: 'register', code: 'ENOTDIR' }),
       'Worker MCP relay failed')
+    expect(request).not.toHaveBeenCalled()
     expect(JSON.stringify(error.mock.calls)).not.toContain(token)
   })
   it('rejects and logs an expired renewal while preserving the live route', async () => {

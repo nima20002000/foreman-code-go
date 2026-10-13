@@ -268,6 +268,7 @@ it('preserves a closed Agent Git worktree and reports its retained bytes during 
   const ports = { authorize: async () => {}, operationClosed: async () => true, nativeClosed: async () => true }
   for (let replay = 0; replay < 2; replay++) {
     const result = await reclaimSourceReservation(grant, ports, AbortSignal.timeout(60_000))
+    expect(result.retained?.worktree).toMatchObject({ state: 'retained', message: expect.any(String) })
     expect(result.retained).toEqual(await measureRetainedMaterializationFootprint(receipt))
     expect(result.retained!.retainedBytes).toBeGreaterThan(0)
     expect(result.closures).toMatchObject([{ materializationId: receipt.materializationId, claimReleased: true }])
