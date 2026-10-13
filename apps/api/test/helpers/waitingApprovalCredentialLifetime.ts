@@ -42,7 +42,9 @@ export async function assertWaitingApprovalCredentialLifetime(transport: 'http' 
     const reader = await f.access.issue({ name: 'Approval reader', audience: 'operator',
       grants: [{ actions: ['interactions:read'], scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
     const denied = await f.connect(reader.token)
-    expect((await denied.callTool({ name: 'interaction_respond', arguments: approvalResponse(pending) })).isError).toBe(true)
+    const { interactionId, optionId, expectedRevision } = approvalResponse(pending)
+    expect((await denied.callTool({ name: 'interaction_respond',
+      arguments: { interactionId, optionId, expectedRevision } })).isError).toBe(true)
     await respondWaitingApproval(f, pending, transport)
     await vi.waitFor(async () => {
       expect(await f.runs.get(f.f.run.id)).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
