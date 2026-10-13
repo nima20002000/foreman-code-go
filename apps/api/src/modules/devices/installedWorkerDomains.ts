@@ -515,9 +515,10 @@ export async function createInstalledWorkerDomains(input: {
   }
   if (profileChecks) extensions.push(profileChecks.extension)
   const updateDrain = createWorkerRuntimeDrain({ signal: lifetime.signal,
-    active: () => [...active].filter(([, namespace]) => namespace !== COMPUTER_MAINTENANCE_NAMESPACE
-      && namespace !== CI_RUNTIME_NAMESPACE).map(([task]) => task),
+    active: () => [...active].filter(([, namespace]) => namespace !== COMPUTER_MAINTENANCE_NAMESPACE)
+      .map(([task]) => task),
     drainJobs: async () => {
+      await Promise.all([hostCi.beginDrain(), ciRuntime.beginDrain()])
       if (jobOpening) await (await jobOpening).beginDrain()
       if (native?.kind === 'configured') await native.drainForUpdate()
       await conversations?.drainForUpdate()
@@ -525,6 +526,7 @@ export async function createInstalledWorkerDomains(input: {
     drainQualifications: async () => { await qualification?.drain() },
     drainMaintenance: async () => { if (maintenance) await (await maintenance).drainForWorkerUpdate() },
     quiescent: async () => {
+      if (!hostCi.isUpdateIdle() || !ciRuntime.isUpdateIdle()) return false
       const logs = await Promise.all([journalOpening, jobJournalOpening])
       if (!(await Promise.all(logs.map(log => log?.isWorkerUpdateIdle() ?? true))).every(Boolean)) return false
       const nativeActive = [registry, jobRegistry].some(value => value.snapshot().launches.some(launch =>
@@ -554,11 +556,17 @@ export async function createInstalledWorkerDomains(input: {
     async drainForUpdate() {
       await updateDrain.run()
     },
-    resumeAfterUpdate() { updateDrain.resume(); jobs?.resumeAdmissions() },
+    resumeAfterUpdate() {
+      updateDrain.resume()
+      jobs?.resumeAdmissions()
+      hostCi.resumeAdmissions()
+      ciRuntime.resumeAdmissions()
+    },
     ...(rsync.kind === 'configured' ? { rsync: rsync.backend, rsyncWriters: rsync.rsyncWriters, rsyncOwnership: rsync.ownership } : {}), workflowAvailable: native?.kind === 'configured', sourceAvailable: Boolean(receiver),
     close() { return shutdown ??= (async () => {
       lifetime.abort()
       const failures: unknown[] = []
+      try { await hostCi.beginDrain() } catch (error) { failures.push(error) }
       try { await ciRuntime.close() } catch (error) { failures.push(error) }
       try { await providerAccounts?.native.close() } catch (error) { failures.push(error) }
       try { await profileChecks?.close() } catch (error) { failures.push(error) }
@@ -628,4 +636,5 @@ function isWorkerAdmission(namespace: string, payload: unknown): boolean {
     || namespace === COMPUTER_MAINTENANCE_NAMESPACE && payload.operation === 'start'
     || namespace === 'job-runtime-qualification-v1' && ['start', 'run'].includes(String(payload.operation))
     || namespace === CI_RUNTIME_NAMESPACE && payload.operation === 'prepare'
+    || namespace === CI_HOST_NAMESPACE && payload.operation === 'start'
 }

@@ -28,7 +28,8 @@ import {
   type StoredRepeatExecution,
 } from './repeatPostgres.js'
 import {
-  assertRepeatRef, repeatDigest, repeatExecutionIdentity, repeatId, repeatSlotId, sameRepeatValue, tickSlotId, workActivationSlotId,
+  assertRepeatRef, repeatDigest, repeatExecutionIdentity, repeatId, repeatSlotId, repeatTickIndex,
+  sameRepeatValue, tickSlotId, workActivationSlotId,
   type RepeatScope,
 } from './repeatResolution.js'
 import { INSPECTION_OCCURRENCE_COLUMNS, inspectionExecutionsQuery } from './inspectionPageQuery.js'
@@ -70,8 +71,10 @@ function summaryOf(stored: StoredInspectionExecution): RunExecutionSummary {
       ...(job.finishedAt === null ? {} : { finishedAt: job.finishedAt }),
       ...(ref.occurrence ? { occurrence: ref.occurrence } : {}), acceptedResultAvailable: accepted })
   }
+  const tickIndex = repeatTickIndex(stored.input)
   return RunExecutionSummarySchema.parse({ ...repeatExecutionIdentity(stored.execution), state: stored.execution.state,
     ...(stored.execution.sessionContinuation ? { continuedFromExecutionId: stored.execution.sessionContinuation.previousExecutionId } : {}),
+    ...(tickIndex === undefined ? {} : { tickIndex }),
     ...(stored.execution.result?.error ? { failure: stored.execution.result.error } : {}),
     createdAt: execution.createdAt, ...(execution.startedAt === undefined ? {} : { startedAt: execution.startedAt }),
     ...(execution.finishedAt === undefined ? {} : { finishedAt: execution.finishedAt }),

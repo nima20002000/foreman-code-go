@@ -10,6 +10,10 @@ import { ApiError, apiClient } from '../shared/api/client'
 import { ReleaseAutoReload, RuntimeInstanceBoundary } from './RuntimeInstanceBoundary'
 import { useState } from 'react'
 import { UnsavedChangesContext, useUnsavedChanges } from '../shared/ui/unsavedChanges'
+import { ApiClient } from '../shared/api/client'
+import { finishSessionChange } from '../shared/api/sessionBoundary'
+import { deferred } from '../test/deferred'
+import { z } from 'zod'
 
 vi.mock('../shared/api/protectedChatStorage', async (original) => ({
   ...await original<typeof import('../shared/api/protectedChatStorage')>(), bindProtectedChatInstance: vi.fn(() => false),
@@ -28,6 +32,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   clients.splice(0).forEach((client) => client.clear())
+  finishSessionChange()
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
   vi.useRealTimers()
 })
@@ -249,4 +255,29 @@ it('compares the loaded bundle when its first identity response is delayed until
   await waitFor(() => expect(reload).toHaveBeenCalled())
   expect(screen.queryByRole('textbox', { name: 'Draft' })).not.toBeInTheDocument()
   vi.unstubAllGlobals()
+})
+
+it('aborts old requests, clears protected caches and rejects delayed responses after an installation change', async () => {
+  const reload = stubReload()
+  const cache = mount()
+  await screen.findByText('Protected content')
+  cache.setQueryData(['protected-record'], { secret: 'old installation' })
+  const pending = deferred<Response>()
+  let signal: AbortSignal | null | undefined
+  const client = new ApiClient({ fetch: async (_url, options) => {
+    signal = options?.signal
+    return pending.promise
+  } })
+  const result = client.request('/api/management/workspaces', z.object({ ok: z.boolean() }))
+  const rejected = expect(result).rejects.toMatchObject({ name: 'AbortError' })
+  vi.mocked(bindProtectedChatInstance).mockReturnValue(true)
+  server.use(http.get('*/api/runtime/identity', () => HttpResponse.json({
+    ...identity, installationId: '8b8fe654-6e4a-4d4c-b451-2795ccbf7074',
+  })))
+  await act(async () => { await cache.invalidateQueries({ queryKey: ['workbench', 'runtime-identity'] }) })
+  await waitFor(() => expect(reload).toHaveBeenCalledOnce())
+  expect(signal?.aborted).toBe(true)
+  expect(cache.getQueryData(['protected-record'])).toBeUndefined()
+  pending.resolve(new Response(JSON.stringify({ ok: true })))
+  await rejected
 })

@@ -122,8 +122,9 @@ it.each(['GRAPHQL_MCP_TOKEN', 'FOREMAN_CODE_MCP_TOKEN', 'both'])('routes %s for 
   value = uncertainValue
   // The SAME launcher and client follow a refreshed owner route after a port change.
   await first.app.close()
-  await removeOwner()
+  const removePredecessor = removeOwner
   removeOwner = await registerAppRoute(owner.token, second.endpoint, owner.principal.expiresAt, launcher)
+  await removePredecessor()
   expect(decodeMcpToolResult((await ownerClient.callTool({ name: 'workspace_defaults_get', arguments: {} })))).toMatchObject({ value })
   for (const file of await readdir(join(directory, 'routes'))) {
     const text = await readFile(join(directory, 'routes', file), 'utf8')

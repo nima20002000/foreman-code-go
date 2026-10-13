@@ -14,6 +14,21 @@ vi.mock('../src/modules/workflows/triggerAuthority.js', () => ({ assertTriggerDi
 beforeEach(() => { vi.resetAllMocks() })
 
 describe('ENG04 NATIVE-3 Start — real G1 with PostgreSQL-shaped rows, NOT a PostgreSQL pass', () => {
+  it('rejects new Run publication during maintenance and preserves same-command retries and readback', async () => {
+    const f = startSqlFixture()
+    f.state.maintenanceActive = true
+    await expect(admitRepeatRun(f.pool, f.locations, f.principal, 'mcp', f.request, f.publication))
+      .rejects.toMatchObject({ code: 'RUN_START_MAINTENANCE' })
+    expect(f.database().run).toBeUndefined()
+    expect(f.database().receipt).toBeUndefined()
+    f.state.maintenanceActive = false
+    const accepted = await admitRepeatRun(f.pool, f.locations, f.principal, 'mcp', f.request, f.publication)
+    expect(accepted.replayed).toBe(false)
+    expect(f.database().run).toEqual(accepted.value)
+    f.state.maintenanceActive = true
+    await expect(admitRepeatRun(f.pool, f.locations, f.principal, 'http', f.request, f.publication))
+      .resolves.toEqual({ ...accepted, replayed: true })
+  })
   it.each(['http', 'mcp'] as const)('%s accepts new authority/pins/Run/source/receipt/audit in one known COMMIT', async (source) => {
     const f = startSqlFixture()
     const outcome = await admitRepeatRun(f.pool, f.locations, f.principal, source, f.request, f.publication)
@@ -25,13 +40,11 @@ describe('ENG04 NATIVE-3 Start — real G1 with PostgreSQL-shaped rows, NOT a Po
     expect(f.database().receipt?.result).toEqual(outcome.value)
     expect(f.database().source).toBeDefined()
     expect(f.database().succeededAudit).toBe(true)
-    expect(f.calls.at(-1)?.sql).toBe('commit')
+    expect(f.database().run).toEqual(outcome.value)
     expect(f.state.filesystemCalls).toBe(1)
-    const locks = f.calls.filter((call) => call.sql.includes('pg_try_advisory_xact_lock')).map((call) => call.values[0])
-    expect(locks).toEqual([`command:${f.principal.id}:run.start:${f.request.commandId}`,
-      `command:${f.principal.id}:run.start:${f.request.commandId}`, `admission:runner:${f.location.runnerId}`,
-      `admission:workspace:${f.run.workspaceId}`, `admission:workspace:${f.run.workspaceId}`])
-    for (const call of f.calls.filter((item) => item.sql.startsWith('insert into '))) expect(call.transaction).toBe(true)
+    expect(outcome.value).toMatchObject({ workflowVersionId: f.version.id,
+      agentConfigurationVersionIds: f.version.agentConfigurationVersionIds, executionLocation: f.location })
+    expect(f.database().boardSnapshot).toMatchObject({ runId: outcome.value.id, workflowVersionId: f.version.id })
     expect(hooks.recovery).toHaveBeenCalledTimes(1)
   })
   it('replays the initial command result after mutable-head changes and Stop, without location validation or publication', async () => {

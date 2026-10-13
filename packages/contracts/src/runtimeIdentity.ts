@@ -21,3 +21,7 @@ export function frozenRuntimeIdentity(identity: RuntimeIdentity): RuntimeIdentit
   return RuntimeIdentitySchema.parse({ installationId: identity.installationId, checkoutId: identity.checkoutId,
     databaseId: identity.databaseId, ...(identity.testResourcesId !== undefined ? { testResourcesId: identity.testResourcesId } : {}) })
 }
+
+/** Browser requests belong to the installation verified before rendering the document. */
+export const RUNTIME_INSTALLATION_HEADER = 'x-foreman-installation-id'
+export const RuntimeInstallationHeaderSchema = RuntimeIdentitySchema.shape.installationId

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { GraphIdSchema, IdSchema, TimestampSchema } from "./schemaPrimitives.js";
 import { CurrentWorkflowRelationshipSchema } from "./wave25/workflowShape.js";
-import type { RunExecutionState, RunOutcome } from "./index.js";
+import type { RunExecutionState, RunOutcome, WorkflowRunSummary } from "./index.js";
 import { AcceptedProviderAccountBindingSchema } from './providerAccounts.js';
 import { ActivitySnapshotV1Schema } from './activity.js';
 
@@ -43,6 +43,37 @@ export function runDropdownStatus(run: { executionState: RunExecutionState; outc
   if (run.executionState !== "completed") return run.executionState;
   if (run.outcome === "pending") throw new RangeError("A completed Run must have a terminal outcome");
   return run.outcome;
+}
+
+/** Terminal Run facts cannot regress when independently refreshed projections arrive out of order. */
+export function preferRunSummary<T extends Pick<WorkflowRunSummary, 'id' | 'executionState' | 'outcome' | 'startedAt' | 'finishedAt'>>(
+  workspace: WorkflowRunSummary | undefined, listed: T, workspaceReadAt: number, listReadAt: number,
+): WorkflowRunSummary | T {
+  if (!workspace) return listed
+  if (workspace.executionState === 'completed' && listed.executionState !== 'completed') return workspace
+  if (listed.executionState === 'completed' && workspace.executionState !== 'completed') return listed
+  if (workspace.startedAt && !listed.startedAt) return workspace
+  if (listed.startedAt && !workspace.startedAt) return listed
+  return workspaceReadAt > listReadAt ? workspace : listed
+}
+
+/** Reconcile by identity before counting or choosing an automatically displayed Run. */
+export function activeRunCandidates(workspace: readonly WorkflowRunSummary[], listed: readonly RunDropdownSummary[]) {
+  const active = new Set(['queued', 'running', 'waiting', 'interrupted'])
+  const summaries = new Map(workspace.map(run => [run.id, run]))
+  const candidates = new Map<string, Pick<WorkflowRunSummary, 'id' | 'startedAt'>>()
+  for (const run of summaries.values()) {
+    if (active.has(run.executionState) || run.cleanupPending) candidates.set(run.id, run)
+  }
+  for (const run of listed) {
+    const summary = summaries.get(run.runId)
+    if (!active.has(run.status)) {
+      if (!(summary?.executionState === 'completed' && summary.cleanupPending)) candidates.delete(run.runId)
+    } else if (summary?.executionState !== 'completed') {
+      candidates.set(run.runId, { id: run.runId, ...(run.startedAt ? { startedAt: run.startedAt } : {}) })
+    }
+  }
+  return [...candidates.values()]
 }
 
 const AgentRunBoardNodeSnapshotSchema = z.object({

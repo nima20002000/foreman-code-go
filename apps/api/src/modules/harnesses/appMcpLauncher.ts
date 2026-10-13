@@ -216,18 +216,59 @@ async function writeInstallationRecord(
     await rm(pending, { force: true })
   }
 }
-export async function registerAppRoute(token: string, endpoint: string, expiresAt: string, launcher = appLauncherPath()): Promise<() => Promise<void>> {
+export interface AppMcpRouteOwnership {
+  runtimeEpoch: string
+  assertActive(): void
+}
+
+export type AppMcpRouteRegistration = (() => Promise<void>) & {
+  refresh(expiresAt: string): Promise<void>
+}
+
+export async function registerAppRoute(
+  token: string, endpoint: string, expiresAt: string, launcher = appLauncherPath(),
+): Promise<AppMcpRouteRegistration> {
   return registerAppRouteDigest(createHash('sha256').update(token).digest('hex'), endpoint, expiresAt, launcher)
 }
-export async function registerAppRouteDigest(digest: string, endpoint: string, expiresAt: string, launcher = appLauncherPath()): Promise<() => Promise<void>> {
+
+export async function registerAppRouteDigest(
+  digest: string, endpoint: string, expiresAt: string, launcher = appLauncherPath(), ownership?: AppMcpRouteOwnership,
+): Promise<AppMcpRouteRegistration> {
   if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error('Invalid Foreman Code MCP route identity.')
   const directory = join(dirname(launcher), 'routes')
   const file = join(directory, `${digest}.json`)
-  await mkdir(directory, { recursive: true, mode: 0o700 })
-  const temporary = `${file}.${randomUUID()}.tmp`
-  try {
-    await writeFile(temporary, JSON.stringify({ endpoint, expiresAt, pid: process.pid }), { mode: 0o600, flag: 'wx' })
-    await rename(temporary, file)
-  } finally { await rm(temporary, { force: true }) }
-  return () => rm(file, { force: true })
+  const registrationId = randomUUID()
+  const runtimeEpoch = ownership?.runtimeEpoch ?? randomUUID()
+  const ownsRoute = async (): Promise<boolean> => {
+    try {
+      const current = JSON.parse(await readFile(file, 'utf8')) as { registrationId?: string; runtimeEpoch?: string }
+      return current.registrationId === registrationId && current.runtimeEpoch === runtimeEpoch
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+      throw error
+    }
+  }
+  const publish = (expiration: string, mode: 'register' | 'refresh'): Promise<void> =>
+    withLauncherLock(launcher, async signal => {
+      ownership?.assertActive()
+      if (mode === 'refresh' && !await ownsRoute()) return
+      await mkdir(directory, { recursive: true, mode: 0o700 })
+      const temporary = `${file}.${randomUUID()}.tmp`
+      try {
+        await writeFile(temporary, JSON.stringify({ endpoint, expiresAt: expiration, pid: process.pid,
+          registrationId, runtimeEpoch }), { mode: 0o600, flag: 'wx' })
+        signal.throwIfAborted()
+        ownership?.assertActive()
+        await rename(temporary, file)
+      } finally {
+        await rm(temporary, { force: true })
+      }
+    })
+  await publish(expiresAt, 'register')
+  const remove = async (): Promise<void> => {
+    await withLauncherLock(launcher, async () => {
+      if (await ownsRoute()) await rm(file, { force: true })
+    })
+  }
+  return Object.assign(remove, { refresh: (expiration: string) => publish(expiration, 'refresh') })
 }
