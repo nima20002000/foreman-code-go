@@ -12,14 +12,14 @@ afterEach(async () => {
 })
 
 async function fixture(prepare: CiRuntimeWorkerPorts['prepare'],
-  options: Pick<CiRuntimeWorkerPorts, 'refresh'> = { refresh: vi.fn() }) {
+  options: Partial<Pick<CiRuntimeWorkerPorts, 'refresh' | 'lastRefresh'>> = { refresh: vi.fn() }) {
   const root = await privateFixtureDirectory('ci-worker-lifetime-')
   roots.push(root)
   const lifetime = new AbortController()
   const ports: CiRuntimeWorkerPorts = {
     git: { cloneDirectory: () => root, git: async () => ({ code: 0, stdout: '', stderr: '' }) },
     managedRuntimeRoot: async () => root,
-    currentRuntimePaths: async () => [], prepare, ...options, lastRefresh: async () => null,
+    currentRuntimePaths: async () => [], prepare, lastRefresh: async () => null, ...options,
     now: () => new Date(),
   }
   const worker = new CiRuntimeWorker(root, ports, lifetime.signal)
@@ -146,6 +146,39 @@ describe('worker CI preparation lifetime', () => {
       finish(f.prepared)
       await f.worker.close()
     }
+  })
+
+  it.each([true, false])('reconciles a persisted preparation with its refresh outcome ok=%s after restart', async ok => {
+    const prepare = vi.fn<CiRuntimeWorkerPorts['prepare']>()
+    const f = await fixture(prepare)
+    prepare.mockResolvedValue(f.prepared)
+    await f.worker.handle(f.request)
+    await f.worker.close()
+    const replacement = new CiRuntimeWorker(f.root, {
+      ...f.ports,
+      lastRefresh: async () => ({ operationId: f.request.operationId, commit: f.request.commit, ok, log: 'refresh result' }),
+    }, new AbortController().signal)
+    expect(await replacement.handle({ operation: 'status' })).toMatchObject({
+      operationId: f.request.operationId, commit: f.request.commit,
+      state: ok ? 'idle' : 'failed', stage: 'refresh', prepared: null,
+      message: ok ? null : 'The runtime refresh failed: refresh result',
+    })
+    expect(prepare).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a newer persisted preparation when the last refresh belongs to an older operation', async () => {
+    const prepare = vi.fn<CiRuntimeWorkerPorts['prepare']>()
+    const f = await fixture(prepare)
+    prepare.mockResolvedValue(f.prepared)
+    await f.worker.handle(f.request)
+    await f.worker.close()
+    const replacement = new CiRuntimeWorker(f.root, {
+      ...f.ports,
+      lastRefresh: async () => ({ operationId: randomUUID(), commit: f.request.commit, ok: true, log: 'previous refresh' }),
+    }, new AbortController().signal)
+    expect(await replacement.handle({ operation: 'status' })).toMatchObject({
+      operationId: f.request.operationId, state: 'prepared', prepared: f.prepared,
+    })
   })
 
   it('returns preparing while work continues and joins it on close', async () => {
