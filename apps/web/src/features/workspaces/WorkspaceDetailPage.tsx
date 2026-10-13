@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useManagedWorkspaceQuery } from '../../shared/api/query'
+import { useBlockingReadError } from '../../shared/api/readFailure'
 import { Button, ErrorState, LoadingState, PageHeader } from '../../shared/ui/nocturne'
 import { WorkspaceSettingsHeader } from './WorkspaceSettingsHeader'
 import { WorkspaceRepositoryForm } from './WorkspaceRepositoryForm'
@@ -10,6 +11,7 @@ export function WorkspaceDetailPage({ workspaceId, section, children }: {
   workspaceId: string; section: 'files' | 'workflows' | 'settings'; children?: ReactNode
 }) {
   const workspace = useManagedWorkspaceQuery(workspaceId)
+  const blocked = useBlockingReadError(workspace)
   const current = workspace.data?.workspace.id === workspaceId ? workspace.data : undefined
   const title = section === 'files' ? 'Project files' : section === 'workflows' ? 'Workflows' : 'Settings'
   const unavailable = workspace.isError
@@ -24,7 +26,7 @@ export function WorkspaceDetailPage({ workspaceId, section, children }: {
       <div className={`settings-editor-content workspace-detail-content${section === 'settings' ? ' workspace-detail-content--settings' : ''}`}>
         {children ?? <>
           {workspace.isError && unavailable}
-          <div hidden={workspace.isError}>
+          <div hidden={Boolean(blocked)}>
             <div className="workspace-settings-actions" role="group" aria-label="Workspace actions">
               <Button variant="ghost" onClick={actions.rename}>Rename workspace</Button>
               <Button variant="ghost" onClick={actions.chooseLocation}>Choose location</Button>

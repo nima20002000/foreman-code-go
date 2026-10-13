@@ -258,7 +258,7 @@ export class ApiClient {
         reloadChangedInstallation(parsedError.data.error.code)
         throw new ApiError({
           ...parsedError.data.error,
-          message: response.status === 502 || response.status === 503
+          message: method === 'GET' && (response.status === 502 || response.status === 503)
             ? 'Updating — reconnecting…' : parsedError.data.error.message,
         }, response.status)
       }
