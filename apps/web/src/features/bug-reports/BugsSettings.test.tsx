@@ -291,11 +291,11 @@ it.each(['server failure', 'invalid acknowledgement'])('retries a save after %s 
   expect(screen.getByRole('combobox', { name: 'Report status' })).toHaveValue('triaged')
 })
 
-it('recovers list and detail request failures through their refresh actions', async () => {
+it.each([500, 502, 503])('recovers list and detail request failures through their refresh actions (%s)', async status => {
   server.use(
     http.get('*/api/management/bug-reports', () => HttpResponse.json({
       error: { code: 'UNAVAILABLE', message: 'Reports are unavailable.' },
-    }, { status: 503 })),
+    }, { status })),
     http.get('*/api/management/bug-reports/:reportId', () => HttpResponse.json({
       error: { code: 'NOT_FOUND', message: 'This bug report was not found.' },
     }, { status: 404 })),
