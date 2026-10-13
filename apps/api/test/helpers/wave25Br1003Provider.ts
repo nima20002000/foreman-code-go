@@ -32,7 +32,7 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
     private readonly outputFor?: (nodeId: string, request: HarnessExecutionRequest) => NonNullable<NativeHistory['terminalResult']>['output']) {}
 
   connection(): NativeHarnessSessionManager {
-    const provider = this
+    const startTurn = this.startTurn.bind(this)
     const sessions = new Map<string, NativeSessionReference>()
     let disposed = false
     const ownsLiveSession = (session: NativeSessionReference) => {
@@ -61,7 +61,7 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
       },
       startTurn: async function* (session, input) {
         if (!ownsLiveSession(session)) throw new Error('The checkpoint connection does not own a live session')
-        yield* provider.startTurn(session, input)
+        yield* startTurn(session, input)
       },
       pending: this.pending.bind(this), respond: this.respond.bind(this),
       inspectResponseAvailability: this.inspectResponseAvailability.bind(this),

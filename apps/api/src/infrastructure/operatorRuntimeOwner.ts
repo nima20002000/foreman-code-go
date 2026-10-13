@@ -64,7 +64,7 @@ export class OperatorRuntimeOwner {
       } catch (error) {
         // No protected work is admitted until acquisition succeeds.
         try { await this.end() } catch (cleanupError) {
-          throw new AggregateError([error, cleanupError], 'Native runtime ownership acquisition cleanup failed.')
+          throw new AggregateError([error, cleanupError], 'Native runtime ownership acquisition cleanup failed.', { cause: cleanupError })
         }
         throw error
       }
