@@ -21,32 +21,25 @@ function lost(): never {
   throw new DomainError('SESSION_LANE_LEASE_LOST', 'The native publication lane changed owners.', 409)
 }
 
-/** Called only after physical capture validation has locked a live lane. */
-export async function holdWorkflowNativePublicationLease(sql: GraphTransactionSql, owner: RunOwnership,
-  capture: WorkflowNativeCapture, lane: Lane): Promise<void> {
+/** Register the live lease read by physical validation while its row remains locked. */
+export function holdWorkflowNativePublicationLease(sql: GraphTransactionSql, owner: RunOwnership,
+  capture: WorkflowNativeCapture, lane: Lane,
+  locked: { lease_owner: string | null; lease_ms: number; expires_at: string }): void {
   assertGraphTransaction(sql)
+  if (!locked.lease_owner) return lost()
   let lanes = lockedLanes.get(sql)
   const previous = lanes?.get(lane.id)
   if (previous) {
     if (previous.owner !== owner || previous.token !== lane.token || previous.generation !== lane.connectionGeneration
       || previous.agentId !== capture.execution.agentId || previous.harness !== capture.session.harness
-      || previous.sessionId !== capture.session.nativeSessionId) return lost()
-    await renewWorkflowNativePublicationLease(sql, owner, lane.id)
+      || previous.sessionId !== capture.session.nativeSessionId
+      || previous.leaseOwner !== locked.lease_owner || previous.expiresAt !== locked.expires_at) return lost()
     return
   }
-  const row = (await sql.query<{ lease_owner: string; lease_ms: number; expires_at: string }>(
-    `select record->>'leaseOwner' as lease_owner,record->>'leaseExpiresAt' as expires_at,
-      greatest(1,extract(epoch from ((record->>'leaseExpiresAt')::timestamptz-updated_at))*1000)::float8 as lease_ms
-      from native_session_lanes where id=$1 and record->>'leaseToken'=$2
-      and record->>'connectionGeneration'=$3 and owner_agent_id=$4 and harness=$5 and native_session_id=$6
-      and (record->>'leaseExpiresAt')::timestamptz>clock_timestamp() for update`,
-    [lane.id, lane.token, String(lane.connectionGeneration), capture.execution.agentId,
-      capture.session.harness, capture.session.nativeSessionId])).rows[0]
-  if (!row?.lease_owner) return lost()
   if (!lanes) { lanes = new Map(); lockedLanes.set(sql, lanes) }
   lanes.set(lane.id, { owner, token: lane.token, generation: lane.connectionGeneration,
-    leaseOwner: row.lease_owner, agentId: capture.execution.agentId, harness: capture.session.harness,
-    sessionId: capture.session.nativeSessionId, leaseMs: row.lease_ms, expiresAt: row.expires_at })
+    leaseOwner: locked.lease_owner, agentId: capture.execution.agentId, harness: capture.session.harness,
+    sessionId: capture.session.nativeSessionId, leaseMs: locked.lease_ms, expiresAt: locked.expires_at })
   beforeGraphCommit(sql, () => renewWorkflowNativePublicationLease(sql, owner, lane.id))
 }
 

@@ -96,7 +96,8 @@ export class WorkflowNativeProofServices {
       session: { reference: unknown } | null; configuration: { harness: string } | null
       closure: { generation: string; expected_reference: unknown; closed: boolean } | null
       lane: { owner_agent_id: string; harness: string; native_session_id: string; generation: string;
-        token: string | null; correlation: string | null; provider_id: string | null; held: boolean } | null
+        token: string | null; correlation: string | null; provider_id: string | null; held: boolean;
+        lease_owner: string | null; lease_ms: number; expires_at: string } | null
     }>(`with current_entry as materialized (
         select phase,reservation,reservation_digest,transition,source_id,source_digest
         from workflow_native_entries where execution_id=$1 and run_id=$6 for update
@@ -125,6 +126,8 @@ export class WorkflowNativeProofServices {
         select owner_agent_id,harness,native_session_id,record->>'connectionGeneration' as generation,
           record->>'leaseToken' as token,record->>'correlationId' as correlation,
           record->>'currentTurnOrMessageId' as provider_id,
+          record->>'leaseOwner' as lease_owner,record->>'leaseExpiresAt' as expires_at,
+          greatest(1,extract(epoch from ((record->>'leaseExpiresAt')::timestamptz-updated_at))*1000)::float8 as lease_ms,
           coalesce((record->>'leaseExpiresAt')::timestamptz>clock_timestamp(),false) as held
         from native_session_lanes where id=$5
           and (select count(*) from current_entry_receipt)=1 for update
@@ -158,12 +161,12 @@ export class WorkflowNativeProofServices {
         || lane.native_session_id !== capture.session.nativeSessionId || lane.token !== capture.lane.token || !lane.held
         || lane.generation !== String(capture.lane.connectionGeneration)
         || lane.provider_id !== null && capture.lane.providerId !== null && lane.provider_id !== capture.lane.providerId) return fail('SESSION_LANE_LEASE_LOST')
+      holdWorkflowNativePublicationLease(sql, owner, capture, capture.lane, lane)
       await assertWorkflowCorrelation(sql, stored.execution.id, lane.correlation ?? undefined)
       if (capture.source.type === 'history' && capture.source.history.correlationId !== undefined
         && capture.source.history.correlationId !== lane.correlation) return fail('NATIVE_TURN_IDENTITY_CONFLICT')
     } else if (capture.source.type === 'event' || capture.source.type === 'history') return fail('SESSION_LANE_LEASE_LOST')
     capture.assertCurrent()
-    if (capture.lane) await holdWorkflowNativePublicationLease(sql, owner, capture, capture.lane)
   }
 
   async assertNativeBoundaryLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3, execution: HarnessExecution,
