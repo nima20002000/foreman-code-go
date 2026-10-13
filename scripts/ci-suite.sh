@@ -25,6 +25,7 @@ if [ "${CI_HOST_RUNNER:-0}" = 1 ]; then
 fi
 
 if [ "${1:-}" = start ] || [ "${1:-}" = prepare ]; then
+  case "$SUITE" in unit-web|unit-web-heavy) exit 0 ;; esac
   case "$SUITE" in unit|unit-*|integration) ;; *) exit 0 ;; esac
   clis="npm install --global --silent --before=$(date -u -d '-2 days' +%Y-%m-%dT%H:%M:%SZ) @openai/codex @anthropic-ai/claude-code"
   if [ "$1" = prepare ]; then
@@ -166,7 +167,8 @@ fi
 if [ "$scope" = affected ] && [ "$SUITE" != integration ]; then
   case "$SUITE" in
     unit|unit-api) ready db; ready clis; delegate_cgroup ;;
-    unit-web|unit-web-heavy|unit-other) ready db ;;
+    unit-web|unit-web-heavy) ;;
+    unit-other) ready db ;;
     lint|lint-api|lint-other|typecheck|typecheck-api|typecheck-other) ;;
     *) echo "Unsupported affected suite $SUITE"; exit 2 ;;
   esac
@@ -183,10 +185,10 @@ case "$SUITE" in
   unit) ready db; ready clis; delegate_cgroup; pnpm test ;;
   unit-api) ready db; ready clis; delegate_cgroup; pnpm --filter @foreman-code/contracts build
     unit_slice unit-api apps/api ;;
-  unit-web) ready db; pnpm --filter @foreman-code/contracts build
+  unit-web) pnpm --filter @foreman-code/contracts build
     unit_slice unit-web apps/web ;;
   # SLICE i/n splits the heavy phase across machines; the run-graph smoke runs once, in the first shard.
-  unit-web-heavy) ready db; pnpm --filter @foreman-code/contracts build
+  unit-web-heavy) pnpm --filter @foreman-code/contracts build
     case "${SLICE:-1/1}" in 1/*) pnpm --filter @foreman-code/web test:run-graph-smoke ;; esac
     mkdir -p "$state"; heavy_report="$(realpath -m "$state/unit-web-heavy.vitest.json")"; progress_reporter="$PWD/scripts/ci-progress-reporter.mjs"; code=0
     (cd apps/web && FOREMAN_WEB_TEST_PHASE=heavy pnpm exec vitest run ${SLICE:+--shard=$SLICE} \

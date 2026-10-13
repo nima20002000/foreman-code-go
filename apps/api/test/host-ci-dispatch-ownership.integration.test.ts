@@ -17,6 +17,7 @@ import { workspaceMirrors } from '../src/modules/ci-host/cloud.js'
 import { DomainError } from '../src/modules/errors.js'
 import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
+import { cloudCiLookupFixture } from './helpers/cloudCiLookupFixture.js'
 
 let database: Awaited<ReturnType<typeof migratedDatabase>>
 beforeAll(async () => { database = await migratedDatabase() }, 60_000)
@@ -153,6 +154,49 @@ function failingCloud(f: Awaited<ReturnType<typeof fixture>>, provider: 'github'
   }
   return { computer, attempts: () => attempts }
 }
+
+it('dispatches on startup while old cloud recovery is blocked and exposes persisted MCP readback', async () => {
+  const f = await fixture()
+  const cloud = await cloudCiLookupFixture('running')
+  const computer = cloud.cloud.computers()[0]!
+  f.computers.splice(0, 2, computer)
+  const computers = f.endpoint.computers.bind(f.endpoint)
+  f.endpoint.computers = async () => {
+    const available = await computers()
+    if (available.length) await cloud.cloud.handle({ operation: 'status' })
+    return available
+  }
+  const request = f.endpoint.request.bind(f.endpoint)
+  f.endpoint.request = (target, input) => input.operation === 'status'
+    ? cloud.cloud.handle(input) : request(target, input)
+  let release!: () => void
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  const status = vi.spyOn(cloud.cloud.provider, 'status').mockImplementation(async () => {
+    await blocked
+    return { done: false, steps: [] }
+  })
+  cloud.advance(55 * 60_000)
+  try {
+    const ticket = await f.enqueue()
+    f.control.available = true
+    // This is the production startup entry point, with no manual dispatcher pass or timer tick.
+    HostCiService.prototype.start.call(f.ci, 60_000)
+    await expect.poll(() => f.starts.length, { timeout: 1000 }).toBe(1)
+    await f.ci.dispatch()
+    expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'running', dispatchAttempts: 1,
+      computer: { hostRef: computer.hostRef } })
+    const denied = await f.connect(['workspaces:read'])
+    expect((await f.call(denied.client, 'ci_get', { ticketId: ticket.ticketId })).isError).toBe(true)
+    expect((await f.pool.query('select host_key,record from ci_runs where id=$1', [ticket.ticketId])).rows[0])
+      .toMatchObject({ host_key: computer.key, record: { state: 'running', dispatchAttempts: 1 } })
+    await expect.poll(() => status.mock.calls.length).toBe(1)
+  } finally {
+    release()
+    await cloud.cloud.reconcile()
+    await f.close()
+    await cloud.close()
+  }
+})
 
 it.each(['github', 'circleci'] as const)(
   'cancels an accepted %s dispatch with a lost reply without replaying start through MCP', async provider => {

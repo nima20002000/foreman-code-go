@@ -82,6 +82,7 @@ export async function activeCiRuns(pool: pg.Pool): Promise<ActiveCiRuns> {
 export class CloudCi {
   private activeRuns: (() => Promise<ActiveCiRuns>) | undefined
   private checked: { at: number; ready: boolean } | undefined
+  private reconciling: Promise<void> | undefined
   private readonly polled = new Map<string, number>()
   private reconcileCursor = 0
   private backoff = { until: 0, ms: 0 }
@@ -102,6 +103,7 @@ export class CloudCi {
 
   /** Waits for background sweeps before their repository can be removed. Call after ticket operations finish. */
   async waitForMirrorCleanup(repository: string, mirror: string) {
+    await this.reconciling
     const key = this.mirrorKey(repository, mirror)
     let cleanup = mirrorMaintenance.get(key)?.cleanup
     while (cleanup) {
@@ -120,7 +122,10 @@ export class CloudCi {
   async handle(raw: unknown): Promise<CiHostReply> {
     const request = CiHostRequestSchema.parse(raw)
     if (request.operation === 'status') {
-      await this.reconcile()
+      // Recovery of an old ticket must not delay readiness for every slot of this provider.
+      void this.reconcile().catch(error => {
+        log.warn({ err: error, provider: this.provider.id }, 'Cloud CI recovery sweep failed')
+      })
       const ready = await this.ready()
       return CiHostReplySchema.parse({ operation: 'status', ready, reasons: ready ? [] : [this.provider.loginHint],
         cpuCount: this.provider.cpus, memoryBytes: this.provider.memoryBytes,
@@ -758,7 +763,12 @@ export class CloudCi {
   }
 
   /** Reconcile overdue runs and retained terminal work in bounded batches. */
-  async reconcile(): Promise<void> {
+  reconcile(): Promise<void> {
+    this.reconciling ??= this.reconcileRuns().finally(() => { this.reconciling = undefined })
+    return this.reconciling
+  }
+
+  private async reconcileRuns(): Promise<void> {
     const entries = await readdir(join(this.root, 'runs'), { withFileTypes: true }).catch(error => {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
       throw error

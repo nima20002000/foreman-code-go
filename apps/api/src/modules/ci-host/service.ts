@@ -109,8 +109,10 @@ export class HostCiService {
   }
 
   start(intervalMs = 5000) {
-    this.timer ??= setInterval(() => { void this.dispatch() }, intervalMs)
+    if (this.timer) return
+    this.timer = setInterval(() => { void this.dispatch() }, intervalMs)
     this.timer.unref()
+    void this.dispatch()
   }
 
   close() { clearInterval(this.timer); this.timer = undefined; return this.dispatching }
