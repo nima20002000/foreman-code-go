@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import type { GitWorktreePorts } from '../sources/gitWorktree.js'
 import { CloudCi } from './cloud.js'
+import { pruneMirrorBranches } from './mirrorBranches.js'
 import { CircleCiProvider, GitHubActionsProvider } from './cloudProviders.js'
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 import { selectByIndexes } from '../../../../../scripts/ci-files.mjs'
@@ -166,6 +167,16 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
   const cloud = reopen()
   const mirrorGit = (...args: string[]) => run(mirror, ...args)
   return { cloud, reopen, commit, dispatched, github, circle, cleanup, mirrorGit, run: (...args: string[]) => run(work, ...args),
+    async prune(activeIds: Set<string>) {
+      const options = { mirror: 'octo/site-ci', roots: [join(root, 'ci-cloud')],
+        activeRuns: { ids: activeIds, readAt: Date.now() },
+        git: async (args: string[]) => {
+          const result = await git.git(args, { cwd: work, signal: AbortSignal.timeout(30_000) })
+          if (result.code !== 0) throw new Error(result.stderr)
+          return result.stdout.trim()
+        } }
+      return pruneMirrorBranches(options)
+    },
     advance: (milliseconds: number) => { now += milliseconds },
     write: (path: string, text: string) => writeFile(join(work, path), text),
     push: (...refs: string[]) => run(work, 'push', '-q', origin, ...refs),
@@ -844,4 +855,23 @@ it('republishes a branch removed by maintenance after a previous automatic clean
   f.cleanup.unavailable = false
   await f.cloud.handle({ ...request, runId: randomUUID() })
   expect(f.mirrorGit('rev-parse', branch)).toMatch(/^[a-f0-9]{40}$/)
+})
+
+
+it('releases stale provider records only when no active Main ticket still uses their branch', async () => {
+  const f = await fixture()
+  const first = randomUUID()
+  const second = randomUUID()
+  const start = { operation: 'start' as const, repository: 'octo/site', commit: f.commit,
+    suite: 'lint' as const, scope: 'affected' as const, files: [] }
+  await f.cloud.handle({ ...start, runId: first })
+  await f.cloud.handle({ ...start, runId: second })
+  const branch = `refs/heads/ci/${f.commit}`
+  await f.prune(new Set([second]))
+  expect(f.mirrorGit('rev-parse', branch)).toMatch(/^[a-f0-9]{40}$/)
+  await f.prune(new Set())
+  expect(f.mirrorGit('for-each-ref', '--format=%(refname)', 'refs/heads/ci/')).toBe('')
+  // Sweeping refs does not rewrite the provider's saved observations.
+  expect(await f.reopen().handle({ operation: 'read', runId: first, afterOffset: 0, maxBytes: 1 }))
+    .toMatchObject({ run: { state: 'starting' } })
 })
