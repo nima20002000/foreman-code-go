@@ -3,6 +3,7 @@ import type { CiHostReply, CiHostRun, CiRunRecord } from '@foreman-code/contract
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import type { HostCiComputer, HostCiEndpoint } from './service.js'
+import { serializeCiJson } from './text.js'
 
 const log = componentLogger('jobs')
 
@@ -17,7 +18,7 @@ export async function collectCiResults(pool: pg.Pool, endpoint: HostCiEndpoint, 
     if (fetched.operation === 'read') {
       results = fetched
       if (fetched.testResults) {
-        await pool.query('update ci_runs set test_results=$2::jsonb where id=$1', [run.id, JSON.stringify(fetched.testResults)])
+        await pool.query('update ci_runs set test_results=$2::jsonb where id=$1', [run.id, serializeCiJson(fetched.testResults)])
         collection = fetched.run.collection === 'pending' ? 'pending' : 'complete'
       } else if (fetched.run.collection) {
         collection = fetched.run.collection
