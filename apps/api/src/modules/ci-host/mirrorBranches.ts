@@ -43,7 +43,15 @@ export async function pruneMirrorBranches(options: {
   for (const root of new Set(options.roots)) {
     for (const directory of await runDirectories(root)) {
       if (!directory.isDirectory()) continue
-      const run = JSON.parse(await readFile(join(root, 'runs', directory.name, 'meta.json'), 'utf8')) as MirrorRun
+      let text: string
+      try {
+        text = await readFile(join(root, 'runs', directory.name, 'meta.json'), 'utf8')
+      } catch (error) {
+        // A run directory can precede its first atomic metadata write.
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+        throw error
+      }
+      const run = JSON.parse(text) as MirrorRun
       if (run.mirror !== options.mirror || !['starting', 'running', 'queued'].includes(run.state)) continue
       const index = options.activeRuns
       // A new dispatch after the index was read stays protected until the next sweep.
