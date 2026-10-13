@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeAll, expect, it } from 'vitest'
 import { routeTree } from '../app/router'
 import { setMockScenario } from '../shared/mocks/scenarios'
@@ -8,8 +8,12 @@ import { setMockScenario } from '../shared/mocks/scenarios'
 beforeAll(() => { globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver })
 afterEach(() => setMockScenario('normal'))
 
-it.each(['/workspaces/workspace-1/workflows', '/workspaces/workspace-1/agents', '/workspaces'])(
-  'leaves the board for %s without flashing an invalid board selection', async (destination) => {
+it.each([
+  ['/workspaces/workspace-1/workflows', 'Workflows'],
+  ['/workspaces/workspace-1/agents', 'Agents'],
+  ['/workspaces', 'Workspaces'],
+])(
+  'leaves the board for %s without flashing an invalid board selection', async (destination, heading) => {
     const history = createMemoryHistory({ initialEntries: ['/workspaces/workspace-1?workflowId=workflow-content-pipeline'] })
     const router = createRouter({ routeTree, history })
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -20,7 +24,11 @@ it.each(['/workspaces/workspace-1/workflows', '/workspaces/workspace-1/agents', 
       }
     })
     render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
-    expect((await screen.findAllByText('Researcher', {}, { timeout: 8000 })).length).toBeGreaterThan(0)
+    const authoring = await screen.findByRole('region', { name: 'Workflow authoring' }, { timeout: 8000 })
+    expect(await within(authoring).findByRole('button', {
+      name: /^Researcher, .*starts the workflow.*Draft$/,
+    }, { timeout: 8000 })).toBeVisible()
+    expect(screen.getByTestId('unified-workflow-board')).toBeVisible()
     observer.observe(document.body, { childList: true, subtree: true })
     await act(async () => { history.push(destination) })
     await waitFor(() => expect(router.state.location.pathname).toBe(destination))
@@ -28,7 +36,9 @@ it.each(['/workspaces/workspace-1/workflows', '/workspaces/workspace-1/agents', 
       expect(router.state.status).toBe('idle')
       expect(screen.queryByTestId('unified-workflow-board')).not.toBeInTheDocument()
     })
+    expect(await screen.findByRole('heading', { name: heading, level: 1 })).toBeVisible()
     observer.disconnect()
+    expect(screen.queryByText('Invalid board selection')).not.toBeInTheDocument()
     expect(flashes).toEqual([])
     client.clear()
   }, 30_000)
