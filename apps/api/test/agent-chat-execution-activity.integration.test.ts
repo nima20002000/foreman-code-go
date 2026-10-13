@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { HarnessExecutionSchema } from '@foreman-code/contracts'
+import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
 import {
   AgentChatExecutionActivityPageSchema, ReadAgentChatResponseSchema, type AgentChatExecutionActivityQuery,
 } from '@foreman-code/contracts/agent-chat'
@@ -18,8 +18,11 @@ import { PostgresAgentChatRepository } from '../src/modules/conversations/agentC
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
 import { RunGraphReadService } from '../src/modules/run-graph/readService.js'
+import { openRepeatCanonicalPublicationLocked } from '../src/modules/run-graph/repeatPublication.js'
+import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { repeatTerminalResolution } from '../src/modules/runs/repeatNode.js'
+import { repeatDigest, repeatId } from '../src/modules/runs/repeatResolution.js'
 import { createWorkflowRepositoryServices } from '../src/modules/runs/workflowRepositoryServices.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
@@ -95,9 +98,24 @@ describe('Persisted execution activity through HTTP and authenticated MCP', { ti
     const admitted = await ownedGraph(database, graph, owner =>
       runs.admitRepeatExecution({ nodeId: node.id, occurrence: null }, () => candidate, owner))
     if (admitted.kind !== 'admitted') throw new Error('Expected the fixture execution to be admitted')
-    // Synthetic retained history exercises reads; this fixture does not claim a native launch or result.
-    await database.pool.query(`update harness_executions set record=record || $2::jsonb where id=$1`,
-      [candidate.id, JSON.stringify({ state: 'running', nativeSessionId: 'thread' })])
+    // Synthetic observations exercise persisted reads without launching native sessions.
+    async function persistExecution(owner: RunOwnership, previous: HarnessExecution, next: HarnessExecution) {
+      await owner.oneShotConnection().transaction(async sql => {
+        const publication = await openRepeatCanonicalPublicationLocked(sql, graph.scope, owner)
+        const source = { execution: next }
+        const sourceDigest = repeatDigest(source)
+        await publication.publishNativeLocked({
+          kind: 'observation', scope: graph.scope, ref: { nodeId: node.id, occurrence: null },
+          previous, next, source, sourceDigest, sourceRevision: '1', effect: null,
+          sourceId: repeatId('repeat-native', graph.run.id, 'outside', next.id, 'observation', sourceDigest),
+        }, async () => {
+          await sql.query('update harness_executions set record=$2::jsonb,created_at=$3 where id=$1',
+            [next.id, JSON.stringify(next), next.createdAt])
+        })
+      })
+    }
+    await ownedGraph(database, graph, owner => persistExecution(owner, admitted.execution,
+      HarnessExecutionSchema.parse({ ...admitted.execution, state: 'running', nativeSessionId: 'thread' })))
     const transfers: unknown[][] = []
     let queryFailure: string | undefined
     const observedPool = new Proxy(database.pool, {
@@ -175,32 +193,41 @@ describe('Persisted execution activity through HTTP and authenticated MCP', { ti
         [JSON.stringify(events)])
     }
     const state = async (value: 'failed' | 'canceled') => {
-      const stored = (await database.pool.query<{ record: Record<string, unknown> }>(
-        'select record from harness_executions where id=$1', [candidate.id])).rows[0]!
-      const terminal = HarnessExecutionSchema.parse({ ...stored.record, state: 'completed',
+      const previous = (await runs.getExecution(candidate.id))!
+      const terminal = HarnessExecutionSchema.parse({ ...previous, state: 'completed',
         result: { outcome: value, ...(value === 'failed' ? {
           error: { code: 'COMMAND_FAILED', message: 'The command failed', retryable: false },
         } : {}) }, finishedAt: new Date().toISOString(),
       })
-      await database.pool.query('update harness_executions set record=$2::jsonb where id=$1',
-        [candidate.id, JSON.stringify(terminal)])
+      await ownedGraph(database, graph, owner => persistExecution(owner, previous, terminal))
     }
     return { graph, executionId: candidate.id, transfers, managers, append, state, http, mcpPage,
       seedNewerExecutions: async () => {
         const stored = (await database.pool.query<{ created_at: Date }>(
           'select created_at from harness_executions where id=$1', [candidate.id])).rows[0]!
-        // Retained terminal history is synthetic; admission still creates every input binding and receipt.
+        // Terminal observations are synthetic; each state and resolution still receives a graph publication.
         const original = (await runs.getExecution(candidate.id))!
         const completed = HarnessExecutionSchema.parse({ ...original, state: 'completed',
           finishedAt: at, result: { outcome: 'canceled' } })
         const resolution = repeatTerminalResolution(graph.version, graph.scope,
           { nodeId: node.id, occurrence: null }, completed)
-        await database.pool.query('update harness_executions set record=$2::jsonb where id=$1',
-          [candidate.id, JSON.stringify(completed)])
-        await database.pool.query(`insert into run_repeat_resolutions
-          (run_id,occurrence_key,workflow_node_id,execution_id,record) values($1,'',$2,$3,$4::jsonb)`,
-        [graph.run.id, node.id, candidate.id, JSON.stringify(resolution)])
         await ownedGraph(database, graph, async owner => {
+          await persistExecution(owner, original, completed)
+          await owner.oneShotConnection().transaction(async sql => {
+            const publication = await openRepeatCanonicalPublicationLocked(sql, graph.scope, owner)
+            const fence = await owner.readOneShotFence(sql)
+            const effect = { kind: 'terminal.accept' as const, entityId: completed.id,
+              digest: repeatDigest({ execution: completed, resolution, decision: null, successor: null, exported: null }) }
+            await publication.publishEffectLocked(effect,
+              [{ type: 'repeat.node.resolved', resolution, outside: true }], async () => {
+                await sql.query(`insert into run_repeat_resolutions
+                  (run_id,occurrence_key,workflow_node_id,execution_id,record) values($1,'',$2,$3,$4::jsonb)`,
+                [graph.run.id, node.id, completed.id, JSON.stringify(resolution)])
+                await sql.query(`insert into run_repeat_effects
+                  (run_id,effect_kind,entity_id,payload_digest,owner_id,owner_fence) values($1,$2,$3,$4,$5,$6)`,
+                [graph.run.id, effect.kind, effect.entityId, effect.digest, fence.ownerId, fence.fence])
+              })
+          })
           const repository = await runs.repeat(owner)
           let settledId: string | null = null
           for (let index = 1; index <= 21; index++) {
@@ -210,8 +237,7 @@ describe('Persisted execution activity through HTTP and authenticated MCP', { ti
             if (admitted.kind !== 'admitted') throw new Error('Expected a retained interval check to be admitted')
             const execution = HarnessExecutionSchema.parse({ ...admitted.execution, state: 'completed',
               finishedAt: at, result: { outcome: 'canceled' } })
-            await database.pool.query('update harness_executions set record=$2::jsonb,created_at=$3 where id=$1',
-              [execution.id, JSON.stringify(execution), createdAt])
+            await persistExecution(owner, admitted.execution, execution)
             settledId = execution.id
           }
         })
