@@ -5,6 +5,7 @@ import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { checkpointRuntimeFixture } from './helpers/wave25Br1003Runtime.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { deferred } from './helpers/deferred.js'
+import { DomainError } from '../src/modules/errors.js'
 
 // The provider boundary is controllable; launch, publication, ownership and shutdown use production SQL/services.
 describe.runIf(postgresEnabled)('workflow startup preservation', () => {
@@ -36,7 +37,10 @@ describe.runIf(postgresEnabled)('workflow startup preservation', () => {
     let startup: Promise<unknown> | undefined
     let restorePages = () => undefined as void
     try {
-      startup = runtime.engine.start(runtime.f.run.id)
+      startup = runtime.engine.start(runtime.f.run.id).then(
+        () => undefined,
+        (error: unknown) => error,
+      )
       await opening.promise
       const before = (await runtime.db.pool.query<{ record: { id: string; state: string } }>(
         'select record from harness_executions where run_id=$1', [runtime.f.run.id])).rows[0]!.record
@@ -54,7 +58,9 @@ describe.runIf(postgresEnabled)('workflow startup preservation', () => {
       await captured.promise
       publish.resolve()
       await shutdown
-      await startup
+      const startupError = await startup
+      expect(startupError).toBeInstanceOf(DomainError)
+      expect(startupError).toMatchObject({ code: 'ENGINE_RESTART' })
       expect(detached).toEqual([original])
       const cleanup = await runtime.db.pool.query(
         'select run_id from run_cleanup_intents where run_id=$1 and pending', [runtime.f.run.id])

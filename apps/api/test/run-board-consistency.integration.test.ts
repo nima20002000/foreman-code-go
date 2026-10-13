@@ -27,12 +27,9 @@ describe.runIf(postgresEnabled)('saved Board read consistency', () => {
         const row = result.rows[0] as Record<string, unknown> | undefined
         if (!interleaved && row?.snapshot_id === f.run.id && row.execution_state === 'running') {
           interleaved = true
-          await runtime.db.pool.query(`update harness_executions set record=record ||
-            jsonb_build_object('state','completed','finishedAt',$2::text,'result',jsonb_build_object('outcome','succeeded'))
-            where id=$1`, [checkId, new Date().toISOString()])
-          await runtime.db.pool.query(`update runs set execution_state='completed',
-            record=record || jsonb_build_object('executionState','completed','outcome','succeeded','finishedAt',$2::text)
-            where id=$1`, [f.run.id, new Date().toISOString()])
+          checkGate.resolve()
+          workerGate.resolve()
+          await finished
         }
         return result
       }) as pg.PoolClient['query']
@@ -49,7 +46,6 @@ describe.runIf(postgresEnabled)('saved Board read consistency', () => {
       readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } } })
     const clients: Client[] = []
     let finished: Promise<unknown> | undefined
-    let checkId: string
     try {
       const address = await app.listen({ host: '127.0.0.1', port: 0 })
       const viewer = await runtime.access.issue({ name: 'Board reader', audience: 'operator',
@@ -61,7 +57,7 @@ describe.runIf(postgresEnabled)('saved Board read consistency', () => {
         authProvider: { token: async () => viewer.token },
       }))
       finished = runtime.engine.start(f.run.id)
-      checkId = await checkStarted.promise
+      await checkStarted.promise
       const args = { workspaceId: f.run.workspaceId, workflowId: f.run.workflowId, runId: f.run.id }
       let raw: unknown
       if (transport === 'http') {

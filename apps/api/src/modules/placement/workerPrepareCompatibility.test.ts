@@ -55,7 +55,7 @@ function fixture({ continuationSupported }: { continuationSupported: boolean }) 
       authorizationRevision: 1, bootId: randomUUID(), connectionGeneration: 1 },
       supports: (namespace: string) => negotiated.some(extension => extension.namespace === namespace && extension.mainCanRequest),
       request: delivered }) },
-    workerExecution: new WorkerExecutionPolicy({ enabled: true }), beforePrepare,
+    workerExecution: new WorkerExecutionPolicy({ enabled: true, managedBy: 'settings' }), beforePrepare,
     commit: vi.fn(), controlFor: vi.fn(),
   })
   return { start: { ...start, correlationId: `execution:${request.executionId}` }, manager, delivered, beforePrepare,

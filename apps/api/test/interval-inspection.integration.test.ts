@@ -14,7 +14,7 @@ import { intervalRuntime } from './helpers/intervalRuntime.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 
 describe.runIf(postgresEnabled)('interval execution inspection', () => {
-  it('reads admitted queued and completed check inputs through HTTP and authenticated MCP', async () => {
+  it('reads admitted queued, running and completed check inputs through HTTP and authenticated MCP', async () => {
     const { runtime, f, watcher, checkStarted, checkGate, workerGate } = await intervalRuntime()
     const queued = deferred<string>()
     const dispatch = deferred()
@@ -68,7 +68,7 @@ describe.runIf(postgresEnabled)('interval execution inspection', () => {
         'select input_json,input_digest from run_repeat_slots where run_id=$1 and tick_index=1', [f.run.id])).rows[0]!
       const input = JSON.parse(stored.input_json)
       expect(input.tick).toEqual({ index: 1, everySeconds: 10 })
-      for (const state of ['queued', 'completed']) {
+      for (const state of ['queued', 'running', 'completed']) {
         const detail = RunExecutionDetailSchema.parse(await read(RUN_INSPECTION_TOOLS.execution, `/${executionId}`, args))
         expect(detail.execution).toMatchObject({ state, tickIndex: 1, workflowNodeId: watcher.id })
         expect(detail.acceptedInput).toEqual({ digest: stored.input_digest, value: input })
@@ -78,13 +78,25 @@ describe.runIf(postgresEnabled)('interval execution inspection', () => {
         const page = RunExecutionsPageSchema.parse(await read(RUN_INSPECTION_TOOLS.executions, '', {
           workspaceId: f.run.workspaceId, runId: f.run.id,
         }))
-        expect(page.items.find(item => item.executionId === executionId)?.tickIndex).toBe(1)
+        expect(page.items.find(item => item.executionId === executionId)).toMatchObject({
+          state, tickIndex: 1, workflowNodeId: watcher.id,
+        })
         if (state === 'queued') {
           dispatch.resolve()
           expect(await checkStarted.promise).toBe(executionId)
+        } else if (state === 'running') {
           checkGate.resolve()
           workerGate.resolve()
           await finished
+        } else {
+          const ordinary = page.items.find(item => item.workflowNodeId === watcher.id && item.tickIndex === undefined)
+          expect(ordinary).toBeDefined()
+          const ordinaryArgs = { ...args, executionId: ordinary!.executionId }
+          const ordinaryDetail = RunExecutionDetailSchema.parse(await read(
+            RUN_INSPECTION_TOOLS.execution, `/${ordinary!.executionId}`, ordinaryArgs,
+          ))
+          expect(ordinaryDetail.execution).not.toHaveProperty('tickIndex')
+          expect(ordinaryDetail.acceptedInput.value).not.toHaveProperty('tick')
         }
       }
       const refused = await denied.client.callTool({ name: RUN_INSPECTION_TOOLS.execution, arguments: args })
