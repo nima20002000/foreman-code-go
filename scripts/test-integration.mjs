@@ -16,6 +16,7 @@ import { ciTemplateCacheDirectory } from './ci-postgres-cache.mjs'
 import { readIntegrationStartup } from './integration-startup.mjs'
 import { integrationPhaseForwarder } from './integration-phase.mjs'
 import { testFixtureCacheRoot } from './test-fixture-cache.mjs'
+import { sweepRestartUnits } from './test-restart-units.mjs'
 import { adaptiveDeadlineMs, groupUsed, integrationProcessLimits, integrationProcessProgress, stopGroup,
   superviseIntegrationProcess } from './integration-process.mjs'
 import { boundedLog, emptyCounts, junitReport, logArchive, mergedVitestReport, positiveInteger,
@@ -979,6 +980,8 @@ export async function runIntegration(argv = [], {
     }
     for (const slot of slots) {
       try { await dropSlotServer(slot) }
+      catch (error) { cleanupError ??= error }
+      try { await sweepRestartUnits(slot) }
       catch (error) { cleanupError ??= error }
     }
     for (const timer of killTimers.values()) clearTimeout(timer)
