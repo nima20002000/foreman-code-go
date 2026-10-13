@@ -786,11 +786,13 @@ export class HostCiRunner {
     })
     if (!meta) return this.canceledBeforeStart(runId)
     const directory = this.runDirectory(runId)
-    const reconciled = await withHostCiRunLock(directory, async () => {
+    // Settled runs have nothing to reconcile. Each lock spawns a flock process, and status polls read every run.
+    const settled = !['starting', 'running'].includes(meta.state)
+    const reconciled = settled || await withHostCiRunLock(directory, async () => {
       await this.reconcile(await this.readMeta(runId), preparing)
       return true
     }, { nonBlocking: true })
-    meta = await this.readMeta(runId)
+    if (!settled) meta = await this.readMeta(runId)
     if (!reconciled && meta.state === 'starting' && meta.serviceUnit && await this.unitState(meta) === 'active') {
       // A live launcher can still be writing metadata after systemd accepted the service.
       meta = { ...meta, state: 'running' }
