@@ -27,6 +27,7 @@ interface EnginePorts {
   consume(items: readonly DurableInteraction[]): Promise<object | undefined>
   enter(context: RepeatEngineStartContext): Promise<void>
   settle(): Promise<boolean>
+  settleForRestart(): Promise<boolean>
 }
 const ports = vi.hoisted(() => ({ owners: new WeakMap<object, EnginePorts>(), savers: new WeakMap<object, EnginePorts>() }))
 // Real engine scheduling/ownership, recording SQL-composition ports. Never patch
@@ -51,6 +52,12 @@ vi.mock('../src/modules/runs/workflowLifecycle.js', async (original) => ({
   },
   settleWorkflowRun: async (owner: RunOwnership) => {
     const host = ports.owners.get(owner); assert.ok(host); return host.settle()
+  },
+  settleWorkForRestart: async (owner: RunOwnership) => {
+    owner.assertOwned()
+    const host = ports.owners.get(owner)
+    assert.ok(host)
+    return host.settleForRestart()
   },
 }))
 vi.mock('../src/modules/runs/approvalCheckpointResume.js', async (original) => ({
@@ -104,6 +111,8 @@ function fixture() {
       return {}
     },
     enter: async (context) => { calls.entries.push(context); await control.work(context) },
+    // Active fixture work requires restart cleanup rather than being preserved as settled.
+    settleForRestart: async () => false,
     settle: async () => {
       assert.ok(control.stopRequested || control.cleanupPending)
       calls.settled++
