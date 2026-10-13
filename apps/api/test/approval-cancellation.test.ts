@@ -32,14 +32,9 @@ import type { PostgresWorkflowRepository } from '../src/modules/workflows/postgr
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import type { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 const now = '2026-09-16T00:00:00.000Z'
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (error: unknown) => void
-  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
-  return { promise, resolve, reject }
-}
 const never = () => new Promise<never>(() => undefined)
 function configuration(id: string): AgentConfigurationVersion {
   return {
@@ -306,7 +301,7 @@ it('retains a timed-out native close for retry instead of evicting the manager',
 it('passes an execution-owned abort signal to native iteration and cancels before database discovery', async () => {
   const item = execution('one', 'starting')
   const f = await fixture([item])
-  const entered = deferred<AbortSignal>()
+  const entered = rejectableDeferred<AbortSignal>()
   f.managers.get('one')!.turnImpl = async function* (signal) {
     assert.ok(signal)
     entered.resolve(signal)
@@ -354,8 +349,8 @@ it('does not start replacement native work when Stop finds a nonresident session
 it('closes a session created concurrently with Stop before any turn is started', async () => {
   const item = execution('one', 'starting')
   const f = await fixture([item])
-  const creating = deferred<void>()
-  const opened = deferred<NativeSessionReference>()
+  const creating = rejectableDeferred<void>()
+  const opened = rejectableDeferred<NativeSessionReference>()
   const manager = f.managers.get('one')!
   Object.assign(manager, { dispose: async () => {
     f.calls.push('dispose:one')
@@ -497,7 +492,7 @@ it('shutdown preserves waiting Run facts while draining the captured restart bou
 })
 
 it('shutdown captures original restart closure before abort and drains it before returning', async () => {
-  const task = deferred<void>(), closure = deferred<void>(), aborted = deferred<void>(), controller = new AbortController()
+  const task = rejectableDeferred<void>(), closure = rejectableDeferred<void>(), aborted = rejectableDeferred<void>(), controller = new AbortController()
   const events: string[] = []
   const cancelRun = vi.fn(async () => undefined)
   const f = engineFixture({ cancelRun } as unknown as ApprovalExecutionCoordinator)
@@ -575,7 +570,7 @@ it('retrying credential cleanup does not cancel or close an already confirmed cl
 })
 
 it('rechecks durable native closure after a failed graph drain rather than trusting the task error', async () => {
-  const task = deferred<void>()
+  const task = rejectableDeferred<void>()
   const f = engineFixture({ cancelRun: async () => undefined } as unknown as ApprovalExecutionCoordinator)
   f.internals.activeTasks.set('run-1', task.promise)
   f.stopFence()
@@ -599,8 +594,8 @@ it('does not claim native closure when a failed create never returned a session 
 it('closes an exact native attach that finishes after Stop times out, without starting another turn', async () => {
   const item = execution('one')
   const f = await fixture([item], true)
-  const attaching = deferred<void>()
-  const opened = deferred<NativeSessionReference>()
+  const attaching = rejectableDeferred<void>()
+  const opened = rejectableDeferred<NativeSessionReference>()
   f.managers.get('one')!.attachImpl = async () => { attaching.resolve(); return opened.promise }
   const observed = f.observe(item).catch((error: unknown) => error)
   await attaching.promise
@@ -620,10 +615,10 @@ it('closes an exact native attach that finishes after Stop times out, without st
 it('does not accept an older close as evidence that a late native attach is closed', async () => {
   const item = execution('one')
   const f = await fixture([item], true)
-  const attaching = deferred<void>()
-  const opened = deferred<NativeSessionReference>()
-  const closing = deferred<void>()
-  const closed = deferred<undefined>()
+  const attaching = rejectableDeferred<void>()
+  const opened = rejectableDeferred<NativeSessionReference>()
+  const closing = rejectableDeferred<void>()
+  const closed = rejectableDeferred<undefined>()
   const manager = f.managers.get('one')!
   manager.attachImpl = async () => { attaching.resolve(); return opened.promise }
   manager.closeImpl = async () => { closing.resolve(); return closed.promise }

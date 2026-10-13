@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
-import { deferred } from '../../../test/helpers/agentChatF1.js'
 import type { ByteTransferPort, TransferContext, TransferIntent, TransferProgress, VerifiedTransferReceipt } from '@foreman-code/contracts/byte-transfer'
 import { ResumableByteTransferSender } from './sender.js'
+import { deferred } from '../../../test/helpers/deferred.js'
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 it('resumes the same immutable intent after lost chunk/final ACK and keeps reads bounded', async () => {
   const bytes = Buffer.from('abcdefgh'), contexts: TransferContext[] = []

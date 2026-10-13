@@ -1,3 +1,4 @@
+import { sleep } from './sleep.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { retainedHeavyJobTokens } from './heavy-job-slots.mjs'
 import { spawn, spawnSync } from 'node:child_process'
@@ -23,7 +24,6 @@ const running = join(state, 'running')
 const gate = { common, multiSlotGate: true }
 const baseTmp = readProductEnvironment(process.env, 'HEAVY_BASE_TMPDIR') || tmpdir()
 const tempRoot = join(baseTmp, `graphql-heavy-${createHash('sha256').update(common).digest('hex').slice(0, 16)}`)
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const readJson = (path) => { try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null } }
 const ageMs = (path) => { try { return Date.now() - statSync(path).mtimeMs } catch { return 0 } }
 const isDirectory = (path) => { try { return lstatSync(path).isDirectory() } catch { return false } }

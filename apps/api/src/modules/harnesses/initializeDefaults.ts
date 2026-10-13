@@ -1,3 +1,4 @@
+import { asRecord } from '../../shared/records.js'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
@@ -11,8 +12,7 @@ import { detectedClaudeProfilePath } from './claudeSdk/productionMetadata.js'
 import { UNAVAILABLE_HARNESS_DEFAULTS_KEY } from '../settings/postgres.js'
 import { ClaudeFullAccessConfigurationSchema } from '@foreman-code/contracts/claude'
 
-const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
-const missingModel = (value: unknown) => typeof object(value).model !== 'string' || !String(object(value).model).trim()
+const missingModel = (value: unknown) => typeof asRecord(value).model !== 'string' || !String(asRecord(value).model).trim()
 const liveUnavailableDefaults = (value: unknown) => UnavailableHarnessDefaultsSchema.parse(
   Array.isArray(value) ? value.filter(harness => harness !== 'opencode') : value)
 
@@ -25,7 +25,7 @@ export async function initializeNativeDefaults(input: {
     'select key,record from application_settings where key=any($1::text[])',
     [['harness-defaults', 'agent-defaults-v1', UNAVAILABLE_HARNESS_DEFAULTS_KEY]])
   const prior = new Map(initial.rows.map(row => [row.key, row.record]))
-  const priorHarnesses = object(prior.get('harness-defaults'))
+  const priorHarnesses = asRecord(prior.get('harness-defaults'))
   const required = new Set<AgentHarness>((['codex', 'claude'] as const).filter(harness => missingModel(priorHarnesses[harness])))
   for (const harness of liveUnavailableDefaults(prior.get(UNAVAILABLE_HARNESS_DEFAULTS_KEY) ?? [])) {
     // A discovered Claude model cannot resolve an unsupported access choice.
@@ -33,9 +33,9 @@ export async function initializeNativeDefaults(input: {
       && !ClaudeFullAccessConfigurationSchema.safeParse(priorHarnesses.claude).success) continue
     required.add(harness)
   }
-  const priorAgents = object(prior.get('agent-defaults-v1'))
+  const priorAgents = asRecord(prior.get('agent-defaults-v1'))
   for (const role of ['orchestrator', 'coder', 'operator'] as const) {
-    const configuration = object(object(priorAgents[role]).harness)
+    const configuration = asRecord(asRecord(priorAgents[role]).harness)
     if (configuration.harness === 'opencode') continue
     if (missingModel(configuration)) required.add((configuration.harness ?? DEFAULT_AGENT_DEFAULTS[role].harness.harness) as AgentHarness)
   }
@@ -68,22 +68,22 @@ export async function initializeNativeDefaults(input: {
     const raw = rows.get('harness-defaults')?.record
     const priorUnavailable = liveUnavailableDefaults(rows.get(UNAVAILABLE_HARNESS_DEFAULTS_KEY)?.record ?? [])
     const unavailable = new Set<AgentHarness>(priorUnavailable)
-    const savedHarnesses = object(raw)
+    const savedHarnesses = asRecord(raw)
     const next: HarnessDefaults = {
-      codex: { ...DEFAULT_HARNESS_DEFAULTS.codex, ...object(savedHarnesses.codex) },
+      codex: { ...DEFAULT_HARNESS_DEFAULTS.codex, ...asRecord(savedHarnesses.codex) },
       ...(savedHarnesses.claude ? { claude: savedHarnesses.claude as NonNullable<HarnessDefaults['claude']> } : {}),
     }
     for (const harness of pending) {
-      if (!missingModel(object(raw)[harness]) && !unavailable.has(harness)) continue
+      if (!missingModel(asRecord(raw)[harness]) && !unavailable.has(harness)) continue
       const options = available.get(harness)
       if (!options) {
-        if (harness !== 'claude' || object(raw).claude) unavailable.add(harness)
+        if (harness !== 'claude' || asRecord(raw).claude) unavailable.add(harness)
         continue
       }
       const base = harness === 'claude' ? { harness: 'claude' as const, model: 'default', configDirectory: detectedClaudeProfilePath(), authMode: 'subscription' as const,
         permissionMode: 'default' as const, sandbox: 'read-only' as const, tools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'AskUserQuestion'], permissionRules: [], instructions: '',
         mcpServers: { 'foreman-code': { type: 'http' as const, url: input.appMcpEndpoint } } } : DEFAULT_HARNESS_DEFAULTS[harness]
-      next[harness] = nativeModelDefaults({ ...base, ...object(object(raw)[harness]) } as typeof base, options) as never
+      next[harness] = nativeModelDefaults({ ...base, ...asRecord(asRecord(raw)[harness]) } as typeof base, options) as never
       unavailable.delete(harness)
     }
     const defaults = HarnessDefaultsSchema.parse(next)
@@ -108,10 +108,10 @@ export async function initializeNativeDefaults(input: {
     }
     if (availabilityChanged) await save(UNAVAILABLE_HARNESS_DEFAULTS_KEY, unavailableDefaults, false)
     const rawAgents = rows.get('agent-defaults-v1')?.record
-    const agents = { ...DEFAULT_AGENT_DEFAULTS, ...object(rawAgents) }
+    const agents = { ...DEFAULT_AGENT_DEFAULTS, ...asRecord(rawAgents) }
     let changed = false
     for (const role of ['orchestrator', 'coder', 'operator'] as const) {
-      const saved = object(object(rawAgents)[role]), configuration = object(saved.harness)
+      const saved = asRecord(asRecord(rawAgents)[role]), configuration = asRecord(saved.harness)
       if (rawAgents !== undefined && !missingModel(configuration)) continue
       const template = agents[role]
       const harness = (configuration.harness ?? template.harness.harness) as AgentHarness

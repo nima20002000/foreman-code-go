@@ -4,9 +4,10 @@ import { admitRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
 import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPublication.js'
 import { DomainError } from '../src/modules/errors.js'
 import { WorkflowScheduleDispatcher } from '../src/modules/schedules/dispatcher.js'
-import { agent3Database, deferred, postgresEnabled } from './helpers/wave25Agent3.js'
+import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 import { sch11Fixture, sch11DomainState, type Sch11Database, type Sch11Fixture } from './helpers/sch11Fixture.js'
 import { sch11Once, sch11Minute } from './helpers/sch11ClockCases.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 describe.skipIf(!postgresEnabled)('scheduled Start concurrency and cancellation', () => {
   let database: Sch11Database
@@ -60,9 +61,9 @@ describe.skipIf(!postgresEnabled)('scheduled Start concurrency and cancellation'
     const slowSchedule = await f.save()
     const healthySchedule = await healthy.save({ ...sch11Once, time: '10:01' })
     f.time.now = slowSchedule.nextOccurrenceAt!
-    const entered = deferred()
-    const release = deferred()
-    const admitted = deferred()
+    const entered = rejectableDeferred()
+    const release = rejectableDeferred()
+    const admitted = rejectableDeferred()
     const errors: unknown[] = []
     const slow = f.dispatcher(async (principal, input, schedule) => {
       await admitRepeatRun(database.pool, f.locations, principal, 'schedule', input, {
@@ -131,8 +132,8 @@ describe.skipIf(!postgresEnabled)('scheduled Start concurrency and cancellation'
     const saved = await f.save()
     f.time.now = saved.nextOccurrenceAt!
     const before = await sch11DomainState(f)
-    const entered = deferred()
-    const release = deferred()
+    const entered = rejectableDeferred()
+    const release = rejectableDeferred()
     const controller = new AbortController()
     const dispatcher = f.dispatcher(async (principal, input, guard) => {
       await f.startUsing()(principal, input, { ...guard, afterAcceptance: async (sql, run) => {

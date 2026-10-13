@@ -10,6 +10,7 @@ import { claudePromptUuid } from '../src/modules/harnesses/claudeSdk/sessionMana
 import type { ClaudeSdkClient, ClaudeSdkUserMessage } from '../src/modules/harnesses/claudeSdk/port.js'
 import type { NativeSessionReference } from '@foreman-code/contracts'
 import type { ClaudeLiveCallbackReader } from '../src/modules/harnesses/claudeSdk/callbackAvailability.js'
+import { deferred } from './helpers/deferred.js'
 
 /** Synthetic contract replay, never native availability evidence. Actual provider
  * allocator, SDK runner, manager, decoder and first-stream observer are exercised. */
@@ -20,7 +21,6 @@ const configuration = OperatorConfigurationVersionSchema.parse({ id: 'version', 
   } })
 const scope = { deviceId: 'synthetic-device', profilePath: '/synthetic-profile', configRevision: 'version', cwd: '/synthetic-work' }
 const start = { kind: 'operator' as const, correlationId: 'conversation:request-1', configuration, workingDirectory: scope.cwd }
-const deferred = <T>() => { let resolve!: (value: T) => void; const promise = new Promise<T>((r) => { resolve = r }); return { promise, resolve } }
 async function drain<T>(input: AsyncIterable<T>): Promise<T[]> { const out: T[] = []; for await (const value of input) out.push(value); return out }
 function fixture(liveCallbacks?: ClaudeLiveCallbackReader, role: 'workflow' | 'operator' | 'agent-chat' = 'operator') {
   const frames = new ClaudeBoundedQueue<unknown>(64)

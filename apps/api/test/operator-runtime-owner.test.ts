@@ -2,6 +2,7 @@ import type { EventEmitter } from 'node:events'
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 
 import { OperatorRuntimeOwner } from '../src/infrastructure/operatorRuntimeOwner.js'
+import { deferred } from './helpers/deferred.js'
 
 interface Driver extends EventEmitter {
   connect: Mock<() => Promise<void>>
@@ -19,11 +20,6 @@ vi.mock('pg', async () => {
   } } }
 })
 beforeEach(() => { state.drivers.length = 0 })
-function gate() {
-  let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
-  return { promise, resolve }
-}
 function fixture() {
   const lost = vi.fn()
   const owner = new OperatorRuntimeOwner('postgresql://fixture/fixture', lost)
@@ -64,7 +60,7 @@ describe('runtime-owner connection lifetime', () => {
 
   it('waits for a pending lock query before closing and releases a late-acquired lock', async () => {
     const { owner, driver } = fixture()
-    const pending = gate(); const entered = gate()
+    const pending = deferred(); const entered = deferred()
     driver.query.mockImplementationOnce(async () => { entered.resolve(); await pending.promise; return { rows: [{ acquired: true }] } })
     const acquiring = owner.acquire()
     await entered.promise

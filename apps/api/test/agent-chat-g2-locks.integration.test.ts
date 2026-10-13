@@ -6,8 +6,8 @@ import type pg from 'pg'
 import { afterAll, beforeAll, beforeEach, describe, it } from 'vitest'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { agentChatKey, PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
-import { deferred } from './helpers/agentChatF1.js'
 import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
+import { deferred } from './helpers/deferred.js'
 
 /** Real, independent PostgreSQL sessions. No app server, HTTP transport or native provider.
  * The shared helper requires an explicit loopback test DB and owns a random isolated schema. */

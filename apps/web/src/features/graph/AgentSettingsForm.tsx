@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage'
 import { nativeToolsSummary } from '@foreman-code/contracts'
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { SavedNodePlacementSchema, type SavedNodePlacement } from '@foreman-code/contracts/node-placement'
@@ -170,7 +171,7 @@ function EditableAgentSettingsForm({ agent, initialPrompt, nodeGraphqlTools, cre
       initialSnapshot.current = previousSnapshot
       const nextIssues = validationIssues(failure)
       setIssues(nextIssues)
-      setError(nextIssues.length ? 'Review the marked fields before saving.' : failure instanceof Error ? failure.message : 'Agent settings are invalid.')
+      setError(nextIssues.length ? 'Review the marked fields before saving.' : errorMessage(failure, 'Agent settings are invalid.'))
     }
   }
   const leave = useUnsavedChanges({ scope: 'surface', label: 'agent settings', canResume, get dirty() { return currentSnapshot !== initialSnapshot.current },

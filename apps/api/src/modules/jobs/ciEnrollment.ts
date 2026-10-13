@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage.js'
 import type pg from 'pg'
 import { CiEnrollmentReadSchema, CiEnrollmentUpdateSchema, type CiEnrollmentComputer,
   type CiEnrollmentState, type CiEnrollmentTemplate, type CiInstalledStorage } from '@foreman-code/contracts'
@@ -267,7 +268,7 @@ export class CiEnrollment {
         } catch (error) {
           if (this.scopeFailure(error)) throw error
           result.state = this.failureState(error)
-          result.message = (error instanceof Error ? error.message : 'CI profile enrollment failed.').slice(0, 2000)
+          result.message = (errorMessage(error, 'CI profile enrollment failed.')).slice(0, 2000)
           componentLogger('jobs').warn({ err: error, workspaceId, templateId: template.id,
             host: buildComputerKey(computer.target) }, 'CI profile enrollment is pending')
         }
@@ -276,7 +277,7 @@ export class CiEnrollment {
     } catch (error) {
       const failure = this.failureState(error)
       record.state.state = failure
-      record.state.message = (error instanceof Error ? error.message : 'CI enrollment failed.').slice(0, 2000)
+      record.state.message = (errorMessage(error, 'CI enrollment failed.')).slice(0, 2000)
       for (const result of record.state.templates.filter(value => value.state === 'pending')) {
         result.state = failure
         result.message = record.state.message

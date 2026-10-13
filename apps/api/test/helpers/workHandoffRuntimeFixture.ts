@@ -3,8 +3,8 @@ import type { HarnessExecution, HarnessExecutionRequest } from '@foreman-code/co
 import { WorkActivationInputSchema, makeCurrentWorkflowFixture, type WorkHandoffResult } from '@foreman-code/contracts/wave25'
 import { RepeatRunRepository } from '../../src/modules/runs/repeatPostgres.js'
 import { checkpointRuntimeFixture } from './wave25Br1003Runtime.js'
-import { deferred } from './wave25Agent3.js'
 import { br1002At } from './wave25Br1002Cuts.js'
+import { rejectableDeferred } from './deferred.js'
 
 export async function workHandoffRuntimeFixture(definition: ReturnType<typeof makeCurrentWorkflowFixture>,
   result: (nodeId: string, request: HarnessExecutionRequest) => WorkHandoffResult) {
@@ -22,9 +22,9 @@ export async function runWorkHandoffWithRestart(f: Fixture, restart: boolean,
     await f.engine.start(f.f.run.id)
     return f
   }
-  const accepted = deferred<void>()
-  const release = deferred<void>()
-  const closing = deferred<void>()
+  const accepted = rejectableDeferred<void>()
+  const release = rejectableDeferred<void>()
+  const closing = rejectableDeferred<void>()
   let paused = false
   const accept = RepeatRunRepository.prototype.acceptWorkTerminal
   const pause = vi.spyOn(RepeatRunRepository.prototype, 'acceptWorkTerminal').mockImplementation(async function (

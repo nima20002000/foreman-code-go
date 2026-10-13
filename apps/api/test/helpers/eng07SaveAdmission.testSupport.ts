@@ -5,8 +5,8 @@ import type { HarnessExecution } from '@foreman-code/contracts'
 import { CURRENT_WORKFLOW_TOOLS, CurrentEditReadResultSchema, CurrentWorkflowSaveInputSchema,
   CurrentWorkflowSaveResultSchema, type CurrentWorkflowSaveInput } from '@foreman-code/contracts/wave25'
 import type { currentOperatorIntegration } from './currentOperatorIntegration.js'
-import { deferred } from './wave25Agent3.js'
 import { graphHeaders, graphRpcValue } from '../eng04-graph-composition-fixture.js'
+import { rejectableDeferred } from './deferred.js'
 
 export type SaveFixture = Awaited<ReturnType<typeof currentOperatorIntegration>>
 export type Transport = 'http' | 'mcp'
@@ -73,7 +73,7 @@ export async function assertSettled(f: SaveFixture) {
  * gate, then the original method sees its original aborted owner/signal. No
  * execution result, native permission, closure or cleanup receipt is mocked. */
 export function parkBeforeNativeEntry(f: SaveFixture) {
-  const parked = deferred<HarnessExecution>(), release = deferred()
+  const parked = rejectableDeferred<HarnessExecution>(), release = rejectableDeferred()
   const observe = f.native.observeExact.bind(f.native)
   const spy = vi.spyOn(f.native, 'observeExact').mockImplementation(async (input) => {
     const abort = () => release.resolve()

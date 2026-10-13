@@ -1,14 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { deferred } from '../../test/deferred'
 
 const epochKey = 'graphql.identity-epoch'
 const lockName = 'graphql.operator-outbox.v1'
 const key = (epoch = 'epoch-a') => `graphql.chat:${epoch}:outbox:conversation-one`
-function gate() {
-  let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
-  return { promise, resolve }
-}
 /** Shared browser service; each imported outbox module below is an independent tab. */
 function browserLocks() {
   const tails = new Map<string, Promise<unknown>>()
@@ -68,7 +64,7 @@ describe('F12: cross-tab durable Operator reservations', () => {
     expect(second.readPendingOperatorMessage('conversation-one').command).toEqual(newer)
   })
   it('generates no identity until the browser-wide lock is acquired and shares the winner across two tabs', async () => {
-    const first = await tab(), second = await tab(), hold = gate()
+    const first = await tab(), second = await tab(), hold = deferred()
     const held = locks.request(lockName, {}, () => hold.promise)
     const a = first.reserveOperatorMessage('conversation-one', 'Run the check.', '/original-route')
     const b = second.reserveOperatorMessage('conversation-one', 'Run the check.', '/different-route')
@@ -179,7 +175,7 @@ describe('F12: cross-tab durable Operator reservations', () => {
   })
 
   it('invalidates a queued reservation on enrollment rotation even before the storage event reaches this tab', async () => {
-    const first = await tab(), hold = gate()
+    const first = await tab(), hold = deferred()
     const held = locks.request(lockName, {}, () => hold.promise)
     const queued = first.reserveOperatorMessage('conversation-one', 'Old identity command.', '/old')
     window.localStorage.setItem(epochKey, 'epoch-b')

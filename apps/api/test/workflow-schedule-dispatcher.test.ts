@@ -4,6 +4,7 @@ import { decideDueSchedule, planDueSchedule } from '../src/modules/schedules/dis
 import { WorkflowScheduleDispatcher, type ScheduleDispatcherPort } from '../src/modules/schedules/dispatcher.js'
 import { scheduleRejectionReason } from '../src/modules/schedules/postgresDispatcher.js'
 import { DomainError } from '../src/modules/errors.js'
+import { deferred } from './helpers/deferred.js'
 
 const settings = { workspaceId: 'schedule-workspace', workflowId: 'schedule-workflow', revision: 1,
   timezone: 'UTC', enabled: true, policy: 'latest_saved', nextOccurrenceAt: '2030-01-07T10:00:00.000Z' }
@@ -11,11 +12,6 @@ const once = WorkflowScheduleSchema.parse({ ...settings, mode: 'once', localDate
 const interval = WorkflowScheduleSchema.parse({ ...settings, mode: 'interval', every: 1,
   unit: 'minute', anchorAt: '2030-01-07T09:00:00.000Z' })
 const weekly = WorkflowScheduleSchema.parse({ ...settings, mode: 'weekly', weekdays: [1], time: '10:00' })
-function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
-  return { promise, resolve }
-}
 
 describe('SCH-04 frozen-policy dispatch plan', () => {
   it.each([once, interval, weekly])('fires $mode at the exact due instant and never early', (schedule) => {

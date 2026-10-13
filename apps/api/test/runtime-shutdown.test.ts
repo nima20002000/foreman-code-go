@@ -1,17 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { RuntimeShutdown } from '../src/infrastructure/runtimeShutdown.js'
-
-function gate() {
-  let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
-  return { promise, resolve }
-}
+import { deferred } from './helpers/deferred.js'
 
 describe('runtime shutdown ownership barrier', () => {
   it('signals every runtime before waiting; drains producers, disposes, then releases', async () => {
-    const stop = gate(); const producer = gate(); const disposal = gate()
-    const disposing = gate(); const draining = gate()
+    const stop = deferred(); const producer = deferred(); const disposal = deferred()
+    const disposing = deferred(); const draining = deferred()
     const calls: string[] = []
     const releaseOwnership = vi.fn(async () => { calls.push('unlock') })
     const shutdown = new RuntimeShutdown({

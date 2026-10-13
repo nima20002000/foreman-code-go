@@ -34,11 +34,6 @@ export async function fileRuntimeFixture() {
   return f
 }
 
-export function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
-  return { promise, resolve }
-}
 const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 const bytes = Buffer.from('# Attached document\n')
 const now = '2026-09-28T00:00:00.000Z'

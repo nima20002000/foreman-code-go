@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { commit, mainId } from './helpers/ciPreparationFixture.js'
 import { postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { mainPreparationRecoverySuite } from './helpers/mainPreparationRecoverySuite.js'
-import { deferred } from './helpers/wave25Agent3.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 describe.skipIf(!postgresEnabled)('Main CI preparation interruption and recovery', () => {
   const suite = mainPreparationRecoverySuite()
@@ -12,8 +12,8 @@ describe.skipIf(!postgresEnabled)('Main CI preparation interruption and recovery
 
   it.each(['refresh', 'capture', 'qualify'] as const)(
     'resumes Main after interruption at %s without repeating completed side effects', async stage => {
-      const reached = deferred()
-      const paused = deferred()
+      const reached = rejectableDeferred()
+      const paused = rejectableDeferred()
       let interrupted = false
       const waitForRelease = async () => {
         if (interrupted) return

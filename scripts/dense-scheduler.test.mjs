@@ -1,8 +1,8 @@
+import { sleep as delay } from './sleep.mjs'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { scheduleQueue } from './dense-scheduler.mjs'
 
-const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds))
 const idle = { cpuUtilization: 0.1, cpuPressure: 0, memoryUtilization: 0.1,
   memoryPressure: 0, totalMemoryBytes: 1000, cpuCount: 2 }
 const defaults = { maxConcurrency: 2, samplePressure: () => idle, pollIntervalMs: 2, stallTimeoutMs: 40 }

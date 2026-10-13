@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage.js'
 import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
 import { withInteractionResponse, isSessionNativeInteraction } from '@foreman-code/contracts'
@@ -140,7 +141,7 @@ function failure(error: unknown): ExecutionResult {
     ? (error as { result?: ExecutionResult }).result?.error : undefined
   return { outcome: 'failed', error: { code: provider?.code ?? (error && typeof error === 'object'
     && 'code' in error && typeof error.code === 'string' ? error.code : 'OPERATOR_SETUP_FAILED'),
-    message: provider?.message ?? (error instanceof Error ? error.message : 'Operator setup failed.'), retryable: true } }
+    message: provider?.message ?? (errorMessage(error, 'Operator setup failed.')), retryable: true } }
 }
 
 /** Only evidence about the attempted prompt, never a later history/approval error. */
@@ -414,7 +415,7 @@ export class OperatorChatService {
     if (context) {
       const snapshot = structuredClone(context)
       void this.control(id, () => this.sessionControls().observeContext(id, snapshot, runtime.configuration?.contentHash ?? '')).catch(error => {
-        this.events.publish(id, 'error', { message: error instanceof Error ? error.message : 'Context usage could not be saved.' })
+        this.events.publish(id, 'error', { message: errorMessage(error, 'Context usage could not be saved.') })
       })
     }
     const redact = nativePersistenceRedactor(Object.values(runtime.environment?.variables ?? {}))
@@ -806,7 +807,7 @@ export class OperatorChatService {
                 await this.observe(id, input.requestId, runtime, AbortSignal.timeout(5_000))
               } catch (error) {
                 await this.repository.uncertain(id, input.requestId,
-                  error instanceof Error ? error.message : 'Cancellation delivery is uncertain.')
+                  errorMessage(error, 'Cancellation delivery is uncertain.'))
                 this.events.publish(id, 'error', { requestId: input.requestId, turnState: 'uncertain' })
               } finally {
                 // Native completion was checked above. Detach a silent SSE reader
@@ -851,7 +852,7 @@ export class OperatorChatService {
       }, 'Operator native turn failed')
       if (signal.aborted) textStream?.dispose(); else textStream?.flush()
       if (submitted || (submitting && !definitePromptRejection(error)) || (creating && !definiteCreationFailure(error))) {
-        await this.repository.uncertain(id, input.requestId, error instanceof Error ? error.message : 'Native delivery is uncertain.')
+        await this.repository.uncertain(id, input.requestId, errorMessage(error, 'Native delivery is uncertain.'))
       } else {
         await this.control(id, async () => {
           const current = await this.repository.active(id)
@@ -864,7 +865,7 @@ export class OperatorChatService {
             undefined, !current.cancel_requested)
         })
       }
-      this.events.publish(id, 'error', { requestId: input.requestId, message: error instanceof Error ? error.message : 'Operator turn failed.' })
+      this.events.publish(id, 'error', { requestId: input.requestId, message: errorMessage(error, 'Operator turn failed.') })
     } finally { await initialStream?.close(); textStream?.dispose() }
   }
 
@@ -1111,7 +1112,7 @@ export class OperatorChatService {
           await this.observe(id, requestId, runtime, AbortSignal.timeout(5_000))
         }
       } catch (error) {
-        await this.repository.uncertain(id, requestId, error instanceof Error ? error.message : 'Cancellation delivery is uncertain.')
+        await this.repository.uncertain(id, requestId, errorMessage(error, 'Cancellation delivery is uncertain.'))
         this.events.publish(id, 'error', { requestId, turnState: 'uncertain' })
       } finally {
         // Once submission identity is durable, a silent event stream must not
@@ -1240,7 +1241,7 @@ export class OperatorChatService {
         }
       } catch (error) {
         await this.repository.uncertain(candidate.id, candidate.active_request_id!,
-          error instanceof Error ? error.message : 'Owner recovery authority is unavailable.')
+          errorMessage(error, 'Owner recovery authority is unavailable.'))
         continue
       }
       // A response/cancel already owns this conversation's native write lane.
@@ -1312,7 +1313,7 @@ export class OperatorChatService {
           if (cleanup) await this.interrupt(row.id, row, runtime)
           await this.observe(row.id, requestId, runtime, signal)
         } catch (error) {
-          await this.repository.uncertain(row.id, requestId, error instanceof Error ? error.message : 'Native recovery is uncertain.')
+          await this.repository.uncertain(row.id, requestId, errorMessage(error, 'Native recovery is uncertain.'))
           // Revoked authority must not leave a resident model running with native tools.
           if (error instanceof DomainError && /AUTH_|ACCESS_DENIED/.test(error.code)) {
             const runtime = this.runtimes.get(row.id)

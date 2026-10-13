@@ -1,3 +1,4 @@
+import { asRecord } from '../shared/records.js'
 import type pg from 'pg'
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres'
 import type { BaseCheckpointSaver, SerializerProtocol } from '@langchain/langgraph-checkpoint'
@@ -21,9 +22,6 @@ export function isAtomicApprovalCheckpointSaver(saver: BaseCheckpointSaver): sav
 }
 function denied(code = 'GRAPH_INTERRUPT_INVALID'): never {
   throw new DomainError(code, 'The exact persisted approval checkpoint could not be consumed.', 409)
-}
-function object(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
 /** The SAME production PostgresSaver, not a second checkpoint table or MemorySaver.
@@ -86,7 +84,7 @@ export class ApprovalPostgresSaver extends PostgresSaver implements AtomicApprov
       const pendingEntries = Array.isArray(parsed) ? parsed : [parsed]
       if (pendingEntries.length > 1000) denied()
       for (const pending of pendingEntries) {
-        const entry = object(pending), value = object(entry.value)
+        const entry = asRecord(pending), value = asRecord(entry.value)
         if (entry.id !== interaction.graphInterruptId) continue
         const ids: unknown = value.interactionIds ?? [value.interactionId]
         if (!Array.isArray(ids) || ids.length > 1000 || !ids.length
@@ -121,7 +119,7 @@ export class ApprovalPostgresSaver extends PostgresSaver implements AtomicApprov
       // A previous sibling callback in this publication may have written the
       // task value while its receipt is still staged. A historical value instead
       // needs a persisted receipt; never adopt an old unreceipted Command write.
-      const marker = plan.values.map(object).find((value) => typeof value.interactionId === 'string'
+      const marker = plan.values.map(asRecord).find((value) => typeof value.interactionId === 'string'
         && task.ids.includes(value.interactionId))
       if (this.transactionWrites.get(sql)?.has(key(marker?.interactionId))) return
       const receipt = await sql.query(`select 1 from run_graph_effects

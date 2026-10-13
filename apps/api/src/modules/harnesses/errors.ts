@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage.js'
 import type { ExecutionResult } from '@foreman-code/contracts'
 
 export function isDefiniteCompactionRejection(error: unknown): boolean {
@@ -29,7 +30,7 @@ export class NativeDeliveryError extends HarnessExecutionError {
     const result = cause instanceof HarnessExecutionError ? cause.result : undefined
     const code = result?.error?.code ?? (cause && typeof cause === 'object' && 'code' in cause
       && typeof cause.code === 'string' ? cause.code : 'NATIVE_OPERATION_FAILED')
-    const message = cause instanceof Error ? cause.message : 'The native operation failed.'
+    const message = errorMessage(cause, 'The native operation failed.')
     super(code, message, result?.error?.retryable ?? true, { cause })
     this.name = 'NativeDeliveryError'
   }

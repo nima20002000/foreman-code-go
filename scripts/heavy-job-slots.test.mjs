@@ -38,7 +38,7 @@ test('repairs a lost reservation, admits the next coordinator and keeps its orig
     execFileSync('git', ['init', '-q', root])
     await mkdir(join(root, 'scripts'))
     await mkdir(join(root, 'packages', 'contracts', 'src'), { recursive: true })
-    for (const name of ['heavy-job.mjs', 'heavy-job-slots.mjs']) {
+    for (const name of ['heavy-job.mjs', 'heavy-job-slots.mjs', 'sleep.mjs']) {
       await cp(new URL(name, import.meta.url), join(root, 'scripts', name))
     }
     await cp(new URL('../packages/contracts/src/productEnvironment.mjs', import.meta.url),

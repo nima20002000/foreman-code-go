@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest'
 import { SessionPreferencesSchema } from '@foreman-code/contracts'
-import { context, deferred, eventually, fixture } from './helpers/agentChatF1.js'
+import { context, eventually, fixture } from './helpers/agentChatF1.js'
+import { deferred } from './helpers/deferred.js'
 
 it('keeps the native message receipt when settings change during its acknowledgment', async () => {
   const f = fixture()

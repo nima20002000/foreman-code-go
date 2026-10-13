@@ -1,3 +1,4 @@
+import { errorMessage } from '../../../shared/errorMessage.js'
 import type { PayloadFingerprintCache } from '../payloadFingerprintCache.js'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join } from 'node:path'
@@ -112,7 +113,7 @@ export function createClaudeCurrentPinResolver(options: {
         profilePath: context.profilePath, configRevision: context.instanceRevision }, launcher: current.launcher, declaration: current.declaration }
     } catch (error) {
       signal?.throwIfAborted()
-      return { status: 'unavailable', reason: error instanceof Error ? error.message : 'Current Claude installation is unreadable.' }
+      return { status: 'unavailable', reason: errorMessage(error, 'Current Claude installation is unreadable.') }
     }
   }
 }

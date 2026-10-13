@@ -1,9 +1,9 @@
+import { asRecord } from '../../shared/records.js'
 import type { HarnessNativeEvent } from '@foreman-code/contracts'
 import type { RunSubagent, RunSubagentTool } from '@foreman-code/contracts/subagents'
 import { SUBAGENT_LIMITS, SubagentTruncationSchema } from '@foreman-code/contracts/subagents'
 import type { SubagentChange, SubagentProjectionContext } from './types.js'
 
-const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const text = (value: unknown): string | undefined => typeof value === 'string' && value.length > 0 && value.length <= 512 ? value : undefined
 const secretKey = /(?:^(?:authorization|cookie|set-cookie|password|passwd|secret|token|access_?token|refresh_?token|api[_-]?key|credential|reasoning|thinking|signature)$|[_-](?:TOKEN|SECRET|PASSWORD|API[_-]?KEY)$)/i
 function sanitize(value: unknown, depth = 0): unknown {
@@ -39,7 +39,7 @@ export function isChildCandidate(context: SubagentProjectionContext, event: Harn
   if (context.provider === 'codex') {
     const unlinked = event.type === 'native.unlinked_notification'
     const method = unlinked ? String(event.payload.method) : event.type
-    const threadId = text(object(unlinked ? event.payload.params : event.payload).threadId)
+    const threadId = text(asRecord(unlinked ? event.payload.params : event.payload).threadId)
     return codexChildMethods.includes(method) && threadId !== undefined && threadId !== context.parentSessionId
       && !children.some(child => nativeChild(child) === threadId)
   }
@@ -53,13 +53,13 @@ export function normalizeSubagentEvent(context: SubagentProjectionContext, event
   let method = event.type
   if (method === 'native.unlinked_notification') {
     method = String(payload.method)
-    payload = object(payload.params)
+    payload = asRecord(payload.params)
   }
   if (context.provider === 'codex') {
     const sessionId = text(payload.threadId)
     const parent = sessionId === context.parentSessionId ? undefined : children.find(child => nativeChild(child) === sessionId)
     const knownParent = sessionId === context.parentSessionId || Boolean(parent)
-    const item = object(payload.item)
+    const item = asRecord(payload.item)
     if (knownParent && item.type === 'subAgentActivity' && text(item.agentThreadId)) {
       const childId = item.agentThreadId as string
       if (childId === context.parentSessionId || childId === sessionId) return []
@@ -78,7 +78,7 @@ export function normalizeSubagentEvent(context: SubagentProjectionContext, event
     }
     if (!parent) return []
     const childId = nativeChild(parent)!
-    const turn = object(payload.turn)
+    const turn = asRecord(payload.turn)
     const turnId = text(payload.turnId) ?? text(turn.id)
     if (['turn/started', 'turn/completed', 'turn.started', 'turn.completed'].includes(method)) {
       return [{ kind: 'status', childId, status: state(turn.status ?? payload.status), ...(turnId ? { turnId } : {}) }]
@@ -87,7 +87,7 @@ export function normalizeSubagentEvent(context: SubagentProjectionContext, event
     const final = method.endsWith('completed')
     if (item.type === 'agentMessage' && typeof item.text === 'string') return [{ kind: 'message', childId, nativeMessageId: item.id as string, role: 'assistant', text: item.text, final }]
     if (item.type === 'userMessage' && Array.isArray(item.content)) return [{ kind: 'message', childId, nativeMessageId: item.id as string, role: 'user',
-      text: item.content.map(value => object(value)).filter(value => value.type === 'text' && typeof value.text === 'string').map(value => value.text).join(''), final }]
+      text: item.content.map(value => asRecord(value)).filter(value => value.type === 'text' && typeof value.text === 'string').map(value => value.text).join(''), final }]
     if (['commandExecution', 'mcpToolCall', 'dynamicToolCall', 'fileChange'].includes(String(item.type))) return [{ kind: 'tool', childId,
       nativeToolId: item.id as string, name: String(item.tool ?? item.command ?? item.type).slice(0, 512), status: item.type === 'commandExecution' && typeof item.exitCode === 'number' && item.exitCode !== 0 ? 'failed' : state(item.status ?? (final ? 'completed' : 'running')),
       input: item.arguments ?? (item.type === 'commandExecution' ? { command: item.command, cwd: item.cwd } : item.changes),

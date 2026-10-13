@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
-import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
+import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { lifecycleFixtures } from './helpers/workflowLifecycleFixtures.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 // Provider transport is deterministic; admission, capture, checkpointing and lifecycle writers remain real.
 describe.skipIf(!postgresEnabled)('native workflow lifecycle: dispatch', () => {
   const fixture = lifecycleFixtures()
 
   it('deduplicates Start and reconciliation while native dispatch is active', async () => {
-    const f = await fixture(), entered = deferred(), release = deferred()
+    const f = await fixture(), entered = rejectableDeferred(), release = rejectableDeferred()
     const original = f.provider.createSession.bind(f.provider)
     vi.spyOn(f.provider, 'createSession').mockImplementationOnce(async (...args) => {
       entered.resolve(); await release.promise; return original(...args)

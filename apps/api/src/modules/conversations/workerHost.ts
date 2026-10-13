@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage.js'
 import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
@@ -406,7 +407,7 @@ export class WorkerConversationHost {
 
   private reject(binding: WorkerConversationBinding, request: WorkerConversationRpcRequest & { correlationId: string },
     error: unknown) {
-    const message = error instanceof Error ? error.message : 'Native input was not delivered.'
+    const message = errorMessage(error, 'Native input was not delivered.')
     return this.ports.journal.rejectTurn(binding, request.correlationId,
       { outcome: 'failed', error: { code: 'NATIVE_INPUT_NOT_DELIVERED', message, retryable: true } },
       request.method === 'conversation.initial-turn' ? request.operationId : undefined)

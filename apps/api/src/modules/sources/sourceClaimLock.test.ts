@@ -3,14 +3,10 @@ import { chmod, readdir, readFile, rm } from 'node:fs/promises'
 import { afterEach, expect, it } from 'vitest'
 import { withClaimLock } from './materialization.js'
 import { openPrivateRoot } from './privateFilesystem.js'
+import { deferred } from '../../../test/helpers/deferred.js'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
-function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>(done => { resolve = done })
-  return { promise, resolve }
-}
 async function children(): Promise<string[]> {
   const tasks = await readdir('/proc/self/task')
   const records = await Promise.all(tasks.map(task => readFile(`/proc/self/task/${task}/children`, 'utf8')

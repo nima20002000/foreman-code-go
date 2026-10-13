@@ -15,6 +15,7 @@ import { ScheduleClockButton } from './ScheduleClockButton'
 import { schedulePath } from './client'
 import { scheduleKeys, useScheduleCommand } from './queries'
 import styles from './schedules.css?raw'
+import { deferred } from '../../test/deferred'
 
 const scope = { workspaceId: 'workspace-schedule', workflowId: 'workflow-schedule' }
 const path = schedulePath(scope)
@@ -49,11 +50,6 @@ async function open(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: 'Schedule workflow' }))
   await screen.findByRole('switch', { name: 'Enabled' })
   return screen.getByRole('dialog', { name: 'Schedule' })
-}
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => { resolve = done })
-  return { promise, resolve }
 }
 
 beforeEach(() => {

@@ -81,11 +81,6 @@ export function runsUrl(runId: string | null, target: RunsSelectorScope = scope)
   if (runId !== null) search.set('selectedRunId', runId)
   return `/workspaces/${encodeURIComponent(target.workspaceId)}?${search}`
 }
-export function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void
-  const promise = new Promise<T>((done) => { resolve = done })
-  return { promise, resolve }
-}
 
 export function pinnedRunHandlers(target: RunsSelectorScope) {
   const source = makeCurrentWorkflowFixture('saved-run-board', 'single')

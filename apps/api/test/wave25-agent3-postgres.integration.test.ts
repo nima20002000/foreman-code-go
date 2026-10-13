@@ -3,8 +3,9 @@ import pg from 'pg'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { repeatRuntimeDirectory } from '../src/modules/runs/repeatRepositoryHost.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
-import { agent3Database, candidateFor, graphHead, deferred, postgresEnabled } from './helpers/wave25Agent3.js'
+import { agent3Database, candidateFor, graphHead, postgresEnabled } from './helpers/wave25Agent3.js'
 import { currentRepositoryFixture } from './helpers/wave25CurrentRepository.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 /** Real current Save/Start, independent SQL owners and canonical transactions.
  * No provider is connected; these assertions stop at the native entry boundary. */
@@ -90,7 +91,7 @@ describe.skipIf(!postgresEnabled)('Current workflow admission crash and owner ra
     expect(recovered.store.consumeLaunchPermit(execution.id)).toBe(false)
   })
   it('an authorized Stop wins an independently blocked launch without allocating resources', async () => {
-    const t = await fresh(), execution = await admit(t), entered = deferred(), release = deferred()
+    const t = await fresh(), execution = await admit(t), entered = rejectableDeferred(), release = rejectableDeferred()
     const pid = Number((await t.owner.client.query('select pg_backend_pid() as pid')).rows[0].pid)
     const stop = t.repository.requestStop(t.f.run.id, async (sql) => {
       await t.authorizeStop(sql)

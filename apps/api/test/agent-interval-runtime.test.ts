@@ -5,12 +5,8 @@ import { executeRepeatRuntime, type RepeatRuntimeLifecycle } from '../src/module
 import type { RepeatExecutionDriver } from '../src/modules/runs/repeatNode.js'
 import type { RepeatTickAdmission } from '../src/modules/runs/repeatPostgres.js'
 import { a1Scenario, graphHarness } from './helpers/eng04A1GraphHarness.js'
+import { deferred } from './helpers/deferred.js'
 
-function deferred<T = void>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => { resolve = done })
-  return { promise, resolve }
-}
 const untilAborted = (signal: AbortSignal) => new Promise<never>((_resolve, reject) => {
   if (signal.aborted) reject(signal.reason)
   signal.addEventListener('abort', () => reject(signal.reason), { once: true })

@@ -1,3 +1,4 @@
+import { errorMessage } from '../../../shared/errorMessage'
 import type { PinnedPanelNode } from './DraftCanvas'
 import { AgentActiveTimeField } from './AgentActiveTimeField'
 import { JobNodePanel, JobNodePicker } from '../../jobs'
@@ -100,7 +101,7 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext, update
       } else if (source.data && !source.isError) {
         useGraphDraftStore.getState().installNextDraft(draftKey, { draft: GraphDraftV3Schema.parse(source.data.draft), agents: source.data.agents, savedDraft: source.data.savedDraft })
       }
-    } catch (error) { setStorageError(error instanceof Error ? error.message : 'Retained edits are unavailable.') }
+    } catch (error) { setStorageError(errorMessage(error, 'Retained edits are unavailable.')) }
   }, [draftKey, initialContext, source.data, source.isError, source.isFetchedAfterMount])
   if (edit) return <EditorForm draftKey={draftKey} edit={edit} updateFailures={updateFailures} />
   if (storageError || source.isError) return <section className="workflow-graph-state" role="alert">
@@ -379,7 +380,7 @@ function EditorForm({ draftKey, edit, updateFailures }: { draftKey: string; edit
     if (preflight.isError) throw preflight.error
     if (!preflight.data) throw new Error('Checking saved workflow and runtime availability…')
     boardStartPins(context.draft, preflight.data)
-  } catch (error) { preflightReason = error instanceof Error ? error.message : 'Saved Start pins are unavailable.' }
+  } catch (error) { preflightReason = errorMessage(error, 'Saved Start pins are unavailable.') }
   const retiredHarness = agents.some(agent => graph.nodes.some(node => node.kind !== 'job' && node.agentId === agent.id)
     && (agent.harness === 'opencode' || agent.harnessConfiguration?.harness === 'opencode'))
   const startDisabled = retiredHarness || !canStart || storageFailed || starting || reloading || (!pendingStart && (!graph.nodes.length || (!needsSave && !!preflightReason) || startReloadRequired || editIntent.locked

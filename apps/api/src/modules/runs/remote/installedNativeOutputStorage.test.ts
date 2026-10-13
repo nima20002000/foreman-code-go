@@ -13,6 +13,7 @@ import { createInstalledNativeOutputStorage, assertNativeOutputRootExcluded, cre
   type InstalledNativeOutputStorageInput, type RemoteNativeOutputStorageOwner,
   type LocalNativeOutputStorageOwner } from './installedNativeOutputStorage.js'
 import { openPrivateRoot, withPrivateDirectoryLock } from '../../sources/privateFilesystem.js'
+import { deferred } from '../../../../test/helpers/deferred.js'
 
 const roots: string[] = []
 const processes: ChildProcess[] = []
@@ -46,12 +47,6 @@ async function fixture() {
     protection: { assertProtected: vi.fn(async () => {}), assertQuiescent: vi.fn(async () => {}) },
     budget: { reserve: vi.fn(async () => ({ assertCurrent: reservationCurrent, release })) } }
   return { root, input, release, reservationCurrent, request: { artifactId: randomUUID(), ...limits } }
-}
-
-function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>(done => { resolve = done })
-  return { promise, resolve }
 }
 
 async function budgetFixture() {

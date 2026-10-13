@@ -4,7 +4,7 @@ import { DomainError } from '../src/modules/errors.js'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import { LeaseGuard, SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
 import { nativeLanes } from './helpers/nativeLanes.js'
-import { deferred } from './helpers/wave25Agent3.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -23,9 +23,9 @@ const completed: NativeHarnessEvent = {
 }
 
 function silentProvider() {
-  const reading = deferred()
-  const release = deferred()
-  const detached = deferred()
+  const reading = rejectableDeferred()
+  const release = rejectableDeferred()
+  const detached = rejectableDeferred()
   let nativeSignal: AbortSignal | undefined
   const unexpected = async (): Promise<never> => { throw new Error('Unexpected provider operation') }
   const manager: NativeHarnessSessionManager = {
@@ -118,7 +118,7 @@ it.each(['Query read timeout', 'Connection terminated due to connection timeout'
     const coordination = nativeLanes()
     const renewLane = coordination.renewLane.bind(coordination)
     const assertLaneLease = coordination.assertLaneLease.bind(coordination)
-    const resumed = deferred()
+    const resumed = rejectableDeferred()
     let unavailable = false
     vi.spyOn(coordination, 'renewLane').mockImplementation(async (...args) => {
       if (unavailable && message === 'delayed response') await resumed.promise
@@ -226,7 +226,7 @@ it('fences the writer when another owner takes over during a database stall', as
 it('rejects a late renewal response before a delayed expiry timer can run', async () => {
   vi.useFakeTimers()
   const expiry = Date.now() + 9_000
-  const renewal = deferred<string>()
+  const renewal = rejectableDeferred<string>()
   const guard = new LeaseGuard(9_000, async () => undefined, () => renewal.promise)
   try {
     await vi.advanceTimersByTimeAsync(3_000)
@@ -268,9 +268,9 @@ it.each(['owner', 'generation'] as const)('rejects expired recovery under a chan
 it('submits the first turn when session publication finishes under the same writer', async () => {
   vi.useFakeTimers()
   const provider = silentProvider()
-  const publishing = deferred()
-  const published = deferred()
-  const submitted = deferred()
+  const publishing = rejectableDeferred()
+  const published = rejectableDeferred()
+  const submitted = rejectableDeferred()
   const offered = vi.fn()
   const coordination = nativeLanes()
   const claim = vi.spyOn(coordination, 'claimLane')
@@ -350,8 +350,8 @@ it.each(['rejected', 'aborted'] as const)('keeps native input unoffered when pub
 
 it('retries failed disposal on the same manager while keeping native writes closed', async () => {
   const provider = silentProvider()
-  const disposed = deferred()
-  const retryStarted = deferred()
+  const disposed = rejectableDeferred()
+  const retryStarted = rejectableDeferred()
   let disposals = 0
   provider.manager.dispose = async () => {
     disposals++
@@ -391,12 +391,12 @@ it('drains a retained observer aborted during the restart ownership check before
   const coordination = nativeLanes()
   const writer = new SingleWriterSessionManager(provider.manager, coordination, 'stream-agent')
   const controller = new AbortController()
-  const observing = deferred()
-  const checkEntered = deferred()
-  const checkFinished = deferred()
-  const releaseEntered = deferred()
-  const releaseFinished = deferred()
-  const observationFinished = deferred()
+  const observing = rejectableDeferred()
+  const checkEntered = rejectableDeferred()
+  const checkFinished = rejectableDeferred()
+  const releaseEntered = rejectableDeferred()
+  const releaseFinished = rejectableDeferred()
+  const observationFinished = rejectableDeferred()
   const observation = writer.withLane(session, 'review-turn', controller.signal, async (_manager, lease) => {
     await coordination.bindLaneTurn(lease.fence, 'review-turn')
     await coordination.acknowledgeLaneTurn(lease.fence, 'review-turn', 'provider-review-turn')

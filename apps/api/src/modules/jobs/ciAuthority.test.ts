@@ -4,14 +4,9 @@ import { ciFixture } from '../../../test/helpers/ciFixture.js'
 import * as credentials from '../interactions/wave25/credentialAuthority.js'
 import { DomainError } from '../errors.js'
 import { CI_RUN_ACTIONS, RunCiAuthority } from './ciAuthority.js'
+import { deferred } from '../../../test/helpers/deferred.js'
 
 afterEach(() => vi.restoreAllMocks())
-
-function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>(done => { resolve = done })
-  return { promise, resolve }
-}
 
 function fixture() {
   const ci = ciFixture()

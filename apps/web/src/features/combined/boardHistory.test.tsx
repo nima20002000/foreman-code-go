@@ -21,7 +21,7 @@ import { getMockFixture, setMockScenario } from '../../shared/mocks/scenarios'
 import { useGraphDraftStore } from '../graph/store'
 import { nextDraftApi } from '../graph/nextDraft/transport'
 import { installFlowLayout } from '../run-board/testFlowLayout'
-import { deferred, pinnedRunHandlers, reply, runsUrl, versionReply } from '../run-board/testFixtures'
+import { pinnedRunHandlers, reply, runsUrl, versionReply } from '../run-board/testFixtures'
 import { page, runA, runB } from '../runs-selector/testFixtures'
 import { RunsSelectorSearchSchema } from '../runs-selector/search'
 import { RunsSelector } from '../runs-selector/RunsSelector'
@@ -38,6 +38,7 @@ import { useOperatorChatStore } from '../operator-chat/operatorChatStore'
 import { admitted, context, envelope, execution, historicalState, installSelectedHandlers,
   scope as chatScope, selectedRoute, snapshot as chatSnapshot } from '../conversations/agentChat/sch10.testSupport'
 import boardStyles from '../workflow-board/workflowBoard.css?inline'
+import { deferred } from '../../test/deferred'
 
 const scope = { workspaceId: 'workspace-1', workflowId: 'workflow-content-pipeline' }
 const snapshotRoute = '*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/snapshot'

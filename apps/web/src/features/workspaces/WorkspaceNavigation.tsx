@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage'
 import {
   useCallback,
   useEffect,
@@ -146,7 +147,7 @@ function NewWorkspaceControl() {
       void navigate({ to: '/workspaces/$workspaceId/settings', params: { workspaceId: workspace.id } })
     } catch (error) {
       attempt.current.failed(error)
-      if (sessionGeneration() === generation) setNameError(error instanceof Error ? error.message : 'The workspace could not be created.')
+      if (sessionGeneration() === generation) setNameError(errorMessage(error, 'The workspace could not be created.'))
     } finally { inFlight.current = false }
   }
 

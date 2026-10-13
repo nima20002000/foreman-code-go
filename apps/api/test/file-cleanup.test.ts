@@ -4,16 +4,12 @@ import { describe, it } from 'vitest'
 
 import type { FileCleanupBytes, FileCleanupCandidate, FileCleanupRepository } from '../src/modules/files/cleanup/repository.js'
 import { TemporaryFileCleanupSweeper } from '../src/modules/files/cleanup/sweeper.js'
+import { deferred } from './helpers/deferred.js'
 
 function value(n: number): FileCleanupCandidate {
   return { fileId: `file-${n}`, revisionId: `revision-${n}`, ownerPrincipalId: 'owner', requestId: `request-${n}`,
     storageKey: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`,
     expiresAt: '2026-09-01 00:00:00+00', retentionRevision: 0 }
-}
-function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
-  return { promise, resolve }
 }
 function fixture() {
   const deleted: string[] = [], errors: unknown[] = []

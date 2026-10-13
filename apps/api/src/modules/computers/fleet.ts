@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage.js'
 import type pg from 'pg'
 import { randomUUID } from 'node:crypto'
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
@@ -142,7 +143,7 @@ export class FleetMaintenanceService {
             return { target, task: null, error: 'This computer is not paired with this Main.' }
           }
           try { return { target, task: await this.startOn(target, task, input.commandId), error: null } }
-          catch (error) { return { target, task: null, error: error instanceof Error ? error.message : 'The computer did not answer.' } }
+          catch (error) { return { target, task: null, error: errorMessage(error, 'The computer did not answer.') } }
         }))
         for (const target of targets) this.cache.delete(this.key(target))
         return ComputerMaintenanceStartResultSchema.parse({ computers })

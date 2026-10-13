@@ -1,3 +1,4 @@
+import { sameComputer } from './sameComputer'
 import { z } from 'zod'
 import { useMutation, useQueryClient, useQuery } from '@tanstack/react-query'
 import { DevicePairingGrantInputSchema, DevicePairingGrantResultSchema, DeviceRevokeInputSchema, DeviceRegistrationSchema, DeviceListResultSchema, MainDeviceIdentityPublicSchema } from '@foreman-code/contracts/device-identity'
@@ -89,7 +90,4 @@ export function useRevokeComputer() {
     },
     onSuccess: () => client.invalidateQueries({ queryKey: computerSettingsKeys.root }),
   })
-}
-function sameComputer(left: CanonicalMachineReference, right: CanonicalMachineReference) {
-  return left.kind === right.kind && left.mainId === right.mainId && (left.kind === 'main' || right.kind === 'device' && left.deviceId === right.deviceId)
 }

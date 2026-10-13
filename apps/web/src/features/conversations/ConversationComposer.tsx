@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage'
 import { parseSessionCommand, type SessionMode } from '@foreman-code/contracts'
 import { SessionControls } from './sessionControls/SessionControls'
 import { useSlashCommandMenu } from './sessionControls/useSlashCommandMenu'
@@ -65,7 +66,7 @@ export function ConversationComposer({
       else onSubmit(content.trim())
     } catch (failure) {
       setCommandError({ conversationId, content,
-        message: failure instanceof Error ? failure.message : 'The native command could not be confirmed.' })
+        message: errorMessage(failure, 'The native command could not be confirmed.') })
     }
     field.current?.focus({ preventScroll: true })
   }

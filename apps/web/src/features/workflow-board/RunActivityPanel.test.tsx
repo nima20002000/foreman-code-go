@@ -7,10 +7,10 @@ import { WorkflowRunSummarySchema, type WorkflowRunSummary } from '@foreman-code
 import { WorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 import { server } from '../../mocks/server'
 import { currentWorkflowFixture } from '../../shared/mocks/currentWorkflow'
-import { deferred } from '../runs-selector/testFixtures'
 import { WorkflowBoardContext } from './context'
 import { boardRunListKey } from './keys'
 import { RunActivityPanel } from './RunActivityPanel'
+import { deferred } from '../../test/deferred'
 
 const fixture = currentWorkflowFixture('activity-list')
 const { workspaceId, workflowId } = fixture.scope

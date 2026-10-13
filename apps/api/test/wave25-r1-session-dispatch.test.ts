@@ -4,7 +4,7 @@ import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.
 import type { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
 import { SingleWriterSessionManager } from '../src/modules/interactions/sessionWriter.js'
 import { deliveryFixture } from './helpers/wave25ApprovalFixture.js'
-import { deferred } from './helpers/wave25Agent3.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 function writer() {
   const fixture = deliveryFixture()
@@ -27,7 +27,7 @@ function writer() {
 
 describe('BR1-006: final check inside the real native writer control queue', () => {
   it('revalidates after queueing and never dispatches a response rejected by that check', async () => {
-    const f = writer(), entered = deferred(), release = deferred()
+    const f = writer(), entered = rejectableDeferred(), release = rejectableDeferred()
     f.native.respond.mockImplementationOnce(async () => { entered.resolve(); await release.promise })
     const option = f.fixture.interaction.responseOptions[0]!
     const first = f.manager.respond(f.fixture.session, 'earlier-request', option)

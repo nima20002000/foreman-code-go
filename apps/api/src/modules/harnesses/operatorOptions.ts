@@ -1,9 +1,7 @@
+import { asRecord } from '../../shared/records.js'
 import type { HarnessOptions } from '@foreman-code/contracts/management'
 import { DomainError } from '../errors.js'
 
-function object(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
-}
 function strings(value: unknown): string[] {
   return Array.isArray(value) ? [...new Set(value.filter((item): item is string => typeof item === 'string' && item.length > 0))] : []
 }
@@ -13,13 +11,13 @@ function bounded(value: unknown, name: string): unknown[] {
 }
 
 export function codexModelOptions(value: unknown): HarnessOptions['models'] {
-  return bounded(object(value).models, 'models').filter(item => object(item).visibility !== 'hide').map((item) => {
-    const model = object(item)
+  return bounded(asRecord(value).models, 'models').filter(item => asRecord(item).visibility !== 'hide').map((item) => {
+    const model = asRecord(item)
     if (typeof model.slug !== 'string' || !model.slug) throw new DomainError('HARNESS_CATALOG_INVALID', 'A native model has no ID.', 502)
     return {
       id: model.slug,
       ...(typeof model.display_name === 'string' ? { name: model.display_name } : {}),
-      reasoningEfforts: strings(bounded(model.supported_reasoning_levels ?? [], 'reasoning levels').map((level) => object(level).effort)),
+      reasoningEfforts: strings(bounded(model.supported_reasoning_levels ?? [], 'reasoning levels').map((level) => asRecord(level).effort)),
       variants: [], serviceTiers: ['standard', ...(strings(model.additional_speed_tiers).includes('fast') ? ['priority'] : [])],
       ...(typeof model.priority === 'number' && Number.isFinite(model.priority) ? { defaultPriority: model.priority } : {}),
     }

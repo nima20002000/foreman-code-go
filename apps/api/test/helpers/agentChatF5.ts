@@ -5,12 +5,8 @@ import {
   type ApprovalResponseOption, type ExecutionResult, type NativeHarnessEvent, type NativeSessionReference, type PendingNativeInteraction,
 } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager, NativeHistory, NativeTurnInput } from '../../src/modules/harnesses/port.js'
+import { deferred } from './deferred.js'
 
-export function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
-  return { promise, resolve }
-}
 export async function eventually(check: () => boolean | Promise<boolean>) {
   const deadline = Date.now() + 30_000
   while (Date.now() < deadline) {

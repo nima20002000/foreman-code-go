@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage.js'
 import { captureVerificationInventory } from '../../../../../scripts/verification-runner.mjs'
 import { constants } from 'node:fs'
 import { mkdir, open, readFile, readlink, rm, statfs, writeFile } from 'node:fs/promises'
@@ -427,7 +428,7 @@ export async function qualifyVerificationRuntime(input: {
     if (!closed) {
       try { closed = await owner.close() }
       catch (error) {
-        const message = error instanceof Error ? error.message : 'Qualification closure failed.'
+        const message = errorMessage(error, 'Qualification closure failed.')
         denial = new Error(`${denial?.message ?? 'Qualification failed.'} Closure failed: ${message}`.slice(0, 500),
           { cause: error })
       }

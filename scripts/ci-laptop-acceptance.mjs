@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { sleep } from './sleep.mjs'
 import { readFile, mkdir, writeFile } from 'node:fs/promises'
 import { resolve, relative, isAbsolute } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
@@ -13,7 +14,6 @@ const args=process.argv.slice(2)
 if(args.includes('--help')) {process.stdout.write(help);process.exit(0)}
 function option(name) {const i=args.indexOf(name);if(i<0||!args[i+1]||args[i+1].startsWith('--')) throw new Error(`Missing ${name}`);return args[i+1]}
 const scenarios=['success','failure','cancel','reconnect','timeout','denied']
-const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))
 function hash(bytes) {return createHash('sha256').update(bytes).digest('hex')}
 async function main() {
   const configPath=resolve(option('--config')), evidenceDir=resolve(option('--evidence-dir')), scenario=option('--scenario')

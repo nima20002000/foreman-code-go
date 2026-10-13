@@ -18,8 +18,9 @@ import { runsSelectorKeys } from '../runs-selector/query'
 import { RunsSelectorSearchSchema } from '../runs-selector/search'
 import { useSelectedRun, type SelectedRunState } from '../runs-selector/useSelectedRun'
 import { RunBoardSlot } from './RunBoardSlot'
-import { deferred, reply, runA, runB, runsUrl, scope } from './testFixtures'
+import { reply, runA, runB, runsUrl, scope } from './testFixtures'
 import { installFlowLayout } from './testFlowLayout'
+import { deferred } from '../../test/deferred'
 
 const snapshotRoute = '*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/:runId/snapshot'
 const clients: QueryClient[] = []

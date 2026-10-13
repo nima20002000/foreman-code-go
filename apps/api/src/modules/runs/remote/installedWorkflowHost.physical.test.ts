@@ -3,7 +3,6 @@ import { EventEmitter } from 'node:events'
 import { mkdir, rm, writeFile, rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
-import { deferred } from '../../../../test/helpers/agentChatF1.js'
 import { describe, expect, it, vi } from 'vitest'
 import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
@@ -30,6 +29,7 @@ import {
 } from '../../devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../../devices/deviceWire.js'
 import { physicalFixture } from './__tests__/installedWorkflowHost.js'
+import { deferred } from '../../../../test/helpers/deferred.js'
 
 describe('original physical source selectors and Main SQL consumer',()=>{
   it('transfers distinct large workflow and reviewer results with a bounded physical dictionary', async () => {

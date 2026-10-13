@@ -5,17 +5,17 @@ import { mainId } from './helpers/ciPreparationFixture.js'
 import { postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { mainPreparationRecoverySuite } from './helpers/mainPreparationRecoverySuite.js'
 import { JobOwnership } from '../src/modules/jobs/ownership.js'
-import { deferred } from './helpers/wave25Agent3.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 describe.skipIf(!postgresEnabled)('Main CI preparation interruption and recovery', () => {
   const suite = mainPreparationRecoverySuite()
   const { input, settle, readBoth } = suite
 
   it('fences a disconnected owner before a replacement commits the same pending preparation', async () => {
-    const reached = deferred()
-    const paused = deferred()
-    const disconnected = deferred()
-    const acquired = deferred<JobOwnership>()
+    const reached = rejectableDeferred()
+    const paused = rejectableDeferred()
+    const disconnected = rejectableDeferred()
+    const acquired = rejectableDeferred<JobOwnership>()
     let interrupted = false
     const f = await suite.createFixture({
       acquire: async (pool, id, onLost) => {
@@ -72,8 +72,8 @@ describe.skipIf(!postgresEnabled)('Main CI preparation interruption and recovery
   }, 30_000)
 
   it('expires a persisted refresh deadline instead of trusting a stale operation indefinitely', async () => {
-    const reached = deferred()
-    const paused = deferred()
+    const reached = rejectableDeferred()
+    const paused = rejectableDeferred()
     let interrupted = false
     const f = await suite.createFixture({
       onMainRefresh: async () => {

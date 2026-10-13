@@ -155,13 +155,6 @@ export async function graphHead(pool: pg.Pool, runId: string): Promise<string> {
   return (await pool.query<{ head: string }>('select head_sequence::text as head from run_graph_heads where run_id=$1', [runId])).rows[0]!.head
 }
 
-export function deferred<T = void>() {
-  let resolve!: (value: T | PromiseLike<T>) => void
-  let reject!: (reason?: unknown) => void
-  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
-  return { promise, resolve, reject }
-}
-
 export function setFixtureVersion(fixture: Agent3Fixture, version: WorkflowVersionV3): Agent3Fixture {
   fixture.version = agentWorkflowVersion(version)
   fixture.run = WorkflowRunV3Schema.parse({ ...fixture.run, workflowVersionId: version.id, agentConfigurationVersionIds: version.agentConfigurationVersionIds, approval: version.approval })

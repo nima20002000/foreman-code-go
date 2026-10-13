@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useStore } from 'zustand'
@@ -64,7 +65,7 @@ function WorkspaceCardActions({ workspaceId, name, revision = 0, disabled, onCom
       setOpen(false)
     } catch (cause) {
       attempt.current.failed(cause)
-      if (sessionGeneration() === generation) setError(cause instanceof Error ? cause.message : 'The workspace could not be updated.')
+      if (sessionGeneration() === generation) setError(errorMessage(cause, 'The workspace could not be updated.'))
     } finally { inFlight.current = false; setPending(false) }
   }
   const uncertain = attempt.current.unresolved && !pending

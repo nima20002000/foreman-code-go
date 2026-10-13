@@ -1,3 +1,5 @@
+import { errorMessage } from '../../../shared/errorMessage.js'
+import { asRecord } from '../../../shared/records.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -14,7 +16,6 @@ import type { ClaudeSdkClient, ClaudeSdkSession } from './port.js'
 import { ClaudeFullAccessConfigurationSchema } from '@foreman-code/contracts/claude'
 import { CLAUDE_PROFILE_CHECK_REVISION } from './profileRevision.js'
 
-const object = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const exists = async (path: string) => readFile(path).then(() => true, () => false)
 
@@ -55,7 +56,7 @@ export async function qualifyClaudeNativeProfile(input: {
       return { async next() {
         if (expectedFault) throw new Error('qualification-owned post-result transport fault')
         const next = await iterator.next()
-        if (faultAfterResult && object(next.value).type === 'result') {
+        if (faultAfterResult && asRecord(next.value).type === 'result') {
           faultAfterResult = false
           expectedFault = true
           return { done: false, value: next.value }
@@ -75,8 +76,8 @@ export async function qualifyClaudeNativeProfile(input: {
     },
     hooks: { PreToolUse: [{ hooks: [async hook => {
       if (hook.hook_event_name !== 'PreToolUse') return {}
-      const path = object(hook.tool_input).file_path
-      const command = object(hook.tool_input).command
+      const path = asRecord(hook.tool_input).file_path
+      const command = asRecord(hook.tool_input).command
       const blocked = path === denied
       hooks.push({ sessionId: hook.session_id, toolUseId: hook.tool_use_id, tool: hook.tool_name,
         ...(typeof path === 'string' ? { file: path } : {}),
@@ -104,7 +105,7 @@ export async function qualifyClaudeNativeProfile(input: {
     for (;;) {
       const next = await iterator.next()
       if (next.done) break
-      const frame = object(next.value.raw)
+      const frame = asRecord(next.value.raw)
       frames.push(frame)
       if (frame.type === 'system' && frame.subtype === 'init') {
         observedTools = Array.isArray(frame.tools)
@@ -124,11 +125,11 @@ export async function qualifyClaudeNativeProfile(input: {
   let failure: { code: string; message: string } | undefined
   try {
     const first = await open()
-    const initialization = object(await first.initializationResult?.())
+    const initialization = asRecord(await first.initializationResult?.())
     evidence.initialization = { hooksApplied: initialization.hooks_applied, models: Array.isArray(initialization.models)
-      ? initialization.models.map(row => ({ value: object(row).value, resolvedModel: object(row).resolvedModel })) : [] }
+      ? initialization.models.map(row => ({ value: asRecord(row).value, resolvedModel: asRecord(row).resolvedModel })) : [] }
     if (!Array.isArray(initialization.models)) throw new Error('Native SDK initialization did not return its catalog.')
-    const model = initialization.models.map(object).find(row => row.resolvedModel === configuration.model || row.value === configuration.model)
+    const model = initialization.models.map(asRecord).find(row => row.resolvedModel === configuration.model || row.value === configuration.model)
     if (!model || configuration.effort && (!Array.isArray(model.supportedEffortLevels) || !model.supportedEffortLevels.includes(configuration.effort))) throw new DomainError('CLAUDE_MODEL_UNAVAILABLE', 'The accepted model and effort are absent from the exact native catalog.', 409)
     passed.add('sdkInitialization')
     const marker = `CLAUDE_PROFILE_${randomUUID()}`
@@ -147,7 +148,7 @@ export async function qualifyClaudeNativeProfile(input: {
       const next = await wakeIterator.next()
       if (next.done) throw new Error('Queued native wake input ended without both exact receipts.')
       wakeFrames.push(next.value.raw)
-      if (object(next.value.raw).type === 'result' && object(next.value.raw).is_error === true) throw new Error('Queued native wake scenario failed.')
+      if (asRecord(next.value.raw).type === 'result' && asRecord(next.value.raw).is_error === true) throw new Error('Queued native wake scenario failed.')
     }
     evidence.queuedWakes = { promptUuids: wakeUuids, frames: wakeFrames, receipts: wakeUuids.map(uuid => first.reconcile(uuid)) }
     passed.add('wakeCorrelation')
@@ -194,7 +195,7 @@ export async function qualifyClaudeNativeProfile(input: {
     await input.assertCurrent()
   } catch (error) {
     input.signal.throwIfAborted()
-    failure = { code: error instanceof DomainError ? error.code : 'CLAUDE_NATIVE_SCENARIO_FAILED', message: error instanceof Error ? error.message : 'Native scenario failed.' }
+    failure = { code: error instanceof DomainError ? error.code : 'CLAUDE_NATIVE_SCENARIO_FAILED', message: errorMessage(error, 'Native scenario failed.') }
     evidence.failure = failure
   } finally { await runner.dispose() }
   input.signal.throwIfAborted(); await input.assertCurrent()

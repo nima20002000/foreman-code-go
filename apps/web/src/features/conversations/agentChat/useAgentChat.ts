@@ -1,3 +1,4 @@
+import { errorMessage } from '../../../shared/errorMessage'
 import type { SessionMode } from '@foreman-code/contracts'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useInfiniteQuery, useIsMutating, useMutation, useMutationState, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
@@ -75,7 +76,7 @@ export function useAgentChat(inputContext: AgentChatContext) {
       restorePendingCommands(client, draftKey, generation)
       return undefined
     } catch (error) {
-      return error instanceof Error ? error.message : 'Pending messages could not be recovered.'
+      return errorMessage(error, 'Pending messages could not be recovered.')
     }
   }, [client, draftKey, generation])
   const commandFilters = useMemo(() => ({ mutationKey: commandKey, exact: true }), [commandKey])
@@ -273,7 +274,7 @@ export function useAgentChat(inputContext: AgentChatContext) {
       if (command.kind === 'send') rememberPendingCommand(draftKey, command)
       void mutation.mutateAsync(command).catch(() => undefined).finally(() => { release(); retireAgentChatAcknowledgements(client) })
       return true
-    } catch (error) { release(); setLocalError(error instanceof Error ? error.message : 'The command could not be prepared.'); return false }
+    } catch (error) { release(); setLocalError(errorMessage(error, 'The command could not be prepared.')); return false }
   }
   const blocked = (action: ManagementAction) => {
     if (!online) return 'You are offline. Your draft is kept.'

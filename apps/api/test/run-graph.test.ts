@@ -2,12 +2,8 @@ import type pg from 'pg'
 import { describe, expect, it, vi } from 'vitest'
 import { ExclusiveGraphConnection, beforeGraphCommit, type GraphTransactionSql } from '../src/modules/run-graph/connection.js'
 import { RunGraphError } from '../src/modules/run-graph/errors.js'
+import { deferred } from './helpers/deferred.js'
 
-function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
-  return { promise, resolve }
-}
 function client(query: (text: string) => Promise<unknown> = async () => ({ rows: [], rowCount: 0 })) {
   return { query: vi.fn(query) } as unknown as pg.ClientBase
 }

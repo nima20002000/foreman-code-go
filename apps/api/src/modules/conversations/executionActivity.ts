@@ -1,3 +1,4 @@
+import { asRecord } from '../../shared/records.js'
 import type pg from 'pg'
 import type { NativeHarnessEvent } from '@foreman-code/contracts'
 import {
@@ -63,7 +64,6 @@ function prefix(value: string, bytes: number) {
   const buffer = Buffer.from(value)
   return new TextDecoder().decode(buffer.subarray(0, bytes), { stream: buffer.length > bytes })
 }
-const object = (value: unknown): Payload => value && typeof value === 'object' && !Array.isArray(value) ? value as Payload : {}
 const text = (value: unknown) => typeof value === 'string' ? value : ''
 const STREAMED_METHODS = ['item/commandExecution/outputDelta', 'item/reasoning/summaryTextDelta', 'item/plan/delta']
 
@@ -74,12 +74,12 @@ function label(row: ExecutionRow) {
   return row.attempt > 1 ? `Attempt ${row.attempt}` : 'Execution'
 }
 function isMessageEvent(type: string, payload: Payload) {
-  return ['item.started', 'item.completed'].includes(type) && ['agentMessage', 'userMessage'].includes(text(object(payload.item).type))
+  return ['item.started', 'item.completed'].includes(type) && ['agentMessage', 'userMessage'].includes(text(asRecord(payload.item).type))
     || type === 'assistant.delta' || type === 'claude.text' || payload.nativeMethod === 'item/agentMessage/delta'
 }
 function messageText(payload: Payload) {
-  const item = object(payload.item)
-  if (item.type === 'userMessage') return (Array.isArray(item.content) ? item.content : []).map(object)
+  const item = asRecord(payload.item)
+  if (item.type === 'userMessage') return (Array.isArray(item.content) ? item.content : []).map(asRecord)
     .filter((part) => part.type === 'text').map((part) => text(part.text)).join('')
   return text(item.text) || text(payload.text) || text(payload.delta)
 }
@@ -104,7 +104,7 @@ export class ExecutionActivityFold {
     for (const row of rows) {
       if (row.sequence <= this.sequence) continue
       this.sequence = row.sequence
-      const type = text(row.record.type), payload = object(row.record.payload)
+      const type = text(row.record.type), payload = asRecord(row.record.payload)
       if (!row.item_key) continue
       const message = isMessageEvent(type, payload)
       const key = message && payload.contentIndex !== undefined ? `${row.item_key}#${String(payload.contentIndex)}` : row.item_key
@@ -122,8 +122,8 @@ export class ExecutionActivityFold {
 
   private foldMessage(entry: Entry, type: string, payload: Payload) {
     const current = entry.message ??= { role: 'assistant', content: { value: '', length: 0 }, complete: false, originalBytes: 0 }
-    if (object(payload.item).type === 'userMessage' || payload.role === 'user') current.role = 'user'
-    const truncation = object(payload.truncation)
+    if (asRecord(payload.item).type === 'userMessage' || payload.role === 'user') current.role = 'user'
+    const truncation = asRecord(payload.truncation)
     if (typeof truncation.originalBytes === 'number') current.originalBytes = Math.max(current.originalBytes, truncation.originalBytes)
     if (current.complete) return
     const final = type === 'item.completed' || type === 'claude.text' && payload.final === true
@@ -135,7 +135,7 @@ export class ExecutionActivityFold {
   private foldActivity(entry: Entry, row: ExecutionEventRow, type: string, payload: Payload): boolean {
     const method = text(payload.nativeMethod)
     if (method === 'turn/plan/updated') {
-      const steps = (Array.isArray(payload.plan) ? payload.plan : []).map(object)
+      const steps = (Array.isArray(payload.plan) ? payload.plan : []).map(asRecord)
         .map((step) => `${step.status === 'completed' ? '[x]' : step.status === 'inProgress' ? '[~]' : '[ ]'} ${text(step.step)}`)
       entry.activity = { id: entry.key, requestId: text(payload.turnId) || 'plan', kind: 'tool', title: 'Update plan', status: 'completed',
         output: text(payload.publicOutput) || [text(payload.explanation), ...steps].filter(Boolean).join('\n'),
@@ -143,7 +143,7 @@ export class ExecutionActivityFold {
       return true
     }
     if (STREAMED_METHODS.includes(method)) { entry.streamed = append(entry.streamed, text(payload.delta), FULL.output); return true }
-    const item = object(payload.item)
+    const item = asRecord(payload.item)
     if (item.type === 'plan' && ['item.started', 'item.completed'].includes(type)) {
       entry.activity = { id: text(item.id), requestId: text(payload.turnId) || 'plan', kind: 'tool', title: 'Plan',
         status: type === 'item.completed' ? 'completed' : 'running',
@@ -162,12 +162,12 @@ export class ExecutionActivityFold {
     if (payload.publicTruncated === true) next = { ...next, truncated: true }
     if (typeof payload.publicTitle === 'string') next = { ...next, title: payload.publicTitle }
     // Show an MCP result's text parts, not its protocol envelope.
-    const parts = Array.isArray(object(item.result).content) ? (object(item.result).content as unknown[]).map(object) : []
+    const parts = Array.isArray(asRecord(item.result).content) ? (asRecord(item.result).content as unknown[]).map(asRecord) : []
     const resultText = item.type === 'mcpToolCall' && item.error == null
       ? parts.filter((part) => part.type === 'text').map((part) => text(part.text)).join('\n') : ''
     // A shell row names its command, so the collapsed one-line row says what ran.
     const command = item.type === 'commandExecution' && next.title === 'Run command'
-      ? (Array.isArray(item.commandActions) ? item.commandActions.map(object).map((action) => text(action.command)).filter(Boolean).join(' && ') : '')
+      ? (Array.isArray(item.commandActions) ? item.commandActions.map(asRecord).map((action) => text(action.command)).filter(Boolean).join(' && ') : '')
         || text(item.command) : ''
     entry.activity = { ...next, ...(resultText ? { output: resultText.slice(0, FULL.output) } : {}),
       ...(command ? { title: command.replace(/\s+/g, ' ').slice(0, 240) } : {}) }
@@ -177,8 +177,8 @@ export class ExecutionActivityFold {
   private foldClaudeTool(entry: Entry, payload: Payload, activity: Activity): Activity {
     const body = (value: unknown): string => {
       if (typeof value === 'string') return value
-      if (Array.isArray(value) && value.every((part) => object(part).type === 'text')) {
-        return value.map((part) => text(object(part).text)).join('\n')
+      if (Array.isArray(value) && value.every((part) => asRecord(part).type === 'text')) {
+        return value.map((part) => text(asRecord(part).text)).join('\n')
       }
       return value == null ? '' : JSON.stringify(value, null, 2)
     }
@@ -200,8 +200,8 @@ export class ExecutionActivityFold {
       output = prefix(value, FULL.output)
       truncated ||= Buffer.byteLength(value) > FULL.output
     }
-    const command = text(object(payload.input).command)
-    const file = text(object(payload.input).file_path)
+    const command = text(asRecord(payload.input).command)
+    const file = text(asRecord(payload.input).file_path)
     let title = activity.title
     if (payload.name === 'Bash' && command) title = command.replace(/\s+/g, ' ')
     else if (file) title = `${text(payload.name)} ${file}`

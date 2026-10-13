@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage.js'
 import { deflateSync } from 'node:zlib'
 import { JOB_PRIVATE_GIT_LAYOUT, JOB_GIT_ENVIRONMENT, JOB_GIT_CONTAINER_DIRECTORY } from './privateGitMounts.js'
 import { createHash } from 'node:crypto'
@@ -567,7 +568,7 @@ export async function qualifyJobRuntime(raw: JobQualificationCandidate, authorit
       probe: measurement, containerId: id, cgroup, descendantsStopped: true, qualifiedRuntime: profile }
     return { ...record, outcome: 'qualified', closure: 'confirmed', measurements, measuredFingerprint: hash(measurements), profile }
   } catch (error) {
-    record.reasons = [error instanceof Error ? error.message : 'Qualification failed.']
+    record.reasons = [errorMessage(error, 'Qualification failed.')]
     return record
   } finally {
     if (!physicallyClosed) physicallyClosed = await owner.close().catch(() => false)

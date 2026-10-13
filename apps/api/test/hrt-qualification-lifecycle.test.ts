@@ -12,12 +12,7 @@ vi.mock('../src/modules/harnesses/compatibility/probe.js', async (original) => (
 import { mkdtemp, rm } from 'node:fs/promises'
 import { nativeCompatibilityProbe } from '../src/modules/harnesses/compatibility/probe.js'
 import { HarnessQualificationService } from '../src/modules/harnesses/qualification/service.js'
-
-function gate<T = void>() {
-  let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => { resolve = done })
-  return { promise, resolve }
-}
+import { deferred } from './helpers/deferred.js'
 
 const binaryDirectories: string[] = []
 function fixture(staticCheck: ConstructorParameters<typeof HarnessQualificationService>[6] = async () => 'schema') {
@@ -43,7 +38,7 @@ afterEach(() => { for (const directory of binaryDirectories.splice(0)) rmSync(di
 
 describe('qualification stop/cancel/join', () => {
   it('settles an interruption after static success before shutdown finishes', async () => {
-    const entered = gate(), staticResult = gate<string>(), finalSave = gate()
+    const entered = deferred(), staticResult = deferred<string>(), finalSave = deferred()
     const f = fixture(async () => { entered.resolve(); return staticResult.promise })
     f.save.mockResolvedValueOnce(undefined).mockImplementationOnce(() => finalSave.promise)
     await f.service.begin('codex'); await entered.promise
@@ -69,7 +64,7 @@ describe('qualification stop/cancel/join', () => {
   })
 
   it('owns and removes a project acquired while shutdown is waiting', async () => {
-    const f = fixture(), project = gate<string>()
+    const f = fixture(), project = deferred<string>()
     vi.mocked(mkdtemp).mockReturnValueOnce(project.promise)
     await f.service.begin('codex')
     await vi.waitFor(() => expect(mkdtemp).toHaveBeenCalledTimes(1))
@@ -92,7 +87,7 @@ describe('qualification stop/cancel/join', () => {
   })
 
   it('joins an admitted management audit before shutdown can complete', async () => {
-    const f = fixture(), audit = gate()
+    const f = fixture(), audit = deferred()
     f.audit.mockReturnValue(audit.promise)
     const principal = { id: 'principal', name: 'Fixture', audience: 'operator' as const,
       expiresAt: new Date(Date.now() + 60_000).toISOString(), revokedAt: null,
@@ -120,7 +115,7 @@ describe('qualification stop/cancel/join', () => {
   })
 
   it('registers preparation before its first await and stops before any version process starts', async () => {
-    const f = fixture(), inspecting = gate<Awaited<ReturnType<typeof f.inspectBinary>>>()
+    const f = fixture(), inspecting = deferred<Awaited<ReturnType<typeof f.inspectBinary>>>()
     f.inspectBinary.mockReturnValueOnce(inspecting.promise)
     const begin = f.service.begin('codex')
     const rejection = expect(begin).rejects.toMatchObject({ name: 'AbortError' })
@@ -135,7 +130,7 @@ describe('qualification stop/cancel/join', () => {
   })
 
   it('shares one suite and joins abort handling, final persistence and directory cleanup', async () => {
-    const f = fixture(), entered = gate(), cleanup = gate(), finalSave = gate()
+    const f = fixture(), entered = deferred(), cleanup = deferred(), finalSave = deferred()
     f.run.mockImplementation(async (input) => {
       entered.resolve()
       await new Promise<void>((resolve) => input.signal.addEventListener('abort', () => resolve(), { once: true }))
@@ -159,7 +154,7 @@ describe('qualification stop/cancel/join', () => {
   })
 
   it('does not start a suite after shutdown interrupts saved-default readback', async () => {
-    const f = fixture(), saved = gate<Awaited<ReturnType<typeof f.settings>>>()
+    const f = fixture(), saved = deferred<Awaited<ReturnType<typeof f.settings>>>()
     f.settings.mockReturnValue(saved.promise)
     await f.service.begin('codex')
     await vi.waitFor(() => expect(f.settings).toHaveBeenCalledTimes(1))

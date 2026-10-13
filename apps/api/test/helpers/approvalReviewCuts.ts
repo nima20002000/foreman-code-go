@@ -1,15 +1,15 @@
 import { vi } from 'vitest'
 import type { Br1002Runtime } from './wave25Br1002Cuts.js'
-import { deferred } from './wave25Agent3.js'
+import { rejectableDeferred } from './deferred.js'
 
 type ReviewNativeArgs = Parameters<Br1002Runtime['repository']['coordination']['appendReviewNativeEvent']>
 
 /** Pause live source publication and leave terminal settlement to the original native history read. */
 export function approvalReviewCuts(f: Br1002Runtime) {
-  const started = deferred<ReviewNativeArgs>()
-  const assistant = deferred<ReviewNativeArgs>()
-  const continueStart = deferred()
-  const continueAssistant = deferred()
+  const started = rejectableDeferred<ReviewNativeArgs>()
+  const assistant = rejectableDeferred<ReviewNativeArgs>()
+  const continueStart = rejectableDeferred()
+  const continueAssistant = rejectableDeferred()
   const append = f.repository.coordination.appendReviewNativeEvent.bind(f.repository.coordination)
   let sawStart = false
   let sawAssistant = false

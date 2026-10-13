@@ -329,5 +329,8 @@
   "apps/api/src/modules/subagents/controlErrors.ts",
   "apps/api/src/modules/subagents/nativeReadback.ts",
   "apps/api/src/modules/workspaces/filesystem.ts",
-  "apps/api/src/modules/workspaces/locationAccess.ts"
+  "apps/api/src/modules/workspaces/locationAccess.ts",
+  "apps/api/src/shared/errorMessage.ts",
+  "apps/api/src/shared/pathExists.ts",
+  "apps/api/src/shared/records.ts"
 ]

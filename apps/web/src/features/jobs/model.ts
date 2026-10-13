@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage'
 import type { JobLogPage } from '@foreman-code/contracts/jobs'
 import type { JobDefinitionSpecRecord, JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import type { JobQueueTicket } from '@foreman-code/contracts/job-admission'
@@ -8,7 +9,7 @@ export const jobAccessLost = (error: unknown) => ApiError.is(error) && [401, 403
 export const jobReadRetry = (count: number, error: unknown) => !jobAccessLost(error) && !(ApiError.is(error) && error.code === 'JOB_SELECTION_MISMATCH') && count < 1
 export function jobError(error: unknown) {
   if (jobAccessLost(error)) return 'Job history unavailable or permission lost. Previously loaded data is hidden.'
-  return error instanceof Error ? error.message : 'The job request could not be completed.'
+  return errorMessage(error, 'The job request could not be completed.')
 }
 /** Strip CSI, OSC, escape and nonprinting controls. React renders the remaining output as text. */
 export function plainLog(text: string) {

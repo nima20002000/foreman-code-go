@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { DomainError } from '../src/modules/errors.js'
 import { NativeDeliveryError } from '../src/modules/harnesses/errors.js'
 import { currentRestartUnit } from './helpers/currentRestartUnit.js'
+import { deferred } from './helpers/deferred.js'
 
 const connections: Array<{ close(): Promise<void> }> = []
 
@@ -12,12 +13,6 @@ function fixture(reviewer = true) {
   const f = currentRestartUnit(reviewer)
   connections.push(f.connection)
   return f
-}
-
-function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
-  return { promise, resolve }
 }
 
 function startupFailure(startup: Promise<unknown>) {

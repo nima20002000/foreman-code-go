@@ -25,6 +25,7 @@ import type { AppInteractionService } from '../src/modules/interactions/app.js'
 import { createGraphqlMcpServer } from '../src/mcp/unified/server.js'
 import { agentInstructionBundle } from '../src/modules/skills/instructions.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
+import { deferred } from './helpers/deferred.js'
 
 const qualify = { qualifyConfiguration: async (value: HarnessConfiguration) => {
   if (value.harness === 'claude') throw new Error('Skills library fixture supports only Codex qualification')
@@ -33,12 +34,6 @@ const qualify = { qualifyConfiguration: async (value: HarnessConfiguration) => {
   supportsStartupPrompt: true, supportedNativeTools: [], supportedSettings: [], unsupportedCapabilities: [] }
 } }
 const codex = { harness: 'codex', model: 'fixture', reasoningEffort: 'low', sandbox: 'read-only', serviceTier: 'standard' } as const
-
-function barrier() {
-  let resolve!: () => void
-  const promise = new Promise<void>(done => { resolve = done })
-  return { promise, resolve }
-}
 
 describe.skipIf(!postgresEnabled)('Skills library over real PostgreSQL, HTTP and the unified MCP', () => {
   let database: Awaited<ReturnType<typeof currentDatabase>>
@@ -180,8 +175,8 @@ describe.skipIf(!postgresEnabled)('Skills library over real PostgreSQL, HTTP and
         expiresAt: new Date(Date.now() + 600_000) })
       const client = await mcp(publisher.token)
       const commandId = randomUUID()
-      const entered = barrier()
-      const released = barrier()
+      const entered = deferred()
+      const released = deferred()
       const execute = commands.execute.bind(commands)
       const paused: typeof commands.execute = async (input) => {
         if (input.commandId === commandId && input.operation === `skill.${operation}`) {
@@ -237,8 +232,8 @@ describe.skipIf(!postgresEnabled)('Skills library over real PostgreSQL, HTTP and
       expiresAt: new Date(Date.now() + 600_000) })
     const client = await mcp(publisher.token)
     const commandId = randomUUID()
-    const entered = barrier()
-    const released = barrier()
+    const entered = deferred()
+    const released = deferred()
     const execute = commands.execute.bind(commands)
     const paused: typeof commands.execute = async (input) => {
       if (input.commandId === commandId) {

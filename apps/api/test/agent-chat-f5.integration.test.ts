@@ -16,8 +16,9 @@ import { agentChatKey, PostgresAgentChatRepository } from '../src/modules/conver
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
-import { AgentChatF5Native, deferred, eventually } from './helpers/agentChatF5.js'
+import { AgentChatF5Native, eventually } from './helpers/agentChatF5.js'
 import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
+import { deferred } from './helpers/deferred.js'
 
 /** Opt-in real SQL/authenticated transports; native I/O remains a deterministic substitute. */
 describe.skipIf(!postgresEnabled)('F5 approval and receipt PostgreSQL / HTTP / MCP regressions', { timeout: 60_000 }, () => {

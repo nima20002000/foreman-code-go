@@ -20,8 +20,8 @@ import { graphRpc, graphRpcValue } from '../eng04-graph-composition-fixture.js'
 import { agentWorkflowNode } from './agentWorkflowFixture.js'
 import { approvalResponse } from './approvalResponse.js'
 import { codexApprovalRuntime } from './codexApprovalRuntime.js'
-import { deferred } from './wave25Agent3.js'
 import { br1002At } from './wave25Br1002Cuts.js'
+import { rejectableDeferred } from './deferred.js'
 
 type Fixture = Awaited<ReturnType<typeof codexApprovalRuntime>>
 
@@ -62,8 +62,8 @@ export async function assertWorkflowSessionContinuation({ restart }: { restart: 
   const f = await fixture()
   let runtime: ReturnType<Fixture['compose']> = f
   let app: ReturnType<typeof buildApp> | undefined
-  const cut = deferred<void>()
-  const release = deferred<void>()
+  const cut = rejectableDeferred<void>()
+  const release = rejectableDeferred<void>()
   const route = RepeatRunRepository.prototype.admitWorkRequest
   let paused = false
   const pause = vi.spyOn(RepeatRunRepository.prototype, 'admitWorkRequest').mockImplementation(async function (
@@ -82,7 +82,7 @@ export async function assertWorkflowSessionContinuation({ restart }: { restart: 
       const starting = runtime.engine.start(f.f.run.id)
       const settled = Promise.allSettled([starting])
       await br1002At(cut.promise, starting)
-      const closing = deferred<void>()
+      const closing = rejectableDeferred<void>()
       const closeForRestart = runtime.native.closeForRestart.bind(runtime.native)
       const close = vi.spyOn(runtime.native, 'closeForRestart').mockImplementation(() => {
         const task = closeForRestart()

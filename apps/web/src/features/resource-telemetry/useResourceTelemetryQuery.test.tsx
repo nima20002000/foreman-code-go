@@ -10,7 +10,7 @@ import { resourceTelemetryKeys, useResourceTelemetryQuery } from '../../shared/a
 import { beginSessionChange, finishSessionChange, sessionIsSwitching } from '../../shared/api/sessionBoundary'
 import { ResourceTelemetryPanel, ScopedResourceTelemetry } from './ResourceTelemetryCards'
 import { sampleClock } from './telemetryView'
-import { deferred } from '../runs-selector/testFixtures'
+import { deferred } from '../../test/deferred'
 
 const route = '*/api/management/resource-telemetry/read'
 let client: QueryClient

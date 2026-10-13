@@ -5,10 +5,11 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkflowScheduleDispatcher } from '../src/modules/schedules/dispatcher.js'
 import { PostgresScheduleDispatcher } from '../src/modules/schedules/postgresDispatcher.js'
 import type { ScheduleDispatchContext } from '../src/modules/schedules/dispatchErrors.js'
-import { agent3Database, deferred, postgresEnabled } from './helpers/wave25Agent3.js'
+import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 import { sch11ClockCases, sch11Minute, sch11Once, sch11Settings } from './helpers/sch11ClockCases.js'
 import { sch11DomainState, sch11Fixture, sch11Pool, type Sch11Database, type Sch11Fixture } from './helpers/sch11Fixture.js'
 import { sch11Child } from './helpers/sch11Process.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 /** No `.fails`/skip markers hide product regressions. Except for the established
  * TEST_DATABASE_URL gate, every assertion is a normal failing regression test.
@@ -195,7 +196,7 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL clock parity / crash recove
     const resumedAt = Date.parse(saved.nextOccurrenceAt!) + 86_400_000
     let clockReads = 0
     const clock = () => new Date(resumedAt + clockReads++ * 2)
-    const considered = deferred()
+    const considered = rejectableDeferred()
     let attemptedDue: string | undefined
     const port = new PostgresScheduleDispatcher(database.pool, async (_principal, input) => {
       attemptedDue = input.commandId
@@ -240,7 +241,7 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL clock parity / crash recove
       fixture.time.now = f.time.now
       return schedule
     }))
-    const entered = deferred(), release = deferred()
+    const entered = rejectableDeferred(), release = rejectableDeferred()
     const dispatcher = f.dispatcher(async (principal, input, guard) => {
       await f.startUsing()(principal, input, { ...guard, afterAcceptance: async (sql, run) => {
         await guard.afterAcceptance(sql, run); entered.resolve(); await release.promise

@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage'
 import { selectLiveTextTimeline } from '../conversations/chatTimeline'
 import { OperatorHistoryActions } from './OperatorHistoryActions'
 import { ActivityChangeEnvelopeV1Schema, OperatorActivitySchema } from '@foreman-code/contracts'
@@ -260,7 +261,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
         }
       } catch (error) {
         if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
-        setPreparationError({ id: input.id, message: error instanceof Error ? error.message : 'The message receipt could not be saved.' })
+        setPreparationError({ id: input.id, message: errorMessage(error, 'The message receipt could not be saved.') })
       }
       refreshOutbox((value) => value + 1)
       acceptState(targetId, result.state)
@@ -274,7 +275,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
     onError: async (error, input) => {
       if (!currentSession(input.generation) || input.epoch !== identityEpoch()) return
       try { await recordOperatorMessageFailure(input.id, input.command.requestId,
-        error instanceof Error ? error.message : 'Message delivery failed.', ApiError.is(error)
+        errorMessage(error, 'Message delivery failed.'), ApiError.is(error)
           && ['INVALID_REQUEST', 'CONVERSATION_REVISION_CONFLICT', 'HARNESS_PROFILE_SELECTION_CONFLICT', 'MESSAGE_ATTACHMENT_NOT_FOUND',
             'MESSAGE_ATTACHMENT_NOT_READY', 'MESSAGE_ATTACHMENT_UNAVAILABLE', 'MESSAGE_ATTACHMENT_CONVERSATION_REQUIRED'].includes(error.code), input.attemptId) } catch { /* The current error remains visible. */ }
       if (currentSession(input.generation) && input.epoch === identityEpoch()) refreshOutbox((value) => value + 1)
@@ -513,7 +514,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
       send.mutate({ id, command, generation, epoch, navigationGeneration })
     } catch (error) {
       if (currentSession(generation) && epoch === identityEpoch()) setPreparationError({ id,
-        message: error instanceof Error ? error.message : 'Message preparation failed.' })
+        message: errorMessage(error, 'Message preparation failed.') })
     } finally {
       reservations.current.delete(id)
       setPreparingId((current) => current === id ? undefined : current)
@@ -636,7 +637,7 @@ function OperatorChatContent({ settingsWarning }: { settingsWarning?: string }) 
                 void discardDefinitivelyRejectedOperatorMessage(conversation.conversation.id, pending.command!.requestId).then((discarded) => {
                   if (discarded) { attachmentReceipts.forget(pending.command!.requestId); send.reset(); setPreparationError(undefined); refreshOutbox((value) => value + 1) }
                 }).catch((error: unknown) => setPreparationError({ id: conversation.conversation.id,
-                  message: error instanceof Error ? error.message : 'The saved attempt could not be cleared.' }))
+                  message: errorMessage(error, 'The saved attempt could not be cleared.') }))
               }}>Clear rejected attempt and keep draft</Button> : null}
             </div> : null}
             {retired ? <p role="status">Retired harness (OpenCode): read-only</p> : <footer className="operator-chat-controls">

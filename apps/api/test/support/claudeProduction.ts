@@ -27,13 +27,8 @@ import type { NativeSessionStart } from '../../src/modules/harnesses/port.js'
 import type { RunOwnership } from '../../src/modules/runs/ownership.js'
 import { PostgresAgentChatRepository } from '../../src/modules/conversations/agentChatRepository.js'
 import { PostgresOperatorConversationRepository } from '../../src/modules/conversations/operatorChatRepository.js'
+import { rejectableDeferred } from '../helpers/deferred.js'
 
-export const deferred = <T>() => {
-  let resolve!: (value: T) => void
-  let reject!: (error: unknown) => void
-  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
-  return { promise, resolve, reject }
-}
 const createdAt = '2026-10-01T00:00:00.000Z'
 /** Synthetic installed/profile records and redacted SDK frames. Exercises actual
  * admission/domain/factory/manager classes without native or PostgreSQL claims. */
@@ -142,7 +137,7 @@ export function productionClaudeFixture(surface: 'workflow' | 'operator' | 'agen
     : { kind: 'workflow', correlationId: `${surface}:request-1`, request: { executionId: 'execution', runId: 'run', workspaceId: 'workspace', workflowNodeId: 'node', workingDirectory: '/recorded/work', runtimeDirectory: '/recorded/runtime', configuration: agent, input: {} } })
   const queries: { frames: ClaudeBoundedQueue<unknown>; messages: AsyncIterator<ClaudeSdkUserMessage> }[] = []
   const initialFrames = new ClaudeBoundedQueue<unknown>(64)
-  const ready = deferred<AsyncIterator<ClaudeSdkUserMessage>>()
+  const ready = rejectableDeferred<AsyncIterator<ClaudeSdkUserMessage>>()
   const setMcpServers = vi.fn(async () => ({ added: ['graphql'], removed: [], errors: {} }))
   const sdkQuery = vi.fn<ClaudeSdkClient['query']>(options => {
     const frames = queries.length ? new ClaudeBoundedQueue<unknown>(64) : initialFrames

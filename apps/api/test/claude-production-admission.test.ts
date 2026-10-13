@@ -3,7 +3,8 @@ import { McpDetectionService } from '../src/modules/harnesses/mcpDetection.js'
 import { NativeHarnessFactories } from '../src/modules/harnesses/runtimeFactory.js'
 import type { NativeProcessRecovery } from '../src/modules/harnesses/recovery/processRegistry.js'
 import type { NativeHarnessEvent, NativeSessionReference } from '@foreman-code/contracts'
-import { productionClaudeFixture, managementEndpoint, deferred } from './support/claudeProduction.js'
+import { productionClaudeFixture, managementEndpoint } from './support/claudeProduction.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 async function replay(f: ReturnType<typeof productionClaudeFixture>) {
   const observed: string[] = []
@@ -128,7 +129,7 @@ describe('common admitted production Claude four-surface replay', () => {
     await f.manager.dispose?.()
   })
   it('joins disposal during exact profile admission without constructing a native query', async () => {
-    const f = productionClaudeFixture('agent'), entered = deferred<void>(), release = deferred<void>()
+    const f = productionClaudeFixture('agent'), entered = rejectableDeferred<void>(), release = rejectableDeferred<void>()
     const actualAdmission = f.profiles.admit.bind(f.profiles)
     vi.spyOn(f.profiles, 'admit').mockImplementation(async (owner, selector) => {
       entered.resolve(); await release.promise
@@ -165,7 +166,7 @@ describe('actual common owned Claude version command', () => {
     return { ...f, factories, recovery, command, close, abandon, admit }
   }
   it('returns version evidence only after positive original-owner cleanup and never supplies auth variables', async () => {
-    const f = ownedVersion(), entered = deferred<void>(), release = deferred<void>()
+    const f = ownedVersion(), entered = rejectableDeferred<void>(), release = rejectableDeferred<void>()
     f.close.mockImplementation(async () => { entered.resolve(); await release.promise })
     let settled = false
     const probe = f.factories.observeClaudeVersion(f.binding, '/recorded-neutral').then(result => { settled = true; return result })
@@ -223,7 +224,7 @@ describe('actual common owned Claude version command', () => {
     }
   })
   it('aborts and joins an in-flight version command during the existing factory shutdown phase', async () => {
-    const f = ownedVersion(), entered = deferred<void>()
+    const f = ownedVersion(), entered = rejectableDeferred<void>()
     f.command.mockImplementation((...args: unknown[]) => new Promise((_resolve, reject) => {
       const signal = args[3] as AbortSignal
       signal.addEventListener('abort', () => reject(signal.reason), { once: true })

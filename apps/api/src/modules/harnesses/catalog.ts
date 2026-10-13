@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage.js'
 import { assertClaudeFullAccess } from './nativeWorkflowConfiguration.js'
 import { isDeepStrictEqual } from 'node:util'
 import { canonical } from './codexProtocol.js'
@@ -120,7 +121,7 @@ export class HarnessCatalogService {
     } catch (error) {
       return {
         harness, defaults: configuration, defaultsRevision: revision, capability: null, ...support,
-        discoveryError: { code: error instanceof DomainError ? error.code : 'HARNESS_DISCOVERY_UNAVAILABLE', message: error instanceof Error ? error.message : 'Harness discovery failed.' },
+        discoveryError: { code: error instanceof DomainError ? error.code : 'HARNESS_DISCOVERY_UNAVAILABLE', message: errorMessage(error, 'Harness discovery failed.') },
       }
     }
   }

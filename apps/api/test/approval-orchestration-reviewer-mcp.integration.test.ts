@@ -9,7 +9,8 @@ import { approvalResponse } from './helpers/approvalResponse.js'
 import { routedApprovalFixture } from './helpers/routedApprovalFixture.js'
 import { approvalReviewCuts } from './helpers/approvalReviewCuts.js'
 import { br1002At } from './helpers/wave25Br1002Cuts.js'
-import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
+import { postgresEnabled } from './helpers/wave25Agent3.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 afterEach(() => vi.restoreAllMocks())
 describe.skipIf(!postgresEnabled)('current durable approval orchestration', () => {
@@ -22,10 +23,10 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
     const clients: Client[] = []
     const appendHistory = f.coordination.appendReviewNativeHistory.bind(f.coordination)
     const cuts = approvalReviewCuts(f)
-    const beforeHistory = deferred()
-    const afterHistory = deferred()
-    const publishHistory = deferred()
-    const finishHistory = deferred()
+    const beforeHistory = rejectableDeferred()
+    const afterHistory = rejectableDeferred()
+    const publishHistory = rejectableDeferred()
+    const finishHistory = rejectableDeferred()
     const historySpy = vi.spyOn(f.coordination, 'appendReviewNativeHistory').mockImplementation(async (...args) => {
       if (!args[1].some((event) => event.type === 'thread.reconciled')) return appendHistory(...args)
       beforeHistory.resolve()

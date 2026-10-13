@@ -11,8 +11,8 @@ import { harnessBinaries } from '../src/modules/harnesses/binaries.js'
 import { CodexRpcError, isObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { runCommand } from '../src/modules/harnesses/process.js'
 import { codexNativeAcceptanceFixture } from './helpers/codexNativeAcceptanceFixture.js'
-import { deferred } from './helpers/wave25Agent3.js'
 import { withCodexNativeHome } from './helpers/codexNativeHome.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 // Workflow and live acceptance share the native session manager.
 
 const enabled = process.env.RUN_CODEX_APP_SERVER_TESTS === '1'
@@ -75,7 +75,7 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
       assert.equal(evidence.schemaVerification, 'installed-contract-validation')
       assert.equal(evidence.productionSupported, false)
       const session = await manager.createSession(input, signal)
-      const requestedApproval = deferred<PendingNativeInteraction>()
+      const requestedApproval = rejectableDeferred<PendingNativeInteraction>()
       const approval = (async () => {
         for await (const event of manager.startTurn(session, {
           prompt: `Run this exact shell command until it succeeds: set -e; stamp=$(date +%s%N); printf "$stamp" > ${JSON.stringify(marker)}; printf "$stamp". Request native command approval when the read-only sandbox blocks it. Do not simulate success. Return its stdout verbatim.`,
@@ -113,7 +113,7 @@ describe.skipIf(!enabled || process.platform === 'win32')('authenticated qualifi
       assert((await manager.inspectConfiguration(session, false, signal)).config)
       assert(Array.isArray((await manager.inspectNativeMcp(session, signal)).data))
 
-      const started = deferred<string>()
+      const started = rejectableDeferred<string>()
       const interrupt = (async () => {
         for await (const event of manager.startTurn(session, {
           prompt: 'Run this exact shell command and wait for it to finish before answering: tail -f /dev/null. Do not simulate the command.',

@@ -2,8 +2,8 @@ import { vi } from 'vitest'
 import type { GraphFact } from '@foreman-code/contracts/wave25'
 import type { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import type { WorkflowNativeCaptureInput } from '../../src/modules/interactions/workflowNativeCapture.js'
-import { deferred } from './wave25Agent3.js'
 import type { codexApprovalRuntime } from './codexApprovalRuntime.js'
+import { rejectableDeferred } from './deferred.js'
 
 export type Br1002Runtime = Awaited<ReturnType<typeof codexApprovalRuntime>>
 export type Br1002NativeArgs = Parameters<PostgresRunRepository['updateExecution']>
@@ -12,8 +12,8 @@ export type Br1002NativeArgs = Parameters<PostgresRunRepository['updateExecution
  * update. Negative mutations happen before the private channel freezes source. */
 export function br1002ContinuationCut(f: Br1002Runtime,
   degrade: (input: WorkflowNativeCaptureInput) => WorkflowNativeCaptureInput = (input) => input) {
-  const before = deferred<Br1002NativeArgs>(), after = deferred<Br1002NativeArgs>()
-  const enter = deferred(), finish = deferred()
+  const before = rejectableDeferred<Br1002NativeArgs>(), after = rejectableDeferred<Br1002NativeArgs>()
+  const enter = rejectableDeferred(), finish = rejectableDeferred()
   const original = f.runs.updateExecution.bind(f.runs)
   const capture = f.nativeCapture.capture.bind(f.nativeCapture)
   let selected = false

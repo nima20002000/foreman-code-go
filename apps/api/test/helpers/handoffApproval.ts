@@ -17,8 +17,8 @@ import { ApprovalPostgresSaver } from '../../src/infrastructure/approvalCheckpoi
 import { codexApprovalRuntime } from './codexApprovalRuntime.js'
 import { approvalResponse } from './approvalResponse.js'
 import { br1002At } from './wave25Br1002Cuts.js'
-import { deferred } from './wave25Agent3.js'
 import { agentWorkflowNode } from './agentWorkflowFixture.js'
+import { rejectableDeferred } from './deferred.js'
 
 type Fixture = Awaited<ReturnType<typeof codexApprovalRuntime>>
 type Runtime = ReturnType<Fixture['compose']>
@@ -74,7 +74,7 @@ async function reviewThroughMcp(f: Fixture, runtime: Runtime, origin: string, pr
     { nativeSessionId: binding.execution.nativeSessionId! })).resolves.toBeDefined()
   await expect(assertOrchestratorGraphAuthority(f.db.pool, interaction,
     { nativeSessionId: `unrelated-${interaction.id}` })).rejects.toMatchObject({ code: 'INTERACTION_ACCESS_DENIED' })
-  const live = deferred<void>()
+  const live = rejectableDeferred<void>()
   const issuance = vi.spyOn(runtime.credentials, 'issueForReviewer')
   const append = runtime.repository.coordination.appendReviewNativeEvent.bind(runtime.repository.coordination)
   const capture = vi.spyOn(runtime.repository.coordination, 'appendReviewNativeEvent').mockImplementation(async (...args) => {
@@ -153,8 +153,8 @@ export async function runHandoffApproval({ restart }: { restart: boolean }): Pro
   const f = await fixture()
   let runtime: Runtime = f
   vi.spyOn(runtime.native.reviewers, 'reconcile').mockResolvedValue(undefined)
-  const cut = deferred<string>()
-  const release = deferred<void>()
+  const cut = rejectableDeferred<string>()
+  const release = rejectableDeferred<void>()
   let stoppedAtCut = false
   const route = RepeatRunRepository.prototype.admitWorkRequest
   const pause = vi.spyOn(RepeatRunRepository.prototype, 'admitWorkRequest').mockImplementation(async function (
@@ -179,7 +179,7 @@ export async function runHandoffApproval({ restart }: { restart: boolean }): Pro
         .toEqual([{ execution_id: executionId }])
       expect((await f.db.pool.query('select request_id from run_work_requests where run_id=$1', [f.f.run.id])).rows)
         .toEqual([])
-      const closing = deferred<void>()
+      const closing = rejectableDeferred<void>()
       const closeForRestart = runtime.native.closeForRestart.bind(runtime.native)
       const close = vi.spyOn(runtime.native, 'closeForRestart').mockImplementation(() => {
         const task = closeForRestart()

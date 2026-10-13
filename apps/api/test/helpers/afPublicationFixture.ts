@@ -36,7 +36,8 @@ import type { CodexFileHostLease } from '../../src/modules/harnesses/codexFiles/
 import type { NativeHarnessSessionManager, NativeHistory, NativeTurnInput } from '../../src/modules/harnesses/port.js'
 import { PostgresWorkflowRepository } from '../../src/modules/workflows/postgres.js'
 import { registerAgentChatRoutes } from '../../src/routes/agentChat.js'
-import { agent3Database, candidateFor, deferred, seedAgent3 } from './wave25Agent3.js'
+import { agent3Database, candidateFor, seedAgent3 } from './wave25Agent3.js'
+import { rejectableDeferred } from './deferred.js'
 
 export const pin = (value: FileWithRevision): MessageAttachmentRef => ({ fileId: value.file.fileId, revisionId: value.revision.revisionId })
 export async function waitFor(check: () => Promise<boolean>): Promise<void> {
@@ -51,7 +52,7 @@ class PausedNative implements NativeHarnessSessionManager {
   steerCalls = 0
   starts = 0
   onFinish: (() => Promise<void>) | undefined
-  private gate: ReturnType<typeof deferred<void>> | undefined
+  private gate: ReturnType<typeof rejectableDeferred<void>> | undefined
   private histories = new Map<string, NativeHistory>()
   async capabilities() {
     return { provider: 'codex' as const, providerVersion: 'fixture-1', persistentSessions: true, reconnect: true,
@@ -69,7 +70,7 @@ class PausedNative implements NativeHarnessSessionManager {
     const id = randomUUID()
     const history: NativeHistory = { correlationId: input.clientCorrelationId, nativeTurnId: id, events: [], pendingInteractions: [] }
     this.histories.set(input.clientCorrelationId, history)
-    const gate = this.holdNext ? deferred() : undefined
+    const gate = this.holdNext ? rejectableDeferred() : undefined
     this.holdNext = false; this.gate = gate
     await input.onSubmitted?.(id)
     if (gate) await gate.promise

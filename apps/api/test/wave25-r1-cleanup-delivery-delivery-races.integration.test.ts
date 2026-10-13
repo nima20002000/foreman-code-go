@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
+import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { approvalResponse } from './helpers/approvalResponse.js'
 import { cleanupDeliveryFixtures, within } from './helpers/cleanupDelivery.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 describe.skipIf(!postgresEnabled)('PostgreSQL approval delivery races', () => {
   const { fixture } = cleanupDeliveryFixtures()
 
   it('Stop commits independently while the actual provider response remains unresolved', async () => {
-    const f = await fixture(), entered = deferred(), release = deferred()
+    const f = await fixture(), entered = rejectableDeferred(), release = rejectableDeferred()
     f.provider.beforeRespond = async () => { entered.resolve(); await release.promise }
     const operation = f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(f.interaction))
     const observed = operation.then((value) => ({ value }), (error: unknown) => ({ error }))
@@ -23,7 +24,7 @@ describe.skipIf(!postgresEnabled)('PostgreSQL approval delivery races', () => {
   }, 60000)
 
   it('a changed native generation cannot consume the old provider response', async () => {
-    const f = await fixture(), entered = deferred(), release = deferred()
+    const f = await fixture(), entered = rejectableDeferred(), release = rejectableDeferred()
     f.provider.beforeRespond = async () => { entered.resolve(); await release.promise }
     const operation = f.service.respond({ kind: 'user', principal: f.principal }, approvalResponse(f.interaction))
     const observed = operation.then(() => undefined, (error: unknown) => error)

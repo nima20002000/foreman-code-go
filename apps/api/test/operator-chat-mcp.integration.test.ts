@@ -16,8 +16,9 @@ import { PostgresOperatorConversationRepository } from '../src/modules/conversat
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { PostgresFoundationSettingsRepository } from '../src/modules/settings/foundation.js'
 import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'
-import { deferred, ReviewManager } from './fixtures/agent1OperatorChat.js'
+import { ReviewManager } from './fixtures/agent1OperatorChat.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', () => {
   let database: Awaited<ReturnType<typeof agent3Database>>
@@ -172,8 +173,8 @@ describe.skipIf(!postgresEnabled)('Authenticated Operator conversation tools', (
     const earlier = { requestId: randomUUID(), content: 'Protected earlier transcript' }
     await repository.beginTurn(conversation.id, earlier, owner.principal.id)
     await repository.finish(conversation.id, earlier.requestId, { outcome: 'succeeded' })
-    const admitted = deferred()
-    const resume = deferred()
+    const admitted = rejectableDeferred()
+    const resume = rejectableDeferred()
     const configuration = repository.configuration.bind(repository)
     const lookup = vi.spyOn(repository, 'configuration').mockImplementation(async (id) => {
       const saved = await configuration(id)

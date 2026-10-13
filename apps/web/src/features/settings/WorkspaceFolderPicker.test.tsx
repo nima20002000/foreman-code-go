@@ -11,6 +11,7 @@ import { setMockScenario } from '../../shared/mocks/scenarios'
 import { mainRoot } from './workspaceBoundLocation.fixtures'
 import type { BoundFolderBrowser } from '../../shared/api/workspaceBoundLocation'
 import { WorkspaceFolderPicker } from './WorkspaceFolderPicker'
+import { deferred } from '../../test/deferred'
 
 type DirectoryPage = NonNullable<ReturnType<typeof useHarnessDirectories>['data']>
 const root = { id: 'projects', label: 'Projects', path: '/projects' }
@@ -26,11 +27,6 @@ function mount(onSelect = vi.fn<(path: string) => Promise<void>>().mockResolvedV
   clients.push(client)
   render(<QueryClientProvider client={client}><WorkspaceFolderPicker disabled={false} value={value} onSelect={onSelect} selectionUnconfirmed={selectionUnconfirmed} directoryBinding={directoryBinding} /></QueryClientProvider>)
   return { client, onSelect }
-}
-function deferred() {
-  let resolve!: () => void
-  const promise = new Promise<void>((complete) => { resolve = complete })
-  return { promise, resolve }
 }
 async function openPicker(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: 'Project folder' }))

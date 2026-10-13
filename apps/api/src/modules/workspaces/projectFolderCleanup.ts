@@ -1,3 +1,4 @@
+import { errorMessage } from '../../shared/errorMessage.js'
 import { lstat, realpath, rm } from 'node:fs/promises'
 import { isAbsolute, relative, sep } from 'node:path'
 import { z } from 'zod'
@@ -84,6 +85,6 @@ export async function cleanupWorkspaceProjectFolders(pool: pg.Pool, principal: M
       values ($1, $2, 'workspace.folder.cleanup', 'workspaces:cleanup', 'failed', $3::jsonb)`,
     [principal.id, source, JSON.stringify({ commandId, workspaceIds: ids })]).catch(() => undefined)
     throw new DomainError('WORKSPACE_FOLDER_CLEANUP_FAILED',
-      `The workspace was archived, but its project folder could not be removed. Retry removal. ${error instanceof Error ? error.message : ''}`, 503)
+      `The workspace was archived, but its project folder could not be removed. Retry removal. ${errorMessage(error, '')}`, 503)
   } finally { client.release() }
 }

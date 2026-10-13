@@ -4,7 +4,8 @@ import { OperatorChatService, type OperatorChatAuthority } from '../src/modules/
 import { nativeCorrelation, type ConversationRow } from '../src/modules/conversations/operatorChatRepository.js'
 import type { NativeSessionStart, NativeTurnInput } from '../src/modules/harnesses/port.js'
 import type { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
-import { deferred, eventually, memoryConversation, operator, ReviewManager } from './fixtures/agent1OperatorChat.js'
+import { eventually, memoryConversation, operator, ReviewManager } from './fixtures/agent1OperatorChat.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 const configuration: OperatorConfigurationVersion = {
   id: 'operator-v1', operatorId: 'operator-one', version: 1, harness: DEFAULT_HARNESS_DEFAULTS.codex,
@@ -205,7 +206,7 @@ describe('PR17 Agent3: durable Operator chat recovery', () => {
     const f = fixture(); seed(f)
     f.row.pending_interaction = approval(f); f.row.response_delivery = 'offered'
     f.manager.nativeHistory.pendingInteractions = [f.row.pending_interaction]
-    const entered = deferred(), held = deferred()
+    const entered = rejectableDeferred(), held = rejectableDeferred()
     f.manager.respond = async (_session, requestId) => {
       f.manager.responses.push(requestId); entered.resolve(); await held.promise
       if (responseOutcome === 'uncertain') throw new Error('Response acknowledgement lost')
@@ -264,7 +265,7 @@ describe('PR17 Agent3: durable Operator chat recovery', () => {
     await f.chat.shutdown()
   })
   for (const phase of ['prepare', 'create'] as const) it(`cancel during ${phase} never submits a prompt, even if creation returns an identity`, async () => {
-    const f = fixture(), entered = deferred(), gate = deferred()
+    const f = fixture(), entered = rejectableDeferred(), gate = rejectableDeferred()
     if (phase === 'prepare') f.authority.prepare = async () => {
       entered.resolve(); await gate.promise
       return { agentId: configuration.operatorId, variables: {} }

@@ -1,5 +1,6 @@
+import { pathExists } from '../../shared/pathExists.js'
 import { createHash, randomUUID } from 'node:crypto'
-import { lstat, mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { PreparedCiRuntimeSchema, type PreparedCiRuntime } from '@foreman-code/contracts'
@@ -18,15 +19,6 @@ const CacheSchema = z.object({
   contextReceiptDigest: DigestSchema,
 }).strict()
 
-async function exists(path: string): Promise<boolean> {
-  try {
-    await lstat(path)
-    return true
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
-    throw error
-  }
-}
 
 function cachePath(installer: string, inputDigest: string): string {
   return join(installer, 'runtime-cache', DigestSchema.parse(inputDigest) + '.json')
@@ -50,7 +42,7 @@ export async function readCiRuntimeCache(input: {
   imageExists(imageId: string): Promise<boolean>
 }): Promise<CachedCiRuntimeImage | null> {
   const path = cachePath(input.installer, input.inputDigest)
-  if (!await exists(path)) return null
+  if (!await pathExists(path)) return null
   const bytes = await readProtectedRuntimeFile({ path, ownerUid: process.getuid!() })
   let value: unknown
   try { value = JSON.parse(bytes.toString('utf8')) }
@@ -62,11 +54,11 @@ export async function readCiRuntimeCache(input: {
   if (!cached.success || cached.data.inputDigest !== input.inputDigest) return null
   const { image: prepared, seedReceiptDigest, contextReceiptDigest } = cached.data
   if (!ownsArtifacts(input.installer, prepared)) return null
-  if (!await exists(prepared.seedReceiptPath) || !await exists(prepared.contextReceiptPath)) return null
+  if (!await pathExists(prepared.seedReceiptPath) || !await pathExists(prepared.contextReceiptPath)) return null
   if (await receiptDigest(prepared.seedReceiptPath) !== seedReceiptDigest
     || await receiptDigest(prepared.contextReceiptPath) !== contextReceiptDigest) return null
   if (prepared.unitCodex) {
-    if (!await exists(prepared.unitCodex.sourceExecutable)) return null
+    if (!await pathExists(prepared.unitCodex.sourceExecutable)) return null
     const binary = await fingerprintQualificationPath(prepared.unitCodex.sourceExecutable, true)
     if (binary.sha256 !== prepared.unitCodex.binarySha256) return null
   }

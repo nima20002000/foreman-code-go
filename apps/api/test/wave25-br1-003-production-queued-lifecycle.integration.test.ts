@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
-import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
+import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { productionFixtures, response, checkpointCut, expireAbandonedClaims, recover } from './helpers/approvalCheckpointProduction.js'
+import { rejectableDeferred } from './helpers/deferred.js'
 
 describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoint recovery: queued-lifecycle', () => {
   const fixture = productionFixtures()
 
   it.each(['lease_expiry', 'stop'] as const)(
     '%s while the service resume is queued cannot commit a checkpoint or repeat delivery', async (race: 'lease_expiry' | 'stop' | 'revoked_authority' | 'closed_execution') => {
-      const f = await fixture(), waiting = deferred(), release = deferred(), queued = deferred()
+      const f = await fixture(), waiting = rejectableDeferred(), release = rejectableDeferred(), queued = rejectableDeferred()
       const update = f.runs.updateState.bind(f.runs), resume = f.engine.resumeInteraction.bind(f.engine)
       let gated = false
       const stateSpy = vi.spyOn(f.runs, 'updateState').mockImplementation(async (...args) => {
