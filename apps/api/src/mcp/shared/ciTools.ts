@@ -23,6 +23,7 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'gate=true with suite=integration, scope=full and no file or partition selection requests a complete '
   + 'typecheck+lint+unit+integration gate. Only Operators, including orchestrators using Operator credentials, can request gates; '
   + 'all existing CI start, cancellation and workspace grants still apply. Gates cannot be superseded. '
+  + 'Test durations are learned automatically in the CI database; no committed timing files or manual timing updates are required. '
   + 'Integration files are assigned longest-first from recorded durations: each build computer runs one exclusive gate job '
   + 'with CPU/memory-sized internal shards (12 on a sufficiently provisioned 16-core computer). '
   + 'Cloud slots run checks first and integration overflow that reduces the predicted build-computer critical path. '

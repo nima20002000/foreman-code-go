@@ -97,7 +97,8 @@ Git. Make focused changes and preserve unrelated worktree edits.
 Every package lint enforces these as errors (local rules live in
 `scripts/eslint-plugin-foreman`). Files, test names and cycles listed in
 `scripts/lint-allowlist.json` predate a rule; never add to that list, fix the
-code instead. `node scripts/lint-baseline.mjs` prunes entries that pass.
+code instead. Exemptions use content IDs so unchanged renames keep their exemptions, including in the cloud mirror.
+Editing an exempt file requires fixing its violations. `node scripts/lint-baseline.mjs` prunes entries that pass.
 
 - `max-lines-per-function` 200 outside tests: oversized functions hide unrelated
   responsibilities.

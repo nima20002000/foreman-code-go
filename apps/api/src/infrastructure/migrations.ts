@@ -138,9 +138,6 @@ import { fileToolsMigration } from '../modules/files/tools/migration.js'
 import { harnessQualificationMigration } from './harnessQualificationMigration.js'
 import { workspaceProvisioningMigration } from './workspaceProvisioningMigration.js'
 
-// Reserved migration blocks: HAP-01 100-109, HAP-02 200-209, HAP-03 300-309,
-// HAP-04 400-409, HAP-05 500-509, HAP-06 600-609, HAP-07 700-709.
-// Explicit versions prevent sibling worktrees from colliding when integrated.
 export const migrations = [
   { version: 1, sql: `
     create table if not exists application_migrations (
@@ -937,7 +934,16 @@ export const migrations = [
   ciResultCacheMigration,
 ] as const
 
+export function assertMigrationVersions(entries: readonly { version: number }[]): void {
+  const versions = new Set<number>()
+  for (const { version } of entries) {
+    if (versions.has(version)) throw new Error(`Duplicate application migration version: ${version}`)
+    versions.add(version)
+  }
+}
+
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
+  assertMigrationVersions(migrations)
   return withTransaction(pool, async (client) => {
     const schema = (await client.query<{ schema: string | null }>('select current_schema() as schema')).rows[0]?.schema
     if (!schema) throw new Error('Application migrations require a current PostgreSQL schema.')

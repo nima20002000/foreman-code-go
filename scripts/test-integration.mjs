@@ -168,9 +168,10 @@ export function orderByDuration(files, durations) {
   return [...files].sort((a, b) => duration(b) - duration(a))
 }
 
-/** Main's learned durations when the host CI runner provides them, otherwise the committed ones. */
+/** Main supplies expectations from the CI database; unmeasured files use the scheduler's fallback. */
 export function integrationDurationsPath(environment) {
-  return readProductEnvironment(environment, 'INTEGRATION_DURATIONS') || join(root, 'scripts', 'integration-durations.json')
+  const snapshot = join(root, 'scripts/ci-learned-durations.json')
+  return readProductEnvironment(environment, 'INTEGRATION_DURATIONS') || (existsSync(snapshot) ? snapshot : null)
 }
 
 /** Wall time of each file that passed on its first attempt; failed and hung files say nothing about their usual time. */
@@ -180,6 +181,7 @@ export function measuredDurations(firstPass) {
 }
 
 export function readDurations(path) {
+  if (!path) return {}
   try {
     const durations = JSON.parse(readFileSync(path, 'utf8'))
     return durations && typeof durations === 'object' && !Array.isArray(durations) ? durations : {}

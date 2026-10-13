@@ -106,14 +106,8 @@ unit_other() {
     "--outputFile.json=$reports/contracts.json" || code=$?
   (cd apps/worker && node_tests "$reports/worker.json" test/*.test.mjs) || status=$?
   if [ "$code" = 0 ]; then code="$status"; fi
-  local script_files=()
-  mapfile -t script_files < <(node --input-type=module -e '
-    import { readFileSync } from "node:fs"
-    const command = JSON.parse(readFileSync("package.json", "utf8")).scripts["test:scripts"]
-    console.log(command.split(/\s+/).filter(value => /^scripts\/.*\.test\.mjs$/.test(value)).join("\n"))
-  ')
   status=0
-  node_tests "$reports/scripts.json" "${script_files[@]}" || status=$?
+  node_tests "$reports/scripts.json" 'scripts/**/*.test.mjs' || status=$?
   if [ "$code" = 0 ]; then code="$status"; fi
   record_tests "$reports/contracts.json" "$reports/worker.json" "$reports/scripts.json"
   return "$code"

@@ -157,3 +157,8 @@ fields across reloads and application navigation. This recovery checkpoint is br
 interaction state, not a saved WorkflowVersion or an Operator-readable shared draft.
 It does not publish edits or grant permissions. Operator authoring continues through
 the authenticated shared Stage/Save/read services; browser recovery adds no MCP action.
+
+CI tools learn test-file durations in the CI database and pass a shared snapshot
+to host and cloud runners. Operators do not maintain duration JSON files or supply
+timing inputs; existing CI input schemas and scope checks apply. Script-test
+inventory follows recursive discovery rather than a manually curated list.

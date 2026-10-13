@@ -1,6 +1,6 @@
-// Unit slices use the same committed timings on every runner. DURATIONS_INPUT can supply a newer shared snapshot.
+// Unit slices use the CI database snapshot supplied through DURATIONS_INPUT.
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, matchesGlob, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -70,7 +70,8 @@ if (process.argv[1] && import.meta.url === `file://${resolve(process.argv[1])}`)
     const tracked = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\0')
     const heavy = readDurations(resolve(root, 'apps/web/heavy-tests.json')).files
     const files = unitFiles(tracked, suite, heavy)
-    const durations = readDurations(process.env.DURATIONS_INPUT || resolve(root, 'scripts/unit-durations.json'))
+    const snapshot = process.env.DURATIONS_INPUT || resolve(root, 'scripts/ci-learned-durations.json')
+    const durations = existsSync(snapshot) ? readDurations(snapshot) : JSON.parse(process.env.CI_DURATIONS || '{}')
     const prefix = suite === 'unit-api' ? 'apps/api/' : 'apps/web/'
     const selected = durationSlice(files, durations, argument)
     if (!selected.length) throw new Error('This unit slice has no files')

@@ -151,7 +151,7 @@ export function expectedPortions(root, suite) {
 }
 
 const QUALIFICATION_SUBSET = 'scripts/integration-qualification.json'
-const INTEGRATION_DURATIONS = 'scripts/integration-durations.json'
+const INTEGRATION_DURATIONS = 'scripts/ci-learned-durations.json'
 
 /** One deterministic, duration-balanced slice of the integration files: the longest files go first, each to the
  * partition with the least recorded time. Files without a recorded duration count as the median. */
@@ -214,8 +214,7 @@ export function captureVerificationInventory(root, suite, { qualification = fals
     } else if (portion.key === 'apps/web:test:run-graph-smoke') {
       selected = ['apps/web/src/features/workflow-board/currentSource.smoke.mjs']
     } else {
-      const script = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).scripts['test:scripts']
-      selected = script.split(/\s+/).filter(value => /^scripts\/.*\.test\.mjs$/.test(value))
+      selected = files.filter(path => /^scripts\/.*\.test\.mjs$/.test(path))
     }
     if (!selected.length) throw new Error(`Empty required test inventory: ${portion.key}`)
     return { ...portion, files: selected.sort() }

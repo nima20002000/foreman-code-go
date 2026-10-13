@@ -248,3 +248,16 @@ milliseconds. These include server startup, importing and applying migrations
 when needed, and cloning one database. The separate `*-server-startup` phases
 measure startup alone. Run this through Foreman CI on a build computer or a
 Docker-capable cloud runner; do not run it on the Agent computer.
+
+Repository hygiene is automatic: `test:scripts` discovers every `scripts/**/*.test.mjs`,
+including nested helpers, and verification captures the same inventory. Application
+migrations retain their stored versions and registration order; startup rejects
+duplicate versions before acquiring a database connection. No migration ranges
+need to be reserved between worktrees.
+
+Test-file durations live in `ci_file_durations` and finished `ci_runs`. Host and
+cloud runners receive the same database snapshot for planning; unmeasured files
+use median or equal weights. Duration artifacts are transient report inputs and
+outputs, including `scripts/ci-learned-durations.json` in generated cloud snapshots.
+Do not commit timing measurements to the source repository. Operator MCP CI tools
+use this automatically without additional input, grants, or manual updates.
