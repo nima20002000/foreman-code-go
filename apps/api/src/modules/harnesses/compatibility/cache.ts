@@ -7,8 +7,9 @@ import { z } from 'zod'
 import { HarnessCompatibilityReasonSchema, type CompatibilityHarness } from '@foreman-code/contracts'
 
 export const CompatibilityCacheEntrySchema = z.object({
-  format: z.literal(1), key: z.string().regex(/^[a-f0-9]{64}$/),
+  format: z.literal(2), key: z.string().regex(/^[a-f0-9]{64}$/),
   harness: z.literal('codex'),
+  installedVersion: z.string().min(1).max(100),
   checkedAt: z.string().datetime(), expiresAt: z.string().datetime(),
   status: z.enum(['probe-passed', 'probe-failed']),
   reason: HarnessCompatibilityReasonSchema.nullable(),
@@ -21,7 +22,7 @@ export interface CompatibilityCache {
 }
 export function compatibilityCacheDirectory(environment: NodeJS.ProcessEnv = process.env): string {
   const configured = environment.XDG_CACHE_HOME
-  return join(configured && isAbsolute(configured) ? configured : join(homedir(), '.cache'), 'graphql', 'harness-compatibility-v1')
+  return join(configured && isAbsolute(configured) ? configured : join(homedir(), '.cache'), 'graphql', 'harness-compatibility-v2')
 }
 
 /** One bounded, atomically replaced record per provider. No DB or network dependency. */
