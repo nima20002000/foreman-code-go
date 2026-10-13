@@ -56,7 +56,7 @@ export class HostHarnessOverrideService {
       ...value, qualification: 'retired', retirementMessage: RETIRED_OPENCODE_MESSAGE,
     }
     if (!value.enabled) return { ...value, qualification: 'disabled' }
-    if (this.profileChecks?.pending(value.target.hostRef)) return { ...value, qualification: 'qualifying' }
+    if (this.profileChecks?.pending(value)) return { ...value, qualification: 'qualifying' }
     // Missing/remote failed evidence remains unavailable, never substitutes local discovery.
     const evidence = await this.evidence(value, client).catch(fallbackOnError(null, 'harness', 'read harness qualification evidence'))
     const qualification = !evidence ? 'unqualified' : harnessHostKey(evidence.target.hostRef) !== harnessHostKey(value.target.hostRef)

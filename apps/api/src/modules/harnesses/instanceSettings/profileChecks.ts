@@ -36,6 +36,14 @@ export interface HostHarnessProfileQualifier {
 }
 const sameTarget = (a: HostHarnessOverride['target'], b: HostHarnessOverride['target']) => harnessHostKey(a.hostRef) === harnessHostKey(b.hostRef)
   && a.applicationInstallationId === b.applicationInstallationId && a.harnessInstallationId === b.harnessInstallationId && a.installationFingerprint === b.installationFingerprint
+type ProfileCheckSelection = Pick<HostHarnessOverride, 'instanceId' | 'revision' | 'driverId' | 'target'>
+interface AutomaticProfileCheckBatch {
+  hostKey: string
+  driverId?: string
+  pendingProfiles?: Set<string>
+}
+const profileKey = (value: ProfileCheckSelection) => `${value.instanceId}:${value.revision}`
+const automaticChecksPerHost = 2
 
 export function nativeProfileCheckId(mainId: string, principalId: string, commandId: string): string {
   const hex = createHash('sha256').update(JSON.stringify(['harness.instance.check', mainId, principalId, commandId])).digest('hex').slice(0, 32)
@@ -46,9 +54,12 @@ export function nativeProfileCheckId(mainId: string, principalId: string, comman
 export class HostHarnessInstanceProfileChecks {
   private readonly stopping = new AbortController()
   private readonly flights = new Set<Promise<unknown>>()
-  private readonly reconnects = new Map<string, { generation: string; task: Promise<void> }>()
+  private readonly hostChecks = new Map<string, Set<Promise<void>>>()
+  private readonly reconnects = new Map<string, {
+    generation: string; task: Promise<void>; batch: AutomaticProfileCheckBatch
+  }>()
   private readonly updates = new Map<string, {
-    hostKey: string; generation: string; abort: AbortController; task: Promise<void>
+    generation: string; abort: AbortController; task: Promise<void>; batch: AutomaticProfileCheckBatch
   }>()
   constructor(private readonly settings: HarnessInstanceSettingsRepository, private readonly proofs: HostHarnessProfileEvidenceRepository,
     private readonly commands: PostgresCommandCoordinator, private readonly authority: HostHarnessOverrideAuthority,
@@ -76,8 +87,9 @@ export class HostHarnessInstanceProfileChecks {
     const previous = this.reconnects.get(key)
     if (previous?.generation === generation) return previous.task
     const signal = AbortSignal.any([this.stopping.signal, connectionSignal])
-    const task = this.recheckProfiles(host, binding, signal, currentBinding)
-    const entry = { generation, task }
+    const batch: AutomaticProfileCheckBatch = { hostKey: key }
+    const task = this.recheckProfiles(host, binding, signal, currentBinding, batch)
+    const entry = { generation, task, batch }
     this.reconnects.set(key, entry)
     this.flights.add(task)
     const cleanup = () => {
@@ -87,16 +99,19 @@ export class HostHarnessInstanceProfileChecks {
     void task.then(cleanup, cleanup)
     return task
   }
-  assertReady(host: CanonicalMachineReference): void {
-    if (this.pending(host)) {
+  assertReady(profile: ProfileCheckSelection): void {
+    if (this.pending(profile)) {
       throw new DomainError('HARNESS_PROFILE_CHECK_PENDING',
-        'This computer is checking its harness profiles after an installation or connection change. Retry Run start shortly.',
+        'The selected harness profile is being checked after an installation or connection change. Retry Run start shortly.',
         503, { reason: 'automatic_profile_check_pending', retryable: true })
     }
   }
-  pending(host: CanonicalMachineReference): boolean {
-    const key = harnessHostKey(host)
-    return this.reconnects.has(key) || [...this.updates.values()].some(update => update.hostKey === key)
+  pending(profile: ProfileCheckSelection): boolean {
+    const hostKey = harnessHostKey(profile.target.hostRef)
+    const batches = [...this.reconnects.values(), ...this.updates.values()]
+    return batches.some(({ batch }) => batch.hostKey === hostKey
+      && (!batch.driverId || batch.driverId === profile.driverId)
+      && (!batch.pendingProfiles || batch.pendingProfiles.has(profileKey(profile))))
   }
   async failure(value: HostHarnessOverride, client?: pg.PoolClient) {
     return (await this.proofs.latest(value.instanceId, value.revision, client))?.failure
@@ -109,12 +124,13 @@ export class HostHarnessInstanceProfileChecks {
     const abort = new AbortController()
     previous?.abort.abort(new DomainError('HARNESS_INVENTORY_STALE', 'The harness installation changed again.', 409))
     const signal = AbortSignal.any([input.signal, abort.signal, this.stopping.signal])
+    const batch: AutomaticProfileCheckBatch = { hostKey, driverId: input.driverId }
     const task = Promise.resolve().then(async () => {
       if (previous) await Promise.allSettled([previous.task])
       signal.throwIfAborted()
-      await this.recheckInstalledProfiles({ ...input, signal })
+      await this.recheckInstalledProfiles({ ...input, signal }, batch)
     })
-    const entry = { hostKey, generation: input.generation, abort, task }
+    const entry = { generation: input.generation, abort, task, batch }
     this.updates.set(key, entry)
     this.flights.add(task)
     const cleanup = () => {
@@ -124,7 +140,7 @@ export class HostHarnessInstanceProfileChecks {
     void task.then(cleanup, cleanup)
     return task
   }
-  private async recheckInstalledProfiles(input: AutomaticHostProfileCheck): Promise<void> {
+  private async recheckInstalledProfiles(input: AutomaticHostProfileCheck, batch: AutomaticProfileCheckBatch): Promise<void> {
     const profiles = await this.settings.list(input.host, input.applicationInstallationId)
     const qualified: HostHarnessOverride[] = []
     for (const value of profiles) {
@@ -133,13 +149,17 @@ export class HostHarnessInstanceProfileChecks {
         || value.driverId === 'opencode' || value.configuration.harness === 'opencode') continue
       if (await this.proofs.previouslyQualified(value)) qualified.push(value)
     }
+    batch.pendingProfiles = new Set(qualified.map(profileKey))
     if (!qualified.length) return
+    const ordered = await this.settings.prioritizeForRuns(qualified)
     let preparationFailure: unknown
     try {
-      if (qualified.some(value => value.driverId === 'codex')) await input.beforeChecks?.()
+      if (qualified.some(value => value.driverId === 'codex') && input.beforeChecks) {
+        await this.withHostCheckSlot(input.host, input.signal, input.beforeChecks)
+      }
     } catch (error) { preparationFailure = error }
     const failures: unknown[] = []
-    for (const saved of qualified) {
+    await this.recheckInParallel(ordered, input.signal, async saved => {
       input.signal.throwIfAborted()
       const installation = input.installation(saved)
       const checkId = randomUUID()
@@ -150,6 +170,7 @@ export class HostHarnessInstanceProfileChecks {
         const target = { ...saved.target, harnessInstallationId: installation.harnessInstallationId,
           installationFingerprint: installation.installationFingerprint }
         if (!sameTarget(target, saved.target)) {
+          batch.pendingProfiles!.add(profileKey({ ...saved, revision: saved.revision + 1 }))
           value = await this.settings.readAuthorized(async client => {
             await input.authorize(client)
             input.signal.throwIfAborted()
@@ -163,6 +184,7 @@ export class HostHarnessInstanceProfileChecks {
         const result = await this.settings.withProfileConnection(client =>
           this.qualifyProfile(client, request, checkId, input.authorize, bounded, 'system'))
         if (result.proof.completedNativeQualification) await this.nativeRetention!.refresh(result.override, bounded)
+        batch.pendingProfiles!.delete(profileKey(value))
       } catch (error) {
         input.signal.throwIfAborted()
         const failure = qualificationError(error)
@@ -196,13 +218,14 @@ export class HostHarnessInstanceProfileChecks {
         })
         failures.push(error)
       }
-    }
+    })
     if (failures.length) throw new AggregateError(failures, 'Automatic harness profile checks failed.')
   }
   private async recheckProfiles(host: CanonicalMachineReference, binding: Readonly<DeviceSessionBinding>,
-    signal: AbortSignal, currentBinding: () => Readonly<DeviceSessionBinding> | null): Promise<void> {
+    signal: AbortSignal, currentBinding: () => Readonly<DeviceSessionBinding> | null,
+    batch: AutomaticProfileCheckBatch): Promise<void> {
     const profiles = await this.settings.list(host, binding.workerInstallationId)
-    const failures: unknown[] = []
+    const qualified: HostHarnessOverride[] = []
     for (const value of profiles) {
       signal.throwIfAborted()
       if (!value.enabled || value.driverId === 'opencode' || value.configuration.harness === 'opencode') continue
@@ -210,6 +233,14 @@ export class HostHarnessInstanceProfileChecks {
       if (!previous?.qualified || previous.authenticated !== true || previous.compatible !== true) continue
       const generation = harnessConnectionGeneration(binding)
       if (previous.connectionGeneration === generation) continue
+      qualified.push(value)
+    }
+    batch.pendingProfiles = new Set(qualified.map(profileKey))
+    if (!qualified.length) return
+    const ordered = await this.settings.prioritizeForRuns(qualified)
+    const failures: unknown[] = []
+    await this.recheckInParallel(ordered, signal, async value => {
+      const generation = harnessConnectionGeneration(binding)
       const checkId = nativeProfileCheckId(binding.mainId, 'system',
         `${generation}:${value.instanceId}:${value.revision}`)
       const input = { commandId: checkId, instanceId: value.instanceId,
@@ -229,6 +260,7 @@ export class HostHarnessInstanceProfileChecks {
         const result = await this.settings.withProfileConnection(client =>
           this.qualifyProfile(client, input, checkId, authorize, bounded, 'system'))
         if (result.proof.completedNativeQualification) await this.nativeRetention!.refresh(result.override, bounded)
+        batch.pendingProfiles!.delete(profileKey(value))
       } catch (error) {
         await this.settings.readAuthorized(client => client.query(`insert into management_audit
           (principal_id,source,action,target_key,outcome,details)
@@ -237,8 +269,44 @@ export class HostHarnessInstanceProfileChecks {
           code: error instanceof DomainError ? error.code : 'HARNESS_PROFILE_CHECK_FAILED' })]))
         failures.push(error)
       }
-    }
+    })
     if (failures.length) throw new AggregateError(failures, 'Automatic Worker profile checks failed.')
+  }
+  private async recheckInParallel(profiles: HostHarnessOverride[], signal: AbortSignal,
+    check: (value: HostHarnessOverride) => Promise<void>): Promise<void> {
+    let next = 0
+    const worker = async () => {
+      while (next < profiles.length) {
+        signal.throwIfAborted()
+        const value = profiles[next++]!
+        await this.withHostCheckSlot(value.target.hostRef, signal, () => check(value))
+      }
+    }
+    const workers = Array.from({ length: Math.min(automaticChecksPerHost, profiles.length) }, worker)
+    const results = await Promise.allSettled(workers)
+    const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+    if (errors.length === 1) throw errors[0]
+    if (errors.length) throw new AggregateError(errors, 'Automatic harness profile checks interrupted.')
+  }
+  private async withHostCheckSlot(host: CanonicalMachineReference, signal: AbortSignal,
+    check: () => Promise<void>): Promise<void> {
+    const key = harnessHostKey(host)
+    const active = this.hostChecks.get(key) ?? new Set<Promise<void>>()
+    this.hostChecks.set(key, active)
+    while (active.size >= automaticChecksPerHost) {
+      await Promise.race(active)
+      signal.throwIfAborted()
+    }
+    signal.throwIfAborted()
+    let release!: () => void
+    const slot = new Promise<void>(resolve => { release = resolve })
+    active.add(slot)
+    try {
+      await check()
+    } finally {
+      active.delete(slot)
+      release()
+    }
   }
   async close(): Promise<void> {
     this.stopping.abort(new Error('Host profile checks are stopping.'))
