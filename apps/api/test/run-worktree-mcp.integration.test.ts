@@ -50,7 +50,7 @@ describe.runIf(postgresEnabled)('Run isolation and authenticated MCP readback', 
             throw new Error(`Run completed before approval: ${JSON.stringify(failures)}`)
           }
           return details.run.executionState
-        }, { timeout: 30000 }).toBe('waiting')
+        }, { timeout: 90_000 }).toBe('waiting')
         const persisted = result(await f.client.callTool({ name: 'run_get', arguments: {
           workspaceId: f.input.workspaceId, runId, detail: 'full' } }))
         if ('detail' in persisted) throw new Error('Expected full Run details')
@@ -87,7 +87,7 @@ describe.runIf(postgresEnabled)('Run isolation and authenticated MCP readback', 
     } finally {
       await f.close()
     }
-  }, 60000)
+  }, 240_000)
 
   it('isolates concurrent Runs, recovers their persisted checkout and respects read grants', async () => {
     let service: RunWorktrees

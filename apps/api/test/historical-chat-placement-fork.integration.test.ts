@@ -40,13 +40,15 @@ it('waits for a historical native chat turn that completes after thirty seconds'
   }
 })
 
-it('bounds a pending fake-provider chat turn to fifteen seconds', async () => {
+it('bounds a pending native chat turn to ninety seconds', async () => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
   let settled = false
   const result = waitForHistoricalChatTurn(async () => agentChatFixtures.active, 'request-1', 'Worker chat fork completion')
     .catch(error => { settled = true; return error as Error })
   try {
-    await vi.advanceTimersByTimeAsync(15_001)
+    await vi.advanceTimersByTimeAsync(89_999)
+    expect(settled).toBe(false)
+    await vi.advanceTimersByTimeAsync(2)
     expect(settled).toBe(true)
     expect(await result).toMatchObject({ message: 'Timed out waiting for Worker chat fork completion.' })
   } finally {
