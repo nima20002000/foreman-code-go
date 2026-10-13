@@ -1,3 +1,4 @@
+import { createTestPool } from './helpers/testPool.mjs'
 import { readUntil } from './helpers/observableCondition.js'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
@@ -8,7 +9,7 @@ import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import pg from 'pg'
 import { expect, it } from 'vitest'
-import { assertTestDatabase, completeTestResourceCleanup, dropFixtureSchema, provisionTestResources,
+import { assertTestDatabase, completeTestResourceCleanup, dropFixtureDatabase, provisionTestResources,
   registerTestResourceCleanup, removeFixtureDirectory, testAdminPool } from '../../../scripts/test-resources.mjs'
 import { groupUsed, stopGroup } from '../../../scripts/integration-process.mjs'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
@@ -32,27 +33,36 @@ it('retains fixture rows and native state until pending qualification closure is
   const invocation = { directory: process.env.FOREMAN_CODE_TEST_ROOT!, token: process.env.FOREMAN_CODE_TEST_OWNER! }
   const cleanupId = registerTestResourceCleanup(invocation, {
     kind: 'native-qualification', root: fixture.directory, registryDirectory, schema: fixture.schema,
-    databaseUrl: process.env.TEST_DATABASE_URL!,
+    databaseUrl: fixture.pool.options.connectionString!,
   })
   const saved = join(fixture.directory, 'recovery-note.txt')
   const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL!, max: 1 })
+  const inspection = createTestPool({ connectionString: fixture.pool.options.connectionString, max: 1 })
+  const fixtureDatabase = (await fixture.pool.query<{ name: string }>(
+    'select current_database() as name')).rows[0]!.name
   try {
-    await fixture.pool.query('create table retained_fixture(value text)')
-    await fixture.pool.query('insert into retained_fixture values($1)', ['preserved'])
-    await writeFile(saved, 'pending closure')
-    const recovery = registry.reserveLaunch(owner)
-    await expect(registry.closeOwner(owner)).rejects.toThrow('closure remains unconfirmed')
-    await expect(fixture.close()).rejects.toThrow('cleanup remains unconfirmed')
-    expect((await admin.query(`select value from ${fixture.schema}.retained_fixture`)).rows)
-      .toEqual([{ value: 'preserved' }])
-    expect(await readFile(saved, 'utf8')).toBe('pending closure')
-    expect(await registry.abandonReservedLaunch(recovery)).toBe(true)
-    expect(await new NativeProcessRegistry(registryDirectory).closeOwner(owner)).toBe(true)
-    completeTestResourceCleanup(invocation, cleanupId)
-    await dropFixtureSchema(admin, fixture.schema)
+    try {
+      expect((await inspection.query('select current_database() as name')).rows)
+        .toEqual([{ name: fixtureDatabase }])
+      await fixture.pool.query('create table retained_fixture(value text)')
+      await fixture.pool.query('insert into retained_fixture values($1)', ['preserved'])
+      await writeFile(saved, 'pending closure')
+      const recovery = registry.reserveLaunch(owner)
+      await expect(registry.closeOwner(owner)).rejects.toThrow('closure remains unconfirmed')
+      await expect(fixture.close()).rejects.toThrow('cleanup remains unconfirmed')
+      expect((await inspection.query(`select value from ${fixture.schema}.retained_fixture`)).rows)
+        .toEqual([{ value: 'preserved' }])
+      expect(await readFile(saved, 'utf8')).toBe('pending closure')
+      expect(await registry.abandonReservedLaunch(recovery)).toBe(true)
+      expect(await new NativeProcessRegistry(registryDirectory).closeOwner(owner)).toBe(true)
+      completeTestResourceCleanup(invocation, cleanupId)
+    } finally {
+      await inspection.end()
+    }
+    await dropFixtureDatabase(admin, fixtureDatabase)
     await removeFixtureDirectory(fixture.directory)
     expect(existsSync(fixture.directory)).toBe(false)
-    expect((await admin.query('select nspname from pg_namespace where nspname=$1', [fixture.schema])).rows)
+    expect((await admin.query('select datname from pg_database where datname=$1', [fixtureDatabase])).rows)
       .toEqual([])
   } finally {
     await admin.end()
