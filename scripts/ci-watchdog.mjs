@@ -30,7 +30,7 @@ export async function runCiPart(command, { expectedDurationMs, progressFile, res
   let stopping
   const running = new Map()
   const output = (destination, bytes) => {
-    lastProgress = Date.now()
+    if (!running.size) lastProgress = Date.now()
     destination.write(bytes)
   }
   child.stdout.on('data', bytes => output(process.stdout, bytes))
@@ -52,10 +52,10 @@ export async function runCiPart(command, { expectedDurationMs, progressFile, res
       for (const line of lines) {
         const event = JSON.parse(line)
         if (event.type === 'start') running.set(event.id, event)
-        else {
+        else if (event.type === 'finish') {
           running.delete(event.id)
           lastProgress = Date.now()
-        }
+        } else if (event.type === 'output') lastProgress = Date.now()
       }
     }
     const elapsed = Date.now() - started

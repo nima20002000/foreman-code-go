@@ -131,3 +131,30 @@ test('the part deadline stops a process even while it keeps producing output', a
   assert.equal(result.code, 1)
   assert.match(result.reason, /exceeded part deadline 500 ms/)
 })
+
+
+test('runner status heartbeats do not count as progress for an active test', async t => {
+  const result = await watchdogFixture(t, `
+    const { appendFileSync } = require('node:fs')
+    appendFileSync(process.env.CI_PROGRESS_FILE, JSON.stringify({ type: 'start', kind: 'test',
+      id: 'test', file: 'loop.test.ts', name: 'planner never returns' }) + '\\n')
+    setInterval(() => console.log('[integration] PROGRESS: test still running'), 50)
+  `, { deadlineMs: 3000 })
+  assert.equal(result.code, 1)
+  assert.match(result.reason, /no test progress for 1000 ms.*planner never returns/)
+})
+
+test('new per-test output keeps an active test progressing', async t => {
+  const result = await watchdogFixture(t, `
+    const { appendFileSync } = require('node:fs')
+    appendFileSync(process.env.CI_PROGRESS_FILE, JSON.stringify({ type: 'start', kind: 'test',
+      id: 'test', file: 'output.test.ts', name: 'reports progress' }) + '\\n')
+    let count = 0
+    const timer = setInterval(() => {
+      appendFileSync(process.env.CI_PROGRESS_FILE, JSON.stringify({ type: 'output' }) + '\\n')
+      if (++count === 15) clearInterval(timer)
+    }, 100)
+  `)
+  assert.equal(result.code, 0)
+  assert.equal(result.reason, null)
+})

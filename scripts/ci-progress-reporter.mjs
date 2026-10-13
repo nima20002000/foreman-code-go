@@ -32,6 +32,10 @@ export default class CiProgressReporter {
     this.record('finish', module)
   }
 
+  onUserConsoleLog() {
+    writeCiProgressEvent('output', { id: '', file: '' })
+  }
+
   onTestCaseReady(test) {
     this.record('start', test)
   }
