@@ -230,8 +230,8 @@ export async function remoteReviewProduction(options: {
     const access = new PostgresAccessService(db.pool)
     const writer = await access.issue({ name: 'Remote review owner', audience: 'operator',
       expiresAt: new Date(Date.now() + 900_000), grants: [{ actions: ManagementActionSchema.options, scope: {} }] })
-    const devicePort = await freePort()
-    const deviceEndpoint = `wss://127.0.0.1:${devicePort}/device/connect`
+    let devicePort = await freePort()
+    let deviceEndpoint = `wss://127.0.0.1:${devicePort}/device/connect`
     const infrastructure = { mode: 'native' as const,
       installationRefreshIntervalMs: options.installationRefreshIntervalMs,
       deviceListener: { ...tls, host: '127.0.0.1', port: devicePort, advertisedEndpoint: deviceEndpoint } }
@@ -348,7 +348,24 @@ export async function remoteReviewProduction(options: {
         () => `Production Main exited: ${mainFailure}`)
     }
     beginPhase('Main startup')
-    await startMain()
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await startMain()
+        break
+      } catch (error) {
+        if (mainService || attempt >= 2 || main?.exitCode === null || !mainFailure.includes('EADDRINUSE')) {
+          throw error
+        }
+        // Port probes release their sockets before the child binds; another listener can win that race.
+        config.port = await freePort()
+        devicePort = await freePort()
+        deviceEndpoint = `wss://127.0.0.1:${devicePort}/device/connect`
+        infrastructure.deviceListener.port = devicePort
+        infrastructure.deviceListener.advertisedEndpoint = deviceEndpoint
+        await writeFile(mainConfiguration,
+          JSON.stringify({ config, infrastructure, claudeInventory: claudeInventory?.sdk }), { mode: 0o600 })
+      }
+    }
     beginPhase('startup model catalog')
     const clients = new Map<string, Promise<Client>>()
     let startupCatalog: ReturnType<typeof HarnessOptionsResultSchema.parse> | undefined
