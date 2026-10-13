@@ -21,7 +21,13 @@ export function createDatabase(options: DatabaseOptions): Database {
       await queryForReadiness(pool, 'select 1', signal)
     },
     async migrate() {
-      await applyApplicationMigrations(pool)
+      const migrationPool = createPool({ ...options, maxConnections: 1,
+        queryTimeoutMs: 60_000, lockTimeoutMs: 5_000 }, 'graphql-migrations')
+      try {
+        await applyApplicationMigrations(migrationPool)
+      } finally {
+        await migrationPool.end()
+      }
     },
     async close() {
       await pool.end()

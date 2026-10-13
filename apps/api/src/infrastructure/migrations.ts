@@ -1,5 +1,7 @@
 import { runWorktreesMigration } from './runWorktreesMigration.js'
 import { withTransaction } from './transaction.js'
+import { checkpointOwnerMigration } from './checkpointOwnerMigration.js'
+import { errorMessage } from '../shared/errorMessage.js'
 import { providerAccountsMigration, providerAccountObservationsMigration } from '../modules/provider-accounts/migration.js'
 import { nativeProofSourceLimitMigration } from './nativeProofSourceLimitMigration.js'
 import { nativeActivityNoiseMigration } from './nativeActivityNoiseMigration.js'
@@ -930,6 +932,7 @@ export const migrations = [
   workflowOrderMigration,
   bugReportLifecycleMigration,
   ciHostSlotsMigration,
+  checkpointOwnerMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
@@ -951,7 +954,12 @@ export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {
     for (const migration of migrations) {
       const { version } = migration
       if (appliedVersions.has(version)) continue
-      await client.query(migration.sql)
+      try {
+        await client.query(migration.sql)
+      } catch (error) {
+        const reason = errorMessage(error, 'Unknown database error')
+        throw new Error(`Application migration ${version} failed: ${reason}. Resolve it before restarting.`, { cause: error })
+      }
       await client.query('insert into application_migrations (version) values ($1)', [version])
     }
   })

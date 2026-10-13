@@ -265,13 +265,16 @@ export abstract class CodexManagerEvents extends CodexManagerPreparation {
         this.handleNotification(child.runtime, method, params, staged)
       }
     }
+    const turnId = text(params.turnId) ?? text(isObject(params.turn) ? params.turn.id : undefined)
+    if (turnId || method === 'serverRequest/resolved') {
+      if (params.threadId === runtime.session.nativeSessionId && !staged && this.stage(runtime, { method, params, arrivalOrdinal })) return
+    }
     if (method === 'thread/tokenUsage/updated') {
       const context = codexContextSnapshot(params, runtime.session.nativeSessionId, runtime.configuration.model, arrivalOrdinal)
       if (context) runtime.context = { ...context, generation: `${runtime.connectionId}:${runtime.generation}` }
     }
     if (runtime.compaction && ['accepted', 'running', 'uncertain'].includes(runtime.compaction.status)
       && params.threadId === runtime.session.nativeSessionId && ['turn/started', 'turn/completed', 'item/started', 'item/completed'].includes(method)) {
-      const turnId = text(params.turnId) ?? text(isObject(params.turn) ? params.turn.id : undefined)
       if (turnId && runtime.compactionPreviousTurns?.has(turnId)) return
       runtime.compaction = codexCompactionNotification(runtime.compaction, method, params)
       if (runtime.compaction.status === 'completed' && runtime.context) runtime.context = { ...runtime.context, stale: true }
@@ -289,10 +292,6 @@ export abstract class CodexManagerEvents extends CodexManagerPreparation {
         'Codex is still recoverable, but its observer connection is unavailable.', true)
       this.record(runtime, 'transport.observer_unavailable', {})
       return
-    }
-    if (['serverRequest/resolved', 'turn/started', 'turn/completed', 'item/started', 'item/completed',
-      'item/agentMessage/delta'].includes(method)) {
-      if (params.threadId === runtime.session.nativeSessionId && !staged && this.stage(runtime, { method, params, arrivalOrdinal })) return
     }
     const normalized = normalizeCodexNotification({ threadId: runtime.session.nativeSessionId, ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
       runtimeGeneration: runtime.generation, terminal: Boolean(runtime.terminalResult),

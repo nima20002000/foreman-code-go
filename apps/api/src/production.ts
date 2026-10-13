@@ -34,7 +34,7 @@ import { WORKSPACE_ROOT_EXTENSION } from '@foreman-code/contracts/workspace-root
 import { PRODUCT_SLUG } from '@foreman-code/contracts/product'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
-import { appMcpServerName } from './modules/harnesses/appMcpLauncher.js'
+import { appLauncherPath, appMcpServerName } from './modules/harnesses/appMcpLauncher.js'
 import { createMainRsyncEntrypoint } from './modules/byte-transfer/installedEntrypoints.js'
 import { PostgresTrustedConnectionSetup } from './modules/devices/trustedConnectionSetup.js'
 import {
@@ -130,7 +130,7 @@ import { assertClaudeCredentialEndpoint } from './modules/harnesses/claudeSdk/mc
 import { PostgresClaudeInteractionAuthority } from './modules/harnesses/claudeSdk/domainAuthority.js'
 import { productionSelectedProfileManager } from './modules/harnesses/selectedProfileProduction.js'
 import { createProductionWorkerConversations } from './modules/conversations/workerProduction.js'
-import { WorkerConversationCallbackSchema } from '@foreman-code/contracts/remote-execution-rpc'
+import { REMOTE_PREPARATION_EXTENSION, WorkerConversationCallbackSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { credentialAuthority } from './modules/interactions/wave25/credentialAuthority.js'
 import type { GraphSqlClient } from './modules/run-graph/connection.js'
 import { currentOperatorAuthority } from './modules/access/runAuthority.js'
@@ -472,6 +472,7 @@ export function buildProductionApp(
       { namespace: CI_RUNTIME_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: CI_HOST_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'host-harness-check-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
+      { ...REMOTE_PREPARATION_EXTENSION, role: 'client' },
       { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
         handle: async (payload, context) => {
           if (WorkerConversationCallbackSchema.safeParse(payload).success) {
@@ -493,7 +494,7 @@ export function buildProductionApp(
           if (!handler) throw new DomainError('JOB_RUNTIME_UNAVAILABLE', 'The actual Job input authority is unavailable.', 503)
           return handler(payload, context)
         } },
-      ...(infrastructure?.deviceDomains?.extensions.filter(value => !['execution-v1', JOB_INPUT_NAMESPACE, BYTE_TRANSFER_NAMESPACE,
+      ...(infrastructure?.deviceDomains?.extensions.filter(value => !['execution-v1', REMOTE_PREPARATION_EXTENSION.namespace, JOB_INPUT_NAMESPACE, BYTE_TRANSFER_NAMESPACE,
         remoteTelemetry.extension.namespace].includes(value.namespace)) ?? []),
     ],
     async bindingLost(binding) {
@@ -898,7 +899,7 @@ export function buildProductionApp(
   const nativeConfigurations = new NativeConfigurationService(
     config.harnesses.codexBinary, config.harnesses.workspaceRoot, nativeFactories, claudeMetadata, providerAccounts,
   )
-  const appRoutes = new AppMcpRoutes(database.pool, appMcpEndpoint)
+  const appRoutes = new AppMcpRoutes(database.pool, appMcpEndpoint, appLauncherPath(), () => runtimeOwner)
   const maintenancePorts = systemMaintenancePorts(process.env, { get codex() { return mainCodex.binary } })
   maintenancePorts.selectInstalledCodex = async signal => {
     const binary = await mainCodex.selectInstalled(signal)
@@ -1164,7 +1165,7 @@ export function buildProductionApp(
     reconcileTerminalCredentials: () => credentials.reconcileTerminalCredentials(),
     renew: async (executionId, credential) => {
       const expiresAt = await credentials.renewForExecution(executionId, credential)
-      await appRoutes.refresh()
+      if (!closing) await appRoutes.refresh()
       return expiresAt
     },
   }
@@ -1672,7 +1673,7 @@ export function buildProductionApp(
   }, appMcpEndpoint)
   const operatorExtensions = createOperatorExtensions({
     pool: database.pool, commands, catalog: harnessCatalog, native: nativeConfigurations,
-    detection, locations,
+    detection, locations, workflows: operatorServices.workflows.current,
     provisioningRoot: projectRoot, harnessProfiles: harnessInstances,
     accountConfigurations,
   })
@@ -1717,11 +1718,13 @@ export function buildProductionApp(
   }
   let httpClosing = false
   const startupLifetime = new AbortController()
+  let schemaPreparation: Promise<void> | undefined
   let initialization: Promise<void> | undefined
   let nativeDefaultsInitialization: Promise<void> | undefined
   let reconciliation: Promise<void> | undefined
   let applicationClose: Promise<void> | undefined
   let stopComputerTimers = () => {}
+  let stopSyncTimer = () => {}
   const runtimeOwner = new OperatorRuntimeOwner(config.database.connectionString, (error) => {
     app.log.error({ err: error }, 'native runtime ownership lost; stopping execution')
     beginShutdown()
@@ -1733,6 +1736,10 @@ export function buildProductionApp(
   })
   const lifecycle = new RuntimeShutdown({
     stop: [
+      { name: 'shared file sync admission', run: () => {
+        stopSyncTimer()
+        runtimeServices.computerSync?.stopAdmission()
+      } },
       { name: 'computer maintenance admission', run: () => {
         stopComputerTimers()
         runtimeServices.computerMaintenance?.stopAdmission()
@@ -1757,6 +1764,8 @@ export function buildProductionApp(
       { name: 'workflow engine', run: () => engine.shutdown() },
     ],
     drain: [
+      { name: 'startup schema preparation', run: () => schemaPreparation?.then(() => undefined, () => undefined) },
+      { name: 'shared file sync work', run: () => runtimeServices.computerSync?.join() },
       { name: 'live harness qualification', run: () => harnessQualifications?.join() },
       // Initialization errors belong to initialize()'s caller, not to cleanup.
       // Wait for its last DB/filesystem operation even if startup was canceled.
@@ -1772,7 +1781,6 @@ export function buildProductionApp(
       { name: 'passive resource telemetry collector', run: async () => { await telemetry?.close() } },
       { name: 'diagnostic and configuration qualification native managers', run: () => nativeFactories.disposeAuxiliaries() },
       { name: 'Job dispatch owners', run: async () => { await jobRuntime?.close() } },
-      { name: 'Foreman Code MCP routes', run: () => appRoutes.close() },
       { name: 'execution native managers', run: async () => {
         // Preserve the manager and authenticated channels until every restart detach commits, including retries.
         try {
@@ -1797,10 +1805,14 @@ export function buildProductionApp(
       } },
     ],
     // Independent of initialized: startup can acquire ownership and then fail.
-    releaseOwnership: () => runtimeOwner.close(),
+    releaseOwnership: async () => {
+      await appRoutes.close()
+      await runtimeOwner.close()
+    },
   })
   const beginShutdown = (): void => {
     closing = true
+    appRoutes.stopAdmission()
     startupLifetime.abort()
     lifecycle.begin()
   }
@@ -1822,6 +1834,18 @@ export function buildProductionApp(
         template.nativeTools ?? null,
       )
     })
+  }
+  const prepareSchema = (): Promise<void> => {
+    if (closing) return Promise.reject(new DomainError('NATIVE_RUNTIME_CLOSING', 'The native runtime is shutting down.', 503))
+    schemaPreparation ??= Promise.resolve().then(async () => {
+      await runtimeOwner.acquire()
+      assertOpen()
+      await startupDatabase(() => database.migrate())
+      assertOpen()
+      await startupDatabase(() => checkpoints.setup())
+      assertOpen()
+    })
+    return schemaPreparation
   }
   const initialize = (): Promise<void> => {
     if (closing) return Promise.reject(new DomainError('NATIVE_RUNTIME_CLOSING', 'The native runtime is shutting down.', 503))
@@ -2048,7 +2072,10 @@ export function buildProductionApp(
           accountChanged: target => runtimeServices.computerAccounts!.invalidate(target),
         })
       runtimeServices.computerSync = new ComputerSyncService(database.pool, machine.installationId,
-        () => deviceRuntime.endpointForDomains(), commands)
+        () => deviceRuntime.endpointForDomains(), commands, undefined, () => {
+          assertOpen()
+          if (!runtimeOwner.active) throw new DomainError('NATIVE_RUNTIME_UNAVAILABLE', 'Shared file sync requires the runtime owner.', 503)
+        })
       registerComputerSyncRoutes(app, runtimeServices.computerSync)
       const syncTimer = setInterval(() => {
         void runtimeServices.computerSync!.poll().catch(error => {
@@ -2056,7 +2083,8 @@ export function buildProductionApp(
         })
       }, 30_000)
       syncTimer.unref()
-      app.addHook('onClose', async () => { clearInterval(syncTimer) })
+      stopSyncTimer = () => { clearInterval(syncTimer) }
+      if (closing) { stopSyncTimer(); runtimeServices.computerSync.stopAdmission() }
       runtimeServices.buildComputers = jobRuntime.buildComputers
       registerBuildComputerRoutes(app, jobRuntime.buildComputers)
       runtimeServices.jobs = jobRuntime.jobs
@@ -2238,7 +2266,7 @@ export function buildProductionApp(
     applicationClose ??= Promise.resolve().then(() => app.close())
     return applicationClose
   }
-  return { app, engine, initialize, reconcile, shutdown, drainShutdown, rsync,
+  return { app, engine, prepareSchema, initialize, reconcile, shutdown, drainShutdown, rsync,
     registerFileStorage: () => {
       fileStorage ??= registerProductionFileStorage(app, database.pool, config)
       mountArtifacts()

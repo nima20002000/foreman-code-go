@@ -119,16 +119,21 @@ export async function remoteWorkflowPreparationClosed(sql: GraphSqlClient, execu
       && (hasPositiveRemoteEntryClosure(receipt) || hasPositiveRemoteNonEntryClosure(receipt))) return true
   }
   const state = await loadWorkflowPreparation(sql, allocation.workspace_id, allocation.operation_id)
-  if (state.status !== 'closed' || !state.closure || state.root.selection.hostRef.kind !== 'device') return false
+  const automatic = state.status === null && state.reservation.preparationClosure
+  const rawClosure = state.closure ?? automatic
+  const rawOwner = state.owner ?? (automatic ? state.reservation.reclamation?.owner : null)
+  const reconciliationId = state.reconciliation_id ?? (automatic ? state.reservation.reclamation?.reclamationId : null)
+  if ((state.status !== 'closed' && !automatic) || !rawClosure || !rawOwner
+    || state.root.selection.hostRef.kind !== 'device') return false
   await assertWorkflowPreparationClosed(sql, state)
-  const closure = SourcePreparationClosureSchema.parse(state.closure)
-  const owner = SourceOperationOwnerSchema.parse(state.owner)
+  const closure = SourcePreparationClosureSchema.parse(rawClosure)
+  const owner = SourceOperationOwnerSchema.parse(rawOwner)
   const binding = state.root.binding
   return owner.preparationKind === 'workflow' && owner.preparationClosed === true
     && isDeepStrictEqual(owner.root, state.root) && isDeepStrictEqual(owner.attempt, state.attempt)
     && isDeepStrictEqual(owner.record, state.record)
     && isDeepStrictEqual(owner.preparationNativeSession ?? null, state.nativeSession)
-    && closure.reconciliationId === state.reconciliation_id && closure.operationId === state.operationId
+    && closure.reconciliationId === reconciliationId && closure.operationId === state.operationId
     && closure.executionId === executionId && closure.attemptId === state.attempt.attemptId
     && closure.rootId === binding.rootId && closure.bindingRevision === binding.bindingRevision
     && closure.materializationId === (state.record?.receipt.materializationId ?? null)

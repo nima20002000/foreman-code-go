@@ -137,7 +137,7 @@ function WorkspaceBoardRoute({ selection }: { selection: WorkflowBoardLocation }
     slots={{ workspace: <strong data-testid="workspace-name">{details.workspace.name}</strong>, graph: workflowId ? (
       <BoardHistoryNavigationBoundary key={JSON.stringify([workspaceId, workflowId])}>
         <WorkflowBoard key={JSON.stringify([workspaceId, workflowId])} workspaceId={workspaceId} workflowId={workflowId}
-          run={run} selectRun={selectRun} summaries={details.runs} selectInspection={selectInspection}
+          run={run} selectRun={selectRun} summaries={details.runs} summariesReadAt={workspace.dataUpdatedAt} selectInspection={selectInspection}
           selectedAgentId={search.agentId} selectDraftAgent={selectDraftAgent}
           inspection={{ runNodeId: search.runNodeId, runRelationshipId: search.runRelationshipId, runExchangeKey: search.runExchangeKey }}>
           <PersistedWorkflowBoundary workspaceId={workspaceId} workflowId={workflowId} workflow={workflow}

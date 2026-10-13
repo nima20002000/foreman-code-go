@@ -1,6 +1,6 @@
 import type { AgentForm } from './agentForm'
 import type { GraphDraftOperationV3, GraphEditIntentV3, WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
-import { hasAgentEdits, referencedAgentEdits, type DraftAgentEdits } from './agentEdits'
+import { hasAgentEdits, rebaseAgentEdits, referencedAgentEdits, snapshotAgentEdits, type DraftAgentEdits } from './agentEdits'
 import { hasLocalChanges, sameValue, type AuthoringIssue, type NextDraftContext } from './model'
 
 /** Opaque workspace/workflow IDs are encoded, never ambiguously concatenated. */
@@ -25,6 +25,8 @@ export type NextDraftEdit = {
   context: NextDraftContext
   graph: WorkflowDefinitionV3
   history: WorkflowDefinitionV3[]
+  /** Number of older draft steps evicted from the bounded history. */
+  historyOffset?: number
   future?: { graph: WorkflowDefinitionV3; agentEdits: DraftAgentEdits }[]
   agentEdits?: DraftAgentEdits
   agentForms?: Record<string, AgentForm>
@@ -38,6 +40,7 @@ export type NextDraftEdit = {
   error?: DraftFailure
   validation?: { revision: number; valid: boolean; issues: AuthoringIssue[] }
   startRejectedVersionId?: string
+  startCanceled?: boolean
 }
 
 export function newNextDraft(context: NextDraftContext, instanceId: string): NextDraftEdit {
@@ -49,9 +52,11 @@ export function editNextDraft(current: NextDraftEdit, update: (graph: WorkflowDe
   // Server stamps are not authored changes. Geometry remains in history for intentional layout edits.
   const graph = { ...updated, version: current.graph.version, createdAt: current.graph.createdAt, updatedAt: current.graph.updatedAt }
   if (sameValue(graph, current.graph)) return current
-  return { ...current, graph, history: [...current.history.slice(-49), current.graph], future: [], validation: undefined,
+  return { ...current, graph, history: [...current.history.slice(-49), current.graph],
+    historyOffset: (current.historyOffset ?? 0) + Math.max(0, current.history.length - 49),
+    future: [], validation: undefined,
     ...(current.agentHistory ? { agentEdits: referencedAgentEdits(graph, current.agentEdits),
-      agentHistory: [...current.agentHistory.slice(-49), current.agentEdits ?? {}] } : {}),
+      agentHistory: [...current.agentHistory.slice(-49), snapshotAgentEdits(current)] } : {}),
     // Typing cannot clear an unresolved command or an authorization/conflict error.
     error: current.error }
 }
@@ -63,8 +68,8 @@ export function undoNextDraft(current: NextDraftEdit): NextDraftEdit {
   const base = current.context.draft.graph
   return { ...current, graph: { ...previous, version: base.version, createdAt: base.createdAt, updatedAt: base.updatedAt },
     history: current.history.slice(0, -1), validation: undefined,
-    future: [...(current.future ?? []).slice(-49), { graph: current.graph, agentEdits: current.agentEdits ?? {} }],
-    ...(current.agentHistory ? { agentEdits: current.agentHistory.at(-1) ?? {}, agentHistory: current.agentHistory.slice(0, -1) } : {}) }
+    future: [...(current.future ?? []).slice(-49), { graph: current.graph, agentEdits: snapshotAgentEdits(current) }],
+    ...(current.agentHistory ? { agentEdits: rebaseAgentEdits(current.agentHistory.at(-1) ?? {}, current.context), agentHistory: current.agentHistory.slice(0, -1) } : {}) }
 }
 
 export function redoNextDraft(current: NextDraftEdit): NextDraftEdit {
@@ -72,8 +77,9 @@ export function redoNextDraft(current: NextDraftEdit): NextDraftEdit {
   if (!next) return current
   const base = current.context.draft.graph
   return { ...current, graph: { ...next.graph, version: base.version, createdAt: base.createdAt, updatedAt: base.updatedAt },
-    agentEdits: next.agentEdits, history: [...current.history.slice(-49), current.graph],
-    agentHistory: [...(current.agentHistory ?? current.history.map(() => ({}))).slice(-49), current.agentEdits ?? {}],
+    agentEdits: rebaseAgentEdits(next.agentEdits, current.context), history: [...current.history.slice(-49), current.graph],
+    historyOffset: (current.historyOffset ?? 0) + Math.max(0, current.history.length - 49),
+    agentHistory: [...(current.agentHistory ?? current.history.map(() => ({}))).slice(-49), snapshotAgentEdits(current)],
     future: current.future!.slice(0, -1), validation: undefined }
 }
 
@@ -82,6 +88,10 @@ export function nextDraftDirty(edit: NextDraftEdit): boolean {
   return hasLocalChanges(saved ? { ...edit.context, draft: saved } : edit.context, edit.graph)
     || hasAgentEdits(edit) || !!edit.pending
     || (!saved && edit.context.draft.publishedRevision !== edit.context.draft.revision)
+}
+
+export function canUndoNextDraft(edit: NextDraftEdit): boolean {
+  return edit.history.length > 0 && (nextDraftDirty(edit) || hasAgentEdits(undoNextDraft(edit)))
 }
 
 export type NextDraftSlice = {

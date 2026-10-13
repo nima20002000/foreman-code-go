@@ -1,10 +1,12 @@
 import { beginRuntimeTiming, runtimeTimingChannel, timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
-import { beginTransaction, commitTransaction, rollbackTransaction } from '../../infrastructure/transaction.js'
+import { beginTransaction, commitTransaction } from '../../infrastructure/transaction.js'
+import { recoverGraphRollback } from './rollbackRecovery.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createHash } from 'node:crypto'
 import type pg from 'pg'
 import { RunGraphError } from './errors.js'
-import { isDatabaseTimeout, retryDatabaseTimeout } from '../../infrastructure/databaseTimeout.js'
+import { isDatabaseTimeout } from '../../infrastructure/databaseTimeout.js'
 
 export interface GraphSqlClient {
   query<R extends pg.QueryResultRow = pg.QueryResultRow>(text: string, values?: unknown[]): Promise<pg.QueryResult<R>>
@@ -81,6 +83,7 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
   #unusable = false
   #unusableCause: unknown
   #closing = false
+  readonly #closingSignal = new AbortController()
   constructor(client: pg.ClientBase, assertOwner: () => void,
     private readonly readPlans?: Map<string, string>) {
     if (adoptedClients.has(client)) throw new RunGraphError('GRAPH_TRANSACTION_CONCURRENT')
@@ -175,11 +178,13 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
         // caller still receives the error and must reconcile an uncertain COMMIT.
         try {
           // Rollback only undoes this connection's uncommitted work, including after ownership loss.
-          await retryDatabaseTimeout(() => timeRuntimeOperation('db', 'sql.rollback', () => rollbackTransaction(this.#client)))
+          await recoverGraphRollback(this.#client, this.#closingSignal.signal)
         }
         catch (rollbackError) {
           if (!this.#unusable) this.#unusableCause = rollbackError
           this.#unusable = true
+          // Destroy the physical session; waiting for its query queue cannot release ownership.
+          void this.#client.end().catch(ignoreError('db', 'discard stalled graph connection'))
         }
         throw error
       } finally { state.live = false }
@@ -187,6 +192,7 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
   }
   async close(): Promise<void> {
     this.#closing = true
+    this.#closingSignal.abort(new RunGraphError('GRAPH_TRANSACTION_CLOSED'))
     await this.#tail
     this.readPlans?.clear()
     adoptedClients.delete(this.#client)

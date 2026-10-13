@@ -9,7 +9,7 @@ import * as contracts from '@foreman-code/contracts/management'
 import pg from 'pg'
 import type { z } from 'zod'
 
-import { buildApp } from '../../src/app.js'
+import { buildApp, type BuildAppOptions } from '../../src/app.js'
 import { applyApplicationMigrations } from '../../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
@@ -22,6 +22,7 @@ import { closeTestResources } from '../support/cleanup.js'
 export async function workspaceMcpFixture(options: {
   connectionString?: string
   port?: number
+  runtimeIdentity?: BuildAppOptions['runtimeIdentity']
   configure?(fixture: {
     app: ReturnType<typeof buildApp>
     pool: pg.Pool
@@ -51,7 +52,7 @@ export async function workspaceMcpFixture(options: {
   const services = { commands, locations, workspaces } as unknown as OperatorServices
   const app = buildApp({ logger: false, readiness: {
     database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined },
-  }, operator: { access, services } })
+  }, operator: { access, services }, ...(options.runtimeIdentity ? { runtimeIdentity: options.runtimeIdentity } : {}) })
 
   let closing: Promise<void> | undefined
   function close() {

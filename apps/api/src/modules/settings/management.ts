@@ -93,9 +93,18 @@ export class FoundationSettingsManagementService {
   updateWorkspaceDefaults(principal: ManagementPrincipal, source: 'http' | 'mcp', input: WorkspaceDefaultsUpdateInput) {
     requireAuthorization(principal, 'settings:update')
     const accepted = WorkspaceDefaultsUpdateInputSchema.parse(input)
+    let livePrincipal = principal
     return this.commands.execute({ principal, source, operation: 'workspace.defaults.update', commandId: accepted.commandId,
       targetKey: 'workspace-defaults-v1', payload: accepted,
-      perform: (client) => this.settings.updateWorkspaceDefaults(accepted.value, accepted.expectedRevision, client),
+      authorize: async client => {
+        livePrincipal = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(livePrincipal, 'settings:update')
+      },
+      perform: async client => {
+        const result = await this.settings.updateWorkspaceDefaults(accepted.value, accepted.expectedRevision, client)
+        requireAuthorization(await readLiveManagementPrincipal(client, principal.id), 'settings:update')
+        return result
+      },
     })
   }
 
@@ -113,9 +122,14 @@ export class FoundationSettingsManagementService {
     commandId: string; expectedRevision: number; value: AgentDefaults
   }) {
     requireAuthorization(principal, 'settings:update')
+    let livePrincipal = principal
     return this.commands.execute({
       principal, source, operation: 'agent.defaults.update', commandId: input.commandId,
       targetKey: 'agent-defaults-v1', payload: input,
+      authorize: async client => {
+        livePrincipal = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(livePrincipal, 'settings:update')
+      },
       perform: async (client) => {
         const value = AgentDefaultsSchema.parse(input.value)
         if (this.accountConfigurations) {
@@ -138,8 +152,8 @@ export class FoundationSettingsManagementService {
             delete value[role].harnessProfileSelection
           }
           if (role === 'operator' && configuration.harness === 'claude' && !value[role].harnessProfileSelection) {
-            const resolved = await this.profiles?.selectionForConfiguration?.(principal, configuration, client)
-              ?? await this.profiles?.prepareOperatorConfiguration?.(principal, source, configuration, input.commandId)
+            const resolved = await this.profiles?.selectionForConfiguration?.(livePrincipal, configuration, client)
+              ?? await this.profiles?.prepareOperatorConfiguration?.(livePrincipal, source, configuration, input.commandId)
             if (resolved) value[role].harnessProfileSelection = resolved
           }
           const selection = value[role].harnessProfileSelection
@@ -150,7 +164,7 @@ export class FoundationSettingsManagementService {
           }
           if (selection) {
             if (!this.profiles) throw new DomainError('HARNESS_PROFILE_SELECTION_UNAVAILABLE', 'Selected host profile validation is not composed.', 503)
-            await this.profiles.validateSelection(principal, selection, configuration, client)
+            await this.profiles.validateSelection(livePrincipal, selection, configuration, client)
             continue
           }
           if (isDeepStrictEqual(withAdvancedDefaults(previous.value[role].harness), withAdvancedDefaults(configuration))) continue
@@ -171,7 +185,7 @@ export class FoundationSettingsManagementService {
           || !isDeepStrictEqual(previous.value.operator.nativeTools, value.operator.nativeTools)
         if (operatorChanged) {
           // Republishing unchanged references still requires authority over their source workspaces.
-          for (const reference of skills) requireAuthorization(principal, 'skills:read', { workspaceId: reference.workspaceId })
+          for (const reference of skills) requireAuthorization(livePrincipal, 'skills:read', { workspaceId: reference.workspaceId })
           await operatorSkillContent(client, skills, previous.value.operator.assignedSkills)
         }
         const current = operatorChanged ? await operators?.ensureWithClient(client) : undefined
@@ -187,6 +201,7 @@ export class FoundationSettingsManagementService {
             value.operator.nativeTools ?? null,
           )
         }
+        requireAuthorization(await readLiveManagementPrincipal(client, principal.id), 'settings:update')
         return result
       },
     })
@@ -196,10 +211,19 @@ export class FoundationSettingsManagementService {
     commandId: string; expectedRevision: number; value: WorkflowDefaults
   }) {
     requireAuthorization(principal, 'settings:update')
+    let livePrincipal = principal
     return this.commands.execute({
       principal, source, operation: 'workflow.defaults.update', commandId: input.commandId,
       targetKey: 'workflow-defaults-v1', payload: input,
-      perform: (client) => this.settings.updateManagedWorkflowDefaults(client, input.value, input.expectedRevision),
+      authorize: async client => {
+        livePrincipal = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(livePrincipal, 'settings:update')
+      },
+      perform: async client => {
+        const result = await this.settings.updateManagedWorkflowDefaults(client, input.value, input.expectedRevision)
+        requireAuthorization(await readLiveManagementPrincipal(client, principal.id), 'settings:update')
+        return result
+      },
     })
   }
 }
