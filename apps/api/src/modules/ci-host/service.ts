@@ -737,10 +737,11 @@ export class HostCiService {
           and record->>'suite'<>'integration'
           order by ${CI_QUEUE_ORDER} limit 50)
         order by ${CI_QUEUE_ORDER}`)).rows
-    let queued = await this.releaseSlowTier(queuedRows.map(row => CiRunRecordSchema.parse(row.record)))
+    const parsed = queuedRows.map(row => CiRunRecordSchema.parse(row.record))
+    const durations = new Map(queuedRows.map((row, index) => [parsed[index]!.id, row.durations]))
+    let queued = await this.releaseSlowTier(parsed)
     // Reserve four GitHub slots while checks wait, including integration already using GitHub.
     const githubIntegrationLimit = Math.max(0, github.length - (queued.some(run => run.suite !== 'integration') ? 4 : 0))
-    const durations = new Map(queuedRows.map((row, index) => [queued[index]!.id, row.durations]))
     queued = await this.weighPartitions(queued, computers.flatMap(computer =>
       Array.from({ length: freeSlots(computer) }, () => computer)))
     queued.sort((left, right) => (left.priority === right.priority
