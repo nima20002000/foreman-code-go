@@ -19,6 +19,7 @@ import { WorkspaceManagementService } from '../../src/modules/workspaces/managem
 import type { OperatorServices } from '../../src/mcp/operator/types.js'
 import { closeTestResources } from '../support/cleanup.js'
 import { migratedDatabase } from './migratedDatabase.js'
+import { createTestPool } from './testPool.mjs'
 import { assertTestDatabase, requireTestServerUrl } from '../../../../scripts/test-resources.mjs'
 
 type WorkspaceFixtureServices = {
@@ -46,7 +47,7 @@ export async function workspaceMcpFixture(options: {
   const databaseUrl = requireTestServerUrl(connectionString)
   const schema = 'workspace_mcp_' + randomUUID().replaceAll('-', '')
   const parentPath = database?.directory ?? await mkdtemp(join(tmpdir(), 'workspace-mcp-'))
-  const admin = new pg.Pool({ connectionString })
+  const admin = createTestPool({ connectionString })
   const pool = database?.pool
     ?? new pg.Pool({ connectionString, options: `-c search_path=${schema}`, application_name: schema })
   const clients: Client[] = []
@@ -60,12 +61,14 @@ export async function workspaceMcpFixture(options: {
 
   const databaseCleanup: Array<() => Promise<void>> = []
   if (database) {
+    databaseCleanup.push(() => admin.end())
     if (!options.database) databaseCleanup.push(() => database.close())
   } else {
     databaseCleanup.push(
       () => pool.end(),
       () => dropFixtureSchema(admin, schema),
       () => removeFixtureDirectory(parentPath),
+      () => admin.end(),
     )
   }
 
@@ -75,7 +78,6 @@ export async function workspaceMcpFixture(options: {
       ...clients.map(client => () => client.close()),
       async () => { await app?.close() },
       ...databaseCleanup,
-      () => admin.end(),
     ])
   }
   try {
