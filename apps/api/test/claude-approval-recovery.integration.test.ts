@@ -1,5 +1,4 @@
 import type pg from 'pg'
-import { setTimeout as delay } from 'node:timers/promises'
 import type { Options } from '@anthropic-ai/claude-agent-sdk'
 import { expect, it, vi } from 'vitest'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
@@ -97,10 +96,11 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
         return owned.manager
       }
       const closeRecoveredRuntime = vi.fn(async () => true)
+      const accountBindingReady = rejectableDeferred<void>()
       const createChat = () => new OperatorChatService(repository, new PostgresOperatorRepository(pool),
         Object.assign(resolver, { closeRecoveredRuntime,
           prepareAccountBinding: async () => {
-            if (scenario === 'restart-after-terminal') await delay(1500)
+            if (scenario === 'restart-after-terminal') await accountBindingReady.promise
           },
         }), directory, { current: id => access.currentOperator(id), assertConfiguration() {},
         setup: async () => ({ harness: 'claude', status: 'configured', endpoint: 'http://127.0.0.1/mcp', checkedAt: new Date().toISOString() }),
@@ -117,6 +117,15 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
         const conversation = await chat.create(owner.principal)
         const id = conversation.id
         await chat.send(id, { requestId: 'model-request', content: 'Read an admitted file' }, owner.principal)
+        if (scenario === 'restart-after-terminal') {
+          const starting = await graphRpc(app, owner.token, 'tools/call', {
+            name: 'operator_chat_get', arguments: { conversationId: id },
+          })
+          expect(starting.result?.isError).not.toBe(true)
+          expect(graphRpcValue(starting.result)).toMatchObject({ activeRequestId: 'model-request' })
+          expect(offers).toEqual([])
+          accountBindingReady.resolve()
+        }
         await vi.waitFor(() => expect(runtimes).toHaveLength(1), { timeout: 20_000, interval: 50 })
         const owned = runtimes[0]!
         const message = (await (await owned.ready.promise).next()).value!
@@ -285,6 +294,7 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
         expect(offers).toEqual([message.uuid])
         expect(responses).toBe(1)
       } finally {
+        accountBindingReady.resolve()
         vi.restoreAllMocks()
         controller.abort()
         try { await app.close() }

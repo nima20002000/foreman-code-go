@@ -55,6 +55,7 @@ if (args[1] === 'install') {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
   }
   console.log('dependency=' + fs.readFileSync('node_modules/dependency', 'utf8'))
+  console.log('kept=' + require(path.join(process.cwd(), 'src/kept.ts')).kept)
 }
 `, { mode: 0o755 })
   const system = systemHostCiPorts()
@@ -128,7 +129,7 @@ it('resets a reused checkout to exactly the requested commit without leftover fi
   expect(second.run.state).toBe('passed')
   expect(second.checkout).toBe(first.checkout)
   expect(fixture.inCheckout(second.checkout, 'rev-parse', 'HEAD')).toBe(fixture.git('rev-parse', 'HEAD'))
-  expect(await readFile(join(second.checkout, 'src/kept.ts'), 'utf8')).toBe('export const kept = 1\n')
+  expect(second.text).toContain('kept=1')
   expect(existsSync(join(second.checkout, 'src/removed.ts'))).toBe(false)
   expect(fixture.inCheckout(second.checkout, 'status', '--porcelain', '--ignored', '--untracked-files=all'))
     .toBe('!! node_modules/dependency')
