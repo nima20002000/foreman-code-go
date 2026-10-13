@@ -24,8 +24,8 @@ describe('persisted activity acknowledgment accessor', () => {
     { status: 'delivery_pending', deliveryState: 'uncertain' },
     { status: 'canceled', deliveryState: 'delivered' },
   ] as const)('has no acknowledgment before completed delivery: %j', async state => {
-    const unavailable = ({ query: async () => { throw new Error('Acknowledgment storage is unavailable') } }) as unknown
-      as Pick<pg.PoolClient, 'query'>
+    const failing = { query: async () => { throw new Error('Acknowledgment storage is unavailable') } }
+    const unavailable = failing as unknown as Pick<pg.PoolClient, 'query'>
     expect(await readActivityAcknowledgment(unavailable, { ...interaction, ...state })).toEqual({})
   })
 
