@@ -2,6 +2,10 @@ const gib = 2 ** 30
 const coresPerSlot = 6
 const memoryPerSlot = 6 * gib
 
+export function gateIntegrationShards(cpuCount: number, memoryBytes: number): number {
+  return Math.max(1, Math.min(64, Math.floor(cpuCount * 0.75), Math.floor((memoryBytes - gib) / gib)))
+}
+
 export function hostCiCapacity(resources: {
   cpuCount: number
   memoryBytes: number

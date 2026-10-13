@@ -21,6 +21,8 @@ import { RUN_CI_JOBS_SQL, runCiJob, storedCiTestResults, type RunCiJobRow } from
 import { fallbackOnError } from '../diagnostics/ignoredError.js'
 import { CI_QUEUE_ORDER, ciQueueReason, compareCiQueue } from './priority.js'
 import { supersedeCiRuns } from './supersession.js'
+import { gateQueueBlock, planCiGate } from './gate.js'
+import { ciGateReport } from './gateReport.js'
 
 /** CI reads are idempotent: one retry after a lock or statement timeout, then a typed retryable error. */
 async function retryRead<T>(work: () => Promise<T>): Promise<T> {
@@ -102,6 +104,10 @@ export class HostCiService {
   close() { clearInterval(this.timer); this.timer = undefined; return this.dispatching }
 
   async run(caller: ManagementPrincipal, input: CiRunInput & { workspaceId?: string | undefined }, source: 'mcp' | 'http' = 'mcp') {
+    if (input.gate && caller.audience !== 'operator') {
+      if (source === 'http') await this.commands.recordDenied(caller.id, source, 'ci.run', input.workspaceId ?? 'ci')
+      throw new DomainError('ACCESS_DENIED', 'Only an Operator or an orchestrator using Operator credentials can request a CI gate.', 403)
+    }
     const actions = input.priority === 'high' && caller.audience !== 'operator'
       ? [...CI_RUN_ACTIONS, 'jobs:prioritize' as const] : CI_RUN_ACTIONS
     const scope = await this.authority.resolve(caller, input.workspaceId, actions).catch(async error => {
@@ -141,18 +147,22 @@ export class HostCiService {
         const snapshot = scope.executionId && !input.commit && this.snapshots ? await this.snapshots(scope.executionId) : null
         const commit = await this.commits.resolve(repository, defaultBranch, input.commit, snapshot)
         const infrastructure = await this.commits.infrastructureOnly?.(repository, commit) ?? false
-        const priority = infrastructure || input.priority === 'high' ? 'high' : 'normal'
+        const priority = input.gate || infrastructure || input.priority === 'high' ? 'high' : 'normal'
         let priorityReason: CiRunRecord['priorityReason'] = 'normal'
-        if (infrastructure) priorityReason = 'ci-infrastructure'
+        if (input.gate) priorityReason = 'gate'
+        else if (infrastructure) priorityReason = 'ci-infrastructure'
         else if (input.priority === 'high') priorityReason = 'requested'
         const branch = await this.commits.branch?.(repository, defaultBranch, commit)
         const groupId = randomUUID(), now = new Date().toISOString()
         const capabilities = await this.commits.capabilities(repository, commit)
-        const inventory = capabilities.parts && input.suite === 'unit'
+        const inventory = capabilities.parts && (input.suite === 'unit' || input.gate)
           ? await this.commits.unitInventory?.(repository, commit) : undefined
         const learned = ['unit', 'integration'].includes(input.suite) ? await this.learnedDurations(repository) : null
         const integration = capabilities.integrationPartitions && input.suite === 'integration'
           ? await this.commits.integrationInventory?.(repository, commit) : undefined
+        if (input.gate && (!capabilities.parts || !integration || !inventory)) {
+          throw new DomainError('CI_GATE_UNSUPPORTED', 'This repository must provide CI suite hooks and complete test inventories for a gate.', 409)
+        }
         let durations = input.suite === 'integration' ? learned : null
         if (integration) {
           const merged = { ...integration.durations, ...learned }
@@ -167,19 +177,23 @@ export class HostCiService {
         const empty = selectionScope === 'affected' && input.files?.length === 0
         const split = input.suite === 'integration' ? capabilities.integrationPartitions : capabilities.parts
         let parts: { part: CiRunRecord['part']; partition: CiRunRecord['partition']; files: string[];
-          expectedDurationMs?: number }[] = split ? planCiParts(selection, unitDurations, inventory)
+          expectedDurationMs?: number; suite?: CiRunRecord['suite']; plannedHostKey?: string;
+          integrationShards?: number; requiresBuildComputer?: boolean }[] = split ? planCiParts(selection, unitDurations, inventory)
           : [{ part: null, partition: null, files: selection.files ?? [] }]
-        if (integration) {
+        if (input.gate) {
+          parts = await planCiGate(input, { ...integration!, durations: durations! }, inventory!, unitDurations, this.endpoint)
+        } else if (integration) {
           parts = planIntegrationParts(selection, { ...integration, durations: durations! }, await this.integrationSlots())
         }
         const runs = parts.map(planned => CiRunRecordSchema.parse({
           ...planned,
           id: randomUUID(), workspaceId: scope.workspaceId,
-          suite: input.suite, scope: selectionScope, commit, repository, groupId,
+          suite: planned.suite ?? input.suite, scope: selectionScope, commit, repository, groupId,
           priority, priorityReason,
+          ...(input.gate ? { gate: true, noSupersede: true } : {}),
           defaultBranch,
           ...(branch !== undefined ? { branch } : {}),
-          ...(input.noSupersede !== undefined ? { noSupersede: input.noSupersede } : {}),
+          ...(!input.gate && input.noSupersede !== undefined ? { noSupersede: input.noSupersede } : {}),
           ...(input.baseCommit ? { baseCommit: input.baseCommit } : {}),
           ...(deriveFiles ? { deriveFiles } : {}),
           state: empty ? 'passed' : 'queued', computer: null, step: empty ? input.suite : null,
@@ -198,7 +212,7 @@ export class HostCiService {
             throw new DomainError('GRAPH_STOP_CONFLICT', 'The Run no longer accepts CI tickets.', 409)
           }
         }
-        await supersedeCiRuns(client, this.commits, runs[0]!, { source, commandId: input.commandId })
+        if (!input.gate) await supersedeCiRuns(client, this.commits, runs[0]!, { source, commandId: input.commandId })
         for (const run of runs) {
           await client.query(`insert into ci_runs(id,workspace_id,group_id,state,record,durations)
             values($1,$2,$3,$6,$4::jsonb,$5::jsonb)`, [run.id, run.workspaceId, groupId, JSON.stringify(run),
@@ -377,6 +391,7 @@ export class HostCiService {
       return { run, partitions: group.length > 1 ? group : undefined, logTail: row.log_tail,
         queue: position ? { position, reason: ciQueueReason(run) } : null,
         group: { groupId: run.groupId, state: ciGroupState(group) },
+        ...(run.gate ? { gate: ciGateReport(group) } : {}),
         ...(input.testStatus ? { tests: await this.testResults(run.id, scope.workspaceId, input.testStatus) } : {}) }
     })
   }
@@ -657,6 +672,17 @@ export class HostCiService {
     return queued.filter(run => !run.deferred || !waiting.has(run.groupId))
   }
 
+  private async gateReservation() {
+    const rows = (await this.pool.query<{ record: unknown }>(`select record from ci_runs
+      where state in ('queued','starting','running') and record->>'gate'='true'
+      order by record->>'queuedAt',group_id,id`)).rows
+    const runs = rows.map(row => CiRunRecordSchema.parse(row.record))
+    const gate = runs[0]
+    const reservedHosts = new Set(runs.filter(run => run.groupId === gate?.groupId && run.suite === 'integration')
+      .map(run => run.plannedHostKey))
+    return { gate, reservedHosts }
+  }
+
   private async dispatchOnce() {
     await this.cancelSuperseded()
     const computers = await this.endpoint.computers()
@@ -708,6 +734,7 @@ export class HostCiService {
       `select host_key,record from ci_runs where state in ('starting','running')`)).rows
     const used = new Map<string, number>()
     for (const row of busyRows) used.set(row.host_key, (used.get(row.host_key) ?? 0) + 1)
+    const { gate, reservedHosts } = await this.gateReservation()
     const totals = new Map<string, number>()
     await inBatches(computers, 8, async computer => {
       if (computer.hostRef.kind === 'cloud') {
@@ -745,9 +772,15 @@ export class HostCiService {
     queued = await this.weighPartitions(queued, computers.flatMap(computer =>
       Array.from({ length: freeSlots(computer) }, () => computer)))
     queued.sort((left, right) => (left.priority === right.priority
+      && !left.gate && !right.gate
       ? Number(needsSystemdExecutor(right)) - Number(needsSystemdExecutor(left)) : 0) || compareCiQueue(left, right))
     // Reserve slots before awaiting a start so concurrent dispatches cannot spend the same capacity.
     await Promise.all(queued.map(async run => {
+      const blocked = gateQueueBlock(run, gate)
+      if (blocked) {
+        if (run.message !== blocked) await this.save({ ...run, message: blocked }, null)
+        return
+      }
       if (run.suite === 'integration' && run.partition && !run.partition.weights) return
       const hostRequired = needsSystemdExecutor(run)
       const integrationLimit = run.priority === 'high'
@@ -759,15 +792,25 @@ export class HostCiService {
         if (computer.hostRef.kind !== 'cloud') return 0
         return isGitHubComputer(computer) ? 1 : 2
       }
+      const affectedFiles = run.scope === 'affected' && !run.deriveFiles ? { files: run.files } : {}
+      const selection = run.gate && run.suite === 'integration'
+        ? { gate: true, integrationShards: run.integrationShards!, files: run.files } : affectedFiles
       const order = computers.filter(computer => runsOnCircleCi(run)
         || computer.hostRef.kind !== 'cloud' || computer.hostRef.provider !== 'circleci')
         .filter(computer => !hostRequired || supportsUserSystemd(computer))
+        .filter(computer => !run.gate || computer.key === run.plannedHostKey)
+        .filter(computer => run.gate || computer.hostRef.kind === 'cloud' || !reservedHosts.has(computer.key))
         .filter(computer => computer.hostRef.kind !== 'cloud' || !computer.hostRef.provider
           || !run.unstartedProviders?.includes(computer.hostRef.provider))
         .sort((left, right) => Number(right.key === run.plannedHostKey) - Number(left.key === run.plannedHostKey)
           || preferred(right) - preferred(left)
           || right.priority - left.priority)
       for (const computer of order) {
+        const exclusiveGate = run.gate && computer.hostRef.kind !== 'cloud'
+        if (exclusiveGate && (used.get(computer.key) ?? 0) > 0) {
+          reasons.push(`${computer.label}: gate waits for exclusive use of this build computer`)
+          continue
+        }
         if (computer.hostRef.kind === 'cloud' && computer.hostRef.provider
           && run.unstartedProviders?.includes(computer.hostRef.provider)) continue
         if (!freeSlots(computer)) {
@@ -775,16 +818,16 @@ export class HostCiService {
           continue
         }
         const usesGitHubIntegration = run.suite === 'integration' && isGitHubComputer(computer)
-        if (usesGitHubIntegration && integrationOnGitHub.size >= integrationLimit) {
+        if (usesGitHubIntegration && !run.gate && integrationOnGitHub.size >= integrationLimit) {
           reasons.push(`${computer.label}: slots reserved for queued checks`)
           continue
         }
-        used.set(computer.key, (used.get(computer.key) ?? 0) + 1)
+        used.set(computer.key, (used.get(computer.key) ?? 0) + (exclusiveGate ? totals.get(computer.key) ?? 1 : 1))
         if (usesGitHubIntegration) integrationOnGitHub.add(computer.key)
         try {
           const reply = CiHostReplySchema.parse(await this.endpoint.request(computer, { operation: 'start', runId: run.id,
             repository: run.repository, commit: run.commit, suite: run.suite, ...(run.part ? { part: run.part } : {}), ...(run.partition ? { partition: run.partition } : {}),
-            scope: run.scope, ...(run.scope === 'affected' && !run.deriveFiles ? { files: run.files } : {}),
+            scope: run.scope, ...selection,
             ...(run.defaultBranch ? { defaultBranch: run.defaultBranch } : {}),
             ...(run.baseCommit ? { baseCommit: run.baseCommit } : {}),
             ...(durations.get(run.id) ? { durations: durations.get(run.id)! } : {}) }))

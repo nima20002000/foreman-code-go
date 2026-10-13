@@ -153,7 +153,8 @@ export class CloudCi {
 
   private async start(request: { runId: string; repository: string; commit: string; suite: CiSuite
     part?: CiPart | undefined; partition?: CiPartition | undefined; durations?: CiDurations | undefined; scope?: CiScope | undefined;
-    files?: string[] | undefined; defaultBranch?: string | undefined; baseCommit?: string | undefined }): Promise<CiHostRun> {
+    files?: string[] | undefined; defaultBranch?: string | undefined; baseCommit?: string | undefined;
+    gate?: boolean | undefined; integrationShards?: number | undefined }): Promise<CiHostRun> {
     const existing = await this.read(request.runId).catch(fallbackOnError(null, 'jobs', 'read existing CI run', { runId: request.runId }, ['ENOENT']))
     if (existing) return this.view(existing, 0)
     if (!this.provider.userSystemd.supported && request.suite === 'integration'
@@ -180,7 +181,8 @@ export class CloudCi {
       ? 'Running full suite: ' + (request.baseCommit
         ? 'baseCommit is unavailable or is not an ancestor of the resolved commit.'
         : 'No merge-base with the workspace default branch is available.') : null
-    let slice = request.suite === 'integration' && !selectOnRunner && (request.partition || !deriveFiles && scope === 'affected')
+    let slice = request.suite === 'integration' && !selectOnRunner
+      && (request.gate || request.partition || !deriveFiles && scope === 'affected')
       ? await this.slice(git, request.commit, request.partition, request.durations ?? {}, request.files) : ''
     if ((!request.files || scope !== 'affected') && request.partition && request.part) {
       slice = `${request.partition.index + 1}/${request.partition.count}`
