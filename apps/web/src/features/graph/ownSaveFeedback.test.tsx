@@ -31,9 +31,6 @@ vi.mock('./nextDraft/DraftCanvas', () => ({ DraftCanvas: ({ open, setOpen, panel
 }) => <><button onClick={() => setOpen({ nodeId: 'node-0', panel: 'settings' })}>Open fixture settings</button>
   {open ? <section role="dialog" aria-label="Agent settings">{panels(open.nodeId).settings}
     <button onClick={() => setOpen(undefined)}>Close fixture settings</button></section> : null}</> }))
-vi.mock('../../shared/api/settingsExperience', () => ({ useLocalHumanAccessQuery: () => ({ data: {
-  principal: { expiresAt: '2099-01-01T00:00:00Z', grants: [{ actions: ['runs:start'], scope: {} }] },
-} }) }))
 vi.mock('../workflow-board/startPreflight', async (original) => ({
   ...await original<typeof import('../workflow-board/startPreflight')>(),
   useBoardStartPreflight: vi.fn(), readBoardStartPreflight: vi.fn(),
