@@ -236,6 +236,7 @@ it.each(['turn', 'compaction', 'closing', 'access-change'] as const)(
       }
       snapshot.mockReturnValue({ revision: 'fixture:2', launches: [launch] })
       await expect.poll(() => drained, { timeout: 2000 }).toBe(true)
+      await expect(draining).resolves.toBeUndefined()
       const discovery = domains.extensions.find(extension => extension.namespace === 'harness-discovery-v1')!
       await expect(discovery.handle!({}, { binding: connection, signal: AbortSignal.timeout(1000) }))
         .rejects.toMatchObject({ code: 'WORKER_RUNTIME_DRAINING' })
