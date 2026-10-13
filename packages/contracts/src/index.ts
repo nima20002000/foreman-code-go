@@ -1653,7 +1653,7 @@ export * from './workerNativeOutput.js'
 export * from './byteTransfer.js'
 export * from './jobInputs.js'
 
-export * from './deviceProvisioning.js'
+export * from './deviceResources.js'
 
 export * from './subagents.js';
 

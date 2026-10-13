@@ -267,10 +267,6 @@
       "types": "./dist/workflowArtifactResult.d.ts",
       "import": "./dist/workflowArtifactResult.js"
     },
-    "./device-provisioning": {
-      "types": "./dist/deviceProvisioning.d.ts",
-      "import": "./dist/deviceProvisioning.js"
-    },
     "./device-resources": {
       "types": "./dist/deviceResources.d.ts",
       "import": "./dist/deviceResources.js"

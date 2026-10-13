@@ -37,7 +37,6 @@ export const ManagementActionSchema = z.enum([
   "harnesses:read",
   "harnesses:update",
   "devices:read",
-  "devices:provision",
   "devices:metrics:read",
   "settings:read",
   "settings:update",
@@ -65,9 +64,9 @@ export const ManagementActionSchema = z.enum([
 ]);
 export type ManagementAction = z.infer<typeof ManagementActionSchema>;
 
-/** Host telemetry, provisioning and CI priority require separately selected grants, including for broad presets. */
+/** Host telemetry and CI priority require separately selected grants, including for broad presets. */
 export const DEFAULT_MANAGEMENT_ACTIONS = ManagementActionSchema.options.filter(
-  (action) => action !== "devices:metrics:read" && action !== "devices:provision"
+  (action) => action !== "devices:metrics:read"
     && action !== 'provider_accounts:read' && action !== 'provider_accounts:manage' && action !== 'jobs:prioritize',
 );
 
