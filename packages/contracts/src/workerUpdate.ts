@@ -65,7 +65,11 @@ export const WorkerArtifactIndexSchema = z.object({
 export const WorkerArtifactRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('release'), target: WorkerArtifactTargetSchema }).strict(),
   z.object({ operation: z.literal('chunk'), manifestSha256: digest, path: artifactPath, offset }).strict(),
+  z.object({ operation: z.literal('ci-smoke'), manifestSha256: digest }).strict(),
 ])
+
+const WorkerCiSmokeSchema = z.object({ repository: WorkerArtifactGitHubSchema.shape.repository,
+  commit: z.string().regex(/^[a-f0-9]{40}$/u) }).strict()
 
 export const WorkerArtifactReplySchema = z.discriminatedUnion('operation', [
   z.object({
@@ -77,6 +81,7 @@ export const WorkerArtifactReplySchema = z.discriminatedUnion('operation', [
       github: WorkerArtifactGitHubSchema.optional(),
     }).strict().nullable(),
   }).strict(),
+  z.object({ operation: z.literal('ci-smoke'), ciSmoke: WorkerCiSmokeSchema.nullable() }).strict(),
   z.object({
     operation: z.literal('chunk'),
     manifestSha256: digest,
