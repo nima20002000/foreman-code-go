@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -931,7 +931,7 @@ async function apiBuildSource(directory) {
   return { source, run, deploys }
 }
 
-test('releases share one dependency tree per lockfile and contracts content instead of copying it', async t => {
+test('releases reuse installed dependencies while freezing their own contracts output', async t => {
   const directory = await installFixture(t)
   const { source, run, deploys } = await apiBuildSource(directory)
   const dependencies = { root: join(directory, 'api-dependencies'), source }
@@ -943,18 +943,18 @@ test('releases share one dependency tree per lockfile and contracts content inst
   // Copying ~800 MB of dependencies took 25-35 s per deploy, and 334 s on a loaded computer.
   await production.deployProductionApi(run, second, { dependencies })
   assert.equal(deploys.length, 1)
-  assert.equal(await readlink(join(second, 'node_modules')), await readlink(join(first, 'node_modules')))
+  assert.equal(await realpath(join(second, 'node_modules/fastify')), await realpath(join(first, 'node_modules/fastify')))
   assert.equal(await readFile(join(second, 'dist/server.js'), 'utf8'), 'build 2\n')
   assert.equal(await readFile(join(first, 'dist/server.js'), 'utf8'), 'build 1\n')
   assert.equal(await readFile(join(second, 'package.json'), 'utf8'), '{"name":"@foreman-code/api","deployed":true}\n')
   assert.equal(await readFile(join(second, 'node_modules/fastify/index.js'), 'utf8'), 'fastify')
 
-  // Changed contracts output is part of the dependency tree, so it gets a fresh tree; the older release keeps its own.
+  // Contracts builds change independently of installed dependencies; each release freezes its own output.
   await writeFile(join(source, 'packages/contracts/dist/index.js'), 'contracts 2\n')
   const third = join(directory, 'releases/release-c/apps/api')
   await production.deployProductionApi(run, third, { dependencies })
-  assert.equal(deploys.length, 2)
-  assert.notEqual(await readlink(join(third, 'node_modules')), await readlink(join(second, 'node_modules')))
+  assert.equal(deploys.length, 1)
+  assert.equal(await realpath(join(third, 'node_modules/fastify')), await realpath(join(second, 'node_modules/fastify')))
   assert.equal(await readFile(join(third, 'node_modules/@foreman-code/contracts/dist/index.js'), 'utf8'), 'contracts 2\n')
   assert.equal(await readFile(join(second, 'node_modules/@foreman-code/contracts/dist/index.js'), 'utf8'), 'contracts 1\n')
 
@@ -963,10 +963,14 @@ test('releases share one dependency tree per lockfile and contracts content inst
   await production.pruneApiDependencies(dependencies.root, [first, third].map(path => join(path, '../..')),
     { removeInBackground: path => removed.push(path) })
   assert.equal(removed.length, 0)
-  await production.pruneApiDependencies(dependencies.root, [third].map(path => join(path, '../..')),
+  await writeFile(join(source, 'pnpm-lock.yaml'), 'lock: 2\n')
+  const fourth = join(directory, 'releases/release-d/apps/api')
+  await production.deployProductionApi(run, fourth, { dependencies })
+  assert.equal(deploys.length, 2)
+  await production.pruneApiDependencies(dependencies.root, [fourth].map(path => join(path, '../..')),
     { removeInBackground: path => removed.push(path) })
   assert.equal(removed.length, 1)
-  assert.equal(await readFile(join(third, 'node_modules/fastify/index.js'), 'utf8'), 'fastify')
+  assert.equal(await readFile(join(fourth, 'node_modules/fastify/index.js'), 'utf8'), 'fastify')
 })
 
 test('pruning protects retained and selected releases through installation aliases', async t => {
@@ -1054,3 +1058,88 @@ for (const failure of ['CI setup: missing package metadata', 'API response timed
     }
   })
 }
+
+
+test('source snapshots keep unchanged source timestamps and API build info across commits', async t => {
+  const directory = await installFixture(t)
+  const repository = join(directory, 'repository')
+  await mkdir(join(repository, 'apps/api/src'), { recursive: true })
+  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')))
+  const git = args => execFileSync('git', args, { cwd: repository, env: environment, encoding: 'utf8' }).trim()
+  const commit = message => {
+    git(['add', '-A'])
+    git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', message])
+  }
+  await writeFile(join(repository, 'apps/api/src/kept.ts'), 'export const kept = 1\n')
+  await writeFile(join(repository, 'apps/api/src/changed.ts'), 'export const changed = 1\n')
+  await writeFile(join(repository, '.gitignore'), 'node_modules/\ndist/\n*.tsbuildinfo\n')
+  git(['init', '-q'])
+  commit('first')
+  git(['remote', 'add', 'origin', 'https://github.com/example/fixture.git'])
+  let timestamp
+  await production.withProductionSourceSnapshot(repository, directory, async ({ source }) => {
+    const kept = join(source, 'apps/api/src/kept.ts')
+    await utimes(kept, 1_000_000, 1_000_000)
+    timestamp = (await stat(kept)).mtimeMs
+    await mkdir(join(source, 'apps/api/dist'), { recursive: true })
+    await writeFile(join(source, 'apps/api/dist/.tsbuildinfo'), 'incremental build state')
+    await writeFile(join(source, 'apps/api/dist/kept.js'), 'emitted kept')
+    await writeFile(join(source, 'apps/api/src/added.ts'), 'untracked collision')
+  })
+  await writeFile(join(repository, 'apps/api/src/added.ts'), 'export const added = 1\n')
+  await writeFile(join(repository, 'apps/api/src/changed.ts'), 'export const changed = 2\n')
+  commit('second')
+  await production.withProductionSourceSnapshot(repository, directory, async ({ source }) => {
+    assert.equal((await stat(join(source, 'apps/api/src/kept.ts'))).mtimeMs, timestamp)
+    assert.equal(await readFile(join(source, 'apps/api/src/added.ts'), 'utf8'), 'export const added = 1\n')
+    assert.equal(await readFile(join(source, 'apps/api/src/changed.ts'), 'utf8'), 'export const changed = 2\n')
+    assert.equal(await readFile(join(source, 'apps/api/dist/.tsbuildinfo'), 'utf8'), 'incremental build state')
+    assert.equal(await readFile(join(source, 'apps/api/dist/kept.js'), 'utf8'), 'emitted kept')
+  })
+})
+
+test('production builds compile contracts and API then bundle web without a web typecheck', async () => {
+  const calls = []
+  await production.buildProductionSource(async (command, args) => { calls.push([command, args]) })
+  assert.deepEqual(calls, [
+    ['corepack', ['pnpm', '--filter', '@foreman-code/contracts', 'build']],
+    ['corepack', ['pnpm', '--filter', '@foreman-code/api', 'build']],
+    ['corepack', ['pnpm', '--filter', '@foreman-code/web', 'exec', 'vite', 'build']],
+  ])
+})
+
+for (const input of ['pnpm-lock.yaml', 'apps/api/package.json', 'packages/contracts/package.json',
+  'pnpm-workspace.yaml', '.npmrc']) {
+  test(`dependency staging invalidates when ${input} changes`, async t => {
+    const directory = await installFixture(t)
+    const { source, run, deploys } = await apiBuildSource(directory)
+    const dependencies = { root: join(directory, 'api-dependencies'), source }
+    const first = join(directory, 'releases/first/apps/api')
+    await production.deployProductionApi(run, first, { dependencies })
+    if (input === 'pnpm-workspace.yaml' || input === '.npmrc') {
+      await writeFile(join(source, input), '# changed install policy\n')
+    } else {
+      await writeFile(join(source, input), (await readFile(join(source, input), 'utf8')) + ' ')
+    }
+    const second = join(directory, 'releases/second/apps/api')
+    await production.deployProductionApi(run, second, { dependencies })
+    assert.equal(deploys.length, 2)
+    assert.notEqual(await realpath(join(first, 'node_modules/fastify')), await realpath(join(second, 'node_modules/fastify')))
+    assert.equal(await readFile(join(first, 'node_modules/@foreman-code/contracts/dist/index.js'), 'utf8'), 'contracts 1\n')
+  })
+}
+
+
+test('dependency pruning retains cache entries used by older symlinked releases', async t => {
+  const directory = await installFixture(t)
+  const root = join(directory, 'api-dependencies')
+  const release = join(directory, 'releases/previous')
+  await mkdir(join(root, 'installed/api/node_modules'), { recursive: true })
+  await writeFile(join(root, 'installed/api/node_modules/value'), 'installed dependency')
+  await mkdir(join(release, 'apps/api'), { recursive: true })
+  await symlink(join(root, 'installed/api/node_modules'), join(release, 'apps/api/node_modules'))
+  const removed = []
+  await production.pruneApiDependencies(root, [release], { removeInBackground: path => removed.push(path) })
+  assert.deepEqual(removed, [])
+  assert.equal(await readFile(join(release, 'apps/api/node_modules/value'), 'utf8'), 'installed dependency')
+})
