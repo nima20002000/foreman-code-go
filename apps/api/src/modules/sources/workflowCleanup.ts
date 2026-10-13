@@ -29,6 +29,40 @@ interface CompletedSource {
 }
 
 const cleanupPageSize = 100
+type SourceCleanupService = Pick<PostgresSourceService, 'confirmClosed'>
+interface ClosureRetry {
+  delayMs: number
+  nextAttemptAt: number
+  missingFileReported: boolean
+}
+const closureRetries = new WeakMap<SourceCleanupService, Map<string, ClosureRetry>>()
+
+function deferSourceClosure(
+  error: unknown,
+  materializationId: string,
+  retries: Map<string, ClosureRetry>,
+  report: (error: unknown) => void,
+): boolean {
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+  if (code !== 'SOURCE_EXECUTION_UNCERTAIN' && code !== 'ENOENT') {
+    retries.delete(materializationId)
+    return false
+  }
+  const previous = retries.get(materializationId)
+  const delayMs = previous ? Math.min(previous.delayMs * 2, 5 * 60_000) : 30_000
+  const retry = {
+    delayMs,
+    nextAttemptAt: Date.now() + delayMs,
+    missingFileReported: previous?.missingFileReported ?? false,
+  }
+  retries.set(materializationId, retry)
+  // Missing receipts or claims do not prove release; keep the source owned and retry.
+  if (code === 'ENOENT' && !retry.missingFileReported) {
+    retry.missingFileReported = true
+    report(error)
+  }
+  return true
+}
 
 async function completedSourcePage(pool: Pick<pg.Pool, 'query'>, after: CompletedSource | undefined) {
   return pool.query<CompletedSource>(`select m.materialization_id,m.state='closed' as already_closed,
@@ -67,13 +101,22 @@ async function completedSourcePage(pool: Pick<pg.Pool, 'query'>, after: Complete
 
 export async function closeCompletedWorkflowSources(
   pool: Pick<pg.Pool, 'query'>,
-  sources: Pick<PostgresSourceService, 'confirmClosed'>,
+  sources: SourceCleanupService,
   report: (error: unknown) => void,
 ): Promise<void> {
+  let retries = closureRetries.get(sources)
+  if (!retries) {
+    retries = new Map()
+    closureRetries.set(sources, retries)
+  }
+  const unseen = new Set(retries.keys())
   let after: CompletedSource | undefined
   for (;;) {
     const { rows } = await completedSourcePage(pool, after)
     for (const row of rows) {
+      unseen.delete(row.materialization_id)
+      const retry = retries.get(row.materialization_id)
+      if (retry && retry.nextAttemptAt > Date.now()) continue
       try {
         // A successful result can be published before its native closure commits.
         if (row.settlement_pending) continue
@@ -84,11 +127,15 @@ export async function closeCompletedWorkflowSources(
         if (record.receipt.binding.deviceId !== null && execution.id === record.receipt.executionId
           && await hasRetainedRemoteReviewerSource(pool, execution)) continue
         await sources.confirmClosed(record)
+        retries.delete(row.materialization_id)
       } catch (error) {
-        report(error)
+        if (!deferSourceClosure(error, row.materialization_id, retries, report)) report(error)
       }
     }
-    if (rows.length < cleanupPageSize) return
+    if (rows.length < cleanupPageSize) {
+      for (const materializationId of unseen) retries.delete(materializationId)
+      return
+    }
     after = rows.at(-1)
   }
 }
