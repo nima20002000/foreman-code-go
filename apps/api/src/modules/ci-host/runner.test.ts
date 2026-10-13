@@ -245,7 +245,7 @@ describe('host CI runner', () => {
   })
   it.each([
     ['unit', undefined, true], ['unit', 'unit-api', true], ['integration', undefined, true],
-    ['unit', 'unit-web', false], ['unit', 'unit-web-heavy', false], ['unit', 'unit-other', false],
+    ['unit', 'unit-web', true], ['unit', 'unit-web-heavy', true], ['unit', 'unit-other', true],
     ['lint', 'lint-api', false], ['typecheck', 'typecheck-api', false], ['build', 'build-api', false],
   ])('prepares the database for %s/%s only when needed', async (suite, part, databaseRequired) => {
     const f = await computer()

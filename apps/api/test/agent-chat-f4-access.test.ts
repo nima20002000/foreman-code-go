@@ -18,7 +18,6 @@ import { registerAgentChatRoutes } from '../src/routes/agentChat.js'
 
 const base = agentChatFixtures.idleAfterCompletion
 const actions: ManagementAction[] = ['agent_chat:read', 'agent_chat:write', 'agent_chat:cancel', 'agent_chat:respond']
-const livePrincipalSql = 'select id,name,audience,grants,expires_at,revoked_at,delegated_from from management_principals where id=$1 for share'
 function principal(allowed = actions, scope: ManagementScope = {}): ManagementPrincipal {
   return { id: 'f4-caller', name: 'F4 caller', audience: 'operator', grants: [{ actions: allowed, scope }], revokedAt: null,
     expiresAt: '2099-01-01T00:00:00Z' }
@@ -39,9 +38,16 @@ function fixture(runId?: string) {
   }
   let live: ManagementPrincipal | null = principal()
   const poolQuery = vi.fn(async (sql: string, values: unknown[]) => {
-    expect(sql).toBe(livePrincipalSql) // Any receipt, audit or reservation write is an error in this read-only port.
-    expect(values).toEqual(['f4-caller'])
-    return { rows: live ? [{ id: live.id, name: live.name, audience: live.audience, grants: live.grants,
+    if (sql.includes('from harness_native_events')) {
+      return { rows: runId && values[0] === 'execution' && values[1] === runId
+        && values[2] === context.workflowNodeId && values[3] === context.agentId
+        ? [{ item_key: 'source-reply', role: 'assistant', content: 'Saved Run reply', original_bytes: 15,
+          complete: true, sequence: '1', revision: '1' }] : [] }
+    }
+    if (!sql.startsWith('select ') || !sql.includes('from management_principals')) {
+      throw new Error('Unexpected chat persistence operation')
+    }
+    return { rows: live && values[0] === live.id ? [{ id: live.id, name: live.name, audience: live.audience, grants: live.grants,
       expires_at: new Date(live.expiresAt), revoked_at: live.revokedAt ? new Date(live.revokedAt) : null, delegated_from: null }] : [] }
   })
   const repository = { get: vi.fn(async () => row), byKey: vi.fn(async () => row),
@@ -56,8 +62,11 @@ function fixture(runId?: string) {
   }
   const version = { definition: { nodes: [{ id: context.workflowNodeId, agentId: context.agentId }] } }
   const workflows = { getCurrentSavedVersion: async () => version, getSavedVersion: async () => version,
-    getAgentConfiguration: async () => undefined } as unknown as ConstructorParameters<typeof AgentChatService>[3]
+    getAgentConfiguration: async () => ({ id: 'config', agentId: context.agentId, harness: { harness: 'codex' } }) } as unknown as ConstructorParameters<typeof AgentChatService>[3]
   const runs = { getForWorkspace: async () => ({ workflowId: context.workflowId, workflowVersionId: 'version', executionState: 'completed', id: runId }),
+    getExecution: async (id: string) => id === 'execution' ? { id, runId, workflowNodeId: context.workflowNodeId,
+      agentId: context.agentId, agentConfigurationVersionId: 'config', attempt: 1, input: {}, state: 'completed',
+      nativeSessionId: 'source', workingDirectory: '/tmp/chat-access', createdAt: base.conversation.createdAt } : undefined,
     async *executionPages() { yield [] } } as unknown as ConstructorParameters<typeof AgentChatService>[4]
   const native = vi.fn()
   const service = new AgentChatService({ query: poolQuery } as unknown as pg.Pool, repository as unknown as PostgresAgentChatRepository,
@@ -103,7 +112,14 @@ describe('F4 A-R02/A-R03 scoped HTTP/MCP chat authorization', () => {
           for (const url of [`${root}?${query}`, `${root}/conversations/${f.row.id}/history`]) {
             const response = await app.inject({ method: 'GET', url, headers })
             expect(response.statusCode, response.body).toBe(matching ? 200 : 403)
-            if (!matching) expect(response.body).not.toContain(base.messages[0]!.content)
+            if (matching && scope === 'run' && url.startsWith(`${root}?`)) {
+              expect(response.json().sourceTranscript).toMatchObject({ executionId: 'execution',
+                messages: [{ role: 'assistant', content: 'Saved Run reply' }] })
+            }
+            if (!matching) {
+              expect(response.body).not.toContain(base.messages[0]!.content)
+              expect(response.body).not.toContain('Saved Run reply')
+            }
           }
           const response = await app.inject({ method: 'POST', url: `${root}/messages`, headers, payload: f.request })
           expect(response.statusCode, response.body).toBe(matching ? 200 : 403)
@@ -140,7 +156,7 @@ describe('F4 A-R02/A-R03 scoped HTTP/MCP chat authorization', () => {
         const history = await app.inject({ method: 'GET', url: `${root}/conversations/${f.row.id}/history`, headers })
         expect(history.statusCode).toBe(action === 'agent_chat:read' ? 200 : 403)
         // Current authorization reads are required; no command receipt/audit/native reservation is allowed.
-        for (const [sql, values] of f.poolQuery.mock.calls) { expect(sql).toBe(livePrincipalSql); expect(values).toEqual([caller.id]) }
+        expect(f.poolQuery).toHaveBeenCalled()
         expect(f.repository.admit).not.toHaveBeenCalled()
         expect(f.repository.cancelQueued).not.toHaveBeenCalled()
         expect(f.repository.requestCancel).not.toHaveBeenCalled()

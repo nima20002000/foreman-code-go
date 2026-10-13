@@ -43,11 +43,11 @@ it('requires a terminal CI lifecycle and rejects regression to queued work', () 
 
 it('reads the full ticket log by following byte offsets through public MCP', async () => {
   const callTool = vi.fn()
-    .mockResolvedValueOnce({ content: [], structuredContent: { text: 'first\n', nextOffset: 6, logBytes: 11 } })
-    .mockResolvedValueOnce({ content: [], structuredContent: { text: 'last\n', nextOffset: 11, logBytes: 11 } })
+    .mockResolvedValueOnce({ content: [], structuredContent: { text: 'first\n', nextOffset: 6, logBytes: 11, maxBytes: 65_536 } })
+    .mockResolvedValueOnce({ content: [], structuredContent: { text: 'last\n', nextOffset: 11, logBytes: 11, maxBytes: 65_536 } })
   const scope = { workspaceId: 'workspace', ticketId: randomUUID() }
   expect(await readCiLog({ callTool }, scope))
-    .toEqual({ text: 'first\nlast\n', logBytes: 11 })
+    .toEqual({ text: 'first\nlast\n', logBytes: 11, maxBytes: 65_536 })
   expect(callTool.mock.calls.map(call => call[0])).toEqual([
     { name: 'ci_logs_read', arguments: { ...scope, afterOffset: 0, maxBytes: 65_536 } },
     { name: 'ci_logs_read', arguments: { ...scope, afterOffset: 6, maxBytes: 65_536 } },
@@ -55,7 +55,7 @@ it('reads the full ticket log by following byte offsets through public MCP', asy
 })
 
 it('fails when a log reader stops advancing before the log is complete', async () => {
-  const callTool = vi.fn().mockResolvedValue({ content: [], structuredContent: { text: '', nextOffset: 0, logBytes: 11 } })
+  const callTool = vi.fn().mockResolvedValue({ content: [], structuredContent: { text: '', nextOffset: 0, logBytes: 11, maxBytes: 65_536 } })
   await expect(readCiLog({ callTool }, {
     workspaceId: 'workspace', ticketId: randomUUID(),
   })).rejects.toThrow('advance')
