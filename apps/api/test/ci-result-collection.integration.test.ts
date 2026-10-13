@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { CiGetOutputSchema, CiRunOutputSchema, type CiHostRun, type CiTestResults } from '@foreman-code/contracts'
+import { CiGetOutputSchema, CiHostRequestSchema, CiRunOutputSchema,
+  type CiHostRequest, type CiHostRun, type CiTestResults } from '@foreman-code/contracts'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { afterAll, beforeAll, expect, it } from 'vitest'
@@ -36,6 +37,7 @@ it.each([false, true])('persists outcome, retries results after restart and enfo
   let finished = false
   let failedRead = false
   let starts = 0
+  const reads: CiHostRequest[] = []
   const endpoint: HostCiEndpoint = {
     computers: async () => [computer],
     request: async (_computer, request) => {
@@ -48,6 +50,7 @@ it.each([false, true])('persists outcome, retries results after restart and enfo
         return { operation: 'start', run: remote }
       }
       if (!remote || request.operation !== 'read') throw new Error('Unexpected CI request')
+      reads.push(CiHostRequestSchema.parse(request))
       const run = finished ? { ...remote, state: 'passed' as const, exitCode: 0, finishedAt: new Date().toISOString() } : remote
       if (request.testResults && !failedRead) {
         failedRead = true
@@ -87,6 +90,8 @@ it.each([false, true])('persists outcome, retries results after restart and enfo
     await ci.dispatch()
     finished = true
     await ci.dispatch()
+    expect(reads).toContainEqual({ operation: 'read', runId: started.ticketId,
+      afterOffset: 0, maxBytes: 32_768, durations: true })
     const pending = CiGetOutputSchema.parse(await invoke('ci_get', { ticketId: started.ticketId }))
     expect(pending.run).toMatchObject({ state: 'passed', collection: 'pending', ...persistedPins })
     expect((await denied.callTool({ name: 'ci_get', arguments: { workspaceId, ticketId: started.ticketId } })).isError).toBe(true)

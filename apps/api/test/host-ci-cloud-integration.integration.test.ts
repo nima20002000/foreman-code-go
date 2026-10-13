@@ -44,7 +44,7 @@ it.each(['mcp', 'http'] as const)('reads queued user-systemd slices through %s w
   const f = await fixture({ github: readiness, cloud: true })
   f.computers.splice(1, 1)
   const systemd = [
-    'apps/api/test/workflow-systemd-restart-active.integration.test.ts',
+    'apps/api/test/workflow-systemd-active-recovery.integration.test.ts',
     'apps/api/test/native-service-restart.integration.test.ts',
   ]
   const ordinary = [
@@ -81,6 +81,9 @@ it.each(['mcp', 'http'] as const)('reads queued user-systemd slices through %s w
       return CiGetOutputSchema.parse(decodeMcpToolResult(result))
     }
     const waiting = await read()
+    const selectedSlices = waiting.partitions!.map(run => integrationPartition(run.files, {}, run.partition!))
+    expect(selectedSlices.every(slice => slice.length > 0)).toBe(true)
+    expect(selectedSlices.flat().sort()).toEqual([...systemd, ...ordinary].sort())
     const host = waiting.partitions!.find(run => run.partition!.hostIndexes!.includes(run.partition!.index))!
     const sibling = waiting.partitions!.find(run => run.id !== host.id)!
     expect(host).toMatchObject({ state: 'queued', computer: null,
@@ -203,7 +206,7 @@ it('keeps every selected file in a nonempty slice when most files require user s
   f.computers.splice(0, 2)
   const systemd = [
     'apps/api/test/native-service-restart.integration.test.ts',
-    'apps/api/test/workflow-systemd-restart-active.integration.test.ts',
+    'apps/api/test/workflow-systemd-active-recovery.integration.test.ts',
   ]
   const ordinary = 'apps/api/test/agent-chat.integration.test.ts'
   try {
@@ -216,6 +219,9 @@ it('keeps every selected file in a nonempty slice when most files require user s
     const slices = read.partitions!.map(run => integrationPartition(run.files, {}, run.partition!))
     expect(slices.every(slice => slice.length === 1)).toBe(true)
     expect(slices.flat().sort()).toEqual([...systemd, ordinary].sort())
+    for (const run of read.partitions!) {
+      expect((await f.pool.query('select record from ci_runs where id=$1', [run.id])).rows[0].record).toEqual(run)
+    }
     expect(read.partitions!.filter(run => run.state === 'queued')).toHaveLength(2)
     expect(read.partitions!.filter(run => run.state === 'running')).toHaveLength(1)
     expect(f.started[0]).toMatchObject({ computer: 'CircleCI 1',

@@ -25,8 +25,10 @@ describe('integration partitions', () => {
 
   it('isolates user-systemd files and balances ordinary files across cloud slices', () => {
     const systemd = [
-      'apps/api/test/workflow-systemd-restart-active.integration.test.ts',
-      'apps/api/test/workflow-systemd-restart-writable-source.integration.test.ts',
+      'apps/api/test/workflow-systemd-installed-service.integration.test.ts',
+      'apps/api/test/workflow-systemd-active-recovery.integration.test.ts',
+      'apps/api/test/workflow-systemd-writable-source-recovery.integration.test.ts',
+      'apps/api/test/workflow-systemd-restart-unit-cleanup.integration.test.ts',
       'apps/api/test/workflow-systemd-restart-admitting-interval.integration.test.ts',
       'apps/api/test/workflow-systemd-restart-failed-admission.integration.test.ts',
       'apps/api/test/native-service-restart.integration.test.ts',

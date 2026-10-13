@@ -23,7 +23,7 @@ beforeEach(async () => {
 })
 
 async function fixture(options: { cloudSlots?: number; files?: string[]; offlineKey?: string; pool?: pg.Pool;
-  occupiedKeys?: Set<string> } = {}) {
+  occupiedKeys?: Set<string>; allowance?: number } = {}) {
   const pool = options.pool ?? database.pool
   const workspaceId = randomUUID()
   await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId,
@@ -31,8 +31,8 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
       provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main',
     } })])
   const computers: HostCiComputer[] = [
-    { key: 'builder-main', label: 'Main builder', priority: 60, hostRef: { kind: 'main', mainId: 'main' } },
-    { key: 'builder-paired', label: 'Paired builder', priority: 50,
+    { key: 'builder-main', label: 'Main builder', priority: 60, ...{ buildAllowancePercent: options.allowance ?? 100 }, hostRef: { kind: 'main', mainId: 'main' } },
+    { key: 'builder-paired', label: 'Paired builder', priority: 50, ...{ buildAllowancePercent: options.allowance ?? 100 },
       hostRef: { kind: 'device', mainId: 'main', deviceId: 'paired' } },
     ...Array.from({ length: options.cloudSlots ?? 24 }, (_, slot) => ({ key: `cloud-${slot}`, label: `Cloud ${slot}`, priority: 30,
       hostRef: { kind: 'cloud' as const, mainId: 'main', provider: 'github' as const, slot },
@@ -110,7 +110,7 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
     }
     throw new Error('The gate did not finish every assigned job')
   }
-  return { ci, started, files, connect, call, value, operator, finishGate, close: async () => {
+  return { ci, started, files, computers, connect, call, value, operator, finishGate, close: async () => {
     await Promise.all(clients.map(client => client.close()))
     await ci.close()
     await app.close()
@@ -302,5 +302,54 @@ it('queues full requests and a second gate behind the first while affected reque
     await f.finishGate(first.ticketId)
     expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: second.ticketId })).group?.state).toBe('running')
     expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: full.ticketId })).run.state).toBe('queued')
+  } finally { await f.close() }
+})
+
+it.each([50, 10])('persists and dispatches a gate within a %i percent build allowance through MCP', async allowance => {
+  const f = await fixture({ allowance, cloudSlots: 2 })
+  try {
+    const input = { suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40), commandId: randomUUID() }
+    const reader = await f.connect(true)
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    const admitted = CiRunOutputSchema.parse(await f.value('ci_run', input))
+    await f.ci.dispatch()
+    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
+    const hosts = read.partitions!.filter(run => run.suite === 'integration' && run.plannedHostKey?.startsWith('builder-'))
+    expect(hosts).toHaveLength(2)
+    const shards = allowance === 50 ? 8 : 1
+    for (const host of hosts) {
+      expect(host.integrationShards).toBe(shards)
+      expect(f.started.find(item => item.request.operation === 'start' && item.request.runId === host.id)?.request)
+        .toMatchObject({ integrationShards: shards })
+      expect((await database.pool.query('select record from ci_runs where id=$1', [host.id])).rows[0].record)
+        .toEqual(host)
+    }
+  } finally { await f.close() }
+})
+
+it('rechecks the build allowance when dispatching an already planned gate through MCP', async () => {
+  const occupiedKeys = new Set(['builder-main', 'builder-paired'])
+  const f = await fixture({ occupiedKeys, cloudSlots: 2 })
+  try {
+    const admitted = CiRunOutputSchema.parse(await f.value('ci_run', {
+      suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40), commandId: randomUUID(),
+    }))
+    await f.ci.dispatch()
+    const queued = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
+    expect(queued.partitions!.filter(run => run.plannedHostKey?.startsWith('builder-'))
+      .every(run => run.state === 'queued')).toBe(true)
+    for (const computer of f.computers.filter(computer => computer.hostRef.kind !== 'cloud')) {
+      Object.assign(computer, { buildAllowancePercent: 50 })
+    }
+    occupiedKeys.clear()
+    await f.ci.dispatch()
+    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
+    const hosts = read.partitions!.filter(run => run.suite === 'integration' && run.plannedHostKey?.startsWith('builder-'))
+    expect(hosts).toHaveLength(2)
+    for (const host of hosts) {
+      expect(host).toMatchObject({ state: 'running', integrationShards: 16 })
+      expect(f.started.find(item => item.request.operation === 'start' && item.request.runId === host.id)?.request)
+        .toMatchObject({ integrationShards: 8 })
+    }
   } finally { await f.close() }
 })

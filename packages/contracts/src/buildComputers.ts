@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { DeviceProvisioningTargetSchema, DeviceCommandIdSchema, DeviceSafeIntegerSchema } from './deviceResources.js'
 
 /** Share (percent) of the computer's CPU and memory that builds may use together. */
-const BuildComputerAllowanceSchema = z.number().int().min(10).max(100)
+export const BuildComputerAllowanceSchema = z.number().int().min(10).max(100)
 export const BuildComputerPreferenceSchema = z.object({
   target: DeviceProvisioningTargetSchema,
   revision: DeviceSafeIntegerSchema,

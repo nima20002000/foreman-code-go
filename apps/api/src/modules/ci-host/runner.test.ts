@@ -99,7 +99,9 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
       args.filter(arg => /\\.test\\.tsx?$/.test(arg)).map(file => ({ name: path.resolve(args[1] === "--dir" ? args[2] : ".", file), status: "passed", startTime: 1, endTime: 6,
       assertionResults: [{ fullName: path.basename(file) + " works", status: "passed", duration: 4 }] })) }));' "$@"\n`
   await writeFile(join(bin, 'corepack'), '#!/bin/bash\necho "corepack $*"\n'
+    + 'echo "CI shard ceiling $FOREMAN_CODE_CI_INTEGRATION_SHARDS"\n'
     + 'echo "CI budget $FOREMAN_CODE_CI_CPU_COUNT $FOREMAN_CODE_CI_MEMORY_BYTES $FOREMAN_CODE_VERIFICATION_UNIT_WORKERS"\n'
+    + 'echo "CI database $FOREMAN_CODE_CI_DATABASE_CPUS $FOREMAN_CODE_CI_DATABASE_MEMORY_BYTES"\n'
     + `${integration}${unitReport}`
     + `if [ "$2" = db:up ]; then code=${options.databaseExit ?? 0};`
     + ' if [ "$code" = 0 ]; then touch "$TMPDIR/database-ready"; fi; exit "$code"; fi\n'
@@ -160,6 +162,42 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
 }
 
 describe('host CI runner', () => {
+  it.each([false, true])('honors saved build allowances for integration starts with gate=%s', async gate => {
+    const f = await computer({ cpuCount: 16, hostSlots: true })
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
+      suite: 'integration', scope: 'full', buildAllowancePercent: 50,
+      ...(gate ? { gate: true, integrationShards: 32, files: ['apps/api/test/a.integration.test.ts'] } : {}) })
+    const done = await f.settle(runId)
+    expect(done.run.state).toBe('passed')
+    // Eight allowed CPUs: the shared database takes two CPUs and 2 GiB for its eight shards.
+    expect(done.text).toContain(`CI database 2 ${2 * 2 ** 30}`)
+    expect(done.text).toContain(`CI budget 6 ${5 * 2 ** 30} 5`)
+    if (gate) expect(done.text).toContain('CI shard ceiling 8')
+  })
+
+  it('sizes the isolated integration database for the shards that share it', async () => {
+    const f = await computer({ cpuCount: 16, hostSlots: true })
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
+      suite: 'integration', scope: 'full', gate: true, integrationShards: 16, files: ['apps/api/test/a.integration.test.ts'] })
+    const done = await f.settle(runId)
+    expect(done.run.state).toBe('passed')
+    // Sixteen shards migrate and query one PostgreSQL: a single CPU and 1 GiB made every file time out.
+    expect(done.text).toContain(`CI database 4 ${4 * 2 ** 30}`)
+    expect(done.text).toContain('CI budget 12 ')
+  })
+
+  it('keeps the exclusive database fallback within the saved build allowance', async () => {
+    const f = await computer({ cpuCount: 16 })
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
+      suite: 'integration', scope: 'full', buildAllowancePercent: 50 })
+    const done = await f.settle(runId)
+    expect(done.run.state).toBe('passed')
+    expect(done.text).toContain(`CI budget 8 ${7 * 2 ** 30} 7`)
+  })
+
   it('passes the admitted slot share to integration sizing and Vitest workers', async () => {
     const f = await computer({ cpuCount: 16, hostSlots: true })
     const runId = randomUUID()
@@ -167,7 +205,7 @@ describe('host CI runner', () => {
       suite: 'integration', scope: 'full' })
     const done = await f.settle(runId)
     expect(done.run.state).toBe('passed')
-    expect(done.text).toContain(`CI budget 7 ${Math.floor(16 * 2 ** 30 * 0.9 / 2) - 2 ** 30} 6`)
+    expect(done.text).toContain(`CI budget 6 ${Math.floor(16 * 2 ** 30 * 0.9 / 2) - 2 * 2 ** 30} 5`)
     expect(done.text).toContain('corepack pnpm db:down')
   })
 

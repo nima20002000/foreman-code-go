@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { hostCiCapacity } from './capacity.js'
+import { gateIntegrationShards, hostCiCapacity } from './capacity.js'
 
 const machine = { cpuCount: 16, memoryBytes: 32 * 2 ** 30, availableMemoryBytes: 24 * 2 ** 30 }
 
@@ -34,4 +34,13 @@ it('does not reserve memory twice when a running job has not consumed its full a
   const second = hostCiCapacity(measured, [first])
   expect(first.memoryBytes + second.memoryBytes).toBeLessThanOrEqual(measured.availableMemoryBytes)
   expect(second).toMatchObject({ slotsUsed: 1, slotsTotal: 2, memoryBytes: 6 * 2 ** 30 })
+})
+
+it.each([
+  [16, 14, 16],
+  [4, 8, 4],
+  [32, 3, 4],
+  [128, 128, 64],
+])('limits %i logical CPUs and %i GiB to %i integration shards', (cpuCount, memoryGiB, shards) => {
+  expect(gateIntegrationShards(cpuCount, memoryGiB * 2 ** 30)).toBe(shards)
 })
