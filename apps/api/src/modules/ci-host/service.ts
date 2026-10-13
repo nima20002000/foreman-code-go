@@ -422,7 +422,8 @@ export class HostCiService {
       const message = run.supersededBy ? `superseded by ${run.supersededBy}` : 'Canceled.'
       const canceled = { ...run, state: 'canceled' as const, finishedAt: new Date().toISOString(), message }
       const saved = await this.saveCancellation(`update ci_runs set state='canceled', host_key=null, record=$2::jsonb
-        where id=$1 and state='queued'`, [run.id, JSON.stringify(canceled)], canceled, audit)
+        where id=$1 and state='queued' and record->>'supersededBy' is not distinct from $3`,
+      [run.id, JSON.stringify(canceled), run.supersededBy ?? null], canceled, audit)
       if (!saved.rowCount) return this.cancelTicket(workspaceId, ticketId, audit)
       return { run: canceled }
     }
