@@ -178,7 +178,7 @@ describe('Board Agent chat live execution activity', () => {
     if (mode === 'item') expect(within(transcript).queryByText('Old full output')).not.toBeInTheDocument()
   })
 
-  it('bounds live retention and rendering while history stays browsable during polling', async () => {
+  it('bounds live retention and rendering during polling', async () => {
     const state = runState()
     const mounted = mountChat(state)
     mounted.mock.setExecutionActivity(state.context, livePage(numberedMessages(1, 200), '200'))
@@ -191,6 +191,15 @@ describe('Board Agent chat live execution activity', () => {
     }
     expect(within(check).getByText('Activity 800')).toBeVisible()
     expect(within(check).queryByText('Activity 1')).not.toBeInTheDocument()
+  })
+
+  it('keeps history browsable during polling and ignores an abandoned history read', async () => {
+    const state = runState()
+    const mounted = mountChat(state)
+    mounted.mock.setExecutionActivity(state.context,
+      livePage(numberedMessages(601, 800), '800', { hasEarlierItems: true }))
+    const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
+    expect(within(check).getByText('Activity 800')).toBeVisible()
 
     const pending = deferred<AgentChatExecutionActivityPage>()
     const abandoned = deferred<AgentChatExecutionActivityPage>()
