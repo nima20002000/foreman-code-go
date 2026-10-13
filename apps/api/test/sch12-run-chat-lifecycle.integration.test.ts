@@ -15,6 +15,26 @@ afterEach(() => vi.restoreAllMocks())
 // are existing deterministic port fixtures. No additional product/migration mocks
 // are introduced; inherited location/native qualification substitutes stay explicit.
 describe.skipIf(!postgresEnabled)('Historical Run-scoped chat lifecycle PostgreSQL / HTTP / MCP', () => {
+  it('reopens the retained Run database with the original scoped MCP credentials', async () => {
+    const f = await historicalFixture()
+    let api: HistoricalApi | undefined
+    try {
+      await runA(f)
+      api = await openHistoricalApi(f)
+      const snapshot = await readSnapshot(api, targetFor(f))
+      const denied = await f.access.issue({ name: 'Historical chat denied scope', audience: 'operator',
+        expiresAt: new Date(Date.now() + 600000),
+        grants: [{ actions: ['runs:read'], scope: { workspaceIds: ['different-workspace'] } }] })
+      const deniedClient = await api.connect(denied.token)
+      const deniedRead = await deniedClient.callTool({ name: 'run_board_snapshot_get', arguments: { ...targetFor(f) } })
+      expect(deniedRead.isError).toBe(true)
+      await api.close()
+      api = await openHistoricalApi(f)
+      expect(await readSnapshot(api, targetFor(f))).toEqual(snapshot)
+      expect(api.native.size).toBe(0)
+    } finally { try { await api?.close() } finally { await f.close() } }
+  }, 120_000)
+
   it('[SCH-12-C01] removed Y resolves A; shared X never shares a child across Runs; restart/continuation preserve results', async () => {
     const f = await historicalFixture()
     let api: HistoricalApi | undefined

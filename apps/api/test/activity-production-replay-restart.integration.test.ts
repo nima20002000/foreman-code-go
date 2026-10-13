@@ -1,15 +1,36 @@
 import { randomUUID } from 'node:crypto'
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { ManualRunStartResultSchema, SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { vi } from 'vitest'
 import { RepeatRunRepository } from '../src/modules/runs/repeatPostgres.js'
 import * as workflowLifecycle from '../src/modules/runs/workflowLifecycle.js'
 import { afterEach, describe, expect, it } from 'vitest'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
-import { closeActivityReplay, setup, eventually } from './helpers/activityReplayFixture.js'
+import { closeActivityReplay, setup, eventually, completedRun } from './helpers/activityReplayFixture.js'
 
 afterEach(closeActivityReplay)
 
 describe.skipIf(!postgresEnabled)('Production activity replay: restart', { timeout: 120000 }, () => {
+  it('retains a completed Run and authenticated readback when production reopens its fixture database', async () => {
+    const f = await setup()
+    const completed = await completedRun(f)
+    const { workspaceId, id: runId } = completed.run
+    const starts = structuredClone(f.replay.starts)
+    await f.restart()
+    await f.reconcile()
+    const response = await f.http('GET', `/api/management/workspaces/${workspaceId}/runs/${runId}`)
+    expect(response.statusCode, response.body).toBe(200)
+    const detail = SavedRunDetailsSchema.parse(response.json())
+    expect(detail.run).toEqual(completed.run)
+    expect(detail.executions).toEqual(completed.executions)
+    const readback = await f.call('run_get', { workspaceId, runId, detail: 'full' })
+    expect(readback.isError).not.toBe(true)
+    expect(SavedRunDetailsSchema.parse(decodeMcpToolResult(readback)).run).toEqual(completed.run)
+    const denied = await f.call('run_get', { workspaceId, runId }, f.denied.token)
+    expect(denied.isError).toBe(true)
+    expect(f.replay.starts).toEqual(starts)
+  })
+
   for (const boundary of ['queued successor', 'native terminal'] as const) {
     it(`restarts the actual engine at a ${boundary} without replaying native work`, async () => {
       const f = await setup({ form: 'sequential', handoffs: true })
