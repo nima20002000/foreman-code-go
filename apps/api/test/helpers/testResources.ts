@@ -2,10 +2,6 @@ export { createFixtureDatabase, createMigratedFixtureDatabase, dropFixtureDataba
   ownedTestDatabaseUrl, ownedTestPath, removeFixtureDirectory } from '../../../../scripts/test-resources.mjs'
 
 import type pg from 'pg'
-import { AgentConfigurationVersionSchema, ExecutionLocationSchema, HarnessExecutionSchema,
-  RuntimeIdentitySchema } from '@foreman-code/contracts'
-import { AcceptedWorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
-import { createRuntimeIdentity, testResourcesIdentity } from '@foreman-code/contracts/runtime-identity-node'
 import { assertTestDatabase, ownedTestDatabaseUrl, ownedTestPath } from '../../../../scripts/test-resources.mjs'
 
 /** Prepared native acceptance binds the API's effective storage and database to this invocation. */
@@ -14,6 +10,8 @@ export async function assertOwnedTestApi(origin: URL, pool: pg.Pool, environment
     || origin.username || origin.password || origin.search || origin.hash) {
     throw new Error('Native acceptance requires a loopback test API')
   }
+  const { RuntimeIdentitySchema } = await import('@foreman-code/contracts')
+  const { createRuntimeIdentity, testResourcesIdentity } = await import('@foreman-code/contracts/runtime-identity-node')
   const databaseUrl = ownedTestDatabaseUrl('TEST_DATABASE_URL', environment)
   await assertTestDatabase(pool, { directory: environment.FOREMAN_CODE_TEST_ROOT!, token: environment.FOREMAN_CODE_TEST_OWNER!,
     name: new URL(databaseUrl).pathname.slice(1), databaseUrl })
@@ -36,6 +34,9 @@ export async function assertOwnedExecutionDestinations(pool: pg.Pool, selection:
   runId?: string
   agentConfigurationVersionIds?: readonly string[]
 }): Promise<void> {
+  const { AgentConfigurationVersionSchema, ExecutionLocationSchema, HarnessExecutionSchema }
+    = await import('@foreman-code/contracts')
+  const { AcceptedWorkflowRunV3Schema } = await import('@foreman-code/contracts/wave25')
   const workspace = await pool.query<{ execution_location: unknown }>(
     'select execution_location from workspaces where id=$1', [selection.workspaceId])
   const location = ExecutionLocationSchema.parse(workspace.rows[0]?.execution_location)

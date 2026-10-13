@@ -14,7 +14,7 @@ import { autoRetestFiles, discoverFiles, failedCasesFromLog, failedFilesFromLog,
   finalizeIntegrationResult, fullRunExitCode, hasActiveHeavyJobToken, hasHeavyJobAdmission,
   hungContext, integrationDurationsPath, integrationEnvironment, integrationReport, measuredDurations,
   integrationLogPath, integrationProgressLine, integrationShardLimit, integrationShardPlan,
-  integrationTimeouts, integrationVitestArguments,
+  integrationTimeouts, integrationVitestArguments, integrationGate,
   isIntegrationTestPath, isRegularIntegrationFile, mergeDurations, options, orderByDuration, parseVitestCases,
   partitionIntegrationFiles, readDurations, readIntegrationResources, reservedIntegrationShards,
   scheduleFiles, scheduleIntegrationQueue, selectFiles, selectExactFiles,
@@ -1076,6 +1076,66 @@ for (const [name, reservedReview] of [
   assert.equal(result.results.length, 3)
   assert.ok(result.results.every((item) => item.status === 'PASSED'))
   assert.deepEqual(overlaps, [])
+})
+
+test('gate identity is explicit and full scope alone keeps diagnostic retests', () => {
+  assert.equal(integrationGate({ FOREMAN_CODE_CI_GATE: '1' }), true)
+  assert.equal(integrationGate({ FOREMAN_CODE_CI_INTEGRATION_SHARDS: '4' }), true)
+  assert.equal(integrationGate({ SCOPE: 'full' }), false)
+  assert.equal(integrationGate({ FOREMAN_CODE_CI_SCOPE: 'full' }), false)
+  assert.equal(integrationGate({ FOREMAN_CODE_CI_GATE: '0' }), false)
+  assert.equal(integrationGate({}), false)
+})
+
+test('gate failures return after one attempt without preparing an isolated retest', async () => {
+  const file = 'apps/api/test/one.integration.test.ts'
+  let attempts = 0
+  const result = await scheduleIntegrationQueue([file], [{ index: 1 }], {
+    gate: true, maxConcurrency: 1, samplePressure: lowPressure, pollIntervalMs: 1,
+    prepareRetest: async () => assert.fail('Gate failures must not allocate retest resources'),
+    runFile: async (_slot, selected, context) => {
+      assert.equal(selected, file)
+      assert.equal(context.isRetest, false)
+      attempts++
+      return { code: 1, complete: true }
+    },
+  })
+  assert.equal(attempts, 1)
+  assert.equal(result.results[0].status, 'FAILED')
+  assert.equal(result.results[0].attempts.length, 1)
+})
+
+test('worker ownership setup validates resources without loading API and execution contracts', () => {
+  const resource = createTestRoot()
+  try {
+    const slot = { ...resource, databaseUrl: new URL('/graphql_test_owned', testAdminUrl).href }
+    const environment = integrationEnvironment({ PATH: process.env.PATH }, slot)
+    const helper = new URL('../apps/api/test/helpers/testResources.ts', import.meta.url).href
+    const program = `
+      import assert from 'node:assert/strict'
+      import { registerHooks } from 'node:module'
+      registerHooks({ resolve(specifier, context, nextResolve) {
+        if (specifier === '@foreman-code/contracts' || specifier.startsWith('@foreman-code/contracts/')) {
+          throw new Error('Domain validation is unavailable during worker ownership setup')
+        }
+        return nextResolve(specifier, context)
+      } })
+      const resources = await import(${JSON.stringify(helper)})
+      assert.equal(resources.ownedTestDatabaseUrl(), process.env.TEST_DATABASE_URL)
+      assert.equal(resources.ownedTestPath(process.env.FOREMAN_CODE_TEST_ROOT), process.env.FOREMAN_CODE_TEST_ROOT)
+      assert.throws(() => resources.ownedTestDatabaseUrl('TEST_DATABASE_URL', {
+        ...process.env, FOREMAN_CODE_TEST_OWNER: 'invalid-owner',
+      }), /ownership/)
+      await assert.rejects(resources.assertOwnedTestApi(new URL('https://example.invalid'), {}), /loopback/)
+      await assert.rejects(resources.assertOwnedExecutionDestinations({ query: async () => ({ rows: [] }) }, {
+        workspaceId: 'workspace-example',
+      }), /Domain validation is unavailable/)
+    `
+    const result = spawnSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', program], {
+      env: environment, encoding: 'utf8',
+    })
+    assert.equal(result.status, 0, result.stderr || result.error?.message)
+  } finally { removeTestRoot(resource) }
 })
 
 test('failed integrations retest serially after gate checks with fresh resources and load context', async () => {
