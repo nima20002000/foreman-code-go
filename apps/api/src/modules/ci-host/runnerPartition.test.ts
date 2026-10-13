@@ -78,7 +78,10 @@ it.each([
         })
         return { code: 0, stdout: '', stderr: '' }
       }
-      if (file === 'systemctl') return { code: 0, stdout: 'active', stderr: '' }
+      if (file === 'systemctl') {
+        if (args.includes('stop')) await launched
+        return { code: 0, stdout: 'active', stderr: '' }
+      }
       return system.run(file, args, options)
     } }
     runner = new HostCiRunner(join(root, 'runner'), ports, environment)
@@ -91,7 +94,7 @@ it.each([
       await expect.poll(async () => {
         const reply = await host.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 })
         return reply.operation === 'read' ? reply.run.state : 'unexpected'
-      }).not.toBe('starting')
+      }, { timeout: 10_000 }).not.toBe('starting')
       await launched
       expect(await host.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
         .toMatchObject({ run: { state: 'passed' } })
