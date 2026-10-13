@@ -114,7 +114,7 @@ if (process.argv[2] === 'rev-parse') console.log('false')
       RUNNER_SELECTION: JSON.stringify(selection),
       BASE_COMMIT: selection?.baseCommit ?? '',
       CI_HOST_RUNNER: hostRunner ? '1' : '0',
-      CI_USER_SYSTEMD: '0',
+      CI_USER_SYSTEMD: '0', CI_EXPECTED_DURATION_MS: '', CI_WATCHDOG_ACTIVE: '', CI_PROGRESS_FILE: '',
       PATH: installedClis ? `${directory}${delimiter}${process.env.PATH}` : directory,
       CALLS_FILE: callsFile, FAIL_COMMAND: failCommand },
   })

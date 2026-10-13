@@ -75,6 +75,8 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'Queued tickets include the dispatch waiting reason in message; it clears when they start. '
   + 'ci_computers_list shows readiness reasons, userSystemd support and its unavailable reason, used/total CI slots, assigned tickets and up to 500 authorized queued '
   + 'tickets with priority, global queue position and reason; queueTruncated reports additional tickets. '
+  + 'Every part fails after 60 seconds without test results/output or max(3x expectedDurationMs, 120 seconds). '
+  + 'The watchdog kills the process tree; message and logs name the running test from Vitest start events. '
   + 'Status and the log tail update on the dispatcher cadence (normally five seconds). Pre-upgrade tickets '
   + 'can have an empty cached tail; ci_logs_read still reads their logs. '
   + 'ci_get with testStatus (passed, failed, skipped) adds the ticket’s structured test results: '

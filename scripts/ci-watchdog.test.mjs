@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
@@ -9,9 +9,11 @@ import { stopGroup } from './integration-process.mjs'
 
 const repository = fileURLToPath(new URL('..', import.meta.url))
 const reporter = join(repository, 'scripts/ci-progress-reporter.mjs')
+const temporary = process.env.TMPDIR ?? join(homedir(), '.cache', 'foreman-tmp')
+mkdirSync(temporary, { recursive: true })
 
 test('CI suite kills a synchronous looping Vitest test and reports its file and name', { timeout: 85_000 }, async t => {
-  const directory = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'ci-hang-'))
+  const directory = mkdtempSync(join(temporary, 'ci-hang-'))
   mkdirSync(join(directory, 'bin'))
   symlinkSync(join(repository, 'packages/contracts/node_modules'), join(directory, 'node_modules'))
   writeFileSync(join(directory, 'loop.test.ts'), `import { test } from 'vitest'
@@ -74,4 +76,56 @@ if (process.argv.includes('test')) {
   if (existsSync(`/proc/${pid}/stat`)) {
     assert.equal(readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' ')[0], 'Z')
   }
+})
+
+async function watchdogFixture(t, source, overrides = {}) {
+  const { runCiPart } = await import('./ci-watchdog.mjs')
+  const directory = mkdtempSync(join(temporary, 'ci-progress-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const messageFile = join(directory, 'message')
+  const resultsFile = join(directory, 'results.json')
+  const code = await runCiPart([process.execPath, '-e', source], { expectedDurationMs: 0,
+    progressFile: join(directory, 'progress.jsonl'), messageFile, resultsFile,
+    idleTimeoutMs: 1000, ...overrides })
+  return { code, reason: existsSync(messageFile) ? readFileSync(messageFile, 'utf8') : null,
+    results: existsSync(resultsFile) ? JSON.parse(readFileSync(resultsFile, 'utf8')) : null }
+}
+
+test('CI deadlines use three expected durations with a two minute minimum', async () => {
+  const { ciPartDeadlineMs } = await import('./ci-watchdog.mjs')
+  assert.equal(ciPartDeadlineMs(0), 120_000)
+  assert.equal(ciPartDeadlineMs(30_000), 120_000)
+  assert.equal(ciPartDeadlineMs(210_000), 630_000)
+})
+
+test('test-start events identify concurrent stuck tests without resetting progress', async t => {
+  const result = await watchdogFixture(t, `
+    const { appendFileSync } = require('node:fs')
+    let id = 0
+    setInterval(() => appendFileSync(process.env.CI_PROGRESS_FILE,
+      JSON.stringify({ type: 'start', kind: 'test', id: String(++id), file: 'loop.test.ts', name: 'loop ' + id }) + '\\n'), 30)
+  `)
+  assert.equal(result.code, 1)
+  assert.match(result.reason, /no test progress for 1000 ms.*loop\.test\.ts > loop 1/)
+  assert.ok(result.results.summary.failed > 1)
+  assert.equal(result.results.files.length, 1)
+})
+
+test('new per-test results keep a progressing part alive', async t => {
+  const result = await watchdogFixture(t, `
+    const { appendFileSync } = require('node:fs')
+    let id = 0
+    const timer = setInterval(() => {
+      appendFileSync(process.env.CI_PROGRESS_FILE, JSON.stringify({ type: 'finish', id: String(++id) }) + '\\n')
+      if (id === 10) clearInterval(timer)
+    }, 100)
+  `)
+  assert.equal(result.code, 0)
+  assert.equal(result.reason, null)
+})
+
+test('the part deadline stops a process even while it keeps producing output', async t => {
+  const result = await watchdogFixture(t, "setInterval(() => console.log('test output'), 30)", { deadlineMs: 500 })
+  assert.equal(result.code, 1)
+  assert.match(result.reason, /exceeded part deadline 500 ms/)
 })

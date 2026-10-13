@@ -88,6 +88,7 @@ const CiHostStartSchema = z.object({
   operation: z.literal('start'), runId: CiHostRunIdSchema, repository: CiRepositorySchema, commit: CommitSchema,
   suite: CiSuiteSchema, part: CiPartSchema.optional(), partition: CiPartitionSchema.optional(), durations: CiDurationsSchema.optional(),
   scope: CiScopeSchema.optional(), files: CiSelectedFilesSchema.optional(),
+  expectedDurationMs: z.number().nonnegative().finite().optional(),
   gate: z.boolean().optional(), integrationShards: z.number().int().min(1).max(64).optional(),
   defaultBranch: WorkspaceRepositorySchema.shape.defaultBranch.optional(),
   baseCommit: CommitSchema.optional(),

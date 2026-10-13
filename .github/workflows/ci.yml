@@ -38,6 +38,10 @@ on:
         description: Runner-selected partition as JSON
         required: false
         default: ''
+      expected_duration_ms:
+        description: Expected duration of this CI part in milliseconds
+        required: false
+        default: '0'
       durations:
         description: Learned file durations shared by every partition as JSON
         required: false
@@ -63,6 +67,7 @@ jobs:
       DEFAULT_BRANCH: ${{ inputs.default_branch }}
       BASE_COMMIT: ${{ inputs.base_commit }}
       CI_PARTITION: ${{ inputs.partition }}
+      CI_EXPECTED_DURATION_MS: ${{ inputs.expected_duration_ms }}
       CI_DURATIONS: ${{ inputs.durations }}
     steps:
       - uses: actions/checkout@v4

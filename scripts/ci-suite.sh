@@ -11,6 +11,9 @@
 # TEST_RESULTS_OUTPUT: where structured test results go for unit and integration (scripts/ci-test-results.mjs).
 # Host CI uses this hook for named parts; ci-files.mjs opts into integration partitions.
 set -euo pipefail
+if [ "${CI_WATCHDOG_ACTIVE:-}" != 1 ] && [ -n "${CI_EXPECTED_DURATION_MS:-}" ] && [ -z "${1:-}" ]; then
+  exec node "$(dirname "$0")/ci-watchdog.mjs" -- bash "$0"
+fi
 # Test commands never inherit where this run's results go: a nested CI fixture would write over them.
 test_results="${TEST_RESULTS_OUTPUT:-}"
 unset TEST_RESULTS_OUTPUT
@@ -68,7 +71,7 @@ unit_slice() {
   output="$(realpath -m "${DURATIONS_OUTPUT:-$state/durations.json}")"
   mkdir -p "$state" "$(dirname "$output")"
   node scripts/ci-unit-files.mjs select "$suite" "${SLICE:-}" > "$state/unit-files"
-  local files=() reporters=(--reporter=default --reporter=json "--outputFile.json=$output.vitest.json")
+  local files=() reporters=(--reporter=default --reporter=json "--reporter=$(realpath scripts/ci-progress-reporter.mjs)" "--outputFile.json=$output.vitest.json")
   mapfile -d '' -t files < "$state/unit-files"
   rm -f "$output" "$output.vitest.json"
   if [ "$suite" = unit-api ]; then
@@ -152,9 +155,9 @@ case "$SUITE" in
   # SLICE i/n splits the heavy phase across machines; the run-graph smoke runs once, in the first shard.
   unit-web-heavy) ready db; pnpm --filter @foreman-code/contracts build
     case "${SLICE:-1/1}" in 1/*) pnpm --filter @foreman-code/web test:run-graph-smoke ;; esac
-    mkdir -p "$state"; heavy_report="$(realpath -m "$state/unit-web-heavy.vitest.json")"; code=0
+    mkdir -p "$state"; heavy_report="$(realpath -m "$state/unit-web-heavy.vitest.json")"; progress_reporter="$PWD/scripts/ci-progress-reporter.mjs"; code=0
     (cd apps/web && FOREMAN_WEB_TEST_PHASE=heavy pnpm exec vitest run ${SLICE:+--shard=$SLICE} \
-      --reporter=default --reporter=json "--outputFile.json=$heavy_report") || code=$?
+      --reporter=default --reporter=json "--reporter=$progress_reporter" "--outputFile.json=$heavy_report") || code=$?
     record_tests "$heavy_report"; exit "$code" ;;
   unit-other) ready db; pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/contracts --filter @foreman-code/worker test \
     && pnpm test:scripts ;;

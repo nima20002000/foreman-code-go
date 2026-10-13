@@ -205,6 +205,7 @@ export class CloudCi {
     }
     const durations = selectOnRunner && request.durations ? JSON.stringify(request.durations) : undefined
     const input: CloudDispatchInput = { mirror, branch, runId: request.runId, suite: request.part ?? request.suite, slice,
+      expectedDurationMs: request.expectedDurationMs ?? 0,
       scope: message ? 'full' : scope, ...(files !== undefined ? { files } : {}),
       ...(defaultBranch ? { defaultBranch } : {}),
       ...(baseCommit ? { baseCommit } : {}),
@@ -518,10 +519,12 @@ export class CloudCi {
       const tests = CiTestResultsSchema.safeParse(artifacts?.testResults)
       if (tests.success) testResults = tests.data
     }
+    const watchdogMessage = full.toString().match(/\[ci-watchdog\] (CI hang watchdog:[^\r\n]*)/)?.[1]
     const passed = status.conclusion === 'success'
     return this.save({ ...run, state: passed ? 'passed' : status.conclusion === 'cancelled' ? 'canceled' : 'failed',
       exitCode: passed ? 0 : 1, finishedAt: status.finishedAt,
-      message: passed ? run.message : [run.message, `${this.provider.label}: ${status.conclusion}.`].filter(Boolean).join(' '),
+      message: watchdogMessage ?? (passed ? run.message
+        : [run.message, `${this.provider.label}: ${status.conclusion}.`].filter(Boolean).join(' ')),
       ...(durations ? { durations } : {}), ...(testResults ? { testResults } : {}) })
   }
 }

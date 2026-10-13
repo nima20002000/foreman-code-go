@@ -68,9 +68,9 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
   const github = { listed: [] as { databaseId: number; displayTitle: string }[], status: 'in_progress', conclusion: '',
     durations: null as Record<string, number> | null, testResults: null as unknown, canceled: [] as string[],
     steps: [] as { number: number; name: string; status: string; conclusion: string | null }[],
-    rateLimited: false, jobReads: [] as ('full' | 'unchanged')[] }
+    log: 'ci\tSuite\tall green\n', rateLimited: false, jobReads: [] as ('full' | 'unchanged')[] }
   const circle = { triggered: [] as string[][], outcome: '' as string, durations: null as Record<string, number> | null,
-    testResults: null as unknown,
+    testResults: null as unknown, log: 'Suite\nall green\n',
     phantoms: 0, lookupError: '', canceled: [] as string[],
     steps: [] as { num: number; name: string; phase: string; outcome?: string }[], output: '',
     downloaded: [] as string[], downloadGate: Promise.resolve() as Promise<void> }
@@ -102,7 +102,7 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
       if (args[0] === 'job' && args[1] === 'output' && args[2] === 'get') return ok(circle.output)
       // The CLI's default view keeps only each step's last lines.
       if (args[0] === 'job' && args[1] === 'output') {
-        return ok(args[args.indexOf('--tail') + 1] === '0' ? 'Suite\nall green\n' : '_… 1 earlier lines hidden_\nall green\n')
+        return ok(args[args.indexOf('--tail') + 1] === '0' ? circle.log : '_… 1 earlier lines hidden_\nall green\n')
       }
       if (args[0] === 'job' && args[1] === 'artifact' && args.includes('--json') && circle.durations) {
         const listed = ['durations/durations.json', ...circle.testResults ? ['durations/test-results.json'] : [],
@@ -137,7 +137,7 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
     }
     if (args[1] === 'list') return ok(JSON.stringify(github.listed))
     if (args[1] === 'cancel') { github.canceled.push(args[2]!); return ok() }
-    if (args[1] === 'view' && args.includes('--log')) return ok('ci\tSuite\tall green\n')
+    if (args[1] === 'view' && args.includes('--log')) return ok(github.log)
     if (args[1] === 'view') return ok(JSON.stringify({ status: github.status, conclusion: github.conclusion, updatedAt: new Date().toISOString() }))
     if (args[1] === 'download') {
       if (!github.durations) return { code: 1, stdout: '', stderr: 'no artifact' }
@@ -779,4 +779,26 @@ describe('GitHub Actions CI on a public mirror', () => {
     f.advance(1_000)
     expect(await read()).toMatchObject({ run: { state: 'passed' } })
   })
+})
+
+
+it.each(['github', 'circleci'] as const)('keeps the watchdog reason and expected deadline on %s', async provider => {
+  const f = await fixture({}, { provider })
+  const runId = randomUUID()
+  await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+    suite: 'unit', scope: 'full', expectedDurationMs: 210_000 })
+  const command = provider === 'github' ? f.dispatched[0]! : f.circle.triggered[0]!
+  expect(command).toContain('expected_duration_ms=210000')
+  const reason = 'CI hang watchdog: no test progress for 60000 ms; running: loop.test.ts > planner never returns'
+  f.github.listed = [{ databaseId: 91, displayTitle: `ci ${runId}` }]
+  f.github.status = 'completed'
+  f.github.conclusion = 'failure'
+  f.github.log = `ci\tSuite\t[ci-watchdog] ${reason}\n`
+  f.circle.outcome = 'failed'
+  f.circle.output = `[ci-watchdog] ${reason}\n`
+  f.circle.log = f.circle.output
+  const result = await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 })
+  expect(result).toMatchObject({ run: { state: 'failed', message: reason }, text: expect.stringContaining(reason) })
+  expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 }))
+    .toMatchObject({ run: { state: 'failed', message: reason }, text: expect.stringContaining(reason) })
 })

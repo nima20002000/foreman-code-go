@@ -187,6 +187,7 @@ export class HostCiService {
         }
         const runs = parts.map(planned => CiRunRecordSchema.parse({
           ...planned,
+          expectedDurationMs: planned.expectedDurationMs ?? (input.suite === 'unit' ? 210_000 : 150_000),
           id: randomUUID(), workspaceId: scope.workspaceId,
           suite: planned.suite ?? input.suite, scope: selectionScope, commit, repository, groupId,
           priority, priorityReason,
@@ -833,6 +834,7 @@ export class HostCiService {
           const reply = CiHostReplySchema.parse(await this.endpoint.request(computer, { operation: 'start', runId: run.id,
             repository: run.repository, commit: run.commit, suite: run.suite, ...(run.part ? { part: run.part } : {}), ...(run.partition ? { partition: run.partition } : {}),
             scope: run.scope, ...selection,
+            ...(run.expectedDurationMs !== undefined ? { expectedDurationMs: run.expectedDurationMs } : {}),
             ...(run.defaultBranch ? { defaultBranch: run.defaultBranch } : {}),
             ...(run.baseCommit ? { baseCommit: run.baseCommit } : {}),
             ...(durations.get(run.id) ? { durations: durations.get(run.id)! } : {}) }))
