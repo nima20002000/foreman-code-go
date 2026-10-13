@@ -50,11 +50,17 @@ describe('production remote review after graceful Main recovery', () => {
       const reviewer = (await receipts(fixture, recovered.runId)).find(receipt => receipt.retainedReviewer)
       expect(reviewer).toBeDefined()
       expect(reviewer!.phase).toBe('confirmed_terminal')
+      expect(reviewer!.stopFence).toBe(true)
       const stops = reviewer!.controls.filter(control => control.action.kind === 'stop')
       expect(stops).toHaveLength(1)
+      expect(stops[0]!.nativeTarget).toEqual({ kind: 'session', sessionId: reviewer!.native!.sessionId })
       expect(stops[0]).toMatchObject({
         commandId: `stop:${reviewer!.intent.operationId}:${cleanup.requested_at.toISOString()}`,
+        operationId: reviewer!.intent.operationId,
+        attemptId: reviewer!.intent.attemptId,
         executionId: reviewer!.intent.executionId,
+        bindingHash: reviewer!.intent.bindingHash,
+        owner: reviewer!.intent.owner,
         native: { sessionId: reviewer!.native!.sessionId },
       })
       expect((await fixture.executions(recovered.runId)).every(execution => execution.state === 'completed')).toBe(true)
