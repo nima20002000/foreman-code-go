@@ -1774,7 +1774,7 @@ it('targets one smoke computer through authenticated MCP and HTTP with grants, r
       expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', request))).toEqual(started)
       const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
       expect(read.run.computer?.hostRef).toEqual(computer.hostRef)
-      expect(read.run.smokeComputer).toEqual(computer.hostRef)
+      expect(read.run).toMatchObject({ smokeComputer: computer.hostRef })
       f.finish(started.ticketId, 0, 'one test passed')
       expect(CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId })).run.state)
         .toBe('passed')
@@ -1804,10 +1804,20 @@ it('rejects Agent smoke targeting and never falls back to another computer when 
     expect((await f.call(f.operator, 'ci_run', request)).isError).toBe(true)
     expect(f.started).toHaveLength(0)
     f.computers.push(computer)
+    const endpointRequest = f.endpoint.request.bind(f.endpoint)
+    f.endpoint.request = async (target, input) => {
+      if (input.operation === 'start' && target.key === computer.key) {
+        throw new DomainError('CI_HOST_BUSY', 'Target is busy.', 409)
+      }
+      return endpointRequest(target, input)
+    }
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { ...request, commandId: 'smoke-busy' }))
+    const queued = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    expect(queued.run.state).toBe('queued')
     f.computers.pop()
-    const other = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
-      ...request, commandId: 'smoke-disabled', smokeComputer: f.computers[0]!.hostRef }))
-    expect(other.ticketId).not.toBe(started.ticketId)
+    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
+    expect(read.run.state).toBe('queued')
+    expect(read.run.computer).toBeNull()
+    expect(f.started).toHaveLength(0)
   } finally { await f.close() }
 })
