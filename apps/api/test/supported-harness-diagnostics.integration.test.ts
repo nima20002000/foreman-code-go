@@ -7,11 +7,11 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { HarnessCompatibilityService } from '../src/modules/harnesses/compatibility/service.js'
-import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
+import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 
 it('reads only supported (Codex and Claude) diagnostics through authenticated MCP and denies callers without harness access', async () => {
-  const database = await currentDatabase()
+  const database = await migratedDatabase()
   const access = new PostgresAccessService(database.pool)
   const inspect = vi.fn()
   const compatibility = new HarnessCompatibilityService({

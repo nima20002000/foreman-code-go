@@ -5,8 +5,8 @@ import type { Socket } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import { expect, it, vi } from 'vitest'
 import { createPool } from '../src/infrastructure/pool.js'
-import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
-import { ownedTestDatabaseUrl } from './helpers/testResources.js'
+import { postgresEnabled } from './helpers/eng04CurrentDatabase.js'
+import { migratedDatabase } from './helpers/migratedDatabase.js'
 
 async function holdPostgresResponses(connectionString: string) {
   const target = new URL(connectionString)
@@ -63,9 +63,9 @@ async function holdPostgresResponses(connectionString: string) {
 }
 
 it.skipIf(!postgresEnabled)('delivers completed queries after a delayed reply while retaining the SQL and response deadlines', async () => {
-  const fixture = await currentDatabase()
+  const fixture = await migratedDatabase()
   try {
-    const url = new URL(ownedTestDatabaseUrl())
+    const url = new URL(fixture.databaseUrl)
     url.searchParams.set('options', `-c search_path=${fixture.schema}`)
     // Hold the real connection's incoming bytes; the dedicated endpoint and guard stay unchanged.
     const responses = await holdPostgresResponses(url.toString())

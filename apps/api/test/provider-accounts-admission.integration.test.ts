@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
-import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
+import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { seedAgent3 } from './helpers/wave25Agent3.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -17,7 +17,7 @@ import { RunHistoryService } from '../src/modules/runs/history.js'
 import { PostgresAgentChatRepository, agentConversation, agentChatKey } from '../src/modules/conversations/agentChatRepository.js'
 
 it('pins queued Start and both fresh and source-Run conversation admissions before the default changes', async () => {
-  const db = await currentDatabase()
+  const db = await migratedDatabase()
   try {
     const access = new PostgresAccessService(db.pool)
     const owner = await access.issue({ name: 'Admission caller', audience: 'operator', expiresAt: new Date('2099-01-01'),
