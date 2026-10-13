@@ -50,6 +50,7 @@ interface Publication {
 interface MirrorMaintenance {
   at: number
   cleanup: Promise<void> | undefined
+  afterFinish?: () => void
   keep: Set<string>
 }
 const mirrorPublications = new Map<string, Map<string, Promise<Publication>>>()
@@ -390,7 +391,12 @@ export class CloudCi {
       ?? { at: -Infinity, cleanup: undefined, keep: new Set<string>() }
     mirrorMaintenance.set(key, maintenance)
     const now = this.ports.now().getTime()
-    if (maintenance.cleanup || now - maintenance.at < PRUNE_INTERVAL_MS) return
+    if (now - maintenance.at < PRUNE_INTERVAL_MS) return
+    if (maintenance.cleanup) {
+      // Coalesce due ticket completions into one pass after the active sweep.
+      if (finishedRunId) maintenance.afterFinish = () => this.schedulePrune(run, finishedRunId)
+      return
+    }
     maintenance.keep.clear()
     for (const reservation of publishingBranches.get(run.mirror) ?? []) {
       const branch = reservation.split('\n')[1]!
@@ -402,6 +408,9 @@ export class CloudCi {
     maintenance.cleanup = cleanup
     void cleanup.then(() => {
       maintenance.cleanup = undefined
+      const afterFinish = maintenance.afterFinish
+      delete maintenance.afterFinish
+      afterFinish?.()
     })
   }
 
