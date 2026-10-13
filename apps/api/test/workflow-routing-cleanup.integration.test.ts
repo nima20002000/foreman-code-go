@@ -7,8 +7,7 @@ import { postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { DomainError } from '../src/modules/errors.js'
 
 describe.skipIf(!postgresEnabled)('routing workflow cleanup', () => {
-  it.each(['immediate', 'deferred'] as const)(
-    'retries a database timeout after %s native closure without replaying native work', async closure => {
+  it.each(['immediate', 'deferred'] as const)('retries cleanup after %s closure without native replay', async closure => {
     const scenario = scenarioFixture('S3-03', randomUUID())
     const f = await scenarioHarness(scenario)
     const finishCleanup = f.base.runs.finishCleanup.bind(f.base.runs)
@@ -22,10 +21,26 @@ describe.skipIf(!postgresEnabled)('routing workflow cleanup', () => {
       const pending = new DomainError('REPEAT_CLEANUP_PENDING', 'Native closure is still pending.', 409)
       reviewers.mockRejectedValueOnce(pending).mockRejectedValueOnce(pending).mockRejectedValueOnce(pending)
     }
+    let recovery: Promise<void> | undefined
+    let timer: ReturnType<typeof setInterval> | undefined
     try {
       const { saved } = await f.save('mcp')
       const started = await f.start('mcp', saved)
+      // The server retries yielded Runs on its reconciliation interval. This fixture owns only this Run.
+      const recover = () => {
+        recovery ??= (async () => {
+          const snapshot = await f.base.runs.getRepeatSnapshot(started.scope.runId)
+          if (snapshot.run.executionState === 'completed' && !snapshot.cleanupPending) return
+          await f.base.engine.start(started.scope.runId)
+        })().catch(error => { f.base.dispatchErrors.push(error) })
+          .finally(() => { recovery = undefined })
+      }
+      recover()
+      timer = setInterval(recover, 5_000)
       const record = await f.settled(started.scope)
+      clearInterval(timer)
+      await recovery
+      expect(cleanup.mock.calls.length).toBeGreaterThanOrEqual(2)
       expect(record).toMatchObject({
         run: { executionState: 'completed', outcome: 'succeeded' },
         cleanupPending: false,
@@ -69,9 +84,14 @@ describe.skipIf(!postgresEnabled)('routing workflow cleanup', () => {
       expect(f.base.provider.counts.starts).toBe(expectedNodes.length)
       expect(f.base.dispatchErrors).toEqual([])
     } finally {
-      reviewers.mockRestore()
-      cleanup.mockRestore()
-      await f.close()
+      clearInterval(timer)
+      try {
+        await f.close()
+      } finally {
+        await recovery
+        reviewers.mockRestore()
+        cleanup.mockRestore()
+      }
     }
   }, 120_000)
 })
