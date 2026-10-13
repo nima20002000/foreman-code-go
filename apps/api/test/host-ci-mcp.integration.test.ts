@@ -1765,7 +1765,7 @@ it('targets one smoke computer through authenticated MCP and HTTP with grants, r
   try {
     const reader = await f.connect(CI_GET_ACTIONS)
     const input = { suite: 'integration', scope: 'affected', commit: 'a'.repeat(40),
-      files: ['apps/api/src/modules/ci-host/ciSmoke.integration.test.ts'], noSupersede: true }
+      files: ['apps/api/test/ci-smoke.integration.test.ts'], noSupersede: true }
     for (const [index, computer] of f.computers.entries()) {
       const request = { ...input, smokeComputer: computer.hostRef, commandId: `smoke-${index}` }
       expect((await f.call(reader, 'ci_run', request)).isError).toBe(true)
@@ -1797,7 +1797,7 @@ it('rejects Agent smoke targeting and never falls back to another computer when 
   const f = await fixture({ agent: true })
   try {
     const request = { suite: 'integration', scope: 'affected', commit: 'a'.repeat(40),
-      files: ['apps/api/src/modules/ci-host/ciSmoke.integration.test.ts'], commandId: 'smoke-denied',
+      files: ['apps/api/test/ci-smoke.integration.test.ts'], commandId: 'smoke-denied',
       smokeComputer: f.computers[0]!.hostRef }
     expect((await f.agent!.callTool({ name: 'ci_run', arguments: request })).isError).toBe(true)
     const computer = f.computers.shift()!

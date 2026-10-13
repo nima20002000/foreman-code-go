@@ -13,7 +13,7 @@ for (const outcome of ['passed', 'failed', 'no-tests', 'timeout']) {
       return { run: { state: outcome === 'failed' ? 'failed' : 'passed', exitCode: outcome === 'failed' ? 1 : 0,
         message: outcome === 'failed' ? 'ERR_PNPM_NO_OFFLINE_META' : null }, text: 'setup log',
         ...(outcome === 'no-tests' ? {} : { testResults: { summary: { passed: 1, failed: 0 }, files: [{
-          file: 'apps/api/src/modules/ci-host/ciSmoke.integration.test.ts', tests: [{ status: 'passed' }] }] } }) };
+          file: 'apps/api/test/ci-smoke.integration.test.ts', tests: [{ status: 'passed' }] }] } }) };
     } };
     const smoke = runInstalledCiSmoke({ repository: 'octo/project', commit: 'a'.repeat(40) },
       { runner, timeoutMs: 100, pollMs: 5 });
@@ -24,7 +24,7 @@ for (const outcome of ['passed', 'failed', 'no-tests', 'timeout']) {
     assert.equal(start.suite, 'integration');
     assert.equal(start.gate, true);
     assert.equal(start.integrationShards, 11);
-    assert.deepEqual(start.files, ['apps/api/src/modules/ci-host/ciSmoke.integration.test.ts']);
+    assert.deepEqual(start.files, ['apps/api/test/ci-smoke.integration.test.ts']);
     assert.equal(requests.some(request => request.operation === 'cancel'), outcome !== 'passed');
   });
 }

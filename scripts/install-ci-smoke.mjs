@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { isDeepStrictEqual } from 'node:util'
 
-const smokeFile = 'apps/api/src/modules/ci-host/ciSmoke.integration.test.ts'
+const smokeFile = 'apps/api/test/ci-smoke.integration.test.ts'
 
 function httpClient(origin, signal, timeoutMs) {
   return async (path, options = {}) => {

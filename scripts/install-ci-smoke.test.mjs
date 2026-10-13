@@ -23,7 +23,7 @@ async function fixture(t, failure) {
       response.end('{}')
     } else if (request.url.endsWith('/tests')) {
       response.end(JSON.stringify({ tests: { summary: { passed: 1, failed: 0, skipped: 0 },
-        files: [{ file: 'apps/api/src/modules/ci-host/ciSmoke.integration.test.ts', tests: [{ status: 'passed' }] }] } }))
+        files: [{ file: 'apps/api/test/ci-smoke.integration.test.ts', tests: [{ status: 'passed' }] }] } }))
     } else if (request.url.endsWith('/computers')) response.end(JSON.stringify({ computers }))
     else if (request.method === 'POST') {
       let body = ''

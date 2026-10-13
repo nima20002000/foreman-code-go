@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { ciGroupState } from './parts.js'
+import { ciGroupState } from '../src/modules/ci-host/parts.js'
 
 it('reports a CI group passed only when its jobs have passed', () => {
   expect(ciGroupState([{ state: 'passed' }])).toBe('passed')
