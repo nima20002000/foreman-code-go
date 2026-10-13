@@ -675,7 +675,12 @@ it.each(['github', 'circleci'] as const)('prunes stale mirror branches and keeps
   expect(await f.cloud.handle({ ...request, runId: first }))
     .toMatchObject({ operation: 'start', run: { state: 'starting' } })
   expect((provider === 'github' ? f.dispatched : f.circle.triggered)[0]).toContain('octo/site-ci')
-  await f.cloud.handle({ ...request, runId: second })
+  const activeState = provider === 'circleci' ? 'running' : 'starting'
+  expect(await f.cloud.handle({ ...request, runId: second }))
+    .toMatchObject({ operation: 'start', run: { state: activeState } })
+  expect(await f.reopen().handle({ operation: 'read', runId: second, afterOffset: 0, maxBytes: 1 }))
+    .toMatchObject({ operation: 'read', run: { state: activeState } })
+  expect(provider === 'github' ? f.dispatched : f.circle.triggered).toHaveLength(2)
   const refs = () => f.mirrorGit('for-each-ref', '--format=%(refname)', 'refs/heads/')
   expect(refs()).not.toContain(`refs/heads/${stale}`)
   expect(refs()).not.toContain('refs/heads/ci/retired-run')
@@ -723,7 +728,12 @@ it('republishes a branch removed by maintenance after a previous automatic clean
   // Maintenance in another process deletes the ref without touching the live publisher's memory.
   f.mirrorGit('update-ref', '-d', branch)
   f.cleanup.unavailable = false
-  await f.cloud.handle({ ...request, runId: randomUUID() })
+  const replacement = randomUUID()
+  expect(await f.cloud.handle({ ...request, runId: replacement }))
+    .toMatchObject({ operation: 'start', run: { state: 'running' } })
+  expect(await f.reopen().handle({ operation: 'read', runId: replacement, afterOffset: 0, maxBytes: 1 }))
+    .toMatchObject({ operation: 'read', run: { state: 'running' } })
+  expect(f.circle.triggered).toHaveLength(2)
   expect(f.mirrorGit('rev-parse', branch)).toMatch(/^[a-f0-9]{40}$/)
 })
 
@@ -767,4 +777,8 @@ it.each(['github', 'circleci'] as const)('keeps publication scoped after cancell
   const commands = provider === 'github' ? f.dispatched : f.circle.triggered
   expect(commands).toHaveLength(2)
   for (const command of commands) expect(command).toContain('octo/site-ci')
+  const activeState = provider === 'circleci' ? 'running' : 'starting'
+  expect(await f.reopen().handle({ operation: 'read', runId: second, afterOffset: 0, maxBytes: 1 }))
+    .toMatchObject({ operation: 'read', run: { state: activeState, provenance: { sourceCommit: f.commit } } })
+  expect(commands).toHaveLength(2)
 })
