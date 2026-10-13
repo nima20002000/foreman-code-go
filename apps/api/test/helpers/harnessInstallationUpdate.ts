@@ -9,7 +9,8 @@ import { expectMcpAccessDenied } from './deniedMcpTool.js'
 type Fixture = Awaited<ReturnType<typeof remoteReviewProduction>>
 
 export function installationUpdateFixture(options: Parameters<typeof remoteReviewProduction>[0] = {}) {
-  return remoteReviewProduction({ ...options, installationRefreshIntervalMs: 100,
+  return remoteReviewProduction({ ...options,
+    installationRefreshIntervalMs: options.installationRefreshIntervalMs ?? 100,
     parallelSetup: true, parallelProfileChecks: true, includeNodeRuntimePayload: false })
 }
 
