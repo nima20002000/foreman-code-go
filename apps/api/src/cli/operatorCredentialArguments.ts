@@ -1,10 +1,11 @@
+import { ManagementActionSchema, type ManagementAction } from '@foreman-code/contracts/management'
+
 export type CredentialArguments =
   | { command: 'revoke'; principalId: string }
   | { command: 'issue'; name: string; audience: 'operator' | 'worker'; days: number | null; workspaceId?: string; access?: 'manage' | 'read-only'
-      /** Whole-computer telemetry is never part of a preset; whoever runs this CLI on Main grants it by name. */
-      computerMetrics?: true }
+      grant?: ManagementAction }
 
-const USAGE = 'Usage: pnpm credential issue --name <name> [--days <days>] [--workspace <id>] [--audience operator|worker] [--access manage|read-only] [--grant devices:metrics:read], or pnpm credential revoke <principal-id>'
+const USAGE = 'Usage: pnpm credential issue --name <name> [--days <days>] [--workspace <id>] [--audience operator|worker] [--access manage|read-only] [--grant <action>], or pnpm credential revoke <principal-id>'
 const FLAGS = new Set(['--name', '--days', '--workspace', '--audience', '--access', '--grant'])
 
 /** Parse everything before opening a database or issuing any credential. */
@@ -43,11 +44,12 @@ export function parseCredentialArguments(argv: readonly string[]): CredentialArg
   if (access !== undefined && (audience !== 'operator' || !['manage', 'read-only'].includes(access))) {
     throw new Error('--access must be manage or read-only and is only valid for Operator credentials')
   }
-  const grant = values.get('--grant')
-  if (grant !== undefined && (audience !== 'operator' || grant !== 'devices:metrics:read')) {
-    throw new Error('--grant accepts only devices:metrics:read and is only valid for Operator credentials')
+  const rawGrant = values.get('--grant')
+  if (rawGrant !== undefined && audience !== 'operator') {
+    throw new Error('--grant is only valid for Operator credentials')
   }
+  const grant = rawGrant === undefined ? undefined : ManagementActionSchema.parse(rawGrant)
   return { command, name, audience, days, ...(workspaceId !== undefined ? { workspaceId } : {}),
-    ...(access ? { access: access as 'manage' | 'read-only' } : {}), ...(grant ? { computerMetrics: true as const } : {}) }
+    ...(access ? { access: access as 'manage' | 'read-only' } : {}), ...(grant ? { grant } : {}) }
 
 }

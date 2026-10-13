@@ -9,10 +9,7 @@ import { workerScopesForAction } from '../access/appPolicy.js'
 import { assertWave25WorkerBinding } from '../interactions/wave25/credentialAuthority.js'
 import { DomainError } from '../errors.js'
 
-export const CI_RUN_ACTIONS: ManagementAction[] = [
-  'sources:read', 'source_roots:read', 'source_roots:bind', 'workspace_locations:read',
-  'job_definitions:read', 'job_definitions:write', 'jobs:start', 'jobs:cancel',
-]
+export const CI_RUN_ACTIONS: ManagementAction[] = ['ci']
 export const CI_GET_ACTIONS: ManagementAction[] = ['jobs:read', 'job_logs:read', 'job_artifacts:read']
 export const CI_PREPARATION_ACTIONS: ManagementAction[] = [
   'job_definitions:read', 'job_definitions:write', 'sources:read',
@@ -73,7 +70,7 @@ export class RunCiAuthority implements CiAuthority {
       const accepted = (await currentOperatorAuthority(sql, principalId)).principal
       const grants = caller.audience === 'operator' ? intersectGrants(caller.grants, accepted.grants) : accepted.grants
       const principal = { ...accepted, grants: intersectGrants(grants, [{
-        actions: actions.includes('jobs:start') ? [...new Set([...actions, ...CI_PREPARATION_ACTIONS])] : actions,
+        actions,
         scope: { workspaceIds: [workspaceId] },
       }]), expiresAt: caller.audience === 'operator'
         ? new Date(Math.min(Date.parse(caller.expiresAt), Date.parse(accepted.expiresAt))).toISOString()

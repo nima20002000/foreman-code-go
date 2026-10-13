@@ -31,6 +31,10 @@ corepack pnpm --filter @foreman-code/api credential revoke principal-UUID
 
 Operator credentials default to no expiry and remain revocable. Use `--days` only for an explicitly finite lifetime (1–365 days). The timestamp `9999-12-31T23:59:59.999Z` represents no expiry in stored records and MCP responses. Accepted Run authority is independent of the starter token’s expiry; owner revocation, live scope checks, Stop and completion still apply. Operator chat credentials last for the conversation and are revoked on release; an explicitly expiring owner remains subject to its chosen lifetime.
 
+The default `--access manage` preset includes the local human’s full supported action catalog, including provider accounts, host telemetry and CI priority. `--access read-only` retains narrow read access and excludes host telemetry, provider accounts and CI mutations. `--grant <action>` accepts any supported management action and adds it to the selected preset. Removed device-provisioning actions are rejected. Explicit grants use the credential’s selected workspace scope; workspace-scoped credentials cannot access global-only tools.
+
+CI start and cancellation require one workspace-scoped `ci` action; high priority needs no additional action. CI reads retain the job, log and artifact read actions. Agents remain limited to their active Run workspace.
+
 The optional `--audience worker` flag creates a Worker-audience credential. At `/mcp` it is limited to the Agent tools of its bound role; it cannot call Operator tools.
 
 To enroll the browser, open Settings and paste the one-time-visible token into Operator access. The API validates it and sets a SameSite Strict, HttpOnly cookie. The token is not written to Vite configuration or localStorage. Real mode is enabled with:
