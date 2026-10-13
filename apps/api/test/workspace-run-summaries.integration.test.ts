@@ -248,8 +248,9 @@ describe('workspace Run summaries', () => {
           record,created_at)
         select $1::text || '-' || n,$2,$3,$4,'queued',
           $5::jsonb || jsonb_build_object('id',$1::text || '-' || n,'createdAt',
-            to_char('2099-01-01'::timestamptz + n * interval '1 second', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')),
-          '2099-01-01'::timestamptz + n * interval '1 second'
+            to_char(('2099-01-01T00:00:00Z'::timestamptz + n * interval '1 second') at time zone 'UTC',
+              'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')),
+          '2099-01-01T00:00:00Z'::timestamptz + n * interval '1 second'
         from generate_series(1,2001) as n`,
       [prefix, workspaceId, f.f.run.workflowId, f.f.run.workflowVersionId, JSON.stringify(f.f.run)])
       const records = (await f.db.pool.query('select id,record from runs where workspace_id=$1 order by id',

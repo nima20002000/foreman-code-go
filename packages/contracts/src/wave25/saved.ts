@@ -62,7 +62,9 @@ export const SavedManagedWorkflowCommandResultSchema = z.object({
 }).strict()
 export const SavedWorkspaceDetailsSchema = z.object({
   workspace: WorkspaceSchema, agents: z.array(AgentSchema), workflows: z.array(SavedWorkflowDefinitionSchema),
-  runs: z.array(WorkflowRunSummarySchema), resources: z.array(ResourceSummarySchema),
+  runs: z.array(WorkflowRunSummarySchema)
+    .describe('Newest 2000 eligible Runs; use paged Run reads for older Runs.'),
+  resources: z.array(ResourceSummarySchema),
   browserProfiles: z.array(BrowserProfileSummarySchema).optional(), runners: z.array(RunnerSummarySchema).optional(),
 }).strict()
 export const SavedWorkflowVersionPageSchema = z.object({

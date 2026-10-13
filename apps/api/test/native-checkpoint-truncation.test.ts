@@ -18,7 +18,7 @@ function largeCheckpoint(): NativeProjectionState {
     ...emptyNativeProjection(binding), lastNativeSequence: '128',
     operations: Array.from({ length: 128 }, (_, index) => ({
       id: `operation-${index + 1}`, messageId: null, turnId: binding.nativeTurnId,
-      action: 'reading_file', position: String(index + 1), nativeSequence: String(index + 1),
+      action: 'reading_file' as const, position: String(index + 1), nativeSequence: String(index + 1),
       sourceId: `source-${index + 1}`, stream: 'stream', generation: '1', pending: false, ended: false,
     })),
   }

@@ -17,7 +17,8 @@ export const runTools = [
     enabled: s => !!s.runs,
     description: 'List authorized execution-semantics-3 Runs newest-first by creation time and ID. '
       + 'Retained historical Runs remain readable through run_board_snapshot_get. '
-      + 'Returns 10 by default. Pass nextCursor unchanged; it is scoped to this workspace and optional workflow filter.', inputSchema: OperatorRunListInputSchema,
+      + 'Returns 10 by default. Use this paged read for older Runs omitted from the newest 2000 workspace summaries. '
+      + 'Pass nextCursor unchanged; it is scoped to this workspace and optional workflow filter.', inputSchema: OperatorRunListInputSchema,
     outputSchema: SavedRunPageSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: (context, input) => context.services.runs.list(context.principal, input),

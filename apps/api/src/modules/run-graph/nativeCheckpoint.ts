@@ -1,6 +1,6 @@
 import { z } from 'zod'
-import { GraphSequenceSchema, GraphIdSchema, canonicalGraphJson } from '@foreman-code/contracts/wave25'
-import { NATIVE_PROJECTION_LIMITS, type NativeProjectionState } from './nativeProjection.js'
+import { GraphSequenceSchema, GraphIdSchema } from '@foreman-code/contracts/wave25'
+import { NATIVE_PROJECTION_LIMITS, truncateNativeCheckpoint, type NativeProjectionState } from './nativeProjection.js'
 import { RunGraphError } from './errors.js'
 const internalId = z.string().min(1).max(NATIVE_PROJECTION_LIMITS.identityLength)
 const schema = z.object({
@@ -21,12 +21,11 @@ const schema = z.object({
 }).strict()
 export function parseNativeCheckpoint(input: unknown): NativeProjectionState {
   try {
-    canonicalGraphJson(input, 120000)
     const state = schema.parse(input)
     if (new Set(state.messages.map((message) => message.id)).size !== state.messages.length
       || new Set(state.operations.map((operation) => operation.id)).size !== state.operations.length
       || (state.terminalNativeSequence !== null && (state.lastNativeSequence === null
         || BigInt(state.terminalNativeSequence) > BigInt(state.lastNativeSequence)))) throw new Error('invalid checkpoint')
-    return state
+    return truncateNativeCheckpoint(state)
   } catch { throw new RunGraphError('GRAPH_INVARIANT_VIOLATION') }
 }
