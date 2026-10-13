@@ -13,7 +13,7 @@ import { clearRetentionCommandMemory } from '../features/retention-settings/rete
 import { routeTree } from '../app/router'
 import { server } from '../mocks/server'
 import { setMockScenario } from '../shared/mocks/scenarios'
-import { mainRoot, rootMainId } from '../features/settings/workspaceBoundLocation.fixtures'
+import { mainRoot } from '../features/settings/workspaceBoundLocation.fixtures'
 import { mockRuntimeIdentity } from '../shared/mocks/handlers'
 
 function renderRoute(path: string) {
@@ -44,11 +44,14 @@ function workspacesDestination() {
 
 function mockApprovedMainFolderBrowser() {
   const browseRequests: WorkspaceRootSelection[] = []
-  localStorage.setItem('graphql.chat-instance-binding', `${mockRuntimeIdentity.checkoutId}:${rootMainId}`)
+  const approvedRoot = {
+    ...mainRoot,
+    hostRef: { kind: 'main' as const, mainId: mockRuntimeIdentity.installationId },
+    applicationInstallationId: mockRuntimeIdentity.installationId,
+  }
   server.use(
-    http.get('/api/runtime/identity', () => HttpResponse.json({ ...mockRuntimeIdentity, installationId: rootMainId })),
     http.get('/api/management/workspaces/workspace-1/root-location', () => HttpResponse.json({ evidence: 'legacy_missing', workspaceId: 'workspace-1', locationRevision: 0, executionLocation: { runnerId: 'original-runner', rootPath: '/previous' } })),
-    http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({ workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [mainRoot] })),
+    http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({ workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [approvedRoot] })),
     http.get('/api/management/harnesses/directories', () => HttpResponse.json({
       roots: [{ id: 'workspaces', label: 'Workspaces', path: mainRoot.bases[0]!.canonicalPath }],
       rootId: null, path: null, parent: null, directories: [], nextCursor: null,
