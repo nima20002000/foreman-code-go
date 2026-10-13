@@ -154,7 +154,13 @@ describe.skipIf(!postgresEnabled)('SCH-04 PostgreSQL dispatcher / common Start',
     }
     const work = Promise.all([dispatcher(gated(realStart)).dispatch(saved),
       dispatcher(gated(startUsing(otherPool)), otherPool).dispatch(saved)])
-    try { await reached(ready.promise, work); release.resolve(); await work } finally { release.resolve(); await work.catch(() => undefined); await otherPool.end() }
+    try {
+      await reached(ready.promise, work)
+      const otherService = new WorkflowScheduleService(otherPool, new PostgresCommandCoordinator(otherPool), () => new Date(now))
+      expect((await otherService.get(reader.principal, scope)).schedule).toEqual(saved)
+      release.resolve()
+      await work
+    } finally { release.resolve(); await work.catch(() => undefined); await otherPool.end() }
     expect(await countRuns()).toBe(1)
     expect(await history()).toHaveLength(1)
   }, 60_000)
