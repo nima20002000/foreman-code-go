@@ -118,6 +118,57 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
+it('completes authenticated MCP discovery without delayed socket cleanup errors', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    const response = await production.app.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        authorization: 'Bearer test-operator',
+        accept: 'application/json, text/event-stream',
+      },
+      payload: { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+    })
+    expect(response.statusCode, response.body).toBe(200)
+    const message = JSON.parse(response.body.split('\n').find(line => line.startsWith('data: '))!.slice(6))
+    expect(message).toMatchObject({
+      jsonrpc: '2.0',
+      id: 1,
+      result: { tools: expect.arrayContaining([expect.objectContaining({ name: 'interaction_get' })]) },
+    })
+    // Run deferred response cleanup while this request still belongs to the test.
+    await vi.advanceTimersByTimeAsync(1_000)
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('serves parsed MCP discovery over Node HTTP and rejects an unauthenticated caller', async () => {
+  const address = await production.app.listen({ host: '127.0.0.1', port: 0 })
+  const call = (token: string) => fetch(`${address}/mcp`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${token}`,
+      accept: 'application/json, text/event-stream',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 'socket-discovery', method: 'tools/list' }),
+  })
+  const response = await call('test-operator')
+  const body = await response.text()
+  expect(response.status, body).toBe(200)
+  const message = JSON.parse(body.split('\n').find(line => line.startsWith('data: '))!.slice(6))
+  expect(message).toMatchObject({
+    jsonrpc: '2.0',
+    id: 'socket-discovery',
+    result: { tools: expect.arrayContaining([expect.objectContaining({ name: 'interaction_get' })]) },
+  })
+  const denied = await call('invalid-operator')
+  expect(denied.status).toBe(401)
+  expect(await denied.json()).toMatchObject({ error: { code: 'AUTH_REQUIRED' } })
+})
+
 it('serves the Board and Operator CI list after production initializes CI, with scoped read access', async () => {
   const services = vi.mocked(buildApp).mock.calls.at(-1)![0].operator!.services
   const url = '/api/management/workspaces/workspace-1/ci?runId=run-1'
