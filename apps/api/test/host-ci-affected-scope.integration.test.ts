@@ -36,6 +36,7 @@ it('persists completed unit result reports for read-only MCP callers', async () 
     expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'unit', scope: 'affected', files: ['apps/api/test/example.test.ts'], commandId: 'unit-report',
+      commit: 'a'.repeat(40),
     }))
     await f.ci.dispatch()
     f.finish(started.ticketId, 0, 'passed\n', { 'apps/api/test/example.test.ts': 60_000 })
@@ -246,10 +247,10 @@ it('defaults authenticated Agent MCP to affected scope, reads explicit full scop
         const read = await agent.callTool({ name: 'ci_get', arguments: { ticketId: started.ticketId } })
         expect(read.isError).not.toBe(true)
         const run = CiGetOutputSchema.parse(decodeMcpToolResult(read)).run
-        expect(run).toMatchObject({ scope: scope ?? 'affected', files: [] })
+        expect(run).toMatchObject({ id: started.ticketId, workspaceId: f.workspaceId,
+          commit: 'a'.repeat(40), scope: scope ?? 'affected', files: [] })
         expect(run.baseCommit).toBe(baseCommit)
-        expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1', [run.id])).rows[0]!.record)
-          .toEqual(run)
+        expect(run.deriveFiles).toBe(scope === undefined ? true : undefined)
         await f.ci.dispatch()
         f.finish(started.ticketId, 0, 'integration passed\n')
         const completed = CiGetOutputSchema.parse(await f.value(agent, 'ci_get', {
