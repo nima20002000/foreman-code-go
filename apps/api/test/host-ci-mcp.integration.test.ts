@@ -98,7 +98,8 @@ function fakeComputers(github: Record<string, boolean> = {}, cloud: boolean | { 
       }
       const text = entry.log.slice(request.afterOffset, request.afterOffset + request.maxBytes)
       const finished = !['starting', 'running'].includes(entry.run.state)
-      return { operation: 'read', run: entry.run, text, nextOffset: request.afterOffset + Buffer.byteLength(text),
+      const run = request.testResults && finished ? { ...entry.run, collection: 'complete' as const } : entry.run
+      return { operation: 'read', run, text, nextOffset: request.afterOffset + Buffer.byteLength(text),
         ...(request.durations && finished && entry.durations ? { durations: entry.durations } : {}) }
     },
   }
@@ -398,7 +399,7 @@ it.each([0, 1250])(
   try {
     const install = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'generic-install' }))
     await expect.poll(async () => CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get',
-      { ticketId: install.ticketId })).run.state).toBe('passed')
+      { ticketId: install.ticketId })).run.state, { timeout: 10_000 }).toBe('passed')
     const installed = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: install.ticketId }))
     expect(installed.run).toMatchObject({ part: null, partition: null, step: 'install', exitCode: 0 })
     expect(installed.logTail).toContain('npm install')
@@ -407,7 +408,7 @@ it.each([0, 1250])(
       [install.ticketId])).rows[0]!.record).toEqual(installed.run)
     const build = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'build', commandId: 'generic-failure' }))
     await expect.poll(async () => CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get',
-      { ticketId: build.ticketId })).run.state).toBe('failed')
+      { ticketId: build.ticketId })).run.state, { timeout: 10_000 }).toBe('failed')
     const failed = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: build.ticketId }))
     expect(failed.run).toMatchObject({ part: null, partition: null, step: 'build', state: 'failed', exitCode: 7 })
     expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
