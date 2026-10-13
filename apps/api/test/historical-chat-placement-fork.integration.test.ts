@@ -46,7 +46,7 @@ it('reports a historical chat read error without polling again', async () => {
 
 it.each(['error', 'unavailable'] as const)('reports a %s historical chat session on its first read', async sessionState => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
-  const state = structuredClone(agentChatFixtures.active)
+  const state = AgentChatStateSchema.parse(agentChatFixtures.active)
   state.sessionState = sessionState
   state.availability = { canSend: false, reason: 'harness_unavailable', message: 'Native chat was rejected.' }
   expect(AgentChatStateSchema.parse(state).sessionState).toBe(sessionState)

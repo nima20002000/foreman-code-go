@@ -17,7 +17,7 @@ async function hostDatabaseClient(env: NodeJS.ProcessEnv) {
     import { testAdminPool } from ${JSON.stringify(resources.href)}
     const pool = await testAdminPool()
     process.on('message', async statement => {
-      if (statement === null) {
+      if (statement?.type === 'close') {
         await pool.end()
         process.disconnect()
         return
@@ -55,7 +55,7 @@ async function hostDatabaseClient(env: NodeJS.ProcessEnv) {
       return read()
     },
     async end() {
-      child.send(null)
+      child.send({ type: 'close' })
       const code = await closed
       if (code !== 0) throw new Error(`Host database client exited (${code}): ${stderr}`)
     },
