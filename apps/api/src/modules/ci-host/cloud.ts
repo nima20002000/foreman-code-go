@@ -154,7 +154,7 @@ export class CloudCi {
   private async start(request: { runId: string; repository: string; commit: string; suite: CiSuite
     part?: CiPart | undefined; partition?: CiPartition | undefined; durations?: CiDurations | undefined; scope?: CiScope | undefined;
     files?: string[] | undefined; defaultBranch?: string | undefined; baseCommit?: string | undefined;
-    gate?: boolean | undefined; integrationShards?: number | undefined }): Promise<CiHostRun> {
+    gate?: boolean | undefined; integrationShards?: number | undefined; expectedDurationMs?: number | undefined }): Promise<CiHostRun> {
     const existing = await this.read(request.runId).catch(fallbackOnError(null, 'jobs', 'read existing CI run', { runId: request.runId }, ['ENOENT']))
     if (existing) return this.view(existing, 0)
     if (!this.provider.userSystemd.supported && request.suite === 'integration'
