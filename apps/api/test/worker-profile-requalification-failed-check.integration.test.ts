@@ -1,10 +1,33 @@
+import { execFile } from 'node:child_process'
+import { rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 import { describe, expect, it } from 'vitest'
 import { HostHarnessOverrideListSchema } from '@foreman-code/contracts/harness-registry'
 import { HarnessQualificationListSchema } from '@foreman-code/contracts/harness-qualification'
 import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
 import { latestEvidence } from './helpers/workerProfileRequalification.js'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
+
+const execute = promisify(execFile)
 
 describe('automatic Worker profile qualification', () => {
+  it('builds the committed Worker execution graph and starts its packaged CLI', async () => {
+    const directory = await privateFixtureDirectory('worker-qualification-artifact-')
+    try {
+      const repository = fileURLToPath(new URL('../../../', import.meta.url))
+      const release = join(directory, 'release')
+      await execute(process.execPath, [join(repository, 'scripts/build-worker-artifact.mjs'),
+        'apps/worker/artifacts/ubuntu-26.04-x64-target.json', release],
+      { cwd: repository, maxBuffer: 4 * 1024 * 1024 })
+      const { stdout } = await execute(process.execPath, [join(release, 'src/cli.mjs'), '--help'])
+      expect(stdout).toContain('graphql-worker run|doctor|identity-request|initialize-native-runtime')
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  }, 120_000)
+
   it('persists a failed automatic check and refuses Start without borrowing the previous generation', async () => {
     const fixture = await remoteReviewProduction({
       workflow: 'sequential', parallelProfileChecks: true, parallelSetup: true,

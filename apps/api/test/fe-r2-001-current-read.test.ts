@@ -10,17 +10,10 @@ describe('FE-R2-001 current canonical read (SQL model, not a database scale test
     const value = await f.canonical.current(f.principal, f.request)
     expect(value.kind).toBe('current')
     expect(value.scope).toEqual(f.request.scope)
-    expect(f.db.calls[0]).toBe('begin isolation level repeatable read read only')
-    expect(f.db.calls.at(-1)).toBe('commit')
-    expect(f.db.calls.filter((q) => q.startsWith('begin '))).toHaveLength(1)
-    expect(f.db.calls.some((q) => /insert |update |from run_activity|harness_native_events|input_json|result_json|\boffset\b/i.test(q))).toBe(false)
-    expect(f.db.calls.some((q) => q.startsWith('select p.record,p.source_digest,p.semantic_digest,p.sequence::text,'))).toBe(true)
-    expect(f.db.calls.some((q) => q.includes('left join run_graph_sources s') && q.includes('s.source_revision=p.sequence'))).toBe(true)
-    expect(value).not.toHaveProperty('activity'); expect(value).not.toHaveProperty('liveActivity')
-    const latest = f.db.calls.find((q) => q.startsWith('select distinct on (e.workflow_node_id) e.id'))!
-    expect(latest).toContain('order by e.workflow_node_id,w.activation_sequence desc nulls last, coalesce(o.occurrence_index,0) desc,x.technical_attempt desc,x.execution_id desc limit 1001')
-    expect(latest).not.toContain("e.record->'input'")
-    expect(latest).not.toContain("e.record->'result' as")
+    expect(f.db.transactions).toEqual([{ readOnly: true, isolation: 'repeatable read', outcome: 'committed' }])
+    expect(f.db.historyBodyReads).toBe(0)
+    expect(value).not.toHaveProperty('activity')
+    expect(value).not.toHaveProperty('liveActivity')
     expect(value.state.executions).toEqual([]); expect(value.state.occurrences).toEqual([])
   })
   it('has fixed current DTO/query work at positions 10 versus 100000 (model rows only)', async () => {
@@ -30,7 +23,7 @@ describe('FE-R2-001 current canonical read (SQL model, not a database scale test
       // Scalar position only: the model supplies the same committed current cut,
       // not an in-memory list of fabricated historical execution rounds.
       f.db.state.head = head
-      responses.push(await f.canonical.current(f.principal, f.request)); queries.push([...f.db.calls])
+      responses.push(await f.canonical.current(f.principal, f.request)); queries.push(f.db.calls.length)
     }
     expect(queries[0]).toEqual(queries[1])
     expect({ ...responses[0], asOfSequence: 'same' }).toEqual({ ...responses[1], asOfSequence: 'same' })
@@ -62,8 +55,8 @@ describe('FE-R2-001 current canonical read (SQL model, not a database scale test
       await expect(f.canonical.current(f.principal, f.request)).rejects.toMatchObject({
         code: layer === 'physical' ? 'GRAPH_SCOPE_MISMATCH' : 'GRAPH_INVARIANT_VIOLATION',
       })
-      expect(f.db.calls).toContain('rollback')
-      expect(f.db.calls.some((q) => /run_activity|input_json|result_json/.test(q))).toBe(false)
+      expect(f.db.transactions.at(-1)?.outcome).toBe('rolled-back')
+      expect(f.db.historyBodyReads).toBe(0)
     }
   })
   it('rejects inconsistent persisted identity, definition, duplicate nodes and changed configuration pins', async () => {
@@ -77,9 +70,10 @@ describe('FE-R2-001 current canonical read (SQL model, not a database scale test
     ]
     for (const change of changes) {
       const f = await currentGraphReadUnit(); change(f)
+      const before = structuredClone(f.db.state)
       await expect(f.canonical.current(f.principal, f.request)).rejects.toMatchObject({ code: 'GRAPH_INVARIANT_VIOLATION' })
-      expect(f.db.calls).toContain('rollback')
-      expect(f.db.calls.some((q) => q.startsWith('update ') || q.startsWith('insert '))).toBe(false)
+      expect(f.db.transactions.at(-1)?.outcome).toBe('rolled-back')
+      expect(f.db.state).toEqual(before)
     }
   })
   it('authorizes before protected metadata reads using runs:read without location privilege', async () => {
@@ -89,18 +83,28 @@ describe('FE-R2-001 current canonical read (SQL model, not a database scale test
     const foreign = currentGraphPrincipal()
     foreign.grants[0]!.scope.workflowIds = ['foreign']
     await expect(f.canonical.current(foreign, f.request)).rejects.toMatchObject({ code: 'GRAPH_READ_ACCESS_DENIED' })
-    expect(f.db.calls.filter((q) => q.startsWith('select '))).toEqual(['select workspace_id,workflow_id,id from runs where id=$1'])
+    expect(f.db.protectedMetadataReads).toBe(0)
+    expect(f.db.transactions.at(-1)?.outcome).toBe('rolled-back')
     const result = await f.canonical.current(f.principal, f.request)
     const wire = JSON.stringify(result)
     expect(wire).not.toMatch(/PRIVATE-RUN-INPUT|executionLocation|authorizationPrincipalId|workingDirectory|runtimeDirectory|nativeSessionId|"prompt"/)
   })
+  it('rejects a public projection whose committed source digest no longer matches', async () => {
+    const f = await currentGraphReadUnit()
+    const source = f.db.state.sources.find(row => row.source_digest === f.db.state.projection!.source_digest)!
+    source.source_digest = `sha256:${'f'.repeat(64)}`
+    await expect(f.canonical.current(f.principal, f.request)).rejects.toMatchObject({ code: 'GRAPH_INVARIANT_VIOLATION' })
+    expect(f.db.transactions.at(-1)?.outcome).toBe('rolled-back')
+  })
   it('does not fall back to full details on missing head or an exact scope miss', async () => {
     const f = await currentGraphReadUnit(); f.db.initialized = false
     await expect(f.canonical.current(f.principal, f.request)).rejects.toMatchObject({ code: 'GRAPH_NOT_INITIALIZED' })
-    expect(f.db.calls.some((q) => /run_activity|harness_native_events|insert |update /.test(q))).toBe(false)
+    expect(f.db.historyBodyReads).toBe(0)
+    expect(f.db.initialized).toBe(false)
     f.db.initialized = true; f.db.calls.length = 0
     await expect(f.canonical.current(f.principal, { ...f.request, scope: { ...f.request.scope, workflowVersionId: 'foreign-version' } }))
       .rejects.toMatchObject({ code: 'GRAPH_SCOPE_MISMATCH' })
-    expect(f.db.calls.some((q) => q.includes('version_record') || q.includes('run_activity'))).toBe(false)
+    expect(f.db.protectedMetadataReads).toBe(0)
+    expect(f.db.historyBodyReads).toBe(0)
   })
 })

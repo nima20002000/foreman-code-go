@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { randomUUID } from 'node:crypto'
 import { OperatorToolSchemaResultSchema } from '@foreman-code/contracts/operator-mcp'
@@ -20,12 +20,20 @@ describe.skipIf(!postgresEnabled)('Selected historical Run chat PostgreSQL / HTT
       const location = await f.locations.set(f.writer.principal, 'http', { workspaceId, commandId: randomUUID(),
         expectedLocationRevision: 1, runnerId: f.locations.runnerId, rootPath: f.db.directory })
       const revision = Number((await f.db.pool.query<{ revision: string }>('select revision::text from workflows where id=$1', [workflowId])).rows[0]!.revision)
+      const dispatch = vi.spyOn(f.engine, 'start')
       const started = RunStartV3ResultSchema.parse(body(await f.client.callTool({ name: 'run_start', arguments: {
         workspaceId, workflowId, workflowVersionId: f.f.version.id, executionSemanticsVersion: 3,
         commandId: randomUUID(), expectedWorkflowRevision: revision, expectedLocationRevision: location.value.locationRevision,
         expectedAgentConfigurationVersionIds: f.f.version.agentConfigurationVersionIds, input: {},
       } })))
+      await eventually(() => dispatch.mock.calls.some(([runId]) => runId === started.run.id))
+      const dispatchIndex = dispatch.mock.calls.findIndex(([runId]) => runId === started.run.id)
+      const dispatched = dispatch.mock.results[dispatchIndex]!
+      expect(dispatched.type).toBe('return')
+      // Join the MCP dispatch just as the first Run joins its engine call before checking cleanup.
+      await dispatched.value
       await terminal(f, started.run.id)
+      expect(dispatch.mock.calls.filter(([runId]) => runId === started.run.id)).toHaveLength(1)
       const b = (await executions(f, started.run.id)).find((entry) => entry.workflowNodeId === y.id)!
       const runIds = [a.runId, b.runId]
       const unchanged = await oldRunRows(f, runIds)

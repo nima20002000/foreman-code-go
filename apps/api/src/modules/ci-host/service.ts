@@ -1042,7 +1042,8 @@ export class HostCiService {
       }
       const affectedFiles = run.scope === 'affected' && !run.deriveFiles ? { files: run.files } : {}
       const selection = (run.gate || smokeTarget) && run.suite === 'integration'
-        ? { gate: true, integrationShards: run.integrationShards!, files: run.files } : affectedFiles
+        ? { gate: true, scope: 'full' as const, integrationShards: run.integrationShards!, files: run.files }
+        : affectedFiles
       const plannedGateReady = run.plannedHostKey && gateShards.has(run.plannedHostKey)
       const order = computers.filter(computer => runsOnCircleCi(run)
         || computer.hostRef.kind !== 'cloud' || computer.hostRef.provider !== 'circleci')
