@@ -1,3 +1,3 @@
 import { describeFullRunRetryBudget } from './helpers/fullRunRetryBudget.js'
 
-describeFullRunRetryBudget(['repeat'])
+describeFullRunRetryBudget(['repeat'], ['http'])

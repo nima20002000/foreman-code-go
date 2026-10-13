@@ -6,7 +6,7 @@ import { recoverTerminalBeforeClosure, useCrashCutDatabase } from './helpers/res
  * are real. Only provider transport and filesystem qualification are synthetic. */
 describe.skipIf(!postgresEnabled)('terminal recovery before native closure', () => {
   const database = useCrashCutDatabase()
-  describe.each(['sequential', 'repeat'] as const)('%s', (form) => {
+  describe.each(['sequential'] as const)('%s', (form) => {
     it('recovers a durable terminal before its closure receipt: success', async () => {
       await recoverTerminalBeforeClosure(database(), form, 'success')
     }, 60_000)

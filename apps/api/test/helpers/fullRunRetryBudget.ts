@@ -6,9 +6,10 @@ import {
   type Form,
 } from './eng06DRecovery.js'
 
-const transports: Array<'http' | 'mcp'> = ['http', 'mcp']
-
-export function describeFullRunRetryBudget(forms: Form[]) {
+export function describeFullRunRetryBudget(
+  forms: Form[],
+  transports: Array<'http' | 'mcp'> = ['http', 'mcp'],
+) {
   describeRetryBudget('full-Run retry budget', () => {
     describe.each(forms)('%s full-Run retry is a separate authorization and identity', (form) => {
       it.each(transports)('%s Start replay creates only one NEW Run with a fresh technical budget', async (via) => {
