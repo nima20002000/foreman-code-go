@@ -1,4 +1,3 @@
-import type { WorkflowDefinitionV3 } from './saved.js'
 
 /**
  * The executable/presentation boundary used by authoring and save admission.

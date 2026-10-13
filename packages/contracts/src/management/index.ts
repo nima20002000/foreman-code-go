@@ -44,7 +44,7 @@ import {
 } from "../index.js";
 
 export * from './principals.js'
-import { ManagementActionSchema, ManagementGrantSchema, type ManagementAction } from './principals.js'
+import { ManagementActionSchema, ManagementGrantSchema } from './principals.js'
 
 /** The implicit local human's product permissions; contains no credentials. */
 export const LocalHumanAccessSchema = z.object({

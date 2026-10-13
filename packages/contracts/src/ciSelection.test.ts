@@ -90,7 +90,7 @@ it('accepts safe selected paths from any repository without a file-count limit',
 })
 
 it.each(['../escape.ts', 'src/../escape.ts', '/src/file.ts', 'C:/src/file.ts',
-  'src\\..\\escape.ts', 'src/./file.ts', 'src//file.ts', 'src/file.ts\0', ''])
-('rejects unsafe selected paths: %s', file => {
+  'src\\..\\escape.ts', 'src/./file.ts', 'src//file.ts', 'src/file.ts\0', ''])(
+  'rejects unsafe selected paths: %s', file => {
   expect(CiSelectedFilesSchema.safeParse([file]).success).toBe(false)
 })
