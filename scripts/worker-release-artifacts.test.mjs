@@ -21,6 +21,7 @@ test('retries asset upload when an existing empty release is not yet visible', a
   let uploads = 0
   const run = async (command, args) => {
     calls.push({ command, args })
+    if (command === 'tar') await writeFile(args[1], 'archive')
     if (command === 'gh' && args[1] === 'upload' && ++uploads === 1) {
       throw new Error('release not found')
     }
@@ -36,6 +37,63 @@ test('retries asset upload when an existing empty release is not yet visible', a
   const upload = calls.find(call => call.command === 'gh' && call.args[1] === 'upload')
   assert.ok(upload.args.includes('--clobber'))
   await assert.rejects(stat(upload.args[3]), { code: 'ENOENT' })
+})
+
+for (const failure of ['view', 'create', 'upload']) {
+  test(`recovers a created release after a temporary ${failure} failure`, async t => {
+    const f = await fixture(t)
+    execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/example/worker.git'], { cwd: f.repository })
+    await mkdir(f.directory)
+    const calls = []
+    const waits = []
+    let exists = failure === 'view'
+    let failed = false
+    const run = async (command, args) => {
+      if (command !== 'gh') return
+      const operation = args[1]
+      calls.push(operation)
+      if (operation === failure && !failed) {
+        failed = true
+        if (operation === 'create') exists = true
+        throw new Error('release not found')
+      }
+      if (operation === 'view' && !exists) throw new Error('release not found')
+      if (operation === 'create') {
+        if (exists) throw new Error('release already exists')
+        exists = true
+        assert.equal(args.some(arg => arg.endsWith('.tar.gz')), false)
+      }
+    }
+    const result = await publishWorkerArtifactsToGitHub({ ...f, artifacts: [{ manifestSha256: 'a'.repeat(64) }], run,
+      sleep: async milliseconds => { waits.push(milliseconds) } })
+    assert.equal(result.tag, `worker-${f.commit}`)
+    assert.deepEqual(waits, [5000])
+    assert.deepEqual(calls, failure === 'view' || failure === 'create'
+      ? ['view', 'create', 'view', 'upload'] : ['view', 'create', 'upload', 'view', 'upload'])
+  })
+}
+
+test('stops retrying after one minute of backoff and cleans up staged assets', async t => {
+  const f = await fixture(t)
+  execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/example/worker.git'], { cwd: f.repository })
+  await mkdir(f.directory)
+  const error = new Error('release not found')
+  const waits = []
+  let uploads = 0
+  let asset
+  const run = async (command, args) => {
+    if (command === 'tar') await writeFile(args[1], 'archive')
+    if (command === 'gh' && args[1] === 'upload') {
+      uploads++
+      asset = args[3]
+      throw error
+    }
+  }
+  await assert.rejects(publishWorkerArtifactsToGitHub({ ...f, artifacts: [{ manifestSha256: 'a'.repeat(64) }], run,
+    sleep: async milliseconds => { waits.push(milliseconds) } }), thrown => thrown === error)
+  assert.equal(uploads, 5)
+  assert.deepEqual(waits, [5000, 10000, 20000, 25000])
+  await assert.rejects(stat(asset), { code: 'ENOENT' })
 })
 
 async function fixture(t) {
