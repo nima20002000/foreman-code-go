@@ -89,6 +89,10 @@ export function nextDraftDirty(edit: NextDraftEdit): boolean {
     || (!saved && edit.context.draft.publishedRevision !== edit.context.draft.revision)
 }
 
+export function canUndoNextDraft(edit: NextDraftEdit): boolean {
+  return edit.history.length > 0 && (nextDraftDirty(edit) || hasAgentEdits(undoNextDraft(edit)))
+}
+
 export type NextDraftSlice = {
   nextDrafts: Record<string, NextDraftEdit>
   installNextDraft: (key: string, context: NextDraftContext, replace?: boolean) => void
