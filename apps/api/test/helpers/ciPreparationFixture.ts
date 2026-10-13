@@ -192,7 +192,8 @@ export async function ciPreparationFixture(options: {
     currentRuntimePaths: async () => ['/ci/managed/installer/qualification-source-aaaaaaaaaaaa'],
     now: () => new Date(),
   }
-  let worker = new CiRuntimeWorker(stateDirectories.worker, workerPorts as never, new AbortController().signal)
+  const workerLifetime = new AbortController()
+  let worker = new CiRuntimeWorker(stateDirectories.worker, workerPorts as never, workerLifetime.signal)
   let restartedOperation: string | undefined
   let statusDrops = options.statusDrops ?? 0
   let ackLost = false
@@ -203,7 +204,7 @@ export async function ciPreparationFixture(options: {
       if (refreshRecord && restartedOperation !== refreshRecord.operationId) {
         await worker.close()
         restartedOperation = refreshRecord.operationId
-        worker = new CiRuntimeWorker(stateDirectories.worker, workerPorts as never, new AbortController().signal)
+        worker = new CiRuntimeWorker(stateDirectories.worker, workerPorts as never, workerLifetime.signal)
       }
       if (payload.operation === 'status' && statusDrops-- > 0) throw new DeviceConnectionError('transport')
       const state = await worker.handle(payload)
@@ -287,13 +288,13 @@ export async function ciPreparationFixture(options: {
   }
   // Main's own CI runtime restarts with Main after its refresh, like a Worker.
   const mainPorts = { ...workerPorts, managedRuntimeRoot: async () => stateDirectories.main }
-  let mainRuntime = new CiRuntimeWorker(stateDirectories.main, mainPorts as never, new AbortController().signal)
+  let mainRuntime = new CiRuntimeWorker(stateDirectories.main, mainPorts as never, workerLifetime.signal)
   let mainRestartedOperation: string | undefined
   const main = options.main === 'installed' ? () => ({ handle: async (payload: unknown) => {
     if (refreshRecord && mainRestartedOperation !== refreshRecord.operationId) {
       await mainRuntime.close()
       mainRestartedOperation = refreshRecord.operationId
-      mainRuntime = new CiRuntimeWorker(stateDirectories.main, mainPorts as never, new AbortController().signal)
+      mainRuntime = new CiRuntimeWorker(stateDirectories.main, mainPorts as never, workerLifetime.signal)
     }
     return mainRuntime.handle(payload)
   } }) : undefined
@@ -305,6 +306,7 @@ export async function ciPreparationFixture(options: {
   const app = Fastify()
   app.addHook('onClose', async () => {
     await ciRuntime.close()
+    workerLifetime.abort()
     await worker.close()
     await mainRuntime.close()
     await rm(directory, { recursive: true, force: true })

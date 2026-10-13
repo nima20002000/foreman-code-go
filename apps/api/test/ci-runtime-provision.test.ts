@@ -1,10 +1,10 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, writeFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { gitFixtureEnvironment } from './helpers/gitFixture.js'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { publishCommit } from '../src/modules/sources/githubPublisher.js'
 import { snapshotAgentWorktree, importAgentSnapshot } from '../src/modules/sources/agentSnapshot.js'
 import { captureGitSource } from '../src/modules/sources/capture.js'
@@ -393,8 +393,9 @@ it('cancels pending computer Git acquisition when the preparation fixture closes
   let gitSignal: AbortSignal | undefined
   let releaseGit!: () => void
   const pendingGit = new Promise<void>(resolve => { releaseGit = resolve })
+  const directory = await privateFixtureDirectory('ci-cancellation-')
   const f = await fixture({ source: { manifest, git: {
-    cloneDirectory: () => '/uncreated-fixture-clone',
+    cloneDirectory: () => join(directory, 'clone'),
     git: async (_args, { signal }) => {
       gitSignal = signal
       signal.addEventListener('abort', releaseGit, { once: true })
@@ -421,12 +422,13 @@ it('cancels pending computer Git acquisition when the preparation fixture closes
   } finally {
     releaseGit()
     await (closing ?? f.app.close())
+    await rm(directory, { recursive: true, force: true })
   }
 })
 
 it.each(['unpublished Agent commit', 'published commit', 'computer without GitHub', 'Main without push access'] as const)(
   'prepares a build computer from GitHub only, through authenticated MCP: %s', async scenario => {
-    const directory = await mkdtemp(join(tmpdir(), 'ci-github-'))
+    const directory = await privateFixtureDirectory('ci-github-')
     let f: Awaited<ReturnType<typeof fixture>> | undefined
     const git = (cwd: string, ...args: string[]) => execFileSync('git', args,
       { cwd, encoding: 'utf8', env: gitFixtureEnvironment() }).trim()
@@ -456,7 +458,7 @@ it.each(['unpublished Agent commit', 'published commit', 'computer without GitHu
       const mainGit: GitWorktreePorts = { cloneDirectory: () => main, git: (args, options) =>
         scenario === 'Main without push access' && args[0] === 'push' ? Promise.resolve(refused) : system.git(args, options) }
       const workerGit: GitWorktreePorts = { cloneDirectory: () => join(directory, 'worker-clone'), git: (args, options) =>
-        scenario === 'computer without GitHub' && ['clone', 'fetch'].includes(args[0]!) ? Promise.resolve(refused)
+        scenario === 'computer without GitHub' && ['rev-parse', 'clone', 'fetch'].includes(args[0]!) ? Promise.resolve(refused)
           : system.git(args[0] === 'clone' ? ['clone', '--no-checkout', origin, args.at(-1)!] : args, options) }
       f = await fixture({ source: { manifest: acceptedManifest, git: workerGit },
         publish: (repository, commit) => publishCommit(mainGit, repository, commit, signal) })
