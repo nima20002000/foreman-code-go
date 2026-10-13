@@ -58,6 +58,8 @@ export const exclusiveIntegrationFiles = [startupFile,
   'apps/api/test/computer-workflow-save.regression-directories.integration.test.ts',
   // Native review startup and reserved-decision recovery must fit the fixed file deadline.
   'apps/api/test/remote-review-production-reserved-decision.integration.test.ts',
+  // Startup and original-owner recovery must finish within the same fixed file deadline.
+  'apps/api/test/remote-review-production-worker-crash.integration.test.ts',
   // Keep installed API packaging sequential on each user-systemd host.
   'apps/api/test/workflow-systemd-restart-active.integration.test.ts',
   'apps/api/test/workflow-systemd-restart-writable-source.integration.test.ts',
