@@ -70,13 +70,17 @@ it('observes subscribed changes without waiting for a polling interval', async (
   expect(vi.getTimerCount()).toBe(0)
 })
 
-it('rechecks subscribed conditions when progress has no commit notification', async () => {
+it.each([
+  { interval: {}, pollingMs: 25 },
+  { interval: { minimumReadIntervalMs: 1_000 }, pollingMs: 1_000 },
+])('rechecks subscribed conditions without a commit notification after $pollingMs ms', async ({ interval }) => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
   let ready = false
   const unsubscribe = vi.fn()
   const read = vi.fn(async () => ready)
   const result = readUntil(read, Boolean, {
     timeoutMs: 2_000, description: 'native retry readiness', subscribe: () => unsubscribe,
+    ...interval,
   })
   await vi.advanceTimersByTimeAsync(0)
   ready = true
