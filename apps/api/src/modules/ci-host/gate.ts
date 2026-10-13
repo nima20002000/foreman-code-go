@@ -78,40 +78,30 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
   const known = Object.values(integration.durations).sort((left, right) => left - right)
   const median = known[Math.floor(known.length / 2)] ?? 30_000
   const duration = (file: string) => integration.durations[file] ?? median
-  const finish = (item: GateComputer, files = item.files) => item.checkMs
-    + (files.length ? SETUP_MS + integrationTime(files, item.shards, duration) : 0)
   const files = [...new Set(integration.files)].sort((left, right) => duration(right) - duration(left) || left.localeCompare(right))
+  // Longest-first list scheduling over hosts and clouds with incremental shard loads: each file goes where it finishes
+  // earliest (hosts win ties), so clouds only take integration that shortens the gate's critical path.
+  const load = new Map(fleet.map(item => [item, { lanes: Array.from({ length: item.shards }, () => 0), serial: 0 }]))
+  const finishWith = (item: GateComputer, file: string) => {
+    const state = load.get(item)!
+    const serial = exclusive.has(file) ? state.serial + duration(file) : state.serial
+    const lanes = exclusive.has(file) ? Math.max(...state.lanes) : Math.max(Math.max(...state.lanes), Math.min(...state.lanes) + duration(file))
+    return item.checkMs + SETUP_MS + serial + lanes
+  }
   const exclusiveCount = (item: GateComputer) => item.files.filter(file => exclusive.has(file) || requiresUserSystemd(file)).length
   for (const file of files) {
     const serial = exclusive.has(file) || requiresUserSystemd(file)
-    const target = [...hosts].sort((left, right) => (serial ? exclusiveCount(left) - exclusiveCount(right) : 0)
-      || finish(left, [...left.files, file]) - finish(right, [...right.files, file]))[0]!
-    target.files.push(file)
-  }
-  const checkCritical = Math.max(...clouds.map(item => item.checkMs))
-  while (Math.max(...hosts.map(item => finish(item))) > checkCritical) {
-    const host = [...hosts].sort((left, right) => finish(right) - finish(left))[0]!
-    const critical = Math.max(...fleet.map(item => finish(item)))
-    let move: { file: string; cloud: GateComputer; score: number; cloudMs: number } | undefined
-    for (const file of host.files) {
-      const remaining = host.files.filter(candidate => candidate !== file)
-      if (!remaining.length || finish(host, remaining) > finish(host)) continue
-      for (const cloud of clouds) {
-        if (requiresUserSystemd(file) && !cloud.computer.userSystemd?.supported) continue
-        const score = Math.max(...fleet.map(item => {
-          if (item === host) return finish(host, remaining)
-          if (item === cloud) return finish(cloud, [...cloud.files, file])
-          return finish(item)
-        }))
-        const cloudMs = finish(cloud, [...cloud.files, file])
-        const improvesPlacement = !move || score < move.score || score === move.score && cloudMs < move.cloudMs
-        if (score > critical || !improvesPlacement) continue
-        move = { file, cloud, score, cloudMs }
-      }
+    const eligible = [...hosts, ...clouds.filter(cloud => !requiresUserSystemd(file) || cloud.computer.userSystemd?.supported)]
+    const target = eligible.map((item, order) => ({ item, order, finish: finishWith(item, file) }))
+      .sort((left, right) => left.finish - right.finish
+        || (serial ? exclusiveCount(left.item) - exclusiveCount(right.item) : 0) || left.order - right.order)[0]!.item
+    const state = load.get(target)!
+    if (exclusive.has(file)) state.serial += duration(file)
+    else {
+      const index = state.lanes.indexOf(Math.min(...state.lanes))
+      state.lanes[index] = state.lanes[index]! + duration(file)
     }
-    if (!move) break
-    host.files = host.files.filter(file => file !== move.file)
-    move.cloud.files.push(move.file)
+    target.files.push(file)
   }
   for (const item of fleet.filter(item => item.files.length)) {
     result.push({ suite: 'integration', part: null, partition: null, files: item.files,
