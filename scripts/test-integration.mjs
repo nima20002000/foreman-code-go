@@ -353,8 +353,8 @@ export function integrationShardPlan(environment, resources = {}, fileCount = In
     && Number.isSafeInteger(activeConnections) && activeConnections >= 0
   // One worker uses the default ten-connection pool plus admin and peer connections.
   const connectionsPerShard = 16
-  // Each shard reserves one logical CPU and 0.5 GiB of memory.
-  const memoryPerShard = 1024 ** 3 / 2
+  // Each shard reserves one logical CPU and 1.5 GiB of memory.
+  const memoryPerShard = 1.5 * 1024 ** 3
   const cpuLimit = knownCpu ? cpuCount : 12
   const memoryLimit = knownMemory ? Math.floor(availableMemoryBytes / memoryPerShard) : 12
   const freeConnections = knownDatabase ? maxConnections - reservedConnections - activeConnections : null
@@ -364,7 +364,7 @@ export function integrationShardPlan(environment, resources = {}, fileCount = In
   const limit = Math.min(cpuLimit, memoryLimit, databaseLimit, ciShardLimit)
   const reasons = [
     knownCpu ? `CPU limit ${cpuLimit}` : 'CPU unknown (fallback 12)',
-    knownMemory ? `memory limit ${memoryLimit} (${availableMemoryBytes} available bytes, 0.5 GiB/shard)`
+    knownMemory ? `memory limit ${memoryLimit} (${availableMemoryBytes} available bytes, 1.5 GiB/shard)`
       : 'memory unknown (fallback 12)',
     knownDatabase ? `PostgreSQL limit ${databaseLimit} (max_connections=${maxConnections},`
       + ` ${reservedConnections} reserved, ${activeConnections} occupied, ${connectionsPerShard} connections/shard)`

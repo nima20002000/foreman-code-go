@@ -4,9 +4,9 @@ const gib = 2 ** 30
 const coresPerSlot = 6
 const memoryPerSlot = 6 * gib
 
-/** Reserve one logical CPU and 0.5 GiB per integration shard, plus 1 GiB for shared processes. */
+/** Reserve one logical CPU and 1.5 GiB per integration shard, plus 1 GiB for shared processes. */
 export function gateIntegrationShards(cpuCount: number, memoryBytes: number): number {
-  return Math.max(1, Math.min(64, Math.floor(cpuCount), Math.floor((memoryBytes - gib) / (gib / 2))))
+  return Math.max(1, Math.min(64, Math.floor(cpuCount), Math.floor((memoryBytes - gib) / (1.5 * gib))))
 }
 
 export function allowedCiResources(resources: {
