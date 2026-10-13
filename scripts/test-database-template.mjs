@@ -1,10 +1,14 @@
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
-import { assertTestRoot, createTestDatabase, dropTestDatabase, requireTestServerUrl } from './test-resources.mjs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { assertTestRoot, createTestDatabase, createTestRoot, dropTestDatabase, requireTestServerUrl,
+  testAdminUrl } from './test-resources.mjs'
 import { createTestPool } from '../apps/api/test/helpers/testPool.mjs'
 
 const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
 const templates = new Map()
+let migrationModule
 
 export function migrationContentsHash(migrations) {
   return createHash('sha256').update(JSON.stringify(migrations.map(({ version, sql }) => ({ version, sql })))).digest('hex')
@@ -33,20 +37,62 @@ export async function assertTestDatabaseTemplate(admin, template) {
   }
 }
 
-export async function createTestDatabaseTemplate(admin, resource) {
+export async function createTestDatabaseTemplate(admin, resource, { cacheDirectory } = {}) {
   assertTestRoot(resource.directory, resource.token)
   const importStarted = performance.now()
   const { tsImport } = require('tsx/esm/api')
-  const { migrations, applyApplicationMigrations } = await tsImport(
-    '../apps/api/src/infrastructure/migrations.ts', import.meta.url)
+  migrationModule ??= tsImport('../apps/api/src/infrastructure/migrations.ts', import.meta.url)
+  const { migrations, applyApplicationMigrations } = await migrationModule
   const importMs = performance.now() - importStarted
   const hash = migrationContentsHash(migrations)
+  if (cacheDirectory) {
+    try {
+      return await cachedTemplate(admin, cacheDirectory, { hash, importMs, applyApplicationMigrations })
+    } catch (error) {
+      console.error(`[test-db] template cache unavailable; migrating job template: ${error.message}`)
+    }
+  }
   const key = `${resource.token}:${hash}`
   if (!templates.has(key)) {
     templates.set(key, migrateTemplate(admin, resource, { hash, importMs, applyApplicationMigrations }))
   }
   try { return await templates.get(key) }
   catch (error) { templates.delete(key); throw error }
+}
+
+async function cachedTemplate(admin, cacheDirectory, migration) {
+  const started = performance.now()
+  const serverKey = createHash('sha256').update(testAdminUrl).digest('hex').slice(0, 16)
+  const directory = resolve(cacheDirectory, `server-${serverKey}`)
+  mkdirSync(directory, { recursive: true, mode: 0o700 })
+  const manifest = join(directory, `${migration.hash}.json`)
+  const lock = `ci-template:${directory}:${migration.hash}`
+  await admin.query('select pg_advisory_lock(hashtext($1))', [lock])
+  try {
+    let root
+    if (existsSync(manifest)) {
+      root = JSON.parse(readFileSync(manifest, 'utf8'))
+      assertTestRoot(root.directory, root.token)
+    } else {
+      root = createTestRoot(directory, `${migration.hash.slice(0, 12)}-`)
+      const temporary = `${manifest}.${root.token}`
+      writeFileSync(temporary, JSON.stringify(root), { mode: 0o600, flag: 'wx' })
+      renameSync(temporary, manifest)
+    }
+    const name = `graphql_test_template_${migration.hash.slice(0, 12)}_${root.token.replaceAll('-', '').slice(0, 12)}`
+    const url = new URL(testAdminUrl)
+    url.pathname = `/${name}`
+    const template = { ...root, name, databaseUrl: url.toString(), hash: migration.hash }
+    const existing = await admin.query('select datname from pg_database where datname=$1', [name])
+    if (existing.rows.length) {
+      await assertTestDatabaseTemplate(admin, template)
+      return { ...template, persistent: true,
+        timings: { importMs: migration.importMs, migrationMs: 0, setupMs: performance.now() - started } }
+    }
+    return { ...await migrateTemplate(admin, root, migration), persistent: true }
+  } finally {
+    await admin.query('select pg_advisory_unlock(hashtext($1))', [lock])
+  }
 }
 
 async function migrateTemplate(admin, resource, { hash, importMs, applyApplicationMigrations }) {

@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { cleanupTestResources, createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot, requireTestServerUrl,
   resetTestDatabase, settleTestResources, testAdminPool, testEnvironment } from './test-resources.mjs'
 import { createTestDatabaseTemplate, dropTestDatabaseTemplate } from './test-database-template.mjs'
+import { ciTemplateCacheDirectory } from './ci-postgres-cache.mjs'
 import { readIntegrationStartup } from './integration-startup.mjs'
 import { integrationPhaseForwarder } from './integration-phase.mjs'
 import { testFixtureCacheRoot } from './test-fixture-cache.mjs'
@@ -652,9 +653,10 @@ export async function runIntegration(argv = [], {
     }
   }
   try {
-    template = await createTestDatabaseTemplate(admin, tempRoot)
+    template = await createTestDatabaseTemplate(admin, tempRoot, { cacheDirectory: ciTemplateCacheDirectory(env) })
     console.log(`[integration] database template ${template.hash}; migration import ${Math.round(template.timings.importMs)} ms;`
-      + ` migrations ${Math.round(template.timings.migrationMs)} ms; setup ${Math.round(template.timings.setupMs)} ms.`)
+      + ` migrations ${Math.round(template.timings.migrationMs)} ms; setup ${Math.round(template.timings.setupMs)} ms;`
+      + ` ${template.persistent ? 'persistent' : 'job'} template.`)
     for (let index = 0; index < shardCount; index++) {
       if (interrupted) throw new Error(`Interrupted during database setup (${interrupted})`)
       const resource = createTestRoot(tempRoot.directory, `slot-${index + 1}-`)
@@ -938,7 +940,7 @@ export async function runIntegration(argv = [], {
           }
           catch (error) { cleanupError ??= error }
         }
-        if (template && !cleanupError) {
+        if (template && !template.persistent && !cleanupError) {
           try { await dropTestDatabaseTemplate(admin, template) }
           catch (error) { cleanupError ??= error }
         }

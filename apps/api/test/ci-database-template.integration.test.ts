@@ -6,6 +6,7 @@ import { createTestDatabaseTemplate, dropTestDatabaseTemplate } from '../../../s
 import { createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot,
   testAdminPool } from '../../../scripts/test-resources.mjs'
 import { createTestPool } from './helpers/testPool.mjs'
+import { integrationPhaseLine } from '../../../scripts/integration-phase.mjs'
 
 it('retains a migrated template across CI jobs while dropping their isolated databases', async () => {
   const admin = await testAdminPool()
@@ -23,8 +24,10 @@ it('retains a migrated template across CI jobs while dropping their isolated dat
       templates.push(template)
       const database = await createTestDatabase(admin, job, { template })
       databases.push(database)
-      console.log(`[ci-db-measure] ${templates.length === 1 ? 'cold' : 'warm'} setup seconds=`
-        + ((performance.now() - started) / 1000).toFixed(3))
+      const elapsedMs = performance.now() - started
+      const phase = templates.length === 1 ? 'cold-db-setup' : 'warm-db-setup'
+      console.log(integrationPhaseLine('ci-database-template.integration.test.ts', phase, elapsedMs))
+      console.log(`[ci-db-measure] ${phase} seconds=${(elapsedMs / 1000).toFixed(3)}`)
       pools.push(createTestPool({ connectionString: database.databaseUrl, max: 1 }))
     }
     expect(templates[1]!.name).toBe(templates[0]!.name)

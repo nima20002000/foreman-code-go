@@ -82,7 +82,7 @@ it('keeps an active database session and its rows when another checkout starts t
     await mkdir(scripts, { mode: 0o700 })
     // The copied checkout must reuse the same server through either database provider.
     await copyFile(new URL('../../../compose.test.yaml', import.meta.url), join(fixture.directory, 'compose.test.yaml'))
-    for (const name of ['test-db.mjs', 'test-postgres-init.sql']) {
+    for (const name of ['test-db.mjs', 'test-postgres-init.sql', 'ci-postgres-cache.mjs']) {
       await copyFile(new URL(`../../../scripts/${name}`, import.meta.url), join(scripts, name))
     }
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -123,7 +123,7 @@ it.skipIf(process.env.FOREMAN_CODE_VERIFICATION_ENVIRONMENT === 'isolated-job-v1
     await mkdir(join(checkout, 'scripts'), { mode: 0o700 })
     // Host CI checkouts are private: the container user cannot read these files.
     await copyFile(new URL('../../../compose.test.yaml', import.meta.url), join(checkout, 'compose.test.yaml'))
-    for (const name of ['test-db.mjs', 'test-postgres-init.sql']) {
+    for (const name of ['test-db.mjs', 'test-postgres-init.sql', 'ci-postgres-cache.mjs']) {
       await copyFile(new URL(`../../../scripts/${name}`, import.meta.url), join(checkout, 'scripts', name))
       await chmod(join(checkout, 'scripts', name), 0o600)
     }
@@ -131,7 +131,7 @@ it.skipIf(process.env.FOREMAN_CODE_VERIFICATION_ENVIRONMENT === 'isolated-job-v1
       const runDirectory = join(checkout, `run-${index}`)
       await mkdir(runDirectory, { mode: 0o700 })
       return { runDirectory, env: { ...process.env, FOREMAN_CODE_CI_HOST_RUN_ID: randomUUID(),
-        FOREMAN_CODE_VERIFICATION_ENVIRONMENT: '', TMPDIR: runDirectory } }
+        FOREMAN_CODE_VERIFICATION_ENVIRONMENT: '', TMPDIR: runDirectory, CI_HOST_RUNNER: '0' } }
     }))
     const database = (action: string, env: NodeJS.ProcessEnv) =>
       execute(process.execPath, [join(checkout, 'scripts', 'test-db.mjs'), action], { env, timeout: 60_000 })

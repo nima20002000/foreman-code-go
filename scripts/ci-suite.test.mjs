@@ -29,6 +29,7 @@ if (args.includes('port')) console.log('127.0.0.1:' + process.env.FIXTURE_PORT)
     mkdirSync(temporary)
     const environment = { ...process.env, PATH: `${directory}${delimiter}${process.env.PATH}`, TMPDIR: temporary,
       FOREMAN_CODE_CI_HOST_RUN_ID: runId, FOREMAN_CODE_VERIFICATION_ENVIRONMENT: '',
+      CI_HOST_RUNNER: '0',
       FIXTURE_PORT: String(port), CALLS_FILE: callsFile }
     for (const action of ['up', 'down']) {
       const result = spawnSync(process.execPath, [fileURLToPath(new URL('./test-db.mjs', import.meta.url)), action],
