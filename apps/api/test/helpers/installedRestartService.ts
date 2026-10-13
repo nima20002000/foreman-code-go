@@ -97,6 +97,7 @@ export async function installedRestartService(directory: string, configuration: 
     .replace('Restart=always', 'Restart=no')
   const service = renderUserService(template, { node: join(release, 'node'), app,
     state: directory, home: serviceUser.homedir, path: environment.PATH ?? '/usr/bin:/bin' })
+  await mkdir(dirname(unitPath), { recursive: true, mode: 0o700 })
   await writeFile(unitPath, service, { mode: 0o600 })
   const systemctl = (...args: string[]) => execute('systemctl', ['--user', ...args], {
     env: { ...process.env, XDG_RUNTIME_DIR: `/run/user/${serviceUser.uid}`,
