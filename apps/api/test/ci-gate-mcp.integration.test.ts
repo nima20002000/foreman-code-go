@@ -167,6 +167,7 @@ it.each([false, true])('admits consecutive gates on different connections after 
       const failed = await f.call(f.operator, 'ci_run', firstInput)
       expect(failed.isError).toBe(true)
       expect(decodeMcpToolResult(failed)).toMatchObject({ error: { code: 'INTERNAL_ERROR' } })
+      expect((await database.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
     }
     const first = CiRunOutputSchema.parse(await f.value('ci_run', firstInput))
     expect(CiRunOutputSchema.parse(await f.value('ci_run', firstInput))).toEqual(first)
@@ -179,6 +180,8 @@ it.each([false, true])('admits consecutive gates on different connections after 
       const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId }))
       expect(read.run).toMatchObject({ id: ticketId, gate: true })
       expect(read.partitions!.length).toBeGreaterThan(1)
+      const stored = (await database.pool.query('select record from ci_runs where id=$1', [ticketId])).rows[0].record
+      expect(stored).toEqual(read.run)
     }
   } finally {
     for (const client of held) client.release()
@@ -258,6 +261,16 @@ it('runs cloud checks before systemd integration overflow assigned to the same s
       expect(run.state).toBe('queued')
       expect(checks.some(check => check.state === 'running')).toBe(true)
     }
+    const runningCloud = read.partitions!.filter(run => run.state === 'running'
+      && run.computer?.hostRef.kind === 'cloud')
+    expect(runningCloud).toHaveLength(4)
+    expect(runningCloud.every(run => run.suite !== 'integration')).toBe(true)
+    await f.finishGate(admitted.ticketId)
+    const finished = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
+    expect(finished.group?.state).toBe('passed')
+    const launched = f.started.flatMap(item => item.request.operation === 'start'
+      && item.request.suite === 'integration' ? item.request.files ?? [] : [])
+    expect(launched.sort()).toEqual([...f.files].sort())
   } finally { await f.close() }
 })
 
