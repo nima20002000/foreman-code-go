@@ -292,7 +292,7 @@ export class PodmanJobSupervisor<Execution extends RuntimeJobExecution = JobExec
     const end = this.timing ? await this.timing.deadlineMs() : Date.now() + execution.acceptedSpec.policy.executionTimeoutMs
     if (!this.watchdogs.has(execution.operationId)) {
       const timer = setTimeout(() => {
-        void (async () => { try { await this.timing?.markTimeout() } finally { await stop() } })().catch(ignoreError('jobs', 'stop container after timeout'))
+        void (async () => { try { await this.timing?.markTimeout() } finally { await stop() } })().catch(ignoreError('jobs', 'stop container after timeout', { operationId: execution.operationId }))
       }, Math.max(0, end - Date.now()))
       timer.unref(); this.watchdogs.set(execution.operationId, timer)
     }
@@ -407,7 +407,7 @@ export class PodmanJobSupervisor<Execution extends RuntimeJobExecution = JobExec
       if (waited.exitCode !== 0 || Number(waited.stdout.trim()) !== row.State.ExitCode) throw new Error('Container wait evidence mismatch.')
       return { exitCode: row.State.ExitCode, signal: null, ...(await this.timing?.isTimedOut() ? { timedOut: true } : {}), ...(row.State.Error ? { execError: 'Container command launch failed.' } : {}) }
     })
-    void exited.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+    void exited.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
     try {
       const entryDeadline=Math.min(end,Date.now()+plan.execution.acceptedSpec.policy.preparationTimeoutMs)
       while(true){

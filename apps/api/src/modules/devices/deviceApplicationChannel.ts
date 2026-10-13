@@ -161,7 +161,7 @@ export class DeviceApplicationChannel {
     options.signal?.addEventListener('abort', cancel, { once: true })
     const timer = setTimeout(() => { abort.abort(); reject(new DeviceApplicationError('timeout')); this.trySendCancel(id) }, Math.min(900_000, Math.max(1, options.timeoutMs ?? 30_000)))
     // Observe rejection immediately while the request bytes are still uploading.
-    void result.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+    void result.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
     try {
       await this.sendPacket(id, namespace, extension.version, 'request', payload, options.bytes, abort.signal, { stop })
       return await result

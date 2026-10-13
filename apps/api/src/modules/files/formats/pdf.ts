@@ -82,7 +82,7 @@ export async function readPdf(bytes: Uint8Array): Promise<DocumentText> {
     throw error;
   } finally {
     // Parent owns process teardown too; an internal destroy error must not hide the actual parse state.
-    await task.destroy().catch(ignoreError('lifecycle', 'task.destroy', { module: 'pdf' }));
+    await task.destroy().catch(ignoreError('lifecycle', 'task.destroy', { module: 'files/formats/pdf' }));
   }
 }
 export async function editPdf(bytes: Uint8Array, edit: DocumentEdit): Promise<Uint8Array> {

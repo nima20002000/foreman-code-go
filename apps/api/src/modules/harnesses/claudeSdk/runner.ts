@@ -262,7 +262,7 @@ export function createClaudeSdkRunner(input: {
     }
     const externalAbort = () => {
       abort.abort(options.signal?.reason)
-      void session.close().catch(ignoreError('harness', 'session.close', { module: 'runner' }))
+      void session.close().catch(ignoreError('harness', 'session.close', { module: 'harnesses/claudeSdk/runner' }))
     }
     const session: ClaudeSdkSession = {
       output: outputQueue,

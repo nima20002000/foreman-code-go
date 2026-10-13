@@ -126,7 +126,7 @@ export function createInstalledNativeOutputs(ports: InstalledNativeOutputProvide
         },
         close: async () => {
           stopped = true; stop.abort(unavailable())
-          await opening?.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+          await opening?.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
           await registry?.withdraw()
         },
       }

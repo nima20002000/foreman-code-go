@@ -74,11 +74,21 @@ const positive = (value: string | undefined, fallback: number) => {
 export async function pruneLogFiles(file: string, count: number, days: number, now = Date.now()): Promise<string[]> {
   const directory = dirname(file), base = basename(file).replace(/\.log$/, '')
   const own = new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.\\d+\\.log$`)
-  const names = (await readdir(directory).catch(() => [] as string[])).filter((name) => own.test(name))
+  const names = (await readdir(directory).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      componentLogger('lifecycle').warn({ operation: 'read log directory', file: basename(file), err: error },
+        'Could not read rotated logs')
+    }
+    return [] as string[]
+  })).filter((name) => own.test(name))
   const files = (await Promise.all(names.map(async (name) => ({ name, modified: (await stat(join(directory, name))).mtimeMs }))))
     .sort((a, b) => b.modified - a.modified)
   const expired = files.filter((item, index) => index >= count || now - item.modified > days * 86_400_000).map((item) => item.name)
-  await Promise.allSettled(expired.map((name) => unlink(join(directory, name))))
+  await Promise.allSettled(expired.map((name) => unlink(join(directory, name)).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    componentLogger('lifecycle').warn({ operation: 'remove rotated log', file: name, err: error },
+      'Could not remove rotated log')
+  })))
   return expired
 }
 

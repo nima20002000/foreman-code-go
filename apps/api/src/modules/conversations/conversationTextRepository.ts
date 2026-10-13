@@ -117,5 +117,5 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
     const revision = (await client.query<{ revision: string }>('update operator_conversations set revision=revision+1,updated_at=now() where id=$1 returning revision::text', [conversationId])).rows[0]!.revision
     await client.query('commit')
     return { status: 'committed', revision, messageRevision: written.revision }
-  } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'conversationTextRepository' })); throw error } finally { client.release() }
+  } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'conversations/conversationTextRepository', conversationId, requestId })); throw error } finally { client.release() }
 }

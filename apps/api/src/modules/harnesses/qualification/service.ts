@@ -253,7 +253,7 @@ export class HarnessQualificationService {
       void task.finally(() => {
         if (this.flights.get(harness) === entry) this.flights.delete(harness)
         this.onFinished?.(harness)
-      }).catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+      }).catch(ignoreError('harness', 'finish harness qualification', { harness, version }))
     }
     return {
       harness, version, binarySha256: sha256, suiteRevision: suite.revision, profile: QUALIFICATION_TARGET_PROFILE[harness],
@@ -346,7 +346,7 @@ export class HarnessQualificationService {
       if (error instanceof AggregateError) throw error
     } finally {
       // A failed removal remains owned and is retried by join().
-      if (workDirectory && !uncertain && !owned.size) await this.removeDirectory(workDirectory).catch(ignoreError('harness', 'removeDirectory', { module: 'service' }))
+      if (workDirectory && !uncertain && !owned.size) await this.removeDirectory(workDirectory).catch(ignoreError('harness', 'remove qualification directory', { harness, version }))
     }
   }
 }

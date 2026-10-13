@@ -116,7 +116,7 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
       signal.throwIfAborted()
       await client.query('commit')
     } catch (error) {
-      await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'operatorChatAuthority' }))
+      await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'conversations/operatorChatAuthority', conversationId, principalId }))
       throw error
     } finally { client.release() }
     let removeRoute: (() => Promise<void>) | undefined

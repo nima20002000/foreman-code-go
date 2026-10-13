@@ -60,7 +60,7 @@ export class PostgresReferenceReadRepository implements ReferenceReadRepository 
       await client.query('commit')
       return 'ready'
     } catch (error) {
-      await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'agentProvenance' }))
+      await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'files/references/agentProvenance', runId: context.runId, executionId: context.executionId, fileId: ref.fileId }))
       throw error
     } finally { client.release() }
   }

@@ -93,7 +93,7 @@ export class HarnessDirectoryBrowser {
           throw new DomainError('DIRECTORY_RENAME_FAILED', 'The folder could not be renamed.', 422)
         }
         try { await rename(current, target) } catch {
-          await rmdir(target).catch(ignoreError('harness', 'rmdir', { module: 'directoryBrowser' }))
+          await rmdir(target).catch(ignoreError('harness', 'remove rename reservation', { commandId: accepted.commandId, creationCommandId: accepted.creationCommandId }))
           throw new DomainError('DIRECTORY_RENAME_FAILED', 'The folder could not be renamed.', 422)
         }
         return { path: target, name: accepted.name, creationCommandId: accepted.creationCommandId }

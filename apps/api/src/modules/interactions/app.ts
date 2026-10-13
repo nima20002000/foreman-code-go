@@ -87,7 +87,7 @@ export class PostgresAppInteractionService implements AppInteractionService {
     const access = await this.toolAccess(principal)
     const enabled = (tool: string) => access.tools.includes(tool as never)
     const worktree = await this.worktree(principal)
-    const sharedFiles = await this.sharedFiles(principal).catch(ignoreError('engine', 'load shared files for interaction view'))
+    const sharedFiles = await this.sharedFiles(principal).catch(ignoreError('engine', 'load shared files for interaction view', { principalId: principal.id }))
     return {
       ...(worktree ? { worktree } : {}),
       ...(sharedFiles ? { sharedFiles } : {}),
@@ -295,7 +295,7 @@ export class PostgresAppInteractionService implements AppInteractionService {
       const denied = error instanceof DomainError && ['INTERACTION_NOT_FOUND', 'INTERACTION_ACCESS_DENIED'].includes(error.code)
       if (denied) {
         await this.commands.recordDenied(principal.id, 'mcp', 'interaction_respond', 'interaction:requested')
-          .catch(ignoreError('engine', 'record denied interaction response audit'))
+          .catch(ignoreError('engine', 'record denied interaction response audit', { principalId: principal.id }))
       } else {
         await this.commands.recordAudit(principal.id, 'mcp', 'interaction_respond',
           `interaction:${current?.id ?? parsed.interactionId}`, 'failed', {

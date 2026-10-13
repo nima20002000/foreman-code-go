@@ -161,7 +161,7 @@ export class CodexStdioTransport {
       }, signal)
       await this.write({ method: 'initialized' })
     } catch (error) {
-      await this.close().catch(ignoreError('harness', 'close', { module: 'codexStdioTransport' }))
+      await this.close().catch(ignoreError('harness', 'close Codex transport', { connectionId: this.requestPrefix }))
       throw error
     }
   }
@@ -557,6 +557,6 @@ export class CodexStdioTransport {
   private fail(error: Error): void {
     if (!this.stop(error)) return
     try { this.onDisconnect(error) } catch { /* ignore: observer failure cannot escape this process boundary. */ }
-    void this.close().catch(ignoreError('harness', 'close', { module: 'codexStdioTransport' }))
+    void this.close().catch(ignoreError('harness', 'close Codex transport', { connectionId: this.requestPrefix }))
   }
 }

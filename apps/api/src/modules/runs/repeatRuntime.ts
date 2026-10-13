@@ -607,7 +607,7 @@ export async function executeRepeatRuntime(input: {
     failed.abort(error)
     const closing = cancel()
     let drained = false
-    try { await drain(true); drained = true } catch (drainError) { logIgnoredError('engine', 'drain repeat work after failure', drainError) } // Uncertain cleanup is retained.
+    try { await drain(true); drained = true } catch (drainError) { logIgnoredError('engine', 'drain repeat work after failure', drainError, { runId: input.runId }) } // Uncertain cleanup is retained.
     const clean = await closing
     input.owner.assertOwned()
     await input.lifecycle.settleRun(current.stopRequested, input.signal.aborted && !current.stopRequested)

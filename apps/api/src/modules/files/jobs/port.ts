@@ -53,7 +53,7 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
       await sql.query('begin')
       const result = await operation(sql)
       await sql.query('commit'); return result
-    } catch (error) { await sql.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'port' })); throw error }
+    } catch (error) { await sql.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'files/jobs/port' })); throw error }
     finally { sql.release() }
   }
   private artifact(link: JobPublicationLink, value: FileWithRevision): JobArtifact {

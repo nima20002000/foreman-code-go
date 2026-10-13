@@ -36,6 +36,6 @@ export class JobOwnership {
   }
   async release():Promise<void> {
     if(this.released)return;this.released=true
-    try {await this.connection.close()} finally {await this.client.end().catch(ignoreError('jobs', 'client.end', { module: 'ownership' }));this.client.removeListener('error',this.handleLoss);this.client.removeListener('end',this.handleLoss)}
+    try {await this.connection.close()} finally {await this.client.end().catch(ignoreError('jobs', 'close job ownership client', { executionId: this.executionId }));this.client.removeListener('error',this.handleLoss);this.client.removeListener('end',this.handleLoss)}
   }
 }

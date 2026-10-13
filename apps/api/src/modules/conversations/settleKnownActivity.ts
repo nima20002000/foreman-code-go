@@ -51,5 +51,5 @@ export async function settleKnownActivity(pool: pg.Pool, conversationId: string,
     await client.query('commit')
     return { activity: OperatorActivitySchema.parse({ ...parsed, sequence: row.sequence, revision: Number(applied.revision) }),
       scopeRevision: scope.revision, itemRevision: applied.revision }
-  } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'settleKnownActivity' })); throw error } finally { client.release() }
+  } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'conversations/settleKnownActivity', conversationId, requestId })); throw error } finally { client.release() }
 }

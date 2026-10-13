@@ -144,7 +144,7 @@ export class RemoteJobExecutionHost {
       try { await this.ports.journal.jobUncertain(intent.operationId, 'Original OCI execution requires reconciliation') } catch (journalError) { logIgnoredError('jobs', 'record uncertain job execution', journalError, { operationId: intent.operationId }) } // A faulted journal already blocks new entry.
     })
     this.tasks.set(intent.operationId, { controller, task })
-    void task.finally(() => { if (this.tasks.get(intent.operationId)?.task === task) this.tasks.delete(intent.operationId) }).catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+    void task.finally(() => { if (this.tasks.get(intent.operationId)?.task === task) this.tasks.delete(intent.operationId) }).catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
     return this.ports.journal.jobStatus(intent.operationId)
   }
   private async execute(intent: RemoteJobDispatchIntent, execution: JobExecutionRecord, signal: AbortSignal) {

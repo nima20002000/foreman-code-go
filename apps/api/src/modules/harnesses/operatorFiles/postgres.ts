@@ -190,6 +190,6 @@ export async function adoptOperatorFilePublications(pool: pg.Pool, context: File
         [context.messageId, JSON.stringify(outputs)])
     }
     await client.query('commit')
-  } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'postgres' })); throw error }
+  } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'harnesses/operatorFiles/postgres' })); throw error }
   finally { client.release() }
 }

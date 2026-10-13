@@ -201,9 +201,9 @@ export class OperatorChatService {
 
   private control<T>(id: string, operation: () => Promise<T>): Promise<T> {
     const previous = this.controls.get(id) ?? Promise.resolve()
-    const next = previous.catch(() => { /* ignore: a failed earlier operation is reported to its own caller; this queue only orders the next one */ }).then(operation)
+    const next = previous.catch(() => { /* ignore: the previous caller receives its failure; the queue must still admit the next operation. */ }).then(operation)
     this.controls.set(id, next)
-    void next.finally(() => { if (this.controls.get(id) === next) this.controls.delete(id) }).catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+    void next.finally(() => { if (this.controls.get(id) === next) this.controls.delete(id) }).catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
     return next
   }
   private assertOpen(): void {
@@ -265,7 +265,7 @@ export class OperatorChatService {
     })()
     this.setupCheck = { configurationId, promise: check }
     this.accepting.add(check)
-    void check.finally(() => { if (this.setupCheck?.promise === check) this.setupCheck = undefined; this.accepting.delete(check) }).catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+    void check.finally(() => { if (this.setupCheck?.promise === check) this.setupCheck = undefined; this.accepting.delete(check) }).catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
     return check
   }
   async assertAccess(id: string, principal: ManagementPrincipal, action: ManagementAction = 'operator_chat:read', includeDeleted = false) {
@@ -552,7 +552,7 @@ export class OperatorChatService {
       const promise = this.runTurn(targetId, input, accepted, row.owner_principal_id!, taskController.signal)
         .finally(() => { if (this.tasks.get(targetId)?.promise === promise) this.tasks.delete(targetId) })
       this.tasks.set(targetId, { requestId: input.requestId, controller: taskController, promise })
-      void promise.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ }) // Persistence failure leaves the accepted identity fenced.
+      void promise.catch(ignoreError('harness', 'finish operator turn', { chatId: targetId, requestId: input.requestId }))
       return begun
     })
     return fork || childReceipt ? this.control(childId, admit) : admit()
@@ -1127,7 +1127,7 @@ export class OperatorChatService {
     })
     // Preserve the ordinary immediate-cancel response, but never wait behind
     // an approval delivery just to acknowledge durable cancellation intent.
-    void delivery.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+    void delivery.catch(ignoreError('harness', 'deliver operator cancellation', { chatId: id, requestId }))
     if (!responseInFlight) await delivery
     return this.get(id, principal)
   }

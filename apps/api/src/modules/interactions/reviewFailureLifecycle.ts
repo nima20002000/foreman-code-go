@@ -79,7 +79,7 @@ async function requestLegacyReviewFailureStop(pool: pg.Pool, reference: FailureR
     await client.query('commit')
     return run.id
   } catch (error) {
-    await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'reviewFailureLifecycle' }))
+    await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'interactions/reviewFailureLifecycle' }))
     throw error
   } finally { client.release() }
 }

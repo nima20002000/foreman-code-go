@@ -412,7 +412,7 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
         })(), { objectMode: false, highWaterMark: POLICY.maxChunkBytes })
         this.readers.add(stream)
         stream.once('close', () => {
-          void closeReader().catch(ignoreError('byte-transfer', 'closeReader', { module: 'service' }))
+          void closeReader().catch(ignoreError('byte-transfer', 'close verified transfer reader', { transferId: receipt.transferId }))
         })
         return stream
       } catch (error) { await handle.close(); throw error }

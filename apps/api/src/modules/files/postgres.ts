@@ -84,7 +84,7 @@ function allocation(row: AllocationRow): FileAllocation {
 async function transaction<T>(client: pg.PoolClient, work: () => Promise<T>): Promise<T> {
   await client.query('begin')
   try { const value = await work(); await client.query('commit'); return value }
-  catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'postgres' })); throw error }
+  catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'files/postgres' })); throw error }
 }
 
 /** Bytes live only in FileByteStorage. This repository also serves FIL-04/05/36. */

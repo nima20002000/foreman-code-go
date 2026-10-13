@@ -3,6 +3,7 @@ import { ArtifactEdgeBindingSchema, type ArtifactEdgeBinding } from '@foreman-co
 import { DomainError } from '../../errors.js'
 import type { FileQuery } from '../repository.js'
 import type { ArtifactEdgeRepository } from './edges.js'
+import { ignoreError } from '../../diagnostics/ignoredError.js'
 
 export class PostgresArtifactEdgeRepository implements ArtifactEdgeRepository {
   constructor(private readonly pool: pg.Pool) {}
@@ -14,7 +15,10 @@ export class PostgresArtifactEdgeRepository implements ArtifactEdgeRepository {
       const result = await operation(client)
       await client.query('commit')
       return result
-    } catch (error) { await client.query('rollback').catch(() => {}); throw error }
+    } catch (error) {
+      await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'files/distributed/postgres' }))
+      throw error
+    }
     finally { client.release() }
   }
   private async live(query: FileQuery, b: ArtifactEdgeBinding): Promise<void> {

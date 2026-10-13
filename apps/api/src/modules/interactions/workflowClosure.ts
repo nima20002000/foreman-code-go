@@ -226,7 +226,7 @@ export class PostgresWorkflowClosureStore implements WorkflowClosureStore {
       await client.query('commit')
       return value
     } catch (error) {
-      await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'workflowClosure' }))
+      await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'interactions/workflowClosure', executionId: execution.id, runId: execution.runId }))
       throw error
     } finally { client.release() }
   }

@@ -127,7 +127,7 @@ export class RunOwnership {
       try {
         await this.graphConnection?.close()
       } finally {
-        await this.rawClient.end().catch(ignoreError('engine', 'rawClient.end', { module: 'ownership' }))
+        await this.rawClient.end().catch(ignoreError('engine', 'close run ownership client', { runId: this.runId }))
         this.rawClient.removeListener('error', this.handleLoss)
         this.rawClient.removeListener('end', this.handleLoss)
         finished()

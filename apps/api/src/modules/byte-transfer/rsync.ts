@@ -113,8 +113,18 @@ export class NodeRsyncExecutor implements RsyncExecutor {
           return
         }
         if (!child.pid) return
-        try { process.kill(-child.pid, 'SIGTERM') } catch (error) { logIgnoredError('byte-transfer', 'terminate rsync process group', error, {}, ['ESRCH']) }
-        killTimer ??= setTimeout(() => { try { process.kill(-child.pid!, 'SIGKILL') } catch (error) { logIgnoredError('byte-transfer', 'kill rsync process group', error, {}, ['ESRCH']) } }, 1000)
+        try {
+          process.kill(-child.pid, 'SIGTERM')
+        } catch (error) {
+          logIgnoredError('byte-transfer', 'terminate rsync process group', error, { pid: child.pid }, ['ESRCH'])
+        }
+        killTimer ??= setTimeout(() => {
+          try {
+            process.kill(-child.pid!, 'SIGKILL')
+          } catch (error) {
+            logIgnoredError('byte-transfer', 'kill rsync process group', error, { pid: child.pid }, ['ESRCH'])
+          }
+        }, 1000)
       }
       const collect = (chunk: Buffer) => {
         if (Buffer.byteLength(output) + chunk.length > 16384) { overflow = true; stop() }

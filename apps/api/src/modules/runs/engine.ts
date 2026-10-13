@@ -138,7 +138,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
       return this.consumeActiveApproval(owner, claim, ids, this.activeRuns.get(runId)!.signal)
     }
     const previous = this.resumeTasks.get(runId) ?? this.activeTasks.get(runId) ?? Promise.resolve()
-    const task = previous.catch(() => { /* ignore: a failed earlier operation is reported to its own caller; this queue only orders the next one */ }).then(() =>
+    const task = previous.catch(() => { /* ignore: the previous caller receives its failure; the queue must still admit the next operation. */ }).then(() =>
       this.trackRun(runId, (controller) => this.drive(runId, controller, ids, claim)),
     ).finally(() => { if (this.resumeTasks.get(runId) === task) this.resumeTasks.delete(runId) })
     this.resumeTasks.set(runId, task)
@@ -347,7 +347,7 @@ export class LangGraphWorkflowEngine implements WorkflowOrchestrator {
         } else await this.nativeExecutions.finishRun(owner.runId)
         await this.finishOwned(owner)
       } catch (error) {
-        await this.runs.finishCleanup(owner.runId, true, owner).catch(ignoreError('engine', 'runs.finishCleanup', { module: 'engine' }))
+        await this.runs.finishCleanup(owner.runId, true, owner).catch(ignoreError('engine', 'record failed run cleanup', { runId: owner.runId }))
         throw error
       }
     } finally { finished() }

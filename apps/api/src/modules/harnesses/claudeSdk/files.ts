@@ -60,7 +60,7 @@ export class ClaudeFileBridge {
   }
   async close(): Promise<void> {
     this.closed = true
-    if (this.issue) await this.issue.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+    if (this.issue) await this.issue.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
     if (this.token) await this.service.sessions.revoke(this.token)
     this.token = undefined
     this.issue = undefined

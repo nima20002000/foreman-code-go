@@ -258,7 +258,7 @@ export class CloudCi {
     const key = `${mirror}\n${commit}\n${defaultBranch ?? ''}\n${baseCommit ?? ''}`
     let published = this.published.get(key)
     if (!published) {
-      const queued = (mirrorPushes.get(mirror) ?? Promise.resolve()).catch(() => { /* ignore: a failed earlier operation is reported to its own caller; this queue only orders the next one */ })
+      const queued = (mirrorPushes.get(mirror) ?? Promise.resolve()).catch(() => { /* ignore: the previous caller receives its failure; the queue must still admit the next operation. */ })
       const pushed = queued.then(() => this.push(repository, mirror, commit, defaultBranch, baseCommit))
       published = pushed
       mirrorPushes.set(mirror, pushed)

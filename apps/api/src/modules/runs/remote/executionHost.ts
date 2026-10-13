@@ -497,7 +497,13 @@ export class RemoteExecutionHost {
           },
         }, resident.controller.signal)) { void event }
         await this.settle(resident, correlationId)
-      } catch { try { await this.ports.journal.uncertain(operationId, 'Native turn acknowledgment or closure unavailable') } catch (journalError) { logIgnoredError('engine', 'record uncertain native turn', journalError, { operationId }) } // A faulted journal already denies entry and requires recovery. }
+      } catch {
+        try {
+          await this.ports.journal.uncertain(operationId, 'Native turn acknowledgment or closure unavailable')
+        } catch (journalError) {
+          logIgnoredError('engine', 'record uncertain native turn', journalError, { operationId })
+        }
+      }
     })()
     return this.ports.journal.status(operationId)
   }

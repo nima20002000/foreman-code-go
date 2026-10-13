@@ -108,7 +108,7 @@ async function command(binary: string, args: string[], directory: string, enviro
   if (timeoutMs !== undefined) signal = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
   let rejectFailure: (error: unknown) => void = () => undefined
   const failure = new Promise<never>((_resolve, reject) => { rejectFailure = reject })
-  void failure.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+  void failure.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
   const owned = spawnOwnedStdioProcess({ binary, args, cwd: directory, environment,
     ...(ownership ? { recovery: ownership.recovery } : {}),
     onError: () => rejectFailure(unavailable()),

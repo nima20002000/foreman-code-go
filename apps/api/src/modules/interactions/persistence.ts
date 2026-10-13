@@ -46,7 +46,7 @@ export async function interactionTransaction<T>(pool: pg.Pool, work: (client: pg
     await client.query('commit')
     return result
   } catch (error) {
-    await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'persistence' }))
+    await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'interactions/persistence' }))
     throw error
   } finally { client.release() }
 }

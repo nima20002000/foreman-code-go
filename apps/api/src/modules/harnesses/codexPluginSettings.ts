@@ -140,7 +140,7 @@ export class CodexPluginSettingsService {
         JSON.stringify({ commandId: row.command_id, requestedBy: row.principal_id, status: result.status,
           nativeFailure: result.nativeFailure ?? null, nativeWriteRepeated: false }), source])
       await client.query('commit')
-    } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'codexPluginSettings' })); throw error }
+    } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'harnesses/codexPluginSettings' })); throw error }
   }
   change(principal: ManagementPrincipal, raw: CodexPluginChangeInput, source: 'http' | 'mcp' = 'http') {
     return this.afterWrite(this.changeNative(principal, raw, source))

@@ -421,7 +421,7 @@ export class NativeProcessRegistry {
     const attempt = timeRuntimeOperation('harness', 'process.close',
       () => this.closeRegistered(scope, id, signal), { ownerId: scope.owner })
     closing.set(identity, attempt)
-    void attempt.finally(() => { if (closing.get(identity) === attempt) closing.delete(identity) }).catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+    void attempt.finally(() => { if (closing.get(identity) === attempt) closing.delete(identity) }).catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
     return attempt
   }
 

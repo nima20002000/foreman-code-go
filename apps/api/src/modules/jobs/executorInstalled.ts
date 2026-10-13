@@ -242,7 +242,7 @@ async function installedSupervisor(input: InstalledJobExecutionHostInput, raw: J
     async attach(argv) {
       const { child, id } = await spawn(argv, 'attachment')
       // Physical closure is also joined by ownership.launchHelpers below.
-      child.once('close', () => { void closeLaunch(id).catch(ignoreError('jobs', 'closeLaunch', { module: 'executorInstalled' })) })
+      child.once('close', () => { void closeLaunch(id).catch(ignoreError('jobs', 'close job helper launch', { launchId: id })) })
       return child
     },
     async run(argv, timeoutMs = 30000) {

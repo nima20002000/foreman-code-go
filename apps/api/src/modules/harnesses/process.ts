@@ -130,7 +130,7 @@ async function runOwnedProcess<T>(
     child.on('error', reject)
   })
   // Observe errors immediately, including errors before any reader is started.
-  void processError.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+  void processError.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
 
   let shutdown: Promise<void> | undefined
   const stop = (): Promise<void> => {
@@ -174,7 +174,7 @@ async function runOwnedProcess<T>(
     }
     return shutdown
   }
-  const abort = () => { void stop().catch(ignoreError('harness', 'stop', { module: 'process' })) }
+  const abort = () => { void stop().catch(ignoreError('harness', 'stop native process', { pid: child.pid, agentId: options.expectedAgentId })) }
   ownedProcesses.set(child, stop)
   options.signal?.addEventListener('abort', abort, { once: true })
   // A root that exits normally must not leave descendants holding our pipes open.
@@ -196,7 +196,7 @@ async function runOwnedProcess<T>(
   // Attach handlers to every concurrent task in the same turn that creates it.
   const tasks = Promise.all([readers, input, closed])
   const result = Promise.race([tasks, processError])
-  void result.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+  void result.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
   try {
     options.onSpawn?.(child)
     if (options.signal?.aborted) abort()
@@ -415,10 +415,10 @@ export function spawnOwnedStdioProcess(options: {
   ownedProcesses.set(child, close)
   const failed = (error: Error) => {
     try { options.onError(error) } catch { /* ignore: a lifecycle observer cannot crash the API. */ }
-    finally { void close().catch(ignoreError('harness', 'close', { module: 'process' })) }
+    finally { void close().catch(ignoreError('harness', 'close native process', { pid: child.pid })) }
   }
   child.on('error', failed)
   for (const stream of [child.stdin, child.stdout, child.stderr]) stream.on('error', failed)
-  child.once('exit', () => { void close().catch(ignoreError('harness', 'close', { module: 'process' })) })
+  child.once('exit', () => { void close().catch(ignoreError('harness', 'close native process', { pid: child.pid })) })
   return { child, closed, close }
 }

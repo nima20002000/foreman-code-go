@@ -157,7 +157,7 @@ export function postgresCodexChatFiles(pool: pg.Pool, files: () => TemporaryFile
           await client.query(`update operator_conversation_messages set record=jsonb_set(record,'{publicationRefs}',$2::jsonb)
             where id=$1`, [row.message_id, JSON.stringify(output)])
           await client.query('commit')
-        } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'chatAdmission' })); throw error }
+        } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'harnesses/codexFiles/chatAdmission' })); throw error }
         finally { client.release() }
       },
     }

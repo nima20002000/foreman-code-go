@@ -538,7 +538,7 @@ export class RsyncWriterOwnership {
           return work(controller.signal)
         })
         pending.add(task)
-        void task.finally(() => pending.delete(task)).catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+        void task.finally(() => pending.delete(task)).catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
         return task
       },
       attach: handle => {

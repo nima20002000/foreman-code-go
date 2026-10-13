@@ -51,7 +51,7 @@ export async function refreshMainJobRuntime(input: { stateDirectory: string; inp
   try {
     await writePrivate(temporary, Buffer.from(`${JSON.stringify(configuration)}\n`), true)
     await rename(temporary, output)
-  } finally { await unlink(temporary).catch(ignoreError('lifecycle', 'unlink', { module: 'refreshMainJobRuntime' })) }
+  } finally { await unlink(temporary).catch(ignoreError('lifecycle', 'unlink', { module: 'cli/refreshMainJobRuntime' }, ['ENOENT'])) }
   const directory = await open(input.stateDirectory, 'r')
   try { await directory.sync() } finally { await directory.close() }
   return { configurationPath: output, previousConfigurationPath: retained }

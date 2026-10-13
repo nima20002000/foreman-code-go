@@ -114,7 +114,7 @@ export class PostgresOperatorActivityRepository {
       await client.query('commit')
       return { activity: OperatorActivitySchema.parse({ ...(applied.record as object), sequence: applied.sequence, revision: Number(applied.revision) }), revision: Number(revision), scopeRevision: revision, itemRevision: applied.revision }
     } catch (error) {
-      await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'operatorActivityRepository' }))
+      await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'conversations/operatorActivityRepository', conversationId, requestId }))
       throw error
     } finally { client.release() }
   }

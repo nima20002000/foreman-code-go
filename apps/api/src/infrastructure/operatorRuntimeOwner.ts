@@ -65,7 +65,7 @@ export class OperatorRuntimeOwner {
     this.closure ??= Promise.resolve().then(async () => {
       // A shutdown during connect must not leave a late-acquired lock behind.
       if (!this.acquisition) return
-      await this.acquisition.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+      await this.acquisition.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
       try {
         if (this.held) await this.client.query('select pg_advisory_unlock($1)', [710_014])
       } finally {

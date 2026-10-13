@@ -347,7 +347,7 @@ export class CodexFileTurn {
     if (this.#closeAttempt) return this.#closeAttempt
     this.#closing = true
     const attempt = (async () => {
-      await this.#activation?.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+      await this.#activation?.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
       if (this.#token) { await this.#dependencies.files.sessions.revoke(this.#token); this.#token = undefined }
       await Promise.allSettled([...this.#pending])
       await this.#dependencies.host.close()

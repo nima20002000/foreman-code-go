@@ -534,7 +534,7 @@ export class HostCiRunner {
     let meta = await this.readMeta(runId)
     const directory = this.runDirectory(runId)
     if (meta.state === 'running') {
-      const exit = await readFile(join(directory, 'exit'), 'utf8').catch(fallbackOnError(null, 'jobs', 'read CI exit status', {}, ['ENOENT']))
+      const exit = await readFile(join(directory, 'exit'), 'utf8').catch(fallbackOnError(null, 'jobs', 'read CI exit status', { runId }, ['ENOENT']))
       // A unit launched before atomic exit publication can expose an empty file mid-write.
       if (exit !== null && exit.trim() !== '') {
         const code = Number(exit.trim())
@@ -564,7 +564,7 @@ export class HostCiRunner {
       meta = { ...meta, cleaned: true }
       await this.writeMeta(meta)
     }
-    const log = await stat(join(directory, 'log')).catch(fallbackOnError(null, 'jobs', 'stat CI log', {}, ['ENOENT']))
+    const log = await stat(join(directory, 'log')).catch(fallbackOnError(null, 'jobs', 'stat CI log', { runId }, ['ENOENT']))
     const step = (await readFile(join(directory, 'step'), 'utf8').catch(() => '')).trim() || null
     return { runId, state: meta.state, step, exitCode: meta.exitCode, startedAt: meta.startedAt,
       finishedAt: meta.finishedAt, logBytes: log?.size ?? 0, message: meta.message }

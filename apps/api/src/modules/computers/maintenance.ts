@@ -167,7 +167,7 @@ export class ComputerMaintenance {
     const request = MaintenanceTaskStartSchema.parse(raw)
     const admission = this.admissions.then(() => this.admit(request, id))
     // A rejected request does not prevent a later independent command from being admitted.
-    this.admissions = admission.catch(() => { /* ignore: a failed earlier operation is reported to its own caller; this queue only orders the next one */ })
+    this.admissions = admission.catch(() => { /* ignore: the previous caller receives its failure; the queue must still admit the next operation. */ })
     return admission
   }
 
@@ -305,7 +305,7 @@ export class ComputerMaintenance {
       change(ledger)
       await this.ports.writePrivateText(this.ledgerPath(), `${JSON.stringify(ledger)}\n`)
     })
-    this.ledgerWrites = write.catch(() => { /* ignore: a failed earlier operation is reported to its own caller; this queue only orders the next one */ })
+    this.ledgerWrites = write.catch(() => { /* ignore: the previous caller receives its failure; the queue must still admit the next operation. */ })
     return write
   }
 

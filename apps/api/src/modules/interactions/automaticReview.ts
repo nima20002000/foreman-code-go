@@ -10,6 +10,7 @@ import { assertOrchestratorGraphAuthority } from './graphAuthority.js'
 import { DomainError } from '../errors.js'
 import { requestReviewFailureStop } from './reviewFailureLifecycle.js'
 import type { ApprovalExecutionCoordinator } from './execution.js'
+import { ignoreError, logIgnoredError } from '../diagnostics/ignoredError.js'
 
 /** Drives durable, explicitly assigned reviewers; never fabricates a board Agent or grants. */
 export class AutomaticReviewService {
@@ -53,12 +54,15 @@ export class AutomaticReviewService {
           const message = error instanceof DomainError ? error.code : 'REVIEW_SETUP_UNCERTAIN'
           if (this.lastErrors.get(interaction.id) === message) return
           this.lastErrors.set(interaction.id, message)
+          logIgnoredError('engine', 'schedule automatic review', error, {
+            interactionId: interaction.id, runId: interaction.runId,
+          })
           // A failed setup is not native terminal evidence. The authoritative
           // interaction remains pending; do not publish fabricated job facts.
 
         }).finally(() => this.tasks.delete(interaction.id))
         this.tasks.set(interaction.id, task)
-        void task.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+        void task.catch(ignoreError('engine', 'finish automatic review task', { interactionId: interaction.id }))
       }
     }
   }
@@ -82,7 +86,10 @@ export class AutomaticReviewService {
         if (this.closing) return
         // One unavailable native boundary must not starve other Runs' cleanup.
         try { await this.stopFailedJob(row.id) }
-        catch (error) { this.lastErrors.set(`failure:${row.id}`, error instanceof Error ? error.message : 'Review cleanup failed.') }
+        catch (error) {
+          this.lastErrors.set(`failure:${row.id}`, error instanceof Error ? error.message : 'Review cleanup failed.')
+          logIgnoredError('engine', 'stop failed review job', error, { reviewJobId: row.id })
+        }
       }
     }
   }

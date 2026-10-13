@@ -461,7 +461,7 @@ export class NativeHarnessFactories {
     for (const owned of this.versionDiagnostics) owned.controller.abort(new Error('Native diagnostics are shutting down.'))
     // Disposal aborts each real adapter's in-flight diagnostic requests. The
     // drain/dispose phase joins these same retained attempts and reports failures.
-    for (const manager of this.auxiliaries.keys()) void this.disposeAuxiliary(manager).catch(ignoreError('harness', 'disposeAuxiliary', { module: 'runtimeFactory' }))
+    for (const manager of this.auxiliaries.keys()) void this.disposeAuxiliary(manager).catch(ignoreError('harness', 'dispose auxiliary manager', { harness: manager.harness }))
   }
 
   admitAuxiliary(manager: NativeHarnessSessionManager): void {
