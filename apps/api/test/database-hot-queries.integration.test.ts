@@ -15,7 +15,43 @@ import { openRunGraphPublication } from '../src/modules/run-graph/publication.js
 import { openRepeatCanonicalPublicationLocked, publishRepeatRunStateLocked } from '../src/modules/run-graph/repeatPublication.js'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
-import { changeRunState, graphFixture, graphRpc, graphRpcValue, ownedGraph } from './eng04-graph-composition-fixture.js'
+import {
+  changeRunState, graphFixture, graphHeaders, graphRpc, graphRpcValue, graphUrl, ownedGraph,
+} from './eng04-graph-composition-fixture.js'
+
+function databaseBeforeHotQueryUpgrade() {
+  return currentDatabase({ beforeMigration: databaseHotQueriesMigration.version })
+}
+
+it('publishes owned run updates through authenticated reads before and after the hot query upgrade', async () => {
+  const db = await databaseBeforeHotQueryUpgrade()
+  try {
+    const fixture = await graphFixture(db, { form: 'single', qualifiedReads: true })
+    try {
+      const read = () => fixture.app.inject({
+        method: 'GET', url: graphUrl(fixture, 'current'), headers: graphHeaders(fixture.writer.token),
+      })
+      await changeRunState(db, fixture, 'running')
+      const before = await read()
+      expect(before.statusCode, before.body).toBe(200)
+      expect(before.json()).toMatchObject({ scope: fixture.scope, state: { run: { executionState: 'running' } } })
+
+      await applyApplicationMigrations(db.pool)
+      const upgraded = await read()
+      expect(upgraded.statusCode, upgraded.body).toBe(200)
+      expect(upgraded.json()).toEqual(before.json())
+
+      await changeRunState(db, fixture, 'waiting')
+      const after = await read()
+      expect(after.statusCode, after.body).toBe(200)
+      expect(after.json()).toMatchObject({ scope: fixture.scope, state: { run: { executionState: 'waiting' } } })
+    } finally {
+      await fixture.app.close()
+    }
+  } finally {
+    await db.close()
+  }
+}, 120_000)
 
 async function persistExecution(db: Awaited<ReturnType<typeof currentDatabase>>,
   fixture: Awaited<ReturnType<typeof graphFixture>>, executionId: string) {
@@ -55,7 +91,7 @@ async function persistExecution(db: Awaited<ReturnType<typeof currentDatabase>>,
 }
 
 it('upgrades hot query access while preserving native facts, CI revisions and authenticated reads', async () => {
-  const db = await currentDatabase({ beforeMigration: databaseHotQueriesMigration.version })
+  const db = await databaseBeforeHotQueryUpgrade()
   const fixture = await graphFixture(db, { form: 'single', qualifiedReads: true })
   const executionId = randomUUID()
   const computer: HostCiComputer = {
