@@ -138,16 +138,22 @@ it.each([false, true])('moves a systemd gate integration part to a free provider
     }
   })
 
-it('keeps a gate check queued while the build computer starts its own exclusive gate part', async () => {
+it.each(gateChecks)('keeps a gate $suite check queued while the build computer starts its own exclusive gate part', async check => {
   const records = queuedRuns(2).map((run, index) => CiRunRecordSchema.parse({ ...run, gate: true,
-    ...(index === 0 ? { suite: 'typecheck', part: 'typecheck-api', plannedHostKey: cloud.key }
-      : { plannedHostKey: host.key, integrationShards: 16, requiresBuildComputer: false }),
+    ...(index === 0 ? { ...check, plannedHostKey: cloud.key }
+      : { plannedHostKey: host.key, integrationShards: 16, requiresBuildComputer: false,
+        files: ['apps/api/test/workflow.integration.test.ts'] }),
     partition: null }))
   const f = fleet(records, [cloud, host], new Map(), new Set([cloud.key]))
   await f.service.dispatch()
   expect(f.started).toHaveLength(1)
-  expect(f.started[0]?.request).toMatchObject({ runId: records[1]!.id, suite: 'integration' })
+  expect(f.started[0]?.computer.key).toBe(host.key)
+  expect(f.started[0]?.request).toMatchObject({ operation: 'start', runId: records[1]!.id,
+    suite: 'integration', gate: true, scope: 'full', integrationShards: 16,
+    files: ['apps/api/test/workflow.integration.test.ts'] })
   expect(records[0]).toMatchObject({ state: 'queued', computer: null })
+  expect(records[1]).toMatchObject({ state: 'running', plannedHostKey: host.key,
+    computer: { hostRef: host.hostRef } })
 })
 
 it('does not start a gate check on a build computer with an occupied CI slot', async () => {
