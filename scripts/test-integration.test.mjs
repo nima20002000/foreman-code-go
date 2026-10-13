@@ -429,16 +429,17 @@ test('unknown or invalid resource measurements retain twelve without ignoring kn
   assert.equal(integrationShardPlan({}, { cpuCount: NaN, availableMemoryBytes: -1 }).shards, 12)
 })
 
-test('explicit shard requests must fit the computed resource cap', () => {
+test('explicit shard requests run at most at the computed resource cap', () => {
   for (const variable of ['GRAPHQL_INTEGRATION_SHARDS', 'FOREMAN_CODE_INTEGRATION_SHARDS']) {
     assert.equal(integrationShardPlan({ [variable]: '16' }, shardResources).shards, 16)
     const smaller = integrationShardPlan({ [variable]: '8' }, shardResources)
     assert.equal(smaller.shards, 8)
     assert.match(smaller.reason, /requested 8/)
-    for (const value of ['0', '-1', '1.5', 'NaN', 'Infinity', '17']) {
-      assert.throws(() => integrationShardPlan({ [variable]: value }, shardResources), /integer from 1 to 16/)
+    for (const value of ['0', '-1', '1.5', 'NaN', 'Infinity']) {
+      assert.throws(() => integrationShardPlan({ [variable]: value }, shardResources), /positive integer/)
     }
-    assert.throws(() => integrationShardPlan({ [variable]: '13' }), /integer from 1 to 12/)
+    assert.equal(integrationShardPlan({ [variable]: '17' }, shardResources).shards, 16)
+    assert.equal(integrationShardPlan({ [variable]: '13' }).shards, 12)
   }
 })
 
@@ -747,8 +748,8 @@ test('computed capacity preserves Job reservations and qualification checks', ()
   const plan = integrationShardPlan(job, { ...shardResources, cpuCount: 8 })
   assert.equal(plan.shards, 8)
   assert.match(plan.reason, /CI reservation 16, qualification 16/)
-  assert.throws(() => integrationShardPlan({ ...job, GRAPHQL_INTEGRATION_SHARDS: '9' },
-    { ...shardResources, cpuCount: 8 }), /integer from 1 to 8/)
+  assert.equal(integrationShardPlan({ ...job, GRAPHQL_INTEGRATION_SHARDS: '9' },
+    { ...shardResources, cpuCount: 8 }).shards, 8)
   assert.equal(integrationShardPlan({ ...job, FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS: '4' },
     shardResources).shards, 4)
   assert.throws(() => integrationShardPlan({ ...job, FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS: '4',

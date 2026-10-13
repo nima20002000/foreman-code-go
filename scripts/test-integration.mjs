@@ -260,10 +260,16 @@ export function integrationShardLimit(value, maximum = 64) {
   return limit
 }
 
+/** A request above what this computer can hold right now runs at the measured limit instead of failing. */
+function requestedShards(value, maximum) {
+  const requested = Number(value)
+  if (!Number.isSafeInteger(requested) || requested < 1) throw new Error('Integration shards must be a positive integer')
+  return Math.min(requested, maximum)
+}
+
 export function reservedIntegrationShards(environment, maximum = 12) {
   if (!environment.FOREMAN_CODE_VERIFICATION_ROOT) {
-    // A request above what this computer can hold right now runs at the measured limit instead of failing.
-    return Math.min(integrationShardLimit(readProductEnvironment(environment, 'INTEGRATION_SHARDS') ?? String(maximum)), maximum)
+    return requestedShards(readProductEnvironment(environment, 'INTEGRATION_SHARDS') ?? String(maximum), maximum)
   }
   if (!environment.FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS
     || !environment.FOREMAN_CODE_VERIFICATION_MAX_INTEGRATION_SHARDS) {
@@ -271,8 +277,8 @@ export function reservedIntegrationShards(environment, maximum = 12) {
   }
   const reserved = integrationShardLimit(environment.FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS)
   const qualified = integrationShardLimit(environment.FOREMAN_CODE_VERIFICATION_MAX_INTEGRATION_SHARDS)
-  const requested = Math.min(integrationShardLimit(readProductEnvironment(environment, 'INTEGRATION_SHARDS')
-    ?? String(Math.min(reserved, maximum))), maximum)
+  const requested = requestedShards(readProductEnvironment(environment, 'INTEGRATION_SHARDS')
+    ?? String(Math.min(reserved, maximum)), maximum)
   if (requested > reserved || requested > qualified) {
     throw new Error('Integration shards exceed the accepted reservation or suite qualification')
   }
