@@ -16,7 +16,7 @@ import type { OperatorRequestContext } from '../types.js'
 
 const readAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
 const writeAnnotations = { ...readAnnotations, readOnlyHint: false }
-/** Provider account grants are target-specific: discovery needs only the unscoped actions. */
+/** Manage credentials include these actions; resource scope is checked by the service. */
 const canRead = (context: OperatorRequestContext) => hasAction(context.principal, 'provider_accounts:read')
 const canManage = (context: OperatorRequestContext) => canRead(context) && hasAction(context.principal, 'provider_accounts:manage')
 const readRequires = [['provider_accounts:read', 'global']] as const
@@ -28,7 +28,7 @@ export const providerAccountTools = [
     requires: readRequires,
     enabled: s => !!s.providerAccounts,
     discoverable: canRead,
-    description: 'Read a target-identified cursor page with fresh ordered observations and independently revisioned defaults. Requires provider_accounts:read on the target.',
+    description: 'Read a target-identified cursor page with fresh ordered observations and independently revisioned defaults. Included in the manage preset; requires provider_accounts:read on the target.',
     inputSchema: ProviderAccountListInputSchema, outputSchema: ProviderAccountPageSchema, annotations: readAnnotations,
     run: (context, input) => context.services.providerAccounts!.page(context.principal, input),
   }),

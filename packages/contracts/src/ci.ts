@@ -13,8 +13,8 @@ const CiRunInputObjectSchema = z.object({
     + 'never falls back to a different computer.'),
   gate: z.boolean().optional().describe('Operator/orchestrator only. With suite=integration and scope=full, '
     + 'queue typecheck, lint, unit and duration-balanced integration as one gate. Gates run one at a time.'),
-  priority: CiPrioritySchema.optional().describe('Defaults to normal. High requires Operator role or an explicit '
-    + 'jobs:prioritize grant. Commits changing only CI infrastructure are automatically high priority.'),
+  priority: CiPrioritySchema.optional().describe('Defaults to normal. Callers authorized for ci can request high priority. '
+    + 'Commits changing only CI infrastructure are automatically high priority.'),
   suite: CiSuiteSchema.describe('Repositories with the CI suite hook queue unit, lint, typecheck and build parts; '
     + 'other repositories run their package script for the suite as one job. Install runs one job.'),
   commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/).optional(),

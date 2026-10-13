@@ -32,14 +32,13 @@ async function main() {
       process.stdout.write(`Revoked ${principalId}\n`)
       return
     }
-    const { name, audience, days, workspaceId, computerMetrics } = input
+    const { name, audience, days, workspaceId } = input
     const grant: ManagementGrant = {
       actions: credentialActions(input.access),
       scope: workspaceId ? { workspaceIds: [workspaceId] } : {},
     }
     const issued = await access.issue({
-      // Computer reads need their own unscoped grant, even beside a workspace-scoped one.
-      name, audience, grants: computerMetrics ? [grant, { actions: ['devices:metrics:read'], scope: {} }] : [grant], expiresAt: new Date(Date.now() + days * 86_400_000),
+      name, audience, grants: [grant], expiresAt: new Date(Date.now() + days * 86_400_000),
     })
     process.stdout.write(`Principal: ${issued.principal.id}\nAudience: ${issued.principal.audience}\nExpires: ${issued.principal.expiresAt}\nToken (shown once): ${issued.token}\n`)
   } finally {

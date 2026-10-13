@@ -43,11 +43,11 @@ export const GRAPHQL_AGENT_TOOLS = {
     description: "Run install, typecheck, lint, unit, build or integration on a build computer. "
       + "Tests the requested commit, the Agent's current files published to GitHub, or the default branch head. "
       + "Scope defaults to affected. Omit files for runner selection against the workspace default branch merge-base; "
-      + "Priority defaults to normal; high requires Operator role or jobs:prioritize. CI-only commits are automatically high. "
+      + "Priority defaults to normal; callers authorized for ci can request high. CI-only commits are automatically high. "
       + "caller files remain supported with an explicit commit. Missing selectors, shared infrastructure changes and "
       + "the default branch head run the full suite and report the reason. Scope full always runs everything. "
       + "Retry the same commandId and payload. Integration automatically sizes duration-balanced parts to free CI slots; "
-      + "partitions caps the count (2–64). Requires jobs:cancel with the CI start grants. Newer descendant commits supersede active work of the same "
+      + "partitions caps the count (2–64). Requires the ci action. Newer descendant commits supersede active work of the same "
       + "suite and requester on the same branch or Agent execution. Main and noSupersede=true tickets are kept.",
     roles: ["operator", "orchestrator", "coder"],
   },
