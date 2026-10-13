@@ -179,6 +179,7 @@ async function fixture(items: HarnessExecution[], cold = false) {
   const captures = createWorkflowNativeCaptureChannel()
   const closed = new Map<string, NonNullable<Awaited<ReturnType<WorkflowClosureStore['read']>>>>()
   const closures: WorkflowClosureStore = {
+    async recoverDetached() { return undefined },
     async begin(execution) { closed.delete(execution.id); return '1' },
     async record(execution, session, durableGeneration, check) { check(); const proof = { execution, session, durableGeneration }; closed.set(execution.id, proof); return proof },
     async read(execution) { return closed.get(execution.id) },
