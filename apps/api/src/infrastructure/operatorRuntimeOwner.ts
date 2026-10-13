@@ -1,9 +1,11 @@
 import pg from 'pg'
 import { DomainError } from '../modules/errors.js'
+import { retryStartupDatabase } from './startupDatabase.js'
 
 /** One API/native owner per database. A separate connection never consumes an application-pool slot. */
 export class OperatorRuntimeOwner {
-  private readonly client: pg.Client
+  private client: pg.Client
+  private readonly startup = new AbortController()
   private held = false
   private closing = false
   private loss: Error | undefined
@@ -11,18 +13,23 @@ export class OperatorRuntimeOwner {
   private closure: Promise<void> | undefined
   private ending: Promise<void> | undefined
 
-  constructor(connectionString: string, onLost: (error: Error) => void) {
-    this.client = new pg.Client({ connectionString, connectionTimeoutMillis: 5_000 })
+  constructor(private readonly connectionString: string, private readonly onLost: (error: Error) => void) {
+    this.client = this.createClient()
+  }
+
+  private createClient(): pg.Client {
+    const client = new pg.Client({ connectionString: this.connectionString, connectionTimeoutMillis: 5_000 })
     const lost = (error: Error) => {
-      if (this.ending || this.loss) return
+      if (client !== this.client || this.ending || this.loss) return
       this.loss = error
       if (this.held) {
         this.held = false
-        onLost(error)
+        this.onLost(error)
       }
     }
-    this.client.on('error', lost)
-    this.client.on('end', () => lost(new Error('The native runtime ownership connection ended.')))
+    client.on('error', lost)
+    client.on('end', () => lost(new Error('The native runtime ownership connection ended.')))
+    return client
   }
 
   /** Passive authority for local telemetry; no lock acquisition or owner mutation. */
@@ -38,7 +45,13 @@ export class OperatorRuntimeOwner {
   acquire(): Promise<void> {
     if (this.closing) return Promise.reject(new Error('Native runtime ownership is closing.'))
     if (this.loss) return Promise.reject(this.loss)
-    this.acquisition ??= Promise.resolve().then(async () => {
+    this.acquisition ??= Promise.resolve().then(() => retryStartupDatabase(async () => {
+      if (this.ending) {
+        await this.ending
+        this.ending = undefined
+        this.loss = undefined
+        this.client = this.createClient()
+      }
       try {
         await this.client.connect()
         if (this.closing) throw new Error('Native runtime ownership is closing.')
@@ -51,10 +64,14 @@ export class OperatorRuntimeOwner {
       } catch (error) {
         // No protected work is admitted until acquisition succeeds.
         try { await this.end() } catch (cleanupError) {
-          throw new AggregateError([error, cleanupError], 'Native runtime ownership acquisition cleanup failed.', { cause: cleanupError })
+          throw new AggregateError([error, cleanupError], 'Native runtime ownership acquisition cleanup failed.')
         }
         throw error
       }
+    }, { signal: this.startup.signal })).catch(error => {
+      // A late lock result still belongs to close(), which waits before unlocking it.
+      if (this.closing && this.held && this.startup.signal.aborted) return
+      throw error
     })
     return this.acquisition
   }
@@ -62,10 +79,12 @@ export class OperatorRuntimeOwner {
   /** Call only AFTER successful protected cleanup, never in a cleanup finally block. */
   close(): Promise<void> {
     this.closing = true
+    this.startup.abort(new Error('Native runtime ownership is closing.'))
     this.closure ??= Promise.resolve().then(async () => {
       // A shutdown during connect must not leave a late-acquired lock behind.
       if (!this.acquisition) return
-      await this.acquisition.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
+      // The acquisition caller reports startup errors; release only waits for its connection cleanup.
+      await this.acquisition.then(() => undefined, () => undefined)
       try {
         if (this.held) await this.client.query('select pg_advisory_unlock($1)', [710_014])
       } finally {

@@ -1,5 +1,5 @@
 import type { EventEmitter } from 'node:events'
-import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 
 import { OperatorRuntimeOwner } from '../src/infrastructure/operatorRuntimeOwner.js'
 import { deferred } from './helpers/deferred.js'
@@ -20,6 +20,12 @@ vi.mock('pg', async () => {
   } } }
 })
 beforeEach(() => { state.drivers.length = 0 })
+afterEach(() => { vi.useRealTimers() })
+function gate() {
+  let resolve!: () => void
+  const promise = new Promise<void>((done) => { resolve = done })
+  return { promise, resolve }
+}
 function fixture() {
   const lost = vi.fn()
   const owner = new OperatorRuntimeOwner('postgresql://fixture/fixture', lost)
@@ -27,6 +33,58 @@ function fixture() {
 }
 
 describe('runtime-owner connection lifetime', () => {
+  it('retries an initial connection timeout with a fresh client before admitting native work', async () => {
+    vi.useFakeTimers()
+    const { owner, driver, lost } = fixture()
+    driver.connect.mockRejectedValueOnce(new Error('Connection terminated due to connection timeout'))
+    const acquisition = owner.acquire().catch(error => error)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(await acquisition).toBeUndefined()
+    expect(owner.active).toBe(true)
+    expect(state.drivers).toHaveLength(2)
+    expect(driver.end).toHaveBeenCalledOnce()
+    expect(state.drivers[1]!.connect).toHaveBeenCalledOnce()
+    expect(lost).not.toHaveBeenCalled()
+    await owner.close()
+  })
+
+  it('cancels initial connection retry on close without acquiring another owner connection', async () => {
+    vi.useFakeTimers()
+    const { owner, driver, lost } = fixture()
+    driver.connect.mockRejectedValueOnce(new Error('Connection terminated due to connection timeout'))
+    const acquisition = owner.acquire().catch(error => error)
+    await vi.advanceTimersByTimeAsync(0)
+    await owner.close()
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(await acquisition).toBeInstanceOf(Error)
+    expect(owner.active).toBe(false)
+    expect(state.drivers).toHaveLength(1)
+    expect(driver.end).toHaveBeenCalledOnce()
+    expect(lost).not.toHaveBeenCalled()
+  })
+
+  it('does not replace the owner client when authentication is permanently invalid', async () => {
+    const { owner, driver, lost } = fixture()
+    const failure = Object.assign(new Error('password authentication failed'), { code: '28P01' })
+    driver.connect.mockRejectedValueOnce(failure)
+    await expect(owner.acquire()).rejects.toBe(failure)
+    expect(state.drivers).toHaveLength(1)
+    expect(driver.end).toHaveBeenCalledOnce()
+    expect(lost).not.toHaveBeenCalled()
+    await owner.close()
+  })
+
+  it('publishes acquisition before a synchronous connection callback can reenter it', async () => {
+    const { owner, driver } = fixture()
+    let reentered: Promise<void> | undefined
+    driver.connect.mockImplementationOnce(async () => { reentered = owner.acquire() })
+    const acquisition = owner.acquire()
+    await acquisition
+    expect(reentered).toBe(acquisition)
+    expect(driver.connect).toHaveBeenCalledOnce()
+    await owner.close()
+  })
+
   it('does not connect just to close an uninitialized owner', async () => {
     const { owner, driver } = fixture()
     await owner.close()
@@ -82,6 +140,7 @@ describe('runtime-owner connection lifetime', () => {
       driver.emit('error', new Error('duplicate loss'))
       expect(lost).toHaveBeenCalledTimes(1)
       await expect(owner.acquire()).rejects.toBeInstanceOf(Error)
+      expect(state.drivers).toHaveLength(1)
       await owner.close()
       expect(lost).toHaveBeenCalledTimes(1)
     })

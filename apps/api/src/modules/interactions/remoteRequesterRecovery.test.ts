@@ -1,7 +1,8 @@
-import { beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import {
   DurableInteractionSchema,
   HarnessExecutionSchema,
+  ReviewJobSchema,
   type PendingNativeInteraction,
 } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
@@ -12,6 +13,8 @@ import { openWorkflowLifecycleLocked } from '../runs/repeatLifecycle.js'
 import { repeatDigest, repeatExecutionIdentity } from '../runs/repeatResolution.js'
 import { nativeLanes } from '../../../test/helpers/nativeLanes.js'
 import { ApprovalExecutionCoordinator } from './execution.js'
+import { createWorkflowNativeCaptureChannel } from './workflowNativeCapture.js'
+import type { RepeatNativeObservationStore } from './repeatObservation.js'
 import { assertSavedPendingApprovalOriginalLocked } from './nativeApprovalProof.js'
 import { readDetachedWorkflowSession, readRemoteWorkflowContinuation } from './workflowClosure.js'
 
@@ -30,15 +33,17 @@ vi.mock('../runs/repeatLifecycle.js', async importOriginal => ({
 }))
 
 beforeEach(() => vi.resetAllMocks())
+afterEach(() => vi.useRealTimers())
 
-async function recoverRequester(detached: boolean) {
+async function recoverRequester(detached: boolean, state: 'waiting' | 'running' = 'waiting',
+  options: { observeWithoutCleanup?: boolean } = {}) {
   const base = makeCurrentWorkflowFixture('requester-recovery', 'approval')
   base.run.executionState = 'waiting'
   const configuration = base.configurations[1]!
-  const execution = HarnessExecutionSchema.parse({
+  let execution = HarnessExecutionSchema.parse({
     id: 'requester-execution', runId: base.run.id, workflowNodeId: base.version.definition.nodes[1]!.id,
     agentId: configuration.agentId, agentConfigurationVersionId: configuration.id,
-    attempt: 1, state: 'waiting', createdAt: base.createdAt, input: {},
+    attempt: 1, state, createdAt: base.createdAt, input: {},
     nativeSessionId: 'requester-session', workingDirectory: '/project', runtimeDirectory: '/runtime',
   })
   const session = { harness: 'codex' as const, providerVersion: 'synthetic', nativeSessionId: execution.nativeSessionId! }
@@ -81,42 +86,156 @@ async function recoverRequester(detached: boolean) {
     oneShotConnection: () => ({ transaction: async (work: (sql: unknown) => Promise<unknown>) => work({}) }),
   } as unknown as RunOwnership
   const acquireOwnership = vi.fn(async (): Promise<RunOwnership | undefined> => undefined)
+  const requestCleanup = vi.fn(async () => {})
   const attach = vi.fn(async () => session)
+  const create = vi.fn(async () => { throw new Error('A saved remote session cannot be replaced') })
+  const startTurn = vi.fn(() => { throw new Error('A saved remote turn cannot be replayed') })
   const manager = {
-    harness: 'codex', attachSession: attach, reconcile: async () => history,
+    harness: 'codex', attachSession: attach, createSession: create, startTurn, reconcile: async () => history,
     originalApplicationAccess: async () => ({ token: 'synthetic-token' }),
     closeForRestart: async () => {},
   }
   type Args = ConstructorParameters<typeof ApprovalExecutionCoordinator>
-  const coordination = nativeLanes()
+  const review = ReviewJobSchema.parse({
+    id: 'original-review-job', interactionId: interaction.id, reviewerAgentId: base.configurations[0]!.agentId,
+    attempt: 1, state: 'pending', provider: session.harness, nativeSessionId: 'reviewer-session',
+    correlationId: 'original-review-turn', createdAt: base.createdAt, updatedAt: base.createdAt,
+  })
+  const coordination = Object.assign(nativeLanes(), { findReviewJob: async () => review })
+  const captures = createWorkflowNativeCaptureChannel()
+  const restore = vi.fn(async () => ({ principalId: continuation.principalId,
+    expiresAt: new Date(Date.now() + 300_000).toISOString(),
+    environment: { agentId: execution.agentId, variables: {} } }))
+  const begin = vi.fn(async () => {
+    continuation.generation = '2'
+    continuation.detached = false
+    return continuation.generation
+  })
+  const beginWait = vi.fn(async () => {})
+  let resident = false
   const coordinator = new ApprovalExecutionCoordinator({
     getExecution: async () => execution, getExecutionConfiguration: async () => configuration,
     getRepeatVersion: async () => base.version, get: async () => base.run,
     getRepeatSnapshot: async () => ({ run: base.run, stopRequested: false, cleanupPending: false }),
-    async *executionPages() { yield [execution] }, acquireOwnership,
-  } as unknown as Args[0], { coordination } as Args[1], {} as Args[2], {
-    resolve: () => ({ manager, processState: 'needs_start', markResident() {} }),
+    async *executionPages() { yield [execution] }, acquireOwnership, requestCleanup,
+    updateExecution: async (next: typeof execution) => { execution = next },
+  } as unknown as Args[0], {
+    coordination, getForExecution: async () => undefined, getNativeRequest: async () => interaction,
+    assertOrchestratorConnection: async () => ({ orchestratorNodeId: base.version.definition.nodes[0]!.id }),
+  } as unknown as Args[1], {
+    ensure: async () => {}, resume: async () => {}, remaining: async () => 60_000,
+    assertActive: async () => {}, beginWait,
+  } as unknown as Args[2], {
+    resolve: () => ({ manager, get processState() { return resident ? 'resident' : 'needs_start' },
+      markResident() { resident = true } }),
   } as unknown as Args[3], 60_000, {
-    restore: async () => ({ principalId: continuation.principalId,
-      environment: { agentId: execution.agentId, variables: {} } }),
+    restore,
   } as unknown as Args[5], undefined, {
-    begin: async () => {
-      continuation.generation = '2'
-      continuation.detached = false
-      return continuation.generation
-    },
+    begin,
     recordDetached: async () => {},
-  } as unknown as Args[7], undefined, undefined, undefined, undefined, undefined,
+  } as unknown as Args[7], undefined, captures.capture, undefined, undefined, undefined,
   async context => ({ ...context, acceptedPlacement: { hostRef: { kind: 'device' } } as
     NonNullable<typeof context.acceptedPlacement> }))
   const stopSharing = coordinator.shareRunOwner(owner)
   try {
-    expect(await coordinator.requestColdRunCleanup(owner, [interaction])).toBe(false)
+    if (!options.observeWithoutCleanup) {
+      expect(await coordinator.requestColdRunCleanup(owner, state === 'running' ? [] : [interaction])).toBe(false)
+      expect(requestCleanup).not.toHaveBeenCalled()
+    }
   } finally {
     stopSharing()
   }
-  return { coordinator, interaction, owner, acquireOwnership, attach, releaseRetention, coordination }
+  const observeOriginal = () => coordinator.observeExact({
+    execution, owner, workflowId: base.run.workflowId, graphThreadId: base.run.id,
+    approval: base.run.approval, signal: new AbortController().signal,
+    request: { executionId: execution.id, runId: execution.runId, workspaceId: base.run.workspaceId,
+      workflowNodeId: execution.workflowNodeId, configuration, workingDirectory: execution.workingDirectory!,
+      runtimeDirectory: execution.runtimeDirectory!, input: execution.input },
+    store: {
+      readExecution: async () => ({ execution, input: execution.input, inputDigest: repeatDigest(execution.input),
+        accepted: false, ref: { nodeId: execution.workflowNodeId, occurrence: null }, slotId: 'original-slot' }),
+      assertExecutionAdmission: async () => {}, assertNativeBoundary: async () => {}, exactSession: async () => session,
+    } as unknown as RepeatNativeObservationStore,
+  })
+  return { coordinator, interaction, owner, acquireOwnership, attach, releaseRetention, coordination,
+    observeOriginal, begin, restore, continuation, create, startTurn, beginWait, requestCleanup }
 }
+
+it('keeps a live remote turn without a graceful detachment receipt after Main loses its owner', async () => {
+  const f = await recoverRequester(false, 'running')
+  try {
+    expect(f.attach).not.toHaveBeenCalled()
+    expect(readRemoteWorkflowContinuation).toHaveBeenCalledWith(f.owner, expect.objectContaining({ state: 'running' }))
+  } finally {
+    await f.coordinator.closeForRestart()
+  }
+})
+
+it('observes the original running remote lifetime without reserving another generation or replaying its turn', async () => {
+  const f = await recoverRequester(false, 'running', { observeWithoutCleanup: true })
+  try {
+    expect(await f.observeOriginal()).toMatchObject({ state: 'waiting', execution: { nativeSessionId: 'requester-session' } })
+    expect(f.begin).not.toHaveBeenCalled()
+    expect(f.continuation.generation).toBe('1')
+    expect(f.restore).toHaveBeenCalledOnce()
+    expect(f.attach).toHaveBeenCalledOnce()
+    expect(f.create).not.toHaveBeenCalled()
+    expect(f.startTurn).not.toHaveBeenCalled()
+  } finally {
+    await f.coordinator.closeForRestart()
+  }
+})
+
+it.each(['running', 'waiting'] as const)(
+  'preserves the cold original %s remote session during another restart without allocating a manager', async state => {
+    const f = await recoverRequester(false, state, { observeWithoutCleanup: true })
+    try {
+      expect(await f.coordinator.preserveActiveForRestart(f.owner)).toBe(true)
+      expect(f.beginWait).toHaveBeenCalledWith(f.interaction.executionId)
+      expect(f.requestCleanup).not.toHaveBeenCalled()
+      expect(f.begin).not.toHaveBeenCalled()
+      expect(f.attach).not.toHaveBeenCalled()
+      expect(f.restore).not.toHaveBeenCalled()
+      expect(f.continuation.generation).toBe('1')
+      expect(f.create).not.toHaveBeenCalled()
+      expect(f.startTurn).not.toHaveBeenCalled()
+      expect(f.coordinator.passiveOwnedNativeSessions()).toEqual([])
+    } finally {
+      await f.coordinator.closeForRestart()
+    }
+  },
+)
+
+it('waits for the orphaned Main writer before observing the original remote turn', async () => {
+  vi.useFakeTimers()
+  const f = await recoverRequester(false, 'running', { observeWithoutCleanup: true })
+  await f.coordination.ensureLane({
+    id: 'original-remote-lane', harness: 'codex', nativeSessionId: f.interaction.nativeSessionId,
+    ownerAgentId: f.interaction.requestingAgentId, observedStatus: 'busy', connectionGeneration: 1,
+    correlationId: `execution:${f.interaction.executionId}`, currentTurnOrMessageId: 'original-turn',
+    leaseOwner: f.interaction.requestingAgentId, leaseToken: 'orphaned-main-writer',
+    leaseExpiresAt: new Date(Date.now() + 500).toISOString(), observedAt: f.interaction.createdAt, revision: 1,
+  })
+  let settled = false
+  const observed = f.observeOriginal().then(value => ({ value }), error => ({ error }))
+    .finally(() => { settled = true })
+  try {
+    await vi.advanceTimersByTimeAsync(499)
+    expect(settled).toBe(false)
+    expect(f.attach).not.toHaveBeenCalled()
+    expect(f.begin).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(await observed).toMatchObject({ value: { state: 'waiting' } })
+    expect(f.attach).toHaveBeenCalledOnce()
+    expect(f.restore).toHaveBeenCalledOnce()
+    expect(f.begin).not.toHaveBeenCalled()
+    expect(f.continuation.generation).toBe('1')
+    expect(f.create).not.toHaveBeenCalled()
+    expect(f.startTurn).not.toHaveBeenCalled()
+  } finally {
+    await f.coordinator.closeForRestart()
+  }
+})
 
 it.each([false, true])('keeps the requester recovery owner for delivery after engine sharing ends (detached=%s)',
   async detached => {

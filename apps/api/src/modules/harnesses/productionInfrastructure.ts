@@ -31,6 +31,7 @@ export interface AuxiliaryHarnessInfrastructure {
   command: typeof runCommand
 }
 export type ProductionHarnessInfrastructure = NativeFactoryInfrastructure & {
+  closeInfrastructure?: () => Promise<void>
   /** Concrete role-authorized profile admission and below-adapter replay client. */
   claudeProfiles?: AcceptedClaudeProfileAdmission<ClaudeProfileOwner>
   /** Genuine installed SDK/CLI pin producer; never derived from stored proof. */

@@ -10,8 +10,8 @@ import { readRemoteWorkflowContinuation, readWorkflowClosure } from './workflowC
 
 vi.mock('../placement/persistence.js', () => ({ readExecutionPlacement: vi.fn() }))
 
-function fixture(detached: boolean) {
-  const execution = recoveryExecution('waiting')
+function fixture(detached: boolean, executionState: 'running' | 'waiting' = 'waiting') {
+  const execution = recoveryExecution(executionState)
   const session = { harness: 'codex' as const, providerVersion: '1.0.0',
     nativeSessionId: execution.nativeSessionId! }
   const digest = 'a'.repeat(64)
@@ -68,8 +68,13 @@ describe('original remote workflow continuation', () => {
     }
   })
 
-  it.each([false, true])('keeps the original session, principal and generation after detached=%s', async detached => {
-    const f = fixture(detached)
+  it.each([
+    { state: 'running' as const, detached: false },
+    { state: 'running' as const, detached: true },
+    { state: 'waiting' as const, detached: false },
+    { state: 'waiting' as const, detached: true },
+  ])('keeps the original session, principal and generation when $state with detached=$detached', async ({ state, detached }) => {
+    const f = fixture(detached, state)
     try {
       expect(await readRemoteWorkflowContinuation(f.owner, f.execution)).toEqual({
         session: f.session, generation: '1', principalId: 'original-principal', detached,

@@ -28,6 +28,7 @@ export interface WorkflowClosureStore {
     assertCurrent: () => void): Promise<ClosedWorkflowSession>
   recordDetached(execution: HarnessExecution, session: NativeSessionReference, generation: string,
     assertCurrent: () => void): Promise<void>
+  recoverDetached?(owner: RunOwnership, execution: HarnessExecution): Promise<NativeSessionReference | undefined>
   read(execution: HarnessExecution): Promise<ClosedWorkflowSession | undefined>
   /** Positive disposal of the ORIGINAL manager, including a failed create or
    * credential preflight that never returned a session identity. Not absence. */
@@ -120,9 +121,19 @@ export async function readWorkflowClosure(sql: Sql, execution: HarnessExecution)
 /** Restart attachment requires the original manager's detachment of the saved session. */
 export async function readDetachedWorkflowSession(owner: RunOwnership,
   execution: HarnessExecution): Promise<NativeSessionReference | undefined> {
+  return (await readDetachedWorkflowLifetime(owner, execution))?.session
+}
+
+export async function readDetachedWorkflowLifetime(owner: RunOwnership, execution: HarnessExecution) {
   owner.assertOwned()
+  const lifetime = await readDetachableWorkflowLifetime(owner.oneShotConnection(), owner, execution)
+  owner.assertOwned()
+  return lifetime?.detached ? { generation: lifetime.generation, session: lifetime.session } : undefined
+}
+
+async function readDetachableWorkflowLifetime(sql: Sql, owner: RunOwnership, execution: HarnessExecution) {
   if (execution.runId !== owner.runId || !['running', 'waiting'].includes(execution.state)) return conflict()
-  const row = (await owner.oneShotConnection().query<ClosureRow & { record: unknown; reference: unknown }>(`select
+  const row = (await sql.query<ClosureRow & { record: unknown; reference: unknown }>(`select
     c.generation::text,c.execution_identity,c.expected_reference,c.closed_reference,
     c.closed_at is not null as closed,c.detached_at is not null as detached,c.detached_reference,c.closed_without_session,
     e.record,s.reference,
@@ -132,27 +143,28 @@ export async function readDetachedWorkflowSession(owner: RunOwnership,
     join execution_native_sessions s on s.execution_id=e.id
     join lateral (select * from execution_native_closures where execution_id=e.id
       order by generation desc limit 1) c on true
-    where e.id=$1 and r.id=$2 and r.execution_state in ('running','waiting')
+    where e.id=$1 and r.id=$2 and r.record->>'executionSemanticsVersion'='3'
+      and r.execution_state in ('running','waiting')
       and r.record->>'outcome'='pending' and r.stop_requested_at is null
       and s.workflow_finalized_at is null
       and not exists(select 1 from run_cleanup_intents intent where intent.run_id=r.id and intent.pending)`,
   [execution.id, owner.runId])).rows[0]
-  owner.assertOwned()
-  if (!row || !row.detached || row.closed || row.closed_without_session || row.prior_unclosed !== false) return undefined
+  if (!row || row.closed || row.closed_without_session || row.prior_unclosed !== false) return undefined
   const current = HarnessExecutionSchema.parse(row.record)
   const session = NativeSessionReferenceSchema.parse(row.reference)
   if (!['running', 'waiting'].includes(current.state) || !isDeepStrictEqual(current, execution)
     || !isDeepStrictEqual(row.execution_identity, executionIdentity(current))
     || current.nativeSessionId !== session.nativeSessionId
-    || !isDeepStrictEqual(row.detached_reference, session)
+    || row.detached && !isDeepStrictEqual(row.detached_reference, session)
     || row.expected_reference !== null && !isDeepStrictEqual(row.expected_reference, session)) return conflict()
-  return session
+  return { generation: row.generation, session, detached: row.detached }
 }
 
 /** A saved continuation still requires authenticated attachment and the original process credential. */
 export async function readRemoteWorkflowContinuation(owner: RunOwnership, execution: HarnessExecution) {
   owner.assertOwned()
-  if (execution.runId !== owner.runId || execution.state !== 'waiting' || !execution.nativeSessionId) return undefined
+  if (execution.runId !== owner.runId || !['running', 'waiting'].includes(execution.state)
+    || !execution.nativeSessionId) return undefined
   return owner.oneShotConnection().transaction(async sql => {
     const placement = await readExecutionPlacement(sql, execution.id)
     if (placement?.hostRef.kind !== 'device' || placement.payload.kind !== 'agent') return undefined
@@ -218,7 +230,45 @@ export async function readUnboundWorkflowClosure(sql: Sql, execution: HarnessExe
  * owner-fenced workflow finalization; old closure evidence is never overwritten.
  */
 export class PostgresWorkflowClosureStore implements WorkflowClosureStore {
-  constructor(private readonly pool: pg.Pool) {}
+  constructor(private readonly pool: pg.Pool,
+    private readonly hasRestartDetachment?: (executionId: string) => boolean) {}
+
+  async recoverDetached(owner: RunOwnership, execution: HarnessExecution): Promise<NativeSessionReference | undefined> {
+    const saved = await readDetachedWorkflowSession(owner, execution)
+    if (saved || !this.hasRestartDetachment?.(execution.id)) return saved
+    const recovered = await owner.oneShotConnection().transaction(async sql => {
+      const allowed = await sql.query(`select 1 from runs r where r.id=$1
+        and r.record->>'executionSemanticsVersion'='3' and r.execution_state in ('running','waiting')
+        and r.record->>'executionState'=r.execution_state and r.record->>'outcome'='pending'
+        and r.stop_requested_at is null
+        and not exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending)
+        for update`, [owner.runId])
+      if (allowed.rowCount !== 1) return false
+      await sql.query('select record from harness_executions where id=$1 and run_id=$2 for update',
+        [execution.id, owner.runId])
+      const lifetime = await readDetachableWorkflowLifetime(sql, owner, execution)
+      if (!lifetime) return false
+      const fence = await owner.readOneShotFence(sql)
+      owner.assertOwned()
+      if (!this.hasRestartDetachment?.(execution.id)) return false
+      if (!lifetime.detached) {
+        const changed = await sql.query(`update execution_native_closures
+          set detached_reference=$3::jsonb,detached_at=clock_timestamp()
+          where execution_id=$1 and generation=$2::bigint and closed_at is null and detached_at is null
+          returning generation`, [execution.id, lifetime.generation, JSON.stringify(lifetime.session)])
+        if (changed.rowCount !== 1) return conflict()
+      }
+      beforeGraphCommit(sql, async () => {
+        owner.assertOwned()
+        if (!isDeepStrictEqual(fence, await owner.readOneShotFence(sql))) return conflict()
+        const current = await readDetachableWorkflowLifetime(sql, owner, execution)
+        if (!current?.detached || current.generation !== lifetime.generation
+          || !isDeepStrictEqual(current.session, lifetime.session)) return conflict()
+      })
+      return true
+    })
+    return recovered ? readDetachedWorkflowSession(owner, execution) : undefined
+  }
 
   private async transaction<T>(execution: HarnessExecution, work: (sql: Sql, current: HarnessExecution) => Promise<T>): Promise<T> {
     return withTransaction(this.pool, async (client) => {

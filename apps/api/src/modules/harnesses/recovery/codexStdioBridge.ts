@@ -1,8 +1,9 @@
 /** Runs inside the authenticated native guardian, alongside its cgroup boundary. */
 export const CODEX_STDIO_BRIDGE_SOURCE = `
-function codexStdioBridge(native, environment, released) {
+function codexStdioBridge(native, environment, released, observerLost) {
   let connection
   let connectionId
+  let originalReleased=false
   let output=''
   let input=''
   const requests=new Map()
@@ -35,10 +36,12 @@ function codexStdioBridge(native, environment, released) {
       if(!native.stdin.write(line+'\\n'))source.pause()
     }
   }
-  process.stdin.on('data',chunk=>{if(!released())forward(chunk,process.stdin)})
+  process.stdin.on('data',chunk=>{
+    if(!originalReleased && !released())forward(chunk,process.stdin)
+  })
   native.stdin.on('drain',()=>{
     if(connection)connection.resume()
-    else if(!released())process.stdin.resume()
+    else if(!originalReleased && !released())process.stdin.resume()
   })
   native.stdin.on('error',stop)
   native.stdout.on('data',chunk=>{
@@ -66,13 +69,15 @@ function codexStdioBridge(native, environment, released) {
       }
       if(connection) {
         if(!connection.write(line+'\\n'))native.stdout.pause()
-      } else if(!released() && process.connected) {
+      } else if(!originalReleased && !released() && process.connected) {
         if(!process.stdout.write(line+'\\n'))native.stdout.pause()
       }
     }
   })
   process.stdout.on('drain',()=>native.stdout.resume())
-  native.stderr.on('data',chunk=>{if(!released() && process.connected)process.stderr.write(chunk)})
+  native.stderr.on('data',chunk=>{
+    if(!originalReleased && !released() && process.connected)process.stderr.write(chunk)
+  })
   return {
     environment:()=>variables,
     settings:()=>settings,
@@ -82,13 +87,14 @@ function codexStdioBridge(native, environment, released) {
       connectionId=id
       socket.setTimeout(0)
       socket.setEncoding('utf8')
-      socket.on('data',chunk=>forward(chunk,socket))
+      socket.on('data',chunk=>{if(connection===socket)forward(chunk,socket)})
       socket.on('drain',()=>native.stdout.resume())
       socket.on('close',()=>{
         if(connection===socket) {
           connection=undefined
           connectionId=undefined
-          // An unplanned observer loss retains ownership until explicit cleanup.
+          input=''
+          observerLost()
           native.stdout.resume()
         }
       })
@@ -97,6 +103,7 @@ function codexStdioBridge(native, environment, released) {
     },
     detach(id) {
       if(connection && connectionId!==id)throw new Error('Native observer identity changed')
+      originalReleased=true
       connection?.destroy()
       connection=undefined
       connectionId=undefined

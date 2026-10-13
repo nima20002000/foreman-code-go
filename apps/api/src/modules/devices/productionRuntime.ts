@@ -5,6 +5,7 @@ import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connec
 import type { RuntimeIdentity } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import { API_APPLICATION_VERSION } from '../../infrastructure/applicationVersion.js'
+import { retryStartupDatabase } from '../../infrastructure/startupDatabase.js'
 import { PostgresDeviceAccessService } from './access.js'
 import type { DeviceExtensionRegistration } from './deviceApplicationChannel.js'
 import { DeviceEndpoint } from './deviceEndpoint.js'
@@ -26,6 +27,7 @@ export interface DeviceDomainComposition {
 export class ProductionDeviceRuntime {
   private stopped = false
   private admissionStopped = false
+  private readonly startup = new AbortController()
   private initialization: Promise<void> | undefined
   private service: PostgresDeviceAccessService | undefined
   private endpoint: DeviceEndpoint | undefined
@@ -81,7 +83,10 @@ export class ProductionDeviceRuntime {
     return structuredClone(identity)
   }
   private async prepare(mainId: string): Promise<void> {
-    const identity = await loadOrCreateMainDeviceIdentity(this.pool, mainId)
+    const identity = await retryStartupDatabase(() => loadOrCreateMainDeviceIdentity(this.pool, mainId), {
+      signal: this.startup.signal,
+      check: () => this.assertAdmissionOpen(),
+    })
     this.assertAdmissionOpen()
     const presence = new ProductionDevicePresence(mainId)
     const access = new PostgresDeviceAccessService(this.pool, mainId, (deviceId, authorizationRevision) => this.endpoint?.revoke(deviceId, authorizationRevision), () => this.setupOptions())
@@ -168,6 +173,7 @@ export class ProductionDeviceRuntime {
   }
   stopAdmission(): void {
     this.admissionStopped = true
+    this.startup.abort(new DomainError('DEVICE_RUNTIME_CLOSING', 'Device access is shutting down.', 503))
     this.listenerStarted = false
     this.endpoint?.stopAdmission()
   }

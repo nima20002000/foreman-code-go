@@ -32,8 +32,19 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
     private readonly outputFor?: (nodeId: string, request: HarnessExecutionRequest) => NonNullable<NativeHistory['terminalResult']>['output']) {}
 
   connection(): NativeHarnessSessionManager {
+    const provider = this
     const sessions = new Map<string, NativeSessionReference>()
     let disposed = false
+    const ownsLiveSession = (session: NativeSessionReference) => {
+      const original = sessions.get(session.nativeSessionId)
+      return !disposed && original?.harness === session.harness
+        && original.providerVersion === session.providerVersion
+        && !this.closedSessions.has(session.nativeSessionId)
+    }
+    const close = async (session: NativeSessionReference) => {
+      await this.close(session)
+      sessions.delete(session.nativeSessionId)
+    }
     // Separate transport facades per execution; only external history is shared.
     return { harness: this.harness, capabilities: this.capabilities.bind(this), inspectMcp: this.inspectMcp.bind(this),
       createSession: async (input) => {
@@ -48,10 +59,20 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
         sessions.set(session.nativeSessionId, session)
         return session
       },
-      startTurn: this.startTurn.bind(this), pending: this.pending.bind(this), respond: this.respond.bind(this),
+      startTurn: async function* (session, input) {
+        if (!ownsLiveSession(session)) throw new Error('The checkpoint connection does not own a live session')
+        yield* provider.startTurn(session, input)
+      },
+      pending: this.pending.bind(this), respond: this.respond.bind(this),
       inspectResponseAvailability: this.inspectResponseAvailability.bind(this),
       history: this.history.bind(this), reconcile: this.reconcile.bind(this),
-      cancel: this.cancel.bind(this), close: this.close.bind(this), closeForRestart: this.close.bind(this),
+      canDetachForRestart: session => {
+        const request = this.requests.get(session.nativeSessionId)
+        return ownsLiveSession(session) && !!request
+          && !this.startedExecutions.includes(request.executionId)
+          && !this.terminals.has(session.nativeSessionId)
+      },
+      cancel: this.cancel.bind(this), close, closeForRestart: close,
       dispose: async () => {
         disposed = true
         for (const session of sessions.values()) await this.close(session)
@@ -191,11 +212,13 @@ export class CheckpointTestProvider implements NativeHarnessSessionManager {
   async reconcile(session: NativeSessionReference, correlationId: string): Promise<NativeHistory> {
     const retained = this.histories.get(correlationId)
     if (retained) return structuredClone(retained)
-    const history = await this.history(session), request = this.requests.get(session.nativeSessionId)
-    return { ...history, ...(request && correlationId === `execution:${request.executionId}` ? {
-      correlationId, nativeTurnId: `turn-${request.executionId}`,
+    const history = await this.history(session)
+    const request = this.requests.get(session.nativeSessionId)
+    if (!request || correlationId !== `execution:${request.executionId}`) return history
+    if (!this.startedExecutions.includes(request.executionId)) return { ...history, correlationId }
+    return { ...history, correlationId, nativeTurnId: `turn-${request.executionId}`,
       ...(history.terminalResult ? { terminalTurn: { correlationId, providerId: `turn-${request.executionId}`, result: history.terminalResult } } : {}),
-    } : {}) }
+    }
   }
   async cancel() { return true }
   async close(session: NativeSessionReference) {
