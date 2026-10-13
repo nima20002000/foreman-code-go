@@ -63,15 +63,20 @@ export class CiRuntimeWorker {
 
   private async restore(): Promise<CiRuntimeWorkerState> {
     const saved = await readCiRuntimeState(this.stateDirectory)
-    if (saved) {
+    const last = await this.ports.lastRefresh(this.stateDirectory)
+    const refreshedPreparation = saved?.state === 'prepared' && last
+      && last.operationId === saved.operationId && last.commit === saved.commit
+    if (saved && !refreshedPreparation) {
       this.state = saved
       return saved
     }
-    // A fresh Worker process: report how the refresh that restarted it ended.
-    const last = await this.ports.lastRefresh(this.stateDirectory)
-    return this.set({ operationId: last?.operationId ?? null, state: last && !last.ok ? 'failed' : 'idle',
+    // A matching refresh outcome supersedes the preparation that survived the restart.
+    const restored = this.set({ ...saved,
+      operationId: last?.operationId ?? null, state: last && !last.ok ? 'failed' : 'idle',
       commit: last?.commit ?? null, stage: last ? 'refresh' : null,
       prepared: null, message: last && !last.ok ? `The runtime refresh failed: ${last.log}` : null })
+    if (last) await writeCiRuntimeState(this.stateDirectory, restored)
+    return restored
   }
 
   private async prepare(request: Extract<CiRuntimeRequest, { operation: 'prepare' }>) {
