@@ -27,7 +27,7 @@ function move(x: number, initialPrompt = 'private executable edit') {
 beforeEach(() => {
   localStorage.clear(); sessionStorage.clear(); useGraphDraftStore.getState().clearAllDrafts()
   useGraphDraftStore.getState().installNextDraft(key, structuredClone(context))
-  vi.stubGlobal('navigator', { ...navigator, locks: { request: async (_key: string, work: () => Promise<unknown>) => work() } })
+  vi.stubGlobal('navigator', { ...navigator, locks: { request: async (_key: string, work: (() => Promise<unknown>) | LockOptions, claim?: (lock: { name: string }) => unknown) => typeof work === 'function' ? work() : claim!({ name: _key }) } })
   vi.spyOn(nextDraftApi, 'layoutBase').mockResolvedValue({ draft: context.draft,
     expectedAgentConfigurationVersionIds: pins, expectedLocationRevision: 1 })
 })

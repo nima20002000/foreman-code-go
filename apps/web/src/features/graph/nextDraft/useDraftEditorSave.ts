@@ -28,7 +28,7 @@ export function useDraftEditorSave({ draftKey, edit, editIntent, core, pendingSt
     canvas.current?.flush()
     useGraphDraftStore.getState().updateNextDraft(draftKey, (state) => ({ ...state, graph: discardMeaningfulChanges(state.context, state.graph),
       context: { ...state.context, draft: { ...(state.context.savedDraft ?? state.context.draft), layoutRevision: state.context.draft.layoutRevision } },
-      history: [], future: [], agentEdits: undefined, agentForms: undefined, agentHistory: undefined, error: undefined, validation: undefined }))
+      history: [], historyOffset: 0, future: [], agentEdits: undefined, agentForms: undefined, agentHistory: undefined, error: undefined, validation: undefined }))
     nextDraftApi.discardLocal(graph.workspaceId, graph.id)
     setLocalError(undefined); setMessage('Changes discarded.')
   }

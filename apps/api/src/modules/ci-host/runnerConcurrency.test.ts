@@ -56,6 +56,7 @@ async function computer(beforeGithub?: () => Promise<void>, cpuCount = 8, isolat
   await mkdir(directory, { recursive: true })
   const root = await mkdtemp(join(directory, 'host-ci-concurrency-'))
   const launches: { args: readonly string[] }[] = []
+  const activeUnits = new Set<string>()
   const ports: HostCiPorts = { cpus: cpuCount, memoryBytes: 16 * 2 ** 30, now: () => new Date(),
     run: async (file, args) => {
       if (file === 'gh') await beforeGithub?.()
@@ -70,8 +71,14 @@ async function computer(beforeGithub?: () => Promise<void>, cpuCount = 8, isolat
       }
       if (file === 'systemd-run') {
         launches.push({ args })
+        activeUnits.add(args.find(arg => arg.startsWith('--unit='))!.slice('--unit='.length))
       }
-      return { code: 0, stdout: file === 'systemctl' && args.includes('is-active') ? 'active\n' : '', stderr: '' }
+      if (file === 'systemctl') {
+        const unit = args.at(-1)!.replace('.service', '')
+        if (args.includes('stop')) activeUnits.delete(unit)
+        return { code: 0, stdout: activeUnits.has(unit) ? 'active\n' : 'inactive\n', stderr: '' }
+      }
+      return { code: 0, stdout: '', stderr: '' }
     } }
   const runner = new HostCiRunner(root, ports)
   fixtures.push({ root, runner })
@@ -101,7 +108,7 @@ describe('host CI runner concurrent starts', () => {
     try {
       await vi.waitFor(async () => {
         await expect(runner.handle({ operation: 'read', runId: request.runId, afterOffset: 0, maxBytes: 1 }))
-          .resolves.toMatchObject({ run: { state: 'canceled' } })
+          .resolves.toMatchObject({ run: { state: 'starting', message: expect.stringContaining('Cancellation requested') } })
       })
     } finally {
       checkout.release()

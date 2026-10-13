@@ -123,13 +123,21 @@ function stop() {
   try {process.kill(-process.pid,'SIGTERM')}catch(error){warnCleanup('terminate native process group',error,{},['ESRCH'])}
   setTimeout(killTree,1000)
 }
-function stopAfterNativeExit() {
+function flushOutput(stream) {
+  if(stream.destroyed || !stream.writable)return Promise.resolve()
+  return new Promise((resolve,reject)=>stream.write('',error=>error?reject(error):resolve()))
+}
+function stopAfterNativeExit(drained) {
   if(stopping)return // A cancellation already owns its graceful cleanup deadline.
   stopping=true
-  // The provider has exited and its receipt has flushed. No grace period is
-  // needed, but remaining descendants still require the same forced cleanup.
   if(!leader)process.exit(1)
-  killTree()
+  // Descendants retaining pipes and consumers that stop reading cannot hold cleanup forever.
+  const deadline=setTimeout(killTree,5000)
+  drained.then(()=>{clearTimeout(deadline);killTree()},error=>{
+    warnCleanup('drain native output',error)
+    clearTimeout(deadline)
+    killTree()
+  })
 }
 process.on('SIGTERM',stop)
 process.on('SIGINT',stop)
@@ -250,6 +258,9 @@ process.on('message',input=>{
         const native=spawn(config.binary,config.args,{cwd:config.cwd,env:environment,
           detached:false,stdio:[detachable&&!config.claudeSessionScope&&!config.reconnectableStdio?'ignore':'pipe',
             pipedOutput?'pipe':'inherit',pipedOutput?'pipe':'inherit'],windowsHide:true})
+        const outputClosed=pipedOutput?new Promise(resolve=>native.once('close',resolve)):Promise.resolve()
+        const finishNativeExit=()=>stopAfterNativeExit(outputClosed.then(()=>
+          Promise.all([flushOutput(process.stdout),flushOutput(process.stderr),bridge?.flush()])))
         // Forward request input after the provider record so fast replies cannot race owner capture.
         try{if(native.pid)provider=identity(native.pid)}
         catch(error){warnCleanup('read native process identity',error,{nativePid:native.pid},['ENOENT','ESRCH'])}
@@ -305,11 +316,10 @@ process.on('message',input=>{
           try {
             const outcome={format:1,operation:'native_exit',id:intent.id,owner:intent.owner,boot,
               guardian:{pid:live.pid,startTicks:live.startTicks},nativePid:native.pid,exitCode,exitSignal}
-            // Flush the exact native outcome before cleanup kills this guardian too.
-            // Pipe output stays unchanged; a disconnected manager cannot receive success.
-            if(process.connected)process.send(outcome,()=>stopAfterNativeExit())
-            else stopAfterNativeExit()
-          }catch{stopAfterNativeExit()}
+            // Persist/send the outcome immediately, then join the separate output relay.
+            if(process.connected)process.send(outcome,finishNativeExit)
+            else finishNativeExit()
+          }catch{finishNativeExit()}
         })
       }catch{stop()}
     })

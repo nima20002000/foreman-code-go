@@ -10,10 +10,11 @@ const statuses: Record<OperatorActivity['status'], string> = {
   pending: 'Waiting', running: 'Running', completed: '', failed: 'Failed', canceled: 'Stopped', unknown: 'Unconfirmed',
 }
 
-export function AgentChatActivity({ entry, onBrowse, onExpand }: {
+export function AgentChatActivity({ entry, onBrowse, onExpand, expandState }: {
   entry: Pick<OperatorActivity, 'kind' | 'title' | 'status' | 'input' | 'output' | 'truncated'>; onBrowse(): void
   /** Reads the full bounded details of a shortened entry. */
   onExpand?(): void
+  expandState?: { pending: boolean; failed: boolean }
 }) {
   const verb = verbs[entry.kind]
   const title = entry.title.toLowerCase().startsWith(`${verb.toLowerCase()} `)
@@ -30,8 +31,13 @@ export function AgentChatActivity({ entry, onBrowse, onExpand }: {
       {entry.input ? <CodeBlock code={entry.input} label="Input" /> : null}
       {entry.output ? <CodeBlock code={entry.output} label="Output" /> : null}
       {!entry.input && !entry.output ? <p>Details unavailable.</p> : null}
-      {entry.truncated ? onExpand ? <Button size="sm" variant="ghost" onClick={onExpand}>Show full details</Button>
-        : <small>Details shortened.</small> : null}
+      {entry.truncated && onExpand ? <Button size="sm" variant="ghost" onClick={onExpand}
+        disabled={expandState?.pending}>{expandState?.pending ? 'Loading full details…' : 'Show full details'}</Button>
+        : null}
+      {entry.truncated && !onExpand ? <small>Details shortened.</small> : null}
+      {expandState?.failed ? <p role="alert">Full details could not be loaded.{' '}
+        <Button size="sm" variant="ghost" onClick={onExpand}>Retry full details</Button>
+      </p> : null}
     </div>
   </details>
 }

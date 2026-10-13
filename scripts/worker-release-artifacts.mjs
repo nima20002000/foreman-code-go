@@ -88,8 +88,13 @@ export async function publishWorkerArtifactsToGitHub({ repository, directory, co
   }
 }
 
-export async function buildWorkerReleaseArtifacts({ repository, directory, productManifestPath, run, publish }) {
+export async function buildWorkerReleaseArtifacts({
+  repository, directory, productManifestPath, run, publish, expectedCommit,
+}) {
   const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository, encoding: 'utf8' }).trim()
+  if (expectedCommit !== undefined && commit !== expectedCommit) {
+    throw new Error('Worker source differs from the captured release commit.')
+  }
   const productManifest = committedBytes(repository, commit, 'package.json')
   const version = workerReleaseVersion(JSON.parse(productManifest))
   const targets = readCommittedWorkerTargets(repository, commit)

@@ -174,3 +174,23 @@ it('defers a completed Main node while its original native lifetime is still set
   await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
   expect(f.sources.confirmClosed).toHaveBeenCalledWith(f.record)
 })
+
+it.each([true, false])('visits a closed sessionless retained copy with reconciliation record=%s', async preparationClosed => {
+  const f = remoteSourceFixture()
+  delete f.execution.nativeSessionId
+  const pool = { query: async () => ({ rows: [{ record: f.record, execution: f.execution,
+    settlement_pending: false, already_closed: true, preparation_closed: preparationClosed }] }) } as unknown as Pick<pg.Pool, 'query'>
+  await closeCompletedWorkflowSources(pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).toHaveBeenCalledWith(f.record)
+  expect(f.report).not.toHaveBeenCalled()
+})
+
+it('keeps a sessionless copy when its preparation closure is still uncertain', async () => {
+  const f = remoteSourceFixture()
+  delete f.execution.nativeSessionId
+  const pool = { query: async () => ({ rows: [{ record: f.record, execution: f.execution,
+    settlement_pending: false, preparation_closed: false }] }) } as unknown as Pick<pg.Pool, 'query'>
+  await closeCompletedWorkflowSources(pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).not.toHaveBeenCalled()
+  expect(f.report).not.toHaveBeenCalled()
+})

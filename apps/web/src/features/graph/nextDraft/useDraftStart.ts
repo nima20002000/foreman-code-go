@@ -1,6 +1,6 @@
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useLocalHumanAccessQuery } from '../../../shared/api/settingsExperience'
+import { readLocalHumanAccess, settingsExperienceKeys, useLocalHumanAccessQuery } from '../../../shared/api/settingsExperience'
 import { assertSession, sessionGeneration } from '../../../shared/api/sessionBoundary'
 import { canUseBoardAction } from '../../workflow-board/permissions'
 import { boardRunListKey } from '../../workflow-board/keys'
@@ -9,6 +9,7 @@ import { boardStartPins, readBoardStartPreflight, sameBoardStartPins, currentBoa
 import { boardStartClient, type BoardStartInput } from '../../workflow-board/startClient'
 import { acknowledgeBoardStart, readBoardStart, rejectBoardStart, reserveBoardStart, useBoardStartOutbox } from '../../workflow-board/startOutbox'
 import { scopeForBoardRun } from '../../workflow-board/client'
+import { recoverBoardStart } from '../../workflow-board/startRecovery'
 import { useGraphDraftStore } from '../store'
 import { nextDraftDirty, type NextDraftEdit } from './state'
 import type { DraftEditorCore } from './useDraftEditorCore'
@@ -48,9 +49,13 @@ export function useDraftStartMutation({ draftKey, edit, editIntent, core, startS
   const { canStart, preflight } = startState
   const queryClient = useQueryClient()
   const startLock = useRef(false)
-  const startMutation = useMutation({ retry: false, mutationFn: async (options?: { saveFirst?: boolean; allowStop?: boolean }) => {
+  const saveContinuation = useRef<{
+    intentId: string; instanceId: string; generation: number; selectionToken: unknown
+  } | undefined>(undefined)
+  const startMutation = useMutation({ retry: false, mutationFn: async (options?: { saveFirst?: boolean; allowStop?: boolean; savedVersionId?: string }) => {
     if (startLock.current) return
     const generation = sessionGeneration()
+    const selectionToken = latestBoard.current?.getSelectionToken?.()
     let sent: BoardStartInput | undefined
     startLock.current = true; setLocalError(undefined)
     try {
@@ -61,25 +66,51 @@ export function useDraftStartMutation({ draftKey, edit, editIntent, core, startS
       if (!existing && !useGraphDraftStore.getState().nextDrafts[draftKey]?.graph.nodes.length) {
         throw new Error('Add an agent before saving and running.')
       }
-      let saved = false
+      let savedVersionId = options?.savedVersionId
+      let saved = !!savedVersionId
       if (!existing && options?.saveFirst) {
         runAfterSave.current = true
         const result = await stopAndSave(options.allowStop)
         assertSession(generation)
         saved = result.intent?.state === 'saved'
-        if (!saved || !alive.current) return
+        if (!alive.current) return
+        if (!saved) {
+          if (result.intent && result.intent.state !== 'discarded') {
+            saveContinuation.current = { intentId: result.intent.id, generation,
+              instanceId: edit.instanceId, selectionToken }
+          }
+          return
+        }
+        savedVersionId = result.intent?.result?.currentVersionId
+        if (!savedVersionId) throw new Error('The saved workflow version is unavailable. Reconcile the save before Start.')
+        saveContinuation.current = undefined
         runAfterSave.current = false
       }
       const current = useGraphDraftStore.getState().nextDrafts[draftKey]
       if (!current) throw new Error('The draft is no longer mounted.')
+      if (savedVersionId && current.context.draft.baseWorkflowVersionId !== savedVersionId) {
+        throw new Error('The saved workflow changed before Save and run could continue.')
+      }
       let candidate = existing
       if (!candidate) {
-        if (current.busy || current.pending || (!saved && editIntent.locked) || nextDraftDirty(current)
+        if (current.busy || current.pending || current.startCanceled || (!saved && editIntent.locked) || nextDraftDirty(current)
           || current.startRejectedVersionId === current.context.draft.baseWorkflowVersionId
           || (!saved && (preflight.isError || !preflight.data))) throw new Error('Save, reload or reconcile before creating a new Start.')
         const displayedPins = saved ? undefined : boardStartPins(current.context.draft, preflight.data!)
-        const fresh = await readBoardStartPreflight(current.context.draft)
+        const [fresh, access] = await Promise.all([
+          readBoardStartPreflight(current.context.draft),
+          queryClient.fetchQuery({ queryKey: settingsExperienceKeys.access(), staleTime: 0,
+            queryFn: ({ signal }) => readLocalHumanAccess({ signal }) }),
+        ])
         assertSession(generation)
+        const principal = access.principal
+        if (!principal || Date.parse(principal.expiresAt) <= Date.now()
+          || !canUseBoardAction(principal.grants, 'runs:start', { workspaceId: graph.workspaceId, workflowId: graph.id })) {
+          throw new Error('Start permission is unavailable for this workflow. No command was sent.')
+        }
+        if (!alive.current || latestBoard.current?.getSelectionToken?.() !== selectionToken) {
+          throw new Error('Selection changed before Start. The saved workflow is kept.')
+        }
         if ((displayedPins && !sameBoardStartPins(displayedPins, boardStartPins(current.context.draft, fresh)))
           || useGraphDraftStore.getState().nextDrafts[draftKey] !== current) {
           throw new Error('The displayed Start pins or local form changed. Reload before starting a new Run.')
@@ -89,10 +120,12 @@ export function useDraftStartMutation({ draftKey, edit, editIntent, core, startS
       sent = await reserveBoardStart(draftKey, candidate)
       const result = await boardStartClient.start(sent)
       assertSession(generation)
-      await acknowledgeBoardStart(draftKey, sent)
+      const acknowledgement = await acknowledgeBoardStart(draftKey, sent)
       void queryClient.invalidateQueries({ queryKey: boardRunListKey(graph.workspaceId, graph.id) })
       if (!alive.current || useGraphDraftStore.getState().nextDrafts[draftKey]?.instanceId !== current.instanceId) return
-      latestBoard.current?.selectRun(scopeForBoardRun(result.run))
+      if (acknowledgement !== 'superseded' && latestBoard.current?.getSelectionToken?.() === selectionToken) {
+        latestBoard.current?.selectRun(scopeForBoardRun(result.run))
+      }
       setMessage('Start acknowledged for the exact saved version. Run status is read separately.')
     } catch (error) {
       try {
@@ -107,7 +140,50 @@ export function useDraftStartMutation({ draftKey, edit, editIntent, core, startS
       throw error
     } finally { startLock.current = false }
   } })
-  const starting = startMutation.isPending
+  const recovery = useMutation({ retry: false, mutationFn: async () => {
+    if (startLock.current) return
+    startLock.current = true
+    try {
+      if (!canStart) throw new Error('Start permission is unavailable for this workflow.')
+      const request = readBoardStart(draftKey)
+      if (!request) return
+      const instanceId = useGraphDraftStore.getState().nextDrafts[draftKey]?.instanceId
+      const { result, acknowledgement } = await recoverBoardStart(draftKey, request)
+      void queryClient.invalidateQueries({ queryKey: boardRunListKey(graph.workspaceId, graph.id) })
+      if (!alive.current || acknowledgement === 'superseded'
+        || useGraphDraftStore.getState().nextDrafts[draftKey]?.instanceId !== instanceId) return
+      if (result.status === 'accepted') {
+        latestBoard.current?.selectRun(scopeForBoardRun(result.run))
+        setMessage('The earlier Run was accepted.')
+      } else {
+        useGraphDraftStore.getState().updateNextDraft(draftKey, current => ({ ...current, startCanceled: true }))
+        setMessage('The earlier Start was canceled. Reload the saved draft, then review and start again.')
+      }
+    } finally { startLock.current = false }
+  } })
+  const starting = startMutation.isPending || recovery.isPending
+  const { mutateAsync } = startMutation
+  useEffect(() => {
+    const continuation = saveContinuation.current
+    const intent = editIntent.query.data?.intent
+    if (!continuation || starting || !intent) return
+    if (!runAfterSave.current || intent.id !== continuation.intentId || intent.state === 'discarded') {
+      saveContinuation.current = undefined
+      runAfterSave.current = false
+      return
+    }
+    if (intent.state !== 'saved' || !intent.result) return
+    saveContinuation.current = undefined
+    runAfterSave.current = false
+    try {
+      assertSession(continuation.generation)
+      const current = useGraphDraftStore.getState().nextDrafts[draftKey]
+      if (!alive.current || current?.instanceId !== continuation.instanceId
+        || latestBoard.current?.getSelectionToken?.() !== continuation.selectionToken) return
+      void mutateAsync({ savedVersionId: intent.result.currentVersionId }).catch(report)
+    } catch (error) { report(error) }
+  }, [editIntent.query.data, mutateAsync, starting, draftKey, alive, latestBoard, runAfterSave, report])
   const start = () => startMutation.mutateAsync()
-  return { startMutation, starting, start }
+  const recoverStart = () => recovery.mutateAsync()
+  return { startMutation, starting, start, recoverStart }
 }

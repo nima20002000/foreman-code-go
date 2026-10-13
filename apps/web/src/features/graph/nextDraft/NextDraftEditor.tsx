@@ -8,7 +8,7 @@ import { useGraphDraftStore } from '../store'
 import { hasLocalChanges } from './model'
 import { nextDraftKey, type NextDraftEdit } from './state'
 import { nextDraftApi, type AuthoringContext } from './transport'
-import { readEditSnapshot } from './editIntentStorage'
+import { claimEditTabOwnership, readEditSnapshot } from './editIntentStorage'
 import { type BoardUpdateFailure } from '../../workflow-board/BoardAlerts'
 import { boardDraftContextKey } from '../../workflow-board/keys'
 import { useDraftEditorController } from './useDraftEditorController'
@@ -29,12 +29,22 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext, update
 }) {
   const edit = useGraphDraftStore((state) => state.nextDrafts[draftKey])
   const [storageError, setStorageError] = useState<string>()
+  const [ownershipReady, setOwnershipReady] = useState(false)
+  useEffect(() => {
+    let mounted = true
+    void claimEditTabOwnership().then(() => {
+      if (mounted) setOwnershipReady(true)
+    }).catch(error => {
+      if (mounted) setStorageError(errorMessage(error, 'Independent tab recovery is unavailable.'))
+    })
+    return () => { mounted = false }
+  }, [])
   const source = useQuery({ queryKey: boardDraftContextKey(workspaceId, workflowId),
     queryFn: ({ signal }) => nextDraftApi.context(workspaceId, workflowId, { signal }),
     initialData: initialContext, enabled: !edit && !storageError, retry: false,
   })
   useEffect(() => {
-    if (useGraphDraftStore.getState().nextDrafts[draftKey]) return
+    if (!ownershipReady || useGraphDraftStore.getState().nextDrafts[draftKey]) return
     try {
       const snapshot = readEditSnapshot(draftKey)
       if (snapshot && !initialContext && !source.isFetchedAfterMount && !source.isError) return
@@ -60,7 +70,7 @@ function DraftLoader({ draftKey, workspaceId, workflowId, initialContext, update
         useGraphDraftStore.getState().installNextDraft(draftKey, { draft: GraphDraftV3Schema.parse(source.data.draft), agents: source.data.agents, savedDraft: source.data.savedDraft })
       }
     } catch (error) { setStorageError(errorMessage(error, 'Retained edits are unavailable.')) }
-  }, [draftKey, initialContext, source.data, source.isError, source.isFetchedAfterMount])
+  }, [draftKey, initialContext, ownershipReady, source.data, source.isError, source.isFetchedAfterMount])
   if (edit) return <EditorForm draftKey={draftKey} edit={edit} updateFailures={updateFailures} />
   if (storageError || source.isError) return <section className="workflow-graph-state" role="alert">
     <h2>Authoring unavailable</h2><p>{storageError ?? source.error?.message}</p>

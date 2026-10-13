@@ -17,14 +17,19 @@ export async function unavailableDeviceOperatorToolCall(context: OperatorRequest
   const call = DeviceToolCall.safeParse(body)
   if (!call.success || operatorToolAvailable(context, call.data.params.name)) return undefined
   const name = call.data.params.name
-  const availableService = name === 'computer_activity_list' ? context.services.computerActivity
-    : name === 'computer_accounts_list' ? context.services.computerAccounts
-    : name.startsWith('computer_github_') ? context.services.computerGitHub
-    : name.startsWith('build_computer') ? context.services.buildComputers
-    : name.startsWith('device_connection_') ? context.services.trustedConnections : context.services.devices
-  const error = availableService
+  let serviceAvailable = !!context.services.devices
+  if (name === 'computer_activity_list') serviceAvailable = !!context.services.computerActivity
+  else if (name === 'computer_accounts_list') serviceAvailable = !!context.services.computerAccounts
+  else if (name.startsWith('computer_github_')) serviceAvailable = !!context.services.computerGitHub
+  else if (name.startsWith('computer_sync_')) serviceAvailable = !!context.services.computerSync
+  else if (name.startsWith('build_computer')) serviceAvailable = !!context.services.buildComputers
+  else if (name.startsWith('device_connection_')) serviceAvailable = !!context.services.trustedConnections
+  let unavailableCode = 'DEVICE_MANAGEMENT_UNAVAILABLE'
+  if (name.startsWith('device_connection_')) unavailableCode = 'DEVICE_CONNECTION_UNAVAILABLE'
+  if (name.startsWith('computer_sync_')) unavailableCode = 'COMPUTER_SYNC_UNAVAILABLE'
+  const error = serviceAvailable
     ? new DomainError('ACCESS_DENIED', 'Device management requires a compatible global settings grant.', 403)
-    : new DomainError(name.startsWith('device_connection_') ? 'DEVICE_CONNECTION_UNAVAILABLE' : 'DEVICE_MANAGEMENT_UNAVAILABLE', 'The requested device service is not composed in this application.', 503)
+    : new DomainError(unavailableCode, 'The requested device service is not composed in this application.', 503)
   if (error.status === 403) await context.services.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)
   return { jsonrpc: '2.0' as const, id: call.data.id, result: toolFailure(error) }
 }
@@ -49,7 +54,7 @@ export async function unavailableOperatorControlToolCall(context: OperatorReques
 const RunToolCallSchema = z.object({
   jsonrpc: z.literal('2.0'), id: z.union([z.string(), z.number().int()]),
   method: z.literal('tools/call'), params: z.object({ name: z.enum([
-    'run_start', 'run_stop', 'run_handoffs_get_v1', 'run_activities_get_v1', 'run_node_placement_get',
+    'run_start', 'run_start_resolve', 'run_stop', 'run_handoffs_get_v1', 'run_activities_get_v1', 'run_node_placement_get',
     'run_subagents_list_v1', 'run_subagent_get_v1', 'run_subagent_messages_list_v1', 'run_subagent_tools_list_v1',
     'run_subagent_input_v1', 'run_subagent_interrupt_v1', 'run_subagent_respond_v1',
   ]) }).passthrough(),

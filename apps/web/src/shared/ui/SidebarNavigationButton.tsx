@@ -10,7 +10,7 @@ const NavigationButton = forwardRef<HTMLButtonElement, NavigationButtonProps>(
       onClick={(event) => {
         if (event.ctrlKey || event.metaKey || event.shiftKey) {
           event.preventDefault()
-          if (href) window.open(href, '_blank')
+          if (href) window.open(href, '_blank', 'noopener')
           return
         }
         // createLink supplies TanStack's navigate() handler and route options.
@@ -20,7 +20,7 @@ const NavigationButton = forwardRef<HTMLButtonElement, NavigationButtonProps>(
         onAuxClick?.(event)
         if (event.button !== 1 || event.defaultPrevented) return
         event.preventDefault()
-        if (href) window.open(href, '_blank')
+        if (href) window.open(href, '_blank', 'noopener')
       }} />
   },
 )
