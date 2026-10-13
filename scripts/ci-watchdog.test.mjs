@@ -155,7 +155,8 @@ test('a fast failure after a test finishes still records that a test started', a
 test('Node test failures count as started tests instead of setup failures', async t => {
   const reporter = fileURLToPath(new URL('./ci-node-test-reporter.mjs', import.meta.url))
   const result = await watchdogFixture(t, `
-    const { writeFileSync } = require('node:fs')
+    const assert = require('node:assert/strict')
+    const { readFileSync, writeFileSync } = require('node:fs')
     const { join, dirname } = require('node:path')
     const { spawnSync } = require('node:child_process')
     const file = join(dirname(process.env.CI_PROGRESS_FILE), 'node-case.test.mjs')
@@ -163,6 +164,10 @@ test('Node test failures count as started tests instead of setup failures', asyn
     const result = spawnSync(process.execPath, ['--test', '--test-reporter=spec', '--test-reporter-destination=stdout',
       '--test-reporter=' + ${JSON.stringify(reporter)}, '--test-reporter-destination=' + file + '.json', file],
       { stdio: 'inherit', env: process.env })
+    const report = JSON.parse(readFileSync(file + '.json', 'utf8'))
+    assert.deepEqual(report.testResults.flatMap(file => file.assertionResults.map(test => [test.fullName, test.status])),
+      [['fails', 'failed']])
+    assert.equal(result.status, 1)
     process.exit(result.status)
   `, { idleTimeoutMs: 10_000 })
   assert.equal(result.code, 1)
