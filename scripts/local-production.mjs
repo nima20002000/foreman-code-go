@@ -239,9 +239,10 @@ async function install() {
     const { upgradeProductionMcpLauncher } = await import(pathToFileURL(upgradeModule))
     await upgradeProductionMcpLauncher(home)
     await activateRelease(release)
-    await enableProductionServices(run, [units.database, units.api], { firstInstall })
-    await run('/usr/bin/systemctl', ['--user', 'start', units.api])
-    await waitForReady({ smoke: () => runProductionCiSmoke({ origin, release }),
+    await waitForReady({ start: async () => {
+      await enableProductionServices(run, [units.database, units.api], { firstInstall })
+      await run('/usr/bin/systemctl', ['--user', 'start', units.api])
+    }, smoke: () => runProductionCiSmoke({ origin, release }),
       rollback: () => rollbackRelease(previousRelease) })
     const pruned = await pruneReleases(join(app, 'releases'), [release, previousRelease])
     if (pruned.length) console.log(`Removed ${pruned.length} old release(s); kept the current and previous release.`)

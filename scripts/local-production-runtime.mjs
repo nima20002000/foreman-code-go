@@ -410,6 +410,7 @@ export async function readProductionIdentity(release, databaseUrl) {
 
 export async function waitForProductionReady(options) {
   try {
+    await options.start?.()
     await pollProductionReady(options)
     await options.smoke?.()
   } catch (error) {

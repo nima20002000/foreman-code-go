@@ -30,7 +30,7 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'other full requests wait behind queued/running gates with a reason; affected requests use spare capacity below gate priority. '
   + 'ci_get on any gate ticket reports per-computer and per-suite expected/actual durations, critical path and wallTimeMs. '
   + 'smokeComputer is Operator-only: unit or integration, affected scope, an explicit commit and one test file. '
-  + 'It pins the job to that enabled computer through normal setup, grants and audit; no executor fallback. Integration smoke exercises gate planning and measured integration shard limits. '
+  + 'It pins the job to that enabled computer through normal setup, grants and audit; no executor fallback or supersession. Integration smoke exercises gate planning and measured integration shard limits. '
   + 'ci_get reads back smokeComputer and the actual computer. '
   + 'scope defaults to affected; scope=full always runs everything. '
   + 'priority defaults to normal. Requesting high requires Operator role or an explicit workspace jobs:prioritize grant '

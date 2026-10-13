@@ -8,7 +8,7 @@ import {
   type WorkerArtifactManifest, type WorkerArtifactTarget,
 } from '@foreman-code/contracts/computer-maintenance'
 import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
-import type { DeviceSessionBinding } from '@foreman-code/contracts'
+import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
 
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')

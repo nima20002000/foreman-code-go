@@ -243,7 +243,8 @@ and one small integration test on every ready build computer and each ready
 cloud executor provider. Integration smoke also exercises gate planning without
 queuing the full gate and uses the measured integration shard limit. The
 installer reads its repository and commit from staged release metadata and
-requires an existing workspace configured for that repository. Each job must
+requires an existing workspace configured for that repository. An enabled build
+computer that is unready fails the smoke rather than being omitted. Each job must
 report a passing smoke test; setup failures and empty test results fail closed.
 Failures restore and restart the retained release and print the original error.
 On a first install without a retained release, the rejected API is stopped.

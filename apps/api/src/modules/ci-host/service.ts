@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { withTransaction } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
-import { CI_HOST_NAMESPACE, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiHostReplySchema, CiListOutputSchema, CiRunRecordSchema,
+import { CI_HOST_NAMESPACE, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiComputerRefSchema, CiHostReplySchema, CiListOutputSchema, CiRunRecordSchema,
   WorkspaceSchema,
   requiresUserSystemd, userSystemdIntegrationFiles,
   type CiDurations, type CiHostRequest, type CiHostReply, type CiListOutput, type CiRunRecord, type CiRunInput,
@@ -218,7 +218,7 @@ export class HostCiService {
         }
         const runs = parts.map(planned => CiRunRecordSchema.parse({
           ...planned,
-          ...(smokeTarget ? { smokeComputer: input.smokeComputer, plannedHostKey: smokeTarget.key,
+          ...(smokeTarget ? { plannedHostKey: smokeTarget.key,
             ...(smokeShards !== undefined ? { integrationShards: smokeShards } : {}) } : {}),
           id: randomUUID(), workspaceId: scope.workspaceId,
           suite: planned.suite ?? input.suite, scope: selectionScope, commit, repository, groupId,
@@ -227,6 +227,7 @@ export class HostCiService {
           defaultBranch,
           ...(branch !== undefined ? { branch } : {}),
           ...(!input.gate && input.noSupersede !== undefined ? { noSupersede: input.noSupersede } : {}),
+          ...(smokeTarget ? { noSupersede: true } : {}),
           ...(input.baseCommit ? { baseCommit: input.baseCommit } : {}),
           ...(deriveFiles ? { deriveFiles } : {}),
           state: empty ? 'passed' : 'queued', computer: null, step: empty ? input.suite : null,
@@ -254,11 +255,24 @@ export class HostCiService {
         await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
           values($1,$2,'ci.priority',$3,'succeeded',$4::jsonb)`, [caller.id, source, scope.workspaceId,
           JSON.stringify({ commandId: input.commandId, groupId, commit, priority, priorityReason,
-            requestedPriority: input.priority ?? 'normal' })])
+            requestedPriority: input.priority ?? 'normal',
+            ...(smokeTarget ? { smokeComputer: input.smokeComputer } : {}) })])
         return { ticketId: runs[0]!.id, ...(runs.length > 1 ? { partitions: runs.map(run => ({ ticketId: run.id })) } : {}) }
       },
     })
     return outcome.value
+  }
+
+  private async smokeTargets(runs: CiRunRecord[]): Promise<Map<string, HostRef>> {
+    const groups = [...new Set(runs.filter(run => run.noSupersede && run.plannedHostKey && !run.gate)
+      .map(run => run.groupId))]
+    if (!groups.length) return new Map()
+    // Audit details preserve the target without changing the record shape read by a retained release.
+    const rows = (await this.pool.query<{ group_id: string; target: unknown }>(`select
+      details->>'groupId' as group_id, details->'smokeComputer' as target from management_audit
+      where action='ci.priority' and details->>'groupId'=any($1::text[]) and details ? 'smokeComputer'`,
+    [groups])).rows
+    return new Map(rows.map(row => [row.group_id, CiComputerRefSchema.parse(row.target)]))
   }
 
   private async integrationSlots(): Promise<CiIntegrationSlots> {
@@ -421,7 +435,9 @@ export class HostCiService {
           and record->'initiator'=$3::jsonb order by created_at,id`,
         [run.groupId, scope.workspaceId, JSON.stringify(run.initiator)])).rows.map(row => CiRunRecordSchema.parse(row.record))
       const position = run.state === 'queued' ? await this.queuePosition(run.id) : undefined
-      return { run, partitions: group.length > 1 ? group : undefined, logTail: row.log_tail,
+      const smokeComputer = (await this.smokeTargets([run])).get(run.groupId)
+      return { run: { ...run, ...(smokeComputer ? { smokeComputer } : {}) },
+        partitions: group.length > 1 ? group : undefined, logTail: row.log_tail,
         queue: position ? { position, reason: ciQueueReason(run) } : null,
         group: { groupId: run.groupId, state: ciGroupState(group) },
         ...(run.gate ? { gate: ciGateReport(group) } : {}),
@@ -804,6 +820,7 @@ export class HostCiService {
     const integrationOnGitHub = new Set(busyRows.filter(row => githubKeys.has(row.host_key)
       && CiRunRecordSchema.parse(row.record).suite === 'integration').map(row => row.host_key))
     const { parsed, durations } = await this.queuedRuns()
+    const smokeTargets = await this.smokeTargets(parsed)
     let queued = await this.releaseSlowTier(parsed)
     // Reserve four GitHub slots while checks wait, including integration already using GitHub.
     const githubIntegrationLimit = Math.max(0, github.length - (queued.some(run => run.suite !== 'integration') ? 4 : 0))
@@ -814,6 +831,7 @@ export class HostCiService {
       ? Number(needsSystemdExecutor(right)) - Number(needsSystemdExecutor(left)) : 0) || compareCiQueue(left, right))
     // Reserve slots before awaiting a start so concurrent dispatches cannot spend the same capacity.
     await Promise.all(queued.map(async run => {
+      const smokeTarget = smokeTargets.get(run.groupId)
       const blocked = gateQueueBlock(run, gate)
       if (blocked) {
         if (run.message !== blocked) await this.save({ ...run, message: blocked }, null)
@@ -831,12 +849,12 @@ export class HostCiService {
         return isGitHubComputer(computer) ? 1 : 2
       }
       const affectedFiles = run.scope === 'affected' && !run.deriveFiles ? { files: run.files } : {}
-      const selection = (run.gate || run.smokeComputer) && run.suite === 'integration'
+      const selection = (run.gate || smokeTarget) && run.suite === 'integration'
         ? { gate: true, integrationShards: run.integrationShards!, files: run.files } : affectedFiles
       const order = computers.filter(computer => runsOnCircleCi(run)
         || computer.hostRef.kind !== 'cloud' || computer.hostRef.provider !== 'circleci')
         .filter(computer => !hostRequired || supportsUserSystemd(computer))
-        .filter(computer => !run.smokeComputer || isDeepStrictEqual(computer.hostRef, run.smokeComputer))
+        .filter(computer => !smokeTarget || isDeepStrictEqual(computer.hostRef, smokeTarget))
         .filter(computer => !run.gate || computer.key === run.plannedHostKey)
         .filter(computer => run.gate || computer.hostRef.kind === 'cloud' || !reservedHosts.has(computer.key))
         .filter(computer => computer.hostRef.kind !== 'cloud' || !computer.hostRef.provider

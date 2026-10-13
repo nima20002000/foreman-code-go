@@ -28,6 +28,10 @@ function httpClient(origin, signal, timeoutMs) {
 function smokeTargets(computers) {
   const providers = new Set()
   return computers.filter(computer => {
+    if (!computer.ready && computer.hostRef.kind !== 'cloud') {
+      throw new Error(`CI smoke enabled computer ${JSON.stringify(computer.hostRef)} is not ready: `
+        + computer.reasons.join('; '))
+    }
     if (!computer.ready) return false
     if (computer.hostRef.kind !== 'cloud') return true
     if (providers.has(computer.hostRef.provider)) return false

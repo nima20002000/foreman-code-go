@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { z } from 'zod'
 import type pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { CiComputersOutputSchema, CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema, CiRunRecordSchema,
@@ -1777,8 +1778,8 @@ it('targets one smoke computer through authenticated MCP and HTTP with grants, r
       expect(read.run).toMatchObject({ smokeComputer: computer.hostRef, integrationShards: 11 })
       const stored = (await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
         [started.ticketId])).rows[0]!.record
-      const { smokeComputer: _target, ...retainedReleaseShape } = CiRunRecordSchema.shape
-      expect((await import('zod')).z.object(retainedReleaseShape).strict().safeParse(stored).success).toBe(true)
+      const retainedReleaseSchema = z.object(CiRunRecordSchema.shape).omit({ smokeComputer: true }).strict()
+      expect(retainedReleaseSchema.safeParse(stored).success).toBe(true)
       f.finish(started.ticketId, 0, 'one test passed')
       expect(CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId })).run.state)
         .toBe('passed')

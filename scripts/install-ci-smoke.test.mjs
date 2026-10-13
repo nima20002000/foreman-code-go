@@ -41,8 +41,9 @@ async function fixture(t, failure) {
     } else {
       const input = admissions[Number(request.url.split('-').at(-1)) - 1]
       const failed = failure === 'setup' && input?.smokeComputer?.deviceId === 'second'
-      response.end(JSON.stringify({ run: { state: failure === 'stall' && input?.smokeComputer ? 'running' : failed ? 'failed' : 'passed',
-        exitCode: failed ? 1 : 0,
+      let state = failed ? 'failed' : 'passed'
+      if (failure === 'stall' && input?.smokeComputer) state = 'running'
+      response.end(JSON.stringify({ run: { state, exitCode: failed ? 1 : 0,
         message: failed ? 'ERR_PNPM_NO_OFFLINE_META: package metadata missing' : null,
         computer: { hostRef: input?.smokeComputer }, files: input?.files },
         logTail: failed ? 'setup failed: ERR_PNPM_NO_OFFLINE_META' : 'one test passed' }))

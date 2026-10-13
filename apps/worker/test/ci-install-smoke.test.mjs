@@ -18,8 +18,10 @@ for (const outcome of ['passed', 'failed', 'no-tests', 'timeout']) {
     const smoke = runCiInstallSmoke({ repository: 'octo/project', commit: 'a'.repeat(40) },
       { runner, timeoutMs: 100, pollMs: 5 });
     if (outcome === 'passed') await smoke;
-    else await assert.rejects(smoke, outcome === 'failed' ? /ERR_PNPM_NO_OFFLINE_META/
-      : outcome === 'timeout' ? /timed out/ : /without running/);
+    else {
+      const failures = { failed: /ERR_PNPM_NO_OFFLINE_META/, timeout: /timed out/, 'no-tests': /without running/ };
+      await assert.rejects(smoke, failures[outcome]);
+    }
     const start = requests.find(request => request.operation === 'start');
     assert.equal(start.suite, 'integration');
     assert.equal(start.gate, true);
