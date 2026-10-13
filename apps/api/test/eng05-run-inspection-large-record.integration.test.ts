@@ -66,13 +66,10 @@ describe.skipIf(!postgresEnabled)('PostgreSQL authenticated Run inspection: larg
       const args = requestScope(f), name = RUN_INSPECTION_TOOLS.record
       const queued = RunRecordDetailSchema.parse(await parity(f, f.client, f.writer.token, name, args))
       expect(queued.run.input).toEqual(fixture.run.input)
-      console.info('[run-inspection] queued record read')
       expect(queued.run.executionState).toBe('queued')
       expect(queued.run).not.toHaveProperty('result')
       await f.engine.start(f.f.run.id)
-      console.info('[run-inspection] engine finished')
       await terminal(f)
-      console.info('[run-inspection] cleanup settled')
       expect(f.provider.startedExecutions).toHaveLength(4)
       expect(new Set(f.provider.startedExecutions).size).toBe(4)
       const counts = { ...f.provider.counts }

@@ -3,7 +3,7 @@ import { RetainedSourceFootprintSchema } from '@foreman-code/contracts/source-op
 import { sourceWorkingTreePath } from '../sources/sourceTreePaths.js'
 import { readRunActivitySnapshot } from './activitySnapshot.js'
 import type pg from 'pg'
-import { RunActivitySchema } from '@foreman-code/contracts'
+import { HarnessExecutionSchema, RunActivitySchema } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { RunWorktreeSchema, SavedRunDetailsSchema, REPEAT_GRAPH_LIMITS, graphJsonBytes, RUN_GRAPH_LIMITS } from '@foreman-code/contracts/wave25'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -42,6 +42,16 @@ export function readCurrentRunDetails(pool: pg.Pool, principal: ManagementPrinci
       'select id from harness_executions where run_id=$1 order by created_at,id limit $2',
       [runId, REPEAT_GRAPH_LIMITS.executions + 1])).rows
     if (rows.length > REPEAT_GRAPH_LIMITS.executions) throw new DomainError('RUN_DETAIL_TOO_LARGE', 'Use the bounded canonical current graph for this Run.', 409)
+    // Reject an oversized response before validating execution inputs and receipts.
+    // Read one record at a time so this check retains at most one execution body.
+    let detailBytes = graphJsonBytes({ run, executions: [] })
+    for (const [index, { id }] of rows.entries()) {
+      const recorded = (await sql.query<{ record: unknown }>(
+        'select record from harness_executions where id=$1 and run_id=$2', [id, runId])).rows[0]!
+      detailBytes += graphJsonBytes(HarnessExecutionSchema.parse(recorded.record)) + (index > 0 ? 1 : 0)
+      if (detailBytes > RUN_GRAPH_LIMITS.snapshotBytes) throw new DomainError(
+        'RUN_DETAIL_TOO_LARGE', 'Use bounded graph metadata and activity pages for this Run.', 409)
+    }
     const executions = []
     for (const { id } of rows) {
       // Reuse A's exact readback, including physical node/Agent/configuration,
