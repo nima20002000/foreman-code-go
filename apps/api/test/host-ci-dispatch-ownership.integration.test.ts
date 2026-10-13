@@ -176,6 +176,35 @@ it('keeps unchanged provider messages and the persisted row stable after a messa
   } finally { await f.close() }
 })
 
+it('preserves a running ticket without optional message metadata during an unchanged MCP refresh', async () => {
+  const f = await fixture()
+  try {
+    const ticket = await f.enqueue()
+    f.control.available = true
+    await f.ci.dispatch()
+    const stored = async () => (await f.pool.query(
+      'select record,xmin::text as revision from ci_runs where id=$1', [ticket.ticketId])).rows[0]
+    const running = await f.read(ticket.ticketId)
+    expect(running.state).toBe('running')
+    const withoutMessages = { ...running }
+    delete withoutMessages.providerMessage
+    delete withoutMessages.messageHistory
+    await f.pool.query('update ci_runs set record=$2::jsonb where id=$1',
+      [ticket.ticketId, JSON.stringify(withoutMessages)])
+    const before = await stored()
+    expect(await f.read(ticket.ticketId)).toEqual(withoutMessages)
+
+    await f.ci.dispatch()
+    await f.ci.dispatch()
+
+    expect(await f.read(ticket.ticketId)).toEqual(withoutMessages)
+    expect(await stored()).toEqual(before)
+    const denied = await f.connect(['jobs:cancel'], [randomUUID()])
+    expect((await f.call(denied.client, 'ci_get', { ticketId: ticket.ticketId })).isError).toBe(true)
+    expect(await stored()).toEqual(before)
+  } finally { await f.close() }
+})
+
 it('retains one executor after an accepted start loses its reply and reconciles after restart', async () => {
   const f = await fixture()
   let restarted: HostCiService | undefined
@@ -435,6 +464,10 @@ it.each([2, 3])('persists one partition plan without changing concurrent cancell
     expect(saved).toHaveLength(partitions)
     expect(new Set(saved.map(row => row.revision)).size).toBe(1)
     const planned = await Promise.all(canceled.map(run => f.read(run.id)))
+    const hostIndexes = Array.from({ length: Math.min(f.computers.length, partitions - 1) }, (_, index) => index)
+    expect(planned[0]!.partition).toMatchObject({
+      weights: Array.from({ length: partitions }, () => 1), hostIndexes,
+    })
     for (const [index, run] of planned.entries()) {
       expect(run).toMatchObject(canceled[index]!)
       expect(run.partition?.weights).toHaveLength(partitions)
