@@ -729,7 +729,6 @@ export async function remoteReviewProduction(options: {
       return SavedRunDetailsSchema.parse(await response.json())
     }
     const registry = new NativeProcessRegistry(join(stateDirectory, 'workflow-native-processes'))
-    closes.push(() => stopMain())
     reportPhase(phase, performance.now() - phaseStarted)
     return { db, directory, stateDirectory, provider, claudeInventory, access, writer, repositoryName,
       sourceManifest: approved.manifest,
