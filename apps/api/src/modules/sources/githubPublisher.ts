@@ -17,8 +17,11 @@ export async function publishCommit(ports: GitWorktreePorts, repository: string,
     if (fetched.code !== 0) throw githubReadFailure(repository)
     return
   }
-  // Main's clone is shallow, so no local check proves what origin serves. A held commit (an Agent's own, or a Run's
-  // start) is pinned under foreman/ci/; the push transfers nothing that origin already has.
+  // Main's clone is shallow, so local ancestry cannot prove what origin serves. A branch tip is served; any other held
+  // commit (an Agent's own, or a Run's start) is pinned under foreman/ci/, transferring nothing origin already has.
+  const tips = await ports.git(['ls-remote', '--heads', 'origin'], { cwd: clone, signal })
+  if (tips.code !== 0) throw githubReadFailure(repository)
+  if (tips.stdout.split('\n').some(line => line.split('\t')[0] === commit)) return
   const pushed = await ports.git(['push', '--quiet', 'origin', `${commit}:refs/heads/foreman/ci/${commit}`], { cwd: clone, signal })
   if (pushed.code !== 0) {
     throw new SourceError('SOURCE_GITHUB_PUSH_REQUIRED', `Main could not publish commit ${commit.slice(0, 12)} to ${repository}. `
