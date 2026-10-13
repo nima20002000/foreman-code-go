@@ -21,6 +21,8 @@ function hostTestAdminUrl() {
   return value
 }
 export const testAdminUrl = hostTestAdminUrl()
+const hostCiRunId = process.env.FOREMAN_CODE_CI_TEST_ADMIN_URL === undefined
+  ? undefined : process.env.FOREMAN_CODE_CI_HOST_RUN_ID
 const serverMarker = 'graphql-disposable-test-server'
 const rootMarker = '.graphql-test-owner.json'
 const cleanupDirectory = '.graphql-test-cleanup'
@@ -140,6 +142,10 @@ export function testEnvironment(environment, resource) {
   requireTestServerUrl(resource.databaseUrl)
   assertTestRoot(resource.directory, resource.token)
   const clean = { ...environment }
+  if (hostCiRunId) {
+    clean.FOREMAN_CODE_CI_TEST_ADMIN_URL = testAdminUrl
+    clean.FOREMAN_CODE_CI_HOST_RUN_ID = hostCiRunId
+  }
   for (const key of Object.keys(clean)) {
     if (/^PG/.test(key) || (!key.startsWith('FOREMAN_CODE_TEST_') && /(?:_API_KEY|_AUTH_TOKEN|_ACCESS_TOKEN)$/.test(key))
       || ['FOREMAN_CODE_MCP_TOKEN', 'LOG_FILE',
