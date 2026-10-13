@@ -89,6 +89,11 @@ export const CiTestResultsSchema = z.object({ summary: CiTestSummarySchema,
     `Give at most ${CI_TEST_RESULT_LIMITS.tests} tests.`)
 export type CiTestResults = z.infer<typeof CiTestResultsSchema>
 
+/** A selected test file a non-gate affected run did not execute: an earlier passed ticket ran it with identical inputs
+ * (its content, transitive imports, lockfile, manifests, CI runner scripts, suite and part). */
+export const CiCachedFileSchema = z.object({ file: z.string().min(1).max(300), ticketId: z.uuid(), commit: CommitSchema }).strict()
+export type CiCachedFile = z.infer<typeof CiCachedFileSchema>
+
 export const CiWatchdogFailureSchema = z.object({ message: z.string().max(2000) }).strict()
 
 const CiHostRunIdSchema = z.uuid()
@@ -105,6 +110,8 @@ const CiHostStartSchema = z.object({
   gate: z.boolean().optional(), integrationShards: z.number().int().min(1).max(64).optional(),
   defaultBranch: WorkspaceRepositorySchema.shape.defaultBranch.optional(),
   baseCommit: CommitSchema.optional(),
+  /** Printed at the top of the run log, such as the selected files the result cache skipped. */
+  notice: z.string().max(CI_LOG_MAX_BYTES).optional(),
 }).strip().refine(value => value.gate
   ? value.suite === 'integration' && value.scope === 'full' && !!value.files?.length && !value.partition && !value.part
     && value.integrationShards !== undefined && value.files.every(file => /^apps\/api\/test\/[^/]+\.integration\.test\.ts$/.test(file))
@@ -187,6 +194,8 @@ export const CiRunRecordSchema = z.object({
   /** An omitted caller selection is computed on the runner; an explicit empty list is already complete. */
   deriveFiles: z.boolean().optional(), defaultBranch: WorkspaceRepositorySchema.shape.defaultBranch.optional(),
   baseCommit: CommitSchema.optional(),
+  /** On a request's first ticket: selected files skipped because an earlier passed ticket proved identical inputs. */
+  cachedFiles: z.array(CiCachedFileSchema).max(CI_SELECTED_FILES_MAX).optional(),
   branch: WorkspaceRepositorySchema.shape.defaultBranch.nullable().optional(),
   noSupersede: z.boolean().optional(),
   supersededBy: CiHostRunIdSchema.optional(),

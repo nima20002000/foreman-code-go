@@ -2,6 +2,7 @@ import type { CiHostRequest, CiHostReply, CiHostRun, CiRunRecord, CiUserSystemd 
 import type { CiRepositoryCapabilities } from './repository.js'
 import type { CiIntegrationInventory } from './integrationParts.js'
 import type { CiUnitInventory } from './parts.js'
+import type { CiTestTree } from './resultCache.js'
 
 export type HostRef = CiRunRecord['computer'] extends infer C ? C extends { hostRef: infer H } ? H : never : never
 /** Local dispatch failures can settle before a host records a start. */
@@ -23,6 +24,8 @@ export interface CiCommits {
   capabilities(repository: string, commit: string): Promise<CiRepositoryCapabilities>
   integrationInventory?(repository: string, commit: string): Promise<CiIntegrationInventory>
   unitInventory?(repository: string, commit: string): Promise<CiUnitInventory>
+  /** The commit's files and their blobs, for result cache keys; without it every selected file runs. */
+  testTree?(repository: string, commit: string): Promise<CiTestTree>
   resolve(repository: string, defaultBranch: string, commit: string | undefined,
     snapshot: { baseCommit: string; commit: string; bundle: Buffer | null } | null): Promise<string>
 }

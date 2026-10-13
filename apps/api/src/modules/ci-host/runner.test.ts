@@ -67,6 +67,9 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
   if (options.selector) {
     await writeFile(join(origin, 'scripts/ci-affected.mjs'),
       await readFile(new URL('../../../../../scripts/ci-affected.mjs', import.meta.url), 'utf8'))
+    await mkdir(join(origin, 'packages/contracts/src'), { recursive: true })
+    await writeFile(join(origin, 'packages/contracts/src/ciImportGraph.mjs'),
+      await readFile(new URL('../../../../../packages/contracts/src/ciImportGraph.mjs', import.meta.url), 'utf8'))
     await mkdir(join(origin, 'apps/api/src'), { recursive: true })
     await writeFile(join(origin, 'apps/api/src/feature.ts'), 'export const value = 1')
     await writeFile(join(origin, unitFiles[0]!), "import '../src/feature.js'")

@@ -58,6 +58,13 @@ export function planCiParts(input: CiRunInput, durations: CiDurations, inventory
   })
 }
 
+/** The unit part a test file runs in, as planCiParts splits it. */
+export function unitPartOf(file: string, heavy: readonly string[]): CiPart {
+  if (file.startsWith('apps/api/')) return 'unit-api'
+  if (!file.startsWith('apps/web/')) return 'unit-other'
+  return heavy.some(pattern => matchesGlob(file.slice('apps/web/'.length), pattern)) ? 'unit-web-heavy' : 'unit-web'
+}
+
 /** CircleCI takes every suite except the Worker unit tests, which need podman. */
 export function runsOnCircleCi(run: { part?: string | null | undefined }): boolean {
   return run.part !== 'unit-other'

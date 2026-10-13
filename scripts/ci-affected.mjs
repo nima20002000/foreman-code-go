@@ -1,50 +1,19 @@
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, posix } from 'node:path'
+import { join } from 'node:path'
+import { ciCodeFile as codeFile, ciInfrastructureFile, importSpecifiers as imports, resolveImport }
+  from '../packages/contracts/src/ciImportGraph.mjs'
 
 const projects = ['apps/api', 'apps/web', 'apps/worker', 'packages/contracts']
-const codeFile = /\.(?:[cm]?[jt]sx?|json|css)$/
 const testFile = /\.(?:test|spec)\.(?:[cm]?[jt]sx?)$/
 const integrationFile = /^apps\/api\/test\/[^/]+\.integration\.test\.ts$/
-const infrastructure = [
-  /(?:^|\/)(?:package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|tsconfig[^/]*|vitest\.config\.[^/]*|eslint\.config\.[^/]*)$/,
-  /(?:^|\/)migrations?\/|Migration\.[cm]?[jt]s$/,
-  /^packages\/contracts\/src\/index\.ts$/,
-  /^scripts\/(?:test-integration[^/]*|test-resources[^/]*|integration-process[^/]*|ci-[^/]*|vitest-[^/]*|test-db\.mjs|test-command\.mjs|heavy-job\.mjs)$/,
-  /^apps\/api\/test\/(?:helpers\/|setup[^/]*$)|^apps\/web\/src\/test\//,
-  /^(?:\.github\/workflows\/|\.circleci\/)/,
-]
-
-function imports(text) {
-  const values = []
-  const pattern = /\b(?:import|export)\s+(?:[^;'"]*?\s+from\s*)?['"]([^'"]+)['"]|\b(?:import|require|vi\.mock|vi\.doMock)\s*\(\s*['"]([^'"]+)['"]/g
-  for (const match of text.matchAll(pattern)) values.push(match[1] ?? match[2])
-  return values
-}
-
-function resolveImport(file, specifier, sources, exports) {
-  specifier = specifier.split('?')[0].split('#')[0]
-  let target
-  if (specifier.startsWith('.')) target = posix.normalize(posix.join(posix.dirname(file), specifier))
-  else if (specifier === '@foreman-code/contracts' || specifier.startsWith('@foreman-code/contracts/')) {
-    const key = specifier === '@foreman-code/contracts' ? '.' : `.${specifier.slice('@foreman-code/contracts'.length)}`
-    const entry = exports[key]
-    const path = typeof entry === 'string' ? entry : entry?.import
-    if (path) target = `packages/contracts/${path.replace(/^\.\//, '').replace(/^dist\//, 'src/')}`
-  }
-  if (!target) return null
-  const stem = target.replace(/\.[cm]?js$/, '')
-  const candidates = [target, ...['.ts', '.tsx', '.mts', '.mjs', '.js', '.jsx', '.json', '/index.ts', '/index.tsx', '/index.js']
-    .map(extension => `${stem}${extension}`)]
-  return candidates.find(candidate => sources.has(candidate)) ?? null
-}
 
 /** Reverse import reachability, like Vitest related/changed, with separate package test inventories. */
 export function selectAffectedFiles({ suite, changedFiles, sources, exports = {} }) {
   const full = reason => ({ scope: 'full', files: [], reason })
   if (!['unit', 'integration', 'lint', 'typecheck'].includes(suite)) return full('This suite requires a full run.')
-  if (changedFiles.some(file => infrastructure.some(pattern => pattern.test(file)))) return full('Shared CI infrastructure changed.')
+  if (changedFiles.some(ciInfrastructureFile)) return full('Shared CI infrastructure changed.')
   if (changedFiles.some(file => codeFile.test(file) && !sources.has(file))) return full('A source file was removed.')
   // Glob dependencies cannot be represented by one literal import edge.
   if ([...sources.values()].some(text => /import\.meta\.glob\s*\(/.test(text))) return full('Glob imports require a full run.')

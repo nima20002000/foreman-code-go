@@ -13,7 +13,7 @@ import type { CiAuthority } from '../jobs/ciAuthority.js'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../jobs/ciAuthority.js'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
-import { planCiParts, runsOnCircleCi } from './parts.js'
+import { planCiParts, runsOnCircleCi, unitPartOf } from './parts.js'
 import { planIntegrationParts } from './integrationParts.js'
 import { readCiSlots } from './planningCapacity.js'
 import { assertCiReadAccess } from './runAccess.js'
@@ -34,6 +34,7 @@ import { readCiGateReservation, readQueuedCiRuns, releaseCiSlowTier } from './qu
 import { expireCloudDispatch, requestCloud } from './cloudDispatch.js'
 import { claimCiSlot, reservedCloudSlotKeys } from './cloudSlots.js'
 import { cancelAssignedCiTicket } from './assignedCancellation.js'
+import { ciCachedNotice, planCachedSelection, recordCiResultCache, type CachedSelection } from './resultCacheStore.js'
 import type { AgentSnapshots, CiCommits, HostCiComputer, HostCiEndpoint, HostRef } from './serviceTypes.js'
 
 export type { AgentSnapshots, CiCommits, HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
@@ -44,6 +45,9 @@ interface PreparedCiRuns {
   repository: NonNullable<Workspace['repository']>
   runs: CiRunRecord[]
   durations: CiDurations | null
+  /** Result cache keys of the files the runs execute, and the log tail of a request the cache completed. */
+  cacheKeys?: Record<string, string>
+  logTail?: string
 }
 
 interface RunStopAudit {
@@ -178,15 +182,17 @@ export class HostCiService {
       },
       authorize: async () => { await this.authority.resolve(caller, scope.workspaceId, actions) },
       perform: async client => {
-        const { runs, durations } = prepared!
-        const { groupId, commit, priority, priorityReason } = runs[0]!
+        const { runs, durations, cacheKeys, logTail } = prepared!
+        const { groupId, commit, priority, priorityReason, cachedFiles } = runs[0]!
         const result = CiRunOutputSchema.parse({ ticketId: runs[0]!.id,
-          ...(runs.length > 1 ? { partitions: runs.map(run => ({ ticketId: run.id })) } : {}) })
+          ...(runs.length > 1 ? { partitions: runs.map(run => ({ ticketId: run.id })) } : {}),
+          ...(cachedFiles?.length ? { cachedFiles } : {}) })
         if (!input.gate) await supersedeCiRuns(client, runs[0]!, superseded, { source, commandId: input.commandId })
         for (const run of runs) {
-          await client.query(`insert into ci_runs(id,workspace_id,group_id,state,record,durations)
-            values($1,$2,$3,$6,$4::jsonb,$5::jsonb)`, [run.id, run.workspaceId, groupId, serializeCiJson(run),
-            durations ? serializeCiJson(durations) : null, run.state])
+          await client.query(`insert into ci_runs(id,workspace_id,group_id,state,record,durations,result_cache_keys,log_tail)
+            values($1,$2,$3,$6,$4::jsonb,$5::jsonb,$7::jsonb,$8)`, [run.id, run.workspaceId, groupId, serializeCiJson(run),
+            durations ? serializeCiJson(durations) : null, run.state,
+            cacheKeys && Object.keys(cacheKeys).length ? JSON.stringify(cacheKeys) : null, logTail ?? ''])
         }
         await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
           values($1,$2,'ci.priority',$3,'succeeded',$4::jsonb)`, [caller.id, source, scope.workspaceId,
@@ -252,7 +258,18 @@ export class HostCiService {
     const selectionScope = supportsSelection ? input.scope ?? 'affected' : 'full'
     const deriveFiles = selectionScope === 'affected' && input.files === undefined
     const selection = { ...input, scope: selectionScope, files: selectionScope === 'affected' ? input.files : [] }
-    const empty = selectionScope === 'affected' && input.files?.length === 0
+    // Gates, full scope and smoke runs always run every file; only explicit affected test selections use the cache.
+    let cache: CachedSelection | undefined
+    if (!input.gate && !smokeTarget && selectionScope === 'affected' && input.files?.length && this.commits.testTree
+      && (input.suite === 'unit' || input.suite === 'integration')) {
+      const testTree = this.commits.testTree.bind(this.commits)
+      cache = await planCachedSelection(this.pool, { workspaceId: scope.workspaceId, repository, commit,
+        suite: input.suite, files: input.files, tree: () => testTree(repository, commit),
+        partOf: file => input.suite === 'unit' && capabilities.parts ? unitPartOf(file, inventory?.heavy ?? []) : input.suite })
+      selection.files = cache.files
+    }
+    const cachedFiles = cache?.cached.length ? cache.cached : undefined
+    const empty = selectionScope === 'affected' && selection.files?.length === 0
     const split = input.suite === 'integration' ? capabilities.integrationPartitions : capabilities.parts
     let parts: { part: CiRunRecord['part']; partition: CiRunRecord['partition']; files: string[];
       expectedDurationMs?: number; suite?: CiRunRecord['suite']; plannedHostKey?: string;
@@ -288,8 +305,9 @@ export class HostCiService {
     if (!input.gate && input.suite === 'unit' && split) {
       parts = planCiParts(selection, unitDurations, inventory, (await readCiSlots(this.pool, this.endpoint)).ordinary)
     }
-    const runs = parts.map(planned => CiRunRecordSchema.parse({
+    const runs = parts.map((planned, index) => CiRunRecordSchema.parse({
       ...planned,
+      ...(index === 0 && cachedFiles ? { cachedFiles } : {}),
       expectedDurationMs: planned.expectedDurationMs ?? (input.suite === 'unit' ? 210_000 : 150_000),
       ...(smokeTarget ? { plannedHostKey: smokeTarget.key,
         ...(smokeShards !== undefined ? { integrationShards: smokeShards } : {}) } : {}),
@@ -305,10 +323,14 @@ export class HostCiService {
       ...(input.baseCommit ? { baseCommit: input.baseCommit } : {}),
       ...(deriveFiles ? { deriveFiles } : {}),
       state: empty ? 'passed' : 'queued', computer: null, step: empty ? input.suite : null,
-      exitCode: empty ? 0 : null, message: empty ? 'No affected files for this suite.' : null,
+      exitCode: empty ? 0 : null,
+      message: empty ? (cachedFiles ? `All ${cachedFiles.length} selected files already passed with identical inputs; `
+        + 'see cachedFiles.' : 'No affected files for this suite.') : null,
       queuedAt: now, startedAt: empty ? now : null, finishedAt: empty ? now : null,
       initiator: { principalId: caller.id, executionId: scope.executionId ?? null } }))
-    return { repository: workspace.repository, runs, durations }
+    return { repository: workspace.repository, runs, durations,
+      ...(cache && !empty ? { cacheKeys: cache.keys } : {}),
+      ...(empty && cachedFiles ? { logTail: ciCachedNotice(cachedFiles) } : {}) }
   }
 
   private async smokeTargets(runs: CiRunRecord[]): Promise<Map<string, HostRef>> {
@@ -675,6 +697,14 @@ export class HostCiService {
         log.warn({ err: error, runId: run.id }, 'CI durations remain pending')
       }
     }
+    if (terminal && collected.run.collection === 'complete') {
+      try {
+        await recordCiResultCache(this.pool, run, collected.run.state)
+      } catch (error) {
+        collected.run = { ...collected.run, collection: 'pending' }
+        log.warn({ err: error, runId: run.id }, 'CI result cache recording remains pending')
+      }
+    }
     await this.settle(run, computer, collected.run, { logTail })
   }
 
@@ -815,6 +845,7 @@ export class HostCiService {
           ...(run.expectedDurationMs !== undefined ? { expectedDurationMs: run.expectedDurationMs } : {}),
           ...(run.defaultBranch ? { defaultBranch: run.defaultBranch } : {}),
           ...(run.baseCommit ? { baseCommit: run.baseCommit } : {}),
+          ...(run.cachedFiles?.length ? { notice: ciCachedNotice(run.cachedFiles) } : {}),
           ...(durations.get(run.id) ? { durations: durations.get(run.id)! } : {}),
         })
         if (assigned === 'busy') {
