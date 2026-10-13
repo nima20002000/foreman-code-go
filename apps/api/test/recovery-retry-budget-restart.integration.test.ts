@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest'
 import { attempts, describeRetryBudget, occurrences, sameSlot } from './helpers/retryBudget.js'
+import { readWorkflowClosure } from '../src/modules/interactions/workflowClosure.js'
 import {
   executionRows, readback, recoveryFixture, assertOriginalFailure, assertRecoveryReceipts,
   type Form,
@@ -7,10 +8,10 @@ import {
 
 const forms: Form[] = ['repeat', 'sequential']
 const cases = forms.flatMap(form =>
-  (['cleanup', 'reattach'] as const).map(recovery => ({ form, recovery })))
+  (['graceful', 'crash'] as const).map(mode => ({ form, mode })))
 
 describeRetryBudget('finite technical retry budget: restart', () => {
-  it.each(cases)('$form: $recovery after restart cannot reset the final attempt budget', async ({ form, recovery }) => {
+  it.each(cases)('$form: $mode restart cannot reset the final attempt budget', async ({ form, mode }) => {
     const f = await recoveryFixture(form, submission => submission.attempt === 1 ? 'retryable_failure' : 'durable_failure_gap')
     try {
       f.launch()
@@ -26,16 +27,15 @@ describeRetryBudget('finite technical retry budget: restart', () => {
       sameSlot(before)
       expect(before.find((row) => row.execution.attempt === 1)!.execution.result?.outcome).toBe('failed')
       expect(before.find((row) => row.execution.attempt === 2)!.execution.result).toBeUndefined()
-      await f.restart()
-      if (recovery === 'cleanup') {
-        const owner = await f.runtime.runs.acquireOwnership(f.base.f.run.id, () => undefined)
-        if (!owner) throw new Error('The restarted Run is already owned.')
-        try {
-          await f.runtime.runs.requestCleanup(f.base.f.run.id, owner)
-        } finally {
-          await owner.release()
-        }
-      }
+      await f.restart({ mode })
+      const pending = await readback(f)
+      expect(pending.record.cleanupPending).toBe(true)
+      const pendingFinal = pending.details.find((detail) => detail.execution.executionId === finalId)!
+      expect(pendingFinal.execution).toEqual(beforeView.details.find((detail) =>
+        detail.execution.executionId === finalId)!.execution)
+      expect(pendingFinal).not.toHaveProperty('reportedResult')
+      expect(pendingFinal.acceptedResult).toEqual({ status: 'not_accepted' })
+      expect(f.provider.recoveryCalls).toEqual([])
       await f.settled()
       const after = await executionRows(f), view = await readback(f)
       expect(view.record.run).toMatchObject({ executionState: 'completed', outcome: 'failed' })
@@ -58,19 +58,18 @@ describeRetryBudget('finite technical retry budget: restart', () => {
       expect(first.execution).toEqual(before.find((row) => row.execution.attempt === 1)!.execution)
       await assertOriginalFailure(f, first.execution.id, true)
       const final = after.find((row) => row.execution.attempt === 2)!
-      if (recovery === 'cleanup') {
-        expect(final.execution.result).toMatchObject({ outcome: 'failed',
-          error: { code: 'EXECUTION_INTERRUPTED', retryable: false } })
-      } else {
-        await assertOriginalFailure(f, final.execution.id, true)
-      }
+      expect(final.execution.result).toEqual(finalDetail.reportedResult)
       expect(final.result_json).toBeNull()
-      if (recovery === 'cleanup') {
-        expect(f.provider.counts.attaches).toBe(0)
-        await assertRecoveryReceipts(f, [finalId])
+      expect(f.provider.counts.attaches).toBe(0)
+      if (mode === 'crash') {
+        await assertRecoveryReceipts(f, [finalId], { detached: false })
       } else {
-        expect(f.provider.counts.attaches).toBe(1)
         expect(f.provider.recoveryCalls).toEqual([])
+        expect(await readWorkflowClosure(f.base.db.pool, final.execution)).toMatchObject({
+          execution: { id: finalId, runId: f.base.f.run.id, attempt: 2 },
+          session: { nativeSessionId: final.execution.nativeSessionId },
+          durableGeneration: expect.stringMatching(/^[1-9][0-9]*$/),
+        })
       }
       expect(f.provider.counts.starts).toBe(2); expect(f.provider.counts.sessions).toBe(2)
       expect(await occurrences(f)).toHaveLength(form === 'repeat' ? 1 : 0)
