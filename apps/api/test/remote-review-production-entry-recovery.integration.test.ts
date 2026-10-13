@@ -7,6 +7,7 @@ import { hasPositiveRemoteEntryClosure } from '@foreman-code/contracts/remote-ex
 import { SourcePreparationSchema } from '@foreman-code/contracts/source-admission'
 import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { waitForRemoteReview, receipts, useRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
+import { waitForRequesterSession } from './helpers/remoteReviewEntryStartup.js'
 
 const withRemoteReviewFixture = useRemoteReviewFixture()
 
@@ -15,18 +16,13 @@ describe('production remote review and native recovery through authenticated MCP
     await withRemoteReviewFixture(async fixture => {
       await fixture.provider.blockRequesterSession()
       const started = await fixture.start()
-      const blocked = await waitForRemoteReview(async () => {
-        const calls = await fixture.provider.calls()
-        const executions = await fixture.executions(started.run.id)
-        const failed = executions.find(execution => execution.result?.outcome === 'failed')
-        if (failed) {
-          throw new Error(`Run execution failed before requester session acknowledgment: ${JSON.stringify({
-            executionId: failed.id, state: failed.state, errorCode: failed.result?.error?.code,
-          })}`)
-        }
-        return calls
-      }, calls => calls.some(call => 'requesterSessionBlocked' in call),
-      'requester thread creation before session acknowledgment')
+      const blocked = await waitForRequesterSession({
+        entryNodeId: fixture.version.entryNodeId,
+        readExecutions: async () => (await fixture.details(started.run.id)).executions,
+        readCalls: fixture.provider.calls,
+        reconcile: fixture.reconcileReviews,
+        subscribe: fixture.subscribeNativeChanges,
+      })
       const provider = blocked.find(call => 'requesterSessionBlocked' in call)!.requesterSessionBlocked as { pid: number }
       const requesterNode = fixture.version.definition.nodes.find(node => node.id !== fixture.version.entryNodeId)!
       const requester = (await fixture.executions(started.run.id)).find(execution => execution.workflowNodeId === requesterNode.id)!
