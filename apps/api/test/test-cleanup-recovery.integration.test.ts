@@ -37,6 +37,9 @@ it('retains fixture rows and native state until pending qualification closure is
   const saved = join(fixture.directory, 'recovery-note.txt')
   const admin = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL!, max: 1 })
   try {
+    const fixtureDatabase = (await fixture.pool.query<{ name: string }>(
+      'select current_database() as name')).rows[0]!.name
+    expect((await admin.query('select current_database() as name')).rows).toEqual([{ name: fixtureDatabase }])
     await fixture.pool.query('create table retained_fixture(value text)')
     await fixture.pool.query('insert into retained_fixture values($1)', ['preserved'])
     await writeFile(saved, 'pending closure')

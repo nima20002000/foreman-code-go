@@ -63,6 +63,8 @@ describe.skipIf(!postgresEnabled)('configuration reads before native launch', ()
       }
     })
     try {
+      const configuration = f.f.configurations[0]!
+      expect(await workflows.getAgentConfiguration(configuration.id)).toEqual(configuration)
       if (fault === 'acquisition') {
         // Exhaust a warm pool so the failure comes from queuing, not connection setup.
         held = await reads.connect()
