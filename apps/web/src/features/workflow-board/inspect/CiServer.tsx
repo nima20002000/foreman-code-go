@@ -10,6 +10,8 @@ import { formatClock, formatDuration } from '../../run-subagents/presentation'
 import { ciComputerLabel, ciJobLabel } from './runLiveStatus'
 import { runInspectionQueryKey } from './queries'
 import { CI_PLACEMENT_LABELS, ciJobDuration, isActiveCiJob, runCiApi, type CiServerSummary } from './ciServer'
+import { useProtectedAccessError } from '../../../shared/api/useProtectedAccessError'
+import { isApiAccessError } from '../../../shared/api/accessError'
 
 const SHORT_PLACEMENTS = { host: 'Host CI', github: 'GitHub', circleci: 'CircleCI' } as const
 
@@ -129,8 +131,9 @@ function CiJobTests({ scope, job, agent, statuses, onStatusesChange }: { scope: 
       ...(selected.length < STATUSES.length ? { status: selected } : {}) }, { signal }),
     enabled: selected.length > 0, retry: false, placeholderData: (previous) => previous?.ticketId === job.ticketId ? previous : undefined,
   })
-  const results = query.data?.ticketId === job.ticketId ? query.data.tests : undefined
-  const counts = results?.summary ?? job.tests
+  const denied = useProtectedAccessError(query)
+  const results = !denied && query.data?.ticketId === job.ticketId ? query.data.tests : undefined
+  const counts = denied ? undefined : results?.summary ?? job.tests
   const toggle = (status: CiTestStatus) => onStatusesChange(statuses.includes(status)
     ? statuses.filter((value) => value !== status) : [...statuses, status])
   return <div className="ci-server-tests">
@@ -148,6 +151,8 @@ function CiJobTests({ scope, job, agent, statuses, onStatusesChange }: { scope: 
         description={isActiveCiJob(job) ? 'Results arrive when the job finishes.'
           : 'Vitest unit and integration jobs report their tests when they finish; other jobs have only a log.'} />
       : <CiTestFiles files={results.files} truncated={results.truncated} />}
+    {query.isError && results ? <Alert tone="warning" title="Test results could not be refreshed.">
+      Showing the last test results read.</Alert> : null}
   </div>
 }
 
@@ -172,14 +177,22 @@ function CiJobLog({ scope, job }: { scope: RepeatGraphScopeV3; job: CiRunJob }) 
   const query = useQuery({
     queryKey: [...runInspectionQueryKey(scope), 'ci-log', job.ticketId, job.ci.state],
     queryFn: ({ signal }) => runCiApi.logTail({ workspaceId: scope.workspaceId, ticketId: job.ticketId }, { signal }),
-    enabled: started, retry: false, refetchInterval: isActiveCiJob(job) ? 3000 : false,
+    enabled: started, retry: false,
+    refetchInterval: state => {
+      if (isApiAccessError(state.state.error)) return false
+      return isActiveCiJob(job) ? 3000 : false
+    },
   })
+  const denied = useProtectedAccessError(query)
+  const log = denied ? undefined : query.data
   return <div className="ci-server-log">
     <CiJobHeader job={job} />
     {!started ? <p className="ci-server-note">The job has not started; its log appears once a computer takes it.</p>
       : query.isPending ? <Spinner label="Loading log" />
-      : query.isError && !query.data ? <Alert tone="warning" title="The log is unavailable right now.">
+      : (denied || query.isError) && !log ? <Alert tone="warning" title="The log is unavailable right now.">
         The computer that ran this job may be offline.</Alert>
-      : <pre className="ci-log" tabIndex={0} aria-label="Log tail">{query.data?.text || 'The log is empty.'}</pre>}
+      : <pre className="ci-log" tabIndex={0} aria-label="Log tail">{log?.text || 'The log is empty.'}</pre>}
+    {query.isError && log ? <Alert tone="warning" title="The log could not be refreshed.">
+      Showing the last log read.</Alert> : null}
   </div>
 }

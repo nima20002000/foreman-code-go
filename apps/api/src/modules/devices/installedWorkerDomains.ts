@@ -44,6 +44,7 @@ import {
 } from '@foreman-code/contracts/source-operations'
 import type { DeviceExtensionRegistration, DeviceExtensionContext } from './deviceApplicationChannel.js'
 import type { DeviceConnectionSupervisor } from './connectionSupervisor.js'
+import { MainClock } from './workerClock.js'
 import { createAuthenticatedTransferReceiver, transferContextForBinding } from '../byte-transfer/carrier.js'
 import { sourceTransfersOnMain } from '../sources/operationCarrier.js'
 import { SourceOperationWorkerService } from '../sources/operationWorker.js'
@@ -105,7 +106,13 @@ export async function createInstalledWorkerDomains(input: {
   const registry = new NativeProcessRegistry(join(input.stateDirectory, 'workflow-native-processes'))
   const jobRegistry = new NativeProcessRegistry(join(input.stateDirectory, 'job-runtime-native-processes'))
   let jobJournalOpening: Promise<RemoteOperationJournal> | undefined
-  const ownership = { now: () => input.connection()?.mainNow() ?? Date.now(),
+  const mainClock = new MainClock()
+  const observedMainTime = () => {
+    const observed = input.connection()?.mainNow()
+    if (observed !== undefined) mainClock.observe(observed)
+    return mainClock.observed ? mainClock.now() : undefined
+  }
+  const ownership = { now: () => observedMainTime() ?? Date.now(),
     retentionNow: () => input.connection()?.mainNow(),
     ...(input.assertStateOwnership ? { assertExclusiveOwner: input.assertStateOwnership } : {}) }
   const jobJournal = () => jobJournalOpening ??= RemoteOperationJournal.open(
@@ -623,9 +630,13 @@ function isWorkerAdmission(namespace: string, payload: unknown): boolean {
       .includes(String(payload.method))
   }
   if (namespace === 'byte-transfer-v1' && 'method' in payload) return payload.method === 'start'
+  if (namespace === 'rsync-stage-v1' && 'method' in payload) {
+    return ['source-prepare', 'receiver-prepare', 'writer-prepare', 'writer-activate'].includes(String(payload.method))
+  }
   if (!('operation' in payload)) return false
   return namespace === SOURCE_OPERATION_EXTENSION.namespace && payload.operation === 'sources.prepare'
     || namespace === COMPUTER_MAINTENANCE_NAMESPACE && payload.operation === 'start'
     || namespace === 'job-runtime-qualification-v1' && ['start', 'run'].includes(String(payload.operation))
     || namespace === CI_RUNTIME_NAMESPACE && payload.operation === 'prepare'
+    || namespace === CI_HOST_NAMESPACE && payload.operation === 'start'
 }

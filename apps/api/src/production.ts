@@ -1832,6 +1832,7 @@ export function buildProductionApp(
       await runtimeOwner.acquire()
       assertOpen()
       await startupDatabase(() => remoteExecution.initialize())
+      await entrypoint?.recover()
       assertOpen()
       if (infrastructure?.mode !== 'replay') await mainCodex.initialize()
       assertOpen()
