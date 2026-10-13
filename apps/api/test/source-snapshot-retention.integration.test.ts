@@ -27,9 +27,11 @@ import { reconcileFailedCaptures } from '../src/modules/sources/failedCaptureCle
 import { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { WorkspaceManagementService } from '../src/modules/workspaces/management.js'
-import { agent3Database } from './helpers/wave25Agent3.js'
+import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { jobExecution, jobSpec } from './helpers/jobFixture.js'
 import { verificationCapacityFixture } from './helpers/verificationCapacityFixture.js'
+import { ownedTestDatabaseUrl } from './helpers/testResources.js'
+import { createTestPool } from './helpers/testPool.mjs'
 import { rejectableDeferred } from './helpers/deferred.js'
 
 let fixture: Awaited<ReturnType<typeof setup>> | undefined
@@ -41,7 +43,7 @@ afterEach(async () => {
 })
 
 async function setup() {
-  const database = await agent3Database()
+  const database = await migratedDatabase()
   const pool = database.pool
   const project = join(database.directory, 'project')
   const canonical = join(database.directory, 'snapshots')
@@ -213,6 +215,29 @@ async function setup() {
       await database.close()
     } }
 }
+
+it('reuses prepared migration history with an independent installation and authenticated source storage', async () => {
+  const prepared = createTestPool({ connectionString: ownedTestDatabaseUrl(), max: 1 })
+  let migrationHistory: unknown[]
+  let installationId: string
+  try {
+    migrationHistory = (await prepared.query(
+      'select version,applied_at from application_migrations order by version')).rows
+    installationId = (await prepared.query<{ id: string }>(
+      'select id from application_installation where singleton=true')).rows[0]!.id
+  } finally {
+    await prepared.end()
+  }
+  fixture = await setup()
+  const f = fixture
+  expect(migrationHistory.length).toBeGreaterThan(0)
+  expect((await f.pool.query(
+    'select version,applied_at from application_migrations order by version')).rows).toEqual(migrationHistory)
+  expect(f.mainId).not.toBe(installationId)
+  const source = (await f.approve()).source
+  expect((await f.read(source)).manifest).toEqual(source.manifest)
+  expect((await f.reservation(source)).state).toBe('retained')
+}, 60_000)
 
 it.each(['approved', 'failed'] as const)(
   'reserves capacity within a short database timeout while %s capture removal is paused', async kind => {
