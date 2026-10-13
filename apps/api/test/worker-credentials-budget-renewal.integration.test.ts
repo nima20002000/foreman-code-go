@@ -13,13 +13,18 @@ beforeEach(() => {
   ({ pool, execution, access, credentials, budgets } = fixture)
 })
 
-it('renews an expired scoped token while its exact execution lease is still owned', async () => {
+it('renews a live scoped token while its execution is waiting without rotating it', async () => {
   const issued = await credentials.issueForExecution(execution.id)
-  await pool.query("update management_principals set expires_at=now()-interval '1 second' where id=$1", [issued.principalId])
-  await expect(access.authenticate(issued.environment.variables.GRAPHQL_MCP_TOKEN!, 'worker')).rejects.toMatchObject({ code: 'AUTH_EXPIRED' })
-  const before = (await pool.query('select token_hash from management_principals where id=$1', [issued.principalId])).rows[0]
+  const token = issued.environment.variables.GRAPHQL_MCP_TOKEN!
+  await pool.query("update management_principals set expires_at=clock_timestamp()+interval '30 seconds' where id=$1",
+    [issued.principalId])
+  expect((await access.authenticate(token, 'worker')).id).toBe(issued.principalId)
+  const before = (await pool.query('select token_hash,expires_at from management_principals where id=$1',
+    [issued.principalId])).rows[0]
   const renewedAt = await credentials.renewForExecution(execution.id, issued)
-  expect(Date.parse(renewedAt)).toBeGreaterThan(Date.now())
+  expect(Date.parse(renewedAt)).toBeGreaterThan(before.expires_at.getTime())
+  expect(issued.renewalDeadline).toBeGreaterThan(performance.now())
+  expect((await access.authenticate(token, 'worker')).id).toBe(issued.principalId)
   const after = (await pool.query('select token_hash,expires_at,revoked_at from management_principals where id=$1', [issued.principalId])).rows[0]
   expect(after.token_hash).toEqual(before.token_hash)
   expect(after.expires_at.toISOString()).toBe(renewedAt)
