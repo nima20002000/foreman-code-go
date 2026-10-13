@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { createRuntimeBuildIdentity } from '../packages/contracts/src/runtimeBuildIdentityNode.mjs'
+import { copyApiRuntime } from './copy-api-runtime.mjs'
 
 async function fixture(t) {
   const storage = process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp')
@@ -38,4 +40,16 @@ test('identifies in-place builds and contract changes independently of checkout 
   assert.notEqual(extended.buildId, rebuilt.buildId)
   assert.notEqual(extended.contractsId, rebuilt.contractsId)
   assert.equal(first.version, 1)
+})
+
+test('packages the captured build identity when the API runtime is copied through its library interface', async t => {
+  const root = await fixture(t)
+  const repository = fileURLToPath(new URL('../', import.meta.url))
+  const output = join(root, 'installed-api')
+  const expected = createRuntimeBuildIdentity(repository)
+
+  await copyApiRuntime(repository, output)
+
+  const identity = JSON.parse(await readFile(join(output, 'runtime-build.json'), 'utf8'))
+  assert.deepEqual(identity, expected)
 })

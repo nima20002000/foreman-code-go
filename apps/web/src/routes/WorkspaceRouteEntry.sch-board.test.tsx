@@ -4,7 +4,7 @@ import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/rea
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { http, HttpResponse } from 'msw'
+import { delay, http, HttpResponse } from 'msw'
 import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selected-run-chat'
 import { RunActivitiesPageSchema } from '@foreman-code/contracts/wave25'
 import { routeTree } from '../app/router'
@@ -173,6 +173,20 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
     expect(writes).toEqual([])
   })
 
+  it('opens a cold draft, inspects a saved Run and returns without sending a write', async () => {
+    const { router } = await mount()
+    const editor = await authoring()
+    await choose('run-a')
+    expect(await savedY()).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Selected Run pinned topology' })).toBeVisible()
+    expect(router.state.location.search.runId).toBe('run-a')
+    await choose(null)
+    await waitFor(() => expect(editor).toBeVisible())
+    expect(within(editor).getByRole('heading', { name: 'Research to review' })).toBeVisible()
+    expect(router.state.location.search.runId).toBeUndefined()
+    expect(writes).toEqual([])
+  })
+
   it('inspects a saved Agent missing from the current workflow and reopens its generated URL', async () => {
     const reads = installNodeInspection()
     const current = getMockFixture(scope.workspaceId)!.workflows.find(item => item.id === scope.workflowId)!
@@ -320,7 +334,7 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
     expect(screen.getByLabelText('Editable workflow graph')).not.toBeVisible()
   })
 
-  it('refreshes the retained draft context without replacing local edits while a Run is pinned', async () => {
+  it.each([3_200, 6_400])('refreshes the retained draft context without replacing local edits over %s ms while a Run is pinned', async (pollingTime) => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     let workspaceReads = 0
     const recordWorkspaceRead = ({ request }: { request: Request }) => {
@@ -337,7 +351,7 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
       await waitFor(() => expect(client.isFetching({ queryKey: boardDraftContextKey(scope.workspaceId, scope.workflowId) })).toBe(0))
       const initialWorkspaceReads = workspaceReads
       const currentReads = context.mock.calls.length
-      await act(async () => { await vi.advanceTimersByTimeAsync(3_200) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(pollingTime) })
       await waitFor(() => expect(context.mock.calls.length).toBeGreaterThan(currentReads))
       expect(workspaceReads).toBe(initialWorkspaceReads)
 
@@ -348,14 +362,18 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
       await waitFor(() => expect(client.isFetching({ queryKey: boardDraftContextKey(scope.workspaceId, scope.workflowId) })).toBe(0))
       const selectedWorkspaceReads = workspaceReads
       const historyReads = context.mock.calls.length
-      await act(async () => { await vi.advanceTimersByTimeAsync(3_200) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(pollingTime) })
       await waitFor(() => expect(context.mock.calls.length).toBeGreaterThan(historyReads))
       expect(workspaceReads).toBe(selectedWorkspaceReads)
       expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).toBe(graph)
 
       await choose(null)
       await waitFor(() => expect(editor).toBeVisible())
-      await waitFor(() => expect(context.mock.calls.length).toBeGreaterThan(historyReads))
+      const restoredReads = context.mock.calls.length
+      await act(async () => { await vi.advanceTimersByTimeAsync(pollingTime) })
+      await waitFor(() => expect(context.mock.calls.length).toBeGreaterThan(restoredReads))
+      expect(workspaceReads).toBe(initialWorkspaceReads + 1)
+      expect(writes).toEqual([])
       expect(within(editor).getByRole('heading', { name: 'Retained local name' })).toBeVisible()
       expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).toBe(graph)
     } finally {
@@ -364,28 +382,42 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
     }
   }, 15_000)
 
-  it('automatically pins an active Run and returns to authoring through New run', async () => {
+  it.each([
+    { executionState: 'running', snapshotDelay: 0 },
+    { executionState: 'queued', snapshotDelay: 0 },
+    { executionState: 'running', snapshotDelay: 1_500 },
+    { executionState: 'queued', snapshotDelay: 1_500 },
+  ] as const)('automatically pins a $executionState Run with a $snapshotDelay ms snapshot delay and returns to authoring through New run', async ({ executionState, snapshotDelay }) => {
     const fixture = getMockFixture(scope.workspaceId)!
     server.use(
-      http.get(`${runsRoute}/summaries`, () => HttpResponse.json(page([{ ...runA, status: 'running' }, runB]))),
       http.get('/api/workspaces/workspace-1', () => HttpResponse.json({
         workspace: fixture.workspace, agents: fixture.agents, workflows: fixture.workflows,
         resources: fixture.resources, browserProfiles: fixture.browserProfiles, runners: fixture.runners,
-        runs: [{ ...fixture.runs[0], id: 'run-a', executionState: 'running', outcome: 'pending', finishedAt: undefined }],
+        runs: [{ ...fixture.runs[0], id: 'run-a', executionState, outcome: 'pending', finishedAt: undefined }],
       })),
+      http.get(`${runsRoute}/summaries`, () => HttpResponse.json(page([
+        { ...runA, status: executionState }, runB,
+      ]))),
+      http.get(`${runsRoute}/:runId/snapshot`, async ({ params }) => {
+        if (snapshotDelay) await delay(snapshotDelay)
+        return HttpResponse.json(reply(String(params.runId), scope))
+      }),
     )
     const listed = await runsSelectorApi.list({ ...scope, limit: 20 })
-    expect(listed.items.find(run => run.runId === 'run-a')).toMatchObject({ status: 'running' })
+    expect(listed.items.find(run => run.runId === 'run-a')).toMatchObject({ status: executionState })
     const { router } = await mount()
-    await savedY()
-    expect(router.state.location.search).toMatchObject({ runId: 'run-a', workflowVersionId: 'version-a',
-      executionSemanticsVersion: 3 })
+    await waitFor(() => expect(router.state.location.search).toMatchObject({
+      runId: 'run-a', workflowVersionId: 'version-a', executionSemanticsVersion: 3,
+    }), { timeout: 3000 })
+    await authoring()
+    expect(await savedY()).toBeVisible()
     expect(screen.getByText('a', { selector: '.board-run-tag code' }).closest('[role="status"]')).toHaveTextContent('Run a')
     expect(screen.queryByRole('button', { name: 'Return to draft' })).not.toBeInTheDocument()
     await choose(null)
     await waitFor(() => expect(screen.getByLabelText('Editable workflow graph')).toBeVisible())
     expect(router.state.location.search.runId).toBeUndefined()
     expect(screen.queryByRole('region', { name: 'Selected Run pinned topology' })).not.toBeInTheDocument()
+    expect(writes).toEqual([])
   })
 
   it('opens the saved-workflow clock from history, without scheduling the historical version', async () => {
