@@ -35,7 +35,7 @@ export async function saveQueuedCiRun(pool: pg.Pool, previous: CiRunRecord, next
 }
 
 /** Only the winning database claim may enter an executor. */
-export async function claimCiDispatch(pool: pg.Pool, run: CiRunRecord, computer: HostCiComputer,
+export async function claimCiDispatch(pool: SqlQuery, run: CiRunRecord, computer: HostCiComputer,
   request: Extract<CiHostRequest, { operation: 'start' }>): Promise<CiRunRecord | null> {
   const next = CiRunRecordSchema.parse({ ...run, state: 'starting', step: 'dispatch', message: null,
     computer: { hostRef: computer.hostRef, label: computer.label }, dispatchRequest: request,
