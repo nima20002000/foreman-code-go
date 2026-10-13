@@ -1,9 +1,32 @@
 import assert from 'node:assert/strict'
 import { describe, it, vi } from 'vitest'
 import { readPublicProjectionLocked } from '../src/modules/run-graph/compactSnapshot.js'
+import { readRepeatGraphCurrent } from '../src/modules/run-graph/repeatReader.js'
 import { ProjectionDatabase, projectionScope } from './eng04-projection-fixture.js'
 
 describe('publication projection reader', () => {
+  it('reads an admitted ordinary workflow without inventing native work', async () => {
+    const db = new ProjectionDatabase()
+    await db.initialize()
+
+    const snapshot = await readRepeatGraphCurrent(db.pool(), {
+      protocolVersion: 1,
+      scope: projectionScope,
+    }, async () => undefined)
+
+    assert.equal(snapshot.asOfSequence, '1')
+    assert.equal(snapshot.state.nodes.length, 1)
+    const node = snapshot.state.nodes[0]!
+    const workflowNodeId = db.fixture.version.definition.nodes[0]!.id
+    assert.deepEqual(node.state, { workflowNodeId, lifecycle: 'not_activated' })
+    assert.deepEqual(node.activity, { workflowNodeId, status: 'unknown' })
+    assert.deepEqual(snapshot.state.executions, [])
+    assert.deepEqual(snapshot.state.interactions, [])
+    assert.deepEqual(snapshot.state.reviews, [])
+    assert.deepEqual(snapshot.state.occurrences, [])
+    assert.equal(db.state.head, 1)
+  })
+
   it('uses the supplied reader on the same transaction for opening, capture and commit recheck', async () => {
     const reader = vi.fn(readPublicProjectionLocked)
     const db = new ProjectionDatabase(reader)
