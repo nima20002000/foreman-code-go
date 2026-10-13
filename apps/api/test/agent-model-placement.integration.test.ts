@@ -108,7 +108,6 @@ it('reconciles a changed Agent profile through authenticated MCP and admits the 
     })).value
     const initial = await base.create()
     initial.expectedAgentConfigurationVersionIds = { [agentId]: created.agent.configurationVersionId! }
-    initial.expectedLocationRevision = placement.locationRevision
     initial.graph.nodes = initial.graph.nodes.map(node => ({ ...agentWorkflowNode(node), agentId,
       placement: { ...placement.local, instanceId: old.instanceId, instanceRevision: old.instanceRevision } }))
     const first = CurrentWorkflowSaveResultSchema.parse(await call('workflow_save_v3', initial))

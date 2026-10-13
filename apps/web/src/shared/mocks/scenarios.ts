@@ -467,8 +467,8 @@ export function getMockHarnessCatalog() {
   }))
 }
 
-export function updateMockManagedHarnessDefaults(next: HarnessDefaults, expectedRevision: number) {
-  if (expectedRevision !== harnessDefaultsRevision) return undefined
+export function updateMockManagedHarnessDefaults(next: HarnessDefaults, expectedRevision?: number) {
+  if (expectedRevision !== undefined && expectedRevision !== harnessDefaultsRevision) return undefined
   updateMockHarnessDefaults(next)
   return { defaults: getMockHarnessDefaults(), revision: harnessDefaultsRevision }
 }
@@ -477,8 +477,8 @@ export function getMockAgentDefaults() {
   return { value: clone(agentDefaults), revision: agentDefaultsRevision, versionId: agentDefaultsRevision ? `mock-agent-defaults-v${agentDefaultsRevision}` : null }
 }
 
-export function updateMockAgentDefaults(next: AgentDefaults, expectedRevision: number) {
-  if (expectedRevision !== agentDefaultsRevision) return undefined
+export function updateMockAgentDefaults(next: AgentDefaults, expectedRevision?: number) {
+  if (expectedRevision !== undefined && expectedRevision !== agentDefaultsRevision) return undefined
   agentDefaults = clone(next)
   agentDefaultsRevision += 1
   return getMockAgentDefaults()
@@ -488,8 +488,8 @@ export function getMockWorkflowDefaults() {
   return { value: clone(workflowDefaults), revision: workflowDefaultsRevision, versionId: workflowDefaultsRevision ? `mock-workflow-defaults-v${workflowDefaultsRevision}` : null }
 }
 
-export function updateMockWorkflowDefaults(next: WorkflowDefaults, expectedRevision: number) {
-  if (expectedRevision !== workflowDefaultsRevision) return undefined
+export function updateMockWorkflowDefaults(next: WorkflowDefaults, expectedRevision?: number) {
+  if (expectedRevision !== undefined && expectedRevision !== workflowDefaultsRevision) return undefined
   workflowDefaults = clone(next)
   workflowDefaultsRevision += 1
   return getMockWorkflowDefaults()

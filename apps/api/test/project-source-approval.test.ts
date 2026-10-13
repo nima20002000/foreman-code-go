@@ -32,11 +32,11 @@ function fixture() {
   const commands = {
     execute: vi.fn(async (request: Parameters<PostgresCommandCoordinator['execute']>[0]) => {
       const hash = commandInputHash(request.payload)
-      const existing = receipts.get(request.commandId)
+      const existing = receipts.get(request.commandId ?? crypto.randomUUID())
       if (existing && existing.hash !== hash) throw new DomainError('COMMAND_ID_CONFLICT', 'Input changed.', 409)
       if (existing) return { value: existing.value, replayed: true }
       const value = await request.perform(client as never)
-      receipts.set(request.commandId, { hash, value })
+      receipts.set(request.commandId ?? crypto.randomUUID(), { hash, value })
       return { value, replayed: false }
     }),
   }

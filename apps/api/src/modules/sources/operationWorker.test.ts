@@ -41,7 +41,7 @@ async function fixture() {
   await writeFile(join(origin, 'src/source.ts'), bytes); run('add', '.'); run('commit', '-qm', 'source')
   const commit = run('rev-parse', 'HEAD'), approvedSourceId = randomUUID()
   const capture = (snapshotId: string, at = commit) => captureGitSource({ root: origin, approvedSourceId, snapshotId, commit: at,
-    repository: 'octo/site', executablePolicy: 'strip', approvedPaths: ['src/source.ts'],
+    repository: 'octo/site', executablePolicy: 'strip',
     sink: { write: async () => {}, writeGitMetadata: async () => {}, commit: async () => {}, abort: async () => {} } })
   const manifest = await capture(randomUUID())
   const system = systemGitWorktreePorts(environment)

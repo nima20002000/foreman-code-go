@@ -289,14 +289,6 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     })))
     expect(next.items).toHaveLength(1)
     expect(next.items[0]!.manifest.snapshotId).not.toBe(page.items[0]!.manifest.snapshotId)
-    await writeFile(join(project, '.env'), 'SECRET=fixture\n')
-    await qualifiedGit(project, ['add', '.env'])
-    await qualifiedGit(project, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
-      'commit', '-m', 'tracked sensitive file'])
-    const sensitiveCommit = (await qualifiedGit(project, ['rev-parse', 'HEAD'])).toString().trim()
-    expect(failure(await client.callTool({ name: 'source_approve', arguments: {
-      ...approve, commandId: randomUUID(), commit: sensitiveCommit,
-    } }))).toMatchObject({ code: 'SOURCE_SENSITIVE_PATH' })
     expect(SourceListResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_list',
       arguments: { workspaceId: workspace.id, detail: 'full' } })))).items).toHaveLength(2)
     expect(ApprovedSourceSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_get',

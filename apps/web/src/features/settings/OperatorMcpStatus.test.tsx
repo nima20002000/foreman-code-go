@@ -114,7 +114,7 @@ it('uses a new Claude command after a completed install is removed in another se
     http.put('/api/management/harnesses/defaults', async ({ request }) => {
       const input = await request.json() as DefaultsUpdate
       inputs.push(input)
-      return HttpResponse.json({ value: { defaults: input.defaults, revision: input.expectedRevision + 1 }, replayed: false })
+      return HttpResponse.json({ value: { defaults: input.defaults, revision: (input.expectedRevision ?? 0) + 1 }, replayed: false })
     }),
   )
   const mounted = mount(<OperatorMcpStatus harness="claude" defaults={defaults} revision={3} />)

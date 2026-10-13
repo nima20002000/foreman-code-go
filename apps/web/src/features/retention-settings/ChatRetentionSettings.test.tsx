@@ -36,7 +36,7 @@ function currentPreview(durationSeconds: number): FileRetentionPreviewResult {
 }
 function accept(input: FileRetentionSaveInput) {
   preference = FileRetentionPreferenceSchema.parse({
-    ...preference, durationSeconds: input.durationSeconds, revision: input.expectedRevision + 1,
+    ...preference, durationSeconds: input.durationSeconds, revision: (input.expectedRevision ?? preference.revision) + 1,
   })
   const result = FileRetentionSaveResultSchema.parse({
     value: {

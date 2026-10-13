@@ -23,7 +23,7 @@ it('shows status and persists off and on with readback revisions', async () => {
     http.post('*/api/management/computers/sync/update', async ({ request }) => {
       const input = await request.json() as ComputerSyncUpdateInput
       writes.push(input)
-      saved = { ...saved, folders: [{ ...saved.folders[0]!, enabled: input.enabled, revision: input.expectedRevision + 1 }] }
+      saved = { ...saved, folders: [{ ...saved.folders[0]!, enabled: input.enabled, revision: (input.expectedRevision ?? saved.folders[0]!.revision) + 1 }] }
       return HttpResponse.json(saved)
     }),
   ])

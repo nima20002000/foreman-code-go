@@ -70,13 +70,13 @@ async function fixture() {
   const denied = vi.fn().mockResolvedValue(undefined)
   const commands = { recordDenied: denied, execute: async (input: Parameters<PostgresCommandCoordinator['execute']>[0]) => {
     await input.authorize?.(sql as unknown as pg.PoolClient)
-    const old = receipts.get(input.commandId)
+    const old = receipts.get(input.commandId ?? crypto.randomUUID())
     if (old) {
       if (old.payload !== JSON.stringify(input.payload)) throw new DomainError('COMMAND_ID_CONFLICT', 'Changed input.', 409)
       return { value: old.value, replayed: true }
     }
     const value = await input.perform(sql as unknown as pg.PoolClient)
-    receipts.set(input.commandId, { payload: JSON.stringify(input.payload), value })
+    receipts.set(input.commandId ?? crypto.randomUUID(), { payload: JSON.stringify(input.payload), value })
     return { value, replayed: false }
   } } as unknown as PostgresCommandCoordinator
   const endpoint = { capabilities: () => [{ namespace: 'computer-sync-v1', mainCanRequest: true }],

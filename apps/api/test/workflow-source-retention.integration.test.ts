@@ -29,7 +29,6 @@ async function fixture() {
       worktrees: { readyRoot: async () => undefined, sources: placement.sources, roots: placement.policies },
     })
     const input = await base.create()
-    input.expectedLocationRevision = placement.locationRevision
     const source = await placement.sources.get(base.writer.principal, 'http', {
       workspaceId: input.workspaceId, ...placement.source,
     })
