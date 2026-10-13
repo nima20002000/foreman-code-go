@@ -418,6 +418,17 @@ test('integration shards use their CI slot CPU and memory shares rather than the
   assert.equal(integrationShardPlan({ ...environment, FOREMAN_CODE_INTEGRATION_SHARDS: '12' }, shardResources).shards, 6)
 })
 
+test('CI shard ceilings respect database capacity without rejecting the run', () => {
+  const environment = { FOREMAN_CODE_CI_INTEGRATION_SHARDS: '12' }
+  assert.equal(integrationShardPlan(environment, shardResources).shards, 12)
+  const plan = integrationShardPlan(environment, { ...shardResources, maxConnections: 100 })
+  assert.equal(plan.shards, 6)
+  assert.match(plan.reason, /PostgreSQL limit 6/)
+  assert.equal(integrationShardPlan({ FOREMAN_CODE_CI_INTEGRATION_SHARDS: '4' }, shardResources).shards, 4)
+  assert.throws(() => integrationShardPlan({ FOREMAN_CODE_CI_INTEGRATION_SHARDS: '0' }, shardResources),
+    /integer from 1 to 64/)
+})
+
 test('unknown or invalid resource measurements retain twelve without ignoring known smaller limits', () => {
   assert.equal(integrationShardPlan({}).shards, 12)
   for (const field of Object.keys(shardResources)) {

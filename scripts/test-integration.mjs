@@ -340,7 +340,9 @@ export function integrationShardPlan(environment, resources = {}, fileCount = In
   const memoryLimit = knownMemory ? Math.floor(availableMemoryBytes / memoryPerShard) : 12
   const freeConnections = knownDatabase ? maxConnections - reservedConnections - activeConnections : null
   const databaseLimit = knownDatabase ? Math.floor(freeConnections / connectionsPerShard) : 12
-  const limit = Math.min(cpuLimit, memoryLimit, databaseLimit)
+  const ciShardCeiling = environment.FOREMAN_CODE_CI_INTEGRATION_SHARDS
+  const ciShardLimit = ciShardCeiling === undefined ? Infinity : integrationShardLimit(ciShardCeiling)
+  const limit = Math.min(cpuLimit, memoryLimit, databaseLimit, ciShardLimit)
   const reasons = [
     knownCpu ? `CPU limit ${cpuLimit}` : 'CPU unknown (fallback 12)',
     knownMemory ? `memory limit ${memoryLimit} (${availableMemoryBytes} available bytes, 1 GiB/shard)`
@@ -349,6 +351,7 @@ export function integrationShardPlan(environment, resources = {}, fileCount = In
       + ` ${reservedConnections} reserved, ${activeConnections} occupied, ${connectionsPerShard} connections/shard)`
       : 'PostgreSQL limits unknown (fallback 12)',
   ]
+  if (ciShardCeiling !== undefined) reasons.push(`CI shard ceiling ${ciShardLimit}`)
   if (slotCpu !== undefined || slotMemory !== undefined) reasons.push('limited to this CI slot share')
   if (limit < 1) throw new Error(`No integration shard fits available resources: ${reasons.join('; ')}`)
   const requested = readProductEnvironment(environment, 'INTEGRATION_SHARDS')
