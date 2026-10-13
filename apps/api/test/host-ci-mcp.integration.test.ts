@@ -40,7 +40,7 @@ afterEach(() => { vi.unstubAllEnvs() })
 
 /** Two build computers that answer the host CI protocol from memory; tests finish their runs. */
 function fakeComputers(github: Record<string, boolean> = {}, cloud: boolean | { github: number; circleci: number } = false,
-  hostSlots = 1) {
+  hostSlots = 1, cloudSystemd = false) {
   const mainId = randomUUID()
   const computers: HostCiComputer[] = ['laptop', 'builder'].map((name, index) => ({ key: `${mainId}:${name}`,
     hostRef: { kind: 'device', mainId, deviceId: randomUUID() }, label: name, priority: 60 - index }))
@@ -48,7 +48,8 @@ function fakeComputers(github: Record<string, boolean> = {}, cloud: boolean | { 
   for (const provider of ['github', 'circleci'] as const) {
     for (let slot = 0; slot < slots[provider]; slot++) {
       computers.push({ key: `${mainId}:cloud:${provider}:${slot}`, hostRef: { kind: 'cloud', mainId, provider, slot },
-        label: `${provider === 'github' ? 'GitHub Actions' : 'CircleCI'} ${slot + 1}`, priority: 30 })
+        label: `${provider === 'github' ? 'GitHub Actions' : 'CircleCI'} ${slot + 1}`, priority: 30,
+        userSystemd: { supported: cloudSystemd, reason: cloudSystemd ? null : 'Executor has no systemd user manager' } })
     }
   }
   const runs = new Map<string, { computer: string; run: CiHostRun; log: string; request: CiHostRequest
@@ -61,6 +62,7 @@ function fakeComputers(github: Record<string, boolean> = {}, cloud: boolean | { 
         const active = [...runs.values()].filter(value => value.computer === computer.label
           && ['starting', 'running'].includes(value.run.state))
         return { operation: 'status', ready: github[computer.label] !== false, cpuCount: 16, memoryBytes: 14 * 2 ** 30,
+          ...(computer.userSystemd ? { userSystemd: computer.userSystemd } : {}),
           slotsTotal: computer.hostRef.kind === 'cloud' ? 1 : hostSlots, slotsUsed: active.length,
           reasons: github[computer.label] === false ? ['Log in to GitHub on this computer (gh auth login).'] : [],
           runs: [...runs.values()].filter(value => value.computer === computer.label).map(value => value.run) }
@@ -108,7 +110,7 @@ function fakeComputers(github: Record<string, boolean> = {}, cloud: boolean | { 
 }
 
 async function fixture(options: { repository?: boolean; github?: Record<string, boolean>; unitInventory?: CiUnitInventory
-  cloud?: boolean | { github: number; circleci: number }; agent?: boolean; hostSlots?: number
+  cloud?: boolean | { github: number; circleci: number }; agent?: boolean; hostSlots?: number; cloudSystemd?: boolean
   repositoryRunner?: { commits: CiCommits; endpoint: HostCiEndpoint } } = {}) {
   const saved = options.agent ? makeCurrentWorkflowFixture(randomUUID()) : undefined
   if (saved) {
@@ -137,7 +139,7 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
     published.push(resolved)
     return resolved
   } }
-  const computers = fakeComputers(options.github, options.cloud, options.hostSlots)
+  const computers = fakeComputers(options.github, options.cloud, options.hostSlots, options.cloudSystemd)
   const commands = new PostgresCommandCoordinator(db.pool)
   const ci = new HostCiService(db.pool, commands, new RunCiAuthority(db.pool), commits,
     options.repositoryRunner?.endpoint ?? computers.endpoint)
@@ -851,6 +853,38 @@ it('queues a run while every computer is busy and starts it on the first one tha
   } finally { await f.close() }
 })
 
+it.each(['github', 'circleci'] as const)('runs user-systemd slices on capable %s slots through authenticated MCP', async provider => {
+  const f = await fixture({ cloud: { github: provider === 'github' ? 2 : 0, circleci: provider === 'circleci' ? 2 : 0 },
+    cloudSystemd: true })
+  f.computers.splice(0, 2)
+  const systemd = 'apps/api/test/native-service-restart.integration.test.ts'
+  const ordinary = 'apps/api/test/agent-chat.integration.test.ts'
+  try {
+    const reader = await f.connect(CI_GET_ACTIONS)
+    const input = { suite: 'integration', scope: 'affected', files: [systemd, ordinary], commit: 'a'.repeat(40),
+      commandId: 'cloud-systemd' }
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    expect(f.started).toHaveLength(0)
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
+    expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(started)
+    await f.ci.dispatch()
+    const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
+    expect(read.partitions).toHaveLength(2)
+    for (const run of read.partitions!) {
+      expect(run).toMatchObject({ state: 'running', computer: { hostRef: { kind: 'cloud', provider } } })
+      expect((await f.pool.query('select record from ci_runs where id=$1', [run.id])).rows[0].record).toEqual(run)
+    }
+    const slices = read.partitions!.map(run => integrationPartition(run.files, {}, run.partition!))
+    expect(slices).toContainEqual([systemd])
+    expect(slices).toContainEqual([ordinary])
+    const listed = CiComputersOutputSchema.parse(await f.value(reader, 'ci_computers_list', {}))
+    expect(listed.computers.every(computer => computer.userSystemd?.supported)).toBe(true)
+    for (const run of read.partitions!) f.finish(run.id, 0, 'Systemd cloud slice completed.\n')
+    const completed = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
+    expect(completed.partitions!.every(run => run.state === 'passed')).toBe(true)
+  } finally { await f.close() }
+})
+
 it('queues only user-systemd files through MCP while ordinary files run on cloud, then clears the wait on start', async () => {
   const readiness = { laptop: true }
   const f = await fixture({ github: readiness, cloud: true })
@@ -894,6 +928,8 @@ it('queues only user-systemd files through MCP while ordinary files run on cloud
     expect(integrationPartition(sibling.files, {}, sibling.partition!).sort()).toEqual([...ordinary].sort())
     expect((await f.pool.query('select record from ci_runs where id=$1', [host.id])).rows[0].record).toEqual(host)
     const computers = CiComputersOutputSchema.parse(await f.value(reader, 'ci_computers_list', {}))
+    expect(computers.computers.find(computer => computer.hostRef.kind === 'cloud')?.userSystemd)
+      .toEqual({ supported: false, reason: 'Executor has no systemd user manager' })
     expect(computers.computers.find(computer => computer.label === 'laptop'))
       .toMatchObject({ ready: true, running: [older.ticketId] })
 

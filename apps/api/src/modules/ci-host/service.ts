@@ -4,7 +4,7 @@ import { CI_HOST_NAMESPACE, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiHostReplySche
   WorkspaceSchema,
   requiresUserSystemd, userSystemdIntegrationFiles,
   type CiDurations, type CiHostRequest, type CiHostReply, type CiListOutput, type CiRunRecord, type CiRunInput,
-  type CiTestResults, type CiTestStatus } from '@foreman-code/contracts'
+  type CiTestResults, type CiTestStatus, type CiUserSystemd } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { CiAuthority } from '../jobs/ciAuthority.js'
@@ -26,7 +26,9 @@ async function retryRead<T>(work: () => Promise<T>): Promise<T> {
 }
 
 type HostRef = CiRunRecord['computer'] extends infer C ? C extends { hostRef: infer H } ? H : never : never
-export interface HostCiComputer { key: string; hostRef: HostRef; label: string; priority: number }
+export interface HostCiComputer {
+  key: string; hostRef: HostRef; label: string; priority: number; userSystemd?: CiUserSystemd
+}
 export interface HostCiEndpoint {
   /** Paired computers that serve host CI now. */
   computers(): Promise<HostCiComputer[]>
@@ -52,6 +54,10 @@ interface RunStopAudit {
 
 function isGitHubComputer(computer: HostCiComputer): boolean {
   return computer.hostRef.kind === 'cloud' && computer.hostRef.provider === 'github'
+}
+
+function supportsUserSystemd(computer: HostCiComputer): boolean {
+  return computer.hostRef.kind !== 'cloud' || computer.userSystemd?.supported === true
 }
 
 function needsBuildComputer(run: CiRunRecord): boolean {
@@ -194,8 +200,7 @@ export class HostCiService {
         Number(isGitHubComputer(left)) - Number(isGitHubComputer(right))
         || right.priority - left.priority
         || (speed.get(right.key) ?? 0) - (speed.get(left.key) ?? 0))
-      const hosts = ordered.filter(computer => computer.hostRef.kind !== 'cloud')
-      const cloud = ordered.filter(computer => computer.hostRef.kind === 'cloud')
+      const hosts = ordered.filter(supportsUserSystemd)
       const selection = group[0]!
       const knownFiles = selection.scope === 'affected' && !selection.deriveFiles
       const hostFiles = knownFiles ? selection.files.filter(requiresUserSystemd).length : userSystemdIntegrationFiles.size
@@ -203,9 +208,9 @@ export class HostCiService {
       const hostCount = hostFiles ? Math.min(hostFiles, ordinaryFiles ? count - 1 : count,
         Math.max(1, hosts.length, count - ordinaryFiles)) : 0
       const hostIndexes = Array.from({ length: hostCount }, (_, index) => index)
-      // A busy build computer holds only user-systemd files; every ordinary slice can start on cloud slots.
+      // Keep systemd files separate so executors without a user manager can take ordinary slices.
       const planned: (HostCiComputer | undefined)[] = [
-        ...hostIndexes.map(index => hosts[index]), ...cloud, ...hosts.slice(hostCount),
+        ...hostIndexes.map(index => hosts[index]), ...ordered.filter(computer => !hosts.slice(0, hostCount).includes(computer)),
       ]
       const known = ordered.map(computer => speed.get(computer.key)).filter((value): value is number => value !== undefined)
       const mean = known.length ? known.reduce((sum, value) => sum + value, 0) / known.length : 1
@@ -461,6 +466,7 @@ export class HostCiService {
           : status.operation === 'status' ? { label: computer.label, hostRef: computer.hostRef, priority: computer.priority,
             ready: status.ready, reasons: status.reasons, cpuCount: status.cpuCount, memoryBytes: status.memoryBytes,
             availableMemoryBytes: status.availableMemoryBytes,
+            ...(status.userSystemd ? { userSystemd: status.userSystemd } : {}),
             slotsUsed: Math.max(running.length, status.slotsUsed ?? 0), slotsTotal: status.slotsTotal ?? 1,
             running } : null)
       }
@@ -611,7 +617,7 @@ export class HostCiService {
       }
       const order = computers.filter(computer => runsOnCircleCi(run)
         || computer.hostRef.kind !== 'cloud' || computer.hostRef.provider !== 'circleci')
-        .filter(computer => !hostRequired || computer.hostRef.kind !== 'cloud')
+        .filter(computer => !hostRequired || supportsUserSystemd(computer))
         .filter(computer => computer.hostRef.kind !== 'cloud' || !computer.hostRef.provider
           || !run.unstartedProviders?.includes(computer.hostRef.provider))
         .sort((left, right) => Number(right.key === run.plannedHostKey) - Number(left.key === run.plannedHostKey)

@@ -52,6 +52,8 @@ jobs:
     timeout-minutes: 60
     env:
       CI: 'true'
+      # ubuntu-latest is a full systemd VM; the suite probes a delegated user service before integration.
+      CI_USER_SYSTEMD: '1'
       FOREMAN_CODE_CI_DEDICATED: '1'
       SUITE: ${{ inputs.suite }}
       SLICE: ${{ inputs.slice }}

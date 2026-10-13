@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
-import type { CiExecutionSuite, CiScope } from '@foreman-code/contracts'
+import type { CiExecutionSuite, CiScope, CiUserSystemd } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { HostCiPorts } from './runner.js'
 import type { CloudRun } from './cloud.js'
@@ -29,6 +29,7 @@ export interface CloudProvider {
   readonly cpus: number
   readonly memoryBytes: number
   readonly loginHint: string
+  readonly userSystemd: CiUserSystemd
   ready(): Promise<boolean>
   /** Starts a run; returns the service's run id when it is known at once. */
   dispatch(input: CloudDispatchInput): Promise<string | null>
@@ -87,6 +88,7 @@ interface GitHubJob { id: number; status: string; steps?: { number: number; name
 export class GitHubActionsProvider implements CloudProvider {
   readonly id = 'github' as const
   readonly label = 'GitHub Actions'
+  readonly userSystemd = { supported: true, reason: null }
   readonly slots = 16
   readonly cpus = 4
   readonly memoryBytes = 16 * 2 ** 30
@@ -185,6 +187,7 @@ export class GitHubActionsProvider implements CloudProvider {
 export class CircleCiProvider implements CloudProvider {
   readonly id = 'circleci' as const
   readonly label = 'CircleCI'
+  readonly userSystemd = { supported: true, reason: null }
   /** CircleCI rejects pipeline parameter values longer than 512 characters. */
   readonly parameterLimit = 500
   readonly slots = 28
