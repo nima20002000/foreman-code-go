@@ -198,6 +198,23 @@ it('retains one executor after an accepted start loses its reply and reconciles 
   }
 })
 
+it('discovers an accepted run when its start acknowledgement was lost', async () => {
+  const f = await fixture()
+  try {
+    const ticket = await f.enqueue()
+    f.control.onStart = async () => { throw new Error('Start reply lost') }
+    f.control.available = true
+    await f.ci.dispatch()
+    expect((await f.read(ticket.ticketId)).state).toBe('starting')
+    const computers = await f.value('ci_computers_list', {})
+    expect(computers).toMatchObject({ computers: expect.arrayContaining([
+      expect.objectContaining({ hostRef: f.starts[0]!.computer.hostRef, running: [ticket.ticketId] }),
+    ]) })
+    expect((await f.read(ticket.ticketId)).state).toBe('running')
+    expect(f.starts).toHaveLength(1)
+  } finally { await f.close() }
+})
+
 it('preserves the assignment when the database rejects settlement after an accepted start', async () => {
   const f = await fixture()
   try {
