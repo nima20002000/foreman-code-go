@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 import { makeCurrentWorkflowFixture } from './currentFixture.js'
 import { RepeatWorkflowVersionV1Schema } from './repeat.js'
-import { RunGraphScopeSchema, RUN_GRAPH_LIMITS } from './protocol.js'
+import { RunGraphScopeSchema, RUN_GRAPH_LIMITS } from './graphPrimitives.js'
 import {
   CanonicalRunGraphScopeSchema, RepeatGraphFactV3Schema, RepeatGraphSnapshotV3Schema, RepeatGraphPageV3Schema,
   RepeatGraphStateV3Schema, repeatGraphTopologyV3, reduceRepeatGraphPageV3, sortRepeatGraphState,

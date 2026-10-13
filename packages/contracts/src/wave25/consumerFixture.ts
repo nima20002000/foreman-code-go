@@ -1,8 +1,8 @@
 import { assertGraphRunTransition, assertGraphNodeTransition } from './reliability.js'
 import {
-  RunGraphEventsResponseSchema, RunGraphSnapshotSchema, sameGraphScope,
-  type RunGraphSnapshot, type RunGraphCurrentState, type GraphFact,
+  RunGraphEventsResponseSchema, RunGraphSnapshotSchema, type RunGraphSnapshot,
 } from './protocol.js'
+import { sameGraphScope, type PublicGraphProjection, type GraphFact } from './graphPrimitives.js'
 
 export type GraphFixtureApplyResult = {
   kind: 'applied' | 'duplicate' | 'discarded' | 'reset'
@@ -39,7 +39,7 @@ function upsert<T>(values: T[], value: T, identity: (item: T) => string): T[] {
   if (index < 0) return [...values, value]
   return values.map((item, position) => position === index ? value : item)
 }
-function applyFact(state: RunGraphCurrentState, fact: GraphFact): RunGraphCurrentState {
+function applyFact(state: PublicGraphProjection, fact: GraphFact): PublicGraphProjection {
   switch (fact.type) {
     case 'run.state':
       assertGraphRunTransition(state.run, fact.state)

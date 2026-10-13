@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { UrlSearchSelectionSchema } from '../index.js'
-import { GraphIdSchema } from './protocol.js'
+import { GraphIdSchema } from './graphPrimitives.js'
 import { RepeatGraphScopeV3Schema, sameCanonicalGraphScope, type RepeatGraphScopeV3 } from './repeatGraphMetadata.js'
 import { RunActivityPublicKindSchema } from './runActivities.js'
 

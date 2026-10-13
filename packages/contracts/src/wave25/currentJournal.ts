@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { RunOutcomeSchema } from '../index.js'
-import { GraphDigestSchema, GraphIdSchema } from './protocol.js'
+import { GraphDigestSchema, GraphIdSchema } from './graphPrimitives.js'
 import { CurrentRunScopeSchema } from './currentWorkflowFoundation.js'
 
 /** Extracted journal identities/state, independent of any retired editor or

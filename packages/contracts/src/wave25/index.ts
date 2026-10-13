@@ -2,11 +2,8 @@
 export * from './json.js'
 export * from './workflow.js'
 export * from './workflowExecutionLocation.js'
+export * from './graphPrimitives.js'
 export * from './protocol.js'
-export {
-  PublicGraphProjectionSchema, PublicGraphDeltaSchema,
-  type PublicGraphProjection, type PublicGraphDelta,
-} from './graphPrimitives.js'
 export * from './storage.js'
 export * from './consumerFixture.js'
 export * from './reliability.js'

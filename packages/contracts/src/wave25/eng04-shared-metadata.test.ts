@@ -5,7 +5,7 @@ import {
   RepeatMetadataEventV1Schema, RepeatMetadataReadV1Schema, validateRepeatMetadataSnapshotV1,
 } from './repeatMetadata.js'
 import { RepeatOccurrenceV1Schema, RepeatDecisionMetadataV1Schema } from './repeat.js'
-import { RunGraphScopeSchema } from './protocol.js'
+import { RunGraphScopeSchema } from './graphPrimitives.js'
 
 function metadata() {
   const f = makeSharedV3Fixture('eng04-shared-metadata'), digest = `sha256:${'b'.repeat(64)}`

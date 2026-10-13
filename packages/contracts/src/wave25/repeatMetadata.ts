@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { RepeatGraphSnapshotV3Schema, RepeatGraphPageV3Schema, RepeatGraphResetV3Schema } from './repeatGraphMetadata.js'
-import { GraphSequenceSchema, RUN_GRAPH_LIMITS } from './protocol.js'
+import { GraphSequenceSchema, RUN_GRAPH_LIMITS } from './graphPrimitives.js'
 import { canonicalGraphJson, graphJsonBytes } from './json.js'
 import {
   RepeatOccurrenceIdentityV1Schema, RepeatOccurrenceV1Schema,
