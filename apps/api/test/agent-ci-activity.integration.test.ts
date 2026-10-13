@@ -10,6 +10,7 @@ import { AcceptedRepeatStartV1Schema, RunActivitiesPageSchema, makeCurrentWorkfl
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { buildApp } from '../src/app.js'
 import { HostCiService, type HostCiComputer, type HostCiEndpoint } from '../src/modules/ci-host/service.js'
+import { databaseHotQueriesMigration } from '../src/infrastructure/databaseHotQueriesMigration.js'
 import { CI_GET_ACTIONS, RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
 import { RunManagementService } from '../src/modules/runs/management.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
@@ -40,7 +41,7 @@ async function admitCiRun(pool: pg.Pool, input: AcceptedRepeatStartV1, principal
   }))
 }
 
-async function fixture(options: { deferMigration?: number } = {}) {
+async function fixture(options: { deferMigration?: number | number[] } = {}) {
   const database = await currentDatabase(options)
   const graph = await graphFixture(database, { form: 'single', qualifiedReads: true, insert: false })
   graph.accepted = await admitCiRun(database.pool, graph.accepted, graph.writer.principal)
@@ -123,7 +124,10 @@ async function fixture(options: { deferMigration?: number } = {}) {
   const boardInput = { workspaceId: graph.scope.workspaceId, workflowId: graph.scope.workflowId, runId: graph.run.id }
   const board = async () => RunBoardSnapshotGetResultSchema.parse(
     await value(reader.token, 'run_board_snapshot_get', boardInput))
-  const get = async (ticketId: string) => CiGetOutputSchema.parse(await value(workerToken, 'ci_get', { ticketId }))
+  const get = async (ticketId: string) => {
+    await ci.dispatch()
+    return CiGetOutputSchema.parse(await value(workerToken, 'ci_get', { ticketId }))
+  }
   const finish = (ticketId: string, state: 'passed' | 'failed' | 'lost', tests?: CiTestResults) => {
     const run = hostRuns.get(ticketId)!
     if (tests) reported.set(ticketId, tests)
@@ -438,7 +442,7 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
   }, 120000)
 
   it('observes retained Host CI once without inventing earlier transitions', async () => {
-    const f = await fixture({ deferMigration: hostCiActivityMigration.version })
+    const f = await fixture({ deferMigration: [hostCiActivityMigration.version, databaseHotQueriesMigration.version] })
     try {
       const ticket = await f.submit()
       expect((await f.activity()).items.filter(item => item.kind === 'job_work')).toEqual([])

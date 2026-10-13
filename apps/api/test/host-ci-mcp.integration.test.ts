@@ -217,7 +217,7 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
   const call = async (client: Client, name: string, input: Record<string, unknown>) => {
     // Drive the background refresh explicitly; polling itself only reads persisted state.
     if (name === 'ci_get') await ci.dispatch()
-    return client.callTool({ name, arguments: { workspaceId, ...input } })
+    return client.callTool({ name, arguments: { ...(client === agent ? {} : { workspaceId }), ...input } })
   }
   const value = async (client: Client, name: string, input: Record<string, unknown>) => {
     const result = await call(client, name, input)
@@ -846,8 +846,10 @@ it('queues a run while every computer is busy and starts it on the first one tha
     const second = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'two' }))
     const third = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'three' }))
     await f.ci.dispatch()
-    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: third.ticketId })).run)
-      .toMatchObject({ state: 'queued', message: 'No ready computer for install; laptop: busy; builder: busy' })
+    const waiting = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: third.ticketId }))
+    expect(waiting.run).toMatchObject({ state: 'queued', priority: 'normal',
+      message: expect.stringContaining('all CI slots in use (1/1)') })
+    expect(waiting.queue).toEqual({ position: 1, reason: waiting.run.message })
     f.finish(first.ticketId, 0, 'ok\n')
     await f.ci.dispatch()
     const moved = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: third.ticketId }))
@@ -893,14 +895,16 @@ it('queues only user-systemd files through MCP while ordinary files run on cloud
     const host = waiting.partitions!.find(run => run.partition!.hostIndexes!.includes(run.partition!.index))!
     const sibling = waiting.partitions!.find(run => run.id !== host.id)!
     expect(host).toMatchObject({ state: 'queued', computer: null,
-      message: 'Waiting for a build computer: this integration slice needs one; laptop: busy' })
+      message: expect.stringContaining('all CI slots in use (1/1)') })
     expect(sibling).toMatchObject({ state: 'running', computer: { hostRef: { kind: 'cloud' } } })
     expect(integrationPartition(host.files, {}, host.partition!).sort()).toEqual([...systemd].sort())
     expect(integrationPartition(sibling.files, {}, sibling.partition!).sort()).toEqual([...ordinary].sort())
     expect((await f.pool.query('select record from ci_runs where id=$1', [host.id])).rows[0].record).toEqual(host)
     const computers = CiComputersOutputSchema.parse(await f.value(reader, 'ci_computers_list', {}))
     expect(computers.computers.find(computer => computer.label === 'laptop'))
-      .toMatchObject({ ready: true, running: [older.ticketId] })
+      .toMatchObject({ ready: true, running: [older.ticketId], slotsUsed: 1, slotsTotal: 1 })
+    expect(computers.queue).toContainEqual({ ticketId: host.id, priority: 'normal', priorityReason: 'normal',
+      position: 1, reason: host.message })
 
     f.finish(sibling.id, 0, 'Cloud slice completed.\n')
     await f.ci.dispatch()
@@ -1068,7 +1072,8 @@ it('runs two host-only tickets on one computer and queues a third through authen
   const f = await fixture({ hostSlots: 2, cloud: true })
   f.computers.splice(1, 1)
   try {
-    const request = { suite: 'integration', scope: 'affected', files: [[...userSystemdIntegrationFiles][0]!] }
+    const request = { suite: 'integration', scope: 'affected', commit: 'a'.repeat(40),
+      files: [[...userSystemdIntegrationFiles][0]!] }
     const denied = await f.connect([...CI_GET_ACTIONS])
     expect((await f.call(denied, 'ci_run', { ...request, commandId: randomUUID() })).isError).toBe(true)
     const tickets = []
