@@ -1,3 +1,4 @@
+import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { readUntil } from './helpers/observableCondition.js'
 import { AgentHarnessSchema } from '@foreman-code/contracts'
 import assert from 'node:assert/strict'
@@ -6,16 +7,16 @@ import type pg from 'pg'
 import { afterAll, beforeAll, beforeEach, describe, it } from 'vitest'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { agentChatKey, PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
-import { agent3Database, postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
+import { postgresEnabled, seedAgent3 } from './helpers/wave25Agent3.js'
 import { deferred } from './helpers/deferred.js'
 
 /** Real, independent PostgreSQL sessions. No app server, HTTP transport or native provider.
- * The shared helper requires an explicit loopback test DB and owns a random isolated schema. */
+ * The shared helper owns a separate migrated database on the disposable loopback server. */
 describe.skipIf(!postgresEnabled)('G2 A2-PF-06: acknowledgement / unknown PostgreSQL lock interleavings', () => {
-  let database: Awaited<ReturnType<typeof agent3Database>>
+  let database: Awaited<ReturnType<typeof migratedDatabase>>
   let seeded: ReturnType<typeof makeCurrentWorkflowFixture>
   beforeAll(async () => {
-    database = await agent3Database()
+    database = await migratedDatabase()
     seeded = await seedAgent3(database.pool, database.directory, makeCurrentWorkflowFixture(`g2-${randomUUID()}`, 'single'), { run: false })
   })
   beforeEach(async () => {

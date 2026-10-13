@@ -245,6 +245,16 @@ export async function testAdminPool() {
   const pool = createTestPool({ connectionString: testAdminUrl, max: 1,
     connectionTimeoutMillis: 10_000, query_timeout: 35_000,
     options: '-c statement_timeout=30000 -c lock_timeout=10000' })
+  const query = pool.query.bind(pool)
+  let pending = Promise.resolve()
+  // Slots share one admin session. Start connection and query deadlines only when that session is available.
+  pool.query = (...args) => {
+    const callback = typeof args.at(-1) === 'function' ? args.pop() : undefined
+    const result = pending.then(() => query(...args))
+    pending = result.then(() => undefined, () => undefined)
+    if (!callback) return result
+    result.then(value => callback(null, value), callback)
+  }
   try {
     const result = await pool.query("select shobj_description(oid, 'pg_database') as marker from pg_database where datname='postgres'")
     if (result.rows[0]?.marker !== serverMarker) throw new Error('PostgreSQL test server ownership marker is missing; run pnpm db:up')
@@ -282,8 +292,16 @@ export async function createTestDatabase(admin, resource, options = {}) {
 }
 
 export async function resetTestDatabase(admin, resource) {
-  await dropTestDatabase(admin, resource)
-  return createTestDatabase(admin, resource, { template: resource.template })
+  assertTestResourcesSettled(resource)
+  await assertTestDatabase(admin, resource)
+  const replacement = await createTestDatabase(admin, resource, { template: resource.template })
+  try {
+    await dropTestDatabase(admin, resource)
+    return replacement
+  } catch (error) {
+    await dropTestDatabase(admin, replacement)
+    throw error
+  }
 }
 
 export async function assertTestDatabase(pool, resource) {

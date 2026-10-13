@@ -1,17 +1,56 @@
+import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 import pg from 'pg'
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import { createFixtureDatabase, createFixtureSchema, dropFixtureDatabase, dropFixtureSchema } from './helpers/testResources.js'
 import { assertOwnedExecutionDestinations } from './helpers/testResources.js'
-import { agent3Database, candidateFor, seedAgent3 } from './helpers/wave25Agent3.js'
-import { createTestRoot, removeTestRoot } from '../../../scripts/test-resources.mjs'
+import { candidateFor, seedAgent3 } from './helpers/wave25Agent3.js'
+import { createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot, resetTestDatabase,
+  testAdminPool, testAdminUrl } from '../../../scripts/test-resources.mjs'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
 
-let destinationFixture: Awaited<ReturnType<typeof agent3Database>>
-beforeAll(async () => { destinationFixture = await agent3Database() })
+let destinationFixture: Awaited<ReturnType<typeof migratedDatabase>>
+beforeAll(async () => { destinationFixture = await migratedDatabase() })
 afterAll(async () => { await destinationFixture?.close() })
+
+it('queues administrative queries without consuming their connection acquisition deadline', async () => {
+  const admin = await testAdminPool()
+  try {
+    const results = await Promise.allSettled([
+      admin.query('select pg_sleep(11)'),
+      admin.query('select 42 as value'),
+    ])
+    expect(results[0].status).toBe('fulfilled')
+    expect(results[1]).toMatchObject({ status: 'fulfilled', value: { rows: [{ value: 42 }] } })
+    await expect(admin.query('select 1 / 0')).rejects.toMatchObject({ code: '22012' })
+    expect((await admin.query('select 43 as value')).rows).toEqual([{ value: 43 }])
+  } finally {
+    await admin.end()
+  }
+})
+
+it('retains the owned database when a reset cannot create its replacement', async () => {
+  const admin = await testAdminPool()
+  const root = createTestRoot(process.env.FOREMAN_CODE_TEST_ROOT)
+  let database: Awaited<ReturnType<typeof createTestDatabase>> | undefined
+  try {
+    database = await createTestDatabase(admin, root)
+    const name = `graphql_test_template_${'1'.repeat(12)}_${root.token.replaceAll('-', '').slice(0, 12)}`
+    const template = { ...root, name, hash: '0'.repeat(64), databaseUrl: new URL(`/${name}`, testAdminUrl).href }
+    await expect(resetTestDatabase(admin, { ...database, template })).rejects.toThrow('identity mismatch')
+    expect((await admin.query('select datname from pg_database where datname=$1', [database.name])).rows)
+      .toEqual([{ datname: database.name }])
+  } finally {
+    if (database) {
+      const exists = await admin.query('select datname from pg_database where datname=$1', [database.name])
+      if (exists.rows.length) await dropTestDatabase(admin, database)
+    }
+    await admin.end()
+    removeTestRoot(root)
+  }
+})
 
 it('rejects connections to the app PostgreSQL endpoint before connecting', async () => {
   const client = new pg.Client({ connectionString: 'postgresql://graphql:graphql@127.0.0.1:5432/graphql' })

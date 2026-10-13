@@ -1,3 +1,4 @@
+import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
@@ -17,12 +18,12 @@ import { readConversationPublicationReceipts } from '../src/modules/conversation
 import { registerProductionFileStorage } from '../src/modules/files/production.js'
 import { productionFileTools } from '../src/modules/files/tools/production.js'
 import { productionClaudeFileAdmission } from '../src/modules/harnesses/claudeSdk/fileProduction.js'
-import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
+import { postgresEnabled } from './helpers/wave25Agent3.js'
 
 describe.skipIf(!postgresEnabled)('Operator Claude publication recovery', () => {
-  let db: Awaited<ReturnType<typeof agent3Database>>
+  let db: Awaited<ReturnType<typeof migratedDatabase>>
   beforeAll(async () => {
-    db = await agent3Database()
+    db = await migratedDatabase()
   })
   afterAll(async () => {
     await db?.close()
@@ -41,7 +42,7 @@ describe.skipIf(!postgresEnabled)('Operator Claude publication recovery', () => 
       finally { await app.close() }
     })
     const config: ApiConfig = { host: '127.0.0.1', port: 4100, readinessTimeoutMs: 2000,
-      database: { connectionString: process.env.TEST_DATABASE_URL!, maxConnections: 4,
+      database: { connectionString: db.databaseUrl, maxConnections: 4,
         connectionTimeoutMs: 2000, queryTimeoutMs: 5000 }, checkpoints: { schema: 'langgraph' },
       fileStorageRoot: join(db.directory, 'vault'), workspaceStorageRoot: join(db.directory, 'projects'),
       harnesses: { workspaceRoot: join(db.directory, 'runtime'), codexBinary: 'recorded', timeoutMs: 5000 } }
