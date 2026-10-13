@@ -3,6 +3,33 @@ import { readUntil } from './observableCondition.js'
 
 afterEach(() => vi.useRealTimers())
 
+it('bounds reconciliation reads when their own writes publish change notifications', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+  let ready = false
+  let changed!: () => void
+  const read = vi.fn(async () => {
+    if (!ready) setTimeout(changed, 25)
+    return ready
+  })
+  const options = {
+    timeoutMs: 3_000,
+    description: 'reserved remote review decision',
+    minimumReadIntervalMs: 1_000,
+    subscribe: (notify: () => void) => {
+      changed = notify
+      return () => undefined
+    },
+  }
+  const result = readUntil(read, Boolean, options)
+  await vi.advanceTimersByTimeAsync(999)
+  expect(read).toHaveBeenCalledTimes(1)
+  ready = true
+  await vi.advanceTimersByTimeAsync(1)
+  await expect(result).resolves.toBe(true)
+  expect(read).toHaveBeenCalledTimes(2)
+  expect(vi.getTimerCount()).toBe(0)
+})
+
 it('bounds polling traffic while awaiting native fixture progress', async () => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
   let ready = false
