@@ -14,7 +14,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { createHash, randomUUID } from 'node:crypto'
 import { PostgresCommandCoordinator } from '../../commands/postgres.js'
 import { JobRepository, type JobSql } from '../../jobs/repository.js'
-import type { FileByteStorage } from '../storage.js'
+import type { FileByteStorage, FileReadSnapshot } from '../storage.js'
 import { byteRange } from '../tools/transfers.js'
 import { DeviceRegistrationSchema, authorizeDevice } from '@foreman-code/contracts/device-identity'
 import { DomainError } from '../../errors.js'
@@ -96,22 +96,62 @@ export class CanonicalJobInputs {
         this.binding(execution)
       }
   }
-  async read(execution:JobExecutionRecord,admission:JobInputAdmission,relativePath:string,offset:number,length:number):Promise<Buffer> {
-    if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(length)||length<1||length>8192)throw new DomainError('JOB_INPUT_RANGE_INVALID','Input delivery ranges are bounded.',416)
-    await this.recheck(execution,admission)
-    let data:Buffer
-    if(relativePath==='manifest.json')data=manifestBytes(admission.manifest).subarray(offset,offset+length)
-    else if(relativePath==='verification.json'&&admission.manifest.verificationContext)data=verificationContextBytes(admission.manifest)!.subarray(offset,offset+length)
-    else if(relativePath==='workflow-input.json')data=Buffer.from(JSON.stringify(admission.manifest.workflowInput)).subarray(offset,offset+length)
-    else {
-      const entry=admission.manifest.entries.find(value=>value.relativePath===relativePath)
-      if(!entry)throw new DomainError('JOB_INPUT_NOT_ADMITTED','Only declared immutable input entries may be read.',403)
-      const stored=await this.authority.files.read(entry.pin.fileId,entry.pin.revisionId)
-      if(!stored)throw new DomainError('FILE_BYTES_UNAVAILABLE','The canonical input is unavailable.',410)
-      data=await byteRange(await this.bytes.download(stored.storageKey,stored.value.revision),offset,length)
+  /** Local delivery owns and closes this descriptor; every range retains live authority checks. */
+  async openRead(execution: JobExecutionRecord, admission: JobInputAdmission,
+    relativePath: string, signal: AbortSignal): Promise<FileReadSnapshot> {
+    signal.throwIfAborted()
+    await this.recheck(execution, admission)
+    const entry = admission.manifest.entries.find(value => value.relativePath === relativePath)
+    if (!entry) {
+      return { read: (offset, length) => {
+        signal.throwIfAborted()
+        return this.readRange(execution, admission, relativePath, offset, length, { signal })
+      }, close: async () => {} }
     }
-    await this.recheck(execution,admission)
-    await this.pool.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details) values($1,'device','job.input.read',$2,'succeeded',$3::jsonb)`,[admission.principalId,`job:${execution.id}`,JSON.stringify({bindingId:admission.manifest.bindingId,relativePath,offset,length,executionId:execution.id,attemptId:execution.attemptId})])
+    const stored = await this.authority.files.read(entry.pin.fileId, entry.pin.revisionId)
+    if (!stored) throw new DomainError('FILE_BYTES_UNAVAILABLE', 'The canonical input is unavailable.', 410)
+    const reader = await this.bytes.openRead(stored.storageKey, { ...stored.value.revision, ...entry.pin })
+    try {
+      signal.throwIfAborted()
+      await this.recheck(execution, admission)
+      return { read: (offset, length) => this.readRange(execution, admission, relativePath, offset, length, { reader, signal }),
+        close: () => reader.close() }
+    } catch (error) { await reader.close(); throw error }
+  }
+  async read(execution: JobExecutionRecord, admission: JobInputAdmission,
+    relativePath: string, offset: number, length: number): Promise<Buffer> {
+    return this.readRange(execution, admission, relativePath, offset, length)
+  }
+  private async readRange(execution: JobExecutionRecord, admission: JobInputAdmission,
+    relativePath: string, offset: number, length: number,
+    options: { reader?: FileReadSnapshot; signal?: AbortSignal } = {}): Promise<Buffer> {
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1 || length > 8192) {
+      throw new DomainError('JOB_INPUT_RANGE_INVALID', 'Input delivery ranges are bounded.', 416)
+    }
+    options.signal?.throwIfAborted()
+    await this.recheck(execution, admission)
+    let data: Buffer
+    if (relativePath === 'manifest.json') data = manifestBytes(admission.manifest).subarray(offset, offset + length)
+    else if (relativePath === 'verification.json' && admission.manifest.verificationContext) {
+      data = verificationContextBytes(admission.manifest)!.subarray(offset, offset + length)
+    } else if (relativePath === 'workflow-input.json') {
+      data = Buffer.from(JSON.stringify(admission.manifest.workflowInput)).subarray(offset, offset + length)
+    } else {
+      const entry = admission.manifest.entries.find(value => value.relativePath === relativePath)
+      if (!entry) throw new DomainError('JOB_INPUT_NOT_ADMITTED', 'Only declared immutable input entries may be read.', 403)
+      if (options.reader) data = await options.reader.read(offset, length)
+      else {
+        const stored = await this.authority.files.read(entry.pin.fileId, entry.pin.revisionId)
+        if (!stored) throw new DomainError('FILE_BYTES_UNAVAILABLE', 'The canonical input is unavailable.', 410)
+        data = await byteRange(await this.bytes.download(stored.storageKey, stored.value.revision), offset, length)
+      }
+    }
+    options.signal?.throwIfAborted()
+    await this.recheck(execution, admission)
+    await this.pool.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
+      values($1,'device','job.input.read',$2,'succeeded',$3::jsonb)`, [admission.principalId, `job:${execution.id}`,
+      JSON.stringify({ bindingId: admission.manifest.bindingId, relativePath, offset, length,
+        executionId: execution.id, attemptId: execution.attemptId })])
     return data
   }
   async execution(executionId:string):Promise<JobExecutionRecord>{

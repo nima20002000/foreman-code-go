@@ -1,5 +1,6 @@
+import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
+import { ManagementActionSchema, ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import pg from 'pg'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -41,14 +42,14 @@ afterEach(async () => {
   for (const close of closers.splice(0)) await close()
 })
 
-async function endpoint() {
+async function endpoint(additionalCaller?: ManagementPrincipal) {
   const pool = new pg.Pool()
   vi.spyOn(pool, 'connect').mockImplementation(() => { throw new Error('Unexpected SQL') })
   const recordDenied = vi.fn(async () => undefined)
   const composed = services(recordDenied)
   const access = new PostgresAccessService(pool)
   vi.spyOn(access, 'authenticate').mockImplementation(async token => {
-    const caller = [owner, restricted].find(candidate => candidate.id === token)
+    const caller = [owner, restricted, ...(additionalCaller ? [additionalCaller] : [])].find(candidate => candidate.id === token)
     if (!caller) throw new DomainError('AUTH_REQUIRED', 'Invalid bearer.', 401)
     return caller
   })
@@ -130,4 +131,34 @@ describe('Operator MCP tool registry', () => {
     expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
     expect(f.recordDenied).toHaveBeenCalledWith(restricted.id, 'mcp', 'device_revoke', 'mcp:device_revoke')
   })
+})
+
+const scopeDimensions = ['workspaceIds', 'workflowIds', 'runIds', 'mainIds', 'deviceIds',
+  'applicationInstallationIds', 'providerAccountIds'] as const
+
+it.each(scopeDimensions)('hides global harness options from a %s scoped authenticated caller', async dimension => {
+  const caller = principal(`scoped-${dimension}`, [
+    { actions: ['capabilities:read'], scope: {} },
+    { actions: ['harnesses:read'], scope: { [dimension]: [randomUUID()] } },
+  ])
+  expect(ManagementPrincipalSchema.safeParse(caller).success).toBe(true)
+  const f = await endpoint(caller)
+  const client = await f.connect(caller.id)
+  expect(await listedNames(client)).not.toContain('harness_options_get')
+  const capabilities = decodeMcpToolResult(await client.callTool({
+    name: 'operator_get_capabilities', arguments: { detail: 'full' },
+  })) as { tools: string[] }
+  expect(capabilities.tools).not.toContain('harness_options_get')
+  const denied = await client.callTool({ name: 'harness_options_get', arguments: { harness: 'codex' } })
+  expect(denied.isError).toBe(true)
+  expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+})
+
+it('hides global tools for combined host and account constraints but keeps the unscoped positive control', async () => {
+  const caller = principal('combined', [{ actions: ['harnesses:read'],
+    scope: { deviceIds: [randomUUID()], mainIds: [randomUUID()], providerAccountIds: [randomUUID()] } }])
+  expect(ManagementPrincipalSchema.safeParse(caller).success).toBe(true)
+  const f = await endpoint(caller)
+  expect(await listedNames(await f.connect(caller.id))).not.toContain('harness_options_get')
+  expect(await listedNames(await f.connect(owner.id))).toContain('harness_options_get')
 })
