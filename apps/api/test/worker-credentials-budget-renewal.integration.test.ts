@@ -1,5 +1,8 @@
 import { beforeEach, expect, it } from 'vitest'
-import { HarnessExecutionSchema } from '@foreman-code/contracts'
+import { randomUUID } from 'node:crypto'
+import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
+import { PostgresInteractionCoordinationRepository } from '../src/modules/interactions/coordination.js'
+import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
 import { workerCredentialBudgetFixture } from './helpers/workerCredentialBudgetFixture.js'
 
 const fixture = workerCredentialBudgetFixture()
@@ -13,8 +16,37 @@ beforeEach(() => {
   ({ pool, execution, access, credentials, budgets } = fixture)
 })
 
+async function issueWaitingCredential() {
+  const configuration = AgentConfigurationVersionSchema.parse((await pool.query(
+    'select record from agent_configuration_versions where id=$1',
+    [execution.agentConfigurationVersionId],
+  )).rows[0].record)
+  const session = {
+    harness: configuration.harness.harness,
+    providerVersion: 'credential-fixture-no-native',
+    nativeSessionId: `waiting-credential-session-${randomUUID()}`,
+  }
+  execution = HarnessExecutionSchema.parse({ ...execution, nativeSessionId: session.nativeSessionId })
+  await pool.query('update harness_executions set record=$2::jsonb where id=$1',
+    [execution.id, JSON.stringify(execution)])
+  const coordination = new PostgresInteractionCoordinationRepository(pool)
+  await coordination.bindWorkflowSession(execution.id, session)
+  await coordination.ensureLane({
+    id: `waiting-credential-lane-${randomUUID()}`,
+    harness: session.harness,
+    nativeSessionId: session.nativeSessionId,
+    ownerAgentId: execution.agentId,
+    connectionGeneration: 1,
+    revision: 0,
+    observedAt: execution.createdAt,
+    observedStatus: 'idle',
+  })
+  credentials = new Wave25WorkerCredentialService(pool, access, 60_000)
+  return credentials.issueForExecution(execution.id)
+}
+
 it('renews a live scoped token while its execution is waiting without rotating it', async () => {
-  const issued = await credentials.issueForExecution(execution.id)
+  const issued = await issueWaitingCredential()
   const token = issued.environment.variables.GRAPHQL_MCP_TOKEN!
   await pool.query("update management_principals set expires_at=clock_timestamp()+interval '30 seconds' where id=$1",
     [issued.principalId])
@@ -32,7 +64,7 @@ it('renews a live scoped token while its execution is waiting without rotating i
 })
 
 it('authenticates a renewed waiting credential only until its execution is stopped', async () => {
-  const issued = await credentials.issueForExecution(execution.id)
+  const issued = await issueWaitingCredential()
   const token = issued.environment.variables.GRAPHQL_MCP_TOKEN!
   const renewedAt = await credentials.renewForExecution(execution.id, issued)
   expect(await access.authenticate(token, 'worker')).toMatchObject({
