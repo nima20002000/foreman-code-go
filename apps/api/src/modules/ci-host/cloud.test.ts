@@ -961,6 +961,7 @@ it.each(['github', 'circleci'] as const)('prunes stale mirror branches and keeps
   expect(refs()).toContain('refs/heads/feature/keep')
   await f.cloud.handle({ operation: 'cancel', runId: first })
   expect(refs()).toContain(`refs/heads/ci/${f.commit}`)
+  f.advance(5 * 60_000)
   await f.reopen().handle({ operation: 'cancel', runId: second })
   await expect.poll(refs, { timeout: 5_000 }).not.toContain(`refs/heads/ci/${f.commit}`)
   await f.reopen().handle({ ...request, runId: randomUUID() })
@@ -980,6 +981,7 @@ it.each(['success', 'failure'] as const)('removes mirror branches after a %s res
   f.github.conclusion = conclusion
   const read = { operation: 'read' as const, runId, afterOffset: 0, maxBytes: 65_536 }
   const state = conclusion === 'success' ? 'passed' : 'failed'
+  f.advance(5 * 60_000)
   expect(await f.cloud.handle(read)).toMatchObject({ run: { state }, text: expect.stringContaining('all green') })
   await expect.poll(() => f.mirrorGit('for-each-ref', '--format=%(refname)', 'refs/heads/ci/'), { timeout: 5_000 }).toBe('')
   expect(await f.reopen().handle(read)).toMatchObject({ run: { state }, text: expect.stringContaining('all green') })
@@ -997,6 +999,7 @@ it.each(['configured', 'admitted'] as const)(
     .toMatchObject({ operation: 'start', run: { state: 'running' } })
   expectMirrorDispatch('circleci', f.circle.triggered[0])
   f.cleanup.unavailable = true
+  f.advance(5 * 60_000)
   f.circle.outcome = 'succeeded'
   expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 }))
     .toMatchObject({ run: { state: 'passed' } })

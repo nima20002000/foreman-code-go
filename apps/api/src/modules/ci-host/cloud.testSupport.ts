@@ -181,7 +181,7 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
     { home: '/home/owner', user: 'owner', host: 'owner-desktop' })
   const cloud = reopen()
   const mirrorGit = (...args: string[]) => run(mirror, ...args)
-  return { cloud, reopen, root, commit, dispatched, github, circle, cleanup, git, mirrorGit, run: (...args: string[]) => run(work, ...args),
+  return { cloud, reopen, root, commit, ports, dispatched, github, circle, cleanup, git, mirrorGit, run: (...args: string[]) => run(work, ...args),
     async prune(activeIds: Set<string>) {
       return pruneMirrorBranches({ mirror: 'octo/site-ci', roots: [join(root, 'ci-cloud')],
         activeRuns: { ids: activeIds, readAt: Date.now() },
