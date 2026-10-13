@@ -50,6 +50,13 @@ it.each([
     expect(done.group).toMatchObject({ groupId: read.run.groupId, state: 'passed' })
     expect(f.started).toHaveLength(count)
     expect(f.started.every(item => item.request.operation === 'start' && item.request.part)).toBe(true)
+    for (const run of done.partitions!) {
+      const dispatched = f.started.filter(item => item.request.operation === 'start' && item.request.runId === run.id)
+      expect(dispatched).toHaveLength(1)
+      const request = dispatched[0]!.request
+      expect(request).toMatchObject({ operation: 'start', suite, part: run.part })
+      if (request.operation === 'start') expect(request.partition ?? null).toEqual(run.partition)
+    }
     const logs = CiLogsOutputSchema.parse(await f.value(f.operator, 'ci_logs_read', {
       ticketId: started.ticketId, group: true, maxBytes: 4096,
     }))
