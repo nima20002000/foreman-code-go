@@ -8,6 +8,7 @@ import { loadConfig } from './config.js'
 import { createCheckpointStore } from './infrastructure/checkpoints.js'
 import { createDatabase } from './infrastructure/database.js'
 import { componentLogger, enableFileLogging } from './infrastructure/logger.js'
+import { trackInFlightRequests } from './infrastructure/inFlightRequests.js'
 import { installProcessLifecycleLogging } from './infrastructure/processLifecycle.js'
 import { retryStartupDatabase } from './infrastructure/startupDatabase.js'
 import { readTestResourcesIdentity } from './infrastructure/testRuntimeResources.js'
@@ -66,17 +67,14 @@ async function main() {
   const reportReconciliationError = (error: unknown) => engineLog.error({ err: error }, 'run reconciliation failed')
 
   // Shutdown waits for in-flight HTTP requests, then for every runtime step; name whatever still holds it.
-  const inFlight = new Map<string, string>()
-  app.addHook('onRequest', async request => { inFlight.set(request.id, `${request.method} ${request.url.split('?')[0]}`) })
-  app.addHook('onResponse', async request => { inFlight.delete(request.id) })
-  app.addHook('onRequestAbort', async request => { inFlight.delete(request.id) })
+  const inFlight = trackInFlightRequests(app, { graceMs: 10_000, closable: url => url.startsWith('/mcp') })
   let shutdownWaiting: NodeJS.Timeout | undefined
   app.addHook('preClose', async () => {
     startup.abort(new Error('Startup canceled by shutdown.'))
     lifecycle.info('api shutting down')
     if (reconciliationTimer) clearInterval(reconciliationTimer)
     shutdownWaiting ??= setInterval(() => {
-      lifecycle.info({ requests: [...inFlight.values()].slice(0, 20), requestCount: inFlight.size,
+      lifecycle.info({ requests: inFlight.describe().slice(0, 20), requestCount: inFlight.size(),
         steps: shutdownPending() }, 'shutdown still waiting')
     }, 5000)
     shutdownWaiting.unref()

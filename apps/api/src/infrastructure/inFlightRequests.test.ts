@@ -15,8 +15,9 @@ async function server() {
   app.post('/slow', () => new Promise(resolve => setTimeout(() => resolve({ done: true }), 400)))
   const address = await app.listen({ host: '127.0.0.1', port: 0 })
   const port = Number(new URL(address).port)
-  const send = (path: string, body: unknown) => new Promise<{ status?: number; error?: string }>(resolve => {
-    const call = request({ host: '127.0.0.1', port, path, method: 'POST', headers: { 'content-type': 'application/json' } },
+  const send = (path: string, body: unknown) => new Promise<{ status?: number | undefined; error?: string | undefined }>(resolve => {
+    const call = request({ host: '127.0.0.1', port, path, method: 'POST', agent: false,
+      headers: { 'content-type': 'application/json' } },
       response => { response.resume(); response.on('end', () => resolve({ status: response.statusCode })) })
     call.on('error', error => resolve({ error: (error as NodeJS.ErrnoException).code ?? error.message }))
     call.end(JSON.stringify(body))
