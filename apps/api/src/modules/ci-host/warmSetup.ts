@@ -15,6 +15,7 @@ export function warmPnpmInstall(source: string, cache: string, run: string): str
   const modules = join(cache, 'modules', inputs.digest('hex'))
   const ready = join(cache, 'locks', `${lock}.ready`)
   const install = `corepack pnpm install --frozen-lockfile --store-dir ${shellQuote(join(cache, 'pnpm-store'))}`
+    + ` --cache-dir ${shellQuote(join(cache, 'pnpm-metadata'))}`
     + ' --package-import-method=hardlink'
   return [
     `mkdir -p ${shellQuote(join(cache, 'locks'))} ${shellQuote(join(cache, 'modules'))}`,
