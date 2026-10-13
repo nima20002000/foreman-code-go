@@ -2,25 +2,47 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { NATIVE_INTERACTION_FIXTURES } from '@foreman-code/contracts'
 import { RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
+import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 
 afterEach(() => vi.restoreAllMocks())
 
-it('persists generation-zero remote admission and keeps its original snapshot immutable', async () => {
+async function remoteControlDatabase() {
   const createSession = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
     .mockRejectedValue(new Error('Database snapshot checks must not start native sessions'))
   const f = await currentDatabase()
   try {
-    // These rows exercise migrated SQL constraints without starting a workflow or qualifying a native session.
     const interaction = structuredClone(NATIVE_INTERACTION_FIXTURES.codex)
-    await f.pool.query(`insert into durable_interactions
-      (id,workspace_id,workflow_id,run_id,execution_id,requesting_agent_id,harness,
-        native_session_id,native_request_id,status,revision,record)
-      values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)`,
-    [interaction.id, interaction.workspaceId, interaction.workflowId, interaction.runId,
-      interaction.executionId, interaction.requestingAgentId, interaction.harness,
-      interaction.nativeSessionId, interaction.nativeRequestId, interaction.status,
-      interaction.revision, JSON.stringify(interaction)])
+    const repository = new PostgresInteractionRepository(f.pool)
+    const created = await repository.create(interaction)
+    return { ...f, interaction, repository, created, createSession }
+  } catch (error) {
+    await f.close()
+    throw error
+  }
+}
+
+it('persists a pending remote interaction and its run activity without native sessions', async () => {
+  const f = await remoteControlDatabase()
+  try {
+    expect(f.created).toEqual({ interaction: f.interaction, created: true })
+    expect(await f.repository.get(f.interaction.id)).toEqual(f.interaction)
+    const activity = await f.pool.query(`select kind, payload from run_activity where run_id=$1`,
+      [f.interaction.runId])
+    expect(activity.rows).toContainEqual({
+      kind: 'interaction_pending',
+      payload: expect.objectContaining({ interactionId: f.interaction.id, status: 'pending' }),
+    })
+    expect(f.createSession).not.toHaveBeenCalled()
+  } finally {
+    await f.close()
+  }
+}, 30_000)
+
+it('persists generation-zero remote admission and keeps its original snapshot immutable', async () => {
+  const f = await remoteControlDatabase()
+  try {
+    const interaction = f.interaction
     const command = RemoteOwnerControlSchema.parse({ schemaVersion: 1, protocolVersion: 1,
       commandId: 'original-response', operationId: 'original-operation', attemptId: 'original-attempt',
       executionId: interaction.executionId, bindingHash: 'a'.repeat(64), owner: { grantId: 'original-grant', epoch: '1' },
@@ -43,6 +65,6 @@ it('persists generation-zero remote admission and keeps its original snapshot im
       values($1,2,'submitted',$2,$3,'other-correlation',$4::jsonb,'original-owner',1,-1)`,
     [interaction.id, interaction.nativeSessionId, interaction.nativeRequestId, JSON.stringify(command)]))
       .rejects.toMatchObject({ code: '23514' })
-    expect(createSession).not.toHaveBeenCalled()
+    expect(f.createSession).not.toHaveBeenCalled()
   } finally { await f.close() }
 }, 30_000)
