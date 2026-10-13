@@ -1,3 +1,4 @@
+import { installBrowserLocks } from '../test/browserLocks'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -88,6 +89,7 @@ function installNodeInspection() {
 }
 
 beforeEach(() => {
+  installBrowserLocks()
   unhandled.length = 0; server.events.on('request:unhandled', recordUnhandled)
   useGraphDraftStore.getState().clearAllDrafts()
   localStorage.clear(); sessionStorage.clear(); bindMockInstallation()
@@ -148,7 +150,8 @@ beforeEach(() => {
   )
 })
 afterEach(() => {
-  cleanup(); clients.splice(0).forEach((client) => client.clear())
+  cleanup(); window.dispatchEvent(new Event('pagehide'))
+  clients.splice(0).forEach((client) => client.clear())
   server.events.removeListener('request:unhandled', recordUnhandled)
   expect(unhandled, 'No selected Board request may bypass MSW').toEqual([])
   server.events.removeListener('request:start', recordWrite)
