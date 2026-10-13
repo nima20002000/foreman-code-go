@@ -1,10 +1,37 @@
+import type { CiHostStatus, CiRunRecord } from '@foreman-code/contracts'
+
 const gib = 2 ** 30
 const coresPerSlot = 6
 const memoryPerSlot = 6 * gib
 
-/** Integration shards mostly wait on PostgreSQL and child processes: measured ~0.5 core and well under 0.5 GiB each. */
+/** Reserve one logical CPU and 0.5 GiB per integration shard, plus 1 GiB for shared processes. */
 export function gateIntegrationShards(cpuCount: number, memoryBytes: number): number {
-  return Math.max(1, Math.min(64, Math.floor(cpuCount * 2), Math.floor((memoryBytes - gib) / (gib / 2))))
+  return Math.max(1, Math.min(64, Math.floor(cpuCount), Math.floor((memoryBytes - gib) / (gib / 2))))
+}
+
+export function allowedCiResources(resources: {
+  cpuCount: number
+  memoryBytes: number
+  availableMemoryBytes: number
+}, buildAllowancePercent = 100) {
+  const fraction = buildAllowancePercent / 100
+  const cpuCount = Math.max(1, Math.floor(resources.cpuCount * fraction))
+  const memoryBytes = Math.max(1, Math.floor(resources.memoryBytes * fraction))
+  return { cpuCount, memoryBytes, availableMemoryBytes: Math.min(resources.availableMemoryBytes, memoryBytes) }
+}
+
+export function buildComputerIntegrationShards(status: Pick<CiHostStatus, 'cpuCount' | 'memoryBytes'>,
+  buildAllowancePercent = 100): number {
+  const resources = allowedCiResources({ ...status, availableMemoryBytes: status.memoryBytes }, buildAllowancePercent)
+  return gateIntegrationShards(resources.cpuCount, hostCiCapacity(resources).memoryBudget)
+}
+
+export function gateDispatchShards(run: Pick<CiRunRecord, 'gate' | 'suite' | 'plannedHostKey' | 'integrationShards'>,
+  computerKey: string, availableShards: number): { integrationShards?: number } {
+  if (!run.gate || run.suite !== 'integration') return {}
+  const integrationShards = computerKey === run.plannedHostKey
+    ? Math.min(run.integrationShards!, availableShards) : availableShards
+  return { integrationShards }
 }
 
 export function hostCiCapacity(resources: {

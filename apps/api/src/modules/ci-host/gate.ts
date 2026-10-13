@@ -5,7 +5,7 @@ import { componentLogger } from '../diagnostics/logger.js'
 import type { HostCiComputer, HostCiEndpoint } from './service.js'
 import type { CiIntegrationInventory } from './integrationParts.js'
 import { planCiParts, runsOnCircleCi, type CiUnitInventory } from './parts.js'
-import { gateIntegrationShards } from './capacity.js'
+import { buildComputerIntegrationShards } from './capacity.js'
 
 const SETUP_MS = 90_000
 const exclusive = new Set(exclusiveIntegrationFiles)
@@ -54,8 +54,8 @@ async function gateComputers(endpoint: HostCiEndpoint): Promise<GateComputer[]> 
   const available = await Promise.all(computers.map(async computer => {
     const status = await readCiComputerStatus(endpoint, computer)
     if (!status?.ready) return null
-    const memory = Math.floor(status.memoryBytes * 0.9)
-    const available: GateComputer = { computer, shards: gateIntegrationShards(status.cpuCount, memory), checkMs: 0, files: [] }
+    const shards = buildComputerIntegrationShards(status, computer.buildAllowancePercent)
+    const available: GateComputer = { computer, shards, checkMs: 0, files: [] }
     return available
   }))
   return available.filter((value): value is GateComputer => value !== null)

@@ -7,7 +7,8 @@ export type HostRef = CiRunRecord['computer'] extends infer C ? C extends { host
 /** Local dispatch failures can settle before a host records a start. */
 export type CiRunSettlement = Omit<CiHostRun, 'startedAt'> & Pick<CiRunRecord, 'startedAt'>
 export interface HostCiComputer {
-  key: string; hostRef: HostRef; label: string; priority: number; userSystemd?: CiUserSystemd
+  key: string; hostRef: HostRef; label: string; priority: number
+  buildAllowancePercent?: number; userSystemd?: CiUserSystemd
 }
 export interface HostCiEndpoint {
   /** Paired computers that serve host CI now. */

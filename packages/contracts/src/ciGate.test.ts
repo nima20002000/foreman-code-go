@@ -29,3 +29,13 @@ it('rejects gate requests that select only part of the gate', () => {
       .success).toBe(false)
   }
 })
+
+it('preserves and validates the saved build allowance on host starts', () => {
+  const request = { operation: 'start', runId: '11111111-1111-4111-8111-111111111111',
+    repository: 'octo/site', commit: 'a'.repeat(40), suite: 'integration', scope: 'full' }
+  expect(CiHostRequestSchema.parse({ ...request, buildAllowancePercent: 50 }))
+    .toMatchObject({ buildAllowancePercent: 50 })
+  for (const buildAllowancePercent of [0, 101, 50.5]) {
+    expect(CiHostRequestSchema.safeParse({ ...request, buildAllowancePercent }).success).toBe(false)
+  }
+})

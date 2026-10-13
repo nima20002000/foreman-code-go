@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { CI_HOST_START_PROTOCOL_VERSION } from '@foreman-code/contracts'
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -73,7 +74,7 @@ it('reserves admissions for startup smoke and resumes them after validation', as
   expect(f.control.launches).toBe(0)
   pending = false
   await expect(runner.handle({ operation: 'status' })).resolves.toMatchObject({ ready: true,
-    startProtocolVersion: 2 })
+    startProtocolVersion: CI_HOST_START_PROTOCOL_VERSION })
   await expect(runner.handle(f.request)).resolves.toMatchObject({ operation: 'start' })
   await vi.waitFor(async () => {
     await expect(runner.handle(f.read)).resolves.toMatchObject({ run: { state: 'running' } })
