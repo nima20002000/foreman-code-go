@@ -29,6 +29,42 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL clock parity / crash recove
     f = await sch11Fixture(database)
   }, 60_000)
 
+  it('a fresh schedule service reads the fixture database and rechecks revoked readers', async () => {
+    const saved = await f.save()
+    const reader = await f.issue(['workflows:read'])
+    const other = sch11Pool(database)
+    try {
+      const service = new WorkflowScheduleService(other.pool, new PostgresCommandCoordinator(other.pool), f.clock)
+      expect(await service.get(reader.principal, f.scope)).toEqual({ schedule: saved })
+      expect(await f.access.revoke(reader.principal.id)).toBe(true)
+      await expect(service.get(reader.principal, f.scope)).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+      expect(await f.service.get(f.writer.principal, f.scope)).toEqual({ schedule: saved })
+    } finally {
+      await other.pool.end()
+    }
+  }, 60_000)
+
+  it('a child dispatcher accepts the schedule in the fixture database', async () => {
+    const saved = await f.save()
+    f.time.now = saved.nextOccurrenceAt!
+    const child = sch11Child(f, saved, 'prepared')
+    try {
+      await child.waitFor('prepared')
+      await child.release()
+      await child.waitFor('done')
+      expect(await child.exited).toEqual({ code: 0, signal: null })
+      expect(await f.history()).toEqual([expect.objectContaining({
+        id: scheduleOccurrenceId(f.scope.workflowId, saved.nextOccurrenceAt!),
+        status: 'accepted',
+        workflowVersionId: f.fixture.version.id,
+      })])
+      expect(await f.countRuns()).toBe(1)
+      expect((await f.current())?.nextOccurrenceAt).toBeNull()
+    } finally {
+      await child.close()
+    }
+  }, 60_000)
+
   it.each(sch11ClockCases)('$name: preview equals the persisted acceptance and cursor', async ({ schedule, from, expected }) => {
     f.time.now = from
     const saved = await f.save(schedule)
