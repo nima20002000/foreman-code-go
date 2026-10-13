@@ -1,12 +1,12 @@
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { expect, it } from 'vitest'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { HostCiRunner, systemHostCiPorts, type HostCiPorts } from './runner.js'
 
-it('selects one heavy integration file per weighted build-computer partition', async () => {
+it.each([false, true])('selects one heavy integration file per weighted build-computer partition (CI shell: %s)', async ciShell => {
   const base = process.env.FOREMAN_CODE_TEST_ROOT ?? process.env.TMPDIR
   if (!base) throw new Error('A disposable test root is required')
   const root = await mkdtemp(join(base, 'partition-host-'))
@@ -45,7 +45,10 @@ it('selects one heavy integration file per weighted build-computer partition', a
     await writeFile(join(bin, 'corepack'), `#!${process.execPath}\n`
       + "require('node:fs').appendFileSync(process.env.CI_CALLS_FILE, JSON.stringify(process.argv.slice(2)) + '\\n')\n")
     await chmod(join(bin, 'corepack'), 0o755)
-    const environment = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CI_CALLS_FILE: calls }
+    const shellStartup = join(root, 'shell-startup')
+    await writeFile(shellStartup, 'export PATH=/unavailable-fixture-commands\n')
+    const environment = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CI_CALLS_FILE: calls,
+      ...(ciShell ? { BASH_ENV: shellStartup } : {}) }
     const ports: HostCiPorts = { ...system, run: async (file, args, options) => {
       if (file === 'gh') return { code: 0, stdout: '', stderr: '' }
       if (file === 'git' && args.includes('clone')) {
@@ -53,8 +56,13 @@ it('selects one heavy integration file per weighted build-computer partition', a
       }
       if (file === 'systemd-run') {
         const cwd = args.find(value => value.startsWith('--working-directory='))!.slice('--working-directory='.length)
-        launched = system.run('/bin/bash', [args.at(-1)!], { cwd, env: environment }).then(result => {
-          expect(result.code).toBe(0)
+        // A systemd service receives the runner's explicit environment, not the enclosing CI shell's BASH_ENV.
+        const env = Object.fromEntries(args.filter(value => value.startsWith('--setenv='))
+          .map(value => value.slice('--setenv='.length).split(/=(.*)/s).slice(0, 2)))
+        const script = args.at(-1)!
+        launched = system.run('/bin/bash', [script], { cwd, env: { ...env, CI_CALLS_FILE: calls } }).then(async result => {
+          const log = await readFile(join(dirname(script), 'log'), 'utf8')
+          expect(result.code, log).toBe(0)
         })
         return { code: 0, stdout: '', stderr: '' }
       }

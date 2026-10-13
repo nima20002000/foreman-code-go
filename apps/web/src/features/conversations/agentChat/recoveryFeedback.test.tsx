@@ -1,11 +1,11 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ActivitySnapshotV1, InteractionSummary, Message } from '@foreman-code/contracts'
 import { agentChatFixtures, type AgentChatState, type SendAgentChatMessageRequest } from '@foreman-code/contracts/agent-chat'
 import { AgentChatTranscript } from './AgentChatTranscript'
-import { mountChat } from './testSupport'
+import { installChatSource, mountChat } from './testSupport'
 import { fixture as fileFixture } from '../../file-cards/testFixtures'
 import { operatorState } from '../../operator-chat/pr17-test-fixtures'
 import { operatorNavigationStatus, operatorTurnStatus, summarizeOperatorConversation } from '../../operator-chat/operatorChatStatus'
@@ -28,7 +28,11 @@ function transcript(value: AgentChatState, onSendAgain = vi.fn(), onRefresh = vi
   </QueryClientProvider>)
   return { onSendAgain, onRefresh }
 }
-afterEach(cleanup)
+beforeEach(installChatSource)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 describe('faithful canonical work and decision feedback', () => {
   it('shows unknown unfinished work outside history while leaving an independent next input usable', async () => {
@@ -36,7 +40,7 @@ describe('faithful canonical work and decision feedback', () => {
     value.activitySnapshot.active = [{ ref: { kind: 'subagent', itemId: 'older-child' }, phase: 'active', outcome: null,
       delivery: null, evidence: 'unknown', startedAt: null }]; value.activitySnapshot.hasMoreActiveWork = true
     const mounted = mountChat(value); await mounted.ready()
-    expect(screen.getByText('Unfinished work unconfirmed')).toBeInTheDocument()
+    expect(await screen.findByText('Unfinished work unconfirmed')).toBeInTheDocument()
     await userEvent.hover(screen.getByRole('status', { name: 'Agent state' }))
     expect(await screen.findByRole('tooltip')).toHaveTextContent('More unfinished items exist than are shown')
     const input = screen.getByRole('textbox', { name: 'Message' })
@@ -52,11 +56,11 @@ describe('faithful canonical work and decision feedback', () => {
     const saved = receipt(value, delivery)
     value.activitySnapshot.pendingInteractions = [saved]
     const { onRefresh, onSendAgain } = transcript(value)
-    const label = delivery === 'uncertain' ? 'Decision delivery unconfirmed' : 'Decision recorded'
+    const label = delivery === 'uncertain' ? 'Decision delivery unconfirmed' : 'Decision sending'
     await userEvent.hover(screen.getByRole('status', { name: label }))
     const tooltip = await screen.findByRole('tooltip')
     expect(tooltip).toHaveTextContent('Delivery to the provider is not confirmed')
-    expect(tooltip).toHaveTextContent('Do not submit this decision again')
+    expect(tooltip).toHaveTextContent('Your decision is saved. Check its status before submitting again.')
     expect(tooltip).toHaveTextContent('original-native-question')
     fireEvent.click(screen.getByRole('button', { name: 'Refresh decision status' }))
     expect(onRefresh).toHaveBeenCalledOnce(); expect(onSendAgain).not.toHaveBeenCalled()
@@ -67,9 +71,9 @@ describe('faithful canonical work and decision feedback', () => {
     value.activitySnapshot.activities = [{ kind: 'interaction', id: saved.id, revision: saved.revision, order: '0', owner: saved.owner,
       source: { schemaVersion: 1, system: 'management_command_receipt', observedAt: null }, evidence: 'confirmed', interaction: saved }]
     transcript(value)
-    expect(screen.getByText('Decision delivery acknowledged')).toBeInTheDocument()
-    await userEvent.hover(screen.getByRole('status', { name: 'Decision delivery acknowledged' }))
-    expect(await screen.findByRole('tooltip')).toHaveTextContent('Work completion is unconfirmed')
+    expect(screen.getByText('Decision delivered')).toBeInTheDocument()
+    await userEvent.hover(screen.getByRole('status', { name: 'Decision delivered' }))
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('This does not confirm work completion.')
   })
 })
 
