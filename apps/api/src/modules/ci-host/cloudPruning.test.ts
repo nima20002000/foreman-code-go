@@ -1,8 +1,44 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { fixture } from './cloud.testSupport.js'
+
+it.each(['github', 'circleci'] as const)(
+  'removes a canceled %s branch after an in-flight sweep already retained it', async provider => {
+    const f = await fixture({}, { provider })
+    f.mirrorGit('update-ref', 'refs/heads/ci/retired-run', 'main')
+    let release!: () => void
+    const blocked = new Promise<void>(resolve => { release = resolve })
+    let deleting = false
+    const git = f.git.git.bind(f.git)
+    vi.spyOn(f.git, 'git').mockImplementation(async (args, options) => {
+      if (args[0] === 'push' && args.includes('--atomic')) {
+        deleting = true
+        await blocked
+      }
+      return git(args, options)
+    })
+    const runId = randomUUID()
+    try {
+      await f.cloud.handle({
+        operation: 'start', workspaceId: 'ci-workspace', repository: 'octo/site', commit: f.commit,
+        runId, suite: 'lint', scope: 'full',
+      })
+      await expect.poll(() => deleting, { timeout: 5_000 }).toBe(true)
+      expect(f.mirrorGit('for-each-ref', '--format=%(refname)', 'refs/heads/ci/'))
+        .toContain(`refs/heads/ci/${f.commit}`)
+      expect(await f.cloud.handle({ operation: 'cancel', runId }))
+        .toMatchObject({ operation: 'cancel', run: { state: 'canceled' } })
+    } finally {
+      release()
+      await f.cloud.waitForMirrorCleanup('octo/site', 'octo/site-ci')
+    }
+    expect(f.mirrorGit('for-each-ref', '--format=%(refname)', 'refs/heads/ci/')).toBe('')
+    expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
+      .toMatchObject({ operation: 'read', run: { state: 'canceled' } })
+  },
+)
 
 it.each(['github', 'circleci'] as const)(
   'prunes stale branches while another %s ticket awaits its first metadata write', async provider => {
