@@ -8,7 +8,7 @@ export interface CiIntegrationSlots { host: number; ordinary: number }
 const TARGET_TEST_MS = 240_000
 const SETUP_MS = 90_000
 
-/** Files measured at or above this run in the slow tier: only after every other part of the request passed. */
+/** Files measured at or above this run in the slow tier, after the rest of the request finishes. */
 export const SLOW_TEST_MS = 60_000
 
 /** Keep the same host-only slices, then size ordinary work to four minutes per free slot. Slow files form a second,

@@ -36,6 +36,8 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'It pins the job to that enabled computer through normal setup, grants and audit; no executor fallback or supersession. Integration smoke exercises gate planning and measured integration shard limits. '
   + 'ci_get reads back smokeComputer and the actual computer. '
   + 'scope defaults to affected; scope=full always runs everything. '
+  + 'Deferred slow integration parts wait for fast parts to finish. Full and gate requests continue after fast failures '
+  + 'to report both tiers; affected requests skip the slow tier after a fast failure. Canceled or lost fast parts stop it. '
   + 'priority defaults to normal. Requesting high requires Operator role or an explicit workspace jobs:prioritize grant '
   + 'on the Agent’s live authorization principal, in addition to all CI run grants. '
   + 'Commits changing only CI infrastructure automatically receive high priority based on their Git changes, '

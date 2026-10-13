@@ -702,8 +702,7 @@ export class HostCiService {
     return this.dispatching
   }
 
-  /** Slow-tier parts wait until every other part of their request passed; if any of those did not pass, the slow
-   * tier is skipped (canceled with the reason) because its result could not make the request green. */
+  /** Full requests collect failures from both tiers; affected requests stop after a fast-tier failure. */
   private async releaseSlowTier(queued: CiRunRecord[]): Promise<CiRunRecord[]> {
     const deferred = queued.filter(run => run.deferred)
     if (!deferred.length) return queued
@@ -715,15 +714,19 @@ export class HostCiService {
     const waiting = new Set<string>()
     for (const groupId of groups) {
       const states = rows.filter(row => row.group_id === groupId).map(row => row.state)
-      if (states.some(state => ['failed', 'canceled', 'lost'].includes(state))) {
+      const slowRuns = deferred.filter(run => run.groupId === groupId)
+      const continueAfterFailure = slowRuns.some(run => run.gate || run.scope === 'full')
+      const stop = states.some(state => state === 'canceled' || state === 'lost'
+        || state === 'failed' && !continueAfterFailure)
+      if (stop) {
         const now = new Date().toISOString()
-        for (const run of deferred.filter(value => value.groupId === groupId)) {
+        for (const run of slowRuns) {
           const skipped = { ...run, state: 'canceled' as const, finishedAt: now,
             message: 'Skipped: slow tests run only after every other test of this request passed, and some did not.' }
           await saveQueuedCiRun(this.pool, run, skipped)
         }
         waiting.add(groupId)
-      } else if (states.some(state => state !== 'passed')) waiting.add(groupId)
+      } else if (states.some(state => state !== 'passed' && state !== 'failed')) waiting.add(groupId)
     }
     return queued.filter(run => !run.deferred || !waiting.has(run.groupId))
   }
