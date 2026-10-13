@@ -45,11 +45,12 @@ import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identit
 import { readInstalledRootConfiguration } from './installedRootConfiguration.js'
 import { localWorkflowSourceClosed } from './workflowCleanup.js'
 import { requireQueuedPreparationClosed } from './queuedPreparationAuthority.js'
-import { localWorkflowPreparationClosed } from './workflowPreparationCleanup.js'
-import { resolvePreparationReconciliationOwner } from './preparationReconciliation.js'
+import { localWorkflowPreparationClosed, remoteWorkflowPreparationClosed } from './workflowPreparationCleanup.js'
+import { resolvePreparationReconciliationOwner, validateSourcePreparationClosure } from './preparationReconciliation.js'
+import type { SourceReservation } from './reservations.js'
 import { MaterializationReservationCleanup } from './materializationReservationCleanup.js'
 import { reclaimSourceReservation } from './reclaimSourceReservation.js'
-import { SourceReservationReclamationResponseSchema } from '@foreman-code/contracts/source-operations'
+import { SourceOperationOwnerSchema, SourceReservationReclamationResponseSchema } from '@foreman-code/contracts/source-operations'
 
 /** Existing approved root records and original Job attempts own these services.
  * Construction does not fabricate an allowlist or authorize native execution. */
@@ -149,6 +150,28 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
   const confirmedClosed = async (sql: GraphSqlClient, record: import('@foreman-code/contracts/source-admission').SourceMaterializationRecord) => {
     const original = await readDispatchIntent(sql, record.receipt.executionId)
     if (original) {
+      let reconciled = (await sql.query<{ reconciliation_id: string; owner: unknown; closure: unknown }>(
+        `select reconciliation_id,owner,closure from source_preparation_reconciliations
+          where operation_id=$1 and status='closed'`, [record.operationId])).rows[0]
+      if (!reconciled) {
+        const retained = (await sql.query<{ record: SourceReservation }>(
+          `select record from source_storage_reservations where reservation_id=$1 and state='retained'`,
+          [record.reservationId])).rows[0]?.record
+        if (retained?.preparationClosure && retained.reclamation?.owner) {
+          reconciled = { reconciliation_id: retained.reclamation.reclamationId,
+            owner: retained.reclamation.owner, closure: retained.preparationClosure }
+        }
+      }
+      if (reconciled) {
+        const owner = SourceOperationOwnerSchema.parse(reconciled.owner)
+        if (owner.preparationKind === 'workflow' && isDeepStrictEqual(owner.record, record)) {
+          validateSourcePreparationClosure(reconciled.reconciliation_id, owner, reconciled.closure)
+          const closed = owner.root.selection.hostRef.kind === 'main'
+            ? await localWorkflowPreparationClosed(sql, owner)
+            : await remoteWorkflowPreparationClosed(sql, record.receipt.executionId)
+          if (closed) return true
+        }
+      }
       const intent = await readReconciledDispatchIntent(sql, record.operationId, true)
       const parent = await readAcceptedPlacement(sql, original.runId, original.nodeId)
       const rawNative = await readNativePlacement(sql, record.receipt.executionId)

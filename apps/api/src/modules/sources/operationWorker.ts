@@ -139,6 +139,7 @@ export class SourceOperationWorkerService {
       }
       await verifyApprovedRootAllowlist(allowlist)
       const result = await reclaimSourceReservation(grant, {
+        ...(this.options.git ? { git: this.options.git } : {}),
         authorize: async () => {
           context.signal.throwIfAborted()
           await this.options.authenticate(context)
