@@ -48,6 +48,7 @@ for (const { provider, paddingBytes, name } of outputCases) it(
     `, JSON.stringify(inputFrames)], { cwd: root, env: {}, recovery,
       ...(provider === 'claude' ? { claudeSessionScope: scope } : { restartDetachable: true, reconnectableStdio: true }) })
     const closed = once(child, 'close')
+    const outputReady = once(child.stdout, 'readable')
     const receipt = new Promise<void>(resolve => child.on('message', message => {
       if ((message as { operation?: string }).operation === 'native_exit') resolve()
     }))
@@ -55,10 +56,12 @@ for (const { provider, paddingBytes, name } of outputCases) it(
     child.stderr.on('data', chunk => stderr.push(chunk))
     child.stdin.write(JSON.stringify({ type: 'user', uuid: promptUuid, message: { content: '/compact' } }) + '\n')
     try {
-      // No stdout reader until the provider exits: the relay must retain pending bytes.
-      await receipt
+      // Let output buffer, then drain it so backpressure cannot prevent provider exit.
+      await outputReady
       const stdout: Buffer[] = []
       child.stdout.on('data', chunk => stdout.push(chunk))
+      child.stdout.resume()
+      await receipt
       const [exitCode, exitSignal] = await closed
       assert.equal(Buffer.concat(stdout).toString(), expected)
       assert.equal(Buffer.concat(stderr).toString(), 'final-stderr\n')
