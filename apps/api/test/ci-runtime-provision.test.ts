@@ -48,15 +48,35 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       expect(started.isError).not.toBe(true)
       expect(await f.settle('p-main')).toMatchObject({ state: 'qualified', commit, deviceId: mainId,
         profiles: [{ profileId: 'p-main', status: 'qualified' }] })
-      expect(f.calls.prepare).toEqual([expect.objectContaining({ installer: '/main/runtime/installer', keepImages: [oldImage] })])
+      expect(f.calls.prepare).toEqual([expect.objectContaining({ installer: join(f.stateDirectories.main, 'installer'), keepImages: [oldImage] })])
       expect(f.calls.bind).toEqual([expect.objectContaining({ source: newPin,
         selection: expect.objectContaining({ hostRef: { kind: 'main', mainId } }) })])
       expect(f.calls.saves.map(value => [value.id, value.spec.policy.imageDigest])).toEqual([['p-main', newImage]])
-      expect(f.calls.refresh).toEqual([expect.objectContaining({ stateDirectory: '/main/runtime' })])
+      expect(f.calls.refresh).toEqual([expect.objectContaining({ stateDirectory: f.stateDirectories.main })])
       const read = await f.call('build_computer_prepare_get', { workspaceId: f.workspaceId, profileId: 'p-main' }, 'reader')
       expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(read))).toMatchObject({ state: 'qualified', deviceId: mainId })
     } finally { await f.app.close() }
   })
+
+  it.each(['p-unit', 'p-main'] as const)(
+    'reads completed refresh after the %s runtime restarts with persisted preparation', async profileId => {
+      const f = await fixture({ main: 'installed' })
+      try {
+        const input = { workspaceId: f.workspaceId, profileId, commit, commandId: 'persisted-refresh' }
+        expect((await f.call('build_computer_prepare', input, 'reader')).isError).toBe(true)
+        expect((await f.call('build_computer_prepare', input)).isError).not.toBe(true)
+        const done = await f.settle(profileId)
+        expect(done).toMatchObject({ state: 'qualified', commit, message: null })
+        const read = await f.call('build_computer_prepare_get', { workspaceId: f.workspaceId, profileId }, 'reader')
+        expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(read))).toEqual(done)
+        const runtime = profileId === 'p-main'
+          ? await f.main!()!.handle({ operation: 'status' })
+          : await f.workerState()
+        expect(runtime).toMatchObject({ state: 'idle', commit, stage: 'refresh', prepared: null })
+        expect(f.calls.prepare).toHaveLength(1)
+        expect(f.calls.refresh).toHaveLength(1)
+      } finally { await f.app.close() }
+    })
 
   it('reports that Main without an installed CI runtime cannot be prepared', async () => {
     const f = await fixture({ main: 'absent' })
@@ -164,7 +184,7 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       expect(f.calls.bind).toEqual([expect.objectContaining({ source: newPin, expectedBindingRevision: 1, accessMode: 'exclusive-write' })])
       expect(f.calls.saves.map(value => [value.id, value.spec.bindingRevision, value.spec.policy.imageDigest]).sort())
         .toEqual([['p-install', 2, newImage], ['p-unit', 2, newImage]])
-      expect(f.calls.refresh).toEqual([expect.objectContaining({ stateDirectory: '/ci/state', root: expect.objectContaining({ source: newPin }),
+      expect(f.calls.refresh).toEqual([expect.objectContaining({ stateDirectory: f.stateDirectories.worker, root: expect.objectContaining({ source: newPin }),
         resources: expect.objectContaining({ limits: expect.objectContaining({ cpuLimit: 4 }) }) })])
       expect(f.calls.qualified.sort()).toEqual(['p-install', 'p-unit'])
       // Readback: Laptop's profile was not touched; Builder's carry the commit.

@@ -82,12 +82,13 @@ it('recovers the original Job host before routing an authenticated Job frame, wi
     now: expect.any(Function), retentionNow: expect.any(Function),
   })
   const clock = ports.open.mock.calls[0]![1] as { now(): number; retentionNow(): number | undefined }
-  expect(clock.now()).toBe(mainTime)
+  vi.spyOn(performance, 'now').mockReturnValueOnce(100).mockReturnValueOnce(125).mockReturnValue(150)
+  expect(clock.now()).toBe(mainTime + 25)
   expect(clock.retentionNow()).toBe(mainTime)
   await expect(execution.handle!(request, { ...context, binding: { ...binding, connectionGeneration: 4 } })).rejects.toThrow('actual authenticated')
   connected = false
   expect(clock.retentionNow()).toBeUndefined()
-  expect(clock.now()).toBeTypeOf('number')
+  expect(clock.now()).toBe(mainTime + 50)
   await mounted.close()
   expect(ports.shutdown).toHaveBeenCalledOnce()
   vi.restoreAllMocks()
