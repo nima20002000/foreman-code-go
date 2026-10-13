@@ -25,14 +25,15 @@ afterEach(async () => {
  * unit's script as a child process the way the user manager would. */
 async function computer(options: { github?: boolean; suiteExit?: number; pause?: boolean
   measured?: Record<string, number>; databaseExit?: number; selector?: boolean;
-  change?: 'source' | 'infrastructure' | 'docs'; defaultBranch?: string } = {}) {
+  change?: 'source' | 'infrastructure' | 'docs'; defaultBranch?: string; cpuCount?: number; hostSlots?: boolean } = {}) {
   const root = await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT ?? '/tmp', 'host-ci-'))
   roots.push(root)
   const environment = gitFixtureEnvironment()
   const origin = join(root, 'origin')
   const git = (...args: string[]) => execFileSync('git', args, { cwd: origin, env: environment, encoding: 'utf8' }).trim()
   await mkdir(join(origin, 'apps/api/test'), { recursive: true })
-  await writeFile(join(origin, 'package.json'), JSON.stringify({ name: 'fixture', scripts: {
+  await writeFile(join(origin, 'package.json'), JSON.stringify({ name: 'fixture',
+    ...(options.hostSlots ? { foremanCi: { hostSlots: 1 } } : {}), scripts: {
     typecheck: 'tsc', lint: 'eslint', build: 'tsc -b', test: 'vitest', 'test:integration': 'node scripts/test-integration.mjs', 'db:up': 'node db.mjs' } }))
   await writeFile(join(origin, 'pnpm-lock.yaml'), '')
   for (const name of ['a', 'b', 'c', 'd']) await writeFile(join(origin, `apps/api/test/${name}.integration.test.ts`), '')
@@ -87,7 +88,9 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
     if (output) fs.writeFileSync(output.slice("--outputFile.json=".length), JSON.stringify({ testResults:
       args.filter(arg => /\\.test\\.tsx?$/.test(arg)).map(file => ({ name: path.resolve(args[1] === "--dir" ? args[2] : ".", file), status: "passed", startTime: 1, endTime: 6,
       assertionResults: [{ fullName: path.basename(file) + " works", status: "passed", duration: 4 }] })) }));' "$@"\n`
-  await writeFile(join(bin, 'corepack'), `#!/bin/bash\necho "corepack $*"\n${integration}${unitReport}`
+  await writeFile(join(bin, 'corepack'), '#!/bin/bash\necho "corepack $*"\n'
+    + 'echo "CI budget $FOREMAN_CODE_CI_CPU_COUNT $FOREMAN_CODE_CI_MEMORY_BYTES $FOREMAN_CODE_VERIFICATION_UNIT_WORKERS"\n'
+    + `${integration}${unitReport}`
     + `if [ "$2" = db:up ]; then code=${options.databaseExit ?? 0};`
     + ' if [ "$code" = 0 ]; then touch "$TMPDIR/database-ready"; fi; exit "$code"; fi\n'
     + 'if [ "$2" = test ] || [ "$2" = test:integration ]'
@@ -104,7 +107,8 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
   const unitStarted = new Promise<void>(resolve => { notifyUnitStarted = resolve })
   const units = new Map<string, ReturnType<typeof spawn>>()
   const system = systemHostCiPorts()
-  const ports: HostCiPorts = { ...system, cpus: 8, memoryBytes: 16 * 2 ** 30,
+  const ports: HostCiPorts = { ...system, cpus: options.cpuCount ?? 8, memoryBytes: 16 * 2 ** 30,
+    availableMemoryBytes: () => 16 * 2 ** 30,
     run: async (file, args, runOptions = {}) => {
       if (file === 'gh') return { code: options.github === false ? 1 : 0, stdout: '', stderr: '' }
       if (file === 'git' && args.includes('clone')) {
@@ -145,6 +149,17 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
 }
 
 describe('host CI runner', () => {
+  it('passes the admitted slot share to integration sizing and Vitest workers', async () => {
+    const f = await computer({ cpuCount: 16, hostSlots: true })
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
+      suite: 'integration', scope: 'full' })
+    const done = await f.settle(runId)
+    expect(done.run.state).toBe('passed')
+    expect(done.text).toContain(`CI budget 7 ${Math.floor(16 * 2 ** 30 * 0.9 / 2) - 2 ** 30} 6`)
+    expect(done.text).toContain('corepack pnpm db:down')
+  })
+
   it('selects changes since an explicit base even when the resolved commit is the default branch head', async () => {
     const f = await computer({ selector: true, change: 'source' })
     f.git('update-ref', 'refs/heads/main', f.commit)

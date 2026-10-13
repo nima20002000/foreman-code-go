@@ -1,5 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 const action = process.argv[2]
 if (!['up', 'down', 'stop'].includes(action)) throw new Error('Usage: test-db.mjs up|down|stop')
@@ -24,10 +26,13 @@ function reusePrivateDatabase() {
 }
 
 function composeDatabase() {
-  const project = 'graphql-tests'
+  const runId = process.env.FOREMAN_CODE_CI_HOST_RUN_ID
+  if (runId !== undefined && !/^[0-9a-f-]{36}$/.test(runId)) throw new Error('Invalid host CI database owner')
+  const project = runId ? `foreman-ci-${runId}` : 'graphql-tests'
   const file = fileURLToPath(new URL('../compose.test.yaml', import.meta.url))
   const environment = { ...process.env }
   for (const key of Object.keys(environment)) if (key.startsWith('COMPOSE_')) delete environment[key]
+  if (runId) environment.FOREMAN_CODE_CI_DATABASE_PORT = '0'
   function docker(args) {
     const result = spawnSync('docker', args, { encoding: 'utf8', env: environment })
     if (result.error) throw result.error
@@ -56,6 +61,14 @@ function composeDatabase() {
   else if (action === 'stop') args.push('stop', 'postgres')
   else args.push('down', '--volumes')
   process.stdout.write(`${docker(args)}\n`)
+  if (runId && action === 'up') {
+    if (!environment.TMPDIR) throw new Error('Host CI database requires its private run directory')
+    const binding = docker(['compose', '--project-name', project, '--file', file, 'port', 'postgres', '5432'])
+    const port = /^127\.0\.0\.1:(\d+)$/.exec(binding)?.[1]
+    if (!port) throw new Error('Host CI database has no private loopback port')
+    writeFileSync(join(environment.TMPDIR, 'test-database-url'),
+      `postgresql://graphql_test_admin:graphql_test_disposable_only@127.0.0.1:${port}/postgres`, { mode: 0o600 })
+  }
 }
 
 const started = performance.now()

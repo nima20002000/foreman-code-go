@@ -50,7 +50,7 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'between parts and reports each part’s maxBytes and nextOffset. '
   + 'ci_get reads the persisted background refresh without waiting for dispatch or build computers. '
   + 'Queued tickets include the dispatch waiting reason in message; it clears when they start. '
-  + 'ci_computers_list shows readiness reasons and assigned tickets to explain busy computers. '
+  + 'ci_computers_list shows readiness reasons, used/total CI slots and assigned tickets. '
   + 'Status and the log tail update on the dispatcher cadence (normally five seconds). Pre-upgrade tickets '
   + 'can have an empty cached tail; ci_logs_read still reads their logs. '
   + 'ci_get with testStatus (passed, failed, skipped) adds the ticket’s structured test results: '
@@ -120,7 +120,7 @@ export function registerCiTools(server: McpServer, context: CiContext) {
   }, input => invoke('ci_get', () => ci.get(context.principal, input)))
   if (available('ci_computers_list')) server.registerTool('ci_computers_list', {
     description: 'List the build computers CI can use, with readiness (GitHub login, git, corepack), size '
-      + 'and persisted starting/running ticket IDs assigned to each computer. '
+      + 'used/total concurrent CI slots, available memory, and persisted starting/running ticket IDs. '
       + 'Read participation and priority with build_computer_get. '
       + CI_CAPABILITY_DETAIL,
     inputSchema: operator ? OperatorCiGetInputSchema.pick({ workspaceId: true }) : z.object({}).strict(),
