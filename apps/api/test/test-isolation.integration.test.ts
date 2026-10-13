@@ -88,7 +88,7 @@ it('checks persisted execution destinations again after reconnecting to the prep
     await assertOwnedExecutionDestinations(fixture.pool, selection)
     await fixture.pool.query('update workspaces set execution_location=$2::jsonb where id=$1',
       [selection.workspaceId, JSON.stringify({ runnerId: 'local', rootPath: outside.directory })])
-    restarted = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL,
+    restarted = new pg.Pool({ connectionString: fixture.databaseUrl,
       options: `-c search_path=${fixture.schema}`, max: 1 })
     const persisted = await restarted.query('select execution_location from workspaces where id=$1',
       [selection.workspaceId])
