@@ -39,6 +39,7 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
   let app: ReturnType<typeof buildApp>, address: string, directory: string, dispatch: PostgresJobDispatch
   let writer: Awaited<ReturnType<PostgresAccessService['issue']>>, reader: typeof writer
   let client: Client, deniedClient: Client
+  const approvalCommandId = randomUUID()
   let proposal: JobCancellationRecoveryRead
   let apply: { recoveryId: string; closure: { closure: { schemaVersion: 1; grantId: string;
     receipt: Awaited<ReturnType<RemoteOperationJournal['jobCancelBeforeEntry']>>;
@@ -58,12 +59,11 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
     const access = new PostgresAccessService(pool), commands = new PostgresCommandCoordinator(pool)
     await pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
       [workspaceId, JSON.stringify({ id: workspaceId, name: 'Revoked Job cleanup fixture' })])
-    writer = await access.issue({ name: 'Human owner and cleanup caller', audience: 'operator',
+    writer = await access.issue({ name: 'Cleanup caller', audience: 'operator',
       expiresAt: new Date(Date.now() + 3600000), grants: [{ actions: ['job_definitions:read', 'job_definitions:write',
         'jobs:read', 'jobs:start', 'jobs:cancel'], scope: { workspaceIds: [workspaceId] } }] })
     reader = await access.issue({ name: 'Read only Job caller', audience: 'operator', expiresAt: new Date(Date.now() + 3600000),
       grants: [{ actions: ['jobs:read'], scope: { workspaceIds: [workspaceId] } }] })
-    await pool.query('update local_human_principal set principal_id=$1', [writer.principal.id])
     const deviceId = randomUUID(), workerInstallationId = randomUUID(), policyId = randomUUID()
     const registration = { mainId, deviceId, workerInstallationId, keyRevision: 1, authorizationRevision: 2,
       publicKeyFingerprint: publicKeyFingerprint(publicKey), status: 'revoked', scopes: ['connect', 'heartbeat'] }
@@ -185,10 +185,17 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
         workspaceId, executionId: execution.id, commandId: randomUUID(), journalSha256: sha(await readFile(join(directory, 'original-journal'))) } })
       expect(result.isError).not.toBe(true)
       proposal = JobCancellationRecoveryReadSchema.parse(decodeMcpToolResult(result))
-      const approved = await app.inject({ method: 'POST', url: `${route()}/approve`,
-        headers: { origin: 'http://127.0.0.1:5173' }, payload: { commandId: randomUUID() } })
-      expect(approved.statusCode).toBe(200)
-      const grant = SignedJobCancellationGrantSchema.parse(approved.json()).grant
+      const approved = await client.callTool({ name: 'job_cancellation_recovery_approve', arguments: {
+        workspaceId, executionId: execution.id, recoveryId: proposal.id, commandId: approvalCommandId } })
+      expect(approved.isError).not.toBe(true)
+      const signed = SignedJobCancellationGrantSchema.parse(decodeMcpToolResult(approved))
+      const repeated = await client.callTool({ name: 'job_cancellation_recovery_approve', arguments: {
+        workspaceId, executionId: execution.id, recoveryId: proposal.id, commandId: approvalCommandId } })
+      expect(decodeMcpToolResult(repeated)).toEqual(signed)
+      const persisted = await client.callTool({ name: 'job_cancellation_recovery_get', arguments: {
+        workspaceId, executionId: execution.id, recoveryId: proposal.id } })
+      expect(decodeMcpToolResult(persisted)).toMatchObject({ state: 'approved', grant: signed })
+      const grant = signed.grant
       const command = { schemaVersion: 1 as const, protocolVersion: 1 as const, commandId: cancelCommandId,
         operationId: execution.operationId, attemptId: execution.attemptId, executionId: execution.id,
         bindingHash: intent.bindingHash, subject: intent.subject, owner: intent.owner, action: { kind: 'stop' as const } }
@@ -220,13 +227,21 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
       join job_dispatch_intents d on d.execution_id=e.id cross join source_storage_reservations r
       where e.id=$1 and r.reservation_id=$2`, [execution.id, reservationId])).rows[0]!
   }
-  it('denies a read-only MCP caller and bearer approval while ordinary revoked execution remains blocked', async () => {
+  it('denies read-only and out-of-scope cleanup while allowing an authorized bearer retry', async () => {
     const denied = await importClosure(apply, deniedClient)
     expect(denied.isError).toBe(true)
     expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
     const bearer = await app.inject({ method: 'POST', url: `${route()}/approve`,
-      headers: { authorization: `Bearer ${writer.token}` }, payload: { commandId: randomUUID() } })
-    expect(bearer.statusCode).toBe(403)
+      headers: { authorization: `Bearer ${writer.token}` }, payload: { commandId: approvalCommandId } })
+    expect(bearer.statusCode).toBe(200)
+    const deniedApproval = await deniedClient.callTool({ name: 'job_cancellation_recovery_approve', arguments: {
+      workspaceId, executionId: execution.id, recoveryId: proposal.id, commandId: randomUUID() } })
+    expect(deniedApproval.isError).toBe(true)
+    expect(JSON.stringify(deniedApproval.content)).toContain('ACCESS_DENIED')
+    const wrongScope = await client.callTool({ name: 'job_cancellation_recovery_approve', arguments: {
+      workspaceId: randomUUID(), executionId: execution.id, recoveryId: proposal.id, commandId: randomUUID() } })
+    expect(wrongScope.isError).toBe(true)
+    expect(JSON.stringify(wrongScope.content)).toContain('ACCESS_DENIED')
     const sql = await database.pool.connect()
     try { await expect(assertDeviceHostInstallation(sql, execution.acceptedSpec.target.hostRef,
       execution.acceptedSpec.target.registration!.workerInstallationId)).rejects.toMatchObject({ code: 'revoked' }) }
@@ -234,7 +249,7 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
     expect(ordinaryTransport).not.toHaveBeenCalled()
     expect(await state()).toMatchObject({ state: 'owned', last_receipt: null, record: { process: { processStopped: false } } })
   })
-  it('rejects changed source-claim pins and expired human approval without changing Main', async () => {
+  it('rejects changed source-claim pins and expired cleanup authorization without changing Main', async () => {
     const changed = structuredClone(apply)
     changed.closure.closure.sourceClaim.reservationId = randomUUID()
     changed.closure.signature = sign(null, Buffer.from(jobCancellationClosureMessage(changed.closure.closure)),
@@ -250,7 +265,7 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
     } finally { clock.mockRestore() }
     expect(await state()).toMatchObject({ state: 'owned', last_receipt: null, record: { process: { processStopped: false } } })
   })
-  it('denies a revoked Worker signature without a matching fresh human approval', async () => {
+  it('denies a revoked Worker signature without a matching fresh cleanup authorization', async () => {
     const pending = await client.callTool({ name: 'job_cancellation_recovery_propose', arguments: {
       workspaceId, executionId: execution.id, commandId: randomUUID(), journalSha256: proposal.journalSha256 } })
     expect(pending.isError).not.toBe(true)
@@ -262,7 +277,7 @@ describe('approved cancellation recovery of a revoked original Worker', () => {
       keys.privateKey).toString('base64url')
     const denied = await importClosure(changed)
     expect(denied.isError).toBe(true)
-    expect(JSON.stringify(denied.content)).toContain('fresh human approval')
+    expect(JSON.stringify(denied.content)).toContain('fresh cleanup authorization')
     expect(await state()).toMatchObject({ state: 'owned', last_receipt: null, record: { process: { processStopped: false } } })
   })
   it('rechecks the approved caller grant before importing any signed closure', async () => {

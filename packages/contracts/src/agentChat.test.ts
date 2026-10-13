@@ -42,3 +42,11 @@ describe("agent chat contract", () => {
       context: { workflowId: "w", workflowNodeId: "n", agentId: "a" } })).toThrow();
   });
 });
+
+it('accepts pasted logs up to one MiB of characters and rejects larger messages', () => {
+  const request = { requestId: 'pasted-log', expectedConversationId: null,
+    context: { workflowId: 'workflow', workflowNodeId: 'node', agentId: 'agent' } };
+  const content = 'x'.repeat(1_048_576);
+  expect(SendAgentChatMessageRequestSchema.parse({ ...request, content }).content).toBe(content);
+  expect(SendAgentChatMessageRequestSchema.safeParse({ ...request, content: content + 'x' }).success).toBe(false);
+});

@@ -70,9 +70,9 @@ describe('Job capability summary matches mounted Operator tools',()=>{
       expect(capabilities.requirements).toContainEqual(expect.objectContaining({
         name: 'job_launch_validate', actions: ['jobs:start'],
       }))
-      for (const name of ['job_cancellation_recovery_propose', 'job_cancellation_recovery_get']) {
+      for (const name of ['job_cancellation_recovery_propose', 'job_cancellation_recovery_get', 'job_cancellation_recovery_approve']) {
         expect(capabilities.requirements).toContainEqual(expect.objectContaining({ name, actions: ['jobs:cancel'],
-          detail: expect.stringContaining('MCP cannot approve itself') }))
+          detail: expect.stringContaining('jobs:cancel') }))
       }
       expect(capabilities.requirements).toContainEqual(expect.objectContaining({
         name: 'ci_enrollment_get', actions: ['job_definitions:read'],
