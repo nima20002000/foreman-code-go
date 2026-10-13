@@ -9,6 +9,7 @@ import { boardStartPins, readBoardStartPreflight, sameBoardStartPins, currentBoa
 import { boardStartClient, type BoardStartInput } from '../../workflow-board/startClient'
 import { acknowledgeBoardStart, readBoardStart, rejectBoardStart, reserveBoardStart, useBoardStartOutbox } from '../../workflow-board/startOutbox'
 import { scopeForBoardRun } from '../../workflow-board/client'
+import { recoverBoardStart } from '../../workflow-board/startRecovery'
 import { useGraphDraftStore } from '../store'
 import { nextDraftDirty, type NextDraftEdit } from './state'
 import type { DraftEditorCore } from './useDraftEditorCore'
@@ -74,7 +75,7 @@ export function useDraftStartMutation({ draftKey, edit, editIntent, core, startS
       if (!current) throw new Error('The draft is no longer mounted.')
       let candidate = existing
       if (!candidate) {
-        if (current.busy || current.pending || (!saved && editIntent.locked) || nextDraftDirty(current)
+        if (current.busy || current.pending || current.startCanceled || (!saved && editIntent.locked) || nextDraftDirty(current)
           || current.startRejectedVersionId === current.context.draft.baseWorkflowVersionId
           || (!saved && (preflight.isError || !preflight.data))) throw new Error('Save, reload or reconcile before creating a new Start.')
         const displayedPins = saved ? undefined : boardStartPins(current.context.draft, preflight.data!)
@@ -89,10 +90,10 @@ export function useDraftStartMutation({ draftKey, edit, editIntent, core, startS
       sent = await reserveBoardStart(draftKey, candidate)
       const result = await boardStartClient.start(sent)
       assertSession(generation)
-      await acknowledgeBoardStart(draftKey, sent)
+      const acknowledgement = await acknowledgeBoardStart(draftKey, sent)
       void queryClient.invalidateQueries({ queryKey: boardRunListKey(graph.workspaceId, graph.id) })
       if (!alive.current || useGraphDraftStore.getState().nextDrafts[draftKey]?.instanceId !== current.instanceId) return
-      latestBoard.current?.selectRun(scopeForBoardRun(result.run))
+      if (acknowledgement !== 'superseded') latestBoard.current?.selectRun(scopeForBoardRun(result.run))
       setMessage('Start acknowledged for the exact saved version. Run status is read separately.')
     } catch (error) {
       try {
@@ -107,7 +108,29 @@ export function useDraftStartMutation({ draftKey, edit, editIntent, core, startS
       throw error
     } finally { startLock.current = false }
   } })
-  const starting = startMutation.isPending
+  const recovery = useMutation({ retry: false, mutationFn: async () => {
+    if (startLock.current) return
+    startLock.current = true
+    try {
+      if (!canStart) throw new Error('Start permission is unavailable for this workflow.')
+      const request = readBoardStart(draftKey)
+      if (!request) return
+      const instanceId = useGraphDraftStore.getState().nextDrafts[draftKey]?.instanceId
+      const { result, acknowledgement } = await recoverBoardStart(draftKey, request)
+      void queryClient.invalidateQueries({ queryKey: boardRunListKey(graph.workspaceId, graph.id) })
+      if (!alive.current || acknowledgement === 'superseded'
+        || useGraphDraftStore.getState().nextDrafts[draftKey]?.instanceId !== instanceId) return
+      if (result.status === 'accepted') {
+        latestBoard.current?.selectRun(scopeForBoardRun(result.run))
+        setMessage('The earlier Run was accepted.')
+      } else {
+        useGraphDraftStore.getState().updateNextDraft(draftKey, current => ({ ...current, startCanceled: true }))
+        setMessage('The earlier Start was canceled. Reload the saved draft, then review and start again.')
+      }
+    } finally { startLock.current = false }
+  } })
+  const starting = startMutation.isPending || recovery.isPending
   const start = () => startMutation.mutateAsync()
-  return { startMutation, starting, start }
+  const recoverStart = () => recovery.mutateAsync()
+  return { startMutation, starting, start, recoverStart }
 }

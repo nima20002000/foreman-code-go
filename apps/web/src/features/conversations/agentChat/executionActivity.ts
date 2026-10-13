@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef } from 'react'
+import { useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type {
   AgentChatContext, AgentChatExecutionActivityPage, AgentChatExecutionItem, AgentChatExecutionSummary,
@@ -6,6 +6,7 @@ import type {
 import { agentChatApi } from '../../../shared/api/agentChat'
 import { sessionGeneration } from '../../../shared/api/sessionBoundary'
 import { agentChatContextKey } from './model'
+import { useExecutionActivityReads, type ActivityRead } from './executionActivityReads'
 
 /** A bounded live window and one explicitly requested history page in the Query cache. */
 export interface ExecutionActivityFeed {
@@ -26,7 +27,6 @@ interface ExecutionActivityHistory {
   hasEarlierItems: boolean
 }
 
-type ActivityRead = { executionId: string; before?: string; itemId?: string }
 const ITEM_LIMIT = 200
 const BYTE_LIMIT = 256 * 1024
 const encoder = new TextEncoder()
@@ -34,11 +34,25 @@ const TERMINAL = new Set(['completed', 'failed', 'canceled', 'interrupted'])
 export const executionIsLive = (execution: AgentChatExecutionSummary) => !TERMINAL.has(execution.state)
 const itemKey = (item: AgentChatExecutionItem) => JSON.stringify([item.executionId, item.id])
 
+function keepsExpandedDetails(existing: AgentChatExecutionItem, incoming: AgentChatExecutionItem) {
+  if (existing.entry.kind !== 'activity' || incoming.entry.kind !== 'activity') return false
+  const full = existing.entry.activity
+  const preview = incoming.entry.activity
+  if (!full.truncated && preview.truncated) return true
+  if (full.truncated && !preview.truncated) return false
+  return (full.input?.length ?? 0) + (full.output?.length ?? 0)
+    > (preview.input?.length ?? 0) + (preview.output?.length ?? 0)
+}
+
 function upsertItems(previous: AgentChatExecutionItem[], incoming: AgentChatExecutionItem[]) {
   const items = new Map(previous.map(item => [itemKey(item), item]))
   for (const item of incoming) {
     const existing = items.get(itemKey(item))
-    if (!existing || BigInt(item.revision) >= BigInt(existing.revision)) items.set(itemKey(item), item)
+    if (existing) {
+      const revision = BigInt(item.revision) - BigInt(existing.revision)
+      if (revision < 0 || revision === 0n && keepsExpandedDetails(existing, item)) continue
+    }
+    items.set(itemKey(item), item)
   }
   return [...items.values()]
 }
@@ -139,7 +153,11 @@ export function mergeExecutionActivity(previous: ExecutionActivityFeed | undefin
   })
   const order = new Map(executions.map((execution, index) => [execution.executionId, index]))
   let items = detail ? updateItems(previous?.items ?? [], page.items)
-    : upsertItems(page.mode === 'snapshot' ? [] : previous?.items ?? [], page.items)
+    : upsertItems(previous?.items ?? [], page.items)
+  if (page.mode === 'snapshot') {
+    const incomingIds = new Set(page.items.map(itemKey))
+    items = items.filter(item => incomingIds.has(itemKey(item)))
+  }
   items = items.filter(item => order.has(item.executionId)).sort((a, b) =>
     order.get(a.executionId)! - order.get(b.executionId)! || Number(BigInt(a.sequence) - BigInt(b.sequence)))
   const retained = retainItems(items)
@@ -159,8 +177,6 @@ export function mergeExecutionActivity(previous: ExecutionActivityFeed | undefin
 /** Polls about once a second while an execution works; slower once every execution has finished. */
 export function useExecutionActivity(context: AgentChatContext) {
   const client = useQueryClient()
-  // Superseded history reads may refresh entries without reopening an abandoned page.
-  const historyRequest = useRef(0)
   const key = useMemo(() => ['agent-chat', sessionGeneration(), agentChatContextKey(context), 'execution-activity'] as const, [context])
   const query = useQuery({
     queryKey: key, enabled: !!context.runId, retry: false, staleTime: 0,
@@ -176,22 +192,17 @@ export function useExecutionActivity(context: AgentChatContext) {
       return !data || data.executions.some(executionIsLive) ? 1_000 : 10_000
     },
   })
-  const read = useCallback(async (page: ActivityRead) => {
-    const request = page.itemId === undefined ? ++historyRequest.current : undefined
-    const result = await agentChatApi.executionActivity(context, page)
-    const active = request === undefined || request === historyRequest.current
-    client.setQueryData<ExecutionActivityFeed>(key, previous =>
-      mergeExecutionActivity(previous, result, active ? page : undefined))
-  }, [client, context, key])
+  const reads = useExecutionActivityReads(context, key, mergeExecutionActivity)
   return {
     query,
+    readState: reads.readState,
     loadEarlier: (executionId: string) => {
       const before = historyBoundary(client.getQueryData<ExecutionActivityFeed>(key), executionId)
-      return read({ executionId, ...(before !== undefined ? { before } : {}) })
+      return reads.read({ executionId, ...(before !== undefined ? { before } : {}) })
     },
-    expand: (executionId: string, itemId: string) => read({ executionId, itemId }),
+    expand: (executionId: string, itemId: string) => reads.read({ executionId, itemId }),
     backToLatest: () => {
-      historyRequest.current += 1
+      reads.abandonHistory()
       client.setQueryData<ExecutionActivityFeed>(key, previous => {
         if (!previous) return previous
         const live = { ...previous }

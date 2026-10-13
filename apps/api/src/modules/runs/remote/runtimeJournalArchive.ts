@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto'
 import { opendir, readFile } from 'node:fs/promises'
 import { z } from 'zod'
+import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { RemoteJobOperationReceiptRecordSchema } from '@foreman-code/contracts/remote-job-execution'
 import { QualificationReceiptSchema } from '../../jobs/qualificationJournal.js'
 import { JobNativeOwnerSchema } from '../../jobs/executorJournal.js'
 import { SourcePreparationClosureSchema } from '@foreman-code/contracts/source-admission'
 
 const ArchiveSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('workflow'), receipt: RemoteOperationReceiptSchema }).strict(),
   z.object({ kind: z.literal('job'), receipt: RemoteJobOperationReceiptRecordSchema,
     owner: JobNativeOwnerSchema.nullable(), logs: z.unknown(), outputs: z.array(z.unknown()),
     sourceClosure: SourcePreparationClosureSchema.nullable() }).strict(),
@@ -31,7 +33,7 @@ export class RuntimeJournalArchive {
     const serialized = await readFile(`${this.path}.runtime-archive/${hash(tombstone.operationId)}.json`, 'utf8')
     if (hash(serialized) !== tombstone.digest) throw new Error('Runtime archive changed: recovery required')
     const archive = ArchiveSchema.parse(JSON.parse(serialized))
-    const operationId = archive.kind === 'job' ? archive.receipt.intent.operationId : archive.receipt.admission.operationId
+    const operationId = archive.kind === 'qualification' ? archive.receipt.admission.operationId : archive.receipt.intent.operationId
     if (operationId !== tombstone.operationId) throw new Error('Runtime archive identity changed')
     return archive
   }
@@ -39,7 +41,7 @@ export class RuntimeJournalArchive {
   async save(raw: z.infer<typeof ArchiveSchema>): Promise<void> {
     const archive = ArchiveSchema.parse(raw)
     const receipt = archive.receipt
-    const identities = archive.kind === 'job'
+    const identities = archive.kind !== 'qualification'
       ? [`operation:${archive.receipt.intent.operationId}`, `execution:${archive.receipt.intent.executionId}`,
         `attempt:${archive.receipt.intent.attemptId}`]
       : [`operation:${archive.receipt.admission.operationId}`, `approval:${archive.receipt.admission.approvalId}`,

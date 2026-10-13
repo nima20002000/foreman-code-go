@@ -52,6 +52,11 @@ export type RemoteExecutionRpcRequest = z.infer<typeof RemoteExecutionRpcRequest
 /** W07 authenticated extension kind. Frame bounds/operation grant remain carrier-owned. */
 export const REMOTE_EXECUTION_EXTENSION = 'execution-v1' as const
 
+/** Preparation revision that preserves the original workflow session continuation. */
+export const REMOTE_PREPARATION_EXTENSION = {
+  namespace: 'execution-prepare', version: 2, maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
+} as const
+
 /** New native entry/turn must use this stricter envelope; historical status and Stop remain supported. */
 export const CurrentRemoteExecutionRpcRequestSchema = RemoteExecutionRpcRequestSchema.superRefine((value, ctx) => {
   if (!['prepare', 'start-turn'].includes(value.method)) return
