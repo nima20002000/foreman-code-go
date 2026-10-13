@@ -3,9 +3,45 @@ import { afterEach, expect, it } from 'vitest'
 import { PostgresSourceReservations } from '../src/modules/sources/reservations.js'
 import { sourceStorageCapacityFixture } from './helpers/sourceStorageCapacityFixture.js'
 import { agent3Database } from './helpers/wave25Agent3.js'
+import { withTransaction } from '../src/infrastructure/transaction.js'
 
 let database: Awaited<ReturnType<typeof agent3Database>> | undefined
 afterEach(async () => { await database?.close(); database = undefined })
+
+it.each(['owned', 'uncertain'] as const)(
+  'admits another source using free memory without charging the %s materialization twice', async state => {
+    database = await agent3Database()
+    const pool = database.pool
+    const scopeId = randomUUID()
+    let availableMemoryBytes = 4 * 2 ** 30
+    const reservations = new PostgresSourceReservations(async () => sourceStorageCapacityFixture({
+      cpuCount: 6, availableMemoryBytes,
+    }))
+    const request = () => ({ scopeId, ownerKind: 'materialization' as const,
+      ownerId: randomUUID(), reservedBytes: 4096 })
+    const first = await withTransaction(pool, sql => reservations.reserve(sql, request()))
+    await withTransaction(pool, sql => reservations.retain(sql, first, state))
+
+    // The host reading already excludes the first execution's resident memory.
+    availableMemoryBytes = 1536 * 2 ** 20
+    const second = await withTransaction(pool, sql => reservations.reserve(sql, request()))
+    expect(second.ownerId).not.toBe(first.ownerId)
+    await expect(withTransaction(pool, sql => reservations.reserve(sql, request())))
+      .rejects.toMatchObject({ code: 'SOURCE_CAPACITY', details: { exhausted: ['preparations'] } })
+
+    await withTransaction(pool, sql => reservations.retain(sql, second, 'owned'))
+    availableMemoryBytes = 2 ** 30
+    await expect(withTransaction(pool, sql => reservations.reserve(sql, request())))
+      .rejects.toMatchObject({ code: 'SOURCE_CAPACITY', details: { exhausted: ['preparations'] } })
+    const stored = await pool.query<{ owner_id: string; state: string; reserved_bytes: string }>(
+      'select owner_id,state,reserved_bytes from source_storage_reservations where scope_id=$1', [scopeId])
+    expect(stored.rows).toHaveLength(2)
+    expect(stored.rows).toEqual(expect.arrayContaining([
+      { owner_id: first.ownerId, state, reserved_bytes: '4096' },
+      { owner_id: second.ownerId, state: 'owned', reserved_bytes: '4096' },
+    ]))
+  },
+)
 
 it('shares a measured host budget across many ordinary Agents and retains it after restart', async () => {
   database = await agent3Database()

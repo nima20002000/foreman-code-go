@@ -63,6 +63,6 @@ it.each([false, true])('preserves low-memory rejection when cache is absent or u
     const capacity = await readSourceStorageCapacity(root)
     expect(capacity.availableMemoryBytes).toBe(2 ** 30)
     expect(sourceStorageLimits(capacity).preparing).toBe(0)
-    expect(sourceStorageLimits(capacity).materializations).toBe(0)
+    expect(sourceStorageLimits(capacity).materializations).toBe(Math.min(64, capacity.cpuCount * 2))
   })
 })
