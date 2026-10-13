@@ -235,7 +235,7 @@ describe('Selected Board history', { timeout: 20_000 }, () => {
     const user = userEvent.setup()
     vi.stubGlobal('innerWidth', width)
     const chatReads = installBoardHistory()
-    await mountBoard()
+    const { router } = await mountBoard()
     await screen.findByRole('region', { name: 'Selected Run pinned topology' })
     const assertSelection = async (runId: string, name: string) => {
       // Run changes remount the canvas. Wait for its pins before retaining a query scope.
@@ -244,6 +244,13 @@ describe('Selected Board history', { timeout: 20_000 }, () => {
         expect(region).toHaveTextContent(`Run ${runId} · version version-${runId.slice(4)}`)
         return region
       })
+      const expectedPins = {
+        workflowId: scope.workflowId,
+        runId,
+        workflowVersionId: `version-${runId.slice(4)}`,
+        executionSemanticsVersion: 3,
+      }
+      expect(router.state.location.search).toMatchObject(expectedPins)
       const graph = within(pinned)
       // Whole-app button queries also compute names/styles for the retained editor.
       const node = await graph.findByRole('button', { name: `Inspect Run node ${name}` })
@@ -264,6 +271,7 @@ describe('Selected Board history', { timeout: 20_000 }, () => {
       const activities = await screen.findByRole('dialog', { name: 'Activities' })
       expect(await within(activities).findByText(`Saved run ${runId}`)).toBeVisible()
       await user.click(within(activities).getByRole('button', { name: 'Close runs' }))
+      expect(router.state.location.search).toMatchObject(expectedPins)
       expect(pinned).toHaveTextContent(`Run ${runId} · version version-${runId.slice(4)}`)
     }
     await assertSelection('run-a', 'Y')
