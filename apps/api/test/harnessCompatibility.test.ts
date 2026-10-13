@@ -35,6 +35,21 @@ function create(options: ConstructorParameters<typeof HarnessCompatibilityServic
 afterEach(async () => { await Promise.allSettled(services.splice(0).map((service) => service.close())) })
 
 describe('harness compatibility diagnostics (not execution qualification)', () => {
+  it('records the installed version and verification result without a release catalog', async () => {
+    const options = fixture('99.0.0')
+    const service = create(options)
+    const [report] = await service.checkAll()
+    expect(report).toMatchObject({ installedVersion: '99.0.0', status: 'probe-passed', schemaSha256: sha })
+    expect(report).not.toHaveProperty('qualifiedRelease')
+    expect(report).not.toHaveProperty('knownRelease')
+    expect(report).not.toHaveProperty('matchesQualifiedVersion')
+    expect(options.cache.entries.get('codex')).toMatchObject({
+      installedVersion: '99.0.0', status: 'probe-passed', schemaSha256: sha,
+    })
+    const [reloaded] = await create(options).checkAll()
+    expect(reloaded).toMatchObject({ installedVersion: '99.0.0', status: 'probe-passed', source: 'cache' })
+    expect(options.probe.probe).toHaveBeenCalledTimes(1)
+  })
   it('records official provenance for the bundled native qualification versions', async () => {
     const options = fixture(QUALIFIED_RELEASES.codex.version)
     const result = await create(options).checkAll()

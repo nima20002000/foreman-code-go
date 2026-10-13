@@ -2,6 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { HarnessCompatibilityListSchema, HarnessReleaseProvenanceSchema, HarnessCompatibilityRetryParamsSchema } from './harnessCompatibility.js'
 
 describe('compatibility diagnostic contracts', () => {
+  it('accepts observed versions and verification results without release paperwork', () => {
+    const report = {
+      harness: 'codex', checkId: '11111111-1111-4111-8111-111111111111', installedVersion: '99.0.0',
+      status: 'probe-passed', checkedAt: '2026-10-01T00:00:00.000Z', source: 'local-probe',
+      checkerRevision: 'diagnostic-revision', reason: null, schemaSha256: 'a'.repeat(64),
+      cacheWarning: null, scope: 'protocol-settings-diagnostic-only',
+    }
+    const response = { canRetry: false, harnesses: [report] }
+    expect(HarnessCompatibilityListSchema.parse(response)).toEqual(response)
+  })
   it('does not accept caller-selected commands or binary paths on retries', () => {
     expect(HarnessCompatibilityRetryParamsSchema.safeParse({ harness: 'codex' }).success).toBe(true)
     const selectedBinary = { harness: 'codex', binary: '/arbitrary', forceQualification: true }
