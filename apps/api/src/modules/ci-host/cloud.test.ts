@@ -594,7 +594,7 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(f.mirrorGit('rev-list', '--count', branch)).toBe('2')
     expect(() => f.mirrorGit('cat-file', '-e', f.commit)).toThrow()
     expect(f.mirrorGit('rev-parse', 'refs/heads/main')).toBe(f.mirrorGit('rev-parse', branch))
-    expect(f.dispatched).toEqual([['workflow', 'run', 'ci.yml', '-R', 'octo/site-ci', '--ref', 'main', '-f', `ref=ci/${f.commit}`,
+    expect(f.dispatched).toEqual([['workflow', 'run', 'ci.yml', '-R', 'octo/site-ci', '--ref', 'main', '-f', `ref=${f.mirrorGit('rev-parse', `refs/heads/ci/${f.commit}`)}`,
       '-f', `run_id=${runId}`, '-f', 'suite=integration',
       '-f', 'slice=s:0,3', '-f', 'scope=full']])
     // A retried start returns the same run without dispatching again.

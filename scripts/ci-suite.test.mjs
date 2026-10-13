@@ -369,7 +369,7 @@ for (const provider of ['github', 'circleci']) {
       git(checkout, 'init', '-q')
       git(checkout, 'remote', 'add', 'origin', `file://${origin}`)
       if (depth === 0) git(checkout, 'fetch', 'origin', '+refs/heads/*:refs/remotes/origin/*')
-      else git(checkout, 'fetch', '--no-tags', `--depth=${depth}`, 'origin', 'ci/tested')
+      else git(checkout, 'fetch', '--no-tags', `--depth=${depth}`, 'origin', commit)
       git(checkout, 'checkout', '--detach', commit)
     } else {
       const configuration = parse(readFileSync(new URL('../.circleci/config.yml', import.meta.url), 'utf8'))

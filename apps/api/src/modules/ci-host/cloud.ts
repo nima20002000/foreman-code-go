@@ -57,7 +57,7 @@ export class CloudCi {
   private readonly operations = new Map<string, Promise<unknown>>()
   private readonly reading = new Set<string>()
   private readonly published = new Map<string, Promise<{
-    git: (args: string[]) => Promise<string>; branch: string; defaultBranch?: string; baseCommit?: string
+    git: (args: string[]) => Promise<string>; branch: string; snapshotCommit: string; defaultBranch?: string; baseCommit?: string
   }>>()
 
   constructor(private readonly mainId: string, readonly provider: CloudProvider, private readonly mirrors: Mirrors,
@@ -187,7 +187,7 @@ export class CloudCi {
     publishingBranches.set(mirror, reservations)
     try {
       await this.prune({ repository: request.repository, mirror })
-      const { git, branch, defaultBranch, baseCommit } = await this.publish(request.repository, mirror, request.commit,
+      const { git, branch, snapshotCommit, defaultBranch, baseCommit } = await this.publish(request.repository, mirror, request.commit,
         deriveFiles && !request.baseCommit ? request.defaultBranch ?? 'main' : undefined,
         deriveFiles ? request.baseCommit : undefined)
       const selectOnRunner = deriveFiles && (defaultBranch !== undefined || baseCommit !== undefined)
@@ -218,7 +218,7 @@ export class CloudCi {
         partition = JSON.stringify(request.partition)
       }
       const durations = selectOnRunner && request.durations ? JSON.stringify(request.durations) : undefined
-      const input: CloudDispatchInput = { mirror, branch, runId: request.runId, suite: request.part ?? request.suite, slice,
+      const input: CloudDispatchInput = { mirror, branch, snapshotCommit, runId: request.runId, suite: request.part ?? request.suite, slice,
         scope: message ? 'full' : scope, ...(files !== undefined ? { files } : {}),
         ...(defaultBranch ? { defaultBranch } : {}),
         ...(baseCommit ? { baseCommit } : {}),
@@ -393,7 +393,7 @@ export class CloudCi {
     // GitHub runs start from main, whose cache scope every run shares, and check out the commit's branch.
     await git(['push', '--quiet', '--force', `https://github.com/${mirror}.git`, `${snapshot}:refs/heads/${branch}`,
       `${snapshot}:refs/heads/main`, ...(comparison ? [`${comparison.commit}:refs/heads/${comparison.branch}`] : [])])
-    return { git, branch, ...(comparison ? { defaultBranch: comparison.branch } : {}),
+    return { git, branch, snapshotCommit: snapshot, ...(comparison ? { defaultBranch: comparison.branch } : {}),
       ...(runnerBaseCommit ? { baseCommit: runnerBaseCommit } : {}) }
   }
 

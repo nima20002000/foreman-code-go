@@ -26,7 +26,7 @@ export interface CloudStep { key: string; name: string; state: 'running' | 'pass
 export type CloudStatus = ({ done: false } | { done: true; conclusion: 'success' | 'failure' | 'cancelled'; finishedAt: string })
   & { steps?: CloudStep[]; output?: { key: string; text: string } }
 export interface CloudDispatchInput {
-  mirror: string; branch: string; runId: string; suite: CiExecutionSuite; slice: string
+  mirror: string; branch: string; snapshotCommit?: string; runId: string; suite: CiExecutionSuite; slice: string
   scope?: CiScope; files?: string; defaultBranch?: string; baseCommit?: string; partition?: string; durations?: string
 }
 
@@ -117,7 +117,7 @@ export class GitHubActionsProvider implements CloudProvider {
 
   async dispatch(input: CloudDispatchInput) {
     // Runs start from main, whose cache scope every run shares, and check out the commit's branch.
-    await this.gh(['workflow', 'run', WORKFLOW, '-R', input.mirror, '--ref', 'main', '-f', `ref=${input.branch}`,
+    await this.gh(['workflow', 'run', WORKFLOW, '-R', input.mirror, '--ref', 'main', '-f', `ref=${input.snapshotCommit ?? input.branch}`,
       '-f', `run_id=${input.runId}`, '-f', `suite=${input.suite}`, '-f', `slice=${input.slice}`,
       ...(input.scope ? ['-f', `scope=${input.scope}`] : []), ...(input.files !== undefined ? ['-f', `files=${input.files}`] : []),
       ...(input.defaultBranch ? ['-f', `default_branch=${input.defaultBranch}`] : []),
