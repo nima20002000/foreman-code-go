@@ -136,7 +136,7 @@ describe('repository draft', () => {
   })
 
   it.each([
-    [503, 'Workspace refresh unavailable.'],
+    [503, 'Updating — reconnecting…'],
     [500, 'Workspace refresh unavailable.'],
   ] as const)('keeps the draft and navigation guard through a failed workspace refresh with HTTP %s', async (status, message) => {
     fixture()
@@ -163,7 +163,7 @@ describe('repository draft', () => {
   })
 
   it.each([
-    [503, 'Workspace refresh unavailable.'],
+    [503, 'Updating — reconnecting…'],
     [500, 'Workspace refresh unavailable.'],
   ] as const)('retains the original unconfirmed command through a failed workspace refresh with HTTP %s', async (status, message) => {
     const state = fixture()

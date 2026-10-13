@@ -63,7 +63,7 @@ it('keeps unfinished work as the chat status while live updates reconnect', asyn
 })
 
 it.each([
-  [503, 'The selected computer is disconnected.'],
+  [503, 'Updating — reconnecting…'],
   [500, 'The selected computer is disconnected.'],
 ] as const)('shows the Board chat command error inline after HTTP %s', async (status, message) => {
   const mounted = mountChat(agentChatFixtures.idleAfterCompletion)
