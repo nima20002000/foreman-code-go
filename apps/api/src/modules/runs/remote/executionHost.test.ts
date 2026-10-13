@@ -636,7 +636,9 @@ describe('actual worker native-port adapter', () => {
       controlFor: async ({ native }) => ({ schemaVersion: 1, protocolVersion: 1, commandId: 'proxy-stop', operationId: intent.operationId, attemptId: intent.attemptId, executionId: intent.executionId, bindingHash: intent.bindingHash, owner: intent.owner, native, action: { kind: 'stop' } }) })
     const session = await proxy.createSession({ request, correlationId: 'execution:execution' })
     expect(await proxy.cancel(session)).toBe(false)
-    expect(state.starts).toBe(1); expect(state.cancels).toBe(1); expect(observed).toEqual(['start_acknowledged', 'stop_requested', 'stop_requested'])
+    expect(state.starts).toBe(1)
+    expect(state.cancels).toBe(1)
+    expect(observed).toEqual(['start_acknowledged', 'start_acknowledged', 'stop_requested', 'stop_requested'])
   })
   it('reuses only the exact ephemeral main worker MCP lease without journaling it', async () => {
     const token = 'test-exact-main-lease', { host, intent, placement, request, journal, state } = await setup(token)

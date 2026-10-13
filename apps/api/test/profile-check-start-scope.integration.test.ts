@@ -16,7 +16,9 @@ describe('profile-scoped Start after Worker reconnect', () => {
     let modelsBlocked = false
     let turnsBlocked = false
     const scope = { workspaceId: fixture.version.workspaceId, workflowId: fixture.version.workflowId }
-    const locationRevision = Number(fixture.version.definition.nodes[0]!.placement!.locationRevision)
+    const placedNode = fixture.version.definition.nodes[0]!
+    if (placedNode.kind === 'job' || !placedNode.placement) throw new Error('Expected an Agent placement.')
+    const locationRevision = Number(placedNode.placement.locationRevision)
     const startInput = async (version: WorkflowVersionV3) => {
       const current = CurrentWorkflowReadResultSchema.parse(await fixture.value(CURRENT_WORKFLOW_TOOLS.saved, scope))
       return { ...scope, commandId: randomUUID(), workflowVersionId: version.id,
@@ -78,6 +80,12 @@ describe('profile-scoped Start after Worker reconnect', () => {
       expect(refreshed).toHaveLength(2)
       expect(refreshed.every(proof => proof.qualified && proof.authenticated && proof.compatible)).toBe(true)
 
+      const reader = await profileReader(fixture)
+      const deniedStop = await fixture.call('run_stop', {
+        workspaceId: scope.workspaceId, runId: active.run.id, commandId: randomUUID(),
+      }, reader)
+      expect(deniedStop.isError).toBe(true)
+      expect(decodeMcpToolResult(deniedStop)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
       await fixture.provider.releaseWorkflowTurns()
       turnsBlocked = false
       await fixture.value('run_stop', { workspaceId: scope.workspaceId, runId: active.run.id, commandId: randomUUID() })
@@ -109,7 +117,6 @@ describe('profile-scoped Start after Worker reconnect', () => {
         code: 'HARNESS_PROFILE_CHECK_PENDING', details: { retryable: true },
       } })
       expect((await fixture.db.pool.query('select id from runs')).rows).toHaveLength(1)
-      const reader = await profileReader(fixture)
       expect((await profiles(fixture, reader)).find(profile => profile.instanceId === pending.instanceId)
         ?.qualification).toBe('qualifying')
 
