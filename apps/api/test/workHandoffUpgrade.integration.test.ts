@@ -111,6 +111,8 @@ describe.skipIf(!postgresEnabled)('saved continuation inputs across an upgrade',
       expect(executionContext.parentRequest).toEqual({ requestId: ab.request.requestId, requesterNodeId: a.workflowNodeId })
       await t.restart()
       expect(await t.store.readWorkExecutionContext(replay.execution.id)).toEqual(executionContext)
+      const restartedReplay = await t.queue(activationId)
+      expect(restartedReplay).toEqual(replay)
       const configuration = (await db.pool.query<{ record: unknown }>(
         'select record from agent_configuration_versions where id=$1', [execution.agentConfigurationVersionId])).rows[0]
       assert.ok(configuration)

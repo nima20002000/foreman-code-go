@@ -36,6 +36,9 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       const token = f.credential.environment.variables.GRAPHQL_MCP_TOKEN!
       await expect(f.access.authenticate(token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
       const native = (await f.repository.coordination.workflowSession(f.reviewer.id))!
+      await expect(f.credentials.bindReviewerJob(f.reviewer.id, f.credential, f.job))
+        .rejects.toMatchObject({ code: 'REVIEWER_AUTHORITY_LOST' })
+      await expect(f.access.authenticate(token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
       await withExclusiveGraphConnection(f.pool, connection => connection.transaction(sql =>
         retainRemoteReviewerCredential(sql, f.reviewer, {
           generation: '1', principalId: f.principal.id, session: native.session,
@@ -49,6 +52,8 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       await expect(app.respond(recovered, approvalResponse(f.interaction)))
         .rejects.toMatchObject({ code: 'REVIEWER_AUTHORITY_LOST' })
       expect(await f.repository.get(f.interaction.id)).toEqual(f.interaction)
+      expect(await f.repository.coordination.workflowSession(f.reviewer.id)).toEqual(native)
+      expect(await f.repository.coordination.findReviewJob(f.interaction.id, f.reviewer.agentId)).toEqual(successor)
     } finally {
       await f.close()
     }
