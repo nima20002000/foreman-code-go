@@ -461,31 +461,37 @@ export class LangGraphWorkflowEngine {
       // Retain each actual Run owner until its durable stop-only cleanup intent
       // commits. Failed persistence must not authorize a Job abort or close.
       this.restartIntent = Promise.resolve().then(async () => {
-        const intents = await withCleanupDeadline(async () => Promise.allSettled([...this.activeOwners.entries()].map(async ([runId, owner]) => {
+        const intents = await Promise.allSettled([...this.activeOwners.entries()].map(async ([runId, owner]) => {
           if (this.activeOwners.get(runId) === owner) {
-            const run = await this.runs.get(runId)
-            const version = run && await this.workflows.getVersion(run.workflowVersionId)
-            const accepted = CurrentRunVersionSnapshotSchema.parse({ run, version })
-            let approvals: WorkflowRestartApprovals | undefined
-            if (accepted.version.definition.handoffs) {
-              const checkpoint = await readWorkflowCheckpoint(runId, accepted.version, this.checkpointer)
-              const interactions = checkpoint.tasks.some(task => task.interrupts?.length)
-                ? await persistWorkflowApprovalWait(owner, this.checkpointer, checkpoint) : []
-              if (interactions.length && isAtomicApprovalCheckpointSaver(this.checkpointer)) {
-                approvals = { saver: this.checkpointer, interactions }
+            const { accepted, approvals } = await withCleanupDeadline(async () => {
+              const run = await this.runs.get(runId)
+              const version = run && await this.workflows.getVersion(run.workflowVersionId)
+              const accepted = CurrentRunVersionSnapshotSchema.parse({ run, version })
+              let approvals: WorkflowRestartApprovals | undefined
+              if (accepted.version.definition.handoffs) {
+                const checkpoint = await readWorkflowCheckpoint(runId, accepted.version, this.checkpointer)
+                const interactions = checkpoint.tasks.some(task => task.interrupts?.length)
+                  ? await persistWorkflowApprovalWait(owner, this.checkpointer, checkpoint) : []
+                if (interactions.length && isAtomicApprovalCheckpointSaver(this.checkpointer)) {
+                  approvals = { saver: this.checkpointer, interactions }
+                }
               }
-            }
+              return { accepted, approvals }
+            })
             // Decide before cancellation drains observation; reuse that decision
             // for closure retries under the same Run owner.
+            // Startup has its own bounded wait; it must not consume the cleanup intent's deadline.
             const preserved = this.restartPreservedOwners.has(owner)
               || await this.nativeExecutions.preserveActiveForRestart(owner)
-            if (preserved) this.restartPreservedOwners.add(owner)
-            // Freeze handoff tasks before classifying their queued reservations.
-            // These tasks do not abort Jobs, which require the cleanup fence first.
-            if (accepted.version.definition.handoffs) this.activeRuns.get(runId)?.abort(reason)
-            if (!preserved) await this.requestRestartCleanup(owner, approvals)
+            await withCleanupDeadline(async () => {
+              if (preserved) this.restartPreservedOwners.add(owner)
+              // Freeze handoff tasks before classifying their queued reservations.
+              // These tasks do not abort Jobs, which require the cleanup fence first.
+              if (accepted.version.definition.handoffs) this.activeRuns.get(runId)?.abort(reason)
+              if (!preserved) await this.requestRestartCleanup(owner, approvals)
+            })
           }
-        })))
+        }))
         const intentErrors = intents.flatMap((item) => item.status === 'rejected' ? [item.reason] : [])
         if (intentErrors.length) throw new AggregateError(intentErrors, 'Workflow restart cleanup intent remains unconfirmed.')
       })

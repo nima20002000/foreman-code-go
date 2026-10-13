@@ -244,6 +244,29 @@ describe.skipIf(!postgresEnabled).each(APP_MCP_SERVER_NAMES)(
     } finally { await f.close() }
   }, 30_000)
 
+  it('creates and binds a chat session while its configured App MCP transport is disabled', async () => {
+    const f = setup('success')
+    try {
+      const request = f.request('disabled-app-mcp', null)
+      const admitted = await f.chat.send(writer, f.workspaceId, request)
+      const id = admitted.state.conversation!.id
+      await eventually(async () => {
+        const turn = await f.repository.turn(id, request.requestId)
+        assert.notEqual(turn?.delivery, 'failed', JSON.stringify(turn?.error))
+        return turn?.delivery === 'completed'
+      })
+      const state = await f.read()
+      assert.equal(state.conversation?.nativeSession?.nativeSessionId, 'h1-native-1')
+      assert.equal(state.availability.canSend, true)
+      assert.equal(f.created.length, 1)
+      assert.equal(f.calls.filter(call => call.method === 'turn/start').length, 1)
+      assert.equal((await f.chat.send(writer, f.workspaceId, request)).replayed, true)
+      assert.equal(f.created.length, 1)
+    } finally {
+      await f.close()
+    }
+  }, 30_000)
+
   for (const mode of ['uncertain', 'cleanup-failure', 'activation-failure', 'binding-failure'] as const) {
     it(`actual adapter ${mode} preserves the creation fence and refuses replacement`, async () => {
       const f = setup(mode === 'binding-failure' ? 'success' : mode)

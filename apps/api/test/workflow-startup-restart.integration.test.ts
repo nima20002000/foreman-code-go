@@ -355,7 +355,12 @@ describe.runIf(postgresEnabled)('restart during native startup', () => {
         expect(reservation.rows[0]).toMatchObject({ execution_identity: { id: executionId }, expected_reference: null })
 
         shutdown = runtime.engine.shutdown().then(() => undefined, (error: unknown) => error)
-        await restarting.promise
+        await Promise.race([
+          restarting.promise,
+          shutdown.then(error => {
+            throw error ?? new Error('Shutdown finished before native startup was drained.')
+          }),
+        ])
         const binding = await runtime.db.pool.query(`select e.record->>'nativeSessionId' as session_id,s.reference
           from harness_executions e left join execution_native_sessions s on s.execution_id=e.id
           where e.id=$1`, [executionId])
