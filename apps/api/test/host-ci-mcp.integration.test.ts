@@ -874,6 +874,33 @@ it('defaults authenticated Agent MCP to affected scope, reads explicit full scop
   } finally { await f.close() }
 }, 60_000)
 
+it('retains an Agent ticket for an authorized Operator after the Agent runtime closes', async () => {
+  const agent = await fixture({ agent: true })
+  let completed: z.infer<typeof CiGetOutputSchema>
+  try {
+    const started = CiRunOutputSchema.parse(await agent.value(agent.agent!, 'ci_run', {
+      suite: 'install', scope: 'full', commandId: 'retained-agent-ticket',
+    }))
+    await agent.ci.dispatch()
+    agent.finish(started.ticketId, 0, 'install passed\n')
+    completed = CiGetOutputSchema.parse(await agent.value(agent.agent!, 'ci_get', { ticketId: started.ticketId }))
+    expect(completed.run.state).toBe('passed')
+  } finally { await agent.close() }
+
+  const operator = await fixture()
+  try {
+    const input = { workspaceId: agent.workspaceId, ticketId: completed.run.id }
+    expect((await operator.call(operator.operator, 'ci_get', input)).isError).toBe(true)
+    const reader = await operator.connect(CI_GET_ACTIONS, { workspaceIds: [agent.workspaceId] })
+    const read = CiGetOutputSchema.parse(await operator.value(reader, 'ci_get', input))
+    expect(read.run).toEqual(completed.run)
+    expect(read.logTail).toBe('install passed\n')
+    const stored = await database.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
+      [read.run.id])
+    expect(stored.rows[0]?.record).toEqual(read.run)
+  } finally { await operator.close() }
+}, 60_000)
+
 it('splits integration over two build computers, reports progress and logs, and replays a retried command', async () => {
   const f = await fixture()
   try {
