@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { memo, type ReactNode } from 'react'
 import Markdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import type { Message } from '@foreman-code/contracts'
@@ -25,6 +25,10 @@ const markdownComponents: Components = {
   },
 }
 
+const AgentMarkdown = memo(function AgentMarkdown({ content }: { content: string }) {
+  return <Markdown components={markdownComponents} skipHtml>{content}</Markdown>
+})
+
 export function AgentChatMessage({ message, name, status, actions, children, onExpand }: {
   message: Omit<Message, 'conversationId'>
   name: string
@@ -38,11 +42,12 @@ export function AgentChatMessage({ message, name, status, actions, children, onE
   const time = timestamp ? new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : undefined
   if (message.role === 'tool') return <details className="agent-chat-tool">
     <summary>Tool output</summary><CodeBlock code={message.content} label="Tool output" />
+    <TextTruncationNotice truncation={message.truncation} />{children}
   </details>
   return <article className={`agent-chat-message agent-chat-message--${user ? 'user' : 'agent'}`}
     aria-label={`Message from ${user ? 'You' : name}`} data-message-role={message.role}>
     <div className="conversation-message-content">
-      {user ? message.content : <Markdown components={markdownComponents} skipHtml>{message.content}</Markdown>}
+      {user ? message.content : <AgentMarkdown content={message.content} />}
     </div>
     <TextTruncationNotice truncation={message.truncation} />
     {message.truncation?.truncated && onExpand ? <MessageExpansion key={`${message.id}:${message.revision}`}

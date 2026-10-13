@@ -8,10 +8,11 @@ import { CompactionActivity } from '../sessionControls/CompactionActivity'
 import { useSlashCommandMenu } from '../sessionControls/useSlashCommandMenu'
 import type { ComposerSessionControls } from '../sessionControls/useSessionControls'
 
-export function AgentChatComposer({ name, draftKey, inputRef, sessionControls, disabled, reason, pending, controlPending,
+export function AgentChatComposer({ name, draftKey, inputRef, sessionControls, disabled, reason, controlReason, pending, controlPending,
   hasAttachments, attachmentControl, actions, canStop, stopReason, onStop, onSubmit }: {
   name: string; draftKey: string; inputRef: RefObject<HTMLTextAreaElement | null>
-  sessionControls: ComposerSessionControls; disabled: boolean; reason?: string; pending: boolean; controlPending: boolean
+  sessionControls: ComposerSessionControls; disabled: boolean; reason?: string; controlReason?: string
+  pending: boolean; controlPending: boolean
   hasAttachments: boolean; attachmentControl?: ReactNode; actions?: ReactNode
   canStop: boolean; stopReason?: string; onStop(): void; onSubmit(content: string, mode?: SessionMode): void
 }) {
@@ -22,9 +23,12 @@ export function AgentChatComposer({ name, draftKey, inputRef, sessionControls, d
   const controlOnly = command.kind === 'compact' || command.kind === 'mode'
   const blocked = disabled || (controlOnly ? controlPending : pending) || !!reason || (!draft.trim() && !hasAttachments) || draft.length > 32_000
   const submit = (content = draft) => {
-    if (blocked && content === draft) return
-    if (disabled || (controlOnly ? controlPending : pending) || !!reason || content.length > 32_000) return
-    onSubmit(content.trim(), parseSessionCommand(content).kind === 'plan-task' ? 'plan' : undefined)
+    const submitted = parseSessionCommand(content)
+    const sessionCommand = submitted.kind === 'compact' || submitted.kind === 'mode'
+    const unavailable = sessionCommand ? controlReason : reason
+    const inFlight = sessionCommand ? controlPending : pending
+    if (disabled || inFlight || unavailable || (!content.trim() && !hasAttachments) || content.length > 32_000) return
+    onSubmit(content.trim(), submitted.kind === 'plan-task' ? 'plan' : undefined)
   }
   const menu = useSlashCommandMenu(draft, value => setDraft(draftKey, value), content => submit(content))
   useLayoutEffect(() => {
