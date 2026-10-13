@@ -738,6 +738,15 @@ function configureDeviceRuntime(composition: ProductionComposition) {
       if (failures.length) throw new AggregateError(failures, 'Original device domain binding cleanup remains incomplete')
     },
     async bindingReady(binding, signal, endpoint) {
+      if (!signal.aborted) {
+        composition.jobRuntime?.requestQueueWake()
+        composition.runtimeServices.ciEnrollment?.request({
+          hostRef: { kind: 'device', mainId: binding.mainId, deviceId: binding.deviceId },
+          applicationInstallationId: binding.workerInstallationId,
+          keyRevision: binding.keyRevision, authorizationRevision: binding.authorizationRevision,
+        })
+        void composition.runtimeServices.ci?.dispatch()
+      }
       if (composition.runtimeServices.computerSync) {
         void composition.runtimeServices.computerSync.paired({
           hostRef: { kind: 'device', mainId: binding.mainId, deviceId: binding.deviceId },
@@ -765,13 +774,6 @@ function configureDeviceRuntime(composition: ProductionComposition) {
         else composition.harnessRegistry.acceptRemoteSnapshot(binding, result.payload)
       }
       if (infrastructure?.deviceDomains) await infrastructure.deviceDomains.reconcile(binding, signal, endpoint)
-      setImmediate(() => {
-        if (!signal.aborted) {
-          composition.jobRuntime?.requestQueueWake()
-          composition.runtimeServices.ciEnrollment?.request()
-          void composition.runtimeServices.ci?.dispatch()
-        }
-      })
     },
   })
 }
@@ -2886,7 +2888,8 @@ async function initializeCiServices(
   runtimeServices.ciEnrollment = new CiEnrollment(database.pool, commands, jobRuntime.profiles,
     runtimeServices.ciRuntime, new ProductionCiEnrollmentInventory(database.pool, jobRuntime.sources,
       () => deviceRuntime.endpointForDomains(), () => jobRuntime?.mainCiRuntime, workerExecution,
-      new ManagedWorkspaceRootService(commands, workspaceRoots, jobRuntime.policies)))
+      new ManagedWorkspaceRootService(commands, workspaceRoots, jobRuntime.policies)),
+    () => { if (!composition.closing) void composition.hostCi?.dispatch() })
   jobRuntime.profiles.enrollment = runtimeServices.ciEnrollment
   jobRuntime.buildComputers.enrollment = runtimeServices.ciEnrollment
   runtimeServices.ciEnrollment.request()
