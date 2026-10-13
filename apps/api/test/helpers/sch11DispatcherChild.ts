@@ -9,6 +9,7 @@ import { repeatStartPublication } from '../../src/modules/run-graph/repeatStartP
 import { admitRepeatRun } from '../../src/modules/runs/repeatStartAdmission.js'
 import { PostgresScheduleDispatcher } from '../../src/modules/schedules/postgresDispatcher.js'
 import { LOCAL_RUNNER_ID, WorkspaceLocationService } from '../../src/modules/workspaces/location.js'
+import { assertTestDatabase, ownedTestDatabaseUrl, ownedTestPath } from '../../../../scripts/test-resources.mjs'
 
 export interface Sch11ChildInput {
   schema: string
@@ -42,16 +43,16 @@ function releaseBarrier(): Promise<void> {
   })
 }
 async function run(input: Sch11ChildInput) {
-  const url = process.env.TEST_DATABASE_URL
-  if (!url) throw new Error('TEST_DATABASE_URL is required')
+  const url = ownedTestDatabaseUrl()
   const parsed = new URL(url)
-  if (!['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || !parsed.pathname.toLowerCase().includes('test')) {
-    throw new Error('Child requires a loopback, test-named PostgreSQL database')
+  const fixtureDatabase = /^\/graphql_fixture_[a-f0-9]{32}$/.test(parsed.pathname)
+  const isolatedSchema = /^wave25_a3_[a-f0-9]{32}$/.test(input.schema)
+  if (!isolatedSchema && !(input.schema === 'public' && fixtureDatabase)) {
+    throw new Error('Child requires an isolated fixture database or schema')
   }
-  if (!/^wave25_a3_[a-f0-9]{32}$/.test(input.schema)) throw new Error('Child requires the isolated helper schema')
   if (!['prepared', 'mid-claim', 'lost-start-ack'].includes(input.mode)) throw new Error('Unknown test boundary')
   const observed = WorkflowScheduleSchema.parse(input.observed)
-  const directory = await realpath(input.directory)
+  const directory = await realpath(ownedTestPath(input.directory))
   for (const root of [input.projectRoot, input.runtimeRoot]) {
     const path = relative(directory, await realpath(root))
     if (path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path)) throw new Error('Test roots escaped the fixture directory')
@@ -62,6 +63,12 @@ async function run(input: Sch11ChildInput) {
   const locations = new WorkspaceLocationService(pool, new PostgresCommandCoordinator(pool),
     input.runtimeRoot, LOCAL_RUNNER_ID, input.projectRoot)
   try {
+    await assertTestDatabase(pool, {
+      directory: process.env.FOREMAN_CODE_TEST_ROOT!,
+      token: process.env.FOREMAN_CODE_TEST_OWNER!,
+      name: parsed.pathname.slice(1),
+      databaseUrl: url,
+    })
     const dispatcher = new PostgresScheduleDispatcher(pool, async (principal, request, guard) => {
       if (input.mode === 'prepared') {
         const released = releaseBarrier() // arm before notifying the parent

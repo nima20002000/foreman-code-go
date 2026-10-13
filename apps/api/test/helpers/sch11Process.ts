@@ -9,7 +9,7 @@ import type { Sch11Fixture } from './sch11Fixture.js'
 export function sch11Child(f: Sch11Fixture, observed: WorkflowSchedule, mode: Sch11ChildInput['mode']) {
   const child = fork(fileURLToPath(new URL('./sch11DispatcherChild.ts', import.meta.url)), [], {
     execArgv: ['--import', 'tsx'], stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-    env: { ...process.env },
+    env: { ...process.env, TEST_DATABASE_URL: f.database.databaseUrl },
   })
   let stderr = '', terminalError: Error | undefined, finished = false
   let exitResult: { code: number | null; signal: NodeJS.Signals | null } | undefined
