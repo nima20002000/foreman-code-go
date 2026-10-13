@@ -113,7 +113,7 @@ export class HostCiService {
     source: 'mcp' | 'http', scope: Awaited<ReturnType<CiAuthority['resolve']>>) {
     const outcome = await this.commands.execute({ principal: caller, source, operation: 'ci.run',
       commandId: input.commandId, targetKey: scope.workspaceId, payload: input,
-      resourceLock: `ci-admission:${scope.workspaceId}:${caller.id}`,
+      resourceLock: `ci-admission:${scope.workspaceId}:${scope.executionId ?? caller.id}`,
       authorize: async () => { await this.authority.resolve(caller, scope.workspaceId, CI_RUN_ACTIONS) },
       perform: async client => {
         const workspace = WorkspaceSchema.parse((await client.query<{ record: unknown }>(

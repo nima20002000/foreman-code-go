@@ -172,6 +172,7 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
     await runtime?.close()
   }
   let agent: Client | undefined
+  let connectAgent: (() => Promise<Client>) | undefined
   if (runtime) {
     try {
       await runtime.db.pool.query(`update management_principals set grants=grants || $2::jsonb where id=$1`,
@@ -205,11 +206,15 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
       await runtime.engine.start(runtime.f.run.id)
       const [interaction] = await runtime.pending()
       if (!interaction) throw new Error('Expected an active Agent')
-      const issued = await runtime.credentials.issueForExecution(interaction.executionId)
-      agent = new Client({ name: 'ci-agent-test', version: '1' })
-      clients.push(agent)
-      await agent.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
-        { requestInit: { headers: { authorization: `Bearer ${issued.environment.variables.GRAPHQL_MCP_TOKEN!}` } } }))
+      connectAgent = async () => {
+        const issued = await runtime.credentials.issueForExecution(interaction.executionId)
+        const client = new Client({ name: 'ci-agent-test', version: '1' })
+        clients.push(client)
+        await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
+          { requestInit: { headers: { authorization: `Bearer ${issued.environment.variables.GRAPHQL_MCP_TOKEN!}` } } }))
+        return client
+      }
+      agent = await connectAgent()
     } catch (error) {
       await close()
       throw error
@@ -227,7 +232,7 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
   }
   return { ...computers, ci, app, credential, workspaceId, operator, agent,
     authorizationPrincipalId: runtime?.authorizationPrincipalId,
-    connect, call, value, published, pool: db.pool, close }
+    connect, connectAgent, call, value, published, pool: db.pool, close }
 }
 
 it.each([
@@ -1516,8 +1521,8 @@ it('supersedes detached Agent commits only within that execution through authent
   const f = await fixture({ agent: true, supersession: { branch: () => null, isAncestor: () => true } })
   f.computers.splice(0)
   try {
-    const call = async (input: Record<string, unknown>) => {
-      const result = await f.agent!.callTool({ name: 'ci_run', arguments: input })
+    const call = async (input: Record<string, unknown>, client = f.agent!) => {
+      const result = await client.callTool({ name: 'ci_run', arguments: input })
       expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
       return CiRunOutputSchema.parse(decodeMcpToolResult(result))
     }
@@ -1525,13 +1530,41 @@ it('supersedes detached Agent commits only within that execution through authent
     const operator = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'install', commit: 'a'.repeat(40), commandId: 'operator-detached',
     }))
-    const next = await call({ suite: 'install', commit: 'b'.repeat(40), commandId: 'agent-next' })
+    const renewed = await f.connectAgent!()
+    const next = await call({ suite: 'install', commit: 'b'.repeat(40), commandId: 'agent-next' }, renewed)
     const read = await f.agent!.callTool({ name: 'ci_get', arguments: { ticketId: old.ticketId } })
     expect(CiGetOutputSchema.parse(decodeMcpToolResult(read)).run)
       .toMatchObject({ state: 'canceled', supersededBy: next.ticketId })
+    const replacement = await renewed.callTool({ name: 'ci_get', arguments: { ticketId: next.ticketId } })
+    expect(CiGetOutputSchema.parse(decodeMcpToolResult(replacement)).run.initiator.principalId)
+      .not.toBe(CiGetOutputSchema.parse(decodeMcpToolResult(read)).run.initiator.principalId)
     expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: operator.ticketId })).run.state)
       .toBe('queued')
     const denied = await f.agent!.callTool({ name: 'ci_get', arguments: { ticketId: operator.ticketId } })
     expect(denied.isError).toBe(true)
+  } finally { await f.close() }
+})
+
+it('resolves branches of existing tickets before superseding them and protects existing main work', async () => {
+  const f = await fixture({ supersession: {
+    branch: commit => commit === 'a'.repeat(40) ? 'main' : 'feature', isAncestor: () => true,
+  } })
+  f.computers.splice(0)
+  try {
+    const main = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+      suite: 'install', commit: 'a'.repeat(40), commandId: 'existing-main',
+    }))
+    const feature = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+      suite: 'install', commit: 'b'.repeat(40), commandId: 'existing-feature',
+    }))
+    await f.pool.query(`update ci_runs set record=record-'branch'-'defaultBranch' where id=any($1::uuid[])`,
+      [[main.ticketId, feature.ticketId]])
+    const next = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+      suite: 'install', commit: 'c'.repeat(40), commandId: 'supersede-existing',
+    }))
+    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: main.ticketId })).run.state)
+      .toBe('queued')
+    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: feature.ticketId })).run)
+      .toMatchObject({ state: 'canceled', supersededBy: next.ticketId })
   } finally { await f.close() }
 })
