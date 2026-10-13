@@ -19,12 +19,19 @@ describe('installed harness updates', () => {
       const original = before[0]!
       await fixture.provider.blockWorkflowTurns()
       blocked = true
-      const started = await fixture.start()
-      const active = await waitForRemoteReview(async () => SavedRunDetailsSchema.parse(
-        await fixture.value('run_get', {
+      const started = (await startWhenReady(fixture))!
+      const active = await waitForRemoteReview(async () => {
+        // The process fixture leaves periodic engine reconciliation to the caller.
+        await fixture.reconcileReviews()
+        const details = SavedRunDetailsSchema.parse(await fixture.value('run_get', {
           detail: 'full', workspaceId: started.run.workspaceId, runId: started.run.id,
-        })), details => details.executions.some(execution => execution.state === 'running'
-          && execution.nativeSessionId !== undefined), 'active Worker execution through MCP')
+        }))
+        if (details.run.outcome === 'failed') {
+          throw new Error(`Worker Run failed before its blocked turn: ${JSON.stringify(details.run.result)}`)
+        }
+        return details
+      }, details => details.executions.some(execution => execution.state === 'running'
+        && execution.nativeSessionId !== undefined), 'active Worker execution through MCP')
       expect(active.run.executionState).toBe('running')
       expect(active.executions).toHaveLength(1)
       const turn = await runningTurn(fixture)
