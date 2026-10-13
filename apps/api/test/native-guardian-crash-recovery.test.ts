@@ -1,12 +1,14 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { once } from 'node:events'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { identityAlive, processIdentity } from '../src/modules/harnesses/recovery/linuxIdentity.js'
-import { NativeProcessRegistry, readDetachedNativeProcess }
+import { detachRecoveredChild, hasDetachedStdioProcess, hasNativeRestartDetachment,
+  NativeProcessRegistry, readDetachedNativeProcess, spawnNativeProcess }
   from '../src/modules/harnesses/recovery/processRegistry.js'
 import { readUntil } from './helpers/observableCondition.js'
 
@@ -169,3 +171,62 @@ it('survives original and repeated observer SIGKILL without replaying native wor
     rmSync(directory, { recursive: true, force: true })
   }
 }, 40_000)
+
+it('validates restart detachment after natural provider completion without retaining a later launch', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'native-guardian-completed-'))
+  const registry = new NativeProcessRegistry(join(directory, 'registry'))
+  const scope = registry.reserveLaunch(owner)
+  const child = spawnNativeProcess(process.execPath, ['-e', `
+    const fs = require('node:fs')
+    fs.watch('.', () => { if (fs.existsSync('finish')) process.exit(0) })
+    console.log('ready')
+  `], { cwd: directory, env: {}, recovery: scope, restartDetachable: true, reconnectableStdio: true })
+  child.stderr.resume()
+  try {
+    await once(child.stdout, 'data')
+    expect(hasNativeRestartDetachment(scope)).toBe(false)
+    const detached = await detachRecoveredChild(child)
+    expect(hasNativeRestartDetachment(scope)).toBe(true)
+    expect(hasDetachedStdioProcess(scope)).toBe(true)
+    writeFileSync(join(directory, 'finish'), '')
+    await readUntil(async () => registry.snapshot().launches.find(launch => launch.launchId === detached.launchId),
+      launch => launch?.lifecycle === 'ended'
+        && !identityAlive(launch.guardian!) && !identityAlive(launch.provider!),
+      { timeoutMs: 5_000, description: 'detached provider natural completion' })
+    expect(hasNativeRestartDetachment(scope)).toBe(true)
+    expect(hasNativeRestartDetachment(registry.scope(owner))).toBe(true)
+    expect(hasDetachedStdioProcess(scope)).toBe(false)
+    expect(hasNativeRestartDetachment({ ...scope, launchId: randomUUID() })).toBe(false)
+    const markerPath = join(scope.root, createHash('sha256').update(owner).digest('hex'),
+      scope.launchId!, 'restart-detached.json')
+    const markerText = readFileSync(markerPath, 'utf8')
+    const marker = JSON.parse(markerText) as { guardian: Record<string, unknown>; provider: Record<string, unknown> }
+    const invalidMarkers = [
+      { ...marker, id: randomUUID() },
+      { ...marker, owner: 'execution:another-owner' },
+      { ...marker, boot: randomUUID() },
+      { ...marker, guardian: { ...marker.guardian, startTicks: '0' } },
+      { ...marker, provider: { ...marker.provider, startTicks: '0' } },
+    ]
+    for (const invalid of invalidMarkers) {
+      writeFileSync(markerPath, JSON.stringify(invalid))
+      expect(() => hasNativeRestartDetachment(scope)).toThrow('Detached native process identity changed.')
+    }
+    writeFileSync(markerPath, markerText)
+    chmodSync(markerPath, 0o644)
+    expect(() => hasNativeRestartDetachment(scope)).toThrow('Unsafe or oversized recovery record.')
+    chmodSync(markerPath, 0o600)
+    expect(hasNativeRestartDetachment(scope)).toBe(true)
+    expect(await registry.closeOwner(owner)).toBe(true)
+    const later = registry.reserveLaunch(owner)
+    expect(later.launchId).not.toBe(scope.launchId)
+    expect(hasNativeRestartDetachment(scope)).toBe(false)
+    expect(hasNativeRestartDetachment(later)).toBe(false)
+    expect(hasNativeRestartDetachment(registry.scope(owner))).toBe(false)
+    expect(await registry.abandonReservedLaunch(later)).toBe(true)
+  } finally {
+    const closed = await registry.closeOwner(owner)
+    if (!closed) throw new Error('Completed native fixture tree closure remains unconfirmed.')
+    rmSync(directory, { recursive: true, force: true })
+  }
+}, 20_000)

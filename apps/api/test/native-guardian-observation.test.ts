@@ -199,6 +199,22 @@ describe('guardian actual child observation receipts', () => {
     expect(f.records.has('/private/restart-detached.json')).toBe(false)
     expect(f.signals).toEqual([[-501, 'SIGTERM']])
   })
+  it('detaches on a closed original output pipe and keeps the attached observer through late IPC loss', () => {
+    const f = guardianFixture(true, false, { restartDetachable: true, reconnectableStdio: true })
+    const command = { id: f.id, owner: 'same-lease', controlKey: 'a'.repeat(64), startTicks: '100' }
+    f.process.stdout.emit('error', { code: 'EPIPE' })
+    expect(f.records.has('/private/restart-detached.json')).toBe(true)
+    const attached = f.control({ ...command, operation: 'attach', connectionId: 'replacement' })
+    expect(attached.destroyed).toBe(false)
+    f.process.connected = false
+    f.process.emit('disconnect')
+    f.process.stderr.emit('error', { code: 'EPIPE' })
+    const request = { id: 7, method: 'item/tool/requestUserInput', params: { threadId: 'same-thread' } }
+    f.native.stdout.write(JSON.stringify(request) + '\n')
+    expect(JSON.parse(attached.replies[1]!)).toEqual(request)
+    expect(f.signals).toEqual([])
+    expect(f.kills).toEqual([])
+  })
   it('reconnects one authenticated stdio observer after release and preserves pending native requests', () => {
     const f = guardianFixture(true, false, { restartDetachable: true, reconnectableStdio: true })
     const command = { id: f.id, owner: 'same-lease', controlKey: 'a'.repeat(64), startTicks: '100' }

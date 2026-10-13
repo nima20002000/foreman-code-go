@@ -62,6 +62,28 @@ describe('runtime-owner connection lifetime', () => {
     expect(lost).not.toHaveBeenCalled()
   })
 
+  it('does not replace the owner client when authentication is permanently invalid', async () => {
+    const { owner, driver, lost } = fixture()
+    const failure = Object.assign(new Error('password authentication failed'), { code: '28P01' })
+    driver.connect.mockRejectedValueOnce(failure)
+    await expect(owner.acquire()).rejects.toBe(failure)
+    expect(state.drivers).toHaveLength(1)
+    expect(driver.end).toHaveBeenCalledOnce()
+    expect(lost).not.toHaveBeenCalled()
+    await owner.close()
+  })
+
+  it('publishes acquisition before a synchronous connection callback can reenter it', async () => {
+    const { owner, driver } = fixture()
+    let reentered: Promise<void> | undefined
+    driver.connect.mockImplementationOnce(async () => { reentered = owner.acquire() })
+    const acquisition = owner.acquire()
+    await acquisition
+    expect(reentered).toBe(acquisition)
+    expect(driver.connect).toHaveBeenCalledOnce()
+    await owner.close()
+  })
+
   it('does not connect just to close an uninitialized owner', async () => {
     const { owner, driver } = fixture()
     await owner.close()

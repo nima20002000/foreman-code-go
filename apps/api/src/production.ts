@@ -177,7 +177,8 @@ import { registerApprovalCheckpointResume } from './modules/runs/approvalCheckpo
 import { createCurrentNativeProductionFactory, isCurrentNativeProductionBinding } from './modules/runs/workflowProduction.js'
 import { isDeepStrictEqual } from 'node:util'
 import { NativeResponseJournal } from './modules/harnesses/recovery/responseJournal.js'
-import { hasDetachedStdioProcess, NativeProcessRegistry, type NativeProcessRecovery } from './modules/harnesses/recovery/processRegistry.js'
+import { hasDetachedStdioProcess, hasNativeRestartDetachment, NativeProcessRegistry,
+  type NativeProcessRecovery } from './modules/harnesses/recovery/processRegistry.js'
 import { join, resolve } from 'node:path'
 
 import type { ApiConfig } from './config.js'
@@ -252,6 +253,7 @@ import { PostgresAppInteractionService } from './modules/interactions/app.js'
 import { PostgresApprovalBudgetRepository } from './modules/interactions/budget.js'
 import { ApprovalExecutionCoordinator } from './modules/interactions/execution.js'
 import { PostgresWorkflowClosureStore } from './modules/interactions/workflowClosure.js'
+import { retryStartupDatabase } from './infrastructure/startupDatabase.js'
 import { OperatorInteractionService } from './modules/interactions/operator.js'
 import { Wave25InteractionRepository as PostgresInteractionRepository } from './modules/interactions/wave25/repository.js'
 import { ExecutionScopedNativeSessionManagerResolver,
@@ -1171,7 +1173,10 @@ export function buildProductionApp(
   }
   const approvals = new ApprovalExecutionCoordinator(
     runs, repository, budgets, managers, config.harnesses.timeoutMs, launchCredentials, validateContinuation,
-    new PostgresWorkflowClosureStore(database.pool), new PostgresRepeatReviewerBindings(database.pool),
+    new PostgresWorkflowClosureStore(database.pool, executionId =>
+      processRegistry instanceof NativeProcessRegistry
+        && hasNativeRestartDetachment(processRegistry.scope(`execution:${executionId}`))),
+    new PostgresRepeatReviewerBindings(database.pool),
     { capture(input) {
       const evidence = workflowCapture.capture.capture(input)
       remoteWorkflow!.capture(input, workflowCapture.verify.read(evidence))
@@ -1683,6 +1688,7 @@ export function buildProductionApp(
     wake: () => engine.reconcile(),
   })
   const app = buildApp({
+    ...(infrastructure?.closeInfrastructure ? { closeInfrastructure: infrastructure.closeInfrastructure } : {}),
     runtimeIdentity: async () => {
       const identity = await readRuntimeIdentity(database.pool,
         fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString)
@@ -1713,6 +1719,7 @@ export function buildProductionApp(
       endpoint: deviceRuntime.endpointForDomains(), stagingRoot: resolve(fileStorageRoot, 'workflow-artifact-transfers') })
   }
   let httpClosing = false
+  const startupLifetime = new AbortController()
   let initialization: Promise<void> | undefined
   let nativeDefaultsInitialization: Promise<void> | undefined
   let reconciliation: Promise<void> | undefined
@@ -1797,20 +1804,27 @@ export function buildProductionApp(
   })
   const beginShutdown = (): void => {
     closing = true
+    startupLifetime.abort()
     lifecycle.begin()
   }
   const assertOpen = (): void => {
     if (closing) throw new DomainError('NATIVE_RUNTIME_CLOSING', 'The native runtime is shutting down.', 503)
   }
+  const startupDatabase = <T>(work: () => Promise<T>): Promise<T> =>
+    retryStartupDatabase(work, { signal: startupLifetime.signal, check: assertOpen })
   const synchronizeOperatorDefaults = async (
-    current: Awaited<ReturnType<PostgresOperatorRepository['ensure']>>,
     template: AgentDefaults['operator'],
   ): Promise<void> => {
-    await inTransaction(database.pool, undefined, client => operators.updateWithClient(
-      client, template.harness, current.operator.currentConfigurationVersionId,
-      template.showThinking ?? false, template.assignedSkills, template.harnessProfileSelection ?? null,
-      template.nativeTools ?? null,
-    ))
+    await inTransaction(database.pool, undefined, async client => {
+      const current = await operators.ensureWithClient(client)
+      if (isDeepStrictEqual(current.configuration.harness, template.harness)
+        && isDeepStrictEqual(current.configuration.nativeTools, template.nativeTools)) return
+      await operators.updateWithClient(
+        client, template.harness, current.operator.currentConfigurationVersionId,
+        template.showThinking ?? false, template.assignedSkills, template.harnessProfileSelection ?? null,
+        template.nativeTools ?? null,
+      )
+    })
   }
   const initialize = (): Promise<void> => {
     if (closing) return Promise.reject(new DomainError('NATIVE_RUNTIME_CLOSING', 'The native runtime is shutting down.', 503))
@@ -1820,7 +1834,7 @@ export function buildProductionApp(
       assertOpen()
       await runtimeOwner.acquire()
       assertOpen()
-      await remoteExecution.initialize()
+      await startupDatabase(() => remoteExecution.initialize())
       assertOpen()
       if (infrastructure?.mode !== 'replay') await mainCodex.initialize()
       assertOpen()
@@ -1829,26 +1843,26 @@ export function buildProductionApp(
       if (canonicalDirectory !== operatorWorkingDirectory) {
         throw new DomainError('OPERATOR_RUNTIME_DIRECTORY_INVALID', 'The canonical Operator directory differs from the configured managed path.', 422)
       }
-      const operator = await operators.ensure()
+      const operator = await startupDatabase(() => operators.ensure())
       assertOpen()
-      const defaults = await foundationSettings.getAgentDefaults()
+      const defaults = await startupDatabase(() => foundationSettings.getAgentDefaults())
       assertOpen()
       if (!isDeepStrictEqual(operator.configuration.harness, defaults.value.operator.harness)
         || !isDeepStrictEqual(operator.configuration.nativeTools, defaults.value.operator.nativeTools)) {
-        await synchronizeOperatorDefaults(operator, defaults.value.operator)
+        await startupDatabase(() => synchronizeOperatorDefaults(defaults.value.operator))
         assertOpen()
       }
-      await chatAuthority.revokeOrphanedCredentials()
-      await appRoutes.refresh()
+      await startupDatabase(() => chatAuthority.revokeOrphanedCredentials())
+      await startupDatabase(() => appRoutes.refresh())
       assertOpen()
-      await harnessSettings.mcp.recover()
+      await startupDatabase(() => harnessSettings.mcp.recover())
       assertOpen()
       await operatorServices.runs.recoverSubagentCommands()
       assertOpen()
-      await harnessSettings.plugins.recover()
+      await startupDatabase(() => harnessSettings.plugins.recover())
       assertOpen()
-      const machine = await deviceRuntime.initializeFromRuntime(() => readRuntimeIdentity(database.pool,
-        fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString))
+      const machine = await deviceRuntime.initializeFromRuntime(() => startupDatabase(() => readRuntimeIdentity(database.pool,
+        fileURLToPath(new URL('../../../', import.meta.url)), config.database.connectionString)))
       providerAccounts.bindTarget(async () => ({ hostRef: { kind: 'main', mainId: machine.installationId },
         applicationInstallationId: machine.installationId, keyRevision: null, authorizationRevision: null }))
       assertOpen()
@@ -1979,8 +1993,8 @@ export function buildProductionApp(
       artifactComposition = { mainId: machine.installationId, authority: artifactAuthority,
         fence: new PostgresAcceptedArtifactAttemptFence(machine.installationId, artifactPorts) }
       mountArtifacts()
-      await bootstrapLocalMainWorkspaceRoot({ pool: database.pool, policies: jobRuntime.policies, mainId: machine.installationId,
-        runtimeRoot: config.harnesses.workspaceRoot, appStorageRoot: projectRoot })
+      await startupDatabase(() => bootstrapLocalMainWorkspaceRoot({ pool: database.pool, policies: jobRuntime!.policies,
+        mainId: machine.installationId, runtimeRoot: config.harnesses.workspaceRoot, appStorageRoot: projectRoot }))
       runtimeServices.workspaceRoots = new WorkspaceBoundLocationService(database.pool, commands, jobRuntime.policies)
       locations.setRootPolicies(jobRuntime.policies)
       registerWorkspaceRootRoutes(app, runtimeServices.workspaceRoots)
@@ -2087,13 +2101,13 @@ export function buildProductionApp(
         clearInterval(enrollmentTimer)
         await runtimeServices.ciEnrollment?.close()
       })
-      await runtimeServices.ciRuntime.recover()
+      await startupDatabase(() => runtimeServices.ciRuntime!.recover())
       jobRuntime.jobs.requestQueueWake()
       registerSourceRoutes(app, jobRuntime.sources)
       registerJobRoutes(app, jobRuntime.jobs)
       registerJobRuntimeProfileRoutes(app, jobRuntime.profiles, runtimeServices.ciRuntime)
       assertOpen()
-      await harnessRegistry.initialize(machine.installationId)
+      await startupDatabase(() => harnessRegistry.initialize(machine.installationId))
       assertOpen()
       if (processRegistry instanceof NativeProcessRegistry) {
         const registry = processRegistry
@@ -2101,7 +2115,7 @@ export function buildProductionApp(
           // Approved canonical alias for the Main, not a separate hardware UUID.
           deviceId: machine.installationId, applicationInstallationId: machine.installationId,
           bootId: (await readFile('/proc/sys/kernel/random/boot_id', 'utf8')).trim(),
-          runtimeEpoch: await runtimeOwner.readRuntimeEpoch(), capability: RESOURCE_TELEMETRY_CAPABILITY }
+          runtimeEpoch: await startupDatabase(() => runtimeOwner.readRuntimeEpoch()), capability: RESOURCE_TELEMETRY_CAPABILITY }
         const authorities = createPassiveTelemetryAuthorities({ pool: database.pool, registry,
           mainContext: () => mainTelemetryContext, mainActive: () => !closing && runtimeOwner.active,
           deviceBinding: id => deviceRuntime.currentBinding(id), presence: id => deviceRuntime.presenceFor(id),
@@ -2130,7 +2144,7 @@ export function buildProductionApp(
       // Qualification still runs at every existing on-demand configuration/execution gate.
       // The bounded compatibility diagnostic creates no native session or model turn.
       if (qualificationRegistry && harnessQualifications) {
-        await qualificationRegistry.load()
+        await qualificationRegistry.load(startupLifetime.signal)
       }
       harnessCompatibility.start()
       assertOpen()
@@ -2165,7 +2179,7 @@ export function buildProductionApp(
       const initializedDefaults = await foundationSettings.getAgentDefaults()
       const currentOperator = await operators.ensure()
       if (!isDeepStrictEqual(currentOperator.configuration.harness, initializedDefaults.value.operator.harness)) {
-        await synchronizeOperatorDefaults(currentOperator, initializedDefaults.value.operator)
+        await startupDatabase(() => synchronizeOperatorDefaults(initializedDefaults.value.operator))
       }
     })()
     await nativeDefaultsInitialization

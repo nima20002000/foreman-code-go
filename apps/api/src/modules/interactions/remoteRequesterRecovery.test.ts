@@ -33,7 +33,8 @@ vi.mock('../runs/repeatLifecycle.js', async importOriginal => ({
 
 beforeEach(() => vi.resetAllMocks())
 
-async function recoverRequester(detached: boolean, state: 'waiting' | 'running' = 'waiting') {
+async function recoverRequester(detached: boolean, state: 'waiting' | 'running' = 'waiting',
+  options: { observeWithoutCleanup?: boolean } = {}) {
   const base = makeCurrentWorkflowFixture('requester-recovery', 'approval')
   base.run.executionState = 'waiting'
   const configuration = base.configurations[1]!
@@ -85,8 +86,10 @@ async function recoverRequester(detached: boolean, state: 'waiting' | 'running' 
   const acquireOwnership = vi.fn(async (): Promise<RunOwnership | undefined> => undefined)
   const requestCleanup = vi.fn(async () => {})
   const attach = vi.fn(async () => session)
+  const create = vi.fn(async () => { throw new Error('A saved remote session cannot be replaced') })
+  const startTurn = vi.fn(() => { throw new Error('A saved remote turn cannot be replayed') })
   const manager = {
-    harness: 'codex', attachSession: attach, reconcile: async () => history,
+    harness: 'codex', attachSession: attach, createSession: create, startTurn, reconcile: async () => history,
     originalApplicationAccess: async () => ({ token: 'synthetic-token' }),
     closeForRestart: async () => {},
   }
@@ -126,8 +129,10 @@ async function recoverRequester(detached: boolean, state: 'waiting' | 'running' 
     NonNullable<typeof context.acceptedPlacement> }))
   const stopSharing = coordinator.shareRunOwner(owner)
   try {
-    expect(await coordinator.requestColdRunCleanup(owner, state === 'running' ? [] : [interaction])).toBe(false)
-    expect(requestCleanup).not.toHaveBeenCalled()
+    if (!options.observeWithoutCleanup) {
+      expect(await coordinator.requestColdRunCleanup(owner, state === 'running' ? [] : [interaction])).toBe(false)
+      expect(requestCleanup).not.toHaveBeenCalled()
+    }
   } finally {
     stopSharing()
   }
@@ -144,7 +149,7 @@ async function recoverRequester(detached: boolean, state: 'waiting' | 'running' 
     } as unknown as RepeatNativeObservationStore,
   })
   return { coordinator, interaction, owner, acquireOwnership, attach, releaseRetention, coordination,
-    observeOriginal, begin, restore, continuation }
+    observeOriginal, begin, restore, continuation, create, startTurn }
 }
 
 it('keeps a live remote turn without a graceful detachment receipt after Main loses its owner', async () => {
@@ -158,13 +163,15 @@ it('keeps a live remote turn without a graceful detachment receipt after Main lo
 })
 
 it('observes the original running remote lifetime without reserving another generation or replaying its turn', async () => {
-  const f = await recoverRequester(false, 'running')
+  const f = await recoverRequester(false, 'running', { observeWithoutCleanup: true })
   try {
     expect(await f.observeOriginal()).toMatchObject({ state: 'waiting', execution: { nativeSessionId: 'requester-session' } })
     expect(f.begin).not.toHaveBeenCalled()
     expect(f.continuation.generation).toBe('1')
     expect(f.restore).toHaveBeenCalledOnce()
     expect(f.attach).toHaveBeenCalledOnce()
+    expect(f.create).not.toHaveBeenCalled()
+    expect(f.startTurn).not.toHaveBeenCalled()
   } finally {
     await f.coordinator.closeForRestart()
   }

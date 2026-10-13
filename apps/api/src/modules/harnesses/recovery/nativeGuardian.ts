@@ -95,6 +95,7 @@ ${CODEX_STDIO_BRIDGE_SOURCE}
 let capture
 let disconnected=false
 let stopping=false,started=false,leader=false,detached=false,detachRecorded=false
+let detachOnDisconnect
 function killTree() {
   // The cgroup includes detached descendants and is pinned by an open fd.
   if(containmentFd!==undefined) {
@@ -123,11 +124,29 @@ process.on('SIGINT',stop)
 process.on('disconnect',()=>{
   disconnected=true
   if(detached)return
+  try {
+    if(detachOnDisconnect?.())return
+  } catch {
+    stop()
+    return
+  }
   if(capture?.pending())setTimeout(stop,120000).unref()
   else stop()
 })
-process.stdout.on('error',error=>{if(!capture&&(!detached||error.code!=='EPIPE'))stop()})
-process.stderr.on('error',error=>{if(!capture&&(!detached||error.code!=='EPIPE'))stop()})
+function outputError(error) {
+  if(capture)return
+  if(error.code==='EPIPE') {
+    try {
+      if(detached || detachOnDisconnect?.())return
+    } catch {
+      stop()
+      return
+    }
+  }
+  stop()
+}
+process.stdout.on('error',outputError)
+process.stderr.on('error',outputError)
 process.on('uncaughtException',stop)
 process.on('unhandledRejection',stop)
 process.on('message',input=>{
@@ -151,6 +170,15 @@ process.on('message',input=>{
     const certificate={format:1,id:intent.id,owner:intent.owner,boot,guardian:live}
     let provider
     let bridge
+    function recordDetachment() {
+      if(config.restartDetachable!==true || !provider || stopping)return false
+      if(!detachRecorded) {
+        birth(join(dir,'restart-detached.json'),
+          {...certificate,provider,reconnectableStdio:config.reconnectableStdio===true})
+        detachRecorded=true
+      }
+      return true
+    }
     const expected=Buffer.from(intent.controlKey,'hex')
     const server=createServer(socket=>{
       let pending=''
@@ -170,11 +198,7 @@ process.on('message',input=>{
           if(message.operation==='detach') {
             if(config.restartDetachable!==true || !provider || stopping){socket.destroy();return}
             bridge?.detach(message.connectionId)
-            if(!detachRecorded) {
-              birth(join(dir,'restart-detached.json'),
-                {...certificate,provider,reconnectableStdio:config.reconnectableStdio===true})
-              detachRecorded=true
-            }
+            recordDetachment()
             detached=true
           }
           if(message.operation==='attach' || message.operation==='environment') {
@@ -240,7 +264,16 @@ process.on('message',input=>{
           native.stderr.on('data',chunk=>{if(!stderrClosed && !process.stderr.write(chunk))native.stderr.pause()})
           process.stderr.on('drain',()=>native.stderr.resume())
         } else if(config.reconnectableStdio) {
-          bridge=codexStdioBridge(native,environment,()=>detached)
+          bridge=codexStdioBridge(native,environment,()=>detached,()=>{detached=true})
+          if(config.restartDetachable===true) {
+            detachOnDisconnect=()=>{
+              if(detachRecorded)return true
+              if(!recordDetachment())return false
+              bridge.detach()
+              detached=true
+              return true
+            }
+          }
         } else if(detachable) {
           native.stdout.on('data',chunk=>{if(!detached&&process.connected)process.stdout.write(chunk)})
           native.stderr.on('data',chunk=>{if(!detached&&process.connected)process.stderr.write(chunk)})

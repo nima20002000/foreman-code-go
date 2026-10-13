@@ -12,6 +12,7 @@ const state = vi.hoisted(() => ({
   initializeCalls: 0,
   databaseClosed: false,
   drainFailure: undefined as Error | undefined,
+  drain: undefined as Promise<void> | undefined,
   productionClose: undefined as (() => Promise<void>) | undefined,
   blockRecovery: true,
   errors: [] as { message: string; error: unknown }[],
@@ -75,10 +76,13 @@ vi.mock('../src/production.js', () => ({ buildProductionApp: (...args: unknown[]
         await new Promise<void>((resolve) => { state.finishRecovery = resolve })
       }
     },
-    drainShutdown: async () => {
-      state.calls.push('native shutdown')
-      state.finishRecovery?.()
-      if (state.drainFailure) throw state.drainFailure
+    drainShutdown: () => {
+      state.drain ??= Promise.resolve().then(() => {
+        state.calls.push('native shutdown')
+        state.finishRecovery?.()
+        if (state.drainFailure) throw state.drainFailure
+      })
+      return state.drain
     },
   }
 } }))
@@ -95,6 +99,7 @@ beforeEach(() => {
   state.initializeCalls = 0
   state.databaseClosed = false
   state.drainFailure = undefined
+  state.drain = undefined
   state.productionClose = undefined
   state.blockRecovery = true
   state.errors = []

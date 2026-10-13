@@ -9,6 +9,7 @@ import { createCheckpointStore } from './infrastructure/checkpoints.js'
 import { createDatabase } from './infrastructure/database.js'
 import { componentLogger, enableFileLogging } from './infrastructure/logger.js'
 import { installProcessLifecycleLogging } from './infrastructure/processLifecycle.js'
+import { retryStartupDatabase } from './infrastructure/startupDatabase.js'
 import { readTestResourcesIdentity } from './infrastructure/testRuntimeResources.js'
 import { buildProductionApp } from './production.js'
 import { registerBuiltWeb } from './builtWeb.js'
@@ -47,23 +48,32 @@ async function main() {
   const { app, initialize, reconcile, drainShutdown, startDeviceListener, registerFileStorage, rsync } = buildProductionApp(config, database, checkpoints,
     componentLogger('http'), undefined, undefined,
     { codex: codexQualificationSuite },
-    { mode: 'native', rsyncInstallation })
+    {
+      mode: 'native',
+      rsyncInstallation,
+      closeInfrastructure: async () => {
+        await drainShutdown()
+        const results = await Promise.allSettled([checkpoints.close(), database.close()])
+        const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+        if (failures.length) throw new AggregateError(failures, 'Infrastructure shutdown was incomplete.')
+        lifecycle.info('api stopped')
+      },
+    })
   let reconciliationTimer: NodeJS.Timeout | undefined
+  const startup = new AbortController()
   const engineLog = componentLogger('engine')
   const reportReconciliationError = (error: unknown) => engineLog.error({ err: error }, 'run reconciliation failed')
 
-  app.addHook('onClose', async () => {
+  app.addHook('preClose', async () => {
+    startup.abort(new Error('Startup canceled by shutdown.'))
     lifecycle.info('api shutting down')
     if (reconciliationTimer) clearInterval(reconciliationTimer)
-    try { await drainShutdown() }
-    finally {
-      await Promise.allSettled([checkpoints.close(), database.close()])
-      lifecycle.info('api stopped')
-    }
   })
+  app.addHook('onClose', async () => { await drainShutdown() })
 
   let closing: Promise<void> | undefined
   const close = () => {
+    startup.abort(new Error('Startup canceled by shutdown.'))
     closing ??= app.close()
     return closing
   }
@@ -79,19 +89,19 @@ async function main() {
     process.removeListener('SIGINT', onSignal)
     process.removeListener('SIGTERM', onSignal)
   })
-  const stopIfClosing = () => { if (closing) throw new Error('Startup canceled by shutdown.') }
+  const stopIfClosing = () => { startup.signal.throwIfAborted() }
 
   try {
     const webRoot = readProductEnvironment(process.env, 'WEB_DIST')
     if (webRoot) await registerBuiltWeb(app, webRoot)
     registerFileStorage()
-    await database.ping()
+    await retryStartupDatabase(() => database.ping(startup.signal), { signal: startup.signal })
     stopIfClosing()
-    await database.migrate()
+    await retryStartupDatabase(() => database.migrate(), { signal: startup.signal })
     stopIfClosing()
-    await checkpoints.setup()
+    await retryStartupDatabase(() => checkpoints.setup(), { signal: startup.signal })
     stopIfClosing()
-    await checkpoints.ping()
+    await retryStartupDatabase(() => checkpoints.ping(startup.signal), { signal: startup.signal })
     stopIfClosing()
     await mkdir(config.harnesses.workspaceRoot, { recursive: true, mode: 0o700 })
     const projectRoot = config.workspaceStorageRoot ?? workspaceStorageRoot()

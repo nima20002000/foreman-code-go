@@ -148,6 +148,8 @@ export function currentRestartUnit(reviewer = false, acceptedPlacement?: Accepte
     }
     if (q.startsWith('select c.generation::text,c.execution_identity')) {
       assert.deepEqual(values, [execution.id, execution.runId]); state.reads++
+      if (q.includes('from runs r join harness_executions e')
+        && (state.stopped || state.cleanup || state.finalized || f.run.executionState === 'completed')) return result()
       const row = rows.at(-1)
       return result(row ? [{ ...row, record: execution, reference: session, prior_unclosed: priorUnclosed(row.generation) }] : [])
     }
@@ -278,8 +280,8 @@ export function currentRestartUnit(reviewer = false, acceptedPlacement?: Accepte
       return { manager, get processState() { return resident ? 'resident' as const : 'needs_start' as const },
         beginStart() {}, markResident() { resident = true } }
     }, release() { resident = false } }
-    const store: PostgresWorkflowClosureStore = Reflect.construct(PostgresWorkflowClosureStore,
-      [pool, (executionId: string) => executionId === execution.id && state.restartDetached])
+    const store = new PostgresWorkflowClosureStore(pool,
+      executionId => executionId === execution.id && state.restartDetached)
     type Args = ConstructorParameters<typeof ApprovalExecutionCoordinator>
     const coordinator = new ApprovalExecutionCoordinator(runs as unknown as Args[0], interactions as unknown as Args[1],
       budgets as unknown as Args[2], resolver, 60_000, credentials as unknown as Args[5], undefined, store,
