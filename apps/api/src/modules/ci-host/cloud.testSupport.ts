@@ -1,7 +1,7 @@
 import { execFile, execFileSync } from 'node:child_process'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { afterEach } from 'vitest'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
@@ -84,6 +84,7 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
     watchdogFailure: null as unknown, log: 'ci\tSuite\tall green\n', rateLimited: false, jobReads: [] as ('full' | 'unchanged')[], artifactError: '', logError: '' }
   const circle = { triggered: [] as string[][], outcome: '' as string, durations: null as Record<string, number> | null,
     testResults: null as unknown, watchdogFailure: null as unknown, log: 'Suite\nall green\n',
+    artifacts: null as Record<string, unknown> | null, rawOutput: null as string | null,
     phantoms: 0, lookupError: '', canceled: [] as string[], runView: null as unknown,
     jobDetails: {} as Record<string, unknown>,
     steps: [] as { num: number; name: string; phase: string; outcome?: string }[], output: '',
@@ -114,7 +115,9 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
       if (args[0] === 'job' && args[1] === 'get') return ok(JSON.stringify(circle.jobDetails[args[2]!] ??
         { executions: [{ steps: circle.steps }], ...circle.outcome
         ? { phase: 'ended', outcome: circle.outcome, stopped_at: '2026-10-11T02:00:00Z' } : { phase: 'started' } }))
-      if (args[0] === 'job' && args[1] === 'output' && args[2] === 'get') return ok(circle.output)
+      if (args[0] === 'job' && args[1] === 'output' && args[2] === 'get') {
+        return ok(args.includes('--strip-ansi=false') ? circle.rawOutput ?? circle.output : circle.output)
+      }
       // The CLI's default view keeps only each step's last lines.
       if (args[0] === 'job' && args[1] === 'output') {
         if (circle.logError) return { code: 1, stdout: '', stderr: circle.logError }
@@ -124,8 +127,9 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
         return { code: 1, stdout: '', stderr: circle.artifactError }
       }
       if (args[0] === 'job' && args[1] === 'artifact' && args.includes('--json')) {
-        if (!circle.durations && !circle.watchdogFailure) return ok('[]')
-        const listed = [...circle.watchdogFailure ? ['durations/watchdog-message.json'] : [], 'durations/durations.json', ...circle.testResults ? ['durations/test-results.json'] : [],
+        if (!circle.artifacts && !circle.durations && !circle.testResults && !circle.watchdogFailure) return ok('[]')
+        const listed = circle.artifacts ? Object.keys(circle.artifacts)
+          : [...circle.watchdogFailure ? ['durations/watchdog-message.json'] : [], 'durations/durations.json', ...circle.testResults ? ['durations/test-results.json'] : [],
           'integration-logs/run/slot-1/a.integration.test.ts.log']
         return ok(JSON.stringify(listed.map(path => ({ path, url: `https://artifacts.example/${path}`, execution: 0 }))))
       }
@@ -135,9 +139,11 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
       const url = args.at(-1)!
       circle.downloaded.push(url)
       await circle.downloadGate
-      const body = url.endsWith('/watchdog-message.json') ? circle.watchdogFailure
-        : url.endsWith('/durations.json') ? circle.durations : url.endsWith('/test-results.json') ? circle.testResults : 'log'
-      await writeFile(args[args.indexOf('-o') + 1]!, JSON.stringify(body))
+      const path = new URL(url).pathname.slice(1)
+      const reports: Record<string, unknown> = { 'watchdog-message.json': circle.watchdogFailure,
+        'durations.json': circle.durations, 'test-results.json': circle.testResults }
+      const body = circle.artifacts ? circle.artifacts[path] : reports[basename(path)]
+      await writeFile(args[args.indexOf('-o') + 1]!, typeof body === 'string' ? body : JSON.stringify(body))
       return ok()
     }
     if (file !== 'gh') return system.run(file, args)
