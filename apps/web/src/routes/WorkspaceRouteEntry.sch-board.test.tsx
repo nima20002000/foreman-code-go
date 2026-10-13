@@ -390,9 +390,11 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
       }),
     )
     const { router } = await mount()
-    await savedY()
-    expect(router.state.location.search).toMatchObject({ runId: 'run-a', workflowVersionId: 'version-a',
-      executionSemanticsVersion: 3 })
+    await waitFor(() => expect(router.state.location.search).toMatchObject({
+      runId: 'run-a', workflowVersionId: 'version-a', executionSemanticsVersion: 3,
+    }), { timeout: 3000 })
+    await authoring()
+    expect(await savedY()).toBeVisible()
     expect(screen.getByText('a', { selector: '.board-run-tag code' }).closest('[role="status"]')).toHaveTextContent('Run a')
     expect(screen.queryByRole('button', { name: 'Return to draft' })).not.toBeInTheDocument()
     await choose(null)
