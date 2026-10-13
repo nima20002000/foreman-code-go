@@ -1587,9 +1587,14 @@ export class ApprovalExecutionCoordinator {
 
   async finishIdleReviewers(runId: string, owner: RunOwnership, signal: AbortSignal): Promise<void> {
     if (owner.runId !== runId) throw new DomainError('RUN_OWNERSHIP_LOST', 'The reviewer Run owner changed.', 409)
+    const run = await this.runs.get(runId, owner)
+    owner.assertOwned()
+    signal.throwIfAborted()
     for (const owned of this.ownedSessions.values()) {
       if (owned.execution.runId !== runId || owned.context.purpose !== 'reviewer'
         || !owned.manager.retainsReviewerSession) continue
+      // Remote closure needs the cleanup intent committed with Run completion.
+      if (owned.context.acceptedPlacement?.hostRef.kind === 'device' && run?.executionState !== 'completed') continue
       const session = owned.session
       if (!session) throw new DomainError('REPEAT_CLEANUP_PENDING', 'The reviewer session is unavailable.', 409)
       const check = () => {
@@ -1636,6 +1641,13 @@ export class ApprovalExecutionCoordinator {
       // An active reviewer may be awaiting this graph response through MCP.
       // Its captured job finalizer releases the exact session after settlement.
       if (owned.session && owned.manager.isActive(owned.session)) continue
+      if (owned.context.purpose === 'reviewer' && owned.manager.retainsReviewerSession
+        && owned.context.acceptedPlacement?.hostRef.kind === 'device') {
+        const owner = owned.runOwner
+        if (!owner) throw new DomainError('RUN_OWNERSHIP_LOST', 'The reviewer Run owner is unavailable.', 409)
+        await this.finishIdleReviewers(runId, owner, owned.controller.signal)
+        continue
+      }
       failures.push(...await this.cleanupSession(owned, false))
     }
     if (failures.length) throw new AggregateError(failures, 'Completed Run session cleanup was incomplete.')
