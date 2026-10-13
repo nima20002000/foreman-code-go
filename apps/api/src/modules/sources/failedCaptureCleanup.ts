@@ -32,7 +32,7 @@ async function canReplay(sql: pg.PoolClient, store: CaptureStore,
   try {
     const principal = await readLiveManagementPrincipal(sql, candidate.requested_by)
     const scope = { workspaceId: row.workspace_id }
-    requireAuthorization(principal, 'sources:approve', scope)
+    requireAuthorization(principal, 'source_roots:bind', scope)
     requireAuthorization(principal, 'sources:read', scope)
     requireAuthorization(principal, 'workspace_locations:read', scope)
     await store.manifest(candidate.snapshot_id)

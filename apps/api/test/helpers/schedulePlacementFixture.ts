@@ -89,7 +89,7 @@ export async function schedulePlacementFixture(f: Sch11Fixture) {
   const policy = bound.binding
   const approved = (await authorities.sources.approve(writer.principal, 'http', { workspaceId: f.scope.workspaceId,
     commandId: randomUUID(), expectedLocationRevision: bound.locationRevision, commit,
-    approvedPaths: ['source.ts'], executablePolicy: 'strip' })).value
+    executablePolicy: 'strip' })).value
   const source = { approvedSourceId: approved.manifest.approvedSourceId, snapshotId: approved.manifest.snapshotId,
     manifestDigest: approved.manifest.manifestDigest }
   const selection = { hostRef, rootPolicyId: policy.rootPolicyId,

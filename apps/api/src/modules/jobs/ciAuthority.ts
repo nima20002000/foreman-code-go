@@ -10,12 +10,12 @@ import { assertWave25WorkerBinding } from '../interactions/wave25/credentialAuth
 import { DomainError } from '../errors.js'
 
 export const CI_RUN_ACTIONS: ManagementAction[] = [
-  'sources:approve', 'sources:read', 'source_roots:read', 'source_roots:bind', 'workspace_locations:read',
+  'sources:read', 'source_roots:read', 'source_roots:bind', 'workspace_locations:read',
   'job_definitions:read', 'job_definitions:write', 'jobs:start', 'jobs:cancel',
 ]
 export const CI_GET_ACTIONS: ManagementAction[] = ['jobs:read', 'job_logs:read', 'job_artifacts:read']
 export const CI_PREPARATION_ACTIONS: ManagementAction[] = [
-  'job_definitions:read', 'job_definitions:write', 'sources:approve', 'sources:read',
+  'job_definitions:read', 'job_definitions:write', 'sources:read',
   'source_roots:bind', 'source_roots:read', 'workspace_locations:read', 'jobs:start', 'job_artifacts:read',
 ]
 export interface CiAuthority {

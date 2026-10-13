@@ -51,7 +51,7 @@ are 32 scenario Agent executions across both rounds, plus the host profile check
    choice/readback; set also takes a fresh `commandId`. For a new policy use `expectedRootPolicyRevision: 0`.
    Validate before setting. Return the primary workspace location to Main before approving/binding the source,
    then read its latest location revision. Approve the pinned tracked source with `source_approve`: supply `workspaceId`, a fresh
-   `commandId`, `expectedLocationRevision` from `workspace_get`, the full commit SHA, `approveTrackedTree: true`, and
+   `commandId`, `expectedLocationRevision` from `workspace_get`, the full commit SHA, and
    `executablePolicy: "preserve-approved"`. This preserves the ordinary sensitive-file and executable checks. Read
    `workspace_root_choices_list` for Main and the paired Worker. Bind the approved source on both hosts
    with `source_root_bind`: pass its returned `{approvedSourceId, snapshotId, manifestDigest}` as `source`, the current

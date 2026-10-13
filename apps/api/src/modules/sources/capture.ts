@@ -124,7 +124,7 @@ async function captureBlobs(reader: ReturnType<typeof gitObjectReader>, records:
 }
 /** Exact Git objects, never archive/export filters or working-tree bytes. */
 export async function captureGitSource(input: { root: string; approvedSourceId: string; commit: string;
-  approvedPaths: readonly string[]; snapshotId?: string; repository?: string; executablePolicy: SourceManifest['executablePolicy']; sink: SourceSnapshotSink }): Promise<SourceManifest> {
+  snapshotId?: string; repository?: string; executablePolicy: SourceManifest['executablePolicy']; sink: SourceSnapshotSink }): Promise<SourceManifest> {
   if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(input.commit)) throw new SourceError('SOURCE_GIT_REF_INVALID', 'An exact Git commit object is required; branch names are not source pins.')
   if (await realpath(input.root) !== input.root || input.root === process.env.HOME || input.root === '/') throw new SourceError('SOURCE_ROOT_INVALID', 'An explicitly approved canonical project root is required.')
   const snapshotId = input.snapshotId ?? randomUUID(), entries: SourceEntry[] = [], signal = AbortSignal.timeout(SOURCE_LIMITS.preparationMs)
@@ -141,8 +141,6 @@ export async function captureGitSource(input: { root: string; approvedSourceId: 
       ? [{ kind: 'commit', object: commit, bytes: commitBytes.toString('base64') }] : undefined
     const tree = /^tree ([a-f0-9]+)\n/.exec(commitBytes.toString('utf8'))?.[1]
     if (!tree || tree.length !== (objectFormat === 'sha1' ? 40 : 64)) throw new SourceError('SOURCE_GIT_REF_INVALID', 'The accepted commit has no exact supported tree.')
-    const names = new Set(input.approvedPaths.map(sourcePath))
-    if (names.size !== input.approvedPaths.length) throw new SourceError('SOURCE_PATH_COLLISION', 'Approvals must name each file once.')
     const records: { path: string; mode: string; object: string }[] = []
     let treeBytes = 0
     const readTree = async (object: string, prefix: string): Promise<void> => {
@@ -165,10 +163,6 @@ export async function captureGitSource(input: { root: string; approvedSourceId: 
       }
     }
     await readTree(tree, '')
-    for (const record of records) {
-      if (!names.delete(record.path)) throw new SourceError('SOURCE_INCLUSION_NOT_APPROVED', 'Every exact tree entry must be explicitly approved; tracked secrets are never silently omitted.')
-    }
-    if (names.size) throw new SourceError('SOURCE_INCLUSION_NOT_FOUND', 'Approved files are absent from the exact Git tree.')
     let metadata: NonNullable<SourceManifest['git']>['metadata']
     if (objects && input.sink.writeGitMetadata) {
       const metadataBytes = Buffer.from(JSON.stringify(objects))

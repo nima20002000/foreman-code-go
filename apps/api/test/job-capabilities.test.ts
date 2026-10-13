@@ -9,7 +9,7 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { createGraphqlMcpServer, roleDeniedToolCall } from '../src/mcp/unified/server.js'
 
 const actions:ManagementAction[]=['job_definitions:read','job_definitions:write','jobs:start','jobs:read','jobs:cancel','job_logs:read','job_artifacts:read','sources:read','source_roots:read',
-  'sources:approve','source_roots:bind','workspace_locations:read','workspace_locations:validate','workspace_locations:update']
+  'source_roots:bind','workspace_locations:read','workspace_locations:validate','workspace_locations:update']
 const readerActions=actions.filter(action=>action.endsWith(':read'))
 function principal(jobActions=actions):ManagementPrincipal {
   return {id:'job-discovery',name:'Job discovery',audience:'operator',expiresAt:'2099-01-01T00:00:00.000Z',revokedAt:null,
@@ -79,14 +79,14 @@ describe('Job capability summary matches mounted Operator tools',()=>{
       }))
       expect(capabilities.requirements).toContainEqual(expect.objectContaining({
         name: 'ci_enrollment_update', actions: ['job_definitions:read', 'job_definitions:write',
-          'sources:approve', 'sources:read', 'source_roots:bind', 'source_roots:read',
+          'sources:read', 'source_roots:bind', 'source_roots:read',
           'workspace_locations:read', 'jobs:start', 'job_artifacts:read',
           'workspace_locations:validate', 'workspace_locations:update'],
       }))
       expect(capabilities.requirements).toContainEqual(expect.objectContaining({ name: 'job_runtime_profile_save',
         actions: ['job_definitions:write', 'sources:read', 'source_roots:read'] }))
       expect(capabilities.requirements).toContainEqual(expect.objectContaining({ name: 'build_computer_prepare',
-        actions: ['job_definitions:read', 'job_definitions:write', 'sources:approve', 'sources:read',
+        actions: ['job_definitions:read', 'job_definitions:write', 'sources:read',
           'source_roots:bind', 'source_roots:read',
           'workspace_locations:read', 'jobs:start', 'job_artifacts:read'] }))
       const limit=capabilities.runtimeLimits!.find(limit=>limit.feature==='ci_jobs')

@@ -106,7 +106,7 @@ it.skipIf(!postgresEnabled)('profiles complete repository approval through real 
   } as typeof query)
   try {
     const address = await app.listen({ host: '127.0.0.1', port: 0 }), headers = { authorization: `Bearer ${owner.token}` }
-    const input = { workspaceId, commandId: randomUUID(), expectedLocationRevision: located.value.locationRevision, commit, approvedPaths, executablePolicy: 'preserve-approved' }
+    const input = { workspaceId, commandId: randomUUID(), expectedLocationRevision: located.value.locationRevision, commit, executablePolicy: 'preserve-approved' }
     metrics.active = true; const start = performance.now()
     const response = await app.inject({ method: 'POST', url: `/api/management/workspaces/${workspaceId}/sources/approve`, headers, payload: input })
     stages.totalMs = performance.now() - start; metrics.active = false
@@ -120,7 +120,7 @@ it.skipIf(!postgresEnabled)('profiles complete repository approval through real 
     expect(retry.isError, JSON.stringify(retry.content)).not.toBe(true); expect(decodeMcpToolResult(retry)).toEqual({ ...result, replayed: true })
     expect((await db.pool.query('select record from source_snapshots')).rows).toEqual([{ record: result.value }])
     expect(metrics.snapshotInserts).toBe(1); expect(metrics.sqlCalls).toBeLessThan(75)
-    const denied = await access.issue({ name: 'Denied profile caller', audience: 'operator', grants: [{ actions: ['sources:read', 'sources:approve', 'workspace_locations:read'], scope: { workspaceIds: ['foreign'] } }], expiresAt: new Date(Date.now() + 600_000) })
+    const denied = await access.issue({ name: 'Denied profile caller', audience: 'operator', grants: [{ actions: ['sources:read', 'source_roots:bind', 'workspace_locations:read'], scope: { workspaceIds: ['foreign'] } }], expiresAt: new Date(Date.now() + 600_000) })
     const deniedClient = new Client({ name: 'Denied source profile', version: '1' }); clients.push(deniedClient)
     await deniedClient.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => denied.token } }))
     expect((await deniedClient.callTool({ name: 'source_approve', arguments: { ...input, commandId: randomUUID() } })).isError).toBe(true)

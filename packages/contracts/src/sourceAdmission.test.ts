@@ -9,31 +9,25 @@ const input = {
   executablePolicy: 'strip',
 }
 
-describe('source approval choice', () => {
+describe('tracked source capture', () => {
+  it('accepts capture without a path approval choice', () => {
+    expect(SourceApproveInputSchema.parse(input)).toEqual(input)
+  })
+
   it('accepts revision zero for repository capture before a workspace folder is configured', () => {
-    expect(SourceApproveInputSchema.parse({ ...input, expectedLocationRevision: 0, approveTrackedTree: true })
+    expect(SourceApproveInputSchema.parse({ ...input, expectedLocationRevision: 0 })
       .expectedLocationRevision).toBe(0)
   })
 
   it.each([-1, 0.5])('rejects invalid location revision %s', expectedLocationRevision => {
-    expect(SourceApproveInputSchema.safeParse({ ...input, expectedLocationRevision, approveTrackedTree: true })
+    expect(SourceApproveInputSchema.safeParse({ ...input, expectedLocationRevision })
       .success).toBe(false)
   })
 
-  it('accepts an explicit inventory or explicit approval of the tracked commit tree', () => {
-    expect(SourceApproveInputSchema.parse({ ...input, approvedPaths: ['src/app.ts'] }))
-      .toEqual({ ...input, approvedPaths: ['src/app.ts'] })
-    expect(SourceApproveInputSchema.parse({ ...input, approveTrackedTree: true }))
-      .toEqual({ ...input, approveTrackedTree: true })
-  })
-
   it.each([
-    {},
-    { approvedPaths: [] },
-    { approveTrackedTree: false },
-    { approvedPaths: ['src/app.ts'], approveTrackedTree: true },
-    { approvedPaths: ['src/app.ts'], approveTrackedTree: false },
-  ])('rejects missing, empty or conflicting approval choices: %j', choice => {
+    { approvedPaths: ['src/app.ts'] },
+    { approveTrackedTree: true },
+  ])('rejects removed approval fields: %j', choice => {
     expect(SourceApproveInputSchema.safeParse({ ...input, ...choice }).success).toBe(false)
   })
 })

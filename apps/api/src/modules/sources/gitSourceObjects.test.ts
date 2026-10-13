@@ -49,7 +49,7 @@ async function fixture(objectFormat: 'sha1' | 'sha256' = 'sha1', count = 2) {
   const commit = git(source, ['rev-parse', 'HEAD'])
   const store = new PrivateSourceSnapshotStore(snapshots)
   const manifest = await captureGitSource({ root: source, commit, repository: 'fixture/project',
-    approvedSourceId: randomUUID(), approvedPaths: paths, executablePolicy: 'strip', sink: store })
+    approvedSourceId: randomUUID(), executablePolicy: 'strip', sink: store })
   const signal = AbortSignal.timeout(120_000)
   const system = systemGitWorktreePorts(gitFixtureEnvironment())
   const ports: GitWorktreePorts = { cloneDirectory: () => destination, git: system.git }

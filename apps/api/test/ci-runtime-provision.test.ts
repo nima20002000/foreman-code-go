@@ -452,7 +452,7 @@ it.each(['unpublished Agent commit', 'published commit', 'computer without GitHu
       const acceptedCommit = snapshot.commit
       if (scenario === 'published commit') git(main, 'push', '-q', 'origin', `${acceptedCommit}:refs/heads/published`)
       const acceptedManifest = await captureGitSource({ root: main, commit: acceptedCommit, approvedSourceId: randomUUID(),
-        approvedPaths: ['pnpm-lock.yaml'], executablePolicy: 'preserve-approved', repository: 'octo/site',
+        executablePolicy: 'preserve-approved', repository: 'octo/site',
         sink: { write: async () => {}, writeGitMetadata: async () => {}, commit: async () => {}, abort: async () => {} } })
       const refused = { code: 128, stdout: '', stderr: 'fatal: could not read Username for https://github.com' }
       const mainGit: GitWorktreePorts = { cloneDirectory: () => main, git: (args, options) =>
