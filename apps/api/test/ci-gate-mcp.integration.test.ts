@@ -59,7 +59,9 @@ it('persists a throughput-sized gate through MCP and rejects a read-only caller'
     expect(read.partitions!.filter(run => run.suite === 'integration').flatMap(run => run.files).sort())
       .toEqual([...files].sort())
     const stored = (await database.pool.query('select record from ci_runs where id=$1', [host.id])).rows[0].record
-    expect(stored).toEqual(host)
+    // The background dispatch may advance the lifecycle after the read; the persisted plan must match it.
+    expect(stored).toMatchObject({ id: host.id, plannedHostKey: host.plannedHostKey, files: host.files,
+      expectedDurationMs: host.expectedDurationMs, integrationShards: host.integrationShards })
   } finally { await f.close() }
 })
 
