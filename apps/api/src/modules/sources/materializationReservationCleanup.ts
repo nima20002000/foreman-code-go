@@ -10,6 +10,7 @@ import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { admissionClosed, loadSourcePreparation, validateSourcePreparationClosure } from './preparationReconciliation.js'
 import type { SourceReclamationResult } from './reclaimSourceReservation.js'
 import { PostgresSourceReservations, type SourceReservation } from './reservations.js'
+import { localWorkflowSourceClosed } from './workflowCleanup.js'
 
 async function admissionInactive(sql: GraphSqlClient, operationId: string): Promise<boolean> {
   const active = await sql.query(`select 1 from job_executions e where e.operation_id=$1
@@ -115,6 +116,13 @@ export class MaterializationReservationCleanup {
       const binding = materialization ? SourceMaterializationRecordSchema.parse(materialization.record).receipt.binding
         : owner?.root.binding
       if (!binding) return null
+      if (materialization && binding.deviceId === null) {
+        const record = SourceMaterializationRecordSchema.parse(materialization.record)
+        const native = await sql.query(`select id from harness_executions
+          where id=$1 and record->>'nativeSessionId' is not null`, [record.receipt.executionId])
+        // A published result can precede the original native owner's close.
+        if (native.rowCount && !await localWorkflowSourceClosed(sql, record.receipt.executionId)) return null
+      }
       const rows = await sql.query<{ record: unknown }>(`select b.record from source_root_bindings b
         join application_installation a on a.singleton and a.id::text=(b.record#>>'{binding,mainId}')
         where concat(b.record#>>'{binding,mainId}',':',coalesce(b.record#>>'{binding,deviceId}','original-main'),':',
