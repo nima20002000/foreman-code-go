@@ -46,9 +46,24 @@ function fixture() {
     closure: { generation: '1', expected_reference: structuredClone(session), closed: false },
     lane: { owner_agent_id: execution.agentId, harness: session.harness, native_session_id: session.nativeSessionId,
       generation: '1', token: 'original-token', correlation: `execution:${execution.id}`, provider_id: 'original-turn', held: true } }
+  const lease = { lease_owner: 'original-owner', lease_ms: 30_000, expires_at: '2099-01-01T00:00:00.000Z' }
   const reads: unknown[][] = []
   const connection = new ExclusiveGraphConnection({ query: async (sql: string, values?: unknown[]) => {
     if (sql.startsWith('with current_entry')) { reads.push(values!); return { rows: [structuredClone(records)], rowCount: 1 } }
+    if (sql.startsWith("select record->>'leaseOwner'")) {
+      const matches = values?.[0] === capture.lane!.id && values[1] === records.lane.token
+        && values[2] === records.lane.generation && values[3] === records.lane.owner_agent_id
+        && values[4] === records.lane.harness && values[5] === records.lane.native_session_id
+        && records.lane.held
+      return { rows: matches ? [structuredClone(lease)] : [], rowCount: matches ? 1 : 0 }
+    }
+    if (sql.startsWith('update native_session_lanes')) {
+      const matches = values?.[0] === capture.lane!.id && values[1] === records.lane.token
+        && values[2] === records.lane.generation && values[4] === lease.lease_owner
+        && values[5] === records.lane.owner_agent_id && values[6] === records.lane.harness
+        && values[7] === records.lane.native_session_id && values[8] === lease.expires_at
+      return { rows: matches ? [{ expires_at: lease.expires_at }] : [], rowCount: matches ? 1 : 0 }
+    }
     if (sql.startsWith('begin') || ['commit', 'rollback'].includes(sql)) return { rows: [], rowCount: 0 }
     throw new Error(`Unexpected guard SQL: ${sql}`)
   } } as unknown as pg.ClientBase, () => owner.assertOwned())
