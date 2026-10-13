@@ -148,6 +148,9 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     controller.abort(new Error('stop waiting for delivery confirmation'))
     await assert.rejects(response)
     const before = await wire()
+    assert.deepEqual(before.filter((message) => message.id === 901 && message.result), [
+      { id: 901, result: { decision: 'accept' } },
+    ])
     assert.equal((await manager.inspectResponseAvailability(session, query)).state, 'recovery_required')
     assert.deepEqual(await wire(), before)
     await finish(f.directory, session.nativeSessionId)
