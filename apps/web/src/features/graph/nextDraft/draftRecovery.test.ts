@@ -74,11 +74,32 @@ it('undoes a draft edit newer than a settings action after history reaches its c
   expect(pendingBoardAction(board, position(redoNextDraft(undone)))).toBeUndefined()
 })
 
+it('hides Undo for published graph-only history until another authored edit is made', () => {
+  const edit = editNextDraft(newNextDraft(fixture(), 'editor'), graph => ({ ...graph, name: 'Saved name' }))
+  storeEditSnapshot(scope, edit)
+  const request = journalRequest(edit, 'graph-save')
+  reserveEditOutbox(scope, { request, target: edit.graph })
+  const published = acknowledgeEditIntentSnapshot(scope, edit, savedJournal(journalIntent(request, edit.context)))
+  const status = (value: typeof edit) => deriveDraftEditorStatus({ edit: value,
+    editIntent: { query: {}, mutation: {} }, agents: [], startState: { preflight: {}, startOutbox: {} },
+    starting: false, reloading: false, workspace: {}, redoCount: 0,
+  } as unknown as Parameters<typeof deriveDraftEditorStatus>[0])
+  expect(published.history).toHaveLength(1)
+  expect(nextDraftDirty(published)).toBe(false)
+  expect(status(published).canUndo).toBe(false)
+  const changed = editNextDraft(published, graph => ({ ...graph, name: 'Another edit' }))
+  expect(status(changed).canUndo).toBe(true)
+  const undone = undoNextDraft(changed)
+  expect(undone.graph.name).toBe('Saved name')
+  expect(status(undone).canUndo).toBe(false)
+  expect(status(undone).canRedo).toBe(true)
+})
+
 it('preserves a suspended divergent form, Agent edits and lineage when quota recovery fails', () => {
   const original = newNextDraft(fixture(), 'suspended')
   original.graph = { ...original.graph, description: 'Suspended draft' }
   original.agentEdits = { 'agent-0': { ...original.context.agents[0]!.agent, name: 'Suspended Agent' } }
-  original.agentForms = { 'agent-0': { base: 'retained-form', name: 'Suspended form', prompt: 'Unsaved prompt',
+  original.agentForms = { 'agent-0': { base: JSON.stringify(original.context.agents[0]!.agent), name: 'Suspended form', prompt: 'Unsaved prompt',
     editor: { ...createHarnessEditor(DEFAULT_HARNESS_DEFAULTS.codex), mcpText: '{unfinished' } } }
   sessionStorage.setItem(tabKey, 'suspended-tab')
   storeEditSnapshot(scope, original, 'consumed-command')
@@ -92,6 +113,8 @@ it('preserves a suspended divergent form, Agent edits and lineage when quota rec
   fail.mockRestore()
   sessionStorage.setItem(tabKey, 'suspended-tab')
   expect(readEditSnapshot(scope)).toEqual(retained)
+  expect(readEditSnapshot(scope)?.agentForms?.['agent-0']?.editor.mcpText).toBe('{unfinished')
+  expect(readEditSnapshot(scope)?.agentEdits?.['agent-0']?.name).toBe('Suspended Agent')
   expect(editSnapshotAcknowledged(scope, original, 'consumed-command')).toBe(true)
 })
 
@@ -157,7 +180,7 @@ it('bounds identical terminal submissions shared with a suspended form', () => {
   sessionStorage.setItem(tabKey, 'writer-tab')
   for (let index = 0; index < 80; index++) {
     storeEditSnapshot(scope, initial)
-    const request = journalRequest(initial, `same-${index}`)
+    const request = journalRequest(initial, `same-command-${index}`)
     reserveEditOutbox(scope, { request, target: initial.graph })
     const intent = { ...journalIntent(request, initial.context), state: 'discarded' as const }
     acknowledgeEditIntentSnapshot(scope, initial, intent)

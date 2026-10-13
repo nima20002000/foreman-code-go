@@ -149,6 +149,17 @@ it('still selects the admitted Run when selection is unchanged', async () => {
   expect(readBoardStart(key)).toBeUndefined()
 })
 
+it('rechecks revoked Start permission before reserving or sending a command', async () => {
+  const h = setup()
+  access(false)
+  await act(async () => {
+    await expect(h.result.current.start()).rejects.toThrow('Start permission is unavailable')
+  })
+  expect(h.start).not.toHaveBeenCalled()
+  expect(h.selectRun).not.toHaveBeenCalled()
+  expect(readBoardStart(key)).toBeUndefined()
+})
+
 it('keeps plain Save-only publication from implicitly starting a Run', () => {
   const h = setup()
   h.waitForSave()
