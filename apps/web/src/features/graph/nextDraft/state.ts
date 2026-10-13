@@ -40,6 +40,7 @@ export type NextDraftEdit = {
   error?: DraftFailure
   validation?: { revision: number; valid: boolean; issues: AuthoringIssue[] }
   startRejectedVersionId?: string
+  startCanceled?: boolean
 }
 
 export function newNextDraft(context: NextDraftContext, instanceId: string): NextDraftEdit {

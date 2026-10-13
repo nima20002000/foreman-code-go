@@ -1,19 +1,46 @@
 import type { OperatorConversationState } from '@foreman-code/contracts'
-import { activityScopeKey, applyCanonicalActivityItems, reconcileActivitySnapshot, sourceVectorIsStale, sourceVectorHasAdvance } from '../conversations/agentChat/activityMerge'
+import {
+  activityScopeKey, applyCanonicalActivityItems, reconcileActivitySnapshot,
+  sourceVectorIsStale, sourceVectorHasAdvance,
+} from '../conversations/agentChat/activityMerge'
 import { mergeChatMessages } from '../conversations/agentChat/model'
-import { mergeOperatorActivity } from '../../shared/api/operatorActivity'
+import { mergeOperatorActivity, retainRecentOperatorActivity } from '../../shared/api/operatorActivity'
 
-export function newerOperatorConversationState(current: OperatorConversationState | undefined, next: OperatorConversationState, source: 'read' | 'receipt' = 'receipt'): OperatorConversationState {
+export function newerOperatorConversationState(current: OperatorConversationState | undefined,
+  next: OperatorConversationState, source: 'read' | 'receipt' = 'receipt'): OperatorConversationState {
   if (current?.activitySnapshot && next.activitySnapshot
-    && (activityScopeKey(current.activitySnapshot.scope) !== activityScopeKey(next.activitySnapshot.scope) || sourceVectorIsStale(current.activitySnapshot, next.activitySnapshot))) return current
+    && (activityScopeKey(current.activitySnapshot.scope) !== activityScopeKey(next.activitySnapshot.scope)
+      || sourceVectorIsStale(current.activitySnapshot, next.activitySnapshot))) return current
   const currentRevision = current?.activitySnapshot?.revision ?? String(current?.revision ?? 0)
   const nextRevision = next.activitySnapshot?.revision ?? String(next.revision)
-  const accepted = current && (current.activitySnapshot && !next.activitySnapshot || BigInt(currentRevision) >= BigInt(nextRevision)) ? current : next
-  // A recent server window may move forward while this tab is reading earlier
-  // activity. Retain observed records in Query, merging only accepted revisions.
-  const activitySnapshot = next.activitySnapshot ? reconcileActivitySnapshot(current?.activitySnapshot, next.activitySnapshot, current?.activitySnapshot?.scope ?? next.activitySnapshot.scope) : current?.activitySnapshot
+  const stale = BigInt(nextRevision) < BigInt(currentRevision)
+  const keepCurrent = current && (current.activitySnapshot && !next.activitySnapshot
+    || BigInt(currentRevision) >= BigInt(nextRevision))
+  const accepted = current && keepCurrent ? current : next
+  const activitySnapshot = next.activitySnapshot ? reconcileActivitySnapshot(current?.activitySnapshot,
+    next.activitySnapshot, current?.activitySnapshot?.scope ?? next.activitySnapshot.scope) : current?.activitySnapshot
   const qualification = source === 'read' ? next : current ?? next
-  const metadataFresh = source === 'read' || !!current?.activitySnapshot && !!next.activitySnapshot && sourceVectorHasAdvance(current.activitySnapshot, next.activitySnapshot)
-  return { ...accepted, ...(activitySnapshot ? { activitySnapshot } : {}), qualificationKey: qualification.qualificationKey, responseAvailability: qualification.responseAvailability, messages: mergeChatMessages(current?.messages ?? [], BigInt(nextRevision) < BigInt(currentRevision) || !metadataFresh && accepted === current ? accepted.messages : next.messages).slice(-100), activities: applyCanonicalActivityItems(mergeOperatorActivity(current?.activities ?? [], next.activities ?? []), activitySnapshot),
-    activityNextCursor: current?.activityNextCursor !== undefined ? current.activityNextCursor : next.activityNextCursor }
+  const metadataFresh = source === 'read' || !!current?.activitySnapshot && !!next.activitySnapshot
+    && sourceVectorHasAdvance(current.activitySnapshot, next.activitySnapshot)
+  const incoming = stale ? [] : next.activities ?? []
+  const previous = current?.activities ?? []
+  const overlaps = incoming.some(entry => previous.some(known =>
+    known.id === entry.id && known.requestId === entry.requestId))
+  const disconnected = !stale && !!next.activityNextCursor && incoming.length > 0 && !overlaps
+  const retained = retainRecentOperatorActivity(applyCanonicalActivityItems(
+    mergeOperatorActivity(disconnected ? [] : previous, incoming), activitySnapshot))
+  let activityNextCursor = current?.activityNextCursor ?? next.activityNextCursor
+  if (retained.removed || disconnected) {
+    activityNextCursor = retained.activities[0]?.sequence ?? next.activityNextCursor
+  }
+  const messages = stale || !metadataFresh && accepted === current ? accepted.messages : next.messages
+  return {
+    ...accepted,
+    ...(activitySnapshot ? { activitySnapshot } : {}),
+    qualificationKey: qualification.qualificationKey,
+    responseAvailability: qualification.responseAvailability,
+    messages: mergeChatMessages(current?.messages ?? [], messages).slice(-100),
+    activities: retained.activities,
+    activityNextCursor,
+  }
 }

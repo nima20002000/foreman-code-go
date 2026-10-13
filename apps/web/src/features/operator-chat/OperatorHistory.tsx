@@ -8,6 +8,7 @@ import { sessionIsSwitching } from '../../shared/api/sessionBoundary'
 import { Button } from '../../shared/ui/nocturne'
 import { mergeChatMessages } from '../conversations/agentChat/model'
 import { ConversationHistory } from '../conversations'
+import { HistoryWindowNotice } from '../conversations/HistoryWindowNotice'
 import { useOperatorChatStore } from './operatorChatStore'
 
 function subscribeIdentity(listener: () => void) {
@@ -52,7 +53,14 @@ function OwnedHistory({ id, epoch, onBrowse, recentMessages, renderMessages }: {
   const recentIds = new Set(recentMessages.map((message) => message.id))
   const messages = mergeChatMessages(...[...(history.data?.pages ?? [])].reverse().map((page) => page.entries.map((entry) => entry.message)), recentMessages)
     .filter((message) => !recentIds.has(message.id))
+  const reloadNearer = () => {
+    onBrowse?.()
+    client.setQueryData<typeof history.data>(key, { pages: [], pageParams: [] })
+    void history.refetch()
+  }
   return <section aria-label="Earlier messages">
+    {history.data && history.data.pageParams[0] !== undefined ? <HistoryWindowNotice pending={history.isFetching}
+      onReload={reloadNearer} /> : null}
     {!open || history.hasNextPage ? <Button size="sm" variant="ghost" disabled={open && history.isFetching}
       onClick={() => { onBrowse?.(); if (!open) setOpen(true); else void history.fetchNextPage() }}>
       {history.isFetching ? 'Loading…' : 'Load earlier messages'}

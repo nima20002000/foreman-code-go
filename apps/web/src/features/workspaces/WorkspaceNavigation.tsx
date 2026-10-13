@@ -131,13 +131,13 @@ function NewWorkspaceControl() {
     if (inFlight.current || (defaults.isPending && !attempt.current.unresolved)) return
     const trimmedName = name.trim()
     if (!trimmedName) { setNameError('Enter a workspace name.'); nameInputRef.current?.focus(); return }
-    if (!parentPath.trim()) { setNameError('Choose a location for the project folder.'); return }
+    if (!parentPath) { setNameError('Choose a location for the project folder.'); return }
     inFlight.current = true
     const generation = sessionGeneration()
     setNameError(undefined)
     try {
       const workspace = (await createManagedWorkspace.mutateAsync(
-        attempt.current.input({ ...(touched.current.name ? { name: trimmedName } : {}), parentPath: parentPath.trim() }),
+        attempt.current.input({ ...(touched.current.name ? { name: trimmedName } : {}), parentPath }),
       )).value.workspace
       assertSession(generation)
       attempt.current.succeeded()

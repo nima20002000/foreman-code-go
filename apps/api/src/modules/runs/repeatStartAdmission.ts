@@ -8,11 +8,10 @@ import { insertRunBoardSnapshot } from './boardSnapshot.js'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
   AcceptedRepeatStartV1Schema, AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema,
-  GraphDigestSchema, RunStartV3InputSchema, SavedRunVersionSnapshotSchema, canonicalGraphJson,
+  GraphDigestSchema, RunStartV3InputSchema, RunStartCanceledResultSchema, SavedRunVersionSnapshotSchema, canonicalGraphJson,
   sameWorkflowValue, workflowRequiresWorkspaceDirectory,
-  type AcceptedRepeatStartV1, type AcceptedWorkflowRunV3, type RunStartV3Input,
+  type AcceptedRepeatStartV1, type AcceptedWorkflowRunV3, type RunStartV3Input, type RunStartCanceledResult,
 } from '@foreman-code/contracts/wave25'
-import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { acceptRunAuthority, bindRunAuthority } from '../access/runAuthority.js'
 import { commandInputHash } from '../commands/postgres.js'
@@ -33,9 +32,11 @@ import { validateReviewerBootstrap } from '../workflows/reviewerBootstrap.js'
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { prepareRunStart } from './startPreparation.js'
 import { RUN_START_LOCK_WAIT_MS, waitForRunStartLock, type RunStartLockWait } from './startLocks.js'
+import { authorizeRunStart, lockRunStartCommand } from './startCommand.js'
 import type { AcceptedProviderAccountBindings } from '../provider-accounts/acceptedBindings.js'
 import type { AcceptedProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
 import { ignoreError } from '../diagnostics/ignoredError.js'
+import { requireRunStartAvailable } from './maintenance.js'
 
 /** Internal canonical producer, not a rollout flag or an admission capability.
  * The production management arm intentionally supplies no producer at this base.
@@ -114,8 +115,8 @@ function immutableRun(run: AcceptedWorkflowRunV3) {
  * It still proves immutable Run/version/configuration/authority and canonical
  * initialization backing. Run membership or a successful audit alone is not a
  * receipt and cannot authorize another Run or dispatch. */
-async function readStartReceipt(sql: GraphTransactionSql, principalId: string, input: RunStartV3Input,
-  hash: string, target: string): Promise<AcceptedWorkflowRunV3 | undefined> {
+export async function readStartReceipt(sql: GraphTransactionSql, principalId: string, input: RunStartV3Input,
+  hash: string, target: string): Promise<AcceptedWorkflowRunV3 | RunStartCanceledResult | undefined> {
   const rows = await sql.query<ReceiptRow>(`select input_hash,target_key,result from management_command_receipts
     where principal_id=$1 and operation='run.start' and command_id=$2`, [principalId, input.commandId])
   if (rows.rows.length > 1) return conflict('RUN_START_RECEIPT_CONFLICT', 'The Start command has contradictory receipts.')
@@ -129,6 +130,8 @@ async function readStartReceipt(sql: GraphTransactionSql, principalId: string, i
   if (receipt.input_hash !== hash || receipt.target_key !== target) {
     return conflict('COMMAND_ID_CONFLICT', 'This command ID was already used with different input.')
   }
+  const canceled = RunStartCanceledResultSchema.safeParse(receipt.result)
+  if (canceled.success) return canceled.data
   const run = acceptedReceipt(receipt.result, input)
   const current = await readAcceptedRepeatRunLocked(sql, run.id)
   SavedRunVersionSnapshotSchema.parse({ run, version: current.version })
@@ -232,6 +235,7 @@ export async function insertRepeatRun(sql: GraphTransactionSql, input: AcceptedR
   publication: RepeatStartPublication, admissionTrigger: RunDropdownTrigger = 'manual',
   placementAdmission?: PreparedRunPlacementAdmission): Promise<AcceptedWorkflowRunV3> {
   assertGraphTransaction(sql)
+  await requireRunStartAvailable(sql)
   const accepted = AcceptedRepeatStartV1Schema.parse(JSON.parse(canonicalGraphJson(input)))
   const run = acceptedReceipt(accepted.run, accepted.snapshot.request)
   const receipt = repeatStartReceipt(run)
@@ -296,10 +300,7 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
   if (!Number.isInteger(maximumResidentRuns) || maximumResidentRuns < 1 || maximumResidentRuns > 128) {
     throw new Error('maximumResidentRuns must be an integer between 1 and 128')
   }
-  const authorize = (caller: ManagementPrincipal) => {
-    requireAuthorization(caller, 'runs:start', { workspaceId: input.workspaceId, workflowId: input.workflowId })
-    requireAuthorization(caller, 'workspace_locations:read', { workspaceId: input.workspaceId })
-  }
+  const authorize = (caller: ManagementPrincipal) => authorizeRunStart(caller, input)
   authorize(principal)
   const hash = commandInputHash({ ...input, ...(triggerJobId === undefined ? {} : { triggerJobId }),
     ...(options.schedule ? { scheduleOccurrenceId: options.schedule.occurrenceId } : {}) })
@@ -312,9 +313,7 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
     if (valid.rowCount !== 1) throw new DomainError('AUTH_REVOKED', 'Start authority expired before commit.', 403)
   }
   const commandLock = async (sql: GraphTransactionSql, wait: RunStartLockWait) => {
-    await waitForRunStartLock(sql, `command:${principal.id}:run.start:${input.commandId}`, wait)
-    await liveAuthority(sql)
-    beforeGraphCommit(sql, () => liveAuthority(sql))
+    await lockRunStartCommand(sql, principal, input, wait)
   }
   const lockWait: RunStartLockWait = { deadline: performance.now() + RUN_START_LOCK_WAIT_MS,
     ...(options.schedule?.signal ? { signal: options.schedule.signal } : {}) }
@@ -324,6 +323,7 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
       await commandLock(sql, lockWait)
       return readStartReceipt(sql, principal.id, input, hash, target)
     }))
+    if (replay && 'status' in replay) return conflict('RUN_START_CANCELED', 'This Start was canceled. Review current settings and explicitly start again.')
     if (replay) return { value: replay, replayed: true }
     if (!publication || typeof publication.initializeLocked !== 'function') {
       return conflict('REPEAT_START_RUNTIME_UNAVAILABLE', 'New v3 Runs remain disabled until canonical publication and the complete existing-engine lifecycle are composed.')
@@ -340,6 +340,7 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
       if (options.schedule?.signal) beforeGraphCommit(sql, async () => options.schedule!.signal!.throwIfAborted())
       await commandLock(sql, lockWait)
       const replayed = await readStartReceipt(sql, principal.id, input, hash, target)
+      if (replayed && 'status' in replayed) return conflict('RUN_START_CANCELED', 'This Start was canceled. Review current settings and explicitly start again.')
       if (replayed) return { value: replayed, replayed: true }
       await waitForRunStartLock(sql, `admission:runner:${prepared.location.runnerId}`, lockWait)
       await waitForRunStartLock(sql, `admission:workspace:${input.workspaceId}`, lockWait)

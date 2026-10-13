@@ -1,5 +1,5 @@
 /** Native SDK output pump: session observation, events, ownership and terminal results. */
-import { failRuntime } from './sessionFailure.js'
+import { closeOutput, failRuntime } from './sessionFailure.js'
 import { claudeCompactionResultMatches } from './compactionResults.js'
 import { claudeContextSnapshot } from './sessionControls.js'
 import { HarnessExecutionError } from '../errors.js'
@@ -133,11 +133,9 @@ export async function pump(ctx: ClaudeManagerContext, runtime: Runtime): Promise
         if (active === matched) delete runtime.active
       }
     }
-    runtime.closed = true
-    delete runtime.httpCredentialAcknowledgement
+    closeOutput(runtime, new Error('Claude output closed before compaction completed'),
+      new Error('Claude stream ended without an exact result; submission remains uncertain'))
     if (!runtime.session && !runtime.replacingForResume) runtime.rejectInit(new Error('Claude stream ended before native initialization'))
-    runtime.compaction?.fail(new Error('Claude output closed before compaction completed'))
-    runtime.active?.events.close(new Error('Claude stream ended without an exact result; submission remains uncertain'))
   } catch (error) {
     await failRuntime(ctx, runtime, error)
   }

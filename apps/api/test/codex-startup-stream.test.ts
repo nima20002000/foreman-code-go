@@ -54,6 +54,54 @@ describe.skipIf(process.platform === 'win32')('Codex assistant text across start
     await rm(f.directory, { recursive: true, force: true })
   })
 
+  it('buffers turn-scoped command output through acknowledgement and durable admission', async () => {
+    const session = await manager.createSession(input(f.directory))
+    let entered = false
+    const admission = new Promise<void>(resolve => { releaseAdmission = resolve })
+    const result = collect(manager.startTurn(session, {
+      prompt: 'wait', clientCorrelationId: 'command-progress',
+      onSubmitted: async () => { entered = true; await admission },
+    }))
+    const nativeTurn = await until(async () => {
+      if (!(await calls(f.directory)).some(entry => isObject(entry.wire) && entry.wire.method === 'turn/start')) return false
+      return (await state(f.directory, session.nativeSessionId)).turns[0]
+    })
+    const progress = (threadId: string, turnId: string, delta: string) => ({
+      method: 'item/commandExecution/outputDelta', params: { threadId, turnId, itemId: 'command', delta },
+    })
+    await emit(f.directory, progress(session.nativeSessionId, String(nativeTurn.id), 'before-response'))
+    await emit(f.directory, progress('foreign-thread', String(nativeTurn.id), 'foreign'))
+    await emit(f.directory, progress(session.nativeSessionId, 'wrong-turn', 'wrong'))
+    const request = (await calls(f.directory)).find(entry => isObject(entry.wire) && entry.wire.method === 'turn/start')!
+    assert(isObject(request.wire))
+    await emit(f.directory, { id: request.wire.id, result: { turn: nativeTurn } })
+    await until(async () => entered)
+    await emit(f.directory, progress(session.nativeSessionId, String(nativeTurn.id), 'during-persistence'))
+    await emit(f.directory, { method: 'item/started', params: { threadId: session.nativeSessionId,
+      turnId: nativeTurn.id, startedAtMs: 1, item: agentMessage('barrier', '') } })
+    await emit(f.directory, { method: 'turn/completed', params: { threadId: session.nativeSessionId,
+      turn: { ...nativeTurn, status: 'completed', completedAt: 2 } } })
+    await emit(f.directory, { method: 'thread/name/updated', params: {
+      threadId: session.nativeSessionId, threadName: 'admission-barrier',
+    } })
+    await until(async () => (await manager.history(session)).events.some(event => event.payload.threadName === 'admission-barrier'))
+    assert.equal((await manager.history(session)).events.some(event => event.payload.nativeMethod === 'item/commandExecution/outputDelta'), false)
+    releaseAdmission!()
+    const events = await result
+    assert.deepEqual(events.filter(event => event.payload.nativeMethod === 'item/commandExecution/outputDelta')
+      .map(event => event.payload.delta), ['before-response', 'during-persistence'])
+    const history = await manager.history(session)
+    assert.deepEqual(history.events.filter(event => event.payload.nativeMethod === 'item/commandExecution/outputDelta')
+      .map(event => event.payload.delta), ['before-response', 'during-persistence'])
+    await emit(f.directory, progress(session.nativeSessionId, String(nativeTurn.id), 'after-terminal'))
+    await emit(f.directory, { method: 'thread/name/updated', params: {
+      threadId: session.nativeSessionId, threadName: 'terminal-barrier',
+    } })
+    await until(async () => (await manager.history(session)).events.some(event => event.payload.threadName === 'terminal-barrier'))
+    assert.deepEqual((await manager.history(session)).events.filter(event => event.payload.nativeMethod === 'item/commandExecution/outputDelta')
+      .map(event => event.payload.delta), ['before-response', 'during-persistence'])
+  })
+
   it('retains startup text after persistence fails and recovers admission without resending', async () => {
     const session = await manager.createSession(input(f.directory))
     let submissions = 0
@@ -241,16 +289,18 @@ describe('Codex assistant delta ownership', () => {
     assert.equal(normalizeCodexNotification(owner, envelope).kind, 'delta')
   })
 
-  it('keeps stale generations, other turns, child threads and terminal text fenced', () => {
-    assert.deepEqual(normalizeCodexNotification(owner, { ...envelope, runtimeGeneration: 2 }),
-      { kind: 'ignored', reason: 'stale_generation' })
-    assert.deepEqual(normalizeCodexNotification(owner, { ...envelope,
-      params: { ...envelope.params, turnId: 'other-turn' },
-    }), { kind: 'ignored', reason: 'inactive_turn' })
-    assert.equal(normalizeCodexNotification(owner, { ...envelope,
-      params: { ...envelope.params, threadId: 'child' },
-    }).kind, 'unlinked')
-    assert.deepEqual(normalizeCodexNotification({ ...owner, terminal: true }, envelope),
-      { kind: 'ignored', reason: 'inactive_turn' })
+  it.each(['item/agentMessage/delta', 'item/commandExecution/outputDelta'])(
+    'keeps stale generations, other turns, child threads and terminal progress fenced for %s', method => {
+      const progressEnvelope = { ...envelope, method }
+      assert.deepEqual(normalizeCodexNotification(owner, { ...progressEnvelope, runtimeGeneration: 2 }),
+        { kind: 'ignored', reason: 'stale_generation' })
+      assert.deepEqual(normalizeCodexNotification(owner, { ...progressEnvelope,
+        params: { ...envelope.params, turnId: 'other-turn' },
+      }), { kind: 'ignored', reason: 'inactive_turn' })
+      assert.equal(normalizeCodexNotification(owner, { ...progressEnvelope,
+        params: { ...envelope.params, threadId: 'child' },
+      }).kind, 'unlinked')
+      assert.deepEqual(normalizeCodexNotification({ ...owner, terminal: true }, progressEnvelope),
+        { kind: 'ignored', reason: 'inactive_turn' })
   })
 })
