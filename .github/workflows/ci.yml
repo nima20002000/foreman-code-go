@@ -98,15 +98,19 @@ jobs:
             !**/node_modules/.cache
             !apps/web/node_modules/.tmp
           key: packages-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}
+      # The offline policy check reads the package metadata even on a packages hit, so it has its own small cache.
+      - id: metadata
+        uses: actions/cache@v4
+        with:
+          path: .logs/pnpm-metadata
+          key: pnpm-metadata-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}
       # A complete packages hit needs no store; a miss restores it so the offline install can fill packages.
       - id: store
         if: steps.packages.outputs.cache-hit != 'true'
         uses: actions/cache@v4
         with:
-          path: |
-            node_modules/.pnpm-store
-            .logs/pnpm-metadata
-          key: pnpm-store-metadata-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}
+          path: node_modules/.pnpm-store
+          key: pnpm-store-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}
       - name: Install from cached store
         run: |
           pnpm install --offline --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink || {
