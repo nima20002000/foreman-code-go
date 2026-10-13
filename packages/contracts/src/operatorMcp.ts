@@ -1,3 +1,4 @@
+export { mcpInputSchema } from './mcpInput.js'
 import { RunWorktreeSchema } from './runWorktrees.js'
 import { z } from 'zod'
 import {
