@@ -19,6 +19,7 @@ import { WorkspaceManagementService } from '../../src/modules/workspaces/managem
 import type { OperatorServices } from '../../src/mcp/operator/types.js'
 import { closeTestResources } from '../support/cleanup.js'
 import type { migratedDatabase } from './migratedDatabase.js'
+import { assertTestDatabase, requireTestServerUrl } from '../../../../scripts/test-resources.mjs'
 
 type WorkspaceFixtureServices = {
   pool: pg.Pool
@@ -41,11 +42,7 @@ export async function workspaceMcpFixture(options: {
 } = {}) {
   const connectionString = options.database?.databaseUrl ?? options.connectionString ?? process.env.TEST_DATABASE_URL
   if (!connectionString) throw new Error('A disposable test database is required')
-  const databaseUrl = new URL(connectionString)
-  if (!['localhost', '127.0.0.1', '[::1]'].includes(databaseUrl.hostname)
-    || !databaseUrl.pathname.includes('test')) {
-    throw new Error('Use a disposable loopback test database')
-  }
+  const databaseUrl = requireTestServerUrl(connectionString)
   const schema = 'workspace_mcp_' + randomUUID().replaceAll('-', '')
   const parentPath = options.database?.directory ?? await mkdtemp(join(tmpdir(), 'workspace-mcp-'))
   const admin = new pg.Pool({ connectionString })
@@ -74,6 +71,12 @@ export async function workspaceMcpFixture(options: {
     ])
   }
   try {
+    await assertTestDatabase(admin, {
+      directory: process.env.FOREMAN_CODE_TEST_ROOT!,
+      token: process.env.FOREMAN_CODE_TEST_OWNER!,
+      name: decodeURIComponent(databaseUrl.pathname.slice(1)),
+      databaseUrl: connectionString,
+    })
     if (!options.database) {
       await createFixtureSchema(admin, schema)
       await applyApplicationMigrations(pool)
