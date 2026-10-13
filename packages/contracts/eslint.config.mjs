@@ -16,6 +16,8 @@ export default tseslint.config(
     // Graph protocol primitives have one definition, in src/wave25/graphPrimitives.ts.
     // protocol.ts only holds the event/snapshot envelopes built on them.
     files: ['**/*.ts'],
+    // The package entry re-exports protocol.ts wholesale (`export *`), which names no primitive.
+    ignores: ['src/wave25/index.ts'],
     rules: {
       'no-restricted-imports': ['error', { patterns: [{
         regex: '(^|/)wave25/protocol(\\.js)?$|^\\./protocol(\\.js)?$',
