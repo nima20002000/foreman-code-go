@@ -36,27 +36,29 @@ it('keeps pending native settlement retryable and rolls back the incomplete Run 
   }
 }, 60_000)
 
+describe('production remote review completion', () => {
+  const withRemoteReviewFixture = useRemoteReviewFixture()
+  it('finishes the last response and releases the idle retained reviewer before Run completion', async () => {
+    await withRemoteReviewFixture(async fixture => {
+      const active = await reviewInProgress(fixture)
+      await fixture.provider.releaseReview()
+      await deliveredReview(fixture, active.interaction.id)
+      await waitForRemoteReview(async () => {
+        await fixture.reconcile()
+        return fixture.executions(active.run.id)
+      }, executions => executions.every(execution => execution.state === 'completed'), 'completed workflow executions')
+      await fixture.reconcile()
+      const settled = await fixture.details(active.run.id)
+      expect(settled.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
+      expect(settled.cleanupPending).not.toBe(true)
+      expect(fixture.registry.snapshot().launches.filter(launch => active.owners.some(owner =>
+        owner.launchId === launch.launchId)).every(launch => launch.lifecycle !== 'active')).toBe(true)
+    })
+  }, 60_000)
+})
+
 describe.each(['graceful', 'expired-receipt'] as const)('production remote review after %s Main recovery', recovery => {
   const withRemoteReviewFixture = useRemoteReviewFixture()
-  if (recovery === 'graceful') {
-    it('finishes the last response and releases the idle retained reviewer before Run completion', async () => {
-      await withRemoteReviewFixture(async fixture => {
-        const active = await reviewInProgress(fixture)
-        await fixture.provider.releaseReview()
-        await deliveredReview(fixture, active.interaction.id)
-        await waitForRemoteReview(async () => {
-          await fixture.reconcile()
-          return fixture.executions(active.run.id)
-        }, executions => executions.every(execution => execution.state === 'completed'), 'completed workflow executions')
-        await fixture.reconcile()
-        const settled = await fixture.details(active.run.id)
-        expect(settled.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
-        expect(settled.cleanupPending).not.toBe(true)
-        expect(fixture.registry.snapshot().launches.filter(launch => active.owners.some(owner =>
-          owner.launchId === launch.launchId)).every(launch => launch.lifecycle !== 'active')).toBe(true)
-      })
-    }, 60_000)
-  }
   it('continues the original retained review with the Worker alive', async () => {
     await withRemoteReviewFixture(fixture => retainedReviewRecovery(fixture, recovery))
   }, 120_000)
