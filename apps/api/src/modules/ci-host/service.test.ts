@@ -59,6 +59,18 @@ function fixture(suite: 'lint' | 'integration' = 'lint') {
   return { create, pool, commands, endpoint, resolve, read: () => ({ record, logTail }) }
 }
 
+it('dispatches persisted tickets immediately when the service starts and keeps one timer', async () => {
+  const service = fixture().create()
+  const dispatch = vi.spyOn(service, 'dispatch').mockResolvedValue(undefined)
+  try {
+    service.start(60_000)
+    service.start(60_000)
+    expect(dispatch).toHaveBeenCalledTimes(1)
+  } finally {
+    await service.close()
+  }
+})
+
 function dispatchFixture(settlementError?: Error) {
   const f = fixture()
   const active = f.read().record

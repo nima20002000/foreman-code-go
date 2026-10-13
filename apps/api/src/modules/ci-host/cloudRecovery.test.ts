@@ -26,6 +26,7 @@ it.each([false, true])('reconciles an overdue quiet CircleCI ticket during statu
   f.advance(55 * 60_000)
   const cloud = restart ? f.reopen() : f.cloud
   await cloud.handle({ operation: 'status' })
+  await cloud.reconcile()
   expect(reads.mock.calls.some(([file, args]) => file === 'circleci' && args[0] === 'run' && args[1] === 'get')).toBe(true)
   // Reading while the provider is unavailable proves the status sweep persisted the terminal ticket.
   f.circle.lookupError = 'permission denied'
@@ -41,6 +42,7 @@ it('keeps an overdue CircleCI ticket running when reconciliation confirms active
   f.advance(55 * 60_000)
   const reads = vi.spyOn(f.ports, 'run')
   await f.cloud.handle({ operation: 'status' })
+  await f.cloud.reconcile()
   expect(reads.mock.calls.some(([file, args]) => file === 'circleci' && args[0] === 'job' && args[1] === 'get')).toBe(true)
   expect(await f.cloud.handle(readRequest(runId))).toMatchObject({ run: { state: 'running', finishedAt: null } })
   expect(f.circle.canceled).toEqual([])
@@ -56,7 +58,9 @@ it('does not reconcile overdue CircleCI work that is still making progress', asy
   f.circle.output = 'Tests are still progressing\n'
   await f.cloud.handle(readRequest(runId))
   const reads = vi.spyOn(f.ports, 'run')
-  await f.reopen().handle({ operation: 'status' })
+  const reopened = f.reopen()
+  await reopened.handle({ operation: 'status' })
+  await reopened.reconcile()
   expect(reads.mock.calls.some(([file, args]) => file === 'circleci' && args[0] === 'run' && args[1] === 'get')).toBe(false)
 })
 
@@ -302,6 +306,7 @@ it.each(['canceled', 'queued'] as const)('cancels GitHub attempts that become vi
   f.advance(4000)
   const reopened = f.reopen()
   await reopened.handle({ operation: 'status' })
+  await reopened.reconcile()
   expect(f.github.canceled).toEqual(expect.arrayContaining(['8', '9']))
   expect(await reopened.handle(readRequest(runId))).toMatchObject({ run: { state: outcome } })
 })

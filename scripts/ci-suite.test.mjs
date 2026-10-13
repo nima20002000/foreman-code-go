@@ -202,7 +202,7 @@ test('host preparation propagates a missing harness installation failure', t => 
   assert.equal(result.status, 9)
   assert.equal(calls.length, 2)
 })
-for (const suite of ['unit', 'unit-api', 'unit-web', 'unit-web-heavy', 'unit-other', 'integration']) {
+for (const suite of ['unit', 'unit-api', 'unit-other', 'integration']) {
   test(`${suite} prepares the host database and reuses installed harness CLIs`, t => {
     const { result, calls } = runSuite(t, suite, '', 'full', 'prepare')
     assert.equal(result.status, 0, result.stderr)
@@ -214,7 +214,7 @@ for (const suite of ['unit', 'unit-api', 'unit-web', 'unit-web-heavy', 'unit-oth
     assert.deepEqual(calls, [['pnpm', 'db:up']])
   })
 }
-for (const suite of ['unit-web', 'unit-web-heavy', 'unit-other']) {
+for (const suite of ['unit-other']) {
   test(`${suite} prepares its disposable database without installing harness CLIs`, t => {
     const { result, calls } = runSuite(t, suite, '', 'affected', 'prepare', false)
     assert.equal(result.status, 0, result.stderr)
@@ -226,6 +226,21 @@ for (const suite of ['unit-web', 'unit-web-heavy', 'unit-other']) {
     assert.equal(result.status, 1, result.stderr)
     assert.match(result.stdout, /Database unavailable/)
     assert.equal(calls.some(call => call[0] === 'scripts/ci-affected-run.mjs'), false)
+  })
+}
+for (const suite of ['unit-web', 'unit-web-heavy']) {
+  for (const action of ['start', 'prepare']) {
+    test(`${suite} ${action} needs no PostgreSQL or harness installation`, t => {
+      const { result, calls } = runSuite(t, suite, '', 'full', action, false)
+      assert.equal(result.status, 0, result.stderr)
+      assert.deepEqual(calls, [])
+    })
+  }
+  test(`${suite} runs affected browser tests independently of PostgreSQL`, t => {
+    const { result, calls } = runSuite(t, suite, '', 'affected', '', true,
+      { scope: 'affected', files: ['apps/web/src/example.test.tsx'], databaseFailure: true })
+    assert.equal(result.status, 0, result.stderr)
+    assert.ok(calls.some(call => call[0] === 'scripts/ci-affected-run.mjs'))
   })
 }
 for (const suite of ['install', 'lint-api', 'typecheck-other', 'build-api']) {
