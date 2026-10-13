@@ -120,7 +120,7 @@ export class SkillUsageService {
           workspaceId: input.workspaceId, workflowId: workflow.id,
           executionSemanticsVersion: 3, commandId: childCommandId(input.commandId, 'workflow', workflow.id),
           expectedRevision: workflow.revision, expectedWorkflowVersionId: workflow.versionId,
-          expectedAgentConfigurationVersionIds: pins, expectedLocationRevision: plan.locationRevision,
+          expectedAgentConfigurationVersionIds: pins,
           graph: workflow.graph,
         }) as { value: { currentVersionId: string } }
         result.workflows.push({ workflowId: workflow.id, workflowVersionId: saved.value.currentVersionId })
@@ -135,9 +135,9 @@ async function readUsage(client: pg.Pool | pg.ClientBase, workspaceId: string, s
   const head = (await client.query<{ head_version: string }>(
     'select head_version from workspace_skills where workspace_id=$1 and skill_id=$2', [workspaceId, skillId])).rows[0]?.head_version
   if (!head) throw new DomainError('SKILL_NOT_FOUND', 'The skill was not found in this workspace.', 404)
-  const location = (await client.query<{ location_revision: string }>(
-    'select location_revision from workspaces where id=$1', [workspaceId])).rows[0]
-  if (!location) throw new DomainError('WORKSPACE_NOT_FOUND', 'The workspace was not found.', 404)
+  const workspace = (await client.query<{ id: string }>(
+    'select id from workspaces where id=$1', [workspaceId])).rows[0]
+  if (!workspace) throw new DomainError('WORKSPACE_NOT_FOUND', 'The workspace was not found.', 404)
   const rows = (await client.query<AgentRow>(`select a.id,a.record,a.metadata_revision::text,c.record as configuration
     from agents a join agent_configuration_versions c on c.id=a.current_configuration_version_id and c.agent_id=a.id
     where a.workspace_id=$1 and a.archived_at is null order by a.id`, [workspaceId])).rows
@@ -169,7 +169,7 @@ async function readUsage(client: pg.Pool | pg.ClientBase, workspaceId: string, s
     return [{ id: row.id, name: graph.name, revision: Number(row.revision), versionId: row.current_version_id, graph,
       currentPins: Object.fromEntries(Object.keys(pins).map(id => [id, consumers.get(id) ?? pins[id]!])) }]
   })
-  return { head, outdated, workflows, locationRevision: Number(location.location_revision) }
+  return { head, outdated, workflows }
 }
 
 function failure(kind: 'agent' | 'workflow', id: string, error: unknown) {
