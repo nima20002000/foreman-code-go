@@ -126,7 +126,7 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
       graphqlTools: ['context_get' as const, 'ci_run' as const, 'ci_get' as const, 'ci_logs_read' as const,
         'ci_computers_list' as const] }))
   }
-  const runtime = saved ? await codexApprovalRuntime('user', { fixture: saved }) : undefined
+  const runtime = saved ? await codexApprovalRuntime('user', { fixture: saved, database }) : undefined
   const db = runtime?.db ?? database
   const access = runtime?.access ?? new PostgresAccessService(db.pool)
   const workspaceId = runtime?.f.scope.workspaceId ?? randomUUID()
