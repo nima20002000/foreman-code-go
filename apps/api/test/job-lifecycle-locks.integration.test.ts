@@ -13,6 +13,7 @@ import type { JobService } from '../src/modules/jobs/service.js'
 import { projectJobReceiptLocked } from '../src/modules/jobs/receiptProjection.js'
 import { JobOwnership } from '../src/modules/jobs/ownership.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
+import { checkpointOwnerMigration } from '../src/infrastructure/checkpointOwnerMigration.js'
 import { readAcceptedRepeatRunLocked } from '../src/modules/runs/repeatStartRead.js'
 import type { RepeatRepositoryHost } from '../src/modules/runs/repeatPostgres.js'
 import { assertGraphTransaction } from '../src/modules/run-graph/connection.js'
@@ -47,6 +48,7 @@ describe.skipIf(process.env.JOB_LIFECYCLE_POSTGRES !== '1' && !process.env.TEST_
         create table run_repeat_slots(slot_id text primary key,input_digest text,input_json text);
         create table run_repeat_executions(execution_id text,run_id text,slot_id text,technical_attempt int,identity jsonb);
       `)
+      await pool.query(checkpointOwnerMigration.sql)
       const base = makeCurrentWorkflowFixture(randomUUID()), execution = jobExecution()
       const node = { kind: 'job' as const, id: 'build', name: 'Build', jobDefinitionId: execution.acceptedSpec.definitionId,
         jobDefinitionRevision: 1, jobDefinitionVersionId: execution.acceptedSpec.definitionVersionId }
@@ -95,6 +97,13 @@ describe.skipIf(process.env.JOB_LIFECYCLE_POSTGRES !== '1' && !process.env.TEST_
       })
       runOwner = await RunOwnership.acquire(pool, run.id, () => {})
       if (!runOwner) throw new Error('Missing Run owner')
+      expect(runOwner.checkpointGeneration).toBe('1')
+      const competingOwner = await RunOwnership.acquire(pool, run.id, () => {})
+      try {
+        expect(competingOwner).toBeUndefined()
+      } finally {
+        await competingOwner?.release()
+      }
       const runLocked = deferred(), readJob = deferred(), jobRequested = deferred()
       const repository = new JobRepository()
       const composition = createWorkflowJobComposition({ jobs: { repository } as JobService, dispatch,

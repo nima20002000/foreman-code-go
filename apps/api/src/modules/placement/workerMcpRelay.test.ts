@@ -1,6 +1,5 @@
-import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { randomUUID } from 'node:crypto'
+import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Socket } from 'node:net'
 import type pg from 'pg'
@@ -13,6 +12,7 @@ import { isAuthorized } from '../access/policy.js'
 import { createWorkerMcpEndpoint } from '../runs/remote/workerMcpEndpoint.js'
 import { prepareWorkerApplicationAccess } from '../runs/remote/workerApplicationAccess.js'
 import { encodeWorkerMcpResult, decodeWorkerMcpResult, WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
+import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { rejectableDeferred } from '../../../test/helpers/deferred.js'
 
 const ports = vi.hoisted(() => ({ intent: vi.fn(), placement: vi.fn(), host: vi.fn(), owner: vi.fn() }))
@@ -89,7 +89,7 @@ describe('Main worker MCP relay with original binding doubles and real worker sc
 
   it('keeps the original authenticated worker endpoint through Main restart and owner reconciliation', async () => {
     const f = fixture()
-    const root = await mkdtemp(join(tmpdir(), 'worker-mcp-restart-'))
+    const root = await privateFixtureDirectory('worker-mcp-restart-')
     let intent = f.request.intent
     let selectedMain = f.relay
     let main = Fastify()
@@ -113,8 +113,7 @@ describe('Main worker MCP relay with original binding doubles and real worker sc
       const environment = relay.environment
       endpoint = await createWorkerMcpEndpoint({ relay, launcher: join(root, 'graphql-mcp.mjs'),
         signal: new AbortController().signal })
-      const route = join(root, 'routes', `${createHash('sha256').update(f.request.applicationAccess.token).digest('hex')}.json`)
-      const originalRoute = JSON.parse(await readFile(route, 'utf8'))
+      const originalEndpoint = endpoint.endpoint
       const requestWorker = (token = f.request.applicationAccess.token) => fetch(endpoint!.endpoint, {
         method: 'POST', headers: { authorization: `Bearer ${token}` },
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
@@ -135,7 +134,10 @@ describe('Main worker MCP relay with original binding doubles and real worker sc
       expect(await recovered.json()).toMatchObject({ result: { tools: [] } })
       expect(relay.environment).toBe(environment)
       expect(environment.variables.GRAPHQL_MCP_TOKEN).toBe(f.request.applicationAccess.token)
-      expect(JSON.parse(await readFile(route, 'utf8'))).toEqual(originalRoute)
+      expect(endpoint.endpoint).toBe(originalEndpoint)
+      const repeated = await requestWorker()
+      expect(repeated.status).toBe(200)
+      expect(await repeated.json()).toMatchObject({ result: { tools: [] } })
 
       f.forward.mockClear()
       expect((await requestWorker('foreign-worker-token')).status).toBe(401)
