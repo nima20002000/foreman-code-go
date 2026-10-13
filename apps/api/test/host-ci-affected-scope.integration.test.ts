@@ -255,7 +255,7 @@ it('retains an Agent ticket for an authorized Operator after the Agent runtime c
     const read = CiGetOutputSchema.parse(await operator.value(reader, 'ci_get', input))
     expect(read.run).toEqual(completed.run)
     expect(read.logTail).toBe('install passed\n')
-    const stored = await database.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
+    const stored = await operator.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
       [read.run.id])
     expect(stored.rows[0]?.record).toEqual(read.run)
   } finally { await operator.close() }

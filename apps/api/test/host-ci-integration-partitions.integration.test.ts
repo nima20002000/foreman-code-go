@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import { CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema, integrationPartition } from '@foreman-code/contracts'
 import { expect, it } from 'vitest'
 import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
