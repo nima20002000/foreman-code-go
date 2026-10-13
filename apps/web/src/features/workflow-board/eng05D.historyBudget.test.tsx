@@ -2,6 +2,7 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it } from 'vitest'
+import { HttpResponse } from 'msw'
 import { RunActivitySchema } from '@foreman-code/contracts'
 import { CurrentRunDetailsSchema, RunExecutionDetailSchema } from '@foreman-code/contracts/wave25'
 import { currentRunKey } from './currentRunQuery'
@@ -45,7 +46,57 @@ function totals(samples: readonly { responseBytes: number }[]) {
   return { requests: samples.length, bytes: samples.reduce((sum, sample) => sum + sample.responseBytes, 0) }
 }
 
-describe('ENG05-D mounted Board bounded-history wire budgets', () => {
+describe('mounted Board bounded-history wire budgets', () => {
+  it('preserves loaded history while recovering a failed current read', async () => {
+    await seedLongHistory()
+    const scope = fixture.runs.before.scope
+    let restarting = false
+    const wire = measureBoardWire(fixture.mock, (request) => {
+      if (restarting && isCurrentRequest(request)) {
+        return HttpResponse.json({ error: { code: 'TEMPORARILY_UNAVAILABLE', message: 'Restarting' } },
+          { status: 503 })
+      }
+      return undefined
+    })
+    const user = userEvent.setup()
+    const { cache } = await mountMeasuredBoard(boardHref(scope))
+    const inspector = await openRunDetails()
+    await waitFor(() => expect(within(inspector).getAllByRole('listitem')).toHaveLength(25))
+    await user.click(within(inspector).getByRole('button', { name: 'Load more executions' }))
+    await waitFor(() => expect(within(inspector).getAllByRole('listitem')).toHaveLength(50))
+    const history = screen.getByText('Run activity history').closest('details')!
+    fireEvent.click(within(history).getByText('Run activity history'))
+    await waitFor(() => expect(within(history).getAllByRole('listitem')).toHaveLength(50))
+    await user.click(within(history).getByRole('button', { name: 'Load more activity' }))
+    await waitFor(() => expect(within(history).getAllByRole('listitem')).toHaveLength(100))
+    await user.click(screen.getByRole('button', { name: 'Load more Runs' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Load more Runs' })).toBeEnabled())
+    await waitFor(() => expect(cache.isFetching()).toBe(0))
+    expect(wire.executions()).toHaveLength(2)
+    expect(wire.activity()).toHaveLength(2)
+    expect(wire.runLists()).toHaveLength(2)
+
+    restarting = true
+    await act(async () => { await cache.invalidateQueries({ queryKey: currentRunKey(scope), exact: true }) })
+    expect(await screen.findByRole('alert', { name: 'Server connection' }))
+      .toHaveTextContent('Updating — reconnecting…')
+    const currentBefore = wire.current().length
+    restarting = false
+    await intervalTick(1000)
+    await waitFor(() => expect(cache.getQueryState(currentRunKey(scope)))
+      .toMatchObject({ status: 'success', fetchStatus: 'idle' }))
+    await waitFor(() => expect(screen.queryByRole('alert', { name: 'Server connection' }))
+      .not.toBeInTheDocument())
+    await waitFor(() => expect(cache.isFetching()).toBe(0))
+    expect(wire.current().length).toBeGreaterThan(currentBefore)
+    expect(wire.executions()).toHaveLength(2)
+    expect(wire.activity()).toHaveLength(2)
+    expect(wire.runLists()).toHaveLength(2)
+    expect(within(inspector).getAllByRole('listitem')).toHaveLength(50)
+    expect(within(history).getAllByRole('listitem')).toHaveLength(100)
+    expect(wire.writes()).toHaveLength(0)
+  }, 30_000)
+
   it('keeps five loaded page windows off the current polling path and refreshes each from one bounded first page', async () => {
     await seedLongHistory()
     const scope = fixture.runs.before.scope
