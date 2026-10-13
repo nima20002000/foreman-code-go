@@ -32,6 +32,20 @@ import { resolveBoundRootPlacement, resolveLocalMainPlacement, resolveWorkflowRo
 import { bindGeneratedWorktreeRun, generatedWorktreePrefix } from '../sources/worktreeRequest.js'
 import { SourceRootRecordSchema, type SourceRootRecord } from '@foreman-code/contracts/source-admission'
 
+function refreshSourcePlacement(
+  saved: SavedNodePlacement, roots: ReadonlyMap<string, SourceRootRecord>,
+): SavedNodePlacement {
+  const reference = saved.rootBinding
+  if (!reference) return saved
+  const root = roots.get(`${reference.rootId}:${reference.bindingRevision}`)
+  if (!root) return saved
+  return {
+    ...saved,
+    source: root.source,
+    rootBinding: { rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision },
+  }
+}
+
 /** Installed main-owned producer: saved immutable versions and W09/W07/HRT
  * authorities supply every pin. No request/Board JSON becomes a runtime grant. */
 export class AgentPlacementProducer implements RunPlacementAdmissionPort {
@@ -101,14 +115,6 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     }) : []
     signal?.throwIfAborted()
     const roots = new Map([...initial.selected.keys()].map((key, index) => [key, refreshed[index]!]))
-    const refreshPlacement = (saved: SavedNodePlacement): SavedNodePlacement => {
-      const reference = saved.rootBinding
-      if (!reference) return saved
-      const root = roots.get(`${reference.rootId}:${reference.bindingRevision}`)
-      if (!root) return saved
-      return { ...saved, source: root.source,
-        rootBinding: { rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision } }
-    }
     return withExclusiveGraphConnection(this.pool, connection => connection.transaction(async sql => {
       signal?.throwIfAborted()
       if (signal) beforeGraphCommit(sql, async () => signal.throwIfAborted())
@@ -129,18 +135,18 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         const context = { sql, principal, configuration, mainId: this.mainId, workspaceId: input.workspaceId,
           roots: this.roots, installations: this.registry.installations, qualificationSuites: this.qualificationSuites }
         if (initial.inheritedRoot) {
-          return refreshPlacement(await resolveBoundRootPlacement({ ...context, root: initial.inheritedRoot }))
+          return refreshSourcePlacement(await resolveBoundRootPlacement({ ...context, root: initial.inheritedRoot }), roots)
         }
-        return refreshPlacement(await resolveLocalMainPlacement(context))
+        return refreshSourcePlacement(await resolveLocalMainPlacement(context), roots)
       }
       const resolveInherited = async (sql: GraphTransactionSql, principal: ManagementPrincipal,
         configuration: AgentConfigurationVersion) => {
         if (!version.definition.defaultWorktree) return resolveMain(sql, principal, configuration)
         const root = await resolveWorkflowRootBinding({ sql, principal, workspaceId: input.workspaceId,
           reference: version.definition.defaultWorktree.rootBinding, sources: this.sources })
-        return refreshPlacement(await resolveBoundRootPlacement({ sql, principal, configuration, root, mainId: this.mainId,
+        return refreshSourcePlacement(await resolveBoundRootPlacement({ sql, principal, configuration, root, mainId: this.mainId,
           workspaceId: input.workspaceId, roots: this.roots, installations: this.registry.installations,
-          qualificationSuites: this.qualificationSuites }))
+          qualificationSuites: this.qualificationSuites }), roots)
       }
       const prepared: { pins: Omit<AcceptedNodePlacement, 'runId' | 'bindingHash'>; selection: RegistryHarnessSelection;
         saved: SavedNodePlacement; configuration: AgentConfigurationVersion; implicit: boolean;
@@ -152,7 +158,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         const configRow = (await sql.query<{ record: unknown }>('select record from agent_configuration_versions where id=$1 and workspace_id=$2 and agent_id=$3',
           [version.agentConfigurationVersionIds[node.agentId], input.workspaceId, node.agentId])).rows[0]
         const config = AgentConfigurationVersionSchema.parse(configRow?.record)
-        const saved = node.placement ? refreshPlacement(node.placement) : await resolveInherited(sql, principal, config)
+        const saved = node.placement ? refreshSourcePlacement(node.placement, roots) : await resolveInherited(sql, principal, config)
         this.assertProfileReady?.(saved.hostRef)
         if (saved) this.workerExecution.requireEnabled(saved.hostRef)
         if (saved && (saved.relativeCwd.length > 1024 || saved.relativeCwd.includes('\0') || posix.isAbsolute(saved.relativeCwd)
