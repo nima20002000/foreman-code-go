@@ -2,7 +2,7 @@ import { isDatabaseTimeout } from '../../infrastructure/databaseTimeout.js'
 import { WORKER_CREDENTIAL_EXPIRY_MARGIN_MS, WORKER_CREDENTIAL_RENEWAL_WINDOW_MS } from '../access/workerCredentials.js'
 import { DomainError } from '../errors.js'
 
-function isTransientRefreshFailure(error: unknown): boolean {
+export function isTransientRefreshFailure(error: unknown): boolean {
   if (isDatabaseTimeout(error)) return true
   if (error instanceof DomainError) {
     if (error.code === 'DATABASE_READ_TIMEOUT') return false
@@ -25,6 +25,7 @@ function isTransientRefreshFailure(error: unknown): boolean {
 /** Renew even when a native event iterator is silent. No token leaves its owner. */
 export function maintainCredential(input: {
   expiresAt(): string | undefined
+  remainingMs?(): number
   check?(): Promise<void>
   refresh(): Promise<void>
   signal: AbortSignal
@@ -35,6 +36,11 @@ export function maintainCredential(input: {
   let deadline: ReturnType<typeof setTimeout> | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
   let retryMs = 1_000
+  const remainingLifetime = () => {
+    if (input.remainingMs) return input.remainingMs()
+    const expiry = input.expiresAt()
+    return expiry ? Date.parse(expiry) - Date.now() : NaN
+  }
   const fail = (error: unknown) => {
     if (stopped || input.signal.aborted) return
     stopTimers()
@@ -48,8 +54,7 @@ export function maintainCredential(input: {
   }
   const schedule = (backoffMs?: number) => {
     if (stopped || input.signal.aborted) return
-    const expiry = input.expiresAt()
-    const remaining = expiry ? Date.parse(expiry) - Date.now() : NaN
+    const remaining = remainingLifetime()
     if (!Number.isFinite(remaining) || remaining <= WORKER_CREDENTIAL_EXPIRY_MARGIN_MS) {
       fail(new Error('The native credential could not be renewed before its safety deadline.'))
       return
@@ -67,7 +72,7 @@ export function maintainCredential(input: {
     if (stopped || input.signal.aborted) return
     const expiry = input.expiresAt()
     if (!expiry) { fail(new Error('The native process lost its credential lease.')); return }
-    const remaining = Date.parse(expiry) - Date.now()
+    const remaining = remainingLifetime()
     if (!Number.isFinite(remaining) || remaining <= WORKER_CREDENTIAL_EXPIRY_MARGIN_MS) {
       fail(new Error('The native credential could not be renewed before its safety deadline.')); return
     }
@@ -76,8 +81,7 @@ export function maintainCredential(input: {
       return input.check?.()
     }).then(() => {
       if (stopped || input.signal.aborted) return
-      const expiry = input.expiresAt()
-      if (expiry && Date.parse(expiry) <= Date.now() + WORKER_CREDENTIAL_RENEWAL_WINDOW_MS) {
+      if (remainingLifetime() <= WORKER_CREDENTIAL_RENEWAL_WINDOW_MS) {
         return input.refresh()
       }
     }).then(() => {

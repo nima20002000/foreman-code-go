@@ -8,6 +8,7 @@ import { ChatMessageFiles } from '../ChatMessageFiles'
 import { ChatDecisionReceipts } from '../ChatDecisionReceipts'
 import { OperatorApprovalCard } from '../../operator-chat/OperatorApprovalCard'
 import { ConversationViewport } from '../ConversationViewport'
+import { HistoryWindowNotice } from '../HistoryWindowNotice'
 import { RunTranscript } from './RunTranscript'
 import { useExecutionActivity } from './executionActivity'
 import { AgentChatMessage } from './AgentChatMessage'
@@ -95,6 +96,8 @@ export function AgentChatTranscript({
     </>
   }
   return <ConversationViewport revision={revision}>{onBrowse => <>
+    {history.hasGap ? <HistoryWindowNotice pending={history.isFetching}
+      onReload={() => { onBrowse(); void history.reloadNearer() }} /> : null}
     {id && (state.hasEarlierMessages && !history.data || history.hasNextPage) ? <Button size="sm" variant="ghost"
       disabled={history.isFetching} onClick={() => { onBrowse(); void history.fetchNextPage() }}>Load earlier messages</Button> : null}
     {history.isError ? <p role="alert">History unavailable. <Button size="sm" disabled={history.isFetching}

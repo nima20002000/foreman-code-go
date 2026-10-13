@@ -257,7 +257,14 @@ export function useAgentChat(inputContext: AgentChatContext) {
       nativeRequestId: state.pendingInteraction!.turn.nativeRequestId!, optionId,
       ...(response !== undefined ? { response } : {}) }))
   }
-  return { state, query, history, access, canRead, denial, online, pending, connection, commands, latestCommand, latestReceipt, currentReceipt, confirmedReceipt, localError, blocked,
+  return { state, query, history: {
+    ...history,
+    hasGap: !!history.data && history.data.pageParams[0] !== undefined,
+    reloadNearer: async () => {
+      await client.resetQueries({ queryKey: historyKey, exact: true })
+      await history.fetchNextPage()
+    },
+  }, access, canRead, denial, online, pending, connection, commands, latestCommand, latestReceipt, currentReceipt, confirmedReceipt, localError, blocked,
     send, stop, cancelQueued, respond, refresh, draftKey }
 }
 

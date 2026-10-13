@@ -1,4 +1,4 @@
-import { RemoteExecutionRpcRequestSchema, REMOTE_EXECUTION_EXTENSION } from '@foreman-code/contracts/remote-execution-rpc'
+import { RemoteExecutionRpcRequestSchema, REMOTE_EXECUTION_EXTENSION, REMOTE_PREPARATION_EXTENSION } from '@foreman-code/contracts/remote-execution-rpc'
 import { RemoteOperationReceiptSchema, type RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import { DeviceConnectionIdentitySchema, type DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import { WorkspaceRootWorkerRequestSchema, WORKSPACE_ROOT_EXTENSION } from '@foreman-code/contracts/workspace-root-policies'
@@ -17,6 +17,7 @@ import type { AcceptedExecutionBinding } from './nativeComposition.js'
  * is not enough to bind native responses to their originating connection. */
 export interface AuthenticatedWorkerChannel {
   identity: DeviceConnectionIdentity
+  supports?(namespace: string): boolean
   request(namespace: string, payload: unknown, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<{ payload: unknown; bytes?: Uint8Array }>
 }
 export interface MainWorkerCarrier { capture(deviceId: string): AuthenticatedWorkerChannel }
@@ -28,7 +29,7 @@ function selected(carrier: MainWorkerCarrier, host: { kind: 'main' | 'device'; m
     || identity.keyRevision !== registration.keyRevision || identity.authorizationRevision !== registration.authorizationRevision) {
     throw new DomainError('REMOTE_CONNECTION_CONFLICT', 'The authenticated carrier does not match the accepted device registration.', 409)
   }
-  return { identity, request: connection.request.bind(connection) }
+  return { identity, request: connection.request.bind(connection), supports: connection.supports?.bind(connection) }
 }
 export function rootWorkerCarrier(carrier: MainWorkerCarrier): RootWorkerClient {
   return { async request(host, registration, raw) {
@@ -82,11 +83,17 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
         throw new DomainError('REMOTE_BINDING_CONFLICT', 'Native request cannot change its accepted operation or placement.', 409)
       }
       const connection = selected(options.carrier, binding.placement.hostRef, binding.placement.registration)
+      const continuesSession = request.method === 'prepare' && request.sessionContinuation !== undefined
+      const namespace = continuesSession ? REMOTE_PREPARATION_EXTENSION.namespace : REMOTE_EXECUTION_EXTENSION
+      if (continuesSession && !connection.supports?.(namespace)) {
+        throw new DomainError('REMOTE_EXECUTION_INCOMPATIBLE',
+          'Update the connected computer before continuing this workflow session.', 409)
+      }
       if (['prepare', 'capabilities', 'inspect-mcp'].includes(method)) await options.beforePrepare(request.intent, request.placement, connection.identity)
       const preparesNative = ['prepare', 'reattach', 'capabilities', 'inspect-mcp'].includes(method)
       const requestOptions = { ...(signal ? { signal } : {}),
         ...(preparesNative && options.preparationTimeoutMs ? { timeoutMs: options.preparationTimeoutMs } : {}) }
-      const result = await connection.request(REMOTE_EXECUTION_EXTENSION, request, requestOptions)
+      const result = await connection.request(namespace, request, requestOptions)
       if (result.bytes !== undefined) throw new DomainError('REMOTE_NATIVE_RESPONSE_INVALID', 'Native metadata responses cannot contain arbitrary bytes.', 409)
       const response = await readRemoteReceiptResponse(result.payload, request.intent, async continuation => {
         const next = await connection.request(REMOTE_EXECUTION_EXTENSION, {

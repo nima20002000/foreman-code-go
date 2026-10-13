@@ -9,7 +9,7 @@ import * as contracts from '@foreman-code/contracts/management'
 import pg from 'pg'
 import type { z } from 'zod'
 
-import { buildApp } from '../../src/app.js'
+import { buildApp, type BuildAppOptions } from '../../src/app.js'
 import { applyApplicationMigrations } from '../../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
@@ -30,6 +30,7 @@ type WorkspaceFixtureServices = {
 export async function workspaceMcpFixture(options: {
   connectionString?: string
   port?: number
+  runtimeIdentity?: BuildAppOptions['runtimeIdentity']
   configureServices?(fixture: WorkspaceFixtureServices): Promise<void>
   configure?(fixture: WorkspaceFixtureServices & {
     app: ReturnType<typeof buildApp>
@@ -72,7 +73,7 @@ export async function workspaceMcpFixture(options: {
     await options.configureServices?.({ pool, access, commands, parentPath, services })
     app = buildApp({ logger: false, readiness: {
       database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined },
-    }, operator: { access, services } })
+    }, operator: { access, services }, ...(options.runtimeIdentity ? { runtimeIdentity: options.runtimeIdentity } : {}) })
     await options.configure?.({ app, pool, access, commands, parentPath, services })
     const address = await app.listen({ host: '127.0.0.1', port: options.port ?? 0 })
     async function connect(token: string) {

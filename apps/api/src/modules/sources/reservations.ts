@@ -16,6 +16,7 @@ export { SOURCE_AGGREGATE_LIMITS } from './storageCapacity.js'
 export type SourceReservation = { reservationId: string; scopeId: string; ownerKind: 'capture' | 'transfer' | 'materialization'; ownerId: string; reservedBytes: number;
   preparation?: SourceOperationOwner; reclamation?: SourceReservationReclamation;
   storageCapacity?: SourceStorageCapacity;
+  preparationClosure?: SourcePreparationClosure;
   referenceReclaimed?: true;
   retainedSharedTree?: { id: string; bytes: number } }
 export async function requireUnreclaimedSourceOperation(sql: GraphSqlClient, operationId: string): Promise<void> {

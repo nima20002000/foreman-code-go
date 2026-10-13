@@ -1,5 +1,6 @@
+import { activeRunCandidates } from '@foreman-code/contracts/run-snapshots'
 import { useCallback, useEffect, useMemo, useRef, type ReactNode, type SyntheticEvent } from 'react'
-import { useLocation } from '@tanstack/react-router'
+import { useLocation, useRouter } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import type { WorkflowRunSummary } from '@foreman-code/contracts'
 import type { RepeatGraphScopeV3, WorkspaceBoardInspection } from '@foreman-code/contracts/wave25'
@@ -12,21 +13,38 @@ import { CurrentRunObserver } from './CurrentRunObserver'
 import { WorkflowBoardContext } from './context'
 import { boardLiveRunSnapshotKey } from './keys'
 import { RunActivityPanel } from './RunActivityPanel'
-import { isActiveRun, shortRunId } from './runFacts'
+import { shortRunId } from './runFacts'
 import { useInspectionPresentation } from './inspect/presentation'
 import './workflowBoard.css'
 
-const LISTED_ACTIVE = new Set(['queued', 'running', 'waiting', 'interrupted'])
-
 /** This component is keyed by workspace/workflow only, NEVER by selected Run. */
-export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, selectRun, inspection, selectInspection, summaries, children, selectedAgentId, selectDraftAgent }: {
+export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, selectRun, inspection, selectInspection, summaries, summariesReadAt, children, selectedAgentId, selectDraftAgent }: {
   workspaceId: string; workflowId: string; run?: RepeatGraphScopeV3
   selectedAgentId?: string; selectDraftAgent?(agentId?: string): void
   inspection: WorkspaceBoardInspection; selectInspection(inspection: WorkspaceBoardInspection): void
-  selectRun(scope?: RepeatGraphScopeV3): void; summaries: readonly WorkflowRunSummary[]; children: ReactNode
+  selectRun(scope?: RepeatGraphScopeV3): void; summaries: readonly WorkflowRunSummary[]; summariesReadAt?: number; children: ReactNode
 }) {
   const location = useLocation()
+  const router = useRouter()
+  const selection = useRef({ location: router.history.location, generation: 0 })
+  const getSelectionToken = useCallback(() => {
+    if (selection.current.location !== router.history.location) {
+      selection.current.location = router.history.location
+      selection.current.generation++
+    }
+    return selection.current.generation
+  }, [router])
+  const chooseRun = useCallback((scope?: RepeatGraphScopeV3) => {
+    selection.current.generation++
+    selectRun(scope)
+  }, [selectRun])
   const selectedRun = useSelectedRun({ workspaceId, workflowId })
+  const navigationSelection = useMemo(() => ({ ...selectedRun,
+    selectRun: (runId: string | null) => {
+      selection.current.generation++
+      return selectedRun.selectRun(runId)
+    },
+  }), [selectedRun])
   // Canonical and legacy Run links share the pinned canvas and retained editor.
   const legacyRun = requestedRun?.workspaceId === workspaceId && requestedRun.workflowId === workflowId
     && !location.search.selectedRunId ? requestedRun : undefined
@@ -48,12 +66,13 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
   // Workspace details are a large, rarely refreshed read; the per-workflow Run list is
   // small and polled, so a Run started elsewhere takes over without waiting for details.
   const autoLive = !requestedRun && !pickedRunId && !location.pathname.includes('/runs/')
-  const listed = useRunSummaries({ workspaceId, workflowId }, autoLive).items
-  const liveId = autoLive ? [
-    ...summaries.filter((item) => item.workspaceId === workspaceId && item.workflowId === workflowId && isActiveRun(item)),
-    ...listed.filter((item) => LISTED_ACTIVE.has(item.status)).map((item) => ({ id: item.runId, startedAt: item.startedAt })),
-  ].filter((item) => !dismissed.current.has(item.id)).sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''))[0]?.id
-    : undefined
+  const listed = useRunSummaries({ workspaceId, workflowId }, autoLive)
+  const candidates = activeRunCandidates(
+    summaries.filter(item => item.workspaceId === workspaceId && item.workflowId === workflowId), listed.items,
+  )
+  // Wait for the first workflow read so an older workspace projection cannot select a completed Run.
+  const liveId = autoLive && listed.isSuccess ? candidates.filter(item => !dismissed.current.has(item.id))
+    .sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''))[0]?.id : undefined
   const liveSnapshot = useQuery({ queryKey: boardLiveRunSnapshotKey(workspaceId, workflowId, liveId),
     queryFn: ({ signal }) => runsSelectorApi.snapshot({ workspaceId, workflowId, runId: liveId! }, { signal }),
     enabled: Boolean(liveId), staleTime: Infinity }).data?.snapshot
@@ -104,13 +123,13 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
     window.addEventListener('keydown', shortcut, true)
     return () => window.removeEventListener('keydown', shortcut, true)
   }, [])
-  const activeRuns = summaries.filter((item) => item.workspaceId === workspaceId && item.workflowId === workflowId && isActiveRun(item)).length
+  const activeRuns = candidates.length
   // History is rendered only by RunBoardSlot. Do not feed legacy Run pins to the
   // hidden editor/SelectedRunCanvas, or fabricate missing version/semantics pins.
-  const value = useMemo(() => ({ workspaceId, workflowId, run: legacyRun, selectRun, inspection, selectInspection, selectedAgentId, selectDraftAgent,
+  const value = useMemo(() => ({ workspaceId, workflowId, run: legacyRun, selectRun: chooseRun, getSelectionToken, inspection, selectInspection, selectedAgentId, selectDraftAgent,
     openLocation: () => setLocationOpen(true), openRuns: () => setRunsOpen(true), activeRuns, authoringActive: current,
-    navigationControls: current ? <BoardNavigationControls workspaceId={workspaceId} workflowId={workflowId} selection={selectedRun} /> : undefined,
-  }), [workspaceId, workflowId, legacyRun, selectRun, inspection, selectInspection, selectedAgentId, selectDraftAgent, activeRuns, setRunsOpen, setLocationOpen, selectedRun, current])
+    navigationControls: current ? <BoardNavigationControls workspaceId={workspaceId} workflowId={workflowId} selection={navigationSelection} /> : undefined,
+  }), [workspaceId, workflowId, legacyRun, chooseRun, getSelectionToken, inspection, selectInspection, selectedAgentId, selectDraftAgent, activeRuns, setRunsOpen, setLocationOpen, navigationSelection, current])
   const authoringEvent = (event: SyntheticEvent) => {
     // React capture also covers descendants portalled outside the inert subtree.
     if (!currentRef.current) { event.preventDefault(); event.stopPropagation() }
@@ -119,7 +138,7 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
     <div ref={toolbar} className="unified-workflow-board" data-testid="unified-workflow-board" style={{ flexDirection: 'column' }}>
       {!current ? <header className="board-topbar" aria-label="Board toolbar"
         style={{ position: 'static', flex: '0 0 auto', flexWrap: 'wrap', justifyContent: 'flex-end', padding: 'var(--space-2)', boxSizing: 'border-box', minWidth: 0 }}>
-        <BoardNavigationControls workspaceId={workspaceId} workflowId={workflowId} selection={selectedRun} />
+        <BoardNavigationControls workspaceId={workspaceId} workflowId={workflowId} selection={navigationSelection} />
       </header> : null}
       <RunBoardSlot selection={boardSelection}>
         <div className="workflow-board-authoring" onClickCapture={authoringEvent} onKeyDownCapture={authoringEvent} onSubmitCapture={authoringEvent}>
@@ -130,7 +149,7 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
           </div> : null}
           <Drawer open={current && runsOpen} onOpenChange={setRunsOpen} title="Activities" className="workflow-board-runs-dialog"
             closeLabel="Close runs" size="lg" closeOnOutsideClick>
-            {current ? <RunActivityPanel summaries={summaries} /> : null}
+            {current ? <RunActivityPanel summaries={summaries} summariesReadAt={summariesReadAt} /> : null}
           </Drawer>
           <Dialog open={current && locationOpen} onOpenChange={setLocationOpen} title="Execution folder" closeLabel="Close execution folder"
             description="Where agents work on files. It applies to future runs; runs already started keep their folder.">

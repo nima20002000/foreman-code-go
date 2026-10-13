@@ -9,6 +9,7 @@ import { RepeatExecutionIdentityV1Schema, RepeatOccurrenceIdentityV1Schema, Repe
 import { WorkflowRunV3Schema, WorkflowVersionV3Schema } from './saved.js'
 import { canonicalGraphJson } from './json.js'
 import { WorkActivationInputSchema } from './handoffs.js'
+import { IntervalCheckAcceptedInputSchema } from './intervalAcceptedInput.js'
 
 /** Private, authenticated inspection. These bodies NEVER enter graph snapshots/deltas. */
 export const RUN_INSPECTION_TOOLS = {
@@ -101,6 +102,7 @@ const RepeatInspectionInputSchema = z.object({
 }).strict()
 export const RunAcceptedInputValueSchema = z.union([
   RepeatInspectionInputSchema,
+  IntervalCheckAcceptedInputSchema,
   WorkActivationInputSchema.safeExtend({ runInput: RunInputSchema }),
 ]).superRefine((value, context) => {
   try { canonicalGraphJson(value, RUN_INSPECTION_LIMITS.inputBytes) }

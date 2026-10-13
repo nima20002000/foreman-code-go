@@ -106,7 +106,7 @@ export const CiHostRequestSchema = z.discriminatedUnion('operation', [
   // `durations: true` asks a finished test run for the file durations it measured, `testResults: true` for its
   // test results. Results are opt-in so a Worker never sends them to a Main whose reply schema predates them.
   z.object({ operation: z.literal('read'), runId: CiHostRunIdSchema, afterOffset: z.number().int().nonnegative(),
-    maxBytes: z.number().int().min(1).max(CI_LOG_MAX_BYTES), durations: z.boolean().optional(), testResults: z.boolean().optional() }).strict(),
+    maxBytes: z.number().int().nonnegative().max(CI_LOG_MAX_BYTES), durations: z.boolean().optional(), testResults: z.boolean().optional() }).strict(),
   z.object({ operation: z.literal('cancel'), runId: CiHostRunIdSchema }).strict(),
 ])
 export type CiHostRequest = z.infer<typeof CiHostRequestSchema>

@@ -1,3 +1,4 @@
+import { installationHeaders, reloadChangedInstallation } from './sessionBoundary'
 import {
   CurrentWorkspaceDetailsSchema, CurrentGetWorkflowResponseSchema, CurrentRunDetailsSchema, CurrentManagedWorkflowCommandResultSchema, CurrentManagedWorkflowPageSchema, RunStartV3InputSchema, RunStartV3ResultSchema, CurrentWorkflowCreateInputSchema, 
   type CurrentWorkspaceDetails, type CurrentGetWorkflowResponse, type CurrentRunDetails, type CurrentWorkflowCreateInput,
@@ -202,7 +203,8 @@ export class ApiClient {
     const generation = sessionGeneration()
     if (sessionIsSwitching()) throw new SessionChangedError()
     const requestSignal = signal ? AbortSignal.any([signal, sessionSignal()]) : sessionSignal()
-    const requestHeaders = new Headers(headers)
+    const bootstrap = path === '/api/runtime/identity' || path === '/api/local-human'
+    const requestHeaders = bootstrap ? new Headers(headers) : installationHeaders(headers)
     requestHeaders.set('Accept', 'application/json')
     if (body !== undefined) requestHeaders.set('Content-Type', 'application/json')
 
@@ -241,7 +243,10 @@ export class ApiClient {
     requestSignal.throwIfAborted()
     if (!response.ok) {
       const parsedError = ApiErrorResponseSchema.safeParse(payload)
-      if (parsedError.success) throw new ApiError(parsedError.data.error, response.status)
+      if (parsedError.success) {
+        reloadChangedInstallation(parsedError.data.error.code)
+        throw new ApiError(parsedError.data.error, response.status)
+      }
       throw new ApiError(
         {
           code: 'HTTP_ERROR',
@@ -465,7 +470,7 @@ export class ApiClient {
 
   respondToInteraction(input: z.input<typeof RespondToInteractionRequestSchema>, options?: RequestOptions) {
     const request = parseRequest(RespondToInteractionRequestSchema, input)
-    return this.request(`/api/interactions/${toPath(request.interactionId)}/respond`, RespondToInteractionResponseSchema, {
+    return this.request(`/api/management/interactions/${toPath(request.interactionId)}/respond`, RespondToInteractionResponseSchema, {
       ...options, method: 'POST', body: request,
     })
   }

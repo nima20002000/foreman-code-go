@@ -2,7 +2,7 @@ import { z } from 'zod'
 import { NativeSessionReferenceSchema } from './index.js'
 import { DispatchIntentSchema } from './nodePlacement.js'
 import { IdSchema } from './schemaPrimitives.js'
-import { SourceHashSchema, MaterializationReceiptSchema, SourceWorktreeRequestSchema } from './sourceMaterialization.js'
+import { SourceHashSchema, MaterializationReceiptSchema, SourceWorktreeRequestSchema, RootBindingSchema } from './sourceMaterialization.js'
 import { SourceRootRecordSchema, SourceMaterializationRecordSchema, SourcePinSchema, SourceCwdAttestationSchema, SourcePreparationClosureSchema } from './sourceAdmission.js'
 import { TransferIntentSchema } from './byteTransfer.js'
 import { RootFilesystemIdentitySchema } from './workspaceRootPolicies.js'
@@ -10,6 +10,19 @@ import { RootFilesystemIdentitySchema } from './workspaceRootPolicies.js'
 export const SOURCE_OPERATION_EXTENSION = { namespace: 'source-operations-v1', version: 1, maxJsonBytes: 1048576, maxBinaryBytes: 0, maxPending: 64 } as const
 export const SourceOperationAttemptSchema = z.object({ placementHash: SourceHashSchema, executionId: IdSchema, attemptId: IdSchema,
   keyRevision: z.number().int().positive().nullable(), authorizationRevision: z.number().int().positive().nullable() }).strict()
+/** Written before secondary source bytes; the placement hash identifies the accepted operation. */
+export const SecondarySourceAllocationSchema = z.object({
+  version: z.literal(1),
+  id: z.uuid(),
+  materializationId: z.uuid(),
+  binding: RootBindingSchema,
+  attempt: SourceOperationAttemptSchema,
+  kind: z.enum(['shared', 'worktree']),
+  state: z.enum(['preparing', 'reclaimed']),
+  filesystem: RootFilesystemIdentitySchema.optional(),
+  worktree: MaterializationReceiptSchema.shape.worktree.optional(),
+}).strict()
+export type SecondarySourceAllocation = z.infer<typeof SecondarySourceAllocationSchema>
 export const SourcePreparationIdentitySchema = z.object({ operationId: IdSchema, ownerPrincipalId: IdSchema, expiresAt: z.string().datetime() }).strict()
 export const SourceStorageCapacitySchema = z.object({
   filesystem: RootFilesystemIdentitySchema,
