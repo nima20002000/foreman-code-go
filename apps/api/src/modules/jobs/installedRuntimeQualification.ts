@@ -12,6 +12,7 @@ import { nativeAgentEnvironment } from '../harnesses/secrets.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { NativeProcessRegistry, spawnNativeProcess, nativeProcessExit, type NativeProcessRecovery } from '../harnesses/recovery/processRegistry.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
+import { fallbackOnError } from '../diagnostics/ignoredError.js'
 import { qualificationCleanupCommandAllowed, qualificationCreationStopped,
   QUALIFICATION_CLEANUP_COMMAND_LIMIT } from './qualificationJournal.js'
 import { inspectInstalledJobRuntimeCandidate, type InstalledRuntimeHostDependencies, type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
@@ -348,7 +349,12 @@ export async function reserveInstalledJobQualification(input: InstalledJobQualif
       const launch = { scope, binary, argv: [...argv], closed: false }
       launches.set(scope.launchId, launch)
       try { await journal.qualificationReserveProcess(operationId, { launchId: scope.launchId, binary, argv: [...argv] }) }
-      catch (error) { await registry.abandonReservedLaunch(scope).catch(() => false); throw error }
+      catch (error) {
+        await registry.abandonReservedLaunch(scope).catch(fallbackOnError(
+          false, 'jobs', 'abandon qualification launch', { operationId, launchId: scope.launchId },
+        ))
+        throw error
+      }
       return scope.launchId
     },
     spawnProcess(id: string, binary: string, argv: string[], options: import('node:child_process').SpawnOptions) {

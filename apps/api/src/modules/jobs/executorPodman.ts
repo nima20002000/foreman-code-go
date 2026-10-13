@@ -15,7 +15,7 @@ import type { QualificationNativeOwner, JobQualificationCandidate, JobQualificat
 import type { JobExecution } from '@foreman-code/contracts'
 import { jobSupervisorIdentity, requireVerificationRuntime, type JobLaunchPlan, type JobSupervisor,
   type QualifiedJobProfile, type RuntimeJobExecution, type VerificationExecution } from './executor.js'
-import { ignoreError } from '../diagnostics/ignoredError.js'
+import { ignoreError, fallbackOnError } from '../diagnostics/ignoredError.js'
 
 export interface PodmanIsolationInput {
   identity: string
@@ -422,7 +422,10 @@ export class PodmanJobSupervisor<Execution extends RuntimeJobExecution = JobExec
       const release=await this.commands.run(['exec',containerId,'node','-e',JOB_COMMAND_RELEASE,'--',JOB_COMMAND_GATE],Math.min(plan.execution.acceptedSpec.policy.preparationTimeoutMs,Math.max(1,end-Date.now())))
       if(release.exitCode!==0)throw new Error('Original Job command release unconfirmed.')
     } catch (error) {
-      if(await owned.close(plan.execution.acceptedSpec.policy.cancellationGraceMs).catch(() => false))this.clearWatch(plan.execution)
+      const closed = await owned.close(plan.execution.acceptedSpec.policy.cancellationGraceMs).catch(fallbackOnError(
+        false, 'jobs', 'close failed job container', { operationId: plan.execution.operationId },
+      ))
+      if (closed) this.clearWatch(plan.execution)
       throw error
     }
     return { containerId, stdout, stderr, exited, proveStopped, stop }
