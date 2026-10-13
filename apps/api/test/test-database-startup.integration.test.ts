@@ -62,6 +62,15 @@ async function hostDatabaseClient(env: NodeJS.ProcessEnv) {
   }
 }
 
+it('closes the database client process after returning query results', async () => {
+  const client = await hostDatabaseClient(process.env)
+  try {
+    expect((await client.query('select 1 as alive')).rows).toEqual([{ alive: 1 }])
+  } finally {
+    await client.end()
+  }
+})
+
 it('keeps an active database session and its rows when another checkout starts the shared test server', async () => {
   const fixture = await currentDatabase()
   const client = await fixture.pool.connect()
