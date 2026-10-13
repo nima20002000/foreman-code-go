@@ -405,4 +405,5 @@ export async function retainedReviewRecovery(fixture: Fixture, recovery: 'crash'
   }, value => value.run.executionState === 'completed' && value.cleanupPending !== true,
   'completed Run and native cleanup after recovered review delivery')
   expect(settled.run.outcome).toBe('succeeded')
+  return { runId: active.run.id, launchIds: ownerLaunchIds }
 }
