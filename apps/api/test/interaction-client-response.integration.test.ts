@@ -36,7 +36,7 @@ it.each(['operator', 'local operator', 'human'] as const)(
     const [interaction] = await f.pending()
     if (!interaction) throw new Error('Expected a pending native request')
     // Load the browser client at runtime; it remains outside the API build output.
-    const webClientModule = '../../web/src/shared/api/client.ts'
+    const webClientModule = new URL('../../web/src/shared/api/client.ts', import.meta.url).href
     const { ApiClient } = await import(webClientModule)
     const web = new ApiClient({ baseUrl: 'http://localhost',
       fetch: async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {

@@ -213,7 +213,7 @@ it.each(['succeeded', 'failed', 'canceled'] as const)(
   const snapshotReads = vi.fn(() => HttpResponse.json(snapshot('run-a')))
   const listReads = vi.fn(() => HttpResponse.json({ items: [{ runId: 'run-a', shortId: 'a',
     startedAt: '2026-10-04T09:00:00.000Z', status, trigger: 'manual' }], pageInfo: { nextCursor: null } }))
-  server.use(http.get(`*/api/management/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/runs`, listReads),
+  server.use(http.get(`*/api/management/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/runs/summaries`, listReads),
     http.get(snapshotRoute, snapshotReads))
   const active = WorkflowRunSummarySchema.parse({ id: 'run-a', workspaceId: scope.workspaceId,
     workflowId: scope.workflowId, executionCondition: { kind: 'manual' },
