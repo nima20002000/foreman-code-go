@@ -1169,7 +1169,7 @@ it.each([
   try {
     const first = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'lint', scope: 'affected', files: ['apps/api/src/example.ts'],
-      commandId: 'nul-log', noSupersede: true,
+      commit: 'a'.repeat(40), commandId: 'nul-log', noSupersede: true,
     }))
     await f.ci.dispatch()
     expect(first.partitions).toBeUndefined()
@@ -1178,7 +1178,7 @@ it.each([
     })
     const second = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'lint', scope: 'affected', files: ['apps/api/src/example.ts'],
-      commandId: 'after-nul-log', noSupersede: true,
+      commit: 'a'.repeat(40), commandId: 'after-nul-log', noSupersede: true,
     }))
     await f.ci.close()
     expect((await read(second.ticketId)).run).toMatchObject({
