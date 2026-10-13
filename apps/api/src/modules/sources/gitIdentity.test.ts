@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type pg from 'pg'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -135,4 +135,14 @@ it('sets identity on a Main Run worktree and repairs it when the persisted workt
   f.git(path, 'commit', '--allow-empty', '-qm', 'resumed agent')
   expect(f.git(path, 'show', '-s', '--format=%cn <%ce>')).toBe('Foreman Code Agent <agent@foreman-code.invalid>')
   expect(f.git(path, 'rev-parse', 'HEAD^')).toBe(merged)
+})
+
+it('merges a nondefault branch into an Agent worktree without inheriting host identity', async () => {
+  const f = await fixture()
+  const path = join(f.root, 'agent')
+  await addGitWorktree(f.ports, { repository: 'octo/site', branch: 'foreman/merge' },
+    f.baseCommit, path, AbortSignal.timeout(30_000))
+  expect(await mergeAsAgent(f, path, 'origin/topic')).toBe('Foreman Code Agent <agent@foreman-code.invalid>')
+  expect(await readFile(join(path, 'topic.txt'), 'utf8')).toBe('topic\n')
+  expect(await readFile(join(path, 'agent.txt'), 'utf8')).toBe('agent work\n')
 })

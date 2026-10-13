@@ -30,12 +30,16 @@ it('tests the unchanged Agent commit without importing files or selecting a newe
   git(directory, 'clone', '-q', '--no-checkout', origin, clone)
   await writeFile(join(origin, 'source.txt'), 'Newer default source')
   git(origin, 'commit', '-qam', 'Advance main')
+  const defaultHead = git(origin, 'rev-parse', 'HEAD')
   const system = systemGitWorktreePorts(environment)
   const run = vi.fn(system.git)
   const commits = new GitCiCommits({ ...system, git: run, cloneDirectory: () => clone })
   expect(await commits.resolve('octo/site', 'main', undefined,
     { commit: baseCommit, baseCommit, bundle: null })).toBe(baseCommit)
+  expect(await commits.resolve('octo/site', 'main', undefined,
+    { commit: baseCommit, baseCommit, bundle: null })).toBe(baseCommit)
   expect(git(clone, 'show', `${baseCommit}:source.txt`)).toBe('Run-start source')
+  expect(git(origin, 'rev-parse', 'refs/heads/main')).toBe(defaultHead)
   expect(run.mock.calls.some(([args]) => args[0] === 'bundle' || args[0] === 'push')).toBe(false)
 })
 
