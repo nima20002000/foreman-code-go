@@ -23,6 +23,7 @@ import { registerProductionFileStorage } from '../src/modules/files/production.j
 import { productionFileTools } from '../src/modules/files/tools/production.js'
 import { nim2691TaskDatabase } from './helpers/nim2691Database.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
+import { readUntil } from './helpers/observableCondition.js'
 import { graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { productionClaudeFixture } from './support/claudeProduction.js'
 import { claudeSdkToolTransport } from './support/claudeSdkToolTransport.js'
@@ -136,8 +137,17 @@ it.each([
       try {
         await chat.send(conversation.id, { requestId, content: 'Call the configured tool' }, owner.principal)
         if (scenario !== 'denied-management') {
-          await vi.waitFor(async () => expect((await repository.get(conversation.id))?.pendingInteraction).toBeDefined())
-          const pending = (await repository.get(conversation.id))!.pendingInteraction!
+          const state = await readUntil(async () => {
+            const current = await chat.get(conversation.id, owner.principal)
+            if (current.error) throw new Error(JSON.stringify(current.error))
+            if (!current.activeRequestId && !current.pendingInteraction) {
+              throw new Error('The tool turn ended without requesting its configured approval.')
+            }
+            return current
+          }, current => current.pendingInteraction !== undefined, {
+            timeoutMs: 15_000, description: 'SDK tool approval',
+          })
+          const pending = state.pendingInteraction!
           const input = { commandId: randomUUID(), requestId, nativeRequestId: pending.turn.nativeRequestId,
             optionId: pending.responseOptions[0]!.optionId }
           const denied = await graphRpc(app, reader.token, 'tools/call', { name: 'operator_chat_respond',
