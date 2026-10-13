@@ -117,6 +117,16 @@ export class ApiError extends Error {
   }
 }
 
+function isGatewayStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504
+}
+
+/** The API is restarting or unreachable: no response, or a gateway status without an API error body. */
+export function isApiRestartError(error: unknown): boolean {
+  return ApiError.is(error)
+    && (error.code === 'NETWORK_ERROR' || (error.code === 'HTTP_ERROR' && isGatewayStatus(error.status)))
+}
+
 type FetchLike = typeof fetch
 
 export interface ApiClientOptions {
@@ -256,16 +266,14 @@ export class ApiClient {
       const parsedError = ApiErrorResponseSchema.safeParse(payload)
       if (parsedError.success) {
         reloadChangedInstallation(parsedError.data.error.code)
-        throw new ApiError({
-          ...parsedError.data.error,
-          message: method === 'GET' && (response.status === 502 || response.status === 503)
-            ? 'Updating — reconnecting…' : parsedError.data.error.message,
-        }, response.status)
+        // The API answered with its own error: a domain failure its owner shows, never a restart.
+        throw new ApiError(parsedError.data.error, response.status)
       }
       throw new ApiError(
         {
           code: 'HTTP_ERROR',
-          message: response.status === 502 || response.status === 503
+          // A gateway status without an API error body means the API is restarting or unreachable.
+          message: isGatewayStatus(response.status)
             ? 'Updating — reconnecting…' : `The API request failed with status ${response.status}.`,
         },
         response.status,
