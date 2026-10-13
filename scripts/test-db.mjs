@@ -27,6 +27,28 @@ function reusePrivateDatabase() {
   process.stdout.write('Reusing the runtime-owned private PostgreSQL test server\n')
 }
 
+// --no-recreate keeps a reused server's first limits; grow them in place for a job sized for more shards.
+// Limits never shrink: another job sharing the server may need what it was given. Zero means unlimited.
+function growDatabaseLimits(docker, project, environment) {
+  const cpus = Number(environment.FOREMAN_CODE_CI_DATABASE_CPUS ?? 0)
+  const memory = Number(environment.FOREMAN_CODE_CI_DATABASE_MEMORY_BYTES ?? 0)
+  if (!(cpus > 0) && !(memory > 0)) return
+  const containers = docker(['ps', '-q', '--filter', `label=com.docker.compose.project=${project}`,
+    '--filter', 'label=com.docker.compose.service=postgres']).split('\n').filter(Boolean)
+  for (const container of containers) {
+    const [{ HostConfig: limits }] = JSON.parse(docker(['inspect', container]))
+    const update = []
+    if (cpus > 0 && limits.NanoCpus > 0 && Math.round(cpus * 1e9) > limits.NanoCpus) update.push(`--cpus=${cpus}`)
+    if (memory > 0 && limits.Memory > 0 && memory > limits.Memory) {
+      const swap = limits.MemorySwap > 0 ? Math.round(memory * limits.MemorySwap / limits.Memory) : -1
+      update.push(`--memory=${memory}`, `--memory-swap=${swap}`)
+    }
+    if (!update.length) continue
+    docker(['update', ...update, container])
+    process.stdout.write(`[test-db] grew the shared PostgreSQL limits: ${update.join(' ')}\n`)
+  }
+}
+
 function composeDatabase(persistentCache) {
   const runId = process.env.FOREMAN_CODE_CI_HOST_RUN_ID
   if (runId !== undefined && !/^[0-9a-f-]{36}$/.test(runId)) throw new Error('Invalid host CI database owner')
@@ -64,6 +86,7 @@ function composeDatabase(persistentCache) {
   else if (action === 'stop') args.push('stop', 'postgres')
   else args.push('down', '--volumes')
   process.stdout.write(`${docker(args)}\n`)
+  if (action === 'up') growDatabaseLimits(docker, project, environment)
   if (action === 'up') {
     // Private checkouts are unreadable to the container user, so the idempotent init SQL goes through stdin.
     docker(['compose', '--project-name', project, '--file', file, 'exec', '-T', '-e', 'PGPASSWORD=graphql_test_disposable_only',
