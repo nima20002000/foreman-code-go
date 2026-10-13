@@ -158,6 +158,15 @@ afterEach(() => {
 })
 
 describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 }, () => {
+  it.each([null, 'run-a'])('opens the Board after claiming browser tab ownership for Run %s', async (runId) => {
+    await mount(runsUrl(runId, scope))
+    const name = runId ? 'Selected Run pinned topology' : 'Workflow authoring'
+    expect(await screen.findByRole('region', { name })).toBeVisible()
+    expect(screen.queryByText('This browser cannot safely recover independent tab edits.')).not.toBeInTheDocument()
+    expect(screen.getByRole('group', { name: 'Board controls' })).toBeVisible()
+    expect(writes).toEqual([])
+  })
+
   it('inspects a saved Agent missing from the current workflow and reopens its generated URL', async () => {
     const reads = installNodeInspection()
     const current = getMockFixture(scope.workspaceId)!.workflows.find(item => item.id === scope.workflowId)!
