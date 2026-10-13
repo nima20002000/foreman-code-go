@@ -23,7 +23,16 @@ for (const form of ['ordinary', 'repeat'] as const) {
         expect(t.faults.deadSessions.has(sessionId)).toBe(true)
         const detached = await t.closureRows()
         await t.recoverUntilSettled(); await assertInterrupted(t, execution.id)
-        expect(await t.closureRows()).toEqual(detached)
+        const closures = await t.closureRows()
+        expect(closures).toHaveLength(detached.length + 1)
+        expect(closures.slice(0, detached.length)).toEqual(detached)
+        const attachment = closures.at(-1)!
+        expect(attachment).toMatchObject({ execution_id: execution.id,
+          execution_identity: detached[0]!.execution_identity,
+          expected_reference: detached[0]!.detached_reference,
+          closed_at: null, closed_reference: null, closed_without_session: false,
+          detached_at: null, detached_reference: null })
+        expect((await t.recoveryRows())[0]).toMatchObject({ generation: attachment.generation })
         expect(t.f.provider.counts).toMatchObject({ starts: 1, responses: 0, attaches: 0 })
       } finally { gate.release(); await started }
     }, 90000)
