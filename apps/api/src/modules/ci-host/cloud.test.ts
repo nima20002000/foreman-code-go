@@ -357,6 +357,38 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(provider === 'github' ? f.dispatched : f.circle.triggered).toHaveLength(1)
   })
 
+  it('waits for mirror cleanup and its queued cancellation sweep before disposing the fixture', async () => {
+    const f = await fixture()
+    let release!: () => void
+    const blocked = new Promise<void>(resolve => { release = resolve })
+    let sweeps = 0
+    f.cloud.setActiveRunLookup(async () => {
+      sweeps++
+      await blocked
+      return { ids: new Set<string>(), readAt: 0 }
+    })
+    const runId = randomUUID()
+    await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId,
+      repository: 'octo/site', commit: f.commit, suite: 'integration', scope: 'full' })
+    await expect.poll(() => sweeps).toBe(1)
+    await f.cloud.handle({ operation: 'cancel', runId })
+    const disposal = f.dispose()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const waiting = await Promise.race([
+        disposal.then(() => false),
+        new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(true), 1_000) }),
+      ])
+      expect(waiting).toBe(true)
+    } finally {
+      clearTimeout(timer)
+      release()
+      await disposal
+    }
+    expect(sweeps).toBe(2)
+    expect(f.dispatched).toHaveLength(1)
+  })
+
   it.each(['github', 'circleci'] as const)('leaves omitted files for the %s runner and mirrors the default-branch merge-base without private history', async provider => {
     const source = 'apps/api/test/value.ts'
     const test = 'apps/api/test/value.integration.test.ts'
