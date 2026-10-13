@@ -1,5 +1,5 @@
 // Releases main after one clean full round through Foreman CI:
-//   corepack pnpm release <X.Y.Z> [--notes-file <file>]
+//   corepack pnpm release <X.Y.Z> [--notes-file <file>] [--gate-ticket <ticket of a clean gate on HEAD>]
 // Requires a clean main equal to origin/main. Gates HEAD on Main's CI (typecheck, lint, unit and integration, full
 // scope; see scripts/ci-remote.mjs for the connection settings), reusing the gate that already ran on HEAD, and waits
 // for every part. Any failed part prints its ticket and failures and stops without a release. Otherwise it writes the
@@ -12,8 +12,8 @@ import { gateCommandId, releaseRoundProblems } from './verify-release-round.mjs'
 
 const git = (...args) => execFileSync('git', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 
-async function release(version, notesFile) {
-  if (!/^\d+\.\d+\.\d+$/.test(version ?? '')) throw new Error('usage: corepack pnpm release <X.Y.Z> [--notes-file <file>]')
+async function release(version, notesFile, gateTicket) {
+  if (!/^\d+\.\d+\.\d+$/.test(version ?? '')) throw new Error('usage: corepack pnpm release <X.Y.Z> [--notes-file <file>] [--gate-ticket <id>]')
   if (git('branch', '--show-current') !== 'main') throw new Error('Releases are made from main.')
   if (git('status', '--porcelain')) throw new Error('The worktree has uncommitted changes.')
   git('fetch', '--quiet', 'origin', 'main')
@@ -31,8 +31,10 @@ async function release(version, notesFile) {
   const workspaceId = await workspaceFor(call)
   // One gate covers typecheck, lint, unit and integration. Its canonical commandId returns the gate that already
   // ran on this exact commit (for example from the gate line) instead of starting a second full round.
-  const started = await call('ci_run', { workspaceId, commit, suite: 'integration', scope: 'full', gate: true,
-    priority: 'high', commandId: gateCommandId(commit) })
+  // --gate-ticket names a gate that already ran on this commit under another credential's commandId.
+  const started = gateTicket ? await namedGate(call, workspaceId, gateTicket, commit)
+    : await call('ci_run', { workspaceId, commit, suite: 'integration', scope: 'full', gate: true,
+      priority: 'high', commandId: gateCommandId(commit) })
   const groups = [{ suite: 'gate', tickets: (started.partitions ?? [{ ticketId: started.ticketId }]).map(value => value.ticketId) }]
   console.error(`[release] Clean round for ${commit.slice(0, 12)}: ${groups.map(group => `${group.suite} (${group.tickets.length})`).join(', ')}`)
   const failed = (await awaitTickets(call, workspaceId, groups.flatMap(group => group.tickets))).filter(run => run.state !== 'passed')
@@ -54,7 +56,16 @@ async function release(version, notesFile) {
   return 0
 }
 
+async function namedGate(call, workspaceId, ticketId, commit) {
+  const found = await call('ci_get', { workspaceId, ticketId })
+  const group = found.partitions ?? [found.run]
+  if (group.some(run => run.commit !== commit)) throw new Error(`Gate ticket ${ticketId} did not run on ${commit.slice(0, 12)}.`)
+  return { ticketId: group[0].id, partitions: group.map(run => ({ ticketId: run.id })) }
+}
+
 const args = process.argv.slice(2)
 const notesIndex = args.indexOf('--notes-file')
 const notesFile = notesIndex >= 0 ? args.splice(notesIndex, 2)[1] : undefined
-process.exitCode = await release(args[0], notesFile).catch(error => { console.error(`[release] ${error.message}`); return 1 })
+const gateIndex = args.indexOf('--gate-ticket')
+const gateTicket = gateIndex >= 0 ? args.splice(gateIndex, 2)[1] : undefined
+process.exitCode = await release(args[0], notesFile, gateTicket).catch(error => { console.error(`[release] ${error.message}`); return 1 })
