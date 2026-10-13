@@ -70,7 +70,7 @@ export const ManagedRemoteExecutionSettingsSchema = RemoteExecutionSettingSnapsh
 
 export const RemoteExecutionSettingsUpdateInputSchema = z.object({
   value: RemoteExecutionSettingsSchema,
-  expectedRevision: z.number().int().nonnegative(),
+  expectedRevision: z.number().int().nonnegative().optional().describe('Omit for last write wins; supply to reject a stale revision.'),
   commandId: z.string().trim().min(8).max(200),
 }).strict()
 

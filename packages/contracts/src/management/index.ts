@@ -421,7 +421,9 @@ export const GraphDraftApplyInputSchema = z.object({
 }).strict();
 
 export const HarnessDefaultsUpdateInputSchema = z.object({
-  ...RevisionMutationFields,
+  ...MutationFields,
+  expectedRevision: ExpectedRevisionSchema.optional()
+    .describe('Omit for last write wins; supply to reject a stale revision.'),
   defaults: ManagementHarnessDefaultsSchema.describe('Unchanged incomplete presets may be retained. New, edited or explicitly selected Claude presets require Full access and supported app MCP connections.'),
   /** Explicitly select a preset even when its template values did not change. */
   configure: AgentHarnessSchema.array().max(3).optional(),
@@ -467,7 +469,10 @@ export const ManagedWorkflowDefaultsSchema = z.object({
   value: WorkflowDefaultsSchema, revision: ExpectedRevisionSchema, versionId: IdSchema.nullable(),
 }).strict();
 export const AgentDefaultsUpdateInputSchema = z.object({
-  ...RevisionMutationFields, value: AgentDefaultsSchema.superRefine((value, context) => {
+  ...MutationFields,
+  expectedRevision: ExpectedRevisionSchema.optional()
+    .describe('Omit for last write wins; supply to reject a stale revision.'),
+  value: AgentDefaultsSchema.superRefine((value, context) => {
     for (const role of ['orchestrator', 'coder', 'operator'] as const) {
       const result = SupportedHarnessConfigurationSchema.safeParse(value[role].harness);
       if (!result.success) for (const issue of result.error.issues) context.addIssue({
@@ -477,7 +482,10 @@ export const AgentDefaultsUpdateInputSchema = z.object({
   }),
 }).strict();
 export const WorkflowDefaultsUpdateInputSchema = z.object({
-  ...RevisionMutationFields, value: WorkflowDefaultsSchema,
+  ...MutationFields,
+  expectedRevision: ExpectedRevisionSchema.optional()
+    .describe('Omit for last write wins; supply to reject a stale revision.'),
+  value: WorkflowDefaultsSchema,
 }).strict();
 export const AgentDefaultsUpdateResultSchema = z.object({ value: ManagedAgentDefaultsSchema, replayed: z.boolean() }).strict();
 export const WorkflowDefaultsUpdateResultSchema = z.object({ value: ManagedWorkflowDefaultsSchema, replayed: z.boolean() }).strict();

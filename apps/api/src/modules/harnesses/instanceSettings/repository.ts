@@ -49,10 +49,10 @@ export class HarnessInstanceSettingsRepository {
   async lockRevision(client: pg.ClientBase, instanceId: string): Promise<void> {
     await client.query('select pg_advisory_xact_lock(hashtext($1))', [`harness-instance:${instanceId}`])
   }
-  async append(client: pg.PoolClient, principalId: string, expectedRevision: number, value: HostHarnessOverride): Promise<HostHarnessOverride> {
+  async append(client: pg.PoolClient, principalId: string, expectedRevision: number | undefined, value: HostHarnessOverride): Promise<HostHarnessOverride> {
     await this.lockRevision(client, value.instanceId)
     const previous = await this.latest(client, value.instanceId)
-    if ((previous?.revision ?? 0) !== expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Host harness settings changed since they were read.', 409, { currentRevision: previous?.revision ?? 0 })
+    if (expectedRevision !== undefined && (previous?.revision ?? 0) !== expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Host harness settings changed since they were read.', 409, { currentRevision: previous?.revision ?? 0 })
     if (previous && (harnessHostKey(previous.target.hostRef) !== harnessHostKey(value.target.hostRef)
       || previous.target.applicationInstallationId !== value.target.applicationInstallationId
       || previous.driverId !== value.driverId)) throw new DomainError('HARNESS_INSTANCE_TARGET_CONFLICT', 'A configured instance cannot move to another host, installation or driver.', 409)

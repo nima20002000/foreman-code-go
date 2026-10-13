@@ -150,12 +150,14 @@ export class HostHarnessOverrideService {
       targetKey: `harness-instance:${input.instanceId}`, payload: input,
       authorize: client => this.authority.authorize(principal, 'harnesses:update', input.target.hostRef, input.target.applicationInstallationId, client),
       perform: async client => {
+        await this.repository.lockRevision(client, input.instanceId)
+        const previous = await this.repository.latest(client, input.instanceId)
         const requested = this.accountConfigurations ? await this.accountConfigurations.resolve(input.configuration,
-          { instanceId: input.instanceId, instanceRevision: String(input.expectedRevision), target: input.target },
+          { instanceId: input.instanceId, instanceRevision: previous?.instanceRevision ?? '0', target: input.target },
           { sql: client }) : input.configuration
         const configuration = withAdvancedDefaults(requested)
         const configurationFingerprint = commandInputHash(configuration)
-        const revision = input.expectedRevision + 1
+        const revision = (previous?.revision ?? 0) + 1
         const value: HostHarnessOverride = { instanceId: input.instanceId, revision, instanceRevision: String(revision),
           target: input.target, presetId: input.presetId, enabled: input.enabled, driverId: configuration.harness,
           configuration, configurationFingerprint, qualification: input.enabled ? 'unqualified' : 'disabled' }

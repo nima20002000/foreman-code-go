@@ -188,7 +188,7 @@ reach native subprocesses, while database credentials and unscoped application
 tokens are excluded. Never put credentials in the checkout or qualification logs.
 An HTTP 401 from a particular provider requires fixing that provider's native
 login or explicit credential; qualification remains required. Supported model
-selection through Settings or revision-checked `harness_defaults_update` MCP
+selection through Settings or `harness_defaults_update` MCP (with optional `expectedRevision`)
 does not authenticate another provider or bypass its qualification.
 
 Operations:

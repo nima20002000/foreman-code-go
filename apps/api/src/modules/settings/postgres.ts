@@ -78,7 +78,7 @@ export class PostgresSettingsRepository {
   async updateManagedHarnessDefaults(
     client: pg.PoolClient,
     input: HarnessDefaults,
-    expectedRevision: number,
+    expectedRevision: number | undefined,
     options: { unavailable?: AgentHarness[] } = {},
   ): Promise<{ defaults: HarnessDefaults; revision: number }> {
     const defaults = HarnessDefaultsSchema.parse(input)
@@ -87,7 +87,7 @@ export class PostgresSettingsRepository {
       'select revision from application_settings where key = $1 for update', [SETTINGS_KEY],
     )
     const revision = Number(current.rows[0]?.revision ?? 0)
-    if (revision !== expectedRevision) {
+    if (expectedRevision !== undefined && revision !== expectedRevision) {
       throw new DomainError('REVISION_CONFLICT', 'Harness defaults changed since they were read.', 409, { currentRevision: revision })
     }
     const result = await client.query<{ revision: string }>(
@@ -97,7 +97,7 @@ export class PostgresSettingsRepository {
          revision = application_settings.revision + 1, updated_at = excluded.updated_at
        where application_settings.revision = $3
        returning revision`,
-      [SETTINGS_KEY, JSON.stringify(defaults), expectedRevision],
+      [SETTINGS_KEY, JSON.stringify(defaults), revision],
     )
     if (!result.rows[0]) {
       const latest = await client.query<{ revision: string }>(

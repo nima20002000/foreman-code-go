@@ -69,7 +69,7 @@ export class ComputerSyncService {
       perform: async sql => {
         await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`computer-sync:${input.workspaceId}`])
         const previous = await this.repository.preference(sql, input.workspaceId, input.target)
-        if (previous.revision !== input.expectedRevision) {
+        if (input.expectedRevision !== undefined && previous.revision !== input.expectedRevision) {
           throw new DomainError('REVISION_CONFLICT', 'Sync settings changed. Refresh before saving again.', 409)
         }
         const preference = { revision: previous.revision + 1, enabled: input.enabled }

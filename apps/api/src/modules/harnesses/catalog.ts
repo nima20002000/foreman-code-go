@@ -127,7 +127,7 @@ export class HarnessCatalogService {
   }
 
   async updateDefaults(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
-    commandId: string; expectedRevision: number; defaults: HarnessDefaults; configure?: AgentHarness[] | undefined
+    commandId: string; expectedRevision?: number | undefined; defaults: HarnessDefaults; configure?: AgentHarness[] | undefined
   }) {
     requireAuthorization(principal, 'harnesses:update')
     const defaults = HarnessDefaultsSchema.parse(input.defaults)
@@ -138,7 +138,7 @@ export class HarnessCatalogService {
         const current = await this.settings.getManagedHarnessDefaults(client)
         const unavailable = new Set(current.unavailable ?? [])
         const configure = new Set(input.configure ?? [])
-        if (current.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Harness defaults changed since they were read.', 409)
+        if (input.expectedRevision !== undefined && current.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Harness defaults changed since they were read.', 409)
         for (const harness of ['codex', 'claude'] as const) {
           const next = defaults[harness], previous = current.defaults[harness]
           if (!next && configure.has(harness)) throw new DomainError('HARNESS_PROFILE_REQUIRED',

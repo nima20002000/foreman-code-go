@@ -170,7 +170,7 @@ export const FileRetentionPreferenceSchema = z.object({
 export const FileRetentionGetInputSchema = z.object({}).strict();
 export const FileRetentionGetResultSchema = z.object({ preference: FileRetentionPreferenceSchema }).strict();
 export const FileRetentionSaveInputSchema = z.object({
-  commandId: Command, expectedRevision: Revision, durationSeconds: FileRetentionDurationSchema,
+  commandId: Command, expectedRevision: Revision.optional().describe('Omit for last write wins; supply to reject a stale revision.'), durationSeconds: FileRetentionDurationSchema,
   applyToExisting: z.boolean().optional(),
 }).strict();
 export const FileRetentionSaveResultSchema = z.object({

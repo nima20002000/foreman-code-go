@@ -119,7 +119,7 @@ export class FoundationSettingsManagementService {
   }
 
   updateAgentDefaults(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
-    commandId: string; expectedRevision: number; value: AgentDefaults
+    commandId: string; expectedRevision?: number | undefined; value: AgentDefaults
   }) {
     requireAuthorization(principal, 'settings:update')
     let livePrincipal = principal
@@ -140,7 +140,7 @@ export class FoundationSettingsManagementService {
         }
         for (const role of ['orchestrator', 'coder', 'operator'] as const) assertClaudeFullAccess(value[role].harness)
         const previous = await this.settings.getAgentDefaults(client)
-        if (previous.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Agent defaults changed since they were read.', 409)
+        if (input.expectedRevision !== undefined && previous.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Agent defaults changed since they were read.', 409)
         for (const role of ['orchestrator', 'coder', 'operator'] as const) {
           const configuration = value[role].harness
           if (role === 'operator' && configuration.harness === 'claude'
@@ -208,7 +208,7 @@ export class FoundationSettingsManagementService {
   }
 
   updateWorkflowDefaults(principal: ManagementPrincipal, source: 'http' | 'mcp', input: {
-    commandId: string; expectedRevision: number; value: WorkflowDefaults
+    commandId: string; expectedRevision?: number | undefined; value: WorkflowDefaults
   }) {
     requireAuthorization(principal, 'settings:update')
     let livePrincipal = principal

@@ -56,7 +56,7 @@ export const settingsTools = [
     requires: [['settings:update', 'global']],
     enabled: s => !!s.remoteExecution,
     description: 'Replace Main’s persisted global remote execution and device listener settings. Requires global '
-      + 'settings:update. Use expectedRevision from remote_execution_settings_get and reuse commandId with identical '
+      + 'settings:update. Omit expectedRevision for last write wins; supply it to reject a stale revision. Reuse commandId with identical '
       + 'input after an uncertain save. Explicit environment values override saved values. TLS certificate/key paths '
       + 'must name owner-only files owned by Main’s OS user. Execution enablement applies live. Listener changes '
       + 'apply live when no computers are connected; otherwise restart Main. Read back effective values and '
@@ -190,7 +190,7 @@ export const settingsTools = [
     enabled: s => !!s.settings,
     description: 'Save the app-wide System prompt for newly started Codex and Claude workflow and Agent chat '
       + 'sessions. Existing sessions keep their saved revision; the Operator is excluded. Requires global '
-      + 'settings:update. Use expectedRevision from system_prompt_get; retry an uncertain save with the same '
+      + 'settings:update. Omit expectedRevision for last write wins; supply it to reject a stale revision. Retry an uncertain save with the same '
       + 'commandId and input, then read back with system_prompt_get. Empty text clears the prompt.',
     inputSchema: PromptSettingUpdateInputSchema, outputSchema: PromptSettingUpdateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -211,8 +211,8 @@ export const settingsTools = [
     requires: [['settings:update', 'global']],
     enabled: s => !!s.settings,
     description: 'Save the Operator own Initial prompt for new conversations. Existing conversations keep '
-      + 'their saved revision. Requires global settings:update. Use expectedRevision from '
-      + 'operator_initial_prompt_get and reuse commandId with the same input after an uncertain save. '
+      + 'their saved revision. Requires global settings:update. Omit expectedRevision for last write wins; supply it to reject a stale revision. '
+      + 'Reuse commandId with the same input after an uncertain save. '
       + 'Read back with operator_initial_prompt_get. Empty text clears the custom Initial prompt.',
     inputSchema: PromptSettingUpdateInputSchema, outputSchema: PromptSettingUpdateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -233,7 +233,7 @@ export const settingsTools = [
     requires: [['settings:update', 'global']],
     enabled: s => !!s.settings,
     description: 'Save general preferences on Main for all connected browsers. Requires global settings:update. '
-      + 'Use expectedRevision from general_settings_get and reuse commandId with the same input after an uncertain save. '
+      + 'Omit expectedRevision for last write wins; supply it to reject a stale revision. Reuse commandId with the same input after an uncertain save. '
       + 'Read back with general_settings_get. This does not sync database files, credentials or native profiles.',
     inputSchema: GeneralSettingsUpdateInputSchema, outputSchema: GeneralSettingsUpdateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -261,7 +261,7 @@ export const settingsTools = [
     name: 'agent_defaults_update',
     requires: [['settings:update', 'global']],
     enabled: s => !!s.settings,
-    description: 'Revision-check and replace role defaults. nativeTools.mcpServers is the native MCP server allowlist ([] = Foreman Code only); nativeTools.apps controls apps/connectors and Claude SDK plugins. Omitted policy fields inherit host settings. Foreman Code stays available under existing grants. These settings are copied into new Agents and pinned into new Operator conversations. Read agent_defaults_get to verify persisted settings. Includes the Operator sandbox or permission rules shared by chat and Settings > Agents > Operator. Codex and Claude support explicit danger-full-access. Access choices do not grant app authority or bypass native qualification and approval routing. New conversations inherit Operator changes; running turns and accepted Runs remain pinned. Requires global settings:update; changing Operator skills, harness, thinking or native-tool settings also requires skills:read in every assigned skill workspace. First local Claude preparation additionally requires harnesses:read and harnesses:update, and runs finite subscription diagnostics for the exact submitted configuration.',
+    description: 'Replace role defaults. Omit expectedRevision for last write wins; supply it to reject a stale revision. nativeTools.mcpServers is the native MCP server allowlist ([] = Foreman Code only); nativeTools.apps controls apps/connectors and Claude SDK plugins. Omitted policy fields inherit host settings. Foreman Code stays available under existing grants. These settings are copied into new Agents and pinned into new Operator conversations. Read agent_defaults_get to verify persisted settings. Includes the Operator sandbox or permission rules shared by chat and Settings > Agents > Operator. Codex and Claude support explicit danger-full-access. Access choices do not grant app authority or bypass native qualification and approval routing. New conversations inherit Operator changes; running turns and accepted Runs remain pinned. Requires global settings:update; changing Operator skills, harness, thinking or native-tool settings also requires skills:read in every assigned skill workspace. First local Claude preparation additionally requires harnesses:read and harnesses:update, and runs finite subscription diagnostics for the exact submitted configuration.',
     inputSchema: AgentDefaultsUpdateInputSchema, outputSchema: AgentDefaultsUpdateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: (context, input) => context.services.settings!.updateAgentDefaults(context.principal, 'mcp', input),
@@ -270,7 +270,7 @@ export const settingsTools = [
     name: 'workflow_defaults_update',
     requires: [['settings:update', 'global']],
     enabled: s => !!s.workflows && !!s.settings,
-    description: 'Revision-check and replace defaults for future workflows. approvalHandler accepts user, orchestrator or native; native handling still requires explicitly configured native approval on each Agent and preserves its permission rules. Existing workflows and in-flight approvals do not change.',
+    description: 'Replace defaults for future workflows. Omit expectedRevision for last write wins; supply it to reject a stale revision. approvalHandler accepts user, orchestrator or native; native handling still requires explicitly configured native approval on each Agent and preserves its permission rules. Existing workflows and in-flight approvals do not change.',
     inputSchema: WorkflowDefaultsUpdateInputSchema, outputSchema: WorkflowDefaultsUpdateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: (context, input) => context.services.settings!.updateWorkflowDefaults(context.principal, 'mcp', input),

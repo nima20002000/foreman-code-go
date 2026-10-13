@@ -171,14 +171,14 @@ export class HarnessMcpSettingsService {
       targetKey: `harness-mcp:${input.harness}`, payload: mcpPlanPayload(input, managedPreset),
       perform: async (client) => this.work(async (signal) => {
         const snapshot = await this.adapters[input.harness].read(signal)
-        if (snapshot.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Native configuration changed. Refresh the list before reviewing this change.', 409)
+        if (input.expectedRevision !== undefined && snapshot.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Native configuration changed. Refresh the list before reviewing this change.', 409)
         if (managedPreset) assertManagedChange(snapshot, input.change, managedPreset, this.operatorEndpoint!)
         else assertChange(snapshot, input.change)
         const pending = await client.query("select 1 from harness_mcp_change_plans where harness=$1 and status in ('pending','submitting','uncertain') and (status <> 'pending' or expires_at>now()) limit 100", [input.harness])
         if (pending.rowCount && pending.rowCount >= 100) throw new DomainError('MCP_PLAN_LIMIT', 'Resolve existing MCP changes before adding more.', 409)
         const inserted = await client.query<Row>(`insert into harness_mcp_change_plans(id,harness,revision,change,requested_by,status,expires_at,managed_preset)
           values($1,$2,$3,$4::jsonb,$5,'pending',now()+interval '10 minutes',$6) returning *`,
-        [randomUUID(), input.harness, input.expectedRevision, JSON.stringify(input.change), principal.id, managedPreset ?? null])
+        [randomUUID(), input.harness, snapshot.revision, JSON.stringify(input.change), principal.id, managedPreset ?? null])
         return projection(inserted.rows[0]!)
       }),
     }) } catch (error) { throw qualificationError(error) }
@@ -333,7 +333,7 @@ export class HarnessMcpSettingsService {
         await this.closeProcesses()
         signal.throwIfAborted()
         const snapshot = await this.adapters[row.harness].read(signal)
-        if (snapshot.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Native configuration changed. Refresh, inspect it, and reconcile again.', 409)
+        if (input.expectedRevision !== undefined && snapshot.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Native configuration changed. Refresh, inspect it, and reconcile again.', 409)
         const matchesExpected = row.native_file === snapshot.file
           && row.native_user_after_hash !== null && row.native_user_after_hash === mcpUserFingerprint(snapshot)
         if (!matchesExpected && !input.acceptObservedState) {

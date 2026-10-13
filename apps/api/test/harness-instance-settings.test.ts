@@ -17,7 +17,9 @@ function fixture() {
   const client = {} as pg.PoolClient
   const authorize = vi.fn(async () => undefined)
   const repository = { readAuthorized: async (operation: (client: pg.PoolClient) => Promise<unknown>) => operation(client), list: async () => rows,
-    append: vi.fn(async (_client: pg.PoolClient, _principal: string, _revision: number, value: HostHarnessOverride) => { rows.push(structuredClone(value)); return value }) } as unknown as HarnessInstanceSettingsRepository
+    lockRevision: async () => undefined,
+    latest: async (_client: pg.PoolClient, instanceId: string) => rows.findLast(row => row.instanceId === instanceId) ?? null,
+    append: vi.fn(async (_client: pg.PoolClient, _principal: string, _revision: number | undefined, value: HostHarnessOverride) => { rows.push(structuredClone(value)); return value }) } as unknown as HarnessInstanceSettingsRepository
   const execute = vi.fn(async (command: { authorize: (client: pg.PoolClient) => Promise<void>; perform: (client: pg.PoolClient) => Promise<unknown> }) => {
     await command.authorize(client); return { value: await command.perform(client), replayed: false }
   })

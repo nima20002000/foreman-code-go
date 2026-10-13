@@ -35,7 +35,7 @@ export const SyncChannelRequestSchema = z.object({
 }).strict()
 export const ComputerSyncReadInputSchema = z.object({ target: DeviceProvisioningTargetSchema }).strict()
 export const ComputerSyncUpdateInputSchema = ComputerSyncReadInputSchema.extend({
-  workspaceId: IdSchema, enabled: z.boolean(), expectedRevision: z.number().int().nonnegative(),
+  workspaceId: IdSchema, enabled: z.boolean(), expectedRevision: z.number().int().nonnegative().optional().describe('Omit for last write wins; supply to reject a stale revision.'),
   commandId: z.string().min(8).max(200),
 }).strict()
 export const ComputerSyncStatusSchema = z.object({

@@ -10,7 +10,7 @@ cancellation and cleanup. Pairing a computer does not enable execution.
 Operator MCP's `remote_execution_settings_get` reads the saved value and revision,
 effective configuration, explicit environment overrides and listener runtime status.
 `remote_execution_settings_update` replaces the global settings with
-`{ value: { enabled, listener }, expectedRevision, commandId }`. Reads require global
+`{ value: { enabled, listener }, commandId, expectedRevision? }`. Omit `expectedRevision` for last write wins; supply it to reject a stale write. Reads require global
 `settings:read`; updates require global `settings:update`. Reuse the same command ID
 and input after an uncertain save, then read back the persisted result.
 Normal placement, permissions, source and runtime qualification checks still apply.
