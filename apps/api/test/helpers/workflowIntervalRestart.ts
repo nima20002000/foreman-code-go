@@ -2,12 +2,15 @@ import { randomUUID } from 'node:crypto'
 import { expect } from 'vitest'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
-import { installationUpdateFixture, startWhenReady, completedRun } from './harnessInstallationUpdate.js'
+import { startWhenReady, completedRun } from './harnessInstallationUpdate.js'
 import { expectMcpAccessDenied } from './deniedMcpTool.js'
+import { remoteReviewProduction } from './remoteReviewProduction.js'
 import { readUntil } from './observableCondition.js'
 
 export async function assertIntervalRestart(executionHost: 'main' | 'worker'): Promise<void> {
-  const fixture = await installationUpdateFixture({ workflow: 'interval', executionHost })
+  const fixture = await remoteReviewProduction({ workflow: 'interval', executionHost,
+    installationRefreshIntervalMs: 60_000, parallelSetup: true, parallelProfileChecks: true,
+    reuseMatchingProfiles: true, includeNodeRuntimePayload: false })
   let blocked = false
   try {
     await fixture.provider.blockWorkflowTurns({ allowFirst: 1 })
