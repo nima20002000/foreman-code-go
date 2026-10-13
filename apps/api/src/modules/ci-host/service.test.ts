@@ -113,6 +113,19 @@ function dispatchFixture(settlementError?: Error) {
   return { ...f, active, queued, records, output }
 }
 
+it.each(['lint', 'typecheck'] as const)('dispatches an ordinary queued $suite check without a gate ticket', async suite => {
+  const f = dispatchFixture()
+  f.records.splice(0, 1)
+  f.records[0] = CiRunRecordSchema.parse({ ...f.queued, suite })
+  await f.create().dispatch()
+  expect((await f.create().get(caller, { ticketId: f.queued.id })).run).toMatchObject({
+    id: f.queued.id, suite, state: 'running', computer: { hostRef: computer.hostRef },
+  })
+  expect(f.endpoint.request).toHaveBeenCalledWith(computer, expect.objectContaining({
+    operation: 'start', runId: f.queued.id, suite,
+  }))
+})
+
 it.each([
   { text: 'finished\0 café 🚀\n', message: 'Done.\0 café 🚀',
     cleanText: 'finished café 🚀\n', cleanMessage: 'Done. café 🚀' },
