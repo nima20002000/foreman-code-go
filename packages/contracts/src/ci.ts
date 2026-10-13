@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { CI_LOG_MAX_BYTES, CI_MAX_RUN_TICKETS, CI_SELECTED_FILES_MAX, CiCachedFileSchema, CiComputerRefSchema, CiActivitySchema, CiRunRecordSchema, CiSuiteSchema, CiScopeSchema, CiSelectedFilesSchema,
+import { CI_LOG_MAX_BYTES, CI_MAX_RUN_TICKETS, CiCachedFileSchema, CiComputerRefSchema, CiActivitySchema, CiRunRecordSchema, CiSuiteSchema, CiScopeSchema, CiSelectedFilesSchema,
   CiTestResultsSchema, CiPrioritySchema, CiPriorityReasonSchema,
   CiTestStatusSchema, CiTestSummarySchema, CiUserSystemdSchema, validCiSelection } from './ciHost.js'
 import { IdSchema } from './schemaPrimitives.js'
@@ -32,7 +32,8 @@ const CiRunInputObjectSchema = z.object({
     + 'mixed explicit selections split even when this is omitted. Other repositories run integration as one job.').optional(),
   scope: CiScopeSchema.optional().describe('Defaults to affected; full runs the complete suite. '
     + 'Repositories without an affected selector always run the full suite.'),
-  files: CiSelectedFilesSchema.optional().describe('Optional affected selection with an explicit commit. Omit to select '
+  files: CiSelectedFilesSchema.optional().describe('Optional affected selection of safe repository-relative paths '
+    + 'with an explicit commit; no file-count cap or repository-root restriction. Omit to select '
     + 'on the runner against baseCommit or the workspace default branch; an empty list runs no tests. '
     + 'Unit and integration files whose inputs match an earlier passed ticket are skipped and listed in cachedFiles; '
     + 'full scope, gates and smoke runs always run every file.'),
@@ -63,7 +64,7 @@ const CiRunTicketSchema = z.object({ ticketId: IdSchema }).strict()
 /** `partitions` lists every part or integration partition; the first is also `ticketId`. Poll each with ci_get. */
 /** `cachedFiles` lists selected files skipped because an earlier passed ticket ran them with identical inputs. */
 export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(CiRunTicketSchema).min(2).max(CI_MAX_RUN_TICKETS).optional(),
-  cachedFiles: z.array(CiCachedFileSchema).max(CI_SELECTED_FILES_MAX).optional() }).strict()
+  cachedFiles: z.array(CiCachedFileSchema).optional() }).strict()
 const CiTicketInputSchema = z.object({ ticketId: IdSchema }).strict()
 /** Statuses to include; the results' summary always counts every test. */
 export const CiTestStatusFilterSchema = z.array(CiTestStatusSchema).min(1).max(3)

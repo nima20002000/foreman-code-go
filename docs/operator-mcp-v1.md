@@ -164,3 +164,10 @@ fields across reloads and application navigation. This recovery checkpoint is br
 interaction state, not a saved WorkflowVersion or an Operator-readable shared draft.
 It does not publish edits or grant permissions. Operator authoring continues through
 the authenticated shared Stage/Save/read services; browser recovery adds no MCP action.
+
+CI affected selections use safe repository-relative paths, with no file-count cap or
+repository-root allowlist. Root files, `docs/`, `.github/`, and other repository
+layouts are accepted by the shared file-selection schema. Absolute paths, backslashes,
+NUL bytes, and empty, `.` or `..` path segments are rejected. Suite-specific file
+rules still apply. Large runner-derived selections remain affected selections rather
+than falling back to the full suite because of their size.

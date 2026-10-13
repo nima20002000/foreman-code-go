@@ -27,11 +27,9 @@ function validCiPart(value: { suite: CiSuite; part?: CiPart | null | undefined; 
 }
 export const CiScopeSchema = z.enum(['affected', 'full'])
 export type CiScope = z.infer<typeof CiScopeSchema>
-/** Most files one CI run records; a larger derived selection runs its part in full instead. */
-export const CI_SELECTED_FILES_MAX = 2000
-export const CiSelectedFilesSchema = z.array(z.string().min(1).max(300)
-  .regex(/^(?:apps\/(?:api|web|worker)|packages\/contracts|scripts)\/[A-Za-z0-9_./-]+$/)
-  .refine(file => !file.split('/').some(part => part === '..' || part === '.' || part === ''))).max(CI_SELECTED_FILES_MAX)
+export const CiSelectedFilesSchema = z.array(z.string().min(1)
+  .regex(/^(?!\/|[A-Za-z]:)[^\\\0]+$/)
+  .refine(file => !file.split('/').some(part => part === '..' || part === '.' || part === '')))
 
 export function validCiSelection(value: { suite: CiSuite; scope?: CiScope | undefined; files?: string[] | undefined }) {
   if (value.scope === 'full') return !value.files?.length
@@ -209,7 +207,7 @@ export const CiRunRecordSchema = z.object({
   deriveFiles: z.boolean().optional(), defaultBranch: WorkspaceRepositorySchema.shape.defaultBranch.optional(),
   baseCommit: CommitSchema.optional(),
   /** On a request's first ticket: selected files skipped because an earlier passed ticket proved identical inputs. */
-  cachedFiles: z.array(CiCachedFileSchema).max(CI_SELECTED_FILES_MAX).optional(),
+  cachedFiles: z.array(CiCachedFileSchema).optional(),
   branch: WorkspaceRepositorySchema.shape.defaultBranch.nullable().optional(),
   noSupersede: z.boolean().optional(),
   supersededBy: CiHostRunIdSchema.optional(),

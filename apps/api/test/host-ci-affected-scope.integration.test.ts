@@ -303,3 +303,27 @@ it('retains an Agent ticket for an authorized Operator after the Agent runtime c
     expect(stored.rows[0]?.record).toEqual(read.run)
   } finally { await operator.close() }
 }, 60_000)
+
+
+it('persists large selections outside repository-specific roots through authenticated MCP', async () => {
+  const f = await fixture()
+  try {
+    const files = ['root.ts', 'docs/example.ts', '.github/check.ts',
+      ...Array.from({ length: 2001 }, (_, index) => `src/feature-${index}.ts`)]
+    const input = { suite: 'typecheck', scope: 'affected', files,
+      commit: 'a'.repeat(40), commandId: 'large-selection' }
+    const reader = await f.connect(CI_GET_ACTIONS)
+    const foreign = await f.connect([...CI_RUN_ACTIONS, ...CI_GET_ACTIONS], { workspaceIds: ['workspace-other'] })
+    for (const caller of [reader, foreign]) {
+      const denied = await f.call(caller, 'ci_run', input)
+      expect(denied.isError).toBe(true)
+      expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+    }
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
+    expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(started)
+    const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
+    expect(read.run).toMatchObject({ scope: 'affected', files })
+    const stored = await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1', [started.ticketId])
+    expect(stored.rows[0]!.record).toEqual(read.run)
+  } finally { await f.close() }
+})
