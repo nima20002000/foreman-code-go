@@ -1,3 +1,4 @@
+import pg from 'pg'
 import { createServer, createConnection, type Socket } from 'node:net'
 import { once } from 'node:events'
 import { describe, expect, it } from 'vitest'
@@ -48,7 +49,22 @@ async function stalledReplies(afterReady: number) {
 }
 
 describe.skipIf(!postgresEnabled)('runtime owner with PostgreSQL reply loss', () => {
+  it('acquires ownership and reads an epoch before injecting reply loss', async () => {
+    const proxy = await stalledReplies(3)
+    const owner = new OperatorRuntimeOwner(proxy.url, () => undefined)
+    try {
+      await owner.acquire()
+      expect(owner.active).toBe(true)
+      expect(await owner.readRuntimeEpoch()).toMatch(/^\d+$/)
+    } finally {
+      await proxy.close()
+      await owner.close().catch(() => { /* ignore: the fault fixture is already closed. */ })
+    }
+  })
+
   it.each(['acquire', 'epoch', 'close'] as const)('bounds %s and releases its physical advisory-lock session', async (operation) => {
+    const monitor = new pg.Client({ connectionString: process.env.TEST_DATABASE_URL! })
+    await monitor.connect()
     const proxy = await stalledReplies(operation === 'acquire' ? 1 : 2)
     const owner = new OperatorRuntimeOwner(proxy.url, () => undefined)
     let successor: OperatorRuntimeOwner | undefined
@@ -56,12 +72,27 @@ describe.skipIf(!postgresEnabled)('runtime owner with PostgreSQL reply loss', ()
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
       if (operation !== 'acquire') await owner.acquire()
+      const readOwnerPid = async () => (await monitor.query<{ pid: number }>(`
+        select pid from pg_locks where locktype='advisory' and classid=0::oid
+          and objid=710014::oid and objsubid=1 and granted
+          and database=(select oid from pg_database where datname=current_database())`)).rows[0]?.pid
+      let ownerPid = operation === 'acquire' ? undefined : await readOwnerPid()
       work = operation === 'acquire' ? owner.acquire()
         : operation === 'epoch' ? owner.readRuntimeEpoch() : owner.close()
       const result = work.then(() => 'success', error => error)
+      if (operation === 'acquire') {
+        ownerPid = await readUntil(readOwnerPid, pid => pid !== undefined,
+          { timeoutMs: 4000, description: 'server-side runtime ownership before lost reply' })
+      }
+      expect(ownerPid).toBeDefined()
       const watchdog = new Promise<string>(resolve => { timer = setTimeout(() => resolve('unbounded'), 7000) })
-      expect(await Promise.race([result, watchdog])).toBeInstanceOf(Error)
+      expect(await Promise.race([result, watchdog])).toMatchObject({
+        code: 'NATIVE_RUNTIME_DATABASE_TIMEOUT',
+      })
       expect(owner.active).toBe(false)
+      await readUntil(async () => (await monitor.query(
+        'select pid from pg_stat_activity where pid=$1', [ownerPid])).rows.length,
+      count => count === 0, { timeoutMs: 5000, description: 'closed runtime-owner backend' })
       successor = await readUntil(async () => {
         const candidate = new OperatorRuntimeOwner(process.env.TEST_DATABASE_URL!, () => undefined)
         try {
@@ -80,6 +111,7 @@ describe.skipIf(!postgresEnabled)('runtime owner with PostgreSQL reply loss', ()
       if (work) await work.catch(() => { /* ignore: the operation's failure is asserted above. */ })
       await owner.close().catch(() => { /* ignore: a failed unlock still closes the physical session. */ })
       await successor?.close()
+      await monitor.end()
     }
   }, 20_000)
 })

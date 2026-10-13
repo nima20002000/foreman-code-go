@@ -8,10 +8,31 @@ import { graphHeaders, graphRpcValue } from './eng04-graph-composition-fixture.j
 import { insertCurrentRunFixture } from './helpers/eng04CurrentRunFixture.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 
+async function insertActiveRun(f: Awaited<ReturnType<typeof writerFixture>>,
+  saved: ReturnType<typeof CurrentWorkflowSaveResultSchema.parse>['value']) {
+  return insertCurrentRunFixture(f.db.pool, f.f, saved, f.writer.principal.id)
+}
+
 describe.skipIf(!postgresEnabled)('workflow-wide edit staging reservation', () => {
   let database: Awaited<ReturnType<typeof currentDatabase>>
   beforeAll(async () => { database = await currentDatabase() }, 60_000)
   afterAll(async () => { await database?.close() })
+
+  it('persists the configured execution location on the active Run fixture', async () => {
+    const f = await writerFixture(database)
+    try {
+      const response = await f.app.inject({ method: 'PUT', url: f.url,
+        headers: graphHeaders(f.writer.token), payload: f.input })
+      expect(response.statusCode, response.body).toBe(200)
+      const saved = CurrentWorkflowSaveResultSchema.parse(response.json()).value
+      const { run } = await insertActiveRun(f, saved)
+      expect(run.executionLocation).toMatchObject({
+        runnerId: 'runner-local', rootPath: database.directory, locationRevision: 1,
+      })
+      expect((await database.pool.query('select record from runs where id=$1', [run.id])).rows[0]!.record)
+        .toMatchObject({ executionLocation: run.executionLocation, executionState: 'queued', outcome: 'pending' })
+    } finally { await f.app.close() }
+  })
 
   it.each([false, true])('rejects a competing principal before any Stop plan with active Run=%s', async (active) => {
     const f = await writerFixture(database)
@@ -19,7 +40,7 @@ describe.skipIf(!postgresEnabled)('workflow-wide edit staging reservation', () =
       const response = await f.app.inject({ method: 'PUT', url: f.url, headers: graphHeaders(f.writer.token), payload: f.input })
       expect(response.statusCode, response.body).toBe(200)
       const saved = CurrentWorkflowSaveResultSchema.parse(response.json()).value
-      const run = active ? await insertCurrentRunFixture(database.pool, f.f, saved, f.writer.principal.id) : null
+      const run = active ? await insertActiveRun(f, saved) : null
       const other = await f.credential([{ actions: ManagementActionSchema.options,
         scope: { workspaceIds: [f.input.workspaceId] } }])
       const stage = { ...f.input, action: 'stage_edits', commandId: randomUUID(), draftId: randomUUID(),
