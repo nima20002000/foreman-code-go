@@ -61,6 +61,38 @@ it('retries acquiring the settings transaction without repeating native discover
   expect(fixture.client.release).toHaveBeenCalledOnce()
 })
 
+it.each(['initial read', 'transaction acquisition'] as const)(
+  'cancels a native defaults retry during %s without another database attempt', async phase => {
+    vi.useFakeTimers()
+    const fixture = startupDefaultsFixture()
+    const failingOperation = phase === 'initial read' ? fixture.query : fixture.connect
+    failingOperation.mockRejectedValue(new Error('Query read timeout'))
+    const controller = new AbortController()
+    const initialized = initializeNativeDefaults({ ...fixture.input, signal: controller.signal }).catch(error => error)
+    await vi.advanceTimersByTimeAsync(0)
+    const reason = new Error('Startup is shutting down')
+    controller.abort(reason)
+    expect(await initialized).toMatchObject({ name: 'AbortError', cause: reason })
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(failingOperation).toHaveBeenCalledOnce()
+    expect(fixture.client.query).not.toHaveBeenCalled()
+    expect(fixture.options).toHaveBeenCalledTimes(phase === 'initial read' ? 0 : 1)
+  },
+)
+
+it.each(['initial read', 'transaction acquisition'] as const)(
+  'fails permanent database authentication errors during %s without retrying', async phase => {
+    const fixture = startupDefaultsFixture()
+    const failingOperation = phase === 'initial read' ? fixture.query : fixture.connect
+    const failure = Object.assign(new Error('password authentication failed'), { code: '28P01' })
+    failingOperation.mockRejectedValue(failure)
+    await expect(initializeNativeDefaults(fixture.input)).rejects.toBe(failure)
+    expect(failingOperation).toHaveBeenCalledOnce()
+    expect(fixture.client.query).not.toHaveBeenCalled()
+    expect(fixture.options).toHaveBeenCalledTimes(phase === 'initial read' ? 0 : 1)
+  },
+)
+
 it('initializes supported defaults when saved settings retain retired configuration and availability facts', async () => {
   const savedHarnesses = {
     ...DEFAULT_HARNESS_DEFAULTS,

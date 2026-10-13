@@ -5,6 +5,7 @@ import { AgentDefaultsSchema, DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, 
   type HarnessDefaults, type AgentHarness } from '@foreman-code/contracts'
 import { UnavailableHarnessDefaultsSchema, type HarnessOptions } from '@foreman-code/contracts/management'
 import { inTransaction } from '../../infrastructure/transaction.js'
+import { retryStartupDatabase } from '../../infrastructure/startupDatabase.js'
 import { latestNativeModel, nativeModelDefaults } from './modelDefaults.js'
 import { DomainError } from '../errors.js'
 import { detectedClaudeProfilePath } from './claudeSdk/productionMetadata.js'
@@ -19,11 +20,14 @@ const liveUnavailableDefaults = (value: unknown) => UnavailableHarnessDefaultsSc
 /** Startup initialization is persisted once under the same settings locks.
  * Existing explicit model/effort/access choices and all immutable pins survive. */
 export async function initializeNativeDefaults(input: {
-  pool: pg.Pool; options(harness: AgentHarness): Promise<HarnessOptions>; appMcpEndpoint: string
+  pool: pg.Pool
+  options(harness: AgentHarness): Promise<HarnessOptions>
+  appMcpEndpoint: string
+  signal?: AbortSignal
 }) {
-  const initial = await input.pool.query<{ key: string; record: unknown }>(
+  const initial = await retryStartupDatabase(() => input.pool.query<{ key: string; record: unknown }>(
     'select key,record from application_settings where key=any($1::text[])',
-    [['harness-defaults', 'agent-defaults-v1', UNAVAILABLE_HARNESS_DEFAULTS_KEY]])
+    [['harness-defaults', 'agent-defaults-v1', UNAVAILABLE_HARNESS_DEFAULTS_KEY]]), { signal: input.signal })
   const prior = new Map(initial.rows.map(row => [row.key, row.record]))
   const priorHarnesses = object(prior.get('harness-defaults'))
   const required = new Set<AgentHarness>((['codex', 'claude'] as const).filter(harness => missingModel(priorHarnesses[harness])))
@@ -58,7 +62,7 @@ export async function initializeNativeDefaults(input: {
     }
     available.set(harness, options)
   }))
-  return inTransaction(input.pool, undefined, async client => {
+  return retryStartupDatabase(() => inTransaction(input.pool, undefined, async client => {
     await client.query('select pg_advisory_xact_lock(hashtext($1))', ['setting:harness-defaults'])
     await client.query('select pg_advisory_xact_lock(hashtext($1))', ['setting:agent-defaults-v1'])
     const current = await client.query<{ key: string; record: unknown; revision: string }>(
@@ -123,5 +127,5 @@ export async function initializeNativeDefaults(input: {
     }
     if (changed) await save('agent-defaults-v1', AgentDefaultsSchema.parse(agents), true)
     return defaults
-  })
+  }), { signal: input.signal })
 }

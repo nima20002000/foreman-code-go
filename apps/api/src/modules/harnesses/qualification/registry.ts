@@ -5,13 +5,15 @@ import { delimiter, isAbsolute, resolve } from 'node:path'
 import type { CompatibilityHarness } from '@foreman-code/contracts'
 import { forgetQualifiedProfile, rememberQualifiedProfile, QUALIFICATION_TARGET_PROFILE } from './profiles.js'
 import type { HarnessQualificationRepository } from './repository.js'
-import { retryStartupDatabase } from '../../../infrastructure/startupDatabase.js'
 
 export class HarnessQualificationRegistry {
   constructor(private readonly repository: Pick<HarnessQualificationRepository, 'list' | 'find'>, private readonly revisions: Partial<Record<CompatibilityHarness, string>>) {}
 
-  async load(signal?: AbortSignal): Promise<void> {
-    const rows = await retryStartupDatabase(() => this.repository.list(), { signal })
+  async load(retryRead?: (
+    work: () => ReturnType<HarnessQualificationRepository['list']>,
+  ) => ReturnType<HarnessQualificationRepository['list']>): Promise<void> {
+    const read = () => this.repository.list()
+    const rows = await (retryRead ? retryRead(read) : read())
     for (const row of rows) {
       if (row.status === 'qualified' && row.suiteRevision === this.revisions[row.harness] && row.profile === QUALIFICATION_TARGET_PROFILE[row.harness]) {
         rememberQualifiedProfile(row.harness, row.version, row.profile)

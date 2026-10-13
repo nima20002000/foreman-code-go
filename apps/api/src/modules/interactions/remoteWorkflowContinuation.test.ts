@@ -10,8 +10,8 @@ import { readRemoteWorkflowContinuation, readWorkflowClosure } from './workflowC
 
 vi.mock('../placement/persistence.js', () => ({ readExecutionPlacement: vi.fn() }))
 
-function fixture(detached: boolean, state: 'running' | 'waiting' = 'waiting') {
-  const execution = recoveryExecution(state)
+function fixture(detached: boolean, executionState: 'running' | 'waiting' = 'waiting') {
+  const execution = recoveryExecution(executionState)
   const session = { harness: 'codex' as const, providerVersion: '1.0.0',
     nativeSessionId: execution.nativeSessionId! }
   const digest = 'a'.repeat(64)

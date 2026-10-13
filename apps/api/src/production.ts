@@ -1857,7 +1857,7 @@ export function buildProductionApp(
       assertOpen()
       await startupDatabase(() => harnessSettings.mcp.recover())
       assertOpen()
-      await operatorServices.runs.recoverSubagentCommands()
+      await startupDatabase(() => operatorServices.runs.recoverSubagentCommands())
       assertOpen()
       await startupDatabase(() => harnessSettings.plugins.recover())
       assertOpen()
@@ -2144,7 +2144,7 @@ export function buildProductionApp(
       // Qualification still runs at every existing on-demand configuration/execution gate.
       // The bounded compatibility diagnostic creates no native session or model turn.
       if (qualificationRegistry && harnessQualifications) {
-        await qualificationRegistry.load(startupLifetime.signal)
+        await qualificationRegistry.load(startupDatabase)
       }
       harnessCompatibility.start()
       assertOpen()
@@ -2170,14 +2170,15 @@ export function buildProductionApp(
     nativeDefaultsInitialization ??= (async () => {
       await initializeNativeDefaults({
         pool: database.pool,
-        options: harness => nativeConfigurations.options(harness),
+        options: harness => startupDatabase(() => nativeConfigurations.options(harness)),
         appMcpEndpoint,
+        signal: startupLifetime.signal,
       })
       assertOpen()
-      await harnessRegistry.refreshMain()
+      await startupDatabase(() => harnessRegistry.refreshMain())
       assertOpen()
-      const initializedDefaults = await foundationSettings.getAgentDefaults()
-      const currentOperator = await operators.ensure()
+      const initializedDefaults = await startupDatabase(() => foundationSettings.getAgentDefaults())
+      const currentOperator = await startupDatabase(() => operators.ensure())
       if (!isDeepStrictEqual(currentOperator.configuration.harness, initializedDefaults.value.operator.harness)) {
         await startupDatabase(() => synchronizeOperatorDefaults(initializedDefaults.value.operator))
       }

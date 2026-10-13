@@ -2,6 +2,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import {
   DurableInteractionSchema,
   HarnessExecutionSchema,
+  ReviewJobSchema,
   type PendingNativeInteraction,
 } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
@@ -94,7 +95,12 @@ async function recoverRequester(detached: boolean, state: 'waiting' | 'running' 
     closeForRestart: async () => {},
   }
   type Args = ConstructorParameters<typeof ApprovalExecutionCoordinator>
-  const coordination = nativeLanes()
+  const review = ReviewJobSchema.parse({
+    id: 'original-review-job', interactionId: interaction.id, reviewerAgentId: base.configurations[0]!.agentId,
+    attempt: 1, state: 'pending', provider: session.harness, nativeSessionId: 'reviewer-session',
+    correlationId: 'original-review-turn', createdAt: base.createdAt, updatedAt: base.createdAt,
+  })
+  const coordination = Object.assign(nativeLanes(), { findReviewJob: async () => review })
   const captures = createWorkflowNativeCaptureChannel()
   const restore = vi.fn(async () => ({ principalId: continuation.principalId,
     expiresAt: new Date(Date.now() + 300_000).toISOString(),
@@ -113,6 +119,7 @@ async function recoverRequester(detached: boolean, state: 'waiting' | 'running' 
     updateExecution: async (next: typeof execution) => { execution = next },
   } as unknown as Args[0], {
     coordination, getForExecution: async () => undefined, getNativeRequest: async () => interaction,
+    assertOrchestratorConnection: async () => ({ orchestratorNodeId: base.version.definition.nodes[0]!.id }),
   } as unknown as Args[1], {
     ensure: async () => {}, resume: async () => {}, remaining: async () => 60_000,
     assertActive: async () => {}, beginWait: async () => {},
@@ -138,7 +145,7 @@ async function recoverRequester(detached: boolean, state: 'waiting' | 'running' 
   }
   const observeOriginal = () => coordinator.observeExact({
     execution, owner, workflowId: base.run.workflowId, graphThreadId: base.run.id,
-    approval: { handler: 'user' }, signal: new AbortController().signal,
+    approval: base.run.approval, signal: new AbortController().signal,
     request: { executionId: execution.id, runId: execution.runId, workspaceId: base.run.workspaceId,
       workflowNodeId: execution.workflowNodeId, configuration, workingDirectory: execution.workingDirectory!,
       runtimeDirectory: execution.runtimeDirectory!, input: execution.input },
