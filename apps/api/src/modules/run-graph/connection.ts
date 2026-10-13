@@ -12,6 +12,9 @@ export interface GraphSqlClient {
   query<R extends pg.QueryResultRow = pg.QueryResultRow>(text: string, values?: unknown[]): Promise<pg.QueryResult<R>>
 }
 export interface GraphTransactionSql extends GraphSqlClient { readonly transaction: true }
+interface GraphConnectionClient extends pg.ClientBase {
+  end?: () => Promise<void>
+}
 const adoptedClients = new WeakSet<pg.ClientBase>()
 const leases = new WeakMap<GraphSqlClient, {
   live: boolean; failed: boolean; committed: boolean; readOnly: boolean; finalizers: (() => Promise<void>)[]
@@ -77,7 +80,7 @@ export function assertGraphTransaction(sql: GraphSqlClient): asserts sql is Grap
  * Construction does NOT acquire RunOwnership or confer workflow authority.
  */
 export class ExclusiveGraphConnection implements GraphSqlClient {
-  readonly #client: pg.ClientBase
+  readonly #client: GraphConnectionClient
   readonly #assertOwner: () => void
   #tail: Promise<void> = Promise.resolve()
   #unusable = false
@@ -183,8 +186,10 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
         catch (rollbackError) {
           if (!this.#unusable) this.#unusableCause = rollbackError
           this.#unusable = true
-          // Destroy the physical session; waiting for its query queue cannot release ownership.
-          void this.#client.end().catch(ignoreError('db', 'discard stalled graph connection'))
+          // Dedicated sessions end here; the pool owner discards unusable leases during cleanup.
+          if (this.#client.end) {
+            void this.#client.end().catch(ignoreError('db', 'discard stalled graph connection'))
+          }
         }
         throw error
       } finally { state.live = false }

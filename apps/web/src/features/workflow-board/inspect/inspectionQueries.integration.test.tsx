@@ -70,7 +70,7 @@ async function joinWithBindingPages(): Promise<RunExecutionDetail> {
     ...current, run: { ...current.run, agentConfigurationVersionIds: pins },
   }))
   const value = structuredClone(original.detail.acceptedInput.value)
-  if ('work' in value) throw new Error('Fan-in fixture requires an ordinary input.')
+  if ('work' in value || 'tick' in value) throw new Error('Fan-in fixture requires an ordinary input.')
   for (const [i, node] of additions.entries()) {
     const result = { outcome: 'succeeded' as const, output: { text: node.name } }
     const source: ReturnType<typeof RunInputSourceSchema.parse> = {
