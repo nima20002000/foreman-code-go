@@ -1036,6 +1036,7 @@ export class HostCiService {
         ? github.length : githubIntegrationLimit
       const reasons = (run.unstartedProviders ?? []).map(provider => `${provider}: dispatch retries exhausted`)
       const preferred = (computer: HostCiComputer) => {
+        if (run.gate && run.suite !== 'integration') return Number(computer.hostRef.kind === 'cloud')
         if (computer.hostRef.kind !== 'cloud') return 3
         if (run.suite !== 'integration') return Number(isGitHubComputer(computer))
         return isGitHubComputer(computer) ? 1 : 2
