@@ -486,7 +486,8 @@ export class HostCiRunner {
       : fileURLToPath(new URL('../../../../../scripts/ci-watchdog.mjs', import.meta.url))
     const watchedCommand = `CI_EXPECTED_DURATION_MS=${meta.expectedDurationMs ?? 0}`
         + ` CI_WATCHDOG_DIRECTORY=${quote(run)} CI_WATCHDOG_MESSAGE_FILE=${quote(join(run, 'watchdog-message.json'))}`
-        + ` node ${quote(watchdog)} -- bash -c ${quote(command)}`
+        // Only test suites report per-test progress; typecheck, lint and build can stay silent for minutes.
+        + (['unit', 'integration'].includes(meta.suite) ? ` node ${quote(watchdog)} --` : '') + ` bash -c ${quote(command)}`
     return ['#!/bin/bash', 'set -o pipefail', `exec >>${quote(join(run, 'log'))} 2>&1`,
       `export TMPDIR=${quote(join(run, 'tmp'))} CI=true NODE_OPTIONS=--max-old-space-size=${heapMb}`
         + ` FOREMAN_CODE_CI_CONTRACTS_CACHE=${quote(join(cache, 'contracts'))}`

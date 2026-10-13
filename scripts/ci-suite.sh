@@ -11,8 +11,9 @@
 # TEST_RESULTS_OUTPUT: where structured test results go for unit and integration (scripts/ci-test-results.mjs).
 # Host CI uses this hook for named parts; ci-files.mjs opts into integration partitions.
 set -euo pipefail
+# Only test suites report per-test progress; typecheck, lint and build can stay silent for minutes.
 if [ "${CI_WATCHDOG_ACTIVE:-}" != 1 ] && [ -n "${CI_EXPECTED_DURATION_MS:-}" ] && [ -z "${1:-}" ]; then
-  exec node "$(dirname "$0")/ci-watchdog.mjs" -- bash "$0"
+  case "${SUITE:-}" in unit|unit-*|integration) exec node "$(dirname "$0")/ci-watchdog.mjs" -- bash "$0" ;; esac
 fi
 # Test commands never inherit where this run's results go: a nested CI fixture would write over them.
 test_results="${TEST_RESULTS_OUTPUT:-}"
