@@ -277,6 +277,51 @@ it('retries persisted cancellation on the assigned executor after transport fail
   }
 })
 
+it('cancels a queued ticket through MCP before a blocked capacity read finishes', async () => {
+  const f = await fixture()
+  const entered = deferred()
+  const release = deferred()
+  let dispatch: Promise<void> | undefined
+  let cancellation: ReturnType<typeof f.call> | undefined
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    const ticket = await f.enqueue()
+    f.control.onStatus = async () => {
+      entered.resolve()
+      await release.promise
+    }
+    f.control.available = true
+    dispatch = f.ci.dispatch()
+    await entered.promise
+    const denied = await f.connect(CI_GET_ACTIONS)
+    expect((await f.call(denied.client, 'ci_cancel', { ticketId: ticket.ticketId })).isError).toBe(true)
+    expect((await f.read(ticket.ticketId)).state).toBe('queued')
+    cancellation = f.call(f.operator.client, 'ci_cancel', { ticketId: ticket.ticketId })
+    const result = await Promise.race([
+      cancellation,
+      new Promise<undefined>(resolve => { timeout = setTimeout(() => resolve(undefined), 1000) }),
+    ])
+    expect(result, 'Cancellation must finish while capacity discovery is blocked').toBeDefined()
+    expect(result!.isError, JSON.stringify(result!.content)).not.toBe(true)
+    expect((await f.read(ticket.ticketId)).state).toBe('canceled')
+    expect(f.starts).toEqual([])
+    release.resolve()
+    await dispatch
+    expect((await f.read(ticket.ticketId)).state).toBe('canceled')
+    expect(f.starts).toEqual([])
+    const audit = (await f.pool.query(
+      "select principal_id from management_audit where action='ci.cancel' and target_key=$1",
+      [`ci:${ticket.ticketId}`])).rows
+    expect(audit).toEqual([{ principal_id: f.operator.principalId }])
+  } finally {
+    clearTimeout(timeout)
+    release.resolve()
+    await dispatch
+    await cancellation
+    await f.close()
+  }
+})
+
 it('retains cleanup when cancellation arrives while the accepted start reply is still in flight', async () => {
   const f = await fixture()
   const entered = deferred()
@@ -291,8 +336,16 @@ it('retains cleanup when cancellation arrives while the accepted start reply is 
     f.control.available = true
     dispatch = f.ci.dispatch()
     await entered.promise
-    expect((await f.call(f.operator.client, 'ci_cancel', { ticketId: ticket.ticketId })).isError).toBe(true)
-    expect((await f.read(ticket.ticketId)).state).toBe('starting')
+    const commandId = randomUUID()
+    const denied = await f.connect(CI_GET_ACTIONS)
+    expect((await f.call(denied.client, 'ci_cancel', { ticketId: ticket.ticketId })).isError).toBe(true)
+    expect((await f.read(ticket.ticketId)).cancellation).toBeUndefined()
+    const pending = await f.call(f.operator.client, 'ci_cancel', { ticketId: ticket.ticketId, commandId })
+    expect(pending.isError).toBe(true)
+    expect(decodeMcpToolResult(pending)).toMatchObject({ error: { code: 'CI_CANCEL_PENDING' } })
+    expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting', cancellation: {
+      principalId: f.operator.principalId, source: 'mcp', commandId, reason: 'direct',
+    } })
     release.resolve()
     await dispatch
     f.control.onStart = async () => {}
