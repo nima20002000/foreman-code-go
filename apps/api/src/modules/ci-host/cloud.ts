@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { homedir, hostname, userInfo } from 'node:os'
-import { join, resolve } from 'node:path'
+import { delimiter, join, resolve } from 'node:path'
 import type pg from 'pg'
 import { CiWatchdogFailureSchema, CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, CiTestResultsSchema, WorkspaceSchema,
   integrationPartition, requiresUserSystemd,
@@ -578,9 +578,18 @@ export class CloudCi {
     const fetching = performance.now()
     // A separate persistent mirror clone negotiates against public refs only. Source objects are read locally.
     const mirrorClone = await ensureClone(this.git, mirror, signal)
-    const sourceObjects = { GIT_ALTERNATE_OBJECT_DIRECTORIES: resolve(clone, objects.stdout.trim()) }
-    const git = async (args: string[], env?: Record<string, string>) => {
-      const result = await this.git.git(args, { cwd: mirrorClone, signal: AbortSignal.timeout(600_000), env: { ...sourceObjects, ...env } })
+    const sourceObjects = resolve(clone, objects.stdout.trim())
+    // Snapshot objects reference source objects, so they live in a daily store beside the mirror clone, never in it:
+    // the clone's refs then reach only objects it owns. Yesterday's store stays readable for late partitions.
+    const store = join(this.root, 'snapshot-objects', ...mirror.split('/'))
+    const day = (offset: number) => new Date(this.ports.now().getTime() - offset).toISOString().slice(0, 10)
+    const snapshotObjects = join(store, day(0))
+    await mkdir(snapshotObjects, { recursive: true, mode: 0o700 })
+    for (const entry of await readdir(store)) {
+      if (entry !== day(0) && entry !== day(86_400_000)) await rm(join(store, entry), { recursive: true, force: true })
+    }
+    const run = async (args: string[], env: Record<string, string>) => {
+      const result = await this.git.git(args, { cwd: mirrorClone, signal: AbortSignal.timeout(600_000), env })
       if (result.code !== 0) {
         // Git's own reason, without any credentials in a URL.
         const detail = result.stderr.replace(/\/\/[^/@\s]+@/g, '//').trim().slice(-500)
@@ -588,8 +597,21 @@ export class CloudCi {
       }
       return result.stdout.trim()
     }
+    const read = (args: string[]) =>
+      run(args, { GIT_ALTERNATE_OBJECT_DIRECTORIES: [snapshotObjects, sourceObjects].join(delimiter) })
+    const git = (args: string[], env?: Record<string, string>) => run(args, { GIT_OBJECT_DIRECTORY: snapshotObjects,
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: [resolve(mirrorClone, '.git', 'objects'), sourceObjects].join(delimiter), ...env })
     const base = 'refs/remotes/origin/main'
-    await git(['fetch', '--quiet', '--no-tags', 'origin', `+main:${base}`])
+    // Fetch without source alternates: their shallow refs are not negotiation haves the mirror clone can walk.
+    const fetch = () => run(['fetch', '--quiet', '--no-tags', 'origin', `+main:${base}`], {})
+    await fetch().catch(async (error: unknown) => {
+      if (!(error instanceof DomainError) || !/could not read|failed to traverse|did not send all necessary objects|bad object|corrupt/i
+        .test(error.message)) throw error
+      log.warn({ err: error, mirror }, 'CI mirror clone is unreadable; rebuilding it once')
+      await rm(mirrorClone, { recursive: true, force: true })
+      await ensureClone(this.git, mirror, signal)
+      await fetch()
+    })
     const reusedSnapshot = await git(['rev-parse', base])
     let fetchMs = performance.now() - fetching
     const workflow = this.provider.id === 'github' ? '.github/workflows/ci.yml' : '.circleci/config.yml'
@@ -690,7 +712,7 @@ export class CloudCi {
       reusedSnapshot, timings,
     }
     log.info({ commit, mirror, timings }, 'CI mirror snapshot published')
-    return { git, branch, snapshot, workflowRef, mirrorPublication, workflows: entries.map(entry => entry.split('\t')[1]!),
+    return { git: read, branch, snapshot, workflowRef, mirrorPublication, workflows: entries.map(entry => entry.split('\t')[1]!),
       ...(comparison ? { defaultBranch: comparison.branch } : {}),
       ...(runnerBaseCommit ? { baseCommit: runnerBaseCommit } : {}) }
   }
