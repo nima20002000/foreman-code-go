@@ -1,16 +1,19 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdtemp, rm, appendFile, writeFile, readFile, symlink, mkdir, rename, link } from 'node:fs/promises'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 import { afterEach, describe, expect, it } from 'vitest'
 import { BYTE_TRANSFER_POLICY, type TransferContext, type TransferIntent } from '@foreman-code/contracts/byte-transfer'
 import { ResumableByteTransferService } from './service.js'
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
-const fixtureRoot = '/tmp'
+const fixtureRoot = join(homedir(), '.cache', 'foreman-tmp')
 const roots: string[] = [], services: ResumableByteTransferService[] = []
 afterEach(async () => { for (const service of services.splice(0)) await service.close(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 async function fixture(bytes = Buffer.from('abcdefgh')) {
+  await mkdir(fixtureRoot, { recursive: true, mode: 0o700 })
   const root = await mkdtemp(join(fixtureRoot, '.graphql-transfer-test-')); roots.push(root)
   let epoch = randomUUID(), revoked = false, now = Date.now(), failure: string | undefined
+  let beforeDataSync: (() => Promise<void>) | undefined
   const context: TransferContext = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
     keyRevision: 1, authorizationRevision: 1, bootId: randomUUID(), connectionEpoch: epoch }
   const intent: TransferIntent = { ...context, version: 1, transferId: randomUUID(), operationId: randomUUID(),
@@ -21,14 +24,18 @@ async function fixture(bytes = Buffer.from('abcdefgh')) {
   const create = () => {
     const service = new ResumableByteTransferService(root, { authorize: async (_, current) => {
       if (revoked || current.connectionEpoch !== epoch) throw new Error('Denied current authority')
-    } }, () => now, async point => { if (failure === point) throw new Error('Injected disk failure') })
+    } }, () => now, async point => {
+      if (point === 'data-sync') await beforeDataSync?.()
+      if (failure === point) throw new Error('Injected disk failure')
+    })
     services.push(service); return service
   }
   const service = create()
   const chunk = (offset: number, value = bytes.subarray(offset, offset + 4)) => ({ offset, bytes: value, sha256: hash(value) })
   return { root, context, intent, bytes, service, create, chunk,
     revoke: () => { revoked = true }, reconnect: () => { epoch = randomUUID(); return { ...context, connectionEpoch: epoch, bootId: randomUUID() } },
-    time: (ms: number) => { now += ms }, fail: (point?: string) => { failure = point } }
+    time: (ms: number) => { now += ms }, fail: (point?: string) => { failure = point },
+    beforeDataSync: (callback: () => Promise<void>) => { beforeDataSync = callback } }
 }
 describe('bounded authenticated transfer staging', () => {
   it('keeps live writes and readers busy while finished old-epoch transfers permit Worker updates', async () => {
@@ -151,11 +158,19 @@ describe('bounded authenticated transfer staging', () => {
   it('rejects competing receiver writers rather than stealing a lock', async () => {
     const f = await fixture(); await f.service.start(f.intent, f.context)
     const other = f.create(); await other.start(f.intent, f.context)
-    const results = await Promise.allSettled([
-      f.service.append(f.intent.transferId, f.context, f.chunk(0)),
-      other.append(f.intent.transferId, f.context, f.chunk(0)),
-    ])
-    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    let announce!: () => void
+    let release!: () => void
+    const writing = new Promise<void>(resolve => { announce = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    f.beforeDataSync(async () => { announce(); await gate })
+    const winner = f.service.append(f.intent.transferId, f.context, f.chunk(0))
+    await writing
+    try {
+      await expect(other.append(f.intent.transferId, f.context, f.chunk(0))).rejects.toThrow('busy')
+    } finally {
+      release()
+      expect((await winner).durableOffset).toBe(4)
+    }
     expect((await f.service.status(f.intent.transferId, f.context)).durableOffset).toBe(4)
   })
   it('reconciles a lost final ACK after directory fsync failure without another receipt', async () => {

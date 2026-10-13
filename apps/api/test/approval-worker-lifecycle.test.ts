@@ -254,16 +254,16 @@ it('revokes resident credentials after attachment failure without preparing anot
 })
 
 for (const harness of ['codex'] as const) {
-  it(`renews ${harness} after a two-hour wait without changing its process, environment, or native identity`, async () => {
+  it(`renews ${harness} before credential expiry without changing its process, environment, or native identity`, async () => {
     const f = fixture(harness)
     await f.observeRequester()
     const credential = f.issued[0]!
     const originalExpiry = credential.expiresAt
-    vi.spyOn(Date, 'now').mockReturnValue(Date.parse(originalExpiry) + 2 * 60 * 60 * 1000)
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse(originalExpiry) - 30_000)
     await f.coordinator.attachOwnedSession(f.context, f.session)
     await f.coordinator.attachOwnedSession(f.context, f.session)
     expect(f.credentials.renew).toHaveBeenCalledTimes(1)
-    expect(f.credentials.renew).toHaveBeenCalledWith(f.context.executionId, { principalId: credential.principalId })
+    expect(f.credentials.renew).toHaveBeenCalledWith(f.context.executionId, expect.objectContaining({ principalId: credential.principalId }))
     expect(f.credentials.prepare).toHaveBeenCalledTimes(1)
     expect(f.managers).toHaveLength(1)
     const manager = f.managers[0]!
@@ -281,12 +281,24 @@ for (const harness of ['codex'] as const) {
 it('fails closed when renewal is refused rather than replacing a paused native process', async () => {
   const f = fixture()
   await f.observeRequester()
-  vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.issued[0]!.expiresAt) + 1)
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.issued[0]!.expiresAt) - 30_000)
   f.credentials.renew.mockRejectedValueOnce(new Error('revoked credential'))
   await expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('revoked credential')
   expect(f.credentials.prepare).toHaveBeenCalledTimes(1)
   expect(f.managers[0]!.attachSession).toHaveBeenCalledTimes(1)
   expect(f.managers[0]!.createSession).not.toHaveBeenCalled()
+  expect(f.credentials.revokeForExecution).toHaveBeenCalledWith(f.context.executionId)
+})
+
+it('rejects an expired resident credential even when same-token renewal is available', async () => {
+  const f = fixture()
+  await f.observeRequester()
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse(f.issued[0]!.expiresAt) + 1)
+  await expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('cannot be renewed')
+  expect(f.credentials.renew).not.toHaveBeenCalled()
+  expect(f.credentials.prepare).toHaveBeenCalledTimes(1)
+  expect(f.managers[0]!.createSession).not.toHaveBeenCalled()
+  expect(f.managers[0]!.startTurn).not.toHaveBeenCalled()
   expect(f.credentials.revokeForExecution).toHaveBeenCalledWith(f.context.executionId)
 })
 
@@ -338,11 +350,45 @@ it('a concurrent startup loser does not revoke the winning startup credentials',
   f.credentials.prepare.mockImplementationOnce(async () => { announce(); await gate; return prepared })
   const first = f.observeRequester()
   await Promise.race([started, first.then(() => { throw new Error('Startup completed before the preflight barrier') })])
-  await expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('already starting')
-  expect(f.credentials.revokeForExecution).not.toHaveBeenCalled()
-  unblock()
-  await first
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('already starting')
+    }
+    expect(f.credentials.prepare).toHaveBeenCalledTimes(1)
+    expect(f.credentials.revokeForExecution).not.toHaveBeenCalled()
+    expect(f.managers[0]!.attachSession).not.toHaveBeenCalled()
+  } finally {
+    unblock()
+    await first
+  }
   expect(f.resolver.resolve(f.context).lifecycle).toBe('resident')
+})
+
+it('preserves the original credential environment when another requester competes during preparation', async () => {
+  const f = fixture()
+  const prepared = await f.credentials.prepare()
+  f.credentials.prepare.mockClear()
+  let announce!: () => void
+  let unblock!: () => void
+  const preparing = new Promise<void>(resolve => { announce = resolve })
+  const gate = new Promise<void>(resolve => { unblock = resolve })
+  f.credentials.prepare.mockImplementationOnce(async () => {
+    announce()
+    await gate
+    return prepared
+  })
+  const first = f.observeRequester()
+  await Promise.race([preparing, first.then(() => { throw new Error('Preparation did not reach the barrier') })])
+  try {
+    await expect(f.coordinator.attachOwnedSession(f.context, f.session)).rejects.toThrow('already starting')
+    expect(f.credentials.prepare).toHaveBeenCalledTimes(1)
+    expect(f.credentials.revokeForExecution).not.toHaveBeenCalled()
+  } finally {
+    unblock()
+    await first
+  }
+  expect(f.managers[0]!.attachSession).toHaveBeenCalledTimes(1)
+  expect(f.managers[0]!.attachSession.mock.calls[0]![1].environment).toBe(prepared.credential.environment)
 })
 
 it('fences reuse until failed resident cleanup finishes', async () => {
