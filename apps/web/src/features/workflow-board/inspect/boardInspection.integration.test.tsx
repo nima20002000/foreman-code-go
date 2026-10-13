@@ -41,9 +41,22 @@ function href(scope: RepeatGraphScopeV3, inspection: WorkspaceBoardInspection = 
 }
 function domInfrastructure() {
   const queues = new Map<string, Promise<unknown>>()
-  Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: (key: string, action: () => unknown) => {
+  Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: (
+    key: string,
+    work: (() => unknown) | LockOptions,
+    claim?: (lock: Lock | null) => unknown,
+  ) => {
+    const lock: Lock = { name: key, mode: 'exclusive' }
+    if (typeof work !== 'function' && work.ifAvailable && queues.has(key)) {
+      return Promise.resolve().then(() => claim!(null))
+    }
+    const action = typeof work === 'function' ? work : () => claim!(lock)
     const result = (queues.get(key) ?? Promise.resolve()).then(action)
-    queues.set(key, result.catch(() => undefined))
+    const settled = result.then(release, release)
+    queues.set(key, settled)
+    function release() {
+      if (queues.get(key) === settled) queues.delete(key)
+    }
     return result
   } } })
   vi.stubGlobal('ResizeObserver', class {
@@ -68,6 +81,7 @@ async function mount(url: string) {
   await router.load()
   const view = render(<QueryClientProvider client={cache}><RouterProvider router={router} /></QueryClientProvider>)
   await screen.findByTestId('unified-workflow-board')
+  await screen.findByRole('region', { name: 'Workflow authoring' })
   return { ...view, cache, router, history }
 }
 const pinnedCanvas = () => screen.getByRole('region', { name: 'Selected Run pinned topology' })
@@ -96,6 +110,7 @@ beforeEach(async () => {
 })
 afterEach(() => {
   cleanup()
+  window.dispatchEvent(new Event('pagehide'))
   clients.splice(0).forEach((cache) => cache.clear()); clearBoardStopStorage()
   useGraphDraftStore.setState({ nextDrafts: {} })
   useInspectionPresentation.setState({ open: {} })
