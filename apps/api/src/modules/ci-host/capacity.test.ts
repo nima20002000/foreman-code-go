@@ -12,7 +12,10 @@ it('budgets two slots on a sixteen-core computer and accounts for existing reser
 })
 
 it('bounds slots by available memory and keeps one slot for a small computer', () => {
-  expect(hostCiCapacity({ ...machine, availableMemoryBytes: 7 * 2 ** 30 })).toMatchObject({ slotsTotal: 1 })
+  for (const cpuCount of [16, 24]) {
+    expect(hostCiCapacity({ ...machine, cpuCount, availableMemoryBytes: 7 * 2 ** 30 }))
+      .toMatchObject({ slotsTotal: 1, memoryBytes: 7 * 2 ** 30 })
+  }
   expect(hostCiCapacity({ cpuCount: 2, memoryBytes: 4 * 2 ** 30, availableMemoryBytes: 2 * 2 ** 30 }))
     .toMatchObject({ slotsTotal: 1, slotsUsed: 0, cpuCount: 2, memoryBytes: 2 * 2 ** 30 })
 })
@@ -23,4 +26,12 @@ it('waits for memory pressure to clear and does not overbook a whole-machine res
     .toMatchObject({ slotsTotal: 1, slotsUsed: 1 })
   expect(hostCiCapacity(machine, [{ cpuCount: machine.cpuCount, memoryBytes: machine.memoryBytes }]))
     .toMatchObject({ slotsTotal: 1, slotsUsed: 1 })
+})
+
+it('does not reserve memory twice when a running job has not consumed its full allowance', () => {
+  const measured = { ...machine, availableMemoryBytes: 12 * 2 ** 30 }
+  const first = hostCiCapacity(measured)
+  const second = hostCiCapacity(measured, [first])
+  expect(first.memoryBytes + second.memoryBytes).toBeLessThanOrEqual(measured.availableMemoryBytes)
+  expect(second).toMatchObject({ slotsUsed: 1, slotsTotal: 2, memoryBytes: 6 * 2 ** 30 })
 })

@@ -108,6 +108,7 @@ async function computer(options: { github?: boolean; suiteExit?: number; pause?:
   const units = new Map<string, ReturnType<typeof spawn>>()
   const system = systemHostCiPorts()
   const ports: HostCiPorts = { ...system, cpus: options.cpuCount ?? 8, memoryBytes: 16 * 2 ** 30,
+    availableMemoryBytes: () => 16 * 2 ** 30,
     run: async (file, args, runOptions = {}) => {
       if (file === 'gh') return { code: options.github === false ? 1 : 0, stdout: '', stderr: '' }
       if (file === 'git' && args.includes('clone')) {
@@ -155,7 +156,7 @@ describe('host CI runner', () => {
       suite: 'integration', scope: 'full' })
     const done = await f.settle(runId)
     expect(done.run.state).toBe('passed')
-    expect(done.text).toContain(`CI budget 8 ${Math.floor(16 * 2 ** 30 * 0.9 / 2)} 7`)
+    expect(done.text).toContain(`CI budget 7 ${Math.floor(16 * 2 ** 30 * 0.9 / 2) - 2 ** 30} 6`)
     expect(done.text).toContain('corepack pnpm db:down')
   })
 

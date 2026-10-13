@@ -50,7 +50,7 @@ interface RunMeta {
   startedAt: string; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
   message: string | null; cleaned: boolean; durations?: CiDurations
   scope?: CiScope; files?: string[]; part?: CiPart; defaultBranch?: string; baseCommit?: string; deriveFiles?: boolean
-  resources?: { cpuCount: number; memoryBytes: number }
+  resources?: { cpuCount: number; memoryBytes: number; memoryBudget?: number }
   isolatedDatabase?: boolean
 }
 
@@ -205,6 +205,7 @@ export class HostCiRunner {
     capacity = this.capacity(active)
     if (databaseSuite && !isolatedDatabase) {
       capacity = { slotsUsed: active.length, slotsTotal: 1, cpuCount: this.ports.cpus,
+        memoryBudget: capacity.memoryBudget,
         memoryBytes: Math.min(this.ports.availableMemoryBytes?.() ?? this.ports.memoryBytes,
           Math.floor(this.ports.memoryBytes - Math.max(2 ** 30, this.ports.memoryBytes * 0.1))) }
     }
@@ -216,7 +217,7 @@ export class HostCiRunner {
     const meta: RunMeta = { runId: request.runId, repository: request.repository, commit: request.commit,
       suite: request.suite, partition: request.partition ?? null, startedAt: this.ports.now().toISOString(),
       state: 'starting', finishedAt: null, exitCode: null, message: null, cleaned: false,
-      resources: { cpuCount: capacity.cpuCount, memoryBytes: capacity.memoryBytes },
+      resources: { cpuCount: capacity.cpuCount, memoryBytes: capacity.memoryBytes, memoryBudget: capacity.memoryBudget },
       isolatedDatabase,
       ...(request.part ? { part: request.part } : {}),
       scope: request.scope ?? 'affected', ...(request.files !== undefined ? { files: request.files } : {}),
@@ -258,7 +259,7 @@ export class HostCiRunner {
     const script = await this.script(meta, source)
     await writeFile(join(this.runDirectory(meta.runId), 'run.sh'), script, { mode: 0o700 })
     if ((await this.readMeta(meta.runId)).state !== 'starting') return
-    const resources = meta.resources!
+    const resources = this.suiteResources(meta)
     const environment = ['PATH', 'HOME', 'USER', 'LANG', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS']
       .flatMap(key => this.environment[key] ? [`--setenv=${key}=${this.environment[key]}`] : [])
     const started = await this.ports.run('systemd-run', ['--user', '--quiet', '--collect', `--unit=${unitName(meta.runId)}`,
@@ -301,6 +302,20 @@ export class HostCiRunner {
     const origin = (await this.git(['remote', 'get-url', 'origin'], clone)).trim()
     await this.git(['remote', 'set-url', 'origin', origin], source)
     await this.git(['checkout', '--quiet', '--detach', meta.commit], source)
+  }
+
+  private suiteResources(meta: RunMeta) {
+    const resources = meta.resources!
+    if (!meta.isolatedDatabase) return resources
+    const database = this.databaseResources(meta)
+    return { cpuCount: resources.cpuCount - database.cpuCount,
+      memoryBytes: Math.max(1, resources.memoryBytes - database.memoryBytes) }
+  }
+
+  private databaseResources(meta: RunMeta) {
+    const resources = meta.resources!
+    return { cpuCount: Math.min(1, resources.cpuCount / 2),
+      memoryBytes: Math.min(2 ** 30, Math.floor(resources.memoryBytes / 2)) }
   }
 
   private async selectFiles(meta: RunMeta, source: string) {
@@ -416,10 +431,11 @@ export class HostCiRunner {
       || (affected && meta.files?.some(file => file.startsWith('apps/api/'))))
     const prerequisiteSuite = apiUnit ? 'unit-api' : meta.part ?? meta.suite
     const run = this.runDirectory(meta.runId)
-    const resources = meta.resources!
+    const resources = this.suiteResources(meta)
     const workers = Math.max(1, Math.min(resources.cpuCount, Math.floor(resources.memoryBytes / 2 ** 30)))
     const heapMb = Math.max(256, Math.min(6144, Math.floor(resources.memoryBytes / 2 / 2 ** 20)))
     const database = capabilities.parts && meta.isolatedDatabase === true
+    const databaseResources = this.databaseResources(meta)
     let integrationEnvironment = ''
     if (meta.suite === 'integration' && capabilities.integrationPartitions) {
       // Main's learned durations, with the commit's committed ones for files it has not measured yet.
@@ -447,13 +463,16 @@ export class HostCiRunner {
     }
     return ['#!/bin/bash', 'set -o pipefail', `exec >>${quote(join(run, 'log'))} 2>&1`,
       `export TMPDIR=${quote(join(run, 'tmp'))} CI=true NODE_OPTIONS=--max-old-space-size=${heapMb}`
-        + ` FOREMAN_CODE_CI_CPU_COUNT=${resources.cpuCount} FOREMAN_CODE_CI_MEMORY_BYTES=${resources.memoryBytes}`
+        + ` FOREMAN_CODE_CI_CPU_COUNT=${Math.max(1, Math.floor(resources.cpuCount))}`
+        + ` FOREMAN_CODE_CI_MEMORY_BYTES=${resources.memoryBytes}`
         + ` FOREMAN_CODE_VERIFICATION_UNIT_WORKERS=${workers}`
         // The repository's suite hook writes structured test results here; integration has its own setting.
         + (capabilities.parts ? ` CI_HOST_RUNNER=1 FOREMAN_CODE_CI_DEDICATED=1`
           + (meta.suite === 'integration' ? '' : ` TEST_RESULTS_OUTPUT=${quote(join(run, 'test-results.json'))}`)
           + ` FOREMAN_CODE_VITEST_CACHE=${quote(join(run, 'vitest-cache'))}` : '') + integrationEnvironment,
-      ...(database ? [`export FOREMAN_CODE_CI_HOST_RUN_ID=${quote(meta.runId)}`] : []),
+      ...(database ? [`export FOREMAN_CODE_CI_HOST_RUN_ID=${quote(meta.runId)}`
+        + ` FOREMAN_CODE_CI_DATABASE_CPUS=${databaseResources.cpuCount}`
+        + ` FOREMAN_CODE_CI_DATABASE_MEMORY_BYTES=${databaseResources.memoryBytes}`] : []),
       'mkdir -p "$TMPDIR"',
       `finish() { local code="$1";`
         + (database ? ` ${pm} db:down || { [ "$code" != 0 ] || code=1; }; trap - EXIT;` : '')

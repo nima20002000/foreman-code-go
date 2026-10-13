@@ -98,11 +98,14 @@ describe('host CI runner concurrent starts', () => {
     await runner.handle(request)
     await checkout.entered
     const canceled = runner.cancel(request.runId)
-    await vi.waitFor(async () => {
-      await expect(runner.handle({ operation: 'read', runId: request.runId, afterOffset: 0, maxBytes: 1 }))
-        .resolves.toMatchObject({ run: { state: 'canceled' } })
-    })
-    checkout.release()
+    try {
+      await vi.waitFor(async () => {
+        await expect(runner.handle({ operation: 'read', runId: request.runId, afterOffset: 0, maxBytes: 1 }))
+          .resolves.toMatchObject({ run: { state: 'canceled' } })
+      })
+    } finally {
+      checkout.release()
+    }
     await expect(canceled).resolves.toMatchObject({ state: 'canceled' })
     const { access } = await import('node:fs/promises')
     await expect(access(join(root, 'runs', request.runId, 'src'))).rejects.toMatchObject({ code: 'ENOENT' })
