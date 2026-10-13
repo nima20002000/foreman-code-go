@@ -94,3 +94,15 @@ it('only includes CI smoke for an enabled authenticated build computer and pins 
     expect(reply.release?.ciSmoke).toEqual(enabled ? { repository: github.repository, commit: f.manifest.commit } : undefined)
   }
 })
+
+it('keeps release announcements readable by retained Workers before updating them', async () => {
+  const f = await release()
+  const github = { repository: 'octo/project', tag: 'worker-' + 'a'.repeat(12) }
+  await writeFile(join(f.artifacts, 'index.json'), JSON.stringify({ ...f.index, github }))
+  const extension = createWorkerArtifactExtension({ directory: f.artifacts, version: f.manifest.version,
+    buildEnabled: async () => true })
+  const payload = (await extension.handle!({ operation: 'release', target }, context)).payload
+  const retainedRelease = WorkerArtifactReplySchema.options[0].shape.release.unwrap().omit({ ciSmoke: true }).strict()
+  const retainedReply = WorkerArtifactReplySchema.options[0].extend({ release: retainedRelease.nullable() })
+  expect(retainedReply.safeParse(payload).success).toBe(true)
+})
