@@ -155,7 +155,7 @@ export const extendedOperatorTools = [
   defineOperatorTool({
     name: 'workspace_location_provision',
     requires: [['workspace_locations:provision', 'workspace'], ['workspace_locations:read', 'workspace'], ['workspace_locations:update', 'workspace']],
-    enabled: s => !!s.extensions?.workspace.provisioningEnabled,
+    enabled: s => !!s.extensions?.workspace?.provisioningEnabled,
     description: "Provision and select one runner-owned workspace directory below the explicitly configured private provisioning root. No arbitrary paths, shell commands, or sandbox expansion.", inputSchema: contracts.LocationProvisionInputSchema, outputSchema: contracts.LocationProvisionResultSchema,
     annotations: {readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false},
     run: (context, input) => context.services.extensions!.workspace.provision(context.principal,input),

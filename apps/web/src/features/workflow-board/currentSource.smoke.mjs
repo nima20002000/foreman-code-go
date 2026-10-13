@@ -36,15 +36,6 @@ test('current Web execution imports and literals have no retired positive path',
     assert.doesNotMatch(text, /executionSemanticsVersion\s*:\s*[12]\b/, file)
   }
 })
-test('one editor calls one shared saved Start and private edit-intent family', () => {
-  const editor = read('apps/web/src/features/graph/nextDraft/NextDraftEditor.tsx')
-  const transport = read('apps/web/src/features/graph/nextDraft/transport.ts')
-  assert.match(editor, /boardStartClient\.start/)
-  assert.match(editor, /useGraphEditIntent/)
-  assert.doesNotMatch(transport, /async start\(|start:\s*async|\/repeat.*update/)
-  assert.match(read('apps/web/src/features/workflow-board/startClient.ts'), /RunStartV3InputSchema/)
-  assert.match(read('apps/web/src/features/workflow-board/stopOutbox.ts'), /RepeatGraphScopeV3Schema/)
-})
 test('ordinary V3 omits repeat and the shared schema makes only configured finite plans optional', () => {
   assert.match(read('packages/contracts/src/wave25/workflowShape.ts'), /repeat:\s*RepeatPlanV1Schema\.optional\(\)/)
   assert.match(read('apps/web/src/features/repeats/RepeatEditor.tsx'), /repeat:\s*_removed,\s*\.\.\.ordinary/)

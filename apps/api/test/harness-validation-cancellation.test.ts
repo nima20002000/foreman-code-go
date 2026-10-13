@@ -123,7 +123,7 @@ it('awaits an expired draft check and cancels its refresh when the HTTP reader l
 })
 
 it('reads the same qualification through authenticated MCP and denies a caller without the read grant', async () => {
-  const { address, resume, qualify, app } = await fixture()
+  const { address, resume, qualify, app, recordDenied } = await fixture()
   resume()
   const connect = async (token: string) => {
     const client = new Client({ name: 'validation-read-test', version: '1' })
@@ -135,6 +135,9 @@ it('reads the same qualification through authenticated MCP and denies a caller w
   }
   const reader = await connect('reader-token')
   const denied = await connect('denied-token')
+  const discovered = (await reader.listTools()).tools.map(tool => tool.name)
+  expect(discovered).toContain('harness_configuration_check')
+  expect(discovered).not.toContain('workspace_location_provision')
   const input = { configuration: DEFAULT_HARNESS_DEFAULTS.codex }
   const read = () => reader.callTool({ name: 'harness_configuration_check', arguments: input })
   const first = HarnessConfigurationCheckResultSchema.parse(decodeMcpToolResult(await read()))
@@ -145,6 +148,8 @@ it('reads the same qualification through authenticated MCP and denies a caller w
   const rejected = await denied.callTool({ name: 'harness_configuration_check', arguments: input })
   expect(rejected).toMatchObject({ isError: true })
   expect(JSON.stringify(rejected.content)).toContain('ACCESS_DENIED')
+  expect(recordDenied).toHaveBeenCalledWith('denied', 'mcp', 'harness_configuration_check',
+    'mcp:harness_configuration_check')
   expect((await app.inject({ method: 'POST', url: '/api/management/harnesses/validate', payload: input,
     headers: { authorization: 'Bearer denied-token' } })).statusCode).toBe(403)
   expect(qualify).toHaveBeenCalledTimes(1)
