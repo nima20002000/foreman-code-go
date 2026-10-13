@@ -26,8 +26,24 @@ export async function prepareRemoteOwnerControl(sql: GraphTransactionSql, owner:
   let commandId: string, action: { kind: 'stop' } | { kind: 'respond'; interactionId: string; interactionRevision: string; nativeInteractionId: string; response: unknown }
   if (command.kind === 'stop') {
     const cleanup = (await sql.query<{ requested_at: Date }>('select requested_at from run_cleanup_intents where run_id=$1 and pending for share', [owner.runId])).rows[0]
-    if (!cleanup) throw new DomainError('REMOTE_CONTROL_UNAVAILABLE', 'The original accepted Run cleanup intent is required for remote Stop.', 409)
-    commandId = `stop:${binding.intent.operationId}:${cleanup.requested_at.toISOString()}`; action = { kind: 'stop' }
+    if (cleanup) {
+      commandId = `stop:${binding.intent.operationId}:${cleanup.requested_at.toISOString()}`
+    } else {
+      if (!receipt.retainedReviewer || receipt.reviewTurns?.some(turn => !turn.settled)) {
+        throw new DomainError('REMOTE_CONTROL_UNAVAILABLE',
+          'The original accepted Run cleanup intent is required for remote Stop.', 409)
+      }
+      // A completed reviewer closes at the workflow boundary while its Run still owns the session.
+      const completed = await sql.query(`select 1 from harness_executions e
+        where e.id=$1 and e.run_id=$2 and e.state='completed'
+          and not exists(select 1 from review_jobs j where j.execution_id=e.id and j.state<>'completed'
+            and (j.state<>'failed' or j.record->'cleanup'->>'completedAt' is null)) for share of e`,
+      [binding.intent.executionId, owner.runId])
+      if (completed.rowCount !== 1) throw new DomainError('REMOTE_CONTROL_UNAVAILABLE',
+        'The original retained reviewer has not finished its workflow and reviews.', 409)
+      commandId = `close-reviewer:${binding.intent.operationId}`
+    }
+    action = { kind: 'stop' }
   } else {
     const rows = await sql.query<{ record: unknown }>('select record from durable_interactions where execution_id=$1 and native_session_id=$2 and native_request_id=$3 for share', [binding.intent.executionId, command.native.sessionId, command.nativeRequestId])
     const interaction = rows.rows.length === 1 ? DurableInteractionSchema.parse(rows.rows[0]!.record) : undefined
