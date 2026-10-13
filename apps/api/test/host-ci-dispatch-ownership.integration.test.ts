@@ -307,13 +307,14 @@ it('retains cleanup when cancellation arrives while the accepted start reply is 
   }
 })
 
-it('preserves direct cancellation committed while partition throughput is being read', async () => {
+it.each([2, 3])('preserves direct cancellation during throughput planning with %i partitions', async partitions => {
   const f = await fixture()
   const entered = deferred()
   const release = deferred()
   let dispatch: Promise<void> | undefined
   try {
-    const tickets = await f.enqueue({ suite: 'integration', partitions: 2, scope: 'full' })
+    const tickets = await f.enqueue({ suite: 'integration', partitions, scope: 'full' })
+    expect(tickets.partitions).toHaveLength(partitions)
     let statuses = 0
     f.control.onStatus = async () => {
       statuses += 1
@@ -326,11 +327,16 @@ it('preserves direct cancellation committed while partition throughput is being 
     dispatch = f.ci.dispatch()
     await entered.promise
     const ticketId = tickets.ticketId
+    expect((await f.read(ticketId)).partition?.weights).toBeUndefined()
+    expect(f.starts).toEqual([])
     await f.value('ci_cancel', { ticketId })
+    expect((await f.read(ticketId)).state).toBe('canceled')
     release.resolve()
     await dispatch
+    await f.ci.dispatch()
     expect((await f.read(ticketId)).state).toBe('canceled')
     expect(f.starts.some(start => start.request.runId === ticketId)).toBe(false)
+    expect(f.starts.length).toBeGreaterThan(0)
   } finally {
     release.resolve()
     await dispatch

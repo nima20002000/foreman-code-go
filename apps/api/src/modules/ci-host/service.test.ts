@@ -294,3 +294,30 @@ it('retries a CI read once after a statement timeout, then reports a retryable e
   await expect(f.create().get(caller, { ticketId: f.read().record.id })).rejects.toMatchObject({
     code: 'DATABASE_READ_TIMEOUT', status: 503, details: { retryable: true, sqlState: '57014' } })
 })
+
+it('retries an unknown start reply on the assigned executor without requeueing', async () => {
+  const f = dispatchFixture()
+  const request = vi.mocked(f.endpoint.request).getMockImplementation()!
+  const starts: { computer: HostCiComputer; runId: string }[] = []
+  vi.mocked(f.endpoint.request).mockImplementation(async (computer, input) => {
+    if (input.operation === 'start') {
+      starts.push({ computer, runId: input.runId })
+      if (starts.length === 1) throw new Error('Start reply lost')
+    }
+    return request(computer, input)
+  })
+  const service = f.create()
+  await service.dispatch()
+  expect((await service.get(caller, { ticketId: f.queued.id })).run).toMatchObject({
+    state: 'starting', computer: { hostRef: computer.hostRef },
+    dispatchRequest: { operation: 'start', runId: f.queued.id },
+  })
+  expect(starts).toEqual([{ computer, runId: f.queued.id }])
+  await service.dispatch()
+  expect((await service.get(caller, { ticketId: f.queued.id })).run).toMatchObject({
+    state: 'running', computer: { hostRef: computer.hostRef },
+  })
+  expect(starts).toEqual([
+    { computer, runId: f.queued.id }, { computer, runId: f.queued.id },
+  ])
+})
