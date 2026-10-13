@@ -4,8 +4,10 @@ export const requirements = new Map([
   ['apps/api/test/operator-management-file-authority.integration.test.ts', ['nativeCgroupDelegation']],
   ['apps/api/test/test-database-startup.integration.test.ts', ['testDatabaseStartup']],
   ['apps/api/test/workflow-systemd-restart.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/workflow-systemd-restart-active.integration.test.ts', ['installedWorkerHost']],
-  ['apps/api/test/workflow-systemd-restart-writable-source.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/workflow-systemd-installed-service.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/workflow-systemd-active-recovery.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/workflow-systemd-writable-source-recovery.integration.test.ts', ['installedWorkerHost']],
+  ['apps/api/test/workflow-systemd-restart-unit-cleanup.integration.test.ts', ['installedWorkerHost']],
   ['apps/api/test/workflow-systemd-restart-admitting-interval.integration.test.ts', ['installedWorkerHost']],
   ['apps/api/test/workflow-systemd-restart-failed-admission.integration.test.ts', ['installedWorkerHost']],
   ['apps/api/test/native-service-restart.integration.test.ts', ['installedWorkerHost']],
@@ -42,8 +44,10 @@ export const requirements = new Map([
 
 // These fixtures control services through systemctl --user; installed Worker processes alone do not need it.
 export const userSystemdIntegrationFiles = new Set([
-  'apps/api/test/workflow-systemd-restart-active.integration.test.ts',
-  'apps/api/test/workflow-systemd-restart-writable-source.integration.test.ts',
+  'apps/api/test/workflow-systemd-installed-service.integration.test.ts',
+  'apps/api/test/workflow-systemd-active-recovery.integration.test.ts',
+  'apps/api/test/workflow-systemd-writable-source-recovery.integration.test.ts',
+  'apps/api/test/workflow-systemd-restart-unit-cleanup.integration.test.ts',
   'apps/api/test/workflow-systemd-restart-admitting-interval.integration.test.ts',
   'apps/api/test/workflow-systemd-restart-failed-admission.integration.test.ts',
   'apps/api/test/native-service-restart.integration.test.ts',
@@ -63,8 +67,9 @@ export const exclusiveIntegrationFiles = [startupFile,
   // Startup and original-owner recovery must finish within the same fixed file deadline.
   'apps/api/test/remote-review-production-worker-crash.integration.test.ts',
   // Keep installed API packaging sequential on each user-systemd host.
-  'apps/api/test/workflow-systemd-restart-active.integration.test.ts',
-  'apps/api/test/workflow-systemd-restart-writable-source.integration.test.ts',
+  'apps/api/test/workflow-systemd-installed-service.integration.test.ts',
+  'apps/api/test/workflow-systemd-active-recovery.integration.test.ts',
+  'apps/api/test/workflow-systemd-writable-source-recovery.integration.test.ts',
   'apps/api/test/workflow-systemd-restart-admitting-interval.integration.test.ts',
   'apps/api/test/workflow-systemd-restart-failed-admission.integration.test.ts',
   'apps/api/test/test-startup-isolation-environment.integration.test.ts',

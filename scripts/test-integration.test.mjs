@@ -94,6 +94,10 @@ test('each affected integration file runs only when its required capability is p
     ['apps/api/test/operator-management-file-authority.integration.test.ts', 'nativeCgroupDelegation'],
     ['apps/api/test/test-database-startup.integration.test.ts', 'testDatabaseStartup'],
     ['apps/api/test/workflow-systemd-restart.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/workflow-systemd-installed-service.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/workflow-systemd-active-recovery.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/workflow-systemd-writable-source-recovery.integration.test.ts', 'installedWorkerHost'],
+    ['apps/api/test/workflow-systemd-restart-unit-cleanup.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/native-service-restart.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/computer-workflow-save.regression-directories.integration.test.ts', 'installedWorkerHost'],
     ['apps/api/test/computer-workflow-save.regression-reservation-cleanup-preparing.integration.test.ts', 'installedWorkerHost'],
@@ -126,6 +130,19 @@ test('each affected integration file runs only when its required capability is p
     assert.equal(unavailable[0].complete, false)
     assert.equal(unavailable[0].code, null)
   }
+})
+
+test('installed API packaging and recovery files run exclusively while publication stays parallel', () => {
+  const installed = [
+    'apps/api/test/workflow-systemd-installed-service.integration.test.ts',
+    'apps/api/test/workflow-systemd-active-recovery.integration.test.ts',
+    'apps/api/test/workflow-systemd-writable-source-recovery.integration.test.ts',
+  ]
+  const ordinary = 'apps/api/test/workflow-systemd-restart-unit-publication.integration.test.ts'
+  assert.deepEqual(partitionIntegrationFiles([...installed, ordinary]), {
+    exclusive: installed,
+    parallel: [ordinary],
+  })
 })
 
 test('unsupported integration files remain required and prevent a complete or passing report', async () => {
