@@ -95,6 +95,13 @@ describe.skipIf(process.env.JOB_LIFECYCLE_POSTGRES !== '1' && !process.env.TEST_
       })
       runOwner = await RunOwnership.acquire(pool, run.id, () => {})
       if (!runOwner) throw new Error('Missing Run owner')
+      expect(runOwner.checkpointGeneration).toBe('1')
+      const competingOwner = await RunOwnership.acquire(pool, run.id, () => {})
+      try {
+        expect(competingOwner).toBeUndefined()
+      } finally {
+        await competingOwner?.release()
+      }
       const runLocked = deferred(), readJob = deferred(), jobRequested = deferred()
       const repository = new JobRepository()
       const composition = createWorkflowJobComposition({ jobs: { repository } as JobService, dispatch,
