@@ -103,7 +103,7 @@ it.each([
   [16, 14, 50, 8],
   [32, 4, 50, 1],
 ])('plans gate shards within the saved CPU and memory allowance', async (cpuCount, memoryGiB, allowance, shards) => {
-  const endpoint = fleet(1)
+  const endpoint = fleet(24)
   const computers = await endpoint.computers()
   for (const computer of computers.filter(computer => computer.hostRef.kind !== 'cloud')) {
     Object.assign(computer, { buildAllowancePercent: allowance })

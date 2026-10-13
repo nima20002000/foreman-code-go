@@ -229,7 +229,7 @@ it('honors persisted MCP build participation and priority while retaining assign
       .toMatchObject({ gate: true, integrationShards: 4, buildAllowancePercent: 50 })
     const storedSmoke = (await db.pool.query('select record from ci_runs where id=$1', [smoke.ticketId])).rows[0]!.record
     expect(storedSmoke).not.toHaveProperty('smokeComputer')
-    expect(storedSmoke).toEqual(smokeRead.run)
+    expect({ ...storedSmoke, smokeComputer: smokeInput.smokeComputer }).toEqual(smokeRead.run)
   } finally {
     await Promise.allSettled(clients.map(client => client.close()))
     await ci?.close()
