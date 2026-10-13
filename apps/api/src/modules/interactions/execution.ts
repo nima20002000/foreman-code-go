@@ -1316,6 +1316,8 @@ export class ApprovalExecutionCoordinator {
     for await (const executions of this.runs.executionPages(owner.runId, owner)) {
       for (const execution of executions) {
         const owned = this.ownedSessions.get(execution.id)
+        // A published session can still be admitting its first turn.
+        await owned?.starting
         const current = await this.runs.getExecution(execution.id, owner)
         if (!current) return false
         if (current.state === 'completed' || current.state === 'queued') continue
