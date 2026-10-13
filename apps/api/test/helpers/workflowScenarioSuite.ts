@@ -107,8 +107,8 @@ async function approveThroughHttp(f: Harness, started: Started) {
     interaction: { id: interaction.id, runId, deliveryState: 'delivered' } })
   expect(f.base.provider.counts).toEqual(counts)
   const final = GetInteractionResponseSchema.parse(await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, ''))
-  expect(final.interaction).toEqual(decision.interaction)
   expect(final.interaction).toEqual(terminalReplay.interaction)
+  // Worker acknowledgement can advance the revision after the first response snapshot.
   const { revision: decisionRevision, updatedAt: decisionUpdatedAt, ...decisionFields } = decision.interaction
   const { revision: finalRevision, updatedAt: finalUpdatedAt, ...finalFields } = final.interaction
   expect(finalFields).toEqual(decisionFields)
