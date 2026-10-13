@@ -101,6 +101,9 @@ function fakeComputers(github: Record<string, boolean> = {}, cloud: boolean | { 
       const finished = !['starting', 'running'].includes(entry.run.state)
       const run = request.testResults && finished ? { ...entry.run, collection: 'complete' as const } : entry.run
       return { operation: 'read', run, text, nextOffset: request.afterOffset + Buffer.byteLength(text),
+        ...(request.testResults && finished ? {
+          testResults: { summary: { passed: 0, failed: 0, skipped: 0 }, files: [], truncated: false },
+        } : {}),
         ...(request.durations && finished && entry.durations ? { durations: entry.durations } : {}) }
     },
   }

@@ -20,6 +20,26 @@ it('denies callers without CI grants and asks for a GitHub repository first', as
   } finally { await f.close() }
 })
 
+it.each([0, 1])('persists a finished integration report through MCP for exit code %s', async exitCode => {
+  const f = await fixture()
+  try {
+    const reader = await f.connect(CI_GET_ACTIONS)
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+      suite: 'integration', commandId: 'finished-report',
+    }))
+    await f.ci.dispatch()
+    f.finish(started.ticketId, exitCode, 'finished\n', { 'apps/api/test/example.integration.test.ts': 1000 })
+    await f.ci.dispatch()
+    const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', {
+      ticketId: started.ticketId, testStatus: ['passed', 'failed', 'skipped'],
+    }))
+    expect(read.tests).toEqual({ summary: { passed: 0, failed: 0, skipped: 0 }, files: [], truncated: false })
+    expect(read.run).toMatchObject({ state: exitCode === 0 ? 'passed' : 'failed', collection: 'complete' })
+    expect((await f.pool.query<{ test_results: unknown }>('select test_results from ci_runs where id=$1',
+      [started.ticketId])).rows[0]!.test_results).toEqual(read.tests)
+  } finally { await f.close() }
+})
+
 it('learns integration file durations from finished runs and hands every partition of the next run the same ones', async () => {
   const f = await fixture()
   const file = (name: string) => `apps/api/test/${name}.integration.test.ts`
