@@ -765,6 +765,9 @@ export class HostCiService {
         if (computer.hostRef.kind !== 'cloud') return 0
         return isGitHubComputer(computer) ? 1 : 2
       }
+      const affectedFiles = run.scope === 'affected' && !run.deriveFiles ? { files: run.files } : {}
+      const selection = run.gate && run.suite === 'integration'
+        ? { gate: true, integrationShards: run.integrationShards!, files: run.files } : affectedFiles
       const order = computers.filter(computer => runsOnCircleCi(run)
         || computer.hostRef.kind !== 'cloud' || computer.hostRef.provider !== 'circleci')
         .filter(computer => !hostRequired || supportsUserSystemd(computer))
@@ -797,9 +800,7 @@ export class HostCiService {
         try {
           const reply = CiHostReplySchema.parse(await this.endpoint.request(computer, { operation: 'start', runId: run.id,
             repository: run.repository, commit: run.commit, suite: run.suite, ...(run.part ? { part: run.part } : {}), ...(run.partition ? { partition: run.partition } : {}),
-            scope: run.scope, ...(run.gate && run.suite === 'integration'
-              ? { gate: true, integrationShards: run.integrationShards!, files: run.files }
-              : run.scope === 'affected' && !run.deriveFiles ? { files: run.files } : {}),
+            scope: run.scope, ...selection,
             ...(run.defaultBranch ? { defaultBranch: run.defaultBranch } : {}),
             ...(run.baseCommit ? { baseCommit: run.baseCommit } : {}),
             ...(durations.get(run.id) ? { durations: durations.get(run.id)! } : {}) }))

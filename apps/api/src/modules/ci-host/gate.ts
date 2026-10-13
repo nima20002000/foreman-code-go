@@ -8,7 +8,6 @@ import { planCiParts, runsOnCircleCi, type CiUnitInventory } from './parts.js'
 import { gateIntegrationShards } from './capacity.js'
 
 const SETUP_MS = 90_000
-const TARGET_MS = 300_000
 const exclusive = new Set(exclusiveIntegrationFiles)
 const log = componentLogger('jobs')
 
@@ -90,8 +89,7 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
     target.files.push(file)
   }
   const checkCritical = Math.max(...clouds.map(item => item.checkMs))
-  const targetMs = Math.max(checkCritical, TARGET_MS)
-  while (Math.max(...hosts.map(item => finish(item))) > targetMs) {
+  while (Math.max(...hosts.map(item => finish(item))) > checkCritical) {
     const host = [...hosts].sort((left, right) => finish(right) - finish(left))[0]!
     const critical = Math.max(...fleet.map(item => finish(item)))
     let move: { file: string; cloud: GateComputer; score: number; cloudMs: number } | undefined
