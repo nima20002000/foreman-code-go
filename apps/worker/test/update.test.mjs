@@ -300,6 +300,30 @@ test('runtime drain blocks maintenance starts until recovery resumes admission',
   assert.doesNotThrow(() => drain.assertAdmission('computer-maintenance-v1', { operation: 'start' }));
 });
 
+test('runtime drain fences workflow and Job admission while allowing status reads', async () => {
+  const drained = [];
+  const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal,
+    active: () => [],
+    drainJobs: async () => { drained.push('jobs'); },
+    drainQualifications: async () => { drained.push('qualifications'); },
+    drainMaintenance: async () => { drained.push('maintenance'); },
+    quiescent: async () => true });
+  const completion = drain.run();
+  for (const method of ['prepare', 'start-turn', 'job-dispatch']) {
+    assert.throws(() => drain.assertAdmission('execution-v1', { method }),
+      { code: 'WORKER_RUNTIME_DRAINING' });
+  }
+  assert.doesNotThrow(() => drain.assertAdmission('execution-v1', { method: 'status' }));
+  await completion;
+  assert.deepEqual(drained, ['jobs', 'qualifications', 'maintenance']);
+  assert.throws(() => drain.assertAdmission('execution-v1', { method: 'prepare' }),
+    { code: 'WORKER_RUNTIME_DRAINING' });
+  drain.resume();
+  for (const method of ['prepare', 'start-turn', 'job-dispatch']) {
+    assert.doesNotThrow(() => drain.assertAdmission('execution-v1', { method }));
+  }
+});
+
 test('terminal supervisor failure resumes maintenance Retry only for the unchanged original release', async t => {
   const f = await fixture(t);
   const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal,
