@@ -105,10 +105,9 @@ export async function installedRestartService(directory: string, configuration: 
   const service = renderUserService(template, { node: join(release, 'node'), app,
     state: directory, home: serviceUser.homedir, path: environment.PATH ?? '/usr/bin:/bin' })
   await publishRestartUnit(unitPath, service)
-  const systemctl = (...args: string[]) => execute('systemctl', ['--user', ...args], {
-    env: { ...process.env, XDG_RUNTIME_DIR: `/run/user/${serviceUser.uid}`,
-      DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${serviceUser.uid}/bus` },
-  })
+  const serviceEnvironment = { ...process.env, XDG_RUNTIME_DIR: `/run/user/${serviceUser.uid}`,
+    DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${serviceUser.uid}/bus` }
+  const systemctl = (...args: string[]) => execute('systemctl', ['--user', ...args], { env: serviceEnvironment })
   await systemctl('daemon-reload')
   const registry = new (await import('../../src/modules/harnesses/recovery/processRegistry.js')).NativeProcessRegistry(
     join(runtime, 'native-process-registry'))
@@ -120,7 +119,16 @@ export async function installedRestartService(directory: string, configuration: 
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
         const status = (await systemctl('show', unit, '--property=ActiveState', '--value')).stdout.trim()
         if (status === 'failed' || status === 'inactive') {
-          throw new Error(`Installed API startup failed: ${unit}`, { cause: error })
+          let diagnostic: string
+          try {
+            const journal = await execute('journalctl', [
+              '--user', '--unit', unit, '--no-pager', '--output=cat', '--lines=40',
+            ], { env: serviceEnvironment, timeout: 10_000, maxBuffer: 1024 * 1024 })
+            diagnostic = journal.stdout.trim().slice(-16384)
+          } catch (journalError) {
+            diagnostic = `Could not capture the service journal: ${String(journalError)}`
+          }
+          throw new Error(`Installed API startup failed: ${unit}\n${diagnostic}`, { cause: error })
         }
         return undefined
       }
