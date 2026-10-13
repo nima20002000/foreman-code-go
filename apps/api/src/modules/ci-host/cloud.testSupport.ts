@@ -178,7 +178,8 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
     }
     return { code: 1, stdout: '', stderr: `unexpected gh ${args.join(' ')}` }
   } }
-  const provider = options.provider === 'circleci' ? new CircleCiProvider(ports) : new GitHubActionsProvider(ports)
+  const provider = options.provider === 'circleci'
+    ? new CircleCiProvider(ports, { circleToken: async () => null }) : new GitHubActionsProvider(ports)
   if (options.userSystemd === false) {
     Object.defineProperty(provider, 'userSystemd', {
       value: { supported: false, reason: 'Executor has no systemd user manager' },

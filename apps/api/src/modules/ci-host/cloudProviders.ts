@@ -4,6 +4,9 @@ import type { CiDurations, CiExecutionSuite, CiHostRun, CiPart, CiScope, CiSuite
 import { DomainError } from '../errors.js'
 import type { HostCiPorts } from './runner.js'
 import { providerCommand } from './providerPoll.js'
+import { CloudHttp, type CloudRestOptions } from './cloudHttp.js'
+import { GitHubRest } from './cloudGithub.js'
+import { CircleRest } from './cloudCircle.js'
 
 export interface CloudRun {
   runId: string; repository: string; mirror: string; commit: string; suite: CiSuite; startedAt: string
@@ -134,9 +137,24 @@ export class GitHubActionsProvider implements CloudProvider {
   readonly loginHint = 'Log in to GitHub on Main (gh auth login) to run CI on GitHub Actions.'
   private readonly jobsCache = new Map<string, { etag: string; jobs: GitHubJob[] }>()
 
-  constructor(private readonly ports: HostCiPorts) {}
+  private readonly rest: GitHubRest
 
-  private gh(args: string[], timeoutMs?: number) { return command(this.ports, this.label, 'gh', args, timeoutMs) }
+  constructor(private readonly ports: HostCiPorts, options: CloudRestOptions = {}) {
+    this.rest = new GitHubRest(new CloudHttp(ports, 'github', options))
+  }
+
+  private gh(args: string[], timeoutMs = 120_000) {
+    return providerCommand(this.ports, 'gh', args, async () => {
+      let result: string | null = null
+      const mirror = args[args.indexOf('-R') + 1]!
+      if (args[0] === 'run' && args[1] === 'list') {
+        result = await this.rest.list(mirror, args[args.indexOf('--branch') + 1]!)
+      } else if (args[0] === 'run' && args[1] === 'view') {
+        result = args.includes('--log') ? await this.rest.log(mirror, args[2]!) : await this.rest.view(mirror, args[2]!)
+      }
+      return result ?? executeCommand(this.ports, this.label, 'gh', args, timeoutMs)
+    })
+  }
 
   async ready() {
     return (await this.ports.run('gh', ['auth', 'status', '--hostname', 'github.com'], { timeoutMs: 15_000 })).code === 0
@@ -178,6 +196,13 @@ export class GitHubActionsProvider implements CloudProvider {
   private async jobs(run: CloudRun): Promise<GitHubJob[]> {
     const id = run.providerRunId!
     const cached = this.jobsCache.get(id)
+    const response = await this.rest.jobs(run.mirror, id, cached?.etag)
+    if (response) {
+      if (response.status === 304 && cached) return cached.jobs
+      const jobs = (await this.rest.readJobs(response)).jobs
+      this.cacheJobs(id, jobs, response.headers.get('etag'))
+      return jobs
+    }
     const result = await this.ports.run('gh', ['api', '-i', ...(cached ? ['-H', `If-None-Match: ${cached.etag}`] : []),
       `repos/${run.mirror}/actions/runs/${id}/jobs?per_page=100`], { timeoutMs: 15_000 })
     const split = /\r?\n\r?\n/.exec(result.stdout)
@@ -192,10 +217,14 @@ export class GitHubActionsProvider implements CloudProvider {
     }
     const jobs = (JSON.parse(result.stdout.slice(split!.index + split![0].length)) as { jobs: GitHubJob[] }).jobs
     const etag = /^etag:\s*(.+?)\s*$/im.exec(head)?.[1]
+    this.cacheJobs(id, jobs, etag)
+    return jobs
+  }
+
+  private cacheJobs(id: string, jobs: GitHubJob[], etag: string | null | undefined) {
     this.jobsCache.delete(id)
     if (etag) this.jobsCache.set(id, { etag, jobs })
     if (this.jobsCache.size > 200) this.jobsCache.delete(this.jobsCache.keys().next().value!)
-    return jobs
   }
 
   async status(run: CloudRun): Promise<CloudStatus> {
@@ -221,6 +250,8 @@ export class GitHubActionsProvider implements CloudProvider {
 
   async artifacts(run: CloudRun, directory: string) {
     await rm(directory, { recursive: true, force: true })
+    const artifacts = await this.rest.artifacts(run.mirror, run.providerRunId!, directory)
+    if (artifacts !== null) return artifacts ? readArtifacts(directory) : noArtifacts
     const downloaded = await this.ports.run('gh', ['run', 'download', run.providerRunId!, '-R', run.mirror,
       '-n', 'durations', '-D', directory], { timeoutMs: 120_000 })
     if (downloaded.code === 0) return readArtifacts(directory)
@@ -244,9 +275,18 @@ export class CircleCiProvider implements CloudProvider {
   readonly memoryBytes = 15 * 2 ** 30
   readonly loginHint = 'Log in to CircleCI on Main (circleci auth login) and follow the CI mirror project to run CI there.'
 
-  constructor(private readonly ports: HostCiPorts) {}
+  private readonly rest: CircleRest
 
-  private circleci(args: string[], timeoutMs?: number) { return command(this.ports, this.label, 'circleci', args, timeoutMs) }
+  constructor(private readonly ports: HostCiPorts, options: CloudRestOptions = {}) {
+    this.rest = new CircleRest(new CloudHttp(ports, 'circleci', options))
+  }
+
+  private circleci(args: string[], timeoutMs = 120_000) {
+    return providerCommand(this.ports, 'circleci', args, async () => {
+      const result = await this.rest.command(args, timeoutMs)
+      return result ?? executeCommand(this.ports, this.label, 'circleci', args, timeoutMs)
+    })
+  }
 
   async ready() { return (await this.ports.run('circleci', ['auth', 'me'], { timeoutMs: 15_000 })).code === 0 }
 
@@ -320,6 +360,10 @@ export class CircleCiProvider implements CloudProvider {
       // CircleCI serves a running step's output so far; it is read whole, so only the running step is read.
       const current = raw.findLast(step => step.phase !== 'ended')
       if (!current) return { done: false, steps }
+      const output = await this.rest.output(current.jobId, current.num, 60_000)
+      if (output !== null) {
+        return { done: false, steps, ...(output.ok ? { output: { key: key(current), text: output.text } } : {}) }
+      }
       const result = await this.ports.run('circleci', ['job', 'output', 'get', current.jobId, '--step-num', String(current.num)],
         { timeoutMs: 60_000 })
       if (result.code !== 0) {
@@ -352,11 +396,13 @@ export class CircleCiProvider implements CloudProvider {
     const { job } = await this.job(run)
     if (!job) return noArtifacts
     // Only the durations artifact is read: downloading every integration log artifact outlasts any timeout.
-    const listed = await this.circleci(['job', 'artifact', job.id, '--json'], 60_000)
+    const listed = await this.rest.artifacts(run.mirror, job.id)
+      ?? await this.circleci(['job', 'artifact', job.id, '--json'], 60_000)
     await rm(directory, { recursive: true, force: true })
     await mkdir(directory, { recursive: true })
     for (const artifact of (JSON.parse(listed) as { path: string; url: string }[])
       .filter(value => value.path.startsWith('durations/'))) {
+      if (await this.rest.download(artifact.url, join(directory, basename(artifact.path)))) continue
       await command(this.ports, this.label, 'curl',
         ['-fsSL', '--max-time', '60', '-o', join(directory, basename(artifact.path)), artifact.url], 70_000)
     }
