@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -41,7 +41,18 @@ process.exit(Number(process.env.COMPILER_EXIT || 0));
     [script, 'build', root, cache, '--', process.execPath, compiler],
     { cwd: root, env: { ...env, COMPILER_EXIT: String(compilerExit) }, encoding: 'utf8' })
   const builds = () => readFileSync(count, 'utf8').trim().split('\n').length
-  return { root, build, builds, commit }
+  const other = join(directory, 'other')
+  git('worktree', 'add', '-q', '--detach', other)
+  const buildAsync = source => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [script, 'build', source, cache, '--', process.execPath, compiler],
+      { cwd: source, env: { ...env, COMPILER_EXIT: '0' } })
+    let output = ''
+    child.stdout.on('data', data => { output += data })
+    child.stderr.on('data', data => { output += data })
+    child.once('error', reject)
+    child.once('exit', status => resolve({ status, output }))
+  })
+  return { root, other, build, buildAsync, builds, commit }
 }
 
 test('restores contracts for unchanged inputs and rebuilds for contracts or dependency changes', t => {
@@ -69,4 +80,17 @@ test('never reuses output from a failed contracts compiler', t => {
   assert.equal(f.build(9).status, 9)
   assert.equal(f.build().status, 0)
   assert.equal(f.builds(), 2)
+})
+
+test('concurrent worktrees compile once and restore independent contracts outputs', async t => {
+  const f = fixture(t)
+  const results = await Promise.all([f.buildAsync(f.root), f.buildAsync(f.other)])
+  for (const result of results) assert.equal(result.status, 0, result.output)
+  assert.equal(f.builds(), 1)
+  writeFileSync(join(f.root, 'packages/contracts/dist/index.js'), 'changed by a job')
+  assert.equal(readFileSync(join(f.other, 'packages/contracts/dist/index.js'), 'utf8'), 'export const value = 1')
+  rmSync(join(f.root, 'packages/contracts/dist'), { recursive: true })
+  assert.equal(f.build().status, 0)
+  assert.equal(readFileSync(join(f.root, 'packages/contracts/dist/index.js'), 'utf8'), 'export const value = 1')
+  assert.equal(f.builds(), 1)
 })
