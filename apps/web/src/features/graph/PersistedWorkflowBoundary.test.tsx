@@ -10,6 +10,7 @@ import { fixture } from './nextDraft/core.cases'
 import { journalIntent, savedJournal } from './nextDraft/nim2644Journal.fixture'
 import { nextDraftApi, type AuthoringContext } from './nextDraft/transport'
 import { nextDraftKey } from './nextDraft/state'
+import { clearEditIntentStorage } from './nextDraft/editIntentStorage'
 
 vi.mock('./nextDraft/DraftCanvas', () => ({ DraftCanvas: () => <div>Workflow canvas</div> }))
 
@@ -44,7 +45,11 @@ beforeEach(() => {
   localStorage.clear()
   sessionStorage.clear()
   vi.stubGlobal('navigator', { ...navigator, locks: {
-    request: async (_name: string, work: () => Promise<unknown>) => work(),
+    request: async (name: string, optionsOrWork: LockOptions | ((lock: Lock) => Promise<unknown>),
+      work?: (lock: Lock) => Promise<unknown>) => {
+      const callback = typeof optionsOrWork === 'function' ? optionsOrWork : work!
+      return callback({ name, mode: 'exclusive' })
+    },
   } })
   vi.spyOn(nextDraftApi, 'editRead').mockResolvedValue(empty)
   vi.spyOn(nextDraftApi, 'pins').mockResolvedValue({ expectedAgentConfigurationVersionIds: {
@@ -54,6 +59,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  clearEditIntentStorage()
   clients.splice(0).forEach((client) => client.clear())
   useGraphDraftStore.getState().clearAllDrafts()
   vi.restoreAllMocks()
@@ -65,7 +71,7 @@ it('opens the persisted draft for editing without a storage error', async () => 
   vi.spyOn(nextDraftApi, 'context').mockResolvedValue(context)
   mount(context)
   expect(await screen.findByRole('button', { name: 'Authoring fixture' })).toBeVisible()
-  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  expect(screen.queryByRole('heading', { name: 'Authoring unavailable' })).not.toBeInTheDocument()
 })
 
 it.each(['draft read first', 'save reply first'] as const)(

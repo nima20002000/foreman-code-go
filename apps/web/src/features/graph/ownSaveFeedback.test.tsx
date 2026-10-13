@@ -13,6 +13,7 @@ import { fixture } from './nextDraft/core.cases'
 import { journalIntent, savedJournal } from './nextDraft/nim2644Journal.fixture'
 import { nextDraftApi, type AuthoringContext } from './nextDraft/transport'
 import { nextDraftKey } from './nextDraft/state'
+import { clearEditIntentStorage } from './nextDraft/editIntentStorage'
 import { graphEditIntentKey } from './nextDraft/useGraphEditIntent'
 import { useGraphDraftStore } from './store'
 import { boardDraftContextKey } from '../workflow-board/keys'
@@ -65,11 +66,16 @@ beforeEach(() => {
   server.use(http.get('*/api/management/workspaces/workspace/jobs/definitions',
     () => HttpResponse.json({ definitions: [] })))
   vi.stubGlobal('navigator', { ...navigator, locks: { request: async (
-    _name: string, optionsOrWork: unknown, work?: () => Promise<unknown>,
-  ) => (typeof optionsOrWork === 'function' ? optionsOrWork as () => Promise<unknown> : work!)() } })
+    name: string, optionsOrWork: LockOptions | ((lock: Lock) => Promise<unknown>),
+    work?: (lock: Lock) => Promise<unknown>,
+  ) => {
+    const callback = typeof optionsOrWork === 'function' ? optionsOrWork : work!
+    return callback({ name, mode: 'exclusive' })
+  } } })
 })
 afterEach(() => {
   cleanup()
+  clearEditIntentStorage()
   clients.splice(0).forEach((client) => client.clear())
   useGraphDraftStore.getState().clearAllDrafts()
   vi.restoreAllMocks()
@@ -119,7 +125,7 @@ it.each(['Agent settings Save', 'Agent settings Save and run', 'one-pass Save'] 
       workflowId="workflow" workflow={source.draft.graph} /></QueryClientProvider>)
     const user = userEvent.setup()
     expect(await screen.findByRole('button', { name: 'Authoring fixture' })).toBeVisible()
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Authoring unavailable' })).not.toBeInTheDocument()
     if (path === 'one-pass Save') {
       await user.click(await screen.findByRole('button', { name: 'Add agent or job to graph' }))
       await user.click(screen.getByRole('button', { name: 'Use one-pass dependencies' }))

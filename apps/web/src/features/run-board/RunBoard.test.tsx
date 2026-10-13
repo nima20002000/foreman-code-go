@@ -452,7 +452,12 @@ it('returns to the first node execution page after six pages while retaining the
     acceptedResult: { status: 'accepted', value: result, digest: await digestCurrentValue(result) },
   })
   const cursors: (string | null)[] = []
-  server.use(http.get(`${inspectionRoute}/:executionId`, () => HttpResponse.json(completed)),
+  const ciRunIds: (string | null)[] = []
+  server.use(http.get('*/api/management/workspaces/:workspaceId/ci', ({ request }) => {
+    const runId = new URL(request.url).searchParams.get('runId')
+    ciRunIds.push(runId)
+    return HttpResponse.json({ runId, jobs: [], truncated: false })
+  }), http.get(`${inspectionRoute}/:executionId`, () => HttpResponse.json(completed)),
     http.get(inspectionRoute, ({ request }) => {
     const cursor = new URL(request.url).searchParams.get('cursor')
     cursors.push(cursor)
@@ -472,6 +477,7 @@ it('returns to the first node execution page after six pages while retaining the
   expect(await inspector.findByLabelText('Execution node-execution')).toBeInTheDocument()
   const hostCi = within(inspector.getByRole('region', { name: 'Agent CI results' }))
   expect(await hostCi.findByText('No CI jobs in this Run yet')).toBeVisible()
+  expect(new Set(ciRunIds)).toEqual(new Set(['run-a']))
   expect(hostCi.queryByText(/CI history unavailable/)).not.toBeInTheDocument()
   for (let pageIndex = 1; pageIndex <= 5; pageIndex++) {
     await userEvent.click(inspector.getByText(buttonText('Load more executions'), { selector: 'button' }))

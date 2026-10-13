@@ -7,6 +7,7 @@ import { renderWithRouter } from '../../test/renderWithRouter'
 import { deferred } from '../../test/deferred'
 import { ReleaseAutoReload, RuntimeInstanceBoundary } from '../../app/RuntimeInstanceBoundary'
 import { UnsavedChangesProvider } from '../../shared/ui/UnsavedChangesProvider'
+import { documentBuildIdentity } from '../../shared/api/documentBuildIdentity'
 import { finishSessionChange } from '../../shared/api/sessionBoundary'
 import { bindProtectedChatInstance } from '../../shared/api/protectedChatStorage'
 import { WorkspaceNavigation } from './WorkspaceNavigation'
@@ -22,6 +23,7 @@ const clients: ReturnType<typeof renderWithRouter>['queryClient'][] = []
 beforeEach(() => {
   vi.mocked(bindProtectedChatInstance).mockReturnValue(false)
   server.use(http.get('*/api/runtime/identity', () => HttpResponse.json(identity)),
+    http.get('*/api/runtime/build-identity/v1', () => HttpResponse.json(documentBuildIdentity)),
     http.get('*/api/management/settings/workspaces/creation', () => HttpResponse.json({
       suggestedName: 'Project', description: '', parentPath: '/projects',
     })))
@@ -46,8 +48,9 @@ async function mountCreation() {
   return { ...mounted, reload, user }
 }
 async function release(client: ReturnType<typeof renderWithRouter>['queryClient']) {
-  server.use(http.get('*/api/runtime/identity', () => HttpResponse.json({ ...identity, checkoutId: 'c'.repeat(64) })))
-  await act(async () => { await client.invalidateQueries({ queryKey: ['workbench', 'runtime-identity'] }) })
+  server.use(http.get('*/api/runtime/build-identity/v1', () =>
+    HttpResponse.json({ ...documentBuildIdentity, buildId: 'c'.repeat(64) })))
+  await act(async () => { await client.invalidateQueries({ queryKey: ['workbench', 'runtime-build-identity'] }) })
 }
 
 it('blocks a release reload for an edited workspace until the draft is closed', async () => {
