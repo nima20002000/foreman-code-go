@@ -41,3 +41,19 @@ it.each([8192, 65536])('keeps receiver hashing linear for %i-byte chunks and det
     await rm(root, { recursive: true, force: true })
   }
 })
+
+it('counts original and copied hash updates without changing SHA-256 results', () => {
+  hashWork.bytes = 0
+  hashWork.limit = 5
+  try {
+    const original = createHash('sha256').update('a')
+    const copied = original.copy().update(Uint8Array.of(98, 99))
+    original.update('é')
+    expect(hashWork.bytes).toBe(5)
+    expect(copied.digest('hex')).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
+    expect(() => original.update(Buffer.from('f'))).toThrow('Hash work exceeded the linear delivery budget')
+  } finally {
+    hashWork.bytes = 0
+    hashWork.limit = Infinity
+  }
+})

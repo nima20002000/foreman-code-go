@@ -1,5 +1,5 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
+import { ManagementActionSchema, ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import pg from 'pg'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -140,6 +140,7 @@ it.each(scopeDimensions)('hides global harness options from a %s scoped authenti
     { actions: ['capabilities:read'], scope: {} },
     { actions: ['harnesses:read'], scope: { [dimension]: ['resource'] } },
   ])
+  expect(ManagementPrincipalSchema.safeParse(caller).success).toBe(true)
   const f = await endpoint(caller)
   const client = await f.connect(caller.id)
   expect(await listedNames(client)).not.toContain('harness_options_get')
@@ -155,6 +156,7 @@ it.each(scopeDimensions)('hides global harness options from a %s scoped authenti
 it('hides global tools for combined host and account constraints but keeps the unscoped positive control', async () => {
   const caller = principal('combined', [{ actions: ['harnesses:read'],
     scope: { deviceIds: ['device'], mainIds: ['main'], providerAccountIds: ['account'] } }])
+  expect(ManagementPrincipalSchema.safeParse(caller).success).toBe(true)
   const f = await endpoint(caller)
   expect(await listedNames(await f.connect(caller.id))).not.toContain('harness_options_get')
   expect(await listedNames(await f.connect(owner.id))).toContain('harness_options_get')

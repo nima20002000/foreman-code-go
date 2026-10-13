@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type pg from 'pg'
 import { expect, it, vi } from 'vitest'
-import { MAX_FILE_BYTES } from '@foreman-code/contracts/files'
+import { FileDescriptionSchema, MAX_FILE_BYTES } from '@foreman-code/contracts/files'
 import { JobInputAdmissionSchema } from '@foreman-code/contracts/job-inputs'
 import { jobExecution } from './helpers/jobFixture.js'
 import { createCanonicalJobInputPorts } from '../src/modules/files/jobInputs/factory.js'
@@ -50,6 +50,9 @@ it('copies a real 20 MiB canonical input with linear hash work and verifies the 
   vi.spyOn(ports.main, 'bind').mockResolvedValue(admission)
   const recheck = vi.spyOn(ports.main, 'recheck').mockResolvedValue(undefined)
   try {
+    expect(FileDescriptionSchema.safeParse({
+      filename: revision.filename, mediaType: revision.mediaType,
+    }).success).toBe(true)
     const candidate = await stored.receive(storageKey, Readable.from([bytes]), revision)
     await stored.stage(candidate, revision)
     await stored.finalize(storageKey, revision)
