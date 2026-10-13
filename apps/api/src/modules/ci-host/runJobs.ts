@@ -10,7 +10,7 @@ export const RUN_CI_JOBS_SQL = `select c.record,c.test_results->'summary' as tes
   from harness_executions e join runs r on r.id=e.run_id and r.workspace_id=$1
   join ci_runs c on c.workspace_id=r.workspace_id and c.record#>>'{initiator,executionId}'=e.id
   left join workflow_versions v on v.id=r.workflow_version_id
-  where e.run_id=$2 order by c.created_at desc,c.id desc limit ${CI_RUN_JOBS_LIMIT + 1}`
+  where e.run_id=$2 and ($3::text is null or e.id=$3) order by c.created_at desc,c.id desc limit ${CI_RUN_JOBS_LIMIT + 1}`
 
 export interface RunCiJobRow { record: unknown; tests: unknown; execution_id: string; agent_id: string; node_id: string; node_name: string }
 

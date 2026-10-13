@@ -40,3 +40,25 @@ it('reads Host CI tickets and tests for this initiating execution while excludin
     expect(runFilter).toBe(scope.runId)
   } finally { view.unmount(); client.clear() }
 })
+
+
+it('reads older execution tickets even when 500 newer tickets belong to other executions', async () => {
+  const newer = Array.from({ length: 500 }, (_, index) => ({
+    ...ciResultJob, ticketId: `newer-ticket-${index}`,
+    requester: { ...ciResultJob.requester, executionId: 'foreign-execution' },
+  }))
+  server.use(http.get('*/api/management/workspaces/:workspaceId/ci', ({ request }) => {
+    const params = new URL(request.url).searchParams
+    const scoped = params.get('executionId') === execution.executionId
+    return HttpResponse.json({ runId: scope.runId, truncated: !scoped, jobs: scoped ? [ciResultJob] : newer })
+  }), http.get('*/api/management/workspaces/:workspaceId/jobs/queue', () =>
+    HttpResponse.json({ tickets: [], nextHistoryCursor: null })))
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const view = render(<QueryClientProvider client={client}><AgentExecutionResults scope={scope}
+    selection={selection} execution={execution} name="Coder" acceptedResult={{ status: 'not_accepted' }} /></QueryClientProvider>)
+  try {
+    const results = screen.getByRole('region', { name: 'Agent CI results' })
+    expect(await within(results).findByRole('button', { name: /Show tests of unit · unit-web/ })).toBeVisible()
+    expect(within(results).queryByText('No CI jobs in this Run yet')).toBeNull()
+  } finally { view.unmount(); client.clear() }
+})

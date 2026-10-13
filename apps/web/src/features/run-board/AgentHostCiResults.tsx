@@ -16,7 +16,8 @@ export function AgentHostCiResults({ selection, scope, execution }: {
   const open = useStore(store, state => state.open)
   const ticketId = useStore(store, state => state.ticketId)
   const query = useRunNodeRead(selection, [execution.executionId, 'host-ci'], async signal => {
-    const result = await runCiApi.list({ workspaceId: scope.workspaceId, runId: scope.runId }, { signal })
+    const result = await runCiApi.list({ workspaceId: scope.workspaceId, runId: scope.runId,
+      executionId: execution.executionId }, { signal })
     if (result.runId !== scope.runId) throw new ApiError({ code: 'INVALID_RESPONSE', message: 'CI belongs to another Run.' })
     const jobs = result.jobs.filter(job => job.requester.executionId === execution.executionId)
     if (jobs.some(job => job.requester.agentId !== execution.agentId || job.requester.nodeId !== execution.workflowNodeId)) {

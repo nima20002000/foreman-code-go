@@ -166,3 +166,26 @@ it('keeps plain Save-only publication from implicitly starting a Run', () => {
   act(() => { h.saved(); h.rerender() })
   expect(h.start).not.toHaveBeenCalled()
 })
+
+
+it('acknowledges delayed Start recovery without replacing a later Activities selection', async () => {
+  const h = setup()
+  h.start.mockRejectedValueOnce(new Error('Start reply was lost'))
+  await act(async () => { await expect(h.result.current.start()).rejects.toThrow('Start reply was lost') })
+  expect(readBoardStart(key)).toBeDefined()
+  const reply = deferred<Awaited<ReturnType<typeof boardStartClient.resolve>>>()
+  const resolve = vi.spyOn(boardStartClient, 'resolve').mockReturnValue(reply.promise)
+  const invalidate = vi.spyOn(h.client, 'invalidateQueries')
+  let pending!: Promise<unknown>
+  act(() => { pending = h.result.current.recoverStart() })
+  await waitFor(() => expect(resolve).toHaveBeenCalledOnce())
+  h.selectAnotherRun()
+  await act(async () => {
+    reply.resolve({ status: 'accepted', run: h.returnedRun })
+    await pending
+  })
+  expect(h.selectRun).not.toHaveBeenCalled()
+  expect(readBoardStart(key)).toBeUndefined()
+  expect(invalidate).toHaveBeenCalled()
+  expect(h.start).toHaveBeenCalledOnce()
+})
