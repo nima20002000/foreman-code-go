@@ -73,7 +73,7 @@ it('observes subscribed changes without waiting for a polling interval', async (
 it.each([
   { interval: {}, pollingMs: 25 },
   { interval: { minimumReadIntervalMs: 1_000 }, pollingMs: 1_000 },
-])('rechecks subscribed conditions without a commit notification after $pollingMs ms', async ({ interval }) => {
+])('rechecks subscribed conditions without a commit notification after $pollingMs ms', async ({ interval, pollingMs }) => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
   let ready = false
   const unsubscribe = vi.fn()
@@ -84,7 +84,7 @@ it.each([
   })
   await vi.advanceTimersByTimeAsync(0)
   ready = true
-  await vi.advanceTimersByTimeAsync(999)
+  await vi.advanceTimersByTimeAsync(pollingMs - 1)
   expect(read).toHaveBeenCalledTimes(1)
   await vi.advanceTimersByTimeAsync(1)
   expect(read).toHaveBeenCalledTimes(2)
