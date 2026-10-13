@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ExecutionAuthorityRequestSchema } from '@foreman-code/contracts/execution-authority'
-import { workerExecutionAuthorizer } from './executionAuthorityClient.js'
+import { workerExecutionAuthorizer, workerReviewerAuthorizer } from './executionAuthorityClient.js'
 import { freezePlacement, deriveDispatch, readPlacement } from './binding.js'
 import { SavedNodePlacementSchema } from '@foreman-code/contracts/node-placement'
 const mainId='11111111-1111-4111-8111-111111111111', digest='a'.repeat(64)
@@ -11,6 +11,21 @@ const pin=freezePlacement({ schemaVersion:1,mainId,mainInstallationId:mainId,run
   payload:{kind:'agent',agentId:'agent',agentConfigurationVersionId:'config',driverId:'codex',driverRevision:'1',instanceId:'instance',instanceRevision:'1',harnessInstallationId:'harness',installationFingerprint:digest,runtimeContractVersion:1,protocolRevision:'1',credentialScopeRefs:[]} })
 const intent=deriveDispatch(pin,{executionId:'execution',occurrenceId:null,occurrenceIndex:0,technicalAttempt:1,attemptId:'attempt',operationId:'operation',inputDigest:`sha256:${digest}`,owner:{grantId:'grant',epoch:'1'}})
 describe('actual Agent admission contracts and private upstream authorizer',()=>{
+  it.each([true, false])('rechecks cleanup after reviewer retention is denied (cleanup: %s)', async cleanupOnly => {
+    const retentionError = new Error('Reviewer retention denied')
+    const actions: string[] = []
+    const authorize = workerReviewerAuthorizer(async (_namespace, raw) => {
+      const input = ExecutionAuthorityRequestSchema.parse(raw)
+      actions.push(input.action)
+      if (input.action === 'retain-reviewer') throw retentionError
+      return { payload: { version: 1, action: input.action, operationId: intent.operationId,
+        attemptId: intent.attemptId, bindingHash: intent.bindingHash, owner: intent.owner,
+        ...(cleanupOnly ? { cleanupOnly: true } : {}) } }
+    })
+    if (cleanupOnly) await expect(authorize(intent, pin)).resolves.toBeUndefined()
+    else await expect(authorize(intent, pin)).rejects.toBe(retentionError)
+    expect(actions).toEqual(['retain-reviewer', 'read'])
+  })
   it('binds the exact saved artifact declaration and rejects a rewritten worker placement',()=>{
     if (pin.payload.kind !== 'agent') throw new Error('fixture')
     const {bindingHash: originalBindingHash,...base}=pin

@@ -994,6 +994,7 @@ for (const [name, reservedReview] of [
   ['remote review delivery', 'apps/api/test/remote-review-production-delivery.integration.test.ts'],
   ['historical workflow version pins', 'apps/api/test/workflow-historical-version-pins.integration.test.ts'],
   ['source snapshot retention', 'apps/api/test/source-snapshot-retention.integration.test.ts'],
+  ['six-node checkpoint routing', 'apps/api/test/eng03-b-durability-routing.integration.test.ts'],
 ]) test(`${name} runs without competing integration or gate processes`, async () => {
   const ordinary = 'apps/api/test/ordinary.integration.test.ts'
   const active = new Set()
