@@ -97,10 +97,13 @@ async function expectCodexCredentialIsolation(directory: string, auditOffset = 0
   expect(execution.every(entry => (entry.af02CredentialKeys as string[])
     .includes(OPERATOR_MCP_ENVIRONMENT_VARIABLE))).toBe(true)
   expect(metadata.every(entry => (entry.af02CredentialKeys as string[]).length === 0)).toBe(true)
-  const overrides = audit.filter(entry => Array.isArray(entry.cli)
-    && (entry.cli as string[]).some(arg => /^mcp_servers\..+\.enabled=false$/.test(arg)))
-  expect(overrides.some(entry => metadataPids.has(entry.processPid))).toBe(true)
-  expect(overrides.some(entry => executionPids.has(entry.processPid))).toBe(false)
+  const connections = audit.filter(entry => typeof entry.appMcpEnabled === 'boolean')
+  const metadataConnections = connections.filter(entry => metadataPids.has(entry.processPid))
+  const executionConnections = connections.filter(entry => executionPids.has(entry.processPid))
+  expect(metadataConnections.length).toBeGreaterThan(0)
+  expect(executionConnections.length).toBeGreaterThan(0)
+  expect(metadataConnections.every(entry => entry.appMcpEnabled === false)).toBe(true)
+  expect(executionConnections.every(entry => entry.appMcpEnabled === true)).toBe(true)
 }
 function fileCallValue(result: CodexFileCallResult): unknown {
   expect(result.success).toBe(true)
@@ -144,7 +147,12 @@ describe.skipIf(!connectionString || process.platform === 'win32')('AF-02 produc
     await writeFile(join(f.directory, 'file-turn'), '')
     // Audit key presence only, not credential values. The fixture's worker
     // default is absent because the actual Operator service supplies its input.
-    const binary = await readFile(f.binary, 'utf8')
+    let binary = await readFile(f.binary, 'utf8')
+    const connectionSeam = 'log({ cli: args })'
+    assert.equal(binary.split(connectionSeam).length, 2)
+    binary = binary.replace(connectionSeam, `const configuredAppMcp = read('mcp.json', {})
+      log({ cli: args, appMcpEnabled: configuredAppMcp.enabled !== false
+        && !processDisabledMcp.has(configuredAppMcp.name) })`)
     const seam = "const agent = process.env.TEST_AGENT_ID || 'agent-a'"
     assert.equal(binary.split(seam).length, 2)
     await writeFile(f.binary, binary.replace(seam,
