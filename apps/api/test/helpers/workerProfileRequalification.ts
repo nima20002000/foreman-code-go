@@ -48,9 +48,7 @@ export async function assertMcpReadback(fixture: Fixture, evidence: Awaited<Retu
   const reads = await Promise.allSettled([
     fixture.value('harness_qualifications_list', {}),
     fixture.inventory(),
-    fixture.db.pool.query<{ check_id: string }>(`select evidence->>'checkId' as check_id
-      from harness_qualifications where evidence->>'checkId'=any($1::text[])`,
-    [completed.map(receipt => receipt.checkId)]),
+    latestEvidence(fixture),
   ])
   const [qualificationsRead, inventoryRead, retainedRead] = reads
   if (qualificationsRead.status === 'rejected' || inventoryRead.status === 'rejected'
@@ -59,12 +57,18 @@ export async function assertMcpReadback(fixture: Fixture, evidence: Awaited<Retu
     throw new AggregateError(errors, 'Worker profile readback failed.')
   }
   const qualifications = HarnessQualificationListSchema.parse(qualificationsRead.value)
-  // Profiles are ordered by instance ID; the shared suite row is overwritten in commit order.
-  expect(retainedRead.value.rows).toHaveLength(1)
-  const retained = completed.find(receipt => receipt.checkId === retainedRead.value.rows[0]!.check_id)!
-  expect(qualifications.qualifications).toContainEqual(retained.record)
+  expect(retainedRead.value).toEqual(evidence)
+  // Main and Worker checks can overwrite the same binary/suite summary row.
+  for (const { record } of completed) {
+    expect(qualifications.qualifications).toContainEqual(expect.objectContaining({
+      harness: record.harness, version: record.version,
+      binarySha256: record.binarySha256, suiteRevision: record.suiteRevision,
+    }))
+  }
   const inventory = inventoryRead.value
-  const generation = inventory.installations.find(installation => installation.driverId === 'codex')!.connectionGeneration
-  expect(evidence.every(proof => proof.connectionGeneration === generation)).toBe(true)
+  const installation = inventory.installations.find(installation => installation.driverId === 'codex')!
+  expect(installation.qualified).toBe(true)
+  expect(completed.every(({ record }) => record.version === installation.observedVersion)).toBe(true)
+  expect(evidence.every(proof => proof.connectionGeneration === installation.connectionGeneration)).toBe(true)
 }
 
