@@ -197,6 +197,8 @@ it.each(['cloud', 'build'] as const)('requeues a cloud setup failure once on ano
     expect(read.run.computer!.hostRef).not.toEqual(part.computer!.hostRef)
     expect(read.run.computer!.hostRef.kind).toBe(destination === 'cloud' ? 'cloud' : 'main')
     expect(read.group?.state).not.toBe('failed')
+    expect(f.started.filter(value => value.request.operation === 'start'
+      && value.request.runId === read.run.setupRetry!.runId)).toHaveLength(1)
     const attempts = f.started.filter(value => value.request.operation === 'start'
       && value.request.runId === part.id)
     expect(attempts).toHaveLength(1)
@@ -442,9 +444,13 @@ it('admits a gate on the ready fleet when another build computer is disconnected
 it('runs cloud checks before systemd integration overflow even when checks move between slots', async () => {
   const f = await fixture({ cloudSlots: 4, files: [...exclusiveIntegrationFiles] })
   try {
-    const admitted = CiRunOutputSchema.parse(await f.value('ci_run', {
+    const input = {
       suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40), commandId: randomUUID(),
-    }))
+    }
+    const reader = await f.connect(true)
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    const admitted = CiRunOutputSchema.parse(await f.value('ci_run', input))
+    expect(CiRunOutputSchema.parse(await f.value('ci_run', input))).toEqual(admitted)
     await f.ci.dispatch()
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     const overflow = read.partitions!.filter(run => run.suite === 'integration'
@@ -455,6 +461,8 @@ it('runs cloud checks before systemd integration overflow even when checks move 
         && check.plannedHostKey === run.plannedHostKey)
       expect(checks.length).toBeGreaterThan(0)
       expect(run.state).toBe('queued')
+      expect((await database.pool.query('select record from ci_runs where id=$1', [run.id])).rows[0].record)
+        .toEqual(run)
     }
     const runningCloud = read.partitions!.filter(run => run.state === 'running'
       && run.computer?.hostRef.kind === 'cloud')
