@@ -67,6 +67,29 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('ENG06-A PostgreSQL recovery rec
     return { execution, reference, owner, generation: row.generation }
   }
 
+  it('advances checkpoint ownership when a recovery owner is replaced', async () => {
+    const f = await seed()
+    try {
+      assert.equal(f.owner.checkpointGeneration, '1')
+      const competing = await RunOwnership.acquire(pool, f.execution.runId, () => undefined)
+      if (competing) await competing.release()
+      assert.equal(competing, undefined)
+    } finally {
+      await f.owner.release()
+    }
+
+    const successor = await RunOwnership.acquire(pool, f.execution.runId, () => undefined)
+    assert.ok(successor)
+    try {
+      assert.equal(successor.checkpointGeneration, '2')
+      await recoverWorkflowNativeClosure(successor, f.execution, async () => true, new AbortController().signal)
+      const closure = await readWorkflowClosure(successor.oneShotConnection(), f.execution)
+      assert.equal(closure?.durableGeneration, f.generation)
+    } finally {
+      await successor.release()
+    }
+  })
+
   for (const detached of [false, true]) it(`persists and reuses exact ${detached ? 'detached' : 'crashed'} closure across Run owners`, async () => {
     const f = await seed({ detached })
     const original = (await pool.query('select * from execution_native_closures where generation=$1', [f.generation])).rows[0]
