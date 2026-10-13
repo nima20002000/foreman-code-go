@@ -52,7 +52,7 @@ function fixture() {
 function retainReviewer(f: ReturnType<typeof fixture>) {
   const saved = approvalFixture()
   const execution: HarnessExecution = { ...saved.executions[0]!, id: intent.executionId, runId: intent.runId,
-    workflowNodeId: intent.nodeId, nativeSessionId: native.sessionId, state: 'completed' as const,
+    workflowNodeId: intent.nodeId, nativeSessionId: native.sessionId, state: 'completed', finishedAt: now,
     result: { outcome: 'succeeded' as const, output: { text: 'Original workflow answer' } } }
   saved.version.entryNodeId = intent.nodeId
   saved.version.definition.entryNodeId = intent.nodeId
@@ -63,6 +63,9 @@ function retainReviewer(f: ReturnType<typeof fixture>) {
     reference: { harness: 'codex', providerVersion: 'fixture', nativeSessionId: native.sessionId } }
   f.state.reviewer = reviewer
   f.state.cleanup = undefined
+  f.state.receipt!.turnInput = {
+    correlationId: `execution:${intent.executionId}`, promptDigest: 'a'.repeat(64), sessionMode: 'regular',
+  }
   f.state.receipt!.retainedReviewer = { agentId: execution.agentId,
     workflowTurnId: native.turnId, result: execution.result!, expiresAt: '2026-10-01T00:01:00.000Z' }
   return { execution, reviewer }
@@ -133,7 +136,6 @@ describe('SQL-only admitted remote control preparation', () => {
   it('closes a completed retained reviewer under its Run owner without requesting Run Stop', async () => {
     const f = fixture()
     const { execution } = retainReviewer(f)
-    f.state.receipt!.turnInput = { correlationId: 'execution:execution', promptDigest: 'a'.repeat(64), sessionMode: 'regular' }
     try {
       const command = await f.prepare('stop')
       expect(command).toMatchObject({ commandId: 'close-reviewer:operation', native,

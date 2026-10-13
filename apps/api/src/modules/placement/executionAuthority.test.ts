@@ -35,7 +35,7 @@ function fixture() {
   const state = { grant: true, origin: connection, cleanup: false, stopped: false, receipt: true, reviewer: undefined as unknown, reviewsPending: false }
   const receipt: RemoteOperationReceipt = { schemaVersion: 1, intent, connection, workerIncarnationId: randomUUID(), sequence: 4,
     phase: 'running', entryAttempted: true, turnEntryAttempted: true, stopFence: false, controls: [],
-    turnInput: { correlationId: 'execution:execution', promptDigest: digest },
+    turnInput: { correlationId: 'execution:execution', promptDigest: digest, sessionMode: 'regular' },
     native: { sessionId: 'native-session', turnId: 'original-turn', processIdentityDigest: digest } }
   const sql = { query: async (text: string) => {
     if (text.startsWith('select r.record as run')) return { rows: state.reviewer ? [state.reviewer] : [],
@@ -66,7 +66,8 @@ function retainReviewer(f: ReturnType<typeof fixture>) {
   const saved = approvalFixture()
   const execution = { ...saved.executions[0]!, id: f.intent.executionId, runId: f.intent.runId,
     workflowNodeId: f.intent.nodeId, nativeSessionId: f.receipt.native!.sessionId,
-    state: 'completed' as const, result: { outcome: 'succeeded' as const } }
+    state: 'completed' as const, finishedAt: '2026-10-01T00:00:00.000Z',
+    result: { outcome: 'succeeded' as const } }
   saved.version.entryNodeId = f.intent.nodeId
   saved.version.definition.entryNodeId = f.intent.nodeId
   saved.version.definition.nodes[0]!.id = f.intent.nodeId
