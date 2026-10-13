@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
-import { AgentChatStateResponseSchema, SendAgentChatMessageResponseSchema } from '@foreman-code/contracts/agent-chat'
+import { AgentChatStateSchema, SendAgentChatMessageResponseSchema } from '@foreman-code/contracts/agent-chat'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { buildApp } from '../src/app.js'
@@ -123,7 +123,6 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
       turn: { requestId: input.requestId, delivery: 'queued' },
       state: { conversation: { id, nativeSession: { nativeSessionId: nativeId } } },
     })
-    expect(pendingRead).toHaveBeenCalledOnce()
     await waitForDelivery(chat, repository, id!, input.requestId, 'failed', { timeoutMs: 1_000 })
     expect((await repository.turn(id!, input.requestId))?.delivery).toBe('failed')
     expect((await repository.get(id!))?.active_request_id).toBeNull()
@@ -132,11 +131,12 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
     const settled = await graphRpc(app, owner.token, 'tools/call', { name: 'agent_chat_read',
       arguments: { workspaceId: seeded.scope.workspaceId, query } })
     expect(settled.result?.isError).not.toBe(true)
-    const settledState = AgentChatStateResponseSchema.parse(graphRpcValue(settled.result)).state
+    const settledState = AgentChatStateSchema.parse(graphRpcValue(settled.result))
     expect(settledState.activeTurn).toBeNull()
     expect(settledState.pendingInteraction).toBeUndefined()
     expect(settledState.turns.find(turn => turn.requestId === input.requestId)).toMatchObject({ delivery: 'failed' })
     expect(settledState.conversation?.nativeSession?.nativeSessionId).toBe(nativeId)
+    expect(pendingRead).toHaveBeenCalledOnce()
     const retry = await graphRpc(app, owner.token, 'tools/call', { name: 'agent_chat_send',
       arguments: { workspaceId: seeded.scope.workspaceId, request: { ...input, requestId: 'retry-unoffered' } } })
     expect(retry.result?.isError).not.toBe(true)
