@@ -386,8 +386,14 @@ it('runs another repository’s named parts through its own suite hook', async (
   }
 })
 
-it('runs generic install without an install script and persists a package-script failure', async () => {
-  const repository = await genericCiRepository({ suiteExit: 7 })
+it.each([0, 1250])(
+  'runs generic install without an install script and persists a package-script failure after a %i ms launch delay',
+  async launchDelayMs => {
+  const repository = await genericCiRepository({ suiteExit: 7, beforeLaunch: async () => {
+    // A subprocess launch can take longer than the default matcher polling deadline.
+    // eslint-disable-next-line no-restricted-syntax
+    await new Promise(resolve => setTimeout(resolve, launchDelayMs))
+  } })
   const f = await fixture({ repositoryRunner: repository })
   try {
     const install = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'generic-install' }))
@@ -397,6 +403,8 @@ it('runs generic install without an install script and persists a package-script
     expect(installed.run).toMatchObject({ part: null, partition: null, step: 'install', exitCode: 0 })
     expect(installed.logTail).toContain('npm install')
     expect(installed.logTail).not.toContain('npm run install')
+    expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
+      [install.ticketId])).rows[0]!.record).toEqual(installed.run)
     const build = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'build', commandId: 'generic-failure' }))
     await expect.poll(async () => CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get',
       { ticketId: build.ticketId })).run.state).toBe('failed')
@@ -571,15 +579,29 @@ it('sizes persisted unit parts from committed timings and then from learned unit
   const durations = Object.fromEntries(files.map(file => [file, 150_000]))
   const f = await fixture({ unitInventory: { files, durations, heavy: [] } })
   try {
-    const first = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'unit', commandId: 'timed-parts' }))
-    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: first.ticketId }))
+    const reader = await f.connect(CI_GET_ACTIONS)
+    const input = { suite: 'unit', scope: 'full', commandId: 'timed-parts' }
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    const first = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
+    let read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: first.ticketId }))
     expect(read.partitions!.filter(run => run.part === 'unit-api')).toHaveLength(6)
-    const active = read.partitions!.filter(run => run.state === 'running')
-    for (const [index, run] of active.entries()) {
-      f.finish(run.id, 0, 'passed\n', Object.fromEntries(files.slice(index * 3, index * 3 + 3).map(file => [file, 60_000])))
+    const measured: string[] = []
+    for (let pass = 0; pass < first.partitions!.length && read.group!.state !== 'passed'; pass++) {
+      const active = read.partitions!.filter(run => run.state === 'running')
+      expect(active.length).toBeGreaterThan(0)
+      for (const run of active) {
+        const slice = run.part === 'unit-api' ? integrationPartition(files, durations, run.partition!) : []
+        measured.push(...slice)
+        f.finish(run.id, 0, 'passed\n', Object.fromEntries(slice.map(file => [file, 60_000])))
+      }
+      read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: first.ticketId }))
     }
-    await f.ci.dispatch()
-    const next = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'unit', commandId: 'learned-parts' }))
+    expect(read.group!.state).toBe('passed')
+    expect(read.partitions!.every(run => run.collection === 'complete')).toBe(true)
+    expect(measured.sort()).toEqual(files)
+    const next = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+      suite: 'unit', scope: 'full', commandId: 'learned-parts',
+    }))
     const learned = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: next.ticketId }))
     expect(learned.partitions!.filter(run => run.part === 'unit-api')).toHaveLength(3)
     expect((await f.pool.query('select count(*)::int as count from ci_file_durations')).rows[0].count).toBe(6)
@@ -1587,7 +1609,11 @@ it('learns integration file durations from finished runs and hands every partiti
     expect(startedDurations()).toEqual([undefined, undefined])
     f.finish(first.partitions![0]!.ticketId, 0, 'ok\n', { [file('a')]: 1000, [file('b')]: 2000 })
     f.finish(first.partitions![1]!.ticketId, 1, 'FAIL\n', { [file('c')]: 3000 })
-    await f.ci.dispatch()
+    const completed = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: first.ticketId }))
+    expect(completed.group!.state).toBe('failed')
+    expect(completed.partitions!.every(run => run.collection === 'complete')).toBe(true)
+    expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where group_id=$1',
+      [completed.run.groupId])).rows.map(row => row.record)).toEqual(expect.arrayContaining(completed.partitions!))
     const learned = { [file('a')]: 1000, [file('b')]: 2000, [file('c')]: 3000 }
     const second = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'integration', commandId: 'learn-2',
       partitions: 2 }))
