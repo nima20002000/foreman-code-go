@@ -19,6 +19,18 @@ export class HarnessInstanceSettingsRepository {
       where host_key=$1 and application_installation_id=$2 order by instance_id,revision desc`, [harnessHostKey(host), applicationInstallationId])
     return result.rows.map(row => HostHarnessOverrideSchema.parse(row.record))
   }
+  async prioritizeForRuns(profiles: HostHarnessOverride[]): Promise<HostHarnessOverride[]> {
+    const result = await this.pool.query<{ instance_id: string; instance_revision: string }>(`
+      select distinct placement.record#>>'{payload,instanceId}' as instance_id,
+        placement.record#>>'{payload,instanceRevision}' as instance_revision
+      from run_node_placements placement join runs run on run.id=placement.run_id
+      where placement.record#>>'{payload,instanceId}'=any($1::text[])
+        and run.record->>'executionState' in ('queued','running','waiting')
+        and run.record->>'outcome'='pending'`, [profiles.map(profile => profile.instanceId)])
+    const used = new Set(result.rows.map(row => `${row.instance_id}:${row.instance_revision}`))
+    const priority = (value: HostHarnessOverride) => Number(used.has(`${value.instanceId}:${value.instanceRevision}`))
+    return [...profiles].sort((left, right) => priority(right) - priority(left))
+  }
   async readAuthorized<T>(operation: (client: pg.PoolClient) => Promise<T>): Promise<T> {
     return withTransaction(this.pool, operation)
   }

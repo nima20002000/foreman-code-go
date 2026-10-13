@@ -52,6 +52,9 @@ function setup(read: () => NativeHistory, changeReply?: (reply: ReturnType<typeo
   const cursors: Array<number | undefined> = []
   const observeOriginalSource = vi.fn<NonNullable<RemoteNativeManagerOptions['observeOriginalSource']>>(async () => {})
   const observedReceipts: Array<ReturnType<typeof RemoteOperationReceiptSchema.parse>> = []
+  const controlFor = vi.fn<RemoteNativeManagerOptions['controlFor']>(async () => {
+    throw new Error('No native control requested')
+  })
   const request = vi.fn<RemoteNativeTransport['request']>(async (method, raw) => {
     const frame = RemoteExecutionRpcRequestSchema.parse(raw)
     if (method === 'prepare') return { session, status }
@@ -65,12 +68,12 @@ function setup(read: () => NativeHistory, changeReply?: (reply: ReturnType<typeo
   })
   const proxy = new RemoteNativeSessionManager({ intent, placement, harness: 'codex', configuration,
     transport: { request }, observeReceipt: async value => { observedReceipts.push(value) }, observeOriginalSource,
-    controlFor: async () => { throw new Error('No native control requested') },
+    controlFor,
   })
   const start = { correlationId: 'execution:execution', request: { executionId: 'execution', runId: 'run',
     workspaceId: 'workspace', workflowNodeId: 'node', workingDirectory: '/project', runtimeDirectory: '/runtime',
     configuration, input: {} } }
-  return { proxy, start, request, cursors, observeOriginalSource, receipt, observedReceipts }
+  return { proxy, start, request, cursors, controlFor, observeOriginalSource, receipt, observedReceipts }
 }
 
 function terminal(events: NativeHarnessEvent[]): NativeHistory {
@@ -102,6 +105,69 @@ describe('remote native history streaming', () => {
     expect(delivered).toEqual(events)
     expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
   })
+  it('refreshes a recovered turn acknowledgment before admitting Stop', async () => {
+    const f = setup(() => ({ events: [], pendingInteractions: [] }))
+    const running = structuredClone(f.receipt)
+    delete f.receipt.native!.turnId
+    delete f.receipt.turnInput
+    f.receipt.phase = 'start_acknowledged'
+    f.receipt.turnEntryAttempted = false
+    const session = await f.proxy.createSession(f.start)
+    Object.assign(f.receipt, running, { sequence: running.sequence + 1 })
+    f.controlFor.mockImplementation(async input => ({
+      schemaVersion: 1, protocolVersion: 1, commandId: randomUUID(),
+      operationId: f.receipt.intent.operationId, attemptId: f.receipt.intent.attemptId,
+      executionId: f.receipt.intent.executionId, bindingHash: f.receipt.intent.bindingHash,
+      owner: f.receipt.intent.owner, native: input.native, action: { kind: 'stop' },
+    }))
+    const request = f.request.getMockImplementation()!
+    f.request.mockImplementation(async (method, payload, signal) => {
+      if (method === 'status') return { status: 'known', receipt: f.receipt }
+      if (method !== 'control') return request(method, payload, signal)
+      const frame = RemoteExecutionRpcRequestSchema.parse(payload)
+      if (frame.method !== 'control') throw new Error('Expected a native control.')
+      expect(frame.command.native).toEqual(running.native)
+      f.receipt.controls.push(frame.command)
+      f.receipt.stopFence = true
+      f.receipt.phase = 'confirmed_terminal'
+      f.receipt.terminal = { kind: 'cancelled', closureEvidenceDigest: 'b'.repeat(64) }
+      f.receipt.sequence++
+      return { status: 'known', receipt: f.receipt }
+    })
+
+    await expect(f.proxy.cancel(session)).resolves.toBe(true)
+    expect(f.controlFor).toHaveBeenCalledWith({ kind: 'stop', native: running.native })
+    expect(f.request.mock.calls.map(([method]) => method)).toEqual(['prepare', 'status', 'control', 'history'])
+  })
+
+  it('reads a recovered terminal closure without admitting another Stop', async () => {
+    const f = setup(() => ({ events: [], pendingInteractions: [] }))
+    const session = await f.proxy.createSession(f.start)
+    f.receipt.phase = 'confirmed_terminal'
+    f.receipt.stopFence = true
+    f.receipt.terminal = { kind: 'cancelled', closureEvidenceDigest: 'b'.repeat(64) }
+    f.receipt.sequence++
+    const request = f.request.getMockImplementation()!
+    f.request.mockImplementation((method, payload, signal) => method === 'status'
+      ? Promise.resolve({ status: 'known', receipt: f.receipt }) : request(method, payload, signal))
+
+    await expect(f.proxy.cancel(session)).resolves.toBe(true)
+    expect(f.controlFor).not.toHaveBeenCalled()
+    expect(f.request.mock.calls.map(([method]) => method)).toEqual(['prepare', 'status', 'history'])
+  })
+
+  it('refuses Stop when refreshed native ownership differs from the original session', async () => {
+    const f = setup(() => ({ events: [], pendingInteractions: [] }))
+    const session = await f.proxy.createSession(f.start)
+    f.receipt.native!.sessionId = 'replacement-session'
+    f.receipt.sequence++
+    f.request.mockImplementation(async () => ({ status: 'known', receipt: f.receipt }))
+
+    await expect(f.proxy.cancel(session)).rejects.toThrow('Original remote receipt changed')
+    expect(f.controlFor).not.toHaveBeenCalled()
+    expect(f.request.mock.calls.map(([method]) => method)).toEqual(['prepare', 'status'])
+  })
+
   it.each(['prepare', 'reattach'] as const)('preserves restart cancellation during %s before acknowledgment', async mode => {
     const f = setup(() => terminal([event(0)]))
     const controller = new AbortController()

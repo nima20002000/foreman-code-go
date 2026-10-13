@@ -3,7 +3,7 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { SavedNodePlacementSchema, type SavedNodePlacement } from '@foreman-code/contracts/node-placement'
 import { SourceRootRecordSchema, type SourceRootRecord } from '@foreman-code/contracts/source-admission'
 import type { SourceRootReference } from '@foreman-code/contracts/worktree-settings'
-import { HostHarnessOverrideSchema } from '@foreman-code/contracts/harness-registry'
+import { HostHarnessOverrideSchema, type HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import type { WorkspaceRootPolicyPort } from '../sources/rootPolicyPorts.js'
@@ -28,6 +28,7 @@ export async function resolveLocalMainPlacement(input: {
   roots: WorkspaceRootPolicyPort
   installations: HarnessInstallationRegistry
   qualificationSuites: Readonly<Record<CompatibilityHarness, string>>
+  assertProfileReady?: (profile: HostHarnessOverride) => void
 }): Promise<SavedNodePlacement> {
   const { sql, mainId, workspaceId } = input
   const hostRef = { kind: 'main' as const, mainId }
@@ -68,6 +69,7 @@ export async function resolveBoundRootPlacement(input: {
   roots: WorkspaceRootPolicyPort
   installations: HarnessInstallationRegistry
   qualificationSuites: Readonly<Record<CompatibilityHarness, string>>
+  assertProfileReady?: (profile: HostHarnessOverride) => void
 }): Promise<SavedNodePlacement> {
   const { sql, principal, mainId, workspaceId, configuration, root } = input
   const hostRef = root.selection.hostRef
@@ -84,13 +86,14 @@ export async function resolveBoundRootPlacement(input: {
     for share of settings`, [applicationInstallationId, JSON.stringify(hostRef)])
   const installed = input.installations.list()
   const requested = configuration.harnessProfileSelection
-  const compatible = profiles.rows.map(row => HostHarnessOverrideSchema.parse(row.record)).filter(profile =>
+  const candidates = profiles.rows.map(row => HostHarnessOverrideSchema.parse(row.record)).filter(profile =>
     profile.enabled
     && sameWorkflowValue(withAdvancedDefaults(profile.configuration), withAdvancedDefaults(configuration.harness))
-    && (!requested || profile.instanceId === requested.instanceId && profile.instanceRevision === requested.instanceRevision)
-    && installed.some(item => item.installed && sameWorkflowValue(item.hostRef, hostRef)
-      && item.harnessInstallationId === profile.target.harnessInstallationId
-      && item.installationFingerprint === profile.target.installationFingerprint))
+    && (!requested || profile.instanceId === requested.instanceId && profile.instanceRevision === requested.instanceRevision))
+  for (const candidate of candidates) input.assertProfileReady?.(candidate)
+  const compatible = candidates.filter(profile => installed.some(item => item.installed
+    && sameWorkflowValue(item.hostRef, hostRef) && item.harnessInstallationId === profile.target.harnessInstallationId
+    && item.installationFingerprint === profile.target.installationFingerprint))
   const qualified = []
   for (const candidate of compatible) {
     const installation = installed.find(item => sameWorkflowValue(item.hostRef, hostRef)

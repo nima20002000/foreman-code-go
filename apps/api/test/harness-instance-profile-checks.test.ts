@@ -19,16 +19,24 @@ function fixture() {
   let current: HostHarnessOverride = { instanceId: randomUUID(), revision: 1, instanceRevision: '1', target: { hostRef: { kind: 'main', mainId }, applicationInstallationId: mainId, harnessInstallationId: 'codex', installationFingerprint: 'sha' },
     presetId: 'local-default:codex', driverId: 'codex', enabled: true, configuration: { harness: 'codex', model: 'test', reasoningEffort: 'high', sandbox: 'read-only', serviceTier: 'standard' }, configurationFingerprint: 'profile-sha', qualification: 'unqualified' }
   const client = { query: vi.fn(async () => undefined) } as unknown as pg.PoolClient
+  const profiles = new Map([[current.instanceId, current]])
   let readTransaction = false
-  const settings = { latest: async () => structuredClone(current), list: async () => [structuredClone(current)],
+  const settings = { latest: async (_client: pg.PoolClient, id: string) => structuredClone(profiles.get(id) ?? null),
+    list: async () => structuredClone([...profiles.values()]),
+    prioritizeForRuns: vi.fn(async (values: HostHarnessOverride[]) => values),
     withProfileConnection: async (work: (client: pg.PoolClient) => Promise<unknown>) => work(client),
     lockRevision: vi.fn(async () => undefined),
     readAuthorized: async (work: (client: pg.PoolClient) => Promise<unknown>) => { readTransaction = true; try { return await work(client) } finally { readTransaction = false } } } as unknown as HarnessInstanceSettingsRepository
-  const stored = new Map<string, HostHarnessProfileEvidence>()
-  const append = vi.fn(async (_client: pg.PoolClient, checkId: string, _value: HostHarnessOverride, proof: HostHarnessProfileEvidence) => { stored.set(checkId, proof) })
-  const proofs = { findCheck: async (id: string) => stored.get(id) ?? null,
-    latest: async () => [...stored.values()].at(-1) ?? null,
-    previouslyQualified: async () => [...stored.values()].some(value => value.qualified),
+  const stored = new Map<string, { value: HostHarnessOverride; proof: HostHarnessProfileEvidence }>()
+  const append = vi.fn(async (_client: pg.PoolClient, checkId: string, value: HostHarnessOverride, proof: HostHarnessProfileEvidence) => {
+    stored.set(checkId, { value: structuredClone(value), proof })
+  })
+  const proofs = { findCheck: async (id: string) => stored.get(id)?.proof ?? null,
+    latest: async (id: string, revision: number) => [...stored.values()]
+      .filter(entry => entry.value.instanceId === id && entry.value.revision === revision).at(-1)?.proof ?? null,
+    previouslyQualified: async (value: HostHarnessOverride) => [...stored.values()].some(entry =>
+      entry.value.instanceId === value.instanceId && entry.value.instanceRevision === value.instanceRevision
+      && entry.proof.qualified && entry.proof.authenticated && entry.proof.compatible),
     append } as unknown as HostHarnessProfileEvidenceRepository
   const commands = { execute: vi.fn(async (command: { authorize: (client: pg.PoolClient) => Promise<void>; perform: (client: pg.PoolClient) => Promise<unknown> }) => {
     await command.authorize(client); return { value: await command.perform(client), replayed: false }
@@ -40,9 +48,12 @@ function fixture() {
   const service = new HostHarnessInstanceProfileChecks(settings, proofs, commands, { authorize }, { qualify })
   const input = { commandId: randomUUID(), instanceId: current.instanceId, expectedRevision: current.revision, target: current.target }
   return { service, qualify, append, proof, input, authorize, settings, commands,
-    seed: (evidence: HostHarnessProfileEvidence) => stored.set('previous', evidence),
-    setOverride: (value: HostHarnessOverride) => { current = value },
-    change: () => { current = { ...current, revision: 2, instanceRevision: '2' } } }
+    seed: (evidence: HostHarnessProfileEvidence, value = current) => stored.set(`previous:${value.instanceId}`, { value, proof: evidence }),
+    setOverride: (value: HostHarnessOverride) => { current = value; profiles.set(value.instanceId, value) },
+    change: () => {
+      current = { ...current, revision: 2, instanceRevision: '2' }
+      profiles.set(current.instanceId, current)
+    } }
 }
 describe('explicit exact-host native profile checks', () => {
   it('checks outside authority transactions and recovers persisted proof without repeating native effects', async () => {
@@ -156,11 +167,11 @@ describe('automatic installation profile checks', () => {
     const task = f.service.recheckInstallation(f.request)
     expect(f.service.recheckInstallation(f.request)).toBe(task)
     await entered
-    expect(() => f.service.assertReady(f.request.host)).toThrow(expect.objectContaining({ code: 'HARNESS_PROFILE_CHECK_PENDING' }))
+    const selected = f.qualify.mock.calls[0]![0]
+    expect(() => f.service.assertReady(selected)).toThrow(expect.objectContaining({ code: 'HARNESS_PROFILE_CHECK_PENDING' }))
     release()
     await task
-    expect(() => f.service.assertReady(f.request.host)).not.toThrow()
-    const selected = f.qualify.mock.calls[0]![0]
+    expect(() => f.service.assertReady(selected)).not.toThrow()
     expect(selected.instanceRevision).toBe(f.saved.instanceRevision)
     expect(selected.revision).toBe(2)
     expect(selected.configuration).toEqual(f.saved.configuration)
@@ -177,8 +188,41 @@ describe('automatic installation profile checks', () => {
     expect(proof.target.installationFingerprint).toBe(f.installation.installationFingerprint)
     expect(proof.failure).toMatchObject({ code: 'HARNESS_QUALIFICATION_FAILED' })
     expect(proof.failure!.message).not.toContain('Native check failed')
-    expect(f.service.pending(f.request.host)).toBe(false)
+    expect(f.service.pending(f.saved)).toBe(false)
     await f.service.close()
+  })
+  it('releases each updated profile after its own check while another profile remains pending', async () => {
+    const f = updatedFixture()
+    const other = { ...f.saved, instanceId: randomUUID() }
+    f.setOverride(other)
+    f.seed(f.proof(other), other)
+    const releases = new Map<string, () => void>()
+    let draining = false
+    f.qualify.mockImplementation(async selected => {
+      if (!draining) await new Promise<void>(resolve => { releases.set(selected.instanceId, resolve) })
+      return f.proof(selected)
+    })
+    const task = f.service.recheckInstallation(f.request)
+    try {
+      await vi.waitFor(() => expect(releases.size).toBe(2))
+      const selected = f.qualify.mock.calls.find(([value]) => value.instanceId === f.saved.instanceId)![0]
+      const pending = f.qualify.mock.calls.find(([value]) => value.instanceId === other.instanceId)![0]
+      expect(() => f.service.assertReady(selected)).toThrow(expect.objectContaining({
+        code: 'HARNESS_PROFILE_CHECK_PENDING', details: expect.objectContaining({ retryable: true }),
+      }))
+      releases.get(selected.instanceId)!()
+      await vi.waitFor(() => expect(f.service.pending(selected)).toBe(false))
+      expect(() => f.service.assertReady(selected)).not.toThrow()
+      expect(() => f.service.assertReady(pending)).toThrow(expect.objectContaining({
+        code: 'HARNESS_PROFILE_CHECK_PENDING', details: expect.objectContaining({ retryable: true }),
+      }))
+      expect(f.append.mock.calls.map(call => call[2].instanceId)).toEqual([selected.instanceId])
+    } finally {
+      draining = true
+      for (const release of releases.values()) release()
+      await task
+      await f.service.close()
+    }
   })
   it('refuses to retain success when the host authority changes during the native check', async () => {
     const f = updatedFixture()
@@ -193,6 +237,47 @@ describe('automatic installation profile checks', () => {
 })
 
 describe('Worker reconnect profile checks', () => {
+  it('checks at most two profiles at once and admits each completed revision independently', async () => {
+    const f = workerFixture()
+    const profiles = [f.override, ...Array.from({ length: 3 }, () => ({ ...f.override, instanceId: randomUUID() }))]
+    for (const profile of profiles) {
+      f.setOverride(profile)
+      f.seed(f.proof(profile), profile)
+    }
+    const releases = new Map<string, () => void>()
+    let draining = false
+    let active = 0
+    let maximum = 0
+    f.qualify.mockImplementation(async selected => {
+      active++
+      maximum = Math.max(maximum, active)
+      if (!draining) await new Promise<void>(resolve => { releases.set(selected.instanceId, resolve) })
+      active--
+      return { ...f.proof(selected), connectionGeneration: harnessConnectionGeneration(f.binding) }
+    })
+    const task = f.service.recheckWorker(f.binding, new AbortController().signal, () => f.binding)
+    try {
+      await vi.waitFor(() => expect(releases.size).toBe(2))
+      expect(f.qualify).toHaveBeenCalledTimes(2)
+      for (const profile of profiles) expect(f.service.pending(profile)).toBe(true)
+      releases.get(profiles[0]!.instanceId)!()
+      await vi.waitFor(() => expect(releases.size).toBe(3))
+      expect(() => f.service.assertReady(profiles[0]!)).not.toThrow()
+      expect(() => f.service.assertReady(profiles[1]!)).toThrow(expect.objectContaining({
+        code: 'HARNESS_PROFILE_CHECK_PENDING', details: expect.objectContaining({ retryable: true }),
+      }))
+      releases.get(profiles[1]!.instanceId)!()
+      await vi.waitFor(() => expect(releases.size).toBe(4))
+      expect(maximum).toBe(2)
+    } finally {
+      draining = true
+      for (const release of releases.values()) release()
+      await task
+      await f.service.close()
+    }
+    expect(f.append).toHaveBeenCalledTimes(4)
+    for (const profile of profiles) expect(() => f.service.assertReady(profile)).not.toThrow()
+  })
   it('checks an enabled qualified profile once per connection and refuses Start while it runs', async () => {
     const f = workerFixture()
     f.seed(f.proof(f.override))
@@ -209,12 +294,12 @@ describe('Worker reconnect profile checks', () => {
     const task = f.service.recheckWorker(f.binding, signal, () => f.binding)
     expect(f.service.recheckWorker(f.binding, signal, () => f.binding)).toBe(task)
     await entered
-    expect(() => f.service.assertReady(f.host)).toThrow(expect.objectContaining({
+    expect(() => f.service.assertReady(f.override)).toThrow(expect.objectContaining({
       code: 'HARNESS_PROFILE_CHECK_PENDING', details: expect.objectContaining({ retryable: true }),
     }))
     release()
     await task
-    expect(() => f.service.assertReady(f.host)).not.toThrow()
+    expect(() => f.service.assertReady(f.override)).not.toThrow()
     await f.service.recheckWorker(f.binding, signal, () => f.binding)
     expect(f.qualify).toHaveBeenCalledTimes(1)
     expect(f.append).toHaveBeenCalledTimes(1)
@@ -242,7 +327,7 @@ describe('Worker reconnect profile checks', () => {
     await expect(f.service.recheckWorker(f.binding, new AbortController().signal, () => current))
       .rejects.toThrow('Automatic Worker profile checks failed')
     expect(f.append).not.toHaveBeenCalled()
-    expect(() => f.service.assertReady(f.host)).not.toThrow()
+    expect(() => f.service.assertReady(f.override)).not.toThrow()
     await f.service.close()
   })
 })

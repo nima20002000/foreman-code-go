@@ -39,7 +39,7 @@ export interface AcceptedProfileAuthority<Owner> {
     pin?: ClaudeQualificationPin
   }>
   assertCurrent(binding: RegistryHarnessSelection): void
-  assertReady?(host: HostHarnessOverride['target']['hostRef']): void
+  assertReady?(profile: HostHarnessOverride): void
 }
 function freeze<T>(value: T): T {
   if (value && typeof value === 'object') {
@@ -95,7 +95,7 @@ export class AcceptedHarnessProfileAdmission<Owner> {
           || original.target.applicationInstallationId !== value.target.applicationInstallationId
           || original.driverId !== value.driverId) return unavailable()
       }
-      if (options.purpose === 'execution') this.authority.assertReady?.(value.target.hostRef)
+      if (options.purpose === 'execution') this.authority.assertReady?.(value)
       const proof = await this.proofs.latest(value.instanceId, value.revision, client)
       if (!proof || !proof.qualified || proof.authenticated !== true || proof.compatible !== true ) return unavailable()
       const current = await this.authority.current(owner, value, client)

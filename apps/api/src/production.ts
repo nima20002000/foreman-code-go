@@ -832,7 +832,7 @@ export function buildProductionApp(
         suiteRevision: `${value.driverId}-profile-check-v1` }
     },
     assertCurrent: binding => harnessRegistry.installations.assertCurrent(binding),
-    assertReady: host => hostProfileChecks.assertReady(host),
+    assertReady: profile => hostProfileChecks.assertReady(profile),
   }
   const selectedProfiles = new AcceptedHarnessProfileAdmission<ClaudeProfileOwner>(hostSettings, hostProfileEvidence, profileAuthority)
   const claudeProfiles = infrastructure?.claudeProfiles ?? new AcceptedClaudeProfileAdmission<ClaudeProfileOwner>(hostSettings, hostProfileEvidence, profileAuthority)
@@ -1519,10 +1519,10 @@ export function buildProductionApp(
   resolveAgentChatManager.unavailable = async (configuration, workingDirectory, executionId) => {
     const { profileSelection } = await agentChatProfileSelection(configuration, workingDirectory, executionId)
     if (!profileSelection) return undefined
-    if (hostProfileChecks.pending(profileSelection.target.hostRef)) {
-      return { reason: 'harness_unavailable', message: 'This computer is checking its harness profile. Retry shortly.' }
-    }
     const profile = await hostSettings.readAuthorized(client => hostSettings.latest(client, profileSelection.instanceId))
+    if (profile && hostProfileChecks.pending(profile)) {
+      return { reason: 'harness_unavailable', message: 'This harness profile is being checked. Retry shortly.' }
+    }
     if (!profile || !profile.enabled || profile.instanceRevision !== profileSelection.instanceRevision
       || !await harnessRegistry.profileEvidence(profile)) {
       return { reason: 'harness_unavailable', message: 'The harness profile used by this Run is unavailable.' }
@@ -1969,7 +1969,7 @@ export function buildProductionApp(
       if (selectedSuites) {
         agentPlacement = new AgentPlacementProducer(database.pool, machine.installationId, jobRuntime.sources, jobRuntime.policies,
           harnessRegistry, { codex: selectedSuites.codex.revision },
-          workerExecution, host => hostProfileChecks.assertReady(host),
+          workerExecution, profile => hostProfileChecks.assertReady(profile),
           (hosts, signal) => installationMonitor.refreshHosts(hosts, signal), providerAccounts)
         agentPreparation = new AgentExecutionPreparation(jobRuntime.sources, agentPlacement)
         executionAuthority = createExecutionAuthorityExtension(database.pool, locations, agentPlacement)

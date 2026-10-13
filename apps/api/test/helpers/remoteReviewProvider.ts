@@ -113,7 +113,15 @@ int main(int argc, char **argv) {
     showModels: () => rm(join(directory, 'hide-models')),
     blockModels: (options?: { workingDirectory: string }) => writeFile(join(directory, 'block-models'),
       options ? JSON.stringify(options) : '', { mode: 0o600 }),
-    releaseModels: () => rm(join(directory, 'block-models')),
+    allowModelDirectories: async (directories: string[]) => {
+      const destination = join(directory, 'allowed-model-directories')
+      await writeFile(`${destination}.pending`, JSON.stringify(directories), { mode: 0o600 })
+      await rename(`${destination}.pending`, destination)
+    },
+    releaseModels: async () => {
+      await rm(join(directory, 'block-models'))
+      await rm(join(directory, 'allowed-model-directories'), { force: true })
+    },
     blockQualification: () => writeFile(join(directory, 'block-qualification'), '', { mode: 0o600 }),
     blockWorkflowAdmission: () => writeFile(join(directory, 'block-workflow-admission'), '', { mode: 0o600 }),
     releaseWorkflowAdmission: () => rm(join(directory, 'block-workflow-admission'), { force: true }),
