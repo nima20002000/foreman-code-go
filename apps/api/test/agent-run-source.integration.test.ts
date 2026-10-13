@@ -140,8 +140,10 @@ describe.runIf(postgresEnabled)('GitHub Run-start sources and Agent CI through a
       const origin = join(f.db.directory, 'origin')
       await mkdir(origin)
       const environment = gitFixtureEnvironment()
-      const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env: environment,
-        encoding: 'utf8' }).trim()
+      const git = (cwd: string, ...args: string[]) => execFileSync('/bin/sh',
+        ['-c', 'umask 002 && exec git "$@"', 'git', ...args], {
+          cwd, env: environment, encoding: 'utf8',
+        }).trim()
       git(origin, 'init', '-q', '-b', 'main')
       await writeFile(join(origin, 'source.txt'), 'Agent base source')
       git(origin, 'add', '.')
@@ -175,7 +177,9 @@ describe.runIf(postgresEnabled)('GitHub Run-start sources and Agent CI through a
       }
       const agent = await connect(issued.environment.variables.GRAPHQL_MCP_TOKEN!)
       const args = { commandId: randomUUID(), suite: 'build' }
-      const ticket = CiRunOutputSchema.parse(decodeMcpToolResult(await agent.callTool({ name: 'ci_run', arguments: args })))
+      const response = await agent.callTool({ name: 'ci_run', arguments: args })
+      expect(response.isError, JSON.stringify(response)).not.toBe(true)
+      const ticket = CiRunOutputSchema.parse(decodeMcpToolResult(response))
       expect(CiRunOutputSchema.parse(decodeMcpToolResult(await agent.callTool({ name: 'ci_run', arguments: args }))))
         .toEqual(ticket)
       expect(snapshots).toHaveBeenCalledTimes(1)
@@ -183,6 +187,8 @@ describe.runIf(postgresEnabled)('GitHub Run-start sources and Agent CI through a
         ticketId: ticket.ticketId,
       } })))
       expect(result.run.commit).toBe(baseCommit)
+      expect(result.run).toMatchObject({ workspaceId, suite: 'build', state: 'queued',
+        initiator: { principalId: issued.principalId, executionId: interaction.executionId } })
       expect((await f.db.pool.query<{ record: { commit: string } }>('select record from ci_runs where id=$1',
         [ticket.ticketId])).rows[0]!.record.commit).toBe(baseCommit)
       const denied = await f.access.issue({ name: 'CI read only', audience: 'operator',
