@@ -10,7 +10,7 @@ import { createPool } from '../src/infrastructure/pool.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
-import { gateIntegrationShards } from '../src/modules/ci-host/capacity.js'
+import { buildComputerIntegrationShards, gateIntegrationShards } from '../src/modules/ci-host/capacity.js'
 import { HostCiService, type HostCiComputer } from '../src/modules/ci-host/service.js'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS, RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
 import { migratedDatabase } from './helpers/migratedDatabase.js'
@@ -283,10 +283,11 @@ it('keeps a draining build gate off cloud until the grace expires, then persists
     expect((await f.call(reader, 'ci_run', { suite: 'integration', scope: 'full', gate: true,
       commandId: randomUUID() })).isError).toBe(true)
     expect((await database.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
+    const hostShards = buildComputerIntegrationShards({ cpuCount: 16, memoryBytes: 16 * 2 ** 30 })
     const root = CiRunRecordSchema.parse({ id: randomUUID(), workspaceId: f.workspaceId, groupId: randomUUID(),
       suite: 'integration', part: null, partition: null, scope: 'full', files,
       repository: 'octo/site', commit: 'a'.repeat(40), gate: true, noSupersede: true,
-      plannedHostKey: 'builder-main', integrationShards: 16, expectedDurationMs: 300_000,
+      plannedHostKey: 'builder-main', integrationShards: hostShards, expectedDurationMs: 300_000,
       priority: 'high', priorityReason: 'gate', state: 'queued', computer: null, step: null,
       exitCode: null, message: null, queuedAt: new Date(now).toISOString(), startedAt: null, finishedAt: null,
       initiator: { principalId: 'operator', executionId: null }, requiresBuildComputer: false })
@@ -297,7 +298,7 @@ it('keeps a draining build gate off cloud until the grace expires, then persists
     await f.ci.dispatch()
     expect(f.started).toEqual([])
     expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: root.id })).run)
-      .toMatchObject({ state: 'queued', files, plannedHostKey: 'builder-main', integrationShards: 16 })
+      .toMatchObject({ state: 'queued', files, plannedHostKey: 'builder-main', integrationShards: hostShards })
     clock.mockReturnValue(now + 90_001)
     await f.ci.dispatch()
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: root.id }))
@@ -538,7 +539,7 @@ it.each([50, 10])('persists and dispatches a gate within a %i percent build allo
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     const hosts = read.partitions!.filter(run => run.suite === 'integration' && run.plannedHostKey?.startsWith('builder-'))
     expect(hosts).toHaveLength(2)
-    const shards = allowance === 50 ? 8 : 1
+    const shards = buildComputerIntegrationShards({ cpuCount: 16, memoryBytes: 16 * 2 ** 30 }, allowance)
     for (const host of hosts) {
       expect(host.integrationShards).toBe(shards)
       expect(f.started.find(item => item.request.operation === 'start' && item.request.runId === host.id)?.request)
@@ -551,15 +552,21 @@ it.each([50, 10])('persists and dispatches a gate within a %i percent build allo
 
 it('rechecks the build allowance when dispatching an already planned gate through MCP', async () => {
   const occupiedKeys = new Set(['builder-main', 'builder-paired'])
-  const f = await fixture({ occupiedKeys, cloudSlots: 2 })
+  const files = ['apps/api/test/first.integration.test.ts', 'apps/api/test/second.integration.test.ts']
+  const f = await fixture({ occupiedKeys, cloudSlots: 2, files })
   try {
     const admitted = CiRunOutputSchema.parse(await f.value('ci_run', {
       suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40), commandId: randomUUID(),
     }))
     await f.ci.dispatch()
     const queued = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
-    expect(queued.partitions!.filter(run => run.plannedHostKey?.startsWith('builder-'))
-      .every(run => run.state === 'queued')).toBe(true)
+    const resources = { cpuCount: 16, memoryBytes: 16 * 2 ** 30 }
+    const planned = queued.partitions!.filter(run => run.suite === 'integration'
+      && run.plannedHostKey?.startsWith('builder-'))
+    expect(planned).toHaveLength(2)
+    for (const host of planned) {
+      expect(host).toMatchObject({ state: 'queued', integrationShards: buildComputerIntegrationShards(resources) })
+    }
     for (const computer of f.computers.filter(computer => computer.hostRef.kind !== 'cloud')) {
       Object.assign(computer, { buildAllowancePercent: 50 })
     }
@@ -569,9 +576,9 @@ it('rechecks the build allowance when dispatching an already planned gate throug
     const hosts = read.partitions!.filter(run => run.suite === 'integration' && run.plannedHostKey?.startsWith('builder-'))
     expect(hosts).toHaveLength(2)
     for (const host of hosts) {
-      expect(host).toMatchObject({ state: 'running', integrationShards: 16 })
+      expect(host).toMatchObject({ state: 'running', integrationShards: buildComputerIntegrationShards(resources) })
       expect(f.started.find(item => item.request.operation === 'start' && item.request.runId === host.id)?.request)
-        .toMatchObject({ integrationShards: 8 })
+        .toMatchObject({ integrationShards: buildComputerIntegrationShards(resources, 50) })
     }
   } finally { await f.close() }
 })

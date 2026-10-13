@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CiHostRequestSchema } from '@foreman-code/contracts';
 import { runCiInstallSmoke } from '../src/ciInstallSmoke.mjs';
+import { gateIntegrationShards } from '../../../apps/api/src/modules/ci-host/capacity.ts';
 
 test('update smoke waits for busy capacity and uses a valid exclusive integration start', async () => {
   const requests = [];
@@ -40,11 +41,12 @@ test('update smoke bounds busy capacity waits and cancels its own ticket', async
   assert.equal(canceled, true);
 });
 
-for (const { capacity, cpuCount, memoryGiB, integrationShards } of [
-  { capacity: 'normal', cpuCount: 16, memoryGiB: 14, integrationShards: 16 },
-  { capacity: 'CPU-limited', cpuCount: 8, memoryGiB: 32, integrationShards: 8 },
-  { capacity: 'memory-limited', cpuCount: 16, memoryGiB: 4, integrationShards: 5 },
+for (const { capacity, cpuCount, memoryGiB } of [
+  { capacity: 'normal', cpuCount: 16, memoryGiB: 14 },
+  { capacity: 'CPU-limited', cpuCount: 8, memoryGiB: 32 },
+  { capacity: 'memory-limited', cpuCount: 16, memoryGiB: 4 },
 ]) {
+  const integrationShards = gateIntegrationShards(cpuCount, Math.floor(memoryGiB * 2 ** 30 * 0.9));
   for (const outcome of ['passed', 'failed', 'no-tests', 'timeout']) {
     test(`Worker install CI smoke uses ${capacity} setup and handles ${outcome}`, async () => {
       const requests = [];

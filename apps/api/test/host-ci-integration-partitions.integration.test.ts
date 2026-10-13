@@ -1,6 +1,7 @@
 import { CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema, integrationPartition } from '@foreman-code/contracts'
 import { expect, it } from 'vitest'
 import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
+import { buildComputerIntegrationShards } from '../src/modules/ci-host/capacity.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
 
 it('splits integration over two build computers, reports progress and logs, and replays a retried command', async () => {
@@ -100,8 +101,10 @@ it('persists the heavy-file partition plan through authenticated MCP and denies 
     expect(slices.map(slice => slice.filter(file => heavy.includes(file)).length)).toEqual([1, 1])
     const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
     expect(read.partitions).toHaveLength(2)
+    const shards = buildComputerIntegrationShards({ cpuCount: 16, memoryBytes: 14 * 2 ** 30 })
     for (const run of read.partitions!) {
-      expect(run).toMatchObject({ scope: 'affected', files: expectedFiles, partition: { count: 2, weights: [16, 16] } })
+      expect(run).toMatchObject({ scope: 'affected', files: expectedFiles,
+        partition: { count: 2, weights: [shards, shards] } })
       const stored = await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1', [run.id])
       expect(stored.rows[0]!.record).toEqual(run)
     }

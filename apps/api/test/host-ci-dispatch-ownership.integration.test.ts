@@ -13,6 +13,7 @@ import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { RunCiAuthority, CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { HostCiService, type HostCiComputer, type HostCiEndpoint } from '../src/modules/ci-host/service.js'
 import { HostCiRunner, type HostCiPorts } from '../src/modules/ci-host/runner.js'
+import { buildComputerIntegrationShards } from '../src/modules/ci-host/capacity.js'
 import { workspaceMirrors } from '../src/modules/ci-host/cloud.js'
 import { DomainError } from '../src/modules/errors.js'
 import { migratedDatabase } from './helpers/migratedDatabase.js'
@@ -640,10 +641,11 @@ it.each([
     expect(saved).toHaveLength(partitions)
     expect(new Set(saved.map(row => row.revision)).size).toBe(1)
     const planned = await Promise.all(canceled.map(run => f.read(run.id)))
+    const shards = buildComputerIntegrationShards({ cpuCount: 8, memoryBytes: 8 * 2 ** 30 })
     for (const [index, run] of planned.entries()) {
       expect(run).toMatchObject(canceled[index]!)
       expect(run).toMatchObject({ state: 'canceled', partition: { index, count: partitions } })
-      expect(run.partition?.weights).toEqual(Array.from({ length: partitions }, () => 8))
+      expect(run.partition?.weights).toEqual(Array.from({ length: partitions }, () => shards))
       expect(run.partition?.weights).toHaveLength(partitions)
       expect(run.partition).toMatchObject({ weights: planned[0]!.partition!.weights, hostIndexes })
     }

@@ -172,7 +172,7 @@ it('prepares supersession ancestry outside the lock and includes tickets admitte
     next = f.call('ci_run', { ...input, commandId: 'next', commit: nextCommit })
     await within(blocked.entered)
     const middle = await within(f.run({ ...input, commandId: 'middle', commit: middleCommit }))
-    expect(await f.read(old.ticketId)).toMatchObject({ supersededBy: middle.ticketId, state: 'canceled' })
+    await expect.poll(() => f.read(old.ticketId)).toMatchObject({ supersededBy: middle.ticketId, state: 'canceled' })
     blocked.release()
     const result = await next
     expect(result.isError).not.toBe(true)
