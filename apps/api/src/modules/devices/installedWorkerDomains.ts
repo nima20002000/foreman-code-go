@@ -713,7 +713,7 @@ export function createWorkerRuntimeDrain(ports: {
       const startedAt = Date.now()
       let stage = 'dispatches'
       const diagnostics = setInterval(() => {
-        componentLogger('devices').info({ stage, elapsedMs: Date.now() - startedAt,
+        componentLogger('devices').warn({ stage, elapsedMs: Date.now() - startedAt,
           waitingOn: ports.waitingOn?.() ?? [] }, 'Worker runtime update is still draining')
       }, 30_000)
       diagnostics.unref()

@@ -249,16 +249,18 @@ export class WorkerUpdater {
       const launch = await (this.options.locateLaunch ?? locateWorkerLaunch)(this.options);
       await this.save({ targetVersion: release.version, state: 'pending', lastError: null },
         { manifestSha256: release.manifestSha256 });
-      await this.save({ state: 'draining' });
-      drained = true;
-      await drain();
-      this.lifetime.signal.throwIfAborted();
-      assertStateOwnership();
+      // Download and verify while the Worker still admits work: through Main this can take minutes.
+      // Only installation and restart need the drained runtime.
       await this.save({ state: 'downloading' });
       downloading = await mkdtemp(join(stateDirectory, '.worker-download-'));
       await downloadWorkerArtifact({ release, request, directory: downloading, facts, signal: this.lifetime.signal });
       this.lifetime.signal.throwIfAborted();
       const ciSmoke = await readWorkerSmokeConfiguration(request, release.manifestSha256);
+      await this.save({ state: 'draining' });
+      drained = true;
+      await drain();
+      this.lifetime.signal.throwIfAborted();
+      assertStateOwnership();
       await this.save({ state: 'installing' });
       const installed = await (this.options.stage ?? stageRunningVersion)({ root: launch.root, stateDirectory,
         artifact: downloading, approvedManifestSha256: release.manifestSha256, facts, expected,

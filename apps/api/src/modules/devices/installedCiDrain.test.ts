@@ -135,7 +135,8 @@ it.each(['ci-host-v1', 'ci-runtime-v1'])(
     updating = u.value.start()
     await vi.waitFor(async () => expect((await u.value.status()).state).toBe('draining'))
     await new Promise<void>(resolve => setImmediate(resolve))
-    expect(u.activity).toEqual([])
+    // The verified download precedes the drain; staging and restart wait for the preparation.
+    expect(u.activity).toEqual(['download', 'download', 'ci-smoke'])
     const next = namespace === 'ci-host-v1'
       ? { ...request, runId: randomUUID() } : { ...request, operationId: randomUUID() }
     await expect(f.handle(namespace, next))

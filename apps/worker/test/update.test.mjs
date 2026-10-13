@@ -233,7 +233,7 @@ test('concurrent status polling preserves saved update transitions and metadata'
   assert.equal(retained.manifestSha256, manifestSha256);
 });
 
-test('busy work drains naturally before any artifact download or restart', async t => {
+test('busy work drains naturally after the verified download and before installation or restart', async t => {
   const f = await fixture(t);
   let finishWork;
   let resumed = 0;
@@ -246,7 +246,7 @@ test('busy work drains naturally before any artifact download or restart', async
   });
   const update = updater.start();
   await until(async () => (await updater.status()).state === 'draining');
-  assert.equal(f.requests.filter(request => request.operation === 'chunk').length, 0);
+  assert.ok(f.requests.some(request => request.operation === 'chunk'));
   assert.equal(resumed, 0);
   assert.equal((await readInstalledRelease({ root: f.root, facts, expected })).manifest.version, '1.0.0');
   finishWork();
@@ -288,20 +288,22 @@ test('an idle Worker keeps admitting work while its update downloads slowly thro
 });
 
 for (const path of ['manifest.json', 'src/cli.mjs']) {
-  test(`rejects changed ${path} bytes and resumes the running release`, async t => {
+  test(`rejects changed ${path} bytes and keeps the running release admitting work`, async t => {
     const f = await fixture(t);
     await writeFile(join(f.incoming.directory, path), 'corrupt bytes');
     const current = await readlink(join(f.root, 'current'));
+    let drained = 0;
     let resumed = 0;
     let launched = false;
-    const updater = await new WorkerUpdater({ ...f.options, resume: () => { resumed++; },
-      launchSupervisor: async () => { launched = true; } }).initialize();
+    const updater = await new WorkerUpdater({ ...f.options, drain: async () => { drained++; },
+      resume: () => { resumed++; }, launchSupervisor: async () => { launched = true; } }).initialize();
     t.after(() => updater.close());
     await assert.rejects(updater.start(), error => error.code === (path === 'manifest.json'
       ? 'manifest_checksum_mismatch' : 'artifact_checksum_mismatch'));
     assert.equal(await readlink(join(f.root, 'current')), current);
     assert.equal((await updater.status()).state, 'failed');
-    assert.equal(resumed, 1);
+    assert.equal(drained, 0);
+    assert.equal(resumed, 0);
     assert.equal(launched, false);
   });
 }
@@ -520,7 +522,8 @@ test('an update interrupted by Main restart retries the saved target on the reco
   const interrupted = await readUpdateRecord(f.stateDirectory);
   assert.equal(interrupted.manifestSha256, f.incoming.release.manifestSha256);
   assert.equal(interrupted.status.lastError, 'worker_update_channel_unavailable');
-  assert.equal(resumed, 1);
+  // The chunk download precedes the drain, so admissions were never fenced.
+  assert.equal(resumed, 0);
   assert.equal(launched, 0);
   assert.equal(await updater.start(), 'Worker update is unavailable on this Main connection.');
   available = true;
