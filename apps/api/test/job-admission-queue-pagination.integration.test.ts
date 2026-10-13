@@ -58,7 +58,14 @@ describe.skipIf(!postgresEnabled)('durable build admission queue: pagination', (
     clients.push(client)
     await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
       { requestInit: { headers: { authorization: `Bearer ${writer.token}` } } }))
+    const defaultPage = await client.callTool({ name: 'job_queue_list', arguments: { workspaceId: f.workspaceId } })
+    expect(defaultPage.isError).not.toBe(true)
+    const defaultHistory = JobQueuePageSchema.parse(decodeMcpToolResult(defaultPage))
+    expect(defaultHistory.tickets.filter(ticket => ticket.id !== active.id).map(ticket => ticket.id))
+      .toEqual(completed.toReversed().slice(0, 100))
+    expect(defaultHistory.nextHistoryCursor).not.toBeNull()
     const found: string[] = []
+    let pageCount = 0
     let cursor: string | null = null
     do {
       const input = { workspaceId: f.workspaceId, historyLimit: 10,
@@ -67,6 +74,13 @@ describe.skipIf(!postgresEnabled)('durable build admission queue: pagination', (
       expect(response.isError).not.toBe(true)
       const page = JobQueuePageSchema.parse(decodeMcpToolResult(response))
       expect(page.tickets.find(ticket => ticket.id === active.id)).toMatchObject({ state: 'blocked' })
+      const history = page.tickets.filter(ticket => ticket.id !== active.id)
+      expect(history.length).toBeLessThanOrEqual(10)
+      for (const ticket of history) {
+        expect(ticket).toMatchObject({ state: 'terminal', terminalReason: 'cancelled' })
+        if (cursor) expect(BigInt(ticket.enqueueSequence)).toBeLessThan(BigInt(cursor))
+      }
+      if (page.nextHistoryCursor) expect(page.nextHistoryCursor).toBe(history.at(-1)!.enqueueSequence)
       const query = new URLSearchParams({ historyLimit: '10' })
       if (cursor) query.set('historyBeforeSequence', cursor)
       const http = await app.inject({ method: 'GET',
@@ -75,8 +89,11 @@ describe.skipIf(!postgresEnabled)('durable build admission queue: pagination', (
       expect(http.statusCode).toBe(200)
       expect(http.json()).toEqual(page)
       found.push(...page.tickets.filter(ticket => ticket.id !== active.id).map(ticket => ticket.id))
+      pageCount++
       cursor = page.nextHistoryCursor
     } while (cursor)
+    expect(pageCount).toBe(11)
+    expect(new Set(found).size).toBe(105)
     expect(found).toEqual(completed.toReversed())
     const current = await f.jobs.getQueueTicket(reader.principal, f.workspaceId, active.id)
     const cancelled = await client.callTool({ name: 'job_queue_cancel', arguments: {
