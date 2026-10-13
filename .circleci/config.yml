@@ -74,19 +74,20 @@ jobs:
       # Keep the pnpm store inside node_modules so cache hits retain the package integrity index.
       - restore_cache:
           keys:
-            - packages-with-store-node22.23.2-{{ checksum "pnpm-lock.yaml" }}
+            - packages-with-store-metadata-node22.23.2-{{ checksum "pnpm-lock.yaml" }}
       - run: |
           if [ -d node_modules/.pnpm ]; then
             echo "packages restored"
-            pnpm install --offline --frozen-lockfile --store-dir node_modules/.pnpm-store --package-import-method=hardlink
+            pnpm install --offline --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink
           else
-            pnpm install --offline --frozen-lockfile --store-dir node_modules/.pnpm-store --package-import-method=hardlink ||
-              pnpm install --frozen-lockfile --store-dir node_modules/.pnpm-store --package-import-method=hardlink
+            pnpm install --offline --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink ||
+              pnpm install --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink
           fi
       - save_cache:
-          key: packages-with-store-node22.23.2-{{ checksum "pnpm-lock.yaml" }}
+          key: packages-with-store-metadata-node22.23.2-{{ checksum "pnpm-lock.yaml" }}
           paths:
             - node_modules
+            - .logs/pnpm-metadata
             - apps/api/node_modules
             - apps/web/node_modules
             - apps/worker/node_modules

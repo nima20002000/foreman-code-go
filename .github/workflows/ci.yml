@@ -93,17 +93,19 @@ jobs:
       - id: store
         uses: actions/cache@v4
         with:
-          path: node_modules/.pnpm-store
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          path: |
+            node_modules/.pnpm-store
+            .logs/pnpm-metadata
+          key: pnpm-store-metadata-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}
       - name: Install from cached store
         run: |
           # A store missing beside restored packages is only filled by a fresh install.
           if [ "${{ steps.packages.outputs.cache-hit }}" = true ] && [ "${{ steps.store.outputs.cache-hit }}" != true ]; then
             rm -rf node_modules apps/*/node_modules packages/*/node_modules
           fi
-          pnpm install --offline --frozen-lockfile --store-dir node_modules/.pnpm-store --package-import-method=hardlink || {
+          pnpm install --offline --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink || {
             [ "${{ steps.store.outputs.cache-hit }}" != true ] || exit 1
-            pnpm install --frozen-lockfile --store-dir node_modules/.pnpm-store --package-import-method=hardlink
+            pnpm install --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink
           }
       # Emitting compilers restore output and build info together, only for identical inputs so deleted source
       # cannot leave stale compiled modules. Keeping build info in dist also invalidates it on a local cleanup.
