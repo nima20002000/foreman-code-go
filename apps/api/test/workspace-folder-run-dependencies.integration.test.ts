@@ -59,12 +59,20 @@ describe.skipIf(!postgresEnabled)('workspace folder dependencies retained by acc
           expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds,
           expectedLocationRevision: before.locationRevision, input: {},
         }
+        const engineStart = f.engine.start.bind(f.engine)
+        // Admission returns before execution; join the scheduled drive before inspecting its approval.
+        const dispatched = new Promise<string>((resolve, reject) => {
+          vi.spyOn(f.engine, 'start').mockImplementation((runId) => {
+            const task = engineStart(runId)
+            void task.then(() => resolve(runId), reject)
+            return task
+          })
+        })
         const started = await f.client.callTool({ name: 'run_start', arguments: start })
         expect(started.isError, JSON.stringify(started)).not.toBe(true)
         const runId = RunStartV3ResultSchema.parse(decodeMcpToolResult(started)).run.id
-        await vi.waitFor(async () => {
-          expect(await f.runs.get(runId)).toMatchObject({ executionState: 'waiting' })
-        }, { timeout: 10_000 })
+        expect(await dispatched).toBe(runId)
+        expect(await f.runs.get(runId)).toMatchObject({ executionState: 'waiting' })
         const acceptedRun = await f.client.callTool({ name: 'run_get', arguments: {
           workspaceId, runId, detail: 'full',
         } })
