@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
-import { tmpdir } from 'node:os'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { releaseRoundProblems } from './verify-release-round.mjs'
 
 const releaseScript = new URL('./release.mjs', import.meta.url).pathname
 const verifyScript = new URL('./verify-release-round.mjs', import.meta.url).pathname
@@ -62,7 +63,9 @@ async function fakeMain(t, outcome = () => 'passed') {
 }
 
 function repository(t) {
-  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'release-'))
+  const temporaryRoot = join(homedir(), '.cache', 'foreman-tmp')
+  mkdirSync(temporaryRoot, { recursive: true })
+  const root = mkdtempSync(join(temporaryRoot, 'release-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))
   const env = { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't',
     GIT_COMMITTER_EMAIL: 't@example.com' }
@@ -215,9 +218,11 @@ test('refuses to release from a dirty worktree without starting CI', async t => 
 })
 
 /** A release commit on top of the tested code whose trailers list the given groups. */
-function releaseCommit(git, work, groups) {
+function releaseCommit(git, work, groups, reruns = []) {
   writeFileSync(join(work, 'package.json'), '{\n  "name": "app",\n  "version": "1.1.0"\n}\n')
-  git('commit', '-qam', 'Release v1.1.0', '-m', groups.map(([suite, ids]) => `Clean-Round: ${suite}=${ids.join(',')}`).join('\n'))
+  const trailers = groups.map(([suite, ids]) => `Clean-Round: ${suite}=${ids.join(',')}`)
+  trailers.push(...reruns.map(value => `Clean-Round-Rerun: ${value}`))
+  git('commit', '-qam', 'Release v1.1.0', '-m', trailers.join('\n'))
 }
 
 test('the verifier rejects a release with no recorded round, a failed part or affected scope', async t => {
@@ -269,4 +274,170 @@ test('the verifier rejects a release with no recorded round, a failed part or af
   result = await run(verifyScript, ['HEAD'], work, main, env)
   assert.equal(result.status, 1)
   assert.match(result.output, /changes code beyond the version and changelog: code\.js/)
+})
+
+
+async function rerunFixture(t) {
+  const main = await fakeMain(t)
+  const repo = repository(t)
+  const tested = repo.git('rev-parse', 'HEAD')
+  const groupId = randomUUID()
+  const group = ['typecheck', 'lint', 'unit', 'integration', 'integration'].map((suite, index) => ({
+    id: randomUUID(), workspaceId, groupId, suite, commit: tested, scope: 'full', gate: true,
+    state: index === 3 ? 'failed' : 'passed', part: null, partition: null, computer: null,
+    files: [`apps/api/test/feature${index}.integration.test.ts`, `apps/api/test/other${index}.integration.test.ts`],
+    message: index === 3 ? 'Build computer setup failed.' : null,
+  }))
+  for (const value of group) main.runs.set(value.id, value)
+  main.groups.set(groupId, group.map(value => value.id))
+  const failed = group[3]
+  const replacement = { ...failed, id: randomUUID(), groupId: randomUUID(), state: 'passed',
+    scope: 'affected', gate: undefined, files: [...failed.files].reverse(), message: null }
+  main.runs.set(replacement.id, replacement)
+  main.groups.set(replacement.groupId, [replacement.id])
+  const read = async (name, input) => {
+    assert.equal(name, 'ci_get')
+    assert.equal(input.workspaceId, workspaceId)
+    main.calls.push({ name, arguments: input })
+    const value = main.runs.get(input.ticketId)
+    if (!value) throw new Error('Unknown ticket.')
+    return { run: value, partitions: main.groups.get(value.groupId).map(id => main.runs.get(id)) }
+  }
+  return { ...repo, main, tested, group, failed, replacement, read }
+}
+
+test('a named gate releases with a passed rerun of the failed files and records both tickets', async t => {
+  const f = await rerunFixture(t)
+  const substitution = `${f.failed.id}=${f.replacement.id}`
+  const result = await run(releaseScript, ['1.1.0', '--gate-ticket', f.group[0].id,
+    '--rerun', substitution], f.work, f.main, f.env)
+  assert.equal(result.status, 0, result.output)
+  assert.equal(f.main.calls.some(call => call.name === 'ci_run'), false)
+  assert.equal(f.git('log', '-1', '--format=%(trailers:key=Clean-Round-Rerun,valueonly)'), substitution)
+  const ids = f.git('log', '-1', '--format=%(trailers:key=Clean-Round,valueonly)').split('=')[1].split(',')
+  assert.deepEqual(ids.sort(), f.group.map(value => value.id).sort())
+  assert.equal(f.git('rev-parse', 'origin/main'), f.git('rev-parse', 'HEAD'))
+  assert.deepEqual(await releaseRoundProblems(f.read, workspaceId, 'HEAD', f.work), [])
+  assert.ok(f.main.calls.some(call => call.arguments.ticketId === f.replacement.id))
+})
+
+test('repeatable --rerun replaces each failed gate part independently', async t => {
+  const f = await rerunFixture(t)
+  const second = f.group[4]
+  second.state = 'failed'
+  const replacement = { ...second, id: randomUUID(), groupId: randomUUID(), state: 'passed', scope: 'affected' }
+  f.main.runs.set(replacement.id, replacement)
+  f.main.groups.set(replacement.groupId, [replacement.id])
+  const reruns = [`${f.failed.id}=${f.replacement.id}`, `${second.id}=${replacement.id}`]
+  const result = await run(releaseScript, ['1.1.0', '--rerun', reruns[0], '--gate-ticket', f.group[0].id,
+    '--rerun', reruns[1]], f.work, f.main, f.env)
+  assert.equal(result.status, 0, result.output)
+  assert.deepEqual(f.git('log', '-1', '--format=%(trailers:key=Clean-Round-Rerun,valueonly,separator=%x0a)')
+    .split('\n').sort(), reruns.sort())
+  assert.deepEqual(await releaseRoundProblems(f.read, workspaceId, 'HEAD', f.work), [])
+})
+
+const invalidReruns = [
+  ['missing rerun', f => []],
+  ['failed replacement', f => { f.replacement.state = 'failed' }],
+  ['running replacement', f => { f.replacement.state = 'running' }],
+  ['different files', f => { f.replacement.files = [f.failed.files[0]] }],
+  ['extra files', f => { f.replacement.files.push('apps/api/test/extra.integration.test.ts') }],
+  ['duplicate files', f => { f.replacement.files = [f.failed.files[0], f.failed.files[0]] }],
+  ['missing file selection', f => { delete f.replacement.files }],
+  ['missing original file selection', f => { delete f.failed.files }],
+  ['unresolved replacement selection', f => { f.replacement.deriveFiles = true }],
+  ['different suite', f => { f.replacement.suite = 'unit' }],
+  ['unrelated commit', f => { f.replacement.commit = f.git('commit-tree', 'HEAD^{tree}', '-m', 'unrelated') }],
+  ['unknown commit', f => { f.replacement.commit = 'a'.repeat(40) }],
+  ['another failed gate part', f => { f.group[4].state = 'failed' }],
+  ['replaced ticket outside the gate', f => {
+    f.failed.state = 'passed'
+    return [`${randomUUID()}=${f.replacement.id}`]
+  }],
+  ['replacement is unreadable', f => [`${f.failed.id}=${randomUUID()}`]],
+  ['replaced ticket passed', f => { f.failed.state = 'passed' }],
+  ['replaced ticket canceled', f => { f.failed.state = 'canceled' }],
+  ['non-gate original part', f => { f.failed.gate = false }],
+  ['affected original scope', f => { f.failed.scope = 'affected' }],
+  ['original commit mismatch', f => { f.failed.commit = 'a'.repeat(40) }],
+  ['missing gate suite', f => { f.group[0].suite = 'lint' }],
+  ['duplicate substitution', f => Array(2).fill(`${f.failed.id}=${f.replacement.id}`)],
+  ['malformed substitution', () => ['not-a-pair']],
+  ['extra equals sign', f => [`${f.failed.id}=${f.replacement.id}=extra`]],
+  ['empty substitution on a passed gate', f => {
+    f.failed.state = 'passed'
+    return ['']
+  }],
+]
+
+for (const [label, configure] of invalidReruns) {
+  test(`release and verifier reject ${label}`, async t => {
+    const f = await rerunFixture(t)
+    const reruns = configure(f) ?? [`${f.failed.id}=${f.replacement.id}`]
+    const args = ['1.1.0', '--gate-ticket', f.group[0].id, ...reruns.flatMap(value => ['--rerun', value])]
+    const result = await run(releaseScript, args, f.work, f.main, f.env)
+    assert.equal(result.status, 1, result.output)
+    assert.equal(f.git('rev-parse', 'HEAD'), f.tested)
+    assert.equal(f.git('rev-parse', 'origin/main'), f.tested)
+    assert.equal(f.git('status', '--porcelain'), '')
+    assert.equal(f.main.calls.some(call => call.name === 'ci_run'), false)
+    releaseCommit(f.git, f.work, [['gate', f.group.map(value => value.id)]], reruns)
+    const problems = await releaseRoundProblems(f.read, workspaceId, 'HEAD', f.work)
+    assert.ok(problems.length > 0, `Verifier accepted ${label}`)
+  })
+}
+
+test('--rerun requires --gate-ticket and creates no CI request', async t => {
+  const f = await rerunFixture(t)
+  const result = await run(releaseScript, ['1.1.0', '--rerun', `${f.failed.id}=${f.replacement.id}`],
+    f.work, f.main, f.env)
+  assert.equal(result.status, 1, result.output)
+  assert.equal(f.git('rev-parse', 'HEAD'), f.tested)
+  assert.equal(f.main.calls.length, 0)
+})
+
+for (const target of ['tested code', 'release commit', 'descendant']) {
+  test(`the verifier accepts matching rerun files on the ${target}`, async t => {
+    const f = await rerunFixture(t)
+    releaseCommit(f.git, f.work, [['gate', f.group.map(value => value.id)]], [`${f.failed.id}=${f.replacement.id}`])
+    const release = f.git('rev-parse', 'HEAD')
+    if (target === 'release commit') f.replacement.commit = release
+    if (target === 'descendant') {
+      f.git('commit', '--allow-empty', '-qm', 'later CI fix')
+      f.replacement.commit = f.git('rev-parse', 'HEAD')
+    }
+    assert.deepEqual(await releaseRoundProblems(f.read, workspaceId, release, f.work), [])
+  })
+}
+
+test('a named gate accepts a matching rerun on a descendant of its code commit', async t => {
+  const f = await rerunFixture(t)
+  f.git('commit', '--allow-empty', '-qm', 'later CI fix')
+  f.replacement.commit = f.git('rev-parse', 'HEAD')
+  f.git('reset', '-q', '--hard', f.tested)
+  const result = await run(releaseScript, ['1.1.0', '--gate-ticket', f.group[0].id,
+    '--rerun', `${f.failed.id}=${f.replacement.id}`], f.work, f.main, f.env)
+  assert.equal(result.status, 0, result.output)
+})
+
+test('the verifier reads the named replacement rather than another ticket in its group', async t => {
+  const f = await rerunFixture(t)
+  const sibling = { ...f.replacement, id: randomUUID(), files: ['apps/api/test/extra.integration.test.ts'], state: 'failed' }
+  f.main.runs.set(sibling.id, sibling)
+  f.main.groups.set(f.replacement.groupId, [sibling.id, f.replacement.id])
+  releaseCommit(f.git, f.work, [['gate', f.group.map(value => value.id)]], [`${f.failed.id}=${f.replacement.id}`])
+  assert.deepEqual(await releaseRoundProblems(f.read, workspaceId, 'HEAD', f.work), [])
+})
+
+test('the verifier rejects a rerun trailer without a gate round', async t => {
+  const f = await rerunFixture(t)
+  const groups = ['typecheck', 'lint', 'unit', 'integration'].map(suite => {
+    const value = { ...f.replacement, id: randomUUID(), groupId: randomUUID(), suite, scope: 'full' }
+    f.main.runs.set(value.id, value)
+    f.main.groups.set(value.groupId, [value.id])
+    return [suite, [value.id]]
+  })
+  releaseCommit(f.git, f.work, groups, [`${f.failed.id}=${f.replacement.id}`])
+  assert.ok((await releaseRoundProblems(f.read, workspaceId, 'HEAD', f.work)).length > 0)
 })
