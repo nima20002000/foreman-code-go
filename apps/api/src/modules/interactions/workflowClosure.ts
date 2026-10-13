@@ -112,10 +112,14 @@ export async function readWorkflowClosure(sql: Sql, execution: HarnessExecution)
 /** Restart attachment requires the original manager's detachment of the saved session. */
 export async function readDetachedWorkflowSession(owner: RunOwnership,
   execution: HarnessExecution): Promise<NativeSessionReference | undefined> {
+  return (await readDetachedWorkflowLifetime(owner, execution))?.session
+}
+
+export async function readDetachedWorkflowLifetime(owner: RunOwnership, execution: HarnessExecution) {
   owner.assertOwned()
   const lifetime = await readDetachableWorkflowLifetime(owner.oneShotConnection(), owner, execution)
   owner.assertOwned()
-  return lifetime?.detached ? lifetime.session : undefined
+  return lifetime?.detached ? { generation: lifetime.generation, session: lifetime.session } : undefined
 }
 
 async function readDetachableWorkflowLifetime(sql: Sql, owner: RunOwnership, execution: HarnessExecution) {

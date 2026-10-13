@@ -145,7 +145,13 @@ it('waits for the orphaned source writer lease to expire before attaching the or
   vi.useFakeTimers()
   const f = await orphanedWriterFixture()
   let settled = false
-  const result = f.restarted.coordinator.withSourceObservationLane(f.owner, f.execution(), async () => 'original source')
+  const result = f.restarted.coordinator.withSourceObservationLane(f.owner, f.execution(), async () => {
+    const captured = f.restarted.coordinator.passiveOwnedNativeSessions()[0]!
+    expect(captured.writer.token).not.toBe(f.lane.leaseToken)
+    await expect(f.coordination.assertLaneLease(f.lane.id, f.lane.leaseToken!))
+      .rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
+    return 'original source'
+  })
     .then(value => ({ value }), error => ({ error }))
     .finally(() => { settled = true })
   await vi.advanceTimersByTimeAsync(499)
@@ -156,7 +162,7 @@ it('waits for the orphaned source writer lease to expire before attaching the or
   expect(await result).toEqual({ value: 'original source' })
   const lane = await f.coordination.getLane(f.session.harness, f.session.nativeSessionId)
   expect(lane?.leaseToken).toBeUndefined()
-  expect(lane?.connectionGeneration).toBeGreaterThan(f.lane.connectionGeneration)
+  expect(lane?.connectionGeneration).toBe(f.lane.connectionGeneration)
   expect(lane?.correlationId).toBe(f.lane.correlationId)
   expect(lane?.currentTurnOrMessageId).toBe(f.lane.currentTurnOrMessageId)
   expect(f.state.attaches).toBe(1)
