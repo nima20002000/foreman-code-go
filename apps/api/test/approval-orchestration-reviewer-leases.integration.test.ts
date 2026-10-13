@@ -72,6 +72,41 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
     }
   }, 50_000)
 
+  it('retains process authentication after repeated observer takeovers without granting a decision lease', async () => {
+    const f = await approvalDatabase()
+    try {
+      const token = f.credential.environment.variables.GRAPHQL_MCP_TOKEN!
+      const native = (await f.repository.coordination.workflowSession(f.reviewer.id))!
+      const retain = () => withExclusiveGraphConnection(f.pool, connection => connection.transaction(sql =>
+        retainRemoteReviewerCredential(sql, f.reviewer, {
+          generation: '1', principalId: f.principal.id, session: native.session,
+        })))
+      await retain()
+      expect(await f.access.authenticate(token, 'worker')).toEqual(f.principal)
+      f.resumeObservation()
+      await f.native.reviewers.shutdown()
+      const app = new PostgresAppInteractionService(f.pool, f.repository, f.commands, f.service)
+      for (const owner of ['first-observer', 'second-observer']) {
+        const job = await f.repository.coordination.claimReviewJob(f.job.id, owner, `${owner}-token`,
+          new Date(Date.now() + 60_000).toISOString())
+        await expect(f.access.authenticate(token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+        await retain()
+        await retain()
+        const recovered = await f.access.authenticate(token, 'worker')
+        expect(recovered).toEqual(f.principal)
+        await expect(app.respond(recovered, approvalResponse(f.interaction)))
+          .rejects.toMatchObject({ code: 'REVIEWER_AUTHORITY_LOST' })
+        expect(await f.repository.get(f.interaction.id)).toEqual(f.interaction)
+        await f.credentials.bindReviewerJob(f.reviewer.id, f.credential, job)
+        await retain()
+        expect(await f.access.authenticate(token, 'worker')).toEqual(f.principal)
+        await f.repository.coordination.transitionReviewJob(job.id, job.leaseToken!, job.state, { releaseLease: true })
+      }
+    } finally {
+      await f.close()
+    }
+  }, 50_000)
+
   it('keeps a busy reviewer pending and gives exactly one contender its durable job lease', async () => {
     const f = await routedApprovalFixture()
     let busyLaneId: string | undefined

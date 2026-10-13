@@ -12,27 +12,72 @@ afterEach(async () => {
 })
 
 async function fixture(prepare: CiRuntimeWorkerPorts['prepare'],
-  options: Pick<CiRuntimeWorkerPorts, 'refresh'> = { refresh: vi.fn() }) {
+  options: Partial<Pick<CiRuntimeWorkerPorts, 'refresh' | 'lastRefresh'>> = { refresh: vi.fn() }) {
   const root = await privateFixtureDirectory('ci-worker-lifetime-')
   roots.push(root)
   const lifetime = new AbortController()
   const ports: CiRuntimeWorkerPorts = {
     git: { cloneDirectory: () => root, git: async () => ({ code: 0, stdout: '', stderr: '' }) },
     managedRuntimeRoot: async () => root,
-    currentRuntimePaths: async () => [], prepare, ...options, lastRefresh: async () => null,
+    currentRuntimePaths: async () => [], prepare, lastRefresh: async () => null, ...options,
     now: () => new Date(),
   }
   const worker = new CiRuntimeWorker(root, ports, lifetime.signal)
+  const restart = (lastRefresh: CiRuntimeWorkerPorts['lastRefresh']) =>
+    new CiRuntimeWorker(root, { ...ports, lastRefresh }, lifetime.signal)
   const request = { operation: 'prepare', operationId: randomUUID(), repository: 'fixture/site',
     commit: 'a'.repeat(40), keepImages: [],
     review: { reviewedByPrincipalId: 'owner', decisionDigest: 'b'.repeat(64) } }
   const prepared: PreparedCiRuntime = { commit: request.commit, imageId: `sha256:${'c'.repeat(64)}`,
     imageManifestDigest: `sha256:${'d'.repeat(64)}`, qualificationSource: `${root}/source`,
     seedReceiptPath: `${root}/seed.json`, contextReceiptPath: `${root}/context.json` }
-  return { worker, lifetime, request, prepared, root, ports }
+  return { worker, lifetime, request, prepared, root, ports, restart }
 }
 
 describe('worker CI preparation lifetime', () => {
+  it.each([true, false])('restores the refresh outcome after restarting a prepared worker: success=%s', async ok => {
+    let prepared!: PreparedCiRuntime
+    const prepare = vi.fn<CiRuntimeWorkerPorts['prepare']>(async () => prepared)
+    const f = await fixture(prepare)
+    prepared = f.prepared
+    const fingerprint = verificationRuntimeFixture().measurement.fingerprint
+    await f.worker.handle(f.request)
+    await f.worker.close()
+    await f.worker.handle({ operation: 'refresh', operationId: f.request.operationId, commit: f.request.commit,
+      root: fingerprint.root, resources: fingerprint.resources,
+      manifest: { version: 1, ...fingerprint.root.source,
+        git: { commit: f.request.commit, tree: 'a'.repeat(40), objectFormat: 'sha1' },
+        capturePolicy: 'git-tree-v1', executablePolicy: 'preserve-approved', entries: [], deletions: [],
+        totalEntries: 0, totalBytes: 0 } })
+    const lastRefresh = async () => ({ operationId: f.request.operationId, commit: f.request.commit,
+      ok, log: ok ? 'exit=0' : 'exit=1' })
+    const restarted = f.restart(lastRefresh)
+    expect(await restarted.handle({ operation: 'status' })).toMatchObject({
+      operationId: f.request.operationId, commit: f.request.commit, stage: 'refresh', prepared: null,
+      state: ok ? 'idle' : 'failed', message: ok ? null : 'The runtime refresh failed: exit=1',
+    })
+    expect(await f.restart(async () => null).handle({ operation: 'status' })).toMatchObject({
+      operationId: f.request.operationId, state: ok ? 'idle' : 'failed', stage: 'refresh',
+    })
+    expect(prepare).toHaveBeenCalledOnce()
+  })
+
+  it('preserves a later preparation when the retained refresh belongs to an earlier operation', async () => {
+    let prepared!: PreparedCiRuntime
+    const prepare = vi.fn<CiRuntimeWorkerPorts['prepare']>(async () => prepared)
+    const f = await fixture(prepare)
+    prepared = f.prepared
+    await f.worker.handle(f.request)
+    await f.worker.close()
+    const restarted = f.restart(async () => ({ operationId: randomUUID(), commit: 'b'.repeat(40),
+      ok: true, log: 'exit=0' }))
+    expect(await restarted.handle({ operation: 'status' })).toMatchObject({
+      operationId: f.request.operationId, state: 'prepared', prepared: f.prepared,
+    })
+    await restarted.handle(f.request)
+    expect(prepare).toHaveBeenCalledOnce()
+  })
+
   it.each([true, false])('reconciles a completed refresh after restart when refresh succeeds: %s', async ok => {
     const prepare = vi.fn<CiRuntimeWorkerPorts['prepare']>()
     const f = await fixture(prepare)
@@ -101,6 +146,39 @@ describe('worker CI preparation lifetime', () => {
       finish(f.prepared)
       await f.worker.close()
     }
+  })
+
+  it.each([true, false])('reconciles a persisted preparation with its refresh outcome ok=%s after restart', async ok => {
+    const prepare = vi.fn<CiRuntimeWorkerPorts['prepare']>()
+    const f = await fixture(prepare)
+    prepare.mockResolvedValue(f.prepared)
+    await f.worker.handle(f.request)
+    await f.worker.close()
+    const replacement = new CiRuntimeWorker(f.root, {
+      ...f.ports,
+      lastRefresh: async () => ({ operationId: f.request.operationId, commit: f.request.commit, ok, log: 'refresh result' }),
+    }, new AbortController().signal)
+    expect(await replacement.handle({ operation: 'status' })).toMatchObject({
+      operationId: f.request.operationId, commit: f.request.commit,
+      state: ok ? 'idle' : 'failed', stage: 'refresh', prepared: null,
+      message: ok ? null : 'The runtime refresh failed: refresh result',
+    })
+    expect(prepare).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a newer persisted preparation when the last refresh belongs to an older operation', async () => {
+    const prepare = vi.fn<CiRuntimeWorkerPorts['prepare']>()
+    const f = await fixture(prepare)
+    prepare.mockResolvedValue(f.prepared)
+    await f.worker.handle(f.request)
+    await f.worker.close()
+    const replacement = new CiRuntimeWorker(f.root, {
+      ...f.ports,
+      lastRefresh: async () => ({ operationId: randomUUID(), commit: f.request.commit, ok: true, log: 'previous refresh' }),
+    }, new AbortController().signal)
+    expect(await replacement.handle({ operation: 'status' })).toMatchObject({
+      operationId: f.request.operationId, state: 'prepared', prepared: f.prepared,
+    })
   })
 
   it('returns preparing while work continues and joins it on close', async () => {

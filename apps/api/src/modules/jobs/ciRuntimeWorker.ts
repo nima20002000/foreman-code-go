@@ -71,9 +71,12 @@ export class CiRuntimeWorker {
       this.state = saved
       return saved
     }
-    return this.set({ operationId: last?.operationId ?? null, state: last && !last.ok ? 'failed' : 'idle',
+    const restored = this.set({ ...saved,
+      operationId: last?.operationId ?? null, state: last && !last.ok ? 'failed' : 'idle',
       commit: last?.commit ?? null, stage: last ? 'refresh' : null,
       prepared: null, message: last && !last.ok ? `The runtime refresh failed: ${last.log}` : null })
+    if (last) await writeCiRuntimeState(this.stateDirectory, restored)
+    return restored
   }
 
   private async prepare(request: Extract<CiRuntimeRequest, { operation: 'prepare' }>) {
