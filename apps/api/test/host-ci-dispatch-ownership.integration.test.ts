@@ -444,7 +444,7 @@ it.each([
         weights: Array.from({ length: partitions }, () => 1),
         hostIndexes,
       })
-      expect(run.partition).toMatchObject({ weights: planned[0]!.partition!.weights, hostIndexes: [0] })
+      expect(run.partition).toMatchObject({ weights: planned[0]!.partition!.weights, hostIndexes })
     }
     await f.ci.dispatch()
     expect(await Promise.all(canceled.map(run => f.read(run.id)))).toEqual(planned)
