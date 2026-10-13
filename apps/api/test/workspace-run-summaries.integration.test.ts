@@ -263,9 +263,17 @@ describe('workspace Run summaries', () => {
         Array.from({ length: 2000 }, (_, index) => `${prefix}-${2001 - index}`),
       )
       const input = { workspaceId, workflowId: f.f.run.workflowId, limit: 1 }
+      const listUrl = `/api/management/workspaces/${workspaceId}/runs?workflowId=${input.workflowId}&limit=1`
+      const listed = await f.app.inject({ method: 'GET', url: listUrl,
+        headers: { authorization: `Bearer ${f.writer.token}` } })
+      expect(listed.statusCode, listed.body).toBe(200)
+      const httpPage = SavedRunPageSchema.parse(listed.json())
+      expect(httpPage.items.map(run => run.id)).toEqual([summaries[0].id])
+      expect(httpPage.items[0]?.executionLocation).toEqual(f.f.run.executionLocation)
       const remote = await f.client.callTool({ name: 'run_list', arguments: input })
-      expect(remote.isError).not.toBe(true)
+      expect(remote.isError, JSON.stringify(remote)).not.toBe(true)
       const page = SavedRunPageSchema.parse(decodeMcpToolResult(remote))
+      expect(page).toEqual(httpPage)
       expect(page.items.map(run => run.id)).toEqual([summaries[0].id])
       expect(page.pageInfo.nextCursor).not.toBeNull()
       const next = await f.client.callTool({ name: 'run_list', arguments: {
@@ -273,6 +281,11 @@ describe('workspace Run summaries', () => {
       } })
       expect(next.isError).not.toBe(true)
       expect(SavedRunPageSchema.parse(decodeMcpToolResult(next)).items[0]?.id).toBe(`${prefix}-2000`)
+      const nextListed = await f.app.inject({ method: 'GET',
+        url: `${listUrl}&cursor=${encodeURIComponent(page.pageInfo.nextCursor!)}`,
+        headers: { authorization: `Bearer ${f.writer.token}` } })
+      expect(nextListed.statusCode, nextListed.body).toBe(200)
+      expect(SavedRunPageSchema.parse(nextListed.json())).toEqual(decodeMcpToolResult(next))
       const denied = await f.access.issue({ name: 'Other workspace reader', audience: 'operator',
         expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['runs:read'],
           scope: { workspaceIds: ['other-workspace'] } }] })
