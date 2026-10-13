@@ -5,7 +5,6 @@ import type pg from 'pg'
 import { withProviderPoll } from './providerPoll.js'
 import { CI_HOST_NAMESPACE, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiComputerRefSchema, CiHostReplySchema, CiListOutputSchema, CiRunRecordSchema, CiRunOutputSchema,
   WorkspaceSchema,
-  requiresUserSystemd,
   type CiDurations, type CiHostRequest, type CiHostReply, type CiHostRun, type CiHostStatus, type CiListOutput, type CiRunRecord, type CiRunInput,
   type CiTestResults, type CiTestStatus, type CiUserSystemd, type CiCancellation, type Workspace } from '@foreman-code/contracts'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -30,7 +29,7 @@ import { claimCiDispatch, releaseCiDispatch, saveQueuedCiRun, ciMessages, reject
   requestCiStart, CI_START_ACK_TIMEOUT_MS, CI_START_MAX_ATTEMPTS } from './dispatch.js'
 import { collectCiResults } from './resultCollection.js'
 import { sanitizeCiText, serializeCiJson } from './text.js'
-import { isGitHubComputer, supportsUserSystemd } from './computerCapabilities.js'
+import { isGitHubComputer, needsSystemdExecutor, supportsUserSystemd } from './computerCapabilities.js'
 import { weighCiPartitions } from './partitionPlanning.js'
 
 /** CI reads are idempotent: one retry after a lock or statement timeout, then a typed retryable error. */
@@ -76,13 +75,6 @@ interface RunStopAudit {
   source: 'http' | 'mcp'
   commandId: string
   runId: string
-}
-
-function needsSystemdExecutor(run: CiRunRecord): boolean {
-  if (run.requiresBuildComputer !== undefined) return run.requiresBuildComputer
-  return run.suite === 'integration' && (run.partition
-    ? run.partition.hostIndexes?.includes(run.partition.index) === true
-    : run.scope === 'full' || Boolean(run.deriveFiles) || run.files.some(requiresUserSystemd))
 }
 
 /** Runs work over every item with at most `limit` in flight. */
