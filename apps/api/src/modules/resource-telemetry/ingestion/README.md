@@ -19,7 +19,7 @@ Immutable execution input, directory, configuration and occurrence-related ident
 must match; changed session/provider reference, expired lease or retired captured
 lifetime is unavailable. Mutable completion changes only lifecycle, never saved facts.
 
-HRT composition supplies `PassiveTelemetryAuthorityInput.getRemoteNativeOwners?()` in
+HRT composition supplies `PassiveTelemetryServicesInput.getRemoteNativeOwners?()` in
 `apps/api/src/modules/resource-telemetry/productionAuthority.ts`. Each original capture
 is a `CapturedRemoteTelemetryNativeOwner`: `execution`, `session`, `writer` with
 `id/token/connectionGeneration`, actual `nativeOwner`, exact authenticated `binding`,
@@ -121,7 +121,7 @@ HRT `476206ab`/`1f242005`. These are source observations, not runtime qualificat
   legitimate offline last-known reads possible while denying revoked registration/key/main/
   authorization/runtime generations. Revocation must call `revoke(context)` synchronously
   to fence callbacks and clear cache, in addition to live authority checks.
-- HRT/W08/CI supply passive `TelemetryOwnershipAuthority.resolve` over existing exact lease,
+- HRT/W08/CI supply passive `TelemetryOwnershipReader.resolve` over existing exact lease,
   accepted execution/attempt/operation/binding hash/grant epoch and observed-host facts.
   Conversation leases have their own role authority. CI uses its genuine subject variant.
   Resolve must reject retired/revoked attempts even after reconnect. Private sharedOwners are

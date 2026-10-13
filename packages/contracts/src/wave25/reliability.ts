@@ -20,18 +20,18 @@ export const GraphEffectFenceSchema = z.object({
 }).strict()
 export type GraphEffectFence = z.infer<typeof GraphEffectFenceSchema>
 export const NativeSubmissionStateSchema = z.enum(['unknown', 'not_submitted', 'uncertain', 'acknowledged', 'settled'])
-export const GraphEffectAuthoritySchema = GraphEffectFenceSchema.extend({
+export const GraphEffectAccessStateSchema = GraphEffectFenceSchema.extend({
   ownership: z.enum(['held', 'lost']), access: z.enum(['effect', 'observe']),
   security: z.enum(['valid', 'invalid', 'unknown']),
   /** Existing domain subject is closed to THIS effect, not merely a finished native turn. */
   effectClosed: z.boolean(), submission: NativeSubmissionStateSchema,
 }).strict()
-export type GraphEffectAuthority = z.infer<typeof GraphEffectAuthoritySchema>
+export type GraphEffectAccessState = z.infer<typeof GraphEffectAccessStateSchema>
 
 /** Called on locked, current authority, never on a cached lease or model-supplied permission. */
 export function assertGraphEffectAuthority(expectedInput: GraphEffectFence, currentInput: unknown): void {
   const expected = GraphEffectFenceSchema.parse(expectedInput)
-  const result = GraphEffectAuthoritySchema.safeParse(currentInput)
+  const result = GraphEffectAccessStateSchema.safeParse(currentInput)
   if (!result.success) throw new Error('GRAPH_AUTHORITY_INVALID')
   const current = result.data
   if (!sameGraphScope(expected.scope, current.scope)
@@ -154,13 +154,13 @@ export const NativeGraphProjectionFenceSchema = z.object({
   ownerId: GraphIdSchema, fence: GraphSequenceSchema, connectionGeneration: GraphSequenceSchema,
 }).strict()
 export type NativeGraphProjectionFence = z.infer<typeof NativeGraphProjectionFenceSchema>
-export const NativeGraphProjectionAuthoritySchema = NativeGraphProjectionFenceSchema.extend({
+export const NativeGraphProjectionAccessStateSchema = NativeGraphProjectionFenceSchema.extend({
   ownership: z.enum(['held', 'lost']), access: z.enum(['project', 'observe']),
 }).strict()
-export type NativeGraphProjectionAuthority = z.infer<typeof NativeGraphProjectionAuthoritySchema>
+export type NativeGraphProjectionAccessState = z.infer<typeof NativeGraphProjectionAccessStateSchema>
 export function assertNativeGraphProjectionAuthority(expectedInput: NativeGraphProjectionFence, currentInput: unknown): void {
   const expected = NativeGraphProjectionFenceSchema.parse(expectedInput)
-  const result = NativeGraphProjectionAuthoritySchema.safeParse(currentInput)
+  const result = NativeGraphProjectionAccessStateSchema.safeParse(currentInput)
   if (!result.success) throw new Error('GRAPH_AUTHORITY_INVALID')
   const current = result.data
   if (!sameGraphScope(expected.scope, current.scope) || canonicalGraphJson(expected.key) !== canonicalGraphJson(current.key)) throw new Error('GRAPH_SCOPE_MISMATCH')

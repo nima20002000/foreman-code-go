@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import { AcceptedWorkflowRunV3Schema, RepeatGraphScopeV3Schema,
-  type AcceptedWorkflowRunV3, type GraphEffectAuthority } from '@foreman-code/contracts/wave25'
+  type AcceptedWorkflowRunV3, type GraphEffectAccessState } from '@foreman-code/contracts/wave25'
 
 import { DomainError } from '../errors.js'
 import { beforeGraphCommit, withExclusiveGraphConnection, type GraphTransactionSql } from '../run-graph/connection.js'
@@ -125,7 +125,7 @@ export async function requestWorkflowStopLocked(sql: GraphTransactionSql, runId:
   const effect = { identity: { kind: 'run.stop' as const, entityId: runId }, digest: graphSourceDigest({ runId, stop: true }) }
   // This authority is the actual authorized command transaction, not a native
   // session or replacement Run owner. Parent locking fences concurrent launch.
-  const readAuthority = async (): Promise<GraphEffectAuthority> => {
+  const readAuthority = async (): Promise<GraphEffectAccessState> => {
     await authorize(sql)
     const row = (await sql.query<{ owner: string; fence: string; record: unknown }>(
       'select pg_backend_pid()::text as owner,txid_current()::text as fence,record from runs where id=$1', [runId])).rows[0]

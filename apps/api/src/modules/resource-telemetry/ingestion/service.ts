@@ -9,7 +9,7 @@ import {
   type TrustedTelemetryContext, type TelemetryReadService,
 } from '@foreman-code/contracts/resource-telemetry'
 import type { TelemetryOwnedTargetFacts, TelemetryTargetAuthority } from '../readback/selector.js'
-import type { TelemetryClock, TelemetryOwnershipAuthority, TelemetryOwnershipView, TelemetryReadAuthority, TelemetrySessionAuthority } from './ports.js'
+import type { TelemetryClock, TelemetryOwnershipReader, TelemetryOwnershipView, TelemetryReadAuthority, TelemetrySessionReader } from './ports.js'
 
 export type IngestReceipt = { status: 'accepted' | 'duplicate'; sampleId: string; gaps: string }
 interface CachedRow { latest: TelemetrySample; lastKnown: TelemetrySample | null; issuedMonoMs: number;
@@ -31,8 +31,8 @@ export class ResourceTelemetryService implements TelemetryReadService<Management
   readonly #pending = new Set<Promise<void>>()
   readonly #listeners = new Set<() => void>()
   #closed = false
-  constructor(readonly ports: { clock: TelemetryClock; sessions: TelemetrySessionAuthority;
-    ownership: TelemetryOwnershipAuthority; reads: TelemetryReadAuthority }) {}
+  constructor(readonly ports: { clock: TelemetryClock; sessions: TelemetrySessionReader;
+    ownership: TelemetryOwnershipReader; reads: TelemetryReadAuthority }) {}
 
   #identity(context: TrustedTelemetryContext, collectorGeneration: string): TelemetryIdentity {
     if (context.capability !== RESOURCE_TELEMETRY_CAPABILITY) throw new TelemetryRejected('capability')

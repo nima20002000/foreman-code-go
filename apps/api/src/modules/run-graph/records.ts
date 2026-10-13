@@ -2,7 +2,7 @@ import {
   NativeGraphProjectionKeySchema, NativeGraphActivityRecordSchema, NativeGraphCorrelationRecordSchema,
   type NativeGraphProjectionKey, type NativeGraphActivityRecord,
   type NativeGraphCorrelationRecord, type RunGraphScope, type NativeGraphProjectionFence,
-  type NativeGraphProjectionAuthority,
+  type NativeGraphProjectionAccessState,
 } from '@foreman-code/contracts/wave25'
 import type { GraphTransactionSql } from './connection.js'
 import { assertGraphTransaction } from './connection.js'
@@ -59,7 +59,7 @@ export async function readNativeGraphCorrelation(
 /** Read actual locked authority in the publication transaction; never return an echo of expected. */
 export interface NativeGraphProjectionGuard {
   expected: NativeGraphProjectionFence
-  readCurrentLocked(sql: GraphTransactionSql, scope: RunGraphScope, key: NativeGraphProjectionKey): Promise<NativeGraphProjectionAuthority>
+  readCurrentLocked(sql: GraphTransactionSql, scope: RunGraphScope, key: NativeGraphProjectionKey): Promise<NativeGraphProjectionAccessState>
 }
 /** Agent 5 implements mapping/CAS, calls assertNativeGraphProjectionAuthority BEFORE any write,
  * and preserves terminal fences. It does not acquire a second runtime owner here. */

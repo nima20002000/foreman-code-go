@@ -1,7 +1,7 @@
 import type pg from 'pg'
 import { isDeepStrictEqual } from 'node:util'
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema, NativeSessionReferenceSchema } from '@foreman-code/contracts'
-import { ArtifactAttemptSchema, type ArtifactAttempt, type ArtifactAuthority, type ArtifactEdgeBinding } from '@foreman-code/contracts/artifact-edges'
+import { ArtifactAttemptSchema, type ArtifactAttempt, type ArtifactGrantReference, type ArtifactEdgeBinding } from '@foreman-code/contracts/artifact-edges'
 import { DeviceConnectionIdentitySchema, type DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import { WorkerMcpRelayRequestSchema, type WorkerMcpRelayRequest, type WorkerNativeOutputDeclarationsPolicy } from '@foreman-code/contracts/worker-mcp-relay'
 import { WORKER_NATIVE_OUTPUT_FILE_OPERATIONS } from '@foreman-code/contracts/worker-native-output'
@@ -31,7 +31,7 @@ export interface NativeArtifactAuthorityPorts {
 }
 const denied = (): never => { throw new DomainError('NATIVE_ARTIFACT_AUTHORITY_DENIED', 'The original accepted artifact attempt or native authority is unavailable.', 403) }
 /** Shared SQL-only accepted attempt fence; consumer need not have launched a native session. */
-async function acceptedAttempt(mainId: string, ports: NativeArtifactAuthorityPorts, raw: ArtifactAttempt, sql: FileQuery, grant?: ArtifactAuthority) {
+async function acceptedAttempt(mainId: string, ports: NativeArtifactAuthorityPorts, raw: ArtifactAttempt, sql: FileQuery, grant?: ArtifactGrantReference) {
   const attempt = ArtifactAttemptSchema.parse(raw)
   const original = await readDispatchIntent(sql, attempt.executionId)
   const intent = original && await readReconciledDispatchIntent(sql, original.operationId, true)
@@ -232,7 +232,7 @@ export class PostgresArtifactPublicationAuthority implements ArtifactPublication
 }
 export class PostgresAcceptedArtifactAttemptFence implements AcceptedArtifactAttemptFence {
   constructor(private readonly mainId: string, private readonly ports: NativeArtifactAuthorityPorts) {}
-  async assertCurrent(attempt: ArtifactAttempt, authority: ArtifactAuthority, query: FileQuery): Promise<void> {
+  async assertCurrent(attempt: ArtifactAttempt, authority: ArtifactGrantReference, query: FileQuery): Promise<void> {
     const principal = await readLiveManagementPrincipal(query, authority.principalId)
     requireAuthorization(principal, 'agent_chat:read', { workspaceId: attempt.workspaceId, workflowId: attempt.workflowId, runId: attempt.runId })
     const current = await acceptedAttempt(this.mainId, this.ports, attempt, query, authority)

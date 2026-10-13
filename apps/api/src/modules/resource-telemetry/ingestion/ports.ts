@@ -3,7 +3,7 @@ import type { DeviceExtensionDescriptor } from '@foreman-code/contracts/device-a
 import type { TelemetrySelector, TelemetryOwner, TrustedTelemetryContext } from '@foreman-code/contracts/resource-telemetry'
 export interface TelemetryClock { monotonicMs(): number; unixMs(): number }
 /** Implemented by existing W07/session and HRT local runtime owners. */
-export interface TelemetrySessionAuthority {
+export interface TelemetrySessionReader {
   active(context: TrustedTelemetryContext, signal: AbortSignal): Promise<boolean>
   presence(context: TrustedTelemetryContext, signal: AbortSignal): Promise<'online' | 'offline'>
 }
@@ -16,7 +16,7 @@ export interface TelemetryOwnershipView {
   sharedOwnersComplete?: boolean
 }
 /** Passive projection of existing accepted placement/attempt/lease/observed host. */
-export interface TelemetryOwnershipAuthority {
+export interface TelemetryOwnershipReader {
   resolve(selector: Extract<TelemetrySelector, { scope: 'owned' }>, signal: AbortSignal): Promise<TelemetryOwnershipView | null>
 }
 export interface TelemetryReadAuthority {

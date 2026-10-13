@@ -17,7 +17,7 @@ import { DomainError } from '../errors.js'
 import { readAcceptedPlacement, readDispatchIntent } from '../placement/persistence.js'
 import { readReconciledDispatchIntent } from '../runs/remote/persistence.js'
 import type { NativeLaunchObservation, PassiveNativeRegistry, TrustedNativeScope, TrustedNativeScopes } from './collector/registryAdapter.js'
-import type { TelemetryOwnershipAuthority, TelemetryReadAuthority, TelemetrySessionAuthority } from './ingestion/ports.js'
+import type { TelemetryOwnershipReader, TelemetryReadAuthority, TelemetrySessionReader } from './ingestion/ports.js'
 import type { TelemetryOwnedTargetFacts, TelemetryTargetAuthority } from './readback/selector.js'
 
 export interface CapturedTelemetryNativeOwner {
@@ -35,7 +35,7 @@ export interface CapturedRemoteTelemetryNativeOwner extends CapturedTelemetryNat
   native: RemoteNativeIdentity
   assertCurrent(): void
 }
-export interface PassiveTelemetryAuthorityInput {
+export interface PassiveTelemetryServicesInput {
   pool: pg.Pool
   getNativeOwners(): readonly CapturedTelemetryNativeOwner[]
   getRemoteNativeOwners?(): readonly CapturedRemoteTelemetryNativeOwner[]
@@ -84,8 +84,8 @@ function ownerTarget(mainId: string, owner: TelemetryOwner): Extract<TelemetrySe
   return { schemaVersion: 1, scope: 'owned', mainId, target }
 }
 /** Read-only projection of actual accepted facts. No ownership ledger, PID discovery, runtime acquisition or grant upgrade. */
-export function createPassiveTelemetryAuthorities(input: PassiveTelemetryAuthorityInput): {
-  sessions: TelemetrySessionAuthority; ownership: TelemetryOwnershipAuthority; reads: TelemetryReadAuthority;
+export function createPassiveTelemetryAuthorities(input: PassiveTelemetryServicesInput): {
+  sessions: TelemetrySessionReader; ownership: TelemetryOwnershipReader; reads: TelemetryReadAuthority;
   targets: TelemetryTargetAuthority; nativeScopes(identity: TelemetryIdentity): TrustedNativeScopes;
 } {
   const captures = () => {
@@ -281,7 +281,7 @@ export function createPassiveTelemetryAuthorities(input: PassiveTelemetryAuthori
       return context ? targets.allowTarget(principal, ownerTarget(context.mainId, owner), signal) : Promise.resolve(false)
     },
   }
-  const ownership: TelemetryOwnershipAuthority = { resolve: (selector, signal) => withSql(signal, async sql => {
+  const ownership: TelemetryOwnershipReader = { resolve: (selector, signal) => withSql(signal, async sql => {
     if (selector.owner.kind !== 'workflow-execution') return null
     const scopes = await load(sql, signal, selector.owner.executionId)
     const scope = scopes.length === 1 ? scopes[0] : undefined
@@ -291,7 +291,7 @@ export function createPassiveTelemetryAuthorities(input: PassiveTelemetryAuthori
       attributionRef: scope.attributionRef, attributionRevision: scope.attributionRevision }) as OwnedSelector
     return telemetrySelectorKey(exact) === telemetrySelectorKey(selector) ? { selector: exact, state: scope.state, sharedOwners: scope.sharedOwners, sharedOwnersComplete: scope.host.hostRef.kind === 'main' } : null
   }) }
-  const sessions: TelemetrySessionAuthority = {
+  const sessions: TelemetrySessionReader = {
     active: async (context, signal) => {
       signal.throwIfAborted()
       if (!input.mainActive() || !input.mainContext() || context.capability !== 'resource-telemetry/v1') return false

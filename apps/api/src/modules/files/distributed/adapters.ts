@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { z } from 'zod'
-import { ArtifactEdgeReadSchema, type ArtifactAttempt, type ArtifactAuthority } from '@foreman-code/contracts/artifact-edges'
+import { ArtifactEdgeReadSchema, type ArtifactAttempt, type ArtifactGrantReference } from '@foreman-code/contracts/artifact-edges'
 import { AgentFilePublishInputSchema, AgentFilePublishResultSchema, AgentFileReadResultSchema } from '@foreman-code/contracts/files'
 import { toolResult, toolFailure } from '../../../mcp/shared/results.js'
 import type { ArtifactEdgeService } from './edges.js'
@@ -12,7 +12,7 @@ const Publish = z.object({ transferId: z.uuid(), publication: AgentFilePublishIn
 /** Authenticator accepts only the intended W07 worker/session credential, resolving live
  * W08 ownership. It must never exchange a browser/Operator credential for worker authority. */
 export interface DistributedArtifactEndpointAuthorization {
-  consumer(request: FastifyRequest): Promise<{ attempt: ArtifactAttempt; authority: ArtifactAuthority }>
+  consumer(request: FastifyRequest): Promise<{ attempt: ArtifactAttempt; authority: ArtifactGrantReference }>
   producer(request: FastifyRequest): Promise<AcceptedArtifactPublication>
 }
 export function createDistributedArtifactActions(edges: ArtifactEdgeService,

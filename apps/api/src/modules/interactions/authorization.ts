@@ -2,7 +2,7 @@ import type { DurableInteraction } from '@foreman-code/contracts'
 
 import { DomainError } from '../errors.js'
 
-export interface WorkerInteractionAuthority {
+export interface WorkerInteractionContext {
   agentId: string
   workspaceId: string
   workflowId: string
@@ -11,7 +11,7 @@ export interface WorkerInteractionAuthority {
 /** Core responder invariant. Authentication/grant lookup remains HAP-04 ownership. */
 export function assertOrchestratorInteractionAuthority(
   interaction: DurableInteraction,
-  authority: WorkerInteractionAuthority,
+  authority: WorkerInteractionContext,
 ): void {
   const allowed = interaction.approval.handler === 'orchestrator'
     && interaction.approval.designatedOrchestratorAgentId === authority.agentId
