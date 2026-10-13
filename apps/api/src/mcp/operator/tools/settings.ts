@@ -139,7 +139,7 @@ export const settingsTools = [
     name: 'operator_chat_activity_get',
     requires: [['operator_chat:read', 'global']],
     enabled: s => !!s.operatorChat,
-    description: 'Page persisted activity of an owned Operator conversation, including records omitted from operator_chat_get. Pages are oldest-first; pass nextCursor as before to read older records. Cursors are decimal strings bound to this conversation. Requires global operator_chat:read.',
+    description: 'Page persisted activity of an owned Operator conversation, including records omitted from operator_chat_get. Supply requestId and activityId to read one persisted item regardless of its age. Pages are oldest-first; pass nextCursor as before to read older records. Cursors are decimal strings bound to this conversation. Requires global operator_chat:read.',
     inputSchema: OperatorActivityQuerySchema.extend({ conversationId: IdSchema }),
     outputSchema: OperatorActivityPageSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },

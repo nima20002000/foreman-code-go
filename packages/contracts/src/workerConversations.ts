@@ -109,6 +109,7 @@ export const WorkerConversationReceiptSchema = z.object({
   connection: DeviceSessionBindingSchema,
   revision: z.number().int().positive(),
   closed: z.boolean(), closing: z.boolean(),
+  closedAt: z.iso.datetime().optional(),
   creation: z.object({ operationId: id, inputHash: digest, status: z.literal('rejected').optional() }).strict().optional(),
   session: z.lazy(() => NativeSessionReferenceSchema).optional(),
   nativeOwner: RemoteNativeIdentitySchema.optional(),

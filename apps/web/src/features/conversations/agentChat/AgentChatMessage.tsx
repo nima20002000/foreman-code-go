@@ -2,7 +2,9 @@ import type { ReactNode } from 'react'
 import Markdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import type { Message } from '@foreman-code/contracts'
-import { CodeBlock } from '../../../shared/ui/nocturne'
+import { useMutation } from '@tanstack/react-query'
+import { errorMessage } from '../../../shared/errorMessage'
+import { Button, CodeBlock } from '../../../shared/ui/nocturne'
 import { TextTruncationNotice } from '../TextTruncationNotice'
 
 const markdownComponents: Components = {
@@ -23,12 +25,13 @@ const markdownComponents: Components = {
   },
 }
 
-export function AgentChatMessage({ message, name, status, actions, children }: {
+export function AgentChatMessage({ message, name, status, actions, children, onExpand }: {
   message: Omit<Message, 'conversationId'>
   name: string
   status?: ReactNode
   actions?: ReactNode
   children?: ReactNode
+  onExpand?(): Promise<void>
 }) {
   const user = message.role === 'user'
   const timestamp = message.createdAt
@@ -42,10 +45,21 @@ export function AgentChatMessage({ message, name, status, actions, children }: {
       {user ? message.content : <Markdown components={markdownComponents} skipHtml>{message.content}</Markdown>}
     </div>
     <TextTruncationNotice truncation={message.truncation} />
+    {message.truncation?.truncated && onExpand ? <MessageExpansion key={`${message.id}:${message.revision}`}
+      onExpand={onExpand} /> : null}
     {children}
     <footer className="agent-chat-message-meta">
       {time ? <time dateTime={timestamp} title={new Date(timestamp!).toLocaleString()}>{time}</time> : null}
       {status}{actions}
     </footer>
   </article>
+}
+
+function MessageExpansion({ onExpand }: { onExpand(): Promise<void> }) {
+  const expansion = useMutation({ mutationFn: onExpand, retry: false })
+  return <>
+    {!expansion.isSuccess ? <Button size="sm" variant="ghost" disabled={expansion.isPending}
+      onClick={() => expansion.mutate()}>{expansion.isPending ? 'Loading full message…' : 'Show full message'}</Button> : null}
+    {expansion.isError ? <p role="alert">{errorMessage(expansion.error, 'The full message could not be loaded.')}</p> : null}
+  </>
 }

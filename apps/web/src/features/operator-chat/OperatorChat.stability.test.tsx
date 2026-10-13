@@ -268,3 +268,44 @@ it.each([false, true])('uses saved full native identity for live-text readiness 
   if (!emptyFinal) expect(screen.getByText('Saved final answer')).toBeVisible()
   expect(screen.getByRole('status', { name: 'Operator is typing' })).toBeVisible()
 })
+
+it.each(['event', 'reconnect', 'history'] as const)('settles an observed tool outside the recent window after %s', async trigger => {
+  const running = { id: 'old-tool', requestId: 'accepted-turn', kind: 'tool' as const,
+    title: 'Old command', status: 'running' as const, sequence: '1', revision: 1 }
+  const newer = Array.from({ length: 100 }, (_, index) => ({ ...running, id: `newer-${index}`,
+    title: `Newer command ${index}`, status: 'completed' as const, sequence: String(index + 2) }))
+  states.a = { ...states.a!, revision: 1, turnState: 'active', activeRequestId: 'accepted-turn',
+    messages: [{ id: 'question', conversationId: 'a', requestId: 'accepted-turn', role: 'user', content: 'Question' }],
+    activities: trigger === 'history' ? newer : [running],
+    activityNextCursor: trigger === 'history' ? '2' : null }
+  let complete = false
+  const exact = vi.fn()
+  server.use(http.get('/api/operator/conversations/:id/activity', ({ request }) => {
+    const params = new URL(request.url).searchParams
+    if (params.get('activityId') === running.id) {
+      exact(params.get('requestId'))
+      return HttpResponse.json({ activities: [{ ...running, status: 'completed', output: 'Saved result', revision: 2 }], nextCursor: null })
+    }
+    return HttpResponse.json({ activities: [complete ? { ...running, status: 'completed', revision: 2 } : running], nextCursor: null })
+  }))
+  mount()
+  await screen.findByRole('textbox', { name: 'Message' })
+  if (trigger === 'history') fireEvent.click(await screen.findByRole('button', { name: 'Load earlier activity' }))
+  expect(await screen.findByText('Tool · Old command')).toBeVisible()
+  states.a = { ...states.a!, revision: 2, activities: newer }
+  complete = true
+  const listeners = api.subscribe.mock.calls[0]![1] as Parameters<typeof subscribeOperatorChat>[1]
+  if (trigger === 'event') act(() => listeners.event({ id: 1, conversationId: 'a', type: 'activity',
+    data: { revision: 2, activity: { ...running, status: 'completed', revision: 2 } } }))
+  else act(() => listeners.reconnect())
+  await waitFor(() => expect(exact).toHaveBeenCalledWith('accepted-turn'))
+  await waitFor(() => {
+    const cached = client.getQueryData<OperatorConversationState>(['operator-chat', 'conversation', 'a'])
+    const history = client.getQueriesData<{ pages: Array<{ activities: typeof running[] }> }>({
+      predicate: query => query.queryKey[0] === 'operator-chat' && query.queryKey[1] === 'activity',
+    })[0]?.[1]
+    const tool = trigger === 'history' ? history?.pages[0]?.activities[0] : cached?.activities?.find(item => item.id === running.id)
+    expect(tool).toMatchObject({ status: 'completed', revision: 2 })
+    expect(screen.queryByText('Running')).not.toBeInTheDocument()
+  })
+})

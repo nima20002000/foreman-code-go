@@ -38,7 +38,8 @@ export function RunTranscript({ feed, name, onBrowse }: {
         {!items.length && executionIsLive(execution) ? <p className="agent-chat-note">Waiting for the first activity…</p> : null}
         <ol className="agent-chat-messages" aria-label="Execution activity">
           {items.map(item => <li key={item.id}>{item.entry.kind === 'message'
-            ? <AgentChatMessage message={item.entry.message} name={name} />
+            ? <AgentChatMessage message={item.entry.message} name={name}
+              onExpand={() => { onBrowse(); return feed.expand(item.executionId, item.id) }} />
             : <AgentChatActivity entry={item.entry.activity} onBrowse={onBrowse}
               expandState={feed.readState(item.executionId, item.id)}
               onExpand={() => feed.expand(item.executionId, item.id)} />}</li>)}

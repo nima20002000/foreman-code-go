@@ -18,6 +18,8 @@ import { JobExecutionRecordSchema, type JobExecutionRecord } from '@foreman-code
 import { SourcePreparationClosureSchema, type SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import { WorkerConversationReceiptSchema } from '@foreman-code/contracts/remote-execution-rpc'
+import { DomainError } from '../../errors.js'
+import { WorkerConversationArchive } from '../../conversations/workerConversationArchive.js'
 import { WorkerConversationJournal } from '../../conversations/workerJournal.js'
 import { RemoteOperationReceiptSchema, RemoteOwnerControlSchema, RemoteTerminalEvidenceSchema, RemoteNativeIdentitySchema, RemoteInteractionTargetSchema, RemoteOwnerReconciliationSchema,
   type RemoteOperationReceipt, type RemoteOperationStatus, type RemoteOwnerControl,
@@ -80,6 +82,7 @@ export class RemoteOperationJournal {
   private tail: Promise<unknown> = Promise.resolve()
   readonly conversations: WorkerConversationJournal
   private readonly runtimeArchive: RuntimeJournalArchive
+  private readonly conversationArchive: WorkerConversationArchive
   private constructor(
     private readonly path: string,
     private data: z.infer<typeof JournalSchema>,
@@ -90,14 +93,30 @@ export class RemoteOperationJournal {
     private readonly retentionNow: () => number | undefined,
   ) {
     this.runtimeArchive = new RuntimeJournalArchive(path, (path, value) => this.writeSnapshot(path, value))
+    this.conversationArchive = new WorkerConversationArchive(path, byteLimit,
+      (archivePath, value) => this.writeSnapshot(archivePath, value))
     this.conversations = new WorkerConversationJournal({
-      read: async () => {
+      read: async conversationId => {
         await this.tail
         if (this.closed || this.faulted) throw new Error('Journal unavailable: recovery required')
-        return structuredClone(this.data.conversations)
+        const retained = this.data.conversations.find(record => record.binding.owner.conversationId === conversationId)
+        const record = retained ?? await this.conversationArchive.read(conversationId)
+        return record ? [structuredClone(record)] : []
       },
-      change: apply => this.change(data => apply(data.conversations)),
-    }, capacity)
+      change: (conversationId, apply) => this.change(async data => {
+        if (data.conversations.some(record => record.binding.owner.conversationId === conversationId)) {
+          return apply(data.conversations)
+        }
+        const archived = await this.conversationArchive.read(conversationId)
+        if (!archived) return apply(data.conversations)
+        const records = [structuredClone(archived)]
+        const result = apply(records)
+        if (!same(records, [archived])) {
+          throw new DomainError('WORKER_CONVERSATION_CONFLICT', 'The native conversation is retired.', 409)
+        }
+        return result
+      }),
+    }, capacity, now)
   }
   static async open(path: string,
     options: { initializeNewInstallation?: boolean; capacity?: number; byteLimit?: number; now?: () => number;
@@ -359,6 +378,19 @@ export class RemoteOperationJournal {
     const now = this.retentionNow()
     if (now === undefined) return
     const cutoff = now - RUNTIME_JOURNAL_RETENTION_MS
+    for (const receipt of [...data.conversations]) {
+      if (!receipt.closed) continue
+      // Snapshots without a closure timestamp begin retention when first observed closed.
+      receipt.closedAt ??= new Date(now).toISOString()
+      if (Date.parse(receipt.closedAt) > cutoff
+        || receipt.turns.some(turn => !['completed', 'rejected'].includes(turn.status))
+        || receipt.compactions.some(control => ['accepted', 'running', 'uncertain'].includes(control.state.status))
+        || receipt.applicationAccessChange?.state === 'reserved'
+        || Object.values(receipt.claudeCallbacks ?? {}).some(callback => !callback.acknowledged
+          || callback.state === 'uncertain')) continue
+      await this.conversationArchive.save(receipt)
+      data.conversations = data.conversations.filter(record => record !== receipt)
+    }
     for (const receipt of [...data.receipts]) {
       if (!('kind' in receipt) || !receipt.terminal?.processStopped
         || Date.parse(receipt.terminal.finishedAt) > cutoff || !['complete', 'failed'].includes(receipt.publication)) continue

@@ -6,8 +6,9 @@ import { WorkerConversationBindingSchema } from '@foreman-code/contracts/remote-
 
 /** Protocol data only; it contains no installed/native qualification. */
 export function workerConversationFixture(kind: 'operator' | 'agent' = 'operator', harness: AgentHarness = 'codex') {
-  const connection = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
-    bootId: randomUUID(), connectionEpoch: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }
+  const deviceConnection = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(),
+    bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }
+  const connection = { ...deviceConnection, connectionEpoch: randomUUID() }
   const profile = { instanceId: randomUUID(), instanceRevision: 'profile-fixture', target: {
     hostRef: { kind: 'device' as const, mainId: connection.mainId, deviceId: connection.deviceId },
     applicationInstallationId: connection.workerInstallationId,
@@ -34,5 +35,5 @@ export function workerConversationFixture(kind: 'operator' | 'agent' = 'operator
   })
   const session = { harness, providerVersion: 'provider-fixture', nativeSessionId: randomUUID() }
   const nativeOwner = { sessionId: session.nativeSessionId, processIdentityDigest: 'b'.repeat(64) }
-  return { binding, configuration, connection, session, nativeOwner }
+  return { binding, configuration, connection, deviceConnection, session, nativeOwner }
 }

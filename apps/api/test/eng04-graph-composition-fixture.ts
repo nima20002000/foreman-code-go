@@ -1,7 +1,7 @@
 import { readPublicProjectionLocked } from '../src/modules/run-graph/compactSnapshot.js'
 import { randomUUID } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
-import { AgentSchema, type AgentConfigurationVersion } from '@foreman-code/contracts'
+import { AgentSchema, DEFAULT_CODEX_ADVANCED_CONFIGURATION, type AgentConfigurationVersion } from '@foreman-code/contracts'
 import { ManagementActionSchema, type ManagementGrant } from '@foreman-code/contracts/management'
 import { makeCurrentWorkflowFixture, CANONICAL_RUN_GRAPH_ROUTES, CurrentWorkflowSaveResultSchema,
   SavedManagedWorkflowCommandResultSchema, type CurrentFixtureForm } from '@foreman-code/contracts/wave25'
@@ -24,11 +24,22 @@ export const privateCanary = 'ENG04-PRIVATE-INPUT-MUST-NOT-REACH-GRAPH'
  * No native/public Start acceptance is claimed. Current authoring, authentication,
  * SQL receipts/audit and canonical publication are actual production services. */
 export async function graphFixture(db: GraphTestDatabase, options: { insert?: boolean; qualifiedReads?: boolean;
-  form?: CurrentFixtureForm; handoffs?: boolean; maxNodeExecutions?: number;
+  form?: CurrentFixtureForm; handoffs?: boolean; maxNodeExecutions?: number; intervalEverySeconds?: number;
   harness?: AgentConfigurationVersion['harness'] } = {}) {
   const f = makeCurrentWorkflowFixture(randomUUID(), options.form ?? 'repeat')
   if (options.harness) {
     for (const configuration of f.configurations) configuration.harness = structuredClone(options.harness)
+  }
+  if (options.intervalEverySeconds !== undefined) {
+    for (const node of f.version.definition.nodes) node.interval = { everySeconds: options.intervalEverySeconds }
+    for (const configuration of f.configurations) {
+      if (configuration.harness.harness !== 'codex') continue
+      configuration.harness.advanced = {
+        ...DEFAULT_CODEX_ADVANCED_CONFIGURATION,
+        ...configuration.harness.advanced,
+        approvalPolicy: 'never',
+      }
+    }
   }
   if (options.handoffs && f.version.definition.repeat) throw new Error('Handoff fixture requires a non-repeat form')
   await db.pool.query(`insert into workspaces(id,record,execution_location,execution_location_identity,location_revision)

@@ -43,6 +43,7 @@
   "apps/api/src/modules/conversations/workerClaudeAuthority.ts",
   "apps/api/src/modules/conversations/workerClaudeFiles.ts",
   "apps/api/src/modules/conversations/workerClaudeOwner.ts",
+  "apps/api/src/modules/conversations/workerConversationArchive.ts",
   "apps/api/src/modules/conversations/workerFiles.ts",
   "apps/api/src/modules/conversations/workerHost.ts",
   "apps/api/src/modules/conversations/workerJournal.ts",
