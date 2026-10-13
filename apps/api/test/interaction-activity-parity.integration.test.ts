@@ -7,7 +7,6 @@ import { OperatorInteractionService } from '../src/modules/interactions/operator
 import { routedApprovalFixture } from './helpers/routedApprovalFixture.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
-import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 
 /** Uses the existing production native/reviewer factory seam and original-source PostgreSQL approval writer.
@@ -17,7 +16,7 @@ it.skipIf(!postgresEnabled)('reads one persisted interaction activity through au
   const workflows = new PostgresWorkflowRepository(f.db.pool)
   const app = buildApp({
     product: { workspaces: new PostgresWorkspaceRepository(f.db.pool, workflows, f.runs), workflows, runs: f.runs,
-      settings: new PostgresSettingsRepository(f.db.pool), engine: f.engine, interactions: f.service },
+      engine: f.engine, interactions: f.service },
     readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access: f.access, services: { commands: new PostgresCommandCoordinator(f.db.pool),
       interactions: new OperatorInteractionService(f.service) } as never } })

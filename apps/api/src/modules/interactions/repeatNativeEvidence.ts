@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 import type { HarnessExecution, NativeSessionReference } from '@foreman-code/contracts'
-import type { ClosedWorkflowSession } from './stoppedWorkflowFinalization.js'
+import type { ClosedWorkflowSession } from './workflowClosure.js'
 import { DomainError } from '../errors.js'
 
 const identityKeys = ['id', 'runId', 'workflowNodeId', 'agentId', 'agentConfigurationVersionId',

@@ -11,7 +11,6 @@ import { InteractionService } from '../src/modules/interactions/service.js'
 import { registerApprovalCheckpointResume } from '../src/modules/runs/approvalCheckpointRegistration.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
 import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.js'
-import { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 import { codexWorkflowRuntime } from './helpers/codexWorkflowRuntime.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { calls, until } from './fixtures/codex-test-helpers.js'
@@ -25,7 +24,7 @@ describe.skipIf(!postgresEnabled)('Codex workflow input delivery through authent
     const workflows = new PostgresWorkflowRepository(f.db.pool)
     const app = buildApp({ product: {
       workspaces: new PostgresWorkspaceRepository(f.db.pool, workflows, f.runs),
-      workflows, runs: f.runs, settings: new PostgresSettingsRepository(f.db.pool),
+      workflows, runs: f.runs,
       engine: f.engine, interactions: f.service,
     }, readiness: { database: { ping: async () => undefined },
       checkpoints: { ping: async () => undefined } }, operator: { access: f.access, services } })

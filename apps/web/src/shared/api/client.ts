@@ -4,7 +4,6 @@ import {
 } from '@foreman-code/contracts/wave25'
 import {
   ApiErrorResponseSchema,
-  GetHarnessDefaultsResponseSchema,
   GetInteractionResponseSchema,
   ListInteractionsRequestSchema,
   ListInteractionsResponseSchema,
@@ -26,10 +25,7 @@ import {
   CancelOperatorTurnResponseSchema,
   CancelOperatorTurnRequestSchema,
   RespondOperatorInteractionRequestSchema,
-  SaveHarnessDefaultsRequestSchema,
-  SaveHarnessDefaultsResponseSchema,
   WorkspaceDetailsRequestSchema,
-  type GetHarnessDefaultsResponse,
   type GetRunRequest,
   type GetWorkflowRequest,
   type ListAgentsRequest,
@@ -37,8 +33,6 @@ import {
   type ListVisibleResourcesRequest,
   type ListVisibleResourcesResponse,
   type OperatorConversationState,
-  type SaveHarnessDefaultsRequest,
-  type SaveHarnessDefaultsResponse,
   type WorkspaceDetailsRequest,
 } from '@foreman-code/contracts'
 import { z } from 'zod'
@@ -489,23 +483,6 @@ export class ApiClient {
     return this.getWorkspaceDetails(input, options)
   }
 
-  getHarnessDefaults(options?: RequestOptions) {
-    return this.request<GetHarnessDefaultsResponse>(
-      '/api/settings/harnesses',
-      GetHarnessDefaultsResponseSchema,
-      options,
-    )
-  }
-
-  saveHarnessDefaults(input: SaveHarnessDefaultsRequest, options?: RequestOptions) {
-    const request = parseRequest(SaveHarnessDefaultsRequestSchema, input)
-    return this.request<SaveHarnessDefaultsResponse>(
-      '/api/settings/harnesses',
-      SaveHarnessDefaultsResponseSchema,
-      { ...options, method: 'PUT', body: request },
-    )
-  }
-
   listAgents(input: ListAgentsRequest, options?: RequestOptions) {
     const request = parseRequest(ListAgentsRequestSchema, input)
     return this.request<ListAgentsResponse>(
@@ -575,8 +552,6 @@ export const apiClient = new ApiClient()
 
 export const getWorkspaceDetails = apiClient.getWorkspaceDetails.bind(apiClient)
 export const getWorkspace = apiClient.getWorkspace.bind(apiClient)
-export const getHarnessDefaults = apiClient.getHarnessDefaults.bind(apiClient)
-export const saveHarnessDefaults = apiClient.saveHarnessDefaults.bind(apiClient)
 export const listAgents = apiClient.listAgents.bind(apiClient)
 export const getWorkflow = apiClient.getWorkflow.bind(apiClient)
 export const getRun = apiClient.getRun.bind(apiClient)

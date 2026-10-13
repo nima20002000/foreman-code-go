@@ -5,9 +5,17 @@ import type pg from 'pg'
 import { beforeGraphCommit, type GraphSqlClient, type GraphTransactionSql } from '../run-graph/connection.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import { DomainError } from '../errors.js'
-import type { ClosedWorkflowSession } from './stoppedWorkflowFinalization.js'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { readExecutionPlacement } from '../placement/persistence.js'
+
+/** Private native-closure evidence, captured by the coordinator, never an API
+ * input or an inference from a terminal business result. No secrets are stored. */
+export interface ClosedWorkflowSession {
+  execution: Pick<HarnessExecution, 'id' | 'runId' | 'workflowNodeId' | 'agentId' | 'agentConfigurationVersionId'
+    | 'attempt' | 'workingDirectory' | 'runtimeDirectory' | 'nativeSessionId'>
+  session: NativeSessionReference
+  durableGeneration?: string
+}
 
 /** Backend-only lifetime receipt. It is not a native action or Run authority.
  * Reserve BEFORE credential preflight, create or
