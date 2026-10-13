@@ -48,6 +48,7 @@ const selectedChatUnavailable = http.get(selectedRoute, ({ params }) => HttpResp
     runId: String(params.runId), workflowNodeId: String(params.workflowNodeId) }, reason: 'execution_missing',
 })))
 const clients: QueryClient[] = []
+let restoreBrowserLocks: () => void
 const unhandled: string[] = []
 const recordUnhandled = ({ request }: { request: Request }) => unhandled.push(`${request.method} ${request.url}`)
 let selected: SelectedRunState
@@ -148,7 +149,7 @@ function fileRow(state: AgentChatState, id: string, filename = 'shared.md', crea
 }
 
 beforeEach(() => {
-  installBrowserLocks()
+  restoreBrowserLocks = installBrowserLocks()
   unhandled.length = 0; server.events.on('request:unhandled', recordUnhandled)
   localStorage.clear(); sessionStorage.clear(); bindMockInstallation(); useGraphDraftStore.getState().clearAllDrafts()
   installFlowLayout(320, 480); installChatSource()
@@ -192,6 +193,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup(); window.dispatchEvent(new Event('pagehide'))
+  restoreBrowserLocks()
   clients.splice(0).forEach((client) => client.clear())
   server.events.removeListener('request:unhandled', recordUnhandled)
   expect(unhandled, 'No selected Board request may bypass MSW').toEqual([])

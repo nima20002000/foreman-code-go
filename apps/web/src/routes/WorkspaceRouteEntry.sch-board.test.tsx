@@ -26,6 +26,7 @@ const scope = { workspaceId: 'workspace-1', workflowId: 'workflow-content-pipeli
 const key = nextDraftKey(scope.workspaceId, scope.workflowId)
 const runsRoute = '*/api/management/workspaces/:workspaceId/workflows/:workflowId/runs'
 const clients: QueryClient[] = []
+let restoreBrowserLocks: () => void
 const unhandled: string[] = []
 const writes: string[] = [], scheduleReads: string[] = []
 const recordUnhandled = ({ request }: { request: Request }) => unhandled.push(`${request.method} ${request.url}`)
@@ -90,7 +91,7 @@ function installNodeInspection() {
 }
 
 beforeEach(() => {
-  installBrowserLocks()
+  restoreBrowserLocks = installBrowserLocks()
   unhandled.length = 0; server.events.on('request:unhandled', recordUnhandled)
   useGraphDraftStore.getState().clearAllDrafts()
   localStorage.clear(); sessionStorage.clear(); bindMockInstallation()
@@ -152,6 +153,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup(); window.dispatchEvent(new Event('pagehide'))
+  restoreBrowserLocks()
   clients.splice(0).forEach((client) => client.clear())
   server.events.removeListener('request:unhandled', recordUnhandled)
   expect(unhandled, 'No selected Board request may bypass MSW').toEqual([])
@@ -344,10 +346,11 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
       await waitFor(() => expect(workspaceReads).toBe(initialWorkspaceReads + 1))
       expect(within(editor).getByRole('heading', { name: 'Retained local name' })).toBeVisible()
       await waitFor(() => expect(client.isFetching({ queryKey: boardDraftContextKey(scope.workspaceId, scope.workflowId) })).toBe(0))
+      const selectedWorkspaceReads = workspaceReads
       const historyReads = context.mock.calls.length
       await act(async () => { await vi.advanceTimersByTimeAsync(3_200) })
       await waitFor(() => expect(context.mock.calls.length).toBeGreaterThan(historyReads))
-      expect(workspaceReads).toBe(initialWorkspaceReads)
+      expect(workspaceReads).toBe(selectedWorkspaceReads)
       expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).toBe(graph)
 
       await choose(null)
@@ -363,11 +366,14 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
 
   it('automatically pins an active Run and returns to authoring through New run', async () => {
     const fixture = getMockFixture(scope.workspaceId)!
-    server.use(http.get('/api/workspaces/workspace-1', () => HttpResponse.json({
-      workspace: fixture.workspace, agents: fixture.agents, workflows: fixture.workflows,
-      resources: fixture.resources, browserProfiles: fixture.browserProfiles, runners: fixture.runners,
-      runs: [{ ...fixture.runs[0], id: 'run-a', executionState: 'running', outcome: 'pending', finishedAt: undefined }],
-    })))
+    server.use(
+      http.get(`${runsRoute}/summaries`, () => HttpResponse.json(page([{ ...runA, status: 'running' }, runB]))),
+      http.get('/api/workspaces/workspace-1', () => HttpResponse.json({
+        workspace: fixture.workspace, agents: fixture.agents, workflows: fixture.workflows,
+        resources: fixture.resources, browserProfiles: fixture.browserProfiles, runners: fixture.runners,
+        runs: [{ ...fixture.runs[0], id: 'run-a', executionState: 'running', outcome: 'pending', finishedAt: undefined }],
+      })),
+    )
     const listed = await runsSelectorApi.list({ ...scope, limit: 20 })
     expect(listed.items.find(run => run.runId === 'run-a')).toMatchObject({ status: 'running' })
     const { router } = await mount()

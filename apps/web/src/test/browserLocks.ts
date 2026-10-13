@@ -1,9 +1,9 @@
-import { vi } from 'vitest'
-
 /** JSDOM lacks Web Locks; model exclusive commands and nonblocking tab ownership claims. */
 export function installBrowserLocks() {
+  const browserNavigator = navigator
+  const originalLocks = Object.getOwnPropertyDescriptor(browserNavigator, 'locks')
   const pending = new Map<string, Promise<unknown>>()
-  vi.stubGlobal('navigator', { ...navigator, locks: {
+  Object.defineProperty(browserNavigator, 'locks', { configurable: true, value: {
     request<T>(name: string, options: LockOptions | ((lock: Lock) => T | PromiseLike<T>),
       callback?: (lock: Lock | null) => T | PromiseLike<T>): Promise<T> {
       const work = typeof options === 'function' ? options : callback!
@@ -24,4 +24,8 @@ export function installBrowserLocks() {
       return result
     },
   } })
+  return () => {
+    if (originalLocks) Object.defineProperty(browserNavigator, 'locks', originalLocks)
+    else Reflect.deleteProperty(browserNavigator, 'locks')
+  }
 }

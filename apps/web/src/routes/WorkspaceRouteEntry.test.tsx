@@ -35,6 +35,7 @@ function readyWorkspace() {
 }
 
 const clients: QueryClient[] = []
+let restoreBrowserLocks: () => void
 async function researcherButton() {
   // Wait for the current Board before querying its canvas; initial route selection
   // and definition loading are separate asynchronous steps.
@@ -75,7 +76,7 @@ async function renderWorkspace(initialEntry: string) {
 
 describe('WorkspaceRouteEntry integration', () => {
   beforeEach(() => {
-    installBrowserLocks()
+    restoreBrowserLocks = installBrowserLocks()
     useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); bindMockInstallation(); sessionStorage.clear()
     server.use(http.get('/api/management/workspaces/workspace-1', () => HttpResponse.json(readyWorkspace())))
     server.use(
@@ -101,6 +102,7 @@ describe('WorkspaceRouteEntry integration', () => {
 
   afterEach(() => {
     cleanup(); window.dispatchEvent(new Event('pagehide'))
+    restoreBrowserLocks()
     clients.splice(0).forEach((client) => client.clear())
     useGraphDraftStore.getState().clearAllDrafts(); vi.restoreAllMocks(); vi.unstubAllGlobals()
     setMockScenario('normal')
