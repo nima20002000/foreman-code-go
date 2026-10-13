@@ -59,7 +59,6 @@ function actionFor(request: FastifyRequest) {
     if (url.endsWith('/responses')) return 'agent_chat:respond' as const
     return 'agent_chat:write' as const
   }
-  if (url === '/api/settings/agents' || url === '/api/settings/workflows') return request.method === 'GET' ? 'settings:read' as const : 'settings:update' as const
   if (url.includes('/agents')) return request.method === 'GET' ? 'agents:read' as const : 'graph:edit' as const
   if (url.includes('/runs/') && url.endsWith('/cancel')) return 'runs:stop' as const
   if (url.includes('/runs')) return request.method === 'GET' ? 'runs:read' as const : 'runs:start' as const

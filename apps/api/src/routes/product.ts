@@ -1,10 +1,4 @@
 import {
-  GetAgentDefaultsResponseSchema,
-  UpdateAgentDefaultsResponseSchema,
-  GetWorkflowDefaultsResponseSchema,
-  UpdateWorkflowDefaultsResponseSchema,
-  UpdateAgentDefaultsRequestSchema,
-  UpdateWorkflowDefaultsRequestSchema,
   ListAgentsResponseSchema,
   ListInteractionsResponseSchema,
   GetInteractionResponseSchema,
@@ -20,7 +14,6 @@ import { requirePrincipal } from '../modules/access/http.js'
 import { DomainError } from '../modules/errors.js'
 import type { LangGraphWorkflowEngine } from '../modules/runs/engine.js'
 import type { PostgresRunRepository } from '../modules/runs/postgres.js'
-import type { PostgresFoundationSettingsRepository } from '../modules/settings/foundation.js'
 import type { PostgresWorkflowRepository } from '../modules/workflows/postgres.js'
 import type { PostgresWorkspaceRepository } from '../modules/workspaces/postgres.js'
 import type { OperatorChatService } from '../modules/conversations/operatorChat.js'
@@ -31,7 +24,6 @@ export interface ProductServices {
   workspaces: PostgresWorkspaceRepository
   workflows: PostgresWorkflowRepository
   runs: PostgresRunRepository
-  foundationSettings?: PostgresFoundationSettingsRepository
   engine: LangGraphWorkflowEngine
   chat?: OperatorChatService
   interactions?: InteractionService
@@ -45,30 +37,10 @@ function notFound(kind: string, id: string): never {
   throw new DomainError(`${kind.toUpperCase()}_NOT_FOUND`, `${kind} '${id}' was not found.`, 404)
 }
 
-export function registerProductRoutes(app: FastifyInstance, services: ProductServices, managementOnlyMutations = false, management?: Pick<OperatorServices, 'workflows' | 'runs'>): void {
+export function registerProductRoutes(
+  app: FastifyInstance, services: ProductServices, management?: Pick<OperatorServices, 'workflows' | 'runs'>,
+): void {
   if (services.chat) registerOperatorChatRoutes(app, services.chat)
-  if (services.foundationSettings) {
-    app.get('/api/settings/agents', async () => GetAgentDefaultsResponseSchema.parse(
-      await services.foundationSettings!.getAgentDefaults(),
-    ))
-    app.put<{ Body: unknown }>('/api/settings/agents', async (request) => {
-      if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the revision-checked management settings command.', 409)
-      const input = UpdateAgentDefaultsRequestSchema.parse(request.body)
-      return UpdateAgentDefaultsResponseSchema.parse(await services.foundationSettings!.updateAgentDefaults(input.value, input.expectedRevision))
-    })
-    app.get('/api/settings/workflows', async () => GetWorkflowDefaultsResponseSchema.parse(
-      await services.foundationSettings!.getWorkflowDefaults(),
-    ))
-    app.put<{ Body: unknown }>('/api/settings/workflows', async (request) => {
-      if (managementOnlyMutations) throw new DomainError('MANAGEMENT_ROUTE_REQUIRED', 'Use the revision-checked management settings command.', 409)
-      const input = UpdateWorkflowDefaultsRequestSchema.parse(request.body)
-      return UpdateWorkflowDefaultsResponseSchema.parse(await services.foundationSettings!.updateWorkflowDefaults(input.value, input.expectedRevision))
-    })
-  }
-  // Harness defaults are read and changed only through the identity-, grant-,
-  // revision- and audit-checked /api/management/harnesses family (MCP parity:
-  // harness_list, harness_get, harness_defaults_update).
-
   app.get<{ Params: WorkspaceParams }>('/api/workspaces/:workspaceId', async (request) => {
     const details = await services.workspaces.getDetails(request.params.workspaceId, requirePrincipal(request))
     // getDetails already returns a SavedWorkspaceDetailsSchema-parsed value; a second parse of this large read only costs time.
@@ -96,7 +68,7 @@ export function registerProductRoutes(app: FastifyInstance, services: ProductSer
 
   const interactions = services.interactions
   if (interactions) {
-    if (managementOnlyMutations) {
+    if (management) {
       app.get<{ Querystring: unknown }>('/api/management/interactions', async (request) => {
         const query = request.query as Record<string, unknown>
         const input = InteractionListInputSchema.parse({

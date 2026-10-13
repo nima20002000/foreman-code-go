@@ -349,31 +349,6 @@ export type AgentDefaults = z.infer<typeof AgentDefaultsSchema>;
 export const WorkflowDefaultsSchema = z.object({ approvalHandler: ApprovalHandlerSchema }).strict();
 export type WorkflowDefaults = z.infer<typeof WorkflowDefaultsSchema>;
 
-export const VersionedAgentDefaultsSchema = z.object({
-  value: AgentDefaultsSchema, versionId: IdSchema.nullable(), revision: z.number().int().nonnegative(),
-}).strict();
-export const GetAgentDefaultsResponseSchema = VersionedAgentDefaultsSchema;
-export const UpdateAgentDefaultsRequestSchema = z.object({
-  value: AgentDefaultsSchema.superRefine((value, context) => {
-    for (const role of ["orchestrator", "coder", "operator"] as const) {
-      const result = SupportedHarnessConfigurationSchema.safeParse(value[role].harness);
-      if (!result.success) for (const issue of result.error.issues) {
-        context.addIssue({ ...issue, path: [role, "harness", ...issue.path] });
-      }
-    }
-  }), expectedRevision: z.number().int().nonnegative(),
-}).strict();
-export const UpdateAgentDefaultsResponseSchema = VersionedAgentDefaultsSchema;
-
-export const VersionedWorkflowDefaultsSchema = z.object({
-  value: WorkflowDefaultsSchema, versionId: IdSchema.nullable(), revision: z.number().int().nonnegative(),
-}).strict();
-export const GetWorkflowDefaultsResponseSchema = VersionedWorkflowDefaultsSchema;
-export const UpdateWorkflowDefaultsRequestSchema = z.object({
-  value: WorkflowDefaultsSchema, expectedRevision: z.number().int().nonnegative(),
-}).strict();
-export const UpdateWorkflowDefaultsResponseSchema = VersionedWorkflowDefaultsSchema;
-
 /** Global templates copied into new board Agents. Prompts and skills never belong here. */
 export const HarnessDefaultsSchema = z
   .object({
