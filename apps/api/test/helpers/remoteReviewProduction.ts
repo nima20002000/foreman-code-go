@@ -54,7 +54,12 @@ const tsxLoader = createRequire(import.meta.url).resolve('tsx')
 
 export async function waitForRemoteReview<T>(read: () => Promise<T>, accept: (value: T) => boolean,
   description: string, subscribe?: (changed: () => void) => () => void): Promise<T> {
-  return readUntil(read, accept, { timeoutMs: 90_000, description, ...(subscribe ? { subscribe } : {}) })
+  return readUntil(read, accept, {
+    timeoutMs: 90_000,
+    description,
+    minimumReadIntervalMs: 1_000,
+    ...(subscribe ? { subscribe } : {}),
+  })
 }
 
 async function freePort() {
