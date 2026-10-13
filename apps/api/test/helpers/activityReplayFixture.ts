@@ -160,7 +160,8 @@ export async function completedRun(f: Awaited<ReturnType<typeof setup>>) {
     const result = SavedRunDetailsSchema.parse(response.json())
     expect(result.run.outcome, JSON.stringify(result.executions.map(execution => execution.result))).not.toBe('failed')
     return result
-  }, (result) => result.run.outcome === 'succeeded')
+  }, (result) => result.run.outcome === 'succeeded' && result.cleanupPending === false
+    && result.activity.some((event) => event.kind === 'run_cleanup_checked' && event.payload.failed === false))
   expect(detail.executions).toHaveLength(f.saved.version.definition.nodes.length)
   expect(f.replay.starts.slice(starts)).toHaveLength(detail.executions.length)
   return detail
