@@ -1,17 +1,22 @@
 import { createHash } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createUnboundWorkerMcpEndpoint, createWorkerMcpEndpoint } from './workerMcpEndpoint.js'
 import * as diagnostics from '../../diagnostics/logger.js'
 
 const roots: string[] = []
+async function temporaryDirectory(prefix: string) {
+  const root = process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(root, { recursive: true })
+  return mkdtemp(join(root, prefix))
+}
 const endpoints: Awaited<ReturnType<typeof createWorkerMcpEndpoint>>[] = []
 afterEach(async () => { await Promise.all(endpoints.splice(0).map(endpoint => endpoint.close())); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 afterEach(() => vi.restoreAllMocks())
 async function setup(tokenName = 'GRAPHQL_MCP_TOKEN') {
-  const root = await mkdtemp(join(tmpdir(), 'worker-private-mcp-')); roots.push(root)
+  const root = await temporaryDirectory('worker-private-mcp-'); roots.push(root)
   const token = 'actual-test-scoped-worker-token', expiresAt = new Date(Date.now() + 60_000).toISOString()
   const request = vi.fn(async () => ({ statusCode: 200, contentType: 'application/json' as const, body: '{"result":"Main grant checked"}' }))
   const refresh = vi.fn(async () => expiresAt)
@@ -26,19 +31,21 @@ describe('actual worker-private HTTP relay with Main authorization double, no pa
     const log = diagnostics.componentLogger('harness')
     const error = vi.spyOn(log, 'error')
     vi.spyOn(diagnostics, 'componentLogger').mockReturnValue(log)
-    const root = await mkdtemp(join(tmpdir(), 'worker-mcp-registration-'))
+    const root = await temporaryDirectory('worker-mcp-registration-')
     roots.push(root)
     const parent = join(root, 'occupied')
     await writeFile(parent, '')
     const token = 'registration-test-credential'
+    const request = vi.fn(async () => { throw new Error('Unregistered route cannot forward') })
     await expect(createWorkerMcpEndpoint({ launcher: join(parent, 'launcher.mjs'),
       signal: new AbortController().signal, relay: {
         environment: { agentId: 'agent', variables: { GRAPHQL_MCP_TOKEN: token } },
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        request: async () => { throw new Error('Unregistered route cannot forward') },
-      } })).rejects.toMatchObject({ code: 'ENOTDIR' })
-    expect(error).toHaveBeenCalledWith(expect.objectContaining({ operation: 'register', code: 'ENOTDIR' }),
+        request,
+      } })).rejects.toMatchObject({ code: 'EEXIST' })
+    expect(error).toHaveBeenCalledWith(expect.objectContaining({ operation: 'register', code: 'EEXIST' }),
       'Worker MCP relay failed')
+    expect(request).not.toHaveBeenCalled()
     expect(JSON.stringify(error.mock.calls)).not.toContain(token)
   })
   it('rejects and logs an expired renewal while preserving the live route', async () => {
@@ -55,7 +62,7 @@ describe('actual worker-private HTTP relay with Main authorization double, no pa
     expect(JSON.stringify(error.mock.calls)).not.toContain(f.token)
   })
   it('keeps inspection unauthorized and the native URL stable when the actual Main lease arrives', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'worker-unbound-mcp-'))
+    const root = await temporaryDirectory('worker-unbound-mcp-')
     roots.push(root)
     const endpoint = await createUnboundWorkerMcpEndpoint({ launcher: join(root, 'foreman-code-mcp.mjs'),
       signal: new AbortController().signal })

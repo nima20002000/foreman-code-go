@@ -19,7 +19,7 @@ function expectNewTab(button: HTMLElement, url: string) {
   const open = vi.spyOn(window, 'open').mockReturnValue(null)
   expect(button).not.toHaveAttribute('href')
   fireEvent.click(button, { ctrlKey: true })
-  expect(open).toHaveBeenCalledWith(url, '_blank')
+  expect(open).toHaveBeenCalledExactlyOnceWith(url, '_blank', 'noopener')
   open.mockRestore()
 }
 
