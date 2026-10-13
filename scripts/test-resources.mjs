@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { createTestPool } from '../apps/api/test/helpers/testPool.mjs'
+import { ciTemplateCacheDirectory } from './ci-postgres-cache.mjs'
 
 const defaultTestAdminUrl = 'postgresql://graphql_test_admin:graphql_test_disposable_only@127.0.0.1:55439/postgres'
 function hostTestAdminUrl() {
@@ -350,13 +351,32 @@ export async function provisionTestResources(environment = process.env) {
   const admin = await testAdminPool()
   const root = createTestRoot()
   let resource
+  let template
+  const dropJobTemplate = async (admin) => {
+    if (!template || template.persistent) return
+    const { dropTestDatabaseTemplate } = await import('./test-database-template.mjs')
+    await dropTestDatabaseTemplate(admin, template)
+  }
   try {
-    resource = await createTestDatabase(admin, root)
+    const cacheDirectory = ciTemplateCacheDirectory(environment)
+    if (cacheDirectory) {
+      const { createTestDatabaseTemplate } = await import('./test-database-template.mjs')
+      template = await createTestDatabaseTemplate(admin, root, { cacheDirectory })
+    }
+    resource = await createTestDatabase(admin, root, { template })
     const isolated = testEnvironment(environment, resource)
     await admin.end()
-    return { environment: isolated, close: () => cleanupTestResources(resource) }
+    return { environment: isolated, close: async () => {
+      if (template && !template.persistent) {
+        const cleanup = await testAdminPool()
+        try { await dropJobTemplate(cleanup) }
+        finally { await cleanup.end() }
+      }
+      await cleanupTestResources(resource)
+    } }
   } catch (error) {
     if (resource) await dropTestDatabase(admin, resource)
+    await dropJobTemplate(admin)
     await admin.end()
     removeTestRoot(root)
     throw error

@@ -1,7 +1,9 @@
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { ciPostgresCacheDirectory } from './ci-postgres-cache.mjs'
 
 const action = process.argv[2]
 if (!['up', 'down', 'stop'].includes(action)) throw new Error('Usage: test-db.mjs up|down|stop')
@@ -25,10 +27,11 @@ function reusePrivateDatabase() {
   process.stdout.write('Reusing the runtime-owned private PostgreSQL test server\n')
 }
 
-function composeDatabase() {
+function composeDatabase(persistentCache) {
   const runId = process.env.FOREMAN_CODE_CI_HOST_RUN_ID
   if (runId !== undefined && !/^[0-9a-f-]{36}$/.test(runId)) throw new Error('Invalid host CI database owner')
-  const project = runId ? `foreman-ci-${runId}` : 'graphql-tests'
+  const cacheKey = persistentCache && createHash('sha256').update(persistentCache).digest('hex').slice(0, 16)
+  const project = cacheKey ? `foreman-ci-pg-${cacheKey}` : runId ? `foreman-ci-${runId}` : 'graphql-tests'
   const file = fileURLToPath(new URL('../compose.test.yaml', import.meta.url))
   const environment = { ...process.env }
   for (const key of Object.keys(environment)) if (key.startsWith('COMPOSE_')) delete environment[key]
@@ -57,7 +60,7 @@ function composeDatabase() {
   }
   const args = ['compose', '--project-name', project, '--file', file]
   // Snapshot checkouts have different bind-mount paths; replacing this shared server interrupts active tests.
-  if (action === 'up') args.push('up', '-d', '--wait', running ? '--no-recreate' : '--force-recreate', 'postgres')
+  if (action === 'up') args.push('up', '-d', '--wait', persistentCache || running ? '--no-recreate' : '--force-recreate', 'postgres')
   else if (action === 'stop') args.push('stop', 'postgres')
   else args.push('down', '--volumes')
   process.stdout.write(`${docker(args)}\n`)
@@ -74,10 +77,41 @@ function composeDatabase() {
     if (!port) throw new Error('Host CI database has no private loopback port')
     writeFileSync(join(environment.TMPDIR, 'test-database-url'),
       `postgresql://graphql_test_admin:graphql_test_disposable_only@127.0.0.1:${port}/postgres`, { mode: 0o600 })
+    if (persistentCache) {
+      writeFileSync(join(environment.TMPDIR, 'test-database-template-cache'), persistentCache, { mode: 0o600 })
+    }
+  }
+}
+
+function hostDatabase() {
+  const cache = ciPostgresCacheDirectory()
+  const marker = process.env.TMPDIR && join(process.env.TMPDIR, 'test-database-template-cache')
+  if (action !== 'up' && marker && existsSync(marker)) {
+    process.stdout.write('Retaining the CI PostgreSQL server; job databases are cleaned by their owners\n')
+    return
+  }
+  if (action === 'up' && marker) rmSync(marker, { force: true })
+  if (!cache || action !== 'up') return composeDatabase()
+  try {
+    mkdirSync(cache, { recursive: true, mode: 0o700 })
+    const directory = realpathSync(cache)
+    if (process.env.FOREMAN_CODE_CI_POSTGRES_LOCKED === '1') return composeDatabase(directory)
+    // Different jobs can reach a cold computer together; only one starts the shared server.
+    const result = spawnSync('flock', ['-w', '90', join(directory, 'startup.lock'),
+      process.execPath, fileURLToPath(import.meta.url), action], {
+      env: { ...process.env, FOREMAN_CODE_CI_POSTGRES_LOCKED: '1' }, encoding: 'utf8',
+    })
+    if (result.error) throw result.error
+    if (result.status !== 0) throw new Error(result.stderr || 'Persistent PostgreSQL startup failed')
+    process.stdout.write(result.stdout)
+    process.stderr.write(result.stderr)
+  } catch (error) {
+    process.stderr.write(`[test-db] persistent server unavailable; using job server: ${error.message}\n`)
+    composeDatabase()
   }
 }
 
 const started = performance.now()
 if (process.env.FOREMAN_CODE_VERIFICATION_ENVIRONMENT === 'isolated-job-v1') reusePrivateDatabase()
-else composeDatabase()
+else hostDatabase()
 process.stdout.write(`[test-db] ${action} completed in ${Math.round(performance.now() - started)} ms\n`)
