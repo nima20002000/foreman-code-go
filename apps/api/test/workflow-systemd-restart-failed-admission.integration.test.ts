@@ -9,7 +9,9 @@ describe('installed Main-local workflows across systemd restart', () => {
       installedMainService: true, sourceAccessMode: 'read-only' })
     try {
       const buildIdentityUrl = () => new URL('/api/runtime/build-identity/v1', fixture.origin())
-      const readBuildIdentity = () => fetch(buildIdentityUrl())
+      const readBuildIdentity = () => fetch(buildIdentityUrl(), {
+        headers: { authorization: `Bearer ${fixture.writer.token}` },
+      })
       const denied = await fetch(buildIdentityUrl(), {
         headers: { authorization: 'Bearer invalid-fixture-credential' },
       })
