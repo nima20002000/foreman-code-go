@@ -7,7 +7,7 @@
     "dev": "node --import tsx src/server.ts",
     "start": "node dist/server.js",
     "typecheck": "node ../../scripts/ci-remote.mjs typecheck -- node ../../scripts/heavy-job.mjs -- node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc --noEmit --incremental --tsBuildInfoFile node_modules/.cache/tsc/typecheck.tsbuildinfo",
-    "lint": "node ../../scripts/ci-remote.mjs lint -- node ../../scripts/heavy-job.mjs -- node --max-old-space-size=8192 ./node_modules/eslint/bin/eslint.js . --max-warnings 0 --cache --cache-strategy content --cache-location node_modules/.cache/eslint/",
+    "lint": "node ../../scripts/ci-remote.mjs lint -- node ../../scripts/heavy-job.mjs -- sh -c \"node ../../scripts/check-import-cycles.mjs && node ../../scripts/check-test-names.mjs && node --max-old-space-size=8192 ./node_modules/eslint/bin/eslint.js . --max-warnings 0 --cache --cache-strategy content --cache-location node_modules/.cache/eslint/\"",
     "test": "node ../../scripts/ci-remote.mjs unit -- node ../../scripts/heavy-job.mjs -- node ../../scripts/test-command.mjs -- vitest run --exclude '**/*.integration.test.ts' --exclude '**/*.acceptance.test.ts'",
     "test:integration": "node ../../scripts/heavy-job.mjs --timeout-ms 9000000 -- node ../../scripts/test-integration.mjs",
     "test:acceptance": "node ../../scripts/heavy-job.mjs -- node ../../scripts/test-command.mjs -- sh -c \"RUN_ENG03_C_NATIVE_TESTS=1 RUN_REAL_HARNESS_TESTS=1 vitest run test/eng03-c-native.acceptance.test.ts test/local-human-native.acceptance.test.ts\"",
