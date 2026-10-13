@@ -29,7 +29,17 @@ describe('production remote review and native recovery through authenticated MCP
 
   it.each(['crash'] as const)(
     'continues the original retained review after Main recovery from %s with the Worker alive', async recovery => {
-      await withRemoteReviewFixture(async fixture => { await retainedReviewRecovery(fixture, recovery) })
+      await withRemoteReviewFixture(async fixture => {
+        const recovered = await retainedReviewRecovery(fixture, recovery)
+        const details = await fixture.details(recovered.runId)
+        expect(details.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
+        expect(details.run.stopCause).toBeUndefined()
+        expect(details.cleanupPending).toBe(false)
+        const closed = fixture.registry.snapshot().launches.filter(owner => recovered.launchIds.includes(owner.launchId))
+        expect(closed.map(owner => owner.launchId).sort()).toEqual(recovered.launchIds)
+        expect(closed.every(owner => owner.lifecycle === 'closed'
+          && owner.closureEvidence === 'cgroup_v2_empty')).toBe(true)
+      })
     // Two full agent startups (reviewer, then requester) and a Main restart: ~60 s under a full parallel run.
     // The file stays within the suite's three-minute limit.
     }, 120_000,

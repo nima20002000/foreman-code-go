@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { expect, it } from 'vitest'
+import { HarnessExecutionSchema } from '@foreman-code/contracts'
+import { makeCurrentWorkflowFixture, WorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import type { AcceptedExecutionBinding } from '../src/modules/placement/nativeComposition.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
@@ -19,13 +21,34 @@ it('closes a persisted completed retained reviewer only after its reviews settle
     schemaCreated = true
     // Copy migrated columns and defaults without unrelated foreign-key fixtures.
     for (const table of ['harness_executions', 'review_jobs', 'remote_execution_receipts',
-      'run_cleanup_intents', 'run_checkpoint_owners']) {
+      'run_cleanup_intents', 'run_checkpoint_owners', 'runs', 'workflow_versions',
+      'agent_configuration_versions', 'execution_native_sessions']) {
       await pool.query(`create table ${table} (like public.${table} including defaults including indexes)`)
     }
     const native = { sessionId: 'reviewer-session', turnId: 'workflow-turn', processIdentityDigest: 'a'.repeat(64) }
+    const fixture = makeCurrentWorkflowFixture(randomUUID(), 'approval')
+    const configuration = fixture.configurations[0]!
+    const run = WorkflowRunV3Schema.parse({ ...fixture.run, id: 'run', executionState: 'running' })
+    const execution = HarnessExecutionSchema.parse({ id: 'execution', runId: run.id,
+      workflowNodeId: fixture.version.entryNodeId, agentId: configuration.agentId,
+      agentConfigurationVersionId: configuration.id, attempt: 1, input: {}, state: 'completed',
+      nativeSessionId: native.sessionId, result: { outcome: 'succeeded' },
+      createdAt: fixture.createdAt, finishedAt: fixture.createdAt })
+    await pool.query(`insert into runs(id,workspace_id,workflow_id,workflow_version_id,execution_state,record)
+      values($1,$2,$3,$4,$5,$6::jsonb)`, [run.id, run.workspaceId, run.workflowId,
+      run.workflowVersionId, run.executionState, JSON.stringify(run)])
+    await pool.query(`insert into workflow_versions(id,workspace_id,workflow_id,version,entry_node_id,record)
+      values($1,$2,$3,$4,$5,$6::jsonb)`, [fixture.version.id, fixture.version.workspaceId,
+      fixture.version.workflowId, fixture.version.version, fixture.version.entryNodeId, JSON.stringify(fixture.version)])
+    await pool.query(`insert into agent_configuration_versions(id,workspace_id,agent_id,version,record)
+      values($1,$2,$3,$4,$5::jsonb)`, [configuration.id, configuration.workspaceId,
+      configuration.agentId, configuration.version, JSON.stringify(configuration)])
+    await pool.query(`insert into execution_native_sessions(execution_id,reference,workflow_finalized_at)
+      values($1,$2::jsonb,$3)`, [execution.id,
+      JSON.stringify({ harness: 'codex', nativeSessionId: native.sessionId, providerVersion: 'fixture' }), fixture.createdAt])
     const mainId = randomUUID()
     const receipt = RemoteOperationReceiptSchema.parse({ schemaVersion: 1,
-      intent: { schemaVersion: 1, protocolVersion: 1, mainId, runId: 'run', nodeId: 'reviewer',
+      intent: { schemaVersion: 1, protocolVersion: 1, mainId, runId: run.id, nodeId: execution.workflowNodeId,
         executionId: 'execution', occurrenceId: null, occurrenceIndex: 0, technicalAttempt: 1,
         attemptId: 'attempt', operationId: 'operation', bindingHash: 'a'.repeat(64),
         inputDigest: `sha256:${'b'.repeat(64)}`, owner: { grantId: 'grant', epoch: '1' } },
@@ -34,11 +57,12 @@ it('closes a persisted completed retained reviewer only after its reviews settle
       workerIncarnationId: randomUUID(), sequence: 5, phase: 'running', entryAttempted: true,
       turnEntryAttempted: true, stopFence: false, controls: [],
       turnInput: { correlationId: 'execution:execution', promptDigest: 'a'.repeat(64), sessionMode: 'regular' },
-      retainedReviewer: { agentId: 'agent', workflowTurnId: native.turnId, result: { outcome: 'succeeded' },
+      retainedReviewer: { agentId: execution.agentId, workflowTurnId: native.turnId, result: execution.result,
         expiresAt: new Date(Date.now() + 300_000).toISOString() },
     })
     await pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record)
-      values('execution','run','reviewer','agent',1,$1::jsonb)`, [JSON.stringify({ state: 'completed' })])
+      values($1,$2,$3,$4,1,$5::jsonb)`, [execution.id, execution.runId, execution.workflowNodeId,
+      execution.agentId, JSON.stringify(execution)])
     await pool.query('insert into remote_execution_receipts(operation_id,sequence,receipt) values($1,$2,$3::jsonb)',
       [receipt.intent.operationId, receipt.sequence, JSON.stringify(receipt)])
     owner = await RunOwnership.acquire(pool, receipt.intent.runId, () => {})
@@ -55,10 +79,10 @@ it('closes a persisted completed retained reviewer only after its reviews settle
     expect(await close()).toEqual(command)
 
     await pool.query(`update harness_executions set record=$1::jsonb where id='execution'`,
-      [JSON.stringify({ state: 'running' })])
+      [JSON.stringify({ ...execution, state: 'running', result: undefined, finishedAt: undefined })])
     await expect(close()).rejects.toMatchObject({ code: 'REMOTE_CONTROL_UNAVAILABLE' })
     await pool.query(`update harness_executions set record=$1::jsonb where id='execution'`,
-      [JSON.stringify({ state: 'completed' })])
+      [JSON.stringify(execution)])
     await pool.query(`insert into review_jobs(id,interaction_id,reviewer_agent_id,execution_id,state,record)
       values('review','interaction','agent','execution','acknowledged','{}'::jsonb)`)
     await expect(close()).rejects.toMatchObject({ code: 'REMOTE_CONTROL_UNAVAILABLE' })

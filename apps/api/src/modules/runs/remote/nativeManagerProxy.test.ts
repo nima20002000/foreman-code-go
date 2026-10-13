@@ -127,6 +127,24 @@ describe('remote native history streaming', () => {
     expect(f.request.mock.calls.map(([method]) => method)).toEqual([mode])
   })
 
+  it('refreshes the original closure receipt before canceling a retained session', async () => {
+    const f = setup(() => terminal([event(0)]))
+    const session = await f.proxy.createSession(f.start)
+    const closed = RemoteOperationReceiptSchema.parse({ ...f.receipt, sequence: f.receipt.sequence + 1,
+      phase: 'confirmed_terminal', stopFence: true,
+      terminal: { kind: 'cancelled', closureEvidenceDigest: 'b'.repeat(64) } })
+    f.request.mockImplementation(async (method, raw) => {
+      expect(RemoteExecutionRpcRequestSchema.parse(raw)).toMatchObject({ method: 'status',
+        intent: f.receipt.intent })
+      if (method !== 'status') throw new Error('Only closure readback is expected')
+      return { status: 'known', receipt: closed }
+    })
+    await f.proxy.close(session)
+    await f.proxy.dispose()
+    expect(f.observedReceipts.at(-1)).toEqual(closed)
+    expect(f.request.mock.calls.map(([method]) => method)).toEqual(['prepare', 'status'])
+  })
+
   it('preserves restart cancellation during remote observation and detaches the same session', async () => {
     const f = setup(() => ({
       events: [], pendingInteractions: [], correlationId: 'execution:execution', nativeTurnId: 'native-turn',
