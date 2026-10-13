@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
-import { RUN_INSPECTION_TOOLS } from '@foreman-code/contracts/wave25'
+import { RUN_INSPECTION_TOOLS, RunRecordDetailSchema } from '@foreman-code/contracts/wave25'
 import { scenarioFixture } from './helpers/eng07BScenarios.js'
 import { runPath, scenarioHarness } from './helpers/eng07BHarness.js'
 import { postgresEnabled } from './helpers/eng04CurrentDatabase.js'
@@ -40,10 +40,19 @@ describe.skipIf(!postgresEnabled)('routing workflow cleanup', () => {
       })
       expect(denied.isError).toBe(true)
       expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
-      expect(await f.mcp(RUN_INSPECTION_TOOLS.record, {
+      const monitorRecord = RunRecordDetailSchema.parse(await f.mcp(RUN_INSPECTION_TOOLS.record, {
         workspaceId: started.scope.workspaceId,
         runId: started.scope.runId,
-      }, monitor)).toEqual(record)
+      }, monitor))
+      expect(monitorRecord).toEqual(record)
+      expect(monitorRecord.run).not.toHaveProperty('executionLocation')
+      expect(record.run.executionLocation).toBeDefined()
+      expect(await f.http('GET', `${runPath(started.scope)}/record`, undefined, reader.token))
+        .toEqual(monitorRecord)
+      expect(await f.readParity(`${runPath(started.scope)}/record`, RUN_INSPECTION_TOOLS.record, {
+        workspaceId: started.scope.workspaceId,
+        runId: started.scope.runId,
+      })).toEqual(record)
       const expectedNodes = scenario.executedIndexes.map(index => scenario.nodes[index]!.id)
       expect([...f.base.provider.startedNodes].sort()).toEqual(expectedNodes.sort())
       expect(new Set(f.base.provider.startedExecutions).size).toBe(expectedNodes.length)
