@@ -58,7 +58,7 @@ export const OPERATOR_RUNTIME_LIMITS = [
       + 'requires global settings:update; omitted targets select paired Workers only. Reuse the original commandId '
       + 'and input to recover the saved task, or a new commandId to retry. Older Workers without worker-update-v1 '
       + 'need one human installation of an updater-enabled Worker first. Main is updated with production:install.' },
-  {feature:'source_approval',state:'protected',detail:'source_approve accepts either every tracked file in approvedPaths or approveTrackedTree: true with approvedPaths omitted. Both approve only the pinned commit tree, retain sensitive-path/content rejection, executable policy and source limits, and persist the approval choice and exact inventory. Requires sources:approve, sources:read and workspace_locations:read in the workspace.'},
+  {feature:'source_approval',state:'protected',detail:'source_approve accepts either every tracked file in approvedPaths or approveTrackedTree: true with approvedPaths omitted. Git acquisition first reserves capacity on the cache filesystem and accounts retained objects; cache-capacity failures preserve worktrees and result branches and permit retry. Both approve only the pinned commit tree, retain sensitive-path/content rejection, executable policy and source limits, and persist the approval choice and exact inventory. Requires sources:approve, sources:read and workspace_locations:read in the workspace.'},
   { feature: 'workflow_create_initial_save', state: 'protected',
     detail: 'workflow_create accepts initialSave {graph, expectedAgentConfigurationVersionIds, expectedLocationRevision}. '
       + 'Creation supplies workflow identity, name, description, defaultWorktree and timestamps. '

@@ -1,0 +1,135 @@
+import { randomUUID } from 'node:crypto'
+import { lstat, mkdir, readdir, rename, rm, statfs, unlink, type FileHandle } from 'node:fs/promises'
+import { dirname, isAbsolute, relative, resolve } from 'node:path'
+import { SOURCE_GIT_CACHE_LIMITS, GitCacheStorageSchema, type GitCacheStorage }
+  from '@foreman-code/contracts/source-materialization'
+import { DomainError } from '../errors.js'
+import { anchored, identity, openPrivateRoot, withPrivateDirectoryLock } from './privateFilesystem.js'
+import { measureRetainedDirectory } from './retainedDirectoryUsage.js'
+import { writeSourceClaim } from './quotaClaims.js'
+import type { GitProcessOptions, GitProcessResult } from './gitProcess.js'
+
+type GitRunner = (args: string[], options: GitProcessOptions) => Promise<GitProcessResult>
+
+function commandIndex(args: string[]): number {
+  let index = 0
+  while (args[index]?.startsWith('-')) {
+    index += ['-c', '-C', '--git-dir', '--work-tree'].includes(args[index]!) ? 2 : 1
+  }
+  return index
+}
+
+function inside(root: string, path: string): boolean {
+  const suffix = relative(root, path)
+  return suffix === '' || !suffix.startsWith('..') && !isAbsolute(suffix)
+}
+
+async function writeStorage(root: FileHandle, storage: GitCacheStorage): Promise<void> {
+  const name = `storage-${randomUUID()}.pending`
+  await writeSourceClaim(root, name, JSON.stringify(GitCacheStorageSchema.parse(storage)))
+  await rename(anchored(root, name), anchored(root, 'storage.json'))
+  await root.sync()
+}
+
+async function measureStorage(root: FileHandle): Promise<GitCacheStorage> {
+  const filesystem = await identity(root)
+  const disk = await statfs(anchored(root), { bigint: true })
+  const retainedBytes = await measureRetainedDirectory(root, filesystem)
+  return GitCacheStorageSchema.parse({ version: 1, filesystem, retainedBytes,
+    reservedBytes: 0, limitBytes: Math.min(SOURCE_GIT_CACHE_LIMITS.bytes, Number(disk.blocks * disk.bsize / 4n)),
+    availableBytes: Number(disk.bavail * disk.bsize), observedAt: new Date().toISOString() })
+}
+
+async function packFiles(common: string): Promise<string[]> {
+  try { return await readdir(resolve(common, 'objects', 'pack')) }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  }
+}
+
+/** Failed fetches retain published objects and branches; only this transfer's incomplete pack files are removed. */
+async function removeIncompletePacks(common: string, before: string[]): Promise<void> {
+  for (const name of await packFiles(common)) {
+    if (!before.includes(name) && /^tmp_(?:pack|idx|rev)_/u.test(name)) {
+      await unlink(resolve(common, 'objects', 'pack', name))
+    }
+  }
+}
+
+function boundedArgs(args: string[], index: number): string[] {
+  const command = args[index]!
+  const flags = command === 'clone'
+    ? ['--no-local', '--no-checkout', '--depth=1', '--single-branch', '--no-tags']
+    : ['--no-auto-maintenance', '--recurse-submodules=no',
+      ...(args.slice(index + 1).includes('origin') ? ['--depth=1'] : [])]
+  // A single pack and its index fit the reserved transfer budget under the inherited per-file kernel limit.
+  return ['-c', 'fetch.unpackLimit=1', '-c', 'gc.auto=0', '-c', 'maintenance.auto=false',
+    '-c', 'fetch.writeCommitGraph=false', '-c', 'pack.writeReverseIndex=false', '-c', 'fetch.uriprotocols=',
+    ...args.slice(0, index + 1), ...flags, ...args.slice(index + 1)]
+}
+
+/** Serialize transfers and reserve their maximum footprint on the cache's actual filesystem. */
+export async function runGitWithCacheStorage(cacheRoot: string, args: string[], options: GitProcessOptions,
+  run: GitRunner): Promise<GitProcessResult> {
+  const index = commandIndex(args)
+  const command = args[index]
+  if (command !== 'clone' && command !== 'fetch') return run(args, options)
+  options.signal.throwIfAborted()
+  let target: string
+  let common: string
+  let createdTarget = false
+  if (command === 'clone') {
+    target = resolve(options.cwd ?? process.cwd(), args.at(-1)!)
+    common = resolve(target, '.git')
+    await mkdir(dirname(target), { recursive: true, mode: 0o700 })
+  } else {
+    const located = await run(['rev-parse', '--path-format=absolute', '--git-common-dir'], options)
+    if (located.code !== 0) return located
+    common = located.stdout.trim()
+    if (!isAbsolute(common)) throw new DomainError('SOURCE_GIT_CACHE_INVALID', 'Git cache identity is unavailable.', 409)
+    target = common
+  }
+  let storagePath = cacheRoot
+  if (!inside(cacheRoot, target)) {
+    storagePath = command === 'clone' ? dirname(target) : common
+  }
+  const root = await openPrivateRoot(storagePath, false)
+  try {
+    return await withPrivateDirectoryLock(root, async guard => {
+      const measured = await measureStorage(root)
+      const reservedBytes = SOURCE_GIT_CACHE_LIMITS.transferBytes
+      const margin = Math.max(SOURCE_GIT_CACHE_LIMITS.diskMarginBytes, Math.ceil(measured.availableBytes * 0.1))
+      await writeStorage(root, measured)
+      if (measured.retainedBytes + reservedBytes > measured.limitBytes
+        || reservedBytes + margin > measured.availableBytes) {
+        throw new DomainError('SOURCE_GIT_CACHE_CAPACITY',
+          'The Git cache has insufficient storage for this transfer. Free cache filesystem space, then retry.',
+          409, { retryable: true, newCommandRequired: false, storage: measured, reservedBytes })
+      }
+      await writeStorage(root, { ...measured, reservedBytes })
+      const before = command === 'fetch' ? await packFiles(common) : []
+      if (command === 'clone') {
+        try { await lstat(target) }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+          createdTarget = true
+        }
+      }
+      let result: GitProcessResult | undefined
+      try {
+        result = await run(boundedArgs(args, index), { ...options,
+          maximumFileBytes: SOURCE_GIT_CACHE_LIMITS.maximumFileBytes, lockFd: guard.fd })
+        return result
+      } finally {
+        if (!result || result.code !== 0) {
+          if (command === 'clone' && createdTarget) await rm(target, { recursive: true, force: true })
+          else if (command === 'fetch') await removeIncompletePacks(common, before)
+        }
+        await writeStorage(root, await measureStorage(root))
+      }
+    }, { signal: options.signal })
+  } finally {
+    await root.close()
+  }
+}

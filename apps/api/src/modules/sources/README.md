@@ -176,3 +176,22 @@ trial; the requested sub-10-second preparation target is not yet achieved.
 These measurements exercise real snapshots and Git worktrees with a fixture
 authorization callback, rather than a complete harness launch. Production DB
 state was not changed. Runtime phase logs separate copy and synchronization.
+
+## Git cache storage
+
+Git clone and fetch use a separate budget on the filesystem containing the
+cache. The host adapter serializes transfers with a directory lock, measures
+all retained bytes, and records the reservation and measured filesystem in
+`storage.json`. The budget is one quarter of filesystem size, capped at
+64 GiB. A transfer reserves 1 GiB plus a free-space margin before Git starts.
+The child inherits the cache lock and a 256 MiB kernel file-size limit.
+Fetch stores one pack and index with automatic maintenance disabled; clone
+and origin fetch use depth one so accepted commits do not pull full history.
+Each transfer remeasures retained objects, including result branches and
+active worktree metadata. Failed transfers remove only their own incomplete
+packs or newly allocated clone staging. Published objects and existing
+worktrees are retained and charged; capacity pressure never deletes them.
+
+HTTP and Operator MCP use the same host adapter. `SOURCE_GIT_CACHE_CAPACITY`
+reports a retryable storage failure through both transports and preserves the
+original repository import command for retry after space becomes available.
