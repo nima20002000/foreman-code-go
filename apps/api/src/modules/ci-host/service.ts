@@ -32,6 +32,7 @@ import { sanitizeCiText, serializeCiJson } from './text.js'
 import { isGitHubComputer, needsSystemdExecutor, supportsUserSystemd } from './computerCapabilities.js'
 import { weighCiPartitions } from './partitionPlanning.js'
 import { readQueuedCiRuns } from './queuedRuns.js'
+import { readHostCiLog } from './logRead.js'
 
 /** CI reads are idempotent: one retry after a lock or statement timeout, then a typed retryable error. */
 async function retryRead<T>(work: () => Promise<T>): Promise<T> {
@@ -479,19 +480,7 @@ export class HostCiService {
     const maxBytes = input.maxBytes ?? CI_LOG_MAX_BYTES
     if (!run.computer) return { text: '', nextOffset: 0, logBytes: 0, maxBytes }
     const computer = await this.computer(run.computer.hostRef)
-    if (maxBytes === 0) {
-      const state = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 0 })
-      if (state.operation !== 'read') throw new DomainError('CI_HOST_REPLY_INVALID', 'The build computer replied out of order.', 502)
-      return { text: '', nextOffset: input.afterOffset ?? state.run.logBytes, logBytes: state.run.logBytes, maxBytes }
-    }
-    let afterOffset = input.afterOffset
-    if (afterOffset === undefined) {
-      const state = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 0 })
-      afterOffset = state.operation === 'read' ? Math.max(0, state.run.logBytes - maxBytes) : 0
-    }
-    const reply = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset, maxBytes })
-    if (reply.operation !== 'read') throw new DomainError('CI_HOST_REPLY_INVALID', 'The build computer replied out of order.', 502)
-    return { text: sanitizeCiText(reply.text), nextOffset: reply.nextOffset, logBytes: reply.run.logBytes, maxBytes }
+    return readHostCiLog(this.endpoint, computer, run.id, { ...input, maxBytes })
   }
 
   async cancel(caller: ManagementPrincipal,
