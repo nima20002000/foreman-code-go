@@ -22,8 +22,26 @@ it('defers reservation cleanup without waiting on a locked completed Run', async
     }, value => value.run.executionState === 'completed' && !value.cleanupPending,
     'workflow completion after cleanup deferral')
     expect(completed.run.outcome).toBe('succeeded')
-    const owner = await RunOwnership.acquire(fixture.db.pool, runId, () => {})
-    try { expect(owner).toBeDefined() } finally { await owner?.release() }
+    const retainedOwner = await waitForRemoteReview(
+      () => RunOwnership.acquire(fixture.db.pool, runId, () => {}),
+      value => value !== undefined, 'completed Run ownership release')
+    if (!retainedOwner) throw new Error('The completed Run owner did not release its lock.')
+    const releaseRetained = retainedOwner.retain(() => {})
+    await retainedOwner.release()
+    try {
+      // Keep native review ownership until the first acquisition observes it.
+      const acquireOwner = async () => {
+        const owner = await RunOwnership.acquire(fixture.db.pool, runId, () => {})
+        await releaseRetained()
+        return owner
+      }
+      const owner = await waitForRemoteReview(acquireOwner, value => value !== undefined,
+        'retained completed Run ownership release')
+      try { expect(owner).toBeDefined() } finally { await owner?.release() }
+    } finally {
+      await releaseRetained()
+      await retainedOwner.release()
+    }
     const reservation = (await fixture.db.pool.query<{ record: SourceReservation; state: string }>(
       `select s.record,s.state from source_storage_reservations s
        join execution_dispatch_intents i on i.operation_id=s.owner_id
