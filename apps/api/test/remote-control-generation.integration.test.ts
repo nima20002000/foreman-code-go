@@ -1,16 +1,26 @@
 import { afterEach, expect, it, vi } from 'vitest'
+import { NATIVE_INTERACTION_FIXTURES } from '@foreman-code/contracts'
 import { RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
-import { approvalDatabase } from './helpers/wave25ApprovalDatabase.js'
+import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 
 afterEach(() => vi.restoreAllMocks())
 
 it('persists generation-zero remote admission and keeps its original snapshot immutable', async () => {
   const createSession = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
     .mockRejectedValue(new Error('Database snapshot checks must not start native sessions'))
-  const f = await approvalDatabase()
+  const f = await currentDatabase()
   try {
-    const interaction = f.interaction
+    // These rows exercise migrated SQL constraints without starting a workflow or qualifying a native session.
+    const interaction = structuredClone(NATIVE_INTERACTION_FIXTURES.codex)
+    await f.pool.query(`insert into durable_interactions
+      (id,workspace_id,workflow_id,run_id,execution_id,requesting_agent_id,harness,
+        native_session_id,native_request_id,status,revision,record)
+      values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)`,
+    [interaction.id, interaction.workspaceId, interaction.workflowId, interaction.runId,
+      interaction.executionId, interaction.requestingAgentId, interaction.harness,
+      interaction.nativeSessionId, interaction.nativeRequestId, interaction.status,
+      interaction.revision, JSON.stringify(interaction)])
     const command = RemoteOwnerControlSchema.parse({ schemaVersion: 1, protocolVersion: 1,
       commandId: 'original-response', operationId: 'original-operation', attemptId: 'original-attempt',
       executionId: interaction.executionId, bindingHash: 'a'.repeat(64), owner: { grantId: 'original-grant', epoch: '1' },
