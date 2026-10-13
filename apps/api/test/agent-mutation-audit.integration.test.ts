@@ -9,7 +9,7 @@ it.skipIf(!postgresEnabled)('persists the initiating Agent transport on success,
   const f = await currentOperatorIntegration({ agentManagement: true })
   try {
     const workspaceId = f.f.scope.workspaceId
-    const http = (path: string, method: 'POST' | 'PATCH', input: unknown) => f.app.inject({ method,
+    const http = (path: string, method: 'POST' | 'PATCH', input: Record<string, unknown>) => f.app.inject({ method,
       url: `/api/management/workspaces/${workspaceId}/agents${path}`,
       headers: { authorization: `Bearer ${f.writer.token}` }, payload: input })
     const mcp = async (name: string, input: Record<string, unknown>) => {

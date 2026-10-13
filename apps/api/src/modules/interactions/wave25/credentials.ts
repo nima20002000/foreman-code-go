@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { databaseCredentialDeadline } from '../../access/credentialLifetime.js'
 import { beginTransaction, commitTransaction, rollbackAfterFailure } from '../../../infrastructure/transaction.js'
 import { WorkerCredentialService, type IssuedWorkerCredential, APP_MCP_TOKEN_ENVIRONMENT_VARIABLE } from '../../access/workerCredentials.js'
 import type { PostgresAccessService } from '../../access/postgres.js'
@@ -42,10 +43,11 @@ export class Wave25WorkerCredentialService extends WorkerCredentialService {
   private async issueV2(executionId: string, purpose: Purpose): Promise<IssuedWorkerCredential> {
     return this.locked(executionId, async (client) => {
       const a = await credentialAuthority(client, executionId, purpose)
+      const expiry = await this.issueExpiry(client)
       const issued = await this.approvalAccess.issue({ name: `execution:${executionId}`, audience: 'worker', agentId: a.execution.agentId,
         grants: [{ actions: ['bug_reports:report', 'interactions:read', ...(a.canRespond ? ['interactions:respond' as const] : [])],
           scope: { workspaceIds: [a.run.workspaceId], workflowIds: [a.run.workflowId], runIds: [a.run.id] } }],
-        expiresAt: new Date(Date.now() + this.ttlMs) }, client)
+        expiresAt: expiry.expiresAt }, client)
       const jobs = purpose === 'reviewer' ? (await client.query<{ id: string; lease_fence: string }>(
         `select id,lease_fence::text from review_jobs where execution_id=$1 and lease_expires_at>clock_timestamp()
          and state in ('leased','submitted','acknowledged','uncertain') order by id limit 2`, [executionId])).rows : []
@@ -55,6 +57,7 @@ export class Wave25WorkerCredentialService extends WorkerCredentialService {
         values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::bigint,$11,$12::bigint)`, [issued.principal.id, executionId, a.run.id, a.run.workspaceId,
         a.run.workflowId, a.execution.agentId, APP_MCP_TOKEN_ENVIRONMENT_VARIABLE, purpose, a.nativeSessionId, a.generation, jobs[0]?.id ?? null, jobs[0]?.lease_fence ?? null])
       return { principalId: issued.principal.id, expiresAt: issued.principal.expiresAt,
+        renewalDeadline: expiry.renewalDeadline,
         environment: { agentId: a.execution.agentId, variables: { [APP_MCP_TOKEN_ENVIRONMENT_VARIABLE]: issued.token } } }
     })
   }
@@ -84,11 +87,12 @@ export class Wave25WorkerCredentialService extends WorkerCredentialService {
       if (updated.rowCount !== 1) return fail('REVIEWER_CREDENTIAL_LOST')
     })
   }
-  override async renewForExecution(id: string, credential: Pick<IssuedWorkerCredential, 'principalId'>): Promise<string> {
+  override async renewForExecution(id: string, credential: Pick<IssuedWorkerCredential, 'principalId' | 'nativeLifetimeGeneration'>): Promise<string> {
     if (!await this.subject(id)) return super.renewForExecution(id, credential)
-    return this.locked(id, async (client) => {
+    const lease = await this.locked(id, async (client) => {
       await client.query('select id from management_principals where id=$1 for update', [credential.principalId])
-      await client.query('select principal_id from worker_credential_bindings where principal_id=$1 for update', [credential.principalId])
+      const binding = await client.query<{ purpose: Purpose }>(
+        'select principal_id,purpose from worker_credential_bindings where principal_id=$1 for update', [credential.principalId])
       try { await assertWave25WorkerBinding(client, credential.principalId) }
       catch (error) {
         if (!(error instanceof Error) || !('code' in error) || error.code !== 'REVIEWER_BINDING_REBIND_REQUIRED') throw error
@@ -96,14 +100,27 @@ export class Wave25WorkerCredentialService extends WorkerCredentialService {
         const retained = row && await readRetainedRemoteReviewer(client, HarnessExecutionSchema.parse(row.record))
         if (retained?.principalId !== credential.principalId) throw error
       }
-      const result = await client.query<{ expires_at: Date }>(`update management_principals p
+      if (credential.nativeLifetimeGeneration && binding.rows[0]?.purpose === 'workflow') {
+        const lifetime = await client.query(`select 1 from execution_native_closures c
+          where c.execution_id=$1 and c.generation=$2::bigint and c.closed_at is null and c.detached_at is null
+          and not exists(select 1 from execution_native_closures successor
+            where successor.execution_id=c.execution_id and successor.generation>c.generation)`,
+        [id, credential.nativeLifetimeGeneration])
+        if (lifetime.rowCount !== 1) return fail('AUTH_REVOKED')
+      }
+      const requestedAt = performance.now()
+      const result = await client.query<{ expires_at: Date; database_now: Date }>(`update management_principals p
         set expires_at=greatest(p.expires_at,clock_timestamp()+($3::integer*interval '1 millisecond'))
         from worker_credential_bindings b where p.id=$1 and b.principal_id=p.id and b.execution_id=$2
-          and p.revoked_at is null and b.revoked_at is null and p.expires_at>clock_timestamp() returning p.expires_at`,
+          and p.revoked_at is null and b.revoked_at is null and p.expires_at>clock_timestamp() returning p.expires_at,clock_timestamp() as database_now`,
       [credential.principalId, id, this.ttlMs])
       if (!result.rows[0]) return fail('WORKER_CREDENTIAL_NOT_RENEWABLE')
-      return result.rows[0].expires_at.toISOString()
+      const row = result.rows[0]
+      return { expiresAt: row.expires_at.toISOString(),
+        renewalDeadline: databaseCredentialDeadline(row.expires_at, row.database_now, requestedAt) }
     })
+    Object.assign(credential, { renewalDeadline: lease.renewalDeadline })
+    return lease.expiresAt
   }
   override async reconcileTerminalCredentials(): Promise<void> {
     const rows = (await this.approvalPool.query<{ principal_id: string; execution_id: string }>(`select b.principal_id,b.execution_id

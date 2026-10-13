@@ -27,7 +27,13 @@ export function createCheckpointStore(
   return {
     saver,
     async setup() {
-      await saver.setup()
+      const migrationPool = createPool({ ...options, connectionString, maxConnections: 1,
+        queryTimeoutMs: 60_000, lockTimeoutMs: 5_000 }, 'graphql-checkpoint-migrations')
+      try {
+        await new ApprovalPostgresSaver(migrationPool, undefined, { schema }).setup()
+      } finally {
+        await migrationPool.end()
+      }
     },
     async ping(signal) {
       // Check the actual checkpoint tables using the saver's own pool, but keep

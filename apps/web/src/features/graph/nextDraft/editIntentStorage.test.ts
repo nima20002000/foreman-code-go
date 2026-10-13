@@ -119,9 +119,9 @@ describe('NIM-2642 protected local form and exact-command recovery', () => {
 })
 
 describe('edit storage under a full browser quota', () => {
-  it('frees superseded form copies and earlier sign-in data, then keeps the current form', () => {
+  it('frees earlier sign-in data while preserving another tab’s recovery form', () => {
     storeEditSnapshot(key, newNextDraft(fixture(), 'closed-tab-form'))
-    // That form belongs to a closed tab, and a newer tab became the latest form of the workflow.
+    // A newer pointer does not establish whether this independently owned tab is closed.
     const ownTab = sessionStorage.getItem(protectedKey('ui', 'graph-edit-intent:tab'))!
     const closedTab = protectedKey('draft', `graph-edit-intent:${key}:closed-tab`)
     localStorage.setItem(closedTab, localStorage.getItem(protectedKey('draft', `graph-edit-intent:${key}:${ownTab}`))!)
@@ -131,7 +131,7 @@ describe('edit storage under a full browser quota', () => {
     localStorage.setItem('unrelated-preference', 'keep')
     const setItem = Storage.prototype.setItem
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, name: string, value: string) {
-      if (this.getItem(closedTab) !== null) throw new DOMException('The quota has been exceeded.', 'QuotaExceededError')
+      if (this.getItem('graphql.chat:earlier-epoch:draft:old-form') !== null) throw new DOMException('The quota has been exceeded.', 'QuotaExceededError')
       setItem.call(this, name, value)
     })
 
@@ -139,7 +139,7 @@ describe('edit storage under a full browser quota', () => {
     expect(() => storeEditSnapshot(key, edit)).not.toThrow()
 
     expect(readEditSnapshot(key)?.graph).toEqual(edit.graph)
-    expect(localStorage.getItem(closedTab)).toBeNull()
+    expect(JSON.parse(localStorage.getItem(closedTab)!).graph).toEqual(edit.graph)
     expect(localStorage.getItem('graphql.chat:earlier-epoch:draft:old-form')).toBeNull()
     expect(localStorage.getItem('unrelated-preference')).toBe('keep')
   })

@@ -1,7 +1,7 @@
 import { processSourceDirectories } from './entryProcessing.js'
 import { constants } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { mkdir, open, rename, type FileHandle } from 'node:fs/promises'
+import { mkdir, open, rename, unlink, type FileHandle } from 'node:fs/promises'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 import { RootBindingSchema, type RootBinding, type MaterializationReceipt,
@@ -13,6 +13,10 @@ import { addGitWorktree, type GitWorktreePorts, type WorktreeRequest } from './g
 import { componentLogger } from '../diagnostics/logger.js'
 import { copySourceTree } from './copySourceTree.js'
 import { verifySourceEntry } from './verifySourceEntry.js'
+import type { MaterializationAttempt } from './ports.js'
+import type { SecondarySourceAllocation } from '@foreman-code/contracts/source-operations'
+import { writeSecondaryAllocation } from './secondaryAllocation.js'
+import { writeSourceClaim } from './quotaClaims.js'
 import { scheduler } from 'node:timers/promises'
 
 const SharedTreeSchema = z.object({
@@ -68,6 +72,9 @@ async function copyEntries(reference: FileHandle, target: FileHandle, manifest: 
 export async function prepareSharedWorkingTree(input: {
   root: FileHandle
   binding: RootBinding
+  primary: FileHandle
+  materializationId: string
+  attempt: MaterializationAttempt
   manifest: SourceManifest
   reference: FileHandle
   authorize(): Promise<void>
@@ -86,16 +93,14 @@ export async function prepareSharedWorkingTree(input: {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
   const id = randomUUID()
-  const pending = await open(anchored(root, pendingName),
-    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600)
-  try {
-    await pending.writeFile(JSON.stringify({ version: 1, id, binding }))
-    await pending.sync()
-  } finally { await pending.close() }
-  await root.sync()
+  const allocation: SecondarySourceAllocation = { version: 1, id, binding,
+    materializationId: input.materializationId, attempt: input.attempt, kind: 'shared', state: 'preparing' }
+  await writeSecondaryAllocation(input.primary, allocation, signal)
+  await writeSourceClaim(root, pendingName, JSON.stringify(allocation), signal)
   await mkdir(anchored(root, id), { mode: 0o700 })
   const directory = await openChildDirectory(root, id)
   try {
+    await writeSecondaryAllocation(input.primary, { ...allocation, filesystem: await identity(directory) }, signal)
     await mkdir(anchored(directory, 'staging'), { mode: 0o700 })
     const tree = await openChildDirectory(directory, 'staging')
     let filesystem: RootBinding['filesystem']
@@ -109,9 +114,10 @@ export async function prepareSharedWorkingTree(input: {
     await rename(anchored(directory, 'staging'), anchored(directory, 'tree'))
     await directory.sync()
     const record = SharedTreeSchema.parse({ version: 1, id, binding, filesystem })
-    const file = await open(anchored(root, pendingName), constants.O_WRONLY | constants.O_TRUNC | constants.O_NOFOLLOW)
-    try { await file.writeFile(JSON.stringify(record)); await file.sync() } finally { await file.close() }
-    await rename(anchored(root, pendingName), anchored(root, name))
+    await writeSourceClaim(root, `${pendingName}.ready`, JSON.stringify(record), signal)
+    await rename(anchored(root, `${pendingName}.ready`), anchored(root, name))
+    await root.sync()
+    await unlink(anchored(root, pendingName))
     await root.sync()
     return record
   } finally { await directory.close() }
@@ -148,6 +154,9 @@ export async function prepareAgentWorktree(input: {
   root: FileHandle
   binding: RootBinding
   executionId: string
+  primary: FileHandle
+  materializationId: string
+  attempt: MaterializationAttempt
   manifest: SourceManifest
   reference: FileHandle
   request: WorktreeRequest
@@ -160,9 +169,26 @@ export async function prepareAgentWorktree(input: {
   const commit = manifest.git?.commit
   if (!commit) throw new SourceError('SOURCE_WORKTREE_INVALID', 'Only Git sources can become agent worktrees.')
   const id = randomUUID()
+  let allocation: SecondarySourceAllocation = { version: 1, id, binding,
+    materializationId: input.materializationId, attempt: input.attempt, kind: 'worktree', state: 'preparing',
+    worktree: { repository: input.request.repository, branch: input.request.branch, commit } }
+  await writeSecondaryAllocation(input.primary, allocation, signal)
   await mkdir(anchored(root, id), { mode: 0o700 })
+  const allocatedDirectory = await openChildDirectory(root, id)
+  try {
+    allocation = { ...allocation, filesystem: await identity(allocatedDirectory) }
+    await writeSecondaryAllocation(input.primary, allocation, signal)
+  } finally {
+    await allocatedDirectory.close()
+  }
   const path = join(binding.canonicalPath, id, 'tree')
-  const added = await addGitWorktree(input.ports, input.request, commit, path, signal, { checkout: 'deferred' })
+  const added = await addGitWorktree(input.ports, input.request, commit, path, signal, {
+    checkout: 'deferred',
+    beforeAllocate: async branch => {
+      allocation = { ...allocation, worktree: { repository: input.request.repository, branch, commit } }
+      await writeSecondaryAllocation(input.primary, allocation, signal)
+    },
+  })
   const allocated = performance.now()
   const directory = await openChildDirectory(root, id)
   try {

@@ -22,7 +22,8 @@ const saved = { ...definition, workspaceId: 'workspace' }
 beforeEach(() => {
   useGraphDraftStore.getState().clearAllDrafts()
   const queues = new Map<string, Promise<unknown>>()
-  Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: (name: string, work: () => unknown) => {
+  Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: (name: string, work: (() => unknown) | LockOptions, claim?: (lock: { name: string }) => unknown) => {
+    if (typeof work !== 'function') return claim!({ name: name })
     const result = (queues.get(name) ?? Promise.resolve()).then(work)
     queues.set(name, result.catch(() => undefined))
     return result
