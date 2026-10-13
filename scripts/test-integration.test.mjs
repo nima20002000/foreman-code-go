@@ -959,6 +959,37 @@ for (const scenario of cpuSchedulingCases) {
   })
 }
 
+test('pending sibling settlement keeps its fixed deadline without competing queue work', async () => {
+  const settlement = 'apps/api/test/engine-pending-sibling-settlement.integration.test.ts'
+  const ordinary = 'apps/api/test/ordinary.integration.test.ts'
+  const gate = 'gate:check'
+  const events = []
+  const active = new Set()
+  const run = async id => {
+    if (id === settlement) assert.equal(active.size, 0)
+    else assert.equal(active.has(settlement), false)
+    active.add(id)
+    events.push(id)
+    try {
+      await new Promise(resolve => setImmediate(resolve))
+      return { code: 0, complete: true }
+    } finally {
+      active.delete(id)
+    }
+  }
+  const result = await scheduleIntegrationQueue([settlement, ordinary], [{ index: 1 }, { index: 2 }], {
+    maxConcurrency: 2, samplePressure: lowPressure, pollIntervalMs: 0.01,
+    durations: { [settlement]: 52_540 },
+    extraItems: [{ id: gate }],
+    runFile: (_slot, file) => run(file), executeExtra: item => run(item.id),
+  })
+  assert.equal(result.unexecuted.length, 0)
+  assert.equal(result.results.length, 3)
+  assert.equal(result.results.every(item => item.status === 'PASSED'), true)
+  assert.deepEqual(new Set(events), new Set([settlement, ordinary, gate]))
+  assert.equal(active.size, 0)
+})
+
 test('integration and gate checks share the bounded queue and delay exclusive files', async () => {
   const ordinary = 'apps/api/test/ordinary.integration.test.ts'
   const exclusive = 'apps/api/test/dev-startup.integration.test.ts'
