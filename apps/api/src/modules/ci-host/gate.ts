@@ -1,4 +1,4 @@
-import { exclusiveIntegrationFiles, requiresUserSystemd, type CiDurations, type CiRunInput,
+import { exclusiveIntegrationFiles, integrationCpuCost, requiresUserSystemd, type CiDurations, type CiRunInput,
   type CiRunRecord } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
@@ -30,6 +30,21 @@ export interface GatePart {
   integrationShards?: number
   requiresBuildComputer?: boolean
   speedFactor?: number
+}
+
+interface IntegrationLoad {
+  lanes: number[]
+  serial: number
+}
+
+function addIntegrationFile(load: IntegrationLoad, file: string, durationMs: number): IntegrationLoad {
+  if (exclusive.has(file)) return { lanes: load.lanes, serial: load.serial + durationMs }
+  const lanes = [...load.lanes]
+  const cost = integrationCpuCost(file, lanes.length, durationMs)
+  const indexes = lanes.map((_, index) => index).sort((left, right) => lanes[left]! - lanes[right]!).slice(0, cost)
+  const finish = Math.max(...indexes.map(index => lanes[index]!)) + durationMs
+  for (const index of indexes) lanes[index] = finish
+  return { lanes, serial: load.serial }
 }
 
 export async function readCiComputerStatus(endpoint: HostCiEndpoint, computer: HostCiComputer) {
@@ -106,9 +121,8 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
   }
   const finishWith = (item: GateComputer, file: string) => {
     const state = load.get(item)!
-    const serial = exclusive.has(file) ? state.serial + duration(file) : state.serial
-    const lanes = exclusive.has(file) ? Math.max(...state.lanes) : Math.max(Math.max(...state.lanes), Math.min(...state.lanes) + duration(file))
-    return item.checkMs + measuredTime(item, state.work + duration(file), SETUP_MS + serial + lanes)
+    const next = addIntegrationFile(state, file, duration(file))
+    return item.checkMs + measuredTime(item, state.work + duration(file), SETUP_MS + next.serial + Math.max(...next.lanes))
   }
   const finish = (item: GateComputer, estimate: 'typical' | 'conservative' = 'typical') => {
     if (!item.files.length) return item.checkMs
@@ -118,12 +132,7 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
   }
   const addFile = (item: GateComputer, file: string) => {
     const state = load.get(item)!
-    state.work += duration(file)
-    if (exclusive.has(file)) state.serial += duration(file)
-    else {
-      const index = state.lanes.indexOf(Math.min(...state.lanes))
-      state.lanes[index] = state.lanes[index]! + duration(file)
-    }
+    load.set(item, { ...addIntegrationFile(state, file, duration(file)), work: state.work + duration(file) })
     item.files.push(file)
   }
   const exclusiveCount = (item: GateComputer) => item.files.filter(file => exclusive.has(file) || requiresUserSystemd(file)).length

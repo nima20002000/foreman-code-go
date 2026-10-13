@@ -109,3 +109,14 @@ export const exclusiveIntegrationFiles = [startupFile,
   'apps/api/test/operator-management-file-authority.integration.test.ts',
   'apps/api/test/r2-2-inherited-references.integration.test.ts',
 ]
+
+/** CPU slots reserved by a file in both gate planning and execution.
+ * @param {string} file
+ * @param {number} shards
+ * @param {...(number | undefined)} durations
+ */
+export function integrationCpuCost(file, shards, ...durations) {
+  const heavy = requirements.get(file)?.includes('installedWorkerHost')
+    || durations.some(ms => Number.isFinite(ms) && ms >= 60_000)
+  return heavy ? Math.min(2, shards) : 1
+}

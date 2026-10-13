@@ -1,4 +1,5 @@
-import { exclusiveIntegrationFiles, requirements } from '../packages/contracts/src/integrationScheduling.mjs'
+import { exclusiveIntegrationFiles, integrationCpuCost,
+  requirements } from '../packages/contracts/src/integrationScheduling.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { integrationEnvironmentCapabilities, partitionIntegrationCapabilities } from './integration-capabilities.mjs'
 import { spawn, spawnSync } from 'node:child_process'
@@ -409,10 +410,8 @@ export async function scheduleIntegrationQueue(files, slots, {
     if (Number.isFinite(durationMs) && durationMs >= 0) {
       queueProfiles[file] = { ...profiles[file], durationMs }
     }
-    const cpuHeavy = requirements.get(file)?.includes('installedWorkerHost')
-      || [profiles[file]?.durationMs, durations[file]].some((ms) => Number.isFinite(ms) && ms >= 60_000)
-    // The queue capacity scales with CPUs; heavy files reserve two of those slots.
-    return { id: file, file, kind: 'integration', cpuCost: cpuHeavy ? Math.min(2, maxConcurrency) : 1,
+    const cpuCost = integrationCpuCost(file, maxConcurrency, profiles[file]?.durationMs, durations[file])
+    return { id: file, file, kind: 'integration', cpuCost,
       exclusive: exclusiveIntegrationFiles.includes(file) }
   })
   const items = [...integrationItems, ...extraItems]

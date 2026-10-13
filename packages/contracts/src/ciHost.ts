@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 export { integrationPartition, requiresUserSystemd } from './ciPartition.mjs'
-export { userSystemdIntegrationFiles, exclusiveIntegrationFiles } from './integrationScheduling.mjs'
+export { userSystemdIntegrationFiles, exclusiveIntegrationFiles, integrationCpuCost } from './integrationScheduling.mjs'
 import { WorkspaceRepositorySchema } from './workspaceRepository.js'
 import { BuildComputerAllowanceSchema } from './buildComputers.js'
 

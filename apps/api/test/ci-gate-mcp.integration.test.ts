@@ -64,7 +64,7 @@ it('persists a throughput-sized gate through MCP and rejects a read-only caller'
 })
 
 async function fixture(options: { cloudSlots?: number; files?: string[]; offlineKey?: string; pool?: pg.Pool;
-  occupiedKeys?: Set<string>; unavailableKeys?: Set<string>; allowance?: number } = {}) {
+  occupiedKeys?: Set<string>; unavailableKeys?: Set<string>; allowance?: number; hostCpuCount?: number } = {}) {
   const pool = options.pool ?? database.pool
   const workspaceId = randomUUID()
   await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId,
@@ -97,7 +97,7 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
       if (computer.key === options.offlineKey) throw new Error('Computer disconnected')
       if (request.operation === 'status') return { operation: 'status', ready: !options.unavailableKeys?.has(computer.key),
         reasons: options.unavailableKeys?.has(computer.key) ? ['Worker draining'] : [],
-        cpuCount: computer.hostRef.kind === 'cloud' ? 4 : 16, memoryBytes: 16 * 2 ** 30,
+        cpuCount: computer.hostRef.kind === 'cloud' ? 4 : options.hostCpuCount ?? 16, memoryBytes: 16 * 2 ** 30,
         slotsTotal: computer.hostRef.kind === 'cloud' ? 1 : 2,
         slotsUsed: options.occupiedKeys?.has(computer.key) ? 1 : 0, runs: [] }
       if (request.operation === 'start') {
@@ -444,4 +444,35 @@ it('rechecks the build allowance when dispatching an already planned gate throug
         .toMatchObject({ integrationShards: 8 })
     }
   } finally { await f.close() }
+})
+
+it('persists the heavy-file CPU budget before exclusive Worker recovery through authenticated MCP', async () => {
+  const files = [
+    'apps/api/test/harness-installation-update-rollback.integration.test.ts',
+    'apps/api/test/remote-review-production-defaults.integration.test.ts',
+    'apps/api/test/remote-review-production-worker-crash.integration.test.ts',
+  ]
+  const f = await fixture({ files, cloudSlots: 2, hostCpuCount: 2,
+    unavailableKeys: new Set(['builder-paired']) })
+  try {
+    const input = { suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40), commandId: randomUUID() }
+    const reader = await f.connect(true)
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    expect((await database.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
+    const admitted = CiRunOutputSchema.parse(await f.value('ci_run', input))
+    expect(CiRunOutputSchema.parse(await f.value('ci_run', input))).toEqual(admitted)
+    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
+    const integration = read.partitions!.filter(run => run.suite === 'integration')
+    expect(integration).toHaveLength(1)
+    expect(integration[0]).toMatchObject({ plannedHostKey: 'builder-main', integrationShards: 2,
+      expectedDurationMs: 450_000 })
+    expect(integration[0]!.files.slice().sort()).toEqual(files.slice().sort())
+    const stored = (await database.pool.query('select record from ci_runs where id=$1', [integration[0]!.id])).rows[0].record
+    expect(stored).toEqual(integration[0])
+    const readerResult = await f.call(reader, 'ci_get', { ticketId: admitted.ticketId })
+    expect(readerResult.isError).not.toBe(true)
+    expect(CiGetOutputSchema.parse(decodeMcpToolResult(readerResult)).partitions).toEqual(read.partitions)
+  } finally {
+    await f.close()
+  }
 })
