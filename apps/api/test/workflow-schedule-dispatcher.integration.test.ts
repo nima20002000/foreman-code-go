@@ -145,7 +145,7 @@ describe.skipIf(!postgresEnabled)('SCH-04 PostgreSQL dispatcher / common Start',
 
   it('admits once when two dispatchers with independent pools race after preparation', async () => {
     const saved = await save(); now = saved.nextOccurrenceAt!
-    const otherPool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL!, max: 4,
+    const otherPool = new pg.Pool({ connectionString: database.databaseUrl, max: 4,
       options: `-c search_path=${database.schema} -c statement_timeout=10000 -c lock_timeout=5000` })
     const ready = rejectableDeferred(), release = rejectableDeferred(); let arrivals = 0
     const gated = (start: ScheduledStart): ScheduledStart => async (...args) => {
@@ -154,7 +154,13 @@ describe.skipIf(!postgresEnabled)('SCH-04 PostgreSQL dispatcher / common Start',
     }
     const work = Promise.all([dispatcher(gated(realStart)).dispatch(saved),
       dispatcher(gated(startUsing(otherPool)), otherPool).dispatch(saved)])
-    try { await reached(ready.promise, work); release.resolve(); await work } finally { release.resolve(); await work.catch(() => undefined); await otherPool.end() }
+    try {
+      await reached(ready.promise, work)
+      const otherService = new WorkflowScheduleService(otherPool, new PostgresCommandCoordinator(otherPool), () => new Date(now))
+      expect((await otherService.get(reader.principal, scope)).schedule).toEqual(saved)
+      release.resolve()
+      await work
+    } finally { release.resolve(); await work.catch(() => undefined); await otherPool.end() }
     expect(await countRuns()).toBe(1)
     expect(await history()).toHaveLength(1)
   }, 60_000)

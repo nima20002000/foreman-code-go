@@ -107,13 +107,20 @@ async function approveThroughHttp(f: Harness, started: Started) {
     interaction: { id: interaction.id, runId, deliveryState: 'delivered' } })
   expect(f.base.provider.counts).toEqual(counts)
   const final = GetInteractionResponseSchema.parse(await f.http('GET', `/api/user/interactions/${interaction.id}`, undefined, ''))
-  expect(final.interaction).toEqual(decision.interaction)
+  expect(final.interaction).toEqual(terminalReplay.interaction)
+  // Worker acknowledgement can advance the revision after the first response snapshot.
+  const { revision: decisionRevision, updatedAt: decisionUpdatedAt, ...decisionFields } = decision.interaction
+  const { revision: finalRevision, updatedAt: finalUpdatedAt, ...finalFields } = final.interaction
+  expect(finalFields).toEqual(decisionFields)
+  expect(finalRevision).toBeGreaterThanOrEqual(decisionRevision)
+  expect(Date.parse(finalUpdatedAt)).toBeGreaterThanOrEqual(Date.parse(decisionUpdatedAt))
   const finalMonitoringResult = await monitor.callTool({
     name: 'interaction_list', arguments: { workspaceId, workflowId, runId, limit: 10 },
   })
   expect(finalMonitoringResult.isError).not.toBe(true)
   const finalMonitor = ManagedInteractionPageSchema.parse(decodeMcpToolResult(finalMonitoringResult))
   expect(finalMonitor.items).toEqual(ListInteractionsResponseSchema.parse(await list()).items)
+  return final.interaction
 }
 
 export function defineScenarioTests(id: ScenarioId, via: Via) {
@@ -158,11 +165,23 @@ export function defineScenarioTests(id: ScenarioId, via: Via) {
             if (id === 'S3-03') expect(f.base.provider.startedNodes).not.toContain(scenario.nodes[4]!.id)
             releaseSlow()
           }
-          if (id === 'S3-04') await approveThroughHttp(f, started)
+          const approval = id === 'S3-04' ? await approveThroughHttp(f, started) : undefined
           await f.settled(started.scope, scenario.repeat ? 75000 : undefined)
           const view = await assertScenarioEvidence(f, started, initial)
           if (id === 'S3-04') expect(view.events.some((event) => event.fact.type === 'worker.resumed'
             && event.evidence.sourceKind === 'native_event')).toBe(true)
+          if (approval) {
+            const acknowledgements = view.events.filter((event) => event.fact.type === 'interaction.state'
+              && event.fact.interaction.interactionId === approval.id
+              && event.fact.interaction.resumeState === 'acknowledged')
+            expect(acknowledgements).toHaveLength(1)
+            expect(acknowledgements[0]).toMatchObject({
+              evidence: { sourceKind: 'native_event' },
+              fact: { interaction: { revision: String(approval.revision), status: 'delivered',
+                deliveryState: 'delivered', selectedOptionId: approval.selectedOptionId,
+                decision: approval.selectedSemantic } },
+            })
+          }
           const expectedNodes = Array.from({ length: scenario.occurrences }, () => scenario.executedIndexes
             .map((index) => scenario.nodes[index]!.id)).flat()
           expect([...f.base.provider.startedNodes].sort()).toEqual([...expectedNodes].sort())
