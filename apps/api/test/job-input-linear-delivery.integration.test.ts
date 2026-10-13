@@ -67,7 +67,7 @@ it('copies a real 20 MiB canonical input with linear hash work and verifies the 
     expect(hashWork.bytes).toBeLessThan(bytes.length * 3)
     expect(recheck.mock.calls.length).toBeGreaterThan(bytes.length / 8192)
     hashWork.limit = Infinity
-    expect(await readFile(join(project, '.graphql-job-inputs/files/input.md'))).toEqual(bytes)
+    expect((await readFile(join(project, '.graphql-job-inputs/files/input.md'))).equals(bytes)).toBe(true)
     expect(fileRead).toHaveBeenCalled()
     const controller = new AbortController()
     const reader = await ports.main.openRead(execution, admission, 'files/input.md', controller.signal)
