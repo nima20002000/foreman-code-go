@@ -208,6 +208,30 @@ it('releases an incompatible Worker assignment when status confirms the ticket n
   expect(f.records[0]?.dispatchAttempts).toBeUndefined()
 })
 
+it('releases a first start rejected by an incompatible Worker before execution', async () => {
+  const f = dispatchFixture()
+  f.records.splice(0, 1)
+  const worker: HostCiComputer = { ...computer,
+    hostRef: { kind: 'device', mainId: 'fixture-main', deviceId: 'fixture-worker' } }
+  vi.mocked(f.endpoint.computers).mockResolvedValue([worker])
+  const request = vi.mocked(f.endpoint.request).getMockImplementation()!
+  vi.mocked(f.endpoint.request).mockImplementation(async (target, input) => {
+    if (input.operation === 'start') {
+      throw new DomainError('CI_HOST_PROTOCOL_UNSUPPORTED', 'Update the Worker CI protocol.', 409)
+    }
+    return request(target, input)
+  })
+  const service = f.create()
+  await service.dispatch()
+  const result = await service.get(caller, { ticketId: f.queued.id })
+  expect(result.run).toMatchObject({ state: 'queued', computer: null, startedAt: null,
+    message: expect.stringContaining('Update the Worker CI protocol.') })
+  expect(result.run.dispatchHostKey).toBeUndefined()
+  expect(result.run.dispatchAttempts).toBeUndefined()
+  expect(result.run.dispatchRequest).toBeUndefined()
+  expect(vi.mocked(f.endpoint.request).mock.calls.filter(([, input]) => input.operation === 'start')).toHaveLength(1)
+})
+
 it.each(['lint', 'typecheck'] as const)('dispatches an ordinary queued $suite check without a gate ticket', async suite => {
   const f = dispatchFixture()
   f.records.splice(0, 1)

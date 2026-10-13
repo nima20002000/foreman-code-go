@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
-import { CiRunRecordSchema, type CiHostRequest, type CiRunRecord } from '@foreman-code/contracts'
+import { CiHostRequestSchema, CiRunRecordSchema, type CiHostRequest, type CiRunRecord } from '@foreman-code/contracts'
 import { expect, it } from 'vitest'
 import { HostCiService, type CiCommits, type HostCiComputer, type HostCiEndpoint } from './service.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
@@ -404,12 +404,28 @@ it('dispatches a duration-planned single ordinary full slice to cloud', async ()
 })
 
 
-function tieredRuns() {
+function tieredRuns(gate = false) {
   const [fast, slow] = queuedRuns(2)
-  return [CiRunRecordSchema.parse({ ...fast, partition: { index: 0, count: 1, weights: [1], tier: 'fast', slowFiles: ['slow'] } }),
-    CiRunRecordSchema.parse({ ...slow, partition: { index: 0, count: 1, weights: [1], tier: 'slow', slowFiles: ['slow'] },
+  return [CiRunRecordSchema.parse({ ...fast, gate, partition: { index: 0, count: 1, weights: [1], tier: 'fast', slowFiles: ['slow'] } }),
+    CiRunRecordSchema.parse({ ...slow, gate, partition: { index: 0, count: 1, weights: [1], tier: 'slow', slowFiles: ['slow'] },
       deferred: true })]
 }
+
+it('dispatches the deferred gate selection with valid host requests after a fast failure', async () => {
+  const records = tieredRuns(true)
+  records[0] = CiRunRecordSchema.parse({ ...records[0]!, state: 'failed', exitCode: 1,
+    finishedAt: '2026-10-12T00:05:00.000Z' })
+  const failed = { ...records[0]! }
+  const f = fleet(records, [cloud])
+  await f.service.dispatch()
+  expect(f.started).toHaveLength(1)
+  expect(CiHostRequestSchema.parse(f.started[0]!.request)).toMatchObject({
+    operation: 'start', runId: records[1]!.id, gate: true, scope: 'full',
+    files: records[1]!.files, integrationShards: 8,
+  })
+  expect(records[1]).toMatchObject({ state: 'running', deferred: true })
+  expect(records[0]).toEqual(failed)
+})
 
 it('starts the slow tier only after every other part of its request passed', async () => {
   const records = tieredRuns()

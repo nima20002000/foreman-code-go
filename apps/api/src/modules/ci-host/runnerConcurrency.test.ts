@@ -190,7 +190,7 @@ describe('host CI runner concurrent starts', () => {
 
   it('keeps the run readable and rejects a second start while launch writes its running state', async () => {
     const writing = barrier()
-    const { runner, request } = await computer()
+    const { root, runner, request, ports, launches } = await computer()
     writes.duringRunningWrite = writing.pause
     try {
       await runner.handle(request)
@@ -199,6 +199,12 @@ describe('host CI runner concurrent starts', () => {
         .resolves.toMatchObject({ run: { state: 'starting' } })
       await expect(runner.handle({ ...request, runId: randomUUID() }))
         .rejects.toMatchObject({ code: 'CI_HOST_BUSY' })
+      const restarted = new HostCiRunner(root, ports)
+      await expect(restarted.handle({ operation: 'read', runId: request.runId, afterOffset: 0, maxBytes: 1 }))
+        .resolves.toMatchObject({ run: { runId: request.runId, state: 'running', exitCode: null, finishedAt: null } })
+      await expect(restarted.handle({ ...request, runId: randomUUID() }))
+        .rejects.toMatchObject({ code: 'CI_HOST_BUSY' })
+      expect(launches).toHaveLength(1)
     } finally {
       writing.release()
     }
