@@ -4,7 +4,7 @@ import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { WorkerConversationReceiptSchema, type WorkerConversationReceipt } from '@foreman-code/contracts/remote-execution-rpc'
 
 const ArchiveSchema = z.object({ receipt: WorkerConversationReceiptSchema,
-  digest: z.string().regex(/^[a-f0-9]{64}$/) }).strict()
+  digest: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).strict()
 
 /** Closed receipts retain all replay identities outside the bounded recovery snapshot. */
 export class WorkerConversationArchive {
