@@ -87,6 +87,7 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'Pages contain complete UTF-8 characters; offsets inside a character skip to the next character. '
   + 'Increase maxBytes if the next character does not fit and nextOffset does not advance. '
   + 'ci_get reads the persisted background refresh without waiting for dispatch or build computers. '
+  + 'Its partitions are ordered by suite, part and numeric shard index. '
   + 'Queued tickets include the dispatch waiting reason in message; it clears when they start. '
   + 'ci_computers_list shows readiness reasons, userSystemd support and its unavailable reason, used/total CI slots, assigned tickets and up to 500 authorized queued '
   + 'tickets with priority, global queue position and reason; queueTruncated reports additional tickets. '

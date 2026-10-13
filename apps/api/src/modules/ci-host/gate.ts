@@ -78,7 +78,8 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
   if (!hosts.length || !clouds.length || !integration.files.length) {
     throw new DomainError('CI_GATE_CAPACITY_REQUIRED', 'A gate needs a ready build computer, cloud CI, and integration files.', 409)
   }
-  const slots = unitSlots ?? clouds.reduce((sum, item) => sum + item.freeSlots, 0)
+  const availableSlots = clouds.reduce((sum, item) => sum + item.freeSlots, 0)
+  const slots = Math.min(unitSlots ?? availableSlots, availableSlots)
   const checks = (['typecheck', 'lint', 'unit'] as const).flatMap(suite =>
     planCiParts({ ...input, gate: false, suite, scope: 'full' }, durations, unit, slots).map(part => ({ ...part, suite })))
   const result: GatePart[] = checks.map(part => {

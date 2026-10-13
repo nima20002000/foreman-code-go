@@ -375,7 +375,8 @@ export class HostCiService {
       assertCiReadAccess(caller, scope.executionId, run)
       const group = (await this.pool.query<{ record: unknown }>(
         `select record from ci_runs where group_id=$1 and workspace_id=$2
-          and record->'initiator'=$3::jsonb order by created_at,id`,
+          and record->'initiator'=$3::jsonb
+          order by record->>'suite',record->>'part',(record->'partition'->>'index')::integer,created_at,id`,
         [run.groupId, scope.workspaceId, JSON.stringify(run.initiator)])).rows.map(row => CiRunRecordSchema.parse(row.record))
       const position = run.state === 'queued' ? await this.queuePosition(run.id) : undefined
       const smokeComputer = (await this.smokeTargets([run])).get(run.groupId)
