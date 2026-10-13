@@ -10,7 +10,7 @@ import { useCodexChatDelivery } from './codex-chat-delivery.helpers.js'
 describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP', { timeout: 60_000 }, () => {
   const fixture = useCodexChatDelivery()
 
-  for (const surface of ['agent'] as Array<'agent' | 'operator'>) {
+  for (const surface of ['agent', 'operator'] as Array<'agent' | 'operator'>) {
     for (const scenario of [
       { answer: 'Pear', completed: true },
       { answer: 'Native forms custom label', completed: true },

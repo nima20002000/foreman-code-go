@@ -7,7 +7,7 @@ import { installationUpdateFixture, profiles, latestEvidence, startWhenReady }
   from './helpers/harnessInstallationUpdate.js'
 
 describe('installed harness updates', () => {
-  it.each(['worker'] as const)(
+  it.each(['main', 'worker'] as const)(
     'automatically checks every qualified %s profile and preserves the running process through authenticated MCP',
     async executionHost => {
       const fixture = await installationUpdateFixture({ workflow: 'single', executionHost })

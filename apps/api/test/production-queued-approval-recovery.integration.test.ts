@@ -2,10 +2,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { deferred, postgresEnabled } from './helpers/wave25Agent3.js'
 import { productionFixtures, response, checkpointCut, expireAbandonedClaims, recover } from './helpers/approvalCheckpointProduction.js'
 
-describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoint recovery: queued-lifecycle', () => {
+describe.skipIf(!postgresEnabled)('BR1-003 production-composed approval/checkpoint recovery: queued resume races', () => {
   const fixture = productionFixtures()
 
-  it.each(['lease_expiry', 'stop'] as const)(
+  it.each(['revoked_authority', 'closed_execution', 'lease_expiry', 'stop'] as const)(
     '%s while the service resume is queued cannot commit a checkpoint or repeat delivery', async (race: 'lease_expiry' | 'stop' | 'revoked_authority' | 'closed_execution') => {
       const f = await fixture(), waiting = deferred(), release = deferred(), queued = deferred()
       const update = f.runs.updateState.bind(f.runs), resume = f.engine.resumeInteraction.bind(f.engine)

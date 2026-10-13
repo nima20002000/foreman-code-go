@@ -11,7 +11,7 @@ afterEach(() => vi.restoreAllMocks())
 // simulates that external boundary, never SQL receipts, native ACKs or results.
 describe.skipIf(!postgresEnabled)('ENG06-D recovery readback over real HTTP and authenticated Operator MCP', () => {
   describe.each(forms)('%s Stop during restart recovery', (form) => {
-    it.each(['http'] as Array<'http' | 'mcp'>)('%s accepts the exact Stop and settles cleanup rather than returning 409 forever', async (via) => {
+    it.each(['http', 'mcp'] as Array<'http' | 'mcp'>)('%s accepts the exact Stop and settles cleanup rather than returning 409 forever', async (via) => {
       const f = await recoveryFixture(form, () => 'park')
       try {
         f.launch(); const before = await parked(f)

@@ -10,7 +10,7 @@ describe.skipIf(!postgresEnabled)('Main CI preparation interruption and recovery
   const suite = mainPreparationRecoverySuite()
   const { input, settle, readBoth } = suite
 
-  it.each(['source', 'root', 'profile'] as const)(
+  it.each(['refresh', 'capture', 'qualify', 'source', 'root', 'profile'] as const)(
     'resumes Main after interruption at %s without repeating completed side effects', async stage => {
       const reached = deferred()
       const paused = deferred()
@@ -22,6 +22,7 @@ describe.skipIf(!postgresEnabled)('Main CI preparation interruption and recovery
       }
       const f = await suite.createFixture({
         pause: async current => { if (current === stage) await waitForRelease() },
+        ...(stage === 'refresh' ? { onMainRefresh: waitForRelease } : {}),
       })
       const original = await f.create()
       const request = input(f)

@@ -5,9 +5,9 @@ import {
   type Form,
 } from './helpers/eng06DRecovery.js'
 
-const forms: Form[] = ['sequential']
+const forms: Form[] = ['repeat', 'sequential']
 
-describeRetryBudget('finite technical retry budget: run-budget (sequential)', () => {
+describeRetryBudget('finite technical retry budget: run-budget', () => {
   it.each(forms)('%s: the shared Run execution budget can stop retries before the per-slot ceiling', async (form) => {
     const rounds = form === 'repeat' ? 3 : 1, budget = rounds * 2
     const f = await recoveryFixture(form, (submission) => submission.request.workflowNodeId.endsWith('-1')

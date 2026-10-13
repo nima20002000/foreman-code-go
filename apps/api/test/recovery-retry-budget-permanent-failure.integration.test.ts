@@ -5,9 +5,9 @@ import {
   type Form,
 } from './helpers/eng06DRecovery.js'
 
-const forms: Form[] = ['repeat']
+const forms: Form[] = ['repeat', 'sequential']
 
-describeRetryBudget('finite technical retry budget: permanent-failure (repeat)', () => {
+describeRetryBudget('finite technical retry budget: permanent-failure', () => {
   it.each(forms)('%s: a non-retryable original failure cannot spend a technical retry', async (form) => {
     const f = await recoveryFixture(form, () => 'permanent_failure')
     try {

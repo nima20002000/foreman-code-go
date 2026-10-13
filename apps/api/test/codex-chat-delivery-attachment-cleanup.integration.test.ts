@@ -13,7 +13,7 @@ import { useCodexChatDelivery } from './codex-chat-delivery.helpers.js'
 describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP', { timeout: 60_000 }, () => {
   const fixture = useCodexChatDelivery()
 
-  for (const kind of ['operator'] as Array<'agent' | 'operator'>) {
+  for (const kind of ['agent', 'operator'] as Array<'agent' | 'operator'>) {
     for (const restart of [false, true]) {
       it(`${kind} settles a known unsent attachment after cleanup retry${restart ? ' across restart' : ''}`, async () => {
         const {

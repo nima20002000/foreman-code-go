@@ -3,17 +3,17 @@ import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { randomUUID } from 'node:crypto'
 import { SendAgentChatMessageResponseSchema } from '@foreman-code/contracts/agent-chat'
 import { eventually } from './helpers/agentChatF5.js'
-import { body, executions, oldRunRows, read, setup, terminal } from './sch06-agent-chat.helpers.js'
+import { body, executions, oldRunRows, read, setup, terminal, dispatchScheduledRun } from './sch06-agent-chat.helpers.js'
 
-describe.skipIf(!postgresEnabled)('Selected manual Run chat PostgreSQL / HTTP / MCP', () => {
-  it('reads manual Run computer evidence and a persisted execution chat through HTTP and MCP', async () => {
+describe.skipIf(!postgresEnabled)('Selected Run chat PostgreSQL / HTTP / MCP', () => {
+  it.each(['manual', 'schedule'] as const)('reads %s Run computer evidence and a persisted execution chat through HTTP and MCP', async (trigger) => {
     const test = await setup()
     const f = test.f
     try {
       const { workspaceId, workflowId } = f.f.scope
-      const runId = f.f.run.id
+      const runId = trigger === 'schedule' ? await dispatchScheduledRun(f) : f.f.run.id
       const summaries = await f.services.runs.history.list(f.writer.principal, { workspaceId, workflowId })
-      expect(summaries.items.find(item => item.runId === runId)?.trigger).toBe('manual')
+      expect(summaries.items.find(item => item.runId === runId)?.trigger).toBe(trigger)
       await f.engine.start(runId)
       await terminal(f, runId)
       const source = (await executions(f, runId))[0]!

@@ -5,10 +5,10 @@ import { postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { finished, workHandoffFixture } from './helpers/workHandoffFixture.js'
 import { sharedWorkHandoffExhaustionDatabase } from './helpers/workHandoffExhaustionDatabase.js'
 
-describe.skipIf(!postgresEnabled)('exhausted saved work routes: named-finish', () => {
+describe.skipIf(!postgresEnabled)('exhausted saved work routes: finish dispositions', () => {
   const database = sharedWorkHandoffExhaustionDatabase()
   for (const recover of [false, true]) {
-    for (const disposition of ['named_finish'] as Array<
+    for (const disposition of ['automatic_finish', 'named_finish', 'finish_with_findings'] as Array<
       'automatic_finish' | 'named_finish' | 'finish_with_findings'
     >) {
       it(`records ${disposition} after the notice (${recover ? 'restart after acceptance' : 'normal'})`, async () => {

@@ -5,15 +5,15 @@ import {
   type Form,
 } from './helpers/eng06DRecovery.js'
 
-const forms: Form[] = ['repeat']
+const forms: Form[] = ['repeat', 'sequential']
 
-describeRetryBudget('finite technical retry budget: occurrences (repeat)', () => {
+describeRetryBudget('finite technical retry budget: occurrences', () => {
   it.each(forms)('%s: each successful business occurrence has its own bounded technical attempts and frozen input', async (form) => {
     const f = await recoveryFixture(form, (submission) => submission.request.workflowNodeId.endsWith('-0') && submission.attempt === 1
       ? 'retryable_failure' : 'success')
     try {
       f.launch()
-      await f.settled(f.base.f.run.id, { pollIntervalMs: 50 })
+      await f.settled(f.base.f.run.id, form === 'repeat' ? { pollIntervalMs: 50 } : undefined)
       const view = await readback(f), rows = await executionRows(f), rounds = form === 'repeat' ? 3 : 1
       expect(view.record.run, JSON.stringify(f.diagnostics())).toMatchObject({ executionState: 'completed', outcome: 'succeeded', result: { outcome: 'succeeded' } })
       expect(rows).toHaveLength(rounds * 3)

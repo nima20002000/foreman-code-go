@@ -6,10 +6,10 @@ import {
   type Form,
 } from './helpers/eng06DRecovery.js'
 
-const forms: Form[] = ['sequential']
-const transports: Array<'http' | 'mcp'> = ['http']
+const forms: Form[] = ['repeat', 'sequential']
+const transports: Array<'http' | 'mcp'> = ['http', 'mcp']
 
-describeRetryBudget('full-Run retry budget (sequential, http)', () => {
+describeRetryBudget('full-Run retry budget', () => {
   describe.each(forms)('%s full-Run retry is a separate authorization and identity', (form) => {
     it.each(transports)('%s Start replay creates only one NEW Run with a fresh technical budget', async (via) => {
       const f = await recoveryFixture(form, () => 'retryable_failure')

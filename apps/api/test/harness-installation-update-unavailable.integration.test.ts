@@ -7,7 +7,7 @@ import {
   from './helpers/harnessInstallationUpdate.js'
 
 describe('installed harness updates', () => {
-  it.each(['main'] as const)(
+  it.each(['main', 'worker'] as const)(
     'retains a resident %s Run across unavailable inventory before a completed payload replacement',
     async executionHost => {
       const fixture = await installationUpdateFixture({ workflow: 'single', executionHost })
@@ -42,11 +42,13 @@ describe('installed harness updates', () => {
         blocked = false
         await completedRun(fixture, started.run.id)
         await completedRun(fixture, next.run.id)
-        const executions = await fixture.db.pool.query<{ id: string }>(
-          'select id from harness_executions where run_id=any($1::text[])', [[started.run.id, next.run.id]])
-        expect(executions.rows).toHaveLength(2)
-        for (const execution of executions.rows) {
-          expect(await localWorkflowSourceClosed(fixture.db.pool, execution.id)).toBe(true)
+        if (executionHost === 'main') {
+          const executions = await fixture.db.pool.query<{ id: string }>(
+            'select id from harness_executions where run_id=any($1::text[])', [[started.run.id, next.run.id]])
+          expect(executions.rows).toHaveLength(2)
+          for (const execution of executions.rows) {
+            expect(await localWorkflowSourceClosed(fixture.db.pool, execution.id)).toBe(true)
+          }
         }
         expect(await pinnedPlacements(fixture, started.run.id)).toEqual(pins)
         expect(await fixture.provider.calls()).toContainEqual({ workflowCompleted: turn })
