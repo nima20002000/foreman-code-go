@@ -13,11 +13,12 @@ export function sourceStorageLimits(capacity: SourceStorageCapacity) {
   const diskMargin = Math.max(GIB, Math.ceil(capacity.availableBytes * 0.1))
   const memoryMargin = Math.max(GIB, Math.ceil(capacity.availableMemoryBytes * 0.25))
   const memorySlots = Math.floor(Math.max(0, capacity.availableMemoryBytes - memoryMargin) / (512 * 2 ** 20))
-  const materializations = Math.min(SOURCE_AGGREGATE_LIMITS.materializations, capacity.cpuCount * 2, memorySlots)
+  // Available memory already excludes resident executions; it bounds new preparations, not active worktrees.
+  const materializations = Math.min(SOURCE_AGGREGATE_LIMITS.materializations, capacity.cpuCount * 2)
   return {
     bytes: Math.min(SOURCE_AGGREGATE_LIMITS.bytes, Math.floor(capacity.totalBytes * 0.25)),
     availableBytes: Math.max(0, capacity.availableBytes - diskMargin),
-    preparing: Math.min(SOURCE_AGGREGATE_LIMITS.preparing, materializations),
+    preparing: Math.min(SOURCE_AGGREGATE_LIMITS.preparing, materializations, memorySlots),
     materializations,
   }
 }
