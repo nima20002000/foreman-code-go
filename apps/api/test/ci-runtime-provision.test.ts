@@ -8,6 +8,7 @@ import { gitFixtureEnvironment } from './helpers/gitFixture.js'
 import { publishCommit } from '../src/modules/sources/githubPublisher.js'
 import { snapshotAgentWorktree, importAgentSnapshot } from '../src/modules/sources/agentSnapshot.js'
 import { captureGitSource } from '../src/modules/sources/capture.js'
+import { createSourceManifest } from '../src/modules/sources/manifest.js'
 import { systemGitWorktreePorts, type GitWorktreePorts } from '../src/modules/sources/gitWorktree.js'
 import { describe, expect, it, vi } from 'vitest'
 import { BuildComputerPrepareStatusSchema } from '@foreman-code/contracts'
@@ -378,6 +379,51 @@ describe('runtime preparation ownership and recovery', () => {
   })
 })
 
+it('cancels pending computer Git acquisition when the preparation fixture closes', async () => {
+  const manifest = createSourceManifest({
+    version: 1,
+    approvedSourceId: randomUUID(),
+    snapshotId: randomUUID(),
+    capturePolicy: 'git-tree-v1',
+    executablePolicy: 'preserve-approved',
+    git: { commit, tree: 'f'.repeat(40), objectFormat: 'sha1' },
+    entries: [],
+    deletions: [],
+  })
+  let gitSignal: AbortSignal | undefined
+  let releaseGit!: () => void
+  const pendingGit = new Promise<void>(resolve => { releaseGit = resolve })
+  const f = await fixture({ source: { manifest, git: {
+    cloneDirectory: () => '/uncreated-fixture-clone',
+    git: async (_args, { signal }) => {
+      gitSignal = signal
+      signal.addEventListener('abort', releaseGit, { once: true })
+      try {
+        await pendingGit
+        return { code: 128, stdout: '', stderr: 'Git acquisition cancelled' }
+      } finally {
+        signal.removeEventListener('abort', releaseGit)
+      }
+    },
+  } } })
+  let closing: Promise<void> | undefined
+  try {
+    const input = { workspaceId: f.workspaceId, profileId: 'p-unit', commandId: 'close-pending-git' }
+    expect((await f.call('build_computer_prepare', input, 'reader')).isError).toBe(true)
+    expect(gitSignal).toBeUndefined()
+    expect((await f.call('build_computer_prepare', input)).isError).not.toBe(true)
+    await vi.waitFor(() => expect(gitSignal).toBeDefined())
+    closing = f.app.close()
+    await vi.waitFor(() => expect(gitSignal?.aborted).toBe(true))
+    await closing
+    expect(f.calls.prepare).toEqual([])
+    expect(f.calls.refresh).toEqual([])
+  } finally {
+    releaseGit()
+    await (closing ?? f.app.close())
+  }
+})
+
 it.each(['unpublished Agent commit', 'published commit', 'computer without GitHub', 'Main without push access'] as const)(
   'prepares a build computer from GitHub only, through authenticated MCP: %s', async scenario => {
     const directory = await mkdtemp(join(tmpdir(), 'ci-github-'))
@@ -414,6 +460,7 @@ it.each(['unpublished Agent commit', 'published commit', 'computer without GitHu
           : system.git(args[0] === 'clone' ? ['clone', '--no-checkout', origin, args.at(-1)!] : args, options) }
       f = await fixture({ source: { manifest: acceptedManifest, git: workerGit },
         publish: (repository, commit) => publishCommit(mainGit, repository, commit, signal) })
+      const originalProfile = structuredClone(f.profiles.get('p-unit'))
       const input = { workspaceId: f.workspaceId, profileId: 'p-unit', commandId: 'github-runtime' }
       expect((await f.call('build_computer_prepare', input, 'readonly')).isError).toBe(true)
       expect(f.calls.prepare).toEqual([])
@@ -422,7 +469,17 @@ it.each(['unpublished Agent commit', 'published commit', 'computer without GitHu
       expect(f.calls.publish).toEqual([{ repository: 'octo/site', commit: acceptedCommit }])
       if (scenario === 'computer without GitHub') {
         expect(settled).toMatchObject({ state: 'failed', message: expect.stringContaining('Connect GitHub on this computer') })
+        const read = await f.call('build_computer_prepare_get', { workspaceId: f.workspaceId,
+          profileId: 'p-unit' }, 'reader')
+        expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(read))).toEqual(settled)
+        expect(await f.workerState()).toMatchObject({ state: 'failed', commit: acceptedCommit,
+          message: expect.stringContaining('Connect GitHub on this computer') })
+        expect(f.profiles.get('p-unit')).toEqual(originalProfile)
         expect(f.calls.prepare).toEqual([])
+        expect(f.calls.bind).toEqual([])
+        expect(f.calls.saves).toEqual([])
+        expect(f.calls.refresh).toEqual([])
+        expect(f.calls.qualified).toEqual([])
         return
       }
       if (scenario === 'Main without push access') {
