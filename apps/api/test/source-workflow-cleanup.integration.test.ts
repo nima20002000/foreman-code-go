@@ -276,6 +276,15 @@ it('cleans reconciled sessionless worktrees only after positive closure and retr
     await closeCompletedWorkflowSources(f.pool, f.sources, error => { throw error })
     await expect(stat(clean.workingDirectory)).rejects.toMatchObject({ code: 'ENOENT' })
     expect(await readFile(join(dirty.workingDirectory, 'unfinished.txt'), 'utf8')).toBe('keep this work')
+    const cleanupRows = (await f.pool.query(`select m.execution_id,m.state,m.worktree_cleanup,
+      s.state as reservation_state
+      from source_execution_materializations m join source_storage_reservations s using(reservation_id)`)).rows
+    expect(cleanupRows.find(row => row.execution_id === clean.record.receipt.executionId))
+      .toMatchObject({ state: 'closed', reservation_state: 'retained', worktree_cleanup: { state: 'removed' } })
+    expect(cleanupRows.find(row => row.execution_id === dirty.record.receipt.executionId))
+      .toMatchObject({ state: 'closed', reservation_state: 'retained', worktree_cleanup: { state: 'retained' } })
+    expect(cleanupRows.find(row => row.execution_id === live.record.receipt.executionId))
+      .toMatchObject({ state: 'prepared', reservation_state: 'owned', worktree_cleanup: null })
     git(dirty.workingDirectory, 'add', '.')
     git(dirty.workingDirectory, 'commit', '-qm', 'Retain result')
     const resultCommit = git(dirty.workingDirectory, 'rev-parse', 'HEAD')
