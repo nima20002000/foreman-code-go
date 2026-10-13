@@ -11,7 +11,8 @@ import { gitFixtureEnvironment } from './gitFixture.js'
 
 /** Real git and package scripts, with local origins and a process standing in for the systemd service. */
 export async function genericCiRepository(options: { lockfile?: string; integration?: boolean; cloud?: boolean
-  suiteExit?: number; suiteHook?: boolean; beforeLaunch?: () => Promise<void> } = {}) {
+  suiteExit?: number; suiteHook?: boolean; beforeLaunch?: () => Promise<void>
+  beforeCheckout?: () => Promise<void> } = {}) {
   const base = process.env.FOREMAN_CODE_TEST_ROOT ?? process.env.TMPDIR
   if (!base) throw new Error('A disposable test root is required.')
   const root = await mkdtemp(join(base, 'generic-ci-'))
@@ -77,7 +78,10 @@ process.exit(result.status ?? 1)
     }
     const ports: HostCiPorts = { ...system, run: async (file, args, settings = {}) => {
       if (file === 'gh') return { code: 0, stdout: '', stderr: '' }
-      if (file === 'git') return system.run(file, args.map(localUrl), { ...settings, env: environment })
+      if (file === 'git') {
+        if (args.includes('worktree') && args.includes('add')) await options.beforeCheckout?.()
+        return system.run(file, args.map(localUrl), { ...settings, env: environment })
+      }
       if (file === 'systemd-run') {
         await options.beforeLaunch?.()
         const cwd = args.find(value => value.startsWith('--working-directory='))!.slice('--working-directory='.length)

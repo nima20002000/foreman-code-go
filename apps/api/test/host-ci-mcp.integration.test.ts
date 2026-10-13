@@ -430,8 +430,15 @@ it.each([
   }
 })
 
-it.each(['typecheck', 'integration'] as const)('reports a missing generic %s script through MCP and persisted readback', async suite => {
-  const repository = await genericCiRepository()
+it.each([
+  ['typecheck', 0], ['typecheck', 1250], ['integration', 0], ['integration', 1250],
+] as const)(
+  'reports a missing generic %s script through MCP and persisted readback after a %i ms checkout delay',
+  async (suite, checkoutDelayMs) => {
+  const repository = await genericCiRepository({ beforeCheckout: async () => {
+    // eslint-disable-next-line no-restricted-syntax
+    await new Promise(resolve => setTimeout(resolve, checkoutDelayMs))
+  } })
   const f = await fixture({ repositoryRunner: repository })
   try {
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite, commandId: `missing-${suite}` }))
