@@ -44,7 +44,9 @@ describe.skipIf(!postgresEnabled)('routing workflow cleanup', () => {
         workspaceId: started.scope.workspaceId,
         runId: started.scope.runId,
       }, monitor))
-      expect(monitorRecord).toEqual(record)
+      const expectedMonitorRecord = structuredClone(record)
+      delete expectedMonitorRecord.run.executionLocation
+      expect(monitorRecord).toEqual(expectedMonitorRecord)
       expect(monitorRecord.run).not.toHaveProperty('executionLocation')
       expect(record.run.executionLocation).toBeDefined()
       expect(await f.http('GET', `${runPath(started.scope)}/record`, undefined, reader.token))
