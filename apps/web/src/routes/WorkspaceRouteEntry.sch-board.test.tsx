@@ -321,7 +321,7 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
     expect(screen.getByLabelText('Editable workflow graph')).not.toBeVisible()
   })
 
-  it('refreshes the retained draft context without replacing local edits while a Run is pinned', async () => {
+  it.each([3_200, 6_400])('refreshes the retained draft context without replacing local edits over %s ms while a Run is pinned', async (pollingTime) => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     let workspaceReads = 0
     const recordWorkspaceRead = ({ request }: { request: Request }) => {
@@ -338,22 +338,28 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
       await waitFor(() => expect(client.isFetching({ queryKey: boardDraftContextKey(scope.workspaceId, scope.workflowId) })).toBe(0))
       const initialWorkspaceReads = workspaceReads
       const currentReads = context.mock.calls.length
-      await act(async () => { await vi.advanceTimersByTimeAsync(3_200) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(pollingTime) })
       await waitFor(() => expect(context.mock.calls.length).toBeGreaterThan(currentReads))
       expect(workspaceReads).toBe(initialWorkspaceReads)
 
       await choose('run-a')
       await savedY()
+      // The first current-state read refreshes the workspace projection once.
+      await waitFor(() => expect(workspaceReads).toBe(initialWorkspaceReads + 1))
       await waitFor(() => expect(client.isFetching({ queryKey: boardDraftContextKey(scope.workspaceId, scope.workflowId) })).toBe(0))
       const historyReads = context.mock.calls.length
-      await act(async () => { await vi.advanceTimersByTimeAsync(3_200) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(pollingTime) })
       await waitFor(() => expect(context.mock.calls.length).toBeGreaterThan(historyReads))
       expect(workspaceReads).toBe(initialWorkspaceReads)
       expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).toBe(graph)
 
       await choose(null)
       await waitFor(() => expect(editor).toBeVisible())
-      await waitFor(() => expect(context.mock.calls.length).toBeGreaterThan(historyReads))
+      const restoredReads = context.mock.calls.length
+      await act(async () => { await vi.advanceTimersByTimeAsync(pollingTime) })
+      await waitFor(() => expect(context.mock.calls.length).toBeGreaterThan(restoredReads))
+      expect(workspaceReads).toBe(initialWorkspaceReads + 1)
+      expect(writes).toEqual([])
       expect(within(editor).getByRole('heading', { name: 'Retained local name' })).toBeVisible()
       expect(useGraphDraftStore.getState().nextDrafts[key]!.graph).toBe(graph)
     } finally {
@@ -362,12 +368,12 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
     }
   }, 15_000)
 
-  it('automatically pins an active Run and returns to authoring through New run', async () => {
+  it.each(['running', 'queued'] as const)('automatically pins a %s Run and returns to authoring through New run', async (executionState) => {
     const fixture = getMockFixture(scope.workspaceId)!
     server.use(http.get('/api/workspaces/workspace-1', () => HttpResponse.json({
       workspace: fixture.workspace, agents: fixture.agents, workflows: fixture.workflows,
       resources: fixture.resources, browserProfiles: fixture.browserProfiles, runners: fixture.runners,
-      runs: [{ ...fixture.runs[0], id: 'run-a', executionState: 'running', outcome: 'pending', finishedAt: undefined }],
+      runs: [{ ...fixture.runs[0], id: 'run-a', executionState, outcome: 'pending', finishedAt: undefined }],
     })))
     const { router } = await mount()
     await savedY()
@@ -379,6 +385,7 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
     await waitFor(() => expect(screen.getByLabelText('Editable workflow graph')).toBeVisible())
     expect(router.state.location.search.runId).toBeUndefined()
     expect(screen.queryByRole('region', { name: 'Selected Run pinned topology' })).not.toBeInTheDocument()
+    expect(writes).toEqual([])
   })
 
   it('opens the saved-workflow clock from history, without scheduling the historical version', async () => {
