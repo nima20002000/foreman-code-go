@@ -176,6 +176,83 @@ describe.runIf(postgresEnabled)('restart during native startup', () => {
     )
   }
 
+  it.each(['created', 'binding'] as const)(
+    'reaches restart closure while native startup is blocked at %s', async boundary => {
+      const runtime = await currentOperatorIntegration({
+        fixture: makeCurrentWorkflowFixture(randomUUID(), 'single'), approvalNodeIds: [],
+      })
+      const paused = rejectableDeferred()
+      const release = rejectableDeferred()
+      const restarting = rejectableDeferred()
+      let observed: NativeSessionReference | undefined
+      let shutdown: Promise<unknown> | undefined
+      let starting: Promise<unknown> | undefined
+      const connection = runtime.provider.connection.bind(runtime.provider)
+      const connections = vi.spyOn(runtime.provider, 'connection').mockImplementation(() => {
+        const manager = connection()
+        const createSession = manager.createSession.bind(manager)
+        return { ...manager, createSession: async (...args: Parameters<typeof manager.createSession>) => {
+          observed = await createSession(...args)
+          if (boundary === 'created') {
+            paused.resolve()
+            await release.promise
+          }
+          return observed
+        } }
+      })
+      const updateExecution = runtime.runs.updateExecution.bind(runtime.runs)
+      const publication = vi.spyOn(runtime.runs, 'updateExecution').mockImplementation(async (...args) => {
+        if (boundary === 'binding' && args[0].nativeSessionId && args[0].state === 'running') {
+          paused.resolve()
+          await release.promise
+        }
+        await updateExecution(...args)
+      })
+      const closeForRestart = runtime.native.closeForRestart.bind(runtime.native)
+      const close = vi.spyOn(runtime.native, 'closeForRestart').mockImplementation(() => {
+        const closing = closeForRestart()
+        restarting.resolve()
+        return closing
+      })
+      try {
+        starting = runtime.engine.start(runtime.f.run.id).then(() => undefined, (error: unknown) => error)
+        await Promise.race([paused.promise, starting.then(() => {
+          throw new Error('The Run finished before the startup boundary.')
+        })])
+        shutdown = runtime.engine.shutdown().then(() => undefined, (error: unknown) => error)
+        const reachedClosure = await Promise.race([
+          restarting.promise.then(() => true),
+          shutdown.then(() => false),
+        ])
+        expect(reachedClosure).toBe(true)
+        expect(runtime.provider.counts).toMatchObject({ sessions: 1, starts: 0 })
+        expect(runtime.provider.closedSessions.has(observed!.nativeSessionId)).toBe(false)
+        release.resolve()
+        expect(await shutdown).toBeUndefined()
+        expect(runtime.provider.closedSessions.has(observed!.nativeSessionId)).toBe(true)
+        expect(runtime.provider.counts.starts).toBe(0)
+        const read = await runtime.client.callTool({ name: 'run_get', arguments: {
+          workspaceId: runtime.f.scope.workspaceId, runId: runtime.f.run.id, detail: 'full',
+        } })
+        expect(read.isError).not.toBe(true)
+        expect(decodeMcpToolResult(read)).toMatchObject({ run: {
+          id: runtime.f.run.id, workflowVersionId: runtime.f.version.id, outcome: 'pending',
+        } })
+      } finally {
+        release.resolve()
+        await shutdown
+        await starting
+        try {
+          await runtime.close()
+        } finally {
+          connections.mockRestore()
+          publication.mockRestore()
+          close.mockRestore()
+        }
+      }
+    }, 60_000,
+  )
+
   it.each(['created', 'binding', 'bound'] as const)(
     'drains native startup paused at %s before closing its original manager', async boundary => {
       const runtime = await currentOperatorIntegration({

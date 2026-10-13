@@ -988,6 +988,39 @@ test('integration and gate checks share the bounded queue and delay exclusive fi
   assert.equal(peak, 2)
 })
 
+test('reserved remote review runs without competing integration or gate processes', async () => {
+  const reservedReview = 'apps/api/test/remote-review-production-reserved-decision.integration.test.ts'
+  const ordinary = 'apps/api/test/ordinary.integration.test.ts'
+  const active = new Set()
+  const overlaps = []
+  let remainingPeers = 2
+  let finishPeers
+  const peersFinished = new Promise((resolve) => { finishPeers = resolve })
+  const run = async (id) => {
+    active.add(id)
+    if (active.has(reservedReview) && active.size > 1) overlaps.push([...active])
+    if (id === reservedReview) await peersFinished
+    else {
+      await new Promise(setImmediate)
+      remainingPeers--
+      if (remainingPeers === 0) finishPeers()
+    }
+    active.delete(id)
+    return { code: 0, complete: true }
+  }
+  const result = await scheduleIntegrationQueue([reservedReview, ordinary],
+    [{ index: 1 }, { index: 2 }, { index: 3 }, { index: 4 }], {
+      maxConcurrency: 4, samplePressure: lowPressure, pollIntervalMs: 1,
+      profiles: { [reservedReview]: { durationMs: 90_000 } },
+      extraItems: [{ id: 'gate:lint' }],
+      executeExtra: (item) => run(item.id),
+      runFile: (_slot, file) => run(file),
+    })
+  assert.equal(result.results.length, 3)
+  assert.ok(result.results.every((item) => item.status === 'PASSED'))
+  assert.deepEqual(overlaps, [])
+})
+
 test('failed integrations retest serially after gate checks with fresh resources and load context', async () => {
   const files = ['apps/api/test/one.integration.test.ts', 'apps/api/test/two.integration.test.ts']
   const slots = [{ index: 1, generation: 0 }, { index: 2, generation: 0 }]

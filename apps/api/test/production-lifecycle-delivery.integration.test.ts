@@ -1,12 +1,17 @@
 import { expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
-import { access, interactions, native, production, registerProductionLifecycleFixture, runs, runtime, start } from './helpers/productionLifecycleFixture.js'
+import { access, native, production, registerProductionLifecycleFixture, runtime, start } from './helpers/productionLifecycleFixture.js'
 
 registerProductionLifecycleFixture()
 
 it('makes production Stop and native delivery progress with a one-slot pool', async () => {
   const { run, issuer, pending } = await start('user')
+
+  const runUrl = `/api/management/workspaces/workspace-1/runs/${run.id}`
+  const waiting = await production.app.inject({ method: 'GET', url: runUrl })
+  expect(waiting.statusCode, waiting.body).toBe(200)
+  expect(waiting.json().run.executionState).toBe('waiting')
 
   const respond = vi.mocked(CodexAppServerSessionManager.prototype.respond)
   const original = respond.getMockImplementation()!
@@ -30,14 +35,23 @@ it('makes production Stop and native delivery progress with a one-slot pool', as
   // Stop may cancel the graph acknowledgement after the native receipt commits.
   expect([200, 409]).toContain(response.statusCode)
   if (response.statusCode === 409) expect(response.json().error.code).toBe('GRAPH_RESUME_OWNER_LOST')
-  expect((await interactions.get(pending.id))?.deliveryState).toBe('delivered')
+  const persisted = await production.app.inject({ method: 'GET', url: `/api/user/interactions/${pending.id}` })
+  expect(persisted.statusCode, persisted.body).toBe(200)
+  expect(persisted.json().interaction.deliveryState).toBe('delivered')
   expect(stop.statusCode, stop.body).toBe(200)
   expect(native.responses).toBe(1)
-  expect((await runs.get(run.id))?.executionState).toBe('completed')
+  const completed = await production.app.inject({ method: 'GET', url: runUrl })
+  expect(completed.statusCode, completed.body).toBe(200)
+  expect(completed.json().run.executionState).toBe('completed')
 })
 
 it('revalidates the accepting authority again between attachment and the native response', async () => {
   const { issuer, pending } = await start('user')
+
+  const before = await production.app.inject({ method: 'GET', url: `/api/user/interactions/${pending.id}` })
+  expect(before.statusCode, before.body).toBe(200)
+  expect(before.json().interaction.status).toBe('pending')
+  expect(before.json().interaction.deliveryState).toBe('not_started')
 
   const coordinator = runtime()
   const attach = coordinator.attachInteraction.bind(coordinator)
@@ -50,5 +64,8 @@ it('revalidates the accepting authority again between attachment and the native 
     headers: {}, payload: { interactionId: pending.id, optionId: pending.responseOptions[0]!.optionId, expectedRevision: pending.revision } })
   expect(response.statusCode, response.body).toBe(200)
   expect(response.json().interaction.deliveryState).toBe('failed')
+  const persisted = await production.app.inject({ method: 'GET', url: `/api/user/interactions/${pending.id}` })
+  expect(persisted.statusCode, persisted.body).toBe(200)
+  expect(persisted.json().interaction.deliveryState).toBe('failed')
   expect(native.responses).toBe(0)
 })

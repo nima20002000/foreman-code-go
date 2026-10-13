@@ -33,9 +33,12 @@ import { agent3Database, seedAgent3 } from './wave25Agent3.js'
 
 /** Real SQL, workflow engine, Codex adapter, credentials and approval services with replayed provider IO. */
 export async function codexApprovalRuntime(handler: 'user' | 'orchestrator' = 'user',
-  options: ApprovalProviderOptions & { fixture?: ReturnType<typeof makeCurrentWorkflowFixture>
-    approvalPolicy?: 'never' } = {}) {
-  const db = await agent3Database()
+  options: ApprovalProviderOptions & {
+    fixture?: ReturnType<typeof makeCurrentWorkflowFixture>
+    approvalPolicy?: 'never'
+    database?: Awaited<ReturnType<typeof agent3Database>>
+  } = {}) {
+  const db = options.database ?? await agent3Database()
   let engine: LangGraphWorkflowEngine | undefined
   const engines: LangGraphWorkflowEngine[] = []
   const adapters: CodexAppServerSessionManager[] = []
@@ -144,12 +147,16 @@ export async function codexApprovalRuntime(handler: 'user' | 'orchestrator' = 'u
           try {
             for (const adapter of adapters) await adapter.shutdown()
             for (const provider of providers.values()) await provider.flush()
-          } finally { await db.close() }
+          } finally {
+            if (!options.database) await db.close()
+          }
         }
       } }
   } catch (error) {
     try { await engine?.shutdown() } finally {
-      try { for (const adapter of adapters) await adapter.shutdown() } finally { await db.close() }
+      try { for (const adapter of adapters) await adapter.shutdown() } finally {
+        if (!options.database) await db.close()
+      }
     }
     throw error
   }
