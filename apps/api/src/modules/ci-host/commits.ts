@@ -36,6 +36,19 @@ export class GitCiCommits implements CiCommits {
       heavy: heavy.code === 0 ? (JSON.parse(heavy.stdout) as { files: string[] }).files : [] }
   }
 
+  async integrationInventory(repository: string, commit: string) {
+    const signal = AbortSignal.timeout(30_000)
+    const clone = await ensureCommit(this.git, repository, commit, signal)
+    const [tree, timings] = await Promise.all([
+      this.git.git(['ls-tree', '-r', '--name-only', commit], { cwd: clone, signal }),
+      this.git.git(['show', `${commit}:scripts/integration-durations.json`], { cwd: clone, signal }),
+    ])
+    if (tree.code !== 0) throw new Error('Could not read the CI integration inventory.')
+    return { files: tree.stdout.trim().split('\n').filter(file =>
+      /^apps\/api\/test\/[^/]+\.integration\.test\.ts$/.test(file)).sort(),
+    durations: timings.code === 0 ? CiDurationsSchema.parse(JSON.parse(timings.stdout)) : {} }
+  }
+
   async resolve(repository: string, defaultBranch: string, commit: string | undefined,
     snapshot: { baseCommit: string; commit: string; bundle: Buffer | null } | null): Promise<string> {
     const signal = AbortSignal.timeout(180_000)
