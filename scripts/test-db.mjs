@@ -52,7 +52,7 @@ function isCleanupProject(project) {
 }
 
 function resourceAlreadyRemoved(error) {
-  return /No such (container|network)|network .+ not found/i.test(error.message)
+  return /No such (container|network|object)|network .+ not found/i.test(error.message)
 }
 
 function inspectComposeResource(docker, args) {
