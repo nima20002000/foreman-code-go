@@ -1,5 +1,6 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, expect, it } from 'vitest'
+import userEvent from '@testing-library/user-event'
 import { AgentChatMessage } from './AgentChatMessage'
 
 afterEach(cleanup)
@@ -34,4 +35,13 @@ it('keeps user input literal and prevents markup or unsafe links from executing'
   expect(screen.getByText('Unsafe')).toHaveAttribute('href', '')
   expect(screen.queryByRole('img')).not.toBeInTheDocument()
   expect(screen.getByRole('article')).not.toHaveTextContent('alert(1)')
+})
+
+it('keeps published files available when a tool message is expanded', async () => {
+  render(<AgentChatMessage name="Builder" message={{ id: 'tool', role: 'tool', content: 'Created a report.' }}>
+    <button type="button">Open report</button>
+  </AgentChatMessage>)
+  await userEvent.click(screen.getByText('Tool output', { selector: 'summary' }))
+  expect(screen.getByRole('button', { name: 'Open report' })).toBeVisible()
+  expect(screen.getByLabelText('Tool output')).toHaveTextContent('Created a report.')
 })
