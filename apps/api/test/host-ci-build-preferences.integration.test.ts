@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { CI_HOST_NAMESPACE, CiComputersOutputSchema, CiGetOutputSchema, CiHostRequestSchema,
+import { CI_HOST_NAMESPACE, CI_HOST_START_PROTOCOL_VERSION, CiComputersOutputSchema, CiGetOutputSchema, CiHostRequestSchema,
   CiRunOutputSchema, CiRunRecordSchema, type CiHostReply, type CiHostRequest, type CiHostRun } from '@foreman-code/contracts'
 import { BuildComputerStatusSchema } from '@foreman-code/contracts/build-computers'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
@@ -40,10 +40,11 @@ it('honors persisted MCP build participation and priority while retaining assign
       keyRevision: null, authorizationRevision: null }
     const runs = new Map<string, { computer: string; run: CiHostRun }>()
     const starts: string[] = []
+    const requests = new Map<string, CiHostRequest>()
     const outdated = new Set<string>()
     const request = async (computer: string, input: CiHostRequest): Promise<CiHostReply> => {
       if (input.operation === 'status') return { operation: 'status', ready: true, reasons: [],
-        ...(!outdated.has(computer) ? { startProtocolVersion: 2 } : {}),
+        ...(!outdated.has(computer) ? { startProtocolVersion: CI_HOST_START_PROTOCOL_VERSION } : {}),
         cpuCount: 8, memoryBytes: 16 * 2 ** 30,
         runs: [...runs.values()].filter(entry => entry.computer === computer).map(entry => entry.run) }
       if (input.operation === 'start') {
@@ -51,6 +52,7 @@ it('honors persisted MCP build participation and priority while retaining assign
           startedAt: new Date().toISOString(), finishedAt: null, logBytes: 0, message: null }
         runs.set(input.runId, { computer, run })
         starts.push(computer)
+        requests.set(input.runId, input)
         return { operation: 'start', run }
       }
       const entry = runs.get(input.runId)!
@@ -95,10 +97,12 @@ it('honors persisted MCP build participation and priority while retaining assign
     }
     const read = async (target: DeviceProvisioningTarget) => BuildComputerStatusSchema.parse(
       await call(reader, 'build_computer_get', { target }))
-    const save = async (target: DeviceProvisioningTarget, buildEnabled: boolean, buildPriority: number) => {
+    const save = async (target: DeviceProvisioningTarget, buildEnabled: boolean, buildPriority: number,
+      buildAllowancePercent = 100) => {
       const old = await read(target)
       const saved = BuildComputerStatusSchema.parse(await call(writer, 'build_computer_update', {
-        commandId: randomUUID(), target, expectedRevision: old.preference.revision, buildEnabled, buildPriority,
+        commandId: randomUUID(), target, expectedRevision: old.preference.revision,
+        buildEnabled, buildPriority, buildAllowancePercent,
       }))
       expect(await read(target)).toEqual(saved)
       return saved
@@ -115,7 +119,7 @@ it('honors persisted MCP build participation and priority while retaining assign
     expect((await list()).computers).toEqual([])
     await save(main, false, 100)
     await save(devices[0]!.target, true, 20)
-    const high = await save(devices[1]!.target, true, 90)
+    const high = await save(devices[1]!.target, true, 90, 50)
     await save(devices[2]!.target, false, 100)
     expect((await list()).computers.map(computer => computer.hostRef)).toEqual([
       devices[1]!.target.hostRef, devices[0]!.target.hostRef,
@@ -186,7 +190,7 @@ it('honors persisted MCP build participation and priority while retaining assign
       .toMatchObject({ run: { state: 'canceled' } })
     await save(main, false, 100)
     await save(devices[0]!.target, true, 20)
-    await save(devices[1]!.target, true, 90)
+    await save(devices[1]!.target, true, 90, 50)
     for (const [index, device, seconds] of [[0, devices[1]!, 400], [1, devices[0]!, 200]] as const) {
       const finishedAt = new Date(Date.now() - 60_000)
       const startedAt = new Date(finishedAt.getTime() - seconds * 1000).toISOString()
@@ -205,10 +209,25 @@ it('honors persisted MCP build participation and priority while retaining assign
     const partitionRead = await get(partitioned.ticketId)
     const higher = partitionRead.partitions!.find(run => run.partition?.index === 0)!
     const lower = partitionRead.partitions!.find(run => run.partition?.index === 1)!
+    expect(requests.get(higher.id)).toMatchObject({ operation: 'start', buildAllowancePercent: 50 })
+    expect(requests.get(lower.id)).toMatchObject({ operation: 'start', buildAllowancePercent: 100 })
+    expect((await read(devices[1]!.target)).preference.buildAllowancePercent).toBe(50)
     expect(higher.computer?.hostRef).toEqual(devices[1]!.target.hostRef)
     expect(lower.computer?.hostRef).toEqual(devices[0]!.target.hostRef)
     expect(higher.partition!.weights).toEqual(lower.partition!.weights)
     expect(higher.partition!.weights![0]! / higher.partition!.weights![1]!).toBeCloseTo(0.5, 1)
+    await call(writer, 'ci_cancel', { workspaceId, ticketId: partitioned.ticketId })
+    const smokeInput = { workspaceId, suite: 'integration', scope: 'affected', commit: 'a'.repeat(40),
+      commandId: randomUUID(), files: ['apps/api/test/feature.integration.test.ts'],
+      smokeComputer: devices[1]!.target.hostRef }
+    expect((await reader.callTool({ name: 'ci_run', arguments: smokeInput })).isError).toBe(true)
+    const smoke = CiRunOutputSchema.parse(await call(writer, 'ci_run', smokeInput))
+    const smokeRead = await get(smoke.ticketId)
+    expect(smokeRead.run).toMatchObject({ state: 'running', integrationShards: 4 })
+    expect(requests.get(smoke.ticketId))
+      .toMatchObject({ gate: true, integrationShards: 4, buildAllowancePercent: 50 })
+    expect((await db.pool.query('select record from ci_runs where id=$1', [smoke.ticketId])).rows[0]!.record)
+      .toEqual(smokeRead.run)
   } finally {
     await Promise.allSettled(clients.map(client => client.close()))
     await ci?.close()

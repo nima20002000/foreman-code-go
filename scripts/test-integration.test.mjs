@@ -385,18 +385,18 @@ const shardResources = {
   maxConnections: 800, reservedConnections: 3, activeConnections: 1,
 }
 
-test('a capable sixteen-CPU machine runs two waiting shards per CPU and reports its resource limits', () => {
+test('a capable sixteen-CPU machine runs one integration shard per CPU and reports its resource limits', () => {
   const plan = integrationShardPlan({}, shardResources)
-  assert.equal(plan.shards, 32)
-  assert.equal(plan.limit, 32)
-  assert.match(plan.reason, /CPU limit 32/)
+  assert.equal(plan.shards, 16)
+  assert.equal(plan.limit, 16)
+  assert.match(plan.reason, /CPU limit 16/)
   assert.match(plan.reason, /memory limit 64.*0.5 GiB\/shard/)
   assert.match(plan.reason, /PostgreSQL limit 49.*max_connections=800.*3 reserved.*1 occupied.*16 connections\/shard/)
 })
 
 test('each resource independently bounds integration parallelism', () => {
   for (const [resources, expected] of [
-    [{ cpuCount: 4 }, 8],
+    [{ cpuCount: 4 }, 4],
     [{ availableMemoryBytes: 3.5 * 1024 ** 3 }, 7],
     [{ maxConnections: 100 }, 6],
     [{ activeConnections: 556 }, 15],
@@ -409,13 +409,13 @@ test('each resource independently bounds integration parallelism', () => {
 test('integration shards use their CI slot CPU and memory shares rather than the whole computer', () => {
   const environment = { FOREMAN_CODE_CI_CPU_COUNT: '8', FOREMAN_CODE_CI_MEMORY_BYTES: String(6 * 1024 ** 3) }
   const plan = integrationShardPlan(environment, shardResources)
-  assert.equal(plan.shards, 12)
-  assert.match(plan.reason, /CPU limit 16/)
+  assert.equal(plan.shards, 8)
+  assert.match(plan.reason, /CPU limit 8/)
   assert.match(plan.reason, /memory limit 12/)
   assert.match(plan.reason, /CI slot share/)
   assert.equal(integrationShardPlan(environment, { ...shardResources, availableMemoryBytes: 3 * 1024 ** 3 }).shards, 6)
   assert.throws(() => integrationShardPlan({ ...environment, FOREMAN_CODE_CI_CPU_COUNT: '0' }, shardResources), /CPU count/)
-  assert.equal(integrationShardPlan({ ...environment, FOREMAN_CODE_INTEGRATION_SHARDS: '20' }, shardResources).shards, 12)
+  assert.equal(integrationShardPlan({ ...environment, FOREMAN_CODE_INTEGRATION_SHARDS: '20' }, shardResources).shards, 8)
 })
 
 test('CI shard ceilings respect database capacity without rejecting the run', () => {
@@ -436,7 +436,7 @@ test('unknown or invalid resource measurements retain twelve without ignoring kn
     assert.equal(plan.shards, 12)
     assert.match(plan.reason, /unknown \(fallback 12\)/)
   }
-  assert.equal(integrationShardPlan({}, { cpuCount: 4 }).shards, 8)
+  assert.equal(integrationShardPlan({}, { cpuCount: 4 }).shards, 4)
   assert.equal(integrationShardPlan({}, { cpuCount: NaN, availableMemoryBytes: -1 }).shards, 12)
 })
 
@@ -449,7 +449,7 @@ test('explicit shard requests run at most at the computed resource cap', () => {
     for (const value of ['0', '-1', '1.5', 'NaN', 'Infinity']) {
       assert.throws(() => integrationShardPlan({ [variable]: value }, shardResources), /positive integer/)
     }
-    assert.equal(integrationShardPlan({ [variable]: '33' }, shardResources).shards, 32)
+    assert.equal(integrationShardPlan({ [variable]: '33' }, shardResources).shards, 16)
     assert.equal(integrationShardPlan({ [variable]: '13' }).shards, 12)
   }
 })
@@ -458,14 +458,14 @@ test('resource-derived capacity can exceed the old explicit ceiling on larger ma
   const plan = integrationShardPlan({ GRAPHQL_INTEGRATION_SHARDS: '80' }, {
     ...shardResources, cpuCount: 96, availableMemoryBytes: 96 * 1024 ** 3, maxConnections: 1600,
   })
-  assert.equal(plan.limit, 99)
+  assert.equal(plan.limit, 96)
   assert.equal(plan.shards, 80)
 })
 
 test('runnable file count bounds chosen shards and appears in the explanation', () => {
   const plan = integrationShardPlan({}, shardResources, 2)
   assert.equal(plan.shards, 2)
-  assert.equal(plan.limit, 32)
+  assert.equal(plan.limit, 16)
   assert.match(plan.reason, /2 runnable files/)
   assert.equal(integrationShardPlan({}, shardResources, 0).shards, 0)
 })
@@ -757,10 +757,10 @@ test('computed capacity preserves Job reservations and qualification checks', ()
     FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS: '16', FOREMAN_CODE_VERIFICATION_MAX_INTEGRATION_SHARDS: '16' }
   assert.equal(integrationShardPlan(job, shardResources).shards, 16)
   const plan = integrationShardPlan(job, { ...shardResources, cpuCount: 4 })
-  assert.equal(plan.shards, 8)
+  assert.equal(plan.shards, 4)
   assert.match(plan.reason, /CI reservation 16, qualification 16/)
   assert.equal(integrationShardPlan({ ...job, GRAPHQL_INTEGRATION_SHARDS: '9' },
-    { ...shardResources, cpuCount: 4 }).shards, 8)
+    { ...shardResources, cpuCount: 4 }).shards, 4)
   assert.equal(integrationShardPlan({ ...job, FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS: '4' },
     shardResources).shards, 4)
   assert.throws(() => integrationShardPlan({ ...job, FOREMAN_CODE_VERIFICATION_INTEGRATION_SHARDS: '4',

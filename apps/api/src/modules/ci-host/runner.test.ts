@@ -99,6 +99,7 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
       args.filter(arg => /\\.test\\.tsx?$/.test(arg)).map(file => ({ name: path.resolve(args[1] === "--dir" ? args[2] : ".", file), status: "passed", startTime: 1, endTime: 6,
       assertionResults: [{ fullName: path.basename(file) + " works", status: "passed", duration: 4 }] })) }));' "$@"\n`
   await writeFile(join(bin, 'corepack'), '#!/bin/bash\necho "corepack $*"\n'
+    + 'echo "CI shard ceiling $FOREMAN_CODE_CI_INTEGRATION_SHARDS"\n'
     + 'echo "CI budget $FOREMAN_CODE_CI_CPU_COUNT $FOREMAN_CODE_CI_MEMORY_BYTES $FOREMAN_CODE_VERIFICATION_UNIT_WORKERS"\n'
     + `${integration}${unitReport}`
     + `if [ "$2" = db:up ]; then code=${options.databaseExit ?? 0};`
@@ -160,6 +161,28 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
 }
 
 describe('host CI runner', () => {
+  it.each([false, true])('honors saved build allowances for integration starts with gate=%s', async gate => {
+    const f = await computer({ cpuCount: 16, hostSlots: true })
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
+      suite: 'integration', scope: 'full', buildAllowancePercent: 50,
+      ...(gate ? { gate: true, integrationShards: 32, files: ['apps/api/test/a.integration.test.ts'] } : {}) })
+    const done = await f.settle(runId)
+    expect(done.run.state).toBe('passed')
+    expect(done.text).toContain(`CI budget 7 ${6 * 2 ** 30} 6`)
+    if (gate) expect(done.text).toContain('CI shard ceiling 8')
+  })
+
+  it('keeps the exclusive database fallback within the saved build allowance', async () => {
+    const f = await computer({ cpuCount: 16 })
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
+      suite: 'integration', scope: 'full', buildAllowancePercent: 50 })
+    const done = await f.settle(runId)
+    expect(done.run.state).toBe('passed')
+    expect(done.text).toContain(`CI budget 8 ${7 * 2 ** 30} 7`)
+  })
+
   it('passes the admitted slot share to integration sizing and Vitest workers', async () => {
     const f = await computer({ cpuCount: 16, hostSlots: true })
     const runId = randomUUID()

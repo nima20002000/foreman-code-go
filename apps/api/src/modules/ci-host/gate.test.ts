@@ -98,3 +98,29 @@ it('lets a build computer without a queued gate part take cloud parts and anothe
   expect(steals(queued[1]!, cloud)).toBe(false)
   expect(steals(part('builder-paired', 'unit'), host)).toBe(false)
 })
+
+it.each([
+  [16, 14, 50, 8],
+  [32, 4, 50, 1],
+])('plans gate shards within the saved CPU and memory allowance', async (cpuCount, memoryGiB, allowance, shards) => {
+  const endpoint = fleet(1)
+  const computers = await endpoint.computers()
+  for (const computer of computers.filter(computer => computer.hostRef.kind !== 'cloud')) {
+    Object.assign(computer, { buildAllowancePercent: allowance })
+  }
+  const files = Array.from({ length: 96 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)
+  const parts = await planCiGate({ suite: 'integration', scope: 'full', gate: true, commandId: 'gate' },
+    { files, durations: Object.fromEntries(files.map(file => [file, 120_000])) },
+    { files: ['apps/api/src/site.test.ts'], durations: {}, heavy: [] }, {}, {
+      computers: async () => computers,
+      request: async computer => ({ operation: 'status', ready: true, reasons: [],
+        cpuCount: computer.hostRef.kind === 'cloud' ? 4 : cpuCount,
+        memoryBytes: memoryGiB * 2 ** 30, runs: [] }),
+    })
+  const hosts = parts.filter(part => part.suite === 'integration' && part.plannedHostKey.startsWith('builder-'))
+  expect(hosts).toHaveLength(2)
+  for (const host of hosts) expect(host.integrationShards).toBe(shards)
+  const cloud = parts.find(part => part.suite === 'integration' && part.plannedHostKey === 'cloud-0')
+  expect(cloud?.integrationShards).toBe(4)
+  expect(parts.filter(part => part.suite === 'integration').flatMap(part => part.files).sort()).toEqual([...files].sort())
+})
