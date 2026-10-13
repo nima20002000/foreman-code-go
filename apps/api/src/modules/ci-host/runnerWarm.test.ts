@@ -61,7 +61,7 @@ if (args[1] === 'install') {
     availableMemoryBytes: () => 16 * 2 ** 30,
     run: async (file, args, options) => {
       if (file === 'gh') return { code: 0, stdout: '', stderr: '' }
-      if (file === 'git' && args.includes('clone')) {
+      if (file === 'git' && args.some(value => value.startsWith('https://github.com/'))) {
         return system.run(file, args.map(arg => arg.startsWith('https://') ? origin : arg), options)
       }
       if (file === 'systemd-run') {

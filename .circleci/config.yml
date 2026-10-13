@@ -54,7 +54,17 @@ jobs:
       DURATIONS_OUTPUT: .logs/ci-durations/durations.json
       TEST_RESULTS_OUTPUT: .logs/ci-durations/test-results.json
     steps:
-      - checkout
+      - run:
+          name: Checkout tested commit
+          command: |
+            started=$(date +%s%3N)
+            git init --quiet .
+            git remote add origin "$CIRCLE_REPOSITORY_URL"
+            depth=1
+            if [ -n "$BASE_COMMIT" ]; then depth=2; fi
+            git fetch --quiet --no-tags --depth="$depth" origin "$CIRCLE_SHA1"
+            git checkout --quiet --detach FETCH_HEAD
+            echo "[ci-setup] checkout completed in $(( $(date +%s%3N) - started )) ms"
       - run:
           name: Node and pnpm
           command: |

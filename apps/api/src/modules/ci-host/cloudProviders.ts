@@ -11,6 +11,7 @@ export interface CloudRun {
   message: string | null; durations?: CiDurations; testResults?: CiTestResults
   scope?: CiScope; files?: string[]; part?: CiPart; baseCommit?: string
   dispatch?: { input: CloudDispatchInput; attempts: number; at: string }
+  mirrorBranch?: string
   workflowStarted?: boolean
   /** Live progress kept while the run is followed: steps already written to the log, the running step's output
    * bytes written so far, and bytes written in all. */

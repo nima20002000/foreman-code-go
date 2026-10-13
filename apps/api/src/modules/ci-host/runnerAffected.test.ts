@@ -60,7 +60,7 @@ it.each([
     const ports: HostCiPorts = { ...system, cpus: 16, memoryBytes: 32 * 2 ** 30,
       availableMemoryBytes: () => 24 * 2 ** 30, run: async (file, args, options) => {
       if (file === 'gh') return { code: 0, stdout: '', stderr: '' }
-      if (file === 'git' && args.includes('clone')) {
+      if (file === 'git' && args.some(value => value.startsWith('https://github.com/'))) {
         return system.run(file, args.map(value => value.startsWith('https://') ? origin : value), options)
       }
       if (file === 'systemd-run') {

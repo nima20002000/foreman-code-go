@@ -42,6 +42,8 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'Without baseCommit, the runner compares the resolved commit with its merge-base against the workspace default branch '
   + 'and uses the repository selector for the suite and part. Missing selectors, shared infrastructure changes and the '
   + 'default branch head (without baseCommit) run the full suite, with the reason in the run message or log. '
+  + 'CI fetches the tested commit and the affected comparison base; jobs with explicit files use shallow checkouts. '
+  + 'Cloud mirror branches are pruned after their last active ticket finishes, preserving persisted results and logs. '
   + 'Caller files remain supported; '
   + 'ci-remote continues to compute and send its selection. '
   + 'ci_get reads back the persisted baseCommit, scope and files. Empty affected selections pass without launching a runner. '

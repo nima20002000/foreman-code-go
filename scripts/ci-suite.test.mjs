@@ -364,7 +364,8 @@ for (const provider of ['github', 'circleci']) {
       const action = configuration.jobs.ci.steps.find(step => step.uses?.startsWith('actions/checkout@'))
       // Execute the documented checkout action ref/depth contract against the fixture remote.
       const depthInput = action.with['fetch-depth']
-      const depth = typeof depthInput === 'number' ? depthInput : 2
+      const depth = typeof depthInput === 'number' ? depthInput
+        : Function('inputs', `return (${depthInput.slice(3, -2)})`)({ base_commit: base })
       git(checkout, 'init', '-q')
       git(checkout, 'remote', 'add', 'origin', `file://${origin}`)
       if (depth === 0) git(checkout, 'fetch', 'origin', '+refs/heads/*:refs/remotes/origin/*')
