@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { addGitWorktree, ensureClone, ensureCommit, systemGitWorktreePorts,
@@ -10,9 +10,14 @@ import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 
 const disk = vi.hoisted(() => ({ full: false }))
+const filesystemRace = vi.hoisted(() => ({ beforeLstat: undefined as
+  ((path: string) => Promise<void>) | undefined }))
 vi.mock('node:fs/promises', async original => {
   const actual = await original<typeof import('node:fs/promises')>()
-  return { ...actual, statfs: async (...args: Parameters<typeof actual.statfs>) => {
+  return { ...actual, lstat: (async (...args: Parameters<typeof actual.lstat>) => {
+    await filesystemRace.beforeLstat?.(String(args[0]))
+    return actual.lstat(...args)
+  }) as typeof actual.lstat, statfs: async (...args: Parameters<typeof actual.statfs>) => {
     const value = await actual.statfs(...args)
     return disk.full ? { ...value, bavail: typeof value.bavail === 'bigint' ? 0n : 0 } : value
   } }
@@ -25,6 +30,7 @@ vi.mock('@foreman-code/contracts/source-materialization', async original => ({
 const roots: string[] = []
 afterEach(async () => {
   disk.full = false
+  filesystemRace.beforeLstat = undefined
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args,
@@ -60,6 +66,37 @@ async function fixture() {
   }
   return { root, origin, commit, ports, cache, storage, transfers }
 }
+
+it.each(['published', 'removed'] as const)(
+  'acquires a clone when another staging directory is %s during cache measurement', async change => {
+    const f = await fixture()
+    await mkdir(f.cache, { recursive: true, mode: 0o700 })
+    const staging = join(f.cache, 'staging')
+    const published = join(f.cache, 'published')
+    await mkdir(staging, { mode: 0o700 })
+    const content = Buffer.alloc(128 * 1024, 1)
+    await writeFile(join(staging, 'source.bin'), content)
+    let changed = false
+    filesystemRace.beforeLstat = async path => {
+      if (changed || !path.endsWith('/staging')) return
+      changed = true
+      if (change === 'published') await rename(staging, published)
+      else await rm(staging, { recursive: true })
+    }
+
+    const clone = await ensureClone(f.ports, 'fixture/project', AbortSignal.timeout(30_000))
+    expect(changed).toBe(true)
+    expect(git(clone, 'rev-parse', 'HEAD')).toBe(f.commit)
+    const stored = await f.storage()
+    expect(stored.reservedBytes).toBe(0)
+    if (change === 'published') {
+      expect(await readFile(join(published, 'source.bin'))).toEqual(content)
+      expect(stored.retainedBytes).toBeGreaterThan(content.length)
+    } else {
+      await expect(readFile(join(staging, 'source.bin'))).rejects.toMatchObject({ code: 'ENOENT' })
+    }
+  },
+)
 
 it('denies a first clone on the cache filesystem before Git writes any objects', async () => {
   const f = await fixture()
