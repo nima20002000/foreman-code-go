@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { inTransaction, type SqlQuery } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
-import { CI_HOST_NAMESPACE, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiComputerRefSchema, CiHostReplySchema, CiListOutputSchema, CiRunRecordSchema,
+import { CI_HOST_NAMESPACE, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiComputerRefSchema, CiHostReplySchema, CiListOutputSchema, CiRunRecordSchema, CiRunOutputSchema,
   WorkspaceSchema,
   requiresUserSystemd, userSystemdIntegrationFiles,
   type CiDurations, type CiHostRequest, type CiHostReply, type CiHostRun, type CiListOutput, type CiRunRecord, type CiRunInput,
@@ -183,6 +183,8 @@ export class HostCiService {
       perform: async client => {
         const { runs, durations } = prepared!
         const { groupId, commit, priority, priorityReason } = runs[0]!
+        const result = CiRunOutputSchema.parse({ ticketId: runs[0]!.id,
+          ...(runs.length > 1 ? { partitions: runs.map(run => ({ ticketId: run.id })) } : {}) })
         if (!input.gate) await supersedeCiRuns(client, runs[0]!, superseded, { source, commandId: input.commandId })
         for (const run of runs) {
           await client.query(`insert into ci_runs(id,workspace_id,group_id,state,record,durations)
@@ -194,7 +196,7 @@ export class HostCiService {
           JSON.stringify({ commandId: input.commandId, groupId, commit, priority, priorityReason,
             requestedPriority: input.priority ?? 'normal',
             ...(input.smokeComputer ? { smokeComputer: input.smokeComputer } : {}) })])
-        return { ticketId: runs[0]!.id, ...(runs.length > 1 ? { partitions: runs.map(run => ({ ticketId: run.id })) } : {}) }
+        return result
       },
     })
     return outcome.value
@@ -594,9 +596,15 @@ export class HostCiService {
     const scope = await this.authority.resolve(caller, input.workspaceId, ['jobs:cancel'])
     const run = await this.read(input.ticketId, scope.workspaceId)
     assertCiReadAccess(caller, scope.executionId, run)
-    return this.cancelTicket(scope.workspaceId, run.id, {
-      principalId: caller.id, source, commandId: input.commandId ?? randomUUID(), reason: 'direct',
-    })
+    this.stoppingRuns += 1
+    try {
+      await this.dispatching
+      return await this.cancelTicket(scope.workspaceId, run.id, {
+        principalId: caller.id, source, commandId: input.commandId ?? randomUUID(), reason: 'direct',
+      })
+    } finally {
+      this.stoppingRuns -= 1
+    }
   }
 
   /** The persisted, authorized Stop intent authorizes cleanup of its Agents' tickets. */

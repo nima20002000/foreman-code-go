@@ -10,6 +10,7 @@ export interface CloudRun {
   message: string | null; durations?: CiDurations; testResults?: CiTestResults
   scope?: CiScope; files?: string[]; part?: CiPart; baseCommit?: string
   dispatch?: { input: CloudDispatchInput; attempts: number; at: string }
+  reconciliation?: { attempts: number; at: string; previousMessage: string | null }
   mirrorBranch?: string
   workflowStarted?: boolean
   provenance?: CiHostRun['provenance']
@@ -57,6 +58,17 @@ export interface CloudProvider {
   /** The measured test file durations and structured test results the run left as an artifact. */
   artifacts(run: CloudRun, directory: string): Promise<CloudArtifacts>
   cancel(run: CloudRun): Promise<void>
+}
+
+export function validateProviderParameters(provider: Pick<CloudProvider, 'label' | 'parameterLimit'>,
+  input: CloudDispatchInput): void {
+  const limit = provider.parameterLimit ?? Number.POSITIVE_INFINITY
+  for (const [name, value] of Object.entries(input)) {
+    if (typeof value === 'string' && value.length > limit) {
+      throw new DomainError('CI_CLOUD_UNAVAILABLE',
+        `${provider.label} cannot accept ${name} longer than ${limit} characters; use another executor.`, 409)
+    }
+  }
 }
 
 /** The service refused because its API rate limit is spent; callers back off instead of retrying at once. */
@@ -226,8 +238,6 @@ export class CircleCiProvider implements CloudProvider {
   readonly cpus = 4
   readonly memoryBytes = 15 * 2 ** 30
   readonly loginHint = 'Log in to CircleCI on Main (circleci auth login) and follow the CI mirror project to run CI there.'
-  /** A pipeline's job id once its workflow has one, so each poll costs one job read. */
-  private readonly jobIds = new Map<string, string>()
 
   constructor(private readonly ports: HostCiPorts) {}
 
@@ -236,6 +246,7 @@ export class CircleCiProvider implements CloudProvider {
   async ready() { return (await this.ports.run('circleci', ['auth', 'me'], { timeoutMs: 15_000 })).code === 0 }
 
   async dispatch(input: CloudDispatchInput) {
+    validateProviderParameters(this, input)
     const started = JSON.parse(await this.circleci(['run', 'trigger', '--project', `gh/${input.mirror}`,
       '--branch', input.workflowRef ?? input.branch,
       '--parameter', `run_id=${input.runId}`, '--parameter', `suite=${input.suite}`,
@@ -263,48 +274,67 @@ export class CircleCiProvider implements CloudProvider {
     }
   }
 
+  private async pipeline(run: CloudRun) {
+    return JSON.parse(await this.circleci(['run', 'get', run.providerRunId!, '--json'])) as {
+      phase?: string; outcome?: string; stopped_at?: string
+      workflows?: { phase?: string; outcome?: string; stopped_at?: string; jobs?: { id: string }[] }[]
+    }
+  }
+
   private async job(run: CloudRun) {
-    const known = this.jobIds.get(run.providerRunId!)
-    if (known) return { job: { id: known } }
-    const view = JSON.parse(await this.circleci(['run', 'get', run.providerRunId!, '--json'])) as
-      { workflows?: { jobs?: { id: string }[] }[] }
-    const job = view.workflows?.[0]?.jobs?.[0] ?? null
-    if (job) this.jobIds.set(run.providerRunId!, job.id)
-    if (this.jobIds.size > 200) this.jobIds.delete(this.jobIds.keys().next().value!)
-    return { job }
+    const view = await this.pipeline(run)
+    return { job: view.workflows?.flatMap(workflow => workflow.jobs ?? [])[0] ?? null }
   }
 
   async status(run: CloudRun): Promise<CloudStatus> {
-    const { job } = await this.job(run)
-    if (!job) return { done: false }
-    const detail = JSON.parse(await this.circleci(['job', 'get', job.id, '--json'])) as
-      { phase: string; outcome?: string; stopped_at?: string
-        executions?: { steps?: { num: number; name: string; phase: string; outcome?: string }[] }[] }
-    const raw = detail.executions?.[0]?.steps ?? []
-    const steps = raw.map(step => ({ key: String(step.num), name: step.name, state: step.phase !== 'ended' ? 'running' as const
+    const view = await this.pipeline(run)
+    const workflows = view.workflows ?? []
+    const jobs = await Promise.all(workflows.flatMap(workflow => workflow.jobs ?? []).map(async job => ({
+      id: job.id,
+      detail: JSON.parse(await this.circleci(['job', 'get', job.id, '--json'])) as {
+        phase: string; outcome?: string; stopped_at?: string
+        executions?: { steps?: { num: number; name: string; phase: string; outcome?: string }[] }[]
+      },
+    })))
+    const raw = jobs.flatMap(job => job.detail.executions?.flatMap(execution =>
+      (execution.steps ?? []).map(step => ({ ...step, jobId: job.id }))) ?? [])
+    const key = (step: { jobId: string; num: number }) => `${step.jobId}:${step.num}`
+    const steps = raw.map(step => ({ key: key(step), name: step.name, state: step.phase !== 'ended' ? 'running' as const
       : step.outcome === 'succeeded' ? 'passed' as const : step.outcome === 'skipped' ? 'skipped' as const : 'failed' as const }))
-    if (detail.phase !== 'ended') {
+    const pending = view.phase !== undefined && view.phase !== 'ended'
+      || workflows.some(workflow => workflow.phase !== undefined && workflow.phase !== 'ended'
+        || !workflow.jobs?.length && workflow.phase !== 'ended' && view.phase !== 'ended')
+      || jobs.some(job => job.detail.phase !== 'ended') || !workflows.length
+    if (pending) {
       // CircleCI serves a running step's output so far; it is read whole, so only the running step is read.
       const current = raw.findLast(step => step.phase !== 'ended')
       if (!current) return { done: false, steps }
-      const result = await this.ports.run('circleci', ['job', 'output', 'get', job.id, '--step-num', String(current.num)],
+      const result = await this.ports.run('circleci', ['job', 'output', 'get', current.jobId, '--step-num', String(current.num)],
         { timeoutMs: 60_000 })
       if (result.code !== 0) {
         const limited = rateLimited(this.label, result.stderr)
         if (limited) throw limited
         return { done: false, steps }
       }
-      return { done: false, steps, output: { key: String(current.num), text: result.stdout } }
+      return { done: false, steps, output: { key: key(current), text: result.stdout } }
     }
-    return { done: true, finishedAt: detail.stopped_at ?? new Date().toISOString(), steps,
-      conclusion: detail.outcome === 'succeeded' ? 'success' : detail.outcome === 'canceled' ? 'cancelled' : 'failure' }
+    const outcomes = [view.outcome, ...workflows.map(workflow => workflow.outcome), ...jobs.map(job => job.detail.outcome)]
+      .filter((outcome): outcome is string => outcome !== undefined)
+    const failed = !outcomes.length || outcomes.some(outcome => !['succeeded', 'canceled'].includes(outcome))
+    const stopped = [view.stopped_at, ...workflows.map(workflow => workflow.stopped_at),
+      ...jobs.map(job => job.detail.stopped_at)].filter((value): value is string => value !== undefined).sort().at(-1)
+    let conclusion: 'success' | 'failure' | 'cancelled' = 'success'
+    if (failed) conclusion = 'failure'
+    else if (outcomes.includes('canceled')) conclusion = 'cancelled'
+    return { done: true, finishedAt: stopped ?? this.ports.now().toISOString(), steps, conclusion }
   }
 
   async log(run: CloudRun) {
-    const { job } = await this.job(run)
-    if (!job) return ''
+    const view = await this.pipeline(run)
     // Every line of every step: the default view keeps only each step's last 200 lines, which drops test failures.
-    return this.circleci(['job', 'output', 'list', job.id, '--tail', '0'], 300_000)
+    const logs = await Promise.all((view.workflows ?? []).flatMap(workflow => workflow.jobs ?? []).map(job =>
+      this.circleci(['job', 'output', 'list', job.id, '--tail', '0'], 300_000)))
+    return logs.join('\n')
   }
 
   async artifacts(run: CloudRun, directory: string) {
@@ -323,9 +353,14 @@ export class CircleCiProvider implements CloudProvider {
   }
 
   async cancel(run: CloudRun) {
-    const view = JSON.parse(await this.circleci(['run', 'get', run.providerRunId!, '--json'])) as
-      { phase?: string; workflows?: unknown[] }
-    if (view.phase === 'ended' && !view.workflows?.length) return
+    let view: { phase?: string; workflows?: unknown[] } | null
+    try {
+      view = JSON.parse(await this.circleci(['run', 'get', run.providerRunId!, '--json'])) as typeof view
+    } catch (error) {
+      if (!(error instanceof DomainError && error.code === 'CI_CLOUD_RUN_NOT_FOUND')) throw error
+      view = null
+    }
+    if (view?.phase === 'ended' && !view.workflows?.length) return
     await this.circleci(['run', 'cancel', run.providerRunId!, '--force'])
   }
 }

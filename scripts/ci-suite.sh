@@ -87,6 +87,37 @@ unit_slice() {
   return "$code"
 }
 
+node_tests() {
+  local report="$1"; shift
+  pnpm exec node --test --test-reporter=spec --test-reporter-destination=stdout \
+    "--test-reporter=$node_reporter" "--test-reporter-destination=$report" "$@"
+}
+
+unit_other() {
+  local code=0 status=0
+  local reports node_reporter
+  reports="$(realpath -m "$state/unit-other")"
+  node_reporter="$(realpath scripts/ci-node-test-reporter.mjs)"
+  mkdir -p "$reports"
+  rm -f "$reports/contracts.json" "$reports/worker.json" "$reports/scripts.json"
+  pnpm --filter @foreman-code/contracts build || return $?
+  pnpm --filter @foreman-code/contracts test --reporter=default --reporter=json \
+    "--outputFile.json=$reports/contracts.json" || code=$?
+  (cd apps/worker && node_tests "$reports/worker.json" test/*.test.mjs) || status=$?
+  if [ "$code" = 0 ]; then code="$status"; fi
+  local script_files=()
+  mapfile -t script_files < <(node --input-type=module -e '
+    import { readFileSync } from "node:fs"
+    const command = JSON.parse(readFileSync("package.json", "utf8")).scripts["test:scripts"]
+    console.log(command.split(/\s+/).filter(value => /^scripts\/.*\.test\.mjs$/.test(value)).join("\n"))
+  ')
+  status=0
+  node_tests "$reports/scripts.json" "${script_files[@]}" || status=$?
+  if [ "$code" = 0 ]; then code="$status"; fi
+  record_tests "$reports/contracts.json" "$reports/worker.json" "$reports/scripts.json"
+  return "$code"
+}
+
 scope="${SCOPE:-affected}"
 selected_list=''
 if [ "$scope" = affected ] && [ -z "${SELECTED_FILES:-}" ] && { [ "$SUITE" != integration ] || [ -z "${SLICE:-}" ]; }; then
@@ -161,8 +192,7 @@ case "$SUITE" in
     (cd apps/web && FOREMAN_WEB_TEST_PHASE=heavy pnpm exec vitest run ${SLICE:+--shard=$SLICE} \
       --reporter=default --reporter=json "--reporter=$progress_reporter" "--outputFile.json=$heavy_report") || code=$?
     record_tests "$heavy_report"; exit "$code" ;;
-  unit-other) ready db; pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/contracts --filter @foreman-code/worker test \
-    && pnpm test:scripts ;;
+  unit-other) ready db; unit_other ;;
   lint-api) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api lint ;;
   lint-other) pnpm --filter @foreman-code/contracts build \
     && pnpm -r --no-bail --filter '!@foreman-code/api' --if-present lint ;;

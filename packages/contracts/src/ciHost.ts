@@ -8,6 +8,9 @@ import { WorkspaceRepositorySchema } from './workspaceRepository.js'
  * It fetches with its own GitHub CLI login and installs packages normally; a systemd unit caps CPU and memory. */
 export const CI_HOST_NAMESPACE = 'ci-host-v1'
 export const CI_LOG_MAX_BYTES = 65_536
+export const CI_UNIT_SHARD_LIMIT = 32
+export const CI_HEAVY_WEB_SHARDS = 2
+export const CI_MAX_RUN_TICKETS = CI_UNIT_SHARD_LIMIT * 2 + CI_HEAVY_WEB_SHARDS + 1
 
 export const CiSuiteSchema = z.enum(['install', 'typecheck', 'lint', 'unit', 'build', 'integration'])
 export type CiSuite = z.infer<typeof CiSuiteSchema>

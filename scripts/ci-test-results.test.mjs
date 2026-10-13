@@ -114,3 +114,60 @@ process.exit(3)
   assert.ok(results.files[0].file.startsWith('apps/web/src/'))
   assert.deepEqual(results.files[0].tests, [{ name: 'renders', status: 'failed', durationMs: 9, message: 'broken' }])
 })
+
+test('unit-other merges contracts, Worker and script results while preserving a failing exit status', t => {
+  const directory = temporary(t)
+  const root = fileURLToPath(new URL('..', import.meta.url))
+  const output = join(directory, 'test-results.json')
+  writeFileSync(join(directory, 'pnpm'), `#!${process.execPath}
+const { writeFileSync } = require('node:fs')
+const args = process.argv.slice(2)
+if (args.includes('build')) process.exit(0)
+const vitest = args.find(arg => arg.startsWith('--outputFile.json='))
+const destination = args.find(arg => arg.startsWith('--test-reporter-destination=') && !arg.endsWith('=stdout'))
+if (!vitest && !destination) process.exit(0)
+const report = (vitest ?? destination).slice((vitest ?? destination).indexOf('=') + 1)
+const file = vitest ? 'packages/contracts/src/value.test.ts' : process.cwd().endsWith('/apps/worker')
+  ? 'apps/worker/test/value.test.mjs' : 'scripts/value.test.mjs'
+const failed = file.startsWith('apps/worker/')
+writeFileSync(report, JSON.stringify({ testResults: [{ name: file, status: failed ? 'failed' : 'passed',
+  assertionResults: [{ fullName: file + ' case', status: failed ? 'failed' : 'passed', duration: 1,
+    failureMessages: failed ? ['worker assertion failed'] : [] }] }] }))
+process.exit(failed ? 7 : 0)
+`, { mode: 0o755 })
+  const result = spawnSync('bash', ['scripts/ci-suite.sh'], { cwd: root, encoding: 'utf8',
+    env: { ...process.env, SUITE: 'unit-other', SCOPE: 'full', TEST_RESULTS_OUTPUT: output,
+      CI_STATE: join(directory, 'state'), PATH: `${directory}${delimiter}${process.env.PATH}`,
+      CI_HOST_RUNNER: '0', CI_EXPECTED_DURATION_MS: '', BASH_ENV: '' } })
+  assert.equal(result.status, 7, result.stderr)
+  const results = JSON.parse(readFileSync(output, 'utf8'))
+  assert.deepEqual(results.summary, { passed: 2, failed: 1, skipped: 0 })
+  assert.equal(results.files[0].file, 'apps/worker/test/value.test.mjs')
+  assert.equal(results.files[0].tests[0].message, 'worker assertion failed')
+})
+
+test('the Node reporter records passing and failing tests with their file and failure detail', t => {
+  const directory = temporary(t)
+  const file = join(directory, 'value.test.mjs')
+  const output = join(directory, 'node.json')
+  writeFileSync(file, `import { test } from 'node:test'
+import assert from 'node:assert/strict'
+test('passes', () => assert.equal(1, 1))
+test('fails', () => assert.equal(1, 2))
+test.skip('skips', () => assert.fail('skipped case ran'))
+`)
+  const reporter = fileURLToPath(new URL('./ci-node-test-reporter.mjs', import.meta.url))
+  const environment = { ...process.env }
+  // The independent suite uses its reporter instead of the parent's test IPC channel.
+  delete environment.NODE_TEST_CONTEXT
+  const result = spawnSync(process.execPath, ['--test', `--test-reporter=${reporter}`,
+    `--test-reporter-destination=${output}`, file], { encoding: 'utf8',
+      env: environment })
+  assert.equal(result.status, 1, result.stderr)
+  const results = ciTestResults([JSON.parse(readFileSync(output, 'utf8'))], directory)
+  assert.deepEqual(results.summary, { passed: 1, failed: 1, skipped: 1 })
+  assert.equal(results.files[0].file, 'value.test.mjs')
+  assert.deepEqual(results.files[0].tests.map(test => [test.name, test.status]).sort(),
+    [['fails', 'failed'], ['passes', 'passed'], ['skips', 'skipped']])
+  assert.match(results.files[0].tests.find(test => test.status === 'failed').message, /1.*2|Expected values/)
+})
