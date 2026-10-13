@@ -277,6 +277,66 @@ it('retries persisted cancellation on the assigned executor after transport fail
   }
 })
 
+it('persists direct cancellation before a start reply returns and recovers cleanup after restart', async () => {
+  const f = await fixture()
+  const entered = deferred()
+  const release = deferred()
+  let dispatch: Promise<void> | undefined
+  let restarted: HostCiService | undefined
+  let deadline: ReturnType<typeof setTimeout> | undefined
+  try {
+    const ticket = await f.enqueue()
+    const commandId = randomUUID()
+    f.control.onStart = async () => {
+      entered.resolve()
+      await release.promise
+    }
+    f.control.available = true
+    dispatch = f.ci.dispatch()
+    await entered.promise
+    const reader = await f.connect(CI_GET_ACTIONS)
+    expect((await f.call(reader.client, 'ci_cancel', { ticketId: ticket.ticketId })).isError).toBe(true)
+    expect((await f.read(ticket.ticketId)).cancellation).toBeUndefined()
+    const cancellation = await Promise.race([
+      f.call(f.operator.client, 'ci_cancel', { ticketId: ticket.ticketId, commandId }),
+      new Promise<never>((_resolve, reject) => {
+        deadline = setTimeout(() => reject(new Error('Cancellation waited for the start reply')), 5_000)
+      }),
+    ])
+    clearTimeout(deadline)
+    expect(cancellation.isError).toBe(true)
+    expect(decodeMcpToolResult(cancellation)).toMatchObject({ error: { code: 'CI_CANCEL_PENDING' } })
+    const pending = await f.read(ticket.ticketId)
+    expect(pending).toMatchObject({ state: 'starting', cancellation: {
+      principalId: f.operator.principalId, source: 'mcp', commandId, reason: 'direct',
+    } })
+    expect(f.starts).toHaveLength(1)
+    release.resolve()
+    await dispatch
+    expect((await f.read(ticket.ticketId)).cancellation).toEqual(pending.cancellation)
+    f.control.onStart = async () => {}
+    restarted = f.createService()
+    await restarted.dispatch()
+    const canceled = await f.read(ticket.ticketId)
+    expect(canceled.state).toBe('canceled')
+    expect(canceled.cancellation).toBeUndefined()
+    expect([...f.remote.values()].every(run => run.state === 'canceled')).toBe(true)
+    expect(f.starts).toHaveLength(1)
+    const audits = (await f.pool.query<{ principal_id: string; source: string; details: unknown }>(
+      "select principal_id,source,details from management_audit where action='ci.cancel' and target_key=$1",
+      [`ci:${ticket.ticketId}`])).rows
+    expect(audits).toHaveLength(1)
+    expect(audits[0]).toMatchObject({ principal_id: f.operator.principalId, source: 'mcp',
+      details: { commandId, ticketId: ticket.ticketId, reason: 'direct' } })
+  } finally {
+    clearTimeout(deadline)
+    release.resolve()
+    await dispatch
+    await restarted?.close()
+    await f.close()
+  }
+})
+
 it('retains cleanup when cancellation arrives while the accepted start reply is still in flight', async () => {
   const f = await fixture()
   const entered = deferred()
