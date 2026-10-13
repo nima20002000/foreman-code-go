@@ -60,7 +60,16 @@ jobs:
             # The app keeps private files only under folders other users cannot replace; the image's home is group-writable.
             chmod go-w "$HOME"
             mkdir -p "$HOME/.cache" && chmod go-w "$HOME/.cache"
-            nvm install 22.23.2 >/dev/null
+            for attempt in 1 2 3; do
+              if nvm install 22.23.2; then
+                break
+              else
+                status=$?
+                if [ "$attempt" -eq 3 ]; then exit "$status"; fi
+                echo "Node install failed; retrying attempt $((attempt + 1)) of 3." >&2
+                sleep "$((attempt * 5))"
+              fi
+            done
             bin="$(dirname "$(nvm which 22.23.2)")"
             echo "export PATH=\"$bin:\$PATH\"" >> "$BASH_ENV"
             export PATH="$bin:$PATH"
