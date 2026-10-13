@@ -5,7 +5,7 @@ import type pg from 'pg'
 import { withProviderPoll } from './providerPoll.js'
 import { CI_HOST_NAMESPACE, CI_HOST_START_PROTOCOL_VERSION, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiComputerRefSchema, CiHostReplySchema, CiListOutputSchema, CiRunRecordSchema, CiRunOutputSchema,
   WorkspaceSchema,
-  type CiDurations, type CiHostReply, type CiHostRun, type CiHostStatus, type CiListOutput, type CiRunRecord, type CiRunInput,
+  type CiDurations, type CiHostReply, type CiHostRequest, type CiHostRun, type CiHostStatus, type CiListOutput, type CiRunRecord, type CiRunInput,
   type CiTestResults, type CiTestStatus, type CiCancellation, type Workspace } from '@foreman-code/contracts'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
