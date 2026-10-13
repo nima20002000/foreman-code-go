@@ -537,6 +537,7 @@ export function buildProductionApp(
         if (!signal.aborted) {
           jobRuntime?.requestQueueWake()
           runtimeServices.ciEnrollment?.request()
+          void runtimeServices.ci?.dispatch()
         }
       })
     },

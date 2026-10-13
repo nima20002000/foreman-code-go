@@ -1,9 +1,14 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest'
 import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { deliveredReview, receipts, reviewInProgress, useRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
 
+let diagnosticOutput: MockInstance<typeof console.info>
+beforeAll(() => {
+  diagnosticOutput = vi.spyOn(console, 'info')
+})
 const withRemoteReviewFixture = useRemoteReviewFixture()
+afterAll(() => diagnosticOutput.mockRestore())
 
 describe('production remote review and native recovery through authenticated MCP', () => {
   it('persists a delivered remote decision and denies a read-only caller on the same product endpoint', async () => {
@@ -43,6 +48,9 @@ describe('production remote review and native recovery through authenticated MCP
         assignment: expect.objectContaining({ jobId: active.job.id, correlationId: active.job.correlationId }),
         providerId: delivered.job.providerTurnOrMessageId, settled: true,
       }))
+      // Phase reporting must stay bounded while the native workflow runs.
+      const output = diagnosticOutput.mock.calls.map(arguments_ => JSON.stringify(arguments_)).join('\n')
+      expect(Buffer.byteLength(output)).toBeLessThan(64 * 1024)
     })
   }, 240_000)
 })

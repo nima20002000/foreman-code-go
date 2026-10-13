@@ -52,6 +52,8 @@ export const userSystemdIntegrationFiles = new Set([
 const startupFile = 'apps/api/test/dev-startup.integration.test.ts'
 // These files measure bounded startup/latency while exercising shared host resources.
 export const exclusiveIntegrationFiles = [startupFile,
+  // Two sequential native executions must settle within the fixed completion deadline.
+  'apps/api/test/computer-workflow-save.regression-directories.integration.test.ts',
   // Native review startup and reserved-decision recovery must fit the fixed file deadline.
   'apps/api/test/remote-review-production-reserved-decision.integration.test.ts',
   // Keep installed API packaging sequential on each user-systemd host.

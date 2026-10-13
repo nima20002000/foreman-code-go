@@ -416,7 +416,12 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     await this.options.observeOriginalSource?.(this.receipt!, { type: 'history', history })
     return history
   }
-  async close(session: NativeSessionReference) { this.assertSession(session); if (this.receipt?.phase !== 'confirmed_terminal') await this.cancel(session); if (this.receipt?.phase !== 'confirmed_terminal') throw new Error('Original remote native closure is unconfirmed') }
+  async close(session: NativeSessionReference) {
+    this.assertSession(session)
+    if (this.receipt?.phase !== 'confirmed_terminal') await this.status(await this.request('status', {}))
+    if (this.receipt?.phase !== 'confirmed_terminal') await this.cancel(session)
+    if (this.receipt?.phase !== 'confirmed_terminal') throw new Error('Original remote native closure is unconfirmed')
+  }
   async dispose() {
     if (!this.prepareAttempted) return
     if (!this.detached && this.receipt?.phase !== 'confirmed_terminal') {

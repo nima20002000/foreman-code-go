@@ -50,7 +50,7 @@ afterEach(async () => {
 })
 
 async function computer(beforeGithub?: () => Promise<void>, cpuCount = 8, isolatedDatabase = false,
-  beforeCheckout?: () => Promise<void>) {
+  beforeCheckout?: () => Promise<void>, beforeFetch?: () => Promise<void>) {
   const directory = process.env.FOREMAN_CODE_TEST_ROOT ?? process.env.TMPDIR
     ?? join(homedir(), '.cache/foreman-code/tests')
   await mkdir(directory, { recursive: true })
@@ -60,6 +60,10 @@ async function computer(beforeGithub?: () => Promise<void>, cpuCount = 8, isolat
   const ports: HostCiPorts = { cpus: cpuCount, memoryBytes: 16 * 2 ** 30, now: () => new Date(),
     run: async (file, args) => {
       if (file === 'gh') await beforeGithub?.()
+      if (file === 'git' && args.includes('cat-file') && beforeFetch) {
+        return { code: 1, stdout: '', stderr: 'Commit not fetched' }
+      }
+      if (file === 'git' && args.includes('fetch')) await beforeFetch?.()
       if (file === 'git' && args.includes('show')) {
         return { code: 0, stdout: JSON.stringify({ foremanCi: { hostSlots: isolatedDatabase ? 1 : 0 } }), stderr: '' }
       }
@@ -164,6 +168,25 @@ describe('host CI runner concurrent starts', () => {
     await expect(first).resolves.toMatchObject({ run: { runId: request.runId } })
     await expect(retry).resolves.toMatchObject({ run: { runId: request.runId } })
     await rejected
+  })
+
+  it('reports a start during preflight and launches it once when a retry arrives before acknowledgement', async () => {
+    const fetch = barrier()
+    const { runner, request, launches } = await computer(undefined, 8, false, undefined, fetch.pause)
+    const first = runner.handle(request)
+    await fetch.entered
+    const retry = runner.handle(request)
+    try {
+      await expect(runner.status()).resolves.toMatchObject({ runs: [expect.objectContaining({
+        runId: request.runId, state: 'starting', step: 'dispatch',
+      })] })
+      fetch.release()
+      await Promise.all([first, retry])
+      await vi.waitFor(() => expect(launches).toHaveLength(1))
+    } finally {
+      fetch.release()
+      await Promise.all([first, retry])
+    }
   })
 
   it('keeps the run readable and rejects a second start while launch writes its running state', async () => {

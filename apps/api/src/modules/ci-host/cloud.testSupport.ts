@@ -22,9 +22,9 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
   mirrorWorkflows?: boolean; sourceWorkflows?: boolean; userSystemd?: boolean } = {}) {
   await mkdir(process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp'), { recursive: true })
   const root = await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp'), 'cloud-ci-'))
-  let waitForCleanup: (() => Promise<void>) | undefined
+  const cleanupHooks: { waitForCleanup?: () => Promise<void> } = {}
   const dispose = async () => {
-    await waitForCleanup?.()
+    await cleanupHooks.waitForCleanup?.()
     await rm(root, { recursive: true, force: true })
   }
   disposals.push(dispose)
@@ -194,7 +194,7 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
     : workspaceId === 'ci-workspace' ? 'octo/site-ci' : null, join(root, 'ci-cloud'), ports, git,
     { home: '/home/owner', user: 'owner', host: 'owner-desktop' })
   const cloud = reopen()
-  waitForCleanup = () => cloud.waitForMirrorCleanup('octo/site', 'octo/site-ci')
+  cleanupHooks.waitForCleanup = () => cloud.waitForMirrorCleanup('octo/site', 'octo/site-ci')
   const mirrorGit = (...args: string[]) => run(mirror, ...args)
   return { cloud, reopen, root, commit, ports, dispatched, github, circle, cleanup, git, mirrorGit, dispose,
     run: (...args: string[]) => run(work, ...args),

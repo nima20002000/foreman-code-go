@@ -5,6 +5,41 @@ import { expect, it, vi } from 'vitest'
 import { fixture } from './cloud.testSupport.js'
 
 it.each(['github', 'circleci'] as const)(
+  'drains a due cancellation sweep queued during %s mirror cleanup', async provider => {
+    const f = await fixture({}, { provider })
+    let release!: () => void
+    const blocked = new Promise<void>(resolve => { release = resolve })
+    let entered!: () => void
+    const sweeping = new Promise<void>(resolve => { entered = resolve })
+    f.cloud.setActiveRunLookup(async () => {
+      entered()
+      await blocked
+      return { ids: new Set<string>(), readAt: 0 }
+    })
+    const runId = randomUUID()
+    const branch = `refs/heads/ci/${f.commit}`
+    try {
+      await f.cloud.handle({
+        operation: 'start', workspaceId: 'ci-workspace', repository: 'octo/site', commit: f.commit,
+        runId, suite: 'lint', scope: 'full',
+      })
+      await sweeping
+      expect(f.mirrorGit('for-each-ref', '--format=%(refname)', branch)).toBe(branch)
+      f.advance(5 * 60_000)
+      expect(await f.cloud.handle({ operation: 'cancel', runId }))
+        .toMatchObject({ operation: 'cancel', run: { state: 'canceled' } })
+    } finally {
+      release()
+      await f.cloud.waitForMirrorCleanup('octo/site', 'octo/site-ci')
+    }
+    expect(f.mirrorGit('for-each-ref', '--format=%(refname)', branch)).toBe('')
+    expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
+      .toMatchObject({ operation: 'read', run: { state: 'canceled' } })
+    expect(provider === 'github' ? f.dispatched : f.circle.triggered).toHaveLength(1)
+  },
+)
+
+it.each(['github', 'circleci'] as const)(
   'removes a canceled %s branch after an in-flight sweep already retained it', async provider => {
     const f = await fixture({}, { provider })
     f.mirrorGit('update-ref', 'refs/heads/ci/retired-run', 'main')

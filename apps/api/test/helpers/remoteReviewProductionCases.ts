@@ -10,6 +10,8 @@ import { hasRetainedRemoteReviewerSource } from '../../src/modules/interactions/
 import { HostHarnessProfileEvidenceRepository } from '../../src/modules/harnesses/instanceSettings/profileRepository.js'
 import { harnessConnectionGeneration } from '../../src/modules/harnesses/hostConnectionGeneration.js'
 import { remoteReviewProduction, waitForRemoteReview as waitForProduction } from './remoteReviewProduction.js'
+import { buildRemoteReviewWorkerRelease } from './remoteReviewProvider.js'
+import { privateFixtureDirectory, withPrivateFixtureDirectories } from './privateFixtureDirectory.js'
 
 type Fixture = Awaited<ReturnType<typeof remoteReviewProduction>>
 type Inventory = Awaited<ReturnType<Fixture['inventory']>>
@@ -43,10 +45,18 @@ export async function waitForRemoteReview<T>(read: () => Promise<T>, accept: (va
 /** Keep pairing and qualified profiles alive for the file's scenarios. */
 export function useRemoteReviewFixture(options: Parameters<typeof remoteReviewProduction>[0] = {}) {
   let fixture: Fixture | undefined
+  let workerRelease: string
+  // Cold packaging has its own bound so it cannot consume the native setup budget.
+  beforeAll(async () => {
+    workerRelease = await (options.workerRelease ?? withPrivateFixtureDirectories(async () => {
+      const directory = await privateFixtureDirectory('remote-review-worker-release-')
+      return buildRemoteReviewWorkerRelease(directory)
+    }))
+  }, 60_000)
   beforeAll(async () => {
     const started = performance.now()
     fixture = await remoteReviewProduction({
-      ...options, parallelProfileChecks: true, reuseMatchingProfiles: true,
+      ...options, workerRelease, parallelProfileChecks: true, reuseMatchingProfiles: true,
       // Reconnects still refresh immediately; avoid periodic payload hashing during native checks.
       parallelSetup: true, installationRefreshIntervalMs: 60_000,
       reportPhase: (phase, elapsedMs) => console.info(`[remote-review] ${phase}: ${Math.round(elapsedMs)} ms`),
@@ -191,18 +201,20 @@ export async function readInteraction(fixture: Fixture, interactionId: string) {
 }
 
 export async function deliveredReview(fixture: Fixture, interactionId: string) {
+  const job = await waitForRemoteReview(async () => {
+    const failure = (await fixture.provider.calls()).find(call => call.providerFailure !== undefined)
+    if (failure) throw new Error(`Remote review provider failed: ${String(failure.providerFailure)}`)
+    await fixture.reconcileReviews()
+    const row = (await fixture.db.pool.query<{ record: unknown }>(
+      'select record from review_jobs where interaction_id=$1', [interactionId])).rows[0]!
+    return ReviewJobSchema.parse(row.record)
+  }, value => value.state === 'completed', 'persisted completed remote review')
   const interaction = await waitForRemoteReview(async () => {
     const failure = (await fixture.provider.calls()).find(call => call.providerFailure !== undefined)
     if (failure) throw new Error(`Remote review provider failed: ${String(failure.providerFailure)}`)
     await fixture.reconcile()
     return readInteraction(fixture, interactionId)
   }, value => value.deliveryState === 'delivered', 'persisted native decision delivery')
-  const job = await waitForRemoteReview(async () => {
-    await fixture.reconcileReviews()
-    const row = (await fixture.db.pool.query<{ record: unknown }>(
-      'select record from review_jobs where interaction_id=$1', [interactionId])).rows[0]!
-    return ReviewJobSchema.parse(row.record)
-  }, value => value.state === 'completed', 'persisted completed remote review')
   expect(interaction.selectedSemantic).toBe('approve_once')
   expect(interaction.deliveredAt).toBeDefined()
   expect(job.providerTurnOrMessageId).toBeDefined()
