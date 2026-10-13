@@ -31,6 +31,27 @@ it('renews a live scoped token while its execution is waiting without rotating i
   expect(after.revoked_at).toBe(null)
 })
 
+it('authenticates a renewed waiting credential only until its execution is stopped', async () => {
+  const issued = await credentials.issueForExecution(execution.id)
+  const token = issued.environment.variables.GRAPHQL_MCP_TOKEN!
+  const renewedAt = await credentials.renewForExecution(execution.id, issued)
+  expect(await access.authenticate(token, 'worker')).toMatchObject({
+    id: issued.principalId,
+    agentId: execution.agentId,
+    expiresAt: renewedAt,
+    grants: [{
+      actions: ['bug_reports:report', 'interactions:read'],
+      scope: {
+        workspaceIds: ['workspace-1'],
+        workflowIds: ['workflow-content-pipeline'],
+        runIds: [execution.runId],
+      },
+    }],
+  })
+  await budgets.stop(execution.id)
+  await expect(access.authenticate(token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+})
+
 it('cannot revive an expired credential while its execution is still waiting', async () => {
   const issued = await credentials.issueForExecution(execution.id)
   const token = issued.environment.variables.GRAPHQL_MCP_TOKEN!
