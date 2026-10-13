@@ -70,17 +70,19 @@ async function main() {
   app.addHook('onRequest', async request => { inFlight.set(request.id, `${request.method} ${request.url.split('?')[0]}`) })
   app.addHook('onResponse', async request => { inFlight.delete(request.id) })
   app.addHook('onRequestAbort', async request => { inFlight.delete(request.id) })
+  let shutdownWaiting: NodeJS.Timeout | undefined
   app.addHook('preClose', async () => {
     startup.abort(new Error('Startup canceled by shutdown.'))
     lifecycle.info('api shutting down')
     if (reconciliationTimer) clearInterval(reconciliationTimer)
-    const waiting = setInterval(() => {
+    shutdownWaiting ??= setInterval(() => {
       lifecycle.info({ requests: [...inFlight.values()].slice(0, 20), requestCount: inFlight.size,
         steps: shutdownPending() }, 'shutdown still waiting')
     }, 5000)
-    waiting.unref()
-    app.addHook('onClose', async () => { clearInterval(waiting) })
+    shutdownWaiting.unref()
   })
+  // Hooks cannot be added once Fastify listens, so the diagnostic timer is cleared by a hook registered now.
+  app.addHook('onClose', async () => { if (shutdownWaiting) clearInterval(shutdownWaiting) })
   app.addHook('onClose', async () => { await drainShutdown() })
 
   let closing: Promise<void> | undefined
