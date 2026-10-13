@@ -21,53 +21,57 @@ export class SyncthingComputer {
   handle(raw: unknown, options: { assertCurrent?: () => void; signal?: AbortSignal } = {}):
     Promise<SyncIdentity | SyncComputerState> {
     const request = SyncComputerRequestSchema.parse(raw)
-    const assertCurrent = options.assertCurrent ?? (() => {})
+    const assertCurrent = () => {
+      options.signal?.throwIfAborted()
+      options.assertCurrent?.()
+    }
     assertCurrent()
     options.signal?.throwIfAborted()
     if (request.operation === 'status') return this.status(options.signal)
     const task = this.pending.then(async () => {
       assertCurrent()
       if (request.operation === 'configure' && !request.enabled
-        && !(await this.ports.available()).running) return this.status()
-      const identity = await this.ports.prepare()
+        && !(await this.ports.available(options.signal)).running) return this.status(options.signal)
+      const identity = await this.ports.prepare(options.signal, assertCurrent)
       assertCurrent()
       if (request.operation === 'identity') return identity
-      await this.configure(identity, request, assertCurrent)
-      return this.status()
+      await this.configure(identity, request, assertCurrent, options.signal)
+      return this.status(options.signal)
     })
     this.pending = task.then(() => undefined, () => undefined)
     return task
   }
 
   private async configure(identity: SyncIdentity, input: Extract<SyncComputerRequest, { operation: 'configure' }>,
-    assertCurrent: () => void) {
+    assertCurrent: () => void, signal?: AbortSignal) {
     const { workspaceId, enabled, peers } = input
     const id = sharedFolderId(workspaceId)
-    const folders = z.array(FolderSchema).parse(await this.ports.rest('GET', '/rest/config/folders'))
+    const folders = z.array(FolderSchema).parse(await this.ports.rest('GET', '/rest/config/folders', undefined, signal))
     if (!enabled) {
       if (folders.some(folder => folder.id === id)) {
         assertCurrent()
-        await this.ports.rest('DELETE', `/rest/config/folders/${id}`)
+        await this.ports.rest('DELETE', `/rest/config/folders/${id}`, undefined, signal)
       }
       return
     }
     for (const peer of peers) {
-      const template = z.record(z.string(), z.unknown()).parse(await this.ports.rest('GET', '/rest/config/defaults/device'))
+      assertCurrent()
+      const template = z.record(z.string(), z.unknown()).parse(await this.ports.rest('GET', '/rest/config/defaults/device', undefined, signal))
       assertCurrent()
       await this.ports.rest('POST', '/rest/config/devices', { ...template, deviceID: peer.deviceId,
-        addresses: [`tcp://${peer.address}:22001`], introducer: false, autoAcceptFolders: false, paused: false })
+        addresses: [`tcp://${peer.address}:22001`], introducer: false, autoAcceptFolders: false, paused: false }, signal)
     }
     const path = join(identity.rootPath, id)
     assertCurrent()
-    await this.ports.mkdir(path)
+    await this.ports.mkdir(path, signal)
     const template = folders.find(folder => folder.id === id)
-      ?? z.record(z.string(), z.unknown()).parse(await this.ports.rest('GET', '/rest/config/defaults/folder'))
+      ?? z.record(z.string(), z.unknown()).parse(await this.ports.rest('GET', '/rest/config/defaults/folder', undefined, signal))
     assertCurrent()
     await this.ports.rest('POST', '/rest/config/folders', {
       ...template, id, label: workspaceId, path, type: 'sendreceive', paused: false,
       devices: [...new Set([identity.deviceId, ...peers.map(peer => peer.deviceId)])].map(deviceID => ({ deviceID })),
       versioning: { type: 'simple', params: { keep: '5' }, cleanupIntervalS: 3600 },
-    })
+    }, signal)
   }
 
   async status(signal?: AbortSignal): Promise<SyncComputerState> {

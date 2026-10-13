@@ -84,6 +84,37 @@ describe('WorkspaceShell', () => {
     else expect(submitted).not.toHaveProperty('name')
   })
 
+  it('submits the selected existing parent path with its trailing whitespace intact', async () => {
+    const selected = '/projects/Selected '
+    let submitted: Record<string, unknown> | undefined
+    server.use(
+      http.get('/api/management/harnesses/directories', ({ request }) => {
+        const path = new URL(request.url).searchParams.get('path')
+        return HttpResponse.json({ roots: [{ id: 'projects', label: 'Projects', path: '/projects' }],
+          rootId: 'projects', path: path === selected ? selected : '/projects',
+          parent: path === selected ? '/projects' : null, nextCursor: null,
+          directories: path === selected ? [] : [{ name: 'Selected ', path: selected }] })
+      }),
+      http.post('/api/management/workspaces', async ({ request }) => {
+        submitted = await request.json() as Record<string, unknown>
+        return HttpResponse.json({ value: { workspace: { id: 'workspace-created', name: 'Project' },
+          revision: 1, archivedAt: null, executionLocation: null, locationRevision: 0,
+          locationValidation: { status: 'restricted' } }, replayed: false })
+      }),
+    )
+    const user = userEvent.setup()
+    renderWithRouter(<WorkspaceShell workspaceId="workspace-1" />)
+    await user.click(await screen.findByRole('button', { name: 'New workspace' }))
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Name' })).not.toHaveValue(''))
+    await user.click(screen.getByRole('button', { name: 'Location' }))
+    await user.click(await screen.findByRole('button', { name: 'Selected' }))
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Destination' })).toHaveValue(selected))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Select location' })).toBeEnabled())
+    await user.click(screen.getByRole('button', { name: 'Select location' }))
+    await user.click(screen.getByRole('button', { name: 'Create workspace' }))
+    await waitFor(() => expect(submitted?.parentPath).toBe(selected))
+  })
+
   it('selects the suggested name for replacement and keeps creation fields minimal', async () => {
     server.use(http.get('/api/management/harnesses/directories', () => HttpResponse.json({
       roots: [{ id: 'projects', label: 'Projects', path: '/projects' }], rootId: 'projects', path: '/projects',

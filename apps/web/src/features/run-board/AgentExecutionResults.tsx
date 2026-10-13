@@ -15,6 +15,7 @@ import { jobsClient } from '../jobs/client'
 import { JobResult } from '../jobs/JobResult'
 import { JobQueueFacts } from '../jobs/JobSpecFacts'
 import { readForRunVisit, runNodeInspectionKey } from './inspectionQuery'
+import { AgentHostCiResults } from './AgentHostCiResults'
 
 export function AgentExecutionResults({ selection, scope, execution, name, acceptedResult }: {
   selection: SelectedRunState; scope: RepeatGraphScopeV3;
@@ -55,7 +56,8 @@ export function AgentExecutionResults({ selection, scope, execution, name, accep
         : <p>No accepted Agent output recorded.</p>}
       <p>Follow-up messages appear in Agent chat. They do not change this execution’s output.</p>
     </section>
-    <section aria-label="Agent CI results"><h3>CI executions</h3>
+    <AgentHostCiResults selection={selection} scope={scope} execution={execution} />
+    <section aria-label="Agent Job results"><h3>Job executions</h3>
       {ci.isError ? <p role="status">CI history unavailable. {runReadErrorLabel(ci.error)}</p> : <>
         {ci.isPending ? <p role="status">Reading CI requests…</p> : null}
         {!ci.isPending && !tickets.size ? <p>No CI requests recorded for this Agent execution.</p> : null}

@@ -45,7 +45,7 @@ async function main() {
     config.checkpoints.schema,
     config.database,
   )
-  const { app, initialize, reconcile, drainShutdown, startDeviceListener, registerFileStorage, rsync } = buildProductionApp(config, database, checkpoints,
+  const { app, prepareSchema, initialize, reconcile, drainShutdown, startDeviceListener, registerFileStorage, rsync } = buildProductionApp(config, database, checkpoints,
     componentLogger('http'), undefined, undefined,
     { codex: codexQualificationSuite },
     {
@@ -97,9 +97,7 @@ async function main() {
     registerFileStorage()
     await retryStartupDatabase(() => database.ping(startup.signal), { signal: startup.signal })
     stopIfClosing()
-    await retryStartupDatabase(() => database.migrate(), { signal: startup.signal })
-    stopIfClosing()
-    await retryStartupDatabase(() => checkpoints.setup(), { signal: startup.signal })
+    await prepareSchema()
     stopIfClosing()
     await retryStartupDatabase(() => checkpoints.ping(startup.signal), { signal: startup.signal })
     stopIfClosing()
