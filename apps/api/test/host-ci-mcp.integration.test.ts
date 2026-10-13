@@ -1351,6 +1351,8 @@ it('preserves MCP cancellation when an in-flight refresh returns an unstarted ti
     }))
     const started = { ticketId: tickets.partitions![1]!.ticketId }
     await f.ci.dispatch()
+    const reader = await f.connect(CI_GET_ACTIONS)
+    expect((await f.call(reader, 'ci_cancel', { ticketId: started.ticketId })).isError).toBe(true)
     const request = f.endpoint.request.bind(f.endpoint)
     f.endpoint.request = async (computer, input) => {
       const reply = await request(computer, input)
@@ -1368,8 +1370,8 @@ it('preserves MCP cancellation when an in-flight refresh returns an unstarted ti
     await dispatch
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
     expect(read.run.state).toBe('canceled')
-    expect((await f.pool.query('select record from ci_runs where id=$1', [started.ticketId])).rows[0].record)
-      .toEqual(read.run)
+    expect((await f.pool.query('select record,host_key from ci_runs where id=$1', [started.ticketId])).rows[0])
+      .toEqual({ record: read.run, host_key: null })
     expect(f.started).toHaveLength(1)
   } finally { release(); await f.close() }
 })

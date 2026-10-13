@@ -154,13 +154,17 @@ test('the Node reporter records passing and failing tests with their file and fa
 import assert from 'node:assert/strict'
 test('passes', () => assert.equal(1, 1))
 test('fails', () => assert.equal(1, 2))
+test.skip('skips', () => assert.fail('skipped case ran'))
 `)
   const reporter = fileURLToPath(new URL('./ci-node-test-reporter.mjs', import.meta.url))
   const result = spawnSync(process.execPath, ['--test', `--test-reporter=${reporter}`,
-    `--test-reporter-destination=${output}`, file], { encoding: 'utf8' })
+    `--test-reporter-destination=${output}`, file], { encoding: 'utf8',
+      env: { ...process.env, NODE_TEST_CONTEXT: 'child-v8' } })
   assert.equal(result.status, 1, result.stderr)
   const results = ciTestResults([JSON.parse(readFileSync(output, 'utf8'))], directory)
-  assert.deepEqual(results.summary, { passed: 1, failed: 1, skipped: 0 })
+  assert.deepEqual(results.summary, { passed: 1, failed: 1, skipped: 1 })
   assert.equal(results.files[0].file, 'value.test.mjs')
+  assert.deepEqual(results.files[0].tests.map(test => [test.name, test.status]).sort(),
+    [['fails', 'failed'], ['passes', 'passed'], ['skips', 'skipped']])
   assert.match(results.files[0].tests.find(test => test.status === 'failed').message, /1.*2|Expected values/)
 })
