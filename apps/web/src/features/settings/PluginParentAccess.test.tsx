@@ -65,6 +65,7 @@ it.each(['codex', 'claude'])('hides warm %s plugin facts immediately when the pa
   await userEvent.setup().click(screen.getByRole('button', { name: 'Refresh' }))
   if (harness === 'codex') {
     const dialog = within(screen.getByRole('dialog', { name: 'Plugin details' }))
+    expect(dialog.getByRole('button', { name: 'Refresh plugin' })).toBeDisabled()
     expect(dialog.getByRole('alert')).toHaveTextContent('Plugin access unavailable')
     expect(dialog.queryByText('trusted')).not.toBeInTheDocument()
   } else {

@@ -100,7 +100,7 @@ it('keeps account controls in each card footer and independent of preset navigat
 })
 
 it.each([
-  [503, 'Updating — reconnecting…'],
+  [503, 'Claude accounts could not update'],
   [500, 'Claude accounts could not update'],
 ] as const)('keeps the other card, presets and panels usable after one account read fails with HTTP %s', async (status, message) => {
   server.use(http.get('/api/provider-accounts/page', ({ request }) => {

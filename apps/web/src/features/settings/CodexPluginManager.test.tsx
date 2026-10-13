@@ -239,7 +239,7 @@ it('awaits a fresh catalog on Refresh before updating the reviewed detail snapsh
   mount('/settings/harnesses?harness=codex&section=plugins&pluginView=available')
   const user = await openPlugin()
   const dialog = within(screen.getByRole('dialog', { name: 'notes plugin' }))
-  const refresh = dialog.getByRole('button', { name: /^Refresh$/ })
+  const refresh = dialog.getByRole('button', { name: 'Refresh plugin' })
   try {
     await user.click(refresh)
     await waitFor(() => expect(refreshRequested).toBe(true))
