@@ -66,6 +66,66 @@ it.each([false, true])('fails an ended CircleCI pipeline with errors on the next
   expect(f.circle.triggered).toHaveLength(1)
 })
 
+it.each([
+  { outcome: 'succeeded', state: 'passed', exitCode: 0 },
+  { outcome: 'failed', state: 'failed', exitCode: 1 },
+  { outcome: 'canceled', state: 'canceled', exitCode: 1 },
+])('settles ended CircleCI pipelines without workflows as $state', async ({ outcome, state, exitCode }) => {
+  const f = await fixture({}, { provider: 'circleci' })
+  for (const started of [false, true]) {
+    f.circle.runView = started ? null : { phase: 'created', workflows: [] }
+    const runId = randomUUID()
+    await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site',
+      commit: f.commit, suite: 'integration', scope: 'full' })
+    f.circle.runView = { phase: 'ended', current_outcome: outcome, stopped_at: '2026-10-11T02:00:00Z', workflows: [] }
+    expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1024 }))
+      .toMatchObject({ run: { state, exitCode, finishedAt: '2026-10-11T02:00:00Z' } })
+    expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
+      .toMatchObject({ run: { state, exitCode } })
+  }
+  expect(f.circle.triggered).toHaveLength(2)
+})
+
+it.each(['pipeline', 'workflow'] as const)('uses an ended CircleCI %s despite stale child status', async ended => {
+  const f = await fixture({}, { provider: 'circleci' })
+  const runId = randomUUID()
+  await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site',
+    commit: f.commit, suite: 'integration', scope: 'full' })
+  f.circle.runView = ended === 'pipeline'
+    ? { phase: 'ended', outcome: 'failed', workflows: [{ phase: 'started', jobs: [{ id: 'job-1' }] }] }
+    : { phase: 'started', workflows: [{ phase: 'ended', outcome: 'canceled', jobs: [{ id: 'job-1' }] }] }
+  expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1024 }))
+    .toMatchObject({ run: { state: ended === 'pipeline' ? 'failed' : 'canceled', exitCode: 1 } })
+})
+
+it.each(['unknown outcome', 'no active workflows'] as const)('fails an ended CircleCI run with %s clearly', async reason => {
+  const f = await fixture({}, { provider: 'circleci' })
+  const runId = randomUUID()
+  await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site',
+    commit: f.commit, suite: 'integration', scope: 'full' })
+  if (reason === 'unknown outcome') f.circle.runView = { phase: 'ended', workflows: [] }
+  else f.circle.lookupError = 'error: Run run-1 has no active workflows'
+  expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1024 }))
+    .toMatchObject({ run: { state: 'failed', exitCode: 1, message: expect.stringContaining('final outcome is unknown') } })
+  expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
+    .toMatchObject({ run: { state: 'failed' } })
+  expect(f.circle.triggered).toHaveLength(1)
+})
+
+it.each([false, true])('settles CircleCI cancellation when nothing is active, lookup also ended: %s', async lookupEnded => {
+  const f = await fixture({}, { provider: 'circleci' })
+  const runId = randomUUID()
+  await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site',
+    commit: f.commit, suite: 'integration', scope: 'full' })
+  f.circle.cancelError = 'error: Run run-1 has no active workflows to cancel.'
+  if (lookupEnded) f.circle.lookupError = 'error: Run run-1 has no active workflows to cancel.'
+  expect(await f.cloud.handle({ operation: 'cancel', runId }))
+    .toMatchObject({ operation: 'cancel', run: { state: 'canceled', finishedAt: expect.any(String) } })
+  expect(await f.reopen().handle({ operation: 'cancel', runId })).toMatchObject({ run: { state: 'canceled' } })
+  expect(f.circle.canceled).toHaveLength(lookupEnded ? 0 : 1)
+  expect(f.circle.triggered).toHaveLength(1)
+})
+
 function expectMirrorDispatch(provider: 'github' | 'circleci', command: string[] | undefined) {
   const option = provider === 'github' ? '-R' : '--project'
   const target = provider === 'github' ? 'octo/site-ci' : 'gh/octo/site-ci'

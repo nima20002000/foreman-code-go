@@ -84,7 +84,7 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
     watchdogFailure: null as unknown, log: 'ci\tSuite\tall green\n', rateLimited: false, jobReads: [] as ('full' | 'unchanged')[], artifactError: '', logError: '' }
   const circle = { triggered: [] as string[][], outcome: '' as string, durations: null as Record<string, number> | null,
     testResults: null as unknown, watchdogFailure: null as unknown, log: 'Suite\nall green\n',
-    phantoms: 0, lookupError: '', canceled: [] as string[], runView: null as unknown,
+    phantoms: 0, lookupError: '', cancelError: '', canceled: [] as string[], runView: null as unknown,
     jobDetails: {} as Record<string, unknown>,
     steps: [] as { num: number; name: string; phase: string; outcome?: string }[], output: '',
     downloaded: [] as string[], downloadGate: Promise.resolve() as Promise<void>, artifactError: '', logError: '' }
@@ -104,11 +104,12 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
       if (args[0] === 'run' && args[1] === 'get') {
         if (circle.lookupError) return { code: 1, stdout: '', stderr: circle.lookupError }
         const phantom = Number(args[2]!.slice('run-'.length)) <= circle.phantoms
-        return ok(JSON.stringify(circle.runView ?? (phantom ? { phase: 'ended', outcome: 'succeeded', workflows: [] }
+        return ok(JSON.stringify(circle.runView ?? (phantom ? { phase: 'created', workflows: [] }
           : { workflows: [{ jobs: [{ id: 'job-1' }] }] })))
       }
       if (args[0] === 'run' && args[1] === 'cancel') {
         circle.canceled.push(args[2]!)
+        if (circle.cancelError) return { code: 1, stdout: '', stderr: circle.cancelError }
         return ok()
       }
       if (args[0] === 'job' && args[1] === 'get') return ok(JSON.stringify(circle.jobDetails[args[2]!] ??

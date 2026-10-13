@@ -15,6 +15,51 @@ vi.mock('node:fs/promises', async original => {
 const readRequest = (runId: string) => ({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 })
 const parameter = (args: string[], name: string) => args.find(value => value.startsWith(`${name}=`))?.slice(name.length + 1)
 
+it.each([false, true])('reconciles an overdue quiet CircleCI ticket during status, restart: %s', async restart => {
+  const f = await fixture({}, { provider: 'circleci' })
+  const runId = randomUUID()
+  await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site',
+    commit: f.commit, suite: 'integration', scope: 'full', expectedDurationMs: 60_000 })
+  await f.cloud.handle(readRequest(runId))
+  f.circle.runView = { phase: 'ended', current_outcome: 'failed', workflows: [] }
+  const reads = vi.spyOn(f.ports, 'run')
+  f.advance(55 * 60_000)
+  const cloud = restart ? f.reopen() : f.cloud
+  await cloud.handle({ operation: 'status' })
+  expect(reads.mock.calls.some(([file, args]) => file === 'circleci' && args[0] === 'run' && args[1] === 'get')).toBe(true)
+  // Reading while the provider is unavailable proves the status sweep persisted the terminal ticket.
+  f.circle.lookupError = 'permission denied'
+  expect(await f.reopen().handle(readRequest(runId))).toMatchObject({ run: { state: 'failed', exitCode: 1 } })
+  expect(f.circle.triggered).toHaveLength(1)
+})
+
+it('keeps an overdue CircleCI ticket running when reconciliation confirms active work', async () => {
+  const f = await fixture({}, { provider: 'circleci' })
+  const runId = randomUUID()
+  await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site',
+    commit: f.commit, suite: 'integration', scope: 'full', expectedDurationMs: 60_000 })
+  f.advance(55 * 60_000)
+  const reads = vi.spyOn(f.ports, 'run')
+  await f.cloud.handle({ operation: 'status' })
+  expect(reads.mock.calls.some(([file, args]) => file === 'circleci' && args[0] === 'job' && args[1] === 'get')).toBe(true)
+  expect(await f.cloud.handle(readRequest(runId))).toMatchObject({ run: { state: 'running', finishedAt: null } })
+  expect(f.circle.canceled).toEqual([])
+})
+
+it('does not reconcile overdue CircleCI work that is still making progress', async () => {
+  const f = await fixture({}, { provider: 'circleci' })
+  const runId = randomUUID()
+  await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site',
+    commit: f.commit, suite: 'integration', scope: 'full', expectedDurationMs: 60_000 })
+  f.advance(55 * 60_000)
+  f.circle.steps = [{ num: 1, name: 'Tests', phase: 'started' }]
+  f.circle.output = 'Tests are still progressing\n'
+  await f.cloud.handle(readRequest(runId))
+  const reads = vi.spyOn(f.ports, 'run')
+  await f.reopen().handle({ operation: 'status' })
+  expect(reads.mock.calls.some(([file, args]) => file === 'circleci' && args[0] === 'run' && args[1] === 'get')).toBe(false)
+})
+
 it.each([{ phase: 'ended' }, { current_outcome: 'not_run' }])(
   'settles CircleCI pipeline errors when the provider reports %j', async terminal => {
     const f = await fixture({}, { provider: 'circleci' })
