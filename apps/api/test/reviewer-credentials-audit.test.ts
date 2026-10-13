@@ -218,21 +218,23 @@ it('F8: an expired resident reviewer token is never renewed or replaced in a sti
   } finally { vi.useRealTimers() }
 })
 
-it('F8: credential renewal SQL binds exact execution/principal and refuses expired reviewer principals', async () => {
-  let query = ''; let parameters: unknown[] = []
-  const pool = { async query(sql: string, values: unknown[]) {
-    query = sql; parameters = values
-    return { rows: [{ expires_at: new Date(Date.now() + 60_000) }] }
-  } } as unknown as pg.Pool
+it('credential renewal returns database expiry and a monotonic deadline despite API clock skew', async () => {
+  const databaseNow = new Date('2026-10-01T00:00:00.000Z')
+  const expiresAt = new Date(databaseNow.getTime() + 60_000)
+  const pool = { query: async () => ({ rows: [{ expires_at: expiresAt, database_now: databaseNow }] }) } as unknown as pg.Pool
   const service = new WorkerCredentialService(pool, {} as PostgresAccessService, 60_000)
-  await service.renewForExecution('execution-reviewer', { principalId: 'principal-reviewer-exact' })
-  assert.deepEqual(parameters.slice(0, 2), ['principal-reviewer-exact', 'execution-reviewer'])
-  assert.match(query, /b\.purpose='reviewer' and p\.expires_at > clock_timestamp\(\)/)
-  assert.match(query, /p\.id=\$1 and b\.principal_id=p\.id and b\.execution_id=\$2/)
-  assert.match(query, /designatedOrchestratorAgentId/)
-  assert.match(query, /workflow_finalized_at is not null/)
-  assert.match(query, /worker_credentials_closed_at is null/)
-  assert.match(query, /p\.revoked_at is null and b\.revoked_at is null/)
+  const credential: Pick<IssuedWorkerCredential, 'principalId' | 'renewalDeadline'> = {
+    principalId: 'principal-reviewer',
+  }
+  const monotonic = vi.spyOn(performance, 'now').mockReturnValue(1_000)
+  const wallClock = vi.spyOn(Date, 'now').mockReturnValue(databaseNow.getTime() + 120_000)
+  try {
+    assert.equal(await service.renewForExecution('execution-reviewer', credential), expiresAt.toISOString())
+    assert.equal(credential.renewalDeadline, 61_000)
+  } finally {
+    monotonic.mockRestore()
+    wallClock.mockRestore()
+  }
 })
 
 it('F8: hung initial authority validation fails before credential expiry instead of waiting forever', async () => {

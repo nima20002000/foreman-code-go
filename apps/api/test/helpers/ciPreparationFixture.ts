@@ -92,14 +92,15 @@ export async function ciPreparationFixture(options: {
   main?: 'installed' | 'absent'
   prepareFails?: boolean; disabled?: boolean; statusDrops?: number; loseRefreshAck?: boolean
   refreshGate?: Promise<void>
+  stateDirectory?: string
   /** Main's publication of the approved commit to GitHub; the computer then fetches it with its own clone. */
   publish?(repository: string, commit: string): Promise<void>
   source?: { manifest: SourceManifest; git: GitWorktreePorts }
   pause?(stage: Stage): Promise<void>
 } = {}) {
   const directory = await privateFixtureDirectory('ci-preparation-')
-  const stateDirectories = { worker: join(directory, 'worker'), main: join(directory, 'main') }
-  await mkdir(stateDirectories.worker, { mode: 0o700 })
+  const stateDirectories = { worker: options.stateDirectory ?? join(directory, 'worker'), main: join(directory, 'main') }
+  await mkdir(stateDirectories.worker, { mode: 0o700, recursive: true })
   await mkdir(stateDirectories.main, { mode: 0o700 })
   const data = ciFixture()
   const workspaceId = data.workspaceId
