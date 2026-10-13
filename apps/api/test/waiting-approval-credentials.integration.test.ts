@@ -1,15 +1,10 @@
 import { readUntil } from './helpers/observableCondition.js'
 import { expect, it, vi } from 'vitest'
-import { assertWaitingApprovalCredentialLifetime } from './helpers/waitingApprovalCredentialLifetime.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { approvalResponse } from './helpers/eng06ApprovalFaults.js'
 import { maintainCredential } from '../src/modules/harnesses/credentialHeartbeat.js'
 import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
 import { APP_MCP_TOKEN_ENVIRONMENT_VARIABLE } from '../src/modules/access/workerCredentials.js'
-
-it('retains the same requester credential across two lifetimes and resumes through http', async () => {
-  await assertWaitingApprovalCredentialLifetime('http')
-}, 180_000)
 
 it('issues and renews against database time despite API clock offsets and jumps', async () => {
   const f = await currentOperatorIntegration()

@@ -18,7 +18,7 @@ import { WorkspaceLocationService } from '../../src/modules/workspaces/location.
 import { WorkspaceManagementService } from '../../src/modules/workspaces/management.js'
 import type { OperatorServices } from '../../src/mcp/operator/types.js'
 import { closeTestResources } from '../support/cleanup.js'
-import type { migratedDatabase } from './migratedDatabase.js'
+import { migratedDatabase } from './migratedDatabase.js'
 import { assertTestDatabase, requireTestServerUrl } from '../../../../scripts/test-resources.mjs'
 
 type WorkspaceFixtureServices = {
@@ -40,13 +40,14 @@ export async function workspaceMcpFixture(options: {
     app: ReturnType<typeof buildApp>
   }): Promise<void>
 } = {}) {
-  const connectionString = options.database?.databaseUrl ?? options.connectionString ?? process.env.TEST_DATABASE_URL
+  const database = options.database ?? (options.connectionString ? undefined : await migratedDatabase())
+  const connectionString = database?.databaseUrl ?? options.connectionString ?? process.env.TEST_DATABASE_URL
   if (!connectionString) throw new Error('A disposable test database is required')
   const databaseUrl = requireTestServerUrl(connectionString)
   const schema = 'workspace_mcp_' + randomUUID().replaceAll('-', '')
-  const parentPath = options.database?.directory ?? await mkdtemp(join(tmpdir(), 'workspace-mcp-'))
+  const parentPath = database?.directory ?? await mkdtemp(join(tmpdir(), 'workspace-mcp-'))
   const admin = new pg.Pool({ connectionString })
-  const pool = options.database?.pool
+  const pool = database?.pool
     ?? new pg.Pool({ connectionString, options: `-c search_path=${schema}`, application_name: schema })
   const clients: Client[] = []
   const access = new PostgresAccessService(pool)
@@ -57,16 +58,23 @@ export async function workspaceMcpFixture(options: {
   const services = { commands, locations, workspaces } as unknown as OperatorServices
   let app: ReturnType<typeof buildApp> | undefined
 
+  const databaseCleanup: Array<() => Promise<void>> = []
+  if (database) {
+    if (!options.database) databaseCleanup.push(() => database.close())
+  } else {
+    databaseCleanup.push(
+      () => pool.end(),
+      () => dropFixtureSchema(admin, schema),
+      () => removeFixtureDirectory(parentPath),
+    )
+  }
+
   let closing: Promise<void> | undefined
   function close() {
     return closing ??= closeTestResources([
       ...clients.map(client => () => client.close()),
       async () => { await app?.close() },
-      ...(!options.database ? [
-        () => pool.end(),
-        () => dropFixtureSchema(admin, schema),
-        () => removeFixtureDirectory(parentPath),
-      ] : []),
+      ...databaseCleanup,
       () => admin.end(),
     ])
   }
@@ -77,7 +85,7 @@ export async function workspaceMcpFixture(options: {
       name: decodeURIComponent(databaseUrl.pathname.slice(1)),
       databaseUrl: connectionString,
     })
-    if (!options.database) {
+    if (!database) {
       await createFixtureSchema(admin, schema)
       await applyApplicationMigrations(pool)
     }
