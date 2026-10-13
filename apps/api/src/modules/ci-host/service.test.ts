@@ -83,7 +83,7 @@ function dispatchFixture(settlementError?: Error) {
       if (typeof tail === 'string') tails.set(next.id, tail)
       return { rows: [], rowCount: 1 }
     }
-    if (sql.includes("'supersededBy' is not null") || sql.includes("'gate'='true'")) return { rows: [] }
+    if (sql.includes("'supersededBy' is not null")) return { rows: [] }
     if (sql.includes("state='queued'")) {
       return { rows: records.filter(record => record.state === 'queued').map(record => ({ record, durations: null })) }
     }
@@ -91,6 +91,7 @@ function dispatchFixture(settlementError?: Error) {
       return { rows: records.filter(record => ['starting', 'running'].includes(record.state))
         .map(record => ({ id: record.id, record, host_key: computer.key })) }
     }
+    if (sql.includes("'gate'='true'")) return { rows: [] }
     return { rows: records.filter(record => record.id === parameters?.[0] || record.groupId === parameters?.[0])
       .map(record => ({ record, log_tail: tails.get(record.id) ?? '' })) }
   }
@@ -111,6 +112,16 @@ function dispatchFixture(settlementError?: Error) {
   })
   return { ...f, active, queued, records, output }
 }
+
+it('dispatches a queued ticket after settling ordinary output', async () => {
+  const f = dispatchFixture()
+  await f.create().dispatch()
+  expect((await f.create().get(caller, { ticketId: f.active.id })).run.state).toBe('passed')
+  expect((await f.create().get(caller, { ticketId: f.queued.id })).run.state).toBe('running')
+  expect(f.endpoint.request).toHaveBeenCalledWith(computer, expect.objectContaining({
+    operation: 'start', runId: f.queued.id,
+  }))
+})
 
 it.each([
   { text: 'finished\0 café 🚀\n', message: 'Done.\0 café 🚀',

@@ -5,7 +5,7 @@ import type pg from 'pg'
 import { CI_HOST_NAMESPACE, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiComputerRefSchema, CiHostReplySchema, CiListOutputSchema, CiRunRecordSchema,
   WorkspaceSchema,
   requiresUserSystemd, userSystemdIntegrationFiles,
-  type CiDurations, type CiHostRequest, type CiHostReply, type CiListOutput, type CiRunRecord, type CiRunInput,
+  type CiDurations, type CiHostRequest, type CiHostReply, type CiHostRun, type CiListOutput, type CiRunRecord, type CiRunInput,
   type CiTestResults, type CiTestStatus, type CiUserSystemd, type Workspace } from '@foreman-code/contracts'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
@@ -25,6 +25,7 @@ import { prepareCiSupersession, validateCiSupersession, supersedeCiRuns } from '
 import { gatePartStealer, gateQueueBlock, planCiGate } from './gate.js'
 import { gateIntegrationShards } from './capacity.js'
 import { ciGateReport } from './gateReport.js'
+import { collectCiResults } from './resultCollection.js'
 import { sanitizeCiText, serializeCiJson } from './text.js'
 
 /** CI reads are idempotent: one retry after a lock or statement timeout, then a typed retryable error. */
@@ -727,7 +728,8 @@ export class HostCiService {
   }
 
   private async settle(run: CiRunRecord, computer: HostCiComputer, state: { state: string; step: string | null
-    exitCode: number | null; startedAt: string; finishedAt: string | null; message: string | null },
+    exitCode: number | null; startedAt: string; finishedAt: string | null; message: string | null
+    collection?: CiHostRun['collection']; provenance?: CiHostRun['provenance'] },
     logTail?: string, audit?: RunStopAudit) {
     const requeued = state.state === 'queued' && computer.hostRef.kind === 'cloud'
     const unstartedProviders = new Set(run.unstartedProviders ?? [])
@@ -739,16 +741,19 @@ export class HostCiService {
       computer: requeued ? null : { hostRef: computer.hostRef, label: computer.label },
       startedAt: requeued ? null : run.startedAt ?? state.startedAt,
       finishedAt: state.finishedAt, message,
+      ...(state.collection ? { collection: state.collection } : {}),
+      ...(state.provenance ? { provenance: state.provenance } : {}),
       ...(unstartedProviders.size ? { unstartedProviders: [...unstartedProviders] } : {}) })
     const hostKey = ['starting', 'running'].includes(next.state) ? computer.key : null
     const saved = await this.saveCancellation(`update ci_runs set state=$2, host_key=$3, record=$4::jsonb,
         log_tail=coalesce($6,log_tail)
-      where id=$1 and state in ('queued','starting','running') and host_key is not distinct from $5
+      where id=$1 and (state in ('queued','starting','running') or state=$8 and record->>'collection'='pending')
+        and host_key is not distinct from $5
         and record->>'supersededBy' is not distinct from $7
         and ($6::text is null or state is distinct from $2 or host_key is distinct from $3
           or record is distinct from $4::jsonb or log_tail is distinct from $6)`,
-      [run.id, next.state, hostKey, serializeCiJson(next), run.state === 'queued' ? null : computer.key,
-        logTail === undefined ? null : sanitizeCiText(logTail), run.supersededBy ?? null],
+      [run.id, next.state, hostKey, serializeCiJson(next), ['starting', 'running'].includes(run.state) ? computer.key : null,
+        logTail === undefined ? null : sanitizeCiText(logTail), run.supersededBy ?? null, run.state],
       next, audit)
     if (requeued && saved.rowCount) log.warn({ runId: run.id, provider: computer.hostRef.provider, message },
       'CI dispatch created no work; ticket queued for another computer')
@@ -817,9 +822,13 @@ export class HostCiService {
     return { gate, reservedHosts }
   }
 
-  private async refreshRun(row: { record: unknown; host_key: string }, computers: HostCiComputer[]) {
+  private async refreshRun(row: { record: unknown; host_key: string | null }, computers: HostCiComputer[]) {
     const run = CiRunRecordSchema.parse(row.record)
     const computer = computers.find(value => value.key === row.host_key)
+      ?? computers.find(value => run.collection === 'pending' && run.computer
+        && value.hostRef.kind === run.computer.hostRef.kind && value.hostRef.mainId === run.computer.hostRef.mainId
+        && value.hostRef.deviceId === run.computer.hostRef.deviceId && value.hostRef.provider === run.computer.hostRef.provider
+        && value.hostRef.slot === run.computer.hostRef.slot)
       ?? (run.computer && run.computer.hostRef.kind !== 'cloud' ? await this.computer(run.computer.hostRef) : null)
     if (!computer) return
     const reply = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 32_768,
@@ -836,33 +845,28 @@ export class HostCiService {
       if (tail?.operation !== 'read') return
       logTail = tail.text
     }
-    // Test results are asked for apart from the read above: a Worker from before them rejects the flag, and its
-    // run must still settle. They land before the finished state, so a reader that sees the outcome also sees its
-    // tests; if they cannot be saved, the run stays active and the next pass tries again.
-    if (['integration', 'unit'].includes(run.suite) && !['starting', 'running'].includes(reply.run.state)) {
-      const results = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 1,
-        testResults: true })
-        .catch(fallbackOnError(null, 'jobs', 'read CI test results from computer', { runId: run.id }))
-      if (results?.operation === 'read' && results.testResults) {
-        const saved = await this.pool.query('update ci_runs set test_results=$2::jsonb where id=$1',
-          [run.id, serializeCiJson(results.testResults)]).then(() => true,
-          (error: unknown) => { log.warn({ err: error, runId: run.id }, 'CI test results not recorded; retrying'); return false })
-        if (!saved) return
+    const terminal = !['queued', 'starting', 'running'].includes(reply.run.state)
+    let collected = { run: reply.run, durations: reply.durations }
+    if (terminal) collected = await collectCiResults(this.pool, this.endpoint, computer, run, reply)
+    if (!['queued', 'starting', 'running'].includes(run.state)) {
+      collected.run = { ...collected.run, state: run.state, exitCode: run.exitCode, finishedAt: run.finishedAt }
+    }
+    if (terminal && collected.durations && collected.run.collection !== 'pending') {
+      try {
+        await this.learnDurations(run.repository, collected.durations)
+      } catch (error) {
+        collected.run = { ...collected.run, collection: 'pending' }
+        log.warn({ err: error, runId: run.id }, 'CI durations remain pending')
       }
     }
-    await this.settle(run, computer, reply.run, logTail)
-    // A run is read here until it finishes, so its measured durations are learned once.
-    if (reply.durations && !['starting', 'running'].includes(reply.run.state)) {
-      await this.learnDurations(run.repository, reply.durations)
-        .catch(error => log.warn({ err: error, runId: run.id }, 'CI durations not recorded'))
-    }
+    await this.settle(run, computer, collected.run, logTail)
   }
 
   private async dispatchOnce() {
     await this.cancelSuperseded()
     const computers = await this.endpoint.computers()
-    const active = (await this.pool.query<{ id: string; record: unknown; host_key: string }>(
-      `select id,record,host_key from ci_runs where state in ('starting','running')`)).rows
+    const active = (await this.pool.query<{ id: string; record: unknown; host_key: string | null }>(
+      `select id,record,host_key from ci_runs where state in ('starting','running') or record->>'collection'='pending'`)).rows
     // Runs are read concurrently, a few at a time: a cloud read waits on the service's API, and each read also
     // writes, so reading every part at once would exhaust the database pool.
     await inBatches(active, 8, async row => {

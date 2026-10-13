@@ -112,6 +112,7 @@ export class HostCiRunner {
     const measured = request.durations && finished ? CiDurationsSchema.safeParse(await report('measured-durations.json')) : null
     const tests = request.testResults && finished ? CiTestResultsSchema.safeParse(await report('test-results.json')) : null
     return CiHostReplySchema.parse({ operation: 'read', run, text, nextOffset,
+      ...(request.testResults && finished ? { run: { ...run, collection: 'complete' } } : {}),
       ...(measured?.success ? { durations: measured.data } : {}),
       ...(tests?.success ? { testResults: tests.data } : {}) })
   }

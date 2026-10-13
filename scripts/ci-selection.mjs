@@ -18,6 +18,15 @@ export function executionFiles(files, executionSuite, cwd) {
   })
 }
 
+/** Learned timings travel with the immutable cloud snapshot, outside provider parameter limits. */
+export function executionDurations(suite, cwd, learned = {}) {
+  const committedPath = join(cwd, 'scripts', suite === 'integration' ? 'integration-durations.json' : 'unit-durations.json')
+  const learnedPath = join(cwd, 'scripts/ci-learned-durations.json')
+  const committed = existsSync(committedPath) ? JSON.parse(readFileSync(committedPath, 'utf8')) : {}
+  const snapshot = existsSync(learnedPath) ? JSON.parse(readFileSync(learnedPath, 'utf8')) : learned
+  return { ...committed, ...snapshot }
+}
+
 /** Selection and partitioning happen in the checked-out repository on the cloud runner. */
 export function executionSelection({ commit, baseCommit, executionSuite, defaultRef, partition, learned = {}, cwd = process.cwd() }) {
   const suite = executionSuite.split('-')[0]
@@ -25,9 +34,7 @@ export function executionSelection({ commit, baseCommit, executionSuite, default
   let files = executionFiles(selection.files, executionSuite, cwd)
   if (selection.scope === 'full' && suite === 'integration' && partition) files = integrationFileList(cwd)
   if (partition && (selection.scope === 'affected' || suite === 'integration')) {
-    const durationPath = join(cwd, 'scripts', suite === 'integration' ? 'integration-durations.json' : 'unit-durations.json')
-    const committed = existsSync(durationPath) ? JSON.parse(readFileSync(durationPath, 'utf8')) : {}
-    files = integrationPartition(files, { ...committed, ...learned }, partition)
+    files = integrationPartition(files, executionDurations(suite, cwd, learned), partition)
   }
   return { ...selection, files }
 }

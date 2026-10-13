@@ -2,6 +2,7 @@ import { HarnessNativeEventSchema, type HarnessNativeEvent } from '@foreman-code
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
+import { RunGraphError } from '../run-graph/errors.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { normalizeNativeProducerEvent, NATIVE_PRODUCER_REJECTION_TYPE, NATIVE_PRODUCER_REJECTION_VERSION,
   type NormalizedNativeProducerEvent } from '../run-graph/nativeProducerNormalization.js'
@@ -60,4 +61,17 @@ export async function appendNormalizedNativeEvent(client: GraphSqlClient,
     }
     throw error
   }
+}
+
+/** Translate provider positions without changing their stored source identity. */
+export async function readPersistedNativeSequence(client: GraphSqlClient, event: HarnessNativeEvent): Promise<string> {
+  const result = await client.query<{ sequence: string }>(
+    `select sequence::text from harness_native_events where execution_id=$1
+      and (($2::text is not null and connection_id=$2 and source_sequence=$3)
+        or ($2::text is null and connection_id is null and sequence=$3))`,
+    [event.executionId, event.connectionId ?? null, event.sequence])
+  if (result.rows.length !== 1) {
+    throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
+  }
+  return result.rows[0]!.sequence
 }
