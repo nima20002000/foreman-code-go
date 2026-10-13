@@ -102,7 +102,9 @@ export function StartControls({ scope, run, permitted, available, refresh, viewR
     refresh()
     return result
   }, onError: hideDeniedPreparation, onSuccess: () => sectionHeading.current?.focus() })
-  const recovery = useMutation({ retry: false, gcTime: 0, mutationFn: async (request: BoardStartInput) => {
+  const recovery = useMutation<
+    Awaited<ReturnType<typeof recoverBoardStart>>['result'], Error, BoardStartInput
+  >({ retry: false, gcTime: 0, mutationFn: async (request) => {
     life.assertCurrent()
     await authorize()
     const resolved = await recoverBoardStart(key, request)

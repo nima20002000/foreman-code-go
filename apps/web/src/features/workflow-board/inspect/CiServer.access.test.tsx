@@ -10,7 +10,7 @@ import { CiServerDialog } from './CiServer'
 import { runInspectionQueryKey } from './queries'
 
 const scope: RepeatGraphScopeV3 = { workspaceId: 'workspace', workflowId: 'workflow',
-  runId: 'run', workflowVersionId: 'version' }
+  runId: 'run', workflowVersionId: 'version', executionSemanticsVersion: 3 }
 const ticketId = '00000000-0000-4000-8000-000000000001'
 const summary = { passed: 0, failed: 1, skipped: 0 }
 const job: CiRunJob = { ticketId, scope: 'affected', placement: 'host', message: null, tests: summary,

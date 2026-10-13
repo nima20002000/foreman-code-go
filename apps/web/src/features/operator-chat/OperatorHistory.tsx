@@ -55,7 +55,7 @@ function OwnedHistory({ id, epoch, onBrowse, recentMessages, renderMessages }: {
     .filter((message) => !recentIds.has(message.id))
   const reloadNearer = () => {
     onBrowse?.()
-    client.setQueryData<typeof history.data>(key, { pages: [], pageParams: [] })
+    client.setQueryData<NonNullable<typeof history.data>>(key, { pages: [], pageParams: [] })
     void history.refetch()
   }
   return <section aria-label="Earlier messages">

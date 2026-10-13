@@ -6,6 +6,7 @@ import { SourceHashSchema, MaterializationReceiptSchema, SourceWorktreeRequestSc
 import { SourceRootRecordSchema, SourceMaterializationRecordSchema, SourcePinSchema, SourceCwdAttestationSchema, SourcePreparationClosureSchema } from './sourceAdmission.js'
 import { TransferIntentSchema } from './byteTransfer.js'
 import { RootFilesystemIdentitySchema } from './workspaceRootPolicies.js'
+export { SOURCE_MATERIALIZATION_RECORD_MAX_BYTES } from './sourceMaterialization.js'
 // Capacity probes and closure requests share the channel with bounded source preparations.
 export const SOURCE_OPERATION_EXTENSION = { namespace: 'source-operations-v1', version: 1, maxJsonBytes: 1048576, maxBinaryBytes: 0, maxPending: 64 } as const
 export const SourceOperationAttemptSchema = z.object({ placementHash: SourceHashSchema, executionId: IdSchema, attemptId: IdSchema,
