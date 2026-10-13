@@ -55,7 +55,7 @@ export class PostgresCommandCoordinator {
     let releaseError: Error | undefined
     let inTransaction = false
     let lifecycleLock = false
-    let resourceLocked = false
+    let resourceLockRequested = false
     let committing = false
     let performing = false
     const commandLock = `command:${input.principal.id}:${input.operation}:${input.commandId}`
@@ -69,8 +69,9 @@ export class PostgresCommandCoordinator {
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [commandLock])
       }
       if (input.resourceLock) {
+        // A lost query reply can leave a session lock held even though acquisition throws.
+        resourceLockRequested = true
         await client.query('select pg_advisory_lock(hashtext($1))', [input.resourceLock])
-        resourceLocked = true
       }
       await input.authorize?.(client)
       const existing = await client.query<{ input_hash: string; target_key: string; result: unknown }>(
@@ -176,7 +177,7 @@ export class PostgresCommandCoordinator {
       }
       throw failure
     } finally {
-      if (resourceLocked && !releaseError) {
+      if (resourceLockRequested && !releaseError) {
         await client.query('select pg_advisory_unlock(hashtext($1))', [input.resourceLock]).catch((error: unknown) => {
           releaseError = error instanceof Error ? error : new Error('Command resource unlock failed.')
         })
