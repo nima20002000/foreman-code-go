@@ -75,9 +75,9 @@ it('keeps main, explicit keep, unrelated branch, suite, requester and non-descen
     const foreign = CiRunOutputSchema.parse(await f.value(other, 'ci_run', {
       suite: 'typecheck', commit: commits[3], commandId: 'another-requester',
     }))
-    const noCancel = await f.connect(CI_RUN_ACTIONS.filter(action => action !== 'jobs:cancel'))
-    expect((await f.call(noCancel, 'ci_run', {
-      suite: 'typecheck', commit: '1'.repeat(40), commandId: 'missing-cancel-grant',
+    const withoutCi = await f.connect(CI_GET_ACTIONS)
+    expect((await f.call(withoutCi, 'ci_run', {
+      suite: 'typecheck', commit: '1'.repeat(40), commandId: 'missing-ci-grant',
     })).isError).toBe(true)
     const next = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'typecheck', commit: '1'.repeat(40), commandId: 'latest-checks',

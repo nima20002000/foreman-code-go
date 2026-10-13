@@ -268,7 +268,7 @@ it('defaults authenticated Agent MCP to affected scope, reads explicit full scop
     }
     const stored = (await f.pool.query<{ grants: { actions: ManagementAction[]; scope: Record<string, unknown> }[] }>(
       'select grants from management_principals where id=$1', [f.authorizationPrincipalId])).rows[0]!
-    const grants = stored.grants.map(grant => ({ ...grant, actions: grant.actions.filter(action => action !== 'jobs:start') }))
+    const grants = stored.grants.map(grant => ({ ...grant, actions: grant.actions.filter(action => action !== 'ci') }))
     await f.pool.query('update management_principals set grants=$2::jsonb where id=$1',
       [f.authorizationPrincipalId, JSON.stringify(grants)])
     expect((await agent.callTool({ name: 'ci_run', arguments: { suite: 'unit', commandId: 'agent-denied' } })).isError).toBe(true)
@@ -322,7 +322,7 @@ it('persists large selections outside repository-specific roots through authenti
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
     expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(started)
     const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
-    expect(read.run).toMatchObject({ scope: 'affected', files })
+    expect(read.run).toMatchObject({ scope: 'affected', files: [...files].sort() })
     const stored = await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1', [started.ticketId])
     expect(stored.rows[0]!.record).toEqual(read.run)
   } finally { await f.close() }

@@ -24,10 +24,11 @@ async function fixture(identity = principal(), extraServices: Partial<OperatorSe
   const inspect = vi.fn(async (harness: 'codex') => ({
     executable: '/fake/cli', identity: harness, version: '99.0.0',
   }))
+  const probe = vi.fn(async () => 'f'.repeat(64))
   const recordAudit = vi.fn(async () => undefined)
   const recordDenied = vi.fn(async () => undefined)
   const service = new HarnessCompatibilityService({
-    probe: { inspect, probe: async () => 'f'.repeat(64), assertUnchanged: async () => undefined },
+    probe: { inspect, probe, assertUnchanged: async () => undefined },
     cache: { load: async () => null, save: async () => undefined },
     commands: { recordAudit },
   })
@@ -51,7 +52,7 @@ async function fixture(identity = principal(), extraServices: Partial<OperatorSe
   await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
     authProvider: { token: async () => 'owner-token' },
   }))
-  return { app, client, inspect, service, recordAudit, recordDenied }
+  return { app, client, inspect, probe, service, recordAudit, recordDenied }
 }
 
 const listCall = { name: 'harness_compatibility_list', arguments: {} }
@@ -90,11 +91,23 @@ describe('compatibility through authenticated MCP', () => {
     expect(recordAudit).toHaveBeenCalledWith('owner', 'mcp', 'harness.compatibility.retry', 'codex', 'succeeded')
   })
 
-  it('rejects caller-selected binaries and invalid harnesses before starting work', async () => {
+  it('ignores caller-selected binaries and checks the installed harness', async () => {
+    const { client, inspect, probe, service } = await fixture()
+    const result = await client.callTool({ name: retryCall.name,
+      arguments: { harness: 'codex', binary: '/arbitrary' } })
+    expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
+    await service.checkAll()
+    expect(inspect).toHaveBeenCalledWith('codex', expect.any(AbortSignal), expect.any(Number))
+    expect(probe).toHaveBeenCalledWith('codex', {
+      executable: '/fake/cli', identity: 'codex', version: '99.0.0',
+    }, expect.any(AbortSignal))
+    const status = HarnessCompatibilityListSchema.parse(decodeMcpToolResult(await client.callTool(listCall)))
+    expect(status.harnesses[0]).toMatchObject({ installedVersion: '99.0.0', status: 'probe-passed' })
+  })
+
+  it('rejects invalid harnesses before starting work', async () => {
     const { client, inspect } = await fixture()
-    for (const arguments_ of [{ harness: 'codex', binary: '/arbitrary' }, { harness: 'other' }]) {
-      expect((await client.callTool({ name: retryCall.name, arguments: arguments_ })).isError).toBe(true)
-    }
+    expect((await client.callTool({ name: retryCall.name, arguments: { harness: 'other' } })).isError).toBe(true)
     expect(inspect).not.toHaveBeenCalled()
   })
 

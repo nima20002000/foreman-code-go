@@ -84,9 +84,9 @@ describe.runIf(postgresEnabled)('GitHub Run-start sources and Agent CI through a
       expect((await f.base.db.pool.query(`select action from management_audit
         where principal_id=$1 and action='source.approve' and outcome='succeeded'`, [f.base.writer.principal.id]))
         .rows.length).toBeGreaterThanOrEqual(2)
-      const denied = await f.base.access.issue({ name: 'Start without source approval', audience: 'operator',
+      const denied = await f.base.access.issue({ name: 'Start without source binding access', audience: 'operator',
         expiresAt: new Date(Date.now() + 600000), grants: [{ actions: ['runs:start', 'workspace_locations:read',
-          'sources:read', 'source_roots:read', 'source_roots:bind'], scope: { workspaceIds: [input.workspaceId] } }] })
+          'sources:read', 'source_roots:read'], scope: { workspaceIds: [input.workspaceId] } }] })
       const deniedClient = await f.connect(denied.token)
       expect(toolError(await deniedClient.callTool({ name: 'run_start', arguments: {
         ...input, commandId: randomUUID(),

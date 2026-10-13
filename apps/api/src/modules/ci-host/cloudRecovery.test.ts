@@ -178,7 +178,6 @@ it.each(['github', 'circleci'] as const)('retains oversized timing inputs for af
   const learned = Object.fromEntries(Array.from({ length: 30 }, (_, index) => [`apps/api/test/unused-${index}.integration.test.ts`, 900]))
   Object.assign(learned, { [files[0]!]: 1, [files[1]!]: 1000 })
   expect(JSON.stringify(learned).length).toBeGreaterThan(500)
-  const expectedDurations = { [files[0]!]: 400, [files[1]!]: 300, [files[2]!]: 200, [files[3]!]: 100, ...learned }
   const selected: string[][] = []
   for (const index of [0, 1]) {
     const partition = { index, count: 2, weights: [2, 1] }
@@ -189,7 +188,7 @@ it.each(['github', 'circleci'] as const)('retains oversized timing inputs for af
     const result = executionSelection({ commit: 'HEAD', executionSuite: 'integration', cwd: checkout,
       defaultRef: `origin/${parameter(command, 'default_branch')}`, partition,
       learned: JSON.parse(parameter(command, 'durations') ?? '{}') })
-    expect(result.files).toEqual(integrationPartition(files, expectedDurations, partition))
+    expect(result.files).toEqual(integrationPartition(files, learned, partition))
     selected.push(result.files)
   }
   expect(selected.flat().sort()).toEqual(files)
@@ -265,15 +264,16 @@ it('preserves readable provider ownership during an interrupted metadata replace
   })
   const updating = f.cloud.handle(readRequest(runId))
   const failed = expect(updating).rejects.toThrow('Interrupted write')
+  let retry: Promise<void> | undefined
   try {
     await paused
     expect(await f.cloud.handle(readRequest(runId))).toMatchObject({ run: { state: 'running' } })
-    expect(await f.reopen().handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
-      suite: 'integration', scope: 'full' })).toMatchObject({ run: { state: 'running' } })
+    retry = expect(f.reopen().handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site',
+      commit: f.commit, suite: 'integration', scope: 'full' })).resolves.toMatchObject({ run: { state: 'running' } })
   } finally {
-    release()
-    await failed
     interrupted.mockImplementation(write)
+    release()
+    await Promise.all([failed, retry])
   }
   await f.reopen().handle({ operation: 'cancel', runId })
   expect(f.github.canceled).toContain('8')

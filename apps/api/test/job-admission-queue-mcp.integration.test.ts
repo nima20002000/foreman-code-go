@@ -136,8 +136,23 @@ describe.skipIf(!postgresEnabled)('durable build admission queue: mcp', () => {
     const forged = await writerClient.callTool({ name: 'job_start', arguments: {
       workspaceId: f.workspaceId, ...input, commandId: randomUUID(), initiatingAgent,
     } })
-    expect(forged.isError).toBe(true)
-    expect(await restarted.listQueue(scopedReader.principal, f.workspaceId)).toEqual([ticket])
+    expect(forged.isError).not.toBe(true)
+    const standalone = JobPendingAdmissionSchema.parse(
+      (decodeMcpToolResult(forged) as { admission: unknown }).admission)
+    const standaloneRead = await client.callTool({ name: 'job_queue_get', arguments: {
+      workspaceId: f.workspaceId, ticketId: standalone.ticket.id,
+    } })
+    const standaloneTicket = JobQueueTicketSchema.parse(
+      (decodeMcpToolResult(standaloneRead) as { ticket: unknown }).ticket)
+    expect(standaloneTicket.workflow).toBeNull()
+    expect(standaloneTicket.initiatingAgent).toBeUndefined()
+    const originTickets = await client.callTool({ name: 'job_queue_list', arguments: {
+      workspaceId: f.workspaceId, initiatingExecutionId: initiatingAgent.executionId,
+    } })
+    expect(JobQueuePageSchema.parse(decodeMcpToolResult(originTickets)).tickets).toEqual([ticket])
+    expect((await client.callTool({ name: 'job_start', arguments: {
+      workspaceId: f.workspaceId, ...input, commandId: randomUUID(),
+    } })).isError).toBe(true)
     await f.complete(execution.id)
     await restarted.wakeQueue()
     const completed = await restarted.getQueueTicket(scopedReader.principal, f.workspaceId, id)

@@ -37,16 +37,19 @@ it('splits integration over two build computers, reports progress and logs, and 
 it('sizes each partition by the measured speed of the computer it is planned for', async () => {
   const f = await fixture()
   try {
-    // History: laptop finished half the suite in 200 s, builder half in 400 s, so laptop works twice as fast.
-    for (const [index, computer, seconds] of [[0, f.computers[0]!, 200], [1, f.computers[1]!, 400]] as const) {
+    const historyFile = 'apps/api/test/history.integration.test.ts'
+    const historyDurations = { [historyFile]: 400_000 }
+    for (const [computer, seconds] of [[f.computers[0]!, 200], [f.computers[1]!, 400]] as const) {
       const finishedAt = new Date(Date.now() - 60_000), startedAt = new Date(finishedAt.getTime() - seconds * 1000)
       const run = { id: crypto.randomUUID(), workspaceId: f.workspaceId, suite: 'integration', commit: 'b'.repeat(40),
-        repository: 'octo/site', partition: { index, count: 2 }, groupId: crypto.randomUUID(), state: 'passed',
+        repository: 'octo/site', gate: true, scope: 'full', files: [historyFile], partition: null,
+        groupId: crypto.randomUUID(), state: 'passed',
         computer: { hostRef: computer.hostRef, label: computer.label }, step: 'integration', exitCode: 0, message: null,
         queuedAt: startedAt.toISOString(), startedAt: startedAt.toISOString(), finishedAt: finishedAt.toISOString(),
         initiator: { principalId: 'principal-history', executionId: null } }
-      await f.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record) values($1,$2,$3,'passed',$4::jsonb)`,
-        [run.id, f.workspaceId, run.groupId, JSON.stringify(run)])
+      await f.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record,durations)
+        values($1,$2,$3,'passed',$4::jsonb,$5::jsonb)`,
+        [run.id, f.workspaceId, run.groupId, JSON.stringify(run), JSON.stringify(historyDurations)])
     }
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'integration', commandId: 'weighted',
       partitions: 2 }))
@@ -98,7 +101,7 @@ it('persists the heavy-file partition plan through authenticated MCP and denies 
     const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
     expect(read.partitions).toHaveLength(2)
     for (const run of read.partitions!) {
-      expect(run).toMatchObject({ scope: 'affected', files: expectedFiles, partition: { count: 2, weights: [1, 1] } })
+      expect(run).toMatchObject({ scope: 'affected', files: expectedFiles, partition: { count: 2, weights: [16, 16] } })
       const stored = await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1', [run.id])
       expect(stored.rows[0]!.record).toEqual(run)
     }

@@ -4,7 +4,7 @@ import { AgentSchema } from '@foreman-code/contracts'
 import { ManagementActionSchema, type ManagementGrant } from '@foreman-code/contracts/management'
 import {
   CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
-  SavedManagedWorkflowCommandResultSchema, makeCurrentWorkflowFixture,
+  SavedManagedWorkflowCommandResultSchema, SavedManagedWorkflowSchema, makeCurrentWorkflowFixture,
   type CurrentFixtureForm,
 } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
@@ -111,12 +111,16 @@ describe.skipIf(!postgresEnabled)('current layout HTTP/MCP', () => {
     const replay = await t.call(CURRENT_WORKFLOW_TOOLS.save, layout)
     expect(graphRpcValue(replay.result)).toEqual({ ...saved, replayed: true })
     const read = await t.call('workflow_get', { workspaceId: t.input.workspaceId, workflowId: t.input.workflowId })
-    expect(graphRpcValue(read.result)).toMatchObject({ revision: first.value.revision,
+    const readback = SavedManagedWorkflowSchema.parse(graphRpcValue(read.result))
+    expect(readback).toMatchObject({ revision: first.value.revision,
       currentVersionId: first.value.currentVersionId, workflow: { nodes: stale.graph.nodes } })
-    expect(graphRpcValue(read.result)).toMatchObject({ workflow: { nodes: [
-      { id: original.nodes[0]!.id, position: original.nodes[0]!.position },
-      { id: original.nodes[1]!.id, position: { x: 1200, y: 99 } },
-    ] } })
+    expect(readback.workflow.nodes).toEqual([
+      original.nodes[0],
+      { ...original.nodes[1], position: { x: 1200, y: 99 } },
+    ])
+    for (const field of ['position', 'width', 'height']) {
+      expect(Object.hasOwn(readback.workflow.nodes[0]!, field)).toBe(false)
+    }
     const denied = await t.credential([{ actions: ['workflows:read', 'graph:read'], scope: { workspaceIds: [t.input.workspaceId] } }])
     expect((await t.call(CURRENT_WORKFLOW_TOOLS.save, layout, denied.token)).result?.isError).toBe(true)
     expect(await count(t, 'workflow_versions')).toBe(1)

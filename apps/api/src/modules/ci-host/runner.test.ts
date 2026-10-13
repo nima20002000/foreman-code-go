@@ -1,6 +1,6 @@
 import { once } from 'node:events'
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile, chmod, readdir } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, copyFile, rm, writeFile, chmod, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
@@ -51,12 +51,12 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
     'apps/api/test/c.integration.test.ts': 200, 'apps/api/test/d.integration.test.ts': 100 }))
   await mkdir(join(origin, 'apps/web/src'), { recursive: true })
   await writeFile(join(origin, 'apps/web/heavy-tests.json'), JSON.stringify({ files: [] }))
-  await writeFile(join(origin, 'scripts/ci-unit-files.mjs'),
-    await readFile(new URL('../../../../../scripts/ci-unit-files.mjs', import.meta.url), 'utf8'))
+  await copyFile(new URL('../../../../../scripts/ci-unit-files.mjs', import.meta.url),
+    join(origin, 'scripts/ci-unit-files.mjs'))
   const suiteFiles = ['ci-affected-run.mjs', 'ci-files.mjs', 'ci-suite.sh',
-    'ci-test-results.mjs', 'ci-node-test-reporter.mjs']
+    'ci-test-results.mjs', 'ci-node-test-reporter.mjs', 'ci-typecheck-cache.mjs']
   for (const file of suiteFiles) {
-    await writeFile(join(origin, 'scripts', file), await readFile(new URL(`../../../../../scripts/${file}`, import.meta.url), 'utf8'))
+    await copyFile(new URL(`../../../../../scripts/${file}`, import.meta.url), join(origin, 'scripts', file))
   }
   await writeFile(join(origin, 'scripts/test-command.mjs'),
     "import { spawnSync } from 'node:child_process'; const [, command, ...args] = process.argv.slice(2);"
@@ -65,11 +65,11 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
     'apps/web/src/first.test.tsx', 'apps/web/src/second.test.tsx']
   for (const file of unitFiles) await writeFile(join(origin, file), '')
   if (options.selector) {
-    await writeFile(join(origin, 'scripts/ci-affected.mjs'),
-      await readFile(new URL('../../../../../scripts/ci-affected.mjs', import.meta.url), 'utf8'))
+    await copyFile(new URL('../../../../../scripts/ci-affected.mjs', import.meta.url),
+      join(origin, 'scripts/ci-affected.mjs'))
     await mkdir(join(origin, 'packages/contracts/src'), { recursive: true })
-    await writeFile(join(origin, 'packages/contracts/src/ciImportGraph.mjs'),
-      await readFile(new URL('../../../../../packages/contracts/src/ciImportGraph.mjs', import.meta.url), 'utf8'))
+    await copyFile(new URL('../../../../../packages/contracts/src/ciImportGraph.mjs', import.meta.url),
+      join(origin, 'packages/contracts/src/ciImportGraph.mjs'))
     await mkdir(join(origin, 'apps/api/src'), { recursive: true })
     await writeFile(join(origin, 'apps/api/src/feature.ts'), 'export const value = 1')
     await writeFile(join(origin, unitFiles[0]!), "import '../src/feature.js'")
@@ -327,7 +327,7 @@ describe('host CI runner', () => {
   })
   it.each([
     ['unit', undefined, true], ['unit', 'unit-api', true], ['integration', undefined, true],
-    ['unit', 'unit-web', true], ['unit', 'unit-web-heavy', true], ['unit', 'unit-other', true],
+    ['unit', 'unit-web', false], ['unit', 'unit-web-heavy', false], ['unit', 'unit-other', true],
     ['lint', 'lint-api', false], ['typecheck', 'typecheck-api', false], ['build', 'build-api', false],
   ])('prepares the database for %s/%s only when needed', async (suite, part, databaseRequired) => {
     const f = await computer()
@@ -339,7 +339,7 @@ describe('host CI runner', () => {
     if (part === 'unit-other') {
       expect(done.text).toContain('corepack pnpm --filter @foreman-code/contracts test')
       expect(done.text).toContain('--test-reporter=spec')
-      expect(done.text).toContain('scripts/fixture.test.mjs')
+      expect(done.text).toContain('scripts/**/*.test.mjs')
     }
     const database = done.text.indexOf('corepack pnpm db:up')
     if (databaseRequired) {
@@ -523,7 +523,8 @@ describe('host CI runner', () => {
     await f.unitStarted
     await Promise.all([...f.units.values()].map(stopUnit))
     expect((await f.settle(runId)).run).toMatchObject({ state: 'lost', exitCode: null })
-    expect(await readFile(join(f.root, 'ci/runs', runId, 'meta.json'), 'utf8')).toContain('"cleaned":true')
+    expect(await f.runner.handle({ operation: 'status' }))
+      .toMatchObject({ slotsUsed: 0, runs: [expect.objectContaining({ runId, state: 'lost' })] })
   })
 })
 
