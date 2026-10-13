@@ -51,6 +51,10 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'Caller selections omit empty parts and shard only selected tests; runner selections keep queued parts and pass empty shards. '
   + 'Poll every ticket in partitions. Retrying commandId returns the '
   + 'original tickets. ci_get returns state (queued, starting, running, passed, failed, canceled, lost), current step, '
+  + 'ci_run requires jobs:cancel as well as the CI start grants. A newer descendant commit cancels active tickets '
+  + 'of the same suite, repository, workspace and requester on the same confirmed branch or Agent execution. '
+  + 'Main, unrelated branches and noSupersede=true tickets are kept. ci_get returns supersededBy and '
+  + 'the message superseded by <ticket>; follow that replacement ticket and all its partitions. '
   + 'computer, part, shard, exit code, group state and a 32 KiB log tail; ci_logs_read pages the full log '
   + `for authorized callers. maxBytes defaults to ${CI_LOG_MAX_BYTES} bytes and larger requests are clamped to `
   + `that maximum; responses report the applied maxBytes and nextOffset. group=true divides the capped budget `
@@ -118,7 +122,7 @@ export function registerCiTools(server: McpServer, context: CiContext) {
     description: CI_CAPABILITY_DETAIL,
     inputSchema: operator ? OperatorCiRunInputSchema : CiRunInputSchema,
     outputSchema: CiRunOutputSchema,
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
   }, input => invoke('ci_run', () => ci.run(context.principal, input)))
   if (available('ci_get')) server.registerTool('ci_get', {
     description: CI_CAPABILITY_DETAIL,
