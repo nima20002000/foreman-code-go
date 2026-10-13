@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { homedir, hostname, userInfo } from 'node:os'
 import { join } from 'node:path'
@@ -20,6 +20,7 @@ import { fallbackOnError } from '../diagnostics/ignoredError.js'
 import { readCloudRun, saveCloudRun } from './cloudJournal.js'
 import { ciLogPage } from './logPage.js'
 import { sanitizeCiText } from './text.js'
+import { withProviderPoll } from './providerPoll.js'
 
 const LOG_LIMIT = 4 * 1024 * 1024
 const MAX_DISPATCH_ATTEMPTS = 3
@@ -49,7 +50,6 @@ interface Publication {
 interface MirrorMaintenance {
   at: number
   cleanup: Promise<void> | undefined
-  afterFinish: (() => void) | undefined
   keep: Set<string>
 }
 const mirrorPublications = new Map<string, Map<string, Promise<Publication>>>()
@@ -148,13 +148,30 @@ export class CloudCi {
   }
 
   private async answer(request: Extract<CiHostRequest, { operation: 'read' }>, run: CloudRun) {
-    const log = await readFile(this.path(run.runId, 'log')).catch(() => Buffer.alloc(0))
+    const page = await this.logPage(run.runId, request.afterOffset, request.maxBytes).catch(fallbackOnError(
+      { text: '', nextOffset: request.afterOffset, logBytes: 0 },
+      'jobs', 'read CI log', { runId: run.runId }, ['ENOENT'],
+    ))
     if (!['starting', 'running', 'queued'].includes(run.state)) this.schedulePrune(run, run.runId)
-    const page = ciLogPage(log, request.afterOffset, request.maxBytes)
-    return CiHostReplySchema.parse({ operation: 'read', run: this.view(run, log.length),
+    return CiHostReplySchema.parse({ operation: 'read', run: this.view(run, page.logBytes),
       text: sanitizeCiText(page.text), nextOffset: page.nextOffset,
       ...(request.durations && run.durations ? { durations: run.durations } : {}),
       ...(request.testResults && run.testResults ? { testResults: run.testResults } : {}) })
+  }
+
+  private async logPage(runId: string, afterOffset: number, maxBytes: number) {
+    const handle = await open(this.path(runId, 'log'), 'r')
+    try {
+      const { size } = await handle.stat()
+      const length = Math.min(maxBytes, Math.max(0, size - afterOffset))
+      if (!length) return { text: '', nextOffset: afterOffset, logBytes: size }
+      const buffer = Buffer.alloc(length)
+      const { bytesRead } = await handle.read(buffer, 0, length, afterOffset)
+      const page = ciLogPage(buffer.subarray(0, bytesRead), 0, maxBytes)
+      return { text: page.text, nextOffset: afterOffset + page.nextOffset, logBytes: size }
+    } finally {
+      await handle.close()
+    }
   }
 
   /** Main's login for the service works; checked at most once a minute. */
@@ -359,15 +376,10 @@ export class CloudCi {
   private schedulePrune(run: Pick<CloudRun, 'repository' | 'mirror'>, finishedRunId?: string) {
     const key = this.mirrorKey(run.repository, run.mirror)
     const maintenance: MirrorMaintenance = mirrorMaintenance.get(key)
-      ?? { at: -Infinity, cleanup: undefined, afterFinish: undefined, keep: new Set<string>() }
+      ?? { at: -Infinity, cleanup: undefined, keep: new Set<string>() }
     mirrorMaintenance.set(key, maintenance)
     const now = this.ports.now().getTime()
-    if (maintenance.cleanup) {
-      // Coalesce completions during a sweep into one more pass over the finished tickets.
-      if (finishedRunId) maintenance.afterFinish = () => this.schedulePrune(run, finishedRunId)
-      return
-    }
-    if (!finishedRunId && now - maintenance.at < PRUNE_INTERVAL_MS) return
+    if (maintenance.cleanup || now - maintenance.at < PRUNE_INTERVAL_MS) return
     maintenance.keep.clear()
     for (const reservation of publishingBranches.get(run.mirror) ?? []) {
       const branch = reservation.split('\n')[1]!
@@ -379,20 +391,7 @@ export class CloudCi {
     maintenance.cleanup = cleanup
     void cleanup.then(() => {
       maintenance.cleanup = undefined
-      const afterFinish = maintenance.afterFinish
-      maintenance.afterFinish = undefined
-      afterFinish?.()
     })
-  }
-
-  private forgetBranches(run: Pick<CloudRun, 'repository' | 'mirror'>, branches: string[]) {
-    const publications = this.publications(run.repository, run.mirror)
-    const removed = new Set(branches)
-    for (const key of publications.keys()) {
-      const [commit, , baseCommit] = key.split('\n')
-      const branch = baseCommit ? `ci/${commit}-${baseCommit}` : `ci/${commit}`
-      if (removed.has(branch)) publications.delete(key)
-    }
   }
 
   private async prune(run: Pick<CloudRun, 'repository' | 'mirror'>, finishedRunId?: string) {
@@ -404,11 +403,25 @@ export class CloudCi {
         ids.delete(finishedRunId)
         activeRuns = { ...activeRuns, ids }
       }
+      const publications = this.publications(run.repository, run.mirror)
+      const publicationKeys = new Map<string, string[]>()
+      for (const key of publications.keys()) {
+        const [commit, , baseCommit] = key.split('\n')
+        const branch = baseCommit ? `ci/${commit}-${baseCommit}` : `ci/${commit}`
+        const keys = publicationKeys.get(branch) ?? []
+        keys.push(key)
+        publicationKeys.set(branch, keys)
+      }
+      const reserved = mirrorMaintenance.get(this.mirrorKey(run.repository, run.mirror))!.keep
       await pruneMirrorBranches({ mirror: run.mirror, activeRuns,
         roots: [this.root, join(this.root, '..', 'github'), join(this.root, '..', 'circleci')],
         // Starts during this sweep stay protected even after their reservation becomes a persisted ticket.
-        keep: () => [...(mirrorMaintenance.get(this.mirrorKey(run.repository, run.mirror))?.keep ?? [])],
-        beforeRemove: branches => this.forgetBranches(run, branches),
+        keep: () => reserved,
+        beforeRemove: branches => {
+          for (const branch of branches) {
+            for (const key of publicationKeys.get(branch) ?? []) publications.delete(key)
+          }
+        },
         git: async args => {
           const result = await this.git.git(args, { cwd: clone, signal: AbortSignal.timeout(120_000) })
           if (result.code !== 0) throw new Error(`CI mirror branch cleanup failed: ${result.stderr.trim().slice(-500)}`)
@@ -631,10 +644,11 @@ export class CloudCi {
     try {
       // A poll that waited for its slot skips the service if a rate limit was hit meanwhile.
       if (this.ports.now().getTime() < this.backoff.until) return run
-      let next: CloudRun
-      if (run.cancellation) next = await this.cancelAttempts(run)
-      else if (pendingCollection) next = await this.collect(run)
-      else next = await this.follow(run)
+      const next = await withProviderPoll(async () => {
+        if (run.cancellation) return this.cancelAttempts(run)
+        if (pendingCollection) return this.collect(run)
+        return this.follow(run)
+      })
       this.backoff = { until: 0, ms: 0 }
       if (next.reconciliation && next.state !== 'starting') {
         const recovered = { ...next,
