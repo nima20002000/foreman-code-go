@@ -333,7 +333,7 @@ test('cloud Node bootstrap stops after three failed installs before enabling the
   assert.match(result.stderr, /Version '22\.23\.2' not found/)
 })
 
-for (const provider of ['github', 'circleci']) {
+for (const provider of ['github', 'circleci', 'circleci-ssh']) {
   test(`${provider} checkout retains only the tested commit and its comparison base`, t => {
     const directory = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'ci-checkout-'))
     t.after(() => rmSync(directory, { recursive: true, force: true }))
@@ -378,8 +378,25 @@ for (const provider of ['github', 'circleci']) {
         git(directory, 'clone', '-q', `file://${origin}`, checkout)
         git(checkout, 'checkout', '--detach', commit)
       } else {
+        let repositoryUrl = `file://${origin}`
+        const bin = join(directory, 'bin')
+        mkdirSync(bin)
+        if (provider === 'circleci-ssh') {
+          repositoryUrl = 'git@github.com:octo/site-ci.git'
+          writeFileSync(join(bin, 'git'), `#!${process.execPath}
+const { spawnSync } = require('node:child_process')
+const args = process.argv.slice(2)
+if (args.includes('git@github.com:octo/site-ci.git')) process.exit(42)
+const mapped = args.map(value => value === 'https://github.com/octo/site-ci.git' ? process.env.FIXTURE_ORIGIN : value)
+const result = spawnSync(process.env.FIXTURE_GIT, mapped, { stdio: 'inherit' })
+process.exit(result.status ?? 1)
+`, { mode: 0o755 })
+        }
+        const gitExecutable = spawnSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim()
         const result = spawnSync('bash', ['-ec', step.run.command], { cwd: checkout, encoding: 'utf8',
-          env: { ...environment, CIRCLE_REPOSITORY_URL: `file://${origin}`, CIRCLE_SHA1: commit, BASE_COMMIT: base } })
+          env: { ...environment, PATH: `${bin}${delimiter}${process.env.PATH}`, FIXTURE_GIT: gitExecutable,
+            FIXTURE_ORIGIN: `file://${origin}`, CIRCLE_REPOSITORY_URL: repositoryUrl,
+            CIRCLE_SHA1: commit, BASE_COMMIT: base } })
         assert.equal(result.status, 0, result.stderr)
       }
     }
