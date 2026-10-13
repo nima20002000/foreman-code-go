@@ -112,7 +112,7 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
     availableMemoryBytes: () => 16 * 2 ** 30,
     run: async (file, args, runOptions = {}) => {
       if (file === 'gh') return { code: options.github === false ? 1 : 0, stdout: '', stderr: '' }
-      if (file === 'git' && args.includes('clone')) {
+      if (file === 'git' && args.some(value => value.startsWith('https://github.com/'))) {
         return system.run('git', args.map(value => value.startsWith('https://github.com/') ? origin : value), runOptions)
       }
       if (file === 'systemd-run') {

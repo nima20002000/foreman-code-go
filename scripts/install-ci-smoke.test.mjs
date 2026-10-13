@@ -2,8 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { once } from 'node:events'
 import { createServer } from 'node:http'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
-async function fixture(t, failure) {
+async function fixture(t, failure, token) {
   const computers = [
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'first' }, ready: true },
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'second' }, ready: true },
@@ -18,9 +21,24 @@ async function fixture(t, failure) {
   const admissions = []
   const canceled = []
   let probes = 0
+  const authenticated = []
   const server = createServer(async (request, response) => {
     response.setHeader('content-type', 'application/json')
-    if (request.url === '/health/live') {
+    if (request.url.startsWith('/api/')) {
+      if (token && request.headers.authorization !== `Bearer ${token}`) {
+        response.statusCode = 403
+        response.end(JSON.stringify({ code: 'LOCAL_HUMAN_REQUIRED',
+          message: 'Agent processes require an application credential.' }))
+        return
+      }
+      authenticated.push({ method: request.method, url: request.url })
+    }
+    if (request.url.startsWith('/api/management/workspaces?')) {
+      const nextPage = request.url.includes('cursor=next')
+      response.end(JSON.stringify({ items: nextPage ? [{ workspace: { id: 'workspace',
+        repository: { owner: 'example', name: 'project' } } }] : [],
+        pageInfo: { nextCursor: nextPage ? null : 'next' } }))
+    } else if (request.url === '/health/live') {
       probes++
       if (failure === 'stall' && admissions.length) return
       response.end('{}')
@@ -40,11 +58,12 @@ async function fixture(t, failure) {
       response.end('{}')
     } else {
       const input = admissions[Number(request.url.split('-').at(-1)) - 1]
-      const failed = failure === 'setup' && input?.smokeComputer?.deviceId === 'second'
+      const failed = ['setup', 'credential-echo'].includes(failure) && input?.smokeComputer?.deviceId === 'second'
       let state = failed ? 'failed' : 'passed'
       if (failure === 'stall' && input?.smokeComputer) state = 'running'
-      response.end(JSON.stringify({ run: { state, exitCode: failed ? 1 : 0,
-        message: failed ? 'ERR_PNPM_NO_OFFLINE_META: package metadata missing' : null,
+      let message = failed ? 'ERR_PNPM_NO_OFFLINE_META: package metadata missing' : null
+      if (failure === 'credential-echo' && failed) message = `Executor echoed ${token}`
+      response.end(JSON.stringify({ run: { state, exitCode: failed ? 1 : 0, message,
         computer: { hostRef: input?.smokeComputer }, files: input?.files },
         logTail: failed ? 'setup failed: ERR_PNPM_NO_OFFLINE_META' : 'one test passed' }))
     }
@@ -52,7 +71,7 @@ async function fixture(t, failure) {
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)) })
-  return { origin: `http://127.0.0.1:${server.address().port}`, admissions, canceled, computers,
+  return { origin: `http://127.0.0.1:${server.address().port}`, admissions, canceled, computers, authenticated,
     probes: () => probes }
 }
 
@@ -105,4 +124,51 @@ test('only the explicit install opt-out bypasses CI smoke', async t => {
     process.env.FOREMAN_INSTALL_SKIP_CI_SMOKE = value
     await assert.rejects(runProductionCiSmoke(input), { code: 'ENOENT' })
   }
+})
+
+async function releaseFixture(t) {
+  const root = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(root, { recursive: true })
+  const release = await mkdtemp(join(root, 'install-smoke-'))
+  t.after(() => rm(release, { recursive: true, force: true }))
+  await writeFile(join(release, 'ci-smoke.json'), JSON.stringify({
+    repository: 'example/project', commit: options.commit,
+  }))
+  return release
+}
+
+test('production smoke authenticates workspace pagination and every CI request from an agent', async t => {
+  const { runProductionCiSmoke } = await import('./install-ci-smoke.mjs')
+  const token = 'smoke-test-credential'
+  const f = await fixture(t, undefined, token)
+  const denied = await fetch(`${f.origin}/api/management/workspaces?limit=100`)
+  assert.equal(denied.status, 403)
+  assert.equal((await denied.json()).code, 'LOCAL_HUMAN_REQUIRED')
+  await runProductionCiSmoke({ ...options, origin: f.origin, release: await releaseFixture(t), token })
+  assert.equal(f.authenticated.filter(request => request.url.includes('workspaces?')).length, 2)
+  assert.equal(f.admissions.length, 6)
+  assert.ok(f.authenticated.some(request => request.url.endsWith('/computers')))
+  assert.ok(f.authenticated.some(request => request.url.endsWith('/tests')))
+})
+
+test('authenticated smoke cancels admitted tickets after an executor failure', async t => {
+  const { runProductionCiSmoke } = await import('./install-ci-smoke.mjs')
+  const token = 'smoke-test-credential'
+  const f = await fixture(t, 'setup', token)
+  await assert.rejects(runProductionCiSmoke({ ...options, origin: f.origin,
+    release: await releaseFixture(t), token }), /ERR_PNPM_NO_OFFLINE_META/)
+  assert.ok(f.canceled.length > 0)
+  assert.equal(f.authenticated.filter(request => request.method === 'DELETE').length, f.canceled.length)
+})
+
+test('smoke failure diagnostics redact the application token echoed by an executor', async t => {
+  const { runProductionCiSmoke } = await import('./install-ci-smoke.mjs')
+  const token = 'smoke-test-credential'
+  const f = await fixture(t, 'credential-echo', token)
+  await assert.rejects(runProductionCiSmoke({ ...options, origin: f.origin,
+    release: await releaseFixture(t), token }), error => {
+    assert.match(error.message, /Executor echoed \[redacted\]/)
+    assert.ok(!error.message.includes(token))
+    return true
+  })
 })

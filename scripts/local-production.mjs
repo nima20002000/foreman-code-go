@@ -202,6 +202,23 @@ async function rollbackRelease(previousRelease) {
   console.error('Restored the previous production release.')
 }
 
+async function runAuthenticatedCiSmoke(release, environment) {
+  if (process.env.FOREMAN_INSTALL_SKIP_CI_SMOKE === '1') {
+    await runProductionCiSmoke({ origin, release })
+    return
+  }
+  const api = join(release, 'apps/api/dist')
+  const { loadConfig } = await import(pathToFileURL(join(api, 'config.js')))
+  const { createDatabase } = await import(pathToFileURL(join(api, 'infrastructure/database.js')))
+  const { withInstallSmokeCredential } = await import(pathToFileURL(join(api, 'cli/installSmokeCredential.js')))
+  const database = createDatabase(loadConfig({ ...process.env, ...environment }).database)
+  try {
+    await withInstallSmokeCredential(database.pool, token => runProductionCiSmoke({ origin, release, token }))
+  } finally {
+    await database.close()
+  }
+}
+
 async function install() {
   // The worker service renderer also validates the installation paths before any mutation.
   service('@NODE@ @APP@ @STATE@ @HOME@ @PATH@')
@@ -242,7 +259,7 @@ async function install() {
     await waitForReady({ start: async () => {
       await enableProductionServices(run, [units.database, units.api], { firstInstall })
       await run('/usr/bin/systemctl', ['--user', 'start', units.api])
-    }, smoke: () => runProductionCiSmoke({ origin, release }),
+    }, smoke: () => runAuthenticatedCiSmoke(release, environment),
       rollback: () => rollbackRelease(previousRelease) })
     const pruned = await pruneReleases(join(app, 'releases'), [release, previousRelease])
     if (pruned.length) console.log(`Removed ${pruned.length} old release(s); kept the current and previous release.`)
