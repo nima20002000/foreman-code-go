@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { GraphTransactionSql } from '../run-graph/connection.js'
 import type { AgentPlacementProducer } from './agentProducer.js'
 import { deriveDispatch, freezePlacement } from './binding.js'
+import { approvalFixture } from '../../../test/helpers/wave25ApprovalFixture.js'
+import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import { assertRemoteExecutionAuthority } from './executionAuthority.js'
 
 const ports = vi.hoisted(() => ({ intent: vi.fn(), placement: vi.fn(), installation: vi.fn(), principal: vi.fn() }))
@@ -30,12 +32,16 @@ function fixture() {
   if (placement.hostRef.kind !== 'device') throw new Error('Expected device placement')
   const connection = { mainId, deviceId: placement.hostRef.deviceId, ...registration,
     bootId: randomUUID(), connectionGeneration: 1 }
-  const state = { grant: true, origin: connection, cleanup: false, stopped: false, receipt: true }
-  const receipt = { schemaVersion: 1, intent, connection, workerIncarnationId: randomUUID(), sequence: 4,
+  const state = { grant: true, origin: connection, cleanup: false, stopped: false, receipt: true, reviewer: undefined as unknown, reviewsPending: false }
+  const receipt: RemoteOperationReceipt = { schemaVersion: 1, intent, connection, workerIncarnationId: randomUUID(), sequence: 4,
     phase: 'running', entryAttempted: true, turnEntryAttempted: true, stopFence: false, controls: [],
     turnInput: { correlationId: 'execution:execution', promptDigest: digest },
     native: { sessionId: 'native-session', turnId: 'original-turn', processIdentityDigest: digest } }
   const sql = { query: async (text: string) => {
+    if (text.startsWith('select r.record as run')) return { rows: state.reviewer ? [state.reviewer] : [],
+      rowCount: state.reviewer ? 1 : 0 }
+    if (text.startsWith('select 1 from review_jobs')) return { rows: state.reviewsPending ? [{}] : [],
+      rowCount: state.reviewsPending ? 1 : 0 }
     if (text.includes('from runs r')) return { rows: [{ authorization_principal_id: 'principal', workspace_id: 'workspace',
       workflow_id: 'workflow', execution_state: 'running', stopped: state.stopped, cleanup: state.cleanup }], rowCount: 1 }
     if (text.includes('execution_dispatch_owner_grants')) return { rows: [], rowCount: state.grant ? 1 : 0 }
@@ -66,6 +72,31 @@ describe('remote cleanup authorization', () => {
     await expect(f.authorize('control')).rejects.toThrow()
     await expect(f.authorize('stop')).resolves.toEqual({ cleanupOnly: true })
     await expect(f.authorize('read')).resolves.toEqual({ cleanupOnly: true })
+  })
+
+  it('authorizes closure of a successful idle reviewer while preserving live Run grants', async () => {
+    const f = fixture()
+    const saved = approvalFixture()
+    const execution = { ...saved.executions[0]!, id: f.intent.executionId, runId: f.intent.runId,
+      workflowNodeId: f.intent.nodeId, nativeSessionId: f.receipt.native!.sessionId,
+      state: 'completed' as const, result: { outcome: 'succeeded' as const } }
+    saved.version.entryNodeId = f.intent.nodeId
+    saved.version.definition.entryNodeId = f.intent.nodeId
+    saved.version.definition.nodes[0]!.id = f.intent.nodeId
+    for (const edge of saved.version.definition.edges) edge.source = f.intent.nodeId
+    f.state.reviewer = { run: { ...saved.run, id: f.intent.runId }, version: saved.version,
+      execution, configuration: saved.configurations[0], finalized: true,
+      reference: { harness: 'codex', providerVersion: 'fixture', nativeSessionId: f.receipt.native!.sessionId } }
+    f.receipt.retainedReviewer = { agentId: execution.agentId, workflowTurnId: f.receipt.native!.turnId!,
+      result: execution.result, expiresAt: '2026-10-01T00:01:00.000Z' }
+    await expect(f.authorize('stop')).resolves.toBeUndefined()
+    expect(f.locations.revalidateRunAuthorization).toHaveBeenCalled()
+    expect(f.pins).toHaveBeenCalled()
+    f.state.reviewsPending = true
+    await expect(f.authorize('stop')).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
+    f.state.reviewsPending = false
+    f.locations.revalidateRunAuthorization.mockRejectedValue(new Error('Permission revoked'))
+    await expect(f.authorize('stop')).rejects.toThrow('Permission revoked')
   })
 
   it('requires a committed cleanup intent even when the caller holds the original grant', async () => {

@@ -7,6 +7,7 @@ import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-exec
 import type { AcceptedExecutionBinding } from '../../placement/nativeComposition.js'
 import { ExclusiveGraphConnection } from '../../run-graph/connection.js'
 import type { RunOwnership } from '../ownership.js'
+import { approvalFixture } from '../../../../test/helpers/wave25ApprovalFixture.js'
 import { prepareRemoteOwnerControl } from './ownerControl.js'
 import { readAdmittedRemoteOwnerControl } from './ownerControlAdmission.js'
 
@@ -25,10 +26,13 @@ function fixture() {
     graphThreadId: 'run', request: {}, approval: { handler: 'user' }, responseOptions: [option], status: 'decided', selectedOptionId: option.optionId,
     selectedSemantic: option.semantic, nativeResponse: { decision: 'approved' }, deliveryState: 'not_started', decidedAt: now, createdAt: now, updatedAt: now }
   const state = { receipt: receipt as RemoteOperationReceipt | undefined, interaction: interaction as DurableInteraction | undefined,
-    cleanup: new Date(now) as Date | undefined, owned: true, queries: [] as string[], control: undefined as unknown }
+    cleanup: new Date(now) as Date | undefined, reviewer: undefined as unknown, reviewsPending: false,
+    owned: true, queries: [] as string[], control: undefined as unknown }
   const raw = { query: async (text: string) => {
     state.queries.push(text)
-    const rows = text.startsWith('select receipt') ? state.receipt ? [{ receipt: state.receipt }] : []
+    const rows = text.startsWith('select r.record as run') ? state.reviewer ? [state.reviewer] : []
+      : text.startsWith('select 1 from review_jobs') ? state.reviewsPending ? [{}] : []
+      : text.startsWith('select receipt') ? state.receipt ? [{ receipt: state.receipt }] : []
       : text.startsWith('select record') ? state.interaction ? [{ record: state.interaction }] : []
         : text.startsWith('select requested_at') ? state.cleanup ? [{ requested_at: state.cleanup }] : []
           : text.startsWith('select remote_owner_control') ? [{ remote_owner_control: state.control }] : []
@@ -70,6 +74,34 @@ describe('SQL-only admitted remote control preparation', () => {
     expect(f.state.queries.every(text => /^(begin|select|commit)/.test(text))).toBe(true)
     await f.db.close()
   })
+  it('closes the original successful idle reviewer without stopping the Run', async () => {
+    const f = fixture()
+    const saved = approvalFixture()
+    const execution = { ...saved.executions[0]!, id: intent.executionId, runId: intent.runId,
+      workflowNodeId: intent.nodeId, nativeSessionId: native.sessionId, state: 'completed' as const,
+      result: { outcome: 'succeeded' as const, output: { text: 'Original workflow answer' } } }
+    saved.version.entryNodeId = intent.nodeId
+    saved.version.definition.entryNodeId = intent.nodeId
+    saved.version.definition.nodes[0]!.id = intent.nodeId
+    for (const edge of saved.version.definition.edges) edge.source = intent.nodeId
+    f.state.reviewer = { run: { ...saved.run, id: intent.runId }, version: saved.version,
+      execution, configuration: saved.configurations[0], finalized: true,
+      reference: { harness: 'codex', providerVersion: 'fixture', nativeSessionId: native.sessionId } }
+    f.state.cleanup = undefined
+    f.state.receipt!.retainedReviewer = { agentId: execution.agentId,
+      workflowTurnId: native.turnId, result: execution.result, expiresAt: '2026-10-01T00:01:00.000Z' }
+    const command = await f.prepare('stop')
+    expect(command).toMatchObject({ commandId: 'close-reviewer:operation', native,
+      action: { kind: 'stop' }, owner: intent.owner })
+    expect(await f.prepare('stop')).toEqual(command)
+    f.state.reviewsPending = true
+    await expect(f.prepare('stop')).rejects.toThrow('cleanup intent')
+    f.state.reviewsPending = false
+    f.state.receipt!.retainedReviewer.result = { outcome: 'succeeded', output: { text: 'Different answer' } }
+    await expect(f.prepare('stop')).rejects.toThrow('cleanup intent')
+    await f.db.close()
+  })
+
   it('reuses a Stop identity from the durable cleanup request', async () => {
     const f = fixture()
     expect(await f.prepare('stop')).toEqual(await f.prepare('stop'))
