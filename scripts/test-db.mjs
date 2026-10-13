@@ -2,12 +2,10 @@ import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { ciPostgresCacheDirectory } from './ci-postgres-cache.mjs'
 
-const action = process.argv[2]
-if (!['up', 'down', 'stop'].includes(action)) throw new Error('Usage: test-db.mjs up|down|stop')
-function reusePrivateDatabase() {
+function reusePrivateDatabase(action) {
   if (action !== 'up') throw new Error('The verification runtime owns private PostgreSQL shutdown')
   if (process.env.FOREMAN_CODE_CI_TEST_DATABASE !== 'running') {
     throw new Error('The verification runtime must start its private PostgreSQL before database startup')
@@ -49,16 +47,18 @@ function growDatabaseLimits(docker, project, environment) {
   }
 }
 
-function composeDatabase(persistentCache) {
-  const runId = process.env.FOREMAN_CODE_CI_HOST_RUN_ID
+export function composeDatabase(action, {
+  persistentCache, environment: sourceEnvironment = process.env, docker: dockerRunner,
+} = {}) {
+  const runId = sourceEnvironment.FOREMAN_CODE_CI_HOST_RUN_ID
   if (runId !== undefined && !/^[0-9a-f-]{36}$/.test(runId)) throw new Error('Invalid host CI database owner')
   const cacheKey = persistentCache && createHash('sha256').update(persistentCache).digest('hex').slice(0, 16)
   const project = cacheKey ? `foreman-ci-pg-${cacheKey}` : runId ? `foreman-ci-${runId}` : 'graphql-tests'
   const file = fileURLToPath(new URL('../compose.test.yaml', import.meta.url))
-  const environment = { ...process.env }
+  const environment = { ...sourceEnvironment }
   for (const key of Object.keys(environment)) if (key.startsWith('COMPOSE_')) delete environment[key]
   if (runId) environment.FOREMAN_CODE_CI_DATABASE_PORT = '0'
-  function docker(args, input) {
+  const docker = dockerRunner ?? function (args, input) {
     const result = spawnSync('docker', args, { encoding: 'utf8', env: environment, input })
     if (result.error) throw result.error
     if (result.status !== 0) throw new Error(result.stderr || `docker ${args[0]} failed`)
@@ -106,7 +106,7 @@ function composeDatabase(persistentCache) {
   }
 }
 
-function hostDatabase() {
+function hostDatabase(action) {
   const cache = ciPostgresCacheDirectory()
   const marker = process.env.TMPDIR && join(process.env.TMPDIR, 'test-database-template-cache')
   if (action !== 'up' && marker && existsSync(marker)) {
@@ -114,11 +114,11 @@ function hostDatabase() {
     return
   }
   if (action === 'up' && marker) rmSync(marker, { force: true })
-  if (!cache || action !== 'up') return composeDatabase()
+  if (!cache || action !== 'up') return composeDatabase(action)
   try {
     mkdirSync(cache, { recursive: true, mode: 0o700 })
     const directory = realpathSync(cache)
-    if (process.env.FOREMAN_CODE_CI_POSTGRES_LOCKED === '1') return composeDatabase(directory)
+    if (process.env.FOREMAN_CODE_CI_POSTGRES_LOCKED === '1') return composeDatabase(action, { persistentCache: directory })
     // Different jobs can reach a cold computer together; only one starts the shared server.
     const result = spawnSync('flock', ['-w', '90', join(directory, 'startup.lock'),
       process.execPath, fileURLToPath(import.meta.url), action], {
@@ -130,11 +130,15 @@ function hostDatabase() {
     process.stderr.write(result.stderr)
   } catch (error) {
     process.stderr.write(`[test-db] persistent server unavailable; using job server: ${error.message}\n`)
-    composeDatabase()
+    composeDatabase(action)
   }
 }
 
-const started = performance.now()
-if (process.env.FOREMAN_CODE_VERIFICATION_ENVIRONMENT === 'isolated-job-v1') reusePrivateDatabase()
-else hostDatabase()
-process.stdout.write(`[test-db] ${action} completed in ${Math.round(performance.now() - started)} ms\n`)
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const action = process.argv[2]
+  if (!['up', 'down', 'stop'].includes(action)) throw new Error('Usage: test-db.mjs up|down|stop')
+  const started = performance.now()
+  if (process.env.FOREMAN_CODE_VERIFICATION_ENVIRONMENT === 'isolated-job-v1') reusePrivateDatabase(action)
+  else hostDatabase(action)
+  process.stdout.write(`[test-db] ${action} completed in ${Math.round(performance.now() - started)} ms\n`)
+}
