@@ -17,6 +17,7 @@ import { AgentChatService } from '../src/modules/conversations/agentChat.js'
 import { PostgresAgentChatRepository } from '../src/modules/conversations/agentChatRepository.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { createWorkflowNativeCaptureChannel } from '../src/modules/interactions/workflowNativeCapture.js'
+import { RunGraphReadService } from '../src/modules/run-graph/readService.js'
 import { PostgresRunRepository } from '../src/modules/runs/postgres.js'
 import { repeatTerminalResolution } from '../src/modules/runs/repeatNode.js'
 import { createWorkflowRepositoryServices } from '../src/modules/runs/workflowRepositoryServices.js'
@@ -244,6 +245,35 @@ describe('Persisted execution activity through HTTP and authenticated MCP', { ti
       },
     }
   }
+
+  it('keeps retained execution history consistent with canonical graph readback', async () => {
+    const fixture = await setup()
+    const { graph } = fixture
+    const reader = new RunGraphReadService(database.pool, { qualifiedReads: true })
+    try {
+      const initial = await reader.snapshot(graph.writer.principal, graph.readRequest)
+      expect(initial.state.executions).toMatchObject([{
+        identity: { executionId: fixture.executionId }, state: 'running',
+      }])
+      await fixture.seedNewerExecutions()
+      const retained = await reader.snapshot(graph.writer.principal, graph.readRequest)
+      expect(retained.state.executions).toHaveLength(22)
+      expect(retained.state.executions.every(execution =>
+        execution.state === 'completed' && execution.resultOutcome === 'canceled')).toBe(true)
+      expect(retained.state.resolutions).toMatchObject([{
+        outside: true, value: { execution: { executionId: fixture.executionId }, resolution: 'canceled' },
+      }])
+      const overview = await fixture.http()
+      expect(overview.executions).toHaveLength(20)
+      expect(overview.hasEarlierExecutions).toBe(true)
+      expect(await fixture.mcpPage()).toEqual(overview)
+      expect(await reader.snapshot(graph.writer.principal, graph.readRequest)).toEqual(retained)
+      await fixture.denied()
+      expect(fixture.managers).not.toHaveBeenCalled()
+    } finally {
+      await fixture.close()
+    }
+  })
 
   it('reads the MCP overview after retained history exceeds twenty executions', async () => {
     const fixture = await setup()
