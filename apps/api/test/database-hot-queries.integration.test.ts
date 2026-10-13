@@ -55,7 +55,7 @@ async function persistExecution(db: Awaited<ReturnType<typeof currentDatabase>>,
 }
 
 it('upgrades hot query access while preserving native facts, CI revisions and authenticated reads', async () => {
-  const db = await currentDatabase({ beforeMigration: databaseHotQueriesMigration.version })
+  const db = await currentDatabase({ deferMigration: databaseHotQueriesMigration.version })
   const fixture = await graphFixture(db, { form: 'single', qualifiedReads: true })
   const executionId = randomUUID()
   const computer: HostCiComputer = {

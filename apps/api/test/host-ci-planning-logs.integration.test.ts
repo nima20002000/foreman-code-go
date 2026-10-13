@@ -239,10 +239,13 @@ it('retains persisted host capacity through failed cancellation and unavailable 
     f.control.state = ''
     const denied = await f.connect(CI_GET_ACTIONS)
     expect((await f.call(denied, 'ci_cancel', { ticketId: active.id })).isError).toBe(true)
-    await f.value('ci_cancel', { ticketId: active.id })
+    const cancellation = await f.call(await f.connect(['jobs:cancel']), 'ci_cancel', { ticketId: active.id })
+    expect(cancellation.isError).toBe(true)
+    expect(decodeMcpToolResult(cancellation)).toMatchObject({ error: { code: 'CI_CANCEL_PENDING' } })
     await f.ci.dispatch()
     const pending = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: active.id }))
-    expect(pending.run).toMatchObject({ state: 'running', finishedAt: null })
+    expect(pending.run).toMatchObject({ state: 'running', finishedAt: null,
+      cancellation: { source: 'mcp', reason: 'direct' } })
     expect(pending.partitions!.filter(run => run.id !== active.id).every(run => run.state === 'queued')).toBe(true)
     const occupied = (await database.pool.query<{ host_key: string | null }>(
       'select host_key from ci_runs where id=$1', [active.id])).rows[0]!

@@ -598,7 +598,7 @@ export class HostCiService {
     assertCiReadAccess(caller, scope.executionId, run)
     this.stoppingRuns += 1
     try {
-      await this.dispatching
+      // Record intent before waiting for remote entry; the ticket lock protects executor cleanup.
       return await this.cancelTicket(scope.workspaceId, run.id, {
         principalId: caller.id, source, commandId: input.commandId ?? randomUUID(), reason: 'direct',
       })
