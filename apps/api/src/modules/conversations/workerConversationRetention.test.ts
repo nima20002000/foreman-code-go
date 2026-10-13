@@ -106,7 +106,7 @@ it('archives acknowledged closed conversations while retaining replay identities
     runId: 'run', nodeId: 'node', executionId: 'execution', occurrenceId: 'occurrence', occurrenceIndex: 0,
     technicalAttempt: 1, attemptId: 'attempt', operationId: 'operation', bindingHash: 'a'.repeat(64),
     inputDigest: `sha256:${'a'.repeat(64)}`, owner: { grantId: 'grant', epoch: '1' } }
-  await journal.accept(intent, fixture.connection, randomUUID())
+  await journal.accept(intent, fixture.deviceConnection, randomUUID())
   expect((await journal.status('operation')).status).toBe('known')
   await expect(journal.conversations.receive(fixture.binding, fixture.connection)).rejects.toThrow('full')
 })
