@@ -1,3 +1,7 @@
+import { existsSync, readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { createRuntimeBuildIdentity } from '@foreman-code/contracts/runtime-build-identity-node'
+import { RuntimeBuildIdentitySchema, type RuntimeBuildIdentity } from '@foreman-code/contracts'
 import type { FastifyInstance } from 'fastify'
 import { DomainError } from '../modules/errors.js'
 import type pg from 'pg'
@@ -17,6 +21,17 @@ export async function readRuntimeIdentity(pool: Pick<pg.Pool, 'query'>, root: st
   return RuntimeIdentitySchema.parse(createRuntimeIdentity(root, connectionString, result.rows[0]?.id ?? ''))
 }
 
+let capturedBuildIdentity: RuntimeBuildIdentity | undefined
+
+/** Capture once at startup; a running API must keep its compiled build identity if its checkout changes. */
+export function readRuntimeBuildIdentity() {
+  if (capturedBuildIdentity) return capturedBuildIdentity
+  const stamp = new URL('../runtime-build.json', import.meta.url)
+  const identity = existsSync(stamp) ? JSON.parse(readFileSync(stamp, 'utf8')) as unknown
+    : createRuntimeBuildIdentity(fileURLToPath(new URL('../../../../', import.meta.url)))
+  capturedBuildIdentity = RuntimeBuildIdentitySchema.parse(identity)
+  return capturedBuildIdentity
+}
 
 /** Reject a stale browser document before route handlers can admit commands or touch files. */
 export function registerRuntimeInstallationSecurity(app: FastifyInstance, identity: () => Promise<RuntimeIdentity>) {

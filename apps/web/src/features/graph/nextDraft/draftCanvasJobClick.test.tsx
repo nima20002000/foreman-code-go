@@ -1,3 +1,4 @@
+import { WorkflowDefinitionV3Schema } from '@foreman-code/contracts/wave25'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { definition } from '../../jobs/fixtures'
@@ -25,9 +26,9 @@ beforeEach(() => {
   useGraphDraftStore.getState().installNextDraft(key, structuredClone(context)) })
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); useGraphDraftStore.getState().clearAllDrafts() })
 
-function mount() {
+function mount(canvasGraph = graph) {
   const change = vi.fn()
-  render(<GraphPresentationProvider><DraftCanvas draftKey={key} graph={graph} agents={context.agents.map((item) => item.agent)} kind="execution"
+  render(<GraphPresentationProvider><DraftCanvas draftKey={key} graph={canvasGraph} agents={context.agents.map((item) => item.agent)} kind="execution"
     change={change} geometry={vi.fn()} pending={vi.fn()} report={vi.fn()} /></GraphPresentationProvider>)
   const job = () => screen.getByRole('button', { name: new RegExp(`${definition.name}, job`) })
   const agent = (index: number) => screen.getByRole('button', { name: new RegExp(`^Node ${index}, `) })
@@ -64,5 +65,23 @@ it('shows the CI server on a saved workflow Board without adding it to the graph
   fireEvent.click(server)
   const dialog = await screen.findByRole('dialog', { name: 'CI server' })
   expect(dialog).toHaveTextContent('No Run selected')
+  expect(change).not.toHaveBeenCalled()
+})
+
+it('keeps a contract-valid ci-server Agent distinct from the presentation CI server', async () => {
+  const authored = { ...graph, entryNodeId: 'ci-server',
+    nodes: graph.nodes.map((node) => node.id === 'node-0' ? { ...node, id: 'ci-server' } : node),
+    edges: graph.edges.map((edge) => ({ ...edge, source: edge.source === 'node-0' ? 'ci-server' : edge.source })) }
+  expect(WorkflowDefinitionV3Schema.parse(authored).nodes[0]!.id).toBe('ci-server')
+  const { agent, change } = mount(authored)
+  const owner = await screen.findByRole('button', { name: /^Node 0, / })
+  fireEvent.click(owner)
+  expect(owner.closest('.react-flow__node')).toHaveClass('selected')
+  expect(screen.getByLabelText('Connect Node 0 to another agent')).toBeInTheDocument()
+  expect(await screen.findByLabelText('Remove handoff from Node 0 to Node 1')).toBeInTheDocument()
+  fireEvent.click(await screen.findByRole('button', { name: /^CI server, Idle/ }))
+  expect(await screen.findByRole('dialog', { name: 'CI server' })).toHaveTextContent('No Run selected')
+  expect(owner.closest('.react-flow__node')).toHaveAttribute('data-id', 'ci-server')
+  expect(agent(1)).toBeInTheDocument()
   expect(change).not.toHaveBeenCalled()
 })

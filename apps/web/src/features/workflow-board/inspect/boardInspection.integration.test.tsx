@@ -735,3 +735,29 @@ describe('CI server on the Board', () => {
     expect(pinnedCanvas().querySelector('.ci-transfer')).toBeNull()
   })
 })
+
+it('inspects an immutable Run node named ci-server independently of its CI tower', async () => {
+  const uncaughtError = vi.fn()
+  window.addEventListener('error', uncaughtError)
+  try {
+    fixture = await inspectionBoardFixture('ci-node-collision', 'ci-server')
+    server.use(...fixture.mock.handlers)
+    await mount(href(fixture.runs.before.scope))
+    const canvas = pinnedCanvas()
+    const owner = await within(canvas).findByRole('button', { name: `Inspect Run node ${fixture.first.name}` })
+    expect(owner.closest('.react-flow__node')).toHaveAttribute('data-id', 'ci-server')
+    // jsdom mouse-down events lack the window view required by the canvas drag handlers.
+    fireEvent.click(owner)
+    await openDetails()
+    await userEvent.setup().selectOptions(within(inspector()).getByRole('combobox', { name: 'Run node' }), 'ci-server')
+    expect(within(inspector()).getByRole('combobox', { name: 'Run node' })).toHaveValue('ci-server')
+    const tower = await within(canvas).findByRole('button', { name: /^CI server, Idle/ })
+    expect(tower.closest('.react-flow__node')).not.toBe(owner.closest('.react-flow__node'))
+    fireEvent.click(tower)
+    expect(await screen.findByRole('dialog', { name: 'CI server' })).toBeVisible()
+    expect(fixture.runs.before.version.definition.nodes[0]!.id).toBe('ci-server')
+    expect(uncaughtError).not.toHaveBeenCalled()
+  } finally {
+    window.removeEventListener('error', uncaughtError)
+  }
+})

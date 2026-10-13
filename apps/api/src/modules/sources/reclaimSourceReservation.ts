@@ -1,7 +1,7 @@
 import { opendir, type FileHandle } from 'node:fs/promises'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
-import { MaterializationReceiptSchema, RootBindingSchema, SourceProjectQuotaSlotSchema }
+import { SOURCE_MATERIALIZATION_RECORD_MAX_BYTES, MaterializationReceiptSchema, RootBindingSchema, SourceProjectQuotaSlotSchema }
   from '@foreman-code/contracts/source-materialization'
 import { SourceOperationAttemptSchema, SourceOperationOwnerSchema,
   type SourceOperationOwner, type SourceReservationReclamation } from '@foreman-code/contracts/source-operations'
@@ -39,7 +39,7 @@ async function retainedWorkingTree(directory: FileHandle, root: SourceRootRecord
     return receipt?.sharedTree ? measureRetainedMaterializationFootprint(receipt) : null
   }
   try {
-    const raw = await readCleanupRecord(copy, 'receipt.json', signal, 2 * 1024 * 1024)
+    const raw = await readCleanupRecord(copy, 'receipt.json', signal, SOURCE_MATERIALIZATION_RECORD_MAX_BYTES)
     if (raw) {
       receipt = z.object({ receipt: MaterializationReceiptSchema }).parse(raw).receipt
       if (owner.record && !isDeepStrictEqual(receipt, owner.record.receipt)) {
@@ -139,7 +139,7 @@ async function releasedOwner(directory: FileHandle, name: string, root: SourceRo
     const claim = ClaimSchema.parse(raw)
     if (!ownsClaim(root, grant, claim)) return null
     const metadata = z.object({ receipt: MaterializationReceiptSchema }).parse(
-      await readCleanupRecord(copy, 'receipt.json', signal, 2 * 1024 * 1024))
+      await readCleanupRecord(copy, 'receipt.json', signal, SOURCE_MATERIALIZATION_RECORD_MAX_BYTES))
     const receipt = metadata.receipt
     const attempt = { placementHash: receipt.placementHash, executionId: receipt.executionId,
       attemptId: receipt.attemptId, keyRevision: receipt.keyRevision, authorizationRevision: receipt.authorizationRevision }
