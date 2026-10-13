@@ -1,3 +1,4 @@
+import { getOperatorConversation } from '../../shared/api/client'
 import { useEffect, type Dispatch, type RefObject, type SetStateAction } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ActivityChangeEnvelopeV1Schema, OperatorActivitySchema } from '@foreman-code/contracts'
@@ -34,6 +35,14 @@ export function useOperatorChatStream({ enabled, open, selectedId, accessDenied,
     })
     const refresh = readback.request
     const close = subscribeOperatorChat(selectedId, {
+      recover: async () => {
+        await queryClient.cancelQueries({ queryKey: detailKey(selectedId), exact: true })
+        if (disposed) throw new DOMException('Conversation changed.', 'AbortError')
+        const state = await queryClient.fetchQuery({ queryKey: detailKey(selectedId), retry: false, staleTime: 0,
+          queryFn: ({ signal }) => getOperatorConversation(selectedId, { signal }) })
+        if (disposed) throw new DOMException('Conversation changed.', 'AbortError')
+        acceptState(selectedId, state)
+      },
       snapshot: (state) => {
         void queryClient.cancelQueries({ queryKey: detailKey(selectedId), exact: true })
         acceptState(selectedId, state)

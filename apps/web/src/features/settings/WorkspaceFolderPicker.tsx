@@ -1,3 +1,4 @@
+import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'
 import { errorMessage } from '../../shared/errorMessage'
 import { useContext, useEffect, useId, useRef, useState, type RefObject } from 'react'
 import { useBoundFolderDirectories, type BoundFolderBrowser } from '../../shared/api/workspaceBoundLocation'
@@ -224,6 +225,26 @@ function FolderPicker({ disabled, onSelect, value, label = 'Project folder', sel
     disabled, onSelect, value, label, selectionUnconfirmed, copyValue, description, directoryBinding,
     onReloadSavedLocation, presentation, triggerRef,
   })
+  const operationPending = create.isPending || rename.isPending || undo.isPending || remove.isPending || selecting
+  const operationUncertain = attempt.current.unresolved || renameAttempt.current.unresolved
+    || undoAttempt.current.unresolved || deleteAttempt.current.unresolved || selectionUnconfirmed
+  useUnsavedChanges({
+    scope: 'surface', label: 'Project folder', dirty: open && creating,
+    busy: operationPending, uncertain: operationUncertain && !operationPending, error: error ?? selectionError,
+    saveDisabled: selectionUnconfirmed,
+    save: async () => {
+      if (deleteAttempt.current.unresolved) await deleteFolders(markedPaths)
+      else if (undoAttempt.current.unresolved) await undoCreation()
+      else if (attempt.current.unresolved) await createFolder()
+      else if (creating) await finishName(true)
+    },
+    discard: () => {
+      if (locked || inFlight.current) return
+      setCreating(false)
+      setOpen(false)
+    },
+  })
+
   return <>
     {value !== undefined ? <WorkspaceLocationCard label={label} path={value} description={description} presentation={presentation} triggerRef={triggerRef}
       disabled={disabled} onChoose={openPicker} onCopy={copyValue ? async () => {
