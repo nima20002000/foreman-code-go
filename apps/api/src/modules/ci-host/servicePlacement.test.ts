@@ -38,6 +38,9 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[]) {
     if (sql.includes('as group_id')) {
       return { rows: records.filter(record => !record.deferred).map(record => ({ group_id: record.groupId, state: record.state })) }
     }
+    if (sql.includes("'gate'='true'")) {
+      return { rows: records.filter(record => record.gate).map(record => ({ record })) }
+    }
     if (sql.includes("state='queued'")) {
       return { rows: records.filter(record => record.state === 'queued').map(record => ({ record, durations: null })) }
     }
@@ -183,4 +186,19 @@ it('skips the slow tier with a reason when another part of its request failed', 
   expect(f.started).toHaveLength(0)
   expect(records[1]).toMatchObject({ state: 'canceled',
     message: expect.stringContaining('slow tests run only after every other test of this request passed') })
+})
+
+it('lets later full requests dispatch when the oldest gate already has a failed part', async () => {
+  const [failed, straggler] = queuedRuns(2).map((run, index) => CiRunRecordSchema.parse({ ...run, gate: true,
+    state: index ? 'running' : 'failed', computer: index ? { hostRef: cloud.hostRef, label: cloud.label } : null,
+    startedAt: '2026-10-12T00:00:01.000Z', finishedAt: index ? null : '2026-10-12T00:01:00.000Z' }))
+  const [later] = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, suite: 'lint', partition: null,
+    queuedAt: '2026-10-12T00:02:00.000Z' }))
+  const records = [failed!, straggler!, later!]
+  const second = { ...cloud, key: 'cloud:circleci:1', hostRef: { ...cloud.hostRef, slot: 1 } }
+  const f = fleet(records, [cloud, second])
+  await f.service.dispatch()
+  expect(f.started.map(item => item.request.operation === 'start' ? item.request.runId : null)).toEqual([later!.id])
+  expect(records[2]).toMatchObject({ state: 'running', message: null })
+  expect(records[1]!.state).toBe('running')
 })
