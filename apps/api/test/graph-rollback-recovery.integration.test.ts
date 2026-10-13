@@ -39,6 +39,30 @@ async function responseProxy(url: string) {
     } }
 }
 
+it('allows the rollback fault fixture to acquire, exclude and replace a real Run owner', async () => {
+  const db = await agent3Database()
+  const proxy = await responseProxy(process.env.TEST_DATABASE_URL!)
+  const pool = new pg.Pool({ ...db.pool.options, connectionString: proxy.url, query_timeout: 100 })
+  let owner: RunOwnership | undefined
+  let replacement: RunOwnership | undefined
+  try {
+    owner = await RunOwnership.acquire(pool, 'rollback-fixture-owner', () => undefined)
+    if (!owner) throw new Error('Expected the original Run owner')
+    expect((await owner.client.query('select 1 as usable')).rows).toEqual([{ usable: 1 }])
+    expect(await RunOwnership.acquire(db.pool, owner.runId, () => undefined)).toBeUndefined()
+    await owner.release()
+    replacement = await RunOwnership.acquire(db.pool, owner.runId, () => undefined)
+    if (!replacement) throw new Error('Expected the replacement Run owner')
+    expect((await replacement.client.query('select 1 as usable')).rows).toEqual([{ usable: 1 }])
+  } finally {
+    await owner?.release()
+    await replacement?.release()
+    await pool.end()
+    await proxy.close()
+    await db.close()
+  }
+}, 60_000)
+
 it('releases a real Run owner and its advisory lock while rollback replies remain unavailable', async () => {
   const db = await agent3Database()
   const proxy = await responseProxy(process.env.TEST_DATABASE_URL!)
