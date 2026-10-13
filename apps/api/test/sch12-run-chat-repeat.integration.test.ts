@@ -16,6 +16,45 @@ afterEach(() => vi.restoreAllMocks())
 // are existing deterministic port fixtures. No additional product/migration mocks
 // are introduced; inherited location/native qualification substitutes stay explicit.
 describe.skipIf(!postgresEnabled)('Historical Run-scoped chat repeat PostgreSQL / HTTP / MCP', () => {
+  it('reopens a retained repeat Run with its credentials and preserves chat read permissions', async () => {
+    const f = await historicalFixture('repeat')
+    let api: HistoricalApi | undefined
+    try {
+      const target = { ...targetFor(f), workflowNodeId: f.f.version.definition.nodes[1]!.id }
+      const before = await historicalRows(f.db.pool, [f.f.run.id])
+      const denied = await f.access.issue({
+        name: 'Unprivileged chat reader',
+        audience: 'operator',
+        expiresAt: new Date(Date.now() + 600_000),
+        grants: [],
+      })
+      api = await openHistoricalApi(f)
+      expect(await readSelected(api, target)).toEqual({
+        kind: 'unavailable', target, reason: 'execution_missing',
+      })
+      const deniedClient = await api.connect(denied.token)
+      const http = await api.app.inject({
+        method: 'GET',
+        url: selectedPath(target),
+        headers: { authorization: `Bearer ${denied.token}` },
+      })
+      expect(http.statusCode, http.body).toBe(403)
+      expect(http.json()).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+      const { workspaceId, ...selection } = target
+      const mcp = await deniedClient.callTool({
+        name: 'agent_chat_read', arguments: { workspaceId, selection },
+      })
+      expect(mcp.isError).toBe(true)
+      expect(mcp.structuredContent).toBeUndefined()
+      expect(JSON.stringify(mcp)).toContain('ACCESS_DENIED')
+      expect(await historicalRows(api.pool, [f.f.run.id])).toEqual(before)
+      expect((await retainedChatRows(api)).conversations).toEqual([])
+      expect(api.native.size).toBe(0)
+    } finally {
+      try { await api?.close() } finally { await f.close() }
+    }
+  }, 120_000)
+
   it('[SCH-12-C02] real repeat executions require an explicit choice and retain separate conversations/sessions', async () => {
     const f = await historicalFixture('repeat')
     let api: HistoricalApi | undefined
