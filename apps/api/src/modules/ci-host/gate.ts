@@ -6,6 +6,7 @@ import type { HostCiComputer, HostCiEndpoint } from './service.js'
 import type { CiIntegrationInventory } from './integrationParts.js'
 import { planCiParts, runsOnCircleCi, type CiUnitInventory } from './parts.js'
 import { buildComputerIntegrationShards } from './capacity.js'
+import { withoutReservedCloudSlots } from './cloudSlots.js'
 
 const SETUP_MS = 90_000
 const exclusive = new Set(exclusiveIntegrationFiles)
@@ -49,8 +50,8 @@ export async function readCiComputerStatus(endpoint: HostCiEndpoint, computer: H
   return status?.operation === 'status' ? status : null
 }
 
-async function gateComputers(endpoint: HostCiEndpoint): Promise<GateComputer[]> {
-  const computers = await endpoint.computers()
+async function gateComputers(endpoint: HostCiEndpoint, reservedCloudSlots: number): Promise<GateComputer[]> {
+  const computers = withoutReservedCloudSlots(await endpoint.computers(), reservedCloudSlots)
   const available = await Promise.all(computers.map(async computer => {
     const status = await readCiComputerStatus(endpoint, computer)
     if (!status?.ready) return null
@@ -61,10 +62,11 @@ async function gateComputers(endpoint: HostCiEndpoint): Promise<GateComputer[]> 
   return available.filter((value): value is GateComputer => value !== null)
 }
 
-/** Hosts get one large job each. Cloud takes checks first, then work that extends the hosts' critical path. */
+/** Hosts get one large job each. Cloud takes checks first, then work that extends the hosts' critical path.
+ * Reserved cloud slots stay out of the plan so non-gate tickets can start while the gate runs. */
 export async function planCiGate(input: CiRunInput, integration: CiIntegrationInventory,
-  unit: CiUnitInventory, durations: CiDurations, endpoint: HostCiEndpoint): Promise<GatePart[]> {
-  const fleet = await gateComputers(endpoint)
+  unit: CiUnitInventory, durations: CiDurations, endpoint: HostCiEndpoint, reservedCloudSlots = 0): Promise<GatePart[]> {
+  const fleet = await gateComputers(endpoint, reservedCloudSlots)
   const hosts = fleet.filter(item => item.computer.hostRef.kind !== 'cloud')
   const clouds = fleet.filter(item => item.computer.hostRef.kind === 'cloud')
   if (!hosts.length || !clouds.length || !integration.files.length) {
