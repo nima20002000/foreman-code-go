@@ -44,6 +44,24 @@ export function foundationManagedAcceptance(source: 'http' | 'mcp') {
           expect(result.statusCode, result.body).toBe(202); run = result.json().run
         }
         await expect.poll(async () => (await f.runs.get(run.id))?.executionState, { timeout: 20000, interval: 25 }).toBe('waiting')
+        const detail = await f.app.inject({
+          method: 'GET',
+          url: `/api/management/workspaces/${input.workspaceId}/runs/${run.id}`,
+          headers: { authorization: `Bearer ${f.writer.token}` },
+        })
+        expect(detail.statusCode, detail.body).toBe(200)
+        expect(detail.json().run).toMatchObject({
+          executionState: 'waiting',
+          outcome: 'pending',
+          workflowVersionId: saved.value.currentVersionId,
+          agentConfigurationVersionIds: input.expectedAgentConfigurationVersionIds,
+        })
+        const remote = await f.client.callTool({
+          name: 'run_get',
+          arguments: { workspaceId: input.workspaceId, runId: run.id, detail: 'full' },
+        })
+        expect(remote.isError, JSON.stringify(decodeMcpToolResult(remote))).not.toBe(true)
+        expect(decodeMcpToolResult(remote)).toEqual(detail.json())
         expect(await f.runs.get(run.id)).toMatchObject({ approval: saved.value.version.approval,
           workflowVersionId: saved.value.currentVersionId, agentConfigurationVersionIds: input.expectedAgentConfigurationVersionIds })
         const configured = (await f.db.pool.query('select record from agent_configuration_versions where id=any($1::text[])', [Object.values(input.expectedAgentConfigurationVersionIds)])).rows.map((row) => row.record)
