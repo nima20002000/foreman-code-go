@@ -25,6 +25,7 @@ import { systemGitWorktreePorts, type GitWorktreePorts, type WorktreeRequest } f
 import { sourceWorkingTreePath } from './sourceTreePaths.js'
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 import { componentLogger } from '../diagnostics/logger.js'
+import { reconcileSecondaryAllocation, preserveReleasedPreparationClaim } from './secondaryAllocation.js'
 import { openSnapshotReference } from './snapshotReference.js'
 
 const equal = isDeepStrictEqual
@@ -189,11 +190,16 @@ export class PrivateSourceMaterializer {
       try { if (!equal(await identity(current), binding.filesystem)) throw new SourceError('SOURCE_ROOT_CHANGED', 'Destination root replaced before activation.') }
       finally { await current.close() }
       const referenceIdentity = await identity(tree)
-      const worktree = writable && input.worktree ? await prepareAgentWorktree({ root, binding, executionId: attempt.executionId,
-        manifest, reference: tree, request: input.worktree, ports: this.git, signal, authorize: () => this.authorize(binding, attempt) }) : undefined
+      const worktree = writable && input.worktree ? await prepareAgentWorktree({
+        root, binding, primary: reservation, materializationId: id, attempt, executionId: attempt.executionId,
+        manifest, reference: tree, request: input.worktree, ports: this.git, signal,
+        authorize: () => this.authorize(binding, attempt),
+      }) : undefined
       const shared = worktree ?? (writable
-        ? await withClaimLock(root, () => prepareSharedWorkingTree({ root: root!, binding, manifest,
-          reference: tree!, signal, authorize: () => this.authorize(binding, attempt) })) : undefined)
+        ? await withClaimLock(root, () => prepareSharedWorkingTree({
+          root: root!, binding, primary: reservation!, materializationId: id, attempt, manifest,
+          reference: tree!, signal, authorize: () => this.authorize(binding, attempt),
+        })) : undefined)
       completed('prepareWorkingTreeMs')
       const receipt = MaterializationReceiptSchema.parse({ version: 1, materializationId: id, binding, ...attempt, ...(quota ? { quota } : {}),
         claimScope: 'execution',
@@ -525,6 +531,18 @@ export async function reconcileSourcePreparation(reconciliationId: string, owner
           if (!quotaPool) throw new SourceError('SOURCE_QUOTA_MISSING', 'Original recovery quota configuration is required.')
           await reclaimPreparationQuota({ binding, quota, materializationId }, root, quotaPool, nativeClosed, cleanupSignal)
           quotaReclaimed = true
+        }
+      }
+      if (materializationId && !quotaReclaimed) {
+        await reconcileSecondaryAllocation(root, binding, owner.attempt, materializationId,
+          cleanupSignal, preparationChildrenClosed)
+      }
+      if (owner.record?.receipt.sharedTree && !quotaReclaimed && current) {
+        const directory = await materializationDirectory(root, owner.record.receipt)
+        try {
+          await preserveReleasedPreparationClaim(directory, current, cleanupSignal)
+        } finally {
+          await directory.close()
         }
       }
       cleanupSignal.throwIfAborted()
