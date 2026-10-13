@@ -592,8 +592,11 @@ test('settles terminal review history before repeated publication expires its ph
   }
 })
 
-test.each(['completion', 'restart'] as const)(
-  'recovery keeps a running retained review authorized until %s', async settlement => {
+test.each([
+  ['completion', 'busy'], ['restart', 'busy'],
+  ['completion', 'acknowledgement only'], ['restart', 'acknowledgement only'],
+] as const)(
+  'recovery keeps a retained review authorized until %s with %s history', async (settlement, observation) => {
     const f = fixture()
     const job = await enqueue(f)
     const now = new Date().toISOString()
@@ -607,7 +610,10 @@ test.each(['completion', 'restart'] as const)(
     const terminal = new Promise<NativeHistory>(resolve => { finish = resolve })
     let reads = 0
     f.manager.reconcile = async () => {
-      if (reads++ === 0) return history([startEvent(job.correlationId)])
+      if (reads++ === 0) {
+        if (observation === 'busy') return history([startEvent(job.correlationId)])
+        return { ...history(), correlationId: job.correlationId, nativeTurnId: 'native-turn' }
+      }
       observing()
       return terminal
     }

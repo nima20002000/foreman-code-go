@@ -208,3 +208,43 @@ it('owns the Board’s actual schedule Redo until its lost reply is reconciled',
     expect(useBoardUndo.getState().actions[historyScope]).toHaveLength(1)
   } finally { release.resolve(); history.unmount(); view.close() }
 })
+
+
+it('stops consecutive Undo at an external edit between two local schedule changes', async () => {
+  const view = owner()
+  try {
+    const external = { ...next, enabled: false, revision: 3 }
+    const local = { ...external, time: '11:00', revision: 4 }
+    persisted = local
+    recordScheduleUndo(scope, external, local, view.client)
+    await expect(executeBoardAction(historyScope, 'undo', 0)).resolves.toBe(true)
+    expect(persisted).toMatchObject({ enabled: false, time: '10:00', revision: 5 })
+    const earlier = pendingBoardAction(historyScope, 0)
+    await expect(executeBoardAction(historyScope, 'undo', 0)).rejects.toThrow(/Schedule changed/)
+    expect(persisted).toMatchObject({ enabled: false, time: '10:00', revision: 5 })
+    expect(inputs).toHaveLength(1)
+    expect(pendingBoardAction(historyScope, 0)).toBe(earlier)
+  } finally { view.close() }
+})
+
+it('allows the newer action’s Redo after Undo stops at an external schedule edit', async () => {
+  const view = owner()
+  try {
+    const earlier = pendingBoardAction(historyScope, 0)!
+    const external = { ...next, enabled: false, revision: 3 }
+    const local = { ...external, time: '11:00', revision: 4 }
+    persisted = local
+    recordScheduleUndo(scope, external, local, view.client)
+    await expect(executeBoardAction(historyScope, 'undo', 0)).resolves.toBe(true)
+    expect(persisted).toMatchObject({ enabled: false, time: '10:00', revision: 5 })
+    expect(pendingBoardAction(historyScope, 0)).toBe(earlier)
+    await expect(executeBoardAction(historyScope, 'undo', 0)).rejects.toThrow(/Schedule changed/)
+    expect(pendingBoardAction(historyScope, 0)).toBe(earlier)
+    expect(useBoardUndo.getState().redo[historyScope]).toHaveLength(1)
+    expect(inputs).toHaveLength(1)
+    await expect(executeBoardAction(historyScope, 'redo', 0)).resolves.toBe(true)
+    expect(persisted).toMatchObject({ enabled: false, time: '11:00', revision: 6 })
+    expect(inputs.map(input => input.expectedRevision)).toEqual([4, 5])
+    expect(useBoardUndo.getState().redo[historyScope]).toHaveLength(0)
+  } finally { view.close() }
+})

@@ -52,13 +52,14 @@ export function toolValue(result: { isError?: boolean | undefined; structuredCon
 
 /** Public socket HTTP + authenticated Streamable HTTP Operator MCP. The existing
  * fixture owns migrations/DB isolation, all production services, the engine,
- * credential issuance, native capture and fences. Its PRESEEDED Run is never
- * launched. Test Runs are created only by public run_start/POST .../runs.
+ * credential issuance, native capture and fences. Test Runs are created only
+ * by public run_start/POST .../runs and use the production recovery sweep.
  * Only the external provider port is wrapped for deterministic timing/output. */
 export async function scenarioHarness(scenario: Scenario) {
   let oracle: (nodeIndex: number, occurrenceIndex: number) => SuccessfulResult = scenario.result
   const outputs = new Map<string, number>()
   const base = await currentOperatorIntegration({ fixture: scenario.source,
+    insertRun: false,
     approvalNodeIds: scenario.approvalNodeIds,
     outputFor(nodeId) {
       const index = scenario.nodes.findIndex((node) => node.id === nodeId)
@@ -114,6 +115,14 @@ export async function scenarioHarness(scenario: Scenario) {
   // Use the SAME human route/authentication/service as buildApp's product binding.
   registerUserInteractions(app, base.service)
   const clients: Client[] = []
+  let recoveryTimer: ReturnType<typeof setInterval> | undefined
+  let recoveryPass: Promise<void> | undefined
+  const recoveryErrors: unknown[] = []
+  function stopRecovery() {
+    clearInterval(recoveryTimer)
+    recoveryTimer = undefined
+    return recoveryPass
+  }
   try {
     // A public location_set must preserve the runner accepted by the synthetic
     // provider. Otherwise credential preflight fails before the first gate,
@@ -209,6 +218,14 @@ export async function scenarioHarness(scenario: Scenario) {
       const record = RunRecordDetailSchema.parse(await http('GET', `${runPath(scope)}/record`))
       expect(record.run.executionLocation).toMatchObject({ runnerId: base.locations.runnerId,
         locationRevision })
+      // Production retries saved checkpoints after bounded settlement waits.
+      // Start recovery only after the public Start has admitted the first Run.
+      recoveryTimer ??= setInterval(() => {
+        if (recoveryPass) return
+        recoveryPass = base.engine.reconcile((error) => recoveryErrors.push(error))
+          .catch((error: unknown) => { recoveryErrors.push(error) })
+          .finally(() => { recoveryPass = undefined })
+      }, 1_000)
       return { scope, accepted, input, saved }
     }
     async function readParity(path: string, name: string, args: Record<string, unknown>) {
@@ -270,19 +287,23 @@ export async function scenarioHarness(scenario: Scenario) {
           starts: base.provider.counts.starts, parked: [...parked.keys()], codes })}`, { cause: error })
       }
       expect(base.dispatchErrors).toEqual([])
+      expect(recoveryErrors).toEqual([])
       return record
     }
     return { base, app, client, connect, rawHttp, http, mcp, command, readParity, graph, save, start, settled, hold, waitUntilParked,
       trace, requests, parked, scenario, workflowPath, locationRevision,
       setOracle(next: typeof oracle) { oracle = next },
       async close() {
+        const recovery = stopRecovery()
         for (const gate of gates.values()) gate.release()
         gates.clear()
+        await recovery
         try { await Promise.allSettled(clients.map((item) => item.close())); await app.close(); await base.close() }
         finally { wrapper.mockRestore() }
       },
     }
   } catch (error) {
+    await stopRecovery()
     for (const gate of gates.values()) gate.release()
     await Promise.allSettled(clients.map((client) => client.close()))
     await app.close(); await base.close(); wrapper.mockRestore(); throw error

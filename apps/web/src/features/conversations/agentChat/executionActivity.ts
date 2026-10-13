@@ -35,6 +35,13 @@ export const executionIsLive = (execution: AgentChatExecutionSummary) => !TERMIN
 const itemKey = (item: AgentChatExecutionItem) => JSON.stringify([item.executionId, item.id])
 
 function keepsExpandedDetails(existing: AgentChatExecutionItem, incoming: AgentChatExecutionItem) {
+  if (existing.entry.kind === 'message' && incoming.entry.kind === 'message') {
+    const full = existing.entry.message
+    const preview = incoming.entry.message
+    if (!full.truncation?.truncated && preview.truncation?.truncated) return true
+    if (full.truncation?.truncated && !preview.truncation?.truncated) return false
+    return full.content.length > preview.content.length
+  }
   if (existing.entry.kind !== 'activity' || incoming.entry.kind !== 'activity') return false
   const full = existing.entry.activity
   const preview = incoming.entry.activity

@@ -1,5 +1,5 @@
 import { CiListOutputSchema, CiLogsOutputSchema, CiTestsOutputSchema,
-  type CiActivity, type CiPlacement, type CiRunJob, type CiTestStatus } from '@foreman-code/contracts'
+  type CiActivity, type OperatorCiListInput, type CiPlacement, type CiRunJob, type CiTestStatus } from '@foreman-code/contracts'
 import { apiClient, type RequestOptions } from '../../../shared/api/client'
 import type { AgentNodeState } from '../../../shared/ui/nocturne'
 import type { CiServerFlowNode } from './CiServer'
@@ -8,8 +8,11 @@ const ciPath = (workspaceId: string) => `/api/management/workspaces/${encodeURIC
 
 /** The Board's reads of a Run's CI: the same service as the Operator's ci_list, ci_get testStatus and ci_logs_read. */
 export const runCiApi = {
-  list: (input: { workspaceId: string; runId: string }, options?: RequestOptions) =>
-    apiClient.request(`${ciPath(input.workspaceId)}?${new URLSearchParams({ runId: input.runId })}`, CiListOutputSchema, options),
+  list: (input: OperatorCiListInput, options?: RequestOptions) => {
+    const query = new URLSearchParams({ runId: input.runId })
+    if (input.executionId) query.set('executionId', input.executionId)
+    return apiClient.request(`${ciPath(input.workspaceId)}?${query}`, CiListOutputSchema, options)
+  },
   tests: (input: { workspaceId: string; ticketId: string; status?: readonly CiTestStatus[] }, options?: RequestOptions) =>
     apiClient.request(`${ciPath(input.workspaceId)}/${encodeURIComponent(input.ticketId)}/tests${input.status
       ? `?${new URLSearchParams({ status: input.status.join(',') })}` : ''}`, CiTestsOutputSchema, options),

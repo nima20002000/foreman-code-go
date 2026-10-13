@@ -116,43 +116,6 @@ async function approveThroughHttp(f: Harness, started: Started) {
   expect(finalMonitor.items).toEqual(ListInteractionsResponseSchema.parse(await list()).items)
 }
 
-async function settleRepeatWithRecovery(f: Harness, started: Started) {
-  // Join each drive before retrying the same accepted Run's saved checkpoint.
-  const recoveryCodes: string[] = []
-  function recordRecoveryError(error: unknown) {
-    const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string'
-      ? error.code : 'UNCLASSIFIED_RECOVERY_ERROR'
-    if (code !== 'RUN_ALREADY_OWNED' && recoveryCodes.length < 10) recoveryCodes.push(code)
-  }
-  let stopping = false
-  const recovery = (async () => {
-    while (!stopping) {
-      await f.base.engine.start(started.scope.runId).catch(recordRecoveryError)
-      const run = await f.base.runs.get(started.scope.runId)
-      if (run?.executionState === 'completed') return
-    }
-  })().catch(recordRecoveryError)
-  let settled = false
-  try {
-    await f.settled(started.scope, 75000)
-    settled = true
-    stopping = true
-    await recovery
-    expect(recoveryCodes).toEqual([])
-  } catch (error) {
-    throw new Error(`ENG07 repeat recovery did not settle: ${JSON.stringify({
-      runId: started.scope.runId, recoveryCodes })}`, { cause: error })
-  } finally {
-    stopping = true
-    // Stop a stalled drive before draining it so the settlement deadline can reach fixture cleanup.
-    try {
-      if (!settled) await f.base.engine.shutdown()
-    } finally {
-      await recovery
-    }
-  }
-}
-
 export function defineScenarioTests(id: ScenarioId, via: Via) {
   describe.skipIf(!postgresEnabled)(`${id} / real PostgreSQL + HTTP + authenticated Operator MCP`, () => {
     afterEach(() => vi.restoreAllMocks())
@@ -196,8 +159,7 @@ export function defineScenarioTests(id: ScenarioId, via: Via) {
             releaseSlow()
           }
           if (id === 'S3-04') await approveThroughHttp(f, started)
-          if (scenario.repeat) await settleRepeatWithRecovery(f, started)
-          else await f.settled(started.scope)
+          await f.settled(started.scope, scenario.repeat ? 75000 : undefined)
           const view = await assertScenarioEvidence(f, started, initial)
           if (id === 'S3-04') expect(view.events.some((event) => event.fact.type === 'worker.resumed'
             && event.evidence.sourceKind === 'native_event')).toBe(true)

@@ -5,6 +5,7 @@ import type { DurableInteraction } from '@foreman-code/contracts'
 export async function readActivityAcknowledgment(query: Pick<pg.PoolClient, 'query'>, interaction: DurableInteraction): Promise<{
   workerAcknowledgmentId?: string; nativeTurnId?: string
 }> {
+  if (interaction.status !== 'delivered' || interaction.deliveryState !== 'delivered') return {}
   const row = (await query.query<{ worker_acknowledgment_id: string; native_turn_id: string | null }>(`
     select g.approval_native_ack_id as worker_acknowledgment_id,
       coalesce(p.record#>>'{original,history,nativeTurnId}',p.record#>>'{lane,providerId}') as native_turn_id

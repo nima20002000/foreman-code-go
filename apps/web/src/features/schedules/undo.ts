@@ -1,11 +1,23 @@
+import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import type { QueryClient } from '@tanstack/react-query'
 import { ScheduleConfigurationSchema, type ScheduleGetInput, type WorkflowSchedule } from '@foreman-code/contracts/schedules'
 import { assertSession, sessionGeneration } from '../../shared/api/sessionBoundary'
 import { boardScope, recordBoardAction, useBoardUndo } from '../workflow-board/boardUndo'
+import { scheduleApi } from './client'
 import { scheduleCommandOwner, type ScheduleCommand } from './queries'
 
-async function restoreSchedule(scope: ScheduleGetInput, target: WorkflowSchedule | null, client: QueryClient,
-  lineageKey: string, generation: number, history: NonNullable<ScheduleCommand['history']>) {
+function scheduleSettings(schedule: WorkflowSchedule) {
+  const { workspaceId, workflowId, revision, nextOccurrenceAt, ...settings } = schedule
+  void workspaceId
+  void workflowId
+  void revision
+  void nextOccurrenceAt
+  if (settings.mode === 'weekly') return { ...settings, weekdays: [...settings.weekdays].sort((a, b) => a - b) }
+  return settings
+}
+
+async function restoreSchedule(scope: ScheduleGetInput, target: WorkflowSchedule | null, expected: WorkflowSchedule,
+  client: QueryClient, lineageKey: string, generation: number, history: NonNullable<ScheduleCommand['history']>) {
   assertSession(generation)
   const owner = scheduleCommandOwner(client, scope)
   if (owner.pending) throw new Error('A schedule change is still in progress.')
@@ -14,12 +26,14 @@ async function restoreSchedule(scope: ScheduleGetInput, target: WorkflowSchedule
     result = await owner.retry(history)
   } else {
     const expectedRevision = useBoardUndo.getState().scheduleRevisions[lineageKey]!
+    const { schedule } = await scheduleApi.get(scope)
+    assertSession(generation)
+    if (!schedule || schedule.revision !== expectedRevision
+      || !sameWorkflowValue(scheduleSettings(schedule), scheduleSettings(expected))) {
+      throw new Error('Schedule changed. Undo or Redo cannot replace another schedule edit.')
+    }
     if (target) {
-      const { workspaceId, workflowId, revision, nextOccurrenceAt, ...settings } = target
-      void workspaceId
-      void workflowId
-      void revision
-      void nextOccurrenceAt
+      const settings = scheduleSettings(target)
       result = await owner.submit({ kind: 'save', history,
         input: { ...scope, expectedRevision, schedule: ScheduleConfigurationSchema.parse(settings) } })
     } else {
@@ -42,7 +56,10 @@ export function recordScheduleUndo(scope: ScheduleGetInput, previous: WorkflowSc
   if (!previous) label = 'schedule set'
   else if (!next.enabled && previous.enabled) label = 'schedule turned off'
   else if (next.enabled && !previous.enabled) label = 'schedule turned on'
-  recordBoardAction(boardScope(scope.workspaceId, scope.workflowId), { label,
-    undo: () => restoreSchedule(scope, previous, client, lineageKey, generation, { actionId, direction: 'undo' }),
-    redo: () => restoreSchedule(scope, next, client, lineageKey, generation, { actionId, direction: 'redo' }) })
+  const restored = previous ?? { ...next, enabled: false, nextOccurrenceAt: null }
+  recordBoardAction(boardScope(scope.workspaceId, scope.workflowId), {
+    label,
+    undo: () => restoreSchedule(scope, previous, next, client, lineageKey, generation, { actionId, direction: 'undo' }),
+    redo: () => restoreSchedule(scope, next, restored, client, lineageKey, generation, { actionId, direction: 'redo' }),
+  })
 }
