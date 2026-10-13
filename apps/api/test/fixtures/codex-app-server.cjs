@@ -264,7 +264,8 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line
     const owner = thread(`thread-${agent}-${process.pid}-${++created}`, params, original)
     store(owner)
     if (flag('hold-thread-fork-ack')) return
-    if (flag('late-thread-fork')) setTimeout(() => replyThread(owner, message.id, params), 800)
+    if (flag('hold-thread-fork')) replyOrHold('thread-fork', () => replyThread(owner, message.id, params))
+    else if (flag('late-thread-fork')) setTimeout(() => replyThread(owner, message.id, params), 800)
     else replyThread(owner, message.id, params)
   } else if (message.method === 'thread/compact/start') {
     const owner = loadThread(params.threadId)

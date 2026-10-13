@@ -159,11 +159,17 @@ describe('Codex creation and prompt write boundaries', () => {
       })
       const session = await manager.createSession(chatInput(f.directory))
       await f.flag('hold-turn-rejection')
-      await assert.rejects(collect(manager.startTurn(session, {
+      const controller = new AbortController()
+      const submission = assert.rejects(collect(manager.startTurn(session, {
         prompt: 'reject', clientCorrelationId: 'rejected',
-      })), boundary('turn_submission', 'unknown'))
+      }, controller.signal)), boundary('turn_submission', 'unknown'))
+      await until(async () => (await f.wire('turn/start')).length > 0)
+      controller.abort()
+      await submission
       await f.flag(`hold-${read}`)
-      const reconciliation = manager.reconcile(session, 'rejected')
+      const reconciliation = manager.reconcile(session, 'rejected').then(
+        value => ({ value }), error => ({ error }),
+      )
       const method = read === 'thread-read' ? 'thread/read' : 'thread/turns/list'
       await until(async () => (await f.wire(method)).length > 0)
       await f.flag('release-turn-rejection')
@@ -178,8 +184,12 @@ describe('Codex creation and prompt write boundaries', () => {
         return true
       })
       assert.equal((await f.wire('turn/start')).length, 1)
+      // The rejection must survive a read held beyond the fixture's former 500 ms deadline.
+      await new Promise(resolve => setTimeout(resolve, 600))
       await f.flag(`release-${read}`)
-      const rejected = await reconciliation
+      const result = await reconciliation
+      if ('error' in result) throw result.error
+      const rejected = result.value
       assert.equal(rejected.nonSubmission?.clientCorrelationId, 'rejected')
       assert.equal(rejected.nativeTurnId, undefined)
       assert.deepEqual((await manager.reconcile(session, 'rejected')).nonSubmission, rejected.nonSubmission)
@@ -292,9 +302,15 @@ describe('Codex creation and prompt write boundaries', () => {
     const manager = f.makeManager()
     const source = await manager.createSession(chatInput(f.directory))
     const forkInput = { ...chatInput(f.directory), correlationId: 'fork-creation', instructionsDelivered: true }
-    await f.flag('late-thread-fork')
-    await assert.rejects(manager.forkSession(source, forkInput), boundary('session_creation', 'unknown'))
+    await f.flag('hold-thread-fork')
+    const controller = new AbortController()
+    const creation = assert.rejects(manager.forkSession(source, forkInput, controller.signal),
+      boundary('session_creation', 'unknown'))
+    await until(async () => (await f.wire('thread/fork')).length > 0)
+    controller.abort()
+    await creation
     await assert.rejects(manager.forkSession(source, forkInput), /may already exist/)
+    await f.flag('release-thread-fork')
     const fork = await until(async () => {
       try { return await manager.reconcileSessionCreation(forkInput, new AbortController().signal, source) } catch { return undefined }
     })
