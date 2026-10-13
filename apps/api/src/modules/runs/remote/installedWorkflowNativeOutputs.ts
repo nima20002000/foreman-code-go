@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { z } from 'zod'
 import { AgentFilePublishResultSchema } from '@foreman-code/contracts/files'
 import { BYTE_TRANSFER_POLICY, TransferIntentSchema } from '@foreman-code/contracts/byte-transfer'
-import { WorkerMcpRelayRequestSchema, WorkerMcpRelayResponseSchema, WorkerNativeOutputAuthorizationSchema,
+import { decodeWorkerMcpResult, WorkerMcpRelayRequestSchema, WorkerMcpRelayResponseSchema, WorkerNativeOutputAuthorizationSchema,
   WorkerNativeOutputDeclarationsAuthorizationSchema, WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
 import { WorkerNativeOutputReadinessSchema } from '@foreman-code/contracts/worker-mcp-relay'
 import { sameCodexNativeOutputSandbox, type CodexNativeOutputQualificationInput } from '../../harnesses/codexNativeOutput.js'
@@ -106,12 +106,11 @@ export function createInstalledWorkflowNativeOutputProviders(input: {
     if (!isDeepStrictEqual(intent, context.intent)) throw unavailable()
     const capture = captureRequest(WORKER_MCP_EXTENSION.namespace)
     const result = await capture.request(payload, signal ? { signal } : undefined)
-    if (result.bytes !== undefined) throw unavailable()
     await context.assertCurrent(undefined, signal)
     if (!isDeepStrictEqual(capture.binding, context.binding) || !isDeepStrictEqual(intent, context.intent)) {
       throw unavailable()
     }
-    return result.payload
+    return decodeWorkerMcpResult(result)
   }
   const envelope = () => ({ version: 1, intent: context.intent, placement: context.placement,
     applicationAccess: context.applicationAccess() })
