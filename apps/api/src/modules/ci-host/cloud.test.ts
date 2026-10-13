@@ -670,7 +670,7 @@ it.each(['github', 'circleci'] as const)('prunes stale mirror branches and keeps
   f.mirrorGit('update-ref', 'refs/heads/feature/keep', 'main')
   const first = randomUUID()
   const second = randomUUID()
-  const request = { operation: 'start' as const, repository: 'octo/site', commit: f.commit,
+  const request = { operation: 'start' as const, workspaceId: 'ci-workspace', repository: 'octo/site', commit: f.commit,
     suite: 'lint' as const, scope: 'affected' as const, files: [] }
   expect(await f.cloud.handle({ ...request, runId: first }))
     .toMatchObject({ operation: 'start', run: { state: 'starting' } })
@@ -691,7 +691,7 @@ it.each(['github', 'circleci'] as const)('prunes stale mirror branches and keeps
 it.each(['success', 'failure'] as const)('removes mirror branches after a %s result without losing persisted results', async conclusion => {
   const f = await fixture()
   const runId = randomUUID()
-  expect(await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+  expect(await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
     suite: 'lint', scope: 'affected', files: [] }))
     .toMatchObject({ operation: 'start', run: { state: 'starting' } })
   expect(f.dispatched[0]).toContain('octo/site-ci')
@@ -708,7 +708,7 @@ it.each(['success', 'failure'] as const)('removes mirror branches after a %s res
 
 it('republishes a branch removed by maintenance after a previous automatic cleanup failed', async () => {
   const f = await fixture({}, { provider: 'circleci' })
-  const request = { operation: 'start' as const, repository: 'octo/site', commit: f.commit,
+  const request = { operation: 'start' as const, workspaceId: 'ci-workspace', repository: 'octo/site', commit: f.commit,
     suite: 'lint' as const, scope: 'affected' as const, files: [] }
   const runId = randomUUID()
   expect(await f.cloud.handle({ ...request, runId }))
@@ -732,7 +732,7 @@ it('releases stale provider records only when no active Main ticket still uses t
   const f = await fixture()
   const first = randomUUID()
   const second = randomUUID()
-  const start = { operation: 'start' as const, repository: 'octo/site', commit: f.commit,
+  const start = { operation: 'start' as const, workspaceId: 'ci-workspace', repository: 'octo/site', commit: f.commit,
     suite: 'lint' as const, scope: 'affected' as const, files: [] }
   expect(await f.cloud.handle({ ...start, runId: first }))
     .toMatchObject({ operation: 'start', run: { state: 'starting' } })
@@ -753,7 +753,7 @@ it.each(['github', 'circleci'] as const)('keeps publication scoped after cancell
   const f = await fixture({}, { provider })
   const first = randomUUID()
   const second = randomUUID()
-  const request = { operation: 'start' as const, repository: 'octo/site', commit: f.commit,
+  const request = { operation: 'start' as const, workspaceId: 'ci-workspace', repository: 'octo/site', commit: f.commit,
     suite: 'lint' as const, scope: 'affected' as const, files: [] }
   expect(await f.cloud.handle({ ...request, runId: first }))
     .toMatchObject({ operation: 'start', run: { state: 'starting' } })

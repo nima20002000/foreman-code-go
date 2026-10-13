@@ -19,7 +19,7 @@ it.each(['github', 'circleci'] as const)('decodes explicit files from the publis
   const files = ['apps/api/test/alpha.test.ts', 'apps/api/test/beta.test.ts', 'apps/api/test/gamma.test.ts']
   const f = await fixture(Object.fromEntries(files.map(file => [file, 'export {}'])), { provider, sourceWorkflows: false })
   const selected = files.slice(0, 2)
-  await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
+  await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
     suite: 'unit', scope: 'affected', files: selected })
   const command = (provider === 'github' ? f.dispatched : f.circle.triggered)[0]!
   const checkout = await f.checkoutMirror(f.mirrorGit('rev-parse', 'main'))
@@ -28,14 +28,14 @@ it.each(['github', 'circleci'] as const)('decodes explicit files from the publis
 
 it.each(['github', 'circleci'] as const)('publishes a later pinned commit from the cached source clone on %s', async provider => {
   const f = await fixture({}, { provider })
-  await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
+  await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
     suite: 'integration', scope: 'full' })
   await f.write('README.md', 'Later source snapshot\n')
   f.run('add', 'README.md')
   f.run('commit', '-qm', 'update source snapshot')
   const later = f.run('rev-parse', 'HEAD')
   f.push('main')
-  const started = await f.reopen().handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site',
+  const started = await f.reopen().handle({ operation: 'start', workspaceId: 'ci-workspace', runId: randomUUID(), repository: 'octo/site',
     commit: later, suite: 'integration', scope: 'full' })
   expect(started).toMatchObject({ run: { provenance: { sourceCommit: later } } })
   if (started.operation !== 'start' || !started.run.provenance) throw new Error('Missing snapshot provenance')
@@ -51,7 +51,7 @@ it.each(['github', 'circleci'] as const)('publishes a later pinned commit from t
 it('keeps the source and workflow pairing across another publication, retry and restart', async () => {
   const f = await fixture()
   const runId = randomUUID()
-  const started = await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+  const started = await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
     suite: 'integration', scope: 'full' })
   const first = f.dispatched[0]!
   const ref = first[first.indexOf('--ref') + 1]!
@@ -61,7 +61,7 @@ it('keeps the source and workflow pairing across another publication, retry and 
   f.run('commit', '-qm', 'different workflow')
   const later = f.run('rev-parse', 'HEAD')
   f.push('main')
-  await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: later,
+  await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId: randomUUID(), repository: 'octo/site', commit: later,
     suite: 'integration', scope: 'full' })
   expect(f.mirrorGit('rev-parse', ref)).toBe(workflowCommit)
   expect(started).toMatchObject({ run: { provenance: { sourceCommit: f.commit, workflowCommit, workflowRef: ref } } })
@@ -83,7 +83,7 @@ it.each(['github', 'circleci'] as const)('retains oversized timing inputs for af
   const selected: string[][] = []
   for (const index of [0, 1]) {
     const partition = { index, count: 2, weights: [2, 1] }
-    await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
+    await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
       suite: 'integration', partition, durations: learned })
     const command = (provider === 'github' ? f.dispatched : f.circle.triggered).at(-1)!
     const checkout = await f.checkoutMirror(f.mirrorGit('rev-parse', 'main'))
@@ -105,7 +105,7 @@ it('uses the same learned timings when only a full-suite slice exceeds the provi
   let fallbacks = 0
   for (const index of [0, 1]) {
     const partition = { index, count: 2, weights: [8, 1] }
-    await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
+    await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
       suite: 'integration', scope: 'full', partition, durations })
     const command = f.circle.triggered.at(-1)!
     const checkout = await f.checkoutMirror(f.mirrorGit('rev-parse', 'main'))
@@ -125,7 +125,7 @@ it('uses the same learned timings when only a full-suite slice exceeds the provi
 it.each(['github', 'circleci'] as const)('retries terminal %s logs and artifacts after restart without dispatching again', async provider => {
   const f = await fixture({}, { provider })
   const runId = randomUUID()
-  await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+  await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
     suite: 'integration', scope: 'full' })
   f.github.listed = [{ databaseId: 8, displayTitle: `ci ${runId}` }]
   const state = provider === 'github' ? f.github : f.circle
@@ -147,7 +147,7 @@ it.each(['github', 'circleci'] as const)('retries terminal %s logs and artifacts
 it('preserves readable provider ownership during an interrupted metadata replacement', async () => {
   const f = await fixture()
   const runId = randomUUID()
-  await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+  await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
     suite: 'integration', scope: 'full' })
   f.github.listed = [{ databaseId: 8, displayTitle: `ci ${runId}` }]
   await f.cloud.handle(readRequest(runId))
@@ -170,7 +170,7 @@ it('preserves readable provider ownership during an interrupted metadata replace
   try {
     await paused
     expect(await f.cloud.handle(readRequest(runId))).toMatchObject({ run: { state: 'running' } })
-    expect(await f.reopen().handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+    expect(await f.reopen().handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
       suite: 'integration', scope: 'full' })).toMatchObject({ run: { state: 'running' } })
   } finally {
     release()
@@ -185,7 +185,7 @@ it('preserves readable provider ownership during an interrupted metadata replace
 it('reports corrupted ownership separately from a missing cloud run', async () => {
   const f = await fixture()
   const runId = randomUUID()
-  await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+  await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
     suite: 'integration', scope: 'full' })
   await fs.writeFile(join(f.root, 'ci-cloud', 'runs', runId, 'meta.json'), '{')
   await expect(f.reopen().handle(readRequest(runId))).rejects.toMatchObject({ code: 'CI_RUN_CORRUPT' })
@@ -195,7 +195,7 @@ it('reports corrupted ownership separately from a missing cloud run', async () =
 it.each(['canceled', 'queued'] as const)('cancels GitHub attempts that become visible after the ticket is %s', async outcome => {
   const f = await fixture()
   const runId = randomUUID()
-  await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+  await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
     suite: 'integration', scope: 'full' })
   if (outcome === 'canceled') await f.cloud.handle({ operation: 'cancel', runId })
   else for (let attempt = 0; attempt < 3; attempt++) {
@@ -217,7 +217,7 @@ it.each(['github', 'circleci'] as const)('starts %s with learned timings regardl
   const second = 'apps/api/test/b.integration.test.ts'
   const snapshots: string[] = []
   for (const durations of [{ [first]: 10, [second]: 20 }, { [second]: 20, [first]: 10 }]) {
-    const started = await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site',
+    const started = await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId: randomUUID(), repository: 'octo/site',
       commit: f.commit, suite: 'integration', scope: 'full', durations })
     expect(started).toMatchObject({ operation: 'start', run: { state: expect.stringMatching(/starting|running/),
       provenance: { sourceCommit: f.commit } } })
