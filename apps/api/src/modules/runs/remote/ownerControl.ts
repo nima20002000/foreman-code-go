@@ -29,7 +29,8 @@ export async function prepareRemoteOwnerControl(sql: GraphTransactionSql, owner:
     const cleanup = (await sql.query<{ requested_at: Date }>('select requested_at from run_cleanup_intents where run_id=$1 and pending for share', [owner.runId])).rows[0]
     if (cleanup) {
       commandId = `stop:${binding.intent.operationId}:${cleanup.requested_at.toISOString()}`
-    } else if (await canCloseRetainedRemoteReviewer(sql, receipt)) {
+    } else if (!receipt.reviewTurns?.some(turn => !turn.settled)
+      && await canCloseRetainedRemoteReviewer(sql, receipt)) {
       commandId = `close-reviewer:${binding.intent.operationId}`
     } else {
       throw new DomainError('REMOTE_CONTROL_UNAVAILABLE',

@@ -528,7 +528,7 @@ export class HostCiService {
         principalId: intent.record.principalId,
         source: intent.record.source,
         commandId: intent.record.commandId,
-        runId: intent.record.runId,
+        runId,
         reason: 'run_stop',
       }
       const results = await Promise.allSettled(tickets.map(ticket =>

@@ -48,6 +48,25 @@ function fixture() {
   }))
   return { state, db, prepare, recover }
 }
+
+function retainReviewer(f: ReturnType<typeof fixture>) {
+  const saved = approvalFixture()
+  const execution = { ...saved.executions[0]!, id: intent.executionId, runId: intent.runId,
+    workflowNodeId: intent.nodeId, nativeSessionId: native.sessionId, state: 'completed' as const,
+    result: { outcome: 'succeeded' as const, output: { text: 'Original workflow answer' } } }
+  saved.version.entryNodeId = intent.nodeId
+  saved.version.definition.entryNodeId = intent.nodeId
+  saved.version.definition.nodes[0]!.id = intent.nodeId
+  for (const edge of saved.version.definition.edges) edge.source = intent.nodeId
+  f.state.reviewer = { run: { ...saved.run, id: intent.runId }, version: saved.version,
+    execution, configuration: saved.configurations[0], finalized: true,
+    reference: { harness: 'codex', providerVersion: 'fixture', nativeSessionId: native.sessionId } }
+  f.state.cleanup = undefined
+  f.state.receipt!.retainedReviewer = { agentId: execution.agentId,
+    workflowTurnId: native.turnId, result: execution.result, expiresAt: '2026-10-01T00:01:00.000Z' }
+  return { execution, reviewer: f.state.reviewer as { finalized: boolean } }
+}
+
 describe('SQL-only admitted remote control preparation', () => {
   it('binds entered form values to the committed decision during preparation and recovery', async () => {
     const f = fixture()
@@ -76,20 +95,7 @@ describe('SQL-only admitted remote control preparation', () => {
   })
   it('closes the original successful idle reviewer without stopping the Run', async () => {
     const f = fixture()
-    const saved = approvalFixture()
-    const execution = { ...saved.executions[0]!, id: intent.executionId, runId: intent.runId,
-      workflowNodeId: intent.nodeId, nativeSessionId: native.sessionId, state: 'completed' as const,
-      result: { outcome: 'succeeded' as const, output: { text: 'Original workflow answer' } } }
-    saved.version.entryNodeId = intent.nodeId
-    saved.version.definition.entryNodeId = intent.nodeId
-    saved.version.definition.nodes[0]!.id = intent.nodeId
-    for (const edge of saved.version.definition.edges) edge.source = intent.nodeId
-    f.state.reviewer = { run: { ...saved.run, id: intent.runId }, version: saved.version,
-      execution, configuration: saved.configurations[0], finalized: true,
-      reference: { harness: 'codex', providerVersion: 'fixture', nativeSessionId: native.sessionId } }
-    f.state.cleanup = undefined
-    f.state.receipt!.retainedReviewer = { agentId: execution.agentId,
-      workflowTurnId: native.turnId, result: execution.result, expiresAt: '2026-10-01T00:01:00.000Z' }
+    retainReviewer(f)
     const command = await f.prepare('stop')
     expect(command).toMatchObject({ commandId: 'close-reviewer:operation', native,
       action: { kind: 'stop' }, owner: intent.owner })
@@ -108,6 +114,25 @@ describe('SQL-only admitted remote control preparation', () => {
     f.state.cleanup = undefined
     await expect(f.prepare('stop')).rejects.toThrow('cleanup intent')
     await f.db.close()
+  })
+  it('closes a completed retained reviewer under its Run owner without requesting Run Stop', async () => {
+    const f = fixture()
+    const { execution } = retainReviewer(f)
+    f.state.receipt!.turnInput = { correlationId: 'execution:execution', promptDigest: 'a'.repeat(64), sessionMode: 'regular' }
+    try {
+      const command = await f.prepare('stop')
+      expect(command).toMatchObject({ commandId: 'close-reviewer:operation', native,
+        action: { kind: 'stop' }, owner: intent.owner })
+      expect(await f.prepare('stop')).toEqual(command)
+      f.state.reviewsPending = true
+      await expect(f.prepare('stop')).rejects.toThrow('cleanup intent')
+      f.state.reviewsPending = false
+      execution.state = 'waiting' as typeof execution.state
+      await expect(f.prepare('stop')).rejects.toThrow('cleanup intent')
+      execution.state = 'completed'
+      f.state.owned = false
+      await expect(f.prepare('stop')).rejects.toThrow('owner lost')
+    } finally { await f.db.close() }
   })
   it.each(['native', 'owner', 'terminal', 'absent'] as const)('rejects %s ownership before producing a command', async kind => {
     const f = fixture()

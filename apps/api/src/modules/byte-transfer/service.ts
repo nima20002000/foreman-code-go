@@ -188,7 +188,7 @@ export class ResumableByteTransferService implements ByteTransferPort {
   }
   private async capacity(candidate: Journal, creating: boolean) {
     let names = await readdir(`/proc/self/fd/${this.directory!.fd}`)
-    if (creating && names.filter(name => name.endsWith('.json')).length >= 64) {
+    if (creating && names.filter(name => name.endsWith('.json')).length >= POLICY.maxActiveGlobal) {
       try { await this.archiveRetired(names) }
       catch (error) {
         if (names.filter(name => name.endsWith('.json')).length >= POLICY.maxRecords) {

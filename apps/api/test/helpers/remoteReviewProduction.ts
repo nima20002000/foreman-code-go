@@ -172,7 +172,6 @@ export async function remoteReviewProduction(options: {
     const workerRuntime = join(directory, 'worker-runtime')
     const claudeProfile = join(directory, 'claude-profile')
     const logEnvironment = remoteReviewEnvironment(claudeDirectory, claudeProfile, launcher)
-    if (options.reportPhase) logEnvironment.LOG_LEVEL = 'debug'
     const workerEnvironment = remoteReviewEnvironment(join(directory, 'worker-home'), claudeProfile, launcher,
       logEnvironment)
     for (const path of [project, runtime, stateDirectory, workerProject, workerRuntime, claudeProfile]) {
