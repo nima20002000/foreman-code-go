@@ -10,6 +10,7 @@ import { apiServiceTemplate, deployProductionApi, publish }
   from '../../../../scripts/local-production-runtime.mjs'
 import { renderUserService } from '../../../worker/src/service.mjs'
 import { copyApiRuntime } from '../../../../scripts/copy-api-runtime.mjs'
+import { createRuntimeBuildIdentity } from '@foreman-code/contracts/runtime-build-identity-node'
 import { readUntil } from './observableCondition.js'
 
 const execute = promisify(execFile)
@@ -78,6 +79,8 @@ export async function installedRestartService(directory: string, configuration: 
     await writeFile(output, compiled.outputText)
   }
   await copyApiRuntime(repository, join(api, 'dist'))
+  await writeFile(join(api, 'dist/runtime-build.json'),
+    `${JSON.stringify(createRuntimeBuildIdentity(repository))}\n`, { mode: 0o600 })
   await cp(join(repository, 'apps/worker/src'), join(release, 'apps/worker/src'), { recursive: true })
   await copyFile(join(repository, 'package.json'), join(release, 'package.json'))
   await copyFile(process.execPath, join(release, 'node'))
