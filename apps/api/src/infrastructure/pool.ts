@@ -1,6 +1,7 @@
 import pg from 'pg'
 import { componentLogger } from './logger.js'
 import { acquireDatabaseConnection } from './databaseReadRetry.js'
+import { ignoreError } from '../modules/diagnostics/ignoredError.js'
 
 type ConnectCallback = Parameters<pg.Pool['connect']>[0]
 
@@ -111,6 +112,6 @@ export async function cancelBackendQuery(options: pg.PoolConfig, processId: numb
     await client.connect()
     await client.query('select pg_cancel_backend($1)', [processId])
   } finally {
-    await client.end().catch(() => undefined)
+    await client.end().catch(ignoreError('lifecycle', 'client.end', { module: 'pool' }))
   }
 }

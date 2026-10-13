@@ -22,8 +22,8 @@ export function parseProcStat(text: string): ProcStat {
   const parentPid = Number(fields[1])
   if (!Number.isSafeInteger(parentPid) || parentPid < 0) throw new Error('invalid-counter')
   let cpuTicks: bigint | null = null; let rssPages: bigint | null = null
-  try { cpuTicks = counter((counter(fields[11]!) + counter(fields[12]!)).toString()) } catch { /* Independent CPU failure. */ }
-  try { rssPages = counter(fields[21] ?? '') } catch { /* Independent RSS failure. */ }
+  try { cpuTicks = counter((counter(fields[11]!) + counter(fields[12]!)).toString()) } catch { /* ignore: independent CPU failure. */ }
+  try { rssPages = counter(fields[21] ?? '') } catch { /* ignore: independent RSS failure. */ }
   return { pid, parentPid, state: fields[0]!, startTicks: counter(fields[19]!).toString(), cpuTicks, rssPages }
 }
 export function parseHostCpu(text: string): { active: bigint; total: bigint } {

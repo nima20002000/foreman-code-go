@@ -85,7 +85,7 @@ export async function startRemoteTelemetrySession(input: {
     finally { abort(); input.signal.removeEventListener('abort', abort) }
   })()
   // The composition owner observes completion; install a rejection observer immediately.
-  void completion.catch(() => undefined)
+  void completion.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
   return { completion, async close() { abort(); await completion.catch(error => { if (!input.signal.aborted) throw error }) } }
 }
 
@@ -166,13 +166,13 @@ export function createWorkerResourceTelemetryExtension(input: {
           }
           finally { input.signal.removeEventListener('abort', abort) }
         })()
-        void pump.catch(() => undefined)
+        void pump.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
         active = { identity: structuredClone(identity), binding: { ...b }, collector: initialized, lifetime, pump }
       }
       if (waiting.has(challenge.challengeId) || waiting.size >= TELEMETRY_LIMITS.outstanding) throw new TelemetryRejected('backpressure')
       let reject!: (error: unknown) => void
       const sample = new Promise<unknown>((resolve, fail) => { reject = fail; waiting.set(challenge.challengeId, { resolve, reject: fail }) })
-      void sample.catch(() => undefined)
+      void sample.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
       const cancel = () => { waiting.delete(challenge.challengeId); reject(new TelemetryRejected('cancelled')) }
       context.signal.addEventListener('abort', cancel, { once: true })
       try {

@@ -32,7 +32,7 @@ export async function discoverTrustedConnectionHost(runner = runReadinessCommand
         const parsed = z.object({ BackendState: z.string(), TailscaleIPs: z.array(z.string()).optional(), Self: z.object({ DNSName: z.string().optional() }).passthrough().optional() }).passthrough().parse(JSON.parse(status.stdout))
         tailscaleState = parsed.BackendState === 'Running' ? 'running' : ['NeedsLogin', 'NeedsMachineAuth', 'NoState'].includes(parsed.BackendState) ? 'authentication-required' : 'stopped'
         if (tailscaleState === 'running') tailscaleAddresses = [...(parsed.TailscaleIPs ?? []), ...(parsed.Self?.DNSName ? [parsed.Self.DNSName.replace(/\.$/, '')] : [])].filter(value => AddressSchema.safeParse(value).success)
-      } catch { /* Malformed status is unavailable, never authenticated. */ }
+      } catch { /* ignore: malformed status is unavailable, never authenticated. */ }
     }
   }
   const lanAddresses = Object.values(networkInterfaces()).flatMap(items => items ?? []).filter(item => !item.internal

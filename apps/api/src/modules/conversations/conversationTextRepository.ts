@@ -3,6 +3,7 @@ import type pg from 'pg'
 import { MessageSchema, type ActivityScope } from '@foreman-code/contracts'
 import type { ActivityTextOperation } from '@foreman-code/contracts/activity-text'
 import type { ActivityMutationFence } from './operatorActivityRepository.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 export type TextMutationResult = { status: 'committed' | 'ignored' | 'reconciliation_required'; revision: string; messageRevision?: string }
 interface Provenance {
@@ -116,5 +117,5 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
     const revision = (await client.query<{ revision: string }>('update operator_conversations set revision=revision+1,updated_at=now() where id=$1 returning revision::text', [conversationId])).rows[0]!.revision
     await client.query('commit')
     return { status: 'committed', revision, messageRevision: written.revision }
-  } catch (error) { await client.query('rollback').catch(() => undefined); throw error } finally { client.release() }
+  } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'conversationTextRepository' })); throw error } finally { client.release() }
 }

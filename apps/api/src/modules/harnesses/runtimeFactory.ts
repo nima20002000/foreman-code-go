@@ -26,6 +26,7 @@ import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import type { NativeResponseJournal } from './recovery/responseJournal.js'
 import type { ProviderAccountResolver, ResolvedProviderAccount } from '../provider-accounts/service.js'
 import { pinnedCodexAccountEnvironment, resolveRuntimeProviderAccount } from './providerAccountRuntime.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 export type HarnessRuntimeRole = 'workflow' | 'operator' | 'agent-chat' | 'diagnostics' | 'qualification'
 interface AllocationContext {
@@ -460,7 +461,7 @@ export class NativeHarnessFactories {
     for (const owned of this.versionDiagnostics) owned.controller.abort(new Error('Native diagnostics are shutting down.'))
     // Disposal aborts each real adapter's in-flight diagnostic requests. The
     // drain/dispose phase joins these same retained attempts and reports failures.
-    for (const manager of this.auxiliaries.keys()) void this.disposeAuxiliary(manager).catch(() => undefined)
+    for (const manager of this.auxiliaries.keys()) void this.disposeAuxiliary(manager).catch(ignoreError('harness', 'disposeAuxiliary', { module: 'runtimeFactory' }))
   }
 
   admitAuxiliary(manager: NativeHarnessSessionManager): void {

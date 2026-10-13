@@ -161,7 +161,7 @@ export class DeviceApplicationChannel {
     options.signal?.addEventListener('abort', cancel, { once: true })
     const timer = setTimeout(() => { abort.abort(); reject(new DeviceApplicationError('timeout')); this.trySendCancel(id) }, Math.min(900_000, Math.max(1, options.timeoutMs ?? 30_000)))
     // Observe rejection immediately while the request bytes are still uploading.
-    void result.catch(() => undefined)
+    void result.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
     try {
       await this.sendPacket(id, namespace, extension.version, 'request', payload, options.bytes, abort.signal, { stop })
       return await result
@@ -173,7 +173,7 @@ export class DeviceApplicationChannel {
       clearTimeout(timer); options.signal?.removeEventListener('abort', cancel); this.pending.delete(id); abort.abort()
     }
   }
-  private trySendCancel(id: string) { try { this.current(); sendFrame(this.options.socket, { type: 'application-cancel', id }) } catch { /* already fenced */ } }
+  private trySendCancel(id: string) { try { this.current(); sendFrame(this.options.socket, { type: 'application-cancel', id }) } catch { /* ignore: already fenced */ } }
   private async waitAck(id: string, offset: number, signal: AbortSignal, send: () => void) {
     this.current()
     let abort: (() => void) | undefined

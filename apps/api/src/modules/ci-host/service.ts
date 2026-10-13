@@ -16,6 +16,7 @@ import { ciGroupState, planCiParts, runsOnCircleCi, type CiUnitInventory } from 
 import { assertCiReadAccess } from './runAccess.js'
 import type { CiRepositoryCapabilities } from './repository.js'
 import { RUN_CI_JOBS_SQL, runCiJob, storedCiTestResults, type RunCiJobRow } from './runJobs.js'
+import { fallbackOnError } from '../diagnostics/ignoredError.js'
 
 /** CI reads are idempotent: one retry after a lock or statement timeout, then a typed retryable error. */
 async function retryRead<T>(work: () => Promise<T>): Promise<T> {
@@ -247,7 +248,8 @@ export class HostCiService {
     for (const computer of computers) {
       if (speed.has(computer.key)) continue
       // No measurement yet: CPU count relative to the measured computers' typical speed per CPU.
-      const status = await this.endpoint.request(computer, { operation: 'status' }).catch(() => null)
+      const status = await this.endpoint.request(computer, { operation: 'status' })
+        .catch(fallbackOnError(null, 'jobs', 'read CI computer status', { computer: computer.key }))
       if (status?.operation === 'status' && speed.size) {
         const perCpu = [...speed.values()].reduce((sum, value) => sum + value, 0) / speed.size / 12
         speed.set(computer.key, perCpu * Math.max(1, Math.floor(status.cpuCount / (status.slotsTotal ?? 1))))
@@ -528,7 +530,8 @@ export class HostCiService {
         ?? (run.computer && run.computer.hostRef.kind !== 'cloud' ? await this.computer(run.computer.hostRef) : null)
       if (!computer) return
       const reply = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 32_768,
-        ...(['integration', 'unit'].includes(run.suite) ? { durations: true } : {}) }).catch(() => null)
+        ...(['integration', 'unit'].includes(run.suite) ? { durations: true } : {}) })
+        .catch(fallbackOnError(null, 'jobs', 'read CI run from computer', { runId: run.id }))
       if (reply?.operation !== 'read') return
       let logTail = reply.text
       if (reply.run.logBytes > 32_768) {
@@ -545,7 +548,8 @@ export class HostCiService {
       // tests; if they cannot be saved, the run stays active and the next pass tries again.
       if (['integration', 'unit'].includes(run.suite) && !['starting', 'running'].includes(reply.run.state)) {
         const results = await this.endpoint.request(computer, { operation: 'read', runId: run.id, afterOffset: 0, maxBytes: 1,
-          testResults: true }).catch(() => null)
+          testResults: true })
+          .catch(fallbackOnError(null, 'jobs', 'read CI test results from computer', { runId: run.id }))
         if (results?.operation === 'read' && results.testResults) {
           const saved = await this.pool.query('update ci_runs set test_results=$2::jsonb where id=$1',
             [run.id, JSON.stringify(results.testResults)]).then(() => true,

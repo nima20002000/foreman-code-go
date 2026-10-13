@@ -3,6 +3,7 @@ import { RunFileProvenanceSchema, type AgentFileReadInput } from '@foreman-code/
 import { DomainError } from '../../errors.js'
 import type { FileQuery } from '../repository.js'
 import type { AgentReferenceContext, ReferenceReadRepository } from './agentTypes.js'
+import { ignoreError } from '../../diagnostics/ignoredError.js'
 
 /** Run-wide first-use pins plus immutable per-execution first-read facts. */
 export class PostgresReferenceReadRepository implements ReferenceReadRepository {
@@ -59,7 +60,7 @@ export class PostgresReferenceReadRepository implements ReferenceReadRepository 
       await client.query('commit')
       return 'ready'
     } catch (error) {
-      await client.query('rollback').catch(() => undefined)
+      await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'agentProvenance' }))
       throw error
     } finally { client.release() }
   }

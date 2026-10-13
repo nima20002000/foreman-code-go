@@ -58,7 +58,7 @@ export class AutomaticReviewService {
 
         }).finally(() => this.tasks.delete(interaction.id))
         this.tasks.set(interaction.id, task)
-        void task.catch(() => undefined)
+        void task.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
       }
     }
   }

@@ -167,6 +167,6 @@ function decodeCursor(cursor: string | undefined, scope: string[]): string | nul
   try {
     const parsed = z.object({ scope: z.array(z.string()), key: z.string().min(1).max(512) }).strict().parse(JSON.parse(Buffer.from(cursor, 'base64url').toString()))
     if (JSON.stringify(parsed.scope) === JSON.stringify(scope)) return parsed.key
-  } catch { /* All malformed and cross-scope cursors share the same public error. */ }
+  } catch { /* ignore: all malformed and cross-scope cursors share the same public error. */ }
   throw new DomainError('SUBAGENT_CURSOR_INVALID', 'The page cursor does not belong to this exact child read.', 400)
 }

@@ -50,7 +50,7 @@ export async function boundedPost(url, body, fetchRequest = fetch) {
   try { response = await fetchRequest(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(10_000) }); }
   catch { throw new WorkerError('enrollment_transport_failed'); }
   if (!response.ok) {
-    await response.body?.cancel().catch(() => {});
+    await response.body?.cancel().catch(() => { /* ignore: releasing an unread body is best effort; the request already failed with its own error code */ });
     throw new WorkerError(`enrollment_http_${response.status}`);
   }
   if (!response.body) throw new WorkerError('enrollment_response_invalid');
@@ -64,7 +64,7 @@ export async function boundedPost(url, body, fetchRequest = fetch) {
       chunks.push(Buffer.from(next.value));
     }
   } catch (error) { throw error instanceof WorkerError ? error : new WorkerError('enrollment_transport_failed'); }
-  finally { await reader.cancel().catch(() => {}); }
+  finally { await reader.cancel().catch(() => { /* ignore: releasing the reader is best effort; the response outcome is already decided */ }); }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
   catch { throw new WorkerError('enrollment_response_invalid'); }
 }

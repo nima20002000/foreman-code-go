@@ -4,6 +4,7 @@ import { transact } from './wave25/context.js'
 import { recoverApprovalFailure } from './wave25/failureRecovery.js'
 import { DomainError } from '../errors.js'
 import { publicReviewStopError, reviewNeedsStop } from './reviewPolicy.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 type FailureReference = { reviewJobId: string } | { interactionId: string; errorCode: 'APPROVAL_DIRECT_CONNECTION_REQUIRED' }
 
@@ -78,7 +79,7 @@ async function requestLegacyReviewFailureStop(pool: pg.Pool, reference: FailureR
     await client.query('commit')
     return run.id
   } catch (error) {
-    await client.query('rollback').catch(() => undefined)
+    await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'reviewFailureLifecycle' }))
     throw error
   } finally { client.release() }
 }

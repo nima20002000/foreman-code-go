@@ -13,6 +13,7 @@ import type { NativeRollout } from '../harnesses/nativeRollout.js'
 import type { ChildProcessEnvironment, NativeHarnessSessionManager } from '../harnesses/port.js'
 import { DomainError } from '../errors.js'
 import type { OperatorChatAuthority } from './operatorChat.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 export const OPERATOR_MCP_ENVIRONMENT_VARIABLE = APP_MCP_TOKEN_ENVIRONMENT_VARIABLE
 
@@ -115,7 +116,7 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
       signal.throwIfAborted()
       await client.query('commit')
     } catch (error) {
-      await client.query('rollback').catch(() => undefined)
+      await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'operatorChatAuthority' }))
       throw error
     } finally { client.release() }
     let removeRoute: (() => Promise<void>) | undefined

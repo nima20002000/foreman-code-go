@@ -43,7 +43,7 @@ export function createNativeFileMcpServer(service: () => FileMcpService, observe
       const mcp = await createFileMcpServer(selected, token!)
       const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
       const delivered = finished(response, { readable: false })
-      void delivered.catch(() => { /* The request handler below reports an interrupted response. */ })
+      void delivered.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
       try {
         await mcp.connect(transport)
         await transport.handleRequest(request, response, body)

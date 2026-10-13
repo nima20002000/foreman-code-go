@@ -34,7 +34,7 @@ export function workerPath(home, node) {
         } catch { return false; }
       });
       if (installed) directories.push(directory);
-    } catch { /* Missing or untrusted installations do not extend PATH. */ }
+    } catch { /* ignore: missing or untrusted installations do not extend PATH. */ }
   }
   add('/usr/local/bin', '/usr', 0);
   let canonicalHome;
@@ -43,7 +43,7 @@ export function workerPath(home, node) {
       && /^[/a-zA-Z0-9_.-]+$/.test(home) && owned(home, true)) {
       canonicalHome = realpathSync(home);
     }
-  } catch { /* Missing or untrusted homes do not extend PATH. */ }
+  } catch { /* ignore: missing or untrusted homes do not extend PATH. */ }
   if (canonicalHome && /^[/a-zA-Z0-9_.-]+$/.test(canonicalHome)) {
     // Resolve ancestors before checking installations; the home itself cannot be a symlink.
     home = canonicalHome;
@@ -53,7 +53,7 @@ export function workerPath(home, node) {
       if (trusted(versions)) {
         for (const entry of readdirSync(versions, { withFileTypes: true }).filter((entry) => entry.isDirectory() && /^v\d+\.\d+\.\d+$/.test(entry.name)).sort((a, b) => b.name.localeCompare(a.name, 'en', { numeric: true }))) add(join(versions, entry.name, 'bin'));
       }
-    } catch { /* NVM is optional. */ }
+    } catch { /* ignore: NVM is optional. */ }
   }
   return [...new Set(directories)].join(':');
 }

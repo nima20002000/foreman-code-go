@@ -122,7 +122,7 @@ export function createAdmittedNativeManager<T extends NativeHarnessSessionManage
     dispose() {
       lifetime.abort(new DomainError('NATIVE_MANAGER_DISPOSED', 'The admitted native allocation is disposed.', 409))
       disposal ??= Promise.resolve().then(async () => {
-        if (opening) await opening.catch(() => undefined)
+        if (opening) await opening.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
         await allocation?.manager.dispose?.(); stopped.clear()
       })
       const attempt = disposal

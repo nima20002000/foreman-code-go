@@ -61,7 +61,7 @@ export class ProductionDeviceListener {
     return attempt
   }
   private async finish(): Promise<void> {
-    await this.starting?.catch(() => undefined)
+    await this.starting?.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
     const server = this.server
     const websocket = this.websocket
     if (!server) return

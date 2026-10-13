@@ -18,6 +18,7 @@ import { qualificationError } from '../qualificationErrors.js'
 import type { HarnessQualificationRepository } from './repository.js'
 import type { HarnessQualificationRegistry } from './registry.js'
 import type { QualificationSuite } from './types.js'
+import { ignoreError } from '../../diagnostics/ignoredError.js'
 
 class QualificationCleanupError extends AggregateError {}
 
@@ -252,7 +253,7 @@ export class HarnessQualificationService {
       void task.finally(() => {
         if (this.flights.get(harness) === entry) this.flights.delete(harness)
         this.onFinished?.(harness)
-      }).catch(() => undefined)
+      }).catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
     }
     return {
       harness, version, binarySha256: sha256, suiteRevision: suite.revision, profile: QUALIFICATION_TARGET_PROFILE[harness],
@@ -345,7 +346,7 @@ export class HarnessQualificationService {
       if (error instanceof AggregateError) throw error
     } finally {
       // A failed removal remains owned and is retried by join().
-      if (workDirectory && !uncertain && !owned.size) await this.removeDirectory(workDirectory).catch(() => undefined)
+      if (workDirectory && !uncertain && !owned.size) await this.removeDirectory(workDirectory).catch(ignoreError('harness', 'removeDirectory', { module: 'service' }))
     }
   }
 }

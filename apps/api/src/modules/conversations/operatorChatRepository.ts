@@ -43,6 +43,7 @@ import { recordNativeNonSubmission, type NativeNonSubmission } from './nativeNon
 import { OperatorConversationRecordSchema, publicOperatorConversation } from './operatorConversationRecord.js'
 import { legacyProviderAccountBinding, readProviderAccountBinding, saveProviderAccountBinding }
   from '../provider-accounts/acceptedBindings.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 export type TurnPhase = 'accepted' | 'creating' | 'ready' | 'submitting' | 'submitted'
 export interface ConversationRow {
@@ -230,7 +231,7 @@ export class PostgresOperatorConversationRepository {
       const activitySnapshot = state ? await readOperatorActivitySnapshot(this.pool, client, id) : undefined
       await client.query('commit')
       return state && activitySnapshot ? { ...state, activitySnapshot } : undefined
-    } catch (error) { await client.query('rollback').catch(() => undefined); throw error } finally { client.release() }
+    } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'operatorChatRepository' })); throw error } finally { client.release() }
   }
   async activitySnapshot(id: string) {
     return (await this.getWithActivity(id))?.activitySnapshot
@@ -449,7 +450,7 @@ export class PostgresOperatorConversationRepository {
       const revision = await this.setDeletedWithQuery(client, id, ownerId, deleted)
       await client.query('commit')
       return { conversationId: id, revision }
-    } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
+    } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'operatorChatRepository' })); throw error }
     finally { client.release() }
   }
 
@@ -570,7 +571,7 @@ export class PostgresOperatorConversationRepository {
       if (!state) throw new Error('The forked conversation was not persisted.')
       await client.query('commit')
       return { state, replayed: false }
-    } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
+    } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'operatorChatRepository' })); throw error }
     finally { client.release() }
   }
 
@@ -675,7 +676,7 @@ export class PostgresOperatorConversationRepository {
       await client.query('commit')
       return { replayed, state }
     } catch (error) {
-      await client.query('rollback').catch(() => undefined)
+      await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'operatorChatRepository' }))
       throw error
     } finally { client.release() }
   }
@@ -857,7 +858,7 @@ export class PostgresOperatorConversationRepository {
       await client.query('update operator_conversations set revision=revision+1,updated_at=now() where id=$1', [id])
       await client.query('commit')
       return true
-    } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
+    } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'operatorChatRepository' })); throw error }
     finally { client.release() }
   }
 
@@ -979,6 +980,6 @@ export class PostgresOperatorConversationRepository {
       [id, requestId, JSON.stringify(result), result.error?.message ?? null, result.outcome === 'failed' ? 'error' : 'idle'])
       await client.query('commit')
       return true
-    } catch (error) { await client.query('rollback').catch(() => undefined); throw error } finally { client.release() }
+    } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'operatorChatRepository' })); throw error } finally { client.release() }
   }
 }

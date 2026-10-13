@@ -6,6 +6,7 @@ import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import { pathsOverlap } from './filesystem.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 export const WORKSPACE_FOLDER_LIFECYCLE_LOCK = 'workspace-folder-lifecycle'
 export const CreatedProjectFolderSchema = z.object({
@@ -82,7 +83,8 @@ export async function cleanupWorkspaceProjectFolders(pool: pg.Pool, principal: M
     await client.query('rollback')
     await client.query(`insert into management_audit (principal_id, source, action, target_key, outcome, details)
       values ($1, $2, 'workspace.folder.cleanup', 'workspaces:cleanup', 'failed', $3::jsonb)`,
-    [principal.id, source, JSON.stringify({ commandId, workspaceIds: ids })]).catch(() => undefined)
+    [principal.id, source, JSON.stringify({ commandId, workspaceIds: ids })])
+      .catch(ignoreError('lifecycle', 'record failed workspace folder cleanup audit', { commandId }))
     throw new DomainError('WORKSPACE_FOLDER_CLEANUP_FAILED',
       `The workspace was archived, but its project folder could not be removed. Retry removal. ${error instanceof Error ? error.message : ''}`, 503)
   } finally { client.release() }

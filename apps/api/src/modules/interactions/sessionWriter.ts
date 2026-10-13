@@ -650,7 +650,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
 
   private control<T>(session: NativeSessionReference, signal: AbortSignal | undefined,
     action: (signal: AbortSignal) => Promise<T>, cleanup = false): Promise<T> {
-    const work = this.controlTail.catch(() => undefined).then(async () => {
+    const work = this.controlTail.catch(() => { /* ignore: a failed earlier operation is reported to its own caller; this queue only orders the next one */ }).then(async () => {
       let active = this.active.get(session.nativeSessionId)
       if (cleanup && active?.operation === 'attach' && active.guard.signal.aborted
         && !isLeaseLost(active.guard.signal.reason)) {

@@ -1,10 +1,11 @@
 import type pg from 'pg'
 import { DomainError } from '../errors.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 type Queryable = Pick<pg.PoolClient, 'query'>
 export async function withConversationPageRead<T>(pool: pg.Pool, work: (query: Queryable) => Promise<T>): Promise<T> {
   const client = await pool.connect()
   try { await client.query('begin isolation level repeatable read read only'); const value = await work(client); await client.query('commit'); return value }
-  catch (error) { await client.query('rollback').catch(() => undefined); throw error } finally { client.release() }
+  catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'activityCursor' })); throw error } finally { client.release() }
 }
 /** The numeric key belongs to one actual stored source row, never another conversation's page. */
 export async function assertConversationCursor(query: Queryable, conversationId: string, before: string | undefined,

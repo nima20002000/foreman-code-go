@@ -36,6 +36,7 @@ import { prepareRunStart } from './startPreparation.js'
 import { RUN_START_LOCK_WAIT_MS, waitForRunStartLock, type RunStartLockWait } from './startLocks.js'
 import type { AcceptedProviderAccountBindings } from '../provider-accounts/acceptedBindings.js'
 import type { AcceptedProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 /** Internal canonical producer, not a rollout flag or an admission capability.
  * The production management arm intentionally supplies no producer at this base.
@@ -385,7 +386,8 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
     await pool.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
       values($1,$2,'run.start',$3,'failed',$4::jsonb)`, [principal.id, source, target,
     JSON.stringify({ commandId: input.commandId, code: error instanceof DomainError ? error.code : 'INTERNAL_ERROR',
-      ...(admissionBegan ? { admissionOutcome: 'unconfirmed' } : {}) })]).catch(() => undefined)
+      ...(admissionBegan ? { admissionOutcome: 'unconfirmed' } : {}) })])
+      .catch(ignoreError('engine', 'record failed run start audit', { commandId: input.commandId }))
     throw error
   }
 }

@@ -63,7 +63,7 @@ export async function discoverLauncher(requested: string, environment: TargetEnv
             if (!command || command.startsWith('-')) throw new Error('Unsupported env shebang options')
             let found: string | null = null
             for (const directory of directories) {
-              try { const path = await realpath(join(directory, command)); await access(path, constants.X_OK); if ((await stat(path)).isFile()) { found = path; break } } catch { /* Try the next target PATH entry. */ }
+              try { const path = await realpath(join(directory, command)); await access(path, constants.X_OK); if ((await stat(path)).isFile()) { found = path; break } } catch { /* ignore: try the next target PATH entry. */ }
             }
             if (!found) throw new Error('Missing env interpreter')
             evidence.interpreter = found

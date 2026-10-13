@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { BYTE_TRANSFER_POLICY as POLICY, TransferIntentSchema, TransferContextSchema,
   TransferProgressSchema, VerifiedTransferReceiptSchema, type TransferIntent, type TransferContext,
   type TransferProgress, type VerifiedTransferReceipt, type ByteTransferPort } from '@foreman-code/contracts/byte-transfer'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 export type TransferOperation = 'start' | 'status' | 'append' | 'finish' | 'cancel' | 'read'
 export class TransferExpiredError extends Error {}
@@ -411,7 +412,7 @@ export class ResumableByteTransferService implements ByteTransferPort, ExternalS
         })(), { objectMode: false, highWaterMark: POLICY.maxChunkBytes })
         this.readers.add(stream)
         stream.once('close', () => {
-          void closeReader().catch(() => {})
+          void closeReader().catch(ignoreError('byte-transfer', 'closeReader', { module: 'service' }))
         })
         return stream
       } catch (error) { await handle.close(); throw error }

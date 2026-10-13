@@ -62,7 +62,7 @@ async function executable(binary: string, cwd: string, environment: NodeJS.Proce
         : [base]
     })
   for (const path of paths) {
-    try { await access(path, constants.X_OK); return await realpath(path) } catch { /* Try the next PATH entry. */ }
+    try { await access(path, constants.X_OK); return await realpath(path) } catch { /* ignore: try the next PATH entry. */ }
   }
   throw new HarnessExecutionError('CODEX_UNAVAILABLE', 'The configured Codex executable is unavailable.')
 }

@@ -26,7 +26,7 @@ function installedCodex(path: string, bundled?: string): string | undefined {
     try {
       const payload = npmCodexBinary(bundled)
       if (payload) excluded.add(payload)
-    } catch { /* The bundled optional native package may be absent on this platform. */ }
+    } catch { /* ignore: the bundled optional native package may be absent on this platform. */ }
   }
   for (const directory of path.split(delimiter).filter(isAbsolute)) {
     const candidate = join(directory, process.platform === 'win32' ? 'codex.exe' : 'codex')
@@ -39,7 +39,7 @@ function installedCodex(path: string, bundled?: string): string | undefined {
         || ['feedface', 'feedfacf', 'cefaedfe', 'cffaedfe', 'cafebabe'].includes(prefix)) return resolved
       const payload = npmCodexBinary(resolved)
       if (payload && !excluded.has(payload)) return payload
-    } catch { /* An unrecognized wrapper is never executed as a trusted default. */ }
+    } catch { /* ignore: an unrecognized wrapper is never executed as a trusted default. */ }
   }
   return undefined
 }
@@ -51,7 +51,7 @@ export function harnessBinaries(environment: NodeJS.ProcessEnv): { codexBinary: 
   let bundled: string | undefined
   if (codex === 'codex') {
     try { bundled = createRequire(import.meta.url).resolve('@openai/codex/bin/codex.js') }
-    catch { /* Standalone workers may provide only their computer-local installation. */ }
+    catch { /* ignore: standalone workers may provide only their computer-local installation. */ }
   }
   return {
     codexBinary: codex === 'codex'

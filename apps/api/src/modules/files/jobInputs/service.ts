@@ -21,6 +21,7 @@ import type { JobInputAuthority } from './authority.js'
 import { inputHash, makeManifest, manifestBytes, recipient, snapshotDigest, verificationContextBytes, verificationContextPin } from './manifest.js'
 import { outputTransferContext } from '../jobs/outputAdmission.js'
 import { JOB_INPUT_NAMESPACE } from './protocol.js'
+import { ignoreError } from '../../diagnostics/ignoredError.js'
 export { JOB_INPUT_NAMESPACE } from './protocol.js'
 /** Main canonical pin/grant authority. Neither callers nor workers supply paths or bytes. */
 export class CanonicalJobInputs {
@@ -28,7 +29,7 @@ export class CanonicalJobInputs {
   constructor(private readonly pool:pg.Pool,private readonly authority:JobInputAuthority,private readonly bytes:FileByteStorage,
     private readonly connection:Pick<DeviceEndpoint,'currentBinding'>,
     private readonly clock:()=>Date=()=>new Date()){this.commands=new PostgresCommandCoordinator(pool)}
-  private async transaction<T>(work:(sql:JobSql)=>Promise<T>):Promise<T>{const sql=await this.pool.connect();try{await sql.query('begin');const value=await work(sql);await sql.query('commit');return value}catch(error){await sql.query('rollback').catch(()=>{});throw error}finally{sql.release()}}
+  private async transaction<T>(work:(sql:JobSql)=>Promise<T>):Promise<T>{const sql=await this.pool.connect();try{await sql.query('begin');const value=await work(sql);await sql.query('commit');return value}catch(error){await sql.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'service' }));throw error}finally{sql.release()}}
   private binding(execution:JobExecutionRecord) {
     const target=execution.acceptedSpec.target
     if(target.hostRef.kind!=='device'||!target.registration)throw new DomainError('JOB_INPUT_REMOTE_DEVICE_REQUIRED','Remote delivery requires its actual accepted device.',403)

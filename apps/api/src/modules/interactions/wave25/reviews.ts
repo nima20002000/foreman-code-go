@@ -358,7 +358,7 @@ export class Wave25InteractionCoordinationRepository extends PostgresInteraction
       "select principal_id from worker_credential_bindings where execution_id=$1 and purpose='reviewer' and revoked_at is null", [executionId])).rows
     let reviewerActive = false
     for (const binding of bindings) {
-      try { await assertWave25WorkerBinding(this.approvalPool, binding.principal_id); reviewerActive = true; break } catch { /* No cached credential grants authority. */ }
+      try { await assertWave25WorkerBinding(this.approvalPool, binding.principal_id); reviewerActive = true; break } catch { /* ignore: no cached credential grants authority. */ }
     }
     return { ...session, reviewerActive }
   }

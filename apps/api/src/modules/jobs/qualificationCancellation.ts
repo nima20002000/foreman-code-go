@@ -43,7 +43,7 @@ export async function interruptActiveQualification(input: {
     child.once('error', reject)
   })
   // Join the controller after the original container has been stopped.
-  void exited.catch(() => {})
+  void exited.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
   let output = ''
   const active = new Promise<void>((resolve, reject) => {
     child.stdout!.on('data', (bytes: Buffer) => {

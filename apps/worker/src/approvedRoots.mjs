@@ -18,7 +18,7 @@ export async function loadApprovedRoots(stateDirectory, pairing) {
   if (allowlist.hostRef.kind !== 'device' || allowlist.hostRef.mainId !== pairing.mainId || allowlist.hostRef.deviceId !== pairing.deviceId || allowlist.applicationInstallationId !== pairing.workerInstallationId) throw new WorkerError('approved_roots_identity_mismatch');
   const paths = [...allowlist.bases.map((base) => base.canonicalPath), allowlist.managedRuntimeRoot];
   for (const path of paths) {
-    const directory = await lstat(path).catch(() => null);
+    const directory = await lstat(path).catch(() => { /* ignore: an unreadable root is reported just below as approved_root_directory_unavailable */ return null; });
     if (!directory?.isDirectory()) throw new WorkerError('approved_root_directory_unavailable');
   }
   const facts = await hostFacts(process.env.HOME ?? '', paths);

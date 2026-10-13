@@ -10,7 +10,7 @@ export function childHistoryCursor(root: string, value?: string): NativeChildCur
   try {
     const parsed = CursorSchema.parse(JSON.parse(Buffer.from(value, 'base64url').toString()))
     if (parsed.root === root) return parsed
-  } catch { /* Opaque cursor never grants a native address outside the original parent. */ }
+  } catch { /* ignore: opaque cursor never grants a native address outside the original parent. */ }
   throw new DomainError('SUBAGENT_NATIVE_CURSOR_INVALID', 'Native child history cursor does not match its original parent.', 409)
 }
 export function encodeChildHistoryCursor(cursor: NativeChildCursor): string { return Buffer.from(JSON.stringify(cursor)).toString('base64url') }

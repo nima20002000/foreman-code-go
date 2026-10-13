@@ -15,6 +15,7 @@ import { pluginConfigurationHas, unrelatedPluginConfiguration } from './codexPlu
 import { PluginReadQueue } from './pluginReadQueue.js'
 import { QualificationCache } from './qualificationCache.js'
 import { assertNoUnresolvedMcpWrites, assertNoUnresolvedPluginWrites, lockNativeConfigurationFile, NATIVE_SETTINGS_LOCK } from './nativeSettingsWrites.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 const operation = 'codex.plugin.change'
 const RecoverySchema = z.object({
@@ -139,7 +140,7 @@ export class CodexPluginSettingsService {
         JSON.stringify({ commandId: row.command_id, requestedBy: row.principal_id, status: result.status,
           nativeFailure: result.nativeFailure ?? null, nativeWriteRepeated: false }), source])
       await client.query('commit')
-    } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
+    } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'codexPluginSettings' })); throw error }
   }
   change(principal: ManagementPrincipal, raw: CodexPluginChangeInput, source: 'http' | 'mcp' = 'http') {
     return this.afterWrite(this.changeNative(principal, raw, source))
@@ -211,7 +212,8 @@ export class CodexPluginSettingsService {
     }, signal), this.signal()).catch(async (error: unknown) => {
       await this.pool.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
         values($1,$4,'codex.plugin.change',$2,'failed',$3::jsonb)`, [principal.id, `codex-plugin:${input.pluginId}`,
-        JSON.stringify({ commandId: input.commandId, code: safeCode(error) }), source]).catch(() => undefined)
+        JSON.stringify({ commandId: input.commandId, code: safeCode(error) }), source])
+        .catch(ignoreError('harness', 'record failed Codex plugin change audit', { commandId: input.commandId, pluginId: input.pluginId }))
       throw error
     })
   }

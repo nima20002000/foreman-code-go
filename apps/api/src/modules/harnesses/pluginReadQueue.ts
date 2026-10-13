@@ -23,7 +23,7 @@ export class PluginReadQueue {
       let resolve!: (value: T) => void
       let reject!: (error: unknown) => void
       const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
-      void promise.catch(() => undefined)
+      void promise.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
       job = { key, controller, promise, users: 0, execute: async () => {
         try { controller.signal.throwIfAborted(); resolve(await work(controller.signal)) }
         catch (error) { reject(error) }

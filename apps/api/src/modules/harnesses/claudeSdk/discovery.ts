@@ -33,7 +33,7 @@ async function findExecutable(binary: string, path: string): Promise<string | un
       await access(candidate, constants.X_OK)
       const resolved = await realpath(candidate)
       if ((await stat(resolved)).isFile()) return resolved
-    } catch { /* Bounded safe PATH lookup; never source shell startup files. */ }
+    } catch { /* ignore: bounded safe PATH lookup; never source shell startup files. */ }
   }
   return undefined
 }

@@ -36,7 +36,7 @@ function supportsEnum(document: ObjectValue, value: unknown, expected: readonly 
   if (expected.every((item) => choices.includes(item))) return
   for (const choice of [...(Array.isArray(schema.anyOf) ? schema.anyOf : []),
     ...(Array.isArray(schema.oneOf) ? schema.oneOf : []), ...(Array.isArray(schema.allOf) ? schema.allOf : [])]) {
-    try { supportsEnum(document, choice, expected, depth + 1); return } catch { /* Try another declared branch. */ }
+    try { supportsEnum(document, choice, expected, depth + 1); return } catch { /* ignore: try another declared branch. */ }
   }
   throw invalid(`enum values ${expected.join(', ')}`)
 }
@@ -46,7 +46,7 @@ function supportsType(document: ObjectValue, value: unknown, expected: string, d
   if (schema.type === expected || (Array.isArray(schema.type) && schema.type.includes(expected))) return
   for (const choice of [...(Array.isArray(schema.anyOf) ? schema.anyOf : []),
     ...(Array.isArray(schema.oneOf) ? schema.oneOf : []), ...(Array.isArray(schema.allOf) ? schema.allOf : [])]) {
-    try { supportsType(document, choice, expected, depth + 1); return } catch { /* Another declared branch. */ }
+    try { supportsType(document, choice, expected, depth + 1); return } catch { /* ignore: another declared branch. */ }
   }
   throw invalid(`type ${expected}`)
 }

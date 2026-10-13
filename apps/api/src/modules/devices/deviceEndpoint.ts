@@ -90,7 +90,7 @@ export class DeviceEndpoint {
       const principal = await this.authenticate(headers)
       await this.acceptAuthenticated(principal, socket)
     } catch (error) {
-      try { sendFrame(socket, { type: 'blocked', code: error instanceof DeviceConnectionError ? error.code : 'transport' }) } catch { /* socket unavailable */ }
+      try { sendFrame(socket, { type: 'blocked', code: error instanceof DeviceConnectionError ? error.code : 'transport' }) } catch { /* ignore: socket unavailable */ }
       socket.close()
     }
   }
@@ -165,8 +165,8 @@ export class DeviceEndpoint {
       } })
       this.channels.set(principal.deviceId, channel); this.allChannels.add(channel)
       const channelTask = channel.run(iterator, this.options.heartbeatMs ?? 30_000).catch((error: unknown) => { abort.abort(); throw error })
-      void channelTask.catch(() => undefined)
-      void this.track(channelTask.catch(() => undefined).then(() => channel.join()).finally(() => this.allChannels.delete(channel)))
+      void channelTask.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
+      void this.track(channelTask.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ }).then(() => channel.join()).finally(() => this.allChannels.delete(channel)))
       await withDeviceDeadline(this.track(this.options.reconcile(binding, abort.signal)), abort.signal, this.options.handshakeMs ?? 10_000)
       if (!current()) throw new DeviceConnectionError('transport')
       if (!session?.presence || this.sessions.get(principal.deviceId)?.abort !== abort) throw new DeviceConnectionError('transport')
@@ -176,7 +176,7 @@ export class DeviceEndpoint {
       if (this.options.onBindingReady) await this.track(Promise.resolve(this.options.onBindingReady(binding, abort.signal)))
       await channelTask
     } catch (error) {
-      try { sendFrame(socket, { type: 'blocked', code: error instanceof DeviceConnectionError ? error.code : 'transport' }) } catch { /* socket already unavailable */ }
+      try { sendFrame(socket, { type: 'blocked', code: error instanceof DeviceConnectionError ? error.code : 'transport' }) } catch { /* ignore: socket already unavailable */ }
     } finally {
       abort.abort(); socket.close()
       if (principal && this.sessions.get(principal.deviceId)?.abort === abort) {
@@ -221,7 +221,7 @@ export class DeviceEndpoint {
     this.revoked.set(deviceId, revision)
     const session = this.sessions.get(deviceId)
     if (session && session.authorizationRevision <= revision) {
-      try { sendFrame(session.socket, { type: 'blocked', code: 'revoked' }) } catch { /* socket already unavailable */ }
+      try { sendFrame(session.socket, { type: 'blocked', code: 'revoked' }) } catch { /* ignore: socket already unavailable */ }
       this.channels.get(deviceId)?.close(new DeviceConnectionError('revoked'))
       session.abort.abort()
       session.socket.close()

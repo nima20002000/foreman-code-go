@@ -18,6 +18,7 @@ import { readPlacement } from '../../placement/binding.js'
 import type { RemoteOperationJournal } from './operationJournal.js'
 import { pageNativeHistory } from './nativeHistoryPage.js'
 import { DomainError } from '../../errors.js'
+import { logIgnoredError } from '../../diagnostics/ignoredError.js'
 
 function executableHarness(harness: RecordedAgentHarness): AgentHarness {
   if (harness === 'opencode') {
@@ -496,7 +497,7 @@ export class RemoteExecutionHost {
           },
         }, resident.controller.signal)) { void event }
         await this.settle(resident, correlationId)
-      } catch { try { await this.ports.journal.uncertain(operationId, 'Native turn acknowledgment or closure unavailable') } catch { /* A faulted journal already denies entry and requires recovery. */ } }
+      } catch { try { await this.ports.journal.uncertain(operationId, 'Native turn acknowledgment or closure unavailable') } catch (journalError) { logIgnoredError('engine', 'record uncertain native turn', journalError, { operationId }) } // A faulted journal already denies entry and requires recovery. }
     })()
     return this.ports.journal.status(operationId)
   }

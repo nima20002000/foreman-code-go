@@ -148,7 +148,7 @@ export class WorkerNativeOutputRegistry implements WorkerNativeArtifactSource {
       return recheck(reply)
     })
     retained.pending = pending
-    this.tail = pending.catch(() => undefined) // Queue continues; original caller receives every failure.
+    this.tail = pending.catch(() => { /* ignore: a failed earlier operation is reported to its own caller; this queue only orders the next one */ }) // Queue continues; original caller receives every failure.
     try { return await pending } finally { delete retained.pending; this.queuedBytes -= queuedBytes }
   }
   private async execute(command: WorkerNativeOutputCommand, call: WorkerNativeArtifactCallback, signal: AbortSignal): Promise<WorkerNativeOutputReply> {

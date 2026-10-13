@@ -6,6 +6,7 @@ import { attachDetachedStdio, detachRecoveredChild, hasDetachedStdioProcess,
   nativeProcessExit, type NativeProcessRecovery } from './recovery/processRegistry.js'
 import { redactKnownSecrets } from './secrets.js'
 import { openCodexRuntimeTiming } from './codexRuntimeTiming.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 export type JsonObject = Record<string, unknown>
 export type RequestId = string | number
@@ -160,7 +161,7 @@ export class CodexStdioTransport {
       }, signal)
       await this.write({ method: 'initialized' })
     } catch (error) {
-      await this.close().catch(() => undefined)
+      await this.close().catch(ignoreError('harness', 'close', { module: 'codexStdioTransport' }))
       throw error
     }
   }
@@ -555,7 +556,7 @@ export class CodexStdioTransport {
 
   private fail(error: Error): void {
     if (!this.stop(error)) return
-    try { this.onDisconnect(error) } catch { /* Observer failure cannot escape this process boundary. */ }
-    void this.close().catch(() => undefined)
+    try { this.onDisconnect(error) } catch { /* ignore: observer failure cannot escape this process boundary. */ }
+    void this.close().catch(ignoreError('harness', 'close', { module: 'codexStdioTransport' }))
   }
 }

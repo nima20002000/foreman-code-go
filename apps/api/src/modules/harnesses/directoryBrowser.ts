@@ -6,6 +6,7 @@ import { requireAuthorization } from '../access/policy.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { WorkspaceFolderDeleteInputSchema, type WorkspaceFolderDeleteInput } from '@foreman-code/contracts/management'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 export function isInside(root: string, path: string): boolean {
   const rel = relative(root, path)
@@ -75,7 +76,7 @@ export class HarnessDirectoryBrowser {
         sourcePath = previous.rows[0]?.result.path ?? created.path
         }
         const roots = await Promise.all(this.configuredRoots.map((root) => realpath(root)))
-        const current = sourcePath && await realpath(sourcePath).catch(() => undefined)
+        const current = sourcePath && await realpath(sourcePath).catch(ignoreError('harness', 'resolve directory browser source', {}, ['ENOENT', 'ENOTDIR']))
         if (!current || current !== sourcePath || !roots.some((root) => current !== root && isInside(root, current))) {
           throw new DomainError('DIRECTORY_UNAVAILABLE', 'The created folder is no longer available at its original location.', 409)
         }
@@ -92,7 +93,7 @@ export class HarnessDirectoryBrowser {
           throw new DomainError('DIRECTORY_RENAME_FAILED', 'The folder could not be renamed.', 422)
         }
         try { await rename(current, target) } catch {
-          await rmdir(target).catch(() => undefined)
+          await rmdir(target).catch(ignoreError('harness', 'rmdir', { module: 'directoryBrowser' }))
           throw new DomainError('DIRECTORY_RENAME_FAILED', 'The folder could not be renamed.', 422)
         }
         return { path: target, name: accepted.name, creationCommandId: accepted.creationCommandId }
@@ -121,7 +122,7 @@ export class HarnessDirectoryBrowser {
           "select result from management_command_receipts where principal_id=$1 and operation='workspace.folder.rename' and result->>'creationCommandId'=$2 order by created_at desc limit 1", [principal.id, accepted.creationCommandId])
         const path = named.rows[0]?.result.path ?? created.path
         const roots = await Promise.all(this.configuredRoots.map((root) => realpath(root)))
-        if (await realpath(path).catch(() => undefined) !== path || !roots.some((root) => path !== root && isInside(root, path))) {
+        if (await realpath(path).catch(ignoreError('harness', 'resolve created directory', {}, ['ENOENT', 'ENOTDIR'])) !== path || !roots.some((root) => path !== root && isInside(root, path))) {
           throw new DomainError('DIRECTORY_UNAVAILABLE', 'The created folder is no longer available.', 409)
         }
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [`workspace-folder:${path}`])

@@ -21,6 +21,7 @@ import type { FileMutationSource } from '../repository.js'
 import { JobOutputPublicationInputSchema, type JobOutputPublicationInput } from '@foreman-code/contracts/job-output-transfer'
 import type { FileStorageService } from '../service.js'
 import { completedBytes } from '../tools/transfers.js'
+import { ignoreError } from '../../diagnostics/ignoredError.js'
 
 export type { JobOutputPublicationInput } from '@foreman-code/contracts/job-output-transfer'
 export interface TrustedJobOutputReader {
@@ -52,7 +53,7 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
       await sql.query('begin')
       const result = await operation(sql)
       await sql.query('commit'); return result
-    } catch (error) { await sql.query('rollback').catch(() => {}); throw error }
+    } catch (error) { await sql.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'port' })); throw error }
     finally { sql.release() }
   }
   private artifact(link: JobPublicationLink, value: FileWithRevision): JobArtifact {

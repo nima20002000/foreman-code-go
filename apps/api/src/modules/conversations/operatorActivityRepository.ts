@@ -6,6 +6,7 @@ import { settleKnownActivity } from './settleKnownActivity.js'
 import { conversationActivityKey } from './activityIdentity.js'
 import { assertConversationCursor, withConversationPageRead } from './activityCursor.js'
 import type { OperatorActivityChange } from './operatorActivity.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 export interface ActivityMutationFence {
   connectionId?: string
@@ -113,7 +114,7 @@ export class PostgresOperatorActivityRepository {
       await client.query('commit')
       return { activity: OperatorActivitySchema.parse({ ...(applied.record as object), sequence: applied.sequence, revision: Number(applied.revision) }), revision: Number(revision), scopeRevision: revision, itemRevision: applied.revision }
     } catch (error) {
-      await client.query('rollback').catch(() => undefined)
+      await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'operatorActivityRepository' }))
       throw error
     } finally { client.release() }
   }

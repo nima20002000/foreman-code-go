@@ -19,6 +19,7 @@ import type { RunManagementService } from '../runs/management.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 import { lockAgentConfigurations } from '../workspaces/agentConfiguration.js'
 import { readAffectedGraphRuns } from './saveAdmission.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 export type EditIntentSource = 'http' | 'mcp'
 type Source = EditIntentSource
@@ -425,7 +426,7 @@ export class DurableEditIntentService<S extends EditStageScope, I extends Durabl
           await this.commands.recordAudit(live.id, source, 'graph.stop_and_save', `edit-intent:${latest.id}`,
             uncertain ? 'uncertain' : 'failed', { commandId: input.commandId,
               code: error instanceof DomainError ? error.code : 'COMMAND_UNCERTAIN' }, client)
-        }).catch(() => undefined) // Revocation withholds readback; it must not delete the intent.
+        }).catch(ignoreError('engine', 'record uncertain graph edit intent', { intentId: input.intentId, commandId: input.commandId })) // Revocation withholds readback; it must not delete the intent.
         if (error instanceof DomainError && (error.code === 'ACCESS_DENIED' || error.code.startsWith('AUTH_'))) throw error
       }
       return this.read(principal, { action: 'read_edits', workspaceId: input.workspaceId,

@@ -14,6 +14,7 @@ import { NativeMcpNotSubmittedError } from './nativeMcpDelivery.js'
 import { qualificationError } from './qualificationErrors.js'
 import { assertNoUnresolvedPluginWrites, lockNativeConfigurationFile } from './nativeSettingsWrites.js'
 import { MCP_INSPECTION_TIMEOUT_MS } from './mcpDetection.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 type Harness = 'codex'
 type RecordedMcpHarness = Harness | 'opencode'
@@ -261,7 +262,7 @@ export class HarnessMcpSettingsService {
             values($1,$4,'harness.mcp.review',$2,'succeeded',$3::jsonb)`,
             [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id, decision: approve ? 'approve' : 'reject' }), source])
           await client.query('commit')
-        } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
+        } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'mcpSettings' })); throw error }
         if (!approve) return this.get(principal, id)
         signal.throwIfAborted()
         adapterEntered = true
@@ -272,7 +273,7 @@ export class HarnessMcpSettingsService {
           await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
             values($1,$4,'harness.mcp.apply',$2,'succeeded',$3::jsonb)`, [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id }), source])
           await client.query('commit')
-        } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
+        } catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'mcpSettings' })); throw error }
         this.notifyChanged()
         return this.get(principal, id)
       } catch (error) {
@@ -289,7 +290,7 @@ export class HarnessMcpSettingsService {
               values($1,$4,'harness.mcp.delivery_recorded',$2,'succeeded',$3::jsonb)`,
               [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id, delivery: notSubmitted ? 'not_submitted' : 'uncertain' }), source])
             await client.query('commit')
-          } catch (persistenceError) { await client.query('rollback').catch(() => undefined); throw persistenceError }
+          } catch (persistenceError) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'mcpSettings' })); throw persistenceError }
           this.notifyChanged()
           return this.get(principal, id)
         }

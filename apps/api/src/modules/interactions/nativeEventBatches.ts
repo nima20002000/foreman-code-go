@@ -53,7 +53,7 @@ export async function* nativeEventBatches(events: AsyncIterable<NativeHarnessEve
       }
     }
   } finally {
-    void pending?.catch(() => undefined)
+    void pending?.catch(() => { /* ignore: the rejection is handled by whoever consumes this promise; this only prevents an unhandled-rejection report */ })
     await iterator.return?.()
   }
 }

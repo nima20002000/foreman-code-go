@@ -93,7 +93,7 @@ function decodeCursor<T extends unknown[]>(cursor: string | undefined, valid: (v
   try {
     const value: unknown = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
     if (Array.isArray(value) && valid(value)) return value as T
-  } catch { /* reported below */ }
+  } catch { /* ignore: reported below */ }
   throw new DomainError('CURSOR_INVALID', 'The skill cursor is invalid.', 400)
 }
 const listCursor = (item: SkillSummary) => encodeCursor([item.name.toLowerCase(), item.workspaceId, item.skillId])

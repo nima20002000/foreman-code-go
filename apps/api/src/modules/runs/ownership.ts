@@ -3,6 +3,7 @@ import pg from 'pg'
 
 import { ExclusiveGraphConnection, type GraphSqlClient } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 /**
  * PostgreSQL, not an API process's maps, arbitrates execution ownership.
@@ -126,7 +127,7 @@ export class RunOwnership {
       try {
         await this.graphConnection?.close()
       } finally {
-        await this.rawClient.end().catch(() => undefined)
+        await this.rawClient.end().catch(ignoreError('engine', 'rawClient.end', { module: 'ownership' }))
         this.rawClient.removeListener('error', this.handleLoss)
         this.rawClient.removeListener('end', this.handleLoss)
         finished()

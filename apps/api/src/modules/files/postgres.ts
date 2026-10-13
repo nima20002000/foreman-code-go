@@ -10,6 +10,7 @@ import {
 import { DomainError } from '../errors.js'
 import type { AllocationSession, AllocationState, FileAllocation, FileReferenceRepository,
   FileMutationContext, NewStoredFile, StoredFile, FileQuery } from './repository.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 type Query = FileQuery
 interface FileRow {
@@ -83,7 +84,7 @@ function allocation(row: AllocationRow): FileAllocation {
 async function transaction<T>(client: pg.PoolClient, work: () => Promise<T>): Promise<T> {
   await client.query('begin')
   try { const value = await work(); await client.query('commit'); return value }
-  catch (error) { await client.query('rollback').catch(() => undefined); throw error }
+  catch (error) { await client.query('rollback').catch(ignoreError('db', 'transaction rollback', { module: 'postgres' })); throw error }
 }
 
 /** Bytes live only in FileByteStorage. This repository also serves FIL-04/05/36. */
