@@ -21,6 +21,7 @@ async function computer() {
   const origin = join(root, 'origin')
   const bin = join(root, 'bin')
   const calls = join(root, 'calls.jsonl')
+  const offlineFailure = join(root, 'offline-failure')
   await mkdir(origin)
   await mkdir(bin)
   await writeFile(join(origin, 'package.json'), JSON.stringify({ scripts: { lint: 'fixture' } }))
@@ -36,6 +37,7 @@ const path = require('node:path')
 const args = process.argv.slice(2)
 fs.appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n')
 if (args[1] === 'install') {
+  if (args.includes('--offline') && fs.existsSync(${JSON.stringify(offlineFailure)})) process.exit(7)
   const storeIndex = args.indexOf('--store-dir')
   const store = storeIndex < 0 ? '.fixture-store' : args[storeIndex + 1]
   const metadataIndex = args.indexOf('--cache-dir')
@@ -86,7 +88,8 @@ if (args[1] === 'install') {
   }
   const commands = async () => (await readFile(calls, 'utf8')).trim().split('\n')
     .map(line => JSON.parse(line) as string[])
-  return { run, commands, origin, git }
+  const failOffline = () => writeFile(offlineFailure, 'store unavailable')
+  return { run, commands, origin, git, failOffline }
 }
 
 it('warms once, installs offline on later jobs, and preserves private mutable dependencies', async () => {
@@ -126,6 +129,15 @@ it('isolates dependencies when concurrent jobs share a warmed repository and sto
   for (const result of results) {
     expect(result).toMatchObject({ run: { state: 'passed' }, text: expect.stringContaining('dependency=pristine') })
   }
+  const installs = (await fixture.commands()).filter(args => args[1] === 'install')
+  expect(installs.filter(args => !args.includes('--offline'))).toHaveLength(1)
+})
+
+it('fails an unavailable warmed store without allowing another online install', async () => {
+  const fixture = await computer()
+  await expect(fixture.run()).resolves.toMatchObject({ run: { state: 'passed' } })
+  await fixture.failOffline()
+  await expect(fixture.run()).resolves.toMatchObject({ run: { state: 'failed', exitCode: 7 } })
   const installs = (await fixture.commands()).filter(args => args[1] === 'install')
   expect(installs.filter(args => !args.includes('--offline'))).toHaveLength(1)
 })
