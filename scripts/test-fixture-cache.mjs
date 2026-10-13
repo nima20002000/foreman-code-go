@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer'
 import { execFile, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { lstat, mkdir, mkdtemp, open, realpath, rename, rm } from 'node:fs/promises'
+import { cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
@@ -89,4 +89,44 @@ export async function cachedTestFixture(root, namespace, inputs, populate) {
   } finally {
     await handle.close()
   }
+}
+
+/** A cached release is a donor when its recorded source snapshot is still the committed content and it was
+ * built for the same target and host. Only the files the release really bundled define it. */
+async function releaseDonor(parent, repository, commit, identity) {
+  for (const name of await readdir(parent)) {
+    if (name.endsWith('.lock') || name.includes('.pending-')) continue
+    const directory = join(parent, name)
+    try {
+      if ((await readFile(join(directory, 'identity'), 'utf8')) !== identity) continue
+      const { sourceSnapshot } = JSON.parse(await readFile(join(directory, 'release', 'manifest.json'), 'utf8'))
+      const files = sourceSnapshot.files
+      const { stdout } = await execute('git', ['ls-tree', '-r', '-z', commit, '--', ...files.map(file => file.path)], {
+        cwd: repository, maxBuffer: 4 * 1024 * 1024,
+      })
+      const current = new Map(stdout.split('\0').filter(Boolean).map(line => {
+        const [meta, path] = line.split('\t')
+        return [path, meta.split(' ')[2]]
+      }))
+      if (files.every(file => current.get(file.path) === file.gitBlobSha1)) return directory
+    } catch (error) {
+      // ignore: an incomplete or foreign entry is not a donor.
+      if (error.code !== 'ENOENT' && !(error instanceof SyntaxError) && !(error instanceof TypeError)) throw error
+    }
+  }
+  return null
+}
+
+/** Worker release cache. The exact-input key finds a direct hit; otherwise an earlier release whose bundled
+ * files are unchanged is copied under the new key instead of rebuilt, so later jobs hit directly. */
+export async function cachedWorkerRelease(root, repository, commit, identityParts, build) {
+  const inputs = await workerFixtureInputs(repository, commit)
+  const identity = createHash('sha256').update(JSON.stringify(identityParts.map(String))).digest('hex')
+  return cachedTestFixture(root, 'worker-artifacts', [inputs, ...identityParts.map(String)], async temporary => {
+    const parent = await realpath(join(root, 'worker-artifacts'))
+    const donor = await releaseDonor(parent, repository, commit, identity)
+    if (donor) await cp(join(donor, 'release'), join(temporary, 'release'), { recursive: true, preserveTimestamps: true })
+    else await build(temporary)
+    await writeFile(join(temporary, 'identity'), identity, { mode: 0o600 })
+  })
 }
