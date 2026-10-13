@@ -1,6 +1,44 @@
 import { randomUUID } from 'node:crypto'
-import { expect, it } from 'vitest'
-import { historicalChatPlacement, historicalChatSource, forkHistoricalChat } from './helpers/historicalChatPlacement.js'
+import { expect, it, vi } from 'vitest'
+import { agentChatFixtures } from '@foreman-code/contracts/agent-chat'
+import { historicalChatPlacement, historicalChatSource, forkHistoricalChat,
+  waitForHistoricalChatTurn } from './helpers/historicalChatPlacement.js'
+
+it.each(['failed', 'canceled'] as const)('reports a %s historical chat turn on its first read', async delivery => {
+  vi.useFakeTimers()
+  const state = structuredClone(agentChatFixtures.failed)
+  state.turns[0]!.delivery = delivery
+  const read = vi.fn(async () => state)
+  const result = waitForHistoricalChatTurn(read, 'request-1', 'Worker chat fork completion')
+    .catch(error => error as Error)
+  try {
+    await vi.advanceTimersByTimeAsync(90_001)
+    expect(await result).toMatchObject({ message: expect.stringContaining(`${delivery}: NATIVE_TURN_FAILED`) })
+    expect(read).toHaveBeenCalledTimes(1)
+  } finally { vi.useRealTimers() }
+})
+
+it('bounds a pending fake-provider chat turn to fifteen seconds', async () => {
+  vi.useFakeTimers()
+  let settled = false
+  const result = waitForHistoricalChatTurn(async () => agentChatFixtures.active, 'request-1', 'Worker chat fork completion')
+    .catch(error => { settled = true; return error as Error })
+  try {
+    await vi.advanceTimersByTimeAsync(15_001)
+    expect(settled).toBe(true)
+    expect(await result).toMatchObject({ message: 'Timed out waiting for Worker chat fork completion.' })
+  } finally {
+    await vi.advanceTimersByTimeAsync(90_001)
+    await result
+    vi.useRealTimers()
+  }
+})
+
+it('reports a historical chat read error without polling again', async () => {
+  const read = vi.fn(async () => { throw new Error('Chat read denied') })
+  await expect(waitForHistoricalChatTurn(read, 'request-1', 'Worker chat fork completion')).rejects.toThrow('Chat read denied')
+  expect(read).toHaveBeenCalledTimes(1)
+})
 
 it('forks historical chat on its accepted Worker and denies a read-only caller', async () => {
   await historicalChatPlacement(async fixture => {
