@@ -170,7 +170,9 @@ describe('host CI runner', () => {
       ...(gate ? { gate: true, integrationShards: 32, files: ['apps/api/test/a.integration.test.ts'] } : {}) })
     const done = await f.settle(runId)
     expect(done.run.state).toBe('passed')
-    expect(done.text).toContain(`CI budget 7 ${6 * 2 ** 30} 6`)
+    // Eight allowed CPUs: the shared database takes two CPUs and 2 GiB for its eight shards.
+    expect(done.text).toContain(`CI database 2 ${2 * 2 ** 30}`)
+    expect(done.text).toContain(`CI budget 6 ${5 * 2 ** 30} 5`)
     if (gate) expect(done.text).toContain('CI shard ceiling 8')
   })
 
@@ -203,7 +205,7 @@ describe('host CI runner', () => {
       suite: 'integration', scope: 'full' })
     const done = await f.settle(runId)
     expect(done.run.state).toBe('passed')
-    expect(done.text).toContain(`CI budget 7 ${Math.floor(16 * 2 ** 30 * 0.9 / 2) - 2 ** 30} 6`)
+    expect(done.text).toContain(`CI budget 6 ${Math.floor(16 * 2 ** 30 * 0.9 / 2) - 2 * 2 ** 30} 5`)
     expect(done.text).toContain('corepack pnpm db:down')
   })
 

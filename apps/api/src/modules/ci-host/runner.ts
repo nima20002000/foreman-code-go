@@ -389,8 +389,15 @@ export class HostCiRunner {
 
   private databaseResources(meta: RunMeta) {
     const resources = meta.resources!
-    return { cpuCount: Math.min(1, resources.cpuCount / 2),
-      memoryBytes: Math.min(2 ** 30, Math.floor(resources.memoryBytes / 2)) }
+    const half = { cpuCount: resources.cpuCount / 2, memoryBytes: Math.floor(resources.memoryBytes / 2) }
+    if (meta.suite !== 'integration') {
+      return { cpuCount: Math.min(1, half.cpuCount), memoryBytes: Math.min(2 ** 30, half.memoryBytes) }
+    }
+    // Every integration shard migrates and queries its own databases on this one server: one CPU
+    // per four shards and 256 MiB each keep setup fast; a fixed single CPU made files time out.
+    const shards = Math.max(1, Math.min(meta.integrationShards ?? Infinity, Math.floor(resources.cpuCount)))
+    return { cpuCount: Math.min(Math.max(1, Math.ceil(shards / 4)), half.cpuCount),
+      memoryBytes: Math.min(Math.max(2 ** 30, shards * 2 ** 28), half.memoryBytes) }
   }
 
   private async selectFiles(meta: RunMeta, source: string) {
