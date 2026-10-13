@@ -10,7 +10,8 @@ const command = { principal, source: 'device' as const, operation: 'job.start', 
   targetKey: 'workspace', payload: { definitionId: 'definition', expectedRevision: 1 }, dedicatedConnection: true as const }
 afterEach(() => vi.restoreAllMocks())
 function fixture(options: { uncertainCommit?: boolean; failRollback?: boolean; failUnlock?: boolean } = {}) {
-  const calls: string[] = [], releases = vi.fn(), end = vi.fn(async () => undefined)
+  const releases = vi.fn()
+  const end = vi.fn(async () => undefined)
   const secondLock = deferred()
   const state = {
     receiptReads: 0,
@@ -31,7 +32,6 @@ function fixture(options: { uncertainCommit?: boolean; failRollback?: boolean; f
   const makeClient = () => {
     let pending: typeof receipt, unlock: (() => void) | undefined
     return { release: releases, query: vi.fn(async (sql: string, values?: unknown[]) => {
-      calls.push(sql)
       if (sql.includes('pg_advisory_lock(')) {
         const prior = lockTail, held = deferred()
         lockTail = held.promise; unlock = held.resolve
@@ -79,7 +79,7 @@ function fixture(options: { uncertainCommit?: boolean; failRollback?: boolean; f
   }
   const pool = { options: {}, connect: async () => makeClient(), end }
   vi.spyOn(pg, 'Pool').mockImplementation(function () { return { ...pool } } as never)
-  return { coordinator: new PostgresCommandCoordinator(pool as unknown as pg.Pool), calls, releases, end, secondLock, state }
+  return { coordinator: new PostgresCommandCoordinator(pool as unknown as pg.Pool), releases, end, secondLock, state }
 }
 
 describe('retained command preparation ownership', () => {
@@ -119,9 +119,8 @@ describe('retained command preparation ownership', () => {
       outcome: 'failed',
       details: { commandId: command.commandId, code: 'INTERNAL_ERROR' },
     }])
-    expect(f.calls.some(sql => sql.includes('insert into management_command_receipts'))).toBe(false)
-    expect(f.calls.some(sql => sql.includes("'failed'"))).toBe(true)
-    expect(f.calls.at(-1)).toContain('pg_advisory_unlock')
+    expect(f.state.receiptWrites).toBe(0)
+    expect(f.state.unlocks).toBe(1)
     expect(f.releases).toHaveBeenCalledOnce(); expect(f.end).toHaveBeenCalledOnce()
   })
 
@@ -129,8 +128,8 @@ describe('retained command preparation ownership', () => {
     const f = fixture(), prepare = vi.fn(), perform = vi.fn(), error = new Error('authority denied')
     await expect(f.coordinator.execute({ ...command, prepare, perform, authorize: async () => { throw error } })).rejects.toBe(error)
     expect(prepare).not.toHaveBeenCalled(); expect(perform).not.toHaveBeenCalled()
-    expect(f.calls.some(sql => sql.includes('select input_hash'))).toBe(false)
-    expect(f.calls).toContain('rollback')
+    expect(f.state.receiptReads).toBe(0)
+    expect(f.state.rollbacks).toBe(1)
   })
 
   it('reauthorizes after preparation and rolls back if authority was revoked', async () => {
@@ -139,8 +138,8 @@ describe('retained command preparation ownership', () => {
     const authorize = vi.fn(async () => { if (revoked) throw error })
     await expect(f.coordinator.execute({ ...command, authorize, prepare: async () => { revoked = true }, perform })).rejects.toBe(error)
     expect(authorize).toHaveBeenCalledTimes(2); expect(perform).not.toHaveBeenCalled()
-    expect(f.calls).toContain('rollback')
-    expect(f.calls.some(sql => sql.includes('insert into management_command_receipts'))).toBe(false)
+    expect(f.state.rollbacks).toBe(1)
+    expect(f.state.receiptWrites).toBe(0)
   })
 
   it('replays a committed receipt after lost commit acknowledgment without preparing again', async () => {
@@ -154,8 +153,8 @@ describe('retained command preparation ownership', () => {
     const f = fixture({ failRollback: true }), error = new Error('admission failed')
     await expect(f.coordinator.execute({ ...command, prepare: async () => undefined, perform: async () => { throw error } })).rejects.toBe(error)
     expect(f.releases).toHaveBeenCalledWith(expect.objectContaining({ message: 'rollback failed' }))
-    expect(f.calls.some(sql => sql.includes('pg_advisory_unlock'))).toBe(false)
-    expect(f.calls.some(sql => sql.includes("'failed'"))).toBe(false)
+    expect(f.state.unlocks).toBe(0)
+    expect(f.state.audits).toEqual([])
   })
 
   it('evicts a connection whose session lock cannot be released after success', async () => {
