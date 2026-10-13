@@ -19,7 +19,12 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
           if (args[0] === 'thread/start') {
             await native.flag('release-late-creation-rejection')
             // Process exit confirms the late rejection was received and its transport closed.
-            await until(async () => (await calls(native.directory)).some(entry => entry.exited) || undefined)
+            await until(async () => {
+              const records = await calls(native.directory)
+              const owner = records.find(entry => entry.wire && typeof entry.wire === 'object'
+                && !Array.isArray(entry.wire) && entry.wire.method === 'thread/start')
+              return owner && records.some(entry => entry.exited === owner.processPid) || undefined
+            })
           }
           throw error
         }
