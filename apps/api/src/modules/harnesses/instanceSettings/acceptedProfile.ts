@@ -65,6 +65,8 @@ export class AcceptedHarnessProfileAdmission<Owner> {
       if (error instanceof DomainError && error.code === 'HARNESS_PROFILE_UNAVAILABLE') {
         // Qualification can start while the authorized profile read is awaiting IO.
         this.authority.assertReady?.(selected.target.hostRef)
+        // A completed check can replace the proof before the stale read returns.
+        return this.readProfile(owner, selected, { purpose: 'execution' })
       }
       throw error
     }
