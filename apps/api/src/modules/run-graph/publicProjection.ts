@@ -1,6 +1,6 @@
 import type { HarnessExecution } from '@foreman-code/contracts'
 import { JobExecutionRecordSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
-import { GraphExecutionIdentitySchema, NodeResolutionSchema, RUN_GRAPH_LIMITS, canonicalGraphJson, type GraphFact, type RunGraphCurrentState, type RunGraphScope } from '@foreman-code/contracts/wave25'
+import { GraphExecutionIdentitySchema, NodeResolutionSchema, RUN_GRAPH_LIMITS, canonicalGraphJson, type GraphFact, type PublicGraphProjection, type RunGraphScope } from '@foreman-code/contracts/wave25'
 import type { GraphTransactionSql } from './connection.js'
 import { assertGraphTransaction } from './connection.js'
 import { readCurrentNativeActivities, selectCurrentNodeActivity } from './currentActivity.js'
@@ -10,7 +10,7 @@ import { publicNodeState, publicReviewUnsettled, type PublicExecution } from './
 import { RunGraphError } from './errors.js'
 import { repeatTickIndex } from '../runs/repeatResolution.js'
 
-type PublicNode = RunGraphCurrentState['nodes'][number]
+type PublicNode = PublicGraphProjection['nodes'][number]
 export interface PublicProjectionOverlay extends PublicAttentionOverlay {
   executions?: readonly HarnessExecution[]
   /** Proposed persisted Job receipt state, under the existing Job/Run owner. */

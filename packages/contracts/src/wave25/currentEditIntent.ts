@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { StagedAgentSchema } from '../management/index.js'
-import { GraphDigestSchema, GraphIdSchema } from './protocol.js'
+import { GraphDigestSchema, GraphIdSchema } from './graphPrimitives.js'
 import {
   CurrentJournalIdentitySchema, CurrentJournalReadInputSchema as GraphEditReadInputSchema,
   CurrentJournalAdvanceInputSchema as GraphEditAdvanceInputSchema,

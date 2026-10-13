@@ -236,7 +236,8 @@ export async function ports(options = {}) {
     'reviews.js': { Wave25InteractionCoordinationRepository: CleanupPort },
     'delivery.js': { Wave25InteractionDeliveryRepository: class {} },
     'decisions.js': { createRequest: () => fail('UNMODELED_CREATE'), decide: () => fail('UNMODELED_DECIDE') },
-    'protocol.js': { RunGraphEventsResponseSchema: schema, RunGraphSnapshotSchema: schema, sameGraphScope: (a,b) => JSON.stringify(a) === JSON.stringify(b) },
+    'protocol.js': { RunGraphEventsResponseSchema: schema, RunGraphSnapshotSchema: schema },
+    'graphPrimitives.js': { sameGraphScope: (a,b) => JSON.stringify(a) === JSON.stringify(b) },
     'reliability.js': { assertGraphRunTransition() {}, assertGraphNodeTransition() {} },
   }
   const productionFiles = actualProjection ? new Map([

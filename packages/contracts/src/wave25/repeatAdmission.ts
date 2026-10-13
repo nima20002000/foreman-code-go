@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { AcceptedWorkflowApprovalConfigurationSchema, RunExecutionLocationSchema, TimestampSchema, IdSchema } from '../index.js'
 import { ExpectedRevisionSchema } from '../management/index.js'
-import { GraphDigestSchema, GraphIdSchema } from './protocol.js'
+import { GraphDigestSchema, GraphIdSchema } from './graphPrimitives.js'
 import { ExecutableRepeatWorkflowV1Schema } from './repeat.js'
 import { WorkflowDefinitionV3Schema, WorkflowRunV3Schema, SavedRunVersionSnapshotSchema } from './saved.js'
 import { sameExecutableWorkflow, sameWorkflowValue } from './meaningfulEdit.js'

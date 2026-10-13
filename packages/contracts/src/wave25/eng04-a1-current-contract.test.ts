@@ -7,7 +7,7 @@ import { WorkflowVersionV3Schema, SavedRunVersionSnapshotSchema } from './saved.
 import { ExecutableWorkflowV3Schema, AcceptedWorkflowRunV3Schema, RunStartV3InputSchema } from './repeatAdmission.js'
 import { RepeatWorkflowVersionV1Schema, RepeatRunVersionV1Schema } from './repeat.js'
 import { EXECUTION_SEMANTICS_VERSION, ExecutionSemanticsVersionSchema } from './workflow.js'
-import { RUN_GRAPH_PROTOCOL_VERSION, GraphExecutionIdentitySchema } from './protocol.js'
+import { RUN_GRAPH_PROTOCOL_VERSION, GraphExecutionIdentitySchema } from './graphPrimitives.js'
 
 // Real public/current schemas, deterministic data only. No storage/native qualification.
 describe('ENG04 A1: one directly validated current contract', () => {

@@ -4,7 +4,7 @@ import { ApprovalHandlerSchema, CurrentAgentWorkflowNodeSchema,
   DEFAULT_AGENT_ACTIVE_TIMEOUT_MS, MAX_AGENT_ACTIVE_TIMEOUT_MS,
   AGENT_INTERVAL_MIN_SECONDS, AGENT_INTERVAL_MAX_SECONDS, AGENT_INTERVAL_MAX_CHECKS_PER_RUN } from './workflowShape.js'
 import { CommandIdSchema, ExpectedRevisionSchema, WorkflowCreateInputSchema, ManagedAgentSchema } from '../management/index.js'
-import { GraphIdSchema } from './protocol.js'
+import { GraphIdSchema } from './graphPrimitives.js'
 import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema } from './saved.js'
 import { sameExecutableWorkflow } from './meaningfulEdit.js'
 

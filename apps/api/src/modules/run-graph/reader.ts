@@ -1,16 +1,16 @@
 import type pg from 'pg'
 import {
-  GraphSequenceSchema, RUN_GRAPH_LIMITS, RunGraphBatchSchema, RunGraphCurrentStateSchema,
+  GraphSequenceSchema, RUN_GRAPH_LIMITS, RunGraphBatchSchema, PublicGraphProjectionSchema,
   RunGraphPageSchema, RunGraphReadRequestSchema, RunGraphEventsRequestSchema, RunGraphSnapshotSchema,
   RunGraphResetSchema, canonicalGraphJson, graphJsonBytes, sameGraphScope,
   type RunGraphScope, type RunGraphPage, type RunGraphReset, type RunGraphSnapshot,
-  type RunGraphBatch, type RunGraphCurrentState, type RunGraphTopology,
+  type RunGraphBatch, type PublicGraphProjection, type PublicGraphTopology,
 } from '@foreman-code/contracts/wave25'
 import { withExclusiveGraphConnection, type GraphTransactionSql } from './connection.js'
 import { RunGraphError } from './errors.js'
 
 export type AuthorizeRunGraphRead = (sql: GraphTransactionSql, scope: RunGraphScope) => Promise<void>
-export type ReadCurrentRunGraph = (sql: GraphTransactionSql, scope: RunGraphScope) => Promise<{ topology: RunGraphTopology; state: RunGraphCurrentState }>
+export type ReadCurrentRunGraph = (sql: GraphTransactionSql, scope: RunGraphScope) => Promise<{ topology: PublicGraphTopology; state: PublicGraphProjection }>
 interface Head { head_sequence: string; retention_floor: string; protocol_version: number; history_coverage: 'from_admission' | 'from_snapshot' }
 
 function readRequest(input: unknown): { protocolVersion: 1; scope: RunGraphScope } {
@@ -53,7 +53,7 @@ export async function readRunGraphSnapshot(
     const head = await authorizedHead(sql, request.scope, authorize)
     const current = await assemble(sql, request.scope)
     if (graphJsonBytes(current) > RUN_GRAPH_LIMITS.snapshotBytes) throw new RunGraphError('GRAPH_SNAPSHOT_TOO_LARGE')
-    const parsedState = RunGraphCurrentStateSchema.safeParse(current.state)
+    const parsedState = PublicGraphProjectionSchema.safeParse(current.state)
     if (!parsedState.success) throw new RunGraphError(parsedState.error.issues.some((issue) => issue.code === 'too_big') ? 'GRAPH_SNAPSHOT_TOO_LARGE' : 'GRAPH_INVARIANT_VIOLATION')
     const state = parsedState.data
     const result = {
