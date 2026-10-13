@@ -20,7 +20,7 @@ import {
 } from './eng04-graph-composition-fixture.js'
 
 function databaseBeforeHotQueryUpgrade() {
-  return currentDatabase({ beforeMigration: databaseHotQueriesMigration.version })
+  return currentDatabase({ deferMigration: databaseHotQueriesMigration.version })
 }
 
 it('publishes owned run updates through authenticated reads before and after the hot query upgrade', async () => {
