@@ -167,10 +167,9 @@ test('builds every reviewed target at once and keeps the reviewed order in the i
   }
   const index = await buildWorkerReleaseArtifacts({ ...f, run })
   assert.equal(peak, 4)
-  const order = f.calls.map(call => call.args[1])
-  assert.deepEqual(index.artifacts.map(artifact => artifact.target.node + artifact.target.osRelease),
-    order.map(path => { const value = JSON.parse(execFileSync('git', ['show', `${f.commit}:${path}`], { cwd: f.repository }))
-      return value.node + value.osRelease }))
+  // Builds finish in any order; the index lists targets in their reviewed (path) order.
+  const reviewed = readCommittedWorkerTargets(f.repository, f.commit).map(({ target }) => target)
+  assert.deepEqual(index.artifacts.map(artifact => artifact.target), reviewed)
 })
 
 test('a failed target build waits for the others before removing artifact storage', async t => {
