@@ -78,9 +78,8 @@ function clickCiServer(button: HTMLElement) {
   const recordBrowserError = (event: ErrorEvent) => browserErrors.push(event.error)
   window.addEventListener('error', recordBrowserError)
   try {
-    fireEvent.mouseDown(button, { view: window })
-    fireEvent.mouseUp(button, { view: window })
-    fireEvent.click(button, { view: window })
+    // JSDOM does not provide the pointer view required by canvas panning.
+    fireEvent.click(button)
   } finally {
     window.removeEventListener('error', recordBrowserError)
   }
