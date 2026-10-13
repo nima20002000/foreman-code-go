@@ -1,7 +1,7 @@
 import { constants } from 'node:fs'
 import { open, type FileHandle } from 'node:fs/promises'
 import { isDeepStrictEqual } from 'node:util'
-import { SourceSnapshotReferenceSchema, type SourceManifest, type SourceSnapshotReference }
+import { SOURCE_MANIFEST_MAX_BYTES, SourceSnapshotReferenceSchema, type SourceManifest, type SourceSnapshotReference }
   from '@foreman-code/contracts/source-materialization'
 import { anchored, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
 import { SourceError, verifySourceManifest } from './manifest.js'
@@ -20,7 +20,7 @@ export async function openSnapshotReference(input: SourceSnapshotReference, mani
       const file = await open(anchored(snapshot, 'manifest.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
       try {
         const stat = await file.stat()
-        if (!stat.isFile() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) {
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > SOURCE_MANIFEST_MAX_BYTES) {
           throw new SourceError('SOURCE_MANIFEST_INVALID', 'Invalid snapshot manifest.')
         }
         if (!isDeepStrictEqual(verifySourceManifest(JSON.parse(await file.readFile('utf8'))), manifest)) {

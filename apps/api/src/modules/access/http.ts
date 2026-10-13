@@ -117,7 +117,7 @@ export function registerOperatorHttpSecurity(app: FastifyInstance, access: Postg
     // Account and chat services resolve persisted resources before checking their full scopes.
     const providerAccounts = path === '/api/provider-accounts' || path.startsWith('/api/provider-accounts/')
     const agentChat = /^\/api\/workspaces\/[^/]+\/agent-chat(?:\/|$)/.test(path)
-    const selfReadback = path === '/api/local-human' || path === '/api/runtime/identity'
+    const selfReadback = path === '/api/local-human' || path === '/api/runtime/identity' || path === '/api/runtime/build-identity/v1'
     const params = request.params as Record<string, string | undefined>
     const resource = {
       ...(params.workspaceId ? { workspaceId: params.workspaceId } : {}),

@@ -168,7 +168,7 @@ import { readAcceptedRepeatRunLocked } from './modules/runs/repeatStartRead.js'
 import { WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { qualifyCodex } from './modules/harnesses/codexProtocol.js'
 import { PostgresWorkflowPhysicalArtifacts } from './modules/runs/remote/workflowPhysicalArtifacts.js'
-import { readRuntimeIdentity } from './infrastructure/runtimeIdentity.js'
+import { readRuntimeIdentity, readRuntimeBuildIdentity } from './infrastructure/runtimeIdentity.js'
 import { readTestResourcesIdentity } from './infrastructure/testRuntimeResources.js'
 import { fileURLToPath } from 'node:url'
 import { AppMcpRoutes } from './modules/harnesses/appMcpRoutes.js'
@@ -1685,7 +1685,9 @@ export function buildProductionApp(
     start: (principal, source, input) => operatorServices.runs.start(principal, source, input),
     wake: () => engine.reconcile(),
   })
+  const runtimeBuildIdentity = readRuntimeBuildIdentity()
   const app = buildApp({
+    runtimeBuildIdentity: () => runtimeBuildIdentity,
     ...(infrastructure?.closeInfrastructure ? { closeInfrastructure: infrastructure.closeInfrastructure } : {}),
     runtimeIdentity: async () => {
       const identity = await readRuntimeIdentity(database.pool,
