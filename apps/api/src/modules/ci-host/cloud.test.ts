@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import type { CiPart, CiSuite } from '@foreman-code/contracts'
 import { describe, expect, it, vi } from 'vitest'
 import { selectByIndexes } from '../../../../../scripts/ci-files.mjs'
@@ -865,6 +866,31 @@ describe('GitHub Actions CI on a public mirror', () => {
     }
     expect(commits.map(commit => f.mirrorGit('rev-parse', `refs/heads/ci/${commit}`)))
       .toContain(f.mirrorGit('rev-parse', 'refs/heads/main'))
+  })
+
+  it('publishes again from a shallow source clone after the mirror moved on', async () => {
+    const f = await fixture()
+    const fixtureGit = f.git.git
+    // Main's git cache clones and fetches shallowly.
+    f.git.git = (args, options) => fixtureGit(args[0] === 'clone' ? ['clone', '--no-local', '--depth=1', ...args.slice(1)]
+      : args[0] === 'fetch' && args.includes('origin') ? ['fetch', '--depth=1', ...args.slice(1)] : args, options)
+    const start = (commit: string) => f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId: randomUUID(),
+      repository: 'octo/site', commit, suite: 'unit' })
+    await start(f.commit)
+    // Another computer publishes to the same mirror.
+    f.mirrorGit('update-ref', 'refs/heads/main', f.mirrorGit('commit-tree', 'main^{tree}', '-p', 'main', '-m', 'elsewhere'))
+    const commits: string[] = []
+    for (const name of ['two', 'three']) {
+      await f.write(`${name}.txt`, `${name}\n`); f.run('add', '.'); f.run('commit', '-qm', name); f.push('HEAD:refs/heads/main')
+      commits.push(f.run('rev-parse', 'HEAD'))
+      await expect(start(commits.at(-1)!)).resolves.toMatchObject({ operation: 'start', run: { state: 'starting' } })
+    }
+    for (const commit of commits) {
+      expect(f.mirrorGit('rev-parse', `refs/heads/ci/${commit}^{tree}`)).toBe(f.run('rev-parse', `${commit}^{tree}`))
+    }
+    // The persistent mirror clone reaches only objects it owns.
+    expect(await fixtureGit(['fsck', '--connectivity-only'], { cwd: join(f.root, 'clones', 'octo', 'site-ci'),
+      signal: AbortSignal.timeout(30_000) })).toMatchObject({ code: 0 })
   })
 
   it("reports git's reason when the mirror cannot be read", async () => {
