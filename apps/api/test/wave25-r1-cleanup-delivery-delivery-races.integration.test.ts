@@ -30,11 +30,18 @@ describe.skipIf(!postgresEnabled)('PostgreSQL approval delivery races', () => {
     const observed = operation.then(() => undefined, (error: unknown) => error)
     try {
       await within(entered.promise)
-      await f.db.pool.query("update native_session_lanes set record=jsonb_set(record,'{connectionGeneration}','1'::jsonb) where native_session_id=$1", [f.interaction.nativeSessionId])
+      const lane = await f.repository.coordination.getLane(f.interaction.harness, f.interaction.nativeSessionId)
+      if (!lane?.leaseToken) throw new Error('Expected the response to own a native writer lease')
+      await f.repository.coordination.releaseLane(lane.id, lane.leaseToken, {
+        observedStatus: 'uncertain',
+        connectionGeneration: lane.connectionGeneration + 1,
+        ...(lane.currentTurnOrMessageId ? { currentTurnOrMessageId: lane.currentTurnOrMessageId } : {}),
+      })
       release.resolve(); await observed
       expect(await f.receipts()).toEqual([])
       expect((await f.runs.get(f.f.run.id))?.outcome).not.toBe('succeeded')
       expect(f.provider.counts.responses).toBe(1)
+      await expect(f.engine.shutdown()).resolves.toBeUndefined()
     } finally { release.resolve(); await observed }
   }, 60000)
 })
