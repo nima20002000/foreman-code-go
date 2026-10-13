@@ -95,6 +95,20 @@ and command conflicts are still validated. Open record/map payloads keep their
 keys; HTTP, output and persisted schemas retain their existing validation.
 `tools/list` and `operator_tool_schema_get` advertise this input behavior.
 
+## Workflow Agent approval defaults
+
+New Codex workflow Agents use `approvalPolicy: "never"`. Workflows can save and
+Start with native handling and no routed approval handler, through both the UI and Operator
+MCP. Omitted Codex advanced settings use this same default without rewriting
+saved configuration snapshots. Existing explicit approval policies are retained.
+An Agent explicitly configured with `on-request` and user review still needs a
+routed handler; automatic review remains an explicit alternative.
+
+`never` changes approval prompts only. The saved sandbox, sensitive-path
+rejection, credential protection, scoped MCP access and read-only Agent limits
+still apply. Operator tool schemas expose the shared approval-policy contract;
+`run_start` uses the same admission service as the UI.
+
 ## Tool catalog
 
 Device provisioning, repair, resource-policy application, and runtime approval have no

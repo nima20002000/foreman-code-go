@@ -8,7 +8,7 @@ import { assertNativeWorkflowConfiguration } from '../src/modules/harnesses/nati
 
 function codex(): Extract<HarnessConfiguration, { harness: 'codex' }> {
   return { harness: 'codex', model: 'fixture', reasoningEffort: 'medium', serviceTier: 'standard', sandbox: 'workspace-write',
-    advanced: structuredClone(DEFAULT_CODEX_ADVANCED_CONFIGURATION) }
+    advanced: { ...structuredClone(DEFAULT_CODEX_ADVANCED_CONFIGURATION), approvalPolicy: 'on-request' } }
 }
 
 function code(expected: string) {
@@ -55,14 +55,17 @@ it('requires explicit native settings for every Agent in a native-handled workfl
   assert.doesNotThrow(() => assertNativeWorkflowConfiguration(value, { handler: 'native' }))
 })
 
-it('refuses ambiguous legacy records without inventing a reviewer, auto approval, or never policy', () => {
-  for (const value of [codex()]) {
-    delete value.advanced
-    const before = structuredClone(value)
-    assert.throws(() => assertNativeWorkflowConfiguration(value), code('NATIVE_APPROVAL_CONFIGURATION_REQUIRED'))
-    assert.deepEqual(value, before)
-    assert.doesNotThrow(() => assertNativeWorkflowConfiguration(value, { handler: 'user' }))
-  }
+it('uses default native handling for omitted settings without changing saved records', () => {
+  const value = codex()
+  delete value.advanced
+  const before = structuredClone(value)
+  assert.doesNotThrow(() => assertNativeWorkflowConfiguration(value))
+  assert.deepEqual(value, before)
+  assert.doesNotThrow(() => assertNativeWorkflowConfiguration(value, { handler: 'user' }))
+})
+
+it('requires a handler only when the Agent explicitly requests user approval', () => {
+  assert.throws(() => assertNativeWorkflowConfiguration(codex()), code('NATIVE_APPROVAL_CONFIGURATION_REQUIRED'))
 })
 
 it('refuses incomplete Orchestrator authority and ephemeral routed Codex sessions', () => {

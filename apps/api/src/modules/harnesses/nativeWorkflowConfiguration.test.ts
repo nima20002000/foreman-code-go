@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { RETIRED_OPENCODE_MESSAGE, type RetiredOpenCodeConfiguration } from '@foreman-code/contracts'
+import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, RETIRED_OPENCODE_MESSAGE, type HarnessConfiguration, type RetiredOpenCodeConfiguration } from '@foreman-code/contracts'
 import { assertNativeWorkflowConfiguration } from './nativeWorkflowConfiguration.js'
 import { NativeConfigurationService } from './nativeConfiguration.js'
 import { NativeHarnessFactories } from './runtimeFactory.js'
@@ -33,4 +33,19 @@ it('disables retired execution while retaining supported local rollout defaults'
   expect(rollout.enabled('opencode')).toBe(false)
   expect(rollout.enabled('codex')).toBe(true)
   expect(rollout.enabled('claude')).toBe(true)
+})
+
+it('admits default and omitted Codex approval settings without a routed handler or snapshot mutation', () => {
+  for (const sandbox of ['read-only', 'workspace-write', 'danger-full-access'] as const) {
+    for (const advanced of [undefined, structuredClone(DEFAULT_CODEX_ADVANCED_CONFIGURATION)]) {
+      const configuration: HarnessConfiguration = {
+        harness: 'codex', model: 'fixture', reasoningEffort: 'medium', serviceTier: 'standard', sandbox,
+        ...(advanced ? { advanced } : {}),
+      }
+      const before = structuredClone(configuration)
+      expect(() => assertNativeWorkflowConfiguration(configuration)).not.toThrow()
+      expect(() => assertNativeWorkflowConfiguration(configuration, { handler: 'native' })).not.toThrow()
+      expect(configuration).toEqual(before)
+    }
+  }
 })
