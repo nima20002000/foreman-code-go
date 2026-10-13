@@ -102,12 +102,12 @@ export class OperatorAgentMutationService {
     return current
   }
 
-  create(principal: ManagementPrincipal, raw: AgentCreateInput) {
+  create(principal: ManagementPrincipal, raw: AgentCreateInput, source: 'http' | 'mcp' = 'mcp') {
     const input = AgentCreateInputSchema.parse(raw)
     requireAuthorization(principal,'agents:create',{workspaceId:input.workspaceId})
     requireAuthorization(principal,'agents:read',{workspaceId:input.workspaceId})
     let livePrincipal = principal
-    return this.commands.execute({principal,source:'mcp',operation:'agent.create',commandId:input.commandId,
+    return this.commands.execute({principal,source,operation:'agent.create',commandId:input.commandId,
       targetKey:`workspace:${input.workspaceId}:agent:${input.agentId}`,payload:input,
       resourceLock: `admission:workspace:${input.workspaceId}`,
       authorize: async client => {
@@ -130,7 +130,7 @@ export class OperatorAgentMutationService {
           configuration = await this.accountConfigurations.resolve(configuration, harnessProfileSelection, { sql: client })
         }
         if (this.accountConfigurations) harnessProfileSelection = await this.accountConfigurations.profile({
-          principal: livePrincipal, source: 'mcp', configuration, selection: harnessProfileSelection, commandId: input.commandId, client, check: true,
+          principal: livePrincipal, source, configuration, selection: harnessProfileSelection, commandId: input.commandId, client, check: true,
         })
         authorizeAgentConfiguration(livePrincipal,input.workspaceId,configuration,input.assignedSkills)
         if (!harnessProfileSelection) await this.harnesses.qualifyConfiguration(configuration)
@@ -147,11 +147,11 @@ export class OperatorAgentMutationService {
     })
   }
 
-  update(principal: ManagementPrincipal, raw: AgentUpdateInput) {
+  update(principal: ManagementPrincipal, raw: AgentUpdateInput, source: 'http' | 'mcp' = 'mcp') {
     const input = AgentUpdateInputSchema.parse(raw)
     requireAuthorization(principal,'agents:update',{workspaceId:input.workspaceId})
     let livePrincipal = principal
-    return this.commands.execute({principal,source:'mcp',operation:'agent.update',commandId:input.commandId,
+    return this.commands.execute({principal,source,operation:'agent.update',commandId:input.commandId,
       targetKey:`workspace:${input.workspaceId}:agent:${input.agentId}`,payload:input,
       resourceLock: `admission:workspace:${input.workspaceId}`,
       authorize: async client => {
@@ -170,7 +170,7 @@ export class OperatorAgentMutationService {
           configuration = await this.accountConfigurations.resolve(configuration, harnessProfileSelection, { sql: client })
         }
         if (this.accountConfigurations) harnessProfileSelection = await this.accountConfigurations.profile({
-          principal: livePrincipal, source: 'mcp', configuration, selection: harnessProfileSelection, commandId: input.commandId, client, check: true,
+          principal: livePrincipal, source, configuration, selection: harnessProfileSelection, commandId: input.commandId, client, check: true,
         })
         authorizeAgentConfiguration(livePrincipal,input.workspaceId,configuration,input.assignedSkills ?? current.agent.assignedSkills)
         if (!harnessProfileSelection && !isDeepStrictEqual(withAdvancedDefaults(configuration),withAdvancedDefaults(current.agent.harnessConfiguration!))) {

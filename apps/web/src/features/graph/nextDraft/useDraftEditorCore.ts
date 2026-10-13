@@ -1,5 +1,6 @@
 import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { sameAuthoredWorkflow, type WorkflowDefinitionV3 } from '@foreman-code/contracts/wave25'
 import { ToastContext } from '../../../shared/ui/nocturne/toastContext'
 import { UnsavedChangesContext } from '../../../shared/ui/unsavedChanges'
@@ -14,6 +15,7 @@ import { useDraftLayout } from './useDraftLayout'
 import type { useGraphEditIntent } from './useGraphEditIntent'
 import type { NextDraftEdit } from './state'
 import { draftFailure } from './writer'
+import { scheduleCommandOwner } from '../../schedules/queries'
 
 export type Panel = 'workflow' | 'agents' | 'repeat' | null
 
@@ -25,6 +27,7 @@ export function useDraftEditorCore({ draftKey, edit, editIntent, board }: {
   board: ReturnType<typeof useWorkflowBoard>
 }) {
   const graph = edit.graph
+  const queryClient = useQueryClient()
   const guard = useContext(UnsavedChangesContext)
   const [panel, setPanel] = useState<Panel>(null)
   const settingsPanel = useRef<HTMLElement>(null)
@@ -80,6 +83,11 @@ export function useDraftEditorCore({ draftKey, edit, editIntent, board }: {
     // URL changes project selection only; neither polling nor Run selection replaces the draft.
   }, [linkedAgent, draftKey, presentation, linkedSelection])
   const change = useCallback((update: (graph: WorkflowDefinitionV3) => WorkflowDefinitionV3) => {
+    const schedule = scheduleCommandOwner(queryClient, { workspaceId: graph.workspaceId, workflowId: graph.id })
+    if ((schedule.pending || schedule.unconfirmed) && schedule.state?.variables?.history) {
+      setLocalError('Confirm the pending schedule change before editing the Board.')
+      return
+    }
     useGraphDraftStore.getState().changeNextDraft(draftKey, (value) => {
       const next = update(value)
       if (editIntent.locked && !sameAuthoredWorkflow(value, next)) {
@@ -89,7 +97,7 @@ export function useDraftEditorCore({ draftKey, edit, editIntent, board }: {
       return next
     }); setMessage(undefined)
     clearBoardRedo(boardScope(graph.workspaceId, graph.id))
-  }, [draftKey, editIntent.locked, graph.workspaceId, graph.id])
+  }, [draftKey, editIntent.locked, graph.workspaceId, graph.id, queryClient])
   const persistLayout = layout.mutate
   const geometry = useCallback((changes: GraphGeometryChange[]) => {
     change((value) => applyGraphGeometry(value, changes))

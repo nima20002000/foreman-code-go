@@ -15,6 +15,8 @@ corepack pnpm dev:api
 
 API startup applies the application migrations, including principals, command receipts, management audit, revisions, archive state, durable graph drafts, and workspace execution locations. Existing workspace, workflow, agent configuration, run, execution, and activity records are retained. Existing workspaces migrate with no configured execution location, and historical runs do not receive invented paths.
 
+Startup acquires exclusive runtime ownership before applying either migration set and retains it through startup and shutdown. The migration and credential CLIs use the same database lock; stop the API before running those commands, then restart it afterward. A command targeting an owned database fails before changing its schema.
+
 The API remains loopback-bound by default. Operator HTTP and MCP requests validate Host and Origin. Public deployment and OAuth interoperability are out of scope for this local credential mode.
 
 ## Issue and revoke credentials

@@ -1,5 +1,6 @@
 /* global process, setInterval, clearInterval */
 import { readFile, rename, writeFile } from 'node:fs/promises'
+import { setTimeout as delay } from 'node:timers/promises'
 import { componentLogger, serializeError } from '../../src/modules/diagnostics/logger.ts'
 import { createDatabase } from '../../src/infrastructure/database.ts'
 import { createCheckpointStore } from '../../src/infrastructure/checkpoints.ts'
@@ -13,9 +14,12 @@ import { ApprovalExecutionCoordinator } from '../../src/modules/interactions/exe
 if (process.env.FOREMAN_CODE_RESTART_FIXTURE_READY) {
   const preserve = ApprovalExecutionCoordinator.prototype.preserveActiveForRestart
   ApprovalExecutionCoordinator.prototype.preserveActiveForRestart = function (owner) {
+    const preservation = preserve.call(this, owner)
     return Promise.all([
-      preserve.call(this, owner),
-      writeFile(`${process.env.FOREMAN_CODE_RESTART_FIXTURE_READY}.preserving`, 'preserving', { mode: 0o600 }),
+      preservation,
+      // Release blocked admission after classification, or while classification waits for startup.
+      Promise.race([preservation, delay(500)]).then(() =>
+        writeFile(`${process.env.FOREMAN_CODE_RESTART_FIXTURE_READY}.preserving`, 'preserving', { mode: 0o600 })),
     ]).then(([result]) => result)
   }
 }

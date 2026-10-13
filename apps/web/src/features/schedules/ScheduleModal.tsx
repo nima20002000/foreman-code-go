@@ -74,7 +74,7 @@ export function ScheduleModal({ scope, store, returnFocusRef }: {
 
   const requestLeave = useUnsavedChanges({
     scope: 'surface', label: 'Schedule', dirty: state.open && dirty,
-    busy: write.pending, uncertain: write.unconfirmed,
+    busy: state.open && write.pending, uncertain: state.open && write.unconfirmed,
     // The command cache survives remounts, not a document reload. The existing guard
     // therefore must not advertise a recoverable reload/navigation for an unknown save.
     canResume: () => false,
