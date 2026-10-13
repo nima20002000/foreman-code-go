@@ -220,11 +220,11 @@ it('marks an unpublished workflow and removes it in one click without another di
   expect(router.state.location.search.workflowId).toBeUndefined()
 })
 
-it('keeps a failed removal visible and retries the same command', async () => {
+it.each([500, 503])('keeps an HTTP %s removal failure visible and retries the same command', async (status) => {
   const requests: unknown[] = []
   server.use(http.delete('/api/management/workspaces/workspace-1/workflows/workflow-content-pipeline', async ({ request }) => {
     requests.push(await request.json())
-    return HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Could not remove workflow.' } }, { status: 503 })
+    return HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Could not remove workflow.' } }, { status })
   }))
   const user = userEvent.setup()
   renderNavigation()

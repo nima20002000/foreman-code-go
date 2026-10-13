@@ -12,11 +12,11 @@ const checkedAt = '2026-09-20T00:00:00.000Z'
 const clients: QueryClient[] = []
 afterEach(() => { cleanup(); clients.splice(0).forEach((client) => client.clear()) })
 
-it('shows refresh failures and disables writes until an inspection succeeds', async () => {
+it.each([500, 503])('shows HTTP %s refresh failures and disables writes until an inspection succeeds', async (status) => {
   let unavailable = false
   server.use(
     http.get('/api/management/harnesses/codex/mcp', () => unavailable
-      ? HttpResponse.json({ error: { code: 'HARNESS_QUALIFICATION_FAILED', message: 'Native inspection unavailable' } }, { status: 503 })
+      ? HttpResponse.json({ error: { code: 'HARNESS_QUALIFICATION_FAILED', message: 'Native inspection unavailable' } }, { status })
       : HttpResponse.json({ harness: 'codex', revision, checkedAt, scope: 'native-user', servers: [],
         presets: { graphql: 'missing', linear: 'missing' } })),
     http.get('/api/management/harnesses/codex/mcp/plans', () => HttpResponse.json({ items: [] })),
@@ -184,7 +184,7 @@ it('keeps native enablement behind the existing review flow in the details dialo
   expect(planned?.change).toMatchObject({ kind: 'enable', enabled: false })
 })
 
-it('adopts a plan settled by another session while its uncertain review remains open', async () => {
+it.each([500, 503])('adopts a plan settled by another session after HTTP %s while its uncertain review remains open', async (status) => {
   let plan: HarnessMcpPlan = {
     id: crypto.randomUUID(), harness: 'codex', revision,
     change: { kind: 'enable', name: 'mytools', enabled: false }, requestedBy: 'owner', status: 'pending',
@@ -196,7 +196,7 @@ it('adopts a plan settled by another session while its uncertain review remains 
     http.get('/api/management/harnesses/codex/mcp', () => HttpResponse.json({ harness: 'codex', revision, checkedAt,
       scope: 'native-user', servers: [], presets: { graphql: 'missing', linear: 'missing' } })),
     http.get('/api/management/harnesses/codex/mcp/plans', () => readbackFails
-      ? HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Plan refresh failed' } }, { status: 503 })
+      ? HttpResponse.json({ error: { code: 'UNAVAILABLE', message: 'Plan refresh failed' } }, { status })
       : HttpResponse.json({ items: [plan] })),
     http.post('/api/management/harnesses/mcp/decision', () => {
       decisions++
