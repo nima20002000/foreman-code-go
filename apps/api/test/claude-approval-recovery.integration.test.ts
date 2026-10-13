@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { setTimeout as delay } from 'node:timers/promises'
 import type { Options } from '@anthropic-ai/claude-agent-sdk'
 import { expect, it, vi } from 'vitest'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
@@ -97,7 +98,11 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
       }
       const closeRecoveredRuntime = vi.fn(async () => true)
       const createChat = () => new OperatorChatService(repository, new PostgresOperatorRepository(pool),
-        Object.assign(resolver, { closeRecoveredRuntime }), directory, { current: id => access.currentOperator(id), assertConfiguration() {},
+        Object.assign(resolver, { closeRecoveredRuntime,
+        prepareAccountBinding: async () => {
+          if (scenario === 'restart-after-terminal') await delay(1500)
+        },
+      }), directory, { current: id => access.currentOperator(id), assertConfiguration() {},
         setup: async () => ({ harness: 'claude', status: 'configured', endpoint: 'http://127.0.0.1/mcp', checkedAt: new Date().toISOString() }),
         prepare: async (_manager, configuration) => ({ agentId: configuration.operatorId, variables: {} }), release: async () => {} })
       let chat = createChat()

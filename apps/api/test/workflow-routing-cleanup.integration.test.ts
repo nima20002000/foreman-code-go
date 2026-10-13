@@ -4,9 +4,11 @@ import { RUN_INSPECTION_TOOLS, RunRecordDetailSchema } from '@foreman-code/contr
 import { scenarioFixture } from './helpers/eng07BScenarios.js'
 import { runPath, scenarioHarness } from './helpers/eng07BHarness.js'
 import { postgresEnabled } from './helpers/eng04CurrentDatabase.js'
+import { DomainError } from '../src/modules/errors.js'
 
 describe.skipIf(!postgresEnabled)('routing workflow cleanup', () => {
-  it('retries a database timeout after completion without replaying native work', async () => {
+  it.each(['immediate', 'deferred'] as const)(
+    'retries a database timeout after %s native closure without replaying native work', async closure => {
     const scenario = scenarioFixture('S3-03', randomUUID())
     const f = await scenarioHarness(scenario)
     const finishCleanup = f.base.runs.finishCleanup.bind(f.base.runs)
@@ -14,6 +16,12 @@ describe.skipIf(!postgresEnabled)('routing workflow cleanup', () => {
     const cleanup = vi.spyOn(f.base.runs, 'finishCleanup')
       .mockRejectedValueOnce(timeout)
       .mockImplementation(finishCleanup)
+    const closeReviewers = f.base.native.finishIdleReviewers.bind(f.base.native)
+    const reviewers = vi.spyOn(f.base.native, 'finishIdleReviewers').mockImplementation(closeReviewers)
+    if (closure === 'deferred') {
+      const pending = new DomainError('REPEAT_CLEANUP_PENDING', 'Native closure is still pending.', 409)
+      reviewers.mockRejectedValueOnce(pending).mockRejectedValueOnce(pending).mockRejectedValueOnce(pending)
+    }
     try {
       const { saved } = await f.save('mcp')
       const started = await f.start('mcp', saved)
@@ -61,6 +69,7 @@ describe.skipIf(!postgresEnabled)('routing workflow cleanup', () => {
       expect(f.base.provider.counts.starts).toBe(expectedNodes.length)
       expect(f.base.dispatchErrors).toEqual([])
     } finally {
+      reviewers.mockRestore()
       cleanup.mockRestore()
       await f.close()
     }

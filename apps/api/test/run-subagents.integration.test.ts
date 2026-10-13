@@ -98,6 +98,7 @@ describe('durable per-Run children over SQL and authenticated MCP', () => {
     } })
     const saved = (await f.service.list(f.reader.principal, f.input)).items[0]!.subagent
     await seedCodexChild(native.directory, root, source, { ...saved, status: 'completed' })
+    await native.json('resume-delay-ms.json', 750)
     const managers = new ExecutionScopedNativeSessionManagerResolver(() => manager)
     const context = { executionId: f.executionId, runId: f.input.runId,
       agentId: source.request.configuration.agentId, harness: 'codex' as const, workingDirectory: native.directory,
