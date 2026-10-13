@@ -1,4 +1,4 @@
-import { memo, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Handle, Position, type Edge, type EdgeProps, type Node, type NodeProps } from '@xyflow/react'
 import type { CiRunJob, CiTestStatus } from '@foreman-code/contracts'
@@ -55,14 +55,21 @@ const label = (value: string) => value[0]!.toUpperCase() + value.slice(1)
 
 type Tab = 'jobs' | 'tests' | 'log'
 /** The CI server's jobs for this Run; a job opens its test results and log tail. */
-export function CiServerDialog({ open, onOpenChange, scope, jobs, names, truncated, error, loading }: {
+export function CiServerDialog({ open, onOpenChange, scope, jobs, names, truncated, error, loading, ticketId }: {
   open: boolean; onOpenChange(open: boolean): void; scope?: RepeatGraphScopeV3 | undefined; jobs: readonly CiRunJob[]
   names: ReadonlyMap<string, string>; truncated: boolean; error: boolean; loading: boolean
+  ticketId?: string | undefined
 }) {
   const [tab, setTab] = useState<Tab>('jobs')
   const [selectedId, setSelectedId] = useState<string>()
   // Kept here so the status filter survives a visit to another tab.
   const [statuses, setStatuses] = useState<CiTestStatus[]>([...STATUSES])
+  useEffect(() => {
+    if (open && ticketId) {
+      setSelectedId(ticketId)
+      setTab('tests')
+    }
+  }, [open, ticketId])
   const selected = jobs.find((job) => job.ticketId === selectedId)
   const agent = (job: CiRunJob) => names.get(job.requester.nodeId) ?? job.requester.nodeName
   const show = (job: CiRunJob) => { setSelectedId(job.ticketId); setTab('tests') }
@@ -83,7 +90,7 @@ export function CiServerDialog({ open, onOpenChange, scope, jobs, names, truncat
   </Dialog>
 }
 
-function CiJobsTable({ jobs, agent, selectedId, truncated, onShow, run }: { jobs: readonly CiRunJob[]; agent(job: CiRunJob): string
+export function CiJobsTable({ jobs, agent, selectedId, truncated, onShow, run }: { jobs: readonly CiRunJob[]; agent(job: CiRunJob): string
   selectedId?: string | undefined; truncated: boolean; onShow(job: CiRunJob): void; run: boolean }) {
   if (!jobs.length) return <EmptyState icon="terminal" title={run ? 'No CI jobs in this Run yet' : 'No Run selected'}
     description={run ? 'When an Agent runs CI, its jobs appear here with their test results.'
@@ -127,7 +134,7 @@ function CiJobTests({ scope, job, agent, statuses, onStatusesChange }: { scope: 
     queryKey: [...runInspectionQueryKey(scope), 'ci-tests', job.ticketId, selected.join(','), job.ci.state],
     queryFn: ({ signal }) => runCiApi.tests({ workspaceId: scope.workspaceId, ticketId: job.ticketId,
       ...(selected.length < STATUSES.length ? { status: selected } : {}) }, { signal }),
-    enabled: selected.length > 0, retry: false, placeholderData: (previous) => previous?.ticketId === job.ticketId ? previous : undefined,
+    enabled: selected.length > 0, retry: false,
   })
   const results = query.data?.ticketId === job.ticketId ? query.data.tests : undefined
   const counts = results?.summary ?? job.tests

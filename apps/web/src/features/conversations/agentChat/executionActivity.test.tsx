@@ -10,6 +10,8 @@ import { useConversationDraftStore } from '../conversationDraftStore'
 import { mergeExecutionActivity, type ExecutionActivityFeed } from './executionActivity'
 import { installChatSource, mountChat } from './testSupport'
 import { deferred } from '../../../test/deferred'
+import { agentChatApi } from '../../../shared/api/agentChat'
+import { ApiError } from '../../../shared/api/client'
 
 const at = '2026-09-27T12:00:00.000Z'
 const message = (executionId: string, id: string, sequence: string, content: string, role: 'user' | 'assistant' = 'assistant'): AgentChatExecutionItem =>
@@ -288,4 +290,129 @@ describe('mergeExecutionActivity', () => {
     expect(stale.cursor).toBe('{"execution-check":"9"}')
     expect(stale.executions[1]?.hasEarlierItems).toBe(true)
   })
+})
+
+
+describe('execution detail readback', () => {
+  it.each(['snapshot', 'changes', 'earlier'] as const)(
+    'preserves expanded input and output when an equal-revision %s preview arrives', mode => {
+      const preview = tool('execution-check', 'command', '7', 'inspect', 'completed', 'preview', true)
+      const full = { ...preview, entry: { kind: 'activity' as const,
+        activity: { ...(preview.entry.kind === 'activity' ? preview.entry.activity : {}),
+          id: 'command', kind: 'tool' as const, title: 'inspect', status: 'completed' as const,
+          input: 'full arguments', output: 'full output', truncated: false } } }
+      const initial = mergeExecutionActivity(undefined, snapshot('running', [preview]))
+      const expanded = mergeExecutionActivity(initial, { ...snapshot('running', [full]), mode: 'item' },
+        { executionId: 'execution-check', itemId: 'command' })
+      const result = mergeExecutionActivity(expanded, { ...snapshot('running', [preview]), mode },
+        mode === 'earlier' ? { executionId: 'execution-check', before: '8' } : undefined)
+      const item = result.history?.items[0] ?? result.items[0]
+      expect(item?.entry).toMatchObject({ activity: { input: 'full arguments', output: 'full output', truncated: false } })
+    },
+  )
+
+  it.each([
+    ['history', 'server'], ['history', 'invalid'], ['history', 'timeout'],
+    ['details', 'server'], ['details', 'invalid'], ['details', 'timeout'],
+  ] as const)('shows and retries a failed %s read after a %s failure', async (operation, failure) => {
+    const state = runState()
+    const mounted = mountChat(state)
+    mounted.mock.setExecutionActivity(state.context, livePage([
+      tool('execution-check', 'command', '7', 'inspect', 'completed', 'Verified preview', true),
+    ], '7', { hasEarlierItems: true }))
+    const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
+    fireEvent.click(within(check).getByText('Ran inspect'))
+    const original = agentChatApi.executionActivity
+    let attempts = 0
+    const read = vi.spyOn(agentChatApi, 'executionActivity').mockImplementation(async (...args) => {
+      const query = args[1]
+      if (query && ('itemId' in query || 'executionId' in query)) {
+        attempts += 1
+        if (attempts === 1 && failure === 'timeout') {
+          throw new ApiError({ code: 'REQUEST_TIMEOUT', message: 'Timed out' }, 0)
+        }
+      }
+      return original(...args)
+    })
+    server.use(http.get('/api/workspaces/:workspaceId/agent-chat/execution-activity', ({ request }) => {
+      if (!new URL(request.url).searchParams.has('executionId')) return undefined
+      if (attempts === 1 && failure === 'server') {
+        return HttpResponse.json({ error: { code: 'READ_FAILED', message: 'Read failed' } }, { status: 500 })
+      }
+      if (attempts === 1 && failure === 'invalid') return HttpResponse.json({ invalid: true })
+      return HttpResponse.json({
+        ...livePage([tool('execution-check', 'command', '7', 'inspect', 'completed', 'Verified full output')], '7'),
+        mode: operation === 'history' ? 'earlier' : 'item',
+      })
+    }))
+    const action = operation === 'history' ? 'Load earlier activity' : 'Show full details'
+    fireEvent.click(within(check).getByRole('button', { name: action }))
+    const alert = await within(check).findByRole('alert')
+    expect(alert).toHaveTextContent(operation === 'history' ? 'Earlier activity could not be loaded' : 'Full details could not be loaded')
+    expect(within(check).getByText('Verified preview')).toBeInTheDocument()
+    fireEvent.click(within(alert).getByRole('button', { name: /Retry/ }))
+    expect(await within(check).findByText('Verified full output')).toBeInTheDocument()
+    expect(attempts).toBe(2)
+    read.mockRestore()
+  })
+})
+
+
+it('deduplicates pending detail reads and isolates their late results when the selected Run changes', async () => {
+  const state = runState()
+  const mounted = mountChat(state)
+  const preview = livePage([tool('execution-check', 'command', '7', 'inspect', 'completed', 'Verified preview', true)], '7')
+  mounted.mock.setExecutionActivity(state.context, preview)
+  const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
+  fireEvent.click(within(check).getByText('Ran inspect'))
+  const pending = deferred<AgentChatExecutionActivityPage>()
+  const original = agentChatApi.executionActivity
+  let details = 0
+  vi.spyOn(agentChatApi, 'executionActivity').mockImplementation((...args) => {
+    if (args[1] && 'itemId' in args[1]) { details += 1; return pending.promise }
+    return original(...args)
+  })
+  const expand = within(check).getByRole('button', { name: 'Show full details' })
+  fireEvent.click(expand)
+  fireEvent.click(expand)
+  await waitFor(() => expect(details).toBe(1))
+  expect(within(check).getByRole('button', { name: 'Loading full details…' })).toBeDisabled()
+  const next = { ...state, context: { ...state.context, runId: 'another-run' } }
+  mounted.mock.setState(next)
+  mounted.mock.setExecutionActivity(next.context, livePage(numberedMessages(8, 8), '8'))
+  mounted.switchContext(next.context)
+  await screen.findByText('Activity 8')
+  await act(async () => { pending.resolve({ ...preview, mode: 'item' }); await pending.promise })
+  expect(screen.queryByText('Verified preview')).not.toBeInTheDocument()
+  expect(screen.queryByText('Full details could not be loaded.')).not.toBeInTheDocument()
+})
+
+it('keeps full details visible when a delayed live preview completes after expansion', async () => {
+  const state = runState()
+  const mounted = mountChat(state)
+  const preview = livePage([tool('execution-check', 'command', '7', 'inspect', 'completed', 'Preview', true)], '7')
+  mounted.mock.setExecutionActivity(state.context, preview)
+  const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
+  const delayed = deferred<AgentChatExecutionActivityPage>()
+  let polling = false
+  server.use(http.get('/api/workspaces/:workspaceId/agent-chat/execution-activity', async ({ request }) => {
+    if (new URL(request.url).searchParams.has('itemId')) {
+      return HttpResponse.json({ ...preview, mode: 'item', items: [
+        { ...tool('execution-check', 'command', '7', 'inspect', 'completed', 'Full output'),
+          entry: { kind: 'activity', activity: { id: 'command', kind: 'tool', title: 'inspect',
+            status: 'completed', input: 'Full arguments', output: 'Full output' } } },
+      ] })
+    }
+    polling = true
+    return HttpResponse.json(await delayed.promise)
+  }))
+  let read: Promise<void> | undefined
+  act(() => { read = mounted.client.refetchQueries(activityQuery) })
+  await waitFor(() => expect(polling).toBe(true))
+  fireEvent.click(within(check).getByText('Ran inspect'))
+  fireEvent.click(within(check).getByRole('button', { name: 'Show full details' }))
+  await within(check).findByText('Full output')
+  await act(async () => { delayed.resolve(preview); await read })
+  expect(within(check).getByText('Full arguments')).toBeInTheDocument()
+  expect(within(check).getByText('Full output')).toBeInTheDocument()
 })

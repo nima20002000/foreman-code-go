@@ -30,8 +30,9 @@ export function DraftEditorView({ draftKey, edit, updateFailures, controller }: 
   controller: ReturnType<typeof useDraftEditorController>
 }) {
   const { graph, context, board, editIntent, undoScope, core, preflight, pendingStart,
-    reloading, stopAndSave, discardChanges, reload, startMutation, starting, start,
-    workspace, managedWorkflow, pendingApprovals, agents, hints, requestSave, historyAction, openAgent, panels } = controller
+    reloading, stopAndSave, discardChanges, reload, startMutation, starting, start, recoverStart,
+    workspace, managedWorkflow, pendingApprovals, agents, hints, requestSave, historyAction, openAgent, panels,
+    scheduleWrite, historyPending } = controller
   const { panel, settingsPanel, workflowName, openSaveField, openNode, setOpenNode, confirm, setConfirm, runAfterSave,
     message, setGeometryPending, canvas, presentation, change, geometry, report, inspect, openPanel, prepare } = core
   const { dirty, needsSave, canUndo, canRedo, startReloadRequired, startDisabled, startReason, saveBusy,
@@ -63,9 +64,9 @@ export function DraftEditorView({ draftKey, edit, updateFailures, controller }: 
         </div>
         <div className="board-control-cluster">
           {needsSave || edit.pending || editIntent.locked || canUndo || canRedo ? <Toolbar label="Draft actions">
-            {canUndo ? <IconButton label="Undo" variant="ghost" disabled={saveBusy || starting || editIntent.locked}
+            {canUndo ? <IconButton label="Undo" variant="ghost" disabled={saveBusy || starting || editIntent.locked || historyPending || scheduleWrite.pending}
               onClick={() => historyAction('undo')}><Undo2 aria-hidden="true" size={16} /></IconButton> : null}
-            {canRedo ? <IconButton label="Redo" variant="ghost" disabled={saveBusy || starting || editIntent.locked}
+            {canRedo ? <IconButton label="Redo" variant="ghost" disabled={saveBusy || starting || editIntent.locked || historyPending || scheduleWrite.pending}
               onClick={() => historyAction('redo')}><Redo2 aria-hidden="true" size={16} /></IconButton> : null}
             {dirty ? <IconButton label="Discard changes" variant="ghost" disabled={saveBusy || starting} onClick={() => setConfirm('discard')}><Icon name="close" size={22} /></IconButton> : null}
             {needsSave || edit.pending || editIntent.locked ? <>
@@ -105,15 +106,22 @@ export function DraftEditorView({ draftKey, edit, updateFailures, controller }: 
           else openPanel(issue.code === 'ENTRY_REQUIRED' && !graph.nodes.length ? 'agents' : 'workflow')
         }} />
       <div className="board-notices" aria-live="polite">
+        {scheduleWrite.unconfirmed && scheduleWrite.command?.history ? <BoardNotice tone="warning"
+          title="The schedule change may have gone through."
+          action={<Button size="sm" disabled={scheduleWrite.pending || historyPending}
+            onClick={() => historyAction(scheduleWrite.command!.history!.direction)}>Retry schedule change</Button>}>
+          Confirm this change before editing the schedule or leaving the Board.</BoardNotice> : null}
         {!pendingStart && workspace.data && workspace.data.locationValidation.status !== 'ready'
           ? <BoardNotice tone="warning" title={locationMessage}
             action={<Button size="sm" onClick={board?.openLocation}>{workspace.data.locationValidation.status === 'unconfigured'
               ? 'Choose folder' : 'Review folder'}</Button>} /> : null}
         {pendingStart ? <BoardNotice tone="warning" title="An earlier start may have gone through."
-          action={<Button size="sm" onClick={() => void (pendingStart ? start() : prepare(start)).catch(report)}>Check again</Button>}>Confirm it before starting another run.</BoardNotice> : null}
+          action={<><Button size="sm" disabled={starting} onClick={() => void start().catch(report)}>Check again</Button>
+            <Button size="sm" disabled={starting} onClick={() => void recoverStart().catch(report)}>Recover Start</Button></>}>
+          Confirm it before starting another run. Recovery finds the accepted Run or cancels the pending Start.</BoardNotice> : null}
         {startReloadRequired ? <BoardNotice tone="warning" title="Reload the saved draft before starting another Run."
           action={<Button size="sm" disabled={reloading} onClick={() => void reload()}>Reload saved draft</Button>}>
-          The previous Start was rejected because its saved version is no longer supported.</BoardNotice> : null}
+          Review the latest saved settings before starting again.</BoardNotice> : null}
         {message ? <BoardNotice tone="success" title={message} /> : null}
         {editIntent.storageError ? <BoardNotice tone="danger" live title="Changes can’t be kept in this browser.">{editIntent.storageError}</BoardNotice> : null}
         {editIntent.query.error ? <BoardNotice tone="warning" title="Couldn’t check the status of your last save.">Your changes are still here. {editIntent.query.error.message}</BoardNotice> : null}

@@ -301,6 +301,10 @@
       "types": "./dist/jobVerificationGate.d.ts",
       "import": "./dist/jobVerificationGate.js"
     },
+    "./production-maintenance": {
+      "types": "./dist/productionMaintenance.d.mts",
+      "import": "./dist/productionMaintenance.mjs"
+    },
     "./job-cancellation-recovery": {
       "types": "./dist/jobCancellationRecovery.d.ts",
       "import": "./dist/jobCancellationRecovery.js"

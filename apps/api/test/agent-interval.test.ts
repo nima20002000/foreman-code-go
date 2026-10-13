@@ -1,44 +1,13 @@
-import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { AgentRunStatusSchema } from '@foreman-code/contracts'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
-import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { expect, it } from 'vitest'
 
 import { buildApp } from '../src/app.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { RunHistoryService } from '../src/modules/runs/history.js'
-import { codexApprovalRuntime } from './helpers/codexApprovalRuntime.js'
-import { deferred } from './helpers/deferred.js'
-
-/** One Agent on two sequential nodes; the entry node is re-activated every 10 seconds. */
-async function intervalRuntime() {
-  const f = makeCurrentWorkflowFixture(randomUUID())
-  const [watcher, worker] = f.version.definition.nodes
-  if (!watcher || !worker) throw new Error('Expected two Agent nodes')
-  worker.agentId = watcher.agentId
-  f.configurations = [f.configurations[0]!]
-  f.version.agentConfigurationVersionIds = { [watcher.agentId]: f.configurations[0]!.id }
-  watcher.interval = { everySeconds: 10 }
-  f.version.definition.executionPolicy!.maxParallelism = 1
-  const checkStarted = deferred<string>(), checkGate = deferred(), workerGate = deferred()
-  const db: { pool?: { query: (text: string, values: unknown[]) => Promise<{ rows: Array<{ node: string; tick: number | null }> }> } } = {}
-  const runtime = await codexApprovalRuntime('user', { fixture: f, approvalPolicy: 'never',
-    workflowOutput: async (executionId) => {
-      const [row] = (await db.pool!.query('select workflow_node_id as node,tick_index as tick from harness_executions where id=$1',
-        [executionId])).rows
-      if (row?.tick) {
-        checkStarted.resolve(executionId)
-        await checkGate.promise
-        return 'Checked the Run: no failed nodes or CI.'
-      }
-      if (row?.node === worker.id) await workerGate.promise
-      return `${row?.node} done`
-    } })
-  db.pool = runtime.db.pool as never
-  return { runtime, f, watcher, worker, checkStarted, checkGate, workerGate }
-}
+import { intervalRuntime } from './helpers/intervalRuntime.js'
 
 it('re-activates an interval node in its own session without routing and stops when the Run completes', async () => {
   const { runtime, f, watcher, worker, checkStarted, checkGate, workerGate } = await intervalRuntime()

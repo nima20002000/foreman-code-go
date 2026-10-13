@@ -4,6 +4,7 @@ export { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import pg from 'pg'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { DomainError } from '../errors.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
@@ -14,6 +15,23 @@ function commitWasRejected(error: unknown): boolean {
   // SQLSTATE is not localized. This is used only after a successful rollback;
   // connection failures and unknown completion still leave COMMIT ambiguous.
   return !error.code.startsWith('08') && error.code !== '40003'
+}
+
+/** Wait outside SQL transactions without a blocking statement that can time out. */
+async function acquireSessionLock(client: pg.PoolClient, key: string): Promise<void> {
+  for (;;) {
+    const result = await client.query<{ locked: boolean }>(
+      'select pg_try_advisory_lock(hashtext($1)) as locked', [key])
+    if (result.rows[0]!.locked) return
+    await delay(25)
+  }
+}
+
+interface PreparedMutation {
+  /** Serialize only the prepared database mutation, leaving preparation concurrent. */
+  resourceLock: string
+  /** Retry preparation when concurrent mutations changed its database inputs. */
+  validate(client: pg.PoolClient): Promise<boolean>
 }
 
 export class PostgresCommandCoordinator {
@@ -39,6 +57,7 @@ export class PostgresCommandCoordinator {
     /** Prepare immutable bytes or installed metadata outside SQL under retained
      * command ownership. Admission and its receipt then share one transaction. */
     prepare?(): Promise<void>
+    preparedMutation?: PreparedMutation
     /** Explicit compatibility boundary for historical receipts, never new commands. */
     replayResult?(result: unknown): T
     /** Resume an unfinished external operation under its original command lock. */
@@ -59,13 +78,18 @@ export class PostgresCommandCoordinator {
     let committing = false
     let performing = false
     const commandLock = `command:${input.principal.id}:${input.operation}:${input.commandId}`
+    const resourceLock = input.preparedMutation?.resourceLock ?? input.resourceLock
     try {
+      if (input.preparedMutation) {
+        lifecycleLock = true
+        await acquireSessionLock(client, commandLock)
+      }
       await beginTransaction(client)
       inTransaction = true
-      if (dedicatedConnection) {
+      if (dedicatedConnection && !lifecycleLock) {
         await client.query('select pg_advisory_lock(hashtext($1))', [commandLock])
         lifecycleLock = true
-      } else {
+      } else if (!lifecycleLock) {
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [commandLock])
       }
       if (input.resourceLock) {
@@ -102,10 +126,21 @@ export class PostgresCommandCoordinator {
         inTransaction = false
       }
       if (input.prepare) {
-        await input.prepare()
-        await beginTransaction(client)
-        inTransaction = true
-        await input.authorize?.(client)
+        for (;;) {
+          await input.prepare()
+          if (input.preparedMutation) {
+            resourceLockRequested = true
+            await acquireSessionLock(client, input.preparedMutation.resourceLock)
+          }
+          await beginTransaction(client)
+          inTransaction = true
+          await input.authorize?.(client)
+          if (!input.preparedMutation || await input.preparedMutation.validate(client)) break
+          await rollbackTransaction(client)
+          inTransaction = false
+          await client.query('select pg_advisory_unlock(hashtext($1))', [resourceLock])
+          resourceLockRequested = false
+        }
       }
       performing = true
       const value = await input.perform(client)
@@ -178,7 +213,7 @@ export class PostgresCommandCoordinator {
       throw failure
     } finally {
       if (resourceLockRequested && !releaseError) {
-        await client.query('select pg_advisory_unlock(hashtext($1))', [input.resourceLock]).catch((error: unknown) => {
+        await client.query('select pg_advisory_unlock(hashtext($1))', [resourceLock]).catch((error: unknown) => {
           releaseError = error instanceof Error ? error : new Error('Command resource unlock failed.')
         })
       }

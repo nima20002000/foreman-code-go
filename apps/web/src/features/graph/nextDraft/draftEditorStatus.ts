@@ -26,7 +26,8 @@ export function deriveDraftEditorStatus({ edit, editIntent, agents, startState, 
   const needsSave = dirty || !context.draft.baseWorkflowVersionId
   const canUndo = (dirty && edit.history.length > 0) || !!undoAction
   const canRedo = (edit.future?.length ?? 0) > 0 || redoCount > 0
-  const startReloadRequired = !!edit.startRejectedVersionId && edit.startRejectedVersionId === context.draft.baseWorkflowVersionId
+  const startReloadRequired = !!edit.startCanceled
+    || (!!edit.startRejectedVersionId && edit.startRejectedVersionId === context.draft.baseWorkflowVersionId)
   let preflightReason: string | undefined
   try {
     if (preflight.isError) throw preflight.error

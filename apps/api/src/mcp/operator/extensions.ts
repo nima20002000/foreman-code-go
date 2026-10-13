@@ -11,7 +11,7 @@ import { OperatorWorkspaceControls } from '../../modules/workspaces/operatorCont
 import { VersionHistoryService } from '../../modules/workflows/historyManagement.js'
 import { SkillCatalogService } from '../../modules/skills/catalog.js'
 import { SkillUsageService } from '../../modules/skills/usage.js'
-import { CurrentWorkflowAuthoring } from '../../modules/workflows/currentAuthoring.js'
+import type { CurrentWorkflowAuthoring } from '../../modules/workflows/currentAuthoring.js'
 import type { ProviderAccountConfigurationService } from '../../modules/harnesses/providerAccountConfiguration.js'
 
 export function createOperatorExtensions(input: {
@@ -20,14 +20,14 @@ export function createOperatorExtensions(input: {
   provisioningRoot?:string|undefined;
   harnessProfiles?: Pick<HostHarnessOverrideService, 'validateSelection'>;
   accountConfigurations?: ProviderAccountConfigurationService;
+  workflows: Pick<CurrentWorkflowAuthoring, 'save'>;
 }) {
   const agents = new OperatorAgentMutationService(input.pool,input.commands,input.catalog,input.harnessProfiles,
     input.accountConfigurations)
   return {
     native:input.native,
     agents,
-    skillUsage:new SkillUsageService(input.pool,agents,new CurrentWorkflowAuthoring(input.pool,input.commands,
-      { accountConfigurations: input.accountConfigurations }),input.commands),
+    skillUsage:new SkillUsageService(input.pool,agents,input.workflows,input.commands),
     history:new VersionHistoryService(input.pool),
     lifecycle:new OperatorLifecycleService(input.commands),
     workspace:new OperatorWorkspaceControls(input.pool,input.commands,input.locations,input.detection,input.provisioningRoot),
