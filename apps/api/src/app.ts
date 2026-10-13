@@ -1,5 +1,6 @@
 import { registerRuntimeInstallationSecurity } from './infrastructure/runtimeIdentity.js'
 import { randomUUID } from 'node:crypto'
+import type { Socket } from 'node:net'
 import { scheduleDispatchLog } from './modules/schedules/dispatchErrors.js'
 
 import {
@@ -123,6 +124,23 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     genReqId: () => randomUUID(),
     // Fastify's per-request lines are replaced by one line whose level says whether it matters.
     logController: new LogController({ disableRequestLogging: true }),
+  })
+  // Fetch pools can replace aborted streams with connections that have no HTTP request yet.
+  const unusedConnections = new Set<Socket>()
+  let httpClosing = false
+  app.server.on('connection', socket => {
+    if (httpClosing) {
+      socket.destroy()
+      return
+    }
+    unusedConnections.add(socket)
+    socket.once('close', () => unusedConnections.delete(socket))
+  })
+  app.server.on('request', request => unusedConnections.delete(request.socket))
+  app.addHook('preClose', async () => {
+    httpClosing = true
+    for (const socket of unusedConnections) socket.destroy()
+    unusedConnections.clear()
   })
   const closeInfrastructure = options.closeInfrastructure
   if (closeInfrastructure) {

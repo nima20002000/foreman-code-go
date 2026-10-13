@@ -118,7 +118,12 @@ export async function remoteReviewProduction(options: {
   }
   const closes: Array<() => Promise<void>> = []
   const mcpClients = new Set<Client>()
-  const close = async () => {
+  let closing: Promise<void> | undefined
+  const close = (): Promise<void> => {
+    closing ??= Promise.resolve().then(cleanup)
+    return closing
+  }
+  const cleanup = async () => {
     // Client streams must release their HTTP requests before Main drains its listener.
     const clientClosures = await Promise.allSettled([...mcpClients].map(client => client.close()))
     mcpClients.clear()
