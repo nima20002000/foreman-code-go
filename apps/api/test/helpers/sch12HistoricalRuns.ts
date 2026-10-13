@@ -98,7 +98,7 @@ export class HistoricalChatNative extends AgentChatF5Native {
  * This is a service/connection restart, not an OS kill or real-provider restart.
  * Unrelated management services and the already-settled fixture engine are reused. */
 export async function openHistoricalApi(f: HistoricalFixture) {
-  const pool = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL!, max: 4,
+  const pool = new pg.Pool({ ...f.db.pool.options, max: 4,
     options: `-c search_path=${f.db.schema} -c statement_timeout=10000 -c lock_timeout=5000` })
   const commands = new PostgresCommandCoordinator(pool)
   const access = new PostgresAccessService(pool)
