@@ -1,3 +1,4 @@
+import { migratedDatabase } from './migratedDatabase.js'
 import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './testResources.js'
 import { agentWorkflowVersion } from './agentWorkflowFixture.js'
 import { randomUUID } from 'node:crypto'
@@ -34,6 +35,7 @@ export async function agent3Database(databaseUrl = process.env.TEST_DATABASE_URL
   if (!['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || !parsed.pathname.toLowerCase().includes('test')) {
     throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
   }
+  if (url === process.env.TEST_DATABASE_URL) return migratedDatabase()
   const schema = `wave25_a3_${randomUUID().replaceAll('-', '')}`
   const started = performance.now()
   const admin = new pg.Pool({ connectionString: url, max: 1 })

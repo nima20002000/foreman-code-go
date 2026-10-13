@@ -56,6 +56,10 @@ export const userSystemdIntegrationFiles = new Set([
 const startupFile = 'apps/api/test/dev-startup.integration.test.ts'
 // These files measure bounded startup/latency while exercising shared host resources.
 export const exclusiveIntegrationFiles = [startupFile,
+  // Measure server and native startup without competing fixture setup.
+  'apps/api/test/ci-postgres-setup.integration.test.ts',
+  'apps/api/test/main-codex-qualification-restart.integration.test.ts',
+  'apps/api/test/main-codex-qualification-partial-version.integration.test.ts',
   // Checkpoint routing must settle within its fixed deadline under CI load.
   'apps/api/test/eng03-b-durability-routing.integration.test.ts',
   // Two sequential native executions must settle within the fixed completion deadline.
