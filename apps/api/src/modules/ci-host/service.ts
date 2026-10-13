@@ -672,6 +672,20 @@ export class HostCiService {
     return queued.filter(run => !run.deferred || !waiting.has(run.groupId))
   }
 
+  private async queuedRuns() {
+    // Check parts must remain visible even behind more than one batch of integration partitions.
+    const queuedRows = (await this.pool.query<{ record: unknown; durations: CiDurations | null }>(
+      `select record,durations from ci_runs where id in
+        (select id from ci_runs where state='queued' and record->>'supersededBy' is null order by ${CI_QUEUE_ORDER} limit 50)
+        or id in (select id from ci_runs where state='queued' and record->>'supersededBy' is null
+          and record->>'suite'<>'integration'
+          order by ${CI_QUEUE_ORDER} limit 50)
+        order by ${CI_QUEUE_ORDER}`)).rows
+    const parsed = queuedRows.map(row => CiRunRecordSchema.parse(row.record))
+    const durations = new Map(queuedRows.map((row, index) => [parsed[index]!.id, row.durations]))
+    return { parsed, durations }
+  }
+
   private async gateReservation() {
     const rows = (await this.pool.query<{ record: unknown }>(`select record from ci_runs
       where state in ('queued','starting','running') and record->>'gate'='true'
@@ -756,16 +770,7 @@ export class HostCiService {
     const githubKeys = new Set(github.map(computer => computer.key))
     const integrationOnGitHub = new Set(busyRows.filter(row => githubKeys.has(row.host_key)
       && CiRunRecordSchema.parse(row.record).suite === 'integration').map(row => row.host_key))
-    // Check parts must remain visible even behind more than one batch of integration partitions.
-    const queuedRows = (await this.pool.query<{ record: unknown; durations: CiDurations | null }>(
-      `select record,durations from ci_runs where id in
-        (select id from ci_runs where state='queued' and record->>'supersededBy' is null order by ${CI_QUEUE_ORDER} limit 50)
-        or id in (select id from ci_runs where state='queued' and record->>'supersededBy' is null
-          and record->>'suite'<>'integration'
-          order by ${CI_QUEUE_ORDER} limit 50)
-        order by ${CI_QUEUE_ORDER}`)).rows
-    const parsed = queuedRows.map(row => CiRunRecordSchema.parse(row.record))
-    const durations = new Map(queuedRows.map((row, index) => [parsed[index]!.id, row.durations]))
+    const { parsed, durations } = await this.queuedRuns()
     let queued = await this.releaseSlowTier(parsed)
     // Reserve four GitHub slots while checks wait, including integration already using GitHub.
     const githubIntegrationLimit = Math.max(0, github.length - (queued.some(run => run.suite !== 'integration') ? 4 : 0))
