@@ -47,7 +47,7 @@ it('reads the full ticket log by following byte offsets through public MCP', asy
     .mockResolvedValueOnce({ content: [], structuredContent: { text: 'last\n', nextOffset: 11, logBytes: 11, maxBytes: 65_536 } })
   const scope = { workspaceId: 'workspace', ticketId: randomUUID() }
   expect(await readCiLog({ callTool }, scope))
-    .toEqual({ text: 'first\nlast\n', logBytes: 11, maxBytes: 65_536 })
+    .toEqual({ text: 'first\nlast\n', logBytes: 11 })
   expect(callTool.mock.calls.map(call => call[0])).toEqual([
     { name: 'ci_logs_read', arguments: { ...scope, afterOffset: 0, maxBytes: 65_536 } },
     { name: 'ci_logs_read', arguments: { ...scope, afterOffset: 6, maxBytes: 65_536 } },

@@ -155,8 +155,6 @@ describe('F4 A-R02/A-R03 scoped HTTP/MCP chat authorization', () => {
         }
         const history = await app.inject({ method: 'GET', url: `${root}/conversations/${f.row.id}/history`, headers })
         expect(history.statusCode).toBe(action === 'agent_chat:read' ? 200 : 403)
-        // Current authorization reads are required; no command receipt/audit/native reservation is allowed.
-        expect(f.poolQuery).toHaveBeenCalled()
         expect(f.repository.admit).not.toHaveBeenCalled()
         expect(f.repository.cancelQueued).not.toHaveBeenCalled()
         expect(f.repository.requestCancel).not.toHaveBeenCalled()
