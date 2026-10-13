@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { CiGetOutputSchema, CiRunOutputSchema, type CiHostRequest, type CiHostReply, type CiHostRun } from '@foreman-code/contracts'
 import type { ManagementAction } from '@foreman-code/contracts/management'
@@ -10,9 +12,11 @@ import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { RunCiAuthority, CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { HostCiService, type HostCiComputer, type HostCiEndpoint } from '../src/modules/ci-host/service.js'
+import { HostCiRunner, type HostCiPorts } from '../src/modules/ci-host/runner.js'
 import { workspaceMirrors } from '../src/modules/ci-host/cloud.js'
 import { DomainError } from '../src/modules/errors.js'
 import { migratedDatabase } from './helpers/migratedDatabase.js'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 
 let database: Awaited<ReturnType<typeof migratedDatabase>>
 beforeAll(async () => { database = await migratedDatabase() }, 60_000)
@@ -27,7 +31,7 @@ function deferred() {
   return { promise, resolve }
 }
 
-async function fixture() {
+async function fixture(executor?: HostCiEndpoint) {
   const pool = database.pool
   const workspaceId = randomUUID()
   const repository = { provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main' }
@@ -43,12 +47,14 @@ async function fixture() {
     available: boolean
     onStart(computer: HostCiComputer, request: CiHostRequest): Promise<void>
     onStatus(computer: HostCiComputer): Promise<void>
+    hideRuns: boolean
     onCancel(): Promise<void>
   } = {
     available: false,
     onStart: async () => {},
     onStatus: async () => {},
     onCancel: async () => {},
+    hideRuns: false,
   }
   const endpoint: HostCiEndpoint = {
     computers: async () => control.available ? computers : [],
@@ -60,7 +66,7 @@ async function fixture() {
           .map(([, run]) => run)
         return { operation: 'status', ready: true, reasons: [], cpuCount: 8, memoryBytes: 8 * 2 ** 30,
           slotsUsed: runs.filter(run => ['starting', 'running'].includes(run.state)).length,
-          slotsTotal: 1, runs }
+          slotsTotal: 1, runs: control.hideRuns ? [] : runs }
       }
       const key = `${computer.key}:${request.runId}`
       if (request.operation === 'start') {
@@ -89,7 +95,7 @@ async function fixture() {
     capabilities: async () => ({ parts: false, integrationPartitions: true, affected: true }),
   }
   const createService = () => {
-    const service = new HostCiService(pool, commands, new RunCiAuthority(pool), commits, endpoint)
+    const service = new HostCiService(pool, commands, new RunCiAuthority(pool), commits, executor ?? endpoint)
     vi.spyOn(service, 'start').mockImplementation(() => {})
     return service
   }
@@ -107,7 +113,7 @@ async function fixture() {
     clients.push(client)
     await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address),
       { requestInit: { headers: { authorization: `Bearer ${issued.token}` } } }))
-    return { client, principalId: (await access.authenticate(issued.token)).id }
+    return { client, token: issued.token, principalId: (await access.authenticate(issued.token)).id }
   }
   const operator = await connect([...CI_RUN_ACTIONS, ...CI_GET_ACTIONS])
   const call = (client: Client, name: string, input: Record<string, unknown>) =>
@@ -128,7 +134,7 @@ async function fixture() {
     await Promise.all(clients.map(client => client.close()))
     await app.close()
   }
-  return { pool, workspaceId, repository, operator, connect, call, value, enqueue, read, ci,
+  return { pool, app, workspaceId, repository, operator, connect, call, value, enqueue, read, ci,
     createService, control, remote, starts, computers, close }
 }
 
@@ -507,4 +513,162 @@ it('pins each workspace mirror at admission and never borrows a duplicate reposi
       f.control.available = false
     }
   } finally { await f.close() }
+})
+
+
+it('retains an overdue unknown start, denies read-only cancellation and cleans the original executor after restart', async () => {
+  const f = await fixture()
+  let restarted: HostCiService | undefined
+  let now: ReturnType<typeof vi.spyOn> | undefined
+  try {
+    const ticket = await f.enqueue()
+    f.control.available = true
+    f.control.onStart = async () => { throw new Error('Accepted start reply lost') }
+    await f.ci.dispatch()
+    const accepted = f.starts[0]!
+    f.control.onStatus = async () => { throw new Error('Status unavailable') }
+    now = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_001)
+    restarted = f.createService()
+    for (let attempt = 0; attempt < 4; attempt++) await restarted.dispatch()
+    expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting', finishedAt: null,
+      computer: { hostRef: accepted.computer.hostRef }, dispatchRequest: { runId: ticket.ticketId } })
+    const stored = (await f.pool.query('select host_key,record from ci_runs where id=$1', [ticket.ticketId])).rows[0]
+    expect(stored).toMatchObject({ host_key: accepted.computer.key, record: { state: 'starting' } })
+    const reader = await f.connect(CI_GET_ACTIONS)
+    expect((await f.call(reader.client, 'ci_cancel', { ticketId: ticket.ticketId })).isError).toBe(true)
+    f.control.onCancel = async () => { throw new Error('Cancel transport unavailable') }
+    expect((await f.call(f.operator.client, 'ci_cancel', { ticketId: ticket.ticketId })).isError).toBe(true)
+    expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting', cancellation: {
+      principalId: f.operator.principalId, source: 'mcp', reason: 'direct' } })
+    f.control.onCancel = async () => {}
+    await restarted.dispatch()
+    expect((await f.read(ticket.ticketId)).state).toBe('canceled')
+    expect([...f.remote.values()].every(run => run.state === 'canceled')).toBe(true)
+    expect(f.starts).toHaveLength(1)
+  } finally {
+    now?.mockRestore()
+    await restarted?.close()
+    await f.close()
+  }
+})
+
+it('bounds retries for an accepted but unlisted start without failing it or releasing capacity', async () => {
+  const f = await fixture()
+  try {
+    const ticket = await f.enqueue()
+    f.control.available = true
+    f.control.hideRuns = true
+    f.control.onStart = async () => { throw new Error('Accepted start reply lost') }
+    for (let attempt = 0; attempt < 5; attempt++) await f.ci.dispatch()
+    const assigned = f.starts[0]!.computer
+    expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting', finishedAt: null,
+      computer: { hostRef: assigned.hostRef }, dispatchRequest: { runId: ticket.ticketId },
+      message: expect.stringContaining('cancellation is required') })
+    expect((await f.pool.query('select host_key from ci_runs where id=$1', [ticket.ticketId])).rows[0])
+      .toEqual({ host_key: assigned.key })
+    await f.value('ci_cancel', { ticketId: ticket.ticketId })
+    expect((await f.read(ticket.ticketId)).state).toBe('canceled')
+    expect(f.starts).toHaveLength(1)
+    expect([...f.remote.values()].every(run => run.state === 'canceled')).toBe(true)
+  } finally { await f.close() }
+})
+
+it('attributes HTTP cancellation to HTTP and audits each transition once alongside MCP', async () => {
+  const f = await fixture()
+  try {
+    const reader = await f.connect(CI_GET_ACTIONS)
+    for (const running of [false, true]) {
+      f.control.available = running
+      const ticket = await f.enqueue()
+      const url = `/api/management/workspaces/${f.workspaceId}/ci/${ticket.ticketId}`
+      const denied = await f.app.inject({ method: 'DELETE', url, headers: { authorization: `Bearer ${reader.token}` } })
+      expect(denied.statusCode).toBe(403)
+      expect((await f.read(ticket.ticketId)).state).toBe(running ? 'running' : 'queued')
+      for (let replay = 0; replay < 2; replay++) {
+        const response = await f.app.inject({ method: 'DELETE', url,
+          headers: { authorization: `Bearer ${f.operator.token}` } })
+        expect(response.statusCode).toBe(200)
+        expect(response.json()).toMatchObject({ run: { state: 'canceled' } })
+      }
+      const rows = (await f.pool.query('select principal_id,source from management_audit where action=$1 and target_key=$2',
+        ['ci.cancel', `ci:${ticket.ticketId}`])).rows
+      expect(rows).toEqual([{ principal_id: f.operator.principalId, source: 'http' }])
+    }
+  } finally { await f.close() }
+})
+
+it('keeps overdue Host fetch cancellation pending until preparation closes and prevents late native entry', async () => {
+  const root = await privateFixtureDirectory('ci-preparation-cancel-')
+  const entered = deferred()
+  const release = deferred()
+  let launches = 0
+  const ports: HostCiPorts = { cpus: 4, memoryBytes: 8 * 2 ** 30, now: () => new Date(),
+    run: async (file, args) => {
+      if (file === 'git' && args.includes('cat-file')) return { code: 1, stdout: '', stderr: 'Commit not fetched' }
+      if (file === 'git' && args.includes('fetch')) { entered.resolve(); await release.promise }
+      if (file === 'git' && args.includes('worktree') && args.includes('add')) {
+        const source = args.at(-2)!
+        await mkdir(source, { recursive: true })
+        await writeFile(join(source, 'package.json'), '{}')
+      }
+      if (file === 'systemd-run') launches++
+      return { code: 0, stdout: file === 'systemctl' ? 'inactive\n' : '', stderr: '' }
+    } }
+  const runner = new HostCiRunner(root, ports, {})
+  const computer: HostCiComputer = { key: 'fixture:builder', label: 'Builder', priority: 1,
+    hostRef: { kind: 'main', mainId: 'fixture-main' } }
+  let available = false
+  let statusUnavailable = false
+  let start: Promise<CiHostReply> | undefined
+  let original: Extract<CiHostRequest, { operation: 'start' }> | undefined
+  const executor: HostCiEndpoint = { computers: async () => available ? [computer] : [],
+    request: async (_computer, request) => {
+      if (request.operation === 'status' && statusUnavailable) throw new Error('Status unavailable')
+      if (request.operation === 'start') {
+        original = request
+        start ??= runner.handle(request)
+        await entered.promise
+        throw new Error('Start acknowledgement lost')
+      }
+      return runner.handle(request)
+    } }
+  const f = await fixture(executor)
+  let restarted: HostCiService | undefined
+  let restoreClock: (() => void) | undefined
+  try {
+    const ticket = await f.enqueue()
+    available = true
+    await f.ci.dispatch()
+    statusUnavailable = true
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_001)
+    restoreClock = () => clock.mockRestore()
+    await f.ci.dispatch()
+    expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting',
+      computer: { hostRef: computer.hostRef }, dispatchRequest: { runId: ticket.ticketId } })
+    const reader = await f.connect(CI_GET_ACTIONS)
+    expect((await f.call(reader.client, 'ci_cancel', { ticketId: ticket.ticketId })).isError).toBe(true)
+    const pending = await f.call(f.operator.client, 'ci_cancel', { ticketId: ticket.ticketId })
+    expect(pending.isError).toBe(true)
+    expect(decodeMcpToolResult(pending)).toMatchObject({ error: { code: 'CI_CANCEL_PENDING' } })
+    expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting', cancellation: {
+      principalId: f.operator.principalId, source: 'mcp' } })
+    expect(launches).toBe(0)
+    release.resolve()
+    await expect(start).resolves.toMatchObject({ run: { state: 'canceled' } })
+    restarted = f.createService()
+    await restarted.dispatch()
+    expect((await f.read(ticket.ticketId)).state).toBe('canceled')
+    expect((await f.pool.query('select state,host_key from ci_runs where id=$1', [ticket.ticketId])).rows[0])
+      .toEqual({ state: 'canceled', host_key: null })
+    const recovered = new HostCiRunner(root, ports, {})
+    await expect(recovered.handle(original)).resolves.toMatchObject({ run: { state: 'canceled' } })
+    expect(launches).toBe(0)
+  } finally {
+    restoreClock?.()
+    release.resolve()
+    await start
+    await restarted?.close()
+    await f.close()
+    await rm(root, { recursive: true, force: true })
+  }
 })

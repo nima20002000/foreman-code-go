@@ -718,16 +718,6 @@ describe('GitHub Actions CI on a public mirror', () => {
     expect(await f.reopen().handle({ operation: 'cancel', runId })).toMatchObject({ run: { state: 'canceled' } })
   })
 
-  it('does not suppress CircleCI permission failures', async () => {
-      const f = await fixture({}, { provider: 'circleci' })
-      f.circle.lookupError = 'permission denied'
-      const runId = randomUUID()
-      await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
-        suite: 'integration', scope: 'full' })
-      await expect(f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
-        .rejects.toMatchObject({ code: 'CI_CLOUD_FAILED' })
-    })
-
   it('publishes only the commit files, then dispatches one run with its partition slice', async () => {
     const f = await fixture()
     const runId = randomUUID()

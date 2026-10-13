@@ -88,7 +88,7 @@ async function computer(beforeGithub?: () => Promise<void>, cpuCount = 8, isolat
   fixtures.push({ root, runner })
   const request = { operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: 'a'.repeat(40),
     suite: 'lint', scope: 'full' }
-  return { root, runner, request, launches }
+  return { root, runner, request, launches, ports }
 }
 
 describe('host CI runner concurrent starts', () => {
@@ -204,4 +204,35 @@ describe('host CI runner concurrent starts', () => {
       writing.release()
     }
   })
+})
+
+
+it.each([false, true])('fences cancellation during repository fetch across restart=%s', async restarted => {
+  const fetch = barrier()
+  const { root, runner, request, launches, ports } = await computer(undefined, 8, false, undefined, fetch.pause)
+  const canceler = restarted ? new HostCiRunner(root, ports) : runner
+  const start = runner.handle(request)
+  try {
+    await fetch.entered
+    await expect(canceler.handle({ operation: 'cancel', runId: request.runId }))
+      .resolves.toMatchObject({ operation: 'cancel', run: { state: 'starting', finishedAt: null } })
+    expect(launches).toHaveLength(0)
+    fetch.release()
+    await expect(start).resolves.toMatchObject({ run: { state: 'canceled' } })
+    await expect(runner.handle(request)).resolves.toMatchObject({ run: { state: 'canceled' } })
+    await expect(runner.status()).resolves.toMatchObject({ slotsUsed: 0 })
+    expect(launches).toHaveLength(0)
+  } finally {
+    fetch.release()
+    await start
+  }
+})
+
+it('persists cancellation before delayed start delivery and rejects native entry on replay', async () => {
+  const { root, runner, request, launches, ports } = await computer()
+  await expect(runner.handle({ operation: 'cancel', runId: request.runId }))
+    .resolves.toMatchObject({ run: { state: 'canceled' } })
+  const restarted = new HostCiRunner(root, ports)
+  await expect(restarted.handle(request)).resolves.toMatchObject({ run: { state: 'canceled' } })
+  expect(launches).toHaveLength(0)
 })
