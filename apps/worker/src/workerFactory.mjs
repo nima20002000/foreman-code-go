@@ -21,6 +21,14 @@ import { ensurePairedManagedSetup } from './managedSetup.mjs';
 import { refreshWorkflowSelection } from './workflowSelection.mjs';
 import { registerWorkerMcpInstallation } from '../../../apps/api/src/modules/harnesses/workerMcpInstallation.ts';
 
+import { readUpdateRecord } from './updateSupervisor.mjs';
+import { WORKER_UPDATE_NAMESPACE } from '../../../packages/contracts/src/workerUpdate.ts';
+import { runWorkerStartupSmoke, workerCiStartupStatus, runCiInstallSmoke } from './ciInstallSmoke.mjs';
+import { HostCiRunner } from '../../../apps/api/src/modules/ci-host/runner.ts';
+
+export function runInstalledCiSmoke(input) {
+  return runCiInstallSmoke(input, { runner: new HostCiRunner() });
+}
 export { ensurePairedManagedSetup };
 export { refreshWorkflowSelection };
 export { inspectManagedInstallation } from './managedInstallation.mjs';
@@ -69,7 +77,10 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
   const manifest = await prepareWorkerState(stateDirectory);
   stateDirectory = await realpath(stateDirectory);
   const execution = executionDomains ? createWorkerExecutionDomains(executionDomains) : undefined;
-  let installed, connection, rsyncEntrypoint, updater, managedSetup;
+  let installed, connection, rsyncEntrypoint, updater, managedSetup, manifestSha256;
+  const startupCi = { pending: false, error: null };
+  const startupLifetime = new AbortController();
+  let startupTask;
   const bindingDrains = new Set();
   const bindingFailures = [];
   const bindingLost = binding => {
@@ -84,9 +95,10 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
   };
   const runtime = await startWorker({ stateDirectory, appVersion: manifest.version,
     loadIdentity: loadOrCreateWorkerIdentity, beforeUnlock: async () => {
+    startupLifetime.abort(new Error('Worker stopped during CI smoke.'));
     const updaterClosing = updater?.close();
     const results = await Promise.allSettled([execution?.close(), installed?.close(),
-      installed?.rsyncWriters?.close(), updaterClosing]);
+      installed?.rsyncWriters?.close(), updaterClosing, startupTask]);
     while (bindingDrains.size) await Promise.allSettled([...bindingDrains]);
     const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []).concat(bindingFailures);
     if (failures.length) throw new AggregateError(failures, 'Worker shutdown remains incomplete.');
@@ -102,7 +114,10 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
     if (!executionDomains) {
       const facts = await hostFacts(process.env.HOME ?? '', [stateDirectory]);
       const releaseDirectory = fileURLToPath(new URL('../', import.meta.url));
-      const manifestSha256 = createHash('sha256').update(await readFile(join(releaseDirectory, 'manifest.json'))).digest('hex');
+      manifestSha256 = createHash('sha256').update(await readFile(join(releaseDirectory, 'manifest.json'))).digest('hex');
+      const update = await readUpdateRecord(stateDirectory);
+      startupCi.pending = update?.status.state === 'restarting' && update.manifestSha256 === manifestSha256
+        && !update.restart?.ciSmoke;
       updater = await new WorkerUpdater({ stateDirectory, version: manifest.version, manifestSha256,
         workerInstallationId: pairing.workerInstallationId, releaseDirectory, facts, assertStateOwnership,
         connection: () => connection, drain: () => installed.drainForUpdate(),
@@ -156,10 +171,23 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
     connection = createWorkerConnection({ pairing, bootId, appVersion: manifest.version,
       readPairing: () => loadWorkerPairing(stateDirectory),
       onBindingLost: bindingLost,
-      onReady: () => updater?.ready(),
+      onReady: () => {
+        if (!startupCi.pending) { updater?.ready(); return; }
+        startupTask ??= runWorkerStartupSmoke({ manifestSha256,
+          request: payload => {
+            const captured = connection.captureRequest(WORKER_UPDATE_NAMESPACE);
+            if (!captured) throw new WorkerError('worker_update_channel_unavailable');
+            return captured.request(payload, { timeoutMs: 5000, signal: startupLifetime.signal });
+          },
+          smoke: input => runCiInstallSmoke(input, { runner: new HostCiRunner(), signal: startupLifetime.signal }),
+        }).then(() => { startupCi.pending = false; updater?.ready(); }, error => {
+          startupCi.error = error.message;
+          process.stderr.write(`Worker startup CI smoke failed: ${error.message}\n`);
+        });
+      },
       extensions: [...extensions, ...(updater ? [workerUpdateExtension] : []),
         ...(execution?.extensions ?? []), ...(installed?.extensions ?? []), ...rootExtensions] });
-    return connection;
+    return { ...connection, status: () => workerCiStartupStatus(connection.status(), startupCi) };
   } });
   return { ...runtime, managedSetup, updating: () => Boolean(updater?.active) };
 }

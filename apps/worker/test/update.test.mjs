@@ -71,6 +71,7 @@ async function fixture(t, targetVersion = '1.1.0') {
   const request = async payload => {
     requests.push(payload);
     if (payload.operation === 'release') return { payload: { operation: 'release', release: incoming.release } };
+    if (payload.operation === 'ci-smoke') return { payload: { operation: 'ci-smoke', ciSmoke: null } };
     assert.equal(payload.manifestSha256, incoming.release.manifestSha256);
     const bytes = (await readFile(join(incoming.directory, payload.path))).subarray(payload.offset,
       payload.offset + 262_144);
@@ -557,4 +558,43 @@ test('a later successful retry of the same target preserves the earlier task rol
     'rolled-back');
   assert.equal((await updater.maintenanceOutcome({ workerTargetVersion: '1.1.0', startedAt: retryStartedAt })).state,
     'current');
+});
+test('healthy Worker startup rolls back when its CI setup smoke fails', async t => {
+  const f = await fixture(t);
+  const updater = await new WorkerUpdater({ ...f.options, launchSupervisor: async () => {
+    await superviseWorkerUpdate(await readUpdateRecord(f.stateDirectory), {
+      prepareService: f.prepareService,
+      restart: () => f.restart('ready'),
+      smoke: async () => { throw new Error('CI setup: missing offline package metadata'); },
+    });
+  } }).initialize();
+  t.after(() => updater.close());
+  await updater.start();
+  assert.equal((await readInstalledRelease({ root: f.root, facts, expected })).manifest.version, '1.0.0');
+  const persisted = await readUpdateRecord(f.stateDirectory);
+  assert.equal(persisted.status.state, 'rolled-back');
+  assert.equal(persisted.status.lastError, 'CI setup: missing offline package metadata');
+});
+
+test('Worker update persists authenticated CI smoke configuration and rolls back a setup failure', async t => {
+  const f = await fixture(t);
+  const configuration = { repository: 'octo/project', commit: f.incoming.release.manifest.commit };
+  const captured = f.options.connection().captureRequest();
+  const updater = await new WorkerUpdater({ ...f.options,
+    connection: () => ({ captureRequest: () => ({ request: payload => payload.operation === 'ci-smoke'
+      ? Promise.resolve({ payload: { operation: 'ci-smoke', ciSmoke: configuration } }) : captured.request(payload) }) }),
+    launchSupervisor: async () => {
+      await superviseWorkerUpdate(await readUpdateRecord(f.stateDirectory), {
+        prepareService: f.prepareService, restart: () => f.restart('ready'),
+        smoke: async plan => {
+          assert.deepEqual(plan.ciSmoke, configuration);
+          throw new Error('CI setup: missing offline package metadata');
+        },
+      });
+    },
+  }).initialize();
+  t.after(() => updater.close());
+  await updater.start();
+  assert.equal((await readInstalledRelease({ root: f.root, facts, expected })).manifest.version, '1.0.0');
+  assert.equal((await readUpdateRecord(f.stateDirectory)).status.lastError, 'CI setup: missing offline package metadata');
 });
