@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { copyVerificationRuntime, desktopLaunchEnvironment, hasNativeTurnStarted, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
   removeUninstalledRelease, renderEnvironment,
   pruneReleases, shouldOpenDashboardAfterInstall, waitForIdleRuns, waitForProductionReady, withInstallationLock } from './local-production-runtime.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
+import * as production from './local-production-runtime.mjs'
 
 test('an interactive first install opens the dashboard', () => {
   assert.equal(shouldOpenDashboardAfterInstall({
@@ -410,3 +411,229 @@ test('install keeps only the current and previous release', async () => {
     assert.deepEqual((await readdir(root)).sort(), ['notes', 'release-now', 'release-prev'])
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+
+async function installFixture(t) {
+  const parent = process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache')
+  const directory = await mkdtemp(join(parent, 'production-install-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  return directory
+}
+
+for (const failure of ['stop', 'backup', 'application migration', 'checkpoint setup',
+  'launcher upgrade', 'activation', 'enable', 'start', 'readiness']) {
+  test(`recovers the previous service and schema after a ${failure} failure`, async t => {
+    const directory = await installFixture(t)
+    const previousRelease = join(directory, 'release-previous')
+    const release = join(directory, 'release-candidate')
+    const current = join(directory, 'current')
+    const stateFile = join(directory, 'deployment.json')
+    const backupFile = join(directory, 'database.dump')
+    await mkdir(previousRelease)
+    await mkdir(release)
+    await symlink(previousRelease, current)
+    let service = 'running'
+    let schema = 'previous'
+    let injected = false
+    const inject = name => {
+      if (name === failure && !injected) {
+        injected = true
+        throw new Error(`Injected ${name} failure`)
+      }
+    }
+    const steps = {
+      stop: async () => { service = 'stopped'; inject('stop') },
+      backup: async () => { inject('backup'); await writeFile(backupFile, schema) },
+      migrate: async () => {
+        inject('application migration')
+        schema = 'application migrated'
+        inject('checkpoint setup')
+        schema = 'application and checkpoints migrated'
+      },
+      upgradeLauncher: async () => { inject('launcher upgrade') },
+      activate: async selected => {
+        await rm(current)
+        await symlink(selected, current)
+        inject('activation')
+      },
+      enable: async () => { inject('enable') },
+      start: async () => { service = 'running'; inject('start') },
+      ready: async selected => {
+        assert.equal(service, 'running')
+        assert.equal(await production.readReleaseSelection(current), selected)
+        if (selected === release) inject('readiness')
+        else assert.equal(schema, 'previous')
+      },
+      restore: async () => { schema = await readFile(backupFile, 'utf8') },
+    }
+    await assert.rejects(production.runReleaseCutover({
+      release, previousRelease, stateFile, backupFile, steps,
+    }), new RegExp(`Injected ${failure} failure`))
+    assert.equal(service, 'running')
+    assert.equal(schema, 'previous')
+    assert.equal(await production.readReleaseSelection(current), previousRelease)
+    assert.equal(JSON.parse(await readFile(stateFile, 'utf8')).phase, 'recovered')
+    assert.equal((await stat(release)).isDirectory(), true)
+    await production.runReleaseCutover({ release, previousRelease, stateFile, backupFile, steps })
+    assert.equal(await production.readReleaseSelection(current), release)
+    assert.equal(schema, 'application and checkpoints migrated')
+    assert.equal(service, 'running')
+    assert.equal(JSON.parse(await readFile(stateFile, 'utf8')).phase, 'ready')
+  })
+}
+
+test('retains an interrupted deployment and backup until recovery succeeds on retry', async t => {
+  const directory = await installFixture(t)
+  const previousRelease = join(directory, 'release-previous')
+  const release = join(directory, 'release-candidate')
+  const stateFile = join(directory, 'deployment.json')
+  const backupFile = join(directory, 'database.dump')
+  await mkdir(release)
+  let selected = previousRelease
+  let service = 'running'
+  let schema = 'previous'
+  let restoreFails = true
+  const steps = {
+    stop: async () => { service = 'stopped' },
+    backup: async () => { await writeFile(backupFile, schema) },
+    migrate: async () => { schema = 'changed'; throw new Error('checkpoint setup failed') },
+    restore: async () => {
+      if (restoreFails) throw new Error('restore unavailable')
+      schema = await readFile(backupFile, 'utf8')
+    },
+    activate: async value => { selected = value },
+    start: async () => { service = 'running' },
+    ready: async () => { assert.equal(schema, 'previous') },
+  }
+  await assert.rejects(production.runReleaseCutover({
+    release, previousRelease, stateFile, backupFile, steps,
+  }), /recovery failed/i)
+  const interrupted = JSON.parse(await readFile(stateFile, 'utf8'))
+  assert.equal(interrupted.phase, 'recovery-failed')
+  assert.equal(interrupted.schemaMayHaveChanged, true)
+  assert.match(interrupted.failure, /checkpoint setup failed/)
+  assert.match(interrupted.recoveryFailure, /restore unavailable/)
+  assert.equal(service, 'stopped')
+  assert.equal(await readFile(backupFile, 'utf8'), 'previous')
+  assert.equal((await stat(release)).isDirectory(), true)
+  restoreFails = false
+  await production.recoverReleaseCutover({ stateFile, steps })
+  assert.equal(selected, previousRelease)
+  assert.equal(service, 'running')
+  assert.equal(schema, 'previous')
+  assert.equal(JSON.parse(await readFile(stateFile, 'utf8')).phase, 'recovered')
+})
+
+test('a failed first installation retries startup defaults independently of configuration publication', async t => {
+  const directory = await installFixture(t)
+  const stateFile = join(directory, 'installation.json')
+  const environment = join(directory, 'production.env')
+  assert.equal(await production.needsStartupConfiguration(stateFile), true)
+  await writeFile(environment, 'DATABASE_URL="configured"\n')
+  assert.equal(await production.needsStartupConfiguration(stateFile), true)
+  const paths = production.productionIntegrationPaths(directory, {})
+  const calls = []
+  const configure = async () => {
+    const firstInstall = await production.needsStartupConfiguration(stateFile)
+    await production.publishDesktopIntegration(paths, { firstInstall, icon: 'icon', desktop: 'desktop', autostart: 'startup' })
+    await production.enableProductionServices(async (_command, args) => { calls.push(args) },
+      ['database.service', 'api.service'], { firstInstall })
+    await production.recordStartupConfiguration(stateFile)
+  }
+  await configure()
+  assert.deepEqual(calls, [['--user', 'enable', 'database.service', 'api.service']])
+  assert.equal(await readFile(paths.autostart, 'utf8'), 'startup')
+  await rm(paths.autostart)
+  calls.length = 0
+  await configure()
+  assert.deepEqual(calls, [])
+  await assert.rejects(stat(paths.autostart), { code: 'ENOENT' })
+  const upgraded = join(directory, 'existing-installation.json')
+  assert.equal(await production.needsStartupConfiguration(upgraded, { previousRelease: '/release/installed' }), false)
+})
+
+test('captures one committed source for API, browser and Worker builds despite source checkout changes', async t => {
+  const directory = await installFixture(t)
+  const repository = join(directory, 'repository')
+  await mkdir(repository)
+  const gitEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')))
+  const git = args => execFileSync('git', args, { cwd: repository, env: gitEnvironment, encoding: 'utf8' }).trim()
+  await mkdir(join(repository, 'packages/contracts'), { recursive: true })
+  const contract = join(repository, 'packages/contracts/value.mjs')
+  await writeFile(contract, 'export const value = () => "committed"\n')
+  git(['init', '-q'])
+  git(['add', '.'])
+  git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture'])
+  git(['remote', 'add', 'origin', 'https://github.com/example/fixture.git'])
+  const commit = git(['rev-parse', 'HEAD'])
+  await writeFile(contract, 'export const value = () => "dirty"\n')
+  let snapshotPath
+  const values = await production.withProductionSourceSnapshot(repository, directory, async ({ source, commit: captured }) => {
+    snapshotPath = source
+    assert.equal(captured, commit)
+    const builtContract = await import(new URL(`file://${join(source, 'packages/contracts/value.mjs')}`).href)
+    const api = builtContract.value()
+    await writeFile(contract, 'export const value = () => "later checkout"\n')
+    git(['add', '.'])
+    git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'later source'])
+    const capturedGit = args => execFileSync('git', args, { cwd: source, encoding: 'utf8' }).trim()
+    assert.equal(capturedGit(['rev-parse', 'HEAD']), commit)
+    assert.equal(capturedGit(['remote', 'get-url', 'origin']), 'https://github.com/example/fixture.git')
+    const worker = await import(new URL(`file://${join(source, 'packages/contracts/value.mjs')}?worker`).href)
+    return { api, browser: builtContract.value(), worker: worker.value() }
+  })
+  assert.deepEqual(values, { api: 'committed', browser: 'committed', worker: 'committed' })
+  await assert.rejects(stat(snapshotPath), { code: 'ENOENT' })
+})
+
+test('pruning protects retained and selected releases through installation aliases', async t => {
+  const directory = await installFixture(t)
+  const physical = join(directory, 'physical')
+  const alias = join(directory, 'alias')
+  const releases = join(physical, 'releases')
+  await mkdir(releases, { recursive: true })
+  for (const name of ['release-previous', 'release-candidate', 'release-active', 'release-old']) {
+    await mkdir(join(releases, name))
+  }
+  await symlink(physical, alias)
+  const current = join(alias, 'current')
+  await symlink(join(releases, 'release-active'), current)
+  await pruneReleases(join(alias, 'releases'), [join(releases, 'release-previous'),
+    join(alias, 'releases/release-candidate')], { current })
+  assert.deepEqual((await readdir(releases)).sort(), ['release-active', 'release-candidate', 'release-previous'])
+})
+
+test('pruning fails closed before deleting anything when a retained release or current link is unresolved', async t => {
+  const directory = await installFixture(t)
+  const releases = join(directory, 'releases')
+  const current = join(directory, 'current')
+  await mkdir(releases)
+  await mkdir(join(releases, 'release-retained'))
+  await mkdir(join(releases, 'release-old'))
+  await symlink(join(releases, 'release-missing'), current)
+  await assert.rejects(pruneReleases(releases, [join(releases, 'release-retained')], { current }), /release|ENOENT/i)
+  assert.deepEqual((await readdir(releases)).sort(), ['release-old', 'release-retained'])
+  await rm(current)
+  await symlink(join(releases, 'release-retained'), current)
+  await assert.rejects(pruneReleases(releases, [join(releases, 'release-missing')], { current }), /release|ENOENT/i)
+  assert.deepEqual((await readdir(releases)).sort(), ['release-old', 'release-retained'])
+})
+
+test('idle-wait minutes accept the default, numeric durations and an explicit zero', () => {
+  assert.equal(production.parseRunWaitMinutes(undefined), 120 * 60_000)
+  assert.equal(production.parseRunWaitMinutes('2.5'), 150_000)
+  assert.equal(production.parseRunWaitMinutes('0'), 0)
+})
+
+for (const value of ['-1', '2h', 'NaN', 'Infinity', '', ' ', '1e999']) {
+  test(`invalid idle-wait minutes ${JSON.stringify(value)} fail and release the installation lock`, async t => {
+    const directory = await installFixture(t)
+    const lock = join(directory, 'install.lock')
+    let staged = false
+    await assert.rejects(withInstallationLock(lock, async () => {
+      production.parseRunWaitMinutes(value)
+      staged = true
+    }), /FOREMAN_INSTALL_RUN_WAIT_MINUTES.*finite.*nonnegative/i)
+    assert.equal(staged, false)
+    assert.equal(await withInstallationLock(lock, async () => 'launcher acquired', { timeoutMs: 1000 }), 'launcher acquired')
+  })
+}
