@@ -126,9 +126,12 @@ describe('actual OCI job adapter with command doubles, no installed runtime clai
         vi.useRealTimers()
         await new Promise<void>(resolve => { setTimeout(resolve, 25) })
         expect(drained).toBe(false)
-        expect(await f.journal.jobStatus(f.intent.operationId)).toMatchObject({ status: 'known', receipt: {
-          terminal: null, publication: 'pending', entryAttempted: false,
+        const pending = await f.journal.jobStatus(f.intent.operationId)
+        expect(pending).toMatchObject({ status: 'known', receipt: {
+          publication: 'pending', entryAttempted: false,
         } })
+        if (pending.status !== 'known') throw new Error('Accepted Job status unavailable')
+        expect(pending.receipt.terminal).toBeUndefined()
         expect(f.state.closureAccepted).toBe(false)
         release()
         await draining

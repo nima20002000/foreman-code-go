@@ -123,13 +123,24 @@ describe('installed Job original Git/scheduler propagation', () => {
       terminal: { outcome: 'preparation_failed', processStopped: true }, publication: 'complete',
     } })
     const successor = structuredClone(f.execution)
+    successor.id = randomUUID()
+    successor.attemptId = randomUUID()
     successor.operationId = randomUUID()
-    const intent = { ...f.intent, operationId: successor.operationId }
+    const intent: RemoteJobDispatchIntent = {
+      ...f.intent,
+      executionId: successor.id,
+      attemptId: successor.attemptId,
+      operationId: successor.operationId,
+      subject: { kind: 'manual-job', workspaceId: successor.workspaceId,
+        jobExecutionId: successor.id, definitionId: successor.acceptedSpec.definitionId },
+    }
     await f.journal.jobAccept(intent, successor, {
       kind: 'main', mainId: intent.mainId,
       mainInstallationId: successor.acceptedSpec.target.mainInstallationId, bootId: bootIdentity(),
     }, randomUUID())
-    f.mounts.operationId = successor.operationId
+    Object.assign(f.mounts, { executionId: successor.id,
+      attemptId: successor.attemptId, operationId: successor.operationId })
+    expect(successor.acceptedSpec).toEqual(f.execution.acceptedSpec)
     if (typeof f.ports.supervisor !== 'function') throw new Error('Installed supervisor factory missing')
     await f.ports.supervisor(successor)
     await expect(f.ports.source.verify(successor.acceptedSpec, new AbortController().signal)).resolves.toBe(f.source)

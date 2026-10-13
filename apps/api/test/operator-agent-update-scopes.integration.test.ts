@@ -3,6 +3,7 @@ import { afterAll, beforeAll, expect, it } from 'vitest'
 import { DEFAULT_CODEX_ADVANCED_CONFIGURATION, type Agent } from '@foreman-code/contracts'
 import * as contracts from '@foreman-code/contracts/management'
 import {
+  CurrentOperatorCapabilitiesSchema,
   CurrentWorkflowSaveResultSchema,
   SavedManagedWorkflowCommandResultSchema,
 } from '@foreman-code/contracts/wave25'
@@ -95,7 +96,7 @@ it('allows workflow-scoped Agent readers to update through HTTP and MCP and deni
   expect(tools).toContain('agent_update')
   expect(tools).not.toContain('agent_create')
   const capabilities = await callWorkspaceTool(scoped.client, 'operator_get_capabilities',
-    contracts.OperatorCapabilitiesSchema, { detail: 'full', workspaceId, workflowId })
+    CurrentOperatorCapabilitiesSchema, { detail: 'full', workspaceId, workflowId })
   expect(capabilities.tools).toContain('agent_update')
   expect(capabilities.requirements?.find(requirement => requirement.name === 'agent_update')?.actions)
     .toEqual(['agents:update', 'agents:read'])
@@ -166,5 +167,5 @@ it('does not discover Agent updates when workspace mutation and workflow read gr
   const capabilities = decodeMcpToolResult(await scoped.client.callTool({
     name: 'operator_get_capabilities', arguments: { detail: 'full' },
   }))
-  expect(contracts.OperatorCapabilitiesSchema.parse(capabilities).tools).not.toContain('agent_update')
+  expect(CurrentOperatorCapabilitiesSchema.parse(capabilities).tools).not.toContain('agent_update')
 })

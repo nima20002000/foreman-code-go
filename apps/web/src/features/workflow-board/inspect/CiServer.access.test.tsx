@@ -67,8 +67,8 @@ describe('CI details after access changes', () => {
     await screen.findByText('protected log text')
     responseStatus = 503
     await act(async () => { await cache.refetchQueries({ queryKey: [...runInspectionQueryKey(scope), 'ci-log'] }) })
+    expect(await screen.findByText('Showing the last log read.')).toBeVisible()
     expect(screen.getByText('protected log text')).toBeVisible()
-    expect(screen.getByText('Showing the last log read.')).toBeVisible()
     for (const next of [403, 503]) {
       responseStatus = next
       await act(async () => { await cache.refetchQueries({ queryKey: [...runInspectionQueryKey(scope), 'ci-log'] }) })
