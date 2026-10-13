@@ -31,14 +31,14 @@ vi.mock('../runs/repeatLifecycle.js', async importOriginal => ({
 
 beforeEach(() => vi.resetAllMocks())
 
-async function recoverRequester(detached: boolean) {
+async function recoverRequester(detached: boolean, state: 'waiting' | 'running' = 'waiting') {
   const base = makeCurrentWorkflowFixture('requester-recovery', 'approval')
   base.run.executionState = 'waiting'
   const configuration = base.configurations[1]!
   const execution = HarnessExecutionSchema.parse({
     id: 'requester-execution', runId: base.run.id, workflowNodeId: base.version.definition.nodes[1]!.id,
     agentId: configuration.agentId, agentConfigurationVersionId: configuration.id,
-    attempt: 1, state: 'waiting', createdAt: base.createdAt, input: {},
+    attempt: 1, state, createdAt: base.createdAt, input: {},
     nativeSessionId: 'requester-session', workingDirectory: '/project', runtimeDirectory: '/runtime',
   })
   const session = { harness: 'codex' as const, providerVersion: 'synthetic', nativeSessionId: execution.nativeSessionId! }
@@ -81,6 +81,7 @@ async function recoverRequester(detached: boolean) {
     oneShotConnection: () => ({ transaction: async (work: (sql: unknown) => Promise<unknown>) => work({}) }),
   } as unknown as RunOwnership
   const acquireOwnership = vi.fn(async (): Promise<RunOwnership | undefined> => undefined)
+  const requestCleanup = vi.fn(async () => {})
   const attach = vi.fn(async () => session)
   const manager = {
     harness: 'codex', attachSession: attach, reconcile: async () => history,
@@ -93,7 +94,7 @@ async function recoverRequester(detached: boolean) {
     getExecution: async () => execution, getExecutionConfiguration: async () => configuration,
     getRepeatVersion: async () => base.version, get: async () => base.run,
     getRepeatSnapshot: async () => ({ run: base.run, stopRequested: false, cleanupPending: false }),
-    async *executionPages() { yield [execution] }, acquireOwnership,
+    async *executionPages() { yield [execution] }, acquireOwnership, requestCleanup,
   } as unknown as Args[0], { coordination } as Args[1], {} as Args[2], {
     resolve: () => ({ manager, processState: 'needs_start', markResident() {} }),
   } as unknown as Args[3], 60_000, {
@@ -111,12 +112,23 @@ async function recoverRequester(detached: boolean) {
     NonNullable<typeof context.acceptedPlacement> }))
   const stopSharing = coordinator.shareRunOwner(owner)
   try {
-    expect(await coordinator.requestColdRunCleanup(owner, [interaction])).toBe(false)
+    expect(await coordinator.requestColdRunCleanup(owner, state === 'running' ? [] : [interaction])).toBe(false)
+    expect(requestCleanup).not.toHaveBeenCalled()
   } finally {
     stopSharing()
   }
   return { coordinator, interaction, owner, acquireOwnership, attach, releaseRetention, coordination }
 }
+
+it('keeps a live remote turn without a graceful detachment receipt after Main loses its owner', async () => {
+  const f = await recoverRequester(false, 'running')
+  try {
+    expect(f.attach).not.toHaveBeenCalled()
+    expect(readRemoteWorkflowContinuation).toHaveBeenCalledWith(f.owner, expect.objectContaining({ state: 'running' }))
+  } finally {
+    await f.coordinator.closeForRestart()
+  }
+})
 
 it.each([false, true])('keeps the requester recovery owner for delivery after engine sharing ends (detached=%s)',
   async detached => {

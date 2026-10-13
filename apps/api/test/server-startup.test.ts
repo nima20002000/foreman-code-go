@@ -1,12 +1,20 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import Fastify from 'fastify'
-import { expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 const state = vi.hoisted(() => ({
   app: undefined as ReturnType<typeof Fastify> | undefined,
   calls: [] as string[],
   finishRecovery: undefined as (() => void) | undefined,
   listeners: new Map<string, () => void>(),
+  pingFailures: [] as Error[],
+  pingCalls: 0,
+  initializeCalls: 0,
+  databaseClosed: false,
+  drainFailure: undefined as Error | undefined,
+  productionClose: undefined as (() => Promise<void>) | undefined,
+  blockRecovery: true,
+  errors: [] as { message: string; error: unknown }[],
 }))
 vi.mock('@foreman-code/contracts/product-environment-node', () => ({ loadProductEnvFile: () => undefined }))
 vi.mock('node:fs/promises', async original => ({
@@ -16,36 +24,81 @@ vi.mock('node:fs/promises', async original => ({
 }))
 // Native qualification belongs to buildProductionApp, which this lifecycle fixture replaces.
 vi.mock('../src/modules/harnesses/qualification/suites/codex.js', () => ({ codexQualificationSuite: {} }))
-vi.mock('../src/infrastructure/logger.js', async original => ({
-  ...(await original<typeof import('../src/infrastructure/logger.js')>()),
+vi.mock('../src/infrastructure/logger.js', () => ({
   enableFileLogging: async () => undefined,
+  componentLogger: () => ({
+    info: () => undefined,
+    error: (context: { err: unknown }, message: string) => state.errors.push({ message, error: context.err }),
+    fatal: (context: { err: unknown }, message: string) => state.errors.push({ message, error: context.err }),
+  }),
 }))
+vi.mock('../src/infrastructure/processLifecycle.js', () => ({ installProcessLifecycleLogging: () => undefined }))
 vi.mock('../src/config.js', () => ({ loadConfig: () => ({ database: {}, checkpoints: { schema: 'test' }, harnesses: { workspaceRoot: process.env.HARNESS_WORKSPACE_ROOT }, host: '127.0.0.1', port: 0 }) }))
 vi.mock('../src/modules/byte-transfer/installedEntrypoints.js', () => ({ readMainRsyncEntrypoint: async () => ({ kind: 'unavailable', reason: 'Startup lifecycle fixture has no installed rsync selection.' }) }))
 vi.mock('../src/infrastructure/database.js', () => ({ createDatabase: () => ({
-  pool: {}, ping: async () => undefined, migrate: async () => undefined,
-  close: async () => { state.calls.push('database closed') },
+  pool: {},
+  ping: async () => {
+    state.pingCalls += 1
+    if (state.databaseClosed) throw new Error('Cannot use a pool after calling end on the pool')
+    const failure = state.pingFailures.shift()
+    if (failure) throw failure
+  },
+  migrate: async () => undefined,
+  close: async () => {
+    state.databaseClosed = true
+    state.calls.push('database closed')
+  },
 }) }))
 vi.mock('../src/infrastructure/checkpoints.js', () => ({ createCheckpointStore: () => ({
   setup: async () => undefined, ping: async () => undefined,
   close: async () => { state.calls.push('checkpoints closed') },
 }) }))
-vi.mock('../src/production.js', () => ({ buildProductionApp: () => ({
-  app: state.app,
-  rsync: { kind: 'unavailable' },
-  registerFileStorage: () => { expect(state.listeners.has('SIGTERM')).toBe(true) },
-  startDeviceListener: async () => undefined,
-  initialize: async () => undefined,
-  reconcile: async () => {
-    state.calls.push('recovery started')
-    await new Promise<void>((resolve) => { state.finishRecovery = resolve })
-  },
-  drainShutdown: async () => { state.calls.push('native shutdown'); state.finishRecovery?.() },
-}) }))
+vi.mock('../src/production.js', () => ({ buildProductionApp: () => {
+  if (state.productionClose) {
+    state.app!.addHook('onClose', async () => { await state.productionClose!() })
+  }
+  return {
+    app: state.app,
+    rsync: { kind: 'unavailable' },
+    registerFileStorage: () => { expect(state.listeners.has('SIGTERM')).toBe(true) },
+    startDeviceListener: async () => undefined,
+    initialize: async () => { state.initializeCalls += 1 },
+    reconcile: async () => {
+      state.calls.push('recovery started')
+      if (state.blockRecovery) {
+        await new Promise<void>((resolve) => { state.finishRecovery = resolve })
+      }
+    },
+    drainShutdown: async () => {
+      state.calls.push('native shutdown')
+      state.finishRecovery?.()
+      if (state.drainFailure) throw state.drainFailure
+    },
+  }
+} }))
 
-it('handles SIGTERM while startup recovery is still running and closes all resources', async () => {
+let previousExitCode: NodeJS.Process['exitCode']
+
+beforeEach(() => {
+  vi.resetModules()
+  state.calls = []
+  state.listeners.clear()
+  state.finishRecovery = undefined
+  state.pingFailures = []
+  state.pingCalls = 0
+  state.initializeCalls = 0
+  state.databaseClosed = false
+  state.drainFailure = undefined
+  state.productionClose = undefined
+  state.blockRecovery = true
+  state.errors = []
+  previousExitCode = process.exitCode
   state.app = Fastify()
-  const once = vi.spyOn(process, 'once').mockImplementation(function (this: NodeJS.Process, event: string | symbol, listener: (...args: unknown[]) => void) {
+  vi.spyOn(process, 'once').mockImplementation(function (
+    this: NodeJS.Process,
+    event: string | symbol,
+    listener: (...args: unknown[]) => void,
+  ) {
     if (event === 'SIGTERM' || event === 'SIGINT') state.listeners.set(event, listener)
     return this
   })
@@ -55,17 +108,65 @@ it('handles SIGTERM while startup recovery is still running and closes all resou
     state.calls.push('listening')
     return 'http://localhost:0'
   })
-  try {
-    await import('../src/server.js')
-    await vi.waitFor(() => expect(state.calls).toContain('recovery started'))
-    state.listeners.get('SIGTERM')!()
-    await vi.waitFor(() => expect(state.calls).toContain('database closed'))
-    await delay(5)
-    expect(state.calls).toEqual(['listening', 'recovery started', 'native shutdown', 'checkpoints closed', 'database closed'])
-  } finally {
-    state.finishRecovery?.()
-    await state.app.close()
-    once.mockRestore()
-    vi.restoreAllMocks()
+})
+
+afterEach(async () => {
+  state.finishRecovery?.()
+  const [closed] = await Promise.allSettled([state.app!.close()])
+  if (closed!.status === 'rejected' && !state.drainFailure) throw closed!.reason
+  process.exitCode = previousExitCode
+  vi.restoreAllMocks()
+})
+
+it('handles SIGTERM while startup recovery is still running and closes all resources', async () => {
+  await import('../src/server.js')
+  await vi.waitFor(() => expect(state.calls).toContain('recovery started'))
+  state.listeners.get('SIGTERM')!()
+  await vi.waitFor(() => expect(state.calls).toContain('database closed'))
+  await delay(5)
+  expect(state.calls).toEqual(['listening', 'recovery started', 'native shutdown', 'checkpoints closed', 'database closed'])
+})
+
+it('retries a transient startup database read before initializing the application once', async () => {
+  state.pingFailures = [new Error('Query read timeout')]
+  await import('../src/server.js')
+  await vi.waitFor(() => expect(state.calls).toContain('recovery started'))
+  expect(state.pingCalls).toBe(2)
+  expect(state.initializeCalls).toBe(1)
+  expect(state.errors).toEqual([])
+  expect(state.databaseClosed).toBe(false)
+})
+
+it('fails a permanent database authentication error without replaying startup', async () => {
+  const failure = Object.assign(new Error('password authentication failed'), { code: '28P01' })
+  state.pingFailures = [failure]
+  await import('../src/server.js')
+  await vi.waitFor(() => expect(state.errors).toContainEqual({ message: 'api failed to start', error: failure }))
+  expect(state.pingCalls).toBe(1)
+  expect(state.initializeCalls).toBe(0)
+  expect(state.databaseClosed).toBe(true)
+})
+
+it('keeps the infrastructure open when runtime shutdown is incomplete', async () => {
+  state.drainFailure = new Error('Runtime ownership has not been released')
+  await import('../src/server.js')
+  await vi.waitFor(() => expect(state.calls).toContain('recovery started'))
+  state.listeners.get('SIGTERM')!()
+  await vi.waitFor(() => expect(state.errors).toContainEqual({ message: 'shutdown failed', error: state.drainFailure }))
+  expect(state.calls).not.toContain('database closed')
+  expect(state.calls).not.toContain('checkpoints closed')
+})
+
+it('finishes older production close hooks while database access is still available', async () => {
+  state.productionClose = async () => {
+    const { createDatabase } = await import('../src/infrastructure/database.js')
+    await createDatabase({ connectionString: '', maxConnections: 1, connectionTimeoutMs: 1 }).ping()
+    state.calls.push('production database cleanup')
   }
+  await import('../src/server.js')
+  await vi.waitFor(() => expect(state.calls).toContain('recovery started'))
+  state.listeners.get('SIGTERM')!()
+  await vi.waitFor(() => expect(state.calls).toContain('database closed'))
+  expect(state.errors).toEqual([])
+  expect(state.calls.indexOf('production database cleanup')).toBeLessThan(state.calls.indexOf('database closed'))
 })
