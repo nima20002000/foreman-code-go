@@ -11,6 +11,7 @@ import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 import { selectByIndexes } from '../../../../../scripts/ci-files.mjs'
 import { affectedSnapshot } from '../../../../../scripts/ci-affected.mjs'
 import { executionSelection } from '../../../../../scripts/ci-selection.mjs'
+import { cloudService } from './cloudService.testSupport.js'
 
 const roots: string[] = []
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
@@ -71,7 +72,8 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
     watchdogFailure: null as unknown, log: 'ci\tSuite\tall green\n', rateLimited: false, jobReads: [] as ('full' | 'unchanged')[] }
   const circle = { triggered: [] as string[][], outcome: '' as string, durations: null as Record<string, number> | null,
     testResults: null as unknown, watchdogFailure: null as unknown, log: 'Suite\nall green\n',
-    phantoms: 0, lookupError: '', canceled: [] as string[],
+    phantoms: 0, lookupError: '', canceled: [] as string[], runView: null as unknown,
+    jobDetails: {} as Record<string, unknown>,
     steps: [] as { num: number; name: string; phase: string; outcome?: string }[], output: '',
     downloaded: [] as string[], downloadGate: Promise.resolve() as Promise<void> }
   let now = Date.now()
@@ -90,15 +92,16 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
       if (args[0] === 'run' && args[1] === 'get') {
         if (circle.lookupError) return { code: 1, stdout: '', stderr: circle.lookupError }
         const phantom = Number(args[2]!.slice('run-'.length)) <= circle.phantoms
-        return ok(JSON.stringify(phantom ? { phase: 'ended', outcome: 'succeeded', workflows: [] }
-          : { workflows: [{ jobs: [{ id: 'job-1' }] }] }))
+        return ok(JSON.stringify(circle.runView ?? (phantom ? { phase: 'ended', outcome: 'succeeded', workflows: [] }
+          : { workflows: [{ jobs: [{ id: 'job-1' }] }] })))
       }
       if (args[0] === 'run' && args[1] === 'cancel') {
         circle.canceled.push(args[2]!)
         return ok()
       }
-      if (args[0] === 'job' && args[1] === 'get') return ok(JSON.stringify({ executions: [{ steps: circle.steps }], ...circle.outcome
-        ? { phase: 'ended', outcome: circle.outcome, stopped_at: '2026-10-11T02:00:00Z' } : { phase: 'started' } }))
+      if (args[0] === 'job' && args[1] === 'get') return ok(JSON.stringify(circle.jobDetails[args[2]!] ??
+        { executions: [{ steps: circle.steps }], ...circle.outcome
+          ? { phase: 'ended', outcome: circle.outcome, stopped_at: '2026-10-11T02:00:00Z' } : { phase: 'started' } }))
       if (args[0] === 'job' && args[1] === 'output' && args[2] === 'get') return ok(circle.output)
       // The CLI's default view keeps only each step's last lines.
       if (args[0] === 'job' && args[1] === 'output') {
@@ -176,6 +179,59 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
 }
 
 describe('GitHub Actions CI on a public mirror', () => {
+  it.each(['unit', 'integration'] as const)('declines oversized fragmented %s selections without retaining a start', async suite => {
+    const candidates = Array.from({ length: 400 }, (_, index) =>
+      `apps/api/test/fragment${String(index).padStart(3, '0')}.${suite === 'integration' ? 'integration.' : ''}test.ts`)
+    const f = await fixture(Object.fromEntries(candidates.map(file => [file, ''])), { provider: 'circleci' })
+    const runId = randomUUID()
+    const files = candidates.filter((_, index) => index % 2 === 0)
+    const request = { operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+      suite, scope: 'affected', files }
+    await expect(f.cloud.handle(request)).rejects.toMatchObject({ code: 'CI_CLOUD_UNAVAILABLE' })
+    expect(f.circle.triggered).toEqual([])
+    // Reusing the id after a declined placement must still dispatch the caller's valid selection.
+    expect(await f.reopen().handle({ ...request, files: files.slice(0, 1) }))
+      .toMatchObject({ run: { state: 'running' } })
+    expect(f.circle.triggered).toHaveLength(1)
+    const input = f.circle.triggered[0]!.find(value => value.startsWith(suite === 'unit' ? 'files=' : 'slice='))!
+    const inventory = f.run('ls-tree', '-r', '--name-only', 'HEAD').split('\n').sort()
+      .filter(file => suite === 'unit' || file.endsWith('.integration.test.ts'))
+    expect(selectByIndexes(inventory, input.slice(input.indexOf('=') + 1))).toEqual(files.slice(0, 1))
+  })
+
+  it.each([
+    ['started', false], ['failed', false], ['started', true], ['failed', true],
+  ] as const)('waits for the second CircleCI job when it is %s in a separate workflow: %s', async (phase, separate) => {
+    const f = await fixture({}, { provider: 'circleci' })
+    f.circle.runView = { workflows: separate ? [{ jobs: [{ id: 'first' }] }, { jobs: [{ id: 'second' }] }]
+      : [{ jobs: [{ id: 'first' }, { id: 'second' }] }] }
+    f.circle.jobDetails.first = { phase: 'ended', outcome: 'succeeded' }
+    f.circle.jobDetails.second = phase === 'started' ? { phase: 'started' } : { phase: 'ended', outcome: 'failed' }
+    const runId = randomUUID()
+    const started = await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+      suite: 'integration', scope: 'full' })
+    if (started.operation !== 'start') throw new Error('Expected a start reply')
+    const main = cloudService(f.cloud, started.run, f.commit)
+    const read = { operation: 'read', runId, afterOffset: 0, maxBytes: 1024 }
+    await main.service.dispatch()
+    expect(await main.read()).toMatchObject({ run: { state: phase === 'started' ? 'running' : 'failed' } })
+    if (phase === 'started') {
+      f.circle.jobDetails.second = { phase: 'ended', outcome: 'failed' }
+      f.advance(4_000)
+      expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'failed', exitCode: 1 } })
+    }
+  })
+
+  it('settles a terminal jobless CircleCI workflow instead of waiting forever', async () => {
+    const f = await fixture({}, { provider: 'circleci' })
+    f.circle.runView = { phase: 'ended', outcome: 'failed', workflows: [{ phase: 'ended', outcome: 'failed', jobs: [] }] }
+    const runId = randomUUID()
+    await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+      suite: 'integration', scope: 'full' })
+    expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1024 }))
+      .toMatchObject({ run: { state: 'failed', exitCode: 1 } })
+  })
+
   it.each(['github', 'circleci'] as const)('selects changes since an explicit base on the %s runner without publishing private history', async provider => {
     const source = 'apps/api/test/value.ts'
     const test = 'apps/api/test/value.integration.test.ts'
@@ -571,17 +627,74 @@ describe('GitHub Actions CI on a public mirror', () => {
       .toMatchObject({ run: { state: 'running' } })
   })
 
-  it.each(['expired', 'started', 'other error'] as const)(
-    'does not suppress CircleCI lookup failures for %s pipelines', async kind => {
+  it('persists missing CircleCI recovery in Main until explicit cancellation resolves ownership', async () => {
+    const f = await fixture({}, { provider: 'circleci' })
+    f.circle.lookupError = 'run.not_found'
+    const runId = randomUUID()
+    const started = await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+      suite: 'integration', scope: 'full' })
+    if (started.operation !== 'start') throw new Error('Expected a start reply')
+    const main = cloudService(f.cloud, started.run, f.commit)
+    const read = { operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      f.advance(75_000)
+      await f.reopen().handle(read)
+      await main.service.dispatch()
+    }
+    expect(await main.read()).toMatchObject({ run: { state: 'starting', computer: { label: 'CircleCI' },
+      message: expect.stringContaining('Operator cancellation is required') } })
+    expect(f.circle.triggered).toHaveLength(1)
+    expect(f.circle.canceled).toEqual([])
+    expect(await f.reopen().handle({ operation: 'cancel', runId })).toMatchObject({ run: { state: 'canceled' } })
+    await main.service.dispatch()
+    expect(await main.read()).toMatchObject({ run: { state: 'canceled' } })
+  })
+
+  it('recovers a transiently missing CircleCI lookup before its reconciliation budget is spent', async () => {
+    const f = await fixture({}, { provider: 'circleci' })
+    f.circle.lookupError = 'run.not_found'
+    const runId = randomUUID()
+    await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+      suite: 'integration', scope: 'full' })
+    const read = { operation: 'read', runId, afterOffset: 0, maxBytes: 1024 }
+    f.advance(75_000)
+    expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'starting', finishedAt: null,
+      message: expect.stringContaining('could not be reconciled') } })
+    f.circle.lookupError = ''
+    f.circle.outcome = 'failed'
+    f.advance(4_000)
+    expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'failed', exitCode: 1 } })
+    expect(f.circle.triggered).toHaveLength(1)
+    expect(f.circle.canceled).toEqual([])
+  })
+
+  it('retains ownership and exposes bounded reconciliation when a started CircleCI pipeline disappears', async () => {
+    const f = await fixture({}, { provider: 'circleci' })
+    const runId = randomUUID()
+    await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+      suite: 'integration', scope: 'full' })
+    f.circle.lookupError = 'run.not_found'
+    const read = { operation: 'read', runId, afterOffset: 0, maxBytes: 1024 }
+    for (let attempt = 0; attempt < 3; attempt++) {
+      f.advance(4_000)
+      expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'running', finishedAt: null,
+        message: expect.stringContaining('could not be reconciled') } })
+    }
+    expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'running',
+      message: expect.stringContaining('Operator cancellation is required') } })
+    expect(f.circle.triggered).toHaveLength(1)
+    expect(f.circle.canceled).toEqual([])
+    expect(await f.reopen().handle({ operation: 'cancel', runId })).toMatchObject({ run: { state: 'canceled' } })
+  })
+
+  it('does not suppress CircleCI permission failures', async () => {
       const f = await fixture({}, { provider: 'circleci' })
-      f.circle.lookupError = kind === 'other error' ? 'permission denied' : kind === 'expired' ? 'run.not_found' : ''
+      f.circle.lookupError = 'permission denied'
       const runId = randomUUID()
       await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
         suite: 'integration', scope: 'full' })
-      if (kind === 'expired') f.advance(75_000)
-      if (kind === 'started') f.circle.lookupError = 'run.not_found'
       await expect(f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
-        .rejects.toMatchObject({ code: kind === 'other error' ? 'CI_CLOUD_FAILED' : 'CI_CLOUD_RUN_NOT_FOUND' })
+        .rejects.toMatchObject({ code: 'CI_CLOUD_FAILED' })
     })
 
   it('publishes only the commit files, then dispatches one run with its partition slice', async () => {
