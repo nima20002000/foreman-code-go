@@ -25,7 +25,8 @@ function queuedRuns(count: number) {
   }))
 }
 
-function fleet(records: CiRunRecord[], available: HostCiComputer[]) {
+function fleet(records: CiRunRecord[], available: HostCiComputer[],
+  unavailable = new Map<string, string>(), occupied = new Set<string>()) {
   const started: { computer: HostCiComputer; request: CiHostRequest }[] = []
   let writes = 0
   const pool = { options: { max: 10 }, query: async (sql: string, parameters?: unknown[]) => {
@@ -68,9 +69,14 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[]) {
     computers: async () => available,
     request: async (computer, request) => {
       if (request.operation === 'status') {
-        return { operation: 'status', ready: true, reasons: [], cpuCount: 8, memoryBytes: 16 * 2 ** 30, runs: [] }
+        const reason = unavailable.get(computer.key)
+        if (reason === 'offline' || reason === 'extension-rejected') throw new Error(reason)
+        return { operation: 'status', ready: !reason, reasons: reason ? [reason] : [],
+          cpuCount: 8, memoryBytes: 16 * 2 ** 30, runs: [],
+          slotsTotal: 1, slotsUsed: occupied.has(computer.key) ? 1 : 0 }
       }
       if (request.operation !== 'start') throw new Error('Unexpected fixture request')
+      if (unavailable.has(computer.key)) throw new Error('Unavailable executor cannot start work')
       started.push({ computer, request })
       return { operation: 'start', run: { runId: request.runId, state: 'running', step: 'integration',
         exitCode: null, startedAt: '2026-10-12T00:00:01.000Z', finishedAt: null, logBytes: 0, message: null } }
@@ -79,6 +85,59 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[]) {
   const service = new HostCiService(pool, {} as PostgresCommandCoordinator, {} as CiAuthority, {} as CiCommits, endpoint)
   return { service, started, writes: () => writes }
 }
+
+it.each(['not-ready', 'offline', 'extension-rejected', 'disabled'])
+  ('dispatches a queued gate part elsewhere after its planned computer becomes %s', async reason => {
+    const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, gate: true,
+      plannedHostKey: host.key, partition: null, integrationShards: 32, requiresBuildComputer: false,
+      files: ['apps/api/test/workflow.integration.test.ts'],
+    }))
+    const replacement: HostCiComputer = { key: 'device:replacement', label: 'Replacement builder', priority: 0,
+      hostRef: { kind: 'device', mainId: 'main', deviceId: 'replacement' } }
+    const available = [host, replacement, cloud]
+    const unavailable = new Map<string, string>()
+    const f = fleet(records, available, unavailable, new Set([host.key]))
+    await f.service.dispatch()
+    expect(f.started).toEqual([])
+    expect(records[0]?.state).toBe('queued')
+
+    if (reason === 'disabled') available.splice(0, 1)
+    else unavailable.set(host.key, reason)
+    await f.service.dispatch()
+    expect(f.started).toHaveLength(1)
+    expect(f.started[0]?.computer.key).toBe(replacement.key)
+    expect(f.started[0]?.request).toMatchObject({ operation: 'start', runId: records[0]!.id,
+      gate: true, files: records[0]!.files, integrationShards: 16 })
+    expect(records[0]).toMatchObject({ state: 'running', computer: { hostRef: replacement.hostRef } })
+  })
+
+it.each([false, true])('reassigns a systemd gate part only to a capable cloud slot: supported=%s', async supported => {
+  const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, gate: true,
+    plannedHostKey: host.key, partition: null, integrationShards: 32, requiresBuildComputer: true,
+    files: ['apps/api/test/native-service-restart.integration.test.ts'],
+  }))
+  const capable = { ...cloud, userSystemd: { supported, reason: supported ? null : 'No user manager' } }
+  const f = fleet(records, [capable])
+  await f.service.dispatch()
+  expect(f.started).toHaveLength(supported ? 1 : 0)
+  expect(records[0]?.state).toBe(supported ? 'running' : 'queued')
+  if (supported) {
+    expect(f.started[0]?.computer.key).toBe(cloud.key)
+    expect(f.started[0]?.request).toMatchObject({ gate: true, files: records[0]!.files, integrationShards: 16 })
+    expect(records[0]?.computer?.hostRef).toEqual(cloud.hostRef)
+  }
+})
+
+it('keeps an unavailable planned gate queued when no replacement is ready', async () => {
+  const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, gate: true,
+    plannedHostKey: host.key, partition: null, integrationShards: 16, requiresBuildComputer: false,
+    files: ['apps/api/test/workflow.integration.test.ts'],
+  }))
+  const f = fleet(records, [cloud], new Map([[cloud.key, 'not-ready']]))
+  await f.service.dispatch()
+  expect(f.started).toEqual([])
+  expect(records[0]).toMatchObject({ state: 'queued', computer: null })
+})
 
 it.each([
   { suite: 'integration', requiresBuildComputer: true,
