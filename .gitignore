@@ -11,3 +11,8 @@ test-results/
 
 # Temporary file-publication storage created by tests.
 apps/api/.af-publications-*/
+
+# CI timing snapshots are runtime inputs, not repository configuration.
+scripts/unit-durations.json
+scripts/integration-durations.json
+scripts/ci-learned-durations.json

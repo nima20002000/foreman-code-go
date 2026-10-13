@@ -239,3 +239,8 @@ pasted logs, through the shared HTTP/MCP contract. `workspace_folders_list` retu
 folders return a partial listing with `truncated: true`; cursor pages cover that
 scanned subset. Select a more specific folder to browse its contents. Allowed-root
 checks and the exclusion of hidden and symlink entries remain enforced.
+
+CI tools learn test-file durations in the CI database and pass a shared snapshot
+to host and cloud runners. Operators do not maintain duration JSON files or supply
+timing inputs; existing CI input schemas and scope checks apply. Script-test
+inventory follows recursive discovery rather than a manually curated list.

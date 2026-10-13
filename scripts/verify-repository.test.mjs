@@ -438,7 +438,7 @@ test('a partitioned CI Job runs one duration-balanced slice and the slices cover
     const durations = { long: 600, mid: 300, short: 100, tiny: 50, other: 250 }
     const all = Object.keys(durations).map(name => `apps/api/test/${name}.integration.test.ts`).sort()
     for (const file of all) writeFileSync(join(root, file), '')
-    writeFileSync(join(root, 'scripts/integration-durations.json'), JSON.stringify(Object.fromEntries(
+    writeFileSync(join(root, 'scripts/ci-learned-durations.json'), JSON.stringify(Object.fromEntries(
       Object.entries(durations).map(([name, ms]) => [`apps/api/test/${name}.integration.test.ts`, ms]))))
     const slice = index => captureVerificationInventory(root, 'integration', { partition: { index, count: 2 } })
       .find(portion => portion.kind === 'integration').files

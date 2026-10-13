@@ -2,7 +2,6 @@ import { ensureClone, ensureCommit, fetchRepositoryBranch, systemGitWorktreePort
 import { importAgentSnapshot } from '../sources/agentSnapshot.js'
 import { publishCommit } from '../sources/githubPublisher.js'
 import type { CiCommits } from './service.js'
-import { CiDurationsSchema } from '@foreman-code/contracts'
 import { ciRepositoryCapabilities } from './repository.js'
 import { onlyCiInfrastructure } from './priority.js'
 import { gitFailure } from '../sources/gitErrors.js'
@@ -60,9 +59,8 @@ export class GitCiCommits implements CiCommits {
     const signal = AbortSignal.timeout(30_000)
     const clone = await ensureCommit(this.git, repository, commit, signal)
     const read = (args: string[]) => this.git.git(args, { cwd: clone, signal })
-    const [tree, timings, heavy] = await Promise.all([
+    const [tree, heavy] = await Promise.all([
       read(['ls-tree', '-r', '--name-only', commit]),
-      read(['show', `${commit}:scripts/unit-durations.json`]),
       read(['show', `${commit}:apps/web/heavy-tests.json`]),
     ])
     if (tree.code !== 0) throw new Error('Could not read the CI commit inventory.')
@@ -70,21 +68,18 @@ export class GitCiCommits implements CiCommits {
       && !/(?:^|\/)(?:node_modules|dist|\.git)\//.test(file)
       && !(file.startsWith('apps/api/') && /\.(?:integration|acceptance)\.test\.ts$/.test(file))
       && (!file.startsWith('apps/web/') || /^apps\/web\/src\/.*\.(?:test|spec)\.tsx?$/.test(file)))
-    return { files, durations: timings.code === 0 ? CiDurationsSchema.parse(JSON.parse(timings.stdout)) : {},
+    return { files, durations: {},
       heavy: heavy.code === 0 ? (JSON.parse(heavy.stdout) as { files: string[] }).files : [] }
   }
 
   async integrationInventory(repository: string, commit: string) {
     const signal = AbortSignal.timeout(30_000)
     const clone = await ensureCommit(this.git, repository, commit, signal)
-    const [tree, timings] = await Promise.all([
-      this.git.git(['ls-tree', '-r', '--name-only', commit], { cwd: clone, signal }),
-      this.git.git(['show', `${commit}:scripts/integration-durations.json`], { cwd: clone, signal }),
-    ])
+    const tree = await this.git.git(['ls-tree', '-r', '--name-only', commit], { cwd: clone, signal })
     if (tree.code !== 0) throw new Error('Could not read the CI integration inventory.')
     return { files: tree.stdout.trim().split('\n').filter(file =>
       /^apps\/api\/test\/[^/]+\.integration\.test\.ts$/.test(file)).sort(),
-    durations: timings.code === 0 ? CiDurationsSchema.parse(JSON.parse(timings.stdout)) : {} }
+    durations: {} }
   }
 
   async testTree(repository: string, commit: string): Promise<CiTestTree> {

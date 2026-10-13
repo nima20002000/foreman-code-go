@@ -20,11 +20,9 @@ export function executionFiles(files, executionSuite, cwd) {
 
 /** Learned timings travel with the immutable cloud snapshot, outside provider parameter limits. */
 export function executionDurations(suite, cwd, learned = {}) {
-  const committedPath = join(cwd, 'scripts', suite === 'integration' ? 'integration-durations.json' : 'unit-durations.json')
   const learnedPath = join(cwd, 'scripts/ci-learned-durations.json')
-  const committed = existsSync(committedPath) ? JSON.parse(readFileSync(committedPath, 'utf8')) : {}
   const snapshot = existsSync(learnedPath) ? JSON.parse(readFileSync(learnedPath, 'utf8')) : learned
-  return { ...committed, ...snapshot }
+  return snapshot
 }
 
 /** Selection and partitioning happen in the checked-out repository on the cloud runner. */

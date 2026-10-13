@@ -1,3 +1,4 @@
+import { resolveLintAllowlist } from './lint-allowlist.mjs'
 // Rejects new test files named after tickets, waves, lanes, rounds or agents instead of the behavior they test.
 //   node scripts/check-test-names.mjs
 // Names in scripts/lint-allowlist.json ("test-names") predate the check; that list may only shrink.
@@ -22,7 +23,7 @@ export function ticketNamedTests(files, allowed) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const files = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean)
-  const allowed = new Set(JSON.parse(readFileSync(`${root}/scripts/lint-allowlist.json`, 'utf8'))['test-names'])
+  const allowed = new Set(resolveLintAllowlist(root, JSON.parse(readFileSync(`${root}/scripts/lint-allowlist.json`, 'utf8')))['test-names'])
   const rejected = ticketNamedTests(files, allowed)
   if (rejected.length) {
     console.error('Name test files after the behavior they cover, not a ticket, wave, lane, round or agent:')

@@ -1,3 +1,4 @@
+import { resolveLintAllowlist } from './lint-allowlist.mjs'
 // Fails on runtime import cycles among apps/api/src modules.
 //   node scripts/check-import-cycles.mjs
 // Type-only imports and dynamic import() do not count. Cycles listed in scripts/lint-allowlist.json
@@ -91,7 +92,7 @@ export function apiImportGraph() {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const allowed = JSON.parse(readFileSync(`${root}/scripts/lint-allowlist.json`, 'utf8'))['import-cycles']
+  const allowed = resolveLintAllowlist(root, JSON.parse(readFileSync(`${root}/scripts/lint-allowlist.json`, 'utf8')))['import-cycles']
   const rejected = newCycles(importCycles(apiImportGraph()), allowed)
   if (rejected.length) {
     console.error('Import cycles in apps/api/src (move the shared code into a module both sides import):')

@@ -349,7 +349,7 @@ export class HostCiService {
   }
 
   /** The repository's learned test file durations, most recently measured first, within the start request's
-   * bound. Files no run has measured fall back to the commit's committed durations on the build computer. */
+   * bound. Files no run has measured use the planner's median or equal-weight fallback. */
   private async learnedDurations(repository: string): Promise<CiDurations | null> {
     const rows = (await this.pool.query<{ file: string; duration_ms: number }>(`select file,duration_ms from ci_file_durations
       where repository=$1 order by updated_at desc,file limit 1000`, [repository])).rows

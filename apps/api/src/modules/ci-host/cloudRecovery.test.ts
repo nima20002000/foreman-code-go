@@ -213,8 +213,7 @@ it('uses the same learned timings when only a full-suite slice exceeds the provi
     if (!slice) fallbacks++
     const result = slice ? selectByIndexes(inventory, slice)
       : executionSelection({ commit: 'HEAD', executionSuite: 'integration', cwd: checkout, partition }).files
-    const committed = Object.fromEntries(['a', 'b', 'c', 'd'].map((name, index) => [`apps/api/test/${name}.integration.test.ts`, 400 - index * 100]))
-    expect(result).toEqual(integrationPartition(inventory, { ...committed, ...durations }, partition))
+    expect(result).toEqual(integrationPartition(inventory, durations, partition))
     selected.push(result)
   }
   expect(fallbacks).toBeGreaterThan(0)

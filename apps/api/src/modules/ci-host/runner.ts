@@ -571,9 +571,7 @@ export class HostCiRunner {
       return file.startsWith('apps/web/') && (part === 'unit-web-heavy' ? isHeavy : !isHeavy)
     })
     if (meta.partition) {
-      const timingsPath = join(source, 'scripts/unit-durations.json')
-      const committed = existsSync(timingsPath) ? JSON.parse(await readFile(timingsPath, 'utf8')) as CiDurations : {}
-      files = integrationPartition(files, { ...committed, ...meta.durations }, meta.partition)
+      files = integrationPartition(files, meta.durations ?? {}, meta.partition)
     }
     return files
   }
@@ -619,10 +617,7 @@ export class HostCiRunner {
     const contracts = prerequisites && existsSync(join(source, 'scripts/ci-contracts.mjs'))
     let integrationEnvironment = ''
     if (meta.suite === 'integration' && capabilities.integrationPartitions) {
-      // Main's learned durations, with the commit's committed ones for files it has not measured yet.
-      const durationsPath = join(source, 'scripts/integration-durations.json')
-      const committed = existsSync(durationsPath) ? JSON.parse(await readFile(durationsPath, 'utf8')) as Record<string, number> : {}
-      const durations = { ...committed, ...meta.durations }
+      const durations = meta.durations ?? {}
       await writeFile(join(run, 'expected-durations.json'), JSON.stringify(durations), { mode: 0o600 })
       // The repository's integration runner uses them for per-file hang deadlines and reports what it measured.
       integrationEnvironment = ` FOREMAN_CODE_INTEGRATION_DURATIONS=${quote(join(run, 'expected-durations.json'))}`

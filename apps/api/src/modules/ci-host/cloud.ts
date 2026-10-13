@@ -695,19 +695,17 @@ export class CloudCi {
       ...(runnerBaseCommit ? { baseCommit: runnerBaseCommit } : {}) }
   }
 
-  /** The same duration-balanced slice a build computer would run, from the commit's own files and durations, as
+  /** The same duration-balanced slice a build computer would run, from the commit's files and CI database durations, as
    * indexes into the commit's sorted integration files (scripts/ci-files.mjs), so it fits a short CI parameter. */
   private async slice(git: (args: string[]) => Promise<string>, commit: string, partition: CiPartition | undefined,
     learned: CiDurations, selected?: string[]) {
     const files = (await git(['ls-tree', '--name-only', `${commit}:apps/api/test`])).split('\n')
       .filter(name => name.endsWith('.integration.test.ts')).map(name => `apps/api/test/${name}`).sort()
-    const committed = await git(['show', `${commit}:scripts/integration-durations.json`])
-      .then(text => JSON.parse(text) as Record<string, number>, () => ({}))
     if (selected?.some(file => !files.includes(file))) {
       throw new DomainError('CI_CLOUD_FAILED', 'Selected integration files are absent from the commit.', 409)
     }
     const candidates = selected ?? files
-    const slice = new Set<string>(partition ? integrationPartition(candidates, { ...committed, ...learned }, partition) : candidates)
+    const slice = new Set<string>(partition ? integrationPartition(candidates, learned, partition) : candidates)
     if (!this.provider.userSystemd.supported && [...slice].some(requiresUserSystemd)) {
       throw new DomainError('CI_CLOUD_UNAVAILABLE',
         `${this.provider.label} cannot run user-systemd files: ${this.provider.userSystemd.reason ?? 'user systemd is unavailable'}.`, 409)

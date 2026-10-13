@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
@@ -52,7 +52,9 @@ if (args.includes('port')) console.log('127.0.0.1:' + process.env.FIXTURE_PORT)
 
 function runSuite(t, suite, failCommand = '', scope = 'full', action = '', installedClis = true, selection = undefined,
   hostRunner = false) {
-  const directory = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'ci-suite-'))
+  const cache = join(homedir(), '.cache', 'foreman-tmp')
+  mkdirSync(cache, { recursive: true })
+  const directory = mkdtempSync(join(cache, 'ci-suite-'))
   t.after(() => rmSync(directory, { recursive: true, force: true }))
   const callsFile = join(directory, 'calls.jsonl')
   writeFileSync(callsFile, '')
@@ -423,3 +425,10 @@ process.exit(result.status ?? 1)
     assert.equal(spawnSync('git', ['cat-file', '-e', stale], { cwd: checkout }).status, 1)
   })
 }
+
+test('the other unit phase passes a recursive script-test glob to Node', t => {
+  const { result, calls } = runSuite(t, 'unit-other')
+  assert.equal(result.status, 0, result.stderr)
+  const scriptTests = calls.find(args => args.includes('--test') && args.includes('scripts/**/*.test.mjs'))
+  assert.ok(scriptTests, 'The script-test phase must discover top-level and nested test files')
+})

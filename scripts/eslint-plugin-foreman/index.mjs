@@ -1,6 +1,7 @@
 // Local lint rules for patterns earlier changes kept producing. Each package config ends with
 // `...foremanLint(import.meta.dirname)`. Files listed in scripts/lint-allowlist.json predate a rule and are exempt
 // from it; that list may only shrink (scripts/lint-baseline.mjs prunes it).
+import { resolveLintAllowlist } from '../lint-allowlist.mjs'
 import { readFileSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -154,7 +155,7 @@ const size = { skipBlankLines: true, skipComments: true }
 
 /** Config objects for one package directory: every rule is an error, minus that package's allowlisted files. */
 export function foremanLint(directory) {
-  const allowlist = JSON.parse(readFileSync(resolve(root, 'scripts/lint-allowlist.json'), 'utf8'))
+  const allowlist = resolveLintAllowlist(root, JSON.parse(readFileSync(resolve(root, 'scripts/lint-allowlist.json'), 'utf8')))
   const prefix = `${relative(root, directory)}/`
   const exemptions = process.env.FOREMAN_LINT_BASELINE === '1' ? [] : Object.entries(allowlist.eslint).flatMap(([id, files]) => {
     const local = files.filter(file => file.startsWith(prefix)).map(file => file.slice(prefix.length))

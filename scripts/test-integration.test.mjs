@@ -1347,8 +1347,9 @@ test('only files that passed their first attempt contribute measured durations',
   ]), { passed: 41_000 })
 })
 
-test('learned durations from the CI runner replace the committed ones as expectations', () => {
-  assert.match(integrationDurationsPath({}), /scripts\/integration-durations\.json$/)
+test('integration expectations use only the CI runner duration snapshot', () => {
+  assert.equal(integrationDurationsPath({}), null)
+  assert.deepEqual(readDurations(integrationDurationsPath({})), {})
   assert.equal(integrationDurationsPath({ FOREMAN_CODE_INTEGRATION_DURATIONS: '/runs/x/durations.json' }),
     '/runs/x/durations.json')
 })

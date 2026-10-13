@@ -39,7 +39,6 @@ it.each([
     for (const file of files) await writeFile(join(origin, file), '')
     await writeFile(join(origin, 'package.json'), JSON.stringify({ scripts: { 'test:integration': 'fixture' } }))
     await writeFile(join(origin, 'pnpm-lock.yaml'), '')
-    await writeFile(join(origin, 'scripts/integration-durations.json'), JSON.stringify(durations))
     await writeFile(join(origin, 'scripts/ci-suite.sh'), '#!/bin/bash\nexit 0\n')
     await writeFile(join(origin, 'scripts/ci-files.mjs'),
       await readFile(new URL('../../../../../scripts/ci-files.mjs', import.meta.url), 'utf8'))
@@ -89,7 +88,7 @@ it.each([
     for (const index of [0, 1, 2, 3]) {
       const runId = randomUUID()
       await host.handle({ operation: 'start', runId, repository: 'example/project', commit, suite: 'integration',
-        partition: { index, count: 4, weights: [8, 1, 1, 1] } })
+        partition: { index, count: 4, weights: [8, 1, 1, 1] }, durations })
       admittedRuns.push(runId)
       await expect.poll(async () => {
         const reply = await host.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 })
