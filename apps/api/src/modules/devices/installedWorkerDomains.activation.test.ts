@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { REMOTE_PREPARATION_EXTENSION } from '@foreman-code/contracts/remote-execution-rpc'
+import { negotiateDeviceExtensions } from '@foreman-code/contracts/device-application'
 import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -60,6 +62,12 @@ it('activates first-installed workflow and profile domains on authenticated disc
     operator: { access, services } })
   try {
     expect(mounted.workflowAvailable).toBe(false)
+    const negotiated = negotiateDeviceExtensions(
+      [{ ...REMOTE_PREPARATION_EXTENSION, role: 'client' }], mounted.extensions)
+    expect(negotiated).toContainEqual(expect.objectContaining({
+      namespace: REMOTE_PREPARATION_EXTENSION.namespace, version: REMOTE_PREPARATION_EXTENSION.version,
+      mainCanRequest: true,
+    }))
     await expect(discovery.handle!(discover, { ...context, binding: { ...binding, authorizationRevision: 2 } }))
       .rejects.toMatchObject({ code: 'HARNESS_INVENTORY_STALE' })
     expect(refresh).not.toHaveBeenCalled()
@@ -90,6 +98,13 @@ it('activates first-installed workflow and profile domains on authenticated disc
     await expect(execution.handle!({ method: 'prepare', intent: f.intent, placement: f.placement,
       request: f.request, executionPlacement: f.nativePlacement }, context))
       .rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
+    const preparation = mounted.extensions.find(extension =>
+      extension.namespace === REMOTE_PREPARATION_EXTENSION.namespace)!
+    await expect(preparation.handle!({ method: 'prepare', intent: f.intent, placement: f.placement,
+      request: f.request, executionPlacement: f.nativePlacement,
+      sessionContinuation: { previousExecutionId: 'previous-execution', previousOperationId: 'previous-operation',
+        session: { harness: 'codex', providerVersion: 'fixture', nativeSessionId: 'previous-session' } },
+    }, context)).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
     const installation = readback.installations[0]!
     const override = HostHarnessOverrideSchema.parse({ instanceId: randomUUID(), revision: 1, instanceRevision: '1',
       target: { hostRef: f.approvedRoots.hostRef, applicationInstallationId: pairing.workerInstallationId,
@@ -110,6 +125,44 @@ it('activates first-installed workflow and profile domains on authenticated disc
     expect(JSON.parse(await readFile(location.path, 'utf8'))).toEqual(selection)
   } finally {
     await app.close()
+    await mounted.close()
+  }
+})
+
+
+it('fences authenticated continuation preparation until a configured worker resumes after update', async () => {
+  const f = await sourceFixture()
+  for (const name of ['workflow-operations.json', 'job-runtime-operations.json']) {
+    const journal = await RemoteOperationJournal.open(join(f.root, name), { initializeNewInstallation: true })
+    await journal.close()
+  }
+  const binding = f.context.binding
+  const pairing = { formatVersion: 1 as const, mainId: binding.mainId, deviceId: binding.deviceId,
+    workerInstallationId: binding.workerInstallationId, keyRevision: 1, authorizationRevision: 1,
+    endpoint: 'wss://worker.example/device/connect', mainPublicKeyFingerprint: 'a'.repeat(64),
+    credential: 'b'.repeat(64), expiresAt: '2099-01-01T00:00:00.000Z' }
+  const location = { path: join(f.root, 'workflow-runtime.json'), ownerUid: process.getuid!() }
+  await writeFile(location.path, JSON.stringify({ schemaVersion: 1, codexBinary: process.execPath,
+    expectedVersion: 'codex-cli 0.162.0', payloadPaths: [], appMcpLauncher: '/installed/launcher.mjs',
+  }), { mode: 0o600 })
+  const mounted = await createInstalledWorkerDomains({ stateDirectory: f.root, pairing, bootId: binding.bootId,
+    configuration: location, approvedRoots: async () => f.approvedRoots,
+    connection: () => ({ currentBinding: () => binding, mainNow: () => Date.now(), captureRequest: () => undefined }),
+    codexSuiteRevision: 'fixture-suite' })
+  const context = { binding, signal: AbortSignal.timeout(20_000) }
+  const payload = { method: 'prepare', intent: f.intent, placement: f.placement, request: f.request,
+    executionPlacement: f.nativePlacement,
+    sessionContinuation: { previousExecutionId: 'previous-execution', previousOperationId: 'previous-operation',
+      session: { harness: 'codex', providerVersion: 'fixture', nativeSessionId: 'previous-session' } } }
+  const preparation = mounted.extensions.find(extension =>
+    extension.namespace === REMOTE_PREPARATION_EXTENSION.namespace)!
+  try {
+    await expect(preparation.handle!(payload, context)).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
+    await mounted.drainForUpdate()
+    await expect(preparation.handle!(payload, context)).rejects.toMatchObject({ code: 'WORKER_RUNTIME_DRAINING' })
+    mounted.resumeAfterUpdate()
+    await expect(preparation.handle!(payload, context)).rejects.toMatchObject({ code: 'HARNESS_UNQUALIFIED' })
+  } finally {
     await mounted.close()
   }
 })

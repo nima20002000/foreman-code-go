@@ -472,10 +472,10 @@ test('cutover without pending migrations skips the dump and database work during
   assert.equal(state.schemaMayHaveChanged, false)
 })
 
-test('cutover with pending migrations completes an online dump before stopping the API', async t => {
+test('cutover with pending migrations captures its recovery dump after stopping the API', async t => {
   const fixture = await cutoverFixture(t, [3])
   await production.runReleaseCutover(fixture)
-  assert.deepEqual(fixture.events, ['pending migrations', 'online backup', 'schema', 'stop', 'migrate',
+  assert.deepEqual(fixture.events, ['pending migrations', 'stop', 'offline backup', 'schema', 'migrate',
     'schema', 'launcher', 'activate', 'enable', 'start', 'ready'])
   assert.equal(fixture.data(), 'after migration')
   assert.equal(fixture.selected(), fixture.release)
@@ -483,7 +483,7 @@ test('cutover with pending migrations completes an online dump before stopping t
   await assert.rejects(stat(fixture.backupFile), { code: 'ENOENT' })
 })
 
-test('a failed migration restores the online dump before restarting the previous release', async t => {
+test('a failed migration restores the stopped-API dump before restarting the previous release', async t => {
   const fixture = await cutoverFixture(t, [3])
   const migrate = fixture.steps.migrate
   fixture.steps.migrate = async () => { await migrate(); throw new Error('migration failed') }
@@ -493,7 +493,7 @@ test('a failed migration restores the online dump before restarting the previous
     assert.equal(fixture.running(), true)
   }
   await assert.rejects(production.runReleaseCutover(fixture), /migration failed/)
-  assert.deepEqual(fixture.events, ['pending migrations', 'online backup', 'schema', 'stop', 'migrate',
+  assert.deepEqual(fixture.events, ['pending migrations', 'stop', 'offline backup', 'schema', 'migrate',
     'stop', 'restore', 'activate', 'start'])
   assert.equal(fixture.selected(), fixture.previousRelease)
   assert.equal(fixture.data(), 'before migration')
