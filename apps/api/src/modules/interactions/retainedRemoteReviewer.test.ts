@@ -95,7 +95,7 @@ function fixture() {
       return result([{ execution_id: execution.id }])
     }
     if (text.startsWith("select record->>'connectionGeneration'")) return result(state.lane ? [{ generation: '1' }] : [])
-    if (text.startsWith('update worker_credential_bindings')) {
+    if (text.includes('update worker_credential_bindings')) {
       expect(values).toEqual([principal.id, execution.id, execution.agentId, session.nativeSessionId, '1'])
       state.purpose = 'reviewer'
       return result([{}])
@@ -267,6 +267,23 @@ describe('atomic original remote reviewer retention', () => {
     expect(f.state).toMatchObject({ finalized: true, purpose: 'reviewer', committed: true, revoked: false })
     expect(f.principal.id).toBe('original-principal')
     await f.connection.close()
+  })
+  it('keeps the original reviewer credential readable after repeated retention', async () => {
+    const f = fixture()
+    try {
+      await f.retain()
+      await f.retain()
+      expect(await readRetainedRemoteReviewer(f.connection, f.execution)).toEqual({
+        generation: '1', principalId: f.principal.id, session: f.session,
+      })
+      expect(f.state).toMatchObject({ finalized: true, purpose: 'reviewer', committed: true, revoked: false })
+      f.state.revoked = true
+      expect(await readRecoverableRemoteReviewer(f.connection, f.execution)).toBeUndefined()
+      await expect(readRetainedRemoteReviewer(f.connection, f.execution))
+        .rejects.toMatchObject({ code: 'REMOTE_REVIEWER_DENIED' })
+    } finally {
+      await f.connection.close()
+    }
   })
   it.each(['revoked', 'terminal', 'lane', 'drift', 'readOnly'] as const)('rolls back retention on %s', async field => {
     const f = fixture()

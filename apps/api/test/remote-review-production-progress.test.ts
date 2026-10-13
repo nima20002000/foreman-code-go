@@ -107,7 +107,8 @@ it('recovers native delivery after the reviewer accepts its decision and complet
   expect(completed.job.providerTurnOrMessageId).toBe('review-turn')
 })
 
-it('settles the reviewer before entering application recovery for its decision', async () => {
+it.each(['acknowledged', 'completed'] as const)(
+  'settles the reviewer before retrying native delivery from %s', async initialState => {
   const pending = NATIVE_INTERACTION_FIXTURES.codex
   const option = pending.responseOptions.find(value => value.semantic === 'approve_once')!
   const time = '2026-10-01T00:00:00.000Z'
@@ -116,23 +117,25 @@ it('settles the reviewer before entering application recovery for its decision',
     selectedSemantic: option.semantic, nativeResponse: { decision: 'accept' }, decidedAt: time, updatedAt: time,
   })
   let job = ReviewJobSchema.parse({ id: 'review-original', interactionId: interaction.id,
-    reviewerAgentId: interaction.approval.designatedOrchestratorAgentId, attempt: 1, state: 'acknowledged',
+    reviewerAgentId: interaction.approval.designatedOrchestratorAgentId, attempt: 1, state: initialState,
     provider: 'codex', nativeSessionId: 'review-session', providerTurnOrMessageId: 'review-turn',
     correlationId: 'review-correlation', createdAt: time, acknowledgedAt: time, updatedAt: time,
+    ...(initialState === 'completed' ? { completedAt: time } : {}),
   })
-  const recovery = vi.fn(async () => {
-    // Delivery recovery cannot advance until the original review turn has settled.
-    if (job.state !== 'completed') throw new Error('Production Main reconciliation timed out.')
+  const retryDecision = vi.fn(async () => {
+    if (job.state !== 'completed') throw new Error('The original review turn has not completed.')
     interaction = DurableInteractionSchema.parse({ ...interaction,
       status: 'delivered', deliveryState: 'delivered', deliveredAt: time,
     })
   })
   const fixture = {
-    provider: { calls: async () => [] },
+    provider: { calls: async () => [], retryReview: retryDecision },
     async reconcileReviews() {
       job = ReviewJobSchema.parse({ ...job, state: 'completed', completedAt: time })
     },
-    reconcile: recovery,
+    async reconcile() {
+      throw new Error('Application maintenance is unavailable.')
+    },
     async value() { return { interaction } },
     db: { pool: { query: async () => ({ rows: [{ record: job }] }) } },
   } as unknown as Parameters<typeof deliveredReview>[0]
@@ -142,5 +145,5 @@ it('settles the reviewer before entering application recovery for its decision',
   expect(delivered.job).toMatchObject({
     id: 'review-original', state: 'completed', providerTurnOrMessageId: 'review-turn',
   })
-  expect(recovery).toHaveBeenCalledOnce()
+  expect(retryDecision).toHaveBeenCalledOnce()
 })
