@@ -3,16 +3,24 @@ import { NATIVE_INTERACTION_FIXTURES } from '@foreman-code/contracts'
 import { RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
-import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
+import { currentRunHistory } from './helpers/currentRunHistory.js'
 
 afterEach(() => vi.restoreAllMocks())
 
 async function remoteControlDatabase() {
   const createSession = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
     .mockRejectedValue(new Error('Database snapshot checks must not start native sessions'))
-  const f = await currentDatabase()
+  const history = await currentRunHistory()
+  const f = history.db
   try {
-    const interaction = structuredClone(NATIVE_INTERACTION_FIXTURES.codex)
+    const interaction = {
+      ...structuredClone(NATIVE_INTERACTION_FIXTURES.codex),
+      workspaceId: history.run.workspaceId,
+      workflowId: history.run.workflowId,
+      runId: history.run.id,
+      graphThreadId: history.run.id,
+      requestingAgentId: history.f.configurations[0]!.agentId,
+    }
     const repository = new PostgresInteractionRepository(f.pool)
     const created = await repository.create(interaction)
     return { ...f, interaction, repository, created, createSession }
