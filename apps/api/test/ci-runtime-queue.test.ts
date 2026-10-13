@@ -1,3 +1,5 @@
+import { rm } from 'node:fs/promises'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import { JobQueueTicketSchema } from '@foreman-code/contracts/job-admission'
@@ -19,7 +21,8 @@ afterEach(() => vi.restoreAllMocks())
 
 describe('CI preparation follows persisted queue state', () => {
   it('prepares after a delayed first scan, restarts the Worker and admits the original ticket with its resolved image', async () => {
-    const preparation = await ciPreparationFixture({ loseRefreshAck: true })
+    const stateDirectory = await privateFixtureDirectory('ci-queue-state-')
+    const preparation = await ciPreparationFixture({ loseRefreshAck: true, stateDirectory })
     const ci = ciFixture({ initialWaitingReasons: [] })
     const before = preparation.profiles.get('p-unit')!
     const template = jobVerificationTemplate({ profileId: before.id, profileRevision: before.revision,
@@ -98,13 +101,18 @@ describe('CI preparation follows persisted queue state', () => {
       expect(preparation.calls.prepare).toEqual([])
       await queue.waitForWork(await queue.scan())
       expect(ticket).toMatchObject({ state: 'blocked', waitingReasons: ['dependencies_changed'] })
-      expect(await preparation.settle('p-unit')).toMatchObject({ state: 'qualified', commit })
+      const prepared = await preparation.settle('p-unit')
+      expect(prepared, prepared.message ?? '').toMatchObject({ state: 'qualified', commit, message: null })
       await queue.waitForWork(await queue.scan())
       expect(ticket).toMatchObject({ state: 'accepted', id: original.id, executionId: original.executionId,
         attemptId: original.attemptId, operationId: original.operationId, definition: original.definition })
       expect(ticket.definition.spec.policy.imageDigest).toBe(oldImage)
       expect(admitted).toHaveBeenCalledWith(expect.objectContaining({ policy: expect.objectContaining({ imageDigest: newImage }) }))
       expect(preparation.calls.refresh).toHaveLength(1)
-    } finally { await preparation.ciRuntime.close(); await preparation.app.close() }
+    } finally {
+      await preparation.ciRuntime.close()
+      await preparation.app.close()
+      await rm(stateDirectory, { recursive: true, force: true })
+    }
   })
 })

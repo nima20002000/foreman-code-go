@@ -218,6 +218,25 @@ it('F8: an expired resident reviewer token is never renewed or replaced in a sti
   } finally { vi.useRealTimers() }
 })
 
+it('credential renewal returns database expiry and a monotonic deadline despite API clock skew', async () => {
+  const databaseNow = new Date('2026-10-01T00:00:00.000Z')
+  const expiresAt = new Date(databaseNow.getTime() + 60_000)
+  const pool = { query: async () => ({ rows: [{ expires_at: expiresAt, database_now: databaseNow }] }) } as unknown as pg.Pool
+  const service = new WorkerCredentialService(pool, {} as PostgresAccessService, 60_000)
+  const credential: Pick<IssuedWorkerCredential, 'principalId' | 'renewalDeadline'> = {
+    principalId: 'principal-reviewer',
+  }
+  const monotonic = vi.spyOn(performance, 'now').mockReturnValue(1_000)
+  const wallClock = vi.spyOn(Date, 'now').mockReturnValue(databaseNow.getTime() + 120_000)
+  try {
+    assert.equal(await service.renewForExecution('execution-reviewer', credential), expiresAt.toISOString())
+    assert.equal(credential.renewalDeadline, 61_000)
+  } finally {
+    monotonic.mockRestore()
+    wallClock.mockRestore()
+  }
+})
+
 it('credential renewal returns the database expiry and a monotonic deadline', async () => {
   const databaseNow = new Date('2026-09-16T00:00:00.000Z')
   const expiresAt = new Date(databaseNow.getTime() + 60_000)

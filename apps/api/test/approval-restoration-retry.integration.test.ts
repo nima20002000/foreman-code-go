@@ -4,6 +4,39 @@ import { approvalResponse } from './helpers/eng06ApprovalFaults.js'
 
 const setup = createApprovalRecoverySetup()
 
+it('delivers the original approval after consecutive transient attachment failures', async () => {
+  const t = await setup('ordinary')
+  const pending = await startWaiting(t)
+  const original = await t.runtime.runs.getExecution(pending.executionId)
+  const responseInput = approvalResponse(pending)
+  const sessions = t.f.provider.counts.sessions
+  await t.restart()
+  const attach = vi.spyOn(t.f.provider, 'attachSession')
+    .mockRejectedValueOnce(new Error('Query read timeout'))
+    .mockRejectedValueOnce(new Error('Query read timeout'))
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await expect(t.runtime.service.respond(t.responder, responseInput)).rejects.toThrow('Query read timeout')
+    expect(await t.runtime.service.get(pending.id)).toEqual(pending)
+    expect(await t.runtime.runs.getExecution(pending.executionId)).toEqual(original)
+    expect(await t.runtime.runs.hasPendingCleanup(t.runId)).toBe(false)
+    expect(t.f.provider.counts.responses).toBe(0)
+  }
+
+  const response = await t.runtime.service.respond(t.responder, responseInput)
+  expect(response.interaction).toMatchObject({
+    id: pending.id,
+    executionId: pending.executionId,
+    nativeSessionId: pending.nativeSessionId,
+    deliveryState: 'delivered',
+  })
+  expect(attach).toHaveBeenCalledTimes(3)
+  await t.finishApprovals()
+  expect(t.f.provider.counts.sessions).toBe(sessions)
+  expect(t.f.provider.counts.responses).toBe(1)
+  expect(t.f.provider.counts.starts).toBe(2)
+}, 90_000)
+
 it.each(['execution read', 'native attachment', 'native reconciliation'] as const)(
   'retries a transient %s failure without fencing or replacing the pending requester', async stage => {
     const t = await setup('ordinary')
