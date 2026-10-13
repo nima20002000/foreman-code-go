@@ -183,6 +183,7 @@ describe('PostgreSQL infrastructure', () => {
       readinessTimeoutMs: 30,
     })
     const blocker = await database.pool.connect()
+    const backend = await blocker.query<{ pid: number }>('select pg_backend_pid() as pid')
     let released = false
     try {
       expect((await app.inject('/health/ready')).statusCode).toBe(503)
@@ -194,11 +195,14 @@ describe('PostgreSQL infrastructure', () => {
       released = true
       await vi.waitFor(() => {
         expect(database.pool.waitingCount).toBe(0)
-        expect(database.pool.totalCount).toBe(0)
+        expect(database.pool.totalCount).toBe(1)
+        expect(database.pool.idleCount).toBe(1)
       })
       await vi.waitFor(async () => {
         expect((await app.inject('/health/ready')).statusCode).toBe(200)
       }, { timeout: 1500 })
+      const recovered = await database.pool.query<{ pid: number }>('select pg_backend_pid() as pid')
+      expect(recovered.rows[0]?.pid).toBe(backend.rows[0]?.pid)
     } finally {
       if (!released) blocker.release()
       await app.close()

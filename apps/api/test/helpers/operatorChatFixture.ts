@@ -9,6 +9,7 @@ import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 import { NativeHarnessEventSchema, type ExecutionResult, type NativeSessionReference } from '@foreman-code/contracts'
 import pg from 'pg'
 import { afterEach, beforeEach } from 'vitest'
+import type { migratedDatabase } from './migratedDatabase.js'
 import { applyApplicationMigrations } from '../../src/infrastructure/migrations.js'
 import { OperatorChatService, PostgresOperatorConversationRepository, type OperatorChatAuthority } from '../../src/modules/conversations/operatorChat.js'
 import { PostgresOperatorRepository } from '../../src/modules/operators/postgres.js'
@@ -147,7 +148,9 @@ export interface OperatorChatFixture {
 export function registerOperatorChatFixture(
   initialize: (fixture: OperatorChatFixture) => void,
   currentChat: () => OperatorChatService | undefined,
+  databaseFactory?: () => ReturnType<typeof migratedDatabase>,
 ) {
+  let fixtureDatabase: Awaited<ReturnType<typeof migratedDatabase>> | undefined
   let schema: string
   let admin: pg.Pool
   let pool: pg.Pool
@@ -168,12 +171,16 @@ export function registerOperatorChatFixture(
       || !['localhost', '127.0.0.1', '[::1]'].includes(database.hostname)
       || !/(?:^|[_-])test(?:db)?(?:$|[_-])/i.test(decodeURIComponent(database.pathname.slice(1)))
       || database.search || database.hash) throw new Error('Use a loopback PostgreSQL database explicitly named for tests')
-    schema = `chat_${randomUUID().replaceAll('-', '')}`
-    admin = new pg.Pool({ connectionString })
-    await createFixtureSchema(admin, schema)
+    fixtureDatabase = await databaseFactory?.()
+    schema = fixtureDatabase?.schema ?? `chat_${randomUUID().replaceAll('-', '')}`
+    if (!fixtureDatabase) {
+      admin = new pg.Pool({ connectionString })
+      await createFixtureSchema(admin, schema)
+    }
     // A one-slot pool catches accidental post-commit nested checkouts.
-    pool = new pg.Pool({ connectionString, max: 1, connectionTimeoutMillis: 2_000, options: `-c search_path=${schema}` })
-    await applyApplicationMigrations(pool)
+    pool = new pg.Pool({ connectionString: fixtureDatabase?.databaseUrl ?? connectionString,
+      max: 1, connectionTimeoutMillis: 2_000, options: `-c search_path=${schema}` })
+    if (!fixtureDatabase) await applyApplicationMigrations(pool)
     access = new PostgresAccessService(pool)
     owner = (await access.issue({ name: 'chat owner', audience: 'operator',
       grants: [{ actions: ['operator_chat:read', 'operator_chat:write', 'operator_chat:cancel', 'operator_chat:respond', 'settings:update', 'harnesses:read'], scope: {} }],
@@ -195,7 +202,10 @@ export function registerOperatorChatFixture(
     finally {
       try { await pool?.end() }
       finally {
-        try { await (admin ? dropFixtureSchema(admin, schema) : Promise.resolve()) }
+        try {
+          if (fixtureDatabase) await fixtureDatabase.close()
+          else if (admin) await dropFixtureSchema(admin, schema)
+        }
         finally {
           try { await admin?.end() }
           finally { await rm(runtimeDirectory, { recursive: true, force: true }) }

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { expect, it } from 'vitest'
+import { beforeAll, expect, it } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import type { ProviderAccount } from '@foreman-code/contracts/provider-accounts'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
@@ -13,8 +13,13 @@ import { ProviderAccountsService, type ProviderAccountOperationNativePort } from
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator, commandInputHash } from '../src/modules/commands/postgres.js'
 
+let database: Awaited<ReturnType<typeof currentDatabase>>
+beforeAll(async () => {
+  database = await currentDatabase({ beforeMigration: providerAccountsMigration.version })
+}, 30_000)
+
 it('migrates account metadata additively and retains legacy profiles, historical hashes, tombstones and original operations', async () => {
-  const db = await currentDatabase({ beforeMigration: providerAccountsMigration.version })
+  const db = database
   try {
     const migrationIndex = migrations.findIndex(migration => migration.version === providerAccountsMigration.version)
     const appliedBefore = await db.pool.query<{ version: number }>('select version from application_migrations')

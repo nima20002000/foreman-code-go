@@ -7,10 +7,11 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'
 import { registerOperatorChatFixture, type OperatorChatFixture, waitFor } from './helpers/operatorChatFixture.js'
+import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 
 let fixture: OperatorChatFixture
-registerOperatorChatFixture(value => { fixture = value }, () => fixture?.chat)
+registerOperatorChatFixture(value => { fixture = value }, () => fixture?.chat, migratedDatabase)
 
 describe.skipIf(!process.env.TEST_DATABASE_URL)('Operator activity item reads', () => {
   it('reads persisted completion beyond the recent window through HTTP and MCP with ownership and grant checks', async () => {

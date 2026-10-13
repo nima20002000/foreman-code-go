@@ -1,13 +1,11 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
-import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
+import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { randomUUID } from 'node:crypto'
-import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import * as c from '@foreman-code/contracts/management'
 import { expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
-import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
@@ -16,11 +14,8 @@ import { WorkflowManagementService } from '../src/modules/workflows/management.j
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
 it('paginates and atomically archives through authenticated MCP with scope, revision and retry safety', async () => {
-  const connectionString = process.env.TEST_DATABASE_URL!
-  const schema = 'batch_page_' + randomUUID().replaceAll('-', '')
-  const admin = new pg.Pool({ connectionString })
-  await createFixtureSchema(admin, schema)
-  const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
+  const database = await migratedDatabase()
+  const { pool } = database
   const access = new PostgresAccessService(pool), commands = new PostgresCommandCoordinator(pool)
   const locations = new WorkspaceLocationService(pool, commands)
   const workspaces = new WorkspaceManagementService(pool, commands, locations)
@@ -31,7 +26,6 @@ it('paginates and atomically archives through authenticated MCP with scope, revi
   }, operator: { access, services } })
   const clients: Client[] = []
   try {
-    await applyApplicationMigrations(pool)
     const owner = await access.issue({ name: 'Batch owner', audience: 'operator',
       grants: [{ actions: [...c.ManagementActionSchema.options], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
@@ -83,7 +77,7 @@ it('paginates and atomically archives through authenticated MCP with scope, revi
     expect((await pool.query("select count(*) from management_audit where action = 'workflow.batch_archive' and outcome = 'succeeded'")).rows[0].count).toBe('1')
   } finally {
     for (const client of clients) await client.close()
-    await app.close(); await pool.end()
-    await dropFixtureSchema(admin, schema); await admin.end()
+    await app.close()
+    await database.close()
   }
 }, 30_000)

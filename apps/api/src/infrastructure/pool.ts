@@ -54,7 +54,7 @@ export function createPool(options: DatabaseOptions, applicationName: string): p
 /**
  * Destroy an aborted/failed probe's connection rather than returning a still-busy
  * client to the pool. Acquisition is bounded by connectionTimeoutMillis. If an
- * abort happens while acquiring, wait for that lease and immediately discard it;
+ * abort happens while acquiring, return the unused healthy lease to the pool;
  * the HTTP probe coalesces callers until this cleanup finishes.
  */
 export async function queryForReadiness(
@@ -64,6 +64,10 @@ export async function queryForReadiness(
 ): Promise<void> {
   signal?.throwIfAborted()
   const client = await pool.connect()
+  if (signal?.aborted) {
+    client.release(false)
+    signal.throwIfAborted()
+  }
   const connection = (client as pg.PoolClient & {
     connection?: { stream?: { destroy(): void } }
   }).connection
