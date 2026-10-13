@@ -115,6 +115,36 @@ describe('exact accepted Claude profile admission', () => {
     vi.mocked(f.authority.authorize).mockRejectedValue(new Error('revoked'))
     await expect(f.admission.revalidate('owner', accepted)).rejects.toThrow('revoked')
   })
+  it('reads replacement proof when automatic qualification finishes during admission IO', async () => {
+    const f = fixture()
+    const previousProof = structuredClone(f.proof)
+    let checking = false
+    f.authority.assertReady = () => {
+      if (checking) throw new DomainError('HARNESS_PROFILE_CHECK_PENDING', 'Checking profile', 503)
+    }
+    f.proofs.latest.mockImplementationOnce(async () => {
+      checking = true
+      return previousProof
+    })
+    vi.mocked(f.authority.current).mockImplementation(async () => {
+      f.proof.connectionGeneration = 'replacement-connection'
+      Object.assign(f.registry.installation, { connectionGeneration: 'replacement-connection' })
+      checking = false
+      return { registry: f.registry, applicationInstallationId: 'main', suiteRevision: 's',
+        pin: f.proof.claudeProof!.pin }
+    })
+
+    const accepted = await f.admission.admit('owner', f.selector)
+    expect(accepted.persistedProof.connectionGeneration).toBe('replacement-connection')
+    expect(accepted.currentBinding.connectionGeneration).toBe('replacement-connection')
+    expect(f.proofs.latest).toHaveBeenCalledTimes(2)
+
+    f.proof.qualified = false
+    await expect(f.admission.admit('owner', f.selector))
+      .rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+    vi.mocked(f.authority.authorize).mockRejectedValue(new DomainError('ACCESS_DENIED', 'Revoked owner', 403))
+    await expect(f.admission.admit('owner', f.selector)).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+  })
   it('registers Claude configuration without a manager or default profile', () => {
     const f = fixture(); const registry = new HarnessInstanceRegistry(localHarnessDrivers)
     registry.reload([{ instanceId: 'explicit', instanceRevision: '1', driverId: 'claude', enabled: true, configuration: f.value.configuration }])
