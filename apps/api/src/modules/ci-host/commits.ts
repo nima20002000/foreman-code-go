@@ -4,11 +4,21 @@ import { publishCommit } from '../sources/githubPublisher.js'
 import type { CiCommits } from './service.js'
 import { CiDurationsSchema } from '@foreman-code/contracts'
 import { ciRepositoryCapabilities } from './repository.js'
+import { onlyCiInfrastructure } from './priority.js'
 
 /** Main's clone of the workspace repository: the requested commit, an Agent's files as a commit on its base, or the
  * default branch head; whatever GitHub lacks is pushed so build computers can fetch it. */
 export class GitCiCommits implements CiCommits {
   constructor(private readonly git: GitWorktreePorts = systemGitWorktreePorts()) {}
+
+  async infrastructureOnly(repository: string, commit: string) {
+    const signal = AbortSignal.timeout(30_000)
+    const clone = await ensureCommit(this.git, repository, commit, signal)
+    const diff = await this.git.git(['diff-tree', '--root', '--no-commit-id', '--name-only',
+      '--no-renames', '--first-parent', '-r', '-m', '-z', commit], { cwd: clone, signal })
+    if (diff.code !== 0) throw new Error('Could not read the CI commit changes.')
+    return onlyCiInfrastructure(diff.stdout.split('\0').filter(Boolean))
+  }
 
   async capabilities(repository: string, commit: string) {
     const signal = AbortSignal.timeout(30_000)

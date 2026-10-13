@@ -18,6 +18,7 @@ import { assertCiReadAccess } from './runAccess.js'
 import type { CiRepositoryCapabilities } from './repository.js'
 import { RUN_CI_JOBS_SQL, runCiJob, storedCiTestResults, type RunCiJobRow } from './runJobs.js'
 import { fallbackOnError } from '../diagnostics/ignoredError.js'
+import { CI_QUEUE_ORDER, ciQueueReason, compareCiQueue } from './priority.js'
 
 /** CI reads are idempotent: one retry after a lock or statement timeout, then a typed retryable error. */
 async function retryRead<T>(work: () => Promise<T>): Promise<T> {
@@ -38,6 +39,7 @@ export interface HostCiEndpoint {
 }
 /** Resolves the commit to test and makes sure GitHub has it, so build computers can fetch it. */
 export interface CiCommits {
+  infrastructureOnly?(repository: string, commit: string): Promise<boolean>
   capabilities(repository: string, commit: string): Promise<CiRepositoryCapabilities>
   unitInventory?(repository: string, commit: string): Promise<CiUnitInventory>
   resolve(repository: string, defaultBranch: string, commit: string | undefined,
@@ -94,7 +96,9 @@ export class HostCiService {
   close() { clearInterval(this.timer); this.timer = undefined; return this.dispatching }
 
   async run(caller: ManagementPrincipal, input: CiRunInput & { workspaceId?: string | undefined }, source: 'mcp' | 'http' = 'mcp') {
-    const scope = await this.authority.resolve(caller, input.workspaceId, CI_RUN_ACTIONS).catch(async error => {
+    const actions = input.priority === 'high' && caller.audience !== 'operator'
+      ? [...CI_RUN_ACTIONS, 'jobs:prioritize' as const] : CI_RUN_ACTIONS
+    const scope = await this.authority.resolve(caller, input.workspaceId, actions).catch(async error => {
       if (source === 'http' && error instanceof DomainError && [401, 403, 404].includes(error.status)) {
         await this.commands.recordDenied(caller.id, source, 'ci.run', input.workspaceId ?? 'ci')
       }
@@ -102,7 +106,7 @@ export class HostCiService {
     })
     const outcome = await this.commands.execute({ principal: caller, source, operation: 'ci.run',
       commandId: input.commandId, targetKey: scope.workspaceId, payload: input,
-      authorize: async () => { await this.authority.resolve(caller, scope.workspaceId, CI_RUN_ACTIONS) },
+      authorize: async () => { await this.authority.resolve(caller, scope.workspaceId, actions) },
       perform: async client => {
         const workspace = WorkspaceSchema.parse((await client.query<{ record: unknown }>(
           'select record from workspaces where id=$1', [scope.workspaceId])).rows[0]?.record)
@@ -113,6 +117,11 @@ export class HostCiService {
         // An Agent's CI tests its current files; they are published to GitHub so build computers can fetch them.
         const snapshot = scope.executionId && !input.commit && this.snapshots ? await this.snapshots(scope.executionId) : null
         const commit = await this.commits.resolve(repository, defaultBranch, input.commit, snapshot)
+        const infrastructure = await this.commits.infrastructureOnly?.(repository, commit) ?? false
+        const priority = infrastructure || input.priority === 'high' ? 'high' : 'normal'
+        let priorityReason: CiRunRecord['priorityReason'] = 'normal'
+        if (infrastructure) priorityReason = 'ci-infrastructure'
+        else if (input.priority === 'high') priorityReason = 'requested'
         const groupId = randomUUID(), now = new Date().toISOString()
         const capabilities = await this.commits.capabilities(repository, commit)
         const inventory = capabilities.parts && input.suite === 'unit'
@@ -131,6 +140,7 @@ export class HostCiService {
         const runs = parts.map(({ part, partition, files }) => CiRunRecordSchema.parse({
           id: randomUUID(), workspaceId: scope.workspaceId,
           suite: input.suite, part, scope: selectionScope, files, commit, repository, partition, groupId,
+          priority, priorityReason,
           ...(input.baseCommit ? { baseCommit: input.baseCommit } : {}),
           ...(deriveFiles ? { deriveFiles, defaultBranch } : {}),
           state: empty ? 'passed' : 'queued', computer: null, step: empty ? input.suite : null,
@@ -154,6 +164,10 @@ export class HostCiService {
             values($1,$2,$3,$6,$4::jsonb,$5::jsonb)`, [run.id, run.workspaceId, groupId, JSON.stringify(run),
             durations ? JSON.stringify(durations) : null, run.state])
         }
+        await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
+          values($1,$2,'ci.priority',$3,'succeeded',$4::jsonb)`, [caller.id, source, scope.workspaceId,
+          JSON.stringify({ commandId: input.commandId, groupId, commit, priority, priorityReason,
+            requestedPriority: input.priority ?? 'normal' })])
         return { ticketId: runs[0]!.id, ...(runs.length > 1 ? { partitions: runs.map(run => ({ ticketId: run.id })) } : {}) }
       },
     })
@@ -280,6 +294,13 @@ export class HostCiService {
       [run.id, run.state, hostKey, JSON.stringify(run)])
   }
 
+  private async queuePosition(id: string): Promise<number | undefined> {
+    const rows = (await this.pool.query<{ id: string; position: number }>(`select id,position from
+      (select id,row_number() over (order by ${CI_QUEUE_ORDER})::integer as position
+        from ci_runs where state='queued') queue where id=$1`, [id])).rows
+    return rows[0]?.position
+  }
+
   async get(caller: ManagementPrincipal, input: { workspaceId?: string | undefined; ticketId: string
     testStatus?: CiTestStatus[] | undefined }) {
     return retryRead(async () => {
@@ -294,7 +315,9 @@ export class HostCiService {
         `select record from ci_runs where group_id=$1 and workspace_id=$2
           and record->'initiator'=$3::jsonb order by created_at,id`,
         [run.groupId, scope.workspaceId, JSON.stringify(run.initiator)])).rows.map(row => CiRunRecordSchema.parse(row.record))
+      const position = run.state === 'queued' ? await this.queuePosition(run.id) : undefined
       return { run, partitions: group.length > 1 ? group : undefined, logTail: row.log_tail,
+        queue: position ? { position, reason: ciQueueReason(run) } : null,
         group: { groupId: run.groupId, state: ciGroupState(group) },
         ...(input.testStatus ? { tests: await this.testResults(run.id, scope.workspaceId, input.testStatus) } : {}) }
     })
@@ -450,7 +473,18 @@ export class HostCiService {
 
   async computers(caller: ManagementPrincipal, input: { workspaceId?: string | undefined }) {
     return retryRead(async () => {
-      await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
+      const scope = await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
+      const queued = (await this.pool.query<{ record: unknown; position: number }>(`select record,position from
+        (select record,row_number() over (order by ${CI_QUEUE_ORDER})::integer as position
+          from ci_runs where state='queued') queue where record->>'workspaceId'=$1
+          and ($2::text is null or record#>>'{initiator,executionId}'=$2)
+        order by position limit 501`, [scope.workspaceId,
+        caller.audience === 'worker' ? scope.executionId ?? '' : null])).rows
+      const queue = queued.slice(0, 500).map(row => {
+        const run = CiRunRecordSchema.parse(row.record)
+        return { ticketId: run.id, priority: run.priority, priorityReason: run.priorityReason,
+          position: row.position, reason: ciQueueReason(run) }
+      })
       const active = (await this.pool.query<{ id: string; host_key: string }>(
         `select id,host_key from ci_runs where state in ('starting','running') and host_key is not null
           order by created_at,id`)).rows
@@ -469,7 +503,7 @@ export class HostCiService {
             slotsUsed: Math.max(running.length, status.slotsUsed ?? 0), slotsTotal: status.slotsTotal ?? 1,
             running } : null)
       }
-      return { computers: result.filter(Boolean) }
+      return { computers: result.filter(Boolean), queue, queueTruncated: queued.length > 500 }
     })
   }
 
@@ -595,21 +629,25 @@ export class HostCiService {
     // Check parts must remain visible even behind more than one batch of integration partitions.
     const queuedRows = (await this.pool.query<{ record: unknown; durations: CiDurations | null }>(
       `select record,durations from ci_runs where id in
-        (select id from ci_runs where state='queued' order by created_at,id limit 50)
+        (select id from ci_runs where state='queued' order by ${CI_QUEUE_ORDER} limit 50)
         or id in (select id from ci_runs where state='queued' and record->>'suite'<>'integration'
-          order by created_at,id limit 50)
-        order by created_at,id`)).rows
+          order by ${CI_QUEUE_ORDER} limit 50)
+        order by ${CI_QUEUE_ORDER}`)).rows
     let queued = queuedRows.map(row => CiRunRecordSchema.parse(row.record))
     // Reserve four GitHub slots while checks wait, including integration already using GitHub.
     const githubIntegrationLimit = Math.max(0, github.length - (queued.some(run => run.suite !== 'integration') ? 4 : 0))
     const durations = new Map(queuedRows.map((row, index) => [queued[index]!.id, row.durations]))
     queued = await this.weighPartitions(queued, computers.flatMap(computer =>
       Array.from({ length: freeSlots(computer) }, () => computer)))
-    queued.sort((left, right) => Number(needsSystemdExecutor(right)) - Number(needsSystemdExecutor(left)))
+    queued.sort((left, right) => (left.priority === right.priority
+      ? Number(needsSystemdExecutor(right)) - Number(needsSystemdExecutor(left)) : 0) || compareCiQueue(left, right))
     // Reserve slots before awaiting a start so concurrent dispatches cannot spend the same capacity.
     await Promise.all(queued.map(async run => {
       if (run.suite === 'integration' && run.partition && !run.partition.weights) return
       const hostRequired = needsSystemdExecutor(run)
+      const integrationLimit = run.priority === 'high'
+        && !queued.some(check => check.suite !== 'integration' && compareCiQueue(check, run) < 0)
+        ? github.length : githubIntegrationLimit
       const reasons = (run.unstartedProviders ?? []).map(provider => `${provider}: dispatch retries exhausted`)
       const preferred = (computer: HostCiComputer) => {
         if (run.suite !== 'integration') return Number(isGitHubComputer(computer))
@@ -632,7 +670,7 @@ export class HostCiService {
           continue
         }
         const usesGitHubIntegration = run.suite === 'integration' && isGitHubComputer(computer)
-        if (usesGitHubIntegration && integrationOnGitHub.size >= githubIntegrationLimit) {
+        if (usesGitHubIntegration && integrationOnGitHub.size >= integrationLimit) {
           reasons.push(`${computer.label}: slots reserved for queued checks`)
           continue
         }
