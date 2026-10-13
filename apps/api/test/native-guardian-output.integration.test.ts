@@ -8,8 +8,17 @@ import { NativeProcessRegistry, nativeProcessExit, spawnNativeProcess, stopRecov
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 
-for (const provider of ['claude', 'codex'] as const) it(
-  `drains backpressured ${provider} final frames before guardian closure`, async () => {
+const outputCases = [
+  { provider: 'claude', paddingBytes: 384 * 1024,
+    name: 'drains backpressured claude final frames before guardian closure' },
+  { provider: 'codex', paddingBytes: 384 * 1024,
+    name: 'drains backpressured codex final frames before guardian closure' },
+  { provider: 'claude', paddingBytes: 2 * 1024 * 1024,
+    name: 'drains claude final frames larger than the relay pipe capacity before guardian closure' },
+] as const
+
+for (const { provider, paddingBytes, name } of outputCases) it(
+  name, async () => {
     const root = await privateFixtureDirectory('guardian-output-')
     const registry = new NativeProcessRegistry(root)
     const owner = 'output-fixture'
@@ -19,7 +28,7 @@ for (const provider of ['claude', 'codex'] as const) it(
     const scope = { deviceId: 'fixture-device', profilePath: root, configRevision: 'fixture-revision', cwd: root }
     const frames = [
       { type: 'system', subtype: 'init', session_id: sessionId },
-      { type: 'assistant', session_id: sessionId, padding: 'x'.repeat(384 * 1024) },
+      { type: 'assistant', session_id: sessionId, padding: 'x'.repeat(paddingBytes) },
       { type: 'system', subtype: 'compact_boundary', session_id: sessionId,
         compact_metadata: { trigger: 'manual' } },
       { type: 'result', session_id: sessionId, user_message_uuid: promptUuid,
@@ -39,6 +48,7 @@ for (const provider of ['claude', 'codex'] as const) it(
     `, JSON.stringify(inputFrames)], { cwd: root, env: {}, recovery,
       ...(provider === 'claude' ? { claudeSessionScope: scope } : { restartDetachable: true, reconnectableStdio: true }) })
     const closed = once(child, 'close')
+    const outputReady = once(child.stdout, 'readable')
     const receipt = new Promise<void>(resolve => child.on('message', message => {
       if ((message as { operation?: string }).operation === 'native_exit') resolve()
     }))
@@ -46,10 +56,12 @@ for (const provider of ['claude', 'codex'] as const) it(
     child.stderr.on('data', chunk => stderr.push(chunk))
     child.stdin.write(JSON.stringify({ type: 'user', uuid: promptUuid, message: { content: '/compact' } }) + '\n')
     try {
-      // No stdout reader until the provider exits: the relay must retain pending bytes.
-      await receipt
+      // Let output buffer, then drain it so backpressure cannot prevent provider exit.
+      await outputReady
       const stdout: Buffer[] = []
       child.stdout.on('data', chunk => stdout.push(chunk))
+      child.stdout.resume()
+      await receipt
       const [exitCode, exitSignal] = await closed
       assert.equal(Buffer.concat(stdout).toString(), expected)
       assert.equal(Buffer.concat(stderr).toString(), 'final-stderr\n')
