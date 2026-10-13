@@ -114,14 +114,32 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
   } }
 }
 
-it('admits consecutive gates from the same caller on different database connections', async () => {
+it.each([false, true])('admits consecutive gates on different connections after a lost lock reply: %s', async lostReply => {
   const pool = createPool({ connectionString: database.databaseUrl, maxConnections: 8,
     connectionTimeoutMs: 1_000, queryTimeoutMs: 1_000 }, 'gate-lock-test')
+  let loseReply = lostReply
+  pool.on('connect', client => {
+    const query = client.query
+    client.query = function (this: pg.PoolClient, ...args: unknown[]) {
+      const result = Reflect.apply(query, this, args)
+      const values = args[1]
+      if (!loseReply || !Array.isArray(values) || typeof values[0] !== 'string'
+        || !values[0].startsWith('ci-admission:')) return result
+      loseReply = false
+      // The server acquired the lock, but the driver did not deliver its acknowledgment.
+      return (result as Promise<unknown>).then(() => { throw new Error('Query read timeout') })
+    } as pg.PoolClient['query']
+  })
   const held: pg.PoolClient[] = []
   const f = await fixture({ pool })
   try {
     const gate = { suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40) }
     const firstInput = { ...gate, commandId: randomUUID() }
+    if (lostReply) {
+      const failed = await f.call(f.operator, 'ci_run', firstInput)
+      expect(failed.isError).toBe(true)
+      expect(decodeMcpToolResult(failed)).toMatchObject({ error: { code: 'INTERNAL_ERROR' } })
+    }
     const first = CiRunOutputSchema.parse(await f.value('ci_run', firstInput))
     expect(CiRunOutputSchema.parse(await f.value('ci_run', firstInput))).toEqual(first)
     await f.ci.dispatch()
