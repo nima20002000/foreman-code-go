@@ -16,12 +16,36 @@ function computer(t, unavailable = false) {
   t.after(() => rmSync(directory, { recursive: true, force: true }))
   const state = join(directory, 'servers.json')
   writeFileSync(state, '{}')
+  const limits = join(directory, 'limits.json')
+  writeFileSync(limits, '{}')
   writeFileSync(join(directory, 'docker'), `#!${process.execPath}
 const fs = require('node:fs')
 const args = process.argv.slice(2)
 const servers = JSON.parse(fs.readFileSync(process.env.SERVERS, 'utf8'))
 const project = args[args.indexOf('--project-name') + 1]
-if (args[0] === 'ps') process.exit(0)
+const limits = JSON.parse(fs.readFileSync(process.env.LIMITS, 'utf8'))
+if (args[0] === 'ps') {
+  const label = args.find(value => value.startsWith('label=com.docker.compose.project='))
+  const name = label?.slice('label=com.docker.compose.project='.length)
+  if (name && limits[name]) console.log(name)
+  process.exit(0)
+}
+if (args[0] === 'inspect') {
+  const limit = limits[args[1]]
+  console.log(JSON.stringify([{ Config: { Labels: { 'graphql.test-owner': 'disposable-tests',
+    'com.docker.compose.service': 'postgres' } }, State: { Running: true },
+    HostConfig: { NanoCpus: limit.nanoCpus, Memory: limit.memory, MemorySwap: limit.memory * 2 } }]))
+  process.exit(0)
+}
+if (args[0] === 'update') {
+  const limit = limits[args.at(-1)]
+  for (const value of args) {
+    if (value.startsWith('--cpus=')) limit.nanoCpus = Math.round(Number(value.slice(7)) * 1e9)
+    if (value.startsWith('--memory=')) limit.memory = Number(value.slice(9))
+  }
+  fs.writeFileSync(process.env.LIMITS, JSON.stringify(limits))
+  process.exit(0)
+}
 if (args[0] === 'volume') process.exit(0)
 if (args.includes('up')) {
   if (process.env.UNAVAILABLE === '1' && !project.includes(process.env.FOREMAN_CODE_CI_HOST_RUN_ID)) {
@@ -30,6 +54,10 @@ if (args.includes('up')) {
   }
   servers[project] ??= 55000 + Object.keys(servers).length
   fs.writeFileSync(process.env.SERVERS, JSON.stringify(servers))
+  // compose up --no-recreate keeps an existing container's limits.
+  limits[project] ??= { nanoCpus: Math.round(Number(process.env.FOREMAN_CODE_CI_DATABASE_CPUS ?? 0) * 1e9),
+    memory: Number(process.env.FOREMAN_CODE_CI_DATABASE_MEMORY_BYTES ?? 0) }
+  fs.writeFileSync(process.env.LIMITS, JSON.stringify(limits))
 }
 if (args.includes('port')) console.log('127.0.0.1:' + servers[project])
 if (args.includes('down')) {
@@ -37,14 +65,16 @@ if (args.includes('down')) {
   fs.writeFileSync(process.env.SERVERS, JSON.stringify(servers))
 }
 `, { mode: 0o755 })
-  function job() {
+  function job(database = {}) {
     const runId = randomUUID()
     const temporary = join(directory, runId)
     mkdirSync(temporary)
     const env = { ...process.env, PATH: `${directory}:${process.env.PATH}`, TMPDIR: temporary,
       CI_HOST_RUNNER: '1', FOREMAN_CODE_CI_HOST_RUN_ID: runId, FOREMAN_CODE_VERIFICATION_ENVIRONMENT: '',
-      FOREMAN_CODE_CI_POSTGRES_CACHE: join(directory, 'cache'), SERVERS: state,
-      UNAVAILABLE: unavailable ? '1' : '0' }
+      FOREMAN_CODE_CI_POSTGRES_CACHE: join(directory, 'cache'), SERVERS: state, LIMITS: limits,
+      UNAVAILABLE: unavailable ? '1' : '0',
+      ...(database.cpus ? { FOREMAN_CODE_CI_DATABASE_CPUS: String(database.cpus) } : {}),
+      ...(database.memory ? { FOREMAN_CODE_CI_DATABASE_MEMORY_BYTES: String(database.memory) } : {}) }
     return {
       runId,
       up() {
@@ -58,7 +88,8 @@ if (args.includes('down')) {
       },
     }
   }
-  return { job, servers: () => JSON.parse(readFileSync(state, 'utf8')) }
+  return { job, servers: () => JSON.parse(readFileSync(state, 'utf8')),
+    limits: () => Object.values(JSON.parse(readFileSync(limits, 'utf8'))) }
 }
 
 test('CI parts reuse one persistent server and job cleanup leaves it running', t => {
@@ -83,4 +114,16 @@ test('an unavailable persistent server falls back to separate job servers and cl
   assert.equal(Object.keys(host.servers()).length, 1)
   second.down()
   assert.equal(Object.keys(host.servers()).length, 0)
+})
+
+test('a reused persistent server grows to the database size a larger job needs and never shrinks', t => {
+  const host = computer(t)
+  const gib = 2 ** 30
+  host.job({ cpus: 1, memory: gib }).up()
+  assert.deepEqual(host.limits(), [{ nanoCpus: 1e9, memory: gib }])
+  // A 16-shard gate part reuses the server a small job created; it must not keep one CPU and 1 GiB.
+  host.job({ cpus: 4, memory: 4 * gib }).up()
+  assert.deepEqual(host.limits(), [{ nanoCpus: 4e9, memory: 4 * gib }])
+  host.job({ cpus: 2, memory: 2 * gib }).up()
+  assert.deepEqual(host.limits(), [{ nanoCpus: 4e9, memory: 4 * gib }])
 })
