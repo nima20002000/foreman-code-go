@@ -46,7 +46,7 @@ it('measures private setup and warm CI setup including PostgreSQL startup, migra
       const runId = randomUUID()
       const temporary = join(root.directory, runId)
       await mkdir(temporary, { mode: 0o700 })
-      const env = { ...process.env, CI_HOST_RUNNER: mode === 'before' ? '0' : '1',
+      const env: NodeJS.ProcessEnv = { ...process.env, CI_HOST_RUNNER: mode === 'before' ? '0' : '1',
         FOREMAN_CODE_CI_HOST_RUN_ID: runId, FOREMAN_CODE_CI_POSTGRES_CACHE: cache,
         FOREMAN_CODE_VERIFICATION_ENVIRONMENT: '', TMPDIR: temporary }
       jobs.push(env)
