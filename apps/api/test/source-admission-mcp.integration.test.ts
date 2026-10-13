@@ -263,7 +263,12 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     expect(captured.workspaceId).toBe(workspace.id)
     expect(captured.locationRevision).toBe(read.locationRevision)
     expect(captured.originIdentityHash).toBe(read.originIdentityHash)
-    expect(captured.manifest.git).toEqual(read.manifest.git)
+    expect(captured.manifest.git).toEqual({
+      commit,
+      tree: read.manifest.git!.tree,
+      objectFormat: read.manifest.git!.objectFormat,
+      metadata: read.manifest.git!.metadata,
+    })
     expect(captured.manifest.entries).toEqual(read.manifest.entries)
     expect(ApprovedSourceSchema.parse(decodeMcpToolResult(await client.callTool({ name: 'source_get',
       arguments: { workspaceId: workspace.id, approvedSourceId: captured.manifest.approvedSourceId,
