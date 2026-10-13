@@ -96,6 +96,17 @@ export type CiCachedFile = z.infer<typeof CiCachedFileSchema>
 
 export const CiWatchdogFailureSchema = z.object({ message: z.string().max(2000) }).strict()
 
+export const CiMirrorPublicationSchema = z.object({
+  state: z.enum(['pending', 'ready', 'failed']),
+  startedAt: TimestampSchema,
+  finishedAt: TimestampSchema.nullable(),
+  snapshotCommit: CommitSchema.optional(),
+  reusedSnapshot: CommitSchema.optional(),
+  timings: z.object({ queueMs: z.number().nonnegative(), sourceMs: z.number().nonnegative(), fetchMs: z.number().nonnegative(),
+    guardMs: z.number().nonnegative(), snapshotMs: z.number().nonnegative(),
+    pushMs: z.number().nonnegative(), totalMs: z.number().nonnegative() }).strict().optional(),
+}).strict()
+
 const CiHostRunIdSchema = z.uuid()
 /** `durations` are Main's learned integration file durations; the commit's committed durations fill the gaps. */
 const CiHostStartSchema = z.object({
@@ -103,6 +114,8 @@ const CiHostStartSchema = z.object({
   workspaceId: IdSchema.optional(),
   /** Publication destination approved in this ticket's workspace at admission; null disables cloud publication. */
   ciMirror: CiRepositorySchema.nullable().optional(),
+  /** Main can record cloud ownership before publishing its checked snapshot. */
+  deferMirror: z.boolean().optional(),
   suite: CiSuiteSchema, part: CiPartSchema.optional(), partition: CiPartitionSchema.optional(), durations: CiDurationsSchema.optional(),
   scope: CiScopeSchema.optional(), files: CiSelectedFilesSchema.optional(),
   expectedDurationMs: z.number().nonnegative().finite().optional(),
@@ -140,6 +153,7 @@ const CiHostRunSchema = z.object({
   exitCode: z.number().int().nullable(), startedAt: TimestampSchema, finishedAt: TimestampSchema.nullable(),
   logBytes: z.number().int().nonnegative(), message: z.string().max(2000).nullable(),
   collection: CiCollectionSchema.optional(), provenance: CiProvenanceSchema.optional(),
+  mirrorPublication: CiMirrorPublicationSchema.optional(),
 }).strict()
 export type CiHostRun = z.infer<typeof CiHostRunSchema>
 export const CiUserSystemdSchema = z.object({ supported: z.boolean(), reason: z.string().max(300).nullable() }).strict()
@@ -206,6 +220,7 @@ export const CiRunRecordSchema = z.object({
     label: z.string() }).strict().nullable(),
   step: z.string().nullable(), exitCode: z.number().int().nullable(), message: z.string().nullable(),
   collection: CiCollectionSchema.optional(), provenance: CiProvenanceSchema.optional(),
+  mirrorPublication: CiMirrorPublicationSchema.optional(),
   queuedAt: TimestampSchema, startedAt: TimestampSchema.nullable(), finishedAt: TimestampSchema.nullable(),
   initiator: z.object({ principalId: IdSchema, executionId: IdSchema.nullable() }).strict(),
   /** The computer a weighted partition was sized for; another free computer may still take it. */

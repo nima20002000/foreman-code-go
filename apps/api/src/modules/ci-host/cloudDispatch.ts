@@ -19,12 +19,14 @@ function unstarted(run: CiRunRecord, state: 'queued' | 'lost' | 'failed', messag
 
 export function requestCloud(endpoint: HostCiEndpoint, computer: HostCiComputer,
   request: CiHostRequest): Promise<CiHostReply> {
-  return requestCiStart(() => endpoint.request(computer, request), { timeoutMs: CLOUD_START_TIMEOUT_MS })
+  return requestCiStart(() => endpoint.request(computer, request.operation === 'start'
+    ? { ...request, deferMirror: true } : request), { timeoutMs: CLOUD_START_TIMEOUT_MS })
 }
 
 export async function expireCloudDispatch(endpoint: HostCiEndpoint, computer: HostCiComputer,
   run: CiRunRecord, observed?: CiHostRun): Promise<CiRunSettlement | null> {
-  const at = run.startedAt ?? run.dispatchedAt ?? run.queuedAt
+  if (observed?.mirrorPublication?.state === 'pending') return observed
+  const at = observed?.mirrorPublication?.finishedAt ?? run.startedAt ?? run.dispatchedAt ?? run.queuedAt
   if ((observed?.state ?? run.state) !== 'starting'
     || Date.now() - Date.parse(at) < CLOUD_START_TIMEOUT_MS * CI_START_MAX_ATTEMPTS) return observed ?? null
   try {
