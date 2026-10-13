@@ -104,6 +104,22 @@ test('fixture teardown removes its compose containers and network after compose 
   assert.equal(fixture.networks.has(`${live}_default`), true)
 })
 
+test('startup tolerates a resource another slot removed between listing and inspecting it', () => {
+  const fixture = dockerFixture()
+  const docker = fixture.docker
+  const vanished = `${stale}-postgres`
+  fixture.docker = args => {
+    if (args[0] === 'inspect' && args[1] === vanished) {
+      fixture.containers.delete(vanished)
+      throw new Error(`error: no such object: ${vanished}`)
+    }
+    return docker(args)
+  }
+  composeDatabase('up', options(fixture))
+  assert.equal(fixture.networks.has(`${stale}_default`), false)
+  assert.equal(fixture.networks.has(`${live}_default`), true)
+})
+
 test('an unknown live-slot status preserves its CI resources', () => {
   const fixture = dockerFixture({ preserveStale: true })
   composeDatabase('up', { ...options(fixture), isProjectLive: () => true,
