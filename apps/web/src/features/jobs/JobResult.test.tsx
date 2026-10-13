@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
-import { act, render, screen } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { http, HttpResponse } from 'msw'
 import { it, expect } from 'vitest'
 import { server } from '../../mocks/server'
@@ -42,13 +42,13 @@ it('retains results through a server failure and withdraws them through denial a
   await act(async () => { await view.client.invalidateQueries({ queryKey, exact: true }) })
   expect(screen.getByText('Process: build failed')).toBeVisible()
   expect(screen.getByText(/build failed <script>/)).toBeVisible()
-  expect(screen.getByText(/Result refresh failed/)).toBeVisible()
+  expect(await screen.findByText(/Result refresh failed/)).toBeVisible()
   server.use(http.get(root, () => HttpResponse.json({ error: { code: 'FORBIDDEN', message: 'Denied' } }, { status: 403 })))
   await act(async () => { await view.client.invalidateQueries({ queryKey, exact: true }) })
-  expect(screen.queryByText('Process: build failed')).not.toBeInTheDocument()
+  await waitFor(() => expect(screen.queryByText('Process: build failed')).not.toBeInTheDocument())
   server.use(http.get(root, () => HttpResponse.error()))
   await act(async () => { await view.client.invalidateQueries({ queryKey, exact: true }) })
-  expect(screen.queryByText('Process: build failed')).not.toBeInTheDocument()
+  await waitFor(() => expect(screen.queryByText('Process: build failed')).not.toBeInTheDocument())
   responses()
   await act(async () => { await view.client.invalidateQueries({ queryKey, exact: true }) })
   expect(await screen.findByText('Process: build failed')).toBeVisible()

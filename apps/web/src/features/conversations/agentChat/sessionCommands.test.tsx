@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { SessionControlStateSchema, unavailableSessionControls } from '@foreman-code/contracts'
@@ -13,12 +14,13 @@ const settings = SessionControlStateSchema.parse({ conversationId: 'chat', revis
   context: null, nativeSessionId: 'native', nativeProviderVersion: 'test', compaction: null, compactions: [],
   busyReason: null, capabilities: unavailableSessionControls('profile') })
 let controls: sessionHooks.ComposerSessionControls
+const clients: QueryClient[] = []
 beforeEach(() => {
   controls = { state: settings, query: { isError: false, refetch: vi.fn() },
     mutation: { isPending: false, isError: false }, change: vi.fn(), command: vi.fn(async () => true) } as unknown as sessionHooks.ComposerSessionControls
   vi.spyOn(sessionHooks, 'useSessionControls').mockImplementation(() => controls)
 })
-afterEach(() => { cleanup(); vi.restoreAllMocks(); useConversationDraftStore.getState().clearAllDrafts() })
+afterEach(() => { cleanup(); clients.splice(0).forEach(client => client.clear()); vi.restoreAllMocks(); useConversationDraftStore.getState().clearAllDrafts() })
 
 for (const action of ['Steer', 'Interrupt and send']) {
   it.each(['/plan', '/plan off', '/compact'])(`${action} routes %s only to native controls`, async content => {
@@ -103,12 +105,14 @@ it.each(['regular', 'plan'] as const)('preserves the original local %s mode in r
   state.turns = [{ ...turn, delivery: 'unknown' }]
   state.messages[0]!.originalInput = { requestId: turn.requestId, content: 'Inspect files', attachments: [] }
   const onSendAgain = vi.fn()
-  render(<AgentChatTranscript state={state} name="Agent" commands={[{ status: 'success', submittedAt: 1,
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  clients.push(client)
+  render(<QueryClientProvider client={client}><AgentChatTranscript state={state} name="Agent" commands={[{ status: 'success', submittedAt: 1,
     result: undefined, error: undefined, command: { kind: 'send', clearDraft: true,
       input: { requestId: turn.requestId, expectedConversationId: state.conversation!.id,
         context: state.context, content: 'Inspect files', sessionMode: mode, intent: 'next_turn' } } }]}
     history={{ data: undefined, hasNextPage: false } as ReturnType<typeof useAgentChat>['history']}
-    onCancel={vi.fn()} onRespond={vi.fn()} onSendAgain={onSendAgain} />)
+    onCancel={vi.fn()} onRespond={vi.fn()} onSendAgain={onSendAgain} /></QueryClientProvider>)
   fireEvent.click(screen.getByRole('button', { name: 'Send again as new message' }))
   expect(onSendAgain).toHaveBeenCalledExactlyOnceWith('Inspect files', [], mode)
 })
