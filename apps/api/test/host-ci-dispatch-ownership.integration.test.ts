@@ -129,8 +129,119 @@ async function fixture() {
     await app.close()
   }
   return { pool, workspaceId, repository, operator, connect, call, value, enqueue, read, ci,
-    createService, control, remote, starts, computers, close }
+    createService, control, remote, starts, computers, endpoint, close }
 }
+
+function failingCloud(f: Awaited<ReturnType<typeof fixture>>, provider: 'github' | 'circleci') {
+  const computer: HostCiComputer = { key: `cloud:${provider}`, label: 'Cloud executor', priority: 10,
+    hostRef: { kind: 'cloud', mainId: 'test-main', provider, slot: 0 } }
+  f.computers.splice(0, 2, computer)
+  const request = f.endpoint.request.bind(f.endpoint)
+  let attempts = 0
+  f.endpoint.request = async (target, input) => {
+    if (target.hostRef.kind === 'cloud' && input.operation === 'start') {
+      attempts++
+      throw new DomainError('CI_CLOUD_FAILED', 'Selected integration files are absent from the commit.', 502)
+    }
+    return request(target, input)
+  }
+  return { computer, attempts: () => attempts }
+}
+
+it.each(['github', 'circleci'] as const)(
+  'cancels an accepted %s dispatch with a lost reply without replaying start through MCP', async provider => {
+    const f = await fixture()
+    const computer: HostCiComputer = { key: `cloud:${provider}`, label: 'Cloud executor', priority: 10,
+      hostRef: { kind: 'cloud', mainId: 'test-main', provider, slot: 0 } }
+    f.computers.splice(0, 2, computer)
+    let calls = 0
+    f.control.onStart = async () => {
+      calls++
+      throw new DomainError('CI_CLOUD_FAILED', 'The start reply was lost.', 502)
+    }
+    try {
+      const ticket = await f.enqueue()
+      f.control.available = true
+      await f.ci.dispatch()
+      expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting', startedAt: null })
+      await f.value('ci_cancel', { ticketId: ticket.ticketId })
+      expect(calls).toBe(1)
+      expect((await f.read(ticket.ticketId)).state).toBe('canceled')
+      expect(f.remote.get(`${computer.key}:${ticket.ticketId}`)?.state).toBe('canceled')
+      expect((await f.pool.query('select host_key from ci_runs where id=$1', [ticket.ticketId])).rows)
+        .toEqual([{ host_key: null }])
+    } finally { await f.close() }
+  })
+
+it.each(['github', 'circleci'] as const)(
+  'retries an unstarted %s ticket twice across Main restarts and frees its slot through MCP', async provider => {
+    const f = await fixture()
+    const cloud = failingCloud(f, provider)
+    const restarted: HostCiService[] = []
+    try {
+      const ticket = await f.enqueue()
+      f.control.available = true
+      await f.ci.dispatch()
+      expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'starting', startedAt: null })
+      expect(cloud.attempts()).toBe(1)
+      await f.ci.dispatch()
+      expect(cloud.attempts()).toBe(1)
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const at = new Date(Date.now() - 75_100).toISOString()
+        await f.pool.query(`update ci_runs set record=jsonb_set(record,'{dispatchedAt}',to_jsonb($2::text))
+          where id=$1`, [ticket.ticketId, at])
+        const service = f.createService()
+        restarted.push(service)
+        await service.dispatch()
+      }
+      expect(cloud.attempts()).toBe(3)
+      expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'queued', computer: null,
+        startedAt: null, unstartedProviders: [provider] })
+      const stored = (await f.pool.query('select state,host_key from ci_runs where id=$1', [ticket.ticketId])).rows[0]
+      expect(stored).toEqual({ state: 'queued', host_key: null })
+      const replacement: HostCiComputer = { key: 'replacement', label: 'Replacement executor', priority: 0,
+        hostRef: { kind: 'device', mainId: 'test-main', deviceId: 'replacement' } }
+      f.computers.push(replacement)
+      await restarted.at(-1)!.dispatch()
+      expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'running',
+        computer: { hostRef: replacement.hostRef } })
+      expect(f.starts[0]!.request.runId).toBe(ticket.ticketId)
+    } finally {
+      await Promise.all(restarted.map(service => service.close()))
+      await f.close()
+    }
+  })
+
+it.each(['github', 'circleci'] as const)(
+  'cancels an unstarted %s ticket through MCP without resolving its selected files again', async provider => {
+    const f = await fixture()
+    const cloud = failingCloud(f, provider)
+    try {
+      const ticket = await f.enqueue()
+      f.control.available = true
+      await f.ci.dispatch()
+      expect(cloud.attempts()).toBe(1)
+      const reader = await f.connect(CI_GET_ACTIONS)
+      expect((await f.call(reader.client, 'ci_cancel', { ticketId: ticket.ticketId })).isError).toBe(true)
+      expect((await f.read(ticket.ticketId)).state).toBe('starting')
+      await f.value('ci_cancel', { ticketId: ticket.ticketId })
+      await f.value('ci_cancel', { ticketId: ticket.ticketId })
+      expect(cloud.attempts()).toBe(1)
+      expect(await f.read(ticket.ticketId)).toMatchObject({ state: 'canceled', startedAt: null,
+        finishedAt: expect.any(String) })
+      expect((await f.pool.query('select state,host_key from ci_runs where id=$1', [ticket.ticketId])).rows)
+        .toEqual([{ state: 'canceled', host_key: null }])
+      expect((await f.pool.query("select details from management_audit where action='ci.cancel' and target_key=$1",
+        [`ci:${ticket.ticketId}`])).rows).toHaveLength(1)
+      f.endpoint.request = async (_target, input) => {
+        if (input.operation !== 'start') throw new Error('Expected a replacement start')
+        return { operation: 'start', run: { runId: input.runId, state: 'running', step: input.suite,
+          startedAt: new Date().toISOString(), finishedAt: null, exitCode: null, logBytes: 0, message: null } }
+      }
+      const next = await f.enqueue({ commandId: randomUUID() })
+      expect((await f.read(next.ticketId)).state).toBe('running')
+    } finally { await f.close() }
+  })
 
 it('audits queued and running MCP cancellation once with the caller and request identity', async () => {
   const f = await fixture()
