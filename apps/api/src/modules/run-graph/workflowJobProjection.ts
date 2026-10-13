@@ -6,8 +6,8 @@ import {
 import { repeatSlotId } from '../runs/repeatResolution.js'
 import { assertGraphTransaction, type GraphTransactionSql } from './connection.js'
 import { RunGraphError } from './errors.js'
-import { graphSourceDigest } from './publication.js'
-import { repeatExecutionStateDigest } from './repeatExecutionPublication.js'
+import { graphSourceDigest } from './graphDigest.js'
+import { repeatExecutionStateDigest } from './graphDigest.js'
 
 interface JobProjectionRow {
   execution_id: string

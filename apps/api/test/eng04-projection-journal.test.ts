@@ -15,7 +15,7 @@ async function publish(db: ProjectionDatabase, count = 1) {
   let publication!: RunGraphPublication<RepeatGraphScopeV3>
   try {
     await connection.transaction(async sql => {
-      publication = await openRunGraphPublication(sql, projectionScope)
+      publication = await openRunGraphPublication(sql, projectionScope, db.readPublicProjection)
       for (let n = 0; n < count; n++) {
         const id = String(n), input = publicationInput(id)
         const result = await publication.repeatChange(input, db.owner,
@@ -58,7 +58,7 @@ describe('ENG04 existing journal, SQL-shaped only', () => {
   it('a caught digest conflict still rolls the entire transaction back', async () => {
     const db = await database(); await publish(db); const before = structuredClone(db.state), c = db.connection()
     try { await assert.rejects(c.transaction(async sql => {
-      const p = await openRunGraphPublication(sql, projectionScope)
+      const p = await openRunGraphPublication(sql, projectionScope, db.readPublicProjection)
       const wrong = { ...publicationInput('0'), sourceDigest: `sha256:${'b'.repeat(64)}` }
       await assert.rejects(p.repeatChange(wrong, db.owner, async () => undefined, async () => [occurrenceFact('0')]))
     })) } finally { await c.close() }
@@ -139,12 +139,12 @@ describe('ENG04 existing journal, SQL-shaped only', () => {
       inputDigest: projectionDigest, previousExecutionId: null, state: 'completed' as const, resultOutcome: 'canceled' as const }
     try {
       await c.transaction(async sql => {
-        const p = await openRunGraphPublication(sql, projectionScope)
+        const p = await openRunGraphPublication(sql, projectionScope, db.readPublicProjection)
         await p.repeatObservation({ evidence: { sourceKind: 'execution', sourceId: 'native-terminal', sourceRevision: '1' }, sourceDigest: projectionDigest },
           db.owner, async () => undefined, async () => [{ type: 'repeat.execution', execution }])
       })
       await assert.rejects(c.transaction(async sql => {
-        const p = await openRunGraphPublication(sql, projectionScope)
+        const p = await openRunGraphPublication(sql, projectionScope, db.readPublicProjection)
         await p.repeatObservation({ evidence: { sourceKind: 'execution', sourceId: 'native-running', sourceRevision: '1' }, sourceDigest: projectionDigest },
           db.owner, async transaction => { await transaction.query('update projection_test_domain set revision=revision+1') },
           async () => [{ type: 'repeat.execution', execution: { ...execution, state: 'running', resultOutcome: null } }])

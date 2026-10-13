@@ -1,5 +1,8 @@
+import type { PublicProjectionReader } from './publicProjectionReader.js'
+import { readPublicProjectionLocked } from './compactSnapshot.js'
+import { canonicalRepeatEffect, canonicalRepeatEffectReceipt } from './repeatEffects.js'
 import {
-  canonicalGraphJson, GraphDigestSchema, GraphIdSchema, RepeatGraphEffectV3Schema,
+  canonicalGraphJson, RepeatGraphEffectV3Schema,
   RepeatGraphFactV3Schema, RepeatGraphScopeV3Schema, sameCanonicalGraphScope,
   qualifyRepeatGraphExecution, validateRepeatGraphFactsV3, RUN_GRAPH_LIMITS,
   type RepeatGraphEffectV3, type RepeatGraphFactV3, type RepeatGraphScopeV3, type WorkflowVersionV3,
@@ -24,30 +27,11 @@ import { assertPublicProjectionCommittedLocked } from './publicProjectionReceipt
 import { DomainError } from '../errors.js'
 import { workflowJobGraphSourceChangesLocked } from './workflowJobProjection.js'
 
+export { canonicalRepeatEffect, canonicalRepeatEffectReceipt } from './repeatEffects.js'
+
 const same = (left: unknown, right: unknown) => canonicalGraphJson(left) === canonicalGraphJson(right)
 const fail = (): never => { throw new RunGraphError('GRAPH_INVARIANT_VIOLATION') }
 
-/** Storage categories are the EXISTING effect_kind CHECK values, not new SQL
- * kinds. operation + subjectId are explicit public v3 meaning. Qualified keys
- * prevent occurrence input, execution input and completion from aliasing. */
-export function canonicalRepeatEffect(scope: RepeatGraphScopeV3, value: RepeatEffect): RepeatGraphEffectV3 {
-  RepeatGraphScopeV3Schema.parse(scope)
-  GraphIdSchema.parse(value.entityId); GraphDigestSchema.parse(value.digest)
-  const kinds = { 'occurrence.create': 'input.bind', 'input.bind': 'input.bind', 'terminal.accept': 'result.accept',
-    'node.inactive': 'route.resolve', 'run.complete': 'route.resolve' } as const
-  return RepeatGraphEffectV3Schema.parse({ operation: value.kind, subjectId: value.entityId, digest: value.digest,
-    identity: { kind: kinds[value.kind], entityId: repeatId('repeat-effect', scope.runId, scope.workflowVersionId, value.kind, value.entityId) } })
-}
-export function canonicalRepeatEffectReceipt(scope: RepeatGraphScopeV3, value: RepeatEffect,
-  semanticDigest?: string): RepeatCanonicalReceipt {
-  const effect = canonicalRepeatEffect(scope, value)
-  const kinds = { 'occurrence.create': 'input_binding', 'input.bind': 'input_binding', 'terminal.accept': 'node_resolution',
-    'node.inactive': 'node_resolution', 'run.complete': 'run' } as const
-  return { scope, evidence: { sourceKind: kinds[value.kind],
-    sourceId: repeatId('repeat-source', scope.runId, scope.workflowVersionId, value.kind, value.entityId), sourceRevision: '1' },
-  sourceDigest: value.digest, effect: { kind: effect.identity.kind, entityId: effect.identity.entityId, digest: effect.digest },
-  ...(semanticDigest === undefined ? {} : { semanticDigest }) }
-}
 export function canonicalRepeatLaunchEffect(claim: RepeatLaunchClaim, digest: string): RepeatGraphEffectV3 {
   if (repeatDigest(claim) !== digest) return fail()
   return RepeatGraphEffectV3Schema.parse({ operation: 'execution.launch', subjectId: claim.executionId,
@@ -163,8 +147,8 @@ export async function openRepeatCanonicalPublicationLocked(sql: GraphTransaction
     const scope = RepeatGraphScopeV3Schema.parse(input)
     owner.assertOwned()
     if (owner.runId !== scope.runId) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
-    if (isReadOnlyGraphTransaction(sql)) return await readRepeatCanonicalPublication(sql, scope, owner)
-    const publication = existing ?? await openRunGraphPublication(sql, scope)
+    if (isReadOnlyGraphTransaction(sql)) return await readRepeatCanonicalPublication(sql, scope, owner, readPublicProjectionLocked)
+    const publication = existing ?? await openRunGraphPublication(sql, scope, readPublicProjectionLocked)
     if (publication.sql !== sql || !sameCanonicalGraphScope(publication.scope, scope)) throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
     assertRunGraphPublication(sql, scope)
     const { version } = await readRepeatGraphPinsLocked(sql, scope)
@@ -273,11 +257,11 @@ export async function openRepeatCanonicalPublicationLocked(sql: GraphTransaction
 
 /** Owner observations validate committed sources without opening a writer or staging finalization. */
 async function readRepeatCanonicalPublication(sql: GraphTransactionSql, scope: RepeatGraphScopeV3,
-  owner: RunOwnership): Promise<RepeatCanonicalPublication> {
+  owner: RunOwnership, readPublicProjection: PublicProjectionReader): Promise<RepeatCanonicalPublication> {
   const { version } = await readRepeatGraphPinsLocked(sql, scope)
   const source = await readRepeatRunSourceLocked(sql, scope)
   if (!source.replayed) throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')
-  await assertPublicProjectionCommittedLocked(sql, scope, source.head)
+  await assertPublicProjectionCommittedLocked(sql, scope, source.head, readPublicProjection)
   if (version.definition.nodes.some(node => node.kind === 'job')
     && (await workflowJobGraphSourceChangesLocked(sql, scope)).length) {
     throw new RunGraphError('GRAPH_INVARIANT_VIOLATION')

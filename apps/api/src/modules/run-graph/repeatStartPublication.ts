@@ -1,3 +1,4 @@
+import { readPublicProjectionLocked } from './compactSnapshot.js'
 import {
   AcceptedRepeatStartV1Schema, canonicalGraphJson, RepeatGraphScopeV3Schema,
   type RepeatGraphScopeV3, type AcceptedRepeatStartV1,
@@ -34,7 +35,7 @@ export const repeatStartPublication: RepeatStartPublication = Object.freeze({
         || canonicalGraphJson(byId(pins.configurations)) !== canonicalGraphJson(byId(accepted.snapshot.executable.configurations))) {
         throw new RunGraphError('GRAPH_SCOPE_MISMATCH')
       }
-      const publication = await openRunGraphPublication(sql, scope, { historyCoverage: 'from_admission' })
+      const publication = await openRunGraphPublication(sql, scope, readPublicProjectionLocked, { historyCoverage: 'from_admission' })
       const receipt = await publication.repeatInsertedRunReadback(run)
       requireRepeatCanonicalReceiptBeforeCommit(sql, { scope, evidence: receipt.evidence,
         sourceDigest: receipt.sourceDigest, semanticDigest: receipt.semanticDigest, effect: null })

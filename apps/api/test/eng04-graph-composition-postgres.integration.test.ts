@@ -1,3 +1,4 @@
+import { readPublicProjectionLocked } from '../src/modules/run-graph/compactSnapshot.js'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
   canonicalGraphJson, RepeatGraphPageV3Schema, reduceRepeatGraphPageV3, RUN_GRAPH_LIMITS,
@@ -82,19 +83,19 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / disposable PostgreS
   it('enlists a real ownerless SQL Stop, permits exact receipt replay and rejects progress after Stop', async () => {
     const t = await fixture(), initial = await snapshot(t)
     await withExclusiveGraphConnection(db.pool, (connection) => connection.transaction(async (sql) => {
-      const publication = await openRunGraphPublication(sql, t.scope)
+      const publication = await openRunGraphPublication(sql, t.scope, readPublicProjectionLocked)
       await sql.query('update runs set stop_requested_at=clock_timestamp() where id=$1', [t.run.id])
       await publishRepeatStoppedRunLocked(publication)
     }))
     expect(await graphPosition(db, t)).toBe('2')
     await withExclusiveGraphConnection(db.pool, (connection) => connection.transaction(async (sql) =>
-      publishRepeatStoppedRunLocked(await openRunGraphPublication(sql, t.scope))))
+      publishRepeatStoppedRunLocked(await openRunGraphPublication(sql, t.scope, readPublicProjectionLocked))))
     expect(await graphPosition(db, t)).toBe('2')
     const page = RepeatGraphPageV3Schema.parse(await events(t, '1'))
     expect(reduceRepeatGraphPageV3(initial, page)).toEqual(await snapshot(t))
     let mutated = false
     await expect(ownedGraph(db, t, (owner) => owner.oneShotConnection().transaction(async (sql) => {
-      const publication = await openRunGraphPublication(sql, t.scope)
+      const publication = await openRunGraphPublication(sql, t.scope, readPublicProjectionLocked)
       await publication.repeatChange({ evidence: { sourceKind: 'run', sourceId: 'test-stop-progress', sourceRevision: '1' },
         sourceDigest: graphSourceDigest('stop-progress'), effect: null }, owner,
       async () => { mutated = true }, async () => [{ type: 'repeat.run.state', state: initial.state.run }])
@@ -106,7 +107,7 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / disposable PostgreS
   it('rolls back on actual advisory owner-fence loss before COMMIT, even after publication was staged', async () => {
     const t = await fixture()
     await expect(ownedGraph(db, t, (owner) => owner.oneShotConnection().transaction(async (sql) => {
-      const publication = await openRunGraphPublication(sql, t.scope)
+      const publication = await openRunGraphPublication(sql, t.scope, readPublicProjectionLocked)
       await sql.query(`update runs set execution_state='running',record=jsonb_set(record,'{executionState}','"running"') where id=$1`, [t.run.id])
       await publishRepeatRunStateLocked(publication, owner)
       // Real session lock loss; not a mocked owner or a native process claim.
@@ -119,7 +120,7 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / disposable PostgreS
   it('rolls back after actual owner loss in an intervening commit finalizer', async () => {
     const t = await fixture(), before = await snapshot(t)
     await expect(ownedGraph(db, t, owner => owner.oneShotConnection().transaction(async sql => {
-      const publication = await openRunGraphPublication(sql, t.scope)
+      const publication = await openRunGraphPublication(sql, t.scope, readPublicProjectionLocked)
       await sql.query(`update runs set execution_state='running',record=jsonb_set(record,'{executionState}','"running"') where id=$1`, [t.run.id])
       await publishRepeatRunStateLocked(publication, owner)
       beforeGraphCommit(sql, async () => {
@@ -137,7 +138,7 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / disposable PostgreS
   it('cannot borrow a real owner on a different PostgreSQL session', async () => {
     const t = await fixture()
     await expect(ownedGraph(db, t, (owner) => withExclusiveGraphConnection(db.pool, (connection) => connection.transaction(async (sql) => {
-      const publication = await openRunGraphPublication(sql, t.scope)
+      const publication = await openRunGraphPublication(sql, t.scope, readPublicProjectionLocked)
       await publishRepeatRunStateLocked(publication, owner)
     })))).rejects.toBeDefined()
     expect(await graphPosition(db, t)).toBe('1')
@@ -153,7 +154,7 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / disposable PostgreS
     // White-box journal capacity test: distinct test source identities point to
     // the ACTUAL same physical metadata. No engine/native evidence is invented.
     const publish = () => ownedGraph(db, t, (owner) => owner.oneShotConnection().transaction(async (sql) => {
-      const publication = await openRunGraphPublication(sql, t.scope)
+      const publication = await openRunGraphPublication(sql, t.scope, readPublicProjectionLocked)
       for (let i = 0; i < count; i++) await publication.repeatRunReadback({
         evidence: { sourceKind: 'run', sourceId: `capacity-source-${i}`, sourceRevision: '1' },
         sourceDigest: graphSourceDigest({ testSource: i, fact }),
@@ -184,7 +185,7 @@ describe.skipIf(!postgresEnabled)('ENG04 graph composition / disposable PostgreS
   it('rejects a reordered complete source group via its permanent ordered-envelope receipt', async () => {
     const t = await fixture(), initial = await snapshot(t)
     await ownedGraph(db, t, (owner) => owner.oneShotConnection().transaction(async (sql) => {
-      const publication = await openRunGraphPublication(sql, t.scope)
+      const publication = await openRunGraphPublication(sql, t.scope, readPublicProjectionLocked)
       for (const id of ['ordering-a', 'ordering-b']) await publication.repeatRunReadback({
         evidence: { sourceKind: 'run', sourceId: id, sourceRevision: '1' }, sourceDigest: graphSourceDigest(id),
       }, owner, async () => [{ type: 'repeat.run.state', state: initial.state.run }])

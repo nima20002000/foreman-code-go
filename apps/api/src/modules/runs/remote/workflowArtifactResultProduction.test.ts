@@ -15,7 +15,8 @@ import { createProductionWorkflowArtifactResultSource } from './workflowArtifact
 const reads = vi.hoisted(() => ({ snapshot: vi.fn(), execution: vi.fn(), dispatch: vi.fn(), intent: vi.fn(),
   receipt: vi.fn(), placement: vi.fn() }))
 vi.mock('../repeatStartRead.js', () => ({ readAcceptedRepeatRunLocked: reads.snapshot }))
-vi.mock('../repeatPostgres.js', () => ({ readRepeatExecutionLocked: reads.execution }))
+vi.mock('../repeatPostgres.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../repeatPostgres.js')>(), readRepeatExecutionLocked: reads.execution }))
 vi.mock('../../placement/persistence.js', () => ({ readDispatchIntent: reads.dispatch, readAcceptedPlacement: reads.placement }))
 vi.mock('./persistence.js', () => ({ readReconciledDispatchIntent: reads.intent }))
 vi.mock('../../run-graph/repeatReceipts.js', () => ({ assertRepeatCanonicalReceiptLocked: reads.receipt,

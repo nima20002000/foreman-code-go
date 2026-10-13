@@ -3,8 +3,8 @@ import {
   GraphSequenceSchema, type PublicGraphProjection, type PublicGraphDelta, type RunGraphScope,
 } from '@foreman-code/contracts/wave25'
 import { assertGraphTransaction, type GraphTransactionSql } from './connection.js'
-import { readPublicProjectionLocked } from './compactSnapshot.js'
-import { graphSourceDigest } from './publication.js'
+import type { PublicProjectionReader } from './publicProjectionReader.js'
+import { graphSourceDigest } from './graphDigest.js'
 import { RunGraphError } from './errors.js'
 
 /** A materialized, digest-checked public view, not a second domain store or journal.
@@ -63,17 +63,17 @@ async function stored(sql: GraphTransactionSql, scope: RunGraphScope) {
 /** Called BEFORE any producer mutation, under the same Run/head lock. A later
  * writer cannot "heal" an unjournaled/corrupt public domain cut by adopting it. */
 export async function assertPublicProjectionCommittedLocked(sql: GraphTransactionSql, scope: RunGraphScope,
-  head: string, actual?: PublicGraphProjection): Promise<void> {
+  head: string, readPublicProjection: PublicProjectionReader, actual?: PublicGraphProjection): Promise<void> {
   assertGraphTransaction(sql)
   const prior = await stored(sql, scope)
   if (!prior || BigInt(GraphSequenceSchema.parse(prior.sequence)) < 1n || BigInt(prior.sequence) > BigInt(GraphSequenceSchema.parse(head))
-    || !same(prior.projection, actual ?? await readPublicProjectionLocked(sql, scope))) return fail()
+    || !same(prior.projection, actual ?? await readPublicProjection(sql, scope))) return fail()
 }
 
 /** Called once by G1, after all SQL producers and before the batch is finalized.
  * Compare canonical values, not elapsed time or presence/absence of a process. */
 export async function capturePublicProjectionLocked(sql: GraphTransactionSql,
-  scope: RunGraphScope): Promise<PublicProjectionReceipt | undefined> {
+  scope: RunGraphScope, readPublicProjection: PublicProjectionReader): Promise<PublicProjectionReceipt | undefined> {
   assertGraphTransaction(sql)
   const head = (await sql.query<{ sequence: string }>(
     'select head_sequence::text as sequence from run_graph_heads where run_id=$1', [scope.runId])).rows[0]
@@ -81,7 +81,7 @@ export async function capturePublicProjectionLocked(sql: GraphTransactionSql,
   const cursor = BigInt(GraphSequenceSchema.parse(head.sequence))
   const prior = await stored(sql, scope)
   if (!prior && cursor !== 0n) return fail()
-  const projection = await readPublicProjectionLocked(sql, scope)
+  const projection = await readPublicProjection(sql, scope)
   if (prior && same(prior.projection, projection)) return undefined
   const delta = publicProjectionDelta(prior?.projection, projection)
   const evidence = { sourceKind: 'run' as const, sourceId: sourceId(scope.runId), sourceRevision: GraphSequenceSchema.parse(String(cursor + 1n)) }
@@ -94,8 +94,8 @@ export async function capturePublicProjectionLocked(sql: GraphTransactionSql,
   return { projection, evidence, sourceDigest, semanticDigest, fact }
 }
 export async function assertPublicProjectionUnchangedLocked(sql: GraphTransactionSql, scope: RunGraphScope,
-  receipt: PublicProjectionReceipt): Promise<void> {
-  const current = await readPublicProjectionLocked(sql, scope)
+  receipt: PublicProjectionReceipt, readPublicProjection: PublicProjectionReader): Promise<void> {
+  const current = await readPublicProjection(sql, scope)
   if (!same(receipt.projection, current)) return fail()
-  await assertPublicProjectionCommittedLocked(sql, scope, receipt.evidence.sourceRevision, current)
+  await assertPublicProjectionCommittedLocked(sql, scope, receipt.evidence.sourceRevision, readPublicProjection, current)
 }

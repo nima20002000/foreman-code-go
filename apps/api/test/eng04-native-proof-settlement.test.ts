@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test, vi } from 'vitest'
 import * as snapshots from '../src/modules/runs/repeatStartRead.js'
-import * as executions from '../src/modules/runs/repeatPostgres.js'
+import * as executions from '../src/modules/runs/repeatExecutionRead.js'
 import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import { type GraphTransactionSql } from '../src/modules/run-graph/connection.js'
 import { settleRepeatNativeExecutionLocked, settleRepeatNativeExecutionWithProofLocked } from '../src/modules/interactions/repeatNativeSettlement.js'

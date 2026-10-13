@@ -1,3 +1,4 @@
+import { readPublicProjectionLocked } from '../../src/modules/run-graph/compactSnapshot.js'
 import assert from 'node:assert/strict'
 import { JobExecutionRecordSchema } from '@foreman-code/contracts/job-verification'
 import type { JobWorkflowNode } from '@foreman-code/contracts/job-workflow'
@@ -77,7 +78,7 @@ export async function workflowJobFixture(db: Awaited<ReturnType<typeof currentDa
         const next = JobExecutionRecordSchema.parse({ ...current,
           process: { phase: 'terminal', outcome: 'succeeded', exitCode: 0, signal: null, processStopped: true },
           publication: 'complete', startedAt: current.createdAt, finishedAt: new Date().toISOString() })
-        const publication = await openRunGraphPublication(sql, f.scope)
+        const publication = await openRunGraphPublication(sql, f.scope, readPublicProjectionLocked)
         const facts = publicNodeProjectionFacts(await readPublicNodeProjection(sql, f.scope, [node.id], { jobs: [next] }))
         const sourceDigest = repeatDigest(next)
         await publication.source({ evidence: { sourceKind: 'execution',

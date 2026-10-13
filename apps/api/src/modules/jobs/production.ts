@@ -1,3 +1,4 @@
+import { readPublicProjectionLocked } from '../run-graph/compactSnapshot.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { withTransaction } from '../../infrastructure/transaction.js'
 import { componentLogger } from '../diagnostics/logger.js'
@@ -321,7 +322,7 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
         const snapshot = await readAcceptedRepeatRunLocked(sql, execution.workflow.runId)
         const scope = { runId: snapshot.run.id, workspaceId: snapshot.run.workspaceId, workflowId: snapshot.run.workflowId,
           workflowVersionId: snapshot.version.id, executionSemanticsVersion: 3 as const }
-        await publishWorkflowJobReceiptLocked(await openRunGraphPublication(sql, scope), execution, receipt, artifacts)
+        await publishWorkflowJobReceiptLocked(await openRunGraphPublication(sql, scope, readPublicProjectionLocked), execution, receipt, artifacts)
       } else await projectJobReceiptLocked(sql, execution, receipt, artifacts)
     },
   }, input.workerExecution)

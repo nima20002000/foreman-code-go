@@ -10,7 +10,7 @@ import type { GraphTransactionSql } from './connection.js'
 import { graphSourceDigest, readRepeatRunSourceLocked, repeatGraphBatchReceipt } from './publication.js'
 import { canonicalRepeatEffect, canonicalRepeatEffectReceipt } from './repeatPublication.js'
 import { boundedRepeatRows } from './repeatProjectionRows.js'
-import { repeatExecutionStateDigest } from './repeatExecutionPublication.js'
+import { repeatExecutionStateDigest } from './graphDigest.js'
 import { RunGraphError } from './errors.js'
 
 const fail = (): never => { throw new RunGraphError('GRAPH_INVARIANT_VIOLATION') }

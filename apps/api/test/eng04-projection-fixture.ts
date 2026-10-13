@@ -1,3 +1,5 @@
+import type { PublicProjectionReader } from '../src/modules/run-graph/publicProjectionReader.js'
+import { readPublicProjectionLocked } from '../src/modules/run-graph/compactSnapshot.js'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import type pg from 'pg'
@@ -31,6 +33,7 @@ interface State { head: number; floor: number; domain: number; stopped: boolean;
  * Unknown SQL is an error. The actual transaction facade/publication/receipt
  * verifier/page reader execute against this model, without a fake receipt hook. */
 export class ProjectionDatabase {
+  constructor(readonly readPublicProjection: PublicProjectionReader = readPublicProjectionLocked) {}
   state: State = { head: 0, floor: 0, domain: 0, stopped: false, executionState: 'queued', outcome: 'pending', sources: [], effects: [], batches: [], cleanupPending: false, projection: null }
   scope = { ...projectionScope } as { workspaceId: string; workflowId: string; workflowVersionId: string; runId: string; executionSemanticsVersion: number }
   initialized = false
@@ -66,7 +69,7 @@ export class ProjectionDatabase {
     const c = this.connection()
     try {
       await c.transaction(async (sql) => {
-        const publication = await openRunGraphPublication(sql, projectionScope, { historyCoverage: 'from_admission' })
+        const publication = await openRunGraphPublication(sql, projectionScope, this.readPublicProjection, { historyCoverage: 'from_admission' })
         await publication.repeatInsertedRunReadback(this.fixture.run)
       })
       assert.equal(this.state.head, 1)
@@ -77,7 +80,7 @@ export class ProjectionDatabase {
   async changeRun(patch: { stopped?: boolean; executionState?: string; outcome?: string; cleanupPending?: boolean }) {
     const c = this.connection()
     try { await c.transaction(async (sql) => {
-      await openRunGraphPublication(sql, projectionScope)
+      await openRunGraphPublication(sql, projectionScope, this.readPublicProjection)
       await sql.query('update projection_test_run set fields=$1', [patch])
     }) } finally { await c.close() }
   }

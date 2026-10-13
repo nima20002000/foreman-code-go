@@ -1,3 +1,5 @@
+import { readPublicProjectionLocked } from '../src/modules/run-graph/compactSnapshot.js'
+import type { PublicProjectionReader } from '../src/modules/run-graph/publicProjectionReader.js'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
@@ -25,7 +27,9 @@ interface Fixture {
 }
 const shared = vi.hoisted(() => ({ current: undefined as Fixture | undefined }))
 const current = () => { assert.ok(shared.current); return shared.current }
-const digest = (value: unknown) => 'sha256:' + createHash('sha256').update(JSON.stringify(value)).digest('hex')
+function digest(value: unknown) {
+  return 'sha256:' + createHash('sha256').update(JSON.stringify(value)).digest('hex')
+}
 const stateDigest = (db: Database) => digest({ run: db.run, stopped: db.stopped })
 function readback() {
   const db = current().db()
@@ -44,20 +48,23 @@ function stage(sql: GraphTransactionSql) {
   })
   return receipt
 }
-vi.mock('../src/modules/run-graph/publication.js', () => {
+vi.mock('../src/modules/run-graph/publication.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/modules/run-graph/publication.js')>()
   const publications = new WeakMap<GraphTransactionSql, {
     sql: GraphTransactionSql; scope: EffectGuard['expected']['scope']
     effect(input: EffectInput, guard: EffectGuard, mutate: (sql: GraphTransactionSql) => Promise<void>): Promise<void>
     repeatStoppedRunReadback(): Promise<ReturnType<typeof stage>>
   }>()
   return {
+    ...actual,
     graphSourceDigest: digest,
     currentRunGraphPublication: (sql: GraphTransactionSql, scope: unknown) => {
       const publication = publications.get(sql)
       assert.deepEqual(publication?.scope, scope)
       return publication
     },
-    openRunGraphPublication: async (sql: GraphTransactionSql, scope: EffectGuard['expected']['scope'], options?: unknown) => {
+    openRunGraphPublication: async (sql: GraphTransactionSql, scope: EffectGuard['expected']['scope'], reader: PublicProjectionReader, options?: unknown) => {
+      assert.equal(reader, readPublicProjectionLocked)
       assert.equal(options, undefined, 'lifecycle must not initialize a missing head')
       if (current().missingHead) throw Object.assign(new Error('missing head'), { code: 'GRAPH_NOT_INITIALIZED' })
       const publication = { sql, scope,

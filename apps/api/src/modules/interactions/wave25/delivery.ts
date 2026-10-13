@@ -5,7 +5,8 @@ import { PostgresInteractionDeliveryRepository, type GraphResumeClaim } from '..
 import { observeNativeDispatch } from './dispatchWait.js'
 import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence,
   type InteractionDeliveryClaim, type NativeDeliveryOutcome } from '../delivery.js'
-import { assertBudget, fail, isCurrentApprovalRun, lockInteraction, readContext, runFor, transact, requireLeaseAtCommit } from './context.js'
+import { transact } from './transaction.js'
+import { assertBudget, fail, isCurrentApprovalRun, lockInteraction, readContext, runFor, requireLeaseAtCommit } from './context.js'
 import { decisionDigest, nextInteraction, publishInteraction } from './publication.js'
 import type { GraphTransactionSql } from '../../run-graph/connection.js'
 import { claimResume, finishResume, renewResume } from './resume.js'

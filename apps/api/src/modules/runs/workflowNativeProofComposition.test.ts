@@ -10,7 +10,8 @@ import type { StoredRepeatExecution } from './repeatPostgres.js'
 import type { RepeatScope } from './repeatResolution.js'
 import { WorkflowNativeProofServices } from './workflowNativeProof.js'
 import { appendWorkflowNativeGraphEventLocked } from './workflowNativeGraph.js'
-vi.mock('../run-graph/publication.js', () => ({ currentRunGraphPublication: () => ({
+vi.mock('../run-graph/publication.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../run-graph/publication.js')>(), currentRunGraphPublication: () => ({
   retainNativeSource: async () => ({ sourceDigest: 'original-proof-digest', sourceId: 'original-proof' }),
 }) }))
 vi.mock('../run-graph/repeatReceipts.js', () => ({ requireRepeatCanonicalReceiptBeforeCommit: vi.fn() }))
