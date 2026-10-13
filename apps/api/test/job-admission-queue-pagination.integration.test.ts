@@ -27,9 +27,27 @@ describe.skipIf(!postgresEnabled)('durable build admission queue: pagination', (
     const completed: string[] = []
     for (let index = 0; index < 105; index++) {
       const ticket = await submit(f, definition)
+      if (index === 0) {
+        const target = f.computers[1]!.target
+        const currentSetting = await f.settings.read(writer.principal, { target })
+        await f.settings.update(writer.principal, 'http', { target,
+          commandId: randomUUID(), expectedRevision: currentSetting.preference.revision,
+          buildEnabled: false, buildPriority: 100 })
+      }
+      await f.jobs.wakeQueue()
+      const currentTicket = await f.jobs.getQueueTicket(reader.principal, f.workspaceId, ticket.id)
+      if (index === 0) {
+        expect(currentTicket.revision).toBeGreaterThan(ticket.revision)
+        await expect(f.jobs.cancelQueued(writer.principal, 'http', f.workspaceId,
+          { commandId: randomUUID(), ticketId: ticket.id, expectedRevision: ticket.revision }))
+          .rejects.toMatchObject({ code: 'REVISION_CONFLICT', status: 409 })
+        expect(await f.jobs.getQueueTicket(reader.principal, f.workspaceId, ticket.id)).toEqual(currentTicket)
+      }
       const cancelled = await f.jobs.cancelQueued(writer.principal, 'http', f.workspaceId,
-        { commandId: randomUUID(), ticketId: ticket.id, expectedRevision: ticket.revision })
+        { commandId: randomUUID(), ticketId: ticket.id, expectedRevision: currentTicket.revision })
       expect(cancelled.state).toBe('terminal')
+      expect(cancelled.terminalReason).toBe('cancelled')
+      expect(await f.jobs.getQueueTicket(reader.principal, f.workspaceId, ticket.id)).toEqual(cancelled)
       completed.push(ticket.id)
     }
     const app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
