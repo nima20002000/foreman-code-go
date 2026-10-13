@@ -47,6 +47,28 @@ it('persists a pending remote interaction and its run activity without native se
   }
 }, 30_000)
 
+it('reads back a checkpoint-bound approval from its original workflow execution', async () => {
+  const f = await remoteControlDatabase()
+  try {
+    const persisted = await f.repository.get(f.interaction.id)
+    expect(persisted).toMatchObject({
+      runId: f.interaction.runId,
+      workflowId: f.interaction.workflowId,
+      executionId: f.interaction.executionId,
+      nativeSessionId: f.interaction.nativeSessionId,
+      nativeRequestId: f.interaction.nativeRequestId,
+      status: 'pending',
+      deliveryState: 'not_started',
+      approval: { handler: 'user' },
+    })
+    expect(persisted?.graphThreadId).toBe(f.interaction.runId)
+    expect(persisted?.graphInterruptId).toEqual(expect.any(String))
+    expect(persisted?.graphInterruptId).not.toBe('')
+  } finally {
+    await f.close()
+  }
+}, 30_000)
+
 it('persists generation-zero remote admission and keeps its original snapshot immutable', async () => {
   const f = await remoteControlDatabase()
   try {
