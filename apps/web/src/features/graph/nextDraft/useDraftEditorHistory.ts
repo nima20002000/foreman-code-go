@@ -6,6 +6,7 @@ import type { useScheduleCommand } from '../../schedules/queries'
 import type { useWorkflowBoard } from '../../workflow-board/context'
 import type { DraftEditorCore } from './useDraftEditorCore'
 import type { useGraphEditIntent } from './useGraphEditIntent'
+import { canUndoNextDraft } from './state'
 
 /** Undo/redo across draft steps and server-saved settings, plus the Ctrl/Cmd+Z/Y shortcuts. */
 export function useDraftEditorHistory({ draftKey, undoScope, board, editIntent, core, saveBusy, starting, schedule }: {
@@ -28,12 +29,13 @@ export function useDraftEditorHistory({ draftKey, undoScope, board, editIntent, 
       if (!current) return
       // Settings saved straight to the server (schedule) interleave with draft steps in the order they happened.
       if (direction === 'undo') {
-        const action = pendingBoardAction(undoScope, current.history.length)
+        const action = pendingBoardAction(undoScope, current.history.length + (current.historyOffset ?? 0))
         if (action) {
-          await executeBoardAction(undoScope, 'undo', current.history.length)
+          await executeBoardAction(undoScope, 'undo', current.history.length + (current.historyOffset ?? 0))
           return
         }
         if (schedule.unconfirmed) throw new Error('Resolve the pending schedule change before using Undo or Redo.')
+        if (!canUndoNextDraft(current)) return
         const previous = current.history.at(-1)
         if (!previous) return
         store.undoNextDraft(draftKey)
@@ -42,7 +44,7 @@ export function useDraftEditorHistory({ draftKey, undoScope, board, editIntent, 
       } else {
         const next = peekBoardRedo(undoScope)
         if (next?.kind === 'action') {
-          await executeBoardAction(undoScope, 'redo', current.history.length)
+          await executeBoardAction(undoScope, 'redo', current.history.length + (current.historyOffset ?? 0))
           return
         }
         if (schedule.unconfirmed) throw new Error('Resolve the pending schedule change before using Undo or Redo.')

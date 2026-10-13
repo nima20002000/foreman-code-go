@@ -72,6 +72,7 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
   let closureDispatch: PostgresJobDispatch | undefined
   let failSourceSettlement = false
   let interruptSourceTransfer = false
+  let sharedInitialization: 'none' | 'fail' | 'complete' = 'none'
   let allowPreparationClosure = true
   let sourceQuotaConfiguration: { path: string; ownerUid: number } | undefined
   const queueServices: JobService[] = []
@@ -161,8 +162,16 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
             'select spec from job_computer_selections where execution_id=$1', [attempt.executionId])).rows[0]
           const quota = row && 'verification' in ResolvedJobDefinitionSpecRecordSchema.parse(row.spec)
             ? verificationQuota : undefined
-          return new PrivateSourceMaterializer({ read: async () => bytes }, async () => {}, quota)
-            .prepare({ manifest, binding: root.binding, attempt })
+          let checks = 0
+          const authorize = async () => {
+            checks += 1
+            if (sharedInitialization === 'fail' && checks === 4) {
+              throw new DomainError('SOURCE_INITIALIZATION_INTERRUPTED', 'Shared initialization interrupted', 503)
+            }
+          }
+          return new PrivateSourceMaterializer({ read: async () => bytes }, authorize, quota)
+            .prepare({ manifest, binding: root.binding, attempt,
+              ...(sharedInitialization !== 'none' ? { sharedWritableTree: true as const } : {}) })
         },verify: record => remote.verify(record),verifyWorkingDirectory:unused,
         releaseClaim: async record => {
           await releaseMaterializationClaim(record.receipt, async () => 'released',
@@ -261,6 +270,46 @@ describe.skipIf(!postgresEnabled)('failed Job source preparation reconciliation'
     await database.pool.query('update management_principals set revoked_at=now() where id=$1',[revoked.principal.id])
     await expect(sources.preparationGet(revoked.principal,'mcp',{workspaceId,operationId:rows[0]!.operation_id})).rejects.toMatchObject({code:'AUTH_REVOKED'})
   },60000)
+  it('recovers shared initialization through authenticated MCP and reads back the closed owner', async () => {
+    const operator = await client(writer.token)
+    const denied = await client(reader.token)
+    const startCommand = randomUUID()
+    sharedInitialization = 'fail'
+    try {
+      await expect(jobs.start(writer.principal, 'mcp', workspaceId,
+        { commandId: startCommand, definitionId, expectedRevision: 1 }))
+        .rejects.toMatchObject({ code: 'SOURCE_INITIALIZATION_INTERRUPTED' })
+      const operationId = (await database.pool.query<{ operation_id: string }>(
+        'select operation_id from job_preparations where workspace_id=$1 and command_id=$2',
+        [workspaceId, startCommand])).rows[0]!.operation_id
+      const command = { workspaceId, operationId, commandId: randomUUID() }
+      await expectMcpAccessDenied(denied.callTool({ name: 'source_preparation_reconcile', arguments: command }))
+      const result = await operator.callTool({ name: 'source_preparation_reconcile', arguments: command })
+      expect(result.isError).not.toBe(true)
+      const value = (decodeMcpToolResult(result) as { value: unknown }).value
+      expect(value).toMatchObject({ operationId, reservationState: 'retained',
+        closure: { childrenClosed: true, claimReleased: true } })
+      expect(decodeMcpToolResult(await operator.callTool({ name: 'source_preparation_get',
+        arguments: { workspaceId, operationId } }))).toEqual(value)
+      sharedInitialization = 'complete'
+      const nextCommand = randomUUID()
+      await expect(jobs.start(writer.principal, 'mcp', workspaceId,
+        { commandId: nextCommand, definitionId, expectedRevision: 1 }))
+        .rejects.toMatchObject({ code: 'SOURCE_REPOSITORY_TIMEOUT' })
+      const next = (await database.pool.query<{ record: SourceMaterializationRecord }>(
+        `select m.record from source_execution_materializations m join job_preparations p using(operation_id)
+          where p.workspace_id=$1 and p.command_id=$2`, [workspaceId, nextCommand])).rows[0]!
+      expect(next.record.receipt.binding).toEqual(root.binding)
+      expect(await readFile(join(root.binding.canonicalPath, next.record.receipt.sharedTree!.id,
+        'tree', 'source.txt'), 'utf8')).toBe('original immutable source')
+      expect((await operator.callTool({ name: 'source_preparation_reconcile', arguments: {
+        workspaceId, operationId: next.record.operationId, commandId: randomUUID(),
+      } })).isError).not.toBe(true)
+    } finally {
+      sharedInitialization = 'none'
+    }
+  }, 60000)
+
   it('keeps capacity and evidence while the original Start command is live, then reconciles its recorded failure',async()=>{
     let entered!:()=>void,release!:()=>void
     const started=new Promise<void>(resolve=>{entered=resolve}),released=new Promise<void>(resolve=>{release=resolve})

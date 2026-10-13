@@ -1,5 +1,4 @@
-import { constants } from 'node:fs'
-import { open, readdir, type FileHandle } from 'node:fs/promises'
+import { opendir, type FileHandle } from 'node:fs/promises'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 import { MaterializationReceiptSchema, RootBindingSchema, SourceProjectQuotaSlotSchema }
@@ -8,10 +7,16 @@ import { SourceOperationAttemptSchema, SourceOperationOwnerSchema,
   type SourceOperationOwner, type SourceReservationReclamation } from '@foreman-code/contracts/source-operations'
 import { SourceMaterializationRecordSchema, type SourcePreparationClosure, type SourceRootRecord }
   from '@foreman-code/contracts/source-admission'
-import { anchored, identity, openChildDirectory, openPrivateRoot } from './privateFilesystem.js'
+import { anchored, identity, openChildDirectory, openPrivateRoot, withPrivateDirectoryLock } from './privateFilesystem.js'
 import { preparationChildrenClosed, reconcileSourcePreparation, type SourceQuotaPool } from './materialization.js'
 import { removeSourceDirectory } from './quotaReclamation.js'
 import { sourceOperationSelectionHash } from './operationDigests.js'
+import { readCleanupRecord } from './sourceCleanupMetadata.js'
+import { readSecondaryAllocation, assertSecondaryOwner, preserveReleasedPreparationClaim } from './secondaryAllocation.js'
+import { sourceMaterializationClaimName } from './quotaClaims.js'
+import { closeSourceWorktree } from './worktreeCleanup.js'
+import type { GitWorktreePorts } from './gitWorktree.js'
+import { scheduler } from 'node:timers/promises'
 import { SourceError } from './manifest.js'
 import { measureRetainedMaterializationFootprint, measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
 import type { RetainedSourceFootprint } from '@foreman-code/contracts/source-operations'
@@ -22,9 +27,11 @@ export type SourceReclamationResult = {
 }
 
 async function retainedWorkingTree(directory: FileHandle, root: SourceRootRecord,
-  owner: SourceOperationOwner, materializationId: string, signal: AbortSignal): Promise<RetainedSourceFootprint | null> {
+  owner: SourceOperationOwner, materializationId: string, reclamationId: string, signal: AbortSignal,
+  authorize: () => Promise<void>, git?: GitWorktreePorts): Promise<RetainedSourceFootprint | null> {
   let receipt = owner.record?.receipt
   let copy: FileHandle
+  let allocation: Awaited<ReturnType<typeof readSecondaryAllocation>> = null
   try {
     copy = await openChildDirectory(directory, materializationId)
   } catch (error) {
@@ -33,7 +40,14 @@ async function retainedWorkingTree(directory: FileHandle, root: SourceRootRecord
   }
   try {
     const raw = await readCleanupRecord(copy, 'receipt.json', signal, 2 * 1024 * 1024)
-    if (raw) receipt = z.object({ receipt: MaterializationReceiptSchema }).parse(raw).receipt
+    if (raw) {
+      receipt = z.object({ receipt: MaterializationReceiptSchema }).parse(raw).receipt
+      if (owner.record && !isDeepStrictEqual(receipt, owner.record.receipt)) {
+        throw new SourceError('SOURCE_RECEIPT_CONFLICT', 'Retained receipt differs from the original preparation.')
+      }
+    }
+    allocation = await readSecondaryAllocation(copy, signal)
+    if (allocation) assertSecondaryOwner(allocation, root.binding, owner.attempt, materializationId)
   } finally { await copy.close() }
   if (receipt) {
     if (receipt.materializationId !== materializationId || receipt.executionId !== owner.attempt.executionId
@@ -43,11 +57,58 @@ async function retainedWorkingTree(directory: FileHandle, root: SourceRootRecord
       || !isDeepStrictEqual(receipt.binding, root.binding)) {
       throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Retained working tree belongs to another preparation.')
     }
-    return receipt.sharedTree ? measureRetainedMaterializationFootprint(receipt) : null
+    if (!receipt.sharedTree) return null
+    if (!receipt.worktree) return measureRetainedMaterializationFootprint(receipt)
+    await preparationChildrenClosed(`${root.binding.canonicalPath}/${receipt.sharedTree.id}`, signal)
+    let worktree: RetainedSourceFootprint['worktree']
+    const parent = await openChildDirectory(directory, materializationId)
+    try {
+      const released = await readCleanupRecord(parent, 'released-claim.json', signal)
+      const raw = released ?? await readCleanupRecord(directory,
+        `closed-preparation-${reclamationId}.claim.json`, signal)
+      const claim = ClaimSchema.parse(raw)
+      if (claim.materializationId !== materializationId || !isDeepStrictEqual(claim.binding, root.binding)
+        || !isDeepStrictEqual(claim.attempt, owner.attempt)) {
+        throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Worktree cleanup does not own the original claim.')
+      }
+      let secondary: FileHandle | undefined
+      let tree: FileHandle | undefined
+      try {
+        secondary = await openChildDirectory(directory, receipt.sharedTree.id)
+        tree = await openChildDirectory(secondary, 'tree')
+        if (!isDeepStrictEqual(await identity(tree), receipt.localTreeIdentity)) {
+          throw new SourceError('SOURCE_TREE_CHANGED', 'Worktree identity changed before cleanup.')
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      } finally {
+        await tree?.close()
+        await secondary?.close()
+      }
+      await authorize()
+      worktree = await closeSourceWorktree(receipt, signal, git)
+      await preserveReleasedPreparationClaim(parent, claim, signal)
+      await authorize()
+      if (receipt.binding.deviceId === null) await removeSourceDirectory(parent, 'tree', receipt, signal)
+    } finally {
+      await parent.close()
+    }
+    return { ...await measureRetainedMaterializationFootprint(receipt), ...(worktree ? { worktree } : {}) }
+  }
+  if (allocation) {
+    if (allocation.state === 'reclaimed') return null
+    await preparationChildrenClosed(`${root.binding.canonicalPath}/${allocation.id}`, signal)
+    const bytes = await measureRetainedSourceDirectory(root.binding.canonicalPath, allocation.id, root.binding.filesystem)
+    const reference = await measureRetainedSourceDirectory(root.binding.canonicalPath, materializationId,
+      root.binding.filesystem)
+    return { retainedBytes: reference + bytes, sharedTree: { id: allocation.id, bytes } }
   }
   // A worktree marker can commit before its materialization receipt.
   const markerSchema = z.object({ id: z.uuid(), executionId: z.string(), binding: RootBindingSchema })
-  for (const name of (await readdir(anchored(directory))).filter(name => /^worktree-.*\.json$/.test(name))) {
+  for await (const entry of await opendir(anchored(directory))) {
+    const name = entry.name
+    signal.throwIfAborted()
+    if (!/^worktree-.*\.json$/.test(name)) continue
     const raw = await readCleanupRecord(directory, name, signal)
     if (!raw) continue
     const marker = markerSchema.parse(raw)
@@ -62,28 +123,6 @@ async function retainedWorkingTree(directory: FileHandle, root: SourceRootRecord
 
 const ClaimSchema = z.object({ version: z.literal(1), materializationId: z.uuid(), binding: RootBindingSchema,
   attempt: SourceOperationAttemptSchema, quota: SourceProjectQuotaSlotSchema.optional() }).strict()
-
-async function readCleanupRecord(directory: FileHandle, name: string, signal: AbortSignal,
-  maximumBytes = 16384): Promise<unknown | null> {
-  signal.throwIfAborted()
-  let file: FileHandle
-  try {
-    file = await open(anchored(directory, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
-    throw error
-  }
-  try {
-    const stat = await file.stat()
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || stat.nlink !== 1
-      || stat.mode & 0o077 || stat.size > maximumBytes) {
-      throw new SourceError('SOURCE_CLAIM_INVALID', 'Source cleanup metadata is not a private bounded record.')
-    }
-    return JSON.parse(await file.readFile({ encoding: 'utf8', signal })) as unknown
-  } finally {
-    await file.close()
-  }
-}
 
 function ownsClaim(root: SourceRootRecord, grant: SourceReservationReclamation,
   claim: ReturnType<typeof ClaimSchema.parse>): boolean {
@@ -122,41 +161,67 @@ async function releasedOwner(directory: FileHandle, name: string, root: SourceRo
 }
 
 async function findOwners(root: SourceRootRecord, grant: SourceReservationReclamation, signal: AbortSignal) {
+  const remaining = Math.max(0, Date.parse(grant.expiresAt) - Date.now())
+  signal = AbortSignal.any([signal, AbortSignal.timeout(Math.min(remaining, 4_294_967_295))])
+  signal.throwIfAborted()
   const directory = await openPrivateRoot(root.binding.canonicalPath)
   try {
     if (!isDeepStrictEqual(await identity(directory), root.binding.filesystem)) {
       throw new SourceError('SOURCE_ROOT_CHANGED', 'The original source cleanup root changed.')
     }
-    const entries = await readdir(anchored(directory))
-    if (entries.length > 8192) throw new SourceError('SOURCE_CAPACITY', 'Source cleanup metadata exceeds its scan limit.')
+    if (grant.owner && isDeepStrictEqual(grant.owner.root, root)) {
+      const owner = grant.owner
+      if (owner.identity.operationId !== grant.operationId
+        || sourceOperationSelectionHash(root, owner.attempt, grant.operationId) !== owner.attempt.placementHash) {
+        throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Cleanup owner belongs to another operation.')
+      }
+      const claimName = sourceMaterializationClaimName(root.binding, owner.attempt,
+        owner.record?.receipt.quota ?? (owner.quotaRequired ? true : undefined),
+        owner.record?.receipt.claimScope ?? 'execution')
+      const claimed = await readCleanupRecord(directory, claimName, signal)
+        ?? await readCleanupRecord(directory, `closed-preparation-${grant.reclamationId}.claim.json`, signal)
+      const closed = await readCleanupRecord(directory, `closed-preparation-${grant.reclamationId}.json`, signal)
+      if (owner.record || claimed || closed) return [owner]
+    }
     const owners = new Map<string, SourceOperationOwner>()
     if (grant.owner && isDeepStrictEqual(grant.owner.root, root)) {
       owners.set(grant.owner.attempt.executionId, grant.owner)
     }
-    for (const name of entries.filter(name => name.endsWith('.lock') || name.endsWith('.claim.json'))) {
-      const raw = await readCleanupRecord(directory, name, signal)
-      if (!raw) continue
-      if (raw && typeof raw === 'object' && 'kind' in raw && raw.kind === 'qualification') continue
-      const claim = ClaimSchema.parse(raw)
-      if (!ownsClaim(root, grant, claim)) continue
-      if (!owners.has(claim.attempt.executionId)) {
-        owners.set(claim.attempt.executionId, SourceOperationOwnerSchema.parse({
-          identity: { operationId: grant.operationId, ownerPrincipalId: root.ownerPrincipalId, expiresAt: grant.expiresAt },
-          root, source: root.source, attempt: claim.attempt, record: null, physicalClosureConfirmed: false,
-          ...(claim.quota ? { quotaRequired: true } : {}),
-        }))
+    let pageEntries = 0
+    for await (const entry of await opendir(anchored(directory), { bufferSize: 128 })) {
+      signal.throwIfAborted()
+      const name = entry.name
+      if (name.endsWith('.lock') || name.endsWith('.claim.json')) {
+        const raw = await readCleanupRecord(directory, name, signal)
+        if (!raw || typeof raw === 'object' && 'kind' in raw && raw.kind === 'qualification') continue
+        const claim = ClaimSchema.parse(raw)
+        if (!ownsClaim(root, grant, claim)) continue
+        if (!owners.has(claim.attempt.executionId)) {
+          owners.set(claim.attempt.executionId, SourceOperationOwnerSchema.parse({
+            identity: { operationId: grant.operationId, ownerPrincipalId: root.ownerPrincipalId, expiresAt: grant.expiresAt },
+            root, source: root.source, attempt: claim.attempt, record: null, physicalClosureConfirmed: false,
+            ...(claim.quota ? { quotaRequired: true } : {}),
+          }))
+        }
+      } else if (z.uuid().safeParse(name).success) {
+        const owner = await releasedOwner(directory, name, root, grant, signal)
+        if (owner) owners.set(owner.attempt.executionId, owner)
       }
-    }
-    // A released claim can precede a failed Main commit; its copy still consumes disk space.
-    for (const name of entries.filter(name => z.uuid().safeParse(name).success)) {
-      const owner = await releasedOwner(directory, name, root, grant, signal)
-      if (owner) owners.set(owner.attempt.executionId, owner)
+      if (owners.size > 1024) {
+        throw new SourceError('SOURCE_CAPACITY', 'Source cleanup owner count exceeds its bound.')
+      }
+      pageEntries += 1
+      if (pageEntries === 128) {
+        pageEntries = 0
+        await scheduler.yield()
+      }
     }
     return [...owners.values()]
   } finally { await directory.close() }
 }
 
 export async function reclaimSourceReservation(grant: SourceReservationReclamation, ports: {
+  git?: GitWorktreePorts
   authorize(): Promise<void>
   operationClosed(operationId: string): Promise<boolean>
   nativeClosed(owner: SourceOperationOwner): Promise<boolean>
@@ -186,7 +251,8 @@ export async function reclaimSourceReservation(grant: SourceReservationReclamati
           if (!isDeepStrictEqual(await identity(directory), root.binding.filesystem)) {
             throw new SourceError('SOURCE_ROOT_CHANGED', 'The original source cleanup root changed.')
           }
-          const footprint = await retainedWorkingTree(directory, root, owner, closure.materializationId, signal)
+          const footprint = await withPrivateDirectoryLock(directory, () => retainedWorkingTree(
+            directory, root, owner, closure.materializationId!, grant.reclamationId, signal, ports.authorize, ports.git), { signal })
           if (footprint) {
             if (retained) throw new SourceError('SOURCE_CLAIM_CONFLICT', 'Multiple retained working trees need reconciliation.')
             retained = footprint

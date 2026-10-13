@@ -21,6 +21,7 @@ const SnapshotSchema = z.object({
 }).strict()
 const OutboxSchema = z.object({ request: GraphEditStageInputV3Schema, target: WorkflowDefinitionV3Schema,
   agentTarget: z.record(z.string(), AgentSchema).optional() }).strict()
+const SubmissionSchema = OutboxSchema.extend({ terminal: z.literal(true).optional() })
 export type EditIntentOutbox = z.infer<typeof OutboxSchema>
 const storageFailure = 'Durable edit storage is unavailable. Edits remain in this tab; no Stop or save will be sent until storage is restored.'
 function storage() {
@@ -43,12 +44,11 @@ function write(name: string, value: unknown) {
     if (local.getItem(name) !== encoded) throw new Error(storageFailure)
   }
   try { attempt() } catch {
-    // A full origin quota is usually old form copies; free them once and retry.
+    // Retry after removing old identity epochs and compacting recoverable forms.
     try { pruneSupersededForms(); attempt() } catch { throw new Error(storageFailure) }
   }
 }
-/** Removes stored data no tab can restore: keys of earlier sign-in epochs and other tabs' form copies
- * that are no longer the latest form of their workflow. Outboxes and submission evidence are kept. */
+/** Old sign-in epochs are inaccessible; current forms keep their independent owners. */
 function pruneSupersededForms() {
   const local = storage(), current = `${chatStoragePrefix}${identityEpoch()}:`
   const draftPrefix = protectedKey('draft'), ownTab = tab(), names: string[] = []
@@ -57,15 +57,14 @@ function pruneSupersededForms() {
     if (name.startsWith(chatStoragePrefix) && !name.startsWith(current)) { local.removeItem(name); continue }
     if (!name.startsWith(draftPrefix)) continue
     const id = decodeURIComponent(name.slice(draftPrefix.length)), split = id.lastIndexOf(':')
-    const scope = id.slice(prefix.length, split), tabId = id.slice(split + 1)
+    const tabId = id.slice(split + 1)
     if (!id.startsWith(prefix) || split < prefix.length || tabId === ownTab) continue
-    if (local.getItem(key('ui', `${scope}:latest`)) !== JSON.stringify(tabId)) { local.removeItem(name); continue }
     // Copies written before forms kept only their own Agents hold the whole workspace catalog.
     try {
       const raw = local.getItem(name), snapshot = raw === null ? undefined : SnapshotSchema.parse(JSON.parse(raw))
       const agents = snapshot && referencedAgents(snapshot)
       if (snapshot && agents && agents.length < snapshot.context.agents.length) local.setItem(name, JSON.stringify({ ...snapshot, context: { ...snapshot.context, agents } }))
-    } catch { /* an unreadable copy is left for reconciliation, never rewritten */ }
+    } catch { /* ignore: an unreadable form stays available for reconciliation. */ }
   }
 }
 /** The workspace Agent catalog is server state; a form copy keeps only the Agents its forms refer to. */
@@ -86,6 +85,63 @@ function tab() {
     if (!id) { id = crypto.randomUUID(); window.sessionStorage.setItem(name, id) }
   } catch { throw new Error(storageFailure) }
   return id
+}
+type TabOwnership = { name: string; ready: Promise<void>; release?: () => void }
+let tabOwnership: TabOwnership | undefined
+function releaseTabOwnership() {
+  tabOwnership?.release?.()
+  tabOwnership = undefined
+}
+if (typeof window !== 'undefined') window.addEventListener('pagehide', event => {
+  if (!event.persisted) releaseTabOwnership()
+})
+/** A lifetime lock distinguishes a reload from a copied sessionStorage owner in another live document. */
+export async function claimEditTabOwnership(): Promise<void> {
+  const id = tab()
+  const name = key('ui', `owner:${id}`)
+  if (tabOwnership?.name === name) return tabOwnership.ready
+  releaseTabOwnership()
+  if (!navigator.locks) return Promise.reject(new Error('This browser cannot safely recover independent tab edits.'))
+  let resolve!: () => void
+  let reject!: (error: unknown) => void
+  const ready = new Promise<void>((accept, fail) => { resolve = accept; reject = fail })
+  const owner: TabOwnership = { name, ready }
+  tabOwnership = owner
+  const generation = sessionGeneration()
+  const claim = (ownerId: string) => {
+    void navigator.locks.request(key('ui', `owner:${ownerId}`), { ifAvailable: true }, async lock => {
+      assertSession(generation)
+      if (tabOwnership !== owner) throw new SessionChangedError()
+      if (!lock) {
+        const independent = crypto.randomUUID()
+        claim(independent)
+        return
+      }
+      if (ownerId !== id) {
+        copyTabSnapshots(id, ownerId)
+        window.sessionStorage.setItem(key('ui', 'tab'), ownerId)
+        owner.name = key('ui', `owner:${ownerId}`)
+      }
+      await new Promise<void>(release => {
+        owner.release = release
+        resolve()
+      })
+    }).catch(reject)
+  }
+  claim(id)
+  return ready
+}
+function copyTabSnapshots(from: string, to: string) {
+  const local = storage()
+  const start = protectedKey('draft')
+  const names = Array.from({ length: local.length }, (_, index) => local.key(index))
+  for (const name of names) {
+    if (!name?.startsWith(start)) continue
+    const scope = decodeURIComponent(name.slice(start.length))
+    if (!scope.startsWith(prefix) || !scope.endsWith(`:${from}`)) continue
+    const snapshot = read(name, SnapshotSchema)
+    if (snapshot) write(protectedKey('draft', `${scope.slice(0, -from.length)}${to}`), snapshot)
+  }
 }
 export function readEditSnapshot(scope: string) {
   const own = key('draft', `${scope}:${tab()}`)
@@ -150,6 +206,7 @@ export function storeEditSnapshot(scope: string, edit: Pick<NextDraftEdit, 'cont
   write(name, { ...value,
     ...(acknowledgedStageCommands.size ? { acknowledgedStageCommands: [...acknowledgedStageCommands] } : {}),
     ...(submittedStageCommands.size ? { submittedStageCommands: [...submittedStageCommands] } : {}) })
+  collectTerminalSubmissions(scope)
 }
 export function readEditOutbox(scope: string): EditIntentOutbox | undefined {
   const value = read(key('outbox', scope), OutboxSchema)
@@ -159,19 +216,87 @@ export function readEditOutbox(scope: string): EditIntentOutbox | undefined {
   }
   return value
 }
-/** Submission evidence is immutable and command-keyed, unlike the shared active
- * outbox. Keep it until session cleanup so a suspended tab can still reconcile
- * after another tab consumes the outbox. It never authorizes or sends a command. */
+/** Command payloads remain immutable until terminal readback and all retained consumers settle. */
 function submissionKey(scope: string, commandId: string) { return key('ui', `submission:${JSON.stringify([scope, commandId])}`) }
 function retainEditSubmission(scope: string, candidate: EditIntentOutbox): EditIntentOutbox {
   const value = OutboxSchema.parse(candidate)
   assertScope(scope, value.request.workspaceId, value.request.workflowId)
   assertScope(scope, value.target.workspaceId, value.target.id)
-  const name = submissionKey(scope, value.request.commandId), previous = read(name, OutboxSchema)
+  const name = submissionKey(scope, value.request.commandId)
+  const previousRecord = read(name, SubmissionSchema)
+  const previous = previousRecord ? submissionPayload(previousRecord) : undefined
   if (previous && !sameWorkflowValue(previous, value)) throw new Error('The retained submission conflicts with this exact command. No evidence was replaced.')
   if (!previous) write(name, value)
   return previous ?? value
 }
+function submissionPayload(record: z.infer<typeof SubmissionSchema>): EditIntentOutbox {
+  return { request: record.request, target: record.target,
+    ...(record.agentTarget ? { agentTarget: record.agentTarget } : {}) }
+}
+function retainedSnapshots(scope: string) {
+  const local = storage()
+  const names = Array.from({ length: local.length }, (_, index) => local.key(index))
+  const start = key('draft', `${scope}:`)
+  return names.flatMap(name => {
+    if (!name?.startsWith(start)) return []
+    const snapshot = read(name, SnapshotSchema)
+    return snapshot ? [{ name, snapshot }] : []
+  })
+}
+function removeSubmission(scope: string, commandId: string, snapshots: ReturnType<typeof retainedSnapshots>) {
+  for (const { name, snapshot } of snapshots) {
+    if (!snapshot.submittedStageCommands?.includes(commandId) && !snapshot.acknowledgedStageCommands?.includes(commandId)) continue
+    write(name, { ...snapshot,
+      submittedStageCommands: snapshot.submittedStageCommands?.filter(id => id !== commandId),
+      acknowledgedStageCommands: snapshot.acknowledgedStageCommands?.filter(id => id !== commandId) })
+  }
+  storage().removeItem(submissionKey(scope, commandId))
+}
+/** A suspended form keeps its submitted payload even after another tab acknowledges it. */
+function collectTerminalSubmissions(scope: string, incomingCommandId?: string) {
+  const local = storage()
+  const names = Array.from({ length: local.length }, (_, index) => local.key(index))
+  const start = key('ui', 'submission:')
+  let snapshots: ReturnType<typeof retainedSnapshots>
+  try { snapshots = retainedSnapshots(scope) }
+  catch { return /* ignore: corrupt sibling forms prevent safe collection. */ }
+  const active = readEditOutbox(scope)?.request.commandId
+  const completed = names.flatMap(name => {
+    if (!name?.startsWith(start)) return []
+    const record = read(name, SubmissionSchema)
+    return record?.terminal && nextDraftKey(record.request.workspaceId, record.request.workflowId) === scope ? [record] : []
+  })
+  const latest = completed.at(-1)?.request.commandId
+  for (const record of completed) {
+    const commandId = record.request.commandId
+    if (active === commandId) continue
+    // Keep one recent payload for immediate duplicate/conflicting-command detection.
+    if (commandId === latest && (!incomingCommandId || incomingCommandId === commandId)) continue
+    const replacements = completed.slice(completed.indexOf(record) + 1).filter(other =>
+      sameStageRequest(record.request, other.request) && sameWorkflowValue(record.target, other.target)
+      && sameWorkflowValue(record.agentTarget, other.agentTarget))
+    const needed = snapshots.some(({ snapshot }) => {
+      if (snapshot.acknowledgedStageCommands?.includes(commandId)) return false
+      if (!snapshot.submittedStageCommands?.includes(commandId) && !snapshotMatchesSubmission(snapshot, record)) return false
+      return !replacements.some(other => snapshot.submittedStageCommands?.includes(other.request.commandId)
+        || snapshot.acknowledgedStageCommands?.includes(other.request.commandId))
+    })
+    if (!needed) {
+      removeSubmission(scope, commandId, snapshots)
+      snapshots = retainedSnapshots(scope)
+    }
+  }
+}
+/** Call only after authenticated terminal readback has been reconciled with the local form. */
+export function acknowledgeEditSubmission(scope: string, intent: GraphEditIntentV3) {
+  if (!['saved', 'discarded'].includes(intent.state)) return
+  const name = submissionKey(scope, intent.stageCommandId)
+  const record = read(name, SubmissionSchema)
+  if (!record || !matchesEditIntent(record, intent)) return
+  if (!record.terminal) write(name, { ...record, terminal: true })
+  collectTerminalSubmissions(scope)
+}
+
 function snapshotMatchesSubmission(snapshot: z.infer<typeof SnapshotSchema>, value: EditIntentOutbox): boolean {
   const request = value.request, draft = snapshot.context.draft
   return draft.workspaceId === request.workspaceId && draft.workflowId === request.workflowId && draft.id === request.draftId
@@ -212,7 +337,8 @@ export function matchesEditIntent(value: EditIntentOutbox, intent: GraphEditInte
  * the submitted form, never the terminal state, result, or authority. */
 export function readEditSubmission(scope: string, intent: GraphEditIntentV3): EditIntentOutbox | undefined {
   assertScope(scope, intent.workspaceId, intent.workflowId)
-  const value = read(submissionKey(scope, intent.stageCommandId), OutboxSchema)
+  const record = read(submissionKey(scope, intent.stageCommandId), SubmissionSchema)
+  const value = record ? submissionPayload(record) : undefined
   if (value) {
     if (!matchesEditIntent(value, intent)) throw new Error('The retained submission does not match the acknowledged command and draft base.')
     return value
@@ -225,6 +351,7 @@ export function readEditSubmission(scope: string, intent: GraphEditIntentV3): Ed
 export function reserveEditOutbox(scope: string, candidate: EditIntentOutbox): EditIntentOutbox {
   const existing = readEditOutbox(scope)
   if (existing) return retainEditSubmission(scope, existing) // Never replace an uncertain command with newer typing.
+  collectTerminalSubmissions(scope, candidate.request.commandId)
   const value = retainEditSubmission(scope, candidate)
   markSubmittedSnapshots(scope, value)
   write(key('outbox', scope), value)
@@ -242,6 +369,7 @@ export function acknowledgeEditOutbox(scope: string, stageCommandId: string): vo
   const existing = readEditOutbox(scope)
   if (existing?.request.commandId === stageCommandId) retainEditSubmission(scope, existing)
   removeEditOutbox(scope, stageCommandId)
+  collectTerminalSubmissions(scope)
 }
 /** These Stage errors originate only before intent insertion (prepare/perform),
  * not in the post-commit readback. Do NOT generalize to all 4xx: authorization,
@@ -262,6 +390,7 @@ export function rejectEditOutbox(scope: string, request: GraphEditStageInputV3, 
   if (!existing) return false
   if (!sameWorkflowValue(existing.request, request)) throw new Error('Another edit command is retained. Its outbox was not cleared.')
   removeEditOutbox(scope, request.commandId)
+  removeSubmission(scope, request.commandId, retainedSnapshots(scope))
   return true
 }
 export function sameStageRequest(left: GraphEditStageInputV3, right: GraphEditStageInputV3) {
@@ -275,6 +404,7 @@ export async function withEditIntentLock<T>(scope: string, work: () => Promise<T
 }
 export function clearEditIntentStorage() {
   if (typeof window === 'undefined') return
+  releaseTabOwnership()
   for (const kind of ['draft', 'outbox', 'ui'] as const) {
     const start = key(kind, '')
     try {

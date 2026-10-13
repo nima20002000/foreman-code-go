@@ -14,6 +14,7 @@ import { ciRepositoryCapabilities } from './repository.js'
 import { gateIntegrationShards, hostCiCapacity } from './capacity.js'
 import { fallbackOnError } from '../diagnostics/ignoredError.js'
 import { warmPnpmInstall } from './warmSetup.js'
+import { ciLogPage } from './logPage.js'
 
 type Command = { code: number; stdout: string; stderr: string }
 export interface HostCiPorts {
@@ -58,6 +59,8 @@ interface RunMeta {
   expectedDurationMs?: number
   isolatedDatabase?: boolean
   gate?: boolean; integrationShards?: number
+  serviceUnit?: string
+  cancellationRequested?: boolean
 }
 
 type StartRequest = { runId: string; repository: string; commit: string; suite: CiSuite
@@ -77,6 +80,7 @@ export class HostCiRunner {
   private startingRunId: string | null = null
   private readonly repositoryQueues = new Map<string, Promise<void>>()
   private githubChecked: { at: number; ready: boolean; reason: string | null } | undefined
+  private draining = false
 
   constructor(private readonly root = join(homedir(), '.local/share/foreman-code/ci-host'),
     private readonly ports: HostCiPorts = systemHostCiPorts(),
@@ -95,8 +99,9 @@ export class HostCiRunner {
       try {
         const buffer = Buffer.alloc(request.maxBytes)
         const { bytesRead } = await handle.read(buffer, 0, request.maxBytes, request.afterOffset)
-        text = sanitizeCiText(buffer.subarray(0, bytesRead).toString('utf8'))
-        nextOffset = request.afterOffset + bytesRead
+        const page = ciLogPage(buffer.subarray(0, bytesRead), 0, request.maxBytes)
+        text = sanitizeCiText(page.text)
+        nextOffset = request.afterOffset + page.nextOffset
       } finally { await handle.close() }
     }
     // A finished test run reports the file durations and test results it measured, so Main can learn and show them.
@@ -111,10 +116,24 @@ export class HostCiRunner {
       ...(tests?.success ? { testResults: tests.data } : {}) })
   }
 
+  async beginDrain(): Promise<void> {
+    this.draining = true
+    await this.startQueue
+    await Promise.all(this.preparing.values())
+  }
+
+  resumeAdmissions() { this.draining = false }
+
+  isUpdateIdle() { return this.preparing.size === 0 && this.startingRunId === null }
+
   private runDirectory(runId: string) { return join(this.root, 'runs', runId) }
 
   private async readMeta(runId: string): Promise<RunMeta> {
-    try { return JSON.parse(await readFile(join(this.runDirectory(runId), 'meta.json'), 'utf8')) as RunMeta }
+    try {
+      const meta = JSON.parse(await readFile(join(this.runDirectory(runId), 'meta.json'), 'utf8')) as RunMeta
+      // Cancellation survives concurrent launch metadata writes and Worker restarts.
+      return { ...meta, cancellationRequested: existsSync(join(this.runDirectory(runId), 'cancel-requested')) }
+    }
     catch { throw new DomainError('CI_RUN_UNKNOWN', 'This computer has no such CI run.', 404) }
   }
 
@@ -182,6 +201,8 @@ export class HostCiRunner {
   }
 
   private async start(request: StartRequest) {
+    if (this.draining) throw new DomainError('WORKER_RUNTIME_DRAINING',
+      'This computer is waiting for CI preparation to finish before updating its runtime.', 409)
     // Keep the busy check and initial persistence together, including same-run retries.
     const previous = this.startQueue
     let release!: () => void
@@ -248,7 +269,14 @@ export class HostCiRunner {
       ...(request.durations ? { durations: request.durations } : {}) }
     await this.writeMeta(meta)
     const preparing = this.launch(meta).catch(async error => {
-      await this.finish(meta.runId, 'failed', null, (error instanceof Error ? error.message : String(error)).slice(0, 2000))
+      const current = await this.readMeta(meta.runId)
+      const message = (error instanceof Error ? error.message : String(error)).slice(0, 2000)
+      if (current.serviceUnit) {
+        // A command failure can occur after native entry; status must reconcile the persisted unit first.
+        await this.writeMeta({ ...current, message })
+      } else {
+        await this.finish(meta.runId, current.cancellationRequested ? 'canceled' : 'failed', null, message)
+      }
     }).finally(() => this.preparing.delete(meta.runId))
     this.preparing.set(meta.runId, preparing)
     return this.refresh(request.runId)
@@ -270,7 +298,8 @@ export class HostCiRunner {
     await previous
     const source = join(this.runDirectory(meta.runId), 'src')
     try {
-      if ((await this.readMeta(meta.runId)).state !== 'starting') return
+      const current = await this.readMeta(meta.runId)
+      if (current.state !== 'starting' || current.cancellationRequested) return
       await this.checkout(meta, source)
     } finally {
       release()
@@ -279,7 +308,12 @@ export class HostCiRunner {
     await this.selectFiles(meta, source)
     const script = await this.script(meta, source)
     await writeFile(join(this.runDirectory(meta.runId), 'run.sh'), script, { mode: 0o700 })
-    if ((await this.readMeta(meta.runId)).state !== 'starting') return
+    const current = await this.readMeta(meta.runId)
+    if (current.state !== 'starting' || current.cancellationRequested) return
+    const serviceUnit = `${unitName(meta.runId)}.service`
+    await this.writeMeta({ ...meta, ...current, serviceUnit,
+      ...(meta.scope ? { scope: meta.scope } : {}), ...(meta.files ? { files: meta.files } : {}),
+      message: meta.message })
     const resources = this.suiteResources(meta)
     const environment = ['PATH', 'HOME', 'USER', 'LANG', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS']
       .flatMap(key => this.environment[key] ? [`--setenv=${key}=${this.environment[key]}`] : [])
@@ -288,12 +322,8 @@ export class HostCiRunner {
       '--property=UMask=0022', `--working-directory=${source}`, ...environment, '/bin/bash', join(this.runDirectory(meta.runId), 'run.sh')],
     { env: this.environment, timeoutMs: 30_000 })
     if (started.code !== 0) throw new Error(`The CI unit could not start: ${started.stderr.trim().slice(0, 500)}`)
-    if ((await this.readMeta(meta.runId)).state !== 'starting') {
-      await this.ports.run('systemctl', ['--user', 'stop', `${unitName(meta.runId)}.service`], { env: this.environment })
-      await this.cleanDatabase(meta)
-      return
-    }
-    await this.writeMeta({ ...meta, state: 'running' })
+    const launched = await this.readMeta(meta.runId)
+    if (launched.state === 'starting') await this.writeMeta({ ...launched, state: 'running' })
   }
 
   private async prepareRepository(request: Pick<StartRequest, 'repository' | 'commit' | 'scope' | 'files'>) {
@@ -574,33 +604,63 @@ export class HostCiRunner {
     if (result.code !== 0) throw new Error(`CI database cleanup failed: ${result.stderr.trim().slice(0, 500)}`)
   }
 
+  private async unitState(meta: RunMeta): Promise<'active' | 'stopped' | 'unknown'> {
+    const unit = meta.serviceUnit ?? `${unitName(meta.runId)}.service`
+    const result = await this.ports.run('systemctl', ['--user', 'is-active', unit], { env: this.environment })
+    const state = result.stdout.trim()
+    if ([0, 3].includes(result.code)) {
+      if (['active', 'activating', 'reloading', 'deactivating'].includes(state)) return 'active'
+      if (['inactive', 'failed'].includes(state)) return 'stopped'
+    }
+    // Collected transient units have no record. A successful manager query must establish that absence.
+    const detail = await this.ports.run('systemctl', ['--user', 'show',
+      '--property=LoadState', '--property=ActiveState', unit], { env: this.environment })
+    if (detail.code === 0 && detail.stdout.split('\n').includes('LoadState=not-found')
+      && detail.stdout.split('\n').includes('ActiveState=inactive')) return 'stopped'
+    return 'unknown'
+  }
+
+  private async reconcile(meta: RunMeta, preparing: boolean): Promise<void> {
+    if (!['starting', 'running'].includes(meta.state) || preparing) return
+    const directory = this.runDirectory(meta.runId)
+    const exit = await readFile(join(directory, 'exit'), 'utf8')
+      .catch(fallbackOnError(null, 'jobs', 'read CI exit status', { runId: meta.runId }, ['ENOENT']))
+    if (exit !== null && exit.trim() !== '') {
+      const code = Number(exit.trim())
+      const watchdog = await readFile(join(directory, 'watchdog-message.json'), 'utf8')
+        .catch(fallbackOnError(null, 'jobs', 'read CI watchdog message', { runId: meta.runId }, ['ENOENT']))
+      let state: CiHostRun['state'] = code === 0 ? 'passed' : 'failed'
+      if (meta.cancellationRequested) state = 'canceled'
+      await this.finish(meta.runId, state,
+        Number.isInteger(code) ? code : 1,
+        watchdog ? CiWatchdogFailureSchema.parse(JSON.parse(watchdog)).message : meta.message)
+      if (meta.cancellationRequested) await this.cleanDatabase(meta)
+      return
+    }
+    if (meta.cancellationRequested) {
+      const stop = await this.ports.run('systemctl', ['--user', 'stop',
+        meta.serviceUnit ?? `${unitName(meta.runId)}.service`], { env: this.environment })
+      if (stop.code !== 0) await this.writeMeta({ ...meta,
+        message: 'Cancellation requested; the CI unit has not confirmed it stopped.' })
+    }
+    const state = await this.unitState(meta)
+    if (state === 'stopped') {
+      await this.cleanDatabase(meta)
+      await this.finish(meta.runId, meta.cancellationRequested ? 'canceled' : 'lost', null,
+        meta.cancellationRequested ? 'Canceled.' : 'The CI unit ended without an exit status.')
+    } else if (state === 'active' && meta.state === 'starting') {
+      const current = await this.readMeta(meta.runId)
+      if (current.state === 'starting') await this.writeMeta({ ...current, state: 'running' })
+    }
+  }
+
   /** Reads the current state of a run, settling it once its unit has exited, and frees its worktree. */
   async refresh(runId: string): Promise<CiHostRun> {
     // Launch can finish while the metadata read is awaiting I/O.
     const preparing = this.preparing.has(runId) || this.startingRunId === runId
     let meta = await this.readMeta(runId)
     const directory = this.runDirectory(runId)
-    if (meta.state === 'running') {
-      const exit = await readFile(join(directory, 'exit'), 'utf8').catch(fallbackOnError(null, 'jobs', 'read CI exit status', { runId }, ['ENOENT']))
-      // A unit launched before atomic exit publication can expose an empty file mid-write.
-      if (exit !== null && exit.trim() !== '') {
-        const code = Number(exit.trim())
-        const watchdogMessage = await readFile(join(directory, 'watchdog-message.json'), 'utf8')
-          .catch(fallbackOnError(null, 'jobs', 'read CI watchdog message', { runId }, ['ENOENT']))
-        await this.finish(runId, code === 0 ? 'passed' : 'failed', Number.isInteger(code) ? code : 1,
-          watchdogMessage ? CiWatchdogFailureSchema.parse(JSON.parse(watchdogMessage)).message : meta.message)
-      } else {
-        const unit = await this.ports.run('systemctl', ['--user', 'is-active', `${unitName(runId)}.service`], { env: this.environment })
-        if (!['active', 'activating'].includes(unit.stdout.trim())) {
-          // The unit is gone without recording an exit: it was stopped or the computer restarted.
-          await this.cleanDatabase(meta)
-          await this.finish(runId, 'lost', null, 'The CI unit ended without an exit status.')
-        }
-      }
-    } else if (meta.state === 'starting' && !preparing) {
-      await this.cleanDatabase(meta)
-      await this.finish(runId, 'lost', null, 'The Worker restarted while preparing this run.')
-    }
+    await this.reconcile(meta, preparing)
     meta = await this.readMeta(runId)
     if (!['starting', 'running'].includes(meta.state) && !meta.cleaned && !this.preparing.has(runId)) {
       const clone = join(this.root, 'git', ...meta.repository.split('/'))
@@ -625,12 +685,10 @@ export class HostCiRunner {
   async cancel(runId: string): Promise<CiHostRun> {
     const meta = await this.readMeta(runId)
     if (['starting', 'running'].includes(meta.state)) {
-      await this.ports.run('systemctl', ['--user', 'stop', `${unitName(runId)}.service`], { env: this.environment })
-      await this.finish(runId, 'canceled', null, 'Canceled.')
+      await writeFile(join(this.runDirectory(runId), 'cancel-requested'), '', { mode: 0o600 })
+      await this.writeMeta({ ...meta, cancellationRequested: true,
+        message: 'Cancellation requested; waiting for the CI unit to stop.' })
       await this.preparing.get(runId)
-      await this.ports.run('systemctl', ['--user', 'stop', `${unitName(runId)}.service`], { env: this.environment })
-      await this.cleanDatabase(meta)
-      await this.finish(runId, 'canceled', null, 'Canceled.')
     }
     return this.refresh(runId)
   }

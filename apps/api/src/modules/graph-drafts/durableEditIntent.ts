@@ -183,10 +183,10 @@ export class DurableEditIntentService<S extends EditStageScope, I extends Durabl
         // applies existing typed operations in memory, and performs no publication.
         const prepared = await this.drafts.prepare(client, principal, input, randomUUID())
         const existing = await client.query<{ id: string }>(`select id from graph_edit_intents
-          where principal_id=$1 and workspace_id=$2 and workflow_id=$3 and state not in ('saved','discarded')`,
-        [principal.id, input.workspaceId, input.workflowId])
+          where workspace_id=$1 and workflow_id=$2 and state not in ('saved','discarded') limit 1`,
+        [input.workspaceId, input.workflowId])
         if (existing.rows[0]) throw new DomainError('GRAPH_EDIT_INTENT_EXISTS',
-          'An unresolved edit intent already exists. Read and reconcile it; do not allocate replacement Stop or save commands.', 409)
+          'This workflow already has staged edits. Resolve them before staging another edit.', 409)
         const current = await this.affectedRuns(client, { ...input, stagedDraft: prepared.stagedDraft })
         this.authorizeCurrent(principal, current)
         const saveInput = prepared.saveInput

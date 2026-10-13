@@ -3,6 +3,7 @@ import { describe, it } from 'vitest'
 import { AgentConfigurationVersionSchema, DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { readWorkflowClosure } from '../src/modules/interactions/workflowClosure.js'
+import { currentRestartUnit } from './helpers/currentRestartUnit.js'
 import { recoveryDatabase, recoveryExecution } from './helpers/eng06Recovery.testSupport.js'
 
 type CoordinatorArgs = ConstructorParameters<typeof ApprovalExecutionCoordinator>
@@ -185,13 +186,15 @@ describe('ENG06-A cold Run and Stop orchestration', () => {
   })
 
   it('leaves a genuine in-process approval owner available for normal delivery', async () => {
-    const f = fixture(); f.state.execution.state = 'waiting'
-    // Only this local selection path is under test; no manager operation runs.
-    const internals = f.coordinator as unknown as { ownedSessions: Map<string, unknown> }
-    internals.ownedSessions.set(f.state.execution.id, { execution: f.state.execution })
-    assert.equal(await f.coordinator.requestColdRunCleanup(f.owner), false)
-    assert.deepEqual(f.calls, [])
-    await f.owner.release()
+    const f = currentRestartUnit()
+    const instance = f.cold()
+    try {
+      await instance.attachOriginal()
+      assert.equal(await instance.coordinator.requestColdRunCleanup(f.owner), false)
+      assert.equal(f.state.cleanup, false)
+      assert.equal(f.state.creates, 0)
+      assert.equal(f.state.turns, 0)
+    } finally { await f.connection.close() }
   })
 
   it('blocks the delivery reconciler from allocating a cold requester before the Run recovery scan', async () => {

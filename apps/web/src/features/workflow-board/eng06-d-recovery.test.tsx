@@ -35,7 +35,8 @@ beforeEach(() => {
   useGraphDraftStore.getState().clearAllDrafts()
   unhandled.length = 0; server.events.on('request:unhandled', onUnhandled)
   const tails = new Map<string, Promise<unknown>>()
-  Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: (key: string, work: () => unknown) => {
+  Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: (key: string, work: (() => unknown) | LockOptions, claim?: (lock: { name: string }) => unknown) => {
+    if (typeof work !== 'function') return claim!({ name: key })
     const task = (tails.get(key) ?? Promise.resolve()).then(work); tails.set(key, task.catch(() => undefined)); return task
   } } })
   vi.stubGlobal('ResizeObserver', class {

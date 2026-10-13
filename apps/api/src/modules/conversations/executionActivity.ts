@@ -36,7 +36,7 @@ export interface ExecutionActivityRequest {
 const executionsSql = `select e.id,e.attempt,e.tick_index,e.record#>>'{input,occurrence,identity,occurrenceIndex}' as occurrence_index,
   e.record->>'state' as state,e.record->>'nativeSessionId' as native_session_id,e.created_at,
   e.record->>'startedAt' as started_at,e.record->>'finishedAt' as finished_at,
-  coalesce((select max(n.sequence) from harness_native_events n where n.execution_id=e.id),0)::text as revision,
+  coalesce((select max(n.sequence) from harness_native_events n where n.execution_id=e.id),-1)::text as revision,
   e.activity_record_revision::text as record_revision
   from harness_executions e join runs r on r.id=e.run_id
   where e.run_id=$1 and e.workflow_node_id=$2 and e.agent_id=$3 and r.workspace_id=$4 and r.workflow_id=$5
@@ -45,17 +45,26 @@ const executionsSql = `select e.id,e.attempt,e.tick_index,e.record#>>'{input,occ
 const RevisionSchema = z.string().regex(/^(0|[1-9][0-9]{0,18})$/)
   .refine((value) => BigInt(value) <= 9_223_372_036_854_775_807n)
 const CursorEntrySchema = z.object({
-  n: RevisionSchema,
+  n: z.union([RevisionSchema, z.literal('-1')]),
   e: RevisionSchema,
   t: z.boolean(),
   after: z.object({ r: RevisionSchema, k: z.string().min(1).max(1024), t: z.boolean() }).optional(),
 })
 const CursorSchema = z.record(z.string().min(1), CursorEntrySchema)
+const VersionedCursorSchema = z.object({ version: z.literal(2), executions: CursorSchema }).strict()
 type CursorEntry = z.infer<typeof CursorEntrySchema>
 function parseCursor(value: string | undefined): Record<string, CursorEntry> | undefined {
   if (value === undefined) return undefined
   try {
-    return CursorSchema.parse(JSON.parse(value))
+    const parsed: unknown = JSON.parse(value)
+    const versioned = VersionedCursorSchema.safeParse(parsed)
+    if (versioned.success) return versioned.data.executions
+    const legacy = CursorSchema.parse(parsed)
+    // Old cursors conflate an empty journal and sequence zero; replay that boundary once.
+    for (const entry of Object.values(legacy)) {
+      if (entry.n === '0') entry.n = '-1'
+    }
+    return legacy
   } catch {
     return undefined
   }
@@ -261,7 +270,8 @@ interface ItemWindow {
   hasMore: boolean
 }
 function projectionRevision(native: string, execution: string) {
-  return String(BigInt(native) + BigInt(execution))
+  const nativeRevision = BigInt(native)
+  return String((nativeRevision < 0n ? 0n : nativeRevision) + BigInt(execution))
 }
 function terminalState(state: AgentChatExecutionSummary['state']) {
   return state === 'completed'
@@ -398,7 +408,7 @@ export class ExecutionActivityReader {
           next[row.id] = known
           hasMoreChanges = true
         } else {
-          summaries.set(row.id, { ...summaries.get(row.id)!, hasEarlierItems: BigInt(row.revision) > 0n })
+          summaries.set(row.id, { ...summaries.get(row.id)!, hasEarlierItems: BigInt(row.revision) >= 0n })
         }
         continue
       }
@@ -420,6 +430,6 @@ export class ExecutionActivityReader {
     const order = new Map(newest.map((row, index) => [row.id, newest.length - index]))
     list.sort((a, b) => order.get(a.executionId)! - order.get(b.executionId)!
       || (BigInt(a.sequence) < BigInt(b.sequence) ? -1 : 1))
-    return page(cursor ? 'changes' : 'snapshot', list, { cursor: JSON.stringify(next), hasMoreChanges })
+    return page(cursor ? 'changes' : 'snapshot', list, { cursor: JSON.stringify({ version: 2, executions: next }), hasMoreChanges })
   }
 }

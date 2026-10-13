@@ -1,6 +1,6 @@
 import { activeRunCandidates } from '@foreman-code/contracts/run-snapshots'
 import { useCallback, useEffect, useMemo, useRef, type ReactNode, type SyntheticEvent } from 'react'
-import { useLocation } from '@tanstack/react-router'
+import { useLocation, useRouter } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 import type { WorkflowRunSummary } from '@foreman-code/contracts'
 import type { RepeatGraphScopeV3, WorkspaceBoardInspection } from '@foreman-code/contracts/wave25'
@@ -25,7 +25,26 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
   selectRun(scope?: RepeatGraphScopeV3): void; summaries: readonly WorkflowRunSummary[]; summariesReadAt?: number; children: ReactNode
 }) {
   const location = useLocation()
+  const router = useRouter()
+  const selection = useRef({ location: router.history.location, generation: 0 })
+  const getSelectionToken = useCallback(() => {
+    if (selection.current.location !== router.history.location) {
+      selection.current.location = router.history.location
+      selection.current.generation++
+    }
+    return selection.current.generation
+  }, [router])
+  const chooseRun = useCallback((scope?: RepeatGraphScopeV3) => {
+    selection.current.generation++
+    selectRun(scope)
+  }, [selectRun])
   const selectedRun = useSelectedRun({ workspaceId, workflowId })
+  const navigationSelection = useMemo(() => ({ ...selectedRun,
+    selectRun: (runId: string | null) => {
+      selection.current.generation++
+      return selectedRun.selectRun(runId)
+    },
+  }), [selectedRun])
   // Canonical and legacy Run links share the pinned canvas and retained editor.
   const legacyRun = requestedRun?.workspaceId === workspaceId && requestedRun.workflowId === workflowId
     && !location.search.selectedRunId ? requestedRun : undefined
@@ -107,10 +126,10 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
   const activeRuns = candidates.length
   // History is rendered only by RunBoardSlot. Do not feed legacy Run pins to the
   // hidden editor/SelectedRunCanvas, or fabricate missing version/semantics pins.
-  const value = useMemo(() => ({ workspaceId, workflowId, run: legacyRun, selectRun, inspection, selectInspection, selectedAgentId, selectDraftAgent,
+  const value = useMemo(() => ({ workspaceId, workflowId, run: legacyRun, selectRun: chooseRun, getSelectionToken, inspection, selectInspection, selectedAgentId, selectDraftAgent,
     openLocation: () => setLocationOpen(true), openRuns: () => setRunsOpen(true), activeRuns, authoringActive: current,
-    navigationControls: current ? <BoardNavigationControls workspaceId={workspaceId} workflowId={workflowId} selection={selectedRun} /> : undefined,
-  }), [workspaceId, workflowId, legacyRun, selectRun, inspection, selectInspection, selectedAgentId, selectDraftAgent, activeRuns, setRunsOpen, setLocationOpen, selectedRun, current])
+    navigationControls: current ? <BoardNavigationControls workspaceId={workspaceId} workflowId={workflowId} selection={navigationSelection} /> : undefined,
+  }), [workspaceId, workflowId, legacyRun, chooseRun, getSelectionToken, inspection, selectInspection, selectedAgentId, selectDraftAgent, activeRuns, setRunsOpen, setLocationOpen, navigationSelection, current])
   const authoringEvent = (event: SyntheticEvent) => {
     // React capture also covers descendants portalled outside the inert subtree.
     if (!currentRef.current) { event.preventDefault(); event.stopPropagation() }
@@ -119,7 +138,7 @@ export function WorkflowBoard({ workspaceId, workflowId, run: requestedRun, sele
     <div ref={toolbar} className="unified-workflow-board" data-testid="unified-workflow-board" style={{ flexDirection: 'column' }}>
       {!current ? <header className="board-topbar" aria-label="Board toolbar"
         style={{ position: 'static', flex: '0 0 auto', flexWrap: 'wrap', justifyContent: 'flex-end', padding: 'var(--space-2)', boxSizing: 'border-box', minWidth: 0 }}>
-        <BoardNavigationControls workspaceId={workspaceId} workflowId={workflowId} selection={selectedRun} />
+        <BoardNavigationControls workspaceId={workspaceId} workflowId={workflowId} selection={navigationSelection} />
       </header> : null}
       <RunBoardSlot selection={boardSelection}>
         <div className="workflow-board-authoring" onClickCapture={authoringEvent} onKeyDownCapture={authoringEvent} onSubmitCapture={authoringEvent}>

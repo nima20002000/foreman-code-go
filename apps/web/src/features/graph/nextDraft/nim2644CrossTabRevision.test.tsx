@@ -112,7 +112,7 @@ function mount() {
 beforeEach(() => {
   useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); sessionStorage.clear()
   sessionStorage.setItem(tabKey, 'B')
-  vi.stubGlobal('navigator', { ...navigator, locks: { request: async (_name: string, work: () => Promise<unknown>) => work() } })
+  vi.stubGlobal('navigator', { ...navigator, locks: { request: async (_name: string, work: (() => Promise<unknown>) | LockOptions, claim?: (lock: { name: string }) => unknown) => typeof work === 'function' ? work() : claim!({ name: _name }) } })
   vi.spyOn(nextDraftApi, 'pins').mockImplementation(async (_workspaceId, graph, _stagedAgents, agents) => ({
     expectedAgentConfigurationVersionIds: Object.fromEntries(graph.nodes.map(nativeNode).flatMap(({ agentId }) => {
       const pin = agents?.find((item) => item.agent.id === agentId)?.agent.configurationVersionId

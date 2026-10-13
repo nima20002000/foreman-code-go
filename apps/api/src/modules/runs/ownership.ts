@@ -20,11 +20,18 @@ export class RunOwnership {
 
   private graphConnection: ExclusiveGraphConnection | undefined
   private queryClient: pg.Client | undefined
+  private generation: string | undefined
 
   private constructor(private readonly rawClient: pg.Client, readonly runId: string, private readonly onLost: () => void) {}
 
   /** Existing native callers share the same serialized port after v2 adoption. */
   get client(): pg.Client { return this.queryClient ?? this.rawClient }
+
+  get checkpointGeneration(): string {
+    this.assertOwned()
+    if (!this.generation) throw new DomainError('RUN_OWNERSHIP_LOST', 'The checkpoint owner is unavailable.', 409)
+    return this.generation
+  }
 
   /** Adopt only before dispatch. No second pool connection can publish on this owner's behalf. */
   oneShotConnection(): ExclusiveGraphConnection {
@@ -76,7 +83,17 @@ export class RunOwnership {
         'select pg_try_advisory_lock($1, hashtext($2)) as acquired',
         [810_002, runId],
       )
-      if (result.rows[0]?.acquired) return owner
+      if (result.rows[0]?.acquired) {
+        const row = (await client.query<{ generation: string }>(`insert into run_checkpoint_owners
+          (run_id,generation,owner_pid,owner_started_at)
+          select $1,1,pg_backend_pid(),backend_start from pg_stat_activity where pid=pg_backend_pid()
+          on conflict(run_id) do update set generation=run_checkpoint_owners.generation+1,
+            owner_pid=excluded.owner_pid,owner_started_at=excluded.owner_started_at
+          returning generation::text`, [runId])).rows[0]
+        if (!row) throw new DomainError('RUN_OWNERSHIP_LOST', 'The checkpoint owner could not be recorded.', 409)
+        owner.generation = row.generation
+        return owner
+      }
       await owner.release()
       return undefined
     } catch (error) {

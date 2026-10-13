@@ -69,11 +69,35 @@ export function changeDraftAgent(edit: NextDraftEdit, agent: Agent, graph: Workf
   if (edit.busy || edit.pending) throw new Error('Reconcile the pending draft command before editing Agent settings.')
   const before = editorAgents(edit).find((item) => item.id === agent.id)
   if (sameAgentContent(before, agent) && sameValue(graph, edit.graph)) return edit
-  const history = edit.agentHistory ?? edit.history.map(() => ({}))
+  const history = (edit.agentHistory ?? edit.history.map(() => ({}))).map((snapshot: DraftAgentEdits) =>
+    before && !snapshot[agent.id] ? { ...snapshot, [agent.id]: before } : snapshot)
+  const previous = { ...snapshotAgentEdits(edit), ...(before ? { [agent.id]: before } : {}) }
   const edits = { ...edit.agentEdits, [agent.id]: agent }
   if (sameAgentContent(draftAgents(edit.context).find((item) => item.id === agent.id), agent)) delete edits[agent.id]
   return { ...edit, graph, agentEdits: referencedAgentEdits(graph, edits), future: [],
-    history: [...edit.history.slice(-49), edit.graph], agentHistory: [...history.slice(-49), edit.agentEdits ?? {}], validation: undefined }
+    history: [...edit.history.slice(-49), edit.graph],
+    historyOffset: (edit.historyOffset ?? 0) + Math.max(0, edit.history.length - 49),
+    agentHistory: [...history.slice(-49), previous], validation: undefined }
+}
+
+/** Empty edit maps still capture previously edited Agents' authored base content. */
+export function snapshotAgentEdits(edit: NextDraftEdit): DraftAgentEdits {
+  const ids = new Set([Object.keys(edit.agentEdits ?? {}),
+    ...(edit.agentHistory ?? []).map(snapshot => Object.keys(snapshot))].flat())
+  return referencedAgentEdits(edit.graph, Object.fromEntries(editorAgents(edit)
+    .filter(agent => ids.has(agent.id)).map(agent => [agent.id, agent])))
+}
+
+/** Historical authored settings become new edits against the acknowledged Agent base. */
+export function rebaseAgentEdits(edits: DraftAgentEdits, context: NextDraftContext): DraftAgentEdits {
+  const saved = new Map(draftAgents(context).map(agent => [agent.id, agent]))
+  return Object.fromEntries(Object.entries(edits).flatMap(([id, agent]) => {
+    const base = saved.get(id)
+    if (sameAgentContent(base, agent)) return []
+    const restored = base ? { ...agent, configurationVersionId: base.configurationVersionId,
+      createdAt: base.createdAt, updatedAt: base.updatedAt } : agent
+    return [[id, restored]]
+  }))
 }
 
 /** Clear only the submitted Agent edits. Later edits survive normalization and publication. */
