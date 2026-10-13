@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import { ManagementPrincipalSchema, type ManagementGrant } from '@foreman-code/contracts/management'
-import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture, type RunWorktree } from '@foreman-code/contracts/wave25'
+import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture, RUN_GRAPH_LIMITS, type RunWorktree } from '@foreman-code/contracts/wave25'
 import { readCurrentRunDetails } from '../src/modules/runs/currentRead.js'
 import { readAcceptedRepeatRunLocked, readRecordedRepeatRunSnapshot } from '../src/modules/runs/repeatStartRead.js'
 import { readRepeatExecutionLocked } from '../src/modules/runs/repeatPostgres.js'
@@ -63,6 +63,7 @@ function fixture() {
     if (sql.includes('from ci_runs')) return { rows: [] }
     if (sql.includes('from durable_interactions')) { expect(values).toEqual([run.id, run.workspaceId, run.workflowId]); return { rows: [] } }
     if (sql === RUN_ACTIVITIES_BOUNDS_SQL) { expect(values).toEqual([run.id]); return { rows: [{ high_water: '0', retained_from: '0', observed: 0 }] } }
+    if (sql.startsWith('select record from harness_executions')) return { rows: [{ record: execution }] }
     if (sql.includes('from harness_executions')) return { rows: [{ id: execution.id }] }
     if (sql.includes('from run_activity')) return { rows: [] }
     if (sql.includes('from run_cleanup_intents')) return { rows: [{ pending: false }] }
@@ -111,6 +112,16 @@ describe('saved current Run read', () => {
     expect(readRecordedRepeatRunSnapshot).not.toHaveBeenCalled()
     expect(readRepeatExecutionLocked).not.toHaveBeenCalled()
     expect(f.query).toHaveBeenCalledWith('rollback')
+    expect(f.release).toHaveBeenCalledOnce()
+  })
+
+  it('rejects oversized saved execution history before validating execution pins', async () => {
+    const f = fixture()
+    f.execution.input = { payload: 'x'.repeat(RUN_GRAPH_LIMITS.snapshotBytes) }
+    vi.mocked(readRepeatExecutionLocked).mockRejectedValue(new Error('execution pin changed'))
+
+    await expect(f.read()).rejects.toMatchObject({ code: 'RUN_DETAIL_TOO_LARGE', status: 409 })
+    expect(readRepeatExecutionLocked).not.toHaveBeenCalled()
     expect(f.release).toHaveBeenCalledOnce()
   })
 
