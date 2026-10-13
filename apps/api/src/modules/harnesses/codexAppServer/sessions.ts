@@ -402,9 +402,11 @@ export abstract class CodexManagerSessions extends CodexManagerTurns {
 
   canDetachForRestart(session: NativeSessionReference): boolean {
     const runtime = this.runtimes.get(session.nativeSessionId)
+    const pendingTurn = runtime?.phase === 'starting' && runtime.starting?.cancelRequested === false
     return !!this.processRecovery && process.platform === 'linux' && !!runtime
-      && runtime.session.providerVersion === session.providerVersion && !runtime.closed && !runtime.disposed
-      && runtime.activeTurnId !== undefined
+      && runtime.session.harness === session.harness && runtime.session.providerVersion === session.providerVersion
+      && !runtime.closed && !runtime.disposed
+      && (runtime.activeTurnId !== undefined || pendingTurn)
       && advanced(runtime.configuration).sessionPersistence !== 'ephemeral'
       && runtime.transport.detachForRestart !== undefined
   }
