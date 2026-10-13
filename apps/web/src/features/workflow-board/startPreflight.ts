@@ -49,9 +49,11 @@ export function boardStartPins(displayed: GraphDraftV3, facts: BoardStartPreflig
   if (workflow.archivedAt || workspace.archivedAt || locationUnavailable || folderUnavailable) {
     throw new Error('The workspace, workflow or execution folder is unavailable.')
   }
+  const publishedGraph = { ...version.definition,
+    name: workflow.workflow.name, description: workflow.workflow.description }
   if (displayed.publishedRevision !== displayed.revision || displayed.revision !== workflow.revision
     || version.id !== displayed.baseWorkflowVersionId || version.id !== workflow.currentVersionId
-    || !sameExecutableWorkflow(version.definition, displayed.graph)) {
+    || !sameExecutableWorkflow(publishedGraph, displayed.graph)) {
     throw mismatch('The displayed draft is not the exact published workflow. Save or explicitly reload before Start.')
   }
   // Metadata labels may have changed since the immutable version. They do not
