@@ -119,6 +119,63 @@ it.each(['running', 'waiting'] as const)(
   },
 )
 
+it('preserves an original Main turn while cold attachment opens without detaching its new generation early', async () => {
+  const f = currentRestartUnit(false, { hostRef: { kind: 'main' } } as AcceptedNodePlacement)
+  connections.push(f.connection)
+  const first = f.cold()
+  await first.attachOriginal()
+  await first.coordinator.closeForRestart()
+  const restarted = f.cold()
+  restarted.manager.originalEnvironment = async () => ({ ORIGINAL_PROCESS_TOKEN: 'retained-fixture-token' })
+  const attaching = deferred()
+  const attached = deferred()
+  const attach = restarted.manager.attachSession.bind(restarted.manager)
+  restarted.manager.attachSession = async (...args) => {
+    attaching.resolve()
+    await attached.promise
+    return attach(...args)
+  }
+  const observing = restarted.coordinator.withSourceObservationLane(f.owner, f.execution(), async () => 'original source')
+  try {
+    await attaching.promise
+    expect(f.rows()).toHaveLength(2)
+    expect(f.rows()[1]).toMatchObject({ detached: false, closed: false })
+    const waits = f.state.budgetWaits
+    expect(await restarted.coordinator.preserveActiveForRestart(f.owner)).toBe(true)
+    expect(f.state.budgetWaits).toBe(waits + 1)
+    expect(f.rows()[1]).toMatchObject({ detached: false, closed: false })
+    expect(f.state.cleanup).toBe(false)
+    expect(f.state.creates).toBe(0)
+    expect(f.state.turns).toBe(0)
+    attached.resolve()
+    expect(await observing).toBe('original source')
+    await restarted.coordinator.closeForRestart()
+    expect(f.rows()[1]).toMatchObject({ detached: true, closed: false })
+  } finally {
+    attached.resolve()
+    await observing
+  }
+})
+
+it('does not preserve a cold attachment after its authorization has failed', async () => {
+  const f = currentRestartUnit(false, { hostRef: { kind: 'main' } } as AcceptedNodePlacement)
+  connections.push(f.connection)
+  const first = f.cold()
+  await first.attachOriginal()
+  await first.coordinator.closeForRestart()
+  const restarted = f.cold()
+  restarted.manager.originalEnvironment = async () => ({ ORIGINAL_PROCESS_TOKEN: 'retained-fixture-token' })
+  restarted.manager.attachSession = async () => {
+    throw new DomainError('WORKER_AUTH_REVOKED', 'Original process authorization was revoked.', 403)
+  }
+  await expect(restarted.coordinator.withSourceObservationLane(f.owner, f.execution(), async () => 'source'))
+    .rejects.toMatchObject({ code: 'WORKER_AUTH_REVOKED' })
+  expect(await restarted.coordinator.preserveActiveForRestart(f.owner)).toBe(false)
+  expect(f.rows()[1]).toMatchObject({ detached: false, closed: false })
+  expect(f.state.creates).toBe(0)
+  expect(f.state.turns).toBe(0)
+})
+
 it.each([
   { state: 'running' as const, missingWrite: false },
   { state: 'running' as const, missingWrite: true },

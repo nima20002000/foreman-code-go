@@ -6,9 +6,10 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
+import { runCommand } from '../src/modules/harnesses/process.js'
 import { identityAlive, processIdentity } from '../src/modules/harnesses/recovery/linuxIdentity.js'
 import { detachRecoveredChild, hasDetachedStdioProcess, hasNativeRestartDetachment,
-  NativeProcessRegistry, readDetachedNativeProcess, spawnNativeProcess }
+  NativeProcessRegistry, readDetachedNativeProcess, registeredNativeProcess, spawnNativeProcess }
   from '../src/modules/harnesses/recovery/processRegistry.js'
 import { readUntil } from './helpers/observableCondition.js'
 
@@ -227,6 +228,40 @@ it('validates restart detachment after natural provider completion without retai
   } finally {
     const closed = await registry.closeOwner(owner)
     if (!closed) throw new Error('Completed native fixture tree closure remains unconfirmed.')
+    rmSync(directory, { recursive: true, force: true })
+  }
+}, 20_000)
+
+it('confirms the captured daemon launch after a preceding inspection consumes its shared reservation', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'native-guardian-shared-scope-'))
+  const registry = new NativeProcessRegistry(join(directory, 'registry'))
+  const scope = registry.reserveLaunch(owner)
+  try {
+    const inspection = await runCommand(process.execPath, ['-e', 'process.exit(0)'], directory,
+      undefined, {}, { recovery: scope })
+    expect(inspection.exitCode).toBe(0)
+    const child = spawnNativeProcess(process.execPath, ['-e', `
+      console.log(JSON.stringify({ method: 'fixture/ready' }))
+      setInterval(()=>{},1000)
+    `], { cwd: directory, env: {}, recovery: scope, restartDetachable: true, reconnectableStdio: true })
+    child.stderr.resume()
+    await once(child.stdout, 'data')
+    const captured = registeredNativeProcess(child)!
+    expect(captured.launchId).not.toBe(scope.launchId)
+    const detached = await detachRecoveredChild(child)
+    expect(detached.launchId).toBe(captured.launchId)
+    expect(child.connected).toBe(false)
+    expect(identityAlive(detached.guardian!)).toBe(true)
+    expect(identityAlive(detached.provider!)).toBe(true)
+    expect(readDetachedNativeProcess(scope)).toBeUndefined()
+    expect(readDetachedNativeProcess(captured)).toMatchObject(detached)
+    expect(readDetachedNativeProcess(registry.scope(owner))).toMatchObject(detached)
+    expect(await registry.closeOwner(owner)).toBe(true)
+    expect(identityAlive(detached.guardian!)).toBe(false)
+    expect(identityAlive(detached.provider!)).toBe(false)
+  } finally {
+    const closed = await registry.closeOwner(owner)
+    if (!closed) throw new Error('Shared-scope native fixture tree closure remains unconfirmed.')
     rmSync(directory, { recursive: true, force: true })
   }
 }, 20_000)
