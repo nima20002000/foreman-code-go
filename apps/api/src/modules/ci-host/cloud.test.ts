@@ -672,10 +672,10 @@ it.each(['github', 'circleci'] as const)('prunes stale mirror branches and keeps
   const second = randomUUID()
   const request = { operation: 'start' as const, workspaceId: 'ci-workspace', repository: 'octo/site', commit: f.commit,
     suite: 'lint' as const, scope: 'affected' as const, files: [] }
-  expect(await f.cloud.handle({ ...request, runId: first }))
-    .toMatchObject({ operation: 'start', run: { state: 'starting' } })
-  expect((provider === 'github' ? f.dispatched : f.circle.triggered)[0]).toContain('octo/site-ci')
   const activeState = provider === 'circleci' ? 'running' : 'starting'
+  expect(await f.cloud.handle({ ...request, runId: first }))
+    .toMatchObject({ operation: 'start', run: { state: activeState } })
+  expect((provider === 'github' ? f.dispatched : f.circle.triggered)[0]).toContain('octo/site-ci')
   expect(await f.cloud.handle({ ...request, runId: second }))
     .toMatchObject({ operation: 'start', run: { state: activeState } })
   expect(await f.reopen().handle({ operation: 'read', runId: second, afterOffset: 0, maxBytes: 1 }))
@@ -717,7 +717,7 @@ it('republishes a branch removed by maintenance after a previous automatic clean
     suite: 'lint' as const, scope: 'affected' as const, files: [] }
   const runId = randomUUID()
   expect(await f.cloud.handle({ ...request, runId }))
-    .toMatchObject({ operation: 'start', run: { state: 'starting' } })
+    .toMatchObject({ operation: 'start', run: { state: 'running' } })
   expect(f.circle.triggered[0]).toContain('octo/site-ci')
   f.cleanup.unavailable = true
   f.circle.outcome = 'succeeded'
@@ -728,6 +728,7 @@ it('republishes a branch removed by maintenance after a previous automatic clean
   // Maintenance in another process deletes the ref without touching the live publisher's memory.
   f.mirrorGit('update-ref', '-d', branch)
   f.cleanup.unavailable = false
+  f.circle.outcome = ''
   const replacement = randomUUID()
   expect(await f.cloud.handle({ ...request, runId: replacement }))
     .toMatchObject({ operation: 'start', run: { state: 'running' } })
@@ -765,19 +766,19 @@ it.each(['github', 'circleci'] as const)('keeps publication scoped after cancell
   const second = randomUUID()
   const request = { operation: 'start' as const, workspaceId: 'ci-workspace', repository: 'octo/site', commit: f.commit,
     suite: 'lint' as const, scope: 'affected' as const, files: [] }
+  const activeState = provider === 'circleci' ? 'running' : 'starting'
   expect(await f.cloud.handle({ ...request, runId: first }))
-    .toMatchObject({ operation: 'start', run: { state: 'starting' } })
+    .toMatchObject({ operation: 'start', run: { state: activeState } })
   expect(await f.cloud.handle({ operation: 'cancel', runId: first }))
     .toMatchObject({ operation: 'cancel', run: { state: 'canceled' } })
   const reopened = f.reopen()
   expect(await reopened.handle({ ...request, runId: second }))
-    .toMatchObject({ operation: 'start', run: { state: 'starting', provenance: { sourceCommit: f.commit } } })
+    .toMatchObject({ operation: 'start', run: { state: activeState, provenance: { sourceCommit: f.commit } } })
   expect(await reopened.handle({ operation: 'read', runId: first, afterOffset: 0, maxBytes: 1 }))
     .toMatchObject({ operation: 'read', run: { state: 'canceled' } })
   const commands = provider === 'github' ? f.dispatched : f.circle.triggered
   expect(commands).toHaveLength(2)
   for (const command of commands) expect(command).toContain('octo/site-ci')
-  const activeState = provider === 'circleci' ? 'running' : 'starting'
   expect(await f.reopen().handle({ operation: 'read', runId: second, afterOffset: 0, maxBytes: 1 }))
     .toMatchObject({ operation: 'read', run: { state: activeState, provenance: { sourceCommit: f.commit } } })
   expect(commands).toHaveLength(2)
