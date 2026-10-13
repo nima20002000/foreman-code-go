@@ -1,5 +1,10 @@
 import { expect, it } from 'vitest'
-import { SourceStorageCapacitySchema } from './sourceOperations.js'
+import { SourceStorageCapacitySchema, SOURCE_MATERIALIZATION_RECORD_MAX_BYTES } from './sourceOperations.js'
+import { SOURCE_MANIFEST_MAX_BYTES } from './sourceMaterialization.js'
+
+it('exposes the materialization record budget to source operation consumers', () => {
+  expect(SOURCE_MATERIALIZATION_RECORD_MAX_BYTES).toBe(SOURCE_MANIFEST_MAX_BYTES + 64 * 1024)
+})
 
 const capacity = {
   filesystem: { device: '1', inode: '2', mountId: '3' },
