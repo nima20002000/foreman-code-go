@@ -25,7 +25,7 @@ export async function readUntil<T>(
         if (accept(value)) return value
         if (performance.now() >= deadline) throw new Error(`Timed out waiting for ${options.description}.`)
         // Commit notifications wake the read immediately; polling covers external native progress.
-        const pollIntervalMs = options.subscribe ? 1000 : 25
+        const pollIntervalMs = Math.max(25, options.minimumReadIntervalMs ?? 0)
         const polling = new Promise<void>(resolve => { pollTimer = setTimeout(resolve, pollIntervalMs) })
         await Promise.race([notification, polling, expired])
         clearTimeout(pollTimer)
