@@ -47,14 +47,14 @@ if (args[1] === 'install') {
   fs.mkdirSync(path.dirname(metadata), { recursive: true })
   fs.writeFileSync(metadata, 'verified package publication time')
   fs.mkdirSync('node_modules', { recursive: true })
-  if (!fs.existsSync('node_modules/dependency')) fs.writeFileSync('node_modules/dependency', 'pristine')
+  if (!fs.existsSync('node_modules/dependency')) fs.linkSync(seed, 'node_modules/dependency')
 } else {
   console.log('dependency=' + fs.readFileSync('node_modules/dependency', 'utf8'))
   fs.writeFileSync('node_modules/dependency', 'modified by suite')
 }
 `, { mode: 0o755 })
   const system = systemHostCiPorts()
-  let launched = Promise.resolve()
+  const launched = new Map<string, Promise<unknown>>()
   const ports: HostCiPorts = { ...system, cpus: 16, memoryBytes: 16 * 2 ** 30,
     availableMemoryBytes: () => 16 * 2 ** 30,
     run: async (file, args, options) => {
@@ -66,9 +66,7 @@ if (args[1] === 'install') {
         const cwd = args.find(arg => arg.startsWith('--working-directory='))!.slice('--working-directory='.length)
         const env = Object.fromEntries(args.filter(arg => arg.startsWith('--setenv='))
           .map(arg => arg.slice('--setenv='.length).split(/=(.*)/s).slice(0, 2)))
-        launched = system.run('/bin/bash', [args.at(-1)!], { cwd, env }).then(result => {
-          if (result.code !== 0) throw new Error(`Fixture failed: ${result.stderr}`)
-        })
+        launched.set(cwd, system.run('/bin/bash', [args.at(-1)!], { cwd, env }))
         return { code: 0, stdout: '', stderr: '' }
       }
       if (file === 'systemctl') return { code: 0, stdout: 'active', stderr: '' }
@@ -83,7 +81,7 @@ if (args[1] === 'install') {
       const reply = await runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 })
       if (reply.operation !== 'read' || reply.run.state === 'starting') throw new Error('Run is starting')
     })
-    await launched
+    await launched.get(join(root, 'runner/runs', runId, 'src'))
     return runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 })
   }
   const commands = async () => (await readFile(calls, 'utf8')).trim().split('\n')
@@ -117,6 +115,17 @@ it('retains release-age metadata for offline installs after the previous worktre
   const fixture = await computer()
   await expect(fixture.run()).resolves.toMatchObject({ run: { state: 'passed' } })
   await expect(fixture.run()).resolves.toMatchObject({ run: { state: 'passed' } })
+  const installs = (await fixture.commands()).filter(args => args[1] === 'install')
+  expect(installs.filter(args => !args.includes('--offline'))).toHaveLength(1)
+})
+
+it('isolates dependencies when concurrent jobs share a warmed repository and store', async () => {
+  const fixture = await computer()
+  await fixture.run()
+  const results = await Promise.all([fixture.run(), fixture.run()])
+  for (const result of results) {
+    expect(result).toMatchObject({ run: { state: 'passed' }, text: expect.stringContaining('dependency=pristine') })
+  }
   const installs = (await fixture.commands()).filter(args => args[1] === 'install')
   expect(installs.filter(args => !args.includes('--offline'))).toHaveLength(1)
 })

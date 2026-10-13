@@ -90,12 +90,12 @@ test('checkout paths with spaces, Unicode and percent characters retain queue ow
 test('temporary directories exclude other writers under a shared group umask', t => {
   const f = fixture()
   t.after(() => rmSync(f.home, { recursive: true, force: true }))
-  const command = 'const fs=require("node:fs"),path=require("node:path");console.log(JSON.stringify([process.env.TMPDIR,path.dirname(process.env.TMPDIR)].map(value=>fs.statSync(value).mode&0o777)))'
+  const command = 'const fs=require("node:fs"),path=require("node:path");console.log("modes="+JSON.stringify([process.env.TMPDIR,path.dirname(process.env.TMPDIR)].map(value=>fs.statSync(value).mode&0o777)))'
   const entry = `process.umask(0o002);process.argv=[process.execPath,${JSON.stringify(join(f.first, 'scripts/heavy-job.mjs'))},'--',process.execPath,'-e',${JSON.stringify(command)}];await import(${JSON.stringify(pathToFileURL(join(f.first, 'scripts/heavy-job.mjs')).href)})`
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', entry],
     { cwd: f.first, env: jobEnv(f.first), encoding: 'utf8', timeout: 10000 })
   assert.equal(result.status, 0, result.stderr)
-  const modes = JSON.parse(result.stdout.trim().split('\n').at(-1))
+  const modes = JSON.parse(result.stdout.split('\n').find(line => line.startsWith('modes=')).slice('modes='.length))
   assert.deepEqual(modes, [0o700, 0o700])
 })
 function mockProc(f, declarations) {
@@ -630,6 +630,25 @@ test('Vitest setup uses the private admission queue in a host CI worktree', { ti
     assert.equal(result.status, 0, result.stdout + result.stderr)
     assert.match(result.stdout, /suite admitted/)
     assert.equal((result.stdout.match(/\[heavy-job\] running /g) ?? []).length, 1)
+  } finally {
+    rmSync(f.home, { recursive: true, force: true })
+  }
+})
+
+test('host CI worktrees remove abandoned temporary directories after a crashed job', { timeout: 6000 }, () => {
+  const f = fixture()
+  try {
+    const env = { ...jobEnv(f.second), CI_HOST_RUNNER: '1' }
+    const crash = spawnSync(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e',
+      "console.log('temporary=' + process.env.TMPDIR); setTimeout(() => process.kill(process.ppid, 'SIGKILL'), 100)"],
+    { cwd: f.second, env, encoding: 'utf8', timeout: 3000 })
+    assert.equal(crash.signal, 'SIGKILL', crash.stderr)
+    const abandoned = crash.stdout.split('\n').find(line => line.startsWith('temporary=')).slice('temporary='.length)
+    utimesSync(abandoned, new Date(0), new Date(0))
+    const next = spawnSync(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e', 'process.exit(0)'],
+      { cwd: f.second, env, encoding: 'utf8', timeout: 3000 })
+    assert.equal(next.status, 0, next.stdout + next.stderr)
+    assert.equal(existsSync(abandoned), false)
   } finally {
     rmSync(f.home, { recursive: true, force: true })
   }
