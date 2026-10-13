@@ -79,7 +79,7 @@ it.each([80_000, 120_000])('balances %i ms integration files against cloud check
   expect(Math.max(...times.values())).toBeLessThanOrEqual(210_000)
 })
 
-it('lets a build computer whose own gate part started take unstarted cloud gate parts', () => {
+it('lets a build computer without a queued gate part take cloud parts and another build computer integration part', () => {
   const host: HostCiComputer = { key: 'builder-main', label: 'Main builder', priority: 60, hostRef: { kind: 'main', mainId: 'main' } }
   const paired: HostCiComputer = { key: 'builder-paired', label: 'Paired builder', priority: 50,
     hostRef: { kind: 'device', mainId: 'main', deviceId: 'paired' } }
@@ -93,5 +93,8 @@ it('lets a build computer whose own gate part started take unstarted cloud gate 
   expect(steals(queued[0]!, paired)).toBe(false)
   expect(steals(queued[0]!, cloud)).toBe(false)
   expect(steals(queued[2]!, host)).toBe(true)
-  expect(steals(queued[1]!, host)).toBe(false)
+  expect(steals(queued[1]!, host)).toBe(true)
+  expect(steals(queued[1]!, paired)).toBe(false)
+  expect(steals(queued[1]!, cloud)).toBe(false)
+  expect(steals(part('builder-paired', 'unit'), host)).toBe(false)
 })

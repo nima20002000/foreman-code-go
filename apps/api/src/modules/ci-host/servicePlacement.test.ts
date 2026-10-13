@@ -26,7 +26,7 @@ function queuedRuns(count: number) {
 }
 
 function fleet(records: CiRunRecord[], available: HostCiComputer[],
-  unavailable = new Map<string, string>(), occupied = new Set<string>()) {
+  unavailable = new Map<string, string>(), occupied = new Set<string>(), slots = new Map<string, number>()) {
   const started: { computer: HostCiComputer; request: CiHostRequest }[] = []
   let writes = 0
   const pool = { options: { max: 10 }, query: async (sql: string, parameters?: unknown[]) => {
@@ -73,7 +73,7 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
         if (reason === 'offline' || reason === 'extension-rejected') throw new Error(reason)
         return { operation: 'status', ready: !reason, reasons: reason ? [reason] : [],
           cpuCount: 8, memoryBytes: 16 * 2 ** 30, runs: [],
-          slotsTotal: 1, slotsUsed: occupied.has(computer.key) ? 1 : 0 }
+          slotsTotal: slots.get(computer.key) ?? 1, slotsUsed: occupied.has(computer.key) ? 1 : 0 }
       }
       if (request.operation !== 'start') throw new Error('Unexpected fixture request')
       if (unavailable.has(computer.key)) throw new Error('Unavailable executor cannot start work')
@@ -165,6 +165,62 @@ it('does not start a gate check on a build computer with an occupied CI slot', a
   expect(records[0]).toMatchObject({ state: 'queued', computer: null })
 })
 
+it.each([
+  { ownPart: 'none', requiresBuildComputer: false },
+  { ownPart: 'passed', requiresBuildComputer: false },
+  { ownPart: 'none', requiresBuildComputer: true },
+  { ownPart: 'passed', requiresBuildComputer: true },
+])('steals a busy build computer integration part with own part=$ownPart and systemd=$requiresBuildComputer',
+  async ({ ownPart, requiresBuildComputer }) => {
+    const replacement: HostCiComputer = { key: 'device:spare', label: 'Spare builder', priority: 0,
+      hostRef: { kind: 'device', mainId: 'main', deviceId: 'spare' } }
+    const records = queuedRuns(2).map(run => CiRunRecordSchema.parse({ ...run, gate: true,
+      plannedHostKey: host.key, partition: null, integrationShards: 32, requiresBuildComputer,
+      expectedDurationMs: 120_000,
+      files: [requiresBuildComputer ? 'apps/api/test/native-service-restart.integration.test.ts'
+        : 'apps/api/test/workflow.integration.test.ts'],
+    }))
+    if (ownPart === 'passed') {
+      records[1] = CiRunRecordSchema.parse({ ...records[1], plannedHostKey: replacement.key, state: 'passed',
+        computer: { hostRef: replacement.hostRef, label: replacement.label },
+        startedAt: '2026-10-12T00:00:01.000Z', finishedAt: '2026-10-12T00:01:00.000Z' })
+    } else records.pop()
+    const f = fleet(records, [host, replacement, cloud], new Map(), new Set([host.key]))
+    await f.service.dispatch()
+    expect(f.started).toHaveLength(1)
+    expect(f.started[0]?.computer.key).toBe(replacement.key)
+    expect(f.started[0]?.request).toMatchObject({ operation: 'start', runId: records[0]!.id,
+      suite: 'integration', gate: true, scope: 'full', files: records[0]!.files, integrationShards: 16 })
+    expect(records[0]).toMatchObject({ state: 'running', plannedHostKey: host.key, integrationShards: 32,
+      expectedDurationMs: 120_000, computer: { hostRef: replacement.hostRef },
+      dispatchRequest: { integrationShards: 16, files: records[0]!.files } })
+    if (ownPart === 'passed') expect(records[1]?.state).toBe('passed')
+  })
+
+it.each(['queued-own-part', 'occupied-slot', 'not-ready'])(
+  'keeps a busy build computer integration part queued when the spare has %s', async reason => {
+    const replacement: HostCiComputer = { key: 'device:spare', label: 'Spare builder', priority: 0,
+      hostRef: { kind: 'device', mainId: 'main', deviceId: 'spare' } }
+    const records = queuedRuns(2).map((run, index) => CiRunRecordSchema.parse({ ...run, gate: true,
+      plannedHostKey: index ? replacement.key : host.key, partition: null,
+      integrationShards: 32, requiresBuildComputer: false,
+      files: ['apps/api/test/workflow.integration.test.ts'],
+    }))
+    if (reason !== 'queued-own-part') records.pop()
+    const occupied = new Set([host.key])
+    if (reason === 'occupied-slot') occupied.add(replacement.key)
+    const unavailable = new Map<string, string>()
+    if (reason === 'not-ready') unavailable.set(replacement.key, reason)
+    const f = fleet(records, [host, replacement, cloud], unavailable, occupied, new Map([[replacement.key, 2]]))
+    await f.service.dispatch()
+    expect(records[0]).toMatchObject({ state: 'queued', computer: null })
+    expect(f.started).toHaveLength(reason === 'queued-own-part' ? 1 : 0)
+    if (reason === 'queued-own-part') {
+      expect(f.started[0]?.request).toMatchObject({ runId: records[1]!.id })
+      expect(records[1]).toMatchObject({ state: 'running', computer: { hostRef: replacement.hostRef } })
+    }
+  })
+
 it.each(['not-ready', 'offline', 'extension-rejected', 'disabled'])(
   'dispatches a queued gate part elsewhere after its planned computer becomes %s', async reason => {
     const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, gate: true,
@@ -176,10 +232,6 @@ it.each(['not-ready', 'offline', 'extension-rejected', 'disabled'])(
     const available = [host, replacement, cloud]
     const unavailable = new Map<string, string>()
     const f = fleet(records, available, unavailable, new Set([host.key]))
-    await f.service.dispatch()
-    expect(f.started).toEqual([])
-    expect(records[0]?.state).toBe('queued')
-
     if (reason === 'disabled') available.splice(0, 1)
     else unavailable.set(host.key, reason)
     await f.service.dispatch()
