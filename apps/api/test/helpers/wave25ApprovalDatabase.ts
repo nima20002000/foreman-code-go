@@ -2,9 +2,13 @@ import { vi } from 'vitest'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
 import { codexApprovalRuntime } from './codexApprovalRuntime.js'
 import { rejectableDeferred } from './deferred.js'
+import type { agent3Database } from './wave25Agent3.js'
 
 /** Shared Save/Start and Codex adapter capture with replayed provider IO. */
-export async function approvalDatabase(options: { command?: string } = {}) {
+export async function approvalDatabase(options: {
+  command?: string
+  database?: Awaited<ReturnType<typeof agent3Database>>
+} = {}) {
   const runtime = await codexApprovalRuntime('orchestrator', options)
   const reconcile = vi.spyOn(runtime.native.reviewers, 'reconcile').mockResolvedValue(undefined)
   const live = rejectableDeferred<void>(), release = rejectableDeferred<void>()
