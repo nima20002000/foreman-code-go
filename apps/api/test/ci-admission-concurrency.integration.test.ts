@@ -177,7 +177,8 @@ it('prepares supersession ancestry outside the lock and includes tickets admitte
     const result = await next
     expect(result.isError).not.toBe(true)
     const accepted = CiRunOutputSchema.parse(decodeMcpToolResult(result))
-    expect(await f.read(middle.ticketId)).toMatchObject({ supersededBy: accepted.ticketId, state: 'canceled' })
+    // Supersession is recorded at admission; the cancellation may finish after a pending dispatch settles.
+    await expect.poll(() => f.read(middle.ticketId)).toMatchObject({ supersededBy: accepted.ticketId, state: 'canceled' })
     expect((await f.pool.query(`select outcome from management_audit
       where action='ci.run' and target_key=$1 and details->>'commandId'='next'`, [f.workspaceId])).rows)
       .toEqual([{ outcome: 'succeeded' }])
