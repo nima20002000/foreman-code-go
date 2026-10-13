@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import pg from 'pg'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { HarnessExecutionSchema } from '@foreman-code/contracts'
 import { SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
 import { createFixtureDatabase, dropFixtureDatabase, removeFixtureDirectory } from './helpers/testResources.js'
@@ -22,6 +22,7 @@ import { closeCompletedWorkflowSources, localWorkflowSourceClosed } from '../src
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 import { reclaimSourceReservation } from '../src/modules/sources/reclaimSourceReservation.js'
 import { sourceBindingHash } from '../src/modules/sources/bindingHash.js'
+import { MaterializationReservationCleanup } from '../src/modules/sources/materializationReservationCleanup.js'
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args,
   { cwd, encoding: 'utf8', env: gitFixtureEnvironment() }).trim()
@@ -142,6 +143,65 @@ async function addOccurrence(f: Awaited<ReturnType<typeof fixture>>, state: 'run
     [receipt.materializationId, execution.id, reservation.reservationId, record, 'prepared'])
   return { record, reservation, workingDirectory }
 }
+
+it('defers automatic Main source reclamation until the original native owner confirms closure', async () => {
+  const f = await fixture()
+  try {
+    const copy = await addOccurrence(f, 'completed', false)
+    const executionId = copy.record.receipt.executionId
+    await f.pool.query(`
+      alter table runs add column workspace_id text;
+      alter table source_execution_materializations add column operation_id text;
+      alter table source_preparation_reconciliations
+        add column owner jsonb, add column principal_id text, add column command_id text,
+        add column queue_ticket_id text, add column reconciliation_id uuid;
+      create table job_executions (operation_id text, record jsonb);
+      create table job_admission_queue (operation_id text, record jsonb);
+      create table job_preparations (operation_id text, workspace_id text);
+      create table workflow_job_preparations (run_id text, preparation jsonb);
+      create table execution_dispatch_intents (operation_id text, run_id text);
+      create table execution_native_recoveries
+        (execution_id text, generation bigint, execution_identity jsonb, reference jsonb);
+      create table application_installation (singleton boolean, id uuid);
+      create table source_root_bindings (root_id uuid, binding_revision integer, record jsonb);
+      create table management_audit
+        (principal_id text, source text, action text, target_key text, outcome text, details jsonb);
+    `)
+    const binding = f.binding
+    const scopeId = `${binding.mainId}:original-main:${binding.mainId}:${binding.filesystem.device}:${binding.filesystem.mountId}`
+    const reservation = { ...copy.reservation, scopeId }
+    await f.pool.query('insert into application_installation values(true,$1)', [binding.mainId])
+    await f.pool.query('insert into source_root_bindings values($1,$2,$3)',
+      [binding.rootId, binding.bindingRevision, f.root])
+    await f.pool.query('update source_execution_materializations set operation_id=$1 where execution_id=$2',
+      [copy.record.operationId, executionId])
+    await f.pool.query('update source_storage_reservations set scope_id=$1,record=$2 where reservation_id=$3',
+      [scopeId, reservation, reservation.reservationId])
+    const reclaim = vi.fn((grant: Parameters<typeof reclaimSourceReservation>[0]) => reclaimSourceReservation(grant, {
+      authorize: async () => {}, operationClosed: async () => true,
+      nativeClosed: owner => localWorkflowSourceClosed(f.pool, owner.attempt.executionId), git: f.ports,
+    }, AbortSignal.timeout(60_000)))
+    const cleanup = new MaterializationReservationCleanup(f.pool, reclaim)
+    const report = vi.fn()
+    expect(await cleanup.reconcile(report)).toBe(0)
+    expect(report).not.toHaveBeenCalled()
+    expect(reclaim).not.toHaveBeenCalled()
+    expect((await f.pool.query('select state,reserved_bytes from source_storage_reservations where reservation_id=$1',
+      [reservation.reservationId])).rows[0]).toEqual({ state: 'owned', reserved_bytes: String(reservation.reservedBytes) })
+    expect(await readFile(join(copy.workingDirectory, 'app.ts'), 'utf8')).toBe('approved source\n')
+
+    await f.pool.query('update execution_native_closures set closed_at=clock_timestamp() where execution_id=$1',
+      [executionId])
+    expect(await cleanup.reconcile(report)).toBe(1)
+    expect(report).not.toHaveBeenCalled()
+    expect(reclaim).toHaveBeenCalledOnce()
+    expect((await f.pool.query('select state from source_execution_materializations where execution_id=$1',
+      [executionId])).rows[0]).toEqual({ state: 'closed' })
+    await expect(stat(copy.workingDirectory)).rejects.toMatchObject({ code: 'ENOENT' })
+  } finally {
+    await f.dispose()
+  }
+}, 60_000)
 
 it('releases finished Loop copies while preserving live ownership, dirty work and saved commits', async () => {
   const f = await fixture()
