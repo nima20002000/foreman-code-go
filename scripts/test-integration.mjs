@@ -21,6 +21,7 @@ import { adaptiveDeadlineMs, groupUsed, integrationProcessLimits, integrationPro
 import { boundedLog, emptyCounts, junitReport, logArchive, mergedVitestReport, positiveInteger,
   readVitestReport, privateDirectory, writeReport } from './verification-reports.mjs'
 import { scheduleQueue } from './dense-scheduler.mjs'
+import { reusableIntegrationFile, startSlotServer, stopSlotServer, stopStrayProcesses } from './integration-slot-process.mjs'
 import { writeCiTestResults } from './ci-test-results.mjs'
 import { readProfiles, startProcessMetrics, writeProfiles } from './dense-resources.mjs'
 
@@ -650,6 +651,13 @@ export async function runIntegration(argv = [], {
     slot.databaseSetupMs = performance.now() - started
     delete slot.resetError
   }
+  // An idle reusable coordinator ends before its slot runs a fresh process, is rebuilt, or is cleaned up.
+  const dropSlotServer = async (slot) => {
+    const server = slot.server
+    slot.server = undefined
+    try { await stopSlotServer(server) }
+    catch (error) { slot.resetError = error; throw error }
+  }
   const recordUnexecuted = (files, phase = 'first', reason = 'no usable integration slots') => {
     const isRetest = phase === 'retest'
     for (const file of files) {
@@ -715,8 +723,11 @@ export async function runIntegration(argv = [], {
       const environment = { ...integrationEnvironment(env, slot), FOREMAN_CODE_TEST_FILE_STARTED_AT: String(Date.now()),
         FOREMAN_CODE_TEST_FILE: file, FOREMAN_CODE_TEST_CACHE_ROOT: testFixtureCacheRoot(env) }
       const vitest = vitestCommand(environment, file, testNamePattern, json)
+      const reuse = !isRetest && reusableIntegrationFile(file)
+      if (!reuse) await dropSlotServer(slot)
       // One slot is one case; it.concurrent must not multiply its SQL fixture load.
-      const child = spawn(vitest.command, vitest.args,
+      const server = reuse ? (slot.server ??= startSlotServer(vitest.env, testNamePattern)) : undefined
+      const child = server?.child ?? spawn(vitest.command, vitest.args,
         { cwd: vitest.cwd, env: vitest.env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
       const progress = integrationProcessProgress()
       const phaseOutput = integrationPhaseForwarder(line => console.log(line))
@@ -725,18 +736,24 @@ export async function runIntegration(argv = [], {
         progress.lastOutputAt = Date.now()
         output.write(chunk)
       }
-      child.stdout.on('data', chunk => {
+      const recordStdout = chunk => {
         recordOutput(chunk)
         phaseOutput.push(chunk)
-      })
-      child.stderr.on('data', recordOutput)
+      }
       let outputResult
       const closeOutput = () => {
         phaseOutput.finish()
         outputResult ??= output.close()
         return outputResult
       }
-      const outputClosed = new Promise((done) => child.once('close', () => done(closeOutput())))
+      let outputClosed
+      let finished
+      if (server) finished = server.run({ file, json, environment: vitest.env }, recordStdout)
+      else {
+        child.stdout.on('data', recordStdout)
+        child.stderr.on('data', recordOutput)
+        outputClosed = new Promise((done) => child.once('close', () => done(closeOutput())))
+      }
       active.set(slot.index, { child, file, progress })
       console.log(`[integration] ${label}START ${file} (slot ${slot.index}, pid ${child.pid ?? 'unavailable'}); log: ${log}`)
       if (interrupted) signalOwnedChildren(active, killTimers, interrupted)
@@ -752,6 +769,10 @@ export async function runIntegration(argv = [], {
           fileTimeoutMs, deadlineMs,
           onTimeout: (reason) => console.error(`[integration] ${label}TIMEOUT ${file} (slot ${slot.index}): ${reason.message}`),
           cleanupAfterExit: () => settleTestResources(admin, slot),
+          finished,
+          // A coordinator that finished its file stays for the slot's next file; only what the file left is stopped.
+          stopProcesses: (outcome, graceMs) => server && !outcome.timedOut && server.alive
+            ? stopStrayProcesses(child.pid, { graceMs }) : stopGroup(child.pid, { graceMs }),
           resetAfterTimeout: async () => {
             try { await resetSlotDatabase(slot) }
             catch (reason) { slot.resetError = reason; throw reason }
@@ -761,17 +782,25 @@ export async function runIntegration(argv = [], {
       } finally {
         metrics = metricsTracker?.stop()
       }
-      const ownedProcessActive = groupUsed(child.pid)
+      if (server) {
+        server.detach()
+        if (result.timedOut || result.slotUnavailable || !server.alive) {
+          try { await stopGroup(child.pid) }
+          catch (reason) { console.error(`[integration] slot ${slot.index} coordinator stop failed: ${reason.message}`) }
+          slot.server = undefined
+        }
+      }
+      const ownedProcessActive = slot.server ? false : groupUsed(child.pid)
       if (ownedProcessActive) {
         slot.unavailable = true
         stopForProcessFailure(result.error?.message
           ?? `Integration slot ${slot.index} still owns child process group ${child.pid}`)
-        child.stdout.off('data', recordOutput)
+        child.stdout.off('data', recordStdout)
         child.stderr.off('data', recordOutput)
         child.stdout.destroy()
         child.stderr.destroy()
       }
-      const retainedLog = ownedProcessActive ? closeOutput() : await outputClosed
+      const retainedLog = ownedProcessActive || server ? closeOutput() : await outputClosed
       let code = ownedProcessActive ? 1 : result.code
       let error = ownedProcessActive ? new Error(fatalProcessError) : result.error
       clearTimeout(killTimers.get(slot.index))
@@ -885,6 +914,7 @@ export async function runIntegration(argv = [], {
       recordFileAttempt(retestReports, file,
         { slot: slot.index, code: 1, complete: false, reason: 'retest database setup failed' })
       try {
+        await dropSlotServer(slot)
         await dropTestDatabase(admin, slot)
         removeTestRoot(slot)
         const resource = createTestRoot(tempRoot.directory, `retest-slot-${slot.index}-`)
@@ -945,6 +975,10 @@ export async function runIntegration(argv = [], {
     let cleanupError
     for (const [index, { child }] of active) {
       try { await stopGroup(child.pid, { signal: interrupted || 'SIGTERM' }); active.delete(index) }
+      catch (error) { cleanupError ??= error }
+    }
+    for (const slot of slots) {
+      try { await dropSlotServer(slot) }
       catch (error) { cleanupError ??= error }
     }
     for (const timer of killTimers.values()) clearTimeout(timer)
