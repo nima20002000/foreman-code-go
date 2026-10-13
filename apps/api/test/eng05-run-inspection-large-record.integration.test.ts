@@ -1,4 +1,10 @@
 import { describe, expect, it } from 'vitest'
+import pg from 'pg'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { buildApp } from '../src/app.js'
+import { beginTransaction, rollbackTransaction } from '../src/infrastructure/transaction.js'
+import { RunManagementService } from '../src/modules/runs/management.js'
 import { randomUUID } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import {
@@ -9,6 +15,45 @@ import { postgresEnabled } from './helpers/wave25Agent3.js'
 import {
   requestScope, reader, parity, path, terminal, denied,
 } from './helpers/runInspection.js'
+
+
+async function rejectOversizedHistoryDuringContention(f: Awaited<ReturnType<typeof currentOperatorIntegration>>) {
+  const readPool = new pg.Pool({ ...f.db.pool.options,
+    options: `-c search_path=${f.db.schema} -c statement_timeout=1000 -c lock_timeout=0` })
+  const app = buildApp({
+    readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
+    operator: { access: f.access, services: { ...f.services,
+      runs: new RunManagementService(readPool, f.commands, f.runs, f.engine, f.locations) } },
+  })
+  const client = new Client({ name: 'run-inspection-contention-test', version: '1' })
+  const blocker = await f.db.pool.connect()
+  try {
+    const address = await app.listen({ host: '127.0.0.1', port: 0 })
+    await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), {
+      authProvider: { token: async () => f.writer.token },
+    }))
+    await beginTransaction(blocker)
+    // Hold the expensive execution-input store, while Run records remain readable.
+    await blocker.query('lock table run_repeat_slots in access exclusive mode')
+    const args = requestScope(f)
+    const http = await app.inject({ method: 'GET',
+      url: `/api/management/workspaces/${args.workspaceId}/runs/${args.runId}`,
+      headers: { authorization: `Bearer ${f.writer.token}` } })
+    expect(http.statusCode, http.body).toBe(409)
+    expect(http.json()).toMatchObject({ error: { code: 'RUN_DETAIL_TOO_LARGE' } })
+    const mcp = await client.callTool({ name: 'run_get', arguments: { ...args, detail: 'full' } })
+    expect(mcp.isError).toBe(true)
+    expect(decodeMcpToolResult(mcp)).toMatchObject({ error: { code: 'RUN_DETAIL_TOO_LARGE' } })
+    expect(RunRecordDetailSchema.parse(await parity({ ...f, app }, client, f.writer.token,
+      RUN_INSPECTION_TOOLS.record, args)).run.input).toEqual(f.f.run.input)
+  } finally {
+    await rollbackTransaction(blocker)
+    blocker.release()
+    await client.close()
+    await app.close()
+    await readPool.end()
+  }
+}
 
 describe.skipIf(!postgresEnabled)('PostgreSQL authenticated Run inspection: large-record', () => {
   it('discloses the exact Run-only record over HTTP/MCP when aggregate execution history exceeds 2 MiB', async () => {
@@ -34,7 +79,7 @@ describe.skipIf(!postgresEnabled)('PostgreSQL authenticated Run inspection: larg
       const aggregate = await f.app.inject({ method: 'GET',
         url: `/api/management/workspaces/${args.workspaceId}/runs/${args.runId}`,
         headers: { authorization: `Bearer ${f.writer.token}` } })
-      console.info('[run-inspection] aggregate read')
+      await rejectOversizedHistoryDuringContention(f)
       expect(aggregate.statusCode, aggregate.body).toBe(409)
       expect(aggregate.json()).toMatchObject({ error: { code: 'RUN_DETAIL_TOO_LARGE' } })
 
