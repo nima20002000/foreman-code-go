@@ -629,11 +629,18 @@ export class CloudCi {
     const snapshotting = performance.now()
     let branchFetchMs = 0
     // A source without the mirror's provider workflows gets the mirror's copies.
-    const treeOf = async (source: string) => {
+    // Source commits are parsed only in their own (shallow) clone; the mirror clone sees their trees.
+    const sourceRead = async (args: string[]) => {
+      const result = await this.git.git(args, { cwd: clone, signal })
+      if (result.code !== 0) throw new DomainError('CI_CLOUD_FAILED', `Could not read source ${args.at(-1)}.`, 502)
+      return result.stdout.trim()
+    }
+    const treeOf = async (sourceCommit: string) => {
+      const source = await sourceRead(['rev-parse', `${sourceCommit}^{tree}`])
       const sourceWorkflows = new Set((await git(['ls-tree', source, '--', ...workflows])).split('\n')
         .map(entry => entry.split('\t')[1]))
       const missing = entries.filter(entry => !sourceWorkflows.has(entry.split('\t')[1]))
-      if (!missing.length && !Object.keys(durations).length) return `${source}^{tree}`
+      if (!missing.length && !Object.keys(durations).length) return source
       await mkdir(this.root, { recursive: true, mode: 0o700 })
       const directory = await mkdtemp(join(this.root, 'snapshot-'))
       try {
@@ -655,7 +662,7 @@ export class CloudCi {
       }
     }
     // Partition starts share the published snapshot and its timing inputs.
-    const date = await git(['show', '-s', '--format=%cI', commit])
+    const date = await sourceRead(['show', '-s', '--format=%cI', commit])
     const author = { GIT_AUTHOR_NAME: mirror.split('/')[0]!, GIT_AUTHOR_EMAIL: `${mirror.split('/')[0]}@users.noreply.github.com`,
       GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date }
     const identity = { ...author, GIT_COMMITTER_NAME: author.GIT_AUTHOR_NAME, GIT_COMMITTER_EMAIL: author.GIT_AUTHOR_EMAIL }
