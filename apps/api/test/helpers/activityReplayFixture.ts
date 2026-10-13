@@ -73,14 +73,16 @@ export async function setup(options: { operatorSandbox?: 'read-only' | 'workspac
   const directory = await privateFixtureDirectory('activity-replay-workspace-')
   closes.push(() => removeFixtureDirectory(directory))
   const workspace = await createActivityReplayWorkspace(directory)
-  const config = loadConfig({ DATABASE_URL: process.env.TEST_DATABASE_URL!, HARNESS_WORKSPACE_ROOT: workspace.harnessWorkspaceRoot,
+  const databaseUrl = new URL(process.env.TEST_DATABASE_URL!)
+  databaseUrl.searchParams.set('options', `-c search_path=${db.schema}`)
+  const config = loadConfig({ DATABASE_URL: databaseUrl.toString(), HARNESS_WORKSPACE_ROOT: workspace.harnessWorkspaceRoot,
     PORT: String(await freePort()), CODEX_BINARY: '/recorded-no-native-codex',  })
   config.workspaceStorageRoot = workspace.workspaceStorageRoot
   config.fileStorageRoot = await createActivityReplayFileStorage()
   closes.push(() => removeFixtureDirectory(config.fileStorageRoot!))
   const cpSchema = `${db.schema}_cp`
   await createFixtureSchema(db.pool, cpSchema)
-  const checkpoints = createCheckpointStore(process.env.TEST_DATABASE_URL!, cpSchema, config.database)
+  const checkpoints = createCheckpointStore(config.database.connectionString, cpSchema, config.database)
   await checkpoints.setup()
   closes.push(async () => { await checkpoints.close(); await dropFixtureSchema(db.pool, cpSchema) })
   const seed = makeCurrentWorkflowFixture(randomUUID(), options.form ?? 'single')
