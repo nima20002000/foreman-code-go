@@ -176,6 +176,21 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
 }
 
 describe('GitHub Actions CI on a public mirror', () => {
+  it('uses the admitted mirror even when the workspace settings no longer provide one', async () => {
+    const f = await fixture({}, { mirror: false })
+    await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', ciMirror: 'octo/site-ci',
+      runId: randomUUID(), repository: 'octo/site', commit: f.commit, suite: 'unit' })
+    expect(f.dispatched[0]).toContain('octo/site-ci')
+  })
+
+  it('refuses cloud publication when admission explicitly recorded no mirror', async () => {
+    const f = await fixture()
+    await expect(f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', ciMirror: null,
+      runId: randomUUID(), repository: 'octo/site', commit: f.commit, suite: 'unit' }))
+      .rejects.toMatchObject({ code: 'CI_CLOUD_UNAVAILABLE' })
+    expect(f.dispatched).toEqual([])
+  })
+
   it.each(['github', 'circleci'] as const)('selects changes since an explicit base on the %s runner without publishing private history', async provider => {
     const source = 'apps/api/test/value.ts'
     const test = 'apps/api/test/value.integration.test.ts'
