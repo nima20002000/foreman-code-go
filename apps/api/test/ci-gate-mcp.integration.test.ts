@@ -93,7 +93,21 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
     for (const [id, run] of runs) runs.set(id, { ...run, state: 'passed', exitCode: 0,
       finishedAt: new Date(Date.parse(run.startedAt) + 1000).toISOString() })
   }
-  return { ci, started, files, connect, call, value, operator, finish, close: async () => {
+  const finishGate = async (ticketId: string) => {
+    const initial = CiGetOutputSchema.parse(await value('ci_get', { ticketId }))
+    const ids = new Set(initial.partitions!.map(run => run.id))
+    for (let wave = 0; wave < initial.partitions!.length; wave++) {
+      for (const [id, run] of runs) {
+        if (ids.has(id)) runs.set(id, { ...run, state: 'passed', exitCode: 0,
+          finishedAt: new Date(Date.parse(run.startedAt) + 1000).toISOString() })
+      }
+      await ci.dispatch()
+      const read = CiGetOutputSchema.parse(await value('ci_get', { ticketId }))
+      if (read.group?.state === 'passed') return
+    }
+    throw new Error('The gate did not finish every assigned job')
+  }
+  return { ci, started, files, connect, call, value, operator, finish, finishGate, close: async () => {
     await Promise.all(clients.map(client => client.close()))
     await ci.close()
     await app.close()
@@ -124,8 +138,7 @@ it('admits one complete gate, denies a reader, and persists the plan and measure
     expect(read).toMatchObject({ gate: { computers: expect.any(Array), criticalPath: {
       expectedDurationMs: expect.any(Number), actualDurationMs: null,
     } } })
-    f.finish()
-    await f.ci.dispatch()
+    await f.finishGate(admitted.ticketId)
     const finished = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     expect(finished.group?.state).toBe('passed')
     expect(finished).toMatchObject({ gate: { suites: expect.arrayContaining([
@@ -192,8 +205,7 @@ it('queues full requests and a second gate behind the first while affected reque
       })
     }
     expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: affected.ticketId })).run.state).toBe('running')
-    f.finish()
-    await f.ci.dispatch()
+    await f.finishGate(first.ticketId)
     expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: second.ticketId })).group?.state).toBe('running')
     expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: full.ticketId })).run.state).toBe('queued')
   } finally { await f.close() }
