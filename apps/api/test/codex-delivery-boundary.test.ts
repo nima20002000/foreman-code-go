@@ -9,6 +9,7 @@ import { filePorts, fileScope, sourceRef } from './fixtures/codex-file-runtime-h
 import { deliveryFixture } from './fixtures/codex-delivery.js'
 import { NativeResponseJournal } from '../src/modules/harnesses/recovery/responseJournal.js'
 import { join } from 'node:path'
+import { CodexStdioTransport } from '../src/modules/harnesses/codexStdioTransport.js'
 
 function boundary(operation: NativeDeliveryError['operation'], delivery: NativeDeliveryError['delivery']) {
   return (error: unknown) => error instanceof NativeDeliveryError
@@ -154,7 +155,9 @@ describe('Codex creation and prompt write boundaries', () => {
 
   for (const read of ['thread-read', 'turn-history'] as const) {
     it(`preserves a definite rejection while an older ${read} response is in flight`, async () => {
-      const manager = f.makeManager(undefined, {}, {
+      const manager = f.makeManager(undefined, {
+        transport: (...args) => new CodexStdioTransport(...args),
+      }, {
         responseJournal: new NativeResponseJournal(join(f.directory, 'native-journal')),
       })
       const session = await manager.createSession(chatInput(f.directory))
@@ -299,7 +302,9 @@ describe('Codex creation and prompt write boundaries', () => {
   })
 
   it('recovers one late fork only for the original source and accepted configuration', async () => {
-    const manager = f.makeManager()
+    const manager = f.makeManager(undefined, {
+      transport: (...args) => new CodexStdioTransport(...args),
+    })
     const source = await manager.createSession(chatInput(f.directory))
     const forkInput = { ...chatInput(f.directory), correlationId: 'fork-creation', instructionsDelivered: true }
     await f.flag('hold-thread-fork')
