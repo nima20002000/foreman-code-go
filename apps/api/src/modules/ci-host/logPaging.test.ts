@@ -6,6 +6,7 @@ import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDir
 import { HostCiRunner, type HostCiPorts } from './runner.js'
 import { CloudCi } from './cloud.js'
 import type { CloudProvider } from './cloudProviders.js'
+import type { GitWorktreePorts } from '../sources/gitWorktree.js'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -25,8 +26,12 @@ async function fixture(kind: 'host' | 'cloud', text: string) {
   await writeFile(join(directory, 'log'), text)
   const ports: HostCiPorts = { cpus: 8, memoryBytes: 16 * 2 ** 30, now: () => new Date(),
     run: async () => { throw new Error('A completed log read must not launch or query a service') } }
+  const git: GitWorktreePorts = {
+    cloneDirectory: () => join(root, 'clone'),
+    git: async () => ({ code: 0, stdout: '', stderr: '' }),
+  }
   const runner = kind === 'host' ? new HostCiRunner(root, ports, {})
-    : new CloudCi('fixture-main', { id: 'github', label: 'Cloud' } as CloudProvider, async () => null, root, ports)
+    : new CloudCi('fixture-main', { id: 'github', label: 'Cloud' } as CloudProvider, async () => null, root, ports, git)
   const read = async (afterOffset: number, maxBytes: number) => {
     const reply = await runner.handle({ operation: 'read', runId, afterOffset, maxBytes })
     if (reply.operation !== 'read') throw new Error('Expected a log page')

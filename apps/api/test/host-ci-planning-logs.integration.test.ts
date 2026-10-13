@@ -98,7 +98,7 @@ async function fixture(realLogs = false) {
   }
   const start = async (waitForDispatch = true) => {
     const result = CiRunOutputSchema.parse(await value('ci_run', { commandId: randomUUID(), suite: 'integration',
-      scope: 'affected', partitions: 3, files: ['apps/api/test/one.integration.test.ts',
+      commit: 'a'.repeat(40), scope: 'affected', partitions: 3, files: ['apps/api/test/one.integration.test.ts',
         'apps/api/test/two.integration.test.ts', 'apps/api/test/three.integration.test.ts'] }))
     const closing = ci.close()
     if (waitForDispatch) await closing
