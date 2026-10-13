@@ -5,8 +5,8 @@ import type pg from 'pg'
 import { withProviderPoll } from './providerPoll.js'
 import { CI_HOST_NAMESPACE, CI_HOST_START_PROTOCOL_VERSION, CiComputerRefSchema, CiHostReplySchema, CiRunRecordSchema, CiRunOutputSchema,
   WorkspaceSchema,
-  type CiDurations, type CiHostRequest, type CiHostReply, type CiHostRun, type CiHostStatus, type CiRunRecord, type CiRunInput,
-  type CiUserSystemd, type CiCancellation, type Workspace } from '@foreman-code/contracts'
+  type CiDurations, type CiHostReply, type CiHostRun, type CiHostStatus, type CiRunRecord, type CiRunInput,
+  type CiCancellation, type Workspace } from '@foreman-code/contracts'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { CiAuthority } from '../jobs/ciAuthority.js'
@@ -14,10 +14,9 @@ import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../jobs/ciAuthority.js'
 import { DomainError } from '../errors.js'
 import { requireAuthorization } from '../access/policy.js'
 import { componentLogger } from '../diagnostics/logger.js'
-import { planCiParts, runsOnCircleCi, type CiUnitInventory } from './parts.js'
-import { planIntegrationParts, type CiIntegrationInventory, type CiIntegrationSlots } from './integrationParts.js'
+import { planCiParts, runsOnCircleCi } from './parts.js'
+import { planIntegrationParts, type CiIntegrationSlots } from './integrationParts.js'
 import { assertCiReadAccess } from './runAccess.js'
-import type { CiRepositoryCapabilities } from './repository.js'
 import { HostCiReads, retryRead } from './readQueries.js'
 import { fallbackOnError } from '../diagnostics/ignoredError.js'
 import { CI_QUEUE_ORDER, ciQueueReason, compareCiQueue } from './priority.js'
@@ -31,28 +30,9 @@ import { sanitizeCiText, serializeCiJson } from './text.js'
 import { isGitHubComputer, needsSystemdExecutor, supportsUserSystemd } from './computerCapabilities.js'
 import { weighCiPartitions } from './partitionPlanning.js'
 import { readQueuedCiRuns } from './queuedRuns.js'
+import type { AgentSnapshots, CiCommits, HostCiComputer, HostCiEndpoint, HostRef } from './serviceTypes.js'
 
-type HostRef = CiRunRecord['computer'] extends infer C ? C extends { hostRef: infer H } ? H : never : never
-export interface HostCiComputer {
-  key: string; hostRef: HostRef; label: string; priority: number; userSystemd?: CiUserSystemd
-}
-export interface HostCiEndpoint {
-  /** Paired computers that serve host CI now. */
-  computers(): Promise<HostCiComputer[]>
-  request(computer: HostCiComputer, request: CiHostRequest): Promise<CiHostReply>
-}
-/** Resolves the commit to test and makes sure GitHub has it, so build computers can fetch it. */
-export interface CiCommits {
-  infrastructureOnly?(repository: string, commit: string): Promise<boolean>
-  branch?(repository: string, defaultBranch: string, commit: string): Promise<string | null>
-  isAncestor?(repository: string, ancestor: string, commit: string): Promise<boolean>
-  capabilities(repository: string, commit: string): Promise<CiRepositoryCapabilities>
-  integrationInventory?(repository: string, commit: string): Promise<CiIntegrationInventory>
-  unitInventory?(repository: string, commit: string): Promise<CiUnitInventory>
-  resolve(repository: string, defaultBranch: string, commit: string | undefined,
-    snapshot: { baseCommit: string; commit: string; bundle: Buffer | null } | null): Promise<string>
-}
-export type AgentSnapshots = (executionId: string) => Promise<{ baseCommit: string; commit: string; bundle: Buffer | null } | null>
+export type { AgentSnapshots, CiCommits, HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
 
 const log = componentLogger('jobs')
 
