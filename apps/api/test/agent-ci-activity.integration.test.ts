@@ -200,7 +200,7 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       expect(CiRunRecordSchema.parse(stored.record)).toEqual(done.run)
       const history = await f.activity()
       expect(history.items.filter(item => item.refs.ciTicketId === ticket.ticketId).map(item => item.ci?.state))
-        .toEqual(['queued', 'running', 'passed'])
+        .toEqual(['queued', 'starting', 'running', 'passed'])
       const finishedBoard = await f.board()
       expect(finishedBoard.snapshot).toEqual(initialBoard.snapshot)
       expect(finishedBoard.activitySnapshot?.active.some(work => work.ref.kind === 'ci')).toBe(false)
@@ -307,10 +307,19 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       const ticket = await f.submit()
       await f.database.pool.query('alter table ci_runs add constraint ci_results_blocked check (test_results is null) not valid')
       f.finish(ticket.ticketId, 'passed', results)
-      expect((await f.get(ticket.ticketId)).run.state).toBe('running')
+      const pending = await f.get(ticket.ticketId)
+      expect(pending.run).toMatchObject({ state: 'passed', exitCode: 0, collection: 'pending' })
+      expect(await stored(ticket.ticketId)).toBeNull()
+      expect((await f.board()).activitySnapshot?.active.some(work => work.ref.kind === 'ci')).toBe(false)
       await f.database.pool.query('alter table ci_runs drop constraint ci_results_blocked')
-      expect((await f.get(ticket.ticketId)).run.state).toBe('passed')
+      expect((await f.get(ticket.ticketId)).run).toMatchObject({
+        state: 'passed', exitCode: 0, finishedAt: pending.run.finishedAt, collection: 'complete',
+      })
       expect(await stored(ticket.ticketId)).toEqual(results)
+      const readback = CiGetOutputSchema.parse(await f.value(f.workerToken, 'ci_get', {
+        ticketId: ticket.ticketId, testStatus: ['passed'],
+      }))
+      expect(readback.tests).toEqual(results)
     } finally { await f.close() }
   }, 120000)
 
@@ -371,7 +380,7 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       else f.finish(ticket.ticketId, terminal)
       expect((await f.get(ticket.ticketId)).run.state).toBe(terminal)
       const events = (await f.activity()).items.filter(item => item.refs.ciTicketId === ticket.ticketId)
-      expect(events.map(item => item.ci?.state)).toEqual(['queued', 'running', terminal])
+      expect(events.map(item => item.ci?.state)).toEqual(['queued', 'starting', 'running', terminal])
       expect(events.at(-1)?.status).toBe({ passed: 'completed', failed: 'failed', lost: 'unknown', canceled: 'canceled' }[terminal])
       expect((await f.board()).activitySnapshot?.active.some(work => work.ref.kind === 'ci')).toBe(false)
     } finally { await f.close() }

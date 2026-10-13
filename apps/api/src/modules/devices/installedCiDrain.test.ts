@@ -6,7 +6,7 @@ import { WorkerPairingConfigurationSchema } from '@foreman-code/contracts/device
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { createInstalledWorkerDomains } from './installedWorkerDomains.js'
 
-const preparation = vi.hoisted(() => ({ root: '', pause: async () => {}, launches: 0 }))
+const preparation = vi.hoisted(() => ({ root: '', pause: async () => {}, launches: 0, failSource: false }))
 vi.mock('../ci-host/runner.js', async original => {
   const actual = await original<typeof import('../ci-host/runner.js')>()
   return { ...actual, HostCiRunner: class extends actual.HostCiRunner {
@@ -29,15 +29,18 @@ vi.mock('../jobs/ciRuntimeWorker.js', async original => {
   return { ...actual, CiRuntimeWorker: class extends actual.CiRuntimeWorker {
     constructor(...[directory, ports, signal]: ConstructorParameters<typeof actual.CiRuntimeWorker>) {
       super(directory, { ...ports,
-        git: { cloneDirectory: () => preparation.root, git: async () => {
-          await preparation.pause()
-          return { code: 0, stdout: '', stderr: '' }
+        git: { cloneDirectory: () => preparation.root, git: async args => {
+          const failed = preparation.failSource && ['cat-file', 'fetch'].includes(args[0]!)
+          return { code: failed ? 1 : 0, stdout: '', stderr: failed ? 'Fixture source is unavailable.' : '' }
         } },
         managedRuntimeRoot: async () => preparation.root,
         currentRuntimePaths: async () => [],
-        prepare: async request => ({ commit: request.commit, imageId: `sha256:${'a'.repeat(64)}`,
-          imageManifestDigest: `sha256:${'b'.repeat(64)}`, qualificationSource: join(preparation.root, 'source'),
-          seedReceiptPath: join(preparation.root, 'seed.json'), contextReceiptPath: join(preparation.root, 'context.json') }),
+        prepare: async request => {
+          await preparation.pause()
+          return { commit: request.commit, imageId: `sha256:${'a'.repeat(64)}`,
+            imageManifestDigest: `sha256:${'b'.repeat(64)}`, qualificationSource: join(preparation.root, 'source'),
+            seedReceiptPath: join(preparation.root, 'seed.json'), contextReceiptPath: join(preparation.root, 'context.json') }
+        },
       }, signal)
     }
   } }
@@ -53,11 +56,11 @@ async function fixture() {
   roots.push(root)
   preparation.root = root
   preparation.launches = 0
-  let enter!: () => void
+  preparation.failSource = false
+  let entered = false
   let release!: () => void
-  const entered = new Promise<void>(resolve => { enter = resolve })
   const released = new Promise<void>(resolve => { release = resolve })
-  preparation.pause = async () => { enter(); await released }
+  preparation.pause = async () => { entered = true; await released }
   const pairing = WorkerPairingConfigurationSchema.parse({ formatVersion: 1, mainId: randomUUID(),
     deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1,
     endpoint: 'wss://fixture.example/device/connect', mainPublicKeyFingerprint: 'a'.repeat(64),
@@ -72,7 +75,7 @@ async function fixture() {
   const context = { binding, signal: AbortSignal.timeout(10_000) }
   const handle = (namespace: string, payload: unknown) =>
     mounted.extensions.find(extension => extension.namespace === namespace)!.handle!(payload, context)
-  return { root, pairing, mounted, options, context, handle, entered, release }
+  return { root, pairing, mounted, options, context, handle, preparationEntered: () => entered, release }
 }
 
 async function updater(f: Awaited<ReturnType<typeof fixture>>) {
@@ -95,6 +98,10 @@ async function updater(f: Awaited<ReturnType<typeof fixture>>) {
       operation: string; path: string; offset: number; manifestSha256: string;
     }) => {
       if (payload.operation === 'release') return { payload: { operation: 'release', release } }
+      if (payload.operation === 'ci-smoke') {
+        activity.push('ci-smoke')
+        return { payload: { operation: 'ci-smoke', ciSmoke: null } }
+      }
       activity.push('download')
       const content = payload.path === 'manifest.json' ? manifestBytes : bytes
       const chunk = content.subarray(payload.offset)
@@ -120,7 +127,11 @@ it.each(['ci-host-v1', 'ci-runtime-v1'])(
   let updating: Promise<unknown> | undefined
   try {
     await f.handle(namespace, request)
-    await f.entered
+    await vi.waitFor(() => expect(f.preparationEntered()).toBe(true))
+    if (namespace === 'ci-runtime-v1') {
+      const status = await f.handle(namespace, { operation: 'status' })
+      expect(status.payload).toMatchObject({ operationId, commit: request.commit, state: 'preparing' })
+    }
     updating = u.value.start()
     await vi.waitFor(async () => expect((await u.value.status()).state).toBe('draining'))
     await new Promise<void>(resolve => setImmediate(resolve))
@@ -131,7 +142,8 @@ it.each(['ci-host-v1', 'ci-runtime-v1'])(
       .rejects.toMatchObject({ code: 'WORKER_RUNTIME_DRAINING' })
     f.release()
     await updating
-    expect(u.activity).toContain('restart')
+    expect(u.activity).toEqual(['download', 'download', 'ci-smoke', 'stage', 'restart'])
+    expect(await u.value.status()).toMatchObject({ state: 'restarting', targetVersion: '1.1.0', lastError: null })
     if (namespace === 'ci-host-v1') expect(preparation.launches).toBe(1)
     await f.mounted.close()
     const restarted = await createInstalledWorkerDomains(f.options)
@@ -144,6 +156,37 @@ it.each(['ci-host-v1', 'ci-runtime-v1'])(
         expect(result.payload).toMatchObject({ operationId, commit: request.commit, state: 'prepared' })
       }
     } finally { await restarted.close() }
+  } finally {
+    f.release()
+    await updating
+    await u.value.close()
+    await f.mounted.close()
+  }
+})
+
+it('allows an installed update after CI source fetching fails without entering runtime preparation', async () => {
+  const f = await fixture()
+  preparation.failSource = true
+  const u = await updater(f)
+  let updating: Promise<unknown> | undefined
+  try {
+    const operationId = randomUUID()
+    const commit = 'a'.repeat(40)
+    const started = await f.handle('ci-runtime-v1', {
+      operation: 'prepare', operationId, repository: 'fixture/site', commit, keepImages: [],
+      review: { reviewedByPrincipalId: 'fixture-owner', decisionDigest: 'b'.repeat(64) },
+    })
+    expect(started.payload).toMatchObject({ operationId, commit, state: 'preparing' })
+    await vi.waitFor(async () => {
+      const status = await f.handle('ci-runtime-v1', { operation: 'status' })
+      expect(status.payload).toMatchObject({ operationId, commit, state: 'failed', prepared: null,
+        message: expect.stringContaining('could not fetch fixture/site from GitHub') })
+    })
+    expect(f.preparationEntered()).toBe(false)
+    updating = u.value.start()
+    await updating
+    expect(u.activity).toEqual(['download', 'download', 'ci-smoke', 'stage', 'restart'])
+    expect(await u.value.status()).toMatchObject({ state: 'restarting', lastError: null })
   } finally {
     f.release()
     await updating
