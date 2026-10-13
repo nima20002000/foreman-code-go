@@ -111,7 +111,7 @@ export class ProviderAccountAuthenticationOperations {
           intent: input.intent, state: 'reserved', revision: 1,
           generation: generation ?? account.observation?.generation ?? 1, nativeSequence: 0,
           cancelRequested: false, nativeClosed: false, createdAt: now.toISOString(), updatedAt: now.toISOString(),
-          expiresAt: new Date(now.getTime() + 15 * 60_000).toISOString(), humanActionRequired: input.intent === 'sign-in' })
+          expiresAt: new Date(now.getTime() + 60 * 60_000).toISOString(), humanActionRequired: input.intent === 'sign-in' })
         await sql.query(`insert into provider_account_authentication_operations
           (id,principal_id,source,account_id,target_key,command_id,input_hash,record,native_closed)
           values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,false)`,

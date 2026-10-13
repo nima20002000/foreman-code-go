@@ -153,6 +153,19 @@ it('distinguishes cancel intent from closure and rejects stale or wrong-generati
   expect(fresh.value.binding.accountId).toBe(f.account.id)
 })
 
+it('keeps sign-in available for an hour across restart without dispatching another login', async () => {
+  const f = await fixture()
+  const prepared = await f.service.prepareAuthentication(f.owner.principal, 'http', f.account.id,
+    { ...command(1), intent: 'sign-in' })
+  expect(Date.parse(prepared.value.expiresAt) - Date.parse(prepared.value.createdAt)).toBe(60 * 60_000)
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(Date.parse(prepared.value.createdAt) + 30 * 60_000)
+  const status = await f.createService().authenticationStatus(f.owner.principal, { operationId: prepared.value.id })
+  expect(status).toMatchObject({ id: prepared.value.id, state: 'awaiting-human',
+    expiresAt: prepared.value.expiresAt, nativeClosed: false })
+  expect(f.native.prepareAuthentication).toHaveBeenCalledTimes(1)
+})
+
 it('retains expiry after late completion and does not implicitly start another operation', async () => {
   const f = await fixture()
   const prepared = await f.service.prepareAuthentication(f.owner.principal, 'http', f.account.id, { ...command(1), intent: 'sign-in' })

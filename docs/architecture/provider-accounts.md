@@ -14,6 +14,11 @@ Page responses always identify their target. Page/get/list perform a selected-sl
 
 ## Authentication rediscovery and human handoff
 
+New provider authentication operations are valid for one hour. HTTP and Operator
+MCP use the same lifetime. Command retries and status reads retain the original
+operation and expiry; they do not start another login or extend its deadline.
+Previously saved operations retain their expiry.
+
 `GET /api/provider-accounts/:accountId/authentication` and `provider_account_auth_list` enumerate persisted original operations by bounded cursor. `currentOperation` identifies the pending/uncertain owner independently of the history cursor. Reloading, closing a dialog or losing a prepare response does not start another login. Status and cancellation address that operation with its original generation; an outer Worker reconnect generation is validated separately.
 
 `POST /api/provider-accounts/authentication/handoff` accepts the authentication read input and is intentionally local-human-only. It returns an ephemeral `local-browser` instruction only when the qualified installed CLI supports that handoff. Bearer callers, including Operators, cannot receive it. Replies use `Cache-Control: no-store, private`, `Pragma: no-cache`, and `Referrer-Policy: no-referrer`. Handoff content never enters operation persistence, account DTOs, events or MCP. Remote sign-in uses the browser on the Worker; Main does not forward native challenges. There is no callback-paste, device-code redemption or token-entry API.

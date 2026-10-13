@@ -141,7 +141,7 @@ export const ProviderAccountAuthenticationOperationSchema = z.object({
   nativeClosed: z.boolean(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
-  expiresAt: z.string().datetime(),
+  expiresAt: z.string().datetime().describe('Authentication operation expiry, one hour after creation; retries retain the original expiry.'),
   humanActionRequired: z.boolean(),
 }).strict().refine(value => value.state !== 'canceled' || value.nativeClosed, {
   message: 'Canceled authentication requires native closure.',

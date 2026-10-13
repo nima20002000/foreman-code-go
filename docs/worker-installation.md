@@ -1,5 +1,18 @@
 # Selected-main Ubuntu worker
 
+## Pairing lifetime
+
+Pairing grants and enrollment codes from `device_pairing_grant_create` and
+`device_setup_code_create` are valid for one hour. They remain single-use and
+bound to the selected Worker key. Retrying the same command retains its original
+expiry; retrying a completed pairing with the same request returns its original
+credential.
+
+New pairings issue device credentials with a 100-year lifetime, so computers do
+not need monthly re-pairing. Revocation, installation/key revisions and device
+scope checks still apply. Previously issued grants and credentials retain their
+saved expiry.
+
 ## Main execution setting
 
 Main's persisted remote execution setting defaults off. New workflow Agent steps

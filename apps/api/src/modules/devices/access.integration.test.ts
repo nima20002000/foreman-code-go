@@ -5,7 +5,8 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { McpServer } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import Fastify from 'fastify'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
+import { DevicePairingGrantResultSchema } from '@foreman-code/contracts/device-identity'
 import { applyApplicationMigrations } from '../../infrastructure/migrations.js'
 import { PostgresAccessService } from '../access/postgres.js'
 import { publicKeyFingerprint } from '@foreman-code/contracts/device-identity-node'
@@ -33,7 +34,7 @@ it('persists pair/revoke with denied and authenticated Operator MCP readback acr
     expect((await loadOrCreateMainDeviceIdentity(pool, mainId)).publicKeyFingerprint).toBe(mainKeys[0]!.publicKeyFingerprint)
     let devices = new PostgresDeviceAccessService(pool, mainId)
     const access = new PostgresAccessService(pool)
-    const owner = await access.issue({ name: 'owner', audience: 'operator', grants: [{ actions: ['settings:read', 'settings:update'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
+    const owner = await access.issue({ name: 'owner', audience: 'operator', grants: [{ actions: ['settings:read', 'settings:update'], scope: {} }], expiresAt: new Date(Date.now() + 2 * 60 * 60_000) })
     const reader = await access.issue({ name: 'reader', audience: 'operator', grants: [{ actions: ['settings:read'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
     app.post('/mcp', async (request, reply) => {
       const token = /^Bearer (.+)$/.exec(request.headers.authorization ?? '')?.[1]
@@ -54,10 +55,14 @@ it('persists pair/revoke with denied and authenticated Operator MCP readback acr
     expect((await denied.listTools()).tools.map(tool => tool.name)).not.toContain('device_pairing_grant_create')
     const keys = generateKeyPairSync('ed25519'), publicKey = keys.publicKey.export({ type: 'spki', format: 'pem' }).toString()
     const args = { commandId: randomUUID(), workerInstallationId: randomUUID(), publicKey, expectedFingerprint: publicKeyFingerprint(publicKey), scopes: ['connect', 'heartbeat'] }
-    const issued = decodeMcpToolResult((await client.callTool({ name: 'device_pairing_grant_create', arguments: args }))) as { grant: string; registration: { deviceId: string } }
+    const issued = DevicePairingGrantResultSchema.parse(decodeMcpToolResult(
+      await client.callTool({ name: 'device_pairing_grant_create', arguments: args })))
+    expect(Date.parse(issued.expiresAt) - Date.now()).toBeGreaterThan(59 * 60_000)
     expect(decodeMcpToolResult((await client.callTool({ name: 'device_pairing_grant_create', arguments: args })))).toEqual(issued)
     const pairing = { mainId, workerInstallationId: args.workerInstallationId, publicKey, grant: issued.grant, requestId: randomUUID() }
     const input = { ...pairing, signature: sign(null, Buffer.from(pairingProof(pairing)), keys.privateKey).toString('base64url') }
+    const issuedAt = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(issuedAt + 30 * 60_000)
     const simultaneous = await Promise.all([devices.pair(input), devices.pair(input)])
     const paired = simultaneous[0]!
     expect(simultaneous[1]).toEqual(paired)
@@ -65,7 +70,12 @@ it('persists pair/revoke with denied and authenticated Operator MCP readback acr
     await expect(devices.pair({ ...replay, signature: sign(null, Buffer.from(pairingProof(replay)), keys.privateKey).toString('base64url') })).rejects.toMatchObject({ code: 'conflict' })
     devices = new PostgresDeviceAccessService(pool, mainId)
     expect(await devices.pair(input)).toEqual(paired)
+    clock.mockReturnValue(issuedAt + 365 * 86400_000)
+    expect(await devices.pair(input)).toEqual(paired)
     const principal = await devices.authenticateDevice(paired.credential, 'connect')
+    await expect(devices.revalidateDevice(principal, 'heartbeat')).resolves.toBeUndefined()
+    await expect(devices.authenticateDevice(paired.credential, 'metrics:report')).rejects.toThrow()
+    clock.mockRestore()
     await expect(authorizeDeviceHost(pool, reader.principal, 'harnesses:read', { kind: 'device', mainId, deviceId: paired.registration.deviceId }, args.workerInstallationId)).rejects.toThrow()
     const readback = decodeMcpToolResult((await client.callTool({ name: 'devices_list', arguments: {} }))) as { devices: unknown[] }
     expect(readback.devices).toEqual([paired.registration])
@@ -79,12 +89,14 @@ it('persists pair/revoke with denied and authenticated Operator MCP readback acr
     expect((await devices.list(owner.principal))[0]?.status).toBe('revoked')
     expect(JSON.stringify((await pool.query('select result from management_command_receipts')).rows)).not.toContain(issued.grant)
     const expiredGrant = await devices.createPairingGrant(owner.principal, { ...args, workerInstallationId: randomUUID(), scopes: ['connect'], commandId: randomUUID() })
-    await pool.query("update device_pairing_grants set expires_at=now()-interval '1 second' where device_id=$1", [expiredGrant.registration.deviceId])
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse(expiredGrant.expiresAt) + 1)
     const expired = { ...pairing, grant: expiredGrant.grant, workerInstallationId: expiredGrant.registration.workerInstallationId, requestId: randomUUID() }
     await expect(devices.pair({ ...expired, signature: sign(null, Buffer.from(pairingProof(expired)), keys.privateKey).toString('base64url') })).rejects.toMatchObject({ code: 'expired' })
+    vi.restoreAllMocks()
     await pool.query('update management_principals set revoked_at=now() where id=$1', [owner.principal.id])
     await expect(devices.list(owner.principal)).rejects.toThrow()
   } finally {
+    vi.restoreAllMocks()
     await Promise.all(clients.map(client => client.close())); await app.close(); await pool.end()
     await admin.query(`drop schema "${schema}" cascade`); await admin.end()
   }

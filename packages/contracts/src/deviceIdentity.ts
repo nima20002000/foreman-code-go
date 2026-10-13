@@ -98,12 +98,14 @@ export const DevicePairingRequestSchema = z.object({ mainId: z.uuid(), workerIns
 }).strict()
 export type DevicePairingRequest = z.infer<typeof DevicePairingRequestSchema>
 export const DevicePairingResultSchema = z.object({ registration: DeviceRegistrationSchema,
-  credential: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.string().datetime(),
+  credential: z.string().regex(/^[a-f0-9]{64}$/),
+  expiresAt: z.string().datetime().describe('Device credential expiry; new pairings use a 100-year lifetime. Revocation and scopes still apply.'),
 }).strict()
 
 export const DeviceListResultSchema = z.object({ devices: z.array(DeviceRegistrationSchema) }).strict()
 export const DevicePairingGrantResultSchema = z.object({ registration: DeviceRegistrationSchema,
-  grant: z.string().regex(/^[A-Za-z0-9_-]{43}$/), expiresAt: z.string().datetime(),
+  grant: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  expiresAt: z.string().datetime().describe('Single-use pairing grant expiry, one hour after creation; retries retain the original expiry.'),
 }).strict()
 export const MainDeviceIdentityPublicSchema = z.object({ mainId: z.uuid(), mainPublicKey: z.string().max(1024),
   mainPublicKeyFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
