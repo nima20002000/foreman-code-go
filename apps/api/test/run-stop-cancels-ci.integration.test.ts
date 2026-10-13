@@ -169,6 +169,13 @@ it('Run Stop cancels all Agent CI partitions and provider runs, audits them, and
     expect(f.cancellations).toHaveLength(0)
     expect((await f.runs.getRepeatSnapshot(input.runId)).stopRequested).toBe(false)
     expect(await f.value(f.writer.token, 'run_stop', input)).toMatchObject({ status: 'accepted', replayed: false })
+    await f.ci.dispatch()
+    for (const ticket of otherTickets) {
+      const read = CiGetOutputSchema.parse(await f.value(f.reader.token, 'ci_get', { ticketId: ticket.id }))
+      expect(['starting', 'running']).toContain(read.run.state)
+      expect(read.run).toMatchObject({ id: ticket.id, groupId: ticket.groupId,
+        commit: ticket.commit, initiator: ticket.initiator })
+    }
     const canceled = [...active, queued[4]!]
     for (const ticket of canceled) {
       const read = CiGetOutputSchema.parse(await f.value(f.reader.token, 'ci_get', { ticketId: ticket.id }))
