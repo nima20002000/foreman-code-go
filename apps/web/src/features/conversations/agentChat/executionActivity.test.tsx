@@ -187,7 +187,7 @@ describe('Board Agent chat live execution activity', () => {
       await pollActivity(mounted, livePage(numberedMessages(end - 199, end), String(end)))
       expect(await within(check).findByText(`Activity ${end}`)).toBeVisible()
       expect(activityData(mounted.client)?.items.length).toBeLessThanOrEqual(200)
-      expect(within(check).getAllByRole('listitem').length).toBeLessThanOrEqual(200)
+      expect(within(check).getAllByRole('listitem', { hidden: true }).length).toBeLessThanOrEqual(200)
     }
     expect(within(check).getByText('Activity 800')).toBeVisible()
     expect(within(check).queryByText('Activity 1')).not.toBeInTheDocument()
@@ -217,7 +217,7 @@ describe('Board Agent chat live execution activity', () => {
     fireEvent.click(within(check).getByRole('button', { name: 'Load earlier activity' }))
     expect(await within(check).findByText('Activity 201')).toBeVisible()
     expect(before).toEqual(['601', '401'])
-    expect(within(check).getAllByRole('listitem').length).toBeLessThanOrEqual(200)
+    expect(within(check).getAllByRole('listitem', { hidden: true }).length).toBeLessThanOrEqual(200)
     fireEvent.click(within(check).getByRole('button', { name: 'Load earlier activity' }))
     await waitFor(() => expect(before).toEqual(['601', '401', '201']))
     fireEvent.click(within(check).getByRole('button', { name: 'Back to latest activity' }))
@@ -248,7 +248,7 @@ describe('Board Agent chat live execution activity', () => {
     const bytes = retained.items.reduce((total, item) => total + new TextEncoder().encode(JSON.stringify(item)).byteLength, 0)
     expect(bytes).toBeLessThanOrEqual(256 * 1024)
     expect(retained.items.length).toBeLessThan(30)
-    expect(within(check).getAllByRole('listitem')).toHaveLength(retained.items.length)
+    expect(within(check).getAllByRole('listitem', { hidden: true })).toHaveLength(retained.items.length)
     expect(within(check).queryByText(`Large activity 1: ${content}`)).not.toBeInTheDocument()
     const boundary = retained.before['execution-check']!
     let requestedBefore: string | null = null
