@@ -221,7 +221,9 @@ it.each(['turn', 'compaction', 'closing', 'access-change'] as const)(
       connection: () => ({ currentBinding: () => connection, mainNow: () => Date.now(), captureRequest: () => undefined }) })
     let drained = false
     const draining = domains.drainForUpdate().then(() => { drained = true })
-    void draining.catch(() => { /* The cleanup aborts a drain that fails the bounded completion assertion. */ })
+    void draining.catch(() => {
+      // ignore: cleanup aborts the drain if the bounded completion assertion fails; success is asserted below.
+    })
     try {
       const blockingSnapshots = [
         [],
