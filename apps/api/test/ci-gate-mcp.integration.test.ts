@@ -118,10 +118,13 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
     operator: { access, services: { commands, ci } as unknown as OperatorServices } })
   const address = await app.listen({ host: '127.0.0.1', port: 0 })
   const clients: Client[] = []
-  const connect = async (readOnly = false) => {
+  const connect = async (readOnly: boolean | 'ungranted' = false) => {
+    let actions = [...CI_RUN_ACTIONS, ...CI_GET_ACTIONS]
+    if (readOnly === 'ungranted') actions = ['workflows:read']
+    else if (readOnly) actions = CI_GET_ACTIONS
     const issued = await access.issue({ name: 'Gate caller', audience: 'operator',
       expiresAt: new Date(Date.now() + 600_000), grants: [{
-        actions: readOnly ? CI_GET_ACTIONS : [...CI_RUN_ACTIONS, ...CI_GET_ACTIONS], scope: { workspaceIds: [workspaceId] },
+        actions, scope: { workspaceIds: [workspaceId] },
       }] })
     const client = new Client({ name: 'gate-test', version: '1' })
     clients.push(client)
@@ -152,12 +155,110 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
     }
     throw new Error('The gate did not finish every assigned job')
   }
-  return { ci, started, files, computers, workspaceId, connect, call, value, operator, finishGate, close: async () => {
+  return { ci, started, runs, files, computers, workspaceId, connect, call, value, operator, finishGate, close: async () => {
     await Promise.all(clients.map(client => client.close()))
     await ci.close()
     await app.close()
   } }
 }
+
+it.each(['cloud', 'build'] as const)('requeues a cloud setup failure once on another %s slot and completes the gate', async destination => {
+  const f = await fixture()
+  try {
+    const computers = [...f.computers]
+    const started = CiRunOutputSchema.parse(await f.value('ci_run', {
+      suite: 'integration', scope: 'full', gate: true, commandId: randomUUID(), commit: 'a'.repeat(40),
+    }))
+    await f.ci.dispatch()
+    const initial = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: started.ticketId }))
+    const part = initial.partitions!.find(run => run.state === 'running' && run.suite === 'unit'
+      && run.computer?.hostRef.kind === 'cloud')!
+    expect(part).toBeDefined()
+    const attempt = f.runs.get(part.id)!
+    const reason = 'CI hang watchdog: no test progress for 180000 ms; running: no test started (setup or command)'
+    const failed = { ...attempt, state: 'failed' as const, exitCode: 1,
+      finishedAt: new Date().toISOString(), message: reason, testsStarted: false }
+    f.runs.set(part.id, failed)
+    if (destination === 'build') {
+      for (const host of initial.partitions!.filter(run => run.computer?.hostRef.kind !== 'cloud')) {
+        const running = f.runs.get(host.id)
+        if (running) f.runs.set(host.id, { ...running, state: 'passed', exitCode: 0,
+          finishedAt: new Date().toISOString() })
+      }
+    }
+    // Keep the failed slot available so the retry must explicitly exclude it.
+    f.computers.splice(0, f.computers.length, ...f.computers.filter(computer =>
+      computer.key === part.plannedHostKey || (destination === 'cloud'
+        ? computer.hostRef.kind === 'cloud' : computer.hostRef.kind !== 'cloud')))
+    await f.ci.dispatch()
+    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: part.id }))
+    expect(read.run).toMatchObject({ state: 'running', id: part.id, groupId: part.groupId,
+      setupRetry: { reason, failedComputer: part.computer!.hostRef } })
+    expect(read.run.computer!.hostRef).not.toEqual(part.computer!.hostRef)
+    expect(read.run.computer!.hostRef.kind).toBe(destination === 'cloud' ? 'cloud' : 'main')
+    expect(read.group?.state).not.toBe('failed')
+    const attempts = f.started.filter(value => value.request.operation === 'start'
+      && value.request.runId === part.id)
+    expect(attempts).toHaveLength(1)
+    expect(f.started.some(value => value.request.operation === 'start'
+      && value.request.runId !== part.id && value.request.suite === part.suite && value.key !== part.plannedHostKey)).toBe(true)
+    expect((await database.pool.query('select record from ci_runs where id=$1', [part.id])).rows[0].record)
+      .toEqual(read.run)
+    const denied = await f.connect('ungranted')
+    expect((await f.call(denied, 'ci_get', { ticketId: part.id })).isError).toBe(true)
+    const retry = f.started.findLast(value => value.request.operation === 'start'
+      && value.request.suite === part.suite && value.request.part === part.part)!.request
+    if (retry.operation !== 'start') throw new Error('Expected a retry start')
+    f.runs.set(retry.runId, { ...f.runs.get(retry.runId)!, state: 'passed', exitCode: 0,
+      finishedAt: new Date().toISOString() })
+    f.computers.splice(0, f.computers.length, ...computers)
+    await f.ci.dispatch()
+    await f.finishGate(started.ticketId)
+    const completed = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: part.id }))
+    expect(completed.run).toMatchObject({ state: 'passed', setupRetry: { reason } })
+    expect(completed.group?.state).toBe('passed')
+  } finally { await f.close() }
+})
+
+it('fails the gate on a second setup failure and does not retry a failure after tests start', async () => {
+  const f = await fixture()
+  try {
+    const started = CiRunOutputSchema.parse(await f.value('ci_run', {
+      suite: 'integration', scope: 'full', gate: true, commandId: randomUUID(), commit: 'a'.repeat(40),
+    }))
+    await f.ci.dispatch()
+    const initial = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: started.ticketId }))
+    const parts = initial.partitions!.filter(run => run.state === 'running' && run.suite === 'unit'
+      && run.computer?.hostRef.kind === 'cloud')
+    const part = parts[0]!
+    const other = parts[1]!
+    const reason = 'Setup failed before the first test started'
+    for (const [run, testsStarted] of [[part, false], [other, true]] as const) {
+      const failed = { ...f.runs.get(run.id)!, state: 'failed' as const, exitCode: 1,
+        finishedAt: new Date().toISOString(), message: reason, testsStarted }
+      f.runs.set(run.id, failed)
+    }
+    await f.ci.dispatch()
+    const retried = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: part.id }))
+    expect(retried.run).toMatchObject({ state: 'running', setupRetry: { reason } })
+    expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: other.id })).run)
+      .toMatchObject({ state: 'failed' })
+    const request = f.started.findLast(value => value.request.operation === 'start'
+      && value.request.suite === part.suite && value.request.part === part.part)!.request
+    if (request.operation !== 'start') throw new Error('Expected a retry start')
+    expect(request.runId).not.toBe(part.id)
+    const failed = { ...f.runs.get(request.runId)!, state: 'failed' as const, exitCode: 2,
+      finishedAt: new Date().toISOString(), message: 'Second setup failure', testsStarted: false }
+    f.runs.set(request.runId, failed)
+    const attempts = f.started.length
+    await f.ci.dispatch()
+    const finished = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: part.id }))
+    expect(finished.run).toMatchObject({ state: 'failed', exitCode: 2,
+      message: 'Second setup failure', setupRetry: { reason } })
+    expect(finished.group?.state).toBe('failed')
+    expect(f.started).toHaveLength(attempts)
+  } finally { await f.close() }
+})
 
 it('keeps a draining build gate off cloud until the grace expires, then persists and completes its cloud parts through MCP', async () => {
   const files = Array.from({ length: 80 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)
