@@ -123,6 +123,7 @@ function fixture(harness: AgentHarness = 'codex', started = true) {
   const capture = createWorkflowNativeCaptureChannel()
   let closed: Awaited<ReturnType<WorkflowClosureStore['read']>>
   const closures: WorkflowClosureStore = {
+    async recoverDetached() { return undefined },
     async begin() { closed = undefined; return '1' },
     async record(execution, session, durableGeneration, check) { check(); closed = { execution, session, durableGeneration }; return closed },
     async read() { return closed },
