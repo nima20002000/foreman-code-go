@@ -21,7 +21,12 @@ import { ensurePairedManagedSetup } from './managedSetup.mjs';
 import { refreshWorkflowSelection } from './workflowSelection.mjs';
 import { registerWorkerMcpInstallation } from '../../../apps/api/src/modules/harnesses/workerMcpInstallation.ts';
 
-export { runInstalledCiSmoke } from './ciInstallSmoke.mjs';
+import { runCiInstallSmoke } from './ciInstallSmoke.mjs';
+import { HostCiRunner } from '../../../apps/api/src/modules/ci-host/runner.ts';
+
+export function runInstalledCiSmoke(input) {
+  return runCiInstallSmoke(input, { runner: new HostCiRunner() });
+}
 export { ensurePairedManagedSetup };
 export { refreshWorkflowSelection };
 export { inspectManagedInstallation } from './managedInstallation.mjs';

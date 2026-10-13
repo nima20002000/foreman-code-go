@@ -1,9 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { gateIntegrationShards } from '../../../apps/api/src/modules/ci-host/capacity.ts';
-import { HostCiRunner } from '../../../apps/api/src/modules/ci-host/runner.ts';
 
-export async function runInstalledCiSmoke({ repository, commit }, { runner = new HostCiRunner(),
+export async function runCiInstallSmoke({ repository, commit }, { runner,
   timeoutMs = 160_000, pollMs = 1000 } = {}) {
   const runId = randomUUID();
   const controller = new AbortController();

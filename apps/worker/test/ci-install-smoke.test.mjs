@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { runInstalledCiSmoke } from '../src/ciInstallSmoke.mjs';
+import { runCiInstallSmoke } from '../src/ciInstallSmoke.mjs';
 
 for (const outcome of ['passed', 'failed', 'no-tests', 'timeout']) {
   test(`Worker install CI smoke uses normal setup and handles ${outcome}`, async () => {
@@ -15,7 +15,7 @@ for (const outcome of ['passed', 'failed', 'no-tests', 'timeout']) {
         ...(outcome === 'no-tests' ? {} : { testResults: { summary: { passed: 1, failed: 0 }, files: [{
           file: 'apps/api/test/ci-smoke.integration.test.ts', tests: [{ status: 'passed' }] }] } }) };
     } };
-    const smoke = runInstalledCiSmoke({ repository: 'octo/project', commit: 'a'.repeat(40) },
+    const smoke = runCiInstallSmoke({ repository: 'octo/project', commit: 'a'.repeat(40) },
       { runner, timeoutMs: 100, pollMs: 5 });
     if (outcome === 'passed') await smoke;
     else await assert.rejects(smoke, outcome === 'failed' ? /ERR_PNPM_NO_OFFLINE_META/
