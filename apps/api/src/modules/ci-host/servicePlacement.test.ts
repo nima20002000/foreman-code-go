@@ -117,3 +117,13 @@ it('runs an unpartitioned systemd selection on a capable cloud slot', async () =
   expect(f.started).toHaveLength(1)
   expect(records[0]?.state).toBe('running')
 })
+
+it('plans systemd files on capable cloud capacity and keeps a build computer available for other slices', async () => {
+  const records = queuedRuns(2)
+  const f = fleet(records, [host, { ...cloud, userSystemd: { supported: true, reason: null } }])
+  await f.service.dispatch()
+  expect(f.started.find(item => item.computer.key === cloud.key)?.request)
+    .toMatchObject({ partition: { index: 0, hostIndexes: [0] } })
+  expect(f.started.find(item => item.computer.key === host.key)?.request)
+    .toMatchObject({ partition: { index: 1, hostIndexes: [0] } })
+})

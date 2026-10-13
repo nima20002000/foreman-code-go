@@ -60,7 +60,7 @@ function supportsUserSystemd(computer: HostCiComputer): boolean {
   return computer.hostRef.kind !== 'cloud' || computer.userSystemd?.supported === true
 }
 
-function needsBuildComputer(run: CiRunRecord): boolean {
+function needsSystemdExecutor(run: CiRunRecord): boolean {
   return run.suite === 'integration' && (run.partition
     ? run.partition.hostIndexes?.includes(run.partition.index) === true
     : run.scope === 'full' || Boolean(run.deriveFiles) || run.files.some(requiresUserSystemd))
@@ -200,17 +200,21 @@ export class HostCiService {
         Number(isGitHubComputer(left)) - Number(isGitHubComputer(right))
         || right.priority - left.priority
         || (speed.get(right.key) ?? 0) - (speed.get(left.key) ?? 0))
-      const hosts = ordered.filter(supportsUserSystemd)
+      const systemdComputers = ordered.filter(supportsUserSystemd).sort((left, right) =>
+        Number(right.hostRef.kind === 'cloud') - Number(left.hostRef.kind === 'cloud'))
       const selection = group[0]!
       const knownFiles = selection.scope === 'affected' && !selection.deriveFiles
       const hostFiles = knownFiles ? selection.files.filter(requiresUserSystemd).length : userSystemdIntegrationFiles.size
       const ordinaryFiles = knownFiles ? selection.files.length - hostFiles : count
       const hostCount = hostFiles ? Math.min(hostFiles, ordinaryFiles ? count - 1 : count,
-        Math.max(1, hosts.length, count - ordinaryFiles)) : 0
+        Math.max(1, systemdComputers.length, count - ordinaryFiles)) : 0
       const hostIndexes = Array.from({ length: hostCount }, (_, index) => index)
       // Keep systemd files separate so executors without a user manager can take ordinary slices.
       const planned: (HostCiComputer | undefined)[] = [
-        ...hostIndexes.map(index => hosts[index]), ...ordered.filter(computer => !hosts.slice(0, hostCount).includes(computer)),
+        ...hostIndexes.map(index => systemdComputers[index]),
+        ...ordered.filter(computer => computer.hostRef.kind === 'cloud'
+          && !systemdComputers.slice(0, hostCount).includes(computer)),
+        ...systemdComputers.slice(hostCount).filter(computer => computer.hostRef.kind !== 'cloud'),
       ]
       const known = ordered.map(computer => speed.get(computer.key)).filter((value): value is number => value !== undefined)
       const mean = known.length ? known.reduce((sum, value) => sum + value, 0) / known.length : 1
@@ -604,11 +608,11 @@ export class HostCiService {
     const durations = new Map(queuedRows.map((row, index) => [queued[index]!.id, row.durations]))
     queued = await this.weighPartitions(queued, computers.flatMap(computer =>
       Array.from({ length: freeSlots(computer) }, () => computer)))
-    queued.sort((left, right) => Number(needsBuildComputer(right)) - Number(needsBuildComputer(left)))
+    queued.sort((left, right) => Number(needsSystemdExecutor(right)) - Number(needsSystemdExecutor(left)))
     // Reserve slots before awaiting a start so concurrent dispatches cannot spend the same capacity.
     await Promise.all(queued.map(async run => {
       if (run.suite === 'integration' && run.partition && !run.partition.weights) return
-      const hostRequired = needsBuildComputer(run)
+      const hostRequired = needsSystemdExecutor(run)
       const reasons = (run.unstartedProviders ?? []).map(provider => `${provider}: dispatch retries exhausted`)
       const preferred = (computer: HostCiComputer) => {
         if (run.suite !== 'integration') return Number(isGitHubComputer(computer))
@@ -693,8 +697,12 @@ export class HostCiService {
           log.warn({ err: error, runId: run.id, computer: computer.key }, 'CI start failed')
         }
       }
-      const prefix = hostRequired ? 'Waiting for a build computer: this integration slice needs one'
-        : `No ready computer for ${run.part ?? run.suite}`
+      const systemdCloud = computers.some(computer => computer.hostRef.kind === 'cloud' && supportsUserSystemd(computer))
+      let prefix = `No ready computer for ${run.part ?? run.suite}`
+      if (hostRequired) {
+        prefix = systemdCloud ? 'Waiting for a systemd-capable executor'
+          : 'Waiting for a build computer: this integration slice needs one'
+      }
       const message = `${prefix}; ${reasons.join('; ') || 'no eligible computers'}`.slice(0, 2000)
       if (message !== run.message) {
         await this.pool.query(`update ci_runs set record=$4::jsonb
