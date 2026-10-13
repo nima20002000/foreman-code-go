@@ -795,8 +795,8 @@ export class HostCiService {
         ? github.length : githubIntegrationLimit
       const reasons = (run.unstartedProviders ?? []).map(provider => `${provider}: dispatch retries exhausted`)
       const preferred = (computer: HostCiComputer) => {
+        if (computer.hostRef.kind !== 'cloud') return 3
         if (run.suite !== 'integration') return Number(isGitHubComputer(computer))
-        if (computer.hostRef.kind !== 'cloud') return 0
         return isGitHubComputer(computer) ? 1 : 2
       }
       const affectedFiles = run.scope === 'affected' && !run.deriveFiles ? { files: run.files } : {}
