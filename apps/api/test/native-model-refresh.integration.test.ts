@@ -1,6 +1,5 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { removeFixtureDirectory } from './helpers/testResources.js'
-import { randomUUID } from 'node:crypto'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
