@@ -323,6 +323,10 @@ export class HostCiRunner {
         }
         meta.resources = { cpuCount: capacity.cpuCount, memoryBytes: capacity.memoryBytes, memoryBudget: capacity.memoryBudget }
         meta.isolatedDatabase = isolatedDatabase
+        if (request.gate) {
+          meta.integrationShards = Math.min(request.integrationShards!,
+            gateIntegrationShards(capacity.cpuCount, capacity.memoryBytes))
+        }
         if (await this.cancelPreparation(meta.runId)) return false
         await this.writeMeta(meta)
         return true
