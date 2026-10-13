@@ -988,8 +988,10 @@ test('integration and gate checks share the bounded queue and delay exclusive fi
   assert.equal(peak, 2)
 })
 
-test('reserved remote review runs without competing integration or gate processes', async () => {
-  const reservedReview = 'apps/api/test/remote-review-production-reserved-decision.integration.test.ts'
+for (const [name, reservedReview] of [
+  ['reserved remote review', 'apps/api/test/remote-review-production-reserved-decision.integration.test.ts'],
+  ['computer workflow directory save', 'apps/api/test/computer-workflow-save.regression-directories.integration.test.ts'],
+]) test(`${name} runs without competing integration or gate processes`, async () => {
   const ordinary = 'apps/api/test/ordinary.integration.test.ts'
   const active = new Set()
   const overlaps = []
