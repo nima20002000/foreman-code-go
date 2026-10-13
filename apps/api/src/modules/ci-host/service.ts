@@ -43,6 +43,13 @@ export type { AgentSnapshots, CiCommits, HostCiComputer, HostCiEndpoint } from '
 
 const log = componentLogger('jobs')
 
+/** Elapsed milliseconds per named phase, each measured from the previous mark. */
+function phaseTimer() {
+  let last = performance.now()
+  const phases: Record<string, number> = {}
+  return { phases, mark(name: string) { const now = performance.now(); phases[name] = Math.round(now - last); last = now } }
+}
+
 type CiRunPhase = 'dispatchWaitMs' | 'prepareMs' | 'insertMs' | 'postMs'
 
 interface PreparedCiRuns {
@@ -267,13 +274,16 @@ export class HostCiService {
     const repository = `${workspace.repository.owner}/${workspace.repository.name}`
     const defaultBranch = workspace.repository.defaultBranch
     // An Agent's CI tests its current files; they are published to GitHub so build computers can fetch them.
+    const timing = phaseTimer()
     const snapshot = scope.executionId && !input.commit && this.snapshots ? await this.snapshots(scope.executionId) : null
     const commit = await this.commits.resolve(repository, defaultBranch, input.commit, snapshot)
+    timing.mark('commitMs')
     const [infrastructure, branch, capabilities] = await Promise.all([
       this.commits.infrastructureOnly?.(repository, commit) ?? false,
       this.commits.branch?.(repository, defaultBranch, commit),
       this.commits.capabilities(repository, commit),
     ])
+    timing.mark('commitFactsMs')
     const priority = input.gate || infrastructure || input.priority === 'high' ? 'high' : 'normal'
     let priorityReason: CiRunRecord['priorityReason'] = 'normal'
     if (input.gate) priorityReason = 'gate'
@@ -288,6 +298,7 @@ export class HostCiService {
       capabilities.integrationPartitions && input.suite === 'integration'
         ? this.commits.integrationInventory?.(repository, commit) : undefined,
     ])
+    timing.mark('inventoryMs')
     if (input.gate && (!capabilities.parts || !integration || !inventory)) {
       throw new DomainError('CI_GATE_UNSUPPORTED', 'This repository must provide CI suite hooks and complete test inventories for a gate.', 409)
     }
@@ -343,15 +354,20 @@ export class HostCiService {
       }
       parts = [{ part: null, partition: null, files: input.files! }]
     } else if (input.gate) {
+      const speeds = await readExecutorSpeeds(this.pool, this.endpoint)
+      timing.mark('speedsMs')
+      const slots = await readCiSlots(this.pool, this.endpoint)
+      timing.mark('slotsMs')
       parts = await planCiGate(input, { ...integration!, durations: durations! }, inventory!, unitDurations, this.endpoint,
-        await readExecutorSpeeds(this.pool, this.endpoint), this.reservedCloudSlots,
-        (await readCiSlots(this.pool, this.endpoint)).ordinary)
+        speeds, this.reservedCloudSlots, slots.ordinary)
     } else if (integration) {
       parts = planIntegrationParts(selection, { ...integration, durations: durations! }, await readCiSlots(this.pool, this.endpoint))
     }
     if (!input.gate && input.suite === 'unit' && split) {
       parts = planCiParts(selection, unitDurations, inventory, (await readCiSlots(this.pool, this.endpoint)).ordinary)
     }
+    timing.mark('planMs')
+    log.info({ gate: input.gate === true, suite: input.suite, ...timing.phases }, 'CI run preparation timing')
     const runs = parts.map((planned, index) => CiRunRecordSchema.parse({
       ...planned,
       ...(index === 0 && cachedFiles ? { cachedFiles } : {}),
