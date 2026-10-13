@@ -837,7 +837,48 @@ test('captures one committed source for API, browser and Worker builds despite s
     return { api, browser: builtContract.value(), worker: worker.value() }
   })
   assert.deepEqual(values, { api: 'committed', browser: 'committed', worker: 'committed' })
-  await assert.rejects(stat(snapshotPath), { code: 'ENOENT' })
+  // The build tree persists so the next install reuses dependencies and incremental TypeScript output.
+  assert.equal((await stat(snapshotPath)).isDirectory(), true)
+})
+
+test('reuses one build tree reset to the exact next commit with dependencies and current build output kept', async t => {
+  const directory = await installFixture(t)
+  const repository = join(directory, 'repository')
+  await mkdir(join(repository, 'apps/api/src'), { recursive: true })
+  const gitEnvironment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')))
+  const git = args => execFileSync('git', args, { cwd: repository, env: gitEnvironment, encoding: 'utf8' }).trim()
+  const commitAll = message => { git(['add', '-A']); git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', message]) }
+  await writeFile(join(repository, 'apps/api/src/kept.ts'), 'export const kept = 1\n')
+  await writeFile(join(repository, 'apps/api/src/removed.ts'), 'export const removed = 1\n')
+  git(['init', '-q'])
+  commitAll('first')
+  git(['remote', 'add', 'origin', 'https://github.com/example/fixture.git'])
+  const first = await production.withProductionSourceSnapshot(repository, directory, async ({ source }) => {
+    await mkdir(join(source, 'node_modules/dependency'), { recursive: true })
+    await writeFile(join(source, 'node_modules/dependency/index.js'), 'installed')
+    await mkdir(join(source, 'apps/api/dist'), { recursive: true })
+    for (const name of ['kept.js', 'kept.d.ts', 'removed.js', 'removed.js.map', '.tsbuildinfo']) {
+      await writeFile(join(source, 'apps/api/dist', name), 'built')
+    }
+    await writeFile(join(source, 'apps/api/src/kept.ts'), 'locally edited\n')
+    await writeFile(join(source, 'stray.txt'), 'untracked')
+    return source
+  })
+  await rm(join(repository, 'apps/api/src/removed.ts'))
+  commitAll('second')
+  const second = git(['rev-parse', 'HEAD'])
+  await production.withProductionSourceSnapshot(repository, directory, async ({ source, commit }) => {
+    assert.equal(source, first)
+    assert.equal(commit, second)
+    const sourceGit = args => execFileSync('git', args, { cwd: source, encoding: 'utf8' }).trim()
+    assert.equal(sourceGit(['rev-parse', 'HEAD']), second)
+    assert.equal(sourceGit(['status', '--porcelain']), '')
+    assert.equal(await readFile(join(source, 'apps/api/src/kept.ts'), 'utf8'), 'export const kept = 1\n')
+    await assert.rejects(stat(join(source, 'stray.txt')), { code: 'ENOENT' })
+    assert.equal(await readFile(join(source, 'node_modules/dependency/index.js'), 'utf8'), 'installed')
+    // Output of a deleted source must not reach the release; output of current sources stays for tsc --incremental.
+    assert.deepEqual((await readdir(join(source, 'apps/api/dist'))).sort(), ['.tsbuildinfo', 'kept.d.ts', 'kept.js'])
+  })
 })
 
 test('pruning protects retained and selected releases through installation aliases', async t => {
