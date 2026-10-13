@@ -169,14 +169,27 @@ it('upgrades hot query access while preserving native facts, CI revisions and au
     expect(nativeBefore.find(row => row.sequence === '7')).toMatchObject({ item_id: 'dynamic', item_error: true })
     expect(nativeBefore.find(row => row.sequence === '6')).toMatchObject({ item_type: 'subagent', status: 'failed' })
 
+    const poll = (token: string, name: string, args: unknown) => graphRpc(app, token, 'tools/call', { name, arguments: args })
+    const readCi = async () => {
+      const result = await poll(fixture.writer.token, 'ci_get', {
+        workspaceId: ticket.workspaceId, ticketId: ticket.id,
+      })
+      expect(result.result?.isError, JSON.stringify(result)).not.toBe(true)
+      return CiGetOutputSchema.parse(graphRpcValue(result.result))
+    }
+    const ciBefore = await readCi()
     await ci.dispatch()
+    expect(await readCi()).toEqual(ciBefore)
     expect(await stored()).toEqual(before)
     logTail = 'Refreshed log'
     await ci.dispatch()
     expect(await stored()).toMatchObject({ record: ticket, log_tail: logTail,
       revision: String(BigInt(before.revision) + 1n), test_results: before.test_results })
     const refreshed = await stored()
+    const ciRefreshed = await readCi()
+    expect(ciRefreshed).toMatchObject({ run: ticket, logTail })
     await ci.dispatch()
+    expect(await readCi()).toEqual(ciRefreshed)
     expect(await stored()).toEqual(refreshed)
     await db.pool.query('update ci_runs set durations=$2::jsonb where id=$1', [ticket.id, '{"unit":5}'])
     await db.pool.query('update ci_runs set test_results=$2::jsonb where id=$1', [ticket.id, '{"retained":"changed"}'])
@@ -185,7 +198,6 @@ it('upgrades hot query access while preserving native facts, CI revisions and au
     await db.pool.query('update ci_runs set record=record,activity_record_revision=9999 where id=$1', [ticket.id])
     expect((await stored()).revision).toBe(changed.revision)
 
-    const poll = (token: string, name: string, args: unknown) => graphRpc(app, token, 'tools/call', { name, arguments: args })
     const result = await poll(fixture.writer.token, 'ci_get', { workspaceId: ticket.workspaceId, ticketId: ticket.id })
     expect(result.result?.isError).not.toBe(true)
     expect(CiGetOutputSchema.parse(graphRpcValue(result.result))).toMatchObject({ run: ticket, logTail })
