@@ -174,7 +174,7 @@ beforeEach(() => {
   })
   useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); bindMockInstallation(); sessionStorage.clear()
   useGraphDraftStore.getState().installNextDraft(key, repairFixture(1))
-  vi.stubGlobal('navigator', { ...navigator, locks: { request: async (_name: string, work: () => Promise<unknown>) => work() } })
+  vi.stubGlobal('navigator', { ...navigator, locks: { request: async (_name: string, work: (() => Promise<unknown>) | LockOptions, claim?: (lock: { name: string }) => unknown) => typeof work === 'function' ? work() : claim!({ name: _name }) } })
   vi.spyOn(nextDraftApi, 'context').mockResolvedValue(repairFixture(1))
   vi.spyOn(nextDraftApi, 'editRead').mockResolvedValue(empty)
   vi.spyOn(nextDraftApi, 'pins').mockImplementation(async (_workspaceId, graph, _stagedAgents, agents) => ({
