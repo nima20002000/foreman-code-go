@@ -85,7 +85,7 @@ describe('SQL-only admitted remote control preparation', () => {
   it('closes a completed retained reviewer under its Run owner without requesting Run Stop', async () => {
     const f = fixture()
     f.state.cleanup = undefined
-    f.state.receipt!.turnInput = { correlationId: 'execution:execution', promptDigest: 'a'.repeat(64) }
+    f.state.receipt!.turnInput = { correlationId: 'execution:execution', promptDigest: 'a'.repeat(64), sessionMode: 'regular' }
     f.state.receipt!.retainedReviewer = {
       agentId: 'agent', workflowTurnId: 'turn', result: { outcome: 'succeeded' },
       expiresAt: '2026-10-01T01:00:00.000Z',
