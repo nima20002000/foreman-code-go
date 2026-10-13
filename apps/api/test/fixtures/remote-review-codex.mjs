@@ -301,6 +301,17 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', async 
         { reasoningEffort: 'medium', description: 'Medium' }] }]
     const respond = async () => {
       const blocked = () => {
+        const allowedFile = join(root, 'allowed-model-directories')
+        if (existsSync(allowedFile)) {
+          try {
+            const allowed = JSON.parse(readFileSync(allowedFile, 'utf8'))
+            if (allowed.some(directory => process.cwd() === directory || process.cwd().startsWith(`${directory}/`))) {
+              return false
+            }
+          } catch (error) {
+            if (error.code !== 'ENOENT') throw error
+          }
+        }
         let contents
         try { contents = readFileSync(join(root, 'block-models'), 'utf8') }
         catch (error) {

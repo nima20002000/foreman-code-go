@@ -1,0 +1,134 @@
+import { randomUUID } from 'node:crypto'
+import { describe, expect, it } from 'vitest'
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { HostHarnessOverrideSaveResultSchema, HostHarnessInstanceCheckResultSchema }
+  from '@foreman-code/contracts/harness-registry'
+import { CURRENT_WORKFLOW_TOOLS, CurrentWorkflowReadResultSchema, CurrentWorkflowSaveResultSchema,
+  ManualRunStartResultSchema, type WorkflowDefinitionV3, type WorkflowVersionV3 }
+  from '@foreman-code/contracts/wave25'
+import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
+import { latestEvidence, pinnedPlacements, profileReader, profiles }
+  from './helpers/harnessInstallationUpdate.js'
+
+describe('profile-scoped Start after Worker reconnect', () => {
+  it('prioritizes active placements and starts a checked profile while other profiles remain pending', async () => {
+    const fixture = await remoteReviewProduction({ workflow: 'single', parallelSetup: true })
+    let modelsBlocked = false
+    let turnsBlocked = false
+    const scope = { workspaceId: fixture.version.workspaceId, workflowId: fixture.version.workflowId }
+    const locationRevision = Number(fixture.version.definition.nodes[0]!.placement!.locationRevision)
+    const startInput = async (version: WorkflowVersionV3) => {
+      const current = CurrentWorkflowReadResultSchema.parse(await fixture.value(CURRENT_WORKFLOW_TOOLS.saved, scope))
+      return { ...scope, commandId: randomUUID(), workflowVersionId: version.id,
+        executionSemanticsVersion: 3 as const, expectedWorkflowRevision: current.revision,
+        expectedAgentConfigurationVersionIds: version.agentConfigurationVersionIds,
+        expectedLocationRevision: locationRevision, input: {} }
+    }
+    const saveGraph = async (graph: WorkflowDefinitionV3) => {
+      const current = CurrentWorkflowReadResultSchema.parse(await fixture.value(CURRENT_WORKFLOW_TOOLS.saved, scope))
+      return CurrentWorkflowSaveResultSchema.parse(await fixture.value(CURRENT_WORKFLOW_TOOLS.save, {
+        ...scope, commandId: randomUUID(), executionSemanticsVersion: 3, graph,
+        expectedRevision: current.revision, expectedWorkflowVersionId: current.version.id,
+        expectedAgentConfigurationVersionIds: current.version.agentConfigurationVersionIds,
+        expectedLocationRevision: locationRevision,
+      })).value.version
+    }
+    try {
+      const configured = fixture.profiles[0]!
+      // Sort unused profiles before the active profile in the repository's default order.
+      const unusedIds = [1, 2, 3].map(index => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`)
+      for (const instanceId of unusedIds) {
+        const saved = HostHarnessOverrideSaveResultSchema.parse(await fixture.value('harness_instance_save', {
+          commandId: randomUUID(), instanceId, expectedRevision: 0, target: configured.target,
+          presetId: configured.presetId, enabled: true, configuration: configured.configuration,
+        })).value
+        const checked = HostHarnessInstanceCheckResultSchema.parse(await fixture.value('harness_instance_check', {
+          commandId: randomUUID(), instanceId, expectedRevision: saved.revision, target: saved.target,
+        }))
+        expect(checked.proof.qualified).toBe(true)
+      }
+      const before = await latestEvidence(fixture)
+      expect(before).toHaveLength(4)
+      await fixture.provider.blockWorkflowTurns()
+      turnsBlocked = true
+      const active = await fixture.start()
+      await waitForRemoteReview(() => fixture.provider.calls(), calls =>
+        calls.some(call => call.workflowTurn !== undefined), 'active native placement')
+      const callsBefore = (await fixture.provider.calls()).length
+      await fixture.provider.blockModels()
+      modelsBlocked = true
+      await fixture.restartWorker()
+      const checking = await waitForRemoteReview(() => fixture.provider.calls(), calls =>
+        new Set(calls.slice(callsBefore).filter(call => call.method === 'model/list')
+          .map(call => call.workingDirectory)).size === 2, 'two parallel profile checks')
+      const directories = [...new Set(checking.slice(callsBefore)
+        .filter(call => call.method === 'model/list').map(call => call.workingDirectory as string))]
+      expect(directories).toHaveLength(2)
+      await expect(fixture.start()).rejects.toThrow('HARNESS_PROFILE_CHECK_PENDING')
+      await fixture.provider.allowModelDirectories(directories)
+      const mixed = await waitForRemoteReview(() => profiles(fixture), values =>
+        values.find(profile => profile.instanceId === configured.instanceId)?.qualification === 'qualified'
+          && values.filter(profile => profile.qualification === 'qualified').length === 2
+          && values.filter(profile => profile.qualification === 'qualifying').length === 2,
+      'active placement ready while unused profiles remain pending')
+      const ready = mixed.find(profile => profile.instanceId === configured.instanceId)!
+      const pending = mixed.find(profile => profile.qualification === 'qualifying')!
+      const evidence = await latestEvidence(fixture)
+      const refreshed = evidence.filter(proof => proof.connectionGeneration !== before[0]!.connectionGeneration)
+      expect(refreshed).toHaveLength(2)
+      expect(refreshed.every(proof => proof.qualified && proof.authenticated && proof.compatible)).toBe(true)
+
+      await fixture.provider.releaseWorkflowTurns()
+      turnsBlocked = false
+      await fixture.value('run_stop', { workspaceId: scope.workspaceId, runId: active.run.id, commandId: randomUUID() })
+      const stopped = await waitForRemoteReview(async () => {
+        await fixture.reconcile()
+        return fixture.details(active.run.id)
+      }, details => details.run.executionState === 'completed', 'closure of the active placement after Worker restart')
+      expect(stopped.run.outcome).toBe('canceled')
+      const pendingGraph = structuredClone(fixture.version.definition)
+      const node = pendingGraph.nodes[0]!
+      if (node.kind === 'job' || !node.placement) throw new Error('Expected an Agent placement.')
+      node.placement.instanceId = pending.instanceId
+      node.placement.instanceRevision = pending.instanceRevision
+      node.placement.harnessInstallationId = pending.target.harnessInstallationId
+      const pendingVersion = await saveGraph(pendingGraph)
+      const pendingInput = await startInput(pendingVersion)
+      const refused = await fixture.call('run_start', pendingInput)
+      expect(refused.isError).toBe(true)
+      expect(decodeMcpToolResult(refused)).toMatchObject({ error: {
+        code: 'HARNESS_PROFILE_CHECK_PENDING', details: { retryable: true },
+      } })
+      const response = await fetch(`${fixture.origin()}/api/management/workspaces/${scope.workspaceId}`
+        + `/workflows/${scope.workflowId}/runs`, {
+        method: 'POST', headers: { authorization: `Bearer ${fixture.writer.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(pendingInput),
+      })
+      expect(response.status).toBe(503)
+      expect(await response.json()).toMatchObject({ error: {
+        code: 'HARNESS_PROFILE_CHECK_PENDING', details: { retryable: true },
+      } })
+      expect((await fixture.db.pool.query('select id from runs')).rows).toHaveLength(1)
+      const reader = await profileReader(fixture)
+      expect((await profiles(fixture, reader)).find(profile => profile.instanceId === pending.instanceId)
+        ?.qualification).toBe('qualifying')
+
+      const readyVersion = await saveGraph(fixture.version.definition)
+      const readyInput = await startInput(readyVersion)
+      const started = ManualRunStartResultSchema.parse(await fixture.value('run_start', readyInput))
+      expect((await fixture.details(started.run.id)).run.workflowVersionId).toBe(readyVersion.id)
+      const placements = await pinnedPlacements(fixture, started.run.id)
+      expect(placements.map(placement => placement.payload)).toEqual([expect.objectContaining({
+        instanceId: ready.instanceId, instanceRevision: ready.instanceRevision,
+      })])
+      expect((await profiles(fixture, reader)).find(profile => profile.instanceId === pending.instanceId)
+        ?.qualification).toBe('qualifying')
+      const replay = ManualRunStartResultSchema.parse(await fixture.value('run_start', readyInput))
+      expect(replay.run.id).toBe(started.run.id)
+    } finally {
+      if (modelsBlocked) await fixture.provider.releaseModels()
+      if (turnsBlocked) await fixture.provider.releaseWorkflowTurns()
+      await fixture.close()
+    }
+  }, 240_000)
+})
