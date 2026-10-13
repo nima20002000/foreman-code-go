@@ -473,13 +473,17 @@ it('returns to the first node execution page after six pages while retaining the
     await screen.findByRole('button', { name: `Attempt 1 · execution-${pageIndex * 25 + 25}` })
   }
   expect(screen.queryByRole('button', { name: 'Attempt 1 · node-execution' })).not.toBeInTheDocument()
+  expect(cursors.slice(0, 6)).toEqual([null, '1', '2', '3', '4', '5'])
+  expect(screen.queryByRole('button', { name: 'Load more executions' })).not.toBeInTheDocument()
   expect(screen.getByText('Earlier executions are hidden. Refresh to return to the first page.')).toBeVisible()
   expect(screen.getByRole('article', { name: 'Execution node-execution' })).toBeInTheDocument()
+  expect(screen.getByText('Saved first occurrence result', { exact: false })).toBeInTheDocument()
   const readsBeforeRefresh = cursors.length
   await userEvent.click(screen.getByRole('button', { name: 'Refresh node executions' }))
   expect(await screen.findByRole('button', { name: 'Attempt 1 · node-execution' })).toHaveAttribute('aria-pressed', 'true')
   expect(cursors.slice(readsBeforeRefresh)).toEqual([null])
   expect(screen.getByRole('article', { name: 'Execution node-execution' })).toBeInTheDocument()
+  expect(screen.getByText('Saved first occurrence result', { exact: false })).toBeInTheDocument()
 })
 
 it('withdraws inspector branch facts after delayed permission loss', async () => {
