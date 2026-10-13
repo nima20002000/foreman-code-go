@@ -72,6 +72,12 @@ it('keeps abandoned writable trees and their measured charge after releasing pre
     'select state,reserved_bytes from source_storage_reservations where reservation_id=$1',
     [orphan.reservation.reservationId])).rows[0]!
   expect(retained).toEqual({ state: 'retained', reserved_bytes: String(footprint.retainedBytes + 16 * 1024) })
+  const stored = (await f.pool.query<{ record: SourceReservation }>(
+    'select record from source_storage_reservations where reservation_id=$1',
+    [orphan.reservation.reservationId])).rows[0]!.record
+  expect(stored.preparationClosure).toMatchObject({ operationId: orphan.reservation.ownerId,
+    executionId: orphan.attempt.executionId, attemptId: orphan.attempt.attemptId,
+    materializationId: orphan.receipt.materializationId, childrenClosed: true, claimReleased: true })
   expect(await readFile(working, 'utf8')).toBe('Unintegrated Agent output')
   expect(await readFile(join(f.namespace, orphan.receipt.materializationId, 'tree', 'source.txt'))).toBeDefined()
   const next = await f.orphan('owned')
