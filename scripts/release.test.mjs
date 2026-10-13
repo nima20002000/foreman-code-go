@@ -130,6 +130,39 @@ test('a release reuses the gate that already passed on HEAD instead of running a
   assert.equal(verified.status, 0, verified.output)
 })
 
+test('a release named with --gate-ticket reuses that clean gate even when it was started under another commandId', async t => {
+  const main = await fakeMain(t)
+  const { work, git, env } = repository(t)
+  const tested = git('rev-parse', 'HEAD')
+  // Another credential's gate on this commit: its commandId receipt is not the release's.
+  const response = await fetch(`${main.url}/mcp`, { method: 'POST', headers: { authorization: 'Bearer release-test-token' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'ci_run', arguments: {
+      workspaceId, commit: tested, suite: 'integration', scope: 'full', gate: true, priority: 'high', commandId: 'other-gate' } } }) })
+  const earlier = JSON.parse((await response.json()).result.content[0].text)
+  const groupsBefore = main.groups.size
+  const result = await run(releaseScript, ['1.1.0', '--gate-ticket', earlier.partitions[3].ticketId], work, main, env)
+  assert.equal(result.status, 0, result.output)
+  assert.equal(main.groups.size, groupsBefore)
+  const trailer = git('log', '-1', '--format=%(trailers:key=Clean-Round,valueonly)')
+  assert.deepEqual(trailer.split('=')[1].split(',').sort(), earlier.partitions.map(value => value.ticketId).sort())
+  const verified = await run(verifyScript, ['HEAD'], work, main, env)
+  assert.equal(verified.status, 0, verified.output)
+})
+
+test('a --gate-ticket from another commit creates no release', async t => {
+  const main = await fakeMain(t)
+  const { work, git, env } = repository(t)
+  const response = await fetch(`${main.url}/mcp`, { method: 'POST', headers: { authorization: 'Bearer release-test-token' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'ci_run', arguments: {
+      workspaceId, commit: 'a'.repeat(40), suite: 'integration', scope: 'full', gate: true, priority: 'high' } } }) })
+  const other = JSON.parse((await response.json()).result.content[0].text)
+  const before = git('rev-parse', 'HEAD')
+  const result = await run(releaseScript, ['1.1.0', '--gate-ticket', other.ticketId], work, main, env)
+  assert.notEqual(result.status, 0, result.output)
+  assert.equal(git('rev-parse', 'HEAD'), before)
+  assert.equal(git('rev-parse', 'origin/main'), before)
+})
+
 test('the verifier rejects a gate round with a missing ticket, a missing suite or a non-gate part', async t => {
   const main = await fakeMain(t)
   const { work, git, env } = repository(t)
