@@ -82,6 +82,8 @@ export const CiTestResultsSchema = z.object({ summary: CiTestSummarySchema,
     `Give at most ${CI_TEST_RESULT_LIMITS.tests} tests.`)
 export type CiTestResults = z.infer<typeof CiTestResultsSchema>
 
+export const CiWatchdogFailureSchema = z.object({ message: z.string().max(2000) }).strict()
+
 const CiHostRunIdSchema = z.uuid()
 /** `durations` are Main's learned integration file durations; the commit's committed durations fill the gaps. */
 const CiHostStartSchema = z.object({

@@ -81,7 +81,7 @@ async function findFile(directory: string, name: string): Promise<string | null>
   return null
 }
 
-export interface CloudArtifacts { durations: unknown; testResults: unknown }
+export interface CloudArtifacts { durations: unknown; testResults: unknown; watchdogFailure?: unknown }
 const noArtifacts: CloudArtifacts = { durations: null, testResults: null }
 
 async function readArtifacts(directory: string): Promise<CloudArtifacts> {
@@ -89,7 +89,8 @@ async function readArtifacts(directory: string): Promise<CloudArtifacts> {
     const path = await findFile(directory, name)
     return path ? JSON.parse(await readFile(path, 'utf8')) as unknown : null
   }
-  return { durations: await read('durations.json').catch(fallbackOnError(null, 'jobs', 'read CI durations artifact')), testResults: await read('test-results.json').catch(fallbackOnError(null, 'jobs', 'read CI test results artifact')) }
+  return { durations: await read('durations.json').catch(fallbackOnError(null, 'jobs', 'read CI durations artifact')), testResults: await read('test-results.json').catch(fallbackOnError(null, 'jobs', 'read CI test results artifact')),
+    watchdogFailure: await read('watchdog-message.json').catch(fallbackOnError(null, 'jobs', 'read CI watchdog artifact')) }
 }
 
 const WORKFLOW = 'ci.yml'

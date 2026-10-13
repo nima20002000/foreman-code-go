@@ -69,7 +69,7 @@ export async function runCiPart(command, { expectedDurationMs, progressFile, res
     const labels = active.map(test => `${test.file}${test.name ? ` > ${test.name}` : ' (module setup/teardown)'}`)
     reason = `CI hang watchdog: ${limit}; running: ${labels.join('; ') || 'no test started (setup or command)'}`.slice(0, 1800)
     console.error(`[ci-watchdog] ${reason}`)
-    if (messageFile) writeFileSync(messageFile, reason)
+    if (messageFile) writeFileSync(messageFile, JSON.stringify({ message: reason }))
     void stop()
   }, 100)
   try {

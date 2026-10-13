@@ -27,6 +27,7 @@ test('planner never returns', () => {
 `)
   writeFileSync(join(directory, 'vitest.config.mjs'), `export default { test: {
     include: ['loop.test.ts'], maxWorkers: 1,
+    runner: ${JSON.stringify(join(repository, 'packages/contracts/ci-test-runner.mjs'))},
     reporters: ['default', ...${existsSync(reporter) ? JSON.stringify([reporter]) : '[]'}]
   } }
 `)
@@ -42,7 +43,8 @@ if (process.argv.includes('test')) {
     cwd: repository, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, PATH: `${directory}/bin:${process.env.PATH}`, SUITE: 'unit-other', SCOPE: 'full',
       CI_HOST_RUNNER: '0', CI_USER_SYSTEMD: '0', CI_STATE: join(directory, 'state'),
-      CI_EXPECTED_DURATION_MS: '1000', CI_WATCHDOG_DIRECTORY: join(directory, 'watchdog'), CI_WATCHDOG_ACTIVE: '', CI_PROGRESS_FILE: '',
+      CI_EXPECTED_DURATION_MS: '1000', CI_WATCHDOG_DIRECTORY: join(directory, 'watchdog'),
+      CI_WATCHDOG_MESSAGE_FILE: join(directory, 'watchdog-message.json'), CI_WATCHDOG_ACTIVE: '', CI_PROGRESS_FILE: '',
       FIXTURE_ROOT: directory, FIXTURE_VITEST: join(repository, 'packages/contracts/node_modules/vitest/vitest.mjs') },
   })
   t.after(async () => {
@@ -87,7 +89,7 @@ async function watchdogFixture(t, source, overrides = {}) {
   const code = await runCiPart([process.execPath, '-e', source], { expectedDurationMs: 0,
     progressFile: join(directory, 'progress.jsonl'), messageFile, resultsFile,
     idleTimeoutMs: 1000, ...overrides })
-  return { code, reason: existsSync(messageFile) ? readFileSync(messageFile, 'utf8') : null,
+  return { code, reason: existsSync(messageFile) ? JSON.parse(readFileSync(messageFile, 'utf8')).message : null,
     results: existsSync(resultsFile) ? JSON.parse(readFileSync(resultsFile, 'utf8')) : null }
 }
 

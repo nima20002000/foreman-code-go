@@ -5,7 +5,7 @@ import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'nod
 import { availableParallelism, freemem, homedir, totalmem } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { join, matchesGlob } from 'node:path'
-import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, CiTestResultsSchema, integrationPartition,
+import { CiWatchdogFailureSchema, CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, CiTestResultsSchema, integrationPartition,
   CiScopeSchema, CiSelectedFilesSchema, validCiSelection,
   type CiDurations, type CiHostReply, type CiHostRun, type CiSuite, type CiPart, type CiPartition, type CiScope } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
@@ -485,7 +485,7 @@ export class HostCiRunner {
     const watchdog = existsSync(sourceWatchdog) ? sourceWatchdog
       : fileURLToPath(new URL('../../../../../scripts/ci-watchdog.mjs', import.meta.url))
     const watchedCommand = `CI_EXPECTED_DURATION_MS=${meta.expectedDurationMs ?? 0}`
-        + ` CI_WATCHDOG_DIRECTORY=${quote(run)} CI_WATCHDOG_MESSAGE_FILE=${quote(join(run, 'watchdog-message'))}`
+        + ` CI_WATCHDOG_DIRECTORY=${quote(run)} CI_WATCHDOG_MESSAGE_FILE=${quote(join(run, 'watchdog-message.json'))}`
         + ` node ${quote(watchdog)} -- bash -c ${quote(command)}`
     return ['#!/bin/bash', 'set -o pipefail', `exec >>${quote(join(run, 'log'))} 2>&1`,
       `export TMPDIR=${quote(join(run, 'tmp'))} CI=true NODE_OPTIONS=--max-old-space-size=${heapMb}`
@@ -569,10 +569,10 @@ export class HostCiRunner {
       // A unit launched before atomic exit publication can expose an empty file mid-write.
       if (exit !== null && exit.trim() !== '') {
         const code = Number(exit.trim())
-        const watchdogMessage = await readFile(join(directory, 'watchdog-message'), 'utf8')
+        const watchdogMessage = await readFile(join(directory, 'watchdog-message.json'), 'utf8')
           .catch(fallbackOnError(null, 'jobs', 'read CI watchdog message', { runId }, ['ENOENT']))
         await this.finish(runId, code === 0 ? 'passed' : 'failed', Number.isInteger(code) ? code : 1,
-          watchdogMessage ?? meta.message)
+          watchdogMessage ? CiWatchdogFailureSchema.parse(JSON.parse(watchdogMessage)).message : meta.message)
       } else {
         const unit = await this.ports.run('systemctl', ['--user', 'is-active', `${unitName(runId)}.service`], { env: this.environment })
         if (!['active', 'activating'].includes(unit.stdout.trim())) {

@@ -57,6 +57,7 @@ jobs:
       CI_DURATIONS: << pipeline.parameters.durations >>
       DURATIONS_OUTPUT: .logs/ci-durations/durations.json
       TEST_RESULTS_OUTPUT: .logs/ci-durations/test-results.json
+      CI_WATCHDOG_MESSAGE_FILE: .logs/ci-durations/watchdog-message.json
     steps:
       - checkout
       - run:
