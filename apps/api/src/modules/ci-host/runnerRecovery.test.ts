@@ -49,7 +49,8 @@ async function fixture() {
   const request = { operation: 'start', runId: randomUUID(), repository: 'fixture/site',
     commit: 'a'.repeat(40), suite: 'lint', scope: 'full' }
   const read = { operation: 'read', runId: request.runId, afterOffset: 0, maxBytes: 100 }
-  const source = join(root, 'runs', request.runId, 'src')
+  // The run's persistent slot checkout.
+  const source = join(root, 'slots', 'fixture', 'site', '0', 'src')
   return { root, ports, runner, control, request, read, source }
 }
 
@@ -129,7 +130,7 @@ it.each([
   await expect(f.runner.status()).resolves.toMatchObject({ slotsUsed: 1 })
 })
 
-it('persists failed cancellation, retains capacity after restart and retries before cleaning the source', async () => {
+it('persists failed cancellation, retains capacity after restart and retries before releasing the slot', async () => {
   const f = await fixture()
   await f.runner.handle(f.request)
   await vi.waitFor(async () => {
@@ -145,6 +146,7 @@ it('persists failed cancellation, retains capacity after restart and retries bef
     .rejects.toMatchObject({ code: 'CI_HOST_BUSY' })
   f.control.stopCode = 0
   await expect(recovered.handle(f.read)).resolves.toMatchObject({ run: { state: 'canceled' } })
-  await expect(access(f.source)).rejects.toMatchObject({ code: 'ENOENT' })
   await expect(recovered.status()).resolves.toMatchObject({ slotsUsed: 0 })
+  // The released slot keeps its checkout for the next part.
+  await expect(readFile(join(f.source, 'package.json'), 'utf8')).resolves.toContain('fixture')
 })

@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -60,14 +60,14 @@ if (args[1] === 'db:up') {
   fs.mkdirSync(path.dirname(metadata), { recursive: true })
   fs.writeFileSync(metadata, 'verified package publication time')
   fs.mkdirSync('node_modules', { recursive: true })
-  if (!fs.existsSync('node_modules/dependency')) fs.linkSync(seed, 'node_modules/dependency')
+  if (!fs.existsSync('node_modules/dependency')) fs.copyFileSync(seed, 'node_modules/dependency')
 } else {
   console.log('dependency=' + fs.readFileSync('node_modules/dependency', 'utf8'))
   fs.writeFileSync('node_modules/dependency', 'modified by suite')
 }
 `, { mode: 0o755 })
   const system = systemHostCiPorts()
-  const launched = new Map<string, Promise<unknown>>()
+  const launched = new Map<string, { cwd: string; done: Promise<unknown> }>()
   const ports: HostCiPorts = { ...system, cpus: 16, memoryBytes: 16 * 2 ** 30,
     availableMemoryBytes: () => 16 * 2 ** 30,
     run: async (file, args, options) => {
@@ -79,7 +79,7 @@ if (args[1] === 'db:up') {
         const cwd = args.find(arg => arg.startsWith('--working-directory='))!.slice('--working-directory='.length)
         const env = Object.fromEntries(args.filter(arg => arg.startsWith('--setenv='))
           .map(arg => arg.slice('--setenv='.length).split(/=(.*)/s).slice(0, 2)))
-        launched.set(cwd, system.run('/bin/bash', [args.at(-1)!], { cwd, env }))
+        launched.set(args.at(-1)!, { cwd, done: system.run('/bin/bash', [args.at(-1)!], { cwd, env }) })
         return { code: 0, stdout: '', stderr: '' }
       }
       if (file === 'systemctl') return { code: 0, stdout: 'active', stderr: '' }
@@ -94,27 +94,28 @@ if (args[1] === 'db:up') {
       const reply = await runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 })
       if (reply.operation !== 'read' || reply.run.state === 'starting') throw new Error('Run is starting')
     })
-    await launched.get(join(root, 'runner/runs', runId, 'src'))
+    const script = join(root, 'runner/runs', runId, 'run.sh')
+    await launched.get(script)?.done
     return runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 })
   }
   const commands = async () => (await readFile(calls, 'utf8')).trim().split('\n')
     .map(line => JSON.parse(line) as string[])
   const failOffline = () => writeFile(offlineFailure, 'store unavailable')
-  async function damageSnapshot() {
-    const modules = join(root, 'runner/cache/example/project/modules')
-    const snapshots = await readdir(modules)
-    expect(snapshots).toHaveLength(1)
-    // A malformed snapshot entry conflicts with the checkout even when the runner has root privileges.
-    await mkdir(join(modules, snapshots[0]!, 'package.json'))
-  }
-  return { run, commands, origin, git, failOffline, damageSnapshot, checkout: (...args: string[]) => execFileSync('git', args, {
+  const slot = join(root, 'runner/slots/example/project/0/src')
+  // A new slot starts without dependencies and installs them from the shared store.
+  const removeDependencies = () => rm(join(slot, 'node_modules'), { recursive: true, force: true })
+  // A checkout whose git link is broken cannot be reset to another commit.
+  const breakCheckout = () => writeFile(join(slot, '.git'), 'gitdir: missing\n')
+  return { run, commands, origin, git, failOffline, removeDependencies, breakCheckout, checkout: (...args: string[]) => execFileSync('git', args, {
     cwd: join(root, 'runner/git/example/project'), env: environment, encoding: 'utf8',
   }).trim() }
 }
 
-it('warms once, installs offline on later jobs, and preserves private mutable dependencies', async () => {
+it('warms once, installs offline on later jobs, and keeps the store private from suite mutations', async () => {
   const fixture = await computer()
   await expect(fixture.run()).resolves.toMatchObject({ run: { state: 'passed' }, text: expect.stringContaining('dependency=pristine') })
+  await expect(fixture.run()).resolves.toMatchObject({ run: { state: 'passed' } })
+  await fixture.removeDependencies()
   await expect(fixture.run()).resolves.toMatchObject({ run: { state: 'passed' }, text: expect.stringContaining('dependency=pristine') })
   const installs = (await fixture.commands()).filter(args => args[1] === 'install')
   expect(installs.filter(args => !args.includes('--offline'))).toHaveLength(1)
@@ -134,21 +135,20 @@ it('allows one online fill for a changed lockfile and then returns to offline in
   expect(installs.at(-1)).toEqual(expect.arrayContaining(['--offline', '--frozen-lockfile']))
 })
 
-it('retains release-age metadata for offline installs after the previous worktree is removed', async () => {
+it('retains release-age metadata for offline installs after slot dependencies are removed', async () => {
   const fixture = await computer()
   await expect(fixture.run()).resolves.toMatchObject({ run: { state: 'passed' } })
+  await fixture.removeDependencies()
   await expect(fixture.run()).resolves.toMatchObject({ run: { state: 'passed' } })
   const installs = (await fixture.commands()).filter(args => args[1] === 'install')
   expect(installs.filter(args => !args.includes('--offline'))).toHaveLength(1)
 })
 
-it('isolates dependencies when concurrent jobs share a warmed repository and store', async () => {
+it('installs concurrent jobs offline from one warmed repository and store', async () => {
   const fixture = await computer()
   await fixture.run()
   const results = await Promise.all([fixture.run(), fixture.run()])
-  for (const result of results) {
-    expect(result).toMatchObject({ run: { state: 'passed' }, text: expect.stringContaining('dependency=pristine') })
-  }
+  for (const result of results) expect(result).toMatchObject({ run: { state: 'passed' } })
   const installs = (await fixture.commands()).filter(args => args[1] === 'install')
   expect(installs.filter(args => !args.includes('--offline'))).toHaveLength(1)
 })
@@ -168,24 +168,18 @@ it('waits for dependencies before database preparation can trigger another insta
   expect(await fixture.commands()).toContainEqual(['pnpm', 'db:up'])
 })
 
-it('installs fresh when a warmed dependency snapshot cannot be copied', async () => {
+it('falls back to a fresh checkout when the slot checkout is unusable, then recreates the slot', async () => {
   const fixture = await computer()
   await expect(fixture.run()).resolves.toMatchObject({ run: { state: 'passed' } })
-  await fixture.damageSnapshot()
-  const result = await fixture.run()
-  expect(result).toMatchObject({
-    run: { state: 'passed' },
-    text: expect.stringContaining('[ci-cache] dependency snapshot unusable; installing fresh'),
-  })
-  expect(result).toMatchObject({ text: expect.stringContaining('dependency=pristine') })
+  await fixture.breakCheckout()
+  await expect(fixture.run()).resolves.toMatchObject({ run: { state: 'passed' },
+    text: expect.stringContaining('[ci-checkout] persistent checkout unusable') })
+  const next = await fixture.run()
+  expect(next).toMatchObject({ run: { state: 'passed' }, text: expect.stringContaining('dependency=pristine') })
+  expect(next).toMatchObject({ text: expect.not.stringContaining('[ci-checkout]') })
   const installs = (await fixture.commands()).filter(args => args[1] === 'install')
-  expect(installs).toHaveLength(3)
-  expect(installs.at(-1)).toEqual(expect.arrayContaining(['--offline', '--frozen-lockfile']))
-  await expect(fixture.run()).resolves.toMatchObject({
-    run: { state: 'passed' }, text: expect.stringContaining('dependency=pristine'),
-  })
+  expect(installs.filter(args => !args.includes('--offline'))).toHaveLength(1)
 })
-
 
 it('fetches only the tested commit on a cold runner and on later jobs with explicit files', async () => {
   const fixture = await computer()

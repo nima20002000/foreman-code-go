@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
-import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { sanitizeCiText, serializeCiJson } from './text.js'
 import { availableParallelism, freemem, homedir, totalmem } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -14,7 +14,7 @@ import { DomainError } from '../errors.js'
 import { ciRepositoryCapabilities } from './repository.js'
 import { allowedCiResources, gateIntegrationShards, hostCiCapacity } from './capacity.js'
 import { fallbackOnError } from '../diagnostics/ignoredError.js'
-import { warmPnpmInstall } from './warmSetup.js'
+import { pnpmInstall } from './warmSetup.js'
 import { ciLogPage } from './logPage.js'
 
 type Command = { code: number; stdout: string; stderr: string }
@@ -57,6 +57,8 @@ interface RunMeta {
   message: string | null; cleaned: boolean; durations?: CiDurations
   scope?: CiScope; files?: string[]; part?: CiPart; defaultBranch?: string; baseCommit?: string; deriveFiles?: boolean
   resources?: { cpuCount: number; memoryBytes: number; memoryBudget?: number }
+  /** The persistent checkout this run holds; absent when it uses a fresh checkout in its run directory. */
+  slot?: number
   expectedDurationMs?: number
   isolatedDatabase?: boolean
   gate?: boolean; integrationShards?: number
@@ -135,6 +137,11 @@ export class HostCiRunner {
   isUpdateIdle() { return this.preparing.size === 0 && this.startingRun === null }
 
   private runDirectory(runId: string) { return join(this.root, 'runs', runId) }
+
+  /** A persistent checkout keeps its installed dependencies between the parts that hold its slot in turn. */
+  private slotSource(repository: string, slot: number) {
+    return join(this.root, 'slots', ...repository.split('/'), String(slot), 'src')
+  }
 
   private async readMeta(runId: string): Promise<RunMeta> {
     try {
@@ -272,9 +279,13 @@ export class HostCiRunner {
       throw new DomainError('CI_HOST_BUSY',
         `All CI slots are in use (${capacity.slotsUsed}/${capacity.slotsTotal}); this commit needs exclusive database capacity.`, 409)
     }
+    // Concurrent parts never share a checkout: take the lowest slot no active run of this repository holds.
+    const held = new Set(active.filter(run => run.repository === request.repository).map(run => run.slot))
+    let slot = 0
+    while (held.has(slot)) slot++
     await mkdir(directory, { recursive: true, mode: 0o700 })
     const meta: RunMeta = { runId: request.runId, repository: request.repository, commit: request.commit,
-      suite: request.suite, partition: request.partition ?? null, startedAt,
+      suite: request.suite, partition: request.partition ?? null, startedAt, slot,
       state: 'starting', finishedAt: null, exitCode: null, message: null, cleaned: false,
       resources: { cpuCount: capacity.cpuCount, memoryBytes: capacity.memoryBytes, memoryBudget: capacity.memoryBudget },
       isolatedDatabase,
@@ -316,11 +327,11 @@ export class HostCiRunner {
     const pending = new Promise<void>(resolve => { release = resolve })
     this.repositoryQueues.set(meta.repository, pending)
     await previous
-    const source = join(this.runDirectory(meta.runId), 'src')
+    let source: string
     try {
       const current = await this.readMeta(meta.runId)
       if (current.state !== 'starting' || current.cancellationRequested) return
-      await this.checkout(meta, source)
+      source = await this.checkout(meta)
     } finally {
       release()
       if (this.repositoryQueues.get(meta.repository) === pending) this.repositoryQueues.delete(meta.repository)
@@ -374,9 +385,40 @@ export class HostCiRunner {
     return parsed.foremanCi?.hostSlots === 1
   }
 
-  private async checkout(meta: RunMeta, source: string) {
+  /** Resets the run's slot checkout to its commit, or falls back to a fresh checkout in the run directory. */
+  private async checkout(meta: RunMeta): Promise<string> {
     const clone = join(this.root, 'git', ...meta.repository.split('/'))
+    if (meta.slot !== undefined) {
+      const source = this.slotSource(meta.repository, meta.slot)
+      try {
+        if (existsSync(join(source, '.git'))) {
+          await this.git(['checkout', '--quiet', '--force', '--detach', meta.commit], source)
+        } else {
+          await rm(source, { recursive: true, force: true })
+          await mkdir(join(source, '..'), { recursive: true, mode: 0o700 })
+          await this.git(['worktree', 'prune'], clone)
+          await this.git(['worktree', 'add', '--quiet', '--detach', source, meta.commit], clone)
+        }
+        // Only installed dependencies survive: untracked files, caches and build outputs of earlier commits
+        // (including outputs of sources this commit deleted) must not leak into this part.
+        await this.git(['clean', '-ffdxq', '-e', 'node_modules'], source)
+        return source
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error)
+        await appendFile(join(this.runDirectory(meta.runId), 'log'),
+          `[ci-checkout] persistent checkout unusable (${reason.slice(0, 500)}); using a fresh checkout\n`, { mode: 0o600 })
+        // The next part on this slot starts from a new checkout instead of failing the same way.
+        await rm(join(source, '..'), { recursive: true, force: true })
+        await this.git(['worktree', 'prune'], clone)
+        delete meta.slot
+        const current = await this.readMeta(meta.runId)
+        delete current.slot
+        await this.writeMeta(current)
+      }
+    }
+    const source = join(this.runDirectory(meta.runId), 'src')
     await this.git(['worktree', 'add', '--quiet', '--detach', source, meta.commit], clone)
+    return source
   }
 
   private suiteResources(meta: RunMeta) {
@@ -591,7 +633,7 @@ export class HostCiRunner {
       `step() { echo "$1" > ${quote(join(run, 'step'))}; echo "::step $1"; }`,
       ...(meta.message ? [`echo ${quote(meta.message)}`] : []),
       'step install',
-      ...(existsSync(join(source, 'pnpm-lock.yaml')) ? warmPnpmInstall(source, cache, run) : [`${pm} install || finish $?`]),
+      ...(existsSync(join(source, 'pnpm-lock.yaml')) ? pnpmInstall(cache) : [`${pm} install || finish $?`]),
       // pnpm script commands can reinstall dependencies, so preparation must wait for installation.
       ...(prerequisites ? [`SUITE=${quote(prerequisiteSuite)} bash scripts/ci-suite.sh prepare`
         + ` >${quote(join(run, 'preparation.log'))} 2>&1 & preparation_pid=$!`] : []),
@@ -628,10 +670,11 @@ export class HostCiRunner {
 
   private async cleanDatabase(meta: RunMeta) {
     const directory = this.runDirectory(meta.runId)
-    const script = join(directory, 'src/scripts/test-db.mjs')
+    const source = meta.slot === undefined ? join(directory, 'src') : this.slotSource(meta.repository, meta.slot)
+    const script = join(source, 'scripts/test-db.mjs')
     if (!existsSync(script) || meta.isolatedDatabase !== true) return
     const result = await this.ports.run('node', [script, 'down'], {
-      cwd: join(directory, 'src'),
+      cwd: source,
       env: { ...this.environment, FOREMAN_CODE_CI_HOST_RUN_ID: meta.runId,
         FOREMAN_CODE_VERIFICATION_ENVIRONMENT: '', TMPDIR: join(directory, 'tmp') },
     })
