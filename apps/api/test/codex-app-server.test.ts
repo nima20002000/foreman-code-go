@@ -585,6 +585,8 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     ]
     for (const mutate of mutations) {
       const changed = structuredClone(source); mutate(changed)
+      assert.notDeepEqual(changed.request.configuration, source.request.configuration,
+        'Each mutation must change the accepted configuration')
       await assertCode(manager.attachSession(session, changed), 'CODEX_SESSION_CONFIGURATION_MISMATCH')
     }
     const changed = structuredClone(source)

@@ -313,6 +313,36 @@ it.each(['success', 'failed', 'canceled'])('preserves terminal CircleCI %s state
   expect(cli.calls).not.toHaveBeenCalled()
 })
 
+it.each(['success', 'failed', 'canceled'])(
+  'retains terminal CircleCI %s outcomes and finish times when child job details lag', async status => {
+    const server = await http((request, response) => {
+      if (request.url === '/api/v2/pipeline/42/workflow') return json(response,
+        { items: [{ id: 'workflow', status, stopped_at: finishedAt }] })
+      if (request.url === '/api/v3/jobs/job') return json(response, { data: { attributes: {
+        name: 'Tests', phase: 'started', ended_at: '2026-10-01T00:02:00Z',
+        parallel_executions: [{ steps: [
+          { num: 1, name: 'Checkout', phase: 'ended', outcome: 'succeeded' },
+          { num: 2, name: 'Suite', phase: 'started' },
+        ] }],
+      } } })
+      circleHandler(request, response)
+    })
+    const cli = ports()
+    const provider = new CircleCiProvider(cli.value, { ...server, circleToken: async () => 'circle-test-token' })
+    const conclusions = { success: 'success', failed: 'failure', canceled: 'cancelled' } as const
+    expect(await provider.status(run)).toEqual({
+      done: true, conclusion: conclusions[status as keyof typeof conclusions], finishedAt,
+      steps: [
+        { key: 'job:1', name: 'Checkout', state: 'passed' },
+        { key: 'job:2', name: 'Suite', state: 'running' },
+      ],
+    })
+    expect(server.requests.filter(request => request.url === '/api/v3/jobs/job')).toHaveLength(1)
+    expect(server.requests.some(request => request.url!.includes('/stdout'))).toBe(false)
+    expect(cli.calls).not.toHaveBeenCalled()
+  },
+)
+
 it.each([
   { outcome: 'succeeded', state: 'passed' },
   { outcome: 'failed', state: 'failed' },
