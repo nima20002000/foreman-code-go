@@ -613,6 +613,28 @@ test('host CI worktrees run concurrently while nested commands retain their own 
   }
 })
 
+test('Vitest setup uses the private admission queue in a host CI worktree', { timeout: 6000 }, () => {
+  const f = fixture()
+  try {
+    copyFileSync(hookSource, join(f.second, 'scripts/vitest-heavy-setup.mjs'))
+    const entry = `const { default: setup } = await import('./scripts/vitest-heavy-setup.mjs');
+      const teardown = await setup();
+      console.log('suite admitted');
+      await teardown();`
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', entry], {
+      cwd: f.second,
+      env: { ...jobEnv(f.second), CI_HOST_RUNNER: '1' },
+      encoding: 'utf8',
+      timeout: 4000,
+    })
+    assert.equal(result.status, 0, result.stdout + result.stderr)
+    assert.match(result.stdout, /suite admitted/)
+    assert.equal((result.stdout.match(/\[heavy-job\] running /g) ?? []).length, 1)
+  } finally {
+    rmSync(f.home, { recursive: true, force: true })
+  }
+})
+
 for (const setting of ['1', '0', '9', 'garbage']) test(`slot setting ${setting} keeps single-slot admission`, { timeout: 8000 }, async () => {
   const f = fixture(), jobs = []
   try {
