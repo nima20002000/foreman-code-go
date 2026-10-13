@@ -5,7 +5,7 @@ import { http, HttpResponse } from 'msw'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
-import { ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
+import { LocalHumanAccessSchema, ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
 import { CurrentManagedWorkflowSchema, GraphEditReadResultV3Schema, makeCurrentWorkflowFixture,
   type GraphEditReadResultV3 } from '@foreman-code/contracts/wave25'
 import { PersistedWorkflowBoundary } from './PersistedWorkflowBoundary'
@@ -84,6 +84,16 @@ afterEach(() => {
 
 it.each(['Agent settings Save', 'Agent settings Save and run', 'one-pass Save'] as const)(
   'acknowledges its own %s without warnings and leaves the saved version usable', async (path) => {
+    let accessReads = 0
+    server.use(http.get('*/api/local-human', () => {
+      accessReads++
+      return HttpResponse.json(LocalHumanAccessSchema.parse({ principal: {
+        id: 'local-principal', name: 'Operator', expiresAt: '2099-01-01T00:00:00Z',
+        grants: [{ actions: ['runs:start'], scope: {
+          workspaceIds: ['workspace'], workflowIds: ['workflow'],
+        } }],
+      } }))
+    }))
     let source: AuthoringContext = fixture()
     source.agents = source.agents.map((item) => ({ ...item, agent: { ...item.agent,
       harness: 'codex', harnessConfiguration: DEFAULT_HARNESS_DEFAULTS.codex } }))
@@ -126,6 +136,7 @@ it.each(['Agent settings Save', 'Agent settings Save and run', 'one-pass Save'] 
     const user = userEvent.setup()
     expect(await screen.findByRole('button', { name: 'Authoring fixture' })).toBeVisible()
     expect(screen.queryByRole('heading', { name: 'Authoring unavailable' })).not.toBeInTheDocument()
+    await waitFor(() => expect(accessReads).toBeGreaterThan(0))
     if (path === 'one-pass Save') {
       await user.click(await screen.findByRole('button', { name: 'Add agent or job to graph' }))
       await user.click(screen.getByRole('button', { name: 'Use one-pass dependencies' }))
@@ -139,6 +150,7 @@ it.each(['Agent settings Save', 'Agent settings Save and run', 'one-pass Save'] 
       await user.click(within(dialog).getByRole('button', { name: 'Save agent settings' }))
       await user.click(within(dialog).getByRole('button', { name: 'Close fixture settings' }))
     }
+    const accessReadsBeforeStart = accessReads
     await user.click(screen.getByRole('button', {
       name: path === 'Agent settings Save and run' ? 'Save and run' : 'Save changes',
     }))
@@ -165,6 +177,7 @@ it.each(['Agent settings Save', 'Agent settings Save and run', 'one-pass Save'] 
       await user.click(screen.getByRole('button', { name: 'Start saved version' }))
       await waitFor(() => expect(start).toHaveBeenCalledOnce())
     }
+    expect(accessReads).toBeGreaterThan(accessReadsBeforeStart)
     source = { ...source, draft: { ...source.draft, revision: 9, publishedRevision: 9,
       graph: { ...source.draft.graph, name: 'External rename' } } }
     await act(async () => {
