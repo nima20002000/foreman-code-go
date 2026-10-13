@@ -24,7 +24,7 @@ it('blocks the remote Codex session when its launcher route cannot be registered
   const request = vi.fn(async () => { throw new Error('Unregistered session cannot call MCP') })
   await expect(runningInstalledFixture('generation', { mcp: {
     request, onSessionStart,
-  } })).rejects.toMatchObject({ code: 'ENOTDIR' })
+  } })).rejects.toMatchObject({ code: 'EEXIST', syscall: 'mkdir', path: parent })
   expect(onSessionStart).not.toHaveBeenCalled()
   expect(request).not.toHaveBeenCalled()
   expect(await readFile(parent, 'utf8')).toBe(contents)
