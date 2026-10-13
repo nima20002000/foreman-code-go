@@ -21,6 +21,7 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
     private readonly clouds: CloudCi[] = []) {}
 
   async computers(): Promise<HostCiComputer[]> {
+    await Promise.all(this.clouds.map(cloud => cloud.reconcile()))
     const rows = (await this.pool.query<{ host_key: string; target: DeviceProvisioningTarget
       build_enabled: boolean; build_priority: number }>(
       'select host_key,target,build_enabled,build_priority from build_computer_preferences')).rows

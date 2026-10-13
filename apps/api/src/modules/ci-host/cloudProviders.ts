@@ -1,9 +1,8 @@
-import { mkdir, readdir, readFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import type { CiDurations, CiExecutionSuite, CiHostRun, CiPart, CiScope, CiSuite, CiTestResults, CiUserSystemd } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { HostCiPorts } from './runner.js'
-import { fallbackOnError } from '../diagnostics/ignoredError.js'
 
 export interface CloudRun {
   runId: string; repository: string; mirror: string; commit: string; suite: CiSuite; startedAt: string
@@ -12,6 +11,10 @@ export interface CloudRun {
   scope?: CiScope; files?: string[]; part?: CiPart; baseCommit?: string
   dispatch?: { input: CloudDispatchInput; attempts: number; at: string }
   workflowStarted?: boolean
+  provenance?: CiHostRun['provenance']
+  collection?: { log: boolean; artifacts: boolean }
+  cancellation?: { at: string; canceledIds: string[] }
+  dispatchHistory?: { at: string; providerRunId: string | null }[]
   /** Live progress kept while the run is followed: steps already written to the log, the running step's output
    * bytes written so far, and bytes written in all. */
   live?: { step: string | null; seen: string[]; output?: { key: string; bytes: number }; bytes: number }
@@ -28,6 +31,7 @@ export interface CloudDispatchInput {
   mirror: string; branch: string; runId: string; suite: CiExecutionSuite; slice: string
   expectedDurationMs?: number
   scope?: CiScope; files?: string; defaultBranch?: string; baseCommit?: string; partition?: string; durations?: string
+  workflowRef?: string; workflowCommit?: string
 }
 
 /** One cloud CI service: how Main starts a run of a mirror branch and reads it back, through the service's CLI login. */
@@ -75,7 +79,11 @@ async function command(ports: HostCiPorts, label: string, file: string, args: st
 }
 
 async function findFile(directory: string, name: string): Promise<string | null> {
-  for (const entry of await readdir(directory, { withFileTypes: true, recursive: true }).catch(() => [])) {
+  const entries = await readdir(directory, { withFileTypes: true, recursive: true }).catch(error => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  })
+  for (const entry of entries) {
     if (entry.isFile() && entry.name === name) return join(entry.parentPath, entry.name)
   }
   return null
@@ -89,8 +97,8 @@ async function readArtifacts(directory: string): Promise<CloudArtifacts> {
     const path = await findFile(directory, name)
     return path ? JSON.parse(await readFile(path, 'utf8')) as unknown : null
   }
-  return { durations: await read('durations.json').catch(fallbackOnError(null, 'jobs', 'read CI durations artifact')), testResults: await read('test-results.json').catch(fallbackOnError(null, 'jobs', 'read CI test results artifact')),
-    watchdogFailure: await read('watchdog-message.json').catch(fallbackOnError(null, 'jobs', 'read CI watchdog artifact')) }
+  return { durations: await read('durations.json'), testResults: await read('test-results.json'),
+    watchdogFailure: await read('watchdog-message.json') }
 }
 
 const WORKFLOW = 'ci.yml'
@@ -117,8 +125,8 @@ export class GitHubActionsProvider implements CloudProvider {
   }
 
   async dispatch(input: CloudDispatchInput) {
-    // Runs start from main, whose cache scope every run shares, and check out the commit's branch.
-    await this.gh(['workflow', 'run', WORKFLOW, '-R', input.mirror, '--ref', 'main', '-f', `ref=${input.branch}`,
+    await this.gh(['workflow', 'run', WORKFLOW, '-R', input.mirror, '--ref', input.workflowRef ?? input.branch,
+      '-f', `ref=${input.workflowRef ?? input.branch}`,
       '-f', `run_id=${input.runId}`, '-f', `suite=${input.suite}`, '-f', `slice=${input.slice}`,
       '-f', `expected_duration_ms=${input.expectedDurationMs ?? 0}`,
       ...(input.scope ? ['-f', `scope=${input.scope}`] : []), ...(input.files !== undefined ? ['-f', `files=${input.files}`] : []),
@@ -130,12 +138,17 @@ export class GitHubActionsProvider implements CloudProvider {
   }
 
   async find(run: CloudRun) {
-    const listed = JSON.parse(await this.gh(['run', 'list', '-R', run.mirror, '--workflow', WORKFLOW, '--branch', 'main',
-      '--event', 'workflow_dispatch', '--limit', '200', '--json', 'databaseId,displayTitle,status'], 15_000)) as
-      { databaseId: number; displayTitle: string; status?: string }[]
+    const branch = run.dispatch?.input.workflowRef ?? run.dispatch?.input.branch ?? 'main'
+    const listed = JSON.parse(await this.gh(['run', 'list', '-R', run.mirror, '--workflow', WORKFLOW, '--branch', branch,
+      '--event', 'workflow_dispatch', '--limit', '200', '--json', 'databaseId,displayTitle,status,headSha'], 15_000)) as
+      { databaseId: number; displayTitle: string; status?: string; headSha: string }[]
     const matches = listed.filter(value => value.displayTitle === `ci ${run.runId}`)
       .sort((left, right) => left.databaseId - right.databaseId)
     const match = matches.find(value => String(value.databaseId) === run.providerRunId) ?? matches[0]
+    if (match && run.provenance && match.headSha !== run.provenance.workflowCommit) {
+      await this.cancel({ ...run, providerRunId: String(match.databaseId) })
+      throw new DomainError('CI_CLOUD_PROVENANCE_MISMATCH', 'The provider workflow does not match the pinned snapshot.', 409)
+    }
     for (const duplicate of matches) {
       if (duplicate === match || duplicate.status === 'completed') continue
       await this.cancel({ ...run, providerRunId: String(duplicate.databaseId) })
@@ -185,13 +198,17 @@ export class GitHubActionsProvider implements CloudProvider {
   }
 
   async log(run: CloudRun) {
-    return (await this.ports.run('gh', ['run', 'view', run.providerRunId!, '-R', run.mirror, '--log'], { timeoutMs: 300_000 })).stdout
+    return this.gh(['run', 'view', run.providerRunId!, '-R', run.mirror, '--log'], 300_000)
   }
 
   async artifacts(run: CloudRun, directory: string) {
+    await rm(directory, { recursive: true, force: true })
     const downloaded = await this.ports.run('gh', ['run', 'download', run.providerRunId!, '-R', run.mirror,
       '-n', 'durations', '-D', directory], { timeoutMs: 120_000 })
-    return downloaded.code === 0 ? readArtifacts(directory) : noArtifacts
+    if (downloaded.code === 0) return readArtifacts(directory)
+    if (/^no artifact|^no valid artifacts/i.test(downloaded.stderr.trim())) return noArtifacts
+    throw rateLimited(this.label, downloaded.stderr)
+      ?? new DomainError('CI_CLOUD_FAILED', 'GitHub Actions artifacts could not be downloaded.', 502)
   }
 
   async cancel(run: CloudRun) { await this.gh(['run', 'cancel', run.providerRunId!, '-R', run.mirror]) }
@@ -218,7 +235,8 @@ export class CircleCiProvider implements CloudProvider {
   async ready() { return (await this.ports.run('circleci', ['auth', 'me'], { timeoutMs: 15_000 })).code === 0 }
 
   async dispatch(input: CloudDispatchInput) {
-    const started = JSON.parse(await this.circleci(['run', 'trigger', '--project', `gh/${input.mirror}`, '--branch', input.branch,
+    const started = JSON.parse(await this.circleci(['run', 'trigger', '--project', `gh/${input.mirror}`,
+      '--branch', input.workflowRef ?? input.branch,
       '--parameter', `run_id=${input.runId}`, '--parameter', `suite=${input.suite}`,
       '--parameter', `slice=${input.slice}`, '--parameter', `expected_duration_ms=${input.expectedDurationMs ?? 0}`, ...(input.scope ? ['--parameter', `scope=${input.scope}`] : []),
       ...(input.files !== undefined ? ['--parameter', `files=${input.files}`] : []),
@@ -285,20 +303,20 @@ export class CircleCiProvider implements CloudProvider {
     const { job } = await this.job(run)
     if (!job) return ''
     // Every line of every step: the default view keeps only each step's last 200 lines, which drops test failures.
-    return (await this.ports.run('circleci', ['job', 'output', 'list', job.id, '--tail', '0'], { timeoutMs: 300_000 })).stdout
+    return this.circleci(['job', 'output', 'list', job.id, '--tail', '0'], 300_000)
   }
 
   async artifacts(run: CloudRun, directory: string) {
     const { job } = await this.job(run)
     if (!job) return noArtifacts
     // Only the durations artifact is read: downloading every integration log artifact outlasts any timeout.
-    const listed = await this.ports.run('circleci', ['job', 'artifact', job.id, '--json'], { timeoutMs: 60_000 })
-    if (listed.code !== 0) return noArtifacts
+    const listed = await this.circleci(['job', 'artifact', job.id, '--json'], 60_000)
+    await rm(directory, { recursive: true, force: true })
     await mkdir(directory, { recursive: true })
-    for (const artifact of (JSON.parse(listed.stdout) as { path: string; url: string }[])
+    for (const artifact of (JSON.parse(listed) as { path: string; url: string }[])
       .filter(value => value.path.startsWith('durations/'))) {
-      await this.ports.run('curl', ['-fsSL', '--max-time', '60', '-o', join(directory, basename(artifact.path)), artifact.url],
-        { timeoutMs: 70_000 })
+      await command(this.ports, this.label, 'curl',
+        ['-fsSL', '--max-time', '60', '-o', join(directory, basename(artifact.path)), artifact.url], 70_000)
     }
     return readArtifacts(directory)
   }

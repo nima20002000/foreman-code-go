@@ -112,10 +112,15 @@ export const CiHostRequestSchema = z.discriminatedUnion('operation', [
 export type CiHostRequest = z.infer<typeof CiHostRequestSchema>
 
 const CiHostRunStateSchema = z.enum(['queued', 'starting', 'running', 'passed', 'failed', 'canceled', 'lost'])
+export const CiCollectionSchema = z.enum(['pending', 'complete', 'unsupported'])
+export const CiProvenanceSchema = z.object({
+  sourceCommit: CommitSchema, workflowCommit: CommitSchema, workflowRef: z.string().min(1).max(200),
+}).strict()
 const CiHostRunSchema = z.object({
   runId: CiHostRunIdSchema, state: CiHostRunStateSchema, step: z.string().max(80).nullable(),
   exitCode: z.number().int().nullable(), startedAt: TimestampSchema, finishedAt: TimestampSchema.nullable(),
   logBytes: z.number().int().nonnegative(), message: z.string().max(2000).nullable(),
+  collection: CiCollectionSchema.optional(), provenance: CiProvenanceSchema.optional(),
 }).strict()
 export type CiHostRun = z.infer<typeof CiHostRunSchema>
 export const CiUserSystemdSchema = z.object({ supported: z.boolean(), reason: z.string().max(300).nullable() }).strict()
@@ -159,6 +164,7 @@ export const CiRunRecordSchema = z.object({
     provider: z.enum(['github', 'circleci']).optional(), slot: z.number().int().nonnegative().optional() }).strict(),
     label: z.string() }).strict().nullable(),
   step: z.string().nullable(), exitCode: z.number().int().nullable(), message: z.string().nullable(),
+  collection: CiCollectionSchema.optional(), provenance: CiProvenanceSchema.optional(),
   queuedAt: TimestampSchema, startedAt: TimestampSchema.nullable(), finishedAt: TimestampSchema.nullable(),
   initiator: z.object({ principalId: IdSchema, executionId: IdSchema.nullable() }).strict(),
   /** The computer a weighted partition was sized for; another free computer may still take it. */
