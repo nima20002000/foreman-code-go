@@ -61,6 +61,25 @@ function fixture() {
   return { authorize, state, locations, pins, connection, intent, receipt }
 }
 
+
+function retainReviewer(f: ReturnType<typeof fixture>) {
+  const saved = approvalFixture()
+  const execution = { ...saved.executions[0]!, id: f.intent.executionId, runId: f.intent.runId,
+    workflowNodeId: f.intent.nodeId, nativeSessionId: f.receipt.native!.sessionId,
+    state: 'completed' as const, result: { outcome: 'succeeded' as const } }
+  saved.version.entryNodeId = f.intent.nodeId
+  saved.version.definition.entryNodeId = f.intent.nodeId
+  saved.version.definition.nodes[0]!.id = f.intent.nodeId
+  for (const edge of saved.version.definition.edges) edge.source = f.intent.nodeId
+  const reviewer = { run: { ...saved.run, id: f.intent.runId }, version: saved.version,
+    execution, configuration: saved.configurations[0], finalized: true,
+    reference: { harness: 'codex', providerVersion: 'fixture', nativeSessionId: f.receipt.native!.sessionId } }
+  f.state.reviewer = reviewer
+  f.receipt.retainedReviewer = { agentId: execution.agentId, workflowTurnId: f.receipt.native!.turnId!,
+    result: execution.result, expiresAt: '2026-10-01T00:01:00.000Z' }
+  return reviewer
+}
+
 describe('remote cleanup authorization', () => {
   it.each(['permission', 'source', 'root', 'harness'])('keeps Stop and closure readback after %s invalidation', async defect => {
     const f = fixture()
@@ -76,19 +95,7 @@ describe('remote cleanup authorization', () => {
 
   it('authorizes closure of a successful idle reviewer while preserving live Run grants', async () => {
     const f = fixture()
-    const saved = approvalFixture()
-    const execution = { ...saved.executions[0]!, id: f.intent.executionId, runId: f.intent.runId,
-      workflowNodeId: f.intent.nodeId, nativeSessionId: f.receipt.native!.sessionId,
-      state: 'completed' as const, result: { outcome: 'succeeded' as const } }
-    saved.version.entryNodeId = f.intent.nodeId
-    saved.version.definition.entryNodeId = f.intent.nodeId
-    saved.version.definition.nodes[0]!.id = f.intent.nodeId
-    for (const edge of saved.version.definition.edges) edge.source = f.intent.nodeId
-    f.state.reviewer = { run: { ...saved.run, id: f.intent.runId }, version: saved.version,
-      execution, configuration: saved.configurations[0], finalized: true,
-      reference: { harness: 'codex', providerVersion: 'fixture', nativeSessionId: f.receipt.native!.sessionId } }
-    f.receipt.retainedReviewer = { agentId: execution.agentId, workflowTurnId: f.receipt.native!.turnId!,
-      result: execution.result, expiresAt: '2026-10-01T00:01:00.000Z' }
+    retainReviewer(f)
     await expect(f.authorize('stop')).resolves.toBeUndefined()
     expect(f.locations.revalidateRunAuthorization).toHaveBeenCalled()
     expect(f.pins).toHaveBeenCalled()
@@ -97,6 +104,17 @@ describe('remote cleanup authorization', () => {
     f.state.reviewsPending = false
     f.locations.revalidateRunAuthorization.mockRejectedValue(new Error('Permission revoked'))
     await expect(f.authorize('stop')).rejects.toThrow('Permission revoked')
+  })
+
+  it('keeps successful reviewer closure tied to session finalization and its live owner grant', async () => {
+    const f = fixture()
+    const reviewer = retainReviewer(f)
+    await expect(f.authorize('stop')).resolves.toBeUndefined()
+    reviewer.finalized = false
+    await expect(f.authorize('stop')).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
+    reviewer.finalized = true
+    f.state.grant = false
+    await expect(f.authorize('stop')).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
   })
 
   it('requires a committed cleanup intent even when the caller holds the original grant', async () => {

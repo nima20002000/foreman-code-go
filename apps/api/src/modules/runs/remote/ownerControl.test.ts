@@ -2,7 +2,7 @@ import type pg from 'pg'
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { CODEX_APPROVAL_OPTIONS_FIXTURE, withInteractionResponse, type ApprovalResponseOption,
-  type DurableInteraction } from '@foreman-code/contracts'
+  type DurableInteraction, type HarnessExecution } from '@foreman-code/contracts'
 import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import type { AcceptedExecutionBinding } from '../../placement/nativeComposition.js'
 import { ExclusiveGraphConnection } from '../../run-graph/connection.js'
@@ -51,20 +51,21 @@ function fixture() {
 
 function retainReviewer(f: ReturnType<typeof fixture>) {
   const saved = approvalFixture()
-  const execution = { ...saved.executions[0]!, id: intent.executionId, runId: intent.runId,
+  const execution: HarnessExecution = { ...saved.executions[0]!, id: intent.executionId, runId: intent.runId,
     workflowNodeId: intent.nodeId, nativeSessionId: native.sessionId, state: 'completed' as const,
     result: { outcome: 'succeeded' as const, output: { text: 'Original workflow answer' } } }
   saved.version.entryNodeId = intent.nodeId
   saved.version.definition.entryNodeId = intent.nodeId
   saved.version.definition.nodes[0]!.id = intent.nodeId
   for (const edge of saved.version.definition.edges) edge.source = intent.nodeId
-  f.state.reviewer = { run: { ...saved.run, id: intent.runId }, version: saved.version,
+  const reviewer = { run: { ...saved.run, id: intent.runId }, version: saved.version,
     execution, configuration: saved.configurations[0], finalized: true,
     reference: { harness: 'codex', providerVersion: 'fixture', nativeSessionId: native.sessionId } }
+  f.state.reviewer = reviewer
   f.state.cleanup = undefined
   f.state.receipt!.retainedReviewer = { agentId: execution.agentId,
-    workflowTurnId: native.turnId, result: execution.result, expiresAt: '2026-10-01T00:01:00.000Z' }
-  return { execution, reviewer: f.state.reviewer as { finalized: boolean } }
+    workflowTurnId: native.turnId, result: execution.result!, expiresAt: '2026-10-01T00:01:00.000Z' }
+  return { execution, reviewer }
 }
 
 describe('SQL-only admitted remote control preparation', () => {
@@ -108,6 +109,20 @@ describe('SQL-only admitted remote control preparation', () => {
     await f.db.close()
   })
 
+  it('requires the retained native session to remain finalized before preparing closure', async () => {
+    const f = fixture()
+    const { reviewer } = retainReviewer(f)
+    try {
+      await expect(f.prepare('stop')).resolves.toMatchObject({
+        commandId: 'close-reviewer:operation', action: { kind: 'stop' }, native,
+      })
+      reviewer.finalized = false
+      await expect(f.prepare('stop')).rejects.toMatchObject({ code: 'REMOTE_CONTROL_UNAVAILABLE' })
+    } finally {
+      await f.db.close()
+    }
+  })
+
   it('reuses a Stop identity from the durable cleanup request', async () => {
     const f = fixture()
     expect(await f.prepare('stop')).toEqual(await f.prepare('stop'))
@@ -127,9 +142,12 @@ describe('SQL-only admitted remote control preparation', () => {
       f.state.reviewsPending = true
       await expect(f.prepare('stop')).rejects.toThrow('cleanup intent')
       f.state.reviewsPending = false
-      execution.state = 'waiting' as typeof execution.state
+      const completed = { ...execution }
+      execution.state = 'waiting'
+      delete execution.result
+      delete execution.finishedAt
       await expect(f.prepare('stop')).rejects.toThrow('cleanup intent')
-      execution.state = 'completed'
+      Object.assign(execution, completed)
       f.state.owned = false
       await expect(f.prepare('stop')).rejects.toThrow('owner lost')
     } finally { await f.db.close() }
