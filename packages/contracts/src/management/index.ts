@@ -544,41 +544,10 @@ export const REPEAT_OPERATOR_TOOL_NAMES = [
 ] as const;
 export type RepeatOperatorToolName = typeof REPEAT_OPERATOR_TOOL_NAMES[number];
 
-/** API catalog/availability must consume these global requirements without implicitly granting them. */
-export const DEVICE_PROVISIONING_OPERATOR_TOOL_NAMES = [
-  "device_pairing_install_create", "device_readiness_get", "device_readiness_check", "device_repair_plan", "device_repair_start",
-  "device_provisioning_operation_get", "device_resources_get", "device_resources_update", "device_resources_apply_now",
-  "device_runtime_approval_get", "device_runtime_approval_request", "device_runtime_approval_revoke",
-] as const;
-export type DeviceProvisioningOperatorToolName = typeof DEVICE_PROVISIONING_OPERATOR_TOOL_NAMES[number];
-export const DEVICE_PROVISIONING_OPERATOR_METADATA = [
-  { name: "device_pairing_install_create", action: "create-install-pairing", actions: ["settings:update", "devices:provision"], scope: "global", readOnly: false, humanOnly: false, detail: "Create one short-lived single-use install/pair command; pairing grants no execution approval." },
-  { name: "device_readiness_get", action: "read-readiness", actions: ["settings:read"], scope: "global", readOnly: true, humanOnly: false, detail: "Read persisted summary and full readiness without probing or repairing the computer." },
-  { name: "device_readiness_check", action: "check-readiness", actions: ["settings:update", "devices:provision"], scope: "global", readOnly: false, humanOnly: false, detail: "Schedule bounded diagnostics for the exact device generation; never remote sudo." },
-  { name: "device_repair_plan", action: "plan-repair", actions: ["settings:read"], scope: "global", readOnly: true, humanOnly: false, detail: "Read a server-generated plan for advertised enum actions; no execution." },
-  { name: "device_repair_start", action: "start-repair", actions: ["settings:update", "devices:provision"], scope: "global", readOnly: false, humanOnly: false, detail: "Start the exact approved plan; local administrator and human steps remain unavailable to MCP." },
-  { name: "device_provisioning_operation_get", action: "read-operation", actions: ["settings:read"], scope: "global", readOnly: true, humanOnly: false, detail: "Read durable operation progress for this target." },
-  { name: "device_resources_get", action: "read-resource-limits", actions: ["settings:read"], scope: "global", readOnly: true, humanOnly: false, detail: "Read measured capacity and separate desired/effective revisions." },
-  { name: "device_resources_update", action: "update-resource-limits", actions: ["settings:update"], scope: "global", readOnly: false, humanOnly: false, detail: "Save exact revision/capacity-bound limits. stop-jobs-and-apply additionally requires jobs:cancel and explicit confirmation." },
-  { name: "device_resources_apply_now", action: "stop-jobs-and-apply", actions: ["settings:update", "jobs:cancel"], scope: "global", readOnly: false, humanOnly: false, detail: "Explicitly stop current Jobs and drain owned work before applying the already saved revision." },
-  { name: "device_runtime_approval_get", action: "read-runtime-approval", actions: ["settings:read"], scope: "global", readOnly: true, humanOnly: false, detail: "Read the revocable device-wide human runtime approval." },
-  { name: "device_runtime_approval_request", action: "request-runtime-approval", actions: ["settings:update"], scope: "global", readOnly: false, humanOnly: false, detail: "Request the once-per-device browser approval. MCP cannot grant it or substitute pairing." },
-  { name: "device_runtime_approval_revoke", action: "revoke-runtime-approval", actions: ["settings:update"], scope: "global", readOnly: false, humanOnly: false, detail: "Revoke the exact approval revision and fence new work." },
-] as const satisfies readonly { name: DeviceProvisioningOperatorToolName; action: string; actions: readonly ManagementAction[];
-  scope: "global"; readOnly: boolean; humanOnly: boolean; detail: string }[];
-export const DEVICE_PROVISIONING_OPERATOR_CONDITIONAL_REQUIREMENTS = [{
-  name: "device_resources_update", field: "applyMode", equals: "stop-jobs-and-apply", actions: ["jobs:cancel"], scope: "global",
-}] as const;
-export const DEVICE_PROVISIONING_HUMAN_LIMITS = [
-  { feature: "device-runtime-approval-grant", state: "protected", detail: "Only an authenticated human browser can grant once-per-device runtime approval; MCP may request, read and revoke it." },
-  { feature: "device-system-setup", state: "protected", detail: "System packages and quota setup require local administrator consent; MCP cannot execute sudo or alter host security." },
-] as const;
-
 export const OperatorToolNameSchema = z.enum([
   'bug_report', 'bug_reports_list', 'bug_report_get', 'bug_report_update', 'bug_reports_close',
   "ci_run", "ci_get", "ci_computers_list", "ci_cancel", "ci_logs_read", "ci_list",
   ...Object.keys(GRAPHQL_OPERATOR_TOOLS) as (keyof typeof GRAPHQL_OPERATOR_TOOLS)[],
-  ...DEVICE_PROVISIONING_OPERATOR_TOOL_NAMES,
   "source_list", "source_get", "source_approve", "source_root_bind", "source_root_get", "source_root_list", "source_preparation_get", "source_preparation_reconcile",
   "job_runtime_profile_list","job_runtime_profile_save","job_runtime_qualification_request","job_runtime_qualification_run","job_runtime_qualification_get","build_computer_prepare","build_computer_prepare_get",
   "ci_enrollment_get", "ci_enrollment_update",

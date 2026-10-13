@@ -80,6 +80,11 @@ MCP services. Credentials are issued for the accepted native process.
 
 ## Tool catalog
 
+Device provisioning, repair, resource-policy application, and runtime approval have no
+Operator implementation and are not advertised as tools. There is no `devices:provision`
+grant or once-per-device runtime approval requirement. Existing device pairing, connection,
+and build-computer tools retain their supported contracts and scope checks.
+
 `computers_maintenance_start` with `sync-mcp` uses the same fleet service as
 Settings and requires global `settings:update`. It copies supported user-level
 definitions without inline secrets. Disabled servers, native tool allow/deny

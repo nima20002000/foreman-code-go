@@ -37,7 +37,7 @@ describe('current remote Job contract boundaries', () => {
     expect(ArtifactEdgeReadSchema.safeParse({ edgeId: 'edge', offset: 0, length: MAX_FILE_READ_BYTES + 1 }).success).toBe(false)
   })
   it.each([
-    'deviceResources', 'deviceProvisioning', 'deviceProvisioningFixtures', 'remoteJobExecution',
+    'deviceResources', 'deviceProvisioningFixtures', 'remoteJobExecution',
     'remoteExecution', 'remoteExecutionRpc', 'workerMcpRelay', 'sourceAdmission', 'workspaceRootPolicies',
     'workspaceBoundLocation', 'jobInputs', 'jobInputsNode', 'jobOutputTransfer', 'byteTransfer', 'files',
   ])('evaluates %s as a fresh first ESM import', (name) => {
