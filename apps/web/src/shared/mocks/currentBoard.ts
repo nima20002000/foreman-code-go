@@ -12,7 +12,7 @@ import {
   ExecutableWorkflowV3Schema, AcceptedWorkflowRunV3Schema, GraphEditStageInputV3Schema, GraphEditReadResultV3Schema,
   GraphEditAdvanceInputV3Schema, GraphEditDiscardInputV3Schema, CurrentWorkflowSaveInputSchema, CurrentWorkflowValidateInputSchema, CURRENT_WORKFLOW_CAPABILITIES, sameExecutableWorkflow,
   RunStartV3InputSchema, RepeatGraphCurrentV3Schema, repeatGraphTopologyV3, sameWorkflowValue,
-  preserveWorkflowGeometry,
+  preserveWorkflowGeometry, RunActivitiesPageSchema,
   type WorkflowDefinitionV3, type WorkflowVersionV3, type GraphDraftV3,
   type GraphEditReadResultV3, type CurrentRunDetails, type RepeatGraphCurrentV3,
 } from '@foreman-code/contracts/wave25'
@@ -215,6 +215,15 @@ async function dispatchCurrentBoardRequest(request: Request, state: CurrentBoard
         if (!tail && method === 'GET') return HttpResponse.json(detail)
         if (tail === '/subagents' && method === 'GET') {
           return HttpResponse.json({ items: [], nextCursor: null, projection: 'caught-up' })
+        }
+        if (tail === '/activities' && method === 'GET') {
+          // The mounted Run Activities feed reads this route; answer an empty, caught-up feed
+          // instead of letting the request fall through MSW to the real network.
+          return HttpResponse.json(RunActivitiesPageSchema.parse({
+            scope: { workspaceId, workflowId: detail.run.workflowId, runId, workflowVersionId: detail.run.workflowVersionId,
+              executionSemanticsVersion: 3 },
+            mode: url.searchParams.has('cursor') ? 'newer' : 'initial', items: [], highWater: '0', retainedFrom: '0',
+            nextCursor: `activities-${runId}-0`, olderCursor: null, hasMore: false }))
         }
         if (tail.includes('/graph') && tail.endsWith('/current') && method === 'GET') return HttpResponse.json(currents.get(runId))
         if (method === 'GET' && path.startsWith(prefix)) {
