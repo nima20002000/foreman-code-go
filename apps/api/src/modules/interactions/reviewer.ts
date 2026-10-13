@@ -394,8 +394,9 @@ export class ReviewerDispatcher {
                 message: 'The Orchestrator finished its review without responding to the assigned interaction.' })
             }
             lane.observedStatus = evidence.nativeIdle ? 'idle' : evidence.nativeBusy || evidence.acknowledged ? 'busy' : 'uncertain'
-            if (recovering && manager.retainsReviewerSession && evidence.acknowledged && evidence.nativeBusy) {
-              // Keep the original process authorized while its running turn is observed, without resubmitting it.
+            const retainedReviewUnsettled = evidence.acknowledged && !evidence.nativeIdle && !evidence.terminal
+            if (recovering && manager.retainsReviewerSession && retainedReviewUnsettled) {
+              // Paged history can acknowledge a turn without including its busy-state event.
               await transition('acknowledged', { releaseLease: false })
               await delay(100, undefined, { signal: workSignal }).catch(error => {
                 workSignal.throwIfAborted()
