@@ -34,5 +34,5 @@ export function workerConversationFixture(kind: 'operator' | 'agent' = 'operator
   })
   const session = { harness, providerVersion: 'provider-fixture', nativeSessionId: randomUUID() }
   const nativeOwner = { sessionId: session.nativeSessionId, processIdentityDigest: 'b'.repeat(64) }
-  return { binding, configuration, connection, session, nativeOwner }
+  return { binding, configuration, connection, deviceConnection: connection, session, nativeOwner }
 }

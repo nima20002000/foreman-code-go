@@ -187,6 +187,19 @@ describe('Persisted execution activity through HTTP and authenticated MCP', { ti
     }
   }
 
+  it('reads the MCP overview after retained history exceeds twenty executions', async () => {
+    const fixture = await setup()
+    try {
+      await fixture.seedNewerExecutions()
+      const overview = await fixture.http()
+      expect(overview.executions).toHaveLength(20)
+      expect(overview.hasEarlierExecutions).toBe(true)
+      expect(await fixture.mcpPage()).toEqual(overview)
+      await fixture.denied()
+      expect(fixture.managers).not.toHaveBeenCalled()
+    } finally { await fixture.close() }
+  })
+
   it('reads an older execution and its message beyond the bounded overview through HTTP and MCP', async () => {
     const fixture = await setup()
     try {

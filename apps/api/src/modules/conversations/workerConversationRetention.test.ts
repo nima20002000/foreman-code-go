@@ -10,6 +10,23 @@ import { workerConversationFixture } from './workerFixtures.test-support.js'
 const closing: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of closing.splice(0).reverse()) await close() })
 
+it('persists a workflow receipt with the conversation fixture device identity', async () => {
+  const root = await mkdtemp(join(process.cwd(), '.conversation-retention-'))
+  closing.push(() => rm(root, { recursive: true, force: true }))
+  const path = join(root, 'operations.json')
+  let journal = await RemoteOperationJournal.open(path, { initializeNewInstallation: true })
+  closing.push(() => journal.close())
+  const fixture = workerConversationFixture()
+  const intent = { schemaVersion: 1 as const, protocolVersion: 1 as const, mainId: fixture.connection.mainId,
+    runId: 'run', nodeId: 'node', executionId: 'execution', occurrenceId: 'occurrence', occurrenceIndex: 0,
+    technicalAttempt: 1, attemptId: 'attempt', operationId: 'operation', bindingHash: 'a'.repeat(64),
+    inputDigest: `sha256:${'a'.repeat(64)}`, owner: { grantId: 'grant', epoch: '1' } }
+  const receipt = await journal.accept(intent, fixture.deviceConnection, randomUUID())
+  await journal.close()
+  journal = await RemoteOperationJournal.open(path)
+  expect(await journal.status(intent.operationId)).toEqual({ status: 'known', receipt })
+})
+
 it('reads a retired conversation after reopening the journal and rejects a replayed creation', async () => {
   const root = await mkdtemp(join(process.cwd(), '.conversation-retention-'))
   closing.push(() => rm(root, { recursive: true, force: true }))
