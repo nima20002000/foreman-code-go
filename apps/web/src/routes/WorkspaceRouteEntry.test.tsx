@@ -224,7 +224,8 @@ describe('WorkspaceRouteEntry integration', () => {
     await user.click(screen.getByRole('button', { name: 'Create workflow' }))
 
     // The sidebar marks a never-published workflow with a "Draft" badge inside its button.
-    const newLink = await screen.findByRole('button', { name: /^Draft workflow/ })
+    const sidebar = within(screen.getByRole('region', { name: 'Workspace workflows' }))
+    const newLink = await sidebar.findByRole('button', { name: /^Draft workflow/ })
     const open = vi.spyOn(window, 'open').mockReturnValue(null)
     fireEvent.click(newLink, { ctrlKey: true })
     const createdId = new URL(open.mock.calls[0]![0] as string, 'http://localhost').searchParams.get('workflowId')
