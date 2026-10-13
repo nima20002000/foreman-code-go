@@ -43,6 +43,8 @@ export type { AgentSnapshots, CiCommits, HostCiComputer, HostCiEndpoint } from '
 
 const log = componentLogger('jobs')
 
+type CiRunPhase = 'dispatchWaitMs' | 'prepareMs' | 'insertMs' | 'postMs'
+
 interface PreparedCiRuns {
   repository: NonNullable<Workspace['repository']>
   runs: CiRunRecord[]
@@ -121,43 +123,81 @@ export class HostCiService {
   close() { clearInterval(this.timer); this.timer = undefined; return this.dispatching }
 
   async run(caller: ManagementPrincipal, input: CiRunInput & { workspaceId?: string | undefined }, source: 'mcp' | 'http' = 'mcp') {
-    if ((input.gate || input.smokeComputer) && caller.audience !== 'operator') {
-      if (source === 'http') await this.commands.recordDenied(caller.id, source, 'ci.run', input.workspaceId ?? 'ci')
-      throw new DomainError('ACCESS_DENIED', 'Only an Operator can request a CI gate or target a smoke computer.', 403)
+    const started = performance.now()
+    const timings = { dispatchWaitMs: 0, prepareMs: 0, insertMs: 0, postMs: 0 }
+    let phase: CiRunPhase = 'prepareMs'
+    let phaseStarted = started
+    const markPhase = (next: CiRunPhase) => {
+      const now = performance.now()
+      timings[phase] += now - phaseStarted
+      phase = next
+      phaseStarted = now
     }
-    const actions = CI_RUN_ACTIONS
-    const scope = await this.authority.resolve(caller, input.workspaceId, actions).catch(async error => {
-      if (source === 'http' && error instanceof DomainError && [401, 403, 404].includes(error.status)) {
-        await this.commands.recordDenied(caller.id, source, 'ci.run', input.workspaceId ?? 'ci')
-      }
-      throw error
-    })
-    // A start already in flight must settle before admission can supersede its ticket.
-    this.stoppingRuns += 1
+    let pausedDispatch = false
+    let authorized = false
+    let ticketId: string | undefined
     try {
-      await this.dispatching
-      const result = await this.enqueue(caller, input, source, scope, actions)
-      await this.cancelSuperseded()
+      if ((input.gate || input.smokeComputer) && caller.audience !== 'operator') {
+        if (source === 'http') await this.commands.recordDenied(caller.id, source, 'ci.run', input.workspaceId ?? 'ci')
+        throw new DomainError('ACCESS_DENIED', 'Only an Operator can request a CI gate or target a smoke computer.', 403)
+      }
+      const actions = CI_RUN_ACTIONS
+      const scope = await this.authority.resolve(caller, input.workspaceId, actions).catch(async error => {
+        if (source === 'http' && error instanceof DomainError && [401, 403, 404].includes(error.status)) {
+          await this.commands.recordDenied(caller.id, source, 'ci.run', input.workspaceId ?? 'ci')
+        }
+        throw error
+      })
+      authorized = true
+      const result = await this.enqueue(caller, input, source, scope, actions, markPhase, async () => {
+        if (pausedDispatch) return
+        // Drain an active start only when admission can supersede its ticket.
+        pausedDispatch = true
+        this.stoppingRuns += 1
+        markPhase('dispatchWaitMs')
+        try {
+          await this.dispatching
+        } finally {
+          markPhase('prepareMs')
+        }
+      })
+      markPhase('postMs')
+      ticketId = result.ticketId
       return result
     } finally {
-      this.stoppingRuns -= 1
-      this.start()
-      void this.dispatch()
+      if (pausedDispatch) this.stoppingRuns -= 1
+      if (authorized) {
+        // Dispatch owns executor cleanup; the request returns its persisted tickets.
+        this.start()
+        void this.dispatch()
+      }
+      markPhase('postMs')
+      log.info({ operation: 'ci_run', source, workspaceId: input.workspaceId, commandId: input.commandId,
+        ticketId, suite: input.suite, gate: input.gate ?? false, outcome: ticketId ? 'succeeded' : 'failed',
+        ...timings, totalMs: performance.now() - started }, 'CI run admission timing')
     }
   }
 
   private async enqueue(caller: ManagementPrincipal, input: CiRunInput,
-    source: 'mcp' | 'http', scope: Awaited<ReturnType<CiAuthority['resolve']>>, actions: ManagementAction[]) {
+    source: 'mcp' | 'http', scope: Awaited<ReturnType<CiAuthority['resolve']>>, actions: ManagementAction[],
+    markPhase: (phase: CiRunPhase) => void, pauseDispatch: () => Promise<void>) {
     const commandId = input.commandId ?? randomUUID()
     let prepared: PreparedCiRuns | undefined
     let supersession: Map<string, boolean> | undefined
     let superseded: CiRunRecord[] = []
+    markPhase('insertMs')
     const outcome = await this.commands.execute({ principal: caller, source, operation: 'ci.run',
       commandId, targetKey: scope.workspaceId, payload: input,
       prepare: async () => {
-        prepared ??= await this.prepareRuns(caller, input, scope)
-        supersession = input.gate ? undefined
-          : await prepareCiSupersession(this.pool, this.commits, prepared.runs[0]!)
+        markPhase('prepareMs')
+        try {
+          prepared ??= await this.prepareRuns(caller, input, scope)
+          supersession = input.gate ? undefined
+            : await prepareCiSupersession(this.pool, this.commits, prepared.runs[0]!)
+          if (supersession && [...supersession.values()].some(Boolean)) await pauseDispatch()
+        } finally {
+          markPhase('insertMs')
+        }
       },
       preparedMutation: {
         resourceLock: `ci-admission:${scope.workspaceId}:${scope.executionId ?? caller.id}`,
@@ -204,6 +244,8 @@ export class HostCiService {
           JSON.stringify({ commandId, groupId, commit, priority, priorityReason,
             requestedPriority: input.priority ?? 'normal',
             ...(input.smokeComputer ? { smokeComputer: input.smokeComputer } : {}) })])
+        // Receipts, commit and coordinator cleanup are visible in the post-insert phase.
+        markPhase('postMs')
         return result
       },
     })
