@@ -9,6 +9,7 @@ import { activeEditIntent, editIntentCommandKey, graphEditIntentKey } from '../.
 import { boardStartClient, type BoardStartInput } from '../startClient'
 import { acknowledgeBoardStart, readBoardStart, reserveBoardStart, useBoardStartOutbox } from '../startOutbox'
 import { scopeForBoardRun } from '../client'
+import { recoverBoardStart } from '../startRecovery'
 import { prepareNewFullRun, runActionsClient } from './client'
 import { useActionLifetime, useDisclosure } from './state'
 import { newFullRunReason, type ActionRun } from './policy'
@@ -101,12 +102,24 @@ export function StartControls({ scope, run, permitted, available, refresh, viewR
     refresh()
     return result
   }, onError: hideDeniedPreparation, onSuccess: () => sectionHeading.current?.focus() })
-  const busy = preflight.isPending || start.isPending || reconcile.isPending
+  const recovery = useMutation({ retry: false, gcTime: 0, mutationFn: async (request: BoardStartInput) => {
+    life.assertCurrent()
+    await authorize()
+    const resolved = await recoverBoardStart(key, request)
+    life.assertCurrent()
+    if (resolved.acknowledgement !== 'superseded') {
+      setConfirming(false)
+      preflight.reset()
+    }
+    refresh()
+    return resolved.result
+  }, onError: hideDeniedPreparation })
+  const busy = preflight.isPending || start.isPending || reconcile.isPending || recovery.isPending
   const reason = editPending ? 'Resolve pending Save / Stop-and-save / Discard before starting new work. Edits are preserved.'
     : !permitted ? 'Start permission is unavailable at workflow scope. A grant limited to this Run cannot create a new Run.'
     : !available ? 'Native Start capability is unavailable or could not be read.'
       : outbox.error ?? (outbox.request ? 'Reconcile the retained Start before creating another command.' : newFullRunReason(run))
-  const result = reconcile.data ?? start.data
+  const result = recovery.data?.status === 'accepted' ? { run: recovery.data.run, replayed: true } : reconcile.data ?? start.data
   return <section aria-label="Start reconciliation and full-run retry">
     <h4 ref={sectionHeading} tabIndex={-1}>Start reconciliation and full-run retry</h4>
     {outbox.error ? <p role="alert">{outbox.error}</p> : null}
@@ -115,9 +128,16 @@ export function StartControls({ scope, run, permitted, available, refresh, viewR
         {' '}This retained command is not necessarily the selected Run. Reconciliation may admit the original command if it was never accepted.</p>
       <button type="button" disabled={!permitted || busy} onClick={() => outbox.request && reconcile.mutate(outbox.request)}>
         {reconcile.isPending ? 'Reconciling exact Start…' : 'Reconcile retained Start'}</button>
+      <button type="button" disabled={!permitted || busy} onClick={() => outbox.request && recovery.mutate(outbox.request)}>
+        {recovery.isPending ? 'Recovering Start…' : 'Recover Start'}</button>
+      <p>Recovery finds the accepted Run or cancels this pending Start. Review a new full Run after cancellation.</p>
       <p>Reuses the same command ID, input and pins. No replacement command, native restart claim, or draft change.</p>
     </div> : null}
     {reconcile.isError ? <p role="alert">Start reconciliation is not confirmed: {(reconcile.error as Error).message} The original command remains retained.</p> : null}
+    {recovery.isError ? <p role="alert">Start recovery is not confirmed: {recovery.error.message}</p> : null}
+    {recovery.data ? <p role="status">{recovery.data.status === 'canceled'
+      ? 'The earlier Start was canceled. Review the current settings before starting again.'
+      : `The earlier Run was accepted: ${recovery.data.run.id}.`}</p> : null}
     <button type="button" ref={trigger} disabled={!!reason || busy || confirming} title={reason}
       onClick={() => { start.reset(); reconcile.reset(); preflight.mutate() }}>{preflight.isPending ? 'Reading fresh Start pins…' : 'Review new full Run'}</button>
     {reason ? <p>{reason}</p> : null}

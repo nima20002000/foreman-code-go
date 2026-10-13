@@ -15,6 +15,9 @@ const state = vi.hoisted(() => ({
   drain: undefined as Promise<void> | undefined,
   productionClose: undefined as (() => Promise<void>) | undefined,
   blockRecovery: true,
+  ownerFailure: undefined as Error | undefined,
+  schemaChanges: [] as string[],
+  ownerHeld: false,
   errors: [] as { message: string; error: unknown }[],
 }))
 vi.mock('@foreman-code/contracts/product-environment-node', () => ({ loadProductEnvFile: () => undefined }))
@@ -46,14 +49,14 @@ vi.mock('../src/infrastructure/database.js', () => ({ createDatabase: () => ({
     const failure = state.pingFailures.shift()
     if (failure) throw failure
   },
-  migrate: async () => undefined,
+  migrate: async () => { state.schemaChanges.push('application'); expect(state.ownerHeld).toBe(true) },
   close: async () => {
     state.databaseClosed = true
     state.calls.push('database closed')
   },
 }) }))
 vi.mock('../src/infrastructure/checkpoints.js', () => ({ createCheckpointStore: () => ({
-  setup: async () => undefined, ping: async () => undefined,
+  setup: async () => { state.schemaChanges.push('checkpoints'); expect(state.ownerHeld).toBe(true) }, ping: async () => undefined,
   close: async () => { state.calls.push('checkpoints closed') },
 }) }))
 vi.mock('../src/production.js', () => ({ buildProductionApp: (...args: unknown[]) => {
@@ -66,6 +69,14 @@ vi.mock('../src/production.js', () => ({ buildProductionApp: (...args: unknown[]
   }
   return {
     app: state.app,
+    prepareSchema: async () => {
+      if (state.ownerFailure) throw state.ownerFailure
+      state.ownerHeld = true
+      const { createDatabase } = await import('../src/infrastructure/database.js')
+      const { createCheckpointStore } = await import('../src/infrastructure/checkpoints.js')
+      await createDatabase({ connectionString: '', maxConnections: 1, connectionTimeoutMs: 1 }).migrate()
+      await createCheckpointStore('', 'test').setup()
+    },
     rsync: { kind: 'unavailable' },
     registerFileStorage: () => { expect(state.listeners.has('SIGTERM')).toBe(true) },
     startDeviceListener: async () => undefined,
@@ -103,6 +114,9 @@ beforeEach(() => {
   state.productionClose = undefined
   state.blockRecovery = true
   state.errors = []
+  state.ownerHeld = false
+  state.ownerFailure = undefined
+  state.schemaChanges = []
   previousExitCode = process.exitCode
   state.app = Fastify()
   vi.spyOn(process, 'once').mockImplementation(function (
@@ -180,4 +194,13 @@ it('finishes older production close hooks while database access is still availab
   await vi.waitFor(() => expect(state.calls).toContain('database closed'))
   expect(state.errors).toEqual([])
   expect(state.calls.indexOf('production database cleanup')).toBeLessThan(state.calls.indexOf('database closed'))
+})
+
+it('rejects an occupied runtime before applying either schema migration', async () => {
+  state.ownerFailure = new Error('Another API owns this database')
+  await import('../src/server.js')
+  await vi.waitFor(() => expect(state.errors).toContainEqual({ message: 'api failed to start', error: state.ownerFailure }))
+  expect(state.schemaChanges).toEqual([])
+  expect(state.initializeCalls).toBe(0)
+  expect(state.databaseClosed).toBe(true)
 })
