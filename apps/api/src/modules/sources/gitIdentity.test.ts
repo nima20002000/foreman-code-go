@@ -56,8 +56,14 @@ async function mergeAsAgent(f: Awaited<ReturnType<typeof fixture>>, path: string
   f.git(path, 'add', 'agent.txt')
   f.git(path, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'agent work')
   const before = f.git(path, 'rev-parse', 'HEAD')
-  const topicCommit = f.git(path, 'rev-parse', topic)
-  f.git(path, 'merge', '--no-ff', '--no-edit', topic)
+  let topicCommit: string
+  if (topic.startsWith('origin/')) {
+    topicCommit = f.git(f.origin, 'rev-parse', topic.slice('origin/'.length))
+    f.git(path, 'fetch', '--no-tags', '--no-write-fetch-head', 'origin', topicCommit)
+  } else {
+    topicCommit = f.git(path, 'rev-parse', topic)
+  }
+  f.git(path, 'merge', '--no-ff', '--no-edit', topicCommit)
   expect(f.git(path, 'show', '-s', '--format=%P')).toBe(`${before} ${topicCommit}`)
   const committer = f.git(path, 'show', '-s', '--format=%cn <%ce>')
   f.git(path, 'commit', '--allow-empty', '-qm', 'agent follow-up')

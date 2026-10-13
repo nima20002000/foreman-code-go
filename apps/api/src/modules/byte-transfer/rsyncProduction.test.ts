@@ -207,9 +207,10 @@ describe('production rsync leaf', () => {
         sourceBindingHash: 'e'.repeat(64) }, AbortSignal.timeout(5000))).rejects.toThrow('does not own')
       await f.worker.retireMaterialization(record, AbortSignal.timeout(5000))
       await expect(f.workerReceiver.status(f.i.transferId, context)).rejects.toThrow('cancelled')
-      expect(await f.workerReceiver.inventory()).toContainEqual(f.i)
+      expect(await f.workerReceiver.inventory()).toEqual([])
       await f.worker.retireMaterialization(record, AbortSignal.timeout(5000))
       await expect(f.workerReceiver.start(f.i, context)).rejects.toThrow('cancelled')
+      await f.workerReceiver.close()
       const restarted = new ResumableByteTransferService(join(f.root, 'worker-canonical'), f.accepted)
       try {
         await expect(restarted.start(f.i, context)).rejects.toThrow('cancelled')

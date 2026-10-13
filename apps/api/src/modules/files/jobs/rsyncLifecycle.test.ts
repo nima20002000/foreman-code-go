@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { JobOutputRsyncLifecycle } from './rsyncLifecycle.js'
 import type { JobOutputAdmission } from '@foreman-code/contracts/job-output-transfer'
 import type { JobPublicationLedger } from './port.js'
+import { temporaryFileExpiresAt } from '@foreman-code/contracts/files'
 function fixture(clock = () => new Date(), createdAt = new Date().toISOString()) {
   const fileId=randomUUID(),revisionId=randomUUID(),sha256='1'.repeat(64),owner={grantId:randomUUID(),epoch:'1'},commandId=randomUUID()
   const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex')
@@ -11,7 +12,47 @@ function fixture(clock = () => new Date(), createdAt = new Date().toISOString())
   const input={workspaceId:'workspace',executionId:randomUUID(),attemptId:randomUUID(),owner,commandId,path:'result.json',mediaType:'application/json' as const,sha256,byteSize:2}
   const intent={transferId:randomUUID(),executionId:input.executionId,attemptId:input.attemptId,sha256,byteSize:2,manifestDigest:'2'.repeat(64)} as JobOutputAdmission['intent']
   const record={input,intent,principalId:'owner',fileId,revisionId,specDigest:'3'.repeat(64)} as JobOutputAdmission
-  const rows:Awaited<ReturnType<JobPublicationLedger['list']>>=[{link:{kind:'job_execution',ownerPrincipalId:'owner',requestId,binding:digest(['job_execution',input.executionId,input.attemptId,owner.grantId,owner.epoch]),inputHash:digest([input.workspaceId,input.executionId,input.attemptId,owner.grantId,owner.epoch,record.specDigest,intent.manifestDigest,input.path,input.mediaType,input.byteSize,input.sha256]),workspaceId:input.workspaceId,executionId:input.executionId,attemptId:input.attemptId,owner,path:input.path,specDigest:record.specDigest,outputSpecDigest:intent.manifestDigest,ref:{fileId,revisionId},createdAt},value:{file:{fileId,currentRevisionId:revisionId,state:'ready',scope:{kind:'job_execution',workspaceId:input.workspaceId,jobExecutionId:input.executionId},createdAt,retentionDurationSeconds:3600,expiresAt:new Date(Date.now()+3600000).toISOString()},revision:{fileId,revisionId,byteClass:'ci-output',filename:'result.json',mediaType:'application/json',sha256,byteSize:2,origin:'job_output',createdAt}}}]
+  const rows: Awaited<ReturnType<JobPublicationLedger['list']>> = [{
+    link: {
+      kind: 'job_execution',
+      ownerPrincipalId: 'owner',
+      requestId,
+      binding: digest(['job_execution', input.executionId, input.attemptId, owner.grantId, owner.epoch]),
+      inputHash: digest([input.workspaceId, input.executionId, input.attemptId, owner.grantId, owner.epoch,
+        record.specDigest, intent.manifestDigest, input.path, input.mediaType, input.byteSize, input.sha256]),
+      workspaceId: input.workspaceId,
+      executionId: input.executionId,
+      attemptId: input.attemptId,
+      owner,
+      path: input.path,
+      specDigest: record.specDigest,
+      outputSpecDigest: intent.manifestDigest,
+      ref: { fileId, revisionId },
+      createdAt,
+    },
+    value: {
+      file: {
+        fileId,
+        currentRevisionId: revisionId,
+        state: 'ready',
+        scope: { kind: 'job_execution', workspaceId: input.workspaceId, jobExecutionId: input.executionId },
+        createdAt,
+        retentionDurationSeconds: 3600,
+        expiresAt: temporaryFileExpiresAt(createdAt, 3600),
+      },
+      revision: {
+        fileId,
+        revisionId,
+        byteClass: 'ci-output',
+        filename: 'result.json',
+        mediaType: 'application/json',
+        sha256,
+        byteSize: 2,
+        origin: 'job_output',
+        createdAt,
+      },
+    },
+  }]
   const query=vi.fn(async()=>({rows:[{}]})),admission={admissionForTransfer:vi.fn(async()=>record)},ledger={list:vi.fn(async()=>rows)}
   return {record,rows,query,admission,lifecycle:new JobOutputRsyncLifecycle({query} as unknown as pg.Pool,admission,ledger,clock)}
 }
