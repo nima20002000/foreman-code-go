@@ -4,13 +4,14 @@ import { readUntil } from './helpers/observableCondition.js'
 afterEach(() => vi.useRealTimers())
 
 it('waits for committed native changes without repeatedly requesting reconciliation', async () => {
-  vi.useFakeTimers()
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
   let ready = false
   const read = vi.fn(async () => ready)
   const listeners = new Set<() => void>()
   const pending = readUntil(read, value => value, {
     timeoutMs: 2000,
     description: 'committed native interaction',
+    minimumReadIntervalMs: 1_000,
     subscribe: changed => {
       listeners.add(changed)
       return () => { listeners.delete(changed) }
@@ -30,12 +31,13 @@ it('waits for committed native changes without repeatedly requesting reconciliat
 })
 
 it('rechecks native progress without a commit notification at the polling deadline', async () => {
-  vi.useFakeTimers()
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
   let ready = false
   const read = vi.fn(async () => ready)
   const pending = readUntil(read, value => value, {
     timeoutMs: 2000,
     description: 'external native progress',
+    minimumReadIntervalMs: 1_000,
     subscribe: () => () => {},
   })
   await vi.advanceTimersByTimeAsync(100)
