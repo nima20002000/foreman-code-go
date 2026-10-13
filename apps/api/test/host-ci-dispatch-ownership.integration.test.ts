@@ -55,10 +55,12 @@ async function fixture() {
     request: async (computer, request): Promise<CiHostReply> => {
       if (request.operation === 'status') {
         await control.onStatus(computer)
+        const runs = [...remote.entries()]
+          .filter(([key]) => key.startsWith(`${computer.key}:`))
+          .map(([, run]) => run)
         return { operation: 'status', ready: true, reasons: [], cpuCount: 8, memoryBytes: 8 * 2 ** 30,
-          slotsUsed: [...remote.entries()].filter(([key, run]) => key.startsWith(`${computer.key}:`)
-            && ['starting', 'running'].includes(run.state)).length,
-          slotsTotal: 1, runs: [] }
+          slotsUsed: runs.filter(run => ['starting', 'running'].includes(run.state)).length,
+          slotsTotal: 1, runs }
       }
       const key = `${computer.key}:${request.runId}`
       if (request.operation === 'start') {
