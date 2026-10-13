@@ -105,6 +105,30 @@ afterEach(() => {
 })
 
 describe('Run inspection inside the one mounted Board', () => {
+  it('loads a pinned Run after claiming tab ownership and returns to the same authoring surface', async () => {
+    const scope = fixture.runs.before.scope
+    const user = userEvent.setup()
+    await mount(href(scope))
+    const authoring = await screen.findByRole('region', { name: 'Workflow authoring' })
+    const pinned = await screen.findByRole('region', { name: 'Selected Run pinned topology' })
+    expect(pinned).toHaveTextContent(scope.workflowVersionId)
+    expect(await within(pinned).findByRole('button', {
+      name: `Inspect Run node ${fixture.first.name ?? fixture.first.label ?? fixture.first.id}`,
+    })).toBeVisible()
+    expect(screen.getByLabelText('Editable workflow graph')).toHaveAttribute('aria-hidden', 'true')
+
+    await user.click(screen.getByRole('button', { name: /^Runs$/ }))
+    await user.click(await screen.findByRole('menuitemradio', { name: 'New run' }))
+
+    await waitFor(() => expect(screen.queryByRole('region', {
+      name: 'Selected Run pinned topology',
+    })).not.toBeInTheDocument())
+    expect(screen.getByRole('region', { name: 'Workflow authoring' })).toBe(authoring)
+    expect(screen.getByLabelText('Editable workflow graph')).toHaveAttribute('aria-hidden', 'false')
+    expect(screen.getByRole('button', { name: 'Start saved version' })).toBeVisible()
+    expect(fixture.mock.calls.filter((call) => call.method === 'POST')).toEqual([])
+  })
+
   it('shows the originating Agent CI lifecycle on the pinned canvas', async () => {
     const scope = fixture.runs.before.scope
     const ref = { kind: 'ci', workspaceId: scope.workspaceId, workflowId: scope.workflowId,
