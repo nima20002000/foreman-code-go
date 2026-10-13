@@ -589,6 +589,8 @@ it('persists the heavy-file CPU budget before exclusive Worker recovery through 
     expect((await database.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
     const admitted = CiRunOutputSchema.parse(await f.value('ci_run', input))
     expect(CiRunOutputSchema.parse(await f.value('ci_run', input))).toEqual(admitted)
+    // Drain background dispatch before comparing persisted records across readers.
+    await f.ci.close()
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     const integration = read.partitions!.filter(run => run.suite === 'integration')
     expect(integration).toHaveLength(1)

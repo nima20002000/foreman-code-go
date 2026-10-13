@@ -155,14 +155,22 @@ test('a fast failure after a test finishes still records that a test started', a
 test('Node test failures count as started tests instead of setup failures', async t => {
   const reporter = fileURLToPath(new URL('./ci-node-test-reporter.mjs', import.meta.url))
   const result = await watchdogFixture(t, `
-    const { writeFileSync } = require('node:fs')
+    const assert = require('node:assert/strict')
+    const { readFileSync, writeFileSync } = require('node:fs')
     const { join, dirname } = require('node:path')
     const { spawnSync } = require('node:child_process')
     const file = join(dirname(process.env.CI_PROGRESS_FILE), 'node-case.test.mjs')
     writeFileSync(file, "import { test } from 'node:test'; test('fails', () => { throw new Error('assertion failed') })")
+    const environment = { ...process.env }
+    // The independent suite needs its reporters instead of the parent test's IPC channel.
+    delete environment.NODE_TEST_CONTEXT
     const result = spawnSync(process.execPath, ['--test', '--test-reporter=spec', '--test-reporter-destination=stdout',
       '--test-reporter=' + ${JSON.stringify(reporter)}, '--test-reporter-destination=' + file + '.json', file],
-      { stdio: 'inherit', env: process.env })
+      { stdio: 'inherit', env: environment })
+    const report = JSON.parse(readFileSync(file + '.json', 'utf8'))
+    assert.deepEqual(report.testResults.flatMap(file => file.assertionResults.map(test => [test.fullName, test.status])),
+      [['fails', 'failed']])
+    assert.equal(result.status, 1)
     process.exit(result.status)
   `, { idleTimeoutMs: 10_000 })
   assert.equal(result.code, 1)
