@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
 import { CI_HOST_NAMESPACE, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiHostReplySchema, CiListOutputSchema, CiRunRecordSchema,
   WorkspaceSchema,
@@ -416,9 +417,7 @@ export class HostCiService {
 
   private async saveCancellation(sql: string, parameters: unknown[], run: CiRunRecord, audit?: RunStopAudit) {
     if (!audit || run.state !== 'canceled') return this.pool.query(sql, parameters)
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       const saved = await client.query(sql, parameters)
       if (saved.rowCount) {
         await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
@@ -428,14 +427,8 @@ export class HostCiService {
           executionId: run.initiator.executionId, reason: 'run_stop',
         })])
       }
-      await client.query('commit')
       return saved
-    } catch (error) {
-      await client.query('rollback')
-      throw error
-    } finally {
-      client.release()
-    }
+    })
   }
 
   async computers(caller: ManagementPrincipal, input: { workspaceId?: string | undefined }) {

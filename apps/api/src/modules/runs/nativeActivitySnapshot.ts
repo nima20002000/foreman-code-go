@@ -1,4 +1,4 @@
-import type pg from 'pg'
+import type { SqlQuery } from '../../infrastructure/transaction.js'
 import { type ActivityItem, type WorkRef, type WorkSummary } from '@foreman-code/contracts'
 import { nativeActivityStatus } from './nativeActivityStatus.js'
 import { claudeConversationActivity } from '../harnesses/claudeSdk/conversationActivity.js'
@@ -68,7 +68,7 @@ export const RUN_NATIVE_ACTIVITY_FACTS_SQL = `with normalized as (
   native_type,tool_name,command_name,item_error
   from bounded order by execution_id,bounded.sequence`
 
-export async function readNativeActivityFacts(sql: Pick<pg.PoolClient, 'query'>, runId: string) {
+export async function readNativeActivityFacts(sql: SqlQuery, runId: string) {
   return (await sql.query<NativeActivityFact>(RUN_NATIVE_ACTIVITY_FACTS_SQL, [runId])).rows
 }
 export function projectNativeActivityFacts(rows: readonly NativeActivityFact[], resolve: (executionId: string) =>

@@ -6,7 +6,6 @@ import { currentOperatorAuthority } from '../../access/runAuthority.js'
 import { requireAuthorization } from '../../access/policy.js'
 import { credentialAuthority } from '../../interactions/wave25/credentialAuthority.js'
 import type { RunOwnership } from '../../runs/ownership.js'
-import type { GraphSqlClient } from '../../run-graph/connection.js'
 import type { PostgresOperatorConversationRepository } from '../../conversations/operatorChatRepository.js'
 import type { PostgresAgentChatRepository } from '../../conversations/agentChatRepository.js'
 import { DomainError } from '../../errors.js'
@@ -50,7 +49,7 @@ export class PostgresClaudeInteractionAuthority implements ClaudeInteractionAuth
       const owner = this.binding.getOwner()
       if (!owner || owner.runId !== this.binding.runId) denied()
       owner.assertOwned()
-      await owner.readOneShotFence(owner.client as unknown as GraphSqlClient)
+      await owner.readOneShotFence(owner.client)
       const admission = await this.workflowAdmission(owner.client)
       owner.assertOwned()
       return admission
@@ -90,7 +89,7 @@ export class PostgresClaudeInteractionAuthority implements ClaudeInteractionAuth
 
   private async workflowAdmission(database: Database): Promise<{ ownerPrincipalId: string; attemptId: string }> {
     if (this.binding.kind !== 'workflow') return denied()
-    const current = await credentialAuthority(database as unknown as GraphSqlClient, this.binding.executionId, 'workflow')
+    const current = await credentialAuthority(database, this.binding.executionId, 'workflow')
     if (current.run.id !== this.binding.runId || current.execution.attempt !== this.binding.attempt) denied()
     const row = (await database.query<{ principal_id: string }>("select record->>'authorizationPrincipalId' as principal_id from runs where id=$1", [this.binding.runId])).rows[0]
     if (!row?.principal_id) denied()
@@ -123,7 +122,7 @@ export class PostgresClaudeInteractionAuthority implements ClaudeInteractionAuth
     if (!actual || actual.nativeMessageId !== identity.nativeMessageId || actual.generation !== identity.generation
       || actual.nativeSessionId !== identity.nativeSessionId || actual.clientCorrelationId !== identity.clientCorrelationId) denied()
     if (this.binding.kind === 'workflow') {
-      const current = await credentialAuthority(this.database as unknown as GraphSqlClient, this.binding.executionId, 'workflow')
+      const current = await credentialAuthority(this.database, this.binding.executionId, 'workflow')
       if (current.nativeSessionId !== identity.nativeSessionId || actual.clientCorrelationId !== `execution:${this.binding.executionId}`) denied()
     } else {
       const row = await this.chat(identity.attemptId), receipt = row.payload.nativeSubmission

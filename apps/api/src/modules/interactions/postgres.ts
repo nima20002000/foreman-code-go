@@ -1,4 +1,5 @@
 import { readActivityAcknowledgment } from './activityAcknowledgment.js'
+import { withTransaction, beginTransaction, commitTransaction, rollbackAfterFailure } from '../../infrastructure/transaction.js'
 import {
   DurableInteractionSchema,
   InteractionRecoveryQuerySchema,
@@ -122,16 +123,14 @@ export class PostgresInteractionRepository {
   }
 
   async bindGraphInterrupt(id: string, graphInterruptId: string): Promise<DurableInteraction> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       const found = await client.query<{ record: unknown }>('select record from durable_interactions where id=$1 for update', [id])
       const current = found.rows[0] ? DurableInteractionSchema.parse(found.rows[0].record) : undefined
       if (!current) throw new DomainError('INTERACTION_NOT_FOUND', 'The interaction was not found.', 404)
       if (current.graphInterruptId && current.graphInterruptId !== graphInterruptId) {
         throw new DomainError('INTERACTION_INTERRUPT_CONFLICT', 'The interaction is already bound to another graph interrupt.', 409)
       }
-      if (current.graphInterruptId) { await client.query('commit'); return current }
+      if (current.graphInterruptId) return current
       const next = DurableInteractionSchema.parse({
         ...current, graphInterruptId, revision: current.revision + 1, updatedAt: new Date().toISOString(),
       })
@@ -140,9 +139,8 @@ export class PostgresInteractionRepository {
         [id, next.revision, JSON.stringify(next), current.revision],
       )
       if (updated.rowCount !== 1) throw new DomainError('REVISION_CONFLICT', 'The interaction changed while binding its graph interrupt.', 409)
-      await client.query('commit')
       return next
-    } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
+    })
   }
 
   async list(input: InteractionQuery): Promise<DurableInteraction[]> {
@@ -213,7 +211,7 @@ export class PostgresInteractionRepository {
     let committing = false
     let releaseError: Error | undefined
     try {
-      await client.query('begin')
+      await beginTransaction(client)
       let principal: ManagementPrincipal | undefined
       let targetRunId: string | undefined
       if (input.principal) {
@@ -236,7 +234,7 @@ export class PostgresInteractionRepository {
           await input.beforeCommit?.(client, result)
           if (principal) await requireActiveWorkerBinding(client, principal.id)
           committing = true
-          await client.query('commit')
+          await commitTransaction(client)
           return result
         }
         throw new DomainError('INTERACTION_ALREADY_DECIDED', 'The interaction already has a different decision.', 409)
@@ -261,12 +259,10 @@ export class PostgresInteractionRepository {
       await input.beforeCommit?.(client, result)
       if (principal) await requireActiveWorkerBinding(client, principal.id)
       committing = true
-      await client.query('commit')
+      await commitTransaction(client)
       return result
     } catch (error) {
-      try { await client.query('rollback') } catch (rollbackError) {
-        releaseError = rollbackError instanceof Error ? rollbackError : new Error('Decision rollback failed.')
-      }
+      releaseError = await rollbackAfterFailure(client)
       if (committing) {
         throw new DomainError('INTERACTION_DECISION_STATUS_UNKNOWN', 'Decision commit could not be confirmed. Read the interaction before retrying; the decision may already have committed.', 503)
       }
@@ -359,9 +355,7 @@ export class PostgresInteractionRepository {
   }
 
   async cancelPendingForRun(runId: string): Promise<number> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       const found = await client.query<{ id: string; record: unknown }>(
         `select id,record from durable_interactions
          where run_id=$1 and (status in ('pending','decided','delivery_pending','delivery_failed') or
@@ -389,9 +383,8 @@ export class PostgresInteractionRepository {
         if (updated.rowCount !== 1) throw new DomainError('REVISION_CONFLICT', 'The interaction changed during cancellation.', 409)
       }
       await this.delivery.cancelForRun(client, runId)
-      await client.query('commit')
       return found.rowCount ?? 0
-    } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
+    })
   }
 
   async beginDeliveryAttempt(interaction: DurableInteraction, correlationId: string, lease?: InteractionLease): Promise<number> {

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { beginTransaction, commitTransaction, rollbackTransaction } from '../../../infrastructure/transaction.js'
 import { isDeepStrictEqual as same } from 'node:util'
 import type pg from 'pg'
 import { z } from 'zod'
@@ -110,7 +111,7 @@ export class PostgresNativeArtifactOutputRepository implements NativeArtifactOut
       }
       processId = (await client.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
       signal?.throwIfAborted()
-      await client.query('begin')
+      await beginTransaction(client)
       await client.query("set local lock_timeout='5s'; set local statement_timeout='10s'")
       await authorize(client)
       await assertNativeArtifactOutputLive(client, this.mainId, record)
@@ -129,11 +130,11 @@ export class PostgresNativeArtifactOutputRepository implements NativeArtifactOut
         values($1,$2,$3,$4,'succeeded',$5::jsonb)`,
       [record.publication.ownerPrincipalId, 'transferReceipt' in record ? 'device' : 'mcp', operation, target,
         JSON.stringify({ commandId: record.commandId })])
-      await client.query('commit')
+      await commitTransaction(client)
       return structuredClone(record)
     } catch (error) {
       signal?.throwIfAborted()
-      try { await client.query('rollback') }
+      try { await rollbackTransaction(client) }
       catch (rollbackError) {
         signal?.throwIfAborted()
         throw new AggregateError([error, rollbackError], 'Artifact binding and rollback both failed.', {

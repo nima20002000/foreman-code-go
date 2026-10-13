@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
 import { commandInputHash } from '../commands/postgres.js'
@@ -224,73 +225,70 @@ export class ProviderAccountAuthenticationOperations {
   private async publish(principal: ManagementPrincipal, source: Source,
     original: ProviderAccountAuthenticationOperation, raw: ProviderAccountNativeAuthenticationObservation) {
     const observation = ProviderAccountNativeAuthenticationObservationSchema.parse(raw)
-    const sql = await this.pool.connect()
     try {
-      await sql.query('begin')
-      await this.authorize(sql, principal, false, original.binding.accountId)
-      const owner = (await sql.query<{ principal_id: string; cancel_principal_id: string | null }>(
-        'select principal_id,cancel_principal_id from provider_account_authentication_operations where id=$1 for update',
-        [original.id])).rows[0]
-      const current = await this.read(original.id, sql)
-      if (!owner) throw new DomainError('PROVIDER_AUTHENTICATION_NOT_FOUND', 'The operation is unavailable.', 404)
-      const acceptedOwner = await readLiveManagementPrincipal(sql,
-        current.cancelRequested ? owner.cancel_principal_id ?? owner.principal_id : owner.principal_id)
-      await this.authorize(sql, acceptedOwner, true, original.binding.accountId)
-      if (observation.operationId !== current.id || !isDeepStrictEqual(observation.binding, current.binding)
-        || observation.generation !== current.generation) {
-        throw new DomainError('PROVIDER_AUTHENTICATION_STALE', 'The native result belongs to another operation or generation.', 409)
-      }
-      if (current.nativeClosed || observation.sequence <= current.nativeSequence) {
-        await sql.query('commit')
-        return current
-      }
-      let state = observation.state
-      if (current.cancelRequested) state = observation.nativeClosed ? 'canceled' : 'outcome-unknown'
-      else if (current.state === 'expired' || Date.parse(current.expiresAt) <= Date.now()) state = 'expired'
-      const next = ProviderAccountAuthenticationOperationSchema.parse({ ...current, state,
-        nativeClosed: observation.nativeClosed, nativeSequence: observation.sequence,
-        humanActionRequired: state === 'awaiting-human', revision: current.revision + 1,
-        updatedAt: new Date().toISOString() })
-      await this.write(sql, next)
-      if (observation.account && !current.cancelRequested && state !== 'expired') {
-        const snapshot = await this.repository.lock(sql)
-        const account = snapshot.accounts.find(value => value.id === current.binding.accountId)
-        if (!account?.binding || !isDeepStrictEqual(account.binding, current.binding)) {
-          throw new DomainError('PROVIDER_ACCOUNT_BINDING_CONFLICT', 'The observed slot binding changed.', 409)
+      return await withTransaction(this.pool, async (sql) => {
+        await this.authorize(sql, principal, false, original.binding.accountId)
+        const owner = (await sql.query<{ principal_id: string; cancel_principal_id: string | null }>(
+          'select principal_id,cancel_principal_id from provider_account_authentication_operations where id=$1 for update',
+          [original.id])).rows[0]
+        const current = await this.read(original.id, sql)
+        if (!owner) throw new DomainError('PROVIDER_AUTHENTICATION_NOT_FOUND', 'The operation is unavailable.', 404)
+        const acceptedOwner = await readLiveManagementPrincipal(sql,
+          current.cancelRequested ? owner.cancel_principal_id ?? owner.principal_id : owner.principal_id)
+        await this.authorize(sql, acceptedOwner, true, original.binding.accountId)
+        if (observation.operationId !== current.id || !isDeepStrictEqual(observation.binding, current.binding)
+          || observation.generation !== current.generation) {
+          throw new DomainError('PROVIDER_AUTHENTICATION_STALE', 'The native result belongs to another operation or generation.', 409)
         }
-        const observed = observation.account
-        if (observed.bindingRevision !== current.binding.bindingRevision || observed.generation !== current.generation) {
-          throw new DomainError('PROVIDER_ACCOUNT_OBSERVATION_STALE', 'The account observation is stale.', 409)
+        if (current.nativeClosed || observation.sequence <= current.nativeSequence) {
+          return current
         }
-        const previous = account.observation
-        const newer = !previous || observed.generation > previous.generation
-          || (observed.generation === previous.generation && observed.sequence > previous.sequence)
-        if (newer) {
-          const changedSubject = account.observation?.subject
-            && account.observation.subject.subject !== observed.subject?.subject
-          if (changedSubject) {
-            await assertAccountUnused(sql, account.id)
+        let state = observation.state
+        if (current.cancelRequested) state = observation.nativeClosed ? 'canceled' : 'outcome-unknown'
+        else if (current.state === 'expired' || Date.parse(current.expiresAt) <= Date.now()) state = 'expired'
+        const next = ProviderAccountAuthenticationOperationSchema.parse({ ...current, state,
+          nativeClosed: observation.nativeClosed, nativeSequence: observation.sequence,
+          humanActionRequired: state === 'awaiting-human', revision: current.revision + 1,
+          updatedAt: new Date().toISOString() })
+        await this.write(sql, next)
+        if (observation.account && !current.cancelRequested && state !== 'expired') {
+          const snapshot = await this.repository.lock(sql)
+          const account = snapshot.accounts.find(value => value.id === current.binding.accountId)
+          if (!account?.binding || !isDeepStrictEqual(account.binding, current.binding)) {
+            throw new DomainError('PROVIDER_ACCOUNT_BINDING_CONFLICT', 'The observed slot binding changed.', 409)
           }
-          account.observation = observed
-          account.status = observed.status
-          account.identity = observed.identity
-          account.possibleDuplicateAccountIds = observed.subject ? snapshot.accounts.filter(other =>
-            other.id !== account.id && other.provider === account.provider
-            && other.observation?.subject?.subject === observed.subject!.subject
-            && isDeepStrictEqual(other.binding?.target, account.binding!.target)).map(other => other.id) : []
-          await this.repository.write(sql, snapshot, snapshot.revision)
+          const observed = observation.account
+          if (observed.bindingRevision !== current.binding.bindingRevision || observed.generation !== current.generation) {
+            throw new DomainError('PROVIDER_ACCOUNT_OBSERVATION_STALE', 'The account observation is stale.', 409)
+          }
+          const previous = account.observation
+          const newer = !previous || observed.generation > previous.generation
+            || (observed.generation === previous.generation && observed.sequence > previous.sequence)
+          if (newer) {
+            const changedSubject = account.observation?.subject
+              && account.observation.subject.subject !== observed.subject?.subject
+            if (changedSubject) {
+              await assertAccountUnused(sql, account.id)
+            }
+            account.observation = observed
+            account.status = observed.status
+            account.identity = observed.identity
+            account.possibleDuplicateAccountIds = observed.subject ? snapshot.accounts.filter(other =>
+              other.id !== account.id && other.provider === account.provider
+              && other.observation?.subject?.subject === observed.subject!.subject
+              && isDeepStrictEqual(other.binding?.target, account.binding!.target)).map(other => other.id) : []
+            await this.repository.write(sql, snapshot, snapshot.revision)
+          }
         }
-      }
-      await sql.query('commit')
-      return next
+        return next
+      })
     } catch (error) {
-      await sql.query('rollback')
       if (error instanceof DomainError && error.status === 403) {
         await this.commands.recordDenied(principal.id, source, 'provider.account.auth.publish', original.id)
         error.denialAudited = true
       }
       throw error
-    } finally { sql.release() }
+    }
   }
 
   private async write(sql: GraphSqlClient, operation: ProviderAccountAuthenticationOperation) {

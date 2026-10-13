@@ -1,4 +1,5 @@
 import { DurableInteractionSchema, ReviewJobSchema, RunStopCauseSchema, WorkflowRunSchema } from '@foreman-code/contracts'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
 import { transact } from './wave25/context.js'
 import { recoverApprovalFailure } from './wave25/failureRecovery.js'
@@ -24,15 +25,13 @@ export async function requestReviewFailureStop(pool: pg.Pool, reference: Failure
 }
 
 async function requestLegacyReviewFailureStop(pool: pg.Pool, reference: FailureReference): Promise<string | undefined> {
-  const client = await pool.connect()
-  try {
-    await client.query('begin')
+  return withTransaction(pool, async (client) => {
     const target = await client.query<{ run_id: string }>('reviewJobId' in reference
       ? `select i.run_id from review_jobs j join durable_interactions i on i.id=j.interaction_id where j.id=$1`
       : 'select run_id from durable_interactions where id=$1',
     ['reviewJobId' in reference ? reference.reviewJobId : reference.interactionId])
     const runId = target.rows[0]?.run_id
-    if (!runId) { await client.query('commit'); return undefined }
+    if (!runId) return undefined
     // Non-key lock is compatible with event inserts referencing this Run.
     // It also serializes competing first-cause/Stop requests without locking a
     // review job ahead of its Run or adopting the caller's stale Run snapshot.
@@ -62,7 +61,7 @@ async function requestLegacyReviewFailureStop(pool: pg.Pool, reference: FailureR
       throw new DomainError('REVIEW_JOB_IDENTITY_CONFLICT', 'The failed review does not own this Run.', 409)
     }
     if (job ? !reviewNeedsStop(job, run) : run.executionState === 'completed' || interaction.status !== 'pending') {
-      await client.query('commit'); return undefined
+      return undefined
     }
     const cause = RunStopCauseSchema.parse({
       kind: 'review_failure', interactionId: interaction.id,
@@ -75,10 +74,6 @@ async function requestLegacyReviewFailureStop(pool: pg.Pool, reference: FailureR
     await client.query('update runs set stop_cause=coalesce(stop_cause,$2::jsonb),record=record where id=$1', [run.id, JSON.stringify(cause)])
     await client.query(`insert into run_cleanup_intents(run_id) values($1)
       on conflict(run_id) do update set pending=true,updated_at=now()`, [run.id])
-    await client.query('commit')
     return run.id
-  } catch (error) {
-    await client.query('rollback').catch(() => undefined)
-    throw error
-  } finally { client.release() }
+  })
 }

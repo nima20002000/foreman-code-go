@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
+import { withTransaction } from '../../../infrastructure/transaction.js'
 import type pg from 'pg'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import {
@@ -23,16 +24,10 @@ export class JobApplicationBridge {
   constructor(private readonly pool: pg.Pool, private readonly dispatch: Pick<PostgresJobDispatch, 'require'|'requireLaunch'|'requireControl'|'requireEvidence'|'observeReceipt'>,
     private readonly workers: Pick<JobWorkerService, 'appendLog'>, private readonly publication: Pick<JobPublicationAuthority, 'authorizePublication'>) {}
   private async authorize(intent: RemoteJobDispatchIntent, binding: JobApplicationConnection, action: 'start'|'read'|'control'|'publish') {
-    const sql = await this.pool.connect()
-    try {
-      await sql.query('begin')
+    return withTransaction(this.pool, async (sql) => {
       const execution = await this.authorizeInSql(sql, intent, binding, action)
-      await sql.query('commit')
       return execution
-    } catch (error) {
-      await sql.query('rollback')
-      throw error
-    } finally { sql.release() }
+    })
   }
   private async authorizeInSql(sql: pg.PoolClient, intent: RemoteJobDispatchIntent, binding: JobApplicationConnection, action: 'start'|'read'|'control'|'publish') {
     let execution = await this.repository.execution(sql, intent.subject.workspaceId, intent.executionId)
@@ -72,14 +67,11 @@ export class JobApplicationBridge {
   /** Metadata-only original source readback. Physical W09 verification and fresh
    * start authority remain separate and mandatory on the selected worker. */
   async resolveAcceptedSource(raw: RemoteJobDispatchIntent, binding: JobApplicationConnection): Promise<AcceptedJobSourceReadout> {
-    const intent = RemoteJobDispatchIntentSchema.parse(raw), sql = await this.pool.connect()
-    try {
-      await sql.query('begin')
+    const intent = RemoteJobDispatchIntentSchema.parse(raw)
+    return withTransaction(this.pool, async (sql) => {
       const execution = await this.authorizeInSql(sql, intent, binding, 'read')
-      const source = await readAcceptedJobSource(sql, execution)
-      await sql.query('commit')
-      return source
-    } catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
+      return readAcceptedJobSource(sql, execution)
+    })
   }
   async handle(raw: unknown, binding: JobApplicationConnection) {
     const frame = RemoteJobMainRpcRequestRecordSchema.parse(raw)

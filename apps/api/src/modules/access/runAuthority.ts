@@ -1,6 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
-import type pg from 'pg'
+import type { TransactionSql } from '../../infrastructure/transaction.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
 import { intersectGrants } from './operatorDelegation.js'
@@ -68,7 +68,7 @@ export interface AcceptedRunAuthority {
 
 /** Called inside run.start's command transaction. No bearer token is created or returned. */
 export async function acceptRunAuthority(
-  client: pg.PoolClient, caller: ManagementPrincipal,
+  client: TransactionSql, caller: ManagementPrincipal,
 ): Promise<AcceptedRunAuthority> {
   const initial = await row(client, caller.id)
   principal(initial)
@@ -93,7 +93,7 @@ export async function acceptRunAuthority(
   return { principal: accepted, ownerId: parent.owner.id, callerId: caller.id }
 }
 
-export async function bindRunAuthority(client: pg.PoolClient, runId: string, accepted: AcceptedRunAuthority): Promise<void> {
+export async function bindRunAuthority(client: TransactionSql, runId: string, accepted: AcceptedRunAuthority): Promise<void> {
   await client.query(`insert into run_authority_principals
     (principal_id,run_id,owner_principal_id,caller_principal_id,grant_ceiling,accepted_expires_at)
     values($1,$2,$3,$4,$5::jsonb,$6)`, [accepted.principal.id, runId, accepted.ownerId, accepted.callerId,

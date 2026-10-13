@@ -3,7 +3,6 @@ import {
   AcceptedWorkflowRunV3Schema, ExecutableWorkflowV3Schema, WorkflowVersionV3Schema, RunWorktreeSchema,
   CurrentRunVersionSnapshotSchema, type AcceptedWorkflowRunV3, type WorkflowVersionV3,
 } from '@foreman-code/contracts/wave25'
-import type pg from 'pg'
 import type { WorkflowNativeProofRecord } from './workflowNativeProof.js'
 
 import {
@@ -181,7 +180,7 @@ export class RepeatRepositoryFactory {
         or p.id=(select owner_principal_id from run_authority_principals where principal_id=$1 and run_id=$2)
         order by p.id for share`, [id, run.id])
       await this.locations.revalidateRunAuthorization(id, run.workspaceId, run.workflowId,
-        sql as unknown as Pick<pg.PoolClient, 'query'>, atCommit)
+        sql, atCommit)
       await owner.readOneShotFence(sql)
       if (!authorityEnlisted) {
         authorityEnlisted = true

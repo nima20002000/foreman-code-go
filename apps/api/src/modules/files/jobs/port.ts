@@ -1,4 +1,5 @@
 import { jobLifecycleSignal } from '../../jobs/lifecycle.js'
+import { withTransaction } from '../../../infrastructure/transaction.js'
 import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
 import type pg from 'pg'
@@ -47,13 +48,7 @@ export class CanonicalJobArtifactPort implements JobArtifactPort {
     private readonly authority: Pick<JobPublicationAuthority, 'authorizePublication'>, private readonly reader: TrustedJobOutputReader,
     private readonly clock: () => Date = () => new Date()) {}
   private async transaction<T>(operation: (query: JobSql) => Promise<T>): Promise<T> {
-    const sql = await this.pool.connect()
-    try {
-      await sql.query('begin')
-      const result = await operation(sql)
-      await sql.query('commit'); return result
-    } catch (error) { await sql.query('rollback').catch(() => {}); throw error }
-    finally { sql.release() }
+    return withTransaction(this.pool, operation)
   }
   private artifact(link: JobPublicationLink, value: FileWithRevision): JobArtifact {
     const job = JobArtifactFileWithRevisionSchema.parse(value)

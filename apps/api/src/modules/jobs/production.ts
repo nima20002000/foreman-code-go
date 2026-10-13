@@ -1,4 +1,5 @@
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { createMainJobExecutionHost } from './mainExecution.js'
 import { createQualificationReportPublisher } from './qualificationReports.js'
@@ -16,7 +17,6 @@ import { reserveInstalledJobQualification, recoverInstalledJobRuntimeQualificati
   reconcileInstalledJobRuntimeQualification } from './installedRuntimeQualification.js'
 import { createJobQualificationCarrier } from './qualificationCarrier.js'
 import { SourceRootRecordSchema, SourceMaterializationRecordSchema } from '@foreman-code/contracts/source-admission'
-import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
 import type pg from 'pg'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
@@ -331,16 +331,12 @@ export async function createProductionJobs(input: { pool: pg.Pool; commands: Pos
   const inputs = { ...canonicalInputs, extension: createMainJobInputRsyncExtension(canonicalInputs.main, canonicalInputs.extension, input.inputRsync) }
   const privateRepositories = new CanonicalJobPrivateRepositories(input.pool, source.sources, source.executions,
     input.infrastructure?.privateRepositoryRemote ?? { async preparePrivateRepository(principal, record) {
-      const sql = await input.pool.connect()
-      let manifest: SourceManifest
-      try {
-        await sql.query('begin')
+      const manifest = await withTransaction(input.pool, async (sql) => {
         const row = (await sql.query<{ record: unknown }>('select record from source_root_bindings where root_id=$1 and binding_revision=$2 for share',
           [record.receipt.binding.rootId, record.receipt.binding.bindingRevision])).rows[0]
         const root = SourceRootRecordSchema.parse(row?.record)
-        manifest = (await source.sources.resolveApprovedSource(sql, principal, record.receipt.binding.workspaceId, root.source)).manifest
-        await sql.query('commit')
-      } catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
+        return (await source.sources.resolveApprovedSource(sql, principal, record.receipt.binding.workspaceId, root.source)).manifest
+      })
       await source.sources.verifyPreparation({ principal, record })
       await source.executions.privateRepository(record, manifest)
     } })

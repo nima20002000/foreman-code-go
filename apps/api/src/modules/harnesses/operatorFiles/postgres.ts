@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
+import { withTransaction } from '../../../infrastructure/transaction.js'
 import type pg from 'pg'
 import { MessageSchema, OperatorConfigurationVersionSchema, type OperatorConfigurationVersion } from '@foreman-code/contracts'
 import { MessageAttachmentRefsSchema, messageAttachmentIdentity, type MessageAttachmentRef } from '@foreman-code/contracts/files'
@@ -133,9 +134,7 @@ export async function adoptOperatorFilePublications(pool: pg.Pool, context: File
   const chat = context.scope.chat
   if (chat.kind !== 'operator' || chat.ownerPrincipalId !== context.ownerPrincipalId || !context.messageId) throw new DomainError(
     'OPERATOR_FILE_ADOPTION_MISMATCH', 'An owned Operator message binding is required.', 409)
-  const client = await pool.connect()
-  try {
-    await client.query('begin')
+  return withTransaction(pool, async (client) => {
     // Process-close cleanup can run before a native ACK. Such a turn could not
     // publish: do not require a fabricated t.native_turn_id merely to release
     // its inputs. Any real publication (including lost-ACK repair) still goes
@@ -143,7 +142,7 @@ export async function adoptOperatorFilePublications(pool: pg.Pool, context: File
     const ready = await client.query(`select 1 from file_tool_publications p
       join file_allocations a on a.owner_principal_id=p.owner_principal_id and a.request_id=p.request_id
       where p.binding=$1 and a.state='finalized' limit 1`, [bindingIdentity(context)])
-    if (!ready.rowCount && !expected?.length) { await client.query('commit'); return }
+    if (!ready.rowCount && !expected?.length) return
     const row = (await client.query<{ request_id: string; message_record: unknown }>(`select t.request_id,m.record as message_record
       from operator_conversations c
       join operator_conversation_turns t on t.conversation_id=c.id and t.message_id=$2 and t.native_turn_id=$4
@@ -188,7 +187,5 @@ export async function adoptOperatorFilePublications(pool: pg.Pool, context: File
       await client.query(`update operator_conversation_messages set record=jsonb_set(record,'{publicationRefs}',$2::jsonb) where id=$1`,
         [context.messageId, JSON.stringify(outputs)])
     }
-    await client.query('commit')
-  } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
-  finally { client.release() }
+  })
 }

@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import { ResolvedJobDefinitionSpecRecordSchema } from '@foreman-code/contracts/job-verification'
 import { isDeepStrictEqual } from 'node:util'
 import { SourceFilesystemOperationSchema, SourceOperationOwnerSchema, type SourceFilesystemOperation, type SourceOperationOwner } from '@foreman-code/contracts/source-operations'
@@ -22,9 +23,7 @@ export class PostgresSourceOperationAuthority {
     private readonly closure: (sql: GraphSqlClient, record: SourceMaterializationRecord) => Promise<boolean>,
     private readonly activeNativeSession?: SourceActiveNativeSessionReader) {}
   private async transaction<T>(work: (sql: GraphSqlClient) => Promise<T>): Promise<T> {
-    const sql = await this.pool.connect()
-    try { await sql.query('begin'); const result = await work(sql); await sql.query('commit'); return result }
-    catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
+    return withTransaction(this.pool, work)
   }
   private async allocation(sql: GraphSqlClient, attempt: MaterializationAttempt) {
     const rows = await sql.query<{ operation_id: string; principal_id: string; preparation_kind: 'job' | 'workflow' }>(`select operation_id,principal_id,'job' preparation_kind from job_preparations where execution_id=$1 and attempt_id=$2

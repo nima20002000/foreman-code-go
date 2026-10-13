@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import { z } from 'zod'
 import { isDeepStrictEqual } from 'node:util'
 import { TransferIntentSchema, type TransferIntent } from '@foreman-code/contracts/byte-transfer'
@@ -44,9 +45,7 @@ function blocked(read: TrustedConnectionRead): TrustedConnectionCheck['state'] |
 export class PostgresTrustedConnectionSetup {
   constructor(private readonly pool: pg.Pool, private readonly mainId: string, private readonly ports: TrustedConnectionSetupPorts) {}
   private async transaction<T>(operation: (client: pg.PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect()
-    try { await client.query('begin'); const result = await operation(client); await client.query('commit'); return result }
-    catch (error) { await client.query('rollback'); throw error } finally { client.release() }
+    return withTransaction(this.pool, operation)
   }
   private async readLocked(client: pg.PoolClient, principal: ManagementPrincipal, deviceId: string, write = false): Promise<TrustedConnectionRead> {
     requireAuthorization(principal, write ? 'settings:update' : 'settings:read')

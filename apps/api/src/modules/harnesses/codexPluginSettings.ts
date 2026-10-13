@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { withClientTransaction } from '../../infrastructure/transaction.js'
 import { z } from 'zod'
 import {
   CodexPluginChangeInputSchema, CodexPluginChangeResultSchema, CodexPluginDetailResultSchema,
@@ -125,8 +126,7 @@ export class CodexPluginSettingsService {
   }
   private async save(source: 'http' | 'mcp', client: pg.PoolClient, principal: ManagementPrincipal, row: Pick<ReceiptRow, 'principal_id' | 'command_id'>,
     result: CodexPluginChangeResult, recovery: Recovery, action: string, insert = false): Promise<void> {
-    await client.query('begin')
-    try {
+    await withClientTransaction(client, async () => {
       await this.liveOwner(principal, client)
       const value = JSON.stringify({ ...result, _recovery: recovery })
       if (insert) await client.query(`insert into management_command_receipts(principal_id,operation,command_id,target_key,input_hash,result)
@@ -138,8 +138,7 @@ export class CodexPluginSettingsService {
         result.status === 'uncertain' ? 'uncertain' : result.status === 'not_applied' ? 'failed' : 'succeeded',
         JSON.stringify({ commandId: row.command_id, requestedBy: row.principal_id, status: result.status,
           nativeFailure: result.nativeFailure ?? null, nativeWriteRepeated: false }), source])
-      await client.query('commit')
-    } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
+    })
   }
   change(principal: ManagementPrincipal, raw: CodexPluginChangeInput, source: 'http' | 'mcp' = 'http') {
     return this.afterWrite(this.changeNative(principal, raw, source))

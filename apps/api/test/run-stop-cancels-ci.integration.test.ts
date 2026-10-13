@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import type pg from 'pg'
 import { expect, it } from 'vitest'
 import { CiGetOutputSchema, CiRunOutputSchema, CiRunRecordSchema,
   type CiHostReply, type CiHostRun, type CiRunRecord } from '@foreman-code/contracts'
@@ -39,7 +38,7 @@ async function fixture() {
   const admitRun = async (runId: string) => {
     const authority = await withExclusiveGraphConnection(pool, connection => connection.transaction(async sql => {
       const root = await currentOperatorAuthority(sql, f.authorizationPrincipalId)
-      return acceptRunAuthority(sql as unknown as pg.PoolClient, root.principal)
+      return acceptRunAuthority(sql, root.principal)
     }))
     const run = WorkflowRunV3Schema.parse({ ...f.f.run, id: runId,
       authorizationPrincipalId: authority.principal.id })

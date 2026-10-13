@@ -1,4 +1,4 @@
-import type pg from 'pg'
+import type { SqlQuery } from '../../infrastructure/transaction.js'
 import { ActivitySnapshotV1Schema, type ActivitySnapshotV1, type ActivitySourceRevision,
   type InteractionSummary, type WorkRef, type WorkSummary, type CiActivity } from '@foreman-code/contracts'
 import { REPEAT_GRAPH_LIMITS, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
@@ -8,7 +8,7 @@ import { readNativeActivityFacts, projectNativeActivityFacts } from './nativeAct
 import { AGENT_CI_SNAPSHOT_SQL, ciActivityFromRecord } from './agentCiSnapshot.js'
 import { publicRunActivity, type ActivityReadRow } from './activityProjection.js'
 
-type Queryable = Pick<pg.PoolClient, 'query'>
+type Queryable = SqlQuery
 export interface RunActivityScope { workspaceId: string; workflowId: string; runId: string; workflowVersionId: string }
 interface RunFact { revision: string; stopped: boolean; outcome: string; execution_state: string; started_at: string | null }
 interface ExecutionFact { id: string; attempt: number; revision: string; state: string; outcome: string | null;

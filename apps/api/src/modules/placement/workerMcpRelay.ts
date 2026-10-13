@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import { WorkerMcpRelayRequestSchema, WorkerMcpRelayAuthorizationSchema, WorkerMcpRelayResponseSchema, WorkerNativeOutputAuthorizationSchema,
   WorkerNativeOutputDeclarationsAuthorizationSchema, WorkerNativeOutputDeclarationsPolicySchema,
@@ -82,13 +83,10 @@ export class MainWorkerMcpRelay {
       || input.intent.mainId !== this.mainId || connection.mainId !== this.mainId) {
       throw new DomainError('WORKER_MCP_SCOPE_CONFLICT', 'Application access must match the original execution lease.', 403)
     }
-    const client = await this.pool.connect()
-    let authorization: ReturnType<typeof WorkerMcpRelayAuthorizationSchema.parse>
-    let nativeScope: TemporaryFileScope | undefined
-    let declarations: WorkerNativeOutputDeclarationsPolicy | undefined
-    let ready = false
-    try {
-      await client.query('begin')
+    const { authorization, nativeScope, declarations, ready } = await withTransaction(this.pool, async (client) => {
+      let nativeScope: TemporaryFileScope | undefined
+      let declarations: WorkerNativeOutputDeclarationsPolicy | undefined
+      let ready = false
       const intent = await readReconciledDispatchIntent(client, app.operationId, true)
       const placement = await readAcceptedPlacement(client, input.intent.runId, input.intent.nodeId)
       if (!intent || !placement || !sameWorkflowValue(intent, input.intent) || !sameWorkflowValue(placement, input.placement)
@@ -121,7 +119,7 @@ export class MainWorkerMcpRelay {
       }
       const authority = await currentOperatorAuthority(client, binding.authorization_principal_id)
       requireAuthorization(authority.principal, 'runs:start', { workspaceId: binding.workspace_id, workflowId: binding.workflow_id })
-      authorization = WorkerMcpRelayAuthorizationSchema.parse({ version: 1, mainId: this.mainId, audience: 'worker', principalId: principal.id,
+      const authorization = WorkerMcpRelayAuthorizationSchema.parse({ version: 1, mainId: this.mainId, audience: 'worker', principalId: principal.id,
         executionId: app.executionId, agentId: app.agentId, operationId: app.operationId, attemptId: app.attemptId, bindingHash: app.bindingHash, expiresAt: principal.expiresAt })
       if (input.operation === 'worker-mcp.authorize-native-output'
         || input.operation === 'worker-mcp.authorize-native-output-declarations'
@@ -164,8 +162,8 @@ export class MainWorkerMcpRelay {
         }
       }
       signal?.throwIfAborted()
-      await client.query('commit')
-    } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
+      return { authorization, nativeScope, declarations, ready }
+    })
     if (input.operation === 'worker-mcp.authorize') return authorization
     if (input.operation === 'worker-mcp.authorize-native-output') return WorkerNativeOutputAuthorizationSchema.parse({
       ...authorization, outputOperation: input.outputOperation, nativeSessionId: input.nativeSessionId, turnId: input.turnId, scope: nativeScope,

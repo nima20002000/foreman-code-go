@@ -1,5 +1,6 @@
 import { authorizeWorkflowWorktreeContent, validateWorkflowWorktrees,
   type WorkflowWorktreeServices } from './worktreeSettings.js'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import { validateReviewerBootstrap } from './reviewerBootstrap.js'
 import { reconcileAgentProfilePlacements } from './agentProfilePlacements.js'
 import { requireCurrentWorkflowAccess } from './currentWorkflowPolicy.js'
@@ -139,9 +140,7 @@ export class CurrentWorkflowAuthoring {
     const input = CurrentWorkflowReadInputSchema.parse(raw)
     requireAuthorization(principal, 'workflows:read', input)
     requireAuthorization(principal, 'graph:read', input)
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       const live = await readLiveManagementPrincipal(client, principal.id)
       requireAuthorization(live, 'workflows:read', input); requireAuthorization(live, 'graph:read', input)
       const row = (await client.query<{ revision: string; current_version_id: string | null }>(
@@ -151,25 +150,21 @@ export class CurrentWorkflowAuthoring {
       const { version } = await versionAt(client, input, input.workflowVersionId ?? row.current_version_id)
       const result = CurrentWorkflowReadResultSchema.parse({ workspaceId: input.workspaceId, workflowId: input.workflowId, revision: Number(row.revision),
         currentVersionId: row.current_version_id, version })
-      await client.query('commit')
       return result
-    } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
+    })
   }
   async validate(principal: ManagementPrincipal, raw: unknown) {
     const input = CurrentWorkflowValidateInputSchema.parse(raw)
     authorize(principal, input, false)
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       const live = await readLiveManagementPrincipal(client, principal.id)
       authorize(live, input, false)
       await this.prepare(client, live, input, false)
-      await client.query('commit')
       return CurrentWorkflowValidationSchema.parse({ valid: true, executionSemanticsVersion: 3,
         expectedRevision: input.expectedRevision, expectedWorkflowVersionId: input.expectedWorkflowVersionId,
         expectedAgentConfigurationVersionIds: input.expectedAgentConfigurationVersionIds,
         expectedLocationRevision: input.expectedLocationRevision, ...this.availability() })
-    } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
+    })
   }
   save(principal: ManagementPrincipal, source: Source, raw: unknown) {
     return this.write(principal, source, raw)

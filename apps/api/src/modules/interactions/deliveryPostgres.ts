@@ -1,4 +1,5 @@
 import { DurableInteractionSchema, type DurableInteraction } from '@foreman-code/contracts'
+import { beginTransaction, commitTransaction, rollbackAfterFailure } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
 
 import { interactionConnection } from './connection.js'
@@ -34,13 +35,13 @@ export class PostgresInteractionDeliveryRepository {
     client.on('error', lost)
     client.on('end', lost)
     try {
-      await client.query('begin')
+      await beginTransaction(client)
       const result = await action(client, controller.signal)
       controller.signal.throwIfAborted()
-      await client.query('commit')
+      await commitTransaction(client)
       return result
     } catch (error) {
-      await client.query('rollback').catch(() => { lost() })
+      if (await rollbackAfterFailure(client)) lost()
       throw error
     } finally {
       client.removeListener('error', lost)

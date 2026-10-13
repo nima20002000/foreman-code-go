@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
 import { isDeepStrictEqual } from 'node:util'
 import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
@@ -223,9 +224,8 @@ export function createRemoteAccountServices(input: {
           || binding.subject && observation.subject?.subject !== binding.subject.subject) {
           throw new DomainError('PROVIDER_ACCOUNT_PRINCIPAL_UNAVAILABLE', 'The accepted Worker principal is unproved or changed.', 409)
         }
-        const client = await input.pool.connect()
-        try {
-          await client.query('begin')
+        const reported = observation
+        observation = await withTransaction(input.pool, async (client) => {
           const currentDevice = await assertDeviceHostInstallation(client, binding.target.hostRef, binding.target.applicationInstallationId)
           if (!currentDevice || currentDevice.keyRevision !== binding.target.keyRevision
             || currentDevice.authorizationRevision !== binding.target.authorizationRevision) {
@@ -237,15 +237,11 @@ export function createRemoteAccountServices(input: {
             throw new DomainError('PROVIDER_ACCOUNT_UNAVAILABLE', 'The accepted Worker slot was removed or changed.', 409)
           }
           if (currentAccount.observation?.subject
-            && currentAccount.observation.subject.subject !== observation.subject?.subject) {
+            && currentAccount.observation.subject.subject !== reported.subject?.subject) {
             await assertAccountUnused(client, binding.accountId)
           }
-          observation = await store.observe(client, binding.accountId, observation)
-          await client.query('commit')
-        } catch (error) {
-          await client.query('rollback')
-          throw error
-        } finally { client.release() }
+          return store.observe(client, binding.accountId, reported)
+        })
         if (!isDeepStrictEqual(input.endpoint().currentBinding(device.deviceId), captured)) {
           throw new DomainError('PROVIDER_ACCOUNT_TARGET_CONFLICT', 'The owning Worker connection changed.', 409)
         }

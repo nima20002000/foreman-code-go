@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { withClientTransaction } from '../../infrastructure/transaction.js'
 import { stat } from 'node:fs/promises'
 import type pg from 'pg'
 import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
@@ -248,8 +249,8 @@ export class HarnessMcpSettingsService {
         if (snapshot) unlockFile = await lockNativeConfigurationFile(client, snapshot.file)
         const managed = approve ? this.managed(selected) : undefined
         const expected = snapshot ? expectedMcpUserFingerprint(snapshot, selected.change, managed) : null
-        await client.query('begin')
-        try {
+        const plan = selected
+        await withClientTransaction(client, async () => {
           await this.liveWriter(client, principal)
           const updated = await client.query<Row>(`update harness_mcp_change_plans set status=$2,decided_by=$3,error=null,
               native_user_after_hash=$4,native_file=$5
@@ -259,37 +260,33 @@ export class HarnessMcpSettingsService {
           marked = approve
           await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
             values($1,$4,'harness.mcp.review',$2,'succeeded',$3::jsonb)`,
-            [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id, decision: approve ? 'approve' : 'reject' }), source])
-          await client.query('commit')
-        } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
+            [principal.id, `harness-mcp:${plan.harness}`, JSON.stringify({ planId: id, decision: approve ? 'approve' : 'reject' }), source])
+        })
         if (!approve) return this.get(principal, id)
         signal.throwIfAborted()
         adapterEntered = true
         await this.adapters[selected.harness].apply(snapshot!, selected.change, signal, managed)
-        await client.query('begin')
-        try {
+        await withClientTransaction(client, async () => {
           await client.query("update harness_mcp_change_plans set status='applied',error=null where id=$1 and status='submitting'", [id])
           await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
-            values($1,$4,'harness.mcp.apply',$2,'succeeded',$3::jsonb)`, [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id }), source])
-          await client.query('commit')
-        } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
+            values($1,$4,'harness.mcp.apply',$2,'succeeded',$3::jsonb)`, [principal.id, `harness-mcp:${plan.harness}`, JSON.stringify({ planId: id }), source])
+        })
         this.notifyChanged()
         return this.get(principal, id)
       } catch (error) {
         if (marked && selected) {
           const notSubmitted = !adapterEntered || error instanceof NativeMcpNotSubmittedError
+          const plan = selected
           const status = notSubmitted ? 'pending' : 'uncertain'
           const message = notSubmitted
             ? 'The native write was not attempted. Retry this same review, or reject it and prepare a new change.'
             : 'The native write may have completed. Use Reconcile; this write will not be repeated.'
-          await client.query('begin')
-          try {
+          await withClientTransaction(client, async () => {
             const updated = await client.query("update harness_mcp_change_plans set status=$2,error=$3 where id=$1 and status='submitting'", [id, status, message])
             if (updated.rowCount) await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
               values($1,$4,'harness.mcp.delivery_recorded',$2,'succeeded',$3::jsonb)`,
-              [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id, delivery: notSubmitted ? 'not_submitted' : 'uncertain' }), source])
-            await client.query('commit')
-          } catch (persistenceError) { await client.query('rollback').catch(() => undefined); throw persistenceError }
+              [principal.id, `harness-mcp:${plan.harness}`, JSON.stringify({ planId: id, delivery: notSubmitted ? 'not_submitted' : 'uncertain' }), source])
+          })
           this.notifyChanged()
           return this.get(principal, id)
         }

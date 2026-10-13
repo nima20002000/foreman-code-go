@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
 import { HarnessExecutionSchema, NativeSessionLaneSchema, NativeSessionReferenceSchema, type HarnessExecution, type NativeSessionReference } from '@foreman-code/contracts'
 import { AcceptedWorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
@@ -118,14 +119,11 @@ export function createPassiveTelemetryAuthorities(input: PassiveTelemetryAuthori
   }
   const withSql = async <T>(signal: AbortSignal, work: (sql: pg.PoolClient) => Promise<T>): Promise<T> => {
     signal.throwIfAborted()
-    const client = await input.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(input.pool, async (client) => {
       const result = await work(client)
-      signal.throwIfAborted(); await client.query('commit')
+      signal.throwIfAborted()
       return result
-    } catch (error) { await client.query('rollback'); throw error }
-    finally { client.release() }
+    })
   }
   const authorized = async (sql: pg.PoolClient, principal: ManagementPrincipal, target: TelemetrySelectorTarget) => {
     const requirement = grant(target)

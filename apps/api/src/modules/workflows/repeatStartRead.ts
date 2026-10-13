@@ -7,7 +7,7 @@ import {
   GraphDraftV3Schema, WorkflowDefinitionV3Schema, sameWorkflowValue,
   type RepeatStartSnapshotV1,
 } from '@foreman-code/contracts/wave25'
-import type pg from 'pg'
+import type { TransactionSql } from '../../infrastructure/transaction.js'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { DomainError } from '../errors.js'
@@ -36,7 +36,7 @@ export interface PreparedRepeatStartLocation {
  * This neither INSERTs a Run nor supplies engine/publication/native readiness.
  * Use the existing authority/receipt/audit/native/capacity fences afterwards. */
 export async function readLockedRepeatStartSnapshot(
-  client: Pick<pg.PoolClient, 'query'>, principal: ManagementPrincipal, raw: unknown,
+  client: TransactionSql, principal: ManagementPrincipal, raw: unknown,
   prepared: PreparedRepeatStartLocation,
 ): Promise<RepeatStartSnapshotV1> {
   const input = RunStartV3InputSchema.parse(raw)

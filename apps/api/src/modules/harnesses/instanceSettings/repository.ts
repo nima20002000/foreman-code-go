@@ -1,4 +1,5 @@
 import pg from 'pg'
+import { withTransaction } from '../../../infrastructure/transaction.js'
 import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
 import { HostHarnessOverrideSchema, type HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
 import { DomainError } from '../../errors.js'
@@ -19,17 +20,7 @@ export class HarnessInstanceSettingsRepository {
     return result.rows.map(row => HostHarnessOverrideSchema.parse(row.record))
   }
   async readAuthorized<T>(operation: (client: pg.PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect()
-    let releaseError: Error | undefined
-    try {
-      await client.query('begin')
-      const result = await operation(client)
-      await client.query('commit')
-      return result
-    } catch (error) {
-      try { await client.query('rollback') } catch (rollbackError) { releaseError = rollbackError instanceof Error ? rollbackError : new Error('Settings read rollback failed.') }
-      throw error
-    } finally { client.release(releaseError) }
+    return withTransaction(this.pool, operation)
   }
   async latest(client: pg.ClientBase, instanceId: string): Promise<HostHarnessOverride | null> {
     const result = await client.query<{ record: unknown }>('select record from harness_instance_settings where instance_id=$1 order by revision desc limit 1', [instanceId])

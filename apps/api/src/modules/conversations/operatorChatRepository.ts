@@ -1,4 +1,5 @@
 import type { TextTruncation } from '@foreman-code/contracts/activity-text'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import { admitSessionMessage } from './sessionControls/messageAdmission.js'
 import { SessionControlStore } from './sessionControls/store.js'
 import type { NativeMessageSubmission } from '../harnesses/port.js'
@@ -223,14 +224,11 @@ export class PostgresOperatorConversationRepository {
 
   /** State, text/files and activity revision share one repeatable-read transaction. */
   async getWithActivity(id: string) {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin isolation level repeatable read read only')
+    return withTransaction(this.pool, async (client) => {
       const state = await this.get(id, client)
       const activitySnapshot = state ? await readOperatorActivitySnapshot(this.pool, client, id) : undefined
-      await client.query('commit')
       return state && activitySnapshot ? { ...state, activitySnapshot } : undefined
-    } catch (error) { await client.query('rollback').catch(() => undefined); throw error } finally { client.release() }
+    }, { isolation: 'repeatable read', readOnly: true })
   }
   async activitySnapshot(id: string) {
     return (await this.getWithActivity(id))?.activitySnapshot
@@ -443,14 +441,10 @@ export class PostgresOperatorConversationRepository {
       })
       return result.value
     }
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       const revision = await this.setDeletedWithQuery(client, id, ownerId, deleted)
-      await client.query('commit')
       return { conversationId: id, revision }
-    } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
-    finally { client.release() }
+    })
   }
 
   private async setDeletedWithQuery(client: pg.PoolClient, id: string, ownerId: string, deleted: boolean): Promise<number> {
@@ -505,17 +499,14 @@ export class PostgresOperatorConversationRepository {
     expectedConfigurationId?: string, validate?: (configuration: OperatorConfigurationVersion) => void,
     preparedProfile?: HarnessProfileSelection) {
     const childId = `operator-fork:${input.requestId}`
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    const forked = await withTransaction(this.pool, async (client) => {
       const source = (await client.query<ConversationRow>('select * from operator_conversations where id=$1 for update', [sourceId])).rows[0]
       if (!source || source.deleted_at || source.owner_principal_id !== ownerId) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
       const existing = (await client.query<ConversationRow>('select * from operator_conversations where id=$1 for update', [childId])).rows[0]
       if (existing) {
         if (existing.parent_conversation_id !== sourceId || existing.owner_principal_id !== ownerId || existing.fork_request_id !== input.requestId)
           throw new DomainError('COMMAND_ID_CONFLICT', 'The fork request ID belongs to another conversation.', 409)
-        await client.query('commit')
-        return this.beginTurn(childId, input, ownerId, undefined, undefined, false, validate)
+        return undefined
       }
       // A new child has no allocations. Handoff history is text-only, never file adoption.
       if (input.attachments?.length) throw new DomainError(
@@ -568,18 +559,15 @@ export class PostgresOperatorConversationRepository {
         values ($1,$2,'user',$3,$4,$5::jsonb)`, [message.id,childId,input.content,input.requestId,JSON.stringify(message)])
       const state = await this.get(childId, client)
       if (!state) throw new Error('The forked conversation was not persisted.')
-      await client.query('commit')
       return { state, replayed: false }
-    } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
-    finally { client.release() }
+    })
+    return forked ?? this.beginTurn(childId, input, ownerId, undefined, undefined, false, validate)
   }
 
   async beginTurn(id: string, input: SendOperatorMessageRequest, ownerId: string, harness?: HarnessConfiguration,
     expectedConfigurationId?: string, receiptOnly = false, validate?: (configuration: OperatorConfigurationVersion) => void,
     preparedProfile?: HarnessProfileSelection) {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       const row = (await client.query<ConversationRow>('select * from operator_conversations where id=$1 for update', [id])).rows[0]
       if (!row || row.deleted_at || row.owner_principal_id !== ownerId) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
       const prior = (await client.query<{ input_hash: string; payload: { content: string; context?: unknown; acceptedConfigurationVersionId?: string }; retryable: boolean; operator_configuration_version_id: string | null }>(
@@ -672,12 +660,8 @@ export class PostgresOperatorConversationRepository {
       }
       const state = await this.get(id, client)
       if (!state) throw new Error('Conversation disappeared inside its locked transaction.')
-      await client.query('commit')
       return { replayed, state }
-    } catch (error) {
-      await client.query('rollback').catch(() => undefined)
-      throw error
-    } finally { client.release() }
+    })
   }
 
   async phase(id: string, requestId: string, phase: TurnPhase, handoffContextIncluded = false): Promise<boolean> {
@@ -802,11 +786,9 @@ export class PostgresOperatorConversationRepository {
   /** Completed messages are immutable; streaming blocks keep their first position. */
   async appendAssistantMessage(id: string, requestId: string, nativeMessageId: string, content: string,
     nativePart?: { parentMessageId?: string; complete: boolean; truncation?: TextTruncation }, precedingActivityId?: string | null): Promise<boolean> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       const row = (await client.query<ConversationRow>('select * from operator_conversations where id=$1 for update', [id])).rows[0]
-      if (!row || row.active_request_id !== requestId) { await client.query('commit'); return false }
+      if (!row || row.active_request_id !== requestId) return false
       const prior = (await client.query<{ record: unknown }>(
         'select record from operator_conversation_messages where conversation_id=$1 and native_message_id=$2', [id,nativeMessageId])).rows[0]
       const existing = prior ? MessageSchema.parse(prior.record) : undefined
@@ -828,9 +810,9 @@ export class PostgresOperatorConversationRepository {
           }
           // A late incomplete snapshot must never replace a completed part.
           if ((precedingActivityId === undefined || existing.afterActivitySequence === activity)
-            && JSON.stringify(existing.truncation) === JSON.stringify(nativePart?.truncation)) { await client.query('commit'); return false }
+            && JSON.stringify(existing.truncation) === JSON.stringify(nativePart?.truncation)) return false
         } else if (nativePart && !nativePart.complete && !content.startsWith(existing.content)) {
-          await client.query('commit'); return false // Older partial snapshot; await complete native evidence.
+          return false // Older partial snapshot; await complete native evidence.
         }
         const mutable = existing.nativeMessageComplete === false
         const message = MessageSchema.parse({ ...existing,
@@ -839,7 +821,7 @@ export class PostgresOperatorConversationRepository {
           afterActivitySequence: activity, updatedAt: new Date().toISOString() })
         if (message.content === existing.content && message.nativeMessageComplete === existing.nativeMessageComplete
           && message.afterActivitySequence === existing.afterActivitySequence
-          && JSON.stringify(message.truncation) === JSON.stringify(existing.truncation)) { await client.query('commit'); return false }
+          && JSON.stringify(message.truncation) === JSON.stringify(existing.truncation)) return false
         await client.query(`update operator_conversation_messages set content=$3,record=$4::jsonb,
           text_provenance=case when $5::boolean and text_provenance is not null then jsonb_set(text_provenance,'{final}','true'::jsonb) else text_provenance end
           where conversation_id=$1 and native_message_id=$2`,
@@ -855,10 +837,8 @@ export class PostgresOperatorConversationRepository {
           values ($1,$2,'assistant',$3,$4,$5::jsonb)`, [message.id,id,content,nativeMessageId,JSON.stringify(message)])
       }
       await client.query('update operator_conversations set revision=revision+1,updated_at=now() where id=$1', [id])
-      await client.query('commit')
       return true
-    } catch (error) { await client.query('rollback').catch(() => undefined); throw error }
-    finally { client.release() }
+    })
   }
 
   async terminal(id: string, requestId: string): Promise<OperatorTerminal | undefined> {
@@ -934,11 +914,9 @@ export class PostgresOperatorConversationRepository {
   }
 
   async finish(id: string, requestId: string, result: ExecutionResult, nativeMessageId?: string, retryable = false): Promise<boolean> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       const row = (await client.query<ConversationRow>('select * from operator_conversations where id=$1 for update', [id])).rows[0]
-      if (!row || row.active_request_id !== requestId) { await client.query('commit'); return false }
+      if (!row || row.active_request_id !== requestId) return false
       const terminal = (await client.query<{ matches: boolean }>(`select
         (terminal_observation is null and $6::text='accepted') or (native_closure_state='closed'
           and (terminal_history is null or terminal_history_persisted)
@@ -977,8 +955,7 @@ export class PostgresOperatorConversationRepository {
         response_delivery=null,last_result=$3::jsonb,last_error=$4,
         turn_state=$5,revision=revision+1,updated_at=now() where id=$1 and active_request_id=$2`,
       [id, requestId, JSON.stringify(result), result.error?.message ?? null, result.outcome === 'failed' ? 'error' : 'idle'])
-      await client.query('commit')
       return true
-    } catch (error) { await client.query('rollback').catch(() => undefined); throw error } finally { client.release() }
+    })
   }
 }

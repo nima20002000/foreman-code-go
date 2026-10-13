@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { withTransaction } from '../../../infrastructure/transaction.js'
 import {
   JobInputAdmissionSchema,
   JobInputDeliveryReceiptSchema,
@@ -28,7 +29,7 @@ export class CanonicalJobInputs {
   constructor(private readonly pool:pg.Pool,private readonly authority:JobInputAuthority,private readonly bytes:FileByteStorage,
     private readonly connection:Pick<DeviceEndpoint,'currentBinding'>,
     private readonly clock:()=>Date=()=>new Date()){this.commands=new PostgresCommandCoordinator(pool)}
-  private async transaction<T>(work:(sql:JobSql)=>Promise<T>):Promise<T>{const sql=await this.pool.connect();try{await sql.query('begin');const value=await work(sql);await sql.query('commit');return value}catch(error){await sql.query('rollback').catch(()=>{});throw error}finally{sql.release()}}
+  private async transaction<T>(work:(sql:JobSql)=>Promise<T>):Promise<T>{return withTransaction(this.pool,work)}
   private binding(execution:JobExecutionRecord) {
     const target=execution.acceptedSpec.target
     if(target.hostRef.kind!=='device'||!target.registration)throw new DomainError('JOB_INPUT_REMOTE_DEVICE_REQUIRED','Remote delivery requires its actual accepted device.',403)

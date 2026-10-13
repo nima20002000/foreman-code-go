@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
 import { readJobComputerSelection } from '../jobs/computerSelection.js'
@@ -208,9 +209,7 @@ export class PostgresSourcePreparationReconciliation {
     private readonly executions: SourceExecutionHostPort,
     private readonly options: { retireTransfers?: ((closure: SourcePreparationClosure) => Promise<void>) | undefined } = {}) {}
   private async transaction<T>(work: (sql: pg.PoolClient) => Promise<T>) {
-    const sql = await this.pool.connect()
-    try { await sql.query('begin'); const value = await work(sql); await sql.query('commit'); return value }
-    catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
+    return withTransaction(this.pool, work)
   }
   async get(principal: ManagementPrincipal, _source: 'http' | 'mcp', raw: unknown) {
     const input = SourcePreparationGetInputSchema.parse(raw)

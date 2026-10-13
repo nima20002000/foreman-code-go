@@ -1,4 +1,4 @@
-import type pg from 'pg'
+import type { TransactionSql } from '../../infrastructure/transaction.js'
 import { ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { WorkflowSchedule } from '@foreman-code/contracts/schedules'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
@@ -7,7 +7,7 @@ import { intersectGrants } from '../access/operatorDelegation.js'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 
-type Sql = Pick<pg.PoolClient, 'query'>
+type Sql = TransactionSql
 
 /** Explicitly capture the schedule writer's root owner and a ceiling, not a chat
  * token. Save does not require Run grants; absent grants cause rejected dispatch.
