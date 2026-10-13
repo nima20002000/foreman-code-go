@@ -72,6 +72,27 @@ function retainReviewer(f: ReturnType<typeof fixture>) {
 }
 
 describe('SQL-only admitted remote control preparation', () => {
+  it('targets the retained session for Run cleanup while review turns can still advance', async () => {
+    const f = fixture()
+    retainReviewer(f)
+    f.state.cleanup = new Date(now)
+    f.state.reviewsPending = true
+    try {
+      const command = await f.prepare('stop')
+      expect(command).toMatchObject({
+        commandId: `stop:operation:${now}`, owner: intent.owner,
+        nativeTarget: { kind: 'session', sessionId: native.sessionId }, action: { kind: 'stop' },
+      })
+      expect(command.native).toBeUndefined()
+      expect(command.nativeTarget).not.toHaveProperty('turnId')
+      expect(await f.prepare('stop')).toEqual(command)
+      f.state.receipt!.native = { ...native, sessionId: 'replacement-session' }
+      await expect(f.prepare('stop')).rejects.toMatchObject({ code: 'REMOTE_CONTROL_UNAVAILABLE' })
+    } finally {
+      await f.db.close()
+    }
+  })
+
   it('binds entered form values to the committed decision during preparation and recovery', async () => {
     const f = fixture()
     const offered: ApprovalResponseOption = { ...option, input: { kind: 'form', schema: {
