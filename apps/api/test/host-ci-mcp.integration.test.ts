@@ -1775,6 +1775,10 @@ it('targets one smoke computer through authenticated MCP and HTTP with grants, r
       const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
       expect(read.run.computer?.hostRef).toEqual(computer.hostRef)
       expect(read.run).toMatchObject({ smokeComputer: computer.hostRef, integrationShards: 11 })
+      const stored = (await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
+        [started.ticketId])).rows[0]!.record
+      const { smokeComputer: _target, ...retainedReleaseShape } = CiRunRecordSchema.shape
+      expect((await import('zod')).z.object(retainedReleaseShape).strict().safeParse(stored).success).toBe(true)
       f.finish(started.ticketId, 0, 'one test passed')
       expect(CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId })).run.state)
         .toBe('passed')
