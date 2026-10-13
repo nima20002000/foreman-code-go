@@ -92,6 +92,9 @@ export const ManagementGrantSchema = z
   .strict();
 export type ManagementGrant = z.infer<typeof ManagementGrantSchema>;
 
+/** Timestamp representation for credentials whose lifetime ends only on revocation. */
+export const NON_EXPIRING_CREDENTIAL_TIMESTAMP = '9999-12-31T23:59:59.999Z'
+
 export const ManagementPrincipalSchema = z
   .object({
     id: IdSchema,
@@ -100,7 +103,7 @@ export const ManagementPrincipalSchema = z
     /** Immutable backend-issued logical Agent subject for worker/App principals. */
     agentId: IdSchema.optional(),
     grants: z.array(ManagementGrantSchema),
-    expiresAt: TimestampSchema,
+    expiresAt: TimestampSchema.describe('Credential expiry; 9999-12-31T23:59:59.999Z means no expiry.'),
     revokedAt: TimestampSchema.nullable(),
   })
   .strict()

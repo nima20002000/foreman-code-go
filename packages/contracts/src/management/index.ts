@@ -678,7 +678,9 @@ export const RunEventsPageSchema = z.object({ items: z.array(RunActivitySchema),
 export const OperatorCapabilitiesSchema = z.object({
   endpoint: z.literal("/mcp"), audience: z.literal("operator"), protocol: z.literal("2026-07-28"),
   tools: z.array(OperatorToolNameSchema),
-  principal: z.object({id: IdSchema, name: z.string(), expiresAt: TimestampSchema}).strict().optional(),
+  principal: z.object({id: IdSchema, name: z.string(), expiresAt: TimestampSchema.describe(
+    'Credential expiry; 9999-12-31T23:59:59.999Z means no expiry.',
+  )}).strict().optional(),
   grants: z.array(ManagementGrantSchema).optional(),
   requestedResource: z.object({workspaceId: IdSchema.optional(),workflowId: IdSchema.optional(),runId: IdSchema.optional()}).strict().optional(),
   requirements: z.array(z.object({name: OperatorToolNameSchema, actions: z.array(ManagementActionSchema), detail: z.string()}).strict()).optional(),

@@ -105,8 +105,7 @@ export class PostgresOperatorChatAuthority implements OperatorChatAuthority {
       signal.throwIfAborted()
       const grants = operatorChatGrants(owner.grants)
       if (!grants.length) throw new DomainError('ACCESS_DENIED', 'This principal has no management authority to delegate to the Operator.', 403)
-      const issued = await this.access.issue({ name: `operator-chat:${conversationId}`, audience: 'operator', grants,
-        expiresAt: new Date(owner.expiresAt) }, client)
+      const issued = await this.access.issue({ name: `operator-chat:${conversationId}`, audience: 'operator', grants }, client)
       // Issuance and both bindings commit together. End/release cannot miss a late credential.
       await client.query('update management_principals set delegated_from=$2 where id=$1', [issued.principal.id, owner.id])
       await client.query('insert into operator_chat_credentials(principal_id,conversation_id) values($1,$2)', [issued.principal.id, conversationId])
