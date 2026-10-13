@@ -88,7 +88,9 @@ export class PostgresCommandCoordinator {
         resumingReceipt = await input.shouldResumeReceipt?.(client) ?? false
         if (!resumingReceipt) {
           const value = input.replayResult ? input.replayResult(receipt.result) : receipt.result as T
+          committing = true
           await commitTransaction(client)
+          committing = false
           inTransaction = false
           return { value, replayed: true }
         }
@@ -98,7 +100,9 @@ export class PostgresCommandCoordinator {
       // Keep its command identity serialized by the session advisory lock, but
       // do not retain row locks while the idempotent callback runs.
       if (dedicatedConnection) {
+        committing = true
         await commitTransaction(client)
+        committing = false
         inTransaction = false
       }
       if (input.prepare) {
@@ -162,15 +166,18 @@ export class PostgresCommandCoordinator {
           }
         }
       }
+      const commitUncertain = committing && !(rolledBack && commitWasRejected(error))
+      let failureCode = failure instanceof DomainError ? failure.code : 'INTERNAL_ERROR'
+      if (commitUncertain) failureCode = 'COMMAND_COMMIT_UNCERTAIN'
       if (!releaseError) {
         // Reuse this now-idle client. Asking the pool for a second connection
         // while retaining the first deadlocks a saturated pool.
         await client.query(
           `insert into management_audit (principal_id, source, action, target_key, outcome, details)
-           values ($1, $2, $3, $4, 'failed', $5::jsonb)`,
-          [input.principal.id, input.source, input.operation, input.targetKey, JSON.stringify({
+           values ($1, $2, $3, $4, $5, $6::jsonb)`,
+          [input.principal.id, input.source, input.operation, input.targetKey, commitUncertain ? 'uncertain' : 'failed', JSON.stringify({
             commandId: input.commandId,
-            code: failure instanceof DomainError ? failure.code : 'INTERNAL_ERROR',
+            code: failureCode,
             ...(failure !== error ? { cleanupFailed: true } : {}),
           })],
         ).catch(ignoreError('db', 'record failed command audit', { commandId: input.commandId, command: input.operation }))

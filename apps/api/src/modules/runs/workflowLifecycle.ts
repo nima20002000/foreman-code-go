@@ -39,8 +39,8 @@ async function retainOwner(sql: GraphTransactionSql, owner: RunOwnership): Promi
 export async function settleWorkForRestart(owner: RunOwnership, approvals?: WorkflowRestartApprovals): Promise<boolean> {
   return owner.oneShotConnection().transaction(async (sql) => {
     const { snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
-    if (!snapshot.version.definition.handoffs || snapshot.stopRequested || snapshot.cleanupPending
-      || !['running', 'waiting'].includes(snapshot.run.executionState)) return false
+    if (snapshot.stopRequested || snapshot.cleanupPending
+      || !['queued', 'running', 'waiting'].includes(snapshot.run.executionState)) return false
     const waiting = [...new Set(approvals?.interactions.map(item => item.executionId) ?? [])]
     const pending = (await sql.query<{ pending: boolean }>(`select exists(
       select 1 from harness_executions e where e.run_id=$1 and (
