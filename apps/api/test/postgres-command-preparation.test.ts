@@ -12,6 +12,20 @@ afterEach(() => vi.restoreAllMocks())
 function fixture(options: { uncertainCommit?: boolean; failRollback?: boolean; failUnlock?: boolean } = {}) {
   const calls: string[] = [], releases = vi.fn(), end = vi.fn(async () => undefined)
   const secondLock = deferred()
+  const state = {
+    receiptReads: 0,
+    receiptWrites: 0,
+    rollbacks: 0,
+    unlocks: 0,
+    audits: [] as Array<{
+      principalId: unknown
+      source: unknown
+      action: unknown
+      targetKey: unknown
+      outcome: unknown
+      details: unknown
+    }>,
+  }
   let receipt: { input_hash: unknown; target_key: unknown; result: unknown } | undefined
   let lockTail = Promise.resolve(), commits = 0, lockRequests = 0
   const makeClient = () => {
@@ -27,10 +41,28 @@ function fixture(options: { uncertainCommit?: boolean; failRollback?: boolean; f
       if (sql.includes('pg_advisory_unlock(')) {
         if (options.failUnlock) throw new Error('unlock failed')
         unlock?.()
+        state.unlocks++
       }
-      if (sql.includes('select input_hash')) return { rows: receipt ? [receipt] : [], rowCount: receipt ? 1 : 0 }
-      if (sql.includes('insert into management_command_receipts')) pending = {
-        input_hash: values?.[4], target_key: values?.[3], result: JSON.parse(String(values?.[5])),
+      if (sql.includes('select input_hash')) {
+        state.receiptReads++
+        return { rows: receipt ? [receipt] : [], rowCount: receipt ? 1 : 0 }
+      }
+      if (sql.includes('insert into management_command_receipts')) {
+        state.receiptWrites++
+        pending = {
+          input_hash: values?.[4], target_key: values?.[3], result: JSON.parse(String(values?.[5])),
+        }
+      }
+      if (sql.includes('insert into management_audit')) {
+        const parameterizedOutcome = values?.length === 6
+        state.audits.push({
+          principalId: values?.[0],
+          source: values?.[1],
+          action: values?.[2],
+          targetKey: values?.[3],
+          outcome: parameterizedOutcome ? values?.[4] : 'succeeded',
+          details: JSON.parse(String(values?.[parameterizedOutcome ? 5 : 4])),
+        })
       }
       if (sql === 'commit') {
         if (pending) { receipt = pending; pending = undefined }
@@ -38,6 +70,7 @@ function fixture(options: { uncertainCommit?: boolean; failRollback?: boolean; f
         if (options.uncertainCommit && commits === 2) throw new Error('commit acknowledgment lost')
       }
       if (sql === 'rollback') {
+        state.rollbacks++
         if (options.failRollback) throw new Error('rollback failed')
         pending = undefined
       }
@@ -46,7 +79,7 @@ function fixture(options: { uncertainCommit?: boolean; failRollback?: boolean; f
   }
   const pool = { options: {}, connect: async () => makeClient(), end }
   vi.spyOn(pg, 'Pool').mockImplementation(function () { return { ...pool } } as never)
-  return { coordinator: new PostgresCommandCoordinator(pool as unknown as pg.Pool), calls, releases, end, secondLock }
+  return { coordinator: new PostgresCommandCoordinator(pool as unknown as pg.Pool), calls, releases, end, secondLock, state }
 }
 
 describe('retained command preparation ownership', () => {
@@ -78,6 +111,14 @@ describe('retained command preparation ownership', () => {
     const f = fixture(), error = new Error('capture failed'), perform = vi.fn()
     await expect(f.coordinator.execute({ ...command, prepare: async () => { throw error }, perform })).rejects.toBe(error)
     expect(perform).not.toHaveBeenCalled()
+    expect(f.state.audits).toEqual([{
+      principalId: principal.id,
+      source: command.source,
+      action: command.operation,
+      targetKey: command.targetKey,
+      outcome: 'failed',
+      details: { commandId: command.commandId, code: 'INTERNAL_ERROR' },
+    }])
     expect(f.calls.some(sql => sql.includes('insert into management_command_receipts'))).toBe(false)
     expect(f.calls.some(sql => sql.includes("'failed'"))).toBe(true)
     expect(f.calls.at(-1)).toContain('pg_advisory_unlock')
