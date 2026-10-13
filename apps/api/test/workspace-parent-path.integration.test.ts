@@ -3,12 +3,22 @@ import { mkdir, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import * as c from '@foreman-code/contracts/management'
 import { expect, it } from 'vitest'
+import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { HarnessDirectoryBrowser } from '../src/modules/harnesses/directoryBrowser.js'
 import { callWorkspaceTool, workspaceMcpFixture } from './helpers/workspaceMcp.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 
 it('preserves browsed parent paths through HTTP and authenticated MCP, retries and persisted readback', async () => {
-  const f = await workspaceMcpFixture()
+  const database = await migratedDatabase()
+  const fixtureOptions = { connectionString: database.databaseUrl, database }
+  let fixture: Awaited<ReturnType<typeof workspaceMcpFixture>> | undefined
+  try {
+    fixture = await workspaceMcpFixture(fixtureOptions)
+  } catch (error) {
+    await database.close()
+    throw error
+  }
+  const f = fixture
   const directories = new HarnessDirectoryBrowser([f.parentPath], f.pool)
   try {
     const restricted = await f.issue([{ actions: ['workspaces:create'], scope: {} }])
@@ -37,6 +47,9 @@ it('preserves browsed parent paths through HTTP and authenticated MCP, retries a
         const read = await callWorkspaceTool(f.owner.client, 'workspace_get', c.ManagedWorkspaceSchema,
           { workspaceId: created.value.workspace.id })
         expect(read.executionLocation?.rootPath).toBe(expectedPath)
+        const persisted = await database.pool.query<{ execution_location: { rootPath: string } }>(
+          'select execution_location from workspaces where id=$1', [created.value.workspace.id])
+        expect(persisted.rows).toEqual([{ execution_location: created.value.executionLocation }])
         expect(await readdir(selected)).toContain(input.name)
         if (siblingExists) expect(await readdir(join(f.parentPath, name))).toEqual([])
         await expectMcpAccessDenied(restricted.client.callTool({ name: 'workspace_create', arguments: {
@@ -52,5 +65,7 @@ it('preserves browsed parent paths through HTTP and authenticated MCP, retries a
         } })
       expect(response.statusCode).toBeGreaterThanOrEqual(400)
     }
-  } finally { await f.close() }
+  } finally {
+    try { await f.close() } finally { await database.close() }
+  }
 }, 30_000)
