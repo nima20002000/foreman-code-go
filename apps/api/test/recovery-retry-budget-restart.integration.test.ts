@@ -21,6 +21,7 @@ describeRetryBudget('finite technical retry budget: restart', () => {
       const before = await executionRows(f)
       const finalId = before.find((row) => row.execution.attempt === 2)!.execution.id
       await expect.poll(() => f.provider.atBarrier(finalId), { timeout: 20000, interval: 50 }).toBe(true)
+      const beforeView = await readback(f)
       expect(f.provider.originalResult(finalId)).toMatchObject({ outcome: 'failed', error: { retryable: true } })
       sameSlot(before)
       expect(before.find((row) => row.execution.attempt === 1)!.execution.result?.outcome).toBe('failed')
@@ -38,6 +39,19 @@ describeRetryBudget('finite technical retry budget: restart', () => {
       await f.settled()
       const after = await executionRows(f), view = await readback(f)
       expect(view.record.run).toMatchObject({ executionState: 'completed', outcome: 'failed' })
+      expect(view.record.cleanupPending).toBe(false)
+      expect(view.page.items.map((item) => item.executionId).sort())
+        .toEqual(beforeView.page.items.map((item) => item.executionId).sort())
+      const finalDetail = view.details.find((detail) => detail.execution.executionId === finalId)!
+      const beforeDetail = beforeView.details.find((detail) => detail.execution.executionId === finalId)!
+      expect(finalDetail.execution).toMatchObject({ attempt: 2, state: 'completed' })
+      expect(finalDetail.acceptedInput).toEqual(beforeDetail.acceptedInput)
+      expect(finalDetail.acceptedResult).toEqual({ status: 'not_accepted' })
+      expect(finalDetail.reportedResult).toMatchObject({ outcome: 'failed',
+        error: { code: 'EXECUTION_INTERRUPTED', retryable: false } })
+      expect(f.provider.originalResult(finalId)).toMatchObject({ outcome: 'failed', error: { retryable: true } })
+      await f.runtime.engine.reconcile((error) => f.errors.push(error))
+      expect(await readback(f)).toEqual(view)
       expect(attempts(after)).toEqual([1, 2]); sameSlot(after)
       expect(after.map((row) => row.execution.id).sort()).toEqual(before.map((row) => row.execution.id).sort())
       const first = after.find((row) => row.execution.attempt === 1)!
