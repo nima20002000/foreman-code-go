@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 
-const generatedBranch = /^refs\/heads\/(?:ci\/[a-f0-9]{40}(?:[a-f0-9]{24})?(?:-[a-f0-9]{40}(?:[a-f0-9]{24})?)?|ci-default\/[a-f0-9]{40}(?:[a-f0-9]{24})?)$/
+const ciBranch = /^refs\/heads\/(?:ci|ci-default)\/.+$/
 interface MirrorRun {
   mirror: string
   commit: string
@@ -51,7 +51,7 @@ export async function pruneMirrorBranches(options: {
   }
   const stale = listed.split('\n').flatMap(line => {
     const [sha, ref] = line.trim().split(/\s+/)
-    return sha && ref && generatedBranch.test(ref) && !keep.has(ref) ? [{ sha, ref }] : []
+    return sha && ref && ciBranch.test(ref) && !keep.has(ref) ? [{ sha, ref }] : []
   })
   for (let offset = 0; offset < stale.length; offset += 50) {
     const batch = stale.slice(offset, offset + 50)
