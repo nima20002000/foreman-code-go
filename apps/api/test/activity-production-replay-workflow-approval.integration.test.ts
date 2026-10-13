@@ -8,6 +8,40 @@ import { closeActivityReplay, setup, admittedRun, eventually } from './helpers/a
 afterEach(closeActivityReplay)
 
 describe.skipIf(!postgresEnabled)('Production activity replay: workflow-approval', { timeout: 120000 }, () => {
+  it('publishes approval from the same isolated database as the accepted Run', async () => {
+    const f = await setup()
+    const started = await admittedRun(f, 'approval')
+    const { workspaceId, id: runId } = started.run
+    const detail = await eventually(async () => {
+      const response = await f.http('GET', `/api/management/workspaces/${workspaceId}/runs/${runId}`)
+      expect(response.statusCode, response.body).toBe(200)
+      return SavedRunDetailsSchema.parse(response.json())
+    }, value => value.run.executionState === 'waiting')
+    expect(detail.run.workflowVersionId).toBe(started.run.workflowVersionId)
+    expect(detail.activitySnapshot!.pendingInteractions).toHaveLength(1)
+    const interactionId = detail.activitySnapshot!.pendingInteractions[0]!.id
+    const response = await f.http('GET', `/api/user/interactions/${interactionId}`, undefined, '')
+    expect(response.statusCode, response.body).toBe(200)
+    const { interaction } = GetInteractionResponseSchema.parse(response.json())
+    expect(f.replay.starts).toHaveLength(1)
+    expect(interaction).toMatchObject({
+      runId,
+      graphThreadId: runId,
+      graphInterruptId: expect.any(String),
+      nativeSessionId: f.replay.starts[0]!.sessionId,
+      status: 'pending',
+      deliveryState: 'not_started',
+    })
+    const readback = await f.call('run_get', { workspaceId, runId, detail: 'full' })
+    expect(readback.isError).not.toBe(true)
+    const persisted = SavedRunDetailsSchema.parse(decodeMcpToolResult(readback))
+    expect(persisted.run).toEqual(detail.run)
+    expect(persisted.activitySnapshot!.pendingInteractions).toEqual(detail.activitySnapshot!.pendingInteractions)
+    const denied = await f.call('run_get', { workspaceId, runId }, f.denied.token)
+    expect(denied.isError).toBe(true)
+    expect(f.replay.responses).toHaveLength(0)
+  })
+
   it('publishes a checkpoint-bound approval wait through HTTP and authenticated MCP', async () => {
     const f = await setup()
     const started = await admittedRun(f, 'approval')
