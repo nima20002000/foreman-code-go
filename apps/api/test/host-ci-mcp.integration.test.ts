@@ -304,11 +304,12 @@ it('runs generic integration once despite requested partitions and falls back fr
   }
 })
 
-it('runs a generic full suite for an empty affected selection and preserves HTTP and MCP readback', async () => {
+it.each(['unit', 'lint'] as const)(
+  'runs generic %s for an empty affected selection and preserves HTTP and MCP readback', async suite => {
   const repository = await genericCiRepository({ cloud: true })
   const f = await fixture({ repositoryRunner: repository })
   try {
-    const input = { suite: 'unit', scope: 'affected', files: [], commit: repository.commit, commandId: 'generic-affected' }
+    const input = { suite, scope: 'affected', files: [], commit: repository.commit, commandId: 'generic-affected' }
     const writer = await f.credential([...CI_RUN_ACTIONS, ...CI_GET_ACTIONS])
     const headers = { authorization: `Bearer ${writer.token}` }
     const url = `/api/management/workspaces/${f.workspaceId}/ci`
@@ -326,7 +327,7 @@ it('runs a generic full suite for an empty affected selection and preserves HTTP
     const result = CiGetOutputSchema.parse(read.json())
     expect(result.run).toMatchObject({ state: 'passed', part: null, partition: null, scope: 'full', files: [],
       computer: { hostRef: { kind: 'main' } } })
-    expect(result.logTail).toContain('fixture unit passed')
+    expect(result.logTail).toContain(`fixture ${suite} passed`)
     expect(repository.cloudAttempts).toContain(started.ticketId)
     expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId })).run)
       .toEqual(result.run)
@@ -1150,7 +1151,10 @@ it('runs two host-only tickets on one computer and queues a third through authen
   } finally { await f.close() }
 })
 
-it('settles NUL log output and dispatches the next queued ticket with persisted MCP readback', async () => {
+it.each([
+  { text: 'finished\0 café\n', message: 'Done.\0\ud800', cleanText: 'finished café\n', cleanMessage: 'Done.\ufffd' },
+  { text: 'finished\ud800\n', message: 'Done.\udc00', cleanText: 'finished\ufffd\n', cleanMessage: 'Done.\ufffd' },
+])('settles invalid log output and dispatches the next queued ticket with persisted MCP readback: $cleanText', async output => {
   const f = await fixture()
   f.computers.splice(1, 1)
   const read = async (ticketId: string) => CiGetOutputSchema.parse(decodeMcpToolResult(await f.operator.callTool({
@@ -1161,15 +1165,17 @@ it('settles NUL log output and dispatches the next queued ticket with persisted 
       suite: 'lint', commandId: 'nul-log', noSupersede: true,
     }))
     await f.ci.dispatch()
+    expect(first.partitions).toBeUndefined()
+    expect((await read(first.ticketId)).run.state).toBe('running')
     const second = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'lint', commandId: 'after-nul-log', noSupersede: true,
     }))
     await f.ci.close()
     expect((await read(second.ticketId)).run.state).toBe('queued')
-    f.finish(first.ticketId, 0, 'finished\0 café\n', undefined, 'Done.\0\ud800')
+    f.finish(first.ticketId, 0, output.text, undefined, output.message)
     await f.ci.dispatch()
     const finished = await read(first.ticketId)
-    expect(finished).toMatchObject({ run: { state: 'passed', message: 'Done.\ufffd' }, logTail: 'finished café\n' })
+    expect(finished).toMatchObject({ run: { state: 'passed', message: output.cleanMessage }, logTail: output.cleanText })
     expect((await read(second.ticketId)).run.state).toBe('running')
     const denied = await f.connect(['workflows:read'])
     expect((await denied.callTool({ name: 'ci_get',

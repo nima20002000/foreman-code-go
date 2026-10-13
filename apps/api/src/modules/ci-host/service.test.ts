@@ -112,6 +112,16 @@ function dispatchFixture(settlementError?: Error) {
   return { ...f, active, queued, records, output }
 }
 
+it('dispatches a queued ticket after settling ordinary output', async () => {
+  const f = dispatchFixture()
+  await f.create().dispatch()
+  expect((await f.create().get(caller, { ticketId: f.active.id })).run.state).toBe('passed')
+  expect((await f.create().get(caller, { ticketId: f.queued.id })).run.state).toBe('running')
+  expect(f.endpoint.request).toHaveBeenCalledWith(computer, expect.objectContaining({
+    operation: 'start', runId: f.queued.id,
+  }))
+})
+
 it.each([
   { text: 'finished\0 café 🚀\n', message: 'Done.\0 café 🚀',
     cleanText: 'finished café 🚀\n', cleanMessage: 'Done. café 🚀' },
