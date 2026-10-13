@@ -128,7 +128,7 @@ it('resets a reused checkout to exactly the requested commit without leftover fi
   expect(second.run.state).toBe('passed')
   expect(second.checkout).toBe(first.checkout)
   expect(fixture.inCheckout(second.checkout, 'rev-parse', 'HEAD')).toBe(fixture.git('rev-parse', 'HEAD'))
-  expect(await readFile(join(second.checkout, 'src/kept.ts'), 'utf8')).toBe('export const kept = 1\n')
+  expect(second.text).toContain('kept=1')
   expect(existsSync(join(second.checkout, 'src/removed.ts'))).toBe(false)
   expect(fixture.inCheckout(second.checkout, 'status', '--porcelain', '--ignored', '--untracked-files=all'))
     .toBe('!! node_modules/dependency')

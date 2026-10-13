@@ -117,6 +117,14 @@ it.each(['aborted', 'resident-write-loss', 'restart-without-proof', 'restart-wit
         const conversation = await chat.create(owner.principal)
         const id = conversation.id
         await chat.send(id, { requestId: 'model-request', content: 'Read an admitted file' }, owner.principal)
+        if (scenario === 'restart-after-terminal') {
+          const starting = await graphRpc(app, owner.token, 'tools/call', {
+            name: 'operator_chat_get', arguments: { conversationId: id },
+          })
+          expect(starting.result?.isError).not.toBe(true)
+          expect(graphRpcValue(starting.result)).toMatchObject({ activeRequestId: 'model-request' })
+          expect(offers).toEqual([])
+        }
         await vi.waitFor(() => expect(runtimes).toHaveLength(1), { timeout: 20_000, interval: 50 })
         const owned = runtimes[0]!
         const message = (await (await owned.ready.promise).next()).value!
