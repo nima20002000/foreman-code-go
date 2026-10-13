@@ -6,10 +6,13 @@ import {
 } from './helpers/eng06DRecovery.js'
 
 const forms: Form[] = ['repeat', 'sequential']
+const cases = forms.flatMap(form =>
+  (['retained', 'unavailable'] as const).map(history => ({ form, history })))
 
 describeRetryBudget('finite technical retry budget: restart', () => {
-  it.each(forms)('%s: restart during the final technical attempt cannot reset its persisted retry budget', async (form) => {
-    const f = await recoveryFixture(form, (submission) => submission.attempt === 1 ? 'retryable_failure' : 'durable_failure_gap')
+  it.each(cases)('$form: restart with $history failure history cannot reset the final attempt budget', async ({ form, history }) => {
+    const finalFault = history === 'retained' ? 'durable_failure_gap' : 'unavailable_failure_history'
+    const f = await recoveryFixture(form, submission => submission.attempt === 1 ? 'retryable_failure' : finalFault)
     try {
       f.launch()
       await expect.poll(async () => (await executionRows(f)).map((row) => ({
@@ -31,10 +34,14 @@ describeRetryBudget('finite technical retry budget: restart', () => {
       const first = after.find((row) => row.execution.attempt === 1)!
       expect(first.execution).toEqual(before.find((row) => row.execution.attempt === 1)!.execution)
       await assertOriginalFailure(f, first.execution.id, true)
-      const interrupted = after.find((row) => row.execution.attempt === 2)!
-      expect(interrupted.execution.result).toMatchObject({ outcome: 'failed',
-        error: { code: 'EXECUTION_INTERRUPTED', retryable: false } })
-      expect(interrupted.result_json).toBeNull()
+      const final = after.find((row) => row.execution.attempt === 2)!
+      if (history === 'unavailable') {
+        expect(final.execution.result).toMatchObject({ outcome: 'failed',
+          error: { code: 'EXECUTION_INTERRUPTED', retryable: false } })
+      } else {
+        await assertOriginalFailure(f, final.execution.id, true)
+      }
+      expect(final.result_json).toBeNull()
       expect(f.provider.counts.attaches).toBe(0)
       await assertRecoveryReceipts(f, [finalId])
       expect(f.provider.counts.starts).toBe(2); expect(f.provider.counts.sessions).toBe(2)

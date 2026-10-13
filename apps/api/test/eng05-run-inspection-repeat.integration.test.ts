@@ -6,7 +6,7 @@ import {
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import {
-  requestScope, reader, allExecutions, parity, terminal, resaveChangingRepeat,
+  requestScope, reader, allExecutions, parity, denied, terminal, resaveChangingRepeat,
 } from './helpers/runInspection.js'
 
 describe.skipIf(!postgresEnabled)('PostgreSQL authenticated Run inspection: repeat', () => {
@@ -54,10 +54,8 @@ describe.skipIf(!postgresEnabled)('PostgreSQL authenticated Run inspection: repe
           }
         }
       }
-      const unknownNode = RunExecutionsPageSchema.parse(await parity(f, r.client, r.token,
-        RUN_INSPECTION_TOOLS.executions, { ...args, workflowNodeId: 'missing-node' }))
-      expect(unknownNode.items).toEqual([])
-      expect(unknownNode.pageInfo.nextCursor).toBeNull()
+      await denied(f, r.client, r.token, RUN_INSPECTION_TOOLS.executions,
+        { ...args, workflowNodeId: 'missing-node' }, 404, 'WORKFLOW_NODE_NOT_FOUND')
       expect(RunExecutionsListInputSchema.safeParse({
         ...args, workflowNodeId: "node' OR true --",
       }).success).toBe(false)

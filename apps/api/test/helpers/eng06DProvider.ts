@@ -7,7 +7,8 @@ import {
 import { RunAcceptedInputValueSchema, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import type { NativeHarnessSessionManager, NativeHistory } from '../../src/modules/harnesses/port.js'
 
-export type Fault = 'success' | 'retryable_failure' | 'permanent_failure' | 'park' | 'durable_reply_gap' | 'durable_failure_gap'
+export type Fault = 'success' | 'retryable_failure' | 'permanent_failure' | 'park'
+  | 'durable_reply_gap' | 'durable_failure_gap' | 'unavailable_failure_history'
 export interface Submission {
   request: HarnessExecutionRequest
   /** Provider-observed submissions within one Run/node/occurrence, NOT a database counter. */
@@ -79,7 +80,8 @@ export class RecoveryProvider {
         turn: { id: `turn-${id}`, status: result.outcome === 'succeeded' ? 'completed' : result.outcome === 'failed' ? 'failed' : 'interrupted' } } }))
   }
   private result(session: Session): ExecutionResult {
-    if (session.fault === 'retryable_failure' || session.fault === 'permanent_failure' || session.fault === 'durable_failure_gap') return {
+    if (session.fault === 'retryable_failure' || session.fault === 'permanent_failure'
+      || session.fault === 'durable_failure_gap' || session.fault === 'unavailable_failure_history') return {
       outcome: 'failed', error: { code: 'ENG06_NATIVE_FAILURE', message: 'Exact original provider failure',
         retryable: session.fault !== 'permanent_failure' },
     }
@@ -94,7 +96,8 @@ export class RecoveryProvider {
     if (!session.alive && !session.terminal) throw new Error('Native process is gone; no durable result exists and its outcome is uncertain')
     // The old transport never receives the durable completion reply. A new
     // connection can read that exact history after closure, without a submission.
-    const visible = session.terminal && !(['durable_reply_gap', 'durable_failure_gap'].includes(session.fault) && session.alive)
+    const visible = session.terminal && session.fault !== 'unavailable_failure_history'
+      && !(['durable_reply_gap', 'durable_failure_gap'].includes(session.fault) && session.alive)
     const id = session.submission.request.executionId, correlationId = `execution:${id}`
     return structuredClone({ ...(session.started ? { correlationId, nativeTurnId: `turn-${id}` } : {}),
       events: visible ? session.events : session.events.filter((event) => event.type === 'turn.started'), pendingInteractions: [],
@@ -154,7 +157,7 @@ export class RecoveryProvider {
             turn: { id: `turn-${id}`, status: 'inProgress' } } }))
         yield session.events[0]!
         if (session.fault !== 'park') provider.finish(session, provider.result(session))
-        if (['park', 'durable_reply_gap', 'durable_failure_gap'].includes(session.fault)) {
+        if (['park', 'durable_reply_gap', 'durable_failure_gap', 'unavailable_failure_history'].includes(session.fault)) {
           // The DB becomes running BEFORE the stream reaches this point. Tests
           // must await this provider-side barrier before restarting the API.
           session.parked = true
