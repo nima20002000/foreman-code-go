@@ -43,13 +43,14 @@ export const GRAPHQL_AGENT_TOOLS = {
     description: "Run install, typecheck, lint, unit, build or integration on a build computer. "
       + "Tests the requested commit, the Agent's current files published to GitHub, or the default branch head. "
       + "Scope defaults to affected. Omit files for runner selection against the workspace default branch merge-base; "
+      + "Priority defaults to normal; high requires Operator role or jobs:prioritize. CI-only commits are automatically high. "
       + "caller files remain supported with an explicit commit. Missing selectors, shared infrastructure changes and "
       + "the default branch head run the full suite and report the reason. Scope full always runs everything. "
       + "Retry the same commandId and payload. Integration supports 2–32 partitions on separate computers.",
     roles: ["operator", "orchestrator", "coder"],
   },
-  ci_get: { label: "Read CI result", description: "Read CI run state, queued waiting reason in message, current step, computer, exit code and bounded log tail by ticketId.", roles: ["operator", "orchestrator", "coder"] },
-  ci_computers_list: { label: "List CI computers", description: "Read authorized build computers with readiness, GitHub login, size, used/total CI slots and running CI runs.", roles: ["operator", "orchestrator", "coder"] },
+  ci_get: { label: "Read CI result", description: "Read CI run state, priority, queue position and waiting reason, current step, computer, exit code and bounded log tail by ticketId.", roles: ["operator", "orchestrator", "coder"] },
+  ci_computers_list: { label: "List CI computers", description: "Read authorized build computers with readiness, GitHub login, size, used/total CI slots, running CI runs and authorized queued tickets with priority, position and reason.", roles: ["operator", "orchestrator", "coder"] },
   ci_cancel: { label: "Cancel CI", description: "Cancel a queued or running CI run by ticketId. Requires jobs:cancel. Poll ci_get to confirm the outcome.", roles: ["operator", "orchestrator", "coder"] },
   ci_logs_read: { label: "Read CI logs", description: "Read CI log text by ticketId. Omit afterOffset for the last maxBytes, or continue with nextOffset.", roles: ["operator", "orchestrator", "coder"] },
   run_status_get: {

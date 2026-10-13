@@ -96,3 +96,19 @@ it('keeps an unpartitioned integration suite on a build computer', async () => {
   expect(f.started).toEqual([])
   expect(records[0]?.state).toBe('queued')
 })
+
+it.each([host, cloud])('dispatches high priority then oldest tickets on $label', async computer => {
+  const records = queuedRuns(4).map((record, index) => CiRunRecordSchema.parse({ ...record,
+    suite: 'install', partition: null, priority: index > 1 ? 'high' : 'normal',
+    queuedAt: new Date(Date.parse(record.queuedAt) + index * 1000).toISOString(),
+  }))
+  const f = fleet(records, [computer])
+  const expected = [records[2]!.id, records[3]!.id, records[0]!.id, records[1]!.id]
+  for (const id of expected) {
+    await f.service.dispatch()
+    expect(f.started.at(-1)?.request).toMatchObject({ runId: id })
+    const running = records.find(record => record.id === id)!
+    running.state = 'passed'
+  }
+  expect(f.started.map(item => item.request.operation === 'start' ? item.request.runId : null)).toEqual(expected)
+})

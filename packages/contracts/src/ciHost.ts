@@ -123,9 +123,12 @@ export const CiHostReplySchema = z.discriminatedUnion('operation', [
 export type CiHostReply = z.infer<typeof CiHostReplySchema>
 
 /** What an Agent or the Operator sees for one CI run. */
+export const CiPrioritySchema = z.enum(['normal', 'high'])
+export const CiPriorityReasonSchema = z.enum(['normal', 'requested', 'ci-infrastructure'])
 export const CiRunRecordSchema = z.object({
   id: CiHostRunIdSchema, workspaceId: IdSchema, suite: CiSuiteSchema, commit: CommitSchema, repository: CiRepositorySchema,
   scope: CiScopeSchema.default('full'), files: CiSelectedFilesSchema.default([]),
+  priority: CiPrioritySchema.default('normal'), priorityReason: CiPriorityReasonSchema.default('normal'),
   /** An omitted caller selection is computed on the runner; an explicit empty list is already complete. */
   deriveFiles: z.boolean().optional(), defaultBranch: WorkspaceRepositorySchema.shape.defaultBranch.optional(),
   baseCommit: CommitSchema.optional(),
