@@ -50,6 +50,15 @@ Do not duplicate one state source in another layer without a documented reason.
 - Send related changes and follow-up issues to the existing agent that owns the feature or workstream. Message a running agent or resume an idle agent; do not spawn a new agent for every related issue.
 - Start a separate agent for distinct work, an explicitly requested separate assignment, or an independent review. Preserve clear ownership when coordinating shared files.
 
+## Releases
+
+- No release without one clean full round on the release commit's code: typecheck, lint, unit and integration,
+  all with full scope and every part passed, on the exact commit the release builds on. A failed or affected-scope
+  round blocks the release; fix and run a new full round.
+- The round runs through Foreman CI, not locally. Release only with `corepack pnpm release <X.Y.Z>`
+  (`scripts/release.mjs`), which records the passing tickets in the commit's `Clean-Round` trailers. Deployers
+  verify a release commit with `node scripts/verify-release-round.mjs <commit>` before deploying it.
+
 ## Verification
 
 From the repository root, use the pinned pnpm runtime. Plain npm installs are

@@ -32,7 +32,7 @@ export function snapshot(cwd = process.cwd()) {
   } finally { rmSync(directory, { recursive: true, force: true }) }
 }
 
-async function mcpClient() {
+export async function mcpClient(clientName = 'ci-remote') {
   const base = environment.FOREMAN_CODE_MAIN_URL ?? 'http://127.0.0.1:3041'
   const tokenFile = environment.FOREMAN_CODE_OPERATOR_TOKEN_FILE
     ?? join(homedir(), '.local/share/foreman-code/production-operator.private.json')
@@ -52,7 +52,7 @@ async function mcpClient() {
     return envelope.result
   }
   version = (await request('initialize', { protocolVersion: '2025-11-25', capabilities: {},
-    clientInfo: { name: 'ci-remote', version: '1' } })).protocolVersion
+    clientInfo: { name: clientName, version: '1' } })).protocolVersion
   return async (name, args) => {
     const result = await request('tools/call', { name, arguments: args })
     const text = result.content?.[0]?.text ?? ''
@@ -80,19 +80,55 @@ async function publish(commit) {
   }
 }
 
-async function remote(suite, args) {
-  if (args.length) console.error('[ci] Selecting affected files from the snapshot; command arguments apply to local runs only.')
-  const call = await mcpClient()
+/** FOREMAN_CODE_WORKSPACE_ID, else the workspace whose repository is this checkout's GitHub origin. */
+export async function workspaceFor(call) {
+  if (environment.FOREMAN_CODE_WORKSPACE_ID) return environment.FOREMAN_CODE_WORKSPACE_ID
   const origin = git(['remote', 'get-url', 'origin']).replace(/\.git$/, '')
   const repository = /github\.com[:/]([^/]+\/[^/]+)$/.exec(origin)?.[1]
   if (!repository) throw new Error(`The origin remote is not a GitHub repository: ${origin}`)
   // The list omits repository details; read each workspace until one uses this repository.
-  let workspaceId = environment.FOREMAN_CODE_WORKSPACE_ID
-  for (const item of workspaceId ? [] : (await call('workspace_list', {})).items ?? []) {
+  for (const item of (await call('workspace_list', {})).items ?? []) {
     const value = (await call('workspace_get', { workspaceId: item.workspace.id })).workspace?.repository
-    if (value && `${value.owner}/${value.name}`.toLowerCase() === repository.toLowerCase()) { workspaceId = item.workspace.id; break }
+    if (value && `${value.owner}/${value.name}`.toLowerCase() === repository.toLowerCase()) return item.workspace.id
   }
-  if (!workspaceId) throw new Error(`No Foreman Code workspace uses ${repository}.`)
+  throw new Error(`No Foreman Code workspace uses ${repository}.`)
+}
+
+/** Polls the tickets until every one finished, prints each failed part with its ticket, failed tests and log
+ * lines, and returns the finished runs. */
+export async function awaitTickets(call, workspaceId, tickets) {
+  const startedAt = Date.now(), states = new Map()
+  for (;;) {
+    // A few reads at a time keep Main's database pool free for the runs themselves.
+    const runs = []
+    for (let index = 0; index < tickets.length; index += 4) {
+      runs.push(...await Promise.all(tickets.slice(index, index + 4)
+        .map(ticketId => call('ci_get', { workspaceId, ticketId }).then(value => value.run))))
+    }
+    for (const run of runs) {
+      const line = `${run.state}${run.computer ? ` on ${run.computer.label}` : ''}`
+      if (states.get(run.id) !== line) { states.set(run.id, line); console.error(`[ci] ${Math.round((Date.now() - startedAt) / 1000)}s ${partName(run)}: ${line}`) }
+    }
+    if (runs.every(run => !['queued', 'starting', 'running'].includes(run.state))) {
+      for (const run of runs.filter(value => value.state !== 'passed')) {
+        const log = await call('ci_logs_read', { workspaceId, ticketId: run.id, maxBytes: 65_536 }).catch(() => ({ text: '' }))
+        const tests = await call('ci_get', { workspaceId, ticketId: run.id, testStatus: ['failed'] })
+          .then(value => value.tests?.files ?? [], () => [])
+        const lines = log.text.split('\n').filter(line => /FAIL|failed files|hung files|error TS|  error  |Error:|×|AssertionError/.test(line))
+        console.log(`\n[ci] ${run.suite} ${partName(run)} ${run.state} (ticket ${run.id})${run.message ? `: ${run.message}` : ''}`)
+        for (const file of tests) for (const test of file.tests) console.log(`[ci] failed test ${file.file} > ${test.name}`)
+        console.log(lines.slice(-60).join('\n') || log.text.slice(-4000))
+      }
+      return runs
+    }
+    await new Promise(resolve => setTimeout(resolve, 5_000))
+  }
+}
+
+async function remote(suite, args) {
+  if (args.length) console.error('[ci] Selecting affected files from the snapshot; command arguments apply to local runs only.')
+  const call = await mcpClient()
+  const workspaceId = await workspaceFor(call)
   const commit = snapshot()
   const selection = environment.FOREMAN_CODE_CI_SCOPE === 'full' || git(['branch', '--show-current']) === 'main'
     ? { scope: 'full', files: [], reason: 'Full scope requested.' } : affectedSnapshot(commit, suite)
@@ -109,31 +145,10 @@ async function remote(suite, args) {
     commandId: randomUUID(), ...(partitions ? { partitions } : {}) })
   const tickets = (started.partitions ?? [{ ticketId: started.ticketId }]).map(value => value.ticketId)
   console.error(`[ci] ${suite} of ${commit.slice(0, 12)} on ${tickets.length} CI ${tickets.length === 1 ? 'machine' : 'machines'}`)
-  const startedAt = Date.now(), states = new Map()
-  for (;;) {
-    // A few reads at a time keep Main's database pool free for the runs themselves.
-    const runs = []
-    for (let index = 0; index < tickets.length; index += 4) {
-      runs.push(...await Promise.all(tickets.slice(index, index + 4)
-        .map(ticketId => call('ci_get', { workspaceId, ticketId }).then(value => value.run))))
-    }
-    for (const run of runs) {
-      const line = `${run.state}${run.computer ? ` on ${run.computer.label}` : ''}`
-      if (states.get(run.id) !== line) { states.set(run.id, line); console.error(`[ci] ${Math.round((Date.now() - startedAt) / 1000)}s ${partName(run)}: ${line}`) }
-    }
-    if (runs.every(run => !['queued', 'starting', 'running'].includes(run.state))) {
-      const failed = runs.filter(run => run.state !== 'passed')
-      for (const run of failed) {
-        const log = await call('ci_logs_read', { workspaceId, ticketId: run.id, maxBytes: 65_536 }).catch(() => ({ text: '' }))
-        const lines = log.text.split('\n').filter(line => /FAIL|failed files|hung files|error TS|  error  |Error:|×|AssertionError/.test(line))
-        console.log(`\n[ci] ${partName(run)} ${run.state}${run.message ? `: ${run.message}` : ''}`)
-        console.log(lines.slice(-60).join('\n') || log.text.slice(-4000))
-      }
-      console.error(`[ci] ${suite} ${failed.length ? 'FAILED' : 'passed'} in ${Math.round((Date.now() - startedAt) / 1000)}s`)
-      return failed.length ? 1 : 0
-    }
-    await new Promise(resolve => setTimeout(resolve, 5_000))
-  }
+  const startedAt = Date.now()
+  const failed = (await awaitTickets(call, workspaceId, tickets)).filter(run => run.state !== 'passed')
+  console.error(`[ci] ${suite} ${failed.length ? 'FAILED' : 'passed'} in ${Math.round((Date.now() - startedAt) / 1000)}s`)
+  return failed.length ? 1 : 0
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
