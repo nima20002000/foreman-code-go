@@ -4,7 +4,7 @@ import { mkdir, open } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { WorkspaceRootPolicy } from '@foreman-code/contracts/workspace-root-policies'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
-import { approvedGitTreePaths, captureGitSource, qualifiedGit } from '../sources/capture.js'
+import { captureGitSource, qualifiedGit } from '../sources/capture.js'
 import { ensureClone, fetchMissingSourceObjects, fetchRepositoryBranch, type GitWorktreePorts } from '../sources/gitWorktree.js'
 import { SOURCE_LIMITS, verifySourceBytes, verifySourceManifest } from '../sources/manifest.js'
 import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot } from '../sources/privateFilesystem.js'
@@ -145,9 +145,8 @@ export class OwnedRepositoryPreparation {
 
   private async populate(directory: Awaited<ReturnType<typeof openPrivateRoot>>, clone: string,
     preparation: RepositoryPreparation, repository: string): Promise<SourceManifest> {
-    const approvedPaths = await approvedGitTreePaths(clone, preparation.commit!)
     const manifest = await captureGitSource({ root: clone, approvedSourceId: preparation.importId,
-      snapshotId: preparation.importId, commit: preparation.commit!, repository, approvedPaths,
+      snapshotId: preparation.importId, commit: preparation.commit!, repository,
       executablePolicy: 'preserve-approved', sink: {
         write: async (_snapshotId, entry, bytes) => {
           const { parent, leaf } = await entryParent(directory, entry.path, true)

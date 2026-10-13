@@ -92,7 +92,7 @@ async function setup() {
     return client
   }
   const client = await connect(owner.token)
-  const approval = { workspaceId, commandId: randomUUID(), commit, approvedPaths: ['source.ts'],
+  const approval = { workspaceId, commandId: randomUUID(), commit,
     executablePolicy: 'strip', expectedLocationRevision: located.value.locationRevision }
   async function approve(ageSeconds = 0) {
     const input = { ...approval, commandId: randomUUID() }
@@ -611,7 +611,7 @@ it('reclaims older terminal snapshots before capture capacity fails and exposes 
     await expect(stat(join(f.canonical, first.source.manifest.snapshotId))).rejects.toMatchObject({ code: 'ENOENT' })
     await f.read(approvals.at(-1)!.source)
     const denied = await f.access.issue({ name: 'Other workspace', audience: 'operator',
-      grants: [{ actions: ['sources:read', 'sources:approve', 'workspace_locations:read'],
+      grants: [{ actions: ['sources:read', 'source_roots:bind', 'workspace_locations:read'],
         scope: { workspaceIds: ['other-workspace'] } }], expiresAt: new Date(Date.now() + 120_000) })
     const deniedClient = await f.connect(denied.token)
     for (const name of ['source_get', 'source_list']) {

@@ -53,12 +53,12 @@ Use the existing explicit protected runtime setup and qualification workflow for
 `ci_enrollment_update` retains its preparation grants, revision checks and idempotent commands; disable serializes
 with new placement while preserving selections already accepted. Enrollment reads require `job_definitions:read`.
 
-`source_approve` accepts either `approvedPaths` listing every file in the pinned Git commit,
-or `approveTrackedTree: true` with `approvedPaths` omitted. The latter explicitly approves
-the commit's complete tracked tree; it does not include later commits, index changes, or
-untracked files. Both modes retain sensitive-path and private-key rejection, executable
-policy, source size and entry limits, and manifest verification. The original request and
-resolved tracked inventory are retained with the approval command and its audit record.
+`source_approve` automatically captures the complete tracked tree of the pinned Git commit
+without a path inventory or approval flag. It requires `source_roots:bind`, `sources:read`,
+and `workspace_locations:read` in the workspace; read-only callers cannot capture.
+Capture excludes later commits, index changes, and untracked files, and retains
+sensitive-path and private-key rejection, executable policy, source size and entry
+limits, and manifest verification. The request and resolved inventory are audited.
 Read back the retained manifest with `source_get`. Source validation failures return their
 public `SOURCE_*` code and message through MCP and the corresponding status through HTTP.
 

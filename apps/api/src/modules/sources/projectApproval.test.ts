@@ -82,13 +82,13 @@ async function fixture() {
   const approved = new Map<string, ApprovedSource>()
   vi.spyOn(service, 'approve').mockImplementation(async (_principal, _transport, raw) => {
     const input = SourceApproveInputSchema.parse(raw)
-    if (!input.approvedPaths) throw new Error('This fixture expects explicit path approval.')
+    const paths = git(clone, 'ls-tree', '-r', '--name-only', input.commit).trim().split('\n')
     let source = approved.get(input.commandId)
     if (!source) {
       const manifest = createSourceManifest({ version: 1, approvedSourceId: randomUUID(), snapshotId: randomUUID(),
         capturePolicy: 'git-tree-v1', executablePolicy: input.executablePolicy, deletions: [],
         git: { commit: input.commit, tree: git(clone, 'rev-parse', `${input.commit}^{tree}`), objectFormat: 'sha1' },
-        entries: input.approvedPaths.map(path => ({ path, kind: 'file', executable: false,
+        entries: paths.map(path => ({ path, kind: 'file', executable: false,
           sha256: 'a'.repeat(64), byteSize: 1 })) })
       source = { version: 1, workspaceId, mainId, locationRevision: 1, manifest, availability: 'retained',
         ownerPrincipalId: principal.id, approvedByPrincipalId: principal.id,

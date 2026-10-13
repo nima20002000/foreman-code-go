@@ -26,7 +26,7 @@ function fixture() {
       workspace_id: 'workspace', expired: state.expired }], rowCount: 1 }
     if (text.includes('from management_principals')) return { rows: [{
       id: 'principal', name: 'Capture owner', audience: 'operator',
-      grants: [{ actions: ['sources:approve', 'sources:read', 'workspace_locations:read'], scope: {} }],
+      grants: [{ actions: ['source_roots:bind', 'sources:read', 'workspace_locations:read'], scope: {} }],
       expires_at: new Date(Date.now() + 60_000), revoked_at: null, delegated_from: null,
     }], rowCount: 1 }
     if (text.startsWith('update source_approvals')) state.approvalState = 'failed'

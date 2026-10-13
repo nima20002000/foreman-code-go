@@ -40,16 +40,16 @@ describe('source admission boundaries', () => {
     expect(storedBytes).toBe(state === 'metadata-only' ? 16 * 1024 : reservedBytes)
   })
 
-  it('requires approval scope before SQL, filesystem, host or command work', async () => {
+  it('requires source root write scope before SQL, filesystem, host or command work', async () => {
     const probe = vi.fn()
     const service = new PostgresSourceService({ connect: probe } as unknown as pg.Pool, { execute: probe } as unknown as PostgresCommandCoordinator,
       { snapshot: probe } as unknown as WorkspaceLocationService, {} as PrivateSourceSnapshotStore, randomUUID(), {} as RegisteredSourceRootPort, {} as SourceExecutionHostPort, {} as SourceClosureProofPort)
     await expect(service.approve(principal, 'mcp', { workspaceId: 'workspace-owned', commandId: randomUUID(), expectedLocationRevision: 1,
-      commit: 'a'.repeat(40), approvedPaths: ['src/app.ts'], executablePolicy: 'strip' })).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+      commit: 'a'.repeat(40), executablePolicy: 'strip' })).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
     expect(probe).not.toHaveBeenCalled()
   })
   it('rejects tool-supplied paths, fake Agent/Run selectors and mutable Git refs', () => {
-    const input = { workspaceId: 'workspace-owned', commandId: randomUUID(), expectedLocationRevision: 1, commit: 'a'.repeat(40), approvedPaths: ['src/app.ts'], executablePolicy: 'strip' }
+    const input = { workspaceId: 'workspace-owned', commandId: randomUUID(), expectedLocationRevision: 1, commit: 'a'.repeat(40), executablePolicy: 'strip' }
     for (const extra of [{ rootPath: '/home/other' }, { agentId: 'invented' }, { runId: 'invented' }, { commit: 'HEAD' }]) expect(SourceApproveInputSchema.safeParse({ ...input, ...extra }).success).toBe(false)
     expect(SourceRootBindInputSchema.safeParse({ rootPath: '/home/other' }).success).toBe(false)
   })

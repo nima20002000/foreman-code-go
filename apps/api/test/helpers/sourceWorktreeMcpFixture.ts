@@ -179,7 +179,7 @@ export async function sourceWorktreeMcpFixture() {
     })
     const approved = (await production.sources.approve(base.writer.principal, 'mcp', {
       workspaceId: base.f.scope.workspaceId, commandId: randomUUID(), expectedLocationRevision: located.locationRevision,
-      commit, approvedPaths: ['app.txt'], executablePolicy: 'strip',
+      commit, executablePolicy: 'strip',
     })).value
     const source = { approvedSourceId: approved.manifest.approvedSourceId,
       snapshotId: approved.manifest.snapshotId, manifestDigest: approved.manifest.manifestDigest }

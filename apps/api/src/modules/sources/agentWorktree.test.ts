@@ -90,7 +90,7 @@ it('reuses retained Main snapshot bytes while isolating writable worktrees and d
   await mkdir(snapshotRoot, { mode: 0o700 })
   const store = new PrivateSourceSnapshotStore(snapshotRoot)
   const manifest = await captureGitSource({ root: f.origin, approvedSourceId: randomUUID(), commit: f.commit,
-    repository: 'octo/site', approvedPaths: ['src/app.ts'], executablePolicy: 'preserve-approved', sink: store })
+    repository: 'octo/site', executablePolicy: 'preserve-approved', sink: store })
   const binding = { ...f.binding, snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }
   const inputs = [f.attempt(), f.attempt()].map(attempt => ({ manifest, binding, attempt,
     sharedWritableTree: true as const, worktree: { repository: 'octo/site', branch: 'foreman/snapshot-reference' } }))
@@ -223,7 +223,7 @@ it('prepares an approved unpublished commit on a fresh worker using the transfer
   await mkdir(canonical, { mode: 0o700 })
   const store = new PrivateSourceSnapshotStore(canonical)
   const manifest = await captureGitSource({ root: main, commit, repository: 'octo/site',
-    approvedSourceId: randomUUID(), approvedPaths: ['src/app.ts'], executablePolicy: 'strip', sink: store })
+    approvedSourceId: randomUUID(), executablePolicy: 'strip', sink: store })
   const signal = AbortSignal.timeout(30_000)
   const reader = store
   const binding = { ...f.binding, snapshotId: manifest.snapshotId, manifestDigest: manifest.manifestDigest }

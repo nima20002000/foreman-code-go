@@ -2,7 +2,7 @@ import type { SourceEntry, SourceManifest } from '@foreman-code/contracts/source
 import type { SourcePinSchema } from '@foreman-code/contracts/source-admission'
 import type { SourceGitHubReferenceSchema } from '@foreman-code/contracts/source-operations'
 import type { z } from 'zod'
-import { approvedGitTreePaths, captureGitSource } from './capture.js'
+import { captureGitSource } from './capture.js'
 import { ensureCommit, type GitWorktreePorts } from './gitWorktree.js'
 import { SourceError, verifySourceBytes } from './manifest.js'
 import type { SourceByteReader, SourceSnapshotPin } from './ports.js'
@@ -26,7 +26,6 @@ export async function openGitHubSource(ports: GitWorktreePorts, reference: Refer
   let metadata: Uint8Array | undefined
   const manifest = await captureGitSource({ root: clone, approvedSourceId: pin.approvedSourceId, snapshotId: pin.snapshotId,
     commit: reference.commit, repository: reference.repository, executablePolicy: reference.executablePolicy,
-    approvedPaths: await approvedGitTreePaths(clone, reference.commit),
     sink: {
       write: async (_snapshot, entry, bytes) => { signal.throwIfAborted(); files.set(entry.path, bytes) },
       writeGitMetadata: async (_snapshot, bytes) => { metadata = bytes },

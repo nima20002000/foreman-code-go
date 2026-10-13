@@ -100,33 +100,33 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     const approve = { workspaceId: workspace.id, commandId: randomUUID(), expectedLocationRevision: Number(policy.locationRevision), commit, executablePolicy: 'strip' }
     const tools = await client.listTools()
     expect(tools.tools.find(tool => tool.name === 'source_approve')?.inputSchema.properties)
-      .toHaveProperty('approveTrackedTree')
+      .not.toHaveProperty('approveTrackedTree')
     const capabilities = await client.callTool({ name: 'operator_get_capabilities',
       arguments: { workspaceId: workspace.id, detail: 'full' } })
     expect(capabilities.isError).not.toBe(true)
     const { runtimeLimits } = OperatorCapabilitiesSchema.parse(decodeMcpToolResult(capabilities))
     expect(runtimeLimits?.find(limit => limit.feature === 'source_approval')?.detail)
-      .toContain('approveTrackedTree: true')
+      .toContain('without path approvals')
     const failure = (response: Awaited<ReturnType<Client['callTool']>>) => {
       expect(response.isError).toBe(true)
       const text = (response.content as { type: string; text?: string }[]).find(item => item.type === 'text')!.text!
       return JSON.parse(text).error
     }
-    for (const [approvedPaths, code, message] of [
-      [['../source.ts'], 'SOURCE_PATH_INVALID', 'Source paths must be unambiguous relative paths.'],
-      [['source.ts'], 'SOURCE_INCLUSION_NOT_APPROVED', 'Every exact tree entry must be explicitly approved; tracked secrets are never silently omitted.'],
-    ] as const) {
-      const explicit: Omit<typeof approve, 'approveTrackedTree'> & { approveTrackedTree?: boolean } = { ...approve }
-      delete explicit.approveTrackedTree
-      const request = { ...explicit, commandId: randomUUID(), approvedPaths: [...approvedPaths] }
-      expect(failure(await client.callTool({ name: 'source_approve', arguments: request })))
-        .toEqual({ code, message })
-      const httpError = await app.inject({ method: 'POST',
-        url: `/api/management/workspaces/${workspace.id}/sources/approve`,
-        headers: { authorization: `Bearer ${operator.token}` }, payload: { ...request, commandId: randomUUID() } })
-      expect(httpError.statusCode).toBe(400)
-      expect(httpError.json().error).toMatchObject({ code, message })
-    }
+    await writeFile(join(project, '.env'), 'SECRET=fixture\n')
+    await qualifiedGit(project, ['add', '.env'])
+    await qualifiedGit(project, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      'commit', '-m', 'sensitive source'])
+    const sensitiveCommit = (await qualifiedGit(project, ['rev-parse', 'HEAD'])).toString().trim()
+    const sensitiveRequest = { ...approve, commandId: randomUUID(), commit: sensitiveCommit }
+    expect(failure(await client.callTool({ name: 'source_approve', arguments: sensitiveRequest })))
+      .toMatchObject({ code: 'SOURCE_SENSITIVE_PATH' })
+    const httpError = await app.inject({ method: 'POST',
+      url: `/api/management/workspaces/${workspace.id}/sources/approve`,
+      headers: { authorization: `Bearer ${operator.token}` },
+      payload: { ...sensitiveRequest, commandId: randomUUID() } })
+    expect(httpError.statusCode).toBe(400)
+    expect(httpError.json().error).toMatchObject({ code: 'SOURCE_SENSITIVE_PATH' })
+    await qualifiedGit(project, ['rm', '-f', '.env'])
     const firstCall = await client.callTool({ name: 'source_approve', arguments: approve })
     expect(firstCall.isError, JSON.stringify(firstCall)).not.toBe(true)
     const first = SourceApproveResultSchema.parse(decodeMcpToolResult(firstCall))
@@ -260,14 +260,14 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     expect(JSON.stringify(unchangedRevision.content)).toContain('SOURCE_ROOT_REVISION_CONFLICT')
     const wrong = await client.callTool({ name: 'source_approve', arguments: { ...approve, rootPath: '/home/other', runId: 'invented', agentId: 'invented' } })
     expect(wrong.isError).toBe(true)
-    const denied = await access.issue({ name: 'Other scope', audience: 'operator', grants: [{ actions: ['sources:read', 'sources:approve', 'workspace_locations:read'], scope: { workspaceIds: ['workspace-other'] } }], expiresAt: new Date(Date.now() + 120_000) })
+    const denied = await access.issue({ name: 'Other scope', audience: 'operator', grants: [{ actions: ['sources:read', 'source_roots:bind', 'workspace_locations:read'], scope: { workspaceIds: ['workspace-other'] } }], expiresAt: new Date(Date.now() + 120_000) })
     const deniedClient = await connect(denied.token)
     expect(failure(await deniedClient.callTool({ name: 'source_approve',
       arguments: { ...approve, commandId: randomUUID() } }))).toMatchObject({ code: 'ACCESS_DENIED' })
     expect(ApprovedSourceSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_get',
       arguments: { workspaceId: workspace.id, ...pin } }))))).toEqual(read)
     expect(Number((await pool.query<{ count: string }>(`select count(*) from management_audit where principal_id=$1 and outcome='denied'`, [denied.principal.id])).rows[0]!.count)).toBeGreaterThan(0)
-    const reader = await access.issue({ name: 'Read-only source', audience: 'operator', grants: [{ actions: ['sources:read'], scope: { workspaceIds: [workspace.id] } }], expiresAt: new Date(Date.now() + 120_000) })
+    const reader = await access.issue({ name: 'Read-only source', audience: 'operator', grants: [{ actions: ['sources:read', 'workspace_locations:read'], scope: { workspaceIds: [workspace.id] } }], expiresAt: new Date(Date.now() + 120_000) })
     const readerClient = await connect(reader.token)
     expect((await readerClient.listTools()).tools.map(t => t.name)).not.toContain('source_approve')
     const beforeDenied = await sources.list(owner.principal, 'mcp', { workspaceId: workspace.id })

@@ -155,13 +155,13 @@ export class PostgresSourceService implements SourceAdmissionPort {
   /** `repository` captures from Main's own clone of the workspace's GitHub repository instead of its project folder. */
   async approve(principal: ManagementPrincipal, source: Transport, raw: unknown, repository?: { repository: string; clone: string; prepared?: true }) {
     const input = SourceApproveInputSchema.parse(raw)
-    requireAuthorization(principal, 'sources:approve', input); requireAuthorization(principal, 'sources:read', input)
+    requireAuthorization(principal, 'source_roots:bind', input); requireAuthorization(principal, 'sources:read', input)
     requireAuthorization(principal, 'workspace_locations:read', input)
     return this.commands.execute({ principal, source, operation: 'source.approve', commandId: input.commandId,
       targetKey: `workspace:${input.workspaceId}:source`, payload: input, dedicatedConnection: true,
       ...(repository ? { resourceLock: `source-project:${input.workspaceId}:${input.commit}` } : {}),
       authorize: async sql => {
-        await authorizeSource(sql, principal, 'sources:approve', input.workspaceId); await authorizeSource(sql, principal, 'sources:read', input.workspaceId); await this.host(sql)
+        await authorizeSource(sql, principal, 'source_roots:bind', input.workspaceId); await authorizeSource(sql, principal, 'sources:read', input.workspaceId); await this.host(sql)
         const prior = (await sql.query<{ availability: string }>(`select s.availability from source_approvals a join source_snapshots s on s.snapshot_id=a.snapshot_id
           where a.requested_by=$1 and a.command_id=$2
           union all select s.availability from management_command_receipts c join source_snapshots s
@@ -174,7 +174,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
         // Existing workspace/host ownership is checked before location.snapshot
         // probes its persisted path; input has no filesystem selector.
         const capturedOrigin = await this.captureTransaction<ApprovalRow | { reused: ApprovedSource }>(async sql => {
-          const live = await authorizeSource(sql, principal, 'sources:approve', input.workspaceId)
+          const live = await authorizeSource(sql, principal, 'source_roots:bind', input.workspaceId)
           requireAuthorization(live.principal, 'workspace_locations:read', input)
           // The location snapshot locks the workspace for update; lock it first so concurrent captures queue
           // instead of deadlocking on a share-lock upgrade.
@@ -188,7 +188,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
           }
           const location = repository ? await this.repositoryOrigin(sql, input.workspaceId, input.expectedLocationRevision, repository)
             : await this.locations.snapshot(sql, input.workspaceId, input.expectedLocationRevision, 'read-only')
-          const approvedPaths = input.approvedPaths ?? await approvedGitTreePaths(location.rootPath, input.commit)
+          const approvedPaths = await approvedGitTreePaths(location.rootPath, input.commit)
           if (repository) {
             const reusable = (await sql.query<{ record: unknown }>(`select s.record from source_snapshots s
               join source_approvals a on a.snapshot_id=s.snapshot_id
@@ -216,7 +216,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
           const configured = WorkspaceSchema.parse((await sql.query<{ record: unknown }>(
             'select record from workspaces where id=$1 for share', [input.workspaceId])).rows[0]!.record).repository
           const origin = { location, mainId: this.mainId, ownerId: live.ownerId, reservation,
-            ...(input.approveTrackedTree ? { approvedPaths } : {}),
+            approvedPaths,
             ...(configured ? { repository: `${configured.owner}/${configured.name}` } : {}) }
           await sql.query(`insert into source_approvals(approved_source_id,snapshot_id,workspace_id,owner_principal_id,requested_by,command_id,input_hash,state,origin,request)
             values($1,$2,$3,$4,$5,$6,$7,'capturing',$8::jsonb,$9::jsonb)`, [approvedSourceId, snapshotId, input.workspaceId, live.ownerId, principal.id,
@@ -228,7 +228,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
         return this.store.withCaptureLock(origin.snapshot_id, async () => {
           let manifest: SourceManifest
           try {
-            const approvedPaths = origin.origin.approvedPaths ?? input.approvedPaths
+            const approvedPaths = origin.origin.approvedPaths
             if (!approvedPaths) throw new DomainError('SOURCE_FACT_CONFLICT', 'The original tracked-tree approval inventory is missing.', 409)
             // Recover a finalized-but-unadopted exact source, never a mutable head.
             const committed = await this.store.manifest(origin.snapshot_id).catch((error: unknown) => {
@@ -238,7 +238,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
             manifest = committed ?? await captureGitSource({ root: origin.origin.location.rootPath, approvedSourceId: origin.approved_source_id,
               snapshotId: origin.snapshot_id, commit: input.commit,
               ...(origin.origin.repository ? { repository: origin.origin.repository } : {}),
-              approvedPaths, executablePolicy: input.executablePolicy, sink: this.store })
+              executablePolicy: input.executablePolicy, sink: this.store })
             if (manifest.approvedSourceId !== origin.approved_source_id || manifest.git?.commit !== input.commit
               || manifest.git.repository !== origin.origin.repository || manifest.executablePolicy !== input.executablePolicy
               || !isDeepStrictEqual(manifest.entries.map(e => e.path).sort(), [...approvedPaths].sort())) throw new DomainError('SOURCE_FACT_CONFLICT', 'Recovered source bytes do not match the original approval.', 409)
@@ -247,7 +247,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
             }
             const retainedBytes = await this.store.retainedCaptureBytes(origin.snapshot_id)
             return await this.transaction(async sql => {
-              const live = await authorizeSource(sql, principal, 'sources:approve', input.workspaceId)
+              const live = await authorizeSource(sql, principal, 'source_roots:bind', input.workspaceId)
               await authorizeSource(sql, principal, 'sources:read', input.workspaceId); requireAuthorization(live.principal, 'workspace_locations:read', input)
               await this.host(sql); await this.workspace(sql, input.workspaceId)
               const location = await sql.query<{ location_revision: string }>('select location_revision from workspaces where id=$1 for share', [input.workspaceId])
@@ -311,7 +311,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
     const source = options.source ?? 'mcp'
     const executablePolicy = input.executablePolicy ?? 'preserve-approved'
     const prepared = options.preparedRepository
-    await this.transaction(async sql => authorizeSource(sql, principal, 'sources:approve', input.workspaceId))
+    await this.transaction(async sql => authorizeSource(sql, principal, 'source_roots:bind', input.workspaceId))
     const configured = await this.transaction(async sql => WorkspaceSchema.parse((await sql.query<{ record: unknown }>(
       'select record from workspaces where id=$1', [input.workspaceId])).rows[0]?.record ?? { id: input.workspaceId, name: '-' }).repository)
     let repository: { repository: string; clone: string; prepared?: true } | undefined = configured ? { repository: `${configured.owner}/${configured.name}`,
@@ -333,7 +333,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
       operation: 'source.project.capture', commandId: input.commandId, targetKey: input.workspaceId,
       payload, dedicatedConnection: true,
       authorize: async sql => {
-        await authorizeSource(sql, principal, 'sources:approve', input.workspaceId)
+        await authorizeSource(sql, principal, 'source_roots:bind', input.workspaceId)
         await authorizeSource(sql, principal, 'sources:read', input.workspaceId)
         requireAuthorization(principal, 'workspace_locations:read', { workspaceId: input.workspaceId })
         await this.host(sql)
@@ -374,10 +374,9 @@ export class PostgresSourceService implements SourceAdmissionPort {
         })
         commit ??= (await qualifiedGit(location.rootPath,
           ['rev-parse', '--verify', 'HEAD^{commit}'])).toString('utf8').trim()
-        const approvedPaths = await approvedGitTreePaths(location.rootPath, commit!)
         if (!repository) await this.locations.revalidateSnapshot(input.workspaceId, location, 'read-only')
         return SourceApproveInputSchema.parse({ workspaceId: input.workspaceId, commandId: input.commandId,
-          expectedLocationRevision: location.locationRevision, commit, approvedPaths,
+          expectedLocationRevision: location.locationRevision, commit,
           executablePolicy })
       },
     })

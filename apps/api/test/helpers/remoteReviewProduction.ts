@@ -449,7 +449,7 @@ export async function remoteReviewProduction(options: {
       const approved = SourceApproveResultSchema.parse(await value('source_approve', {
         workspaceId: saved.scope.workspaceId, commandId: randomUUID(),
         expectedLocationRevision: mainLocation.locationRevision, commit,
-        approvedPaths: ['README.md'], executablePolicy: 'strip',
+        executablePolicy: 'strip',
       })).value
       return { mainLocation, approved }
     }

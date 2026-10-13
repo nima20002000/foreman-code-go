@@ -142,7 +142,7 @@ it('fetches promised blobs before isolated source capture needs them offline', a
   await rename(f.origin, join(f.root, 'offline-origin'))
   const captured: Buffer[] = []
   const manifest = await captureGitSource({ root: clone, commit: f.commit, approvedSourceId: randomUUID(),
-    approvedPaths: ['README.md'], executablePolicy: 'strip', sink: {
+    executablePolicy: 'strip', sink: {
       async write(_snapshot, _entry, bytes) { captured.push(Buffer.from(bytes)) },
       async commit() {},
       async abort() {},

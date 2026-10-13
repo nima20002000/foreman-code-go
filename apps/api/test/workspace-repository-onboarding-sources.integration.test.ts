@@ -16,7 +16,7 @@ describe('workspace repository onboarding: sources', () => {
       const input = await workspace(f)
       const imported = await add(f, input)
       const source = imported.value.approvedSource!
-      const operator = await f.issue([{ actions: ['sources:approve', 'sources:read', 'workspace_locations:read'],
+      const operator = await f.issue([{ actions: ['source_roots:bind', 'sources:read', 'workspace_locations:read'],
         scope: { workspaceIds: [input.workspaceId] } }])
       const approvals = () => f.pool.query('select snapshot_id from source_approvals where workspace_id=$1',
         [input.workspaceId])

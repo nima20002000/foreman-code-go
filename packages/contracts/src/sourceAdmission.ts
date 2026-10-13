@@ -1,12 +1,11 @@
 import { SourceRootReferenceSchema } from './worktreeSettings.js'
 import { z } from 'zod'
 import { IdSchema } from './schemaPrimitives.js'
-import { SOURCE_ENTRY_LIMIT, SourceManifestSchema, SourceHashSchema, RootBindingSchema, MaterializationReceiptSchema } from './sourceMaterialization.js'
+import { SourceManifestSchema, SourceHashSchema, RootBindingSchema, MaterializationReceiptSchema } from './sourceMaterialization.js'
 import { RootFilesystemIdentitySchema } from './workspaceRootPolicies.js'
 
 export type SourceAction =
   | 'sources:read'
-  | 'sources:approve'
   | 'sources:reconcile'
   | 'source_roots:read'
   | 'source_roots:bind'
@@ -14,11 +13,8 @@ export const SourcePinSchema = z.object({ approvedSourceId: z.uuid(), snapshotId
 export type ApprovedSourcePin = z.infer<typeof SourcePinSchema>
 export const SourceApproveInputSchema = z.object({ workspaceId: IdSchema, commandId: z.string().min(8).max(200),
   expectedLocationRevision: z.number().int().nonnegative(), commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
-  approvedPaths: z.array(z.string().min(1).max(1024)).min(1).max(SOURCE_ENTRY_LIMIT).optional(),
-  approveTrackedTree: z.literal(true).optional(), executablePolicy: z.enum(['strip', 'preserve-approved']),
-}).strict().refine(input => (input.approvedPaths !== undefined) !== (input.approveTrackedTree === true), {
-  message: 'Provide approvedPaths or approveTrackedTree: true, but not both.',
-})
+  executablePolicy: z.enum(['strip', 'preserve-approved']),
+}).strict()
 export const ApprovedSourceSchema = z.object({ version: z.literal(1), workspaceId: IdSchema, ownerPrincipalId: IdSchema,
   approvedByPrincipalId: IdSchema, locationRevision: z.number().int().nonnegative(),
   mainId: z.uuid(), originIdentityHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),

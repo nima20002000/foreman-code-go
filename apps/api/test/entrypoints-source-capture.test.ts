@@ -28,7 +28,7 @@ it('captures a complete committed repository at the entry limit into real privat
     const commit = (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim()
     await writeFile(join(root, 'AGENTS.md'), 'Uncommitted working tree changes.\n')
     const store = new PrivateSourceSnapshotStore(storage)
-    const manifest = await captureGitSource({ root, commit, approvedSourceId: randomUUID(), approvedPaths, executablePolicy: 'strip', sink: store })
+    const manifest = await captureGitSource({ root, commit, approvedSourceId: randomUUID(), executablePolicy: 'strip', sink: store })
     expect(manifest.git?.commit).toBe(commit)
     expect(manifest.entries.map(entry => entry.path)).toEqual([...approvedPaths].sort())
     expect(manifest.entries.length).toBeGreaterThan(2000)
@@ -47,7 +47,7 @@ it('captures a complete committed repository at the entry limit into real privat
     const publish = vi.spyOn(store, 'commit')
     try {
       await expect(captureGitSource({ root, commit: overflowCommit, approvedSourceId: randomUUID(),
-        approvedPaths: [...approvedPaths, 'overflow.ts'], executablePolicy: 'strip', sink: store }))
+        executablePolicy: 'strip', sink: store }))
         .rejects.toMatchObject({ code: 'SOURCE_CAPACITY', status: 413 })
       expect(abort).toHaveBeenCalledOnce()
       expect(publish).not.toHaveBeenCalled()
@@ -70,7 +70,7 @@ it('joins the actual Git child after cancellation with unread batch output', asy
     const commit = (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim(), controller = new AbortController()
     const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(controller.signal)
     try {
-      await expect(captureGitSource({ root, commit, approvedSourceId: randomUUID(), approvedPaths: ['first.bin', 'second.bin'], executablePolicy: 'strip',
+      await expect(captureGitSource({ root, commit, approvedSourceId: randomUUID(), executablePolicy: 'strip',
         sink: { write: async (...args) => { await store.write(...args); controller.abort(new Error('Capture stopped in sink.')) },
           commit: store.commit.bind(store), abort: store.abort.bind(store) } })).rejects.toThrow('Capture stopped in sink.')
       expect(abort).toHaveBeenCalledOnce(); expect(commitSink).not.toHaveBeenCalled()
@@ -92,7 +92,7 @@ it('quiesces every bounded pending private write before quarantining a failed ca
     for (const path of paths) await writeFile(join(root, path), 'Original bounded source bytes.\n')
     await qualifiedGit(root, ['add', '.']); await qualifiedGit(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@local', 'commit', '-qm', 'Fixture'])
     const commit = (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim()
-    captured = captureGitSource({ root, commit, approvedSourceId: randomUUID(), approvedPaths: paths, executablePolicy: 'strip', sink: {
+    captured = captureGitSource({ root, commit, approvedSourceId: randomUUID(), executablePolicy: 'strip', sink: {
       write: async (...args) => {
         active++; peak = Math.max(peak, active)
         try { if (++count === 4) { entered(); throw new Error('Private source writer failed.') } await held; await store.write(...args) }
@@ -121,7 +121,7 @@ it('maps its expired preparation budget to a typed retryable failure after priva
     await qualifiedGit(root, ['add', '.']); await qualifiedGit(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@local', 'commit', '-qm', 'Fixture'])
     const commit = (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim(), timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(controller.signal)
     try {
-      await expect(captureGitSource({ root, commit, approvedSourceId: randomUUID(), approvedPaths: ['source.txt'], executablePolicy: 'strip', sink: {
+      await expect(captureGitSource({ root, commit, approvedSourceId: randomUUID(), executablePolicy: 'strip', sink: {
         write: async (...args) => { await store.write(...args); controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError')) },
         commit: store.commit.bind(store), abort: store.abort.bind(store),
       } })).rejects.toMatchObject({ code: 'SOURCE_CAPTURE_TIMEOUT', status: 503, details: { retryable: true, newCommandRequired: true } })
