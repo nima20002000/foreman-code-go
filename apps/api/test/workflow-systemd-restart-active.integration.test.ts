@@ -8,7 +8,9 @@ import { assertInstalledWorkflowRestart } from './helpers/installedWorkflowResta
 describe('installed Main-local workflows across systemd restart', () => {
   let fixture: Awaited<ReturnType<typeof installationUpdateFixture>> | undefined
   const repository = fileURLToPath(new URL('../../../', import.meta.url))
-  const readBuildIdentity = () => fetch(new URL('/api/runtime/build-identity/v1', fixture!.origin()))
+  const readBuildIdentity = () => fetch(new URL('/api/runtime/build-identity/v1', fixture!.origin()), {
+    headers: { authorization: `Bearer ${fixture!.writer.token}` },
+  })
 
   beforeAll(async () => {
     fixture = await installationUpdateFixture({
