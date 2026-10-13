@@ -333,3 +333,78 @@ test('cloud Node bootstrap stops after three failed installs before enabling the
   assert.equal(shellEnvironment, '')
   assert.match(result.stderr, /Version '22\.23\.2' not found/)
 })
+
+for (const provider of ['github', 'circleci', 'circleci-ssh']) {
+  test(`${provider} checkout retains only the tested commit and its comparison base`, t => {
+    const directory = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'ci-checkout-'))
+    t.after(() => rmSync(directory, { recursive: true, force: true }))
+    const origin = join(directory, 'origin')
+    const checkout = join(directory, 'checkout')
+    mkdirSync(origin)
+    mkdirSync(checkout)
+    const environment = { ...process.env, GIT_AUTHOR_NAME: 'Fixture', GIT_COMMITTER_NAME: 'Fixture',
+      GIT_AUTHOR_EMAIL: 'fixture@example.org', GIT_COMMITTER_EMAIL: 'fixture@example.org' }
+    const git = (cwd, ...args) => {
+      const result = spawnSync('git', args, { cwd, env: environment, encoding: 'utf8' })
+      assert.equal(result.status, 0, result.stderr)
+      return result.stdout.trim()
+    }
+    git(origin, 'init', '-q', '-b', 'main')
+    git(origin, 'commit', '--allow-empty', '-qm', 'old history')
+    const stale = git(origin, 'rev-parse', 'HEAD')
+    git(origin, 'branch', 'ci/stale', stale)
+    git(origin, 'commit', '--allow-empty', '-qm', 'comparison base')
+    const base = git(origin, 'rev-parse', 'HEAD')
+    git(origin, 'commit', '--allow-empty', '-qm', 'tested commit')
+    const commit = git(origin, 'rev-parse', 'HEAD')
+    git(origin, 'branch', 'ci/tested', commit)
+    const require = createRequire(new URL('../apps/api/package.json', import.meta.url))
+    const { parse } = require('yaml')
+    if (provider === 'github') {
+      const configuration = parse(readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'))
+      const action = configuration.jobs.ci.steps.find(step => step.uses?.startsWith('actions/checkout@'))
+      // Execute the documented checkout action ref/depth contract against the fixture remote.
+      const depthInput = action.with['fetch-depth']
+      const depth = typeof depthInput === 'number' ? depthInput
+        : Function('inputs', `return (${depthInput.slice(3, -2)})`)({ base_commit: base })
+      git(checkout, 'init', '-q')
+      git(checkout, 'remote', 'add', 'origin', `file://${origin}`)
+      if (depth === 0) git(checkout, 'fetch', 'origin', '+refs/heads/*:refs/remotes/origin/*')
+      else git(checkout, 'fetch', '--no-tags', `--depth=${depth}`, 'origin', commit)
+      git(checkout, 'checkout', '--detach', commit)
+    } else {
+      const configuration = parse(readFileSync(new URL('../.circleci/config.yml', import.meta.url), 'utf8'))
+      const step = configuration.jobs.ci.steps[0]
+      if (step === 'checkout') {
+        git(directory, 'clone', '-q', `file://${origin}`, checkout)
+        git(checkout, 'checkout', '--detach', commit)
+      } else {
+        let repositoryUrl = `file://${origin}`
+        const bin = join(directory, 'bin')
+        mkdirSync(bin)
+        if (provider === 'circleci-ssh') {
+          repositoryUrl = 'git@github.com:octo/site-ci.git'
+          writeFileSync(join(bin, 'git'), `#!${process.execPath}
+const { spawnSync } = require('node:child_process')
+const args = process.argv.slice(2)
+if (args.includes('git@github.com:octo/site-ci.git')) process.exit(42)
+const mapped = args.map(value => value === 'https://github.com/octo/site-ci.git' ? process.env.FIXTURE_ORIGIN : value)
+const result = spawnSync(process.env.FIXTURE_GIT, mapped, { stdio: 'inherit' })
+process.exit(result.status ?? 1)
+`, { mode: 0o755 })
+        }
+        const gitExecutable = spawnSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim()
+        const result = spawnSync('bash', ['-ec', step.run.command], { cwd: checkout, encoding: 'utf8',
+          env: { ...environment, PATH: `${bin}${delimiter}${process.env.PATH}`, FIXTURE_GIT: gitExecutable,
+            FIXTURE_ORIGIN: `file://${origin}`, CIRCLE_REPOSITORY_URL: repositoryUrl,
+            CIRCLE_SHA1: commit, BASE_COMMIT: base } })
+        assert.equal(result.status, 0, result.stderr)
+      }
+    }
+    assert.equal(git(checkout, 'rev-parse', 'HEAD'), commit)
+    assert.equal(git(checkout, 'for-each-ref', '--format=%(refname)', 'refs/remotes/'), '')
+    assert.equal(git(checkout, 'rev-list', '--count', 'HEAD'), '2')
+    assert.equal(git(checkout, 'merge-base', base, 'HEAD'), base)
+    assert.equal(spawnSync('git', ['cat-file', '-e', stale], { cwd: checkout }).status, 1)
+  })
+}

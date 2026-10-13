@@ -41,6 +41,9 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[]) {
     if (sql.includes("state='queued'")) {
       return { rows: records.filter(record => record.state === 'queued').map(record => ({ record, durations: null })) }
     }
+    if (sql.includes("'gate'='true'")) {
+      return { rows: records.filter(record => record.gate).map(record => ({ record })) }
+    }
     if (sql.includes("state in ('passed','failed')")) return { rows: [] }
     return { rows: records.filter(record => ['starting', 'running'].includes(record.state))
       .map(record => ({ record, host_key: record.computer?.hostRef.kind === 'cloud' ? cloud.key : host.key })) }
@@ -60,6 +63,31 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[]) {
   const service = new HostCiService(pool, {} as PostgresCommandCoordinator, {} as CiAuthority, {} as CiCommits, endpoint)
   return { service, started, writes: () => writes }
 }
+
+it.each([
+  { suite: 'integration', requiresBuildComputer: true,
+    files: ['apps/api/test/native-service-restart.integration.test.ts'] },
+  { suite: 'integration', requiresBuildComputer: false,
+    files: ['apps/api/test/workflow.integration.test.ts'] },
+  { suite: 'unit', requiresBuildComputer: false,
+    files: ['apps/api/src/modules/ci-host/servicePlacement.test.ts'] },
+] as const)('prefers an idle build computer for affected $suite with requiresBuildComputer=$requiresBuildComputer',
+  async ({ suite, requiresBuildComputer, files }) => {
+    const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run,
+      suite, scope: 'affected', files, requiresBuildComputer,
+    }))
+    const circleci = { ...cloud, userSystemd: { supported: true, reason: null } }
+    const github: HostCiComputer = {
+      ...circleci, key: 'cloud:github', label: 'GitHub',
+      hostRef: { kind: 'cloud', mainId: 'main', provider: 'github', slot: 0 },
+    }
+    const f = fleet(records, [circleci, github, host])
+    await f.service.dispatch()
+    expect(f.started).toHaveLength(1)
+    expect(f.started[0]?.computer.key).toBe(host.key)
+    expect(f.started[0]?.request).toMatchObject({ operation: 'start', suite, scope: 'affected', files })
+    expect(records[0]).toMatchObject({ state: 'running', computer: { hostRef: host.hostRef } })
+  })
 
 it('assigns host slices to build computers even when a cloud computer has higher priority', async () => {
   const records = queuedRuns(2)
@@ -183,4 +211,19 @@ it('skips the slow tier with a reason when another part of its request failed', 
   expect(f.started).toHaveLength(0)
   expect(records[1]).toMatchObject({ state: 'canceled',
     message: expect.stringContaining('slow tests run only after every other test of this request passed') })
+})
+
+it('lets later full requests dispatch when the oldest gate already has a failed part', async () => {
+  const [failed, straggler] = queuedRuns(2).map((run, index) => CiRunRecordSchema.parse({ ...run, gate: true,
+    state: index ? 'running' : 'failed', computer: index ? { hostRef: cloud.hostRef, label: cloud.label } : null,
+    startedAt: '2026-10-12T00:00:01.000Z', finishedAt: index ? null : '2026-10-12T00:01:00.000Z' }))
+  const [later] = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, suite: 'lint', partition: null,
+    queuedAt: '2026-10-12T00:02:00.000Z' }))
+  const records = [failed!, straggler!, later!]
+  const second = { ...cloud, key: 'cloud:circleci:1', hostRef: { ...cloud.hostRef, slot: 1 } }
+  const f = fleet(records, [cloud, second])
+  await f.service.dispatch()
+  expect(f.started.map(item => item.request.operation === 'start' ? item.request.runId : null)).toEqual([later!.id])
+  expect(records[2]).toMatchObject({ state: 'running', message: null })
+  expect(records[1]!.state).toBe('running')
 })

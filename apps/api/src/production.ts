@@ -14,7 +14,7 @@ import { GitCiCommits } from './modules/ci-host/commits.js'
 import { RunCiAuthority } from './modules/jobs/ciAuthority.js'
 import { ProductionHostCiEndpoint } from './modules/ci-host/endpoint.js'
 import { HostCiRunner } from './modules/ci-host/runner.js'
-import { cloudCis, workspaceMirrors } from './modules/ci-host/cloud.js'
+import { activeCiRuns, cloudCis, workspaceMirrors } from './modules/ci-host/cloud.js'
 import { agentSnapshots, type ReadAgentFiles } from './modules/ci-host/agentSnapshots.js'
 import { systemGitWorktreePorts } from './modules/sources/gitWorktree.js'
 import { registerComputerAccountsRoutes } from './routes/computerAccounts.js'
@@ -34,7 +34,7 @@ import { WORKSPACE_ROOT_EXTENSION } from '@foreman-code/contracts/workspace-root
 import { PRODUCT_SLUG } from '@foreman-code/contracts/product'
 import type { ClaudeHarnessConfiguration } from '@foreman-code/contracts/claude'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
-import { appMcpServerName } from './modules/harnesses/appMcpLauncher.js'
+import { appLauncherPath, appMcpServerName } from './modules/harnesses/appMcpLauncher.js'
 import { createMainRsyncEntrypoint } from './modules/byte-transfer/installedEntrypoints.js'
 import { PostgresTrustedConnectionSetup } from './modules/devices/trustedConnectionSetup.js'
 import {
@@ -462,6 +462,7 @@ export function buildProductionApp(
       { namespace: COMPUTER_ACCOUNTS_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 65_536, maxBinaryBytes: 0 },
       { namespace: COMPUTER_MAINTENANCE_NAMESPACE, version: COMPUTER_MAINTENANCE_VERSION, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       createProductionWorkerArtifactExtension({
+        pool: database.pool,
         environment: process.env,
         releaseDirectory: fileURLToPath(new URL('../../../', import.meta.url)),
       }),
@@ -897,7 +898,7 @@ export function buildProductionApp(
   const nativeConfigurations = new NativeConfigurationService(
     config.harnesses.codexBinary, config.harnesses.workspaceRoot, nativeFactories, claudeMetadata, providerAccounts,
   )
-  const appRoutes = new AppMcpRoutes(database.pool, appMcpEndpoint)
+  const appRoutes = new AppMcpRoutes(database.pool, appMcpEndpoint, appLauncherPath(), () => runtimeOwner)
   const maintenancePorts = systemMaintenancePorts(process.env, { get codex() { return mainCodex.binary } })
   maintenancePorts.selectInstalledCodex = async signal => {
     const binary = await mainCodex.selectInstalled(signal)
@@ -1163,7 +1164,7 @@ export function buildProductionApp(
     reconcileTerminalCredentials: () => credentials.reconcileTerminalCredentials(),
     renew: async (executionId, credential) => {
       const expiresAt = await credentials.renewForExecution(executionId, credential)
-      await appRoutes.refresh()
+      if (!closing) await appRoutes.refresh()
       return expiresAt
     },
   }
@@ -1771,7 +1772,6 @@ export function buildProductionApp(
       { name: 'passive resource telemetry collector', run: async () => { await telemetry?.close() } },
       { name: 'diagnostic and configuration qualification native managers', run: () => nativeFactories.disposeAuxiliaries() },
       { name: 'Job dispatch owners', run: async () => { await jobRuntime?.close() } },
-      { name: 'Foreman Code MCP routes', run: () => appRoutes.close() },
       { name: 'execution native managers', run: async () => {
         // Preserve the manager and authenticated channels until every restart detach commits, including retries.
         try {
@@ -1796,10 +1796,14 @@ export function buildProductionApp(
       } },
     ],
     // Independent of initialized: startup can acquire ownership and then fail.
-    releaseOwnership: () => runtimeOwner.close(),
+    releaseOwnership: async () => {
+      await appRoutes.close()
+      await runtimeOwner.close()
+    },
   })
   const beginShutdown = (): void => {
     closing = true
+    appRoutes.stopAdmission()
     startupLifetime.abort()
     lifecycle.begin()
   }
@@ -1996,7 +2000,9 @@ export function buildProductionApp(
         runtimeServices.workspaces, runtimeServices.workspaceRoots, jobRuntime.policies, jobRuntime.sources,
         machine.installationId, projectRoot)
       registerWorkspaceRepositoryRoutes(app, runtimeServices.workspaceRepositories)
-      const clouds = cloudCis(machine.installationId, workspaceMirrors(database.pool))
+      const clouds = cloudCis(machine.installationId, workspaceMirrors(database.pool), {
+        activeRuns: () => activeCiRuns(database.pool),
+      })
       runtimeServices.computerActivity = new ComputerActivityService(database.pool, machine.installationId,
         id => deviceRuntime.presenceFor(id), commands, clouds)
       registerComputerActivityRoutes(app, runtimeServices.computerActivity)

@@ -257,3 +257,16 @@ test('a dedicated computer fills every slot while CPU is busy and still stops at
   assert.ok(peak <= 1)
   assert.ok(full.results.some(result => result.status !== 'PASSED' || peak <= 1))
 })
+
+test('a dedicated computer starts free slots together while a shared host spaces its starts', async () => {
+  const startTimes = async dedicated => {
+    const started = []
+    await scheduleQueue(Array.from({ length: 3 }, (_, index) => ({ id: `file-${index}` })), {
+      ...defaults, maxConcurrency: 3, pollIntervalMs: 200, dedicated,
+      execute: async () => { started.push(performance.now()); await delay(10); return { code: 0 } },
+    })
+    return started.at(-1) - started[0]
+  }
+  assert.ok(await startTimes(true) < 100)
+  assert.ok(await startTimes(false) >= 2 * 200 - 20)
+})
