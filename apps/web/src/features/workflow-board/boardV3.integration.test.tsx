@@ -47,7 +47,8 @@ function newBoardMock(options: Parameters<typeof createCurrentBoardMock>[0] = {}
 }
 function locks() {
   const queues = new Map<string, Promise<unknown>>()
-  Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: (key: string, action: () => unknown) => {
+  Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: (key: string, action: (() => unknown) | LockOptions, claim?: (lock: { name: string }) => unknown) => {
+    if (typeof action !== 'function') return claim!({ name: key })
     const result = (queues.get(key) ?? Promise.resolve()).then(action); queues.set(key, result.catch(() => undefined)); return result
   } } })
 }
