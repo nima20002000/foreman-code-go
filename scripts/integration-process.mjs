@@ -81,6 +81,7 @@ export function waitForIntegrationProcess(child, {
   pollIntervalMs = integrationProcessLimits.pollIntervalMs,
   graceMs = integrationProcessLimits.graceMs,
   onTimeout = () => {},
+  finished,
 }) {
   // A file past its adaptive deadline is hung even while it still logs; the idle watchdog stays as a backstop.
   const hungAfterMs = deadlineMs !== null && deadlineMs < fileTimeoutMs ? deadlineMs : null
@@ -126,15 +127,18 @@ export function waitForIntegrationProcess(child, {
     const timer = setInterval(() => { void check() }, pollIntervalMs)
     child.once('error', onError)
     child.once('exit', onExit)
+    // A reused coordinator reports each file's status without exiting.
+    finished?.then((code) => { if (!timedOut) finish({ code, timedOut: false }) })
   })
 }
 
 export async function superviseIntegrationProcess(child, {
-  resetAfterTimeout, cleanupAfterExit = async () => {}, ...options
+  resetAfterTimeout, cleanupAfterExit = async () => {},
+  stopProcesses = (_result, graceMs) => stopGroup(child.pid, { graceMs }), ...options
 }) {
   const result = await waitForIntegrationProcess(child, options)
   try {
-    await stopGroup(child.pid, { graceMs: options.graceMs ?? integrationProcessLimits.graceMs })
+    await stopProcesses(result, options.graceMs ?? integrationProcessLimits.graceMs)
     await cleanupAfterExit()
   } catch (error) {
     return { ...result, code: 1, error, slotUnavailable: true }

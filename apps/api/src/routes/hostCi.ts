@@ -1,4 +1,4 @@
-import { CiGetOutputSchema, CiListOutputSchema, CiLogsInputSchema, CiLogsOutputSchema, CiRunInputSchema, CiRunOutputSchema,
+import { CiComputersOutputSchema, CiCancelOutputSchema, CiGetOutputSchema, CiListOutputSchema, CiLogsInputSchema, CiLogsOutputSchema, CiRunInputSchema, CiRunOutputSchema,
   CiTestStatusFilterSchema, CiTestsOutputSchema, OperatorCiListInputSchema } from '@foreman-code/contracts'
 import { z } from 'zod'
 import type { FastifyInstance } from 'fastify'
@@ -17,6 +17,10 @@ export function registerHostCiRoutes(app: FastifyInstance, services: { ci?: Host
     CiRunOutputSchema.parse(await ci().run(requirePrincipal(request), {
       ...CiRunInputSchema.parse(request.body), workspaceId: request.params.workspaceId,
     }, 'http')))
+  app.get<{ Params: { workspaceId: string } }>(`${root}/computers`, async request =>
+    CiComputersOutputSchema.parse(await ci().computers(requirePrincipal(request), request.params)))
+  app.delete<{ Params: { workspaceId: string; ticketId: string } }>(`${root}/:ticketId`, async request =>
+    CiCancelOutputSchema.parse(await ci().cancel(requirePrincipal(request), request.params)))
   // The CI tickets of one Run, for the Board's CI component (the Operator uses ci_list).
   const listQuery = OperatorCiListInputSchema.pick({ runId: true }).strict()
   app.get<{ Params: { workspaceId: string }; Querystring: unknown }>(root, async request =>

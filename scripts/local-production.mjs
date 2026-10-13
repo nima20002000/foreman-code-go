@@ -6,6 +6,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
+import { runProductionCiSmoke } from './install-ci-smoke.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { renderUserService } from '../apps/worker/src/service.mjs'
 import { workerPath } from '../apps/worker/src/harnessPath.mjs'
@@ -81,7 +82,7 @@ async function stageRelease() {
     await cp(join(source, 'apps/web/dist'), join(release, 'apps/web/dist'), { recursive: true })
     await mkdir(join(release, 'scripts'), { recursive: true })
     for (const name of ['local-production.mjs', 'local-production-runtime.mjs', 'graphql-mcp.mjs',
-      'worker-release-artifacts.mjs', 'worker-artifact-files.mjs']) {
+      'worker-release-artifacts.mjs', 'worker-artifact-files.mjs', 'install-ci-smoke.mjs']) {
       await copyFile(join(source, 'scripts', name), join(release, 'scripts', name))
     }
     await copyVerificationRuntime(source, release)
@@ -93,6 +94,11 @@ async function stageRelease() {
     for (const name of ['service.mjs', 'diagnostics.mjs', 'harnessPath.mjs']) {
       await copyFile(join(source, 'apps/worker/src', name), join(release, 'apps/worker/src', name))
     }
+    const { stdout: commit } = await capture('git', ['rev-parse', 'HEAD'], { cwd: source })
+    const { stdout: remote } = await capture('git', ['remote', 'get-url', 'origin'], { cwd: source })
+    const repository = /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?\s*$/.exec(remote)?.[1]
+    if (!repository) throw new Error('Production CI smoke requires a GitHub origin repository.')
+    await publish(join(release, 'ci-smoke.json'), JSON.stringify({ commit: commit.trim(), repository }))
     await copyFile(process.execPath, join(release, 'node'))
     await chmod(join(release, 'node'), 0o700)
     await buildWorkerReleaseArtifacts({ repository: source, directory: join(release, 'worker-artifacts'),
@@ -165,12 +171,52 @@ X-GNOME-Autostart-enabled=true
 ` })
 }
 
-async function waitForReady(timeoutMs = 90_000) {
+async function waitForReady({ timeoutMs = 90_000, ...checks } = {}) {
   const environment = await readEnvironment(envFile)
   if (!environment) throw new Error('Production configuration is missing.')
   const release = await realpath(current)
   const expected = await readProductionIdentity(release, environment.DATABASE_URL)
-  await waitForProductionReady({ origin, expected, timeoutMs })
+  await waitForProductionReady({ origin, expected, timeoutMs, ...checks })
+}
+
+async function activateRelease(release) {
+  const pending = join(app, `current.${randomBytes(8).toString('hex')}`)
+  try {
+    await symlink(release, pending)
+    await rename(pending, current)
+  } finally {
+    await rm(pending, { force: true })
+  }
+}
+
+async function rollbackRelease(previousRelease) {
+  await run('/usr/bin/systemctl', ['--user', 'stop', units.api])
+  if (!previousRelease) {
+    await rm(current, { force: true })
+    console.error('Rejected release stopped; no previous release is available.')
+    return
+  }
+  await activateRelease(previousRelease)
+  await run('/usr/bin/systemctl', ['--user', 'start', units.api])
+  await waitForReady()
+  console.error('Restored the previous production release.')
+}
+
+async function runAuthenticatedCiSmoke(release, environment) {
+  if (process.env.FOREMAN_INSTALL_SKIP_CI_SMOKE === '1') {
+    await runProductionCiSmoke({ origin, release })
+    return
+  }
+  const api = join(release, 'apps/api/dist')
+  const { loadConfig } = await import(pathToFileURL(join(api, 'config.js')))
+  const { createDatabase } = await import(pathToFileURL(join(api, 'infrastructure/database.js')))
+  const { withInstallSmokeCredential } = await import(pathToFileURL(join(api, 'cli/installSmokeCredential.js')))
+  const database = createDatabase(loadConfig({ ...process.env, ...environment }).database)
+  try {
+    await withInstallSmokeCredential(database.pool, token => runProductionCiSmoke({ origin, release, token }))
+  } finally {
+    await database.close()
+  }
 }
 
 async function install() {
@@ -209,16 +255,12 @@ async function install() {
     const upgradeModule = join(release, 'apps/api/dist/modules/harnesses/productionMcpUpgrade.js')
     const { upgradeProductionMcpLauncher } = await import(pathToFileURL(upgradeModule))
     await upgradeProductionMcpLauncher(home)
-    const pending = join(app, `current.${randomBytes(8).toString('hex')}`)
-    try {
-      await symlink(release, pending)
-      await rename(pending, current)
-    } finally {
-      await rm(pending, { force: true })
-    }
-    await enableProductionServices(run, [units.database, units.api], { firstInstall })
-    await run('/usr/bin/systemctl', ['--user', 'start', units.api])
-    await waitForReady()
+    await activateRelease(release)
+    await waitForReady({ start: async () => {
+      await enableProductionServices(run, [units.database, units.api], { firstInstall })
+      await run('/usr/bin/systemctl', ['--user', 'start', units.api])
+    }, smoke: () => runAuthenticatedCiSmoke(release, environment),
+      rollback: () => rollbackRelease(previousRelease) })
     const pruned = await pruneReleases(join(app, 'releases'), [release, previousRelease])
     if (pruned.length) console.log(`Removed ${pruned.length} old release(s); kept the current and previous release.`)
     console.log(`Foreman Code backend installed: ${origin}/workspaces`)

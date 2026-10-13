@@ -139,8 +139,11 @@ export function startProcessMetrics(pid, { procRoot = '/proc', intervalMs = 100,
     : linuxProcessUnits()
   const started = performance.now()
   const identities = new Map()
+  // CPU a process had already used when tracking began is not this job's, e.g. a reused coordinator's earlier files.
+  const initialTicks = new Map()
   let peakRssBytes = 0
   let rootGroup
+  let sampled = false
   let result
   let sampleError
   const sample = () => {
@@ -167,10 +170,12 @@ export function startProcessMetrics(pid, { procRoot = '/proc', intervalMs = 100,
     for (const ownedPid of owned) {
       const record = records.get(ownedPid)
       const previous = identities.get(ownedPid)
+      if (!sampled) initialTicks.set(ownedPid, record.ticks)
       identities.set(ownedPid, { ...record, ticks: Math.max(previous?.ticks ?? 0, record.ticks) })
       if (record.state !== 'Z') rssBytes += record.rssPages * units.pageSizeBytes
     }
     peakRssBytes = Math.max(peakRssBytes, rssBytes)
+    sampled = true
     return records
   }
   sample()
@@ -201,8 +206,8 @@ export function startProcessMetrics(pid, { procRoot = '/proc', intervalMs = 100,
       result = {
         durationMs: performance.now() - started,
         peakRssBytes,
-        cpuSeconds: [...identities.values()].reduce((total, record) => total + record.ticks, 0)
-          / units.clockTicksPerSecond,
+        cpuSeconds: [...identities.values()].reduce((total, record) =>
+          total + record.ticks - (initialTicks.get(record.pid) ?? 0), 0) / units.clockTicksPerSecond,
       }
       return result
     },

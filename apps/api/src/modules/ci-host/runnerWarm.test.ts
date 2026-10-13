@@ -72,7 +72,7 @@ if (args[1] === 'db:up') {
     availableMemoryBytes: () => 16 * 2 ** 30,
     run: async (file, args, options) => {
       if (file === 'gh') return { code: 0, stdout: '', stderr: '' }
-      if (file === 'git' && args.includes('clone')) {
+      if (file === 'git' && args.some(value => value.startsWith('https://github.com/'))) {
         return system.run(file, args.map(arg => arg.startsWith('https://') ? origin : arg), options)
       }
       if (file === 'systemd-run') {
@@ -107,7 +107,9 @@ if (args[1] === 'db:up') {
     // A malformed snapshot entry conflicts with the checkout even when the runner has root privileges.
     await mkdir(join(modules, snapshots[0]!, 'package.json'))
   }
-  return { run, commands, origin, git, failOffline, damageSnapshot }
+  return { run, commands, origin, git, failOffline, damageSnapshot, checkout: (...args: string[]) => execFileSync('git', args, {
+    cwd: join(root, 'runner/git/example/project'), env: environment, encoding: 'utf8',
+  }).trim() }
 }
 
 it('warms once, installs offline on later jobs, and preserves private mutable dependencies', async () => {
@@ -182,4 +184,19 @@ it('installs fresh when a warmed dependency snapshot cannot be copied', async ()
   await expect(fixture.run()).resolves.toMatchObject({
     run: { state: 'passed' }, text: expect.stringContaining('dependency=pristine'),
   })
+})
+
+
+it('fetches only the tested commit on a cold runner and on later jobs with explicit files', async () => {
+  const fixture = await computer()
+  const staleCommit = fixture.git('rev-parse', 'HEAD')
+  fixture.git('branch', 'ci/stale', staleCommit)
+  fixture.git('commit', '--allow-empty', '-qm', 'tested commit')
+  await expect(fixture.run()).resolves.toMatchObject({ run: { state: 'passed' } })
+  expect(fixture.checkout('for-each-ref', '--format=%(refname)', 'refs/remotes/')).toBe('')
+  expect(fixture.checkout('rev-list', '--count', fixture.git('rev-parse', 'HEAD'))).toBe('1')
+  fixture.git('commit', '--allow-empty', '-qm', 'next tested commit')
+  await expect(fixture.run()).resolves.toMatchObject({ run: { state: 'passed' } })
+  expect(fixture.checkout('for-each-ref', '--format=%(refname)', 'refs/remotes/')).toBe('')
+  expect(fixture.checkout('rev-list', '--count', fixture.git('rev-parse', 'HEAD'))).toBe('1')
 })

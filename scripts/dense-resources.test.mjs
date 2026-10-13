@@ -56,7 +56,7 @@ function writeProcess(root, { pid, parent, group, ticks, pages }) {
   writeFileSync(join(root, String(pid), 'stat'), `${pid} (command with ) parentheses) ${fields.join(' ')}\n`)
 }
 
-test('metrics include tree and group descendants and retain sampled CPU after parent exit', t => {
+test('metrics include tree and group descendants, count CPU used while tracked, and retain it after parent exit', t => {
   const procRoot = fixture(t)
   writeProcess(procRoot, { pid: 100, parent: 1, group: 100, ticks: 10, pages: 2 })
   writeProcess(procRoot, { pid: 200, parent: 100, group: 200, ticks: 20, pages: 3 })
@@ -69,7 +69,8 @@ test('metrics include tree and group descendants and retain sampled CPU after pa
   rmSync(join(procRoot, '100'), { recursive: true })
   writeProcess(procRoot, { pid: 200, parent: 1, group: 200, ticks: 40, pages: 20 })
   const metrics = monitor.stop()
-  assert.equal(metrics.cpuSeconds, 0.8)
+  // Ticks already used when tracking began (a reused coordinator's earlier files) are not this job's CPU.
+  assert.equal(metrics.cpuSeconds, 0.2)
   assert.equal(metrics.peakRssBytes, 25 * 4096)
   assert.ok(metrics.durationMs >= 0)
   assert.equal(monitor.stop(), metrics)

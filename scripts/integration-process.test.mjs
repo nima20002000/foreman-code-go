@@ -8,6 +8,9 @@ import { adaptiveDeadlineMs, groupUsed, integrationProcessProgress, stopGroup, s
   waitForIntegrationProcess } from './integration-process.mjs'
 import { boundedLog } from './verification-reports.mjs'
 import { fullRunExitCode, scheduleFiles } from './test-integration.mjs'
+import { reusableIntegrationFile, startSlotServer, stopSlotServer, stopStrayProcesses,
+  strayProcesses } from './integration-slot-process.mjs'
+import { slotFileCode } from './integration-slot-server.mjs'
 
 function loggedChild(log, script, { ipc = false } = {}) {
   const fd = openSync(log, 'w', 0o600)
@@ -421,4 +424,79 @@ test('a file within its adaptive deadline finishes normally', async () => {
     await stopGroup(child.pid, { graceMs: 100 })
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+// Speaks the slot coordinator protocol: one JSON command per stdin line, output, then the done line. A file named
+// "leak" leaves a lingering test worker with a grandchild; "hang" never finishes; "fail" exits 1.
+const fakeSlotServer = `
+const { spawn } = require('node:child_process')
+require('node:readline').createInterface({ input: process.stdin }).on('line', (line) => {
+  const { file } = JSON.parse(line)
+  process.stdout.write('output of ' + file + '\\n')
+  if (file === 'hang') return setInterval(() => process.stdout.write('still running\\n'), 20)
+  if (file === 'leak') spawn(process.execPath, ['-e', "require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']); setInterval(() => {}, 1000)", '/vitest/dist/workers/forks.js'], { stdio: 'ignore' })
+  process.stdout.write('\\n[integration-slot] done ' + (file === 'fail' ? 1 : 0) + '\\n')
+})`
+
+test('one slot coordinator runs consecutive files with separate output, statuses and leftover cleanup', async () => {
+  const server = startSlotServer(process.env, undefined, { args: ['-e', fakeSlotServer] })
+  const pid = server.child.pid
+  try {
+    const outputs = {}
+    const run = (file) => server.run({ file }, (chunk) => { outputs[file] = (outputs[file] ?? '') + chunk })
+    assert.equal(await run('first'), 0)
+    assert.equal(await run('fail'), 1)
+    assert.equal(await run('leak'), 0)
+    await new Promise((done) => setTimeout(done, 200))
+    assert.equal(strayProcesses(pid).length, 2)
+    await stopStrayProcesses(pid, { graceMs: 1000, settleMs: 20 })
+    assert.deepEqual(strayProcesses(pid), [])
+    assert.equal(server.alive, true)
+    assert.equal(await run('last'), 0)
+    assert.equal(server.child.pid, pid)
+    for (const file of ['first', 'fail', 'leak', 'last']) assert.equal(outputs[file].trim(), `output of ${file}`)
+  } finally {
+    await stopSlotServer(server, { graceMs: 500 })
+  }
+  assert.equal(groupUsed(pid), false)
+})
+
+test('a reused coordinator reports a finished file without exiting and a hung file still loses its whole group', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'integration-slot-'))
+  const server = startSlotServer(process.env, undefined, { args: ['-e', fakeSlotServer] })
+  const pid = server.child.pid
+  const supervise = (file) => {
+    const log = join(directory, `${file}.log`)
+    const output = boundedLog(log, 1024 * 1024)
+    const progress = integrationProcessProgress()
+    const finished = server.run({ file }, (chunk) => { progress.lastOutputAt = Date.now(); output.write(chunk) })
+    return superviseIntegrationProcess(server.child, { log, progress, finished, idleTimeoutMs: 2000,
+      fileTimeoutMs: 3000, deadlineMs: 300, pollIntervalMs: 20, graceMs: 100,
+      stopProcesses: (outcome, graceMs) => outcome.timedOut ? stopGroup(pid, { graceMs })
+        : stopStrayProcesses(pid, { graceMs, settleMs: 20 }) }).finally(() => { server.detach(); output.close() })
+  }
+  try {
+    assert.deepEqual(await supervise('first'), { code: 0, timedOut: false })
+    assert.equal(server.alive, true)
+    const hung = await supervise('hang')
+    assert.equal(hung.code, 124)
+    assert.equal(hung.hung, true)
+    assert.equal(groupUsed(pid), false)
+  } finally {
+    await stopSlotServer(server, { graceMs: 100 })
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('only ordinary files share a slot coordinator, and its file status follows the Vitest CLI', () => {
+  assert.equal(reusableIntegrationFile('apps/api/test/agent-chat-g4.integration.test.ts'), true)
+  assert.equal(reusableIntegrationFile('apps/api/test/operator-chat-controls.integration.test.ts'), false)
+  assert.equal(reusableIntegrationFile('apps/api/test/native-service-restart.integration.test.ts'), false)
+  assert.equal(reusableIntegrationFile('apps/api/test/historical-chat-placement-fork.integration.test.ts'), false)
+  const module = (state) => ({ state: () => state })
+  assert.equal(slotFileCode(module('passed'), []), 0)
+  assert.equal(slotFileCode(module('skipped'), []), 0)
+  assert.equal(slotFileCode(module('failed'), []), 1)
+  assert.equal(slotFileCode(module('passed'), [new Error('unhandled')]), 1)
+  assert.equal(slotFileCode(undefined, []), 1)
 })

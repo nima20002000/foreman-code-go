@@ -3,6 +3,7 @@ import { CiRunRecordSchema, type CiHostRequest, type CiRunRecord } from '@forema
 import type { HostCiComputer } from './service.js'
 import { withTransaction, type SqlQuery } from '../../infrastructure/transaction.js'
 import { ExecutionLimiter } from '../runs/limiter.js'
+import { sanitizeCiText, serializeCiJson } from './text.js'
 
 const dispatchLimits = new WeakMap<pg.Pool, ExecutionLimiter>()
 const dispatchSignal = new AbortController().signal
@@ -27,7 +28,7 @@ export async function withCiTicketLock<T>(pool: pg.Pool, ticketId: string, work:
 export async function saveQueuedCiRun(pool: pg.Pool, previous: CiRunRecord, next: CiRunRecord) {
   const saved = await pool.query(`update ci_runs set state=$2, host_key=$3, record=$4::jsonb
     where id=$1 and state='queued' and host_key is null and record=$5::jsonb`,
-  [previous.id, next.state, null, JSON.stringify(next), JSON.stringify(previous)])
+  [previous.id, next.state, null, serializeCiJson(next), JSON.stringify(previous)])
   return Boolean(saved.rowCount)
 }
 
@@ -38,17 +39,17 @@ export async function claimCiDispatch(pool: pg.Pool, run: CiRunRecord, computer:
     computer: { hostRef: computer.hostRef, label: computer.label }, dispatchRequest: request })
   const saved = await pool.query(`update ci_runs set state=$2, host_key=$3, record=$4::jsonb
     where id=$1 and state='queued' and host_key is null and record=$5::jsonb`,
-  [run.id, next.state, computer.key, JSON.stringify(next), JSON.stringify(run)])
+  [run.id, next.state, computer.key, serializeCiJson(next), JSON.stringify(run)])
   return saved.rowCount ? next : null
 }
 
 /** This is only safe after the executor definitely rejected entry. */
 export async function releaseCiDispatch(sql: SqlQuery, run: CiRunRecord, computer: HostCiComputer, message: string) {
   const next = CiRunRecordSchema.parse({ ...run, state: 'queued', computer: null, step: null,
-    dispatchRequest: undefined, message: message.slice(0, 2000) })
+    dispatchRequest: undefined, message: sanitizeCiText(message).slice(0, 2000) })
   const saved = await sql.query(`update ci_runs set state=$2, host_key=null, record=$4::jsonb
     where id=$1 and state='starting' and host_key=$3 and record=$5::jsonb`,
-  [run.id, next.state, computer.key, JSON.stringify(next), JSON.stringify(run)])
+  [run.id, next.state, computer.key, serializeCiJson(next), JSON.stringify(run)])
   return Boolean(saved.rowCount)
 }
 
