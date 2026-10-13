@@ -157,9 +157,12 @@ test('fails', () => assert.equal(1, 2))
 test.skip('skips', () => assert.fail('skipped case ran'))
 `)
   const reporter = fileURLToPath(new URL('./ci-node-test-reporter.mjs', import.meta.url))
+  const environment = { ...process.env }
+  // The independent suite uses its reporter instead of the parent's test IPC channel.
+  delete environment.NODE_TEST_CONTEXT
   const result = spawnSync(process.execPath, ['--test', `--test-reporter=${reporter}`,
     `--test-reporter-destination=${output}`, file], { encoding: 'utf8',
-      env: { ...process.env, NODE_TEST_CONTEXT: 'child-v8' } })
+      env: environment })
   assert.equal(result.status, 1, result.stderr)
   const results = ciTestResults([JSON.parse(readFileSync(output, 'utf8'))], directory)
   assert.deepEqual(results.summary, { passed: 1, failed: 1, skipped: 1 })

@@ -1345,6 +1345,7 @@ it('preserves MCP cancellation when an in-flight refresh returns an unstarted ti
   let entered!: () => void
   const blocked = new Promise<void>(resolve => { release = resolve })
   const reading = new Promise<void>(resolve => { entered = resolve })
+  let cancellation: Promise<unknown> | undefined
   try {
     const tickets = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'integration', scope: 'full', partitions: 2, commandId: 'cancel-unstarted',
@@ -1364,16 +1365,26 @@ it('preserves MCP cancellation when an in-flight refresh returns an unstarted ti
     }
     const dispatch = f.ci.dispatch()
     await reading
-    expect(await f.value(f.operator, 'ci_cancel', { ticketId: started.ticketId }))
-      .toMatchObject({ run: { state: 'canceled' } })
+    let canceled = false
+    cancellation = f.value(f.operator, 'ci_cancel', { ticketId: started.ticketId }).then(value => {
+      canceled = true
+      return value
+    })
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(canceled).toBe(false)
+    const pending = await reader.callTool({ name: 'ci_get',
+      arguments: { workspaceId: f.workspaceId, ticketId: started.ticketId } })
+    expect(pending.isError).not.toBe(true)
+    expect(CiGetOutputSchema.parse(decodeMcpToolResult(pending)).run.state).toBe('running')
     release()
     await dispatch
+    expect(await cancellation).toMatchObject({ run: { state: 'canceled' } })
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
     expect(read.run.state).toBe('canceled')
     expect((await f.pool.query('select record,host_key from ci_runs where id=$1', [started.ticketId])).rows[0])
       .toEqual({ record: read.run, host_key: null })
     expect(f.started).toHaveLength(1)
-  } finally { release(); await f.close() }
+  } finally { release(); await cancellation; await f.close() }
 })
 
 it('prefers build computers and CircleCI over higher-priority GitHub slots for integration', async () => {
