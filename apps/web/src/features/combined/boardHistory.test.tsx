@@ -75,9 +75,10 @@ async function mountBoard(entry = runsUrl('run-a', scope)) {
 }
 
 async function choose(user: ReturnType<typeof userEvent.setup>, runId: string) {
-  const controls = screen.getByRole('group', { name: 'Board controls' })
-  await user.click(within(controls).getByRole('button', { name: 'Runs' }))
-  const menu = await screen.findByRole('menu', { name: 'Runs' })
+  const controls = screen.getByLabelText('Board controls')
+  expect(controls).toHaveRole('group')
+  await user.click(within(controls).getByLabelText('Runs', { selector: 'button' }))
+  const menu = await screen.findByLabelText('Runs', { selector: '[role=menu]' })
   await user.click(await waitFor(() => {
     const row = menu.querySelector<HTMLButtonElement>(`[data-run-id="${runId}"]`)
     expect(row).not.toBeNull()
@@ -236,11 +237,12 @@ describe('Selected Board history', { timeout: 20_000 }, () => {
     vi.stubGlobal('innerWidth', width)
     const chatReads = installBoardHistory()
     const { router } = await mountBoard()
-    await screen.findByRole('region', { name: 'Selected Run pinned topology' })
+    await screen.findByLabelText('Selected Run pinned topology')
     const assertSelection = async (runId: string, name: string) => {
       // Run changes remount the canvas. Wait for its pins before retaining a query scope.
       const pinned = await waitFor(() => {
-        const region = screen.getByRole('region', { name: 'Selected Run pinned topology' })
+        const region = screen.getByLabelText('Selected Run pinned topology')
+        expect(region).toHaveRole('region')
         expect(region).toHaveTextContent(`Run ${runId} · version version-${runId.slice(4)}`)
         return region
       })
@@ -252,42 +254,43 @@ describe('Selected Board history', { timeout: 20_000 }, () => {
       }
       expect(router.state.location.search).toMatchObject(expectedPins)
       const graph = within(pinned)
-      // Whole-app button queries also compute names/styles for the retained editor.
-      const node = await graph.findByRole('button', { name: `Inspect Run node ${name}` })
+      const node = await graph.findByLabelText(`Inspect Run node ${name}`, { selector: 'button' })
+      expect(node).toHaveRole('button')
       expect(node).toBeVisible()
       expect(node).toBeEnabled()
-      expect(screen.queryByRole('complementary', { name: 'Agent chat' })).not.toBeInTheDocument()
-      expect(screen.queryByRole('button', { name: 'Open Selected Run panel' })).not.toBeInTheDocument()
-      await user.click(graph.getByRole('button', { name: `Open ${name} chat` }))
-      const chat = await screen.findByRole('dialog', { name: `${name} chat` })
-      // The redesigned chat header replaces the popover subtitle; the Run binding is proven by the chat read below.
+      expect(screen.queryByLabelText('Agent chat', { selector: 'aside, [role=complementary]' })).not.toBeInTheDocument()
+      expect(screen.queryByLabelText('Open Selected Run panel', { selector: 'button' })).not.toBeInTheDocument()
+      await user.click(graph.getByLabelText(`Open ${name} chat`, { selector: 'button' }))
+      const chat = await screen.findByLabelText(`${name} chat`, { selector: '[role=dialog]' })
+      expect(chat).toBeVisible()
       expect(within(chat).getByTestId('agent-conversation')).toBeInTheDocument()
       await waitFor(() => expect(chatReads.at(-1)?.searchParams.get('runId')).toBe(runId))
       expect(chatReads.at(-1)?.searchParams.get('workflowNodeId')).toBe(name === 'Y' ? 'node-y' : 'node-x')
       await user.keyboard('{Escape}')
       await waitFor(() => expect(chat).not.toBeInTheDocument())
-      const controls = screen.getByRole('group', { name: 'Workflow controls' })
-      await user.click(within(controls).getByRole('button', { name: 'Activities' }))
+      const controls = screen.getByLabelText('Workflow controls')
+      expect(controls).toHaveRole('group')
+      await user.click(within(controls).getByLabelText('Activities', { selector: 'button' }))
       const activities = await screen.findByRole('dialog', { name: 'Activities' })
       expect(await within(activities).findByText(`Saved run ${runId}`)).toBeVisible()
-      await user.click(within(activities).getByRole('button', { name: 'Close runs' }))
+      await user.click(within(activities).getByLabelText('Close runs', { selector: 'button' }))
       expect(router.state.location.search).toMatchObject(expectedPins)
       expect(pinned).toHaveTextContent(`Run ${runId} · version version-${runId.slice(4)}`)
     }
     await assertSelection('run-a', 'Y')
-    const controls = screen.getByRole('group', { name: 'Board controls' })
+    const controls = screen.getByLabelText('Board controls')
     if (width === 320) {
-      await user.click(within(controls).getByRole('button', { name: 'Files' }))
+      await user.click(within(controls).getByLabelText('Files', { selector: 'button' }))
       const dialog = await screen.findByRole('dialog', { name: 'Files' })
-      await user.click(within(dialog).getByRole('button', { name: 'Close files' }))
+      await user.click(within(dialog).getByLabelText('Close files', { selector: 'button' }))
       await waitFor(() => expect(dialog).not.toBeInTheDocument())
     }
     await choose(user, 'run-b')
     await assertSelection('run-b', 'X in B')
-    expect(screen.queryByRole('button', { name: 'Inspect Run node Y' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Inspect Run node Y', { selector: 'button' })).not.toBeInTheDocument()
     await choose(user, 'run-a')
     await assertSelection('run-a', 'Y')
-    expect(screen.queryByRole('button', { name: 'Inspect Run node X in B' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Inspect Run node X in B', { selector: 'button' })).not.toBeInTheDocument()
   })
 
   it('keeps same-named Operator file cards bound to chats A and B while a Board is open', async () => {
