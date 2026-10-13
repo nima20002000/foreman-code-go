@@ -1,8 +1,13 @@
+import { once } from 'node:events'
+import { readFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { connect } from 'node:tls'
 import { afterAll, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest'
 import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { deliveredReview, receipts, reviewInProgress, useRemoteReviewFixture,
   waitForRemoteReview } from './helpers/remoteReviewProductionCases.js'
+import { createRemoteReviewTransport } from './helpers/remoteReviewTransport.js'
 
 let diagnosticOutput: MockInstance<typeof console.info>
 beforeAll(() => {
@@ -12,6 +17,40 @@ const withRemoteReviewFixture = useRemoteReviewFixture()
 afterAll(() => diagnosticOutput.mockRestore())
 
 describe('production remote review and native recovery through authenticated MCP', () => {
+  it('closes the review transport with an accepted TLS connection that has not upgraded', async () => {
+    await withRemoteReviewFixture(async fixture => {
+      const certificateFile = join(fixture.directory, 'tls', 'certificate.pem')
+      const transport = await createRemoteReviewTransport({
+        certificateFile,
+        privateKeyFile: join(fixture.directory, 'tls', 'private-key.pem'),
+        endpoint: 'wss://127.0.0.1:1/device/connect',
+        beforeAuthorization: async () => {},
+      })
+      const endpoint = new URL(transport.endpoint)
+      const socket = connect({
+        host: endpoint.hostname,
+        port: Number(endpoint.port),
+        ca: await readFile(certificateFile),
+      })
+      let closing: Promise<void> | undefined
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      let closedBeforeDisconnect = false
+      try {
+        await once(socket, 'secureConnect')
+        closing = transport.close()
+        closedBeforeDisconnect = await Promise.race([
+          closing.then(() => true),
+          new Promise<boolean>(resolve => { timeout = setTimeout(() => resolve(false), 2_000) }),
+        ])
+      } finally {
+        clearTimeout(timeout)
+        socket.destroy()
+        await (closing ?? transport.close())
+      }
+      expect(closedBeforeDisconnect).toBe(true)
+    })
+  })
+
   it('persists a delivered remote decision and denies a read-only caller on the same product endpoint', async () => {
     await withRemoteReviewFixture(async fixture => {
       const active = await reviewInProgress(fixture)
