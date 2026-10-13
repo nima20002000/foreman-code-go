@@ -39,8 +39,9 @@ export async function claimCiDispatch(pool: pg.Pool, run: CiRunRecord, computer:
   request: Extract<CiHostRequest, { operation: 'start' }>): Promise<CiRunRecord | null> {
   const next = CiRunRecordSchema.parse({ ...run, state: 'starting', step: 'dispatch', message: null,
     computer: { hostRef: computer.hostRef, label: computer.label }, dispatchRequest: request,
-    ...(computer.hostRef.kind !== 'cloud' ? { dispatchHostKey: computer.key,
-      dispatchAttempts: (run.dispatchAttempts ?? 0) + 1, dispatchedAt: new Date().toISOString() } : {}) })
+    dispatchAttempts: computer.hostRef.kind === 'cloud' ? 0 : (run.dispatchAttempts ?? 0) + 1,
+    dispatchedAt: new Date().toISOString(),
+    ...(computer.hostRef.kind !== 'cloud' ? { dispatchHostKey: computer.key } : {}) })
   const saved = await pool.query(`update ci_runs set state=$2, host_key=$3, record=$4::jsonb
     where id=$1 and state='queued' and host_key is null and record=$5::jsonb`,
   [run.id, next.state, computer.key, serializeCiJson(next), JSON.stringify(run)])
@@ -79,11 +80,13 @@ export function rejectedCiStart(error: unknown) {
 }
 
 /** The request may finish later; its reply cannot settle a ticket after this deadline. */
-export async function requestCiStart<T>(request: () => Promise<T>): Promise<T> {
+export async function requestCiStart<T>(request: () => Promise<T>,
+  options: { timeoutMs?: number } = {}): Promise<T> {
   let timer: NodeJS.Timeout | undefined
   try {
     return await Promise.race([request(), new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error('CI start acknowledgement timed out.')), CI_START_ACK_TIMEOUT_MS)
+      timer = setTimeout(() => reject(new Error('CI start acknowledgement timed out.')),
+        options.timeoutMs ?? CI_START_ACK_TIMEOUT_MS)
       timer.unref()
     })])
   } finally {
