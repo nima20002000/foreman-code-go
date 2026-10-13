@@ -35,6 +35,7 @@ describe.skipIf(!postgresEnabled)('PostgreSQL approval delivery races', () => {
       expect(await f.receipts()).toEqual([])
       expect((await f.runs.get(f.f.run.id))?.outcome).not.toBe('succeeded')
       expect(f.provider.counts.responses).toBe(1)
+      await expect(f.engine.shutdown()).resolves.toBeUndefined()
     } finally { release.resolve(); await observed }
   }, 60000)
 })
