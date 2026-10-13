@@ -53,6 +53,7 @@ interface MirrorMaintenance {
   at: number
   cleanup: Promise<void> | undefined
   keep: Set<string>
+  pendingFinishedRunId?: string | undefined
 }
 const mirrorPublications = new Map<string, Map<string, Promise<Publication>>>()
 const mirrorMaintenance = new Map<string, MirrorMaintenance>()
@@ -393,7 +394,11 @@ export class CloudCi {
       ?? { at: -Infinity, cleanup: undefined, keep: new Set<string>() }
     mirrorMaintenance.set(key, maintenance)
     const now = this.ports.now().getTime()
-    if (maintenance.cleanup || now - maintenance.at < PRUNE_INTERVAL_MS) return
+    if (maintenance.cleanup) {
+      if (finishedRunId) maintenance.pendingFinishedRunId = finishedRunId
+      return
+    }
+    if (now - maintenance.at < PRUNE_INTERVAL_MS) return
     maintenance.keep.clear()
     for (const reservation of publishingBranches.get(run.mirror) ?? []) {
       const branch = reservation.split('\n')[1]!
@@ -405,6 +410,13 @@ export class CloudCi {
     maintenance.cleanup = cleanup
     void cleanup.then(() => {
       maintenance.cleanup = undefined
+      const pendingFinishedRunId = maintenance.pendingFinishedRunId
+      if (pendingFinishedRunId) {
+        maintenance.pendingFinishedRunId = undefined
+        // A sweep's reservations can retain branches belonging to tickets that finished during it.
+        maintenance.at = -Infinity
+        this.schedulePrune(run, pendingFinishedRunId)
+      }
     })
   }
 
