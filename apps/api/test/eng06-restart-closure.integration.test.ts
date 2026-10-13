@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, it } from 'vitest'
+import { checkpointOwnerMigration } from '../src/infrastructure/checkpointOwnerMigration.js'
 import { workflowRestartRecoveryMigration } from '../src/infrastructure/workflowRestartRecoveryMigration.js'
 import { recoverWorkflowNativeClosure, readWorkflowClosure, readUnboundWorkflowClosure } from '../src/modules/interactions/workflowClosure.js'
 import { RunOwnership } from '../src/modules/runs/ownership.js'
@@ -38,6 +39,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('ENG06-A PostgreSQL recovery rec
         detached_at timestamptz,detached_reference jsonb,closed_without_session boolean not null default false);
       create index execution_native_closures_latest_idx on execution_native_closures(execution_id,generation desc);
     `)
+    await pool.query(checkpointOwnerMigration.sql)
     await pool.query(workflowRestartRecoveryMigration.sql)
   }, 30_000)
   afterAll(async () => {
@@ -66,6 +68,29 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('ENG06-A PostgreSQL recovery rec
     assert.ok(owner)
     return { execution, reference, owner, generation: row.generation }
   }
+
+  it('advances checkpoint ownership when a recovery owner is replaced', async () => {
+    const f = await seed()
+    try {
+      assert.equal(f.owner.checkpointGeneration, '1')
+      const competing = await RunOwnership.acquire(pool, f.execution.runId, () => undefined)
+      if (competing) await competing.release()
+      assert.equal(competing, undefined)
+    } finally {
+      await f.owner.release()
+    }
+
+    const successor = await RunOwnership.acquire(pool, f.execution.runId, () => undefined)
+    assert.ok(successor)
+    try {
+      assert.equal(successor.checkpointGeneration, '2')
+      await recoverWorkflowNativeClosure(successor, f.execution, async () => true, new AbortController().signal)
+      const closure = await readWorkflowClosure(successor.oneShotConnection(), f.execution)
+      assert.equal(closure?.durableGeneration, f.generation)
+    } finally {
+      await successor.release()
+    }
+  })
 
   for (const detached of [false, true]) it(`persists and reuses exact ${detached ? 'detached' : 'crashed'} closure across Run owners`, async () => {
     const f = await seed({ detached })
