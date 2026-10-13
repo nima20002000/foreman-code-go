@@ -7,6 +7,7 @@ import { onTestFailed } from 'vitest'
 import { CurrentWorkflowReadResultSchema } from '@foreman-code/contracts/wave25'
 import { RunPlacementGetResultSchema } from '@foreman-code/contracts/placement-readback'
 import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
+import { ApprovedSourceSchema, SourceRootListResultSchema } from '@foreman-code/contracts/source-admission'
 import { ScheduleOperatorCapabilitiesSchema } from '../src/mcp/operator/tools/workflowSchedules.js'
 import { advanceMainSourceBinding, fixture, startInput, toolError } from './helpers/nodePlacementStartFixture.js'
 
@@ -61,6 +62,9 @@ describe.skipIf(!postgresEnabled)('mixed computer placement readback', () => {
       expect(accepted.accepted).toBe(true)
       expect(accepted.replayed).toBe(false)
       expect(await f.start(via === 'http' ? 'mcp' : 'http', input)).toEqual({ ...accepted, replayed: true })
+      const rootResult = await f.client.callTool({ name: 'source_root_list', arguments: { workspaceId: input.workspaceId } })
+      expect(rootResult.isError).not.toBe(true)
+      const roots = SourceRootListResultSchema.parse(decodeMcpToolResult(rootResult)).items
       const expected = [f.placement.local, f.placement.remote]
       stage = 'placement readback'
       const readbacks: AcceptedNodePlacement[] = []
@@ -78,13 +82,24 @@ describe.skipIf(!postgresEnabled)('mixed computer placement readback', () => {
         if (index === 0) expect(pin.labelAtAcceptance).toBe('Main')
         expect(pin.hostRef).toEqual(expected[index]!.hostRef)
         expect(pin.destination.canonicalProjectRoot).toBe(expected[index]!.projectRoot)
-        expect(pin.source).toMatchObject({ kind: 'pending', ...f.placement.source,
-          rootId: expected[index]!.rootBinding!.rootId, bindingRevision: 1 })
+        const root = roots.find(root => root.binding.rootId === expected[index]!.rootBinding!.rootId)!
+        expect(root.binding.bindingRevision).toBeGreaterThan(expected[index]!.rootBinding!.bindingRevision)
+        expect(pin.source).toEqual({ kind: 'pending', ...root.source, revisionId: root.source.snapshotId,
+          rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision,
+          materializationId: null, materializationDigest: null })
+        const sourceResult = await f.client.callTool({ name: 'source_get', arguments: {
+          workspaceId: input.workspaceId, ...root.source,
+        } })
+        expect(sourceResult.isError).not.toBe(true)
+        expect(ApprovedSourceSchema.parse(decodeMcpToolResult(sourceResult)).manifest.git?.commit)
+          .toBe(f.git('rev-parse', 'HEAD'))
         expect(pin.payload).toMatchObject({ kind: 'agent', agentId: node.agentId,
           agentConfigurationVersionId: saved.version.agentConfigurationVersionIds[node.agentId],
           instanceId: expected[index]!.instanceId, instanceRevision: '1', harnessInstallationId: expected[index]!.harnessInstallationId })
         readbacks.push(pin)
       }
+      expect(readbacks[0]!.source).toMatchObject({ snapshotId: roots[0]!.source.snapshotId })
+      expect(readbacks[1]!.source).toMatchObject({ snapshotId: roots[0]!.source.snapshotId })
       expect((await f.base.db.pool.query('select record from run_node_placements where run_id=$1 order by node_id',
         [accepted.run.id])).rows.map(row => row.record)).toEqual([...readbacks].sort((a, b) => a.nodeId.localeCompare(b.nodeId)))
       await advanceMainSourceBinding(f)

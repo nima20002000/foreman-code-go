@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { expect } from 'vitest'
-import { SendAgentChatMessageResponseSchema } from '@foreman-code/contracts/agent-chat'
+import { SendAgentChatMessageResponseSchema, type AgentChatState } from '@foreman-code/contracts/agent-chat'
 import { ReadSelectedRunChatResponseSchema } from '@foreman-code/contracts/selected-run-chat'
 import { WorkerConversationBindingSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { remoteReviewProduction, waitForRemoteReview } from './remoteReviewProduction.js'
 import { measureIntegrationPhase } from './integrationPhase.js'
+import { readUntil } from './observableCondition.js'
 
 export async function historicalChatPlacement(
   scenario: (fixture: Awaited<ReturnType<typeof remoteReviewProduction>>) => Promise<void>,
@@ -55,9 +56,8 @@ export async function forkHistoricalChat(
   const { started, execution, workspaceId, selection, read } = source
   const accepted = SendAgentChatMessageResponseSchema.parse(await measureIntegrationPhase('historical chat fork send',
     () => fixture.value('agent_chat_send', { workspaceId, selection, message })))
-  const completed = await measureIntegrationPhase('historical chat fork completion', () => waitForRemoteReview(read,
-    state => state.turns.some(turn => turn.requestId === message.requestId && turn.delivery === 'completed'),
-    'Worker chat fork completion'))
+  const completed = await measureIntegrationPhase('historical chat fork completion',
+    () => waitForHistoricalChatTurn(read, message.requestId, 'Worker chat fork completion'))
   expect(completed.conversation?.nativeSession?.nativeSessionId).not.toBe(execution.nativeSessionId)
   expect(completed.conversation?.origin).toEqual({ kind: 'run_execution', runId: started.run.id,
     executionId: execution.id, sourceNativeSessionId: execution.nativeSessionId })
@@ -69,4 +69,20 @@ export async function forkHistoricalChat(
   expect(binding.profile.instanceId).toBe(fixture.profiles[0]!.instanceId)
   expect(binding.sourceExecution?.executionId).toBe(execution.id)
   return { ...source, message, completed, id }
+}
+
+export function waitForHistoricalChatTurn(read: () => Promise<AgentChatState>, requestId: string, description: string) {
+  return readUntil(read, state => {
+    const turn = state.turns.find(turn => turn.requestId === requestId)
+    if (turn?.delivery === 'completed') return true
+    if (turn?.delivery === 'failed' || turn?.delivery === 'canceled') {
+      const detail = turn.error ? `${turn.error.code}: ${turn.error.message}` : 'The turn did not complete.'
+      throw new Error(`${description} ${turn.delivery}: ${detail}`)
+    }
+    if (state.sessionState === 'error' || state.sessionState === 'unavailable') {
+      throw new Error(`${description} ${state.sessionState}: ${state.availability.reason ?? 'native_session_missing'}: `
+        + (state.availability.message ?? 'The chat session cannot complete this turn.'))
+    }
+    return false
+  }, { timeoutMs: 15_000, description })
 }

@@ -21,7 +21,7 @@ describe.skipIf(!postgresEnabled)('mixed computer placement validation', () => {
     } finally { await f.close() }
   }, 120_000)
 
-  it('rejects a Main source binding that changes between resolution and admission commit', async () => {
+  it.each(['http', 'mcp'] as const)('%s rejects a Main source binding that changes between resolution and admission commit', async via => {
     const f = await fixture()
     try {
       const saved = await f.save('mcp')
@@ -32,8 +32,14 @@ describe.skipIf(!postgresEnabled)('mixed computer placement validation', () => {
         return result
       })
       const input = startInput(f, saved)
-      expect(toolError(await f.client.callTool({ name: 'run_start', arguments: input })))
-        .toMatchObject({ error: { code: 'PLACEMENT_ADMISSION_CONFLICT' } })
+      if (via === 'mcp') {
+        expect(toolError(await f.client.callTool({ name: 'run_start', arguments: input })))
+          .toMatchObject({ error: { code: 'PLACEMENT_ADMISSION_CONFLICT' } })
+      } else {
+        const response = await f.app.inject({ method: 'POST', url: `${f.path}/runs`, headers: f.headers, payload: input })
+        expect(response.statusCode).toBe(409)
+        expect(response.json()).toMatchObject({ error: { code: 'PLACEMENT_ADMISSION_CONFLICT' } })
+      }
       expect((await f.base.db.pool.query('select id from runs where workflow_id=$1', [input.workflowId])).rows).toEqual([])
       expect((await f.base.db.pool.query('select 1 from run_node_placements p join runs r on r.id=p.run_id where r.workflow_id=$1',
         [input.workflowId])).rows).toEqual([])

@@ -53,7 +53,7 @@ if (args[0] === 'mcp') {
     process.stderr.write(`Error: No MCP server named '${args[2]}' found.\n`)
     process.exit(1)
   }
-  send(args[1] === 'list' ? [{ name: mcpName }] : mcp)
+  send(args[1] === 'list' ? [mcp] : mcp)
   process.exit(0)
 }
 if (args[0] !== 'app-server') process.exit(2)

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
-import { historicalChatPlacement, historicalChatSource, forkHistoricalChat } from './helpers/historicalChatPlacement.js'
+import { historicalChatPlacement, historicalChatSource, forkHistoricalChat,
+  waitForHistoricalChatTurn } from './helpers/historicalChatPlacement.js'
 import { AgentChatStateSchema } from '@foreman-code/contracts/agent-chat'
 import { waitForRemoteReview } from './helpers/remoteReviewProduction.js'
 import { measureIntegrationPhase } from './helpers/integrationPhase.js'
@@ -45,11 +46,7 @@ it('recovers historical chat on its accepted Worker through Main restart and pro
     await measureIntegrationPhase('historical chat continuation send',
       () => fixture.value('agent_chat_send', { workspaceId, selection, message: followUp }))
     const resumed = await measureIntegrationPhase('historical chat continuation completion',
-      () => waitForRemoteReview(read, state => {
-        const turn = state.turns.find(turn => turn.requestId === followUp.requestId)
-        expect(turn?.delivery, JSON.stringify(turn?.error)).not.toBe('failed')
-        return turn?.delivery === 'completed'
-      }, 'recovered Worker chat continuation'))
+      () => waitForHistoricalChatTurn(read, followUp.requestId, 'recovered Worker chat continuation'))
     expect(resumed.turns.find(turn => turn.requestId === followUp.requestId)?.error).toBeUndefined()
     expect(resumed.conversation?.nativeSession).toEqual(completed.conversation?.nativeSession)
     expect(await fixture.details(started.run.id)).toEqual(before)
