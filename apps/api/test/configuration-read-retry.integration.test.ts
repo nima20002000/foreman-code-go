@@ -1,3 +1,4 @@
+import { createTestPool } from './helpers/testPool.mjs'
 import pg from 'pg'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
@@ -12,7 +13,7 @@ afterEach(() => vi.restoreAllMocks())
 describe.skipIf(!postgresEnabled)('configuration reads before native launch', () => {
   it.each(['acquisition', 'statement'] as const)('retries a %s timeout under the same execution and saved configuration', async fault => {
     const f = await currentOperatorIntegration({ approvalNodeIds: [] })
-    const reads = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL, max: 1,
+    const reads = createTestPool({ connectionString: f.db.pool.options.connectionString, max: 1,
       connectionTimeoutMillis: 10_000,
       options: `-c search_path=${f.db.schema} -c statement_timeout=10000` })
     const workflows = new PostgresWorkflowRepository(reads)
