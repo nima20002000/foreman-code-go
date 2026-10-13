@@ -80,6 +80,14 @@ it('settles an unoffered rollover failure and retries through authenticated Agen
     }
     const nativeId = (await repository.get(id!))!.native_session_id
     expect(transport!.offers).toHaveLength(256)
+    expect(new Set(transport!.offers).size).toBe(256)
+    const idle = await graphRpc(app, owner.token, 'tools/call', { name: 'agent_chat_read',
+      arguments: { workspaceId: seeded.scope.workspaceId, query } })
+    expect(idle.result?.isError).not.toBe(true)
+    const idleState = AgentChatStateSchema.parse(graphRpcValue(idle.result))
+    expect(idleState.activeTurn).toBeNull()
+    expect(idleState.turns.every(turn => turn.delivery === 'completed')).toBe(true)
+    expect(idleState.turns.find(turn => turn.requestId === 'completed-255')?.delivery).toBe('completed')
     transport!.failNextResume()
     const input = { requestId: 'unoffered', content: 'retryable input', intent: 'next_turn', expectedConversationId: id, context: query }
     const denied = await graphRpc(app, reader.token, 'tools/call', { name: 'agent_chat_send',

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import {
-  RUN_INSPECTION_TOOLS, RUN_INSPECTION_LIMITS, RunRecordDetailSchema, WorkflowRunV3Schema, makeCurrentWorkflowFixture,
+  RUN_INSPECTION_TOOLS, RUN_INSPECTION_LIMITS, RunRecordDetailSchema, RunExecutionsPageSchema, WorkflowRunV3Schema, makeCurrentWorkflowFixture,
 } from '@foreman-code/contracts/wave25'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
@@ -23,6 +23,11 @@ describe.skipIf(!postgresEnabled)('PostgreSQL authenticated Run inspection: larg
       expect(queued.run.executionState).toBe('queued')
       expect(queued.run).not.toHaveProperty('result')
       await f.engine.start(f.f.run.id); await terminal(f)
+      const executions = RunExecutionsPageSchema.parse(await parity(f, f.client, f.writer.token,
+        RUN_INSPECTION_TOOLS.executions, { ...args, limit: 100 }))
+      expect(executions.items).toHaveLength(fixture.version.definition.nodes.length)
+      expect(executions.items.every(execution => execution.state === 'completed')).toBe(true)
+      expect(executions.pageInfo.nextCursor).toBeNull()
       const counts = { ...f.provider.counts }
       const aggregate = await f.app.inject({ method: 'GET',
         url: `/api/management/workspaces/${args.workspaceId}/runs/${args.runId}`,
