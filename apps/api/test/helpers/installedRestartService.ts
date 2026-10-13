@@ -1,11 +1,11 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { copyFile, cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { userInfo } from 'node:os'
-import { dirname, join, relative } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import ts from 'typescript'
 import { apiServiceTemplate, deployProductionApi, publish }
   from '../../../../scripts/local-production-runtime.mjs'
 import { renderUserService } from '../../../worker/src/service.mjs'
@@ -18,6 +18,18 @@ import { ownedTestPath } from './testResources.js'
 const execute = promisify(execFile)
 const repository = fileURLToPath(new URL('../../../..', import.meta.url))
 const serviceUser = userInfo()
+const workerRequire = createRequire(new URL('../../../worker/package.json', import.meta.url))
+const { build } = workerRequire('esbuild') as {
+  build(options: {
+    entryPoints: string[]
+    outdir: string
+    outbase: string
+    platform: 'node'
+    format: 'esm'
+    target: string
+    logLevel: 'silent'
+  }): Promise<unknown>
+}
 
 export async function publishRestartUnit(unitPath: string, service: string) {
   await publish(unitPath, service, 0o600)
@@ -73,14 +85,16 @@ export async function installedRestartService(directory: string, configuration: 
   await copyFile(join(repository, 'apps/api/test/helpers/testPool.mjs'), join(api, 'test/helpers/testPool.mjs'))
   const source = join(repository, 'apps/api/src')
   await cp(source, join(api, 'dist'), { recursive: true, filter: path => !path.endsWith('.ts') })
-  for (const path of await sources(source)) {
-    const output = join(api, 'dist', relative(source, path).replace(/\.ts$/, '.js'))
-    const compiled = ts.transpileModule(await readFile(path, 'utf8'), { compilerOptions: {
-      target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, esModuleInterop: true,
-    } })
-    await mkdir(dirname(output), { recursive: true })
-    await writeFile(output, compiled.outputText)
-  }
+  // Transform the installed modules together without rebuilding a compiler program for each file.
+  await build({
+    entryPoints: await sources(source),
+    outdir: join(api, 'dist'),
+    outbase: source,
+    platform: 'node',
+    format: 'esm',
+    target: 'es2022',
+    logLevel: 'silent',
+  })
   await copyApiRuntime(repository, join(api, 'dist'))
   await writeFile(join(api, 'dist/runtime-build.json'),
     `${JSON.stringify(createRuntimeBuildIdentity(repository))}\n`, { mode: 0o600 })
