@@ -166,9 +166,12 @@ it.each(closureCases)('closes linked worktrees after $failure with $outputBytes 
     await pool.query('update source_storage_reservations set reserved_bytes=$1', [reservation.reservedBytes])
     await closeCompletedWorkflowSources(pool, recovered, report)
     expect((await pool.query('select reserved_bytes from source_storage_reservations')).rows[0].reserved_bytes)
-      .toBe(String(reservation.reservedBytes))
-    // Restore measured accounting before a subsequent admission.
-    await recovered.confirmClosed(record)
+      .toBe(String(retainedBytes))
+    await closeCompletedWorkflowSources(pool, recovered, report)
+    expect((await pool.query('select state,reserved_bytes from source_storage_reservations')).rows[0])
+      .toEqual({ state: 'retained', reserved_bytes: String(retainedBytes) })
+    expect(await readFile(join(tree, 'app.ts'))).toEqual(bytes)
+    expect(await readFile(dependency)).toEqual(Buffer.alloc(128 * 1024, 1))
     await expect(new PostgresSourceReservations(async () => sourceStorageCapacityFixture()).reserve(pool, { scopeId: reservation.scopeId,
       ownerKind: 'materialization', ownerId: randomUUID(), reservedBytes: 100_000 }))
       .resolves.toHaveProperty('reservationId')

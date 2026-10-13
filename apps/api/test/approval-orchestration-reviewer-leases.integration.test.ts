@@ -2,8 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { routedApprovalFixture } from './helpers/routedApprovalFixture.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { approvalDatabase } from './helpers/wave25ApprovalDatabase.js'
-import { retainRemoteReviewerCredential } from '../src/modules/interactions/retainedRemoteReviewer.js'
-import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { approvalResponse } from './helpers/approvalResponse.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 
@@ -36,19 +34,26 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       const token = f.credential.environment.variables.GRAPHQL_MCP_TOKEN!
       await expect(f.access.authenticate(token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
       const native = (await f.repository.coordination.workflowSession(f.reviewer.id))!
-      await withExclusiveGraphConnection(f.pool, connection => connection.transaction(sql =>
-        retainRemoteReviewerCredential(sql, f.reviewer, {
-          generation: '1', principalId: f.principal.id, session: native.session,
-        })))
+      expect(native).toMatchObject({ finalized: true, reviewerActive: false })
+      await expect(f.credentials.bindReviewerJob(f.reviewer.id, f.credential, f.job))
+        .rejects.toMatchObject({ code: 'REVIEWER_AUTHORITY_LOST' })
+      await expect(f.access.authenticate(token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+      await f.credentials.bindReviewerJob(f.reviewer.id, f.credential, successor)
+      const rebound = await f.repository.coordination.workflowSession(f.reviewer.id)
+      expect(rebound).toEqual({ ...native, reviewerActive: true })
       const recovered = await f.access.authenticate(token, 'worker')
       expect(recovered).toEqual(f.principal)
-      const binding = (await f.pool.query(`select approval_review_job_id,approval_review_lease_fence
+      const binding = (await f.pool.query(`select approval_review_job_id,approval_review_lease_fence::text
         from worker_credential_bindings where principal_id=$1`, [recovered.id])).rows[0]
-      expect(binding).toEqual({ approval_review_job_id: null, approval_review_lease_fence: null })
+      expect(binding).toEqual({
+        approval_review_job_id: successor.id, approval_review_lease_fence: expect.any(String),
+      })
       const app = new PostgresAppInteractionService(f.pool, f.repository, f.commands, f.service)
       await expect(app.respond(recovered, approvalResponse(f.interaction)))
         .rejects.toMatchObject({ code: 'REVIEWER_AUTHORITY_LOST' })
       expect(await f.repository.get(f.interaction.id)).toEqual(f.interaction)
+      expect(await f.repository.coordination.workflowSession(f.reviewer.id)).toEqual(rebound)
+      expect(await f.repository.coordination.findReviewJob(f.interaction.id, f.reviewer.agentId)).toEqual(successor)
     } finally {
       await f.close()
     }
