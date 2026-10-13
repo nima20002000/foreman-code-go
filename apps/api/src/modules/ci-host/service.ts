@@ -70,6 +70,7 @@ async function inBatches<T>(items: readonly T[], limit: number, work: (item: T) 
 /** Main resolves and publishes the commit, then queues suite parts and integration partitions for idle CI computers. */
 export class HostCiService {
   private dispatching: Promise<void> | undefined
+  private dispatchRequested = false
   private timer: NodeJS.Timeout | undefined
   private stoppingRuns = 0
   private readonly endpoint: HostCiEndpoint
@@ -636,10 +637,16 @@ export class HostCiService {
     return Boolean(saved.rowCount)
   }
 
-  /** One pass: refresh running runs, then give queued runs to free CI slots in priority order. */
+  /** Refresh running runs and dispatch queued work, retaining wake-ups during an active pass. */
   dispatch(): Promise<void> {
+    this.dispatchRequested = true
     if (this.stoppingRuns) return this.dispatching ?? Promise.resolve()
-    this.dispatching ??= withProviderPoll(() => this.dispatchOnce()).catch(error => log.warn({ err: error }, 'CI dispatch failed'))
+    this.dispatching ??= (async () => {
+      while (this.dispatchRequested && !this.stoppingRuns) {
+        this.dispatchRequested = false
+        await withProviderPoll(() => this.dispatchOnce())
+      }
+    })().catch(error => log.warn({ err: error }, 'CI dispatch failed'))
       .finally(() => { this.dispatching = undefined })
     return this.dispatching
   }
