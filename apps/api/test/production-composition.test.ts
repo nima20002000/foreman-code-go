@@ -1,4 +1,4 @@
-import { CiListOutputSchema, CiRunRecordSchema, CODEX_APPROVAL_OPTIONS_FIXTURE, DEFAULT_HARNESS_DEFAULTS, DurableInteractionSchema, type AgentConfigurationVersion, type DurableInteraction } from '@foreman-code/contracts'
+import { CiListOutputSchema, CiRunRecordSchema, CODEX_APPROVAL_OPTIONS_FIXTURE, DEFAULT_HARNESS_DEFAULTS, DEFAULT_STUCK_EXECUTION_IDLE_MS, DurableInteractionSchema, type AgentConfigurationVersion, type DurableInteraction } from '@foreman-code/contracts'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { ManagementPrincipalSchema, type ManagementAction, type ManagementScope } from '@foreman-code/contracts/management'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
@@ -9,6 +9,7 @@ import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { createDatabase } from '../src/infrastructure/database.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { BugReportService } from '../src/modules/bug-reports/service.js'
 import { DomainError } from '../src/modules/errors.js'
 import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 
@@ -68,6 +69,8 @@ it('production recovery drains every delivery page and coalesces concurrent tick
   vi.spyOn(production.engine, 'reconcile').mockResolvedValue()
   const report = vi.fn()
   await Promise.all([production.reconcile(report), production.reconcile(report)])
+  expect(BugReportService.prototype.detectStuckExecutions)
+    .toHaveBeenCalledExactlyOnceWith(DEFAULT_STUCK_EXECUTION_IDLE_MS)
   expect(recover.mock.calls).toEqual([[{ limit: 100 }], [{ limit: 100, afterId: 'next-interaction' }]])
   expect(RunWorktrees.prototype.cleanup).toHaveBeenCalledExactlyOnceWith(report)
   expect(report).not.toHaveBeenCalled()
@@ -85,6 +88,8 @@ it('production shutdown closes recovery admission and waits for the in-flight pa
   await Promise.all([running, stopping])
   await production.reconcile(vi.fn())
   expect(recover).not.toHaveBeenCalled()
+  expect(BugReportService.prototype.detectStuckExecutions)
+    .toHaveBeenCalledExactlyOnceWith(DEFAULT_STUCK_EXECUTION_IDLE_MS)
 })
 
 beforeEach(() => {
@@ -98,6 +103,7 @@ beforeEach(() => {
   vi.spyOn(InteractionService.prototype, 'respond').mockImplementation(respond)
   vi.spyOn(PostgresCommandCoordinator.prototype, 'recordDenied').mockResolvedValue(undefined)
   vi.spyOn(RunWorktrees.prototype, 'cleanup').mockResolvedValue(undefined)
+  vi.spyOn(BugReportService.prototype, 'detectStuckExecutions').mockResolvedValue(0)
   vi.spyOn(PostgresAccessService.prototype, 'authenticate').mockImplementation(async (token, audience) => {
     const allowed = Array.isArray(audience) ? audience.includes(principal.audience) : principal.audience === audience
     if (token !== 'test-operator' || !allowed) throw new DomainError('AUTH_REQUIRED', 'Authentication required.', 401)
