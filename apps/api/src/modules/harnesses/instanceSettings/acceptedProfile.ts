@@ -124,7 +124,9 @@ export class AcceptedHarnessProfileAdmission<Owner> {
     const current = await this.admit(owner, {
       instanceId: accepted.override.instanceId, instanceRevision: accepted.override.instanceRevision, target: accepted.override.target,
     })
-    if (!isDeepStrictEqual(current, accepted)) unavailable()
+    // Rechecks replace proof metadata even when the admitted runtime binding is unchanged.
+    if (!isDeepStrictEqual(current.override, accepted.override)
+      || !isDeepStrictEqual(current.currentBinding, accepted.currentBinding)) unavailable()
   }
   async revalidateObservation(owner: Owner, accepted: AcceptedHarnessProfile): Promise<void> {
     const current = await this.admitObservation(owner, {
