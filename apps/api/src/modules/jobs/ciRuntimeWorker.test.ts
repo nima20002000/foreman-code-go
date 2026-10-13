@@ -36,10 +36,9 @@ async function fixture(prepare: CiRuntimeWorkerPorts['prepare'],
 
 describe('worker CI preparation lifetime', () => {
   it.each([true, false])('restores the refresh outcome after restarting a prepared worker: success=%s', async ok => {
-    let prepared!: PreparedCiRuntime
-    const prepare = vi.fn<CiRuntimeWorkerPorts['prepare']>(async () => prepared)
+    const prepare = vi.fn<CiRuntimeWorkerPorts['prepare']>()
     const f = await fixture(prepare)
-    prepared = f.prepared
+    prepare.mockResolvedValue(f.prepared)
     const fingerprint = verificationRuntimeFixture().measurement.fingerprint
     await f.worker.handle(f.request)
     await f.worker.close()
@@ -63,10 +62,9 @@ describe('worker CI preparation lifetime', () => {
   })
 
   it('preserves a later preparation when the retained refresh belongs to an earlier operation', async () => {
-    let prepared!: PreparedCiRuntime
-    const prepare = vi.fn<CiRuntimeWorkerPorts['prepare']>(async () => prepared)
+    const prepare = vi.fn<CiRuntimeWorkerPorts['prepare']>()
     const f = await fixture(prepare)
-    prepared = f.prepared
+    prepare.mockResolvedValue(f.prepared)
     await f.worker.handle(f.request)
     await f.worker.close()
     const restarted = f.restart(async () => ({ operationId: randomUUID(), commit: 'b'.repeat(40),

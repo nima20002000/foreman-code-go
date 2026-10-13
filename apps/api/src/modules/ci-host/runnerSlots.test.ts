@@ -55,6 +55,7 @@ if (args[1] === 'install') {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
   }
   console.log('dependency=' + fs.readFileSync('node_modules/dependency', 'utf8'))
+  console.log('kept=' + require(path.join(process.cwd(), 'src/kept.ts')).kept)
 }
 `, { mode: 0o755 })
   const system = systemHostCiPorts()
