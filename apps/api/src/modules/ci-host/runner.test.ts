@@ -284,7 +284,7 @@ describe('host CI runner', () => {
     await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
       suite: 'unit', part: 'unit-api' })
     const done = await f.settle(runId)
-    expect(done.run).toMatchObject({ state: 'failed', exitCode: 9, step: 'unit-api' })
+    expect(done.run).toMatchObject({ state: 'failed', exitCode: 9, step: 'prepare' })
     expect(done.text).toContain('corepack pnpm db:up')
     expect(done.text).not.toContain('corepack pnpm test')
   })
