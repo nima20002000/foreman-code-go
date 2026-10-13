@@ -477,13 +477,15 @@ it('returns to the first node execution page after six pages while retaining the
   expect(screen.queryByRole('button', { name: 'Load more executions' })).not.toBeInTheDocument()
   expect(screen.getByText('Earlier executions are hidden. Refresh to return to the first page.')).toBeVisible()
   expect(screen.getByRole('article', { name: 'Execution node-execution' })).toBeInTheDocument()
-  expect(screen.getByText('Saved first occurrence result', { exact: false })).toBeInTheDocument()
+  expect(screen.getByLabelText('Accepted output from X before rename'))
+    .toHaveTextContent('Saved first occurrence result')
   const readsBeforeRefresh = cursors.length
   await userEvent.click(screen.getByRole('button', { name: 'Refresh node executions' }))
   expect(await screen.findByRole('button', { name: 'Attempt 1 · node-execution' })).toHaveAttribute('aria-pressed', 'true')
   expect(cursors.slice(readsBeforeRefresh)).toEqual([null])
   expect(screen.getByRole('article', { name: 'Execution node-execution' })).toBeInTheDocument()
-  expect(screen.getByText('Saved first occurrence result', { exact: false })).toBeInTheDocument()
+  expect(screen.getByLabelText('Accepted output from X before rename'))
+    .toHaveTextContent('Saved first occurrence result')
 })
 
 it('withdraws inspector branch facts after delayed permission loss', async () => {
