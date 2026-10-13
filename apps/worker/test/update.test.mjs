@@ -255,6 +255,38 @@ test('busy work drains naturally before any artifact download or restart', async
   assert.equal(resumed, 0);
 });
 
+test('an idle Worker keeps admitting work while its update downloads slowly through Main', async t => {
+  const f = await fixture(t);
+  const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal,
+    active: () => [], drainJobs: async () => {}, drainQualifications: async () => {},
+    drainMaintenance: async () => {}, quiescent: async () => true });
+  // Before Main publishes the GitHub release asset, every artifact chunk crosses the device channel.
+  let finishDownload;
+  const downloaded = new Promise(resolve => { finishDownload = resolve; });
+  let chunkWaiting = false;
+  const original = f.options.connection().captureRequest().request;
+  const updater = await new WorkerUpdater({ ...f.options, drain: () => drain.run(), resume: () => drain.resume(),
+    connection: () => ({ captureRequest: () => ({ request: async payload => {
+      if (payload.operation === 'chunk') {
+        chunkWaiting = true;
+        await downloaded;
+      }
+      return original(payload);
+    } }) }) }).initialize();
+  t.after(() => {
+    finishDownload();
+    return updater.close();
+  });
+  const update = updater.start();
+  await until(() => chunkWaiting);
+  assert.equal((await updater.status()).state, 'downloading');
+  assert.doesNotThrow(() => drain.assertAdmission('harness-discovery-v1', {}));
+  assert.doesNotThrow(() => drain.assertAdmission('execution-v1', { method: 'prepare' }));
+  finishDownload();
+  assert.equal(await update, 'Worker 1.1.0 restart is scheduled.');
+  assert.throws(() => drain.assertAdmission('harness-discovery-v1', {}), { code: 'WORKER_RUNTIME_DRAINING' });
+});
+
 for (const path of ['manifest.json', 'src/cli.mjs']) {
   test(`rejects changed ${path} bytes and resumes the running release`, async t => {
     const f = await fixture(t);
