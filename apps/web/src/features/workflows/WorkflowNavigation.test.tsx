@@ -149,7 +149,7 @@ describe('WorkflowNavigation', () => {
     await user.click(screen.getByRole('button', { name: 'Create workflow' }))
 
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
-    const draftLink = screen.getByRole('button', { name: /Draft workflow/ })
+    const draftLink = screen.getByRole('button', { name: /^Draft workflow/ })
     expect(draftLink).toBeVisible()
     expect(draftLink).not.toHaveTextContent('Session')
   })
@@ -169,7 +169,7 @@ describe('WorkflowNavigation', () => {
     expect(await screen.findByText('Workflow created, but its graph could not be opened. Retry opening it.')).toHaveAttribute('role', 'alert')
     expect(router.state.location.search.workflowId).toBeUndefined()
     expect(screen.queryByRole('button', { name: 'Create workflow' })).not.toBeInTheDocument()
-    const newLink = await screen.findByRole('button', { name: /Draft workflow/ })
+    const newLink = await screen.findByRole('button', { name: /^Draft workflow/ })
     expect(newLink).toBeVisible()
 
     server.resetHandlers()
@@ -179,7 +179,7 @@ describe('WorkflowNavigation', () => {
     const createdId = new URL(open.mock.calls[0]![0] as string, 'http://localhost').searchParams.get('workflowId')
     open.mockRestore()
     await waitFor(() => expect(router.state.location.search.workflowId).toBe(createdId))
-    expect(screen.getAllByRole('button', { name: /Draft workflow/ })).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: /^Draft workflow/ })).toHaveLength(1)
   })
 
   it('keeps inside presses open and dismisses the creation dialog from its backdrop', async () => {
@@ -208,10 +208,10 @@ it('marks an unpublished workflow and removes it in one click without another di
   await user.click(await screen.findByRole('button', { name: 'New workflow' }))
   await user.type(screen.getByRole('textbox', { name: 'Name' }), 'Temporary draft')
   await user.click(screen.getByRole('button', { name: 'Create workflow' }))
-  expect(await screen.findByRole('button', { name: /Temporary draft/ })).toBeVisible()
+  expect(await screen.findByRole('button', { name: /^Temporary draft/ })).toBeVisible()
   screen.getByRole('button', { name: 'Remove Temporary draft' }).focus()
   await user.keyboard('{Enter}')
-  await waitFor(() => expect(screen.queryByRole('button', { name: /Temporary draft/ })).not.toBeInTheDocument())
+  await waitFor(() => expect(screen.queryByRole('button', { name: /^Temporary draft/ })).not.toBeInTheDocument())
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   expect(router.state.location.search.workflowId).toBeUndefined()
 })

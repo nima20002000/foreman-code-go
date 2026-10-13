@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { ReactFlowProvider, useReactFlow } from '@xyflow/react'
 import { useState } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import canvasStyles from './nextDraft.css?inline'
 import { GraphPresentationProvider } from '../GraphPresentation'
 import { applyGraphGeometry, type GraphGeometryChange } from '../geometry'
 import { useGraphDraftStore } from '../store'
@@ -58,14 +59,15 @@ function mount() {
 }
 
 it('keeps the edge remove button mounted while crossing to its controls', async () => {
+  render(<style>{canvasStyles}</style>)
   const view = mount()
   const remove = await screen.findByLabelText(/Remove handoff/)
   const control = remove.closest('foreignObject')!
   const edge = control.parentElement!
   vi.useFakeTimers()
-  expect(control).toHaveAttribute('data-visible', 'false')
+  expect(remove).not.toBeVisible()
   fireEvent.pointerEnter(edge)
-  expect(control).toHaveAttribute('data-visible', 'true')
+  expect(remove).toBeVisible()
   fireEvent.pointerLeave(edge)
   act(() => vi.advanceTimersByTime(100))
   fireEvent.pointerEnter(remove)
@@ -73,10 +75,10 @@ it('keeps the edge remove button mounted while crossing to its controls', async 
   expect(screen.getByRole('button', { name: /Remove handoff/ })).toBe(remove)
   fireEvent.pointerLeave(edge)
   act(() => vi.advanceTimersByTime(160))
-  expect(control).toHaveAttribute('data-visible', 'false')
+  expect(remove).not.toBeVisible()
   expect(view.container.contains(remove)).toBe(true)
   act(() => remove.focus())
-  expect(control).toHaveAttribute('data-visible', 'true')
+  expect(remove).toBeVisible()
   expect(remove).toHaveFocus()
   fireEvent.blur(remove)
   fireEvent.pointerEnter(edge)

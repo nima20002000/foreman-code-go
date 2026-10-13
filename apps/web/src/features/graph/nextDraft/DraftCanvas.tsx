@@ -84,7 +84,7 @@ const TypedEdge = memo(function TypedEdge({ id, source, target, data, selected }
   const { hovered, onPointerEnter, onPointerLeave } = useHoverControls()
   const [editing, setEditing] = useState(false)
   const [focused, setFocused] = useState(false)
-  const visible = hovered || focused || selected
+  const visible = hovered || focused || selected === true
   if (!curve) return null
   const limit = data?.maxWorkHandoffsPerRun
   return <g onPointerEnter={onPointerEnter} onPointerLeave={onPointerLeave}

@@ -69,12 +69,12 @@ it.each(['network', 503] as const)('preserves folder selection, pending creation
   const reconnect = async () => {
     accessFailure = true
     await act(async () => { await client.invalidateQueries({ queryKey: settingsExperienceKeys.access(), exact: true }) })
-    expect(await screen.findByRole('dialog', { name: 'Reconnecting to the server' })).toBeInTheDocument()
+    expect(await screen.findByRole('alert', { name: 'Server connection' })).toBeInTheDocument()
     await act(async () => { await client.invalidateQueries({ queryKey: ['workbench', 'runtime-identity'] }) })
     expect(identityReads).toBeGreaterThan(1)
     accessFailure = false
     await user.click(screen.getByRole('button', { name: 'Try again' }))
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Reconnecting to the server' })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('alert', { name: 'Server connection' })).not.toBeInTheDocument())
     expect(screen.getByRole('textbox', { name: 'Unsaved settings' })).toBe(settings)
     expect(settings).toHaveValue('Uncommitted settings')
   }
