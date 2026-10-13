@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { GraphActivity, NativeGraphCorrelationRecord, NativeGraphProjectionKey } from '@foreman-code/contracts/wave25'
+import { graphJsonBytes } from '@foreman-code/contracts/wave25'
 import { nativeAction, nativeObject, nativeString } from '../runs/nativeAction.js'
 
 /** Internal, bounded checkpoint. It contains protocol identities, never arguments/output/prose. */
@@ -78,6 +79,23 @@ export function emptyNativeProjection(binding: ProjectionBinding): NativeProject
     boundTurnId: binding.nativeTurnId, evidenceFloor: null, transportFence: null,
     lastNativeSequence: null, terminalNativeSequence: null, acknowledgement: null,
     disconnected: false, uncertain: false, overflow: false, messages: [], operations: [] }
+}
+
+export function truncateNativeCheckpoint(state: NativeProjectionState): NativeProjectionState {
+  if (graphJsonBytes(state) <= NATIVE_PROJECTION_LIMITS.checkpointBytes) return state
+  const bounded = { ...state, overflow: true, messages: [...state.messages],
+    operations: [...state.operations].sort((left, right) => {
+      const first = BigInt(left.nativeSequence)
+      const second = BigInt(right.nativeSequence)
+      if (first === second) return right.id.localeCompare(left.id)
+      return first > second ? -1 : 1
+    }) }
+  // Retain sequence fences and mark incomplete evidence so dropped tombstones cannot imply active work.
+  while (graphJsonBytes(bounded) > NATIVE_PROJECTION_LIMITS.checkpointBytes) {
+    if (bounded.operations.length) bounded.operations.pop()
+    else bounded.messages.shift()
+  }
+  return bounded
 }
 
 const mappedAction = (action: string): NonNullable<GraphActivity['action']> => {
@@ -232,10 +250,8 @@ export function projectNativeEvidence(previous: NativeProjectionState | undefine
     stamp()
     if (eligible(operation, state, binding)) acknowledge(event.sourceId)
   }
-  if (Buffer.byteLength(JSON.stringify(state)) > NATIVE_PROJECTION_LIMITS.checkpointBytes) {
-    return answer({ ...initial, overflow: true }, 'rejected', 'capacity')
-  }
-  return answer(state, JSON.stringify(state) === before ? 'ignored' : 'changed', 'evidence')
+  const bounded = truncateNativeCheckpoint(state)
+  return answer(bounded, JSON.stringify(bounded) === before ? 'ignored' : 'changed', 'evidence')
 }
 
 /**
@@ -255,8 +271,7 @@ export function reconcileNativeEvidence(previous: NativeProjectionState | undefi
     || cut.connectionGeneration !== binding.connectionGeneration || !binding.nativeTurnId
     || ![cut.nativeSequence, cut.sourcePosition, cut.connectionGeneration].every(sequence)
     || BigInt(cut.connectionGeneration) < BigInt(initial.generation)
-    || evidence.length > NATIVE_PROJECTION_LIMITS.operations + NATIVE_PROJECTION_LIMITS.messages
-    || Buffer.byteLength(JSON.stringify(evidence)) > NATIVE_PROJECTION_LIMITS.checkpointBytes) return rejected()
+    || evidence.length > NATIVE_PROJECTION_LIMITS.operations + NATIVE_PROJECTION_LIMITS.messages) return rejected()
   const priorFloor = initial.evidenceFloor
   if (priorFloor && priorFloor.generation === cut.connectionGeneration
     && (priorFloor.stream !== cut.sourceStreamId || BigInt(priorFloor.position) >= BigInt(cut.sourcePosition))) return rejected()

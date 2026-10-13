@@ -1,6 +1,6 @@
 import { ExecutionResultSchema, HarnessNativeEventSchema, type HarnessNativeEvent } from '@foreman-code/contracts'
 import {
-  canonicalGraphJson, graphJsonBytes, parseNativeGraphObservation, sameGraphScope,
+  canonicalGraphJson, parseNativeGraphObservation, sameGraphScope,
   assertNativeGraphProjectionAuthority, type GraphFact, type NativeGraphObservation, type NativeGraphCorrelationRecord, type RunGraphScope,
   type NativeGraphProjectionKey,
 } from '@foreman-code/contracts/wave25'
@@ -12,7 +12,7 @@ import { assertRunGraphPublication, graphSourceDigest, type RunGraphPublication 
 import { readNativeGraphActivity, readNativeGraphCorrelation, type NativeGraphProjectionGuard } from './records.js'
 import { RunGraphError } from './errors.js'
 import { PostgresNativeGraphProjectionWriter } from './nativeWriter.js'
-import { nativeProjectionId, projectNativeEvidence, reconcileNativeEvidence, type ProjectionBinding, type ProjectionEvent, type NativeProjectionState } from './nativeProjection.js'
+import { nativeProjectionId, nativeProjectionActivity, projectNativeEvidence, reconcileNativeEvidence, type ProjectionBinding, type ProjectionEvent, type NativeProjectionState } from './nativeProjection.js'
 import { parseNativeCheckpoint } from './nativeCheckpoint.js'
 import { selectNativeGraphEvidence } from './nativeEvidence.js'
 import { normalizeNativeProducerEvent } from './nativeProducerNormalization.js'
@@ -140,12 +140,8 @@ async function ingest(publication: RunGraphPublication, input: HarnessNativeEven
     else result.projected++
     // Invalid input does not destroy a good checkpoint; bounded-capacity uncertainty is explicit.
     if (projected.disposition === 'rejected' && projected.reason !== 'capacity') continue
-    let nextState = projected.state
-    if (graphJsonBytes(nextState) > 120000) {
-      nextState = { ...(previous ?? nextState), operations: previous?.operations ?? [], messages: previous?.messages ?? [], overflow: true }
-      projected.activity = { workflowNodeId: key.execution.workflowNodeId, execution: key.execution, status: 'unknown' }
-      result.rejected++
-    }
+    const nextState = parseNativeCheckpoint(projected.state)
+    projected.activity = nativeProjectionActivity(nextState, binding)
     const current = await readNativeGraphActivity(sql, scope, key)
     const changed = !current || canonicalGraphJson(current.activity) !== canonicalGraphJson(projected.activity)
       || current.lastNativeSequence !== (nextState.lastNativeSequence ?? current.lastNativeSequence)

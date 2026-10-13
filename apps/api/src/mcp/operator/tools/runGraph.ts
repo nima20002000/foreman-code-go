@@ -39,7 +39,7 @@ export function registerRunGraphTools(server: McpServer, context: OperatorReques
     inputSchema: z.object({}).strict(), outputSchema: CanonicalRunGraphReadCapabilitiesSchema, annotations,
   }, async () => invoke(RUN_GRAPH_MCP_TOOLS.readCapabilities, () => canonical.readCapabilities(context.principal)))
   if (runGraphToolAvailable(context, RUN_GRAPH_MCP_TOOLS.snapshot)) server.registerTool(RUN_GRAPH_MCP_TOOLS.snapshot, {
-    description: 'Read a coherent, bounded graph snapshot for the exact authorized workspace/workflow/Run/version. No native bodies or filesystem details.',
+    description: 'Read a coherent, bounded graph snapshot for the exact authorized workspace/workflow/Run/version. Current node resolutions retain the newest 2000 rows. Truncated native checkpoints report unknown activity until complete evidence repairs them. No native bodies or filesystem details.',
     inputSchema: RunGraphReadRequestSchema, outputSchema: RunGraphSnapshotSchema, annotations,
   }, async (input) => invoke(RUN_GRAPH_MCP_TOOLS.snapshot, async () => RunGraphSnapshotSchema.parse(await canonical.snapshot(context.principal, input))))
   if (runGraphToolAvailable(context, RUN_GRAPH_MCP_TOOLS.current)) server.registerTool(RUN_GRAPH_MCP_TOOLS.current, {
