@@ -82,6 +82,22 @@ it('closes an unbound attempt after owner restarts, records interruption, and ad
       execution => execution.workflowNodeId !== fixture.version.entryNodeId && !!execution.nativeSessionId),
     'later Run native session')
     expect(launched.some(execution => execution.nativeSessionId)).toBe(true)
-    await fixture.value('run_stop', { workspaceId: later.run.workspaceId, runId: later.run.id, commandId: randomUUID() })
+    const laterOwners = fixture.registry.snapshot().launches.filter(launch =>
+      launched.some(execution => launch.owner === `execution:${execution.id}`))
+    const stopCommandId = randomUUID()
+    await fixture.value('run_stop', { workspaceId: later.run.workspaceId, runId: later.run.id, commandId: stopCommandId })
+    const stopped = SavedRunDetailsSchema.parse(await fixture.value('run_get', {
+      workspaceId: later.run.workspaceId, runId: later.run.id, detail: 'full',
+    }))
+    expect(stopped.run.executionState).toBe('completed')
+    expect(stopped.cleanupPending).not.toBe(true)
+    expect(stopped.run.workflowVersionId).toBe(later.run.workflowVersionId)
+    expect(stopped.run.input).toEqual(later.run.input)
+    const laterReceipts = await receipts(fixture, later.run.id)
+    expect(laterReceipts.length).toBeGreaterThan(0)
+    expect(laterReceipts.every(receipt => !!receipt.terminal?.closureEvidenceDigest)).toBe(true)
+    expect(laterOwners.every(owner => fixture.registry.closedRegistration(owner.owner, owner.launchId))).toBe(true)
+    await fixture.value('run_stop', { workspaceId: later.run.workspaceId, runId: later.run.id, commandId: stopCommandId })
+    expect(await receipts(fixture, later.run.id)).toEqual(laterReceipts)
   })
 }, 240_000)

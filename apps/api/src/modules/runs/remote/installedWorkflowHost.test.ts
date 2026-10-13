@@ -335,6 +335,33 @@ describe('installed host resident execution continuity', () => {
     }
   })
 
+  it.each(['status', 'reattach'] as const)('reads %s during committed cleanup without renewing the reviewer', async method => {
+    const f = await runningInstalledFixture('generation', { retainReviewer: true })
+    try {
+      f.finish('succeeded')
+      await f.retained
+      f.cleanup()
+      f.revokeRetention()
+      const before = f.requests.length
+      const fields = method === 'reattach' ? { session: f.session, request: f.request } : {}
+      const reply = await f.call(method, fields)
+      expect(reply.payload).toMatchObject(method === 'reattach'
+        ? { session: f.session, status: { status: 'known' } } : { status: 'known' })
+      expect(f.requests.slice(before).filter(request => request.namespace === 'execution-authority-v1'
+        && (request.payload as { action: string }).action === 'retain-reviewer')).toHaveLength(0)
+      await f.stop()
+      await f.settled
+      expect(await f.journal.status(f.intent.operationId)).toMatchObject({
+        status: 'known', receipt: { phase: 'confirmed_terminal', stopFence: true },
+      })
+      expect(f.closeOwner).toHaveBeenCalled()
+    } finally {
+      f.cleanup()
+      await f.stop()
+      await f.host.close()
+    }
+  })
+
   it('reads the original native history during cleanup without renewing model-tool access', async () => {
     const f = await runningInstalledFixture()
     try {
