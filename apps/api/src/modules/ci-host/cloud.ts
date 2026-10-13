@@ -15,6 +15,7 @@ import { CLOUD_START_TIMEOUT_MS, CircleCiProvider, GitHubActionsProvider,
 import { runsOnCircleCi } from './parts.js'
 import { pruneMirrorBranches, type ActiveCiRuns } from './mirrorBranches.js'
 import { fallbackOnError } from '../diagnostics/ignoredError.js'
+import { sanitizeCiText, serializeCiJson } from './text.js'
 
 const LOG_LIMIT = 4 * 1024 * 1024
 const MAX_DISPATCH_ATTEMPTS = 3
@@ -132,7 +133,8 @@ export class CloudCi {
     const log = await readFile(this.path(run.runId, 'log')).catch(() => Buffer.alloc(0))
     if (!['starting', 'running', 'queued'].includes(run.state)) await this.prune(run, run.runId)
     const text = log.subarray(request.afterOffset, request.afterOffset + request.maxBytes)
-    return CiHostReplySchema.parse({ operation: 'read', run: this.view(run, log.length), text: text.toString('utf8'),
+    return CiHostReplySchema.parse({ operation: 'read', run: this.view(run, log.length),
+      text: sanitizeCiText(text.toString('utf8')),
       nextOffset: request.afterOffset + text.length,
       ...(request.durations && run.durations ? { durations: run.durations } : {}),
       ...(request.testResults && run.testResults ? { testResults: run.testResults } : {}) })
@@ -155,7 +157,7 @@ export class CloudCi {
 
   private async save(run: CloudRun) {
     await mkdir(join(this.root, 'runs', run.runId), { recursive: true, mode: 0o700 })
-    await writeFile(this.path(run.runId, 'meta.json'), JSON.stringify(run), { mode: 0o600 })
+    await writeFile(this.path(run.runId, 'meta.json'), serializeCiJson(run), { mode: 0o600 })
     return run
   }
 
@@ -165,7 +167,8 @@ export class CloudCi {
     if (run.state === 'starting') step = 'dispatch'
     if (run.state === 'queued') step = null
     return { runId: run.runId, state: run.state, step,
-      exitCode: run.exitCode, startedAt: run.startedAt, finishedAt: run.finishedAt, logBytes, message: run.message }
+      exitCode: run.exitCode, startedAt: run.startedAt, finishedAt: run.finishedAt, logBytes,
+      message: run.message === null ? null : sanitizeCiText(run.message) }
   }
 
   private async start(request: { runId: string; repository: string; commit: string; suite: CiSuite
@@ -272,7 +275,7 @@ export class CloudCi {
     const message = `${this.provider.label} created no workflow within 75 seconds. `
       + (retry ? `Retrying dispatch (${run.dispatch!.attempts + 1}/${MAX_DISPATCH_ATTEMPTS}).`
         : 'Dispatch retries exhausted; queued for another computer.')
-    await writeFile(this.path(run.runId, 'log'), `${message}\n`, { flag: 'a', mode: 0o600 })
+    await writeFile(this.path(run.runId, 'log'), sanitizeCiText(`${message}\n`), { flag: 'a', mode: 0o600 })
     const next = await this.save({ ...run, message })
     if (retry) return this.trigger(next, run.dispatch!.input)
     return this.save({ ...next, state: 'queued', providerRunId: null, finishedAt: null, exitCode: null })
@@ -551,8 +554,9 @@ export class CloudCi {
     // The provider's whole log is kept at the end, so the live copy stays within the same bound.
     chunk = chunk.subarray(0, Math.max(0, LOG_LIMIT - bytes))
     if (!chunk.length && step === live.step && output?.bytes === live.output?.bytes && seen.size === live.seen.length) return run
-    if (chunk.length) await writeFile(this.path(run.runId, 'log'), chunk, { flag: 'a', mode: 0o600 })
-    bytes += chunk.length
+    const text = sanitizeCiText(chunk.toString('utf8'))
+    if (text.length) await writeFile(this.path(run.runId, 'log'), text, { flag: 'a', mode: 0o600 })
+    bytes += Buffer.byteLength(text)
     return this.save({ ...run, live: { step, seen: [...seen], ...(output ? { output } : {}), bytes } })
   }
 
@@ -575,7 +579,8 @@ export class CloudCi {
     if (!status.done) return run
     this.polled.delete(runId)
     const full = Buffer.from(await this.provider.log(run).catch(() => '')).subarray(-LOG_LIMIT)
-    await writeFile(this.path(runId, 'log'), run.live?.bytes ? Buffer.concat([Buffer.from(`--- ${this.provider.label} log ---\n`), full]) : full,
+    const text = sanitizeCiText(full.toString('utf8'))
+    await writeFile(this.path(runId, 'log'), run.live?.bytes ? `--- ${this.provider.label} log ---\n${text}` : text,
       { flag: 'a', mode: 0o600 })
     let durations: CiDurations | undefined
     let testResults: CiTestResults | undefined
