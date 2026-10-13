@@ -85,7 +85,7 @@ export function registerProductionLifecycleFixture() {
     config.workspaceStorageRoot = project
     database = createDatabase(config.database)
     await database.migrate()
-    checkpoints = createCheckpointStore(connectionString, `${schema}_checkpoints`, config.database)
+    checkpoints = createCheckpointStore(config.database.connectionString, `${schema}_checkpoints`, config.database)
     await checkpoints.setup()
     access = new PostgresAccessService(database.pool)
     sessions = new Map(); connections = new WeakMap(); repeatedApproval = false; reviewNoDecision = false

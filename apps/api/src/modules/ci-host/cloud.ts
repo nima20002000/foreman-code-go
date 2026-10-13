@@ -97,6 +97,17 @@ export class CloudCi {
     this.activeRuns = lookup
   }
 
+  /** Waits for background sweeps before their repository can be removed. Call after ticket operations finish. */
+  async waitForMirrorCleanup(repository: string, mirror: string) {
+    const key = this.mirrorKey(repository, mirror)
+    let cleanup = mirrorMaintenance.get(key)?.cleanup
+    while (cleanup) {
+      await cleanup
+      // A completed sweep can schedule another pass for tickets canceled during that sweep.
+      cleanup = mirrorMaintenance.get(key)?.cleanup
+    }
+  }
+
   computers(priority = 30): HostCiComputer[] {
     return Array.from({ length: this.provider.slots }, (_, slot) => ({ key: `${this.mainId}:cloud:${this.provider.id}:${slot}`,
       hostRef: { kind: 'cloud' as const, mainId: this.mainId, provider: this.provider.id, slot },
