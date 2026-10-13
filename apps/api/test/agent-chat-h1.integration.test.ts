@@ -172,6 +172,28 @@ describe.skipIf(!postgresEnabled).each(APP_MCP_SERVER_NAMES)(
     }
   }
 
+  it('creates a chat and completes its first message with an isolated App MCP transport', async () => {
+    const f = setup('success')
+    try {
+      const request = f.request('first-message', null)
+      const admitted = await f.chat.send(writer, f.workspaceId, request)
+      await eventually(async () => {
+        const state = await f.read()
+        return state.turns.some(turn => turn.requestId === request.requestId
+          && ['completed', 'failed', 'unknown', 'canceled'].includes(turn.delivery))
+      })
+      const state = await f.read()
+      assert.equal(state.conversation?.id, admitted.state.conversation!.id)
+      assert.equal(state.turns.find(turn => turn.requestId === request.requestId)?.delivery, 'completed')
+      assert.equal(state.activeTurn, null)
+      assert.equal(state.conversation?.nativeSession?.nativeSessionId, 'h1-native-1')
+      assert.equal(state.messages.filter(message => message.role === 'assistant'
+        && message.content === 'H1 completed reply').length, 1)
+    } finally {
+      await f.close()
+    }
+  }, 30_000)
+
   for (const preflight of [false, true]) {
     it(`actual Codex adapter: ${preflight ? 'preflight failure' : 'thread/start rejection'} is failed, exact replay is inert, explicit retry succeeds`, async () => {
       const f = setup()
