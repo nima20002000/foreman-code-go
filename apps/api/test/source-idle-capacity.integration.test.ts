@@ -47,7 +47,7 @@ it.each(['owned', 'uncertain'] as const)(
     await withTransaction(pool, sql => reservations.retain(sql, first, state))
     await expect(withTransaction(pool, sql => reservations.reserve(sql, { ...request, ownerId: randomUUID() })))
       .rejects.toMatchObject({ code: 'SOURCE_CAPACITY', details: {
-        exhausted: ['preparations', 'materializations'], usage: { preparing: 0, activeMaterializations: 1 },
+        exhausted: ['preparations'], usage: { preparing: 0, activeMaterializations: 1 },
       } })
     await expect(withTransaction(pool, sql => reservations.reserve(sql,
       { ...request, ownerKind: 'capture', ownerId: randomUUID() })))
