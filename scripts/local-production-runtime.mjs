@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
-import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, open, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
@@ -412,7 +413,74 @@ export function localProductionEnvironment(desktopHome, password) {
   }
 }
 
-export async function deployProductionApi(run, destination) {
+// A release links to one immutable dependency tree per lockfile, manifests and contracts content instead of
+// copying ~800 MB per deploy (25-35 s, and minutes on a loaded computer). Changed inputs get a fresh tree.
+async function apiDependencyKey(source) {
+  const hash = createHash('sha256')
+  for (const path of ['pnpm-lock.yaml', 'apps/api/package.json', 'packages/contracts/package.json']) {
+    hash.update(`${path}\0`).update(await readFile(join(source, path)))
+  }
+  const visit = async relative => {
+    const entries = await readdir(join(source, 'packages/contracts', relative), { withFileTypes: true })
+    for (const entry of entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+      if (entry.name === 'node_modules' || entry.name.endsWith('.tsbuildinfo')) continue
+      const path = join(relative, entry.name)
+      if (entry.isDirectory()) await visit(path)
+      else if (entry.isFile()) hash.update(`${path}\0`).update(await readFile(join(source, 'packages/contracts', path)))
+    }
+  }
+  await visit('')
+  return hash.digest('hex').slice(0, 32)
+}
+
+export async function deployProductionApi(run, destination, { dependencies } = {}) {
+  if (!dependencies) return deployApiPackage(run, destination)
+  await mkdir(dependencies.root, { recursive: true, mode: 0o700 })
+  const shared = join(dependencies.root, await apiDependencyKey(dependencies.source))
+  const ready = await lstat(join(shared, 'api')).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error })
+  if (!ready) {
+    const staging = await mkdtemp(join(dependencies.root, '.staging-'))
+    try {
+      await deployApiPackage(run, join(staging, 'api'))
+      await rename(staging, shared)
+    } catch (error) {
+      await rm(staging, { recursive: true, force: true })
+      // Another install finished the same tree first; it is identical.
+      if (error.code !== 'ENOTEMPTY' && error.code !== 'EEXIST') throw error
+    }
+  }
+  await mkdir(destination, { recursive: true })
+  for (const name of await readdir(join(shared, 'api'))) {
+    if (name === 'node_modules' || name === 'dist') continue
+    await cp(join(shared, 'api', name), join(destination, name), { recursive: true, verbatimSymlinks: true })
+  }
+  // The API's own build output always comes from this build.
+  await cp(join(dependencies.source, 'apps/api/dist'), join(destination, 'dist'), { recursive: true, verbatimSymlinks: true })
+  await symlink(join(shared, 'api/node_modules'), join(destination, 'node_modules'))
+}
+
+/** Removes shared dependency trees that none of `releases` (release directories) links to. */
+export async function pruneApiDependencies(root, releases, { removeInBackground = removeDetached } = {}) {
+  const used = new Set()
+  for (const release of releases) {
+    const link = await readlink(join(release, 'apps/api/node_modules')).catch(() => null)
+    if (link) used.add(dirname(dirname(link)))
+  }
+  let entries
+  try { entries = await readdir(root) } catch (error) { if (error.code === 'ENOENT') return []; throw error }
+  const removed = []
+  let pruned
+  for (const name of entries) {
+    if (name.startsWith('.') || used.has(join(root, name))) continue
+    pruned ??= await mkdtemp(join(root, '.pruned-'))
+    await rename(join(root, name), join(pruned, name))
+    removed.push(join(root, name))
+  }
+  if (pruned) removeInBackground(pruned)
+  return removed
+}
+
+async function deployApiPackage(run, destination) {
   const failures = []
   try {
     await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'deploy', '--prod', '--legacy', destination])

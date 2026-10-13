@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { access, chmod, copyFile, cp, mkdir, mkdtemp, open, readFile, realpath, rename, rm, symlink } from 'node:fs/promises'
+import { access, chmod, copyFile, cp, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rm, symlink } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -14,7 +14,7 @@ import { workerPath } from '../apps/worker/src/harnessPath.mjs'
 import { buildWorkerReleaseArtifacts } from './worker-release-artifacts.mjs'
 import {
   copyVerificationRuntime, deployProductionApi, desktopLaunchEnvironment, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
-  pruneReleases, removeUninstalledRelease, readActiveRuns, readProductionIdentity, waitForIdleRuns, renderEnvironment, waitForProductionReady, withInstallationLock,
+  pruneApiDependencies, pruneReleases, removeUninstalledRelease, readActiveRuns, readProductionIdentity, waitForIdleRuns, renderEnvironment, waitForProductionReady, withInstallationLock,
   shouldOpenDashboardAfterInstall,
   productionIntegrationPaths, publishDesktopIntegration, enableProductionServices, apiServiceTemplate,
   launchProduction, launchBrowser, parseRunWaitMinutes, readReleaseSelection,
@@ -83,7 +83,8 @@ async function stageRelease({ source: buildSource, commit }, runBuild) {
   const release = await mkdtemp(join(releases, 'release-'))
   try {
     await mkdir(join(release, 'apps'), { recursive: true })
-    await deployProductionApi(runBuild, join(release, 'apps/api'))
+    await deployProductionApi(runBuild, join(release, 'apps/api'),
+      { dependencies: { root: join(app, 'api-dependencies'), source: buildSource } })
     await cp(join(buildSource, 'apps/web/dist'), join(release, 'apps/web/dist'), { recursive: true })
     await mkdir(join(release, 'scripts'), { recursive: true })
     for (const name of ['local-production.mjs', 'local-production-runtime.mjs', 'graphql-mcp.mjs',
@@ -299,6 +300,8 @@ async function finishInstallation({ release, previousRelease, firstInstall, envi
     await publishWorkerArtifactsLater(release)
     const pruned = await pruneReleases(join(app, 'releases'), [release, previousRelease])
     if (pruned.length) console.log(`Removed ${pruned.length} old release(s); kept the current and previous release.`)
+    const kept = (await readdir(join(app, 'releases'))).filter(name => name.startsWith('release-')).map(name => join(app, 'releases', name))
+    await pruneApiDependencies(join(app, 'api-dependencies'), kept)
     console.log(`Foreman Code backend installed: ${origin}/workspaces`)
     if (shouldOpenDashboardAfterInstall({ previousRelease, stdin: process.stdin, stdout: process.stdout })) {
       await handoffDashboard()
