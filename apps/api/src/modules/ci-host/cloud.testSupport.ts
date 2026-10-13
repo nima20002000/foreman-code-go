@@ -11,8 +11,10 @@ import { pruneMirrorBranches } from './mirrorBranches.js'
 import { CircleCiProvider, GitHubActionsProvider } from './cloudProviders.js'
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 
-const roots: string[] = []
-afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
+const disposals: (() => Promise<void>)[] = []
+afterEach(async () => {
+  for (const dispose of disposals.splice(0)) await dispose()
+})
 
 /** A private repository and its public mirror as local bare repositories standing in for GitHub, with a gh that
  * records dispatches and replays the run states a test sets. */
@@ -20,7 +22,8 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
   mirrorWorkflows?: boolean; sourceWorkflows?: boolean; userSystemd?: boolean } = {}) {
   await mkdir(process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp'), { recursive: true })
   const root = await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp'), 'cloud-ci-'))
-  roots.push(root)
+  const dispose = () => rm(root, { recursive: true, force: true })
+  disposals.push(dispose)
   const environment = gitFixtureEnvironment()
   const run = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, env: environment, encoding: 'utf8' }).trim()
   const work = join(root, 'work'), mirrorWork = join(root, 'mirror-work')
@@ -181,7 +184,8 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
     { home: '/home/owner', user: 'owner', host: 'owner-desktop' })
   const cloud = reopen()
   const mirrorGit = (...args: string[]) => run(mirror, ...args)
-  return { cloud, reopen, root, commit, dispatched, github, circle, cleanup, git, mirrorGit, run: (...args: string[]) => run(work, ...args),
+  return { cloud, reopen, root, commit, dispatched, github, circle, cleanup, git, mirrorGit, dispose,
+    run: (...args: string[]) => run(work, ...args),
     async prune(activeIds: Set<string>) {
       return pruneMirrorBranches({ mirror: 'octo/site-ci', roots: [join(root, 'ci-cloud')],
         activeRuns: { ids: activeIds, readAt: Date.now() },
