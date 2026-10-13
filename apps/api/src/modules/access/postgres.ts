@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 
 import {
   ManagementGrantSchema,
+  NON_EXPIRING_CREDENTIAL_TIMESTAMP,
   ManagementPrincipalSchema,
   type ManagementAudience,
   type ManagementGrant,
@@ -140,9 +141,13 @@ export class PostgresAccessService {
     /** Backend-derived for worker credentials; never accepted from an MCP request. */
     agentId?: string
     grants: ManagementGrant[]
-    expiresAt: Date
+    expiresAt?: Date
   }, client?: pg.ClientBase): Promise<{ principal: ManagementPrincipal; token: string }> {
-    if (!Number.isFinite(input.expiresAt.getTime())) throw new DomainError('INVALID_EXPIRY', 'Credential expiry must be in the future.', 400)
+    if (!input.expiresAt && input.audience !== 'operator') {
+      throw new DomainError('INVALID_EXPIRY', 'Non-Operator credentials require an expiry.', 400)
+    }
+    const expiresAt = input.expiresAt ?? new Date(NON_EXPIRING_CREDENTIAL_TIMESTAMP)
+    if (!Number.isFinite(expiresAt.getTime())) throw new DomainError('INVALID_EXPIRY', 'Credential expiry must be in the future.', 400)
     const name = input.name.trim()
     if (!name) throw new DomainError('INVALID_PRINCIPAL_NAME', 'Credential name is required.', 400)
     const grants = input.grants.map((grant) => ManagementGrantSchema.parse(grant))
@@ -155,14 +160,14 @@ export class PostgresAccessService {
     const id = `principal-${randomUUID()}`
     const accepted = ManagementPrincipalSchema.parse({
       id, name, audience: input.audience, ...(input.agentId ? { agentId: input.agentId } : {}),
-      grants, expiresAt: input.expiresAt.toISOString(), revokedAt: null,
+      grants, expiresAt: expiresAt.toISOString(), revokedAt: null,
     })
     const token = `opm_${randomBytes(32).toString('base64url')}`
     const result = await (client ?? this.pool).query<PrincipalRow>(
       `insert into management_principals (id, name, audience, agent_id, token_hash, grants, expires_at)
        select $1, $2, $3, $4, $5, $6::jsonb, $7::timestamptz where $7::timestamptz>clock_timestamp()
        returning id, name, audience, agent_id, token_hash, grants, expires_at, revoked_at`,
-      [id, accepted.name, accepted.audience, accepted.agentId ?? null, digest(token), JSON.stringify(accepted.grants), input.expiresAt],
+      [id, accepted.name, accepted.audience, accepted.agentId ?? null, digest(token), JSON.stringify(accepted.grants), expiresAt],
     )
     if (!result.rows[0]) throw new DomainError('INVALID_EXPIRY', 'Credential expiry must be in the future.', 400)
     return { principal: fromRow(result.rows[0]), token }

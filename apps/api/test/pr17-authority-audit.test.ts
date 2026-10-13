@@ -114,3 +114,38 @@ it('F04: an ordinary delegated chat principal is not accepted as durable Run aut
   const h = authorityDatabase()
   await assert.rejects(currentOperatorAuthority(h.db, 'chat'), (error: unknown) => error instanceof DomainError && error.code === 'AUTH_INVALID')
 })
+
+
+it('an accepted Run survives expiry of the chat token that started it', async () => {
+  const h = authorityDatabase()
+  const tokenExpiry = Date.now() + 60_000
+  h.rows.get('chat')!.expires_at = new Date(tokenExpiry)
+  h.caller.expiresAt = new Date(tokenExpiry).toISOString()
+  const accepted = await acceptRunAuthority(h.db, h.caller)
+  await bindRunAuthority(h.db, 'run', accepted)
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(tokenExpiry + 1)
+  try {
+    const current = await currentOperatorAuthority(h.db, accepted.principal.id)
+    assert(current.principal.grants.some(grant => grant.actions.includes('runs:start')))
+    assert(Date.parse(current.principal.expiresAt) > Date.now())
+  } finally {
+    clock.mockRestore()
+  }
+})
+
+it('an accepted Run survives root starter expiry while retaining owner revocation', async () => {
+  const h = authorityDatabase()
+  const owner = await currentOperatorAuthority(h.db, 'owner')
+  const accepted = await acceptRunAuthority(h.db, owner.principal)
+  await bindRunAuthority(h.db, 'run', accepted)
+  h.rows.get('owner')!.expires_at = new Date(Date.now() - 1)
+  const current = await currentOperatorAuthority(h.db, accepted.principal.id)
+  assert.equal(current.owner.id, 'owner')
+  await assert.rejects(currentOperatorAuthority(h.db, 'owner'),
+    (error: unknown) => error instanceof DomainError && error.code === 'AUTH_EXPIRED')
+  h.rows.get('owner')!.revoked_at = new Date()
+  await assert.rejects(currentOperatorAuthority(h.db, accepted.principal.id),
+    (error: unknown) => error instanceof DomainError && error.code === 'AUTH_REVOKED')
+  await assert.rejects(currentOperatorAuthority(h.db, 'owner'),
+    (error: unknown) => error instanceof DomainError && error.code === 'AUTH_REVOKED')
+})

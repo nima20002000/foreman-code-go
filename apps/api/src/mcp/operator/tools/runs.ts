@@ -84,7 +84,8 @@ export const runTools = [
     name: 'run_start',
     requires: [['runs:start', 'workflow'], ['workspace_locations:read', 'workspace']],
     enabled: s => !!s.runs,
-    description: 'Request one Run of the explicit saved version. Every new workflow uses semantics 3, with or without '
+    description: 'Request one Run of the explicit saved version. Accepted Run authority survives starter-token expiry; '
+      + 'owner revocation, current scopes, Stop and completion still apply. Every new workflow uses semantics 3, with or without '
       + 'repeat. Pin 3 plus the current workflow revision, exact Agent configuration map and location revision. In '
       + 'mixed-computer workflows, Agents without a saved computer choice resolve to the authorized Main source, '
       + 'root and matching qualified harness; all accepted placements are persisted in the Run. For a GitHub '

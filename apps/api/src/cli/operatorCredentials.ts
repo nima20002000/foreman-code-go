@@ -39,7 +39,10 @@ async function main() {
     }
     const issued = await access.issue({
       // Computer reads need their own unscoped grant, even beside a workspace-scoped one.
-      name, audience, grants: computerMetrics ? [grant, { actions: ['devices:metrics:read'], scope: {} }] : [grant], expiresAt: new Date(Date.now() + days * 86_400_000),
+      name,
+      audience,
+      grants: computerMetrics ? [grant, { actions: ['devices:metrics:read'], scope: {} }] : [grant],
+      ...(days !== null ? { expiresAt: new Date(Date.now() + days * 86_400_000) } : {}),
     })
     process.stdout.write(`Principal: ${issued.principal.id}\nAudience: ${issued.principal.audience}\nExpires: ${issued.principal.expiresAt}\nToken (shown once): ${issued.token}\n`)
   } finally {

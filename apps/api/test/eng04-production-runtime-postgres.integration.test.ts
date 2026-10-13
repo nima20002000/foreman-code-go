@@ -62,6 +62,16 @@ describe.skipIf(!postgresEnabled)('ENG04 production runtime lifecycle PostgreSQL
     return { run, owner, principal, locations, authorize, source, children }
   }
 
+  it('continues a persisted Run after its root starter credential expires', async () => {
+    const f = await fixture()
+    await db.pool.query('update management_principals set expires_at=now()-interval \'1 second\' where id=$1',
+      [f.principal.id])
+    await markRepeatRunRunning(f.owner, f.locations, { executionState: 'running', outcome: 'pending' })
+    assert.equal((await f.source()).run.executionState, 'running')
+    await db.pool.query('update management_principals set revoked_at=now() where id=$1', [f.principal.id])
+    await assert.rejects(markRepeatRunRunning(f.owner, f.locations, { executionState: 'running', outcome: 'pending' }))
+  })
+
   it('publishes first running state with exact authority and preserves its original start on replay', async () => {
     const f = await fixture(), input = { executionState: 'running' as const, outcome: 'pending' as const,
       startedAt: '2026-09-25T00:00:00.000Z' }

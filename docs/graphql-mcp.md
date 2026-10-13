@@ -66,7 +66,10 @@ Operator chat credentials for the conversation's lifetime. The launcher reads
 loopback `/mcp`. It never scans ports or falls back to another instance. Route
 files hold an endpoint, runtime PID and expiry, never a token, and are
 owner-only. Restarting on another port refreshes routes without changing native
-configuration. A revoked or expired credential stays denied even if a route file
+configuration. Owner Operator credentials default to no expiry (reported as
+`9999-12-31T23:59:59.999Z`); explicitly finite tokens still expire. Accepted
+Runs continue after starter-token expiry and still honor owner revocation and
+current scopes. A revoked or expired credential stays denied even if a route file
 survives an interrupted shutdown.
 
 Verification: `graphql-mcp-roles.test.ts` covers each role's tool list and

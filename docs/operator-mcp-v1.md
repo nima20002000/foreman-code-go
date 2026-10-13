@@ -24,10 +24,12 @@ The API remains loopback-bound by default. Operator HTTP and MCP requests valida
 Credential issuance and revocation are trusted local owner commands; neither is an MCP tool. The plaintext token is displayed once and only its SHA-256 digest is stored.
 
 ```sh
-corepack pnpm --filter @foreman-code/api credential issue --name local-owner --days 30
+corepack pnpm --filter @foreman-code/api credential issue --name local-owner
 corepack pnpm --filter @foreman-code/api credential issue --name workspace-operator --days 7 --workspace workspace-1
 corepack pnpm --filter @foreman-code/api credential revoke principal-UUID
 ```
+
+Operator credentials default to no expiry and remain revocable. Use `--days` only for an explicitly finite lifetime (1–365 days). The timestamp `9999-12-31T23:59:59.999Z` represents no expiry in stored records and MCP responses. Accepted Run authority is independent of the starter token’s expiry; owner revocation, live scope checks, Stop and completion still apply. Operator chat credentials last for the conversation and are revoked on release; an explicitly expiring owner remains subject to its chosen lifetime.
 
 The optional `--audience worker` flag creates a Worker-audience credential. At `/mcp` it is limited to the Agent tools of its bound role; it cannot call Operator tools.
 

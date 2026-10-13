@@ -1,10 +1,10 @@
 export type CredentialArguments =
   | { command: 'revoke'; principalId: string }
-  | { command: 'issue'; name: string; audience: 'operator' | 'worker'; days: number; workspaceId?: string; access?: 'manage' | 'read-only'
+  | { command: 'issue'; name: string; audience: 'operator' | 'worker'; days: number | null; workspaceId?: string; access?: 'manage' | 'read-only'
       /** Whole-computer telemetry is never part of a preset; whoever runs this CLI on Main grants it by name. */
       computerMetrics?: true }
 
-const USAGE = 'Usage: pnpm credential issue --name <name> [--days 30] [--workspace <id>] [--audience operator|worker] [--access manage|read-only] [--grant devices:metrics:read], or pnpm credential revoke <principal-id>'
+const USAGE = 'Usage: pnpm credential issue --name <name> [--days <days>] [--workspace <id>] [--audience operator|worker] [--access manage|read-only] [--grant devices:metrics:read], or pnpm credential revoke <principal-id>'
 const FLAGS = new Set(['--name', '--days', '--workspace', '--audience', '--access', '--grant'])
 
 /** Parse everything before opening a database or issuing any credential. */
@@ -33,9 +33,9 @@ export function parseCredentialArguments(argv: readonly string[]): CredentialArg
   if (audience !== 'operator' && audience !== 'worker') {
     throw new Error('--audience must be exactly operator or worker')
   }
-  const rawDays = values.get('--days') ?? '30'
-  const days = Number(rawDays)
-  if (!/^\d+$/.test(rawDays) || !Number.isInteger(days) || days < 1 || days > 365) {
+  const rawDays = values.get('--days') ?? (audience === 'operator' ? undefined : '30')
+  const days = rawDays === undefined ? null : Number(rawDays)
+  if (days !== null && (!/^\d+$/.test(rawDays ?? '') || !Number.isInteger(days) || days < 1 || days > 365)) {
     throw new Error('--days must be an integer from 1 through 365')
   }
   const workspaceId = values.get('--workspace')
