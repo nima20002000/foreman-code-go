@@ -162,6 +162,37 @@ it('rejects duplicate closures that would cycle back to a report being closed', 
   } finally { await f.close() }
 }, 60_000)
 
+it('serializes inverse duplicate closures so concurrent commands cannot create a cycle', async () => {
+  const f = await fixture()
+  try {
+    const owner = await f.operator(['bug_reports:report', 'bug_reports:read', 'bug_reports:update'])
+    const reports = []
+    for (const title of ['First concurrent failure', 'Second concurrent failure']) {
+      reports.push(BugReportSchema.parse(BugReportCreateResultSchema.parse(value(await owner.client.callTool({
+        name: 'bug_report', arguments: { ...reportInput(), title },
+      }))).report))
+    }
+    const [first, second] = reports as [typeof reports[number], typeof reports[number]]
+    const results = await Promise.all([[first, second], [second, first]].map(async ([source, target]) =>
+      owner.client.callTool({ name: 'bug_reports_close', arguments: {
+        commandId: randomUUID(), status: 'duplicate', duplicateOfId: target!.id,
+        reports: [{ reportId: source!.id, expectedRevision: source!.revision }],
+      } })))
+    expect(results.filter(result => result.isError !== true)).toHaveLength(1)
+    expect(JSON.stringify(results.find(result => result.isError)?.content)).toContain('INVALID_INPUT')
+    const listed = BugReportPageSchema.parse(value(await owner.client.callTool({
+      name: 'bug_reports_list', arguments: {},
+    })))
+    expect(listed.items).toHaveLength(1)
+    expect(listed.items[0]!.status).toBe('open')
+    for (const report of reports) {
+      expect(BugReportCreateResultSchema.parse(value(await owner.client.callTool({
+        name: 'bug_report', arguments: { ...reportInput(), title: report.title },
+      }))).report.id).toBe(listed.items[0]!.id)
+    }
+  } finally { await f.close() }
+}, 60_000)
+
 it('conflicts when a close command is retried with a different note that redacts to the same text', async () => {
   const f = await fixture()
   try {

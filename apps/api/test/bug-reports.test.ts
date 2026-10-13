@@ -18,6 +18,7 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { bugReportsMigration } from '../src/infrastructure/bugReportsMigration.js'
+import { bugReportLifecycleMigration } from '../src/infrastructure/bugReportLifecycleMigration.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 
@@ -67,6 +68,42 @@ async function fixture(pool = database.pool) {
 }
 
 describe('bug report HTTP persistence', () => {
+  it('preserves populated pre-lifecycle reports and matches their migrated titles on repeat', async () => {
+    const upgrading = await currentDatabase({ beforeMigration: bugReportLifecycleMigration.version })
+    try {
+      const f = await fixture(upgrading.pool)
+      const saved = []
+      for (const status of ['triaged', 'fixed'] as const) {
+        const content: Partial<BugReportCreateInput> = { ...f.input({ title: `Legacy   ${status} failure` }) }
+        delete content.commandId
+        const report = BugReportSchema.parse({
+          ...content, id: `bug-report-${randomUUID()}`, status, revision: 2, occurrenceCount: 2,
+          reporter: { principalId: f.owner.principal.id, name: f.owner.principal.name, audience: 'operator' },
+          harness: null, createdAt: '2026-10-10T10:00:00.000Z', updatedAt: '2026-10-11T10:00:00.000Z',
+          lastReportedAt: '2026-10-11T10:00:00.000Z',
+        })
+        await upgrading.pool.query(
+          `insert into bug_reports(id,workspace_id,fingerprint,status,severity,revision,record,created_at)
+           values($1,$2,$3,$4,$5,$6,$7::jsonb,$8)`,
+          [report.id, report.workspaceId, randomUUID(), report.status, report.severity,
+            report.revision, JSON.stringify(report), report.createdAt],
+        )
+        saved.push(report)
+      }
+      await applyApplicationMigrations(upgrading.pool)
+      await applyApplicationMigrations(upgrading.pool)
+      for (const original of saved) {
+        expect(await f.bugReports.get(f.owner.principal, original.id)).toEqual(original)
+        const repeated = await f.bugReports.report(f.owner.principal, 'http',
+          f.input({ title: original.title.toUpperCase().replace(/ +/g, ' ') }))
+        expect(repeated).toMatchObject({ deduplicated: true,
+          outcome: original.status === 'fixed' ? 'reopened' : 'repeat',
+          report: { id: original.id, status: original.status === 'fixed' ? 'open' : 'triaged',
+            occurrenceCount: 3, revision: 3, tried: original.tried, happened: original.happened } })
+      }
+    } finally { await upgrading.close() }
+  })
+
   it('returns only a summary for another reporter and strips old full-report command receipts on replay', async () => {
     const f = await fixture()
     const original = BugReportSchema.parse(BugReportCreateResultSchema.parse((await f.request(
