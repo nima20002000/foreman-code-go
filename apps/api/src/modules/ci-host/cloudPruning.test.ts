@@ -5,6 +5,52 @@ import { expect, it, vi } from 'vitest'
 import { fixture } from './cloud.testSupport.js'
 
 it.each(['github', 'circleci'] as const)(
+  'waits for cancellation cleanup queued during an active %s sweep', async provider => {
+    const f = await fixture({}, { provider })
+    let releaseFirst!: () => void
+    let releaseSecond!: () => void
+    const firstSweep = new Promise<void>(resolve => { releaseFirst = resolve })
+    const secondSweep = new Promise<void>(resolve => { releaseSecond = resolve })
+    let sweeps = 0
+    f.cloud.setActiveRunLookup(async () => {
+      sweeps++
+      await (sweeps === 1 ? firstSweep : secondSweep)
+      return { ids: new Set<string>(), readAt: 0 }
+    })
+    const runId = randomUUID()
+    let cleanup: Promise<void> | undefined
+    try {
+      await f.cloud.handle({
+        operation: 'start', workspaceId: 'ci-workspace', repository: 'octo/site', commit: f.commit,
+        runId, suite: 'lint', scope: 'full',
+      })
+      await expect.poll(() => sweeps).toBe(1)
+      expect(await f.cloud.handle({ operation: 'cancel', runId }))
+        .toMatchObject({ run: { state: 'canceled' } })
+      let cleanupFinished = false
+      cleanup = f.cloud.waitForMirrorCleanup('octo/site', 'octo/site-ci').then(() => {
+        cleanupFinished = true
+      })
+      releaseFirst()
+      await expect.poll(() => sweeps).toBe(2)
+      expect(cleanupFinished).toBe(false)
+      expect(f.mirrorGit('for-each-ref', '--format=%(refname)', 'refs/heads/ci/'))
+        .toContain(`refs/heads/ci/${f.commit}`)
+      releaseSecond()
+      await cleanup
+      expect(f.mirrorGit('for-each-ref', '--format=%(refname)', 'refs/heads/ci/')).toBe('')
+      expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
+        .toMatchObject({ run: { state: 'canceled' } })
+      expect(provider === 'github' ? f.dispatched : f.circle.triggered).toHaveLength(1)
+    } finally {
+      releaseFirst()
+      releaseSecond()
+      await cleanup
+    }
+  },
+)
+
+it.each(['github', 'circleci'] as const)(
   'drains a due cancellation sweep queued during %s mirror cleanup', async provider => {
     const f = await fixture({}, { provider })
     let release!: () => void
