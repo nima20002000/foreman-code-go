@@ -6,7 +6,7 @@ import { WorkerPairingConfigurationSchema } from '@foreman-code/contracts/device
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { createInstalledWorkerDomains } from './installedWorkerDomains.js'
 
-const preparation = vi.hoisted(() => ({ root: '', pause: async () => {}, launches: 0 }))
+const preparation = vi.hoisted(() => ({ root: '', pause: async () => {}, launches: 0, failSource: false }))
 vi.mock('../ci-host/runner.js', async original => {
   const actual = await original<typeof import('../ci-host/runner.js')>()
   return { ...actual, HostCiRunner: class extends actual.HostCiRunner {
@@ -29,9 +29,10 @@ vi.mock('../jobs/ciRuntimeWorker.js', async original => {
   return { ...actual, CiRuntimeWorker: class extends actual.CiRuntimeWorker {
     constructor(...[directory, ports, signal]: ConstructorParameters<typeof actual.CiRuntimeWorker>) {
       super(directory, { ...ports,
-        git: { cloneDirectory: () => preparation.root, git: async () => {
+        git: { cloneDirectory: () => preparation.root, git: async args => {
           await preparation.pause()
-          return { code: 0, stdout: '', stderr: '' }
+          const failed = preparation.failSource && ['cat-file', 'fetch'].includes(args[0]!)
+          return { code: failed ? 1 : 0, stdout: '', stderr: failed ? 'Fixture source is unavailable.' : '' }
         } },
         managedRuntimeRoot: async () => preparation.root,
         currentRuntimePaths: async () => [],
@@ -53,6 +54,7 @@ async function fixture() {
   roots.push(root)
   preparation.root = root
   preparation.launches = 0
+  preparation.failSource = false
   let enter!: () => void
   let release!: () => void
   const entered = new Promise<void>(resolve => { enter = resolve })
@@ -149,6 +151,37 @@ it.each(['ci-host-v1', 'ci-runtime-v1'])(
         expect(result.payload).toMatchObject({ operationId, commit: request.commit, state: 'prepared' })
       }
     } finally { await restarted.close() }
+  } finally {
+    f.release()
+    await updating
+    await u.value.close()
+    await f.mounted.close()
+  }
+})
+
+
+it('allows an installed update after CI source fetching fails without entering runtime preparation', async () => {
+  const f = await fixture()
+  preparation.failSource = true
+  const u = await updater(f)
+  let updating: Promise<unknown> | undefined
+  try {
+    const operationId = randomUUID()
+    const commit = 'a'.repeat(40)
+    const started = await f.handle('ci-runtime-v1', {
+      operation: 'prepare', operationId, repository: 'fixture/site', commit, keepImages: [],
+      review: { reviewedByPrincipalId: 'fixture-owner', decisionDigest: 'b'.repeat(64) },
+    })
+    expect(started.payload).toMatchObject({ operationId, commit, state: 'preparing' })
+    await vi.waitFor(async () => {
+      const status = await f.handle('ci-runtime-v1', { operation: 'status' })
+      expect(status.payload).toMatchObject({ operationId, commit, state: 'failed', prepared: null,
+        message: expect.stringContaining('could not fetch fixture/site from GitHub') })
+    })
+    updating = u.value.start()
+    await updating
+    expect(u.activity).toEqual(['download', 'download', 'ci-smoke', 'stage', 'restart'])
+    expect(await u.value.status()).toMatchObject({ state: 'restarting', lastError: null })
   } finally {
     f.release()
     await updating
