@@ -1,8 +1,13 @@
-import { expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
+import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
 import { approvalDatabase } from './helpers/wave25ApprovalDatabase.js'
 
+afterEach(() => vi.restoreAllMocks())
+
 it('persists generation-zero remote admission and keeps its original snapshot immutable', async () => {
+  const createSession = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
+    .mockRejectedValue(new Error('Database snapshot checks must not start native sessions'))
   const f = await approvalDatabase()
   try {
     const interaction = f.interaction
@@ -28,5 +33,6 @@ it('persists generation-zero remote admission and keeps its original snapshot im
       values($1,2,'submitted',$2,$3,'other-correlation',$4::jsonb,'original-owner',1,-1)`,
     [interaction.id, interaction.nativeSessionId, interaction.nativeRequestId, JSON.stringify(command)]))
       .rejects.toMatchObject({ code: '23514' })
+    expect(createSession).not.toHaveBeenCalled()
   } finally { await f.close() }
 }, 30_000)
