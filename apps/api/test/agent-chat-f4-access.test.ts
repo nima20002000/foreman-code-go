@@ -12,7 +12,8 @@ import type { AgentConversationRow, PostgresAgentChatRepository } from '../src/m
 import type { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 import { DomainError } from '../src/modules/errors.js'
 import { operatorToolAvailable } from '../src/mcp/operator/availability.js'
-import { registerAgentChatTools } from '../src/mcp/operator/tools/agentChat.js'
+import { agentChatTools } from '../src/mcp/operator/tools/agentChat.js'
+import { registerOperatorToolGroup } from '../src/mcp/operator/server.js'
 import type { OperatorRequestContext } from '../src/mcp/operator/types.js'
 import { registerAgentChatRoutes } from '../src/routes/agentChat.js'
 
@@ -206,7 +207,7 @@ describe('F4 A-R02/A-R03 scoped HTTP/MCP chat authorization', () => {
     const interrupt = vi.spyOn(f.service, 'interrupt').mockResolvedValue(base)
     const cancel = vi.spyOn(f.service, 'cancelQueued').mockResolvedValue(base)
     const respond = vi.spyOn(f.service, 'respond').mockResolvedValue(base)
-    registerAgentChatTools(server as unknown as McpServer, mcpContext(f.service, principal()))
+    registerOperatorToolGroup(server as unknown as McpServer, mcpContext(f.service, principal()), agentChatTools)
     const inputs: Partial<Record<OperatorToolName, Record<string, unknown>>> = {
       agent_chat_interrupt: { requestId: 'i', expectedNativeTurnId: 'turn-one' },
       agent_chat_cancel_queued: { requestId: 'c', turnRequestId: 'queued' },

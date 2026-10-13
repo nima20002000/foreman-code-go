@@ -7,6 +7,9 @@ import { DomainError } from '../errors.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { toolFailure } from '../../mcp/shared/results.js'
 import type { RunPlacementReadService } from './readService.js'
+import { placementChoiceRequirements } from './choicesService.js'
+import { defineOperatorTool, grants, registerToolDefinition } from '../../mcp/operator/definition.js'
+import type { OperatorRequestContext } from '../../mcp/operator/types.js'
 
 /** Mount under the existing management auth hook. No caller placement/proof JSON
  * is accepted by this read-only adapter or by the existing shared Start route. */
@@ -17,20 +20,31 @@ export function registerRunPlacementRoutes(app: FastifyInstance, reads: RunPlace
   })
 }
 
-export function registerRunPlacementTool(server: McpServer, reads: RunPlacementReadService, principal: ManagementPrincipal, commands: Pick<PostgresCommandCoordinator, 'recordDenied'>): void {
-  server.registerTool('run_node_placement_get', {
-    description: 'Read accepted host, configuration, root, source and requested Agent branch prefix for one Run node. Persisted native placements report each prepared branch and materialized working directory separately. Inherited Main nodes without a per-node binding return legacy_missing evidence. Requires live scoped runs:read and workspace_locations:read for canonical paths. Current Board settings are never substituted and this read does not launch work.',
-    inputSchema: RunPlacementGetInputSchema, outputSchema: RunPlacementGetResultSchema,
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async (input) => {
-    try {
-      const result = await reads.get(principal, input)
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], structuredContent: result }
-    } catch (error) {
-      if (error instanceof DomainError && error.status === 403) await commands.recordDenied(principal.id, 'mcp', 'run_node_placement_get', 'mcp:run_node_placement_get')
-      return toolFailure(error)
-    }
-  })
+type Commands = Pick<PostgresCommandCoordinator, 'recordDenied'>
+const readAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+async function respond(principal: ManagementPrincipal, commands: Commands, name: 'run_node_placement_get' | 'workflow_node_placement_choices',
+  read: () => Promise<Record<string, unknown>>) {
+  try {
+    const result = await read()
+    return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], structuredContent: result }
+  } catch (error) {
+    if (error instanceof DomainError && error.status === 403) await commands.recordDenied(principal.id, 'mcp', name, `mcp:${name}`)
+    return toolFailure(error)
+  }
+}
+
+export const runPlacementTool = defineOperatorTool({
+  name: 'run_node_placement_get',
+  requires: [['runs:read', 'run'], ['workspace_locations:read', 'workspace']],
+  enabled: s => !!s.runs && !!s.runPlacements,
+  description: 'Read accepted host, configuration, root, source and requested Agent branch prefix for one Run node. Persisted native placements report each prepared branch and materialized working directory separately. Inherited Main nodes without a per-node binding return legacy_missing evidence. Requires live scoped runs:read and workspace_locations:read for canonical paths. Current Board settings are never substituted and this read does not launch work.',
+  inputSchema: RunPlacementGetInputSchema, outputSchema: RunPlacementGetResultSchema, annotations: readAnnotations,
+  handle: (context, input) => respond(context.principal, context.services.commands, 'run_node_placement_get',
+    () => context.services.runPlacements!.get(context.principal, input)),
+})
+export function registerRunPlacementTool(server: McpServer, reads: RunPlacementReadService, principal: ManagementPrincipal, commands: Commands): void {
+  const context = { principal, services: { runPlacements: reads, commands } } as unknown as OperatorRequestContext
+  registerToolDefinition(server, context, runPlacementTool)
 }
 
 export function registerNodePlacementChoicesRoutes(app: FastifyInstance, reads: import('./choicesService.js').NodePlacementChoicesService): void {
@@ -40,19 +54,19 @@ export function registerNodePlacementChoicesRoutes(app: FastifyInstance, reads: 
     return reads.get(requirePrincipal(request), { ...request.query, ...request.params })
   })
 }
+export const nodePlacementChoicesTool = defineOperatorTool({
+  name: 'workflow_node_placement_choices',
+  requires: grants(placementChoiceRequirements),
+  enabled: s => !!s.placementChoices && !!s.workflows,
+  description: 'List computers, approved sources and roots, and matching harness profiles for one saved node/configuration. Unusable roots remain visible as unavailable choices with a reason, including released sources. Existing host bindings remain selectable after workspace location changes while their saved policy and source remain authorized. Requires scoped workflows:read, workspace_locations:read, source_roots:read and sources:read, plus global harnesses:read. Clear node placement through workflow_save_v3 to inherit the workflow default, or Main when no default is saved. Discovery does not grant execution; Save and Start revalidate revisions and authority.',
+  inputSchema: NodePlacementChoicesInputSchema, outputSchema: NodePlacementChoicesResultSchema, annotations: readAnnotations,
+  handle: (context, input) => respond(context.principal, context.services.commands, 'workflow_node_placement_choices',
+    () => context.services.placementChoices!.get(context.principal, input)),
+})
 export function registerNodePlacementChoicesTool(server: McpServer, reads: import('./choicesService.js').NodePlacementChoicesService,
-  principal: ManagementPrincipal, commands: Pick<PostgresCommandCoordinator, 'recordDenied'>): void {
-  server.registerTool('workflow_node_placement_choices', {
-    description: 'List computers, approved sources and roots, and matching harness profiles for one saved node/configuration. Unusable roots remain visible as unavailable choices with a reason, including released sources. Existing host bindings remain selectable after workspace location changes while their saved policy and source remain authorized. Requires scoped workflows:read, workspace_locations:read, source_roots:read and sources:read, plus global harnesses:read. Clear node placement through workflow_save_v3 to inherit the workflow default, or Main when no default is saved. Discovery does not grant execution; Save and Start revalidate revisions and authority.',
-    inputSchema: NodePlacementChoicesInputSchema, outputSchema: NodePlacementChoicesResultSchema,
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, async input => {
-    try { const result = await reads.get(principal, input); return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], structuredContent: result } }
-    catch (error) {
-      if (error instanceof DomainError && error.status === 403) await commands.recordDenied(principal.id, 'mcp', 'workflow_node_placement_choices', 'mcp:workflow_node_placement_choices')
-      return toolFailure(error)
-    }
-  })
+  principal: ManagementPrincipal, commands: Commands): void {
+  const context = { principal, services: { placementChoices: reads, commands } } as unknown as OperatorRequestContext
+  registerToolDefinition(server, context, nodePlacementChoicesTool)
 }
 
 /** Discovery and accepted Run readback have separate grants and do not authorize execution. */

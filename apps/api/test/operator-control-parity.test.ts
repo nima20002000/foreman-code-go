@@ -4,7 +4,8 @@ import type { McpServer } from '@modelcontextprotocol/server'
 import { OperatorConversationStateSchema } from '@foreman-code/contracts'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import { describe, expect, it, vi } from 'vitest'
-import { registerSettingsTools } from '../src/mcp/operator/tools/settings.js'
+import { settingsTools } from '../src/mcp/operator/tools/settings.js'
+import { registerOperatorToolGroup } from '../src/mcp/operator/server.js'
 import type { OperatorRequestContext } from '../src/mcp/operator/types.js'
 import type { OperatorChatService } from '../src/modules/conversations/operatorChat.js'
 import { registerOperatorChatRoutes } from '../src/routes/operatorChat.js'
@@ -22,7 +23,7 @@ function controls(owner: ManagementPrincipal) {
   const server = { registerTool: (name: string, _definition: unknown, callback: (input: unknown) => Promise<{ structuredContent?: unknown }>) => {
     tools.set(name, callback)
   } } as unknown as McpServer
-  registerSettingsTools(server, context)
+  registerOperatorToolGroup(server, context, settingsTools)
   return { chat, tools }
 }
 

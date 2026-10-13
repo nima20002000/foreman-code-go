@@ -4,7 +4,8 @@ import type { AgentFileToolService } from '../../src/modules/files/tools/service
 import Fastify from 'fastify'
 import { McpServer } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
-import { registerWorkspaceTools } from '../../src/mcp/operator/tools/workspaces.js'
+import { workspaceTools } from '../../src/mcp/operator/tools/workspaces.js'
+import { registerOperatorToolGroup } from '../../src/mcp/operator/server.js'
 import type { OperatorRequestContext } from '../../src/mcp/operator/types.js'
 import { vi } from 'vitest'
 import type pg from 'pg'
@@ -197,7 +198,7 @@ export async function managementEndpoint(token = 'synthetic-scoped-token') {
   app.post('/mcp', async (request, reply) => {
     if (request.headers.authorization !== `Bearer ${token}`) return reply.code(401).send()
     const server = new McpServer({ name: 'graphql', version: '1.0.0' })
-    registerWorkspaceTools(server, { principal, services: { workspaces: { list } } } as unknown as OperatorRequestContext)
+    registerOperatorToolGroup(server, { principal, services: { workspaces: { list } } } as unknown as OperatorRequestContext, workspaceTools)
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true })
     reply.raw.on('close', () => { void transport.close(); void server.close() })
     await server.connect(transport)
