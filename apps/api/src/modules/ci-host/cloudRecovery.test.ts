@@ -183,3 +183,23 @@ it.each(['canceled', 'queued'] as const)('cancels GitHub attempts that become vi
   expect(f.github.canceled).toEqual(expect.arrayContaining(['8', '9']))
   expect(await reopened.handle(readRequest(runId))).toMatchObject({ run: { state: outcome } })
 })
+
+it.each(['github', 'circleci'] as const)('starts %s with learned timings regardless of their key order', async provider => {
+  const f = await fixture({}, { provider })
+  const first = 'apps/api/test/a.integration.test.ts'
+  const second = 'apps/api/test/b.integration.test.ts'
+  const snapshots: string[] = []
+  for (const durations of [{ [first]: 10, [second]: 20 }, { [second]: 20, [first]: 10 }]) {
+    const started = await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site',
+      commit: f.commit, suite: 'integration', scope: 'full', durations })
+    expect(started).toMatchObject({ operation: 'start', run: { state: expect.stringMatching(/starting|running/),
+      provenance: { sourceCommit: f.commit } } })
+    if (started.operation !== 'start' || !started.run.provenance) throw new Error('Missing snapshot provenance')
+    const snapshot = started.run.provenance.workflowCommit
+    snapshots.push(snapshot)
+    expect(JSON.parse(f.mirrorGit('show', `${snapshot}:scripts/ci-learned-durations.json`)))
+      .toEqual({ [first]: 10, [second]: 20 })
+  }
+  expect(snapshots[1]).toBe(snapshots[0])
+  expect(provider === 'github' ? f.dispatched : f.circle.triggered).toHaveLength(2)
+})

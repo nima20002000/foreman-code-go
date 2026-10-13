@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { CiGetOutputSchema, CiRunOutputSchema, type CiHostRun } from '@foreman-code/contracts'
+import { CiGetOutputSchema, CiRunOutputSchema, type CiHostRun, type CiTestResults } from '@foreman-code/contracts'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { afterAll, beforeAll, expect, it } from 'vitest'
@@ -27,7 +27,11 @@ it.each([false, true])('persists outcome, retries results after restart and enfo
   const computer = { key: 'ci-builder', hostRef: { kind: 'main' as const, mainId: 'ci-main' }, label: 'CI builder', priority: 1 }
   const provenance = { sourceCommit: 'a'.repeat(40), workflowCommit: 'b'.repeat(40), workflowRef: `ci-snapshot/${'b'.repeat(40)}` }
   const persistedPins = includeProvenance ? { provenance } : {}
-  const tests = { summary: { passed: 1, failed: 0, skipped: 0 }, truncated: false, files: [] }
+  const tests: CiTestResults = { summary: { passed: 1, failed: 0, skipped: 0 }, truncated: false,
+    files: [{ file: 'apps/api/test/example.test.ts', status: 'passed', durationMs: 10,
+      tests: [{ name: 'returns café 🚀', status: 'passed', durationMs: 10, message: 'Done.\0\ud800' }] }] }
+  const expectedTests: CiTestResults = { ...tests,
+    files: [{ ...tests.files[0]!, tests: [{ ...tests.files[0]!.tests[0]!, message: 'Done.\ufffd' }] }] }
   let remote: CiHostRun | undefined
   let finished = false
   let failedRead = false
@@ -93,9 +97,9 @@ it.each([false, true])('persists outcome, retries results after restart and enfo
     await ci.dispatch()
     const complete = CiGetOutputSchema.parse(await invoke('ci_get', { ticketId: started.ticketId, testStatus: ['passed'] }))
     expect(complete.run).toMatchObject({ state: 'passed', collection: 'complete', ...persistedPins })
-    expect(complete.tests).toEqual(tests)
+    expect(complete.tests).toEqual(expectedTests)
     expect(starts).toBe(1)
-    expect((await pool.query('select test_results from ci_runs where id=$1', [started.ticketId])).rows[0].test_results).toEqual(tests)
+    expect((await pool.query('select test_results from ci_runs where id=$1', [started.ticketId])).rows[0].test_results).toEqual(expectedTests)
   } finally {
     await Promise.all(clients.map(client => client.close()))
     await ci.close()
