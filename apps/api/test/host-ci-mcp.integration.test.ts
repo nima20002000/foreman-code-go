@@ -1084,6 +1084,14 @@ it('queues only user-systemd files through MCP while ordinary files run on cloud
     f.finish(older.ticketId, 0, 'Older integration completed.\n')
     await f.ci.dispatch()
     const unready = (await read()).partitions!.find(run => run.id === host.id)!
+    const unavailable = CiComputersOutputSchema.parse(await f.value(reader, 'ci_computers_list', {}))
+    const buildComputer = unavailable.computers.find(computer => computer.hostRef.kind !== 'cloud')!
+    expect(buildComputer.ready).toBe(false)
+    expect(buildComputer.reasons).toHaveLength(1)
+    expect(unavailable.queue).toContainEqual({ ticketId: host.id, priority: 'normal', priorityReason: 'normal',
+      position: 1, reason: unready.message })
+    const denied = await f.connect(['workflows:read'])
+    expect((await f.call(denied, 'ci_get', { ticketId: host.id })).isError).toBe(true)
     expect(unready).toMatchObject({ state: 'queued',
       message: 'Waiting for a build computer: this integration slice needs one; laptop: Log in to GitHub.' })
     expect((await f.pool.query('select record from ci_runs where id=$1', [host.id])).rows[0].record).toEqual(unready)
