@@ -466,20 +466,31 @@ it('returns to the first node execution page after six pages while retaining the
   }))
   await mount()
   await userEvent.click(await screen.findByRole('button', { name: 'Inspect X before rename' }))
-  await userEvent.click(await screen.findByRole('button', { name: 'Attempt 1 · node-execution' }))
-  expect(await screen.findByRole('article', { name: 'Execution node-execution' })).toBeInTheDocument()
+  const inspector = within(await screen.findByRole('region', { name: 'Run node inspector: X before rename' }))
+  const buttonText = (label: string) => (_content: string, element: Element | null) => element?.textContent === label
+  await userEvent.click(await inspector.findByText(buttonText('Attempt 1 · node-execution'), { selector: 'button' }))
+  expect(await inspector.findByLabelText('Execution node-execution')).toBeInTheDocument()
   for (let pageIndex = 1; pageIndex <= 5; pageIndex++) {
-    await userEvent.click(screen.getByRole('button', { name: 'Load more executions' }))
-    await screen.findByRole('button', { name: `Attempt 1 · execution-${pageIndex * 25 + 25}` })
+    await userEvent.click(inspector.getByText(buttonText('Load more executions'), { selector: 'button' }))
+    const lastAttempt = `Attempt 1 · execution-${pageIndex * 25 + 25}`
+    expect(await inspector.findByText(buttonText(lastAttempt), { selector: 'button' })).toHaveAccessibleName(lastAttempt)
   }
-  expect(screen.queryByRole('button', { name: 'Attempt 1 · node-execution' })).not.toBeInTheDocument()
-  expect(screen.getByText('Earlier executions are hidden. Refresh to return to the first page.')).toBeVisible()
-  expect(screen.getByRole('article', { name: 'Execution node-execution' })).toBeInTheDocument()
+  expect(inspector.queryByText(buttonText('Attempt 1 · node-execution'), { selector: 'button' })).not.toBeInTheDocument()
+  expect(cursors.slice(0, 6)).toEqual([null, '1', '2', '3', '4', '5'])
+  expect(inspector.queryByText(buttonText('Load more executions'), { selector: 'button' })).not.toBeInTheDocument()
+  expect(inspector.getByText('Earlier executions are hidden. Refresh to return to the first page.')).toBeVisible()
+  expect(inspector.getByLabelText('Execution node-execution')).toBeInTheDocument()
+  expect(inspector.getByLabelText('Accepted output from X before rename'))
+    .toHaveTextContent('Saved first occurrence result')
   const readsBeforeRefresh = cursors.length
-  await userEvent.click(screen.getByRole('button', { name: 'Refresh node executions' }))
-  expect(await screen.findByRole('button', { name: 'Attempt 1 · node-execution' })).toHaveAttribute('aria-pressed', 'true')
+  await userEvent.click(inspector.getByText(buttonText('Refresh node executions'), { selector: 'button' }))
+  const selectedAttempt = await inspector.findByText(buttonText('Attempt 1 · node-execution'), { selector: 'button' })
+  expect(selectedAttempt).toHaveAccessibleName('Attempt 1 · node-execution')
+  expect(selectedAttempt).toHaveAttribute('aria-pressed', 'true')
   expect(cursors.slice(readsBeforeRefresh)).toEqual([null])
-  expect(screen.getByRole('article', { name: 'Execution node-execution' })).toBeInTheDocument()
+  expect(inspector.getByLabelText('Execution node-execution')).toBeInTheDocument()
+  expect(inspector.getByLabelText('Accepted output from X before rename'))
+    .toHaveTextContent('Saved first occurrence result')
 })
 
 it('withdraws inspector branch facts after delayed permission loss', async () => {
