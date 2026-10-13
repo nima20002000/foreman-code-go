@@ -1,6 +1,3 @@
-import { randomUUID } from 'node:crypto'
-import { rm } from 'node:fs/promises'
-import { dirname } from 'node:path'
 import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
 import type { SourceGitHubReferenceSchema } from '@foreman-code/contracts/source-operations'
 import type { z } from 'zod'
@@ -20,27 +17,12 @@ export async function publishCommit(ports: GitWorktreePorts, repository: string,
     if (fetched.code !== 0) throw githubReadFailure(repository)
     return
   }
-  if (await originServes(ports, clone, commit, signal)) return
+  // Main's clone is shallow, so no local check proves what origin serves. A held commit (an Agent's own, or a Run's
+  // start) is pinned under foreman/ci/; the push transfers nothing that origin already has.
   const pushed = await ports.git(['push', '--quiet', 'origin', `${commit}:refs/heads/foreman/ci/${commit}`], { cwd: clone, signal })
   if (pushed.code !== 0) {
     throw new SourceError('SOURCE_GITHUB_PUSH_REQUIRED', `Main could not publish commit ${commit.slice(0, 12)} to ${repository}. `
       + 'Connect GitHub with push access on Main (gh auth login), then retry.')
-  }
-}
-
-/** Main's clone is shallow and its remote-tracking refs can be stale, so neither proves what origin serves. A fetch
- * of the commit into an empty repository does: nothing there can satisfy it locally. */
-async function originServes(ports: GitWorktreePorts, clone: string, commit: string, signal: AbortSignal) {
-  const url = await ports.git(['remote', 'get-url', 'origin'], { cwd: clone, signal })
-  if (url.code !== 0 || !url.stdout.trim()) return false
-  const probe = `${clone}-probe-${randomUUID()}`
-  try {
-    if ((await ports.git(['init', '--quiet', '--bare', probe], { cwd: dirname(clone), signal })).code !== 0) return false
-    const fetched = await ports.git(['fetch', '--quiet', '--no-tags', '--depth=1', '--filter=blob:none',
-      '--no-write-fetch-head', url.stdout.trim(), commit], { cwd: probe, signal })
-    return fetched.code === 0
-  } finally {
-    await rm(probe, { recursive: true, force: true })
   }
 }
 

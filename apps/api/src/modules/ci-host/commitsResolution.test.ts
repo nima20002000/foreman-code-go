@@ -67,12 +67,12 @@ it('publishes a missing non-tip commit by reading it from origin at depth one', 
   expect(f.git.mock.calls.filter(([args]) => args[0] === 'push')).toHaveLength(0)
 })
 
-it('resolves a published commit Main already holds without pushing it', async () => {
+it('pins a published commit Main already holds without moving origin branches', async () => {
   const f = await shallowFixture()
   f.run(f.clone, 'fetch', '--quiet', '--depth=2', 'origin', 'main')
   expect(await f.commits.resolve('octo/site', 'main', f.commit, null)).toBe(f.commit)
-  expect(f.git.mock.calls.filter(([args]) => args[0] === 'push')).toHaveLength(0)
-  expect(f.run(f.origin, 'for-each-ref', '--format=%(refname)', 'refs/heads/')).toBe('refs/heads/main')
+  expect(f.run(f.origin, 'rev-parse', `refs/heads/foreman/ci/${f.commit}`)).toBe(f.commit)
+  expect(f.run(f.origin, 'rev-parse', 'refs/heads/main')).toBe(f.tip)
 })
 
 it('pushes an unpublished local commit so origin can serve it', async () => {
