@@ -84,7 +84,7 @@ function dispatchFixture(settlementError?: Error) {
       if (typeof tail === 'string') tails.set(next.id, tail)
       return { rows: [], rowCount: 1 }
     }
-    if (sql.includes("'supersededBy' is not null") || sql.includes("'gate'='true'")) return { rows: [] }
+    if (sql.includes("'supersededBy' is not null") || sql.includes("and record->>'gate'='true'")) return { rows: [] }
     if (sql.includes("state='queued'")) {
       return { rows: records.filter(record => record.state === 'queued').map(record => ({ record, durations: null })) }
     }
