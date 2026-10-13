@@ -63,7 +63,22 @@ function removeExact(key: string, request: BoardStartInput): void {
   } catch { throw new Error(storageError) }
   publish(key)
 }
-export const acknowledgeBoardStart = (key: string, request: BoardStartInput) => locked(key, () => removeExact(key, request))
+export function acknowledgeBoardStart(key: string, request: BoardStartInput): Promise<'removed' | 'absent' | 'superseded'> {
+  return locked(key, () => {
+    if (nextDraftKey(request.workspaceId, request.workflowId) !== key) throw new Error('Start scope mismatch')
+    const current = readBoardStart(key)
+    if (!current) {
+      publish(key)
+      return 'absent'
+    }
+    if (current.commandId !== request.commandId) {
+      publish(key, current)
+      return 'superseded'
+    }
+    removeExact(key, request)
+    return 'removed'
+  })
+}
 
 /** Only an explicit unsupported-version terminal rejection clears the exact command.
  * Denial, stale pins and uncertain transport retain it; they cannot prove a lost Start was not admitted. */
