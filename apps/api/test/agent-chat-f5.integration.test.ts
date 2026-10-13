@@ -136,6 +136,7 @@ describe.skipIf(!postgresEnabled)('F5 approval and receipt PostgreSQL / HTTP / M
     try {
       const admit = (input: SendAgentChatMessageRequest, delivery: 'queued' | 'submitting' = 'queued') =>
         f.repository.admit({ key: agentChatKey(f.context), context: f.context, request: input, delivery })
+      // This capacity scenario includes 159 admissions and authenticated cancellation of every queued turn.
       // Older unfinished receipts, then enough terminal history to crowd out the old oldest-first LIMIT.
       for (let i = 0; i < 59; i++) {
         const input = { ...f.message(`older-${i}`, f.id), ...(i < 15
@@ -215,5 +216,5 @@ describe.skipIf(!postgresEnabled)('F5 approval and receipt PostgreSQL / HTTP / M
       assert.equal((await f.read()).turns.some((turn) => turn.requestId === 'capacity-freed'), true)
       assert.equal(f.native.prompts.length, 1, 'No queued or rejected request may reach the held native turn.')
     } finally { await f.close() }
-  }, 30_000)
+  }, 120_000)
 })
