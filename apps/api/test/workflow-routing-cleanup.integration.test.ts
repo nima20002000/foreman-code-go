@@ -24,6 +24,11 @@ describe.skipIf(!postgresEnabled)('routing workflow cleanup', () => {
     try {
       const { saved } = await f.save('mcp')
       const started = await f.start('mcp', saved)
+      // Workflow execution and its database work precede the cleanup retry deadline.
+      await vi.waitFor(async () => {
+        const completed = RunRecordDetailSchema.parse(await f.http('GET', `${runPath(started.scope)}/record`))
+        expect(completed.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
+      }, { timeout: 75_000, interval: 100 })
       const record = await f.settled(started.scope)
       expect(recordAtTimeout).toMatchObject({
         run: { id: started.scope.runId, executionState: 'completed', outcome: 'succeeded' },
