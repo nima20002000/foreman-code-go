@@ -24,7 +24,7 @@ import { prepareCiSupersession, validateCiSupersession, supersedeCiRuns } from '
 import { gatePartStealer, gateQueueBlock, planCiGate, readCiComputerStatus } from './gate.js'
 import { buildComputerIntegrationShards, gateDispatchShards } from './capacity.js'
 import { ciGateReport } from './gateReport.js'
-import { claimCiDispatch, releaseCiDispatch, saveQueuedCiRun, ciMessages, rejectedCiStart, withCiTicketLock,
+import { releaseCiDispatch, saveQueuedCiRun, ciMessages, rejectedCiStart, withCiTicketLock,
   requestCiStart, CI_START_ACK_TIMEOUT_MS, CI_START_MAX_ATTEMPTS } from './dispatch.js'
 import { collectCiResults } from './resultCollection.js'
 import { sanitizeCiText, serializeCiJson } from './text.js'
@@ -33,6 +33,7 @@ import { weighCiPartitions } from './partitionPlanning.js'
 import { readExecutorSpeeds } from './executorSpeed.js'
 import { readQueuedCiRuns } from './queuedRuns.js'
 import { dispatchCloudTicket, expireCloudDispatch, requestCloud } from './cloudDispatch.js'
+import { claimCiSlot, reservedCloudSlotKeys } from './cloudSlots.js'
 import { cancelAssignedCiTicket } from './assignedCancellation.js'
 import { readHostCiLog } from './logRead.js'
 import type { AgentSnapshots, CiCommits, HostCiComputer, HostCiEndpoint, HostRef } from './serviceTypes.js'
@@ -76,10 +77,13 @@ export class HostCiService {
   private timer: NodeJS.Timeout | undefined
   private stoppingRuns = 0
   private readonly endpoint: HostCiEndpoint
+  /** Cloud slots kept free for non-gate tickets while a gate is queued or running. */
+  private readonly reservedCloudSlots: number
 
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly authority: CiAuthority, private readonly commits: CiCommits,
-    endpoint: HostCiEndpoint, private readonly snapshots?: AgentSnapshots) {
+    endpoint: HostCiEndpoint, private readonly snapshots?: AgentSnapshots, options: { reservedCloudSlots?: number } = {}) {
+    this.reservedCloudSlots = options.reservedCloudSlots ?? 0
     this.endpoint = {
       computers: () => endpoint.computers(),
       request: async (computer, request) => {
@@ -269,7 +273,7 @@ export class HostCiService {
         && fleet.some(computer => computer.hostRef.kind === 'cloud')) {
         const smokeUnit = await this.commits.unitInventory?.(repository, commit)
         if (smokeUnit) {
-          try { await planCiGate(input, integration, smokeUnit, unitDurations, this.endpoint) }
+          try { await planCiGate(input, integration, smokeUnit, unitDurations, this.endpoint, new Map(), this.reservedCloudSlots) }
           catch (error) {
             if (!(error instanceof DomainError) || error.code !== 'CI_GATE_CAPACITY_REQUIRED') throw error
             log.info({ reason: error.message }, 'CI smoke has no complete ready gate fleet')
@@ -279,7 +283,7 @@ export class HostCiService {
       parts = [{ part: null, partition: null, files: input.files! }]
     } else if (input.gate) {
       parts = await planCiGate(input, { ...integration!, durations: durations! }, inventory!, unitDurations, this.endpoint,
-        await readExecutorSpeeds(this.pool, this.endpoint))
+        await readExecutorSpeeds(this.pool, this.endpoint), this.reservedCloudSlots)
     } else if (integration) {
       parts = planIntegrationParts(selection, { ...integration, durations: durations! }, await this.integrationSlots())
     }
@@ -948,6 +952,7 @@ export class HostCiService {
       && !left.gate && !right.gate
       ? Number(needsSystemdExecutor(right)) - Number(needsSystemdExecutor(left)) : 0) || compareCiQueue(left, right))
     const stealsGatePart = gatePartStealer(computers, queued)
+    const reservedCloud = reservedCloudSlotKeys(computers, this.reservedCloudSlots)
     // Reserve slots before awaiting a start so concurrent dispatches cannot spend the same capacity.
     await Promise.all(queued.map(async run => {
       const smokeTarget = smokeTargets.get(run.groupId)
@@ -985,11 +990,16 @@ export class HostCiService {
           || !run.unstartedProviders?.includes(computer.hostRef.provider))
         .sort((left, right) => Number(right.key === run.plannedHostKey) - Number(left.key === run.plannedHostKey)
           || preferred(right) - preferred(left)
+          || Number(reservedCloud.has(left.key)) - Number(reservedCloud.has(right.key))
           || right.priority - left.priority)
       for (const computer of order) {
         const reason = unavailable.get(computer.key)
         if (reason) {
           reasons.push(`${computer.label}: ${reason}`)
+          continue
+        }
+        if (run.gate && reservedCloud.has(computer.key)) {
+          reasons.push(`${computer.label}: reserved for non-gate CI while a gate runs`)
           continue
         }
         const exclusiveGate = run.gate && computer.hostRef.kind !== 'cloud'
@@ -1011,7 +1021,7 @@ export class HostCiService {
         used.set(computer.key, (used.get(computer.key) ?? 0) + (exclusiveGate ? totals.get(computer.key) ?? 1 : 1))
         if (usesGitHubIntegration) integrationOnGitHub.add(computer.key)
         const shards = gateDispatchShards(run, computer.key, gateShards.get(computer.key)!)
-        const assigned = await claimCiDispatch(this.pool, run, computer, {
+        const assigned = await claimCiSlot(this.pool, run, computer, {
           operation: 'start', runId: run.id, workspaceId: run.workspaceId, ciMirror: run.ciMirror ?? null,
           repository: run.repository, commit: run.commit, suite: run.suite,
           ...(run.part ? { part: run.part } : {}),
@@ -1022,6 +1032,12 @@ export class HostCiService {
           ...(run.baseCommit ? { baseCommit: run.baseCommit } : {}),
           ...(durations.get(run.id) ? { durations: durations.get(run.id)! } : {}),
         })
+        if (assigned === 'busy') {
+          used.set(computer.key, totals.get(computer.key) ?? 1)
+          if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
+          reasons.push(`${computer.label}: slot is busy with another CI ticket`)
+          continue
+        }
         if (!assigned) {
           releaseSlot(computer)
           if (usesGitHubIntegration) integrationOnGitHub.delete(computer.key)
