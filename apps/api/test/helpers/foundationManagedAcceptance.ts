@@ -33,6 +33,15 @@ export function foundationManagedAcceptance(source: 'http' | 'mcp') {
           executionSemanticsVersion: 3, expectedWorkflowRevision: saved.value.revision,
           expectedLocationRevision: location.value.locationRevision,
           expectedAgentConfigurationVersionIds: saved.value.version.agentConfigurationVersionIds, commandId: randomUUID(), input: {} }
+        const engineStart = f.engine.start.bind(f.engine)
+        // Start responds after admission; await its scheduled drive without imposing a separate load-sensitive deadline.
+        const dispatched = new Promise<string>((resolve, reject) => {
+          vi.spyOn(f.engine, 'start').mockImplementation((runId) => {
+            const task = engineStart(runId)
+            void task.then(() => resolve(runId), reject)
+            return task
+          })
+        })
         let run: { id: string }
         if (source === 'mcp') {
           const result = await f.client.callTool({ name: 'run_start', arguments: start })
@@ -43,7 +52,8 @@ export function foundationManagedAcceptance(source: 'http' | 'mcp') {
             headers: { authorization: `Bearer ${f.writer.token}` }, payload: start })
           expect(result.statusCode, result.body).toBe(202); run = result.json().run
         }
-        await expect.poll(async () => (await f.runs.get(run.id))?.executionState, { timeout: 20000, interval: 25 }).toBe('waiting')
+        expect(await dispatched).toBe(run.id)
+        expect((await f.runs.get(run.id))?.executionState).toBe('waiting')
         const detail = await f.app.inject({
           method: 'GET',
           url: `/api/management/workspaces/${input.workspaceId}/runs/${run.id}`,
