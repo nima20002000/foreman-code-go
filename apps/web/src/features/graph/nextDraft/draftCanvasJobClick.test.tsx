@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { definition } from '../../jobs/fixtures'
+import { clickConnectionHandles } from '../testConnectionHandles'
 import { GraphPresentationProvider } from '../GraphPresentation'
 import { useGraphDraftStore } from '../store'
 import { fixture } from './core.cases'
@@ -51,8 +52,8 @@ it('selects Agent then Job without changing workflow connections', async () => {
 
 it('creates a connection only after the connection handles are activated', async () => {
   const { change, edges } = mount()
-  fireEvent.click(screen.getByLabelText('Connect Node 0 to another agent'))
-  fireEvent.click(screen.getByLabelText(`Connect to ${definition.name}`))
+  clickConnectionHandles(screen.getByLabelText('Connect Node 0 to another agent'),
+    screen.getByLabelText(`Connect to ${definition.name}`))
   expect(change).toHaveBeenCalledOnce()
   expect(edges()).toEqual(['node-0>job-node'])
 })

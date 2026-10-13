@@ -201,7 +201,8 @@ describe('WorkspaceRouteEntry integration', () => {
     const title = 'Main coordinator'
     expect(node).toHaveAccessibleName(/Claude/)
     expect(node).toHaveAttribute('aria-pressed', 'false')
-    await userEvent.click(screen.getByRole('button', { name: `Open ${title} settings` }))
+    await user.hover(node)
+    await user.click(screen.getByRole('button', { name: `Open ${title} settings` }))
     const dialog = await screen.findByRole('dialog', { name: `${title} settings` })
     expect(dialog).toBeVisible()
     expect(within(dialog).getByRole('textbox', { name: 'Name' })).toHaveValue(agent.name)
@@ -223,7 +224,8 @@ describe('WorkspaceRouteEntry integration', () => {
     await user.click(screen.getByRole('button', { name: 'Create workflow' }))
 
     // The sidebar marks a never-published workflow with a "Draft" badge inside its button.
-    const newLink = await screen.findByRole('button', { name: /^Draft workflow/ })
+    const sidebar = within(screen.getByRole('region', { name: 'Workspace workflows' }))
+    const newLink = await sidebar.findByRole('button', { name: /^Draft workflow/ })
     const open = vi.spyOn(window, 'open').mockReturnValue(null)
     fireEvent.click(newLink, { ctrlKey: true })
     const createdId = new URL(open.mock.calls[0]![0] as string, 'http://localhost').searchParams.get('workflowId')
