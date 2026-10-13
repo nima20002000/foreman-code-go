@@ -93,7 +93,7 @@ export function useOperatorSendMutation({ acceptState, invalidate, attachmentRec
       try { await recordOperatorMessageFailure(input.id, input.command.requestId,
         error instanceof Error ? error.message : 'Message delivery failed.', ApiError.is(error)
           && ['INVALID_REQUEST', 'CONVERSATION_REVISION_CONFLICT', 'HARNESS_PROFILE_SELECTION_CONFLICT', 'MESSAGE_ATTACHMENT_NOT_FOUND',
-            'MESSAGE_ATTACHMENT_NOT_READY', 'MESSAGE_ATTACHMENT_UNAVAILABLE', 'MESSAGE_ATTACHMENT_CONVERSATION_REQUIRED'].includes(error.code), input.attemptId) } catch { /* The current error remains visible. */ }
+            'MESSAGE_ATTACHMENT_NOT_READY', 'MESSAGE_ATTACHMENT_UNAVAILABLE', 'MESSAGE_ATTACHMENT_CONVERSATION_REQUIRED'].includes(error.code), input.attemptId) } catch { /* ignore: The current error remains visible. */ }
       if (currentSession(input.generation) && input.epoch === identityEpoch()) refreshOutbox((value) => value + 1)
     },
     // A later 4xx cannot prove an earlier lost delivery was not accepted.

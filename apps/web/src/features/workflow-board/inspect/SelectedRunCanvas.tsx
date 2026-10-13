@@ -250,7 +250,7 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
     previous.current = next
     return result
   }, [topology, states, record, recordLoading, facts, jobExecutions, board.inspection.runNodeId, choreography.nodes, cis, waits, checks, checking])
-  const { canvasNodes, presentedNodes, onNodesChange, resize, finishResize } =
+  const { canvasNodes, presentedNodes, onNodesChange, beginResize, resize, finishResize } =
     useRunCanvasGeometry({ nodes, layout, version, geometry })
   const ciServerNode = useMemo(() => ciServerFlowNode(canvasNodes, ciSummary,
     () => useInspectionPresentation.getState().setOpen(ciDialogKey, true)), [ciSummary, canvasNodes, ciDialogKey])
@@ -291,7 +291,7 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
       <Button size="sm" onClick={() => board.selectInspection({})}>Clear missing node selection</Button>
     </Alert> : null}
     {version ? <div className="pinned-run-flow">
-      <ReactFlowProvider><RunAgentPanels.Provider value={{ panels, open, setOpen, beginResize: adapter.beginResize, resize, finishResize }}><Choreography.Provider value={motion}><ReactFlow<RunNode | CiServerFlowNode, RunEdge | CiTransferFlowEdge> nodes={flowNodes} edges={flowEdges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+      <ReactFlowProvider><RunAgentPanels.Provider value={{ panels, open, setOpen, beginResize, resize, finishResize }}><Choreography.Provider value={motion}><ReactFlow<RunNode | CiServerFlowNode, RunEdge | CiTransferFlowEdge> nodes={flowNodes} edges={flowEdges} nodeTypes={nodeTypes} edgeTypes={edgeTypes}
         onNodesChange={onNodesChange} nodesDraggable={Boolean(geometry)} nodesConnectable={false} nodesFocusable edgesFocusable
         elementsSelectable deleteKeyCode={null} onlyRenderVisibleElements
         fitView fitViewOptions={fitViewOptions} proOptions={proOptions} minZoom={0.1} maxZoom={1.6}
@@ -381,5 +381,5 @@ function useRunCanvasGeometry({ nodes, layout, version, geometry }: {
     setCanvasNodes(adapter.finishResize(change.id, change.width!, change.height!, change.position))
     flushGeometry()
   }
-  return { canvasNodes, presentedNodes, onNodesChange, resize, finishResize }
+  return { canvasNodes, presentedNodes, onNodesChange, beginResize: adapter.beginResize, resize, finishResize }
 }

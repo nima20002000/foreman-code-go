@@ -72,7 +72,7 @@ export function useOperatorCreateConversation({ historyTriggerRef, setAskSend, s
         const draft = useConversationDraftStore.getState().drafts[selectedId] ?? ''
         if (/^\/n?e?w?$/.test(draft.trim())) clearDraft(selectedId, draft)
       }
-    } catch { /* The mutation keeps the failure visible. */ }
+    } catch { /* ignore: The mutation keeps the failure visible. */ }
     finally { creating.current = false }
   }
   return { create, creating, createConversation }

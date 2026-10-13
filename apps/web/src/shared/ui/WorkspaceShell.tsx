@@ -82,7 +82,7 @@ export function WorkspaceShell({
   const workspacesQuery = useWorkspacePages(workspaces === undefined)
   const navigationWorkspaces = workspaces ?? workspacesQuery.data?.pages.flatMap((page) => page.items.map((item) => item.workspace))
   const { navigationCollapsed, navigationWidth, resizeWidth, navigationMotion, setCollapsed,
-    startResize, resizeWithKeyboard } = useNavigationResize()
+    startResize, resizeWithKeyboard, resetWidth } = useNavigationResize()
   const rememberedWorkspaceId = useNavigationUiStore((state) => state.activeWorkspaceId)
   const navigationWorkspaceId = activeGlobalSection
     ? rememberedWorkspaceId ?? workspaceId
@@ -116,11 +116,7 @@ export function WorkspaceShell({
           title="Drag to resize navigation. Ctrl/Cmd+B or Enter toggles navigation. Arrow keys resize."
           onPointerDown={startResize}
           onKeyDown={resizeWithKeyboard}
-          onDoubleClick={() => {
-            stopResizeRef.current?.()
-            setNavigationWidth(DEFAULT_NAVIGATION_WIDTH, 'manual')
-            setCollapsed(false, 'manual')
-          }}
+          onDoubleClick={resetWidth}
         />
 
         <nav className="shell-navigation" id="workspace-primary-navigation">
@@ -296,6 +292,11 @@ function useNavigationResize() {
     setNavigationWidth(nextWidth)
   }
 
+  const resetWidth = () => {
+    stopResizeRef.current?.()
+    setNavigationWidth(DEFAULT_NAVIGATION_WIDTH, 'manual')
+    setCollapsed(false, 'manual')
+  }
   return { navigationCollapsed, navigationWidth, resizeWidth, navigationMotion, setCollapsed,
-    startResize, resizeWithKeyboard }
+    startResize, resizeWithKeyboard, resetWidth }
 }

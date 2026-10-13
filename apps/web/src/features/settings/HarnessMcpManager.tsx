@@ -156,7 +156,7 @@ function useNativeMcpManager({ harness, accessUnavailable = false }: NativeMcpMa
   }
   const presets = serverData?.presets
   const details = serverData?.servers.find((server) => server.name === detailsName)
-  const detailsPreset = details && APP_MCP_SERVER_NAMES.some((name) => name === details.name) && ['installed', 'disabled'].includes(presets?.graphql ?? '') ? 'graphql'
+  const detailsPreset: HarnessMcpManagedPreset | undefined = details && APP_MCP_SERVER_NAMES.some((name) => name === details.name) && ['installed', 'disabled'].includes(presets?.graphql ?? '') ? 'graphql'
     : details?.name === 'linear' && ['installed', 'disabled'].includes(presets?.linear ?? '') ? 'linear' : undefined
   const detailsRemovable = Boolean(details && (detailsPreset || details.editable))
   const outstanding = allPlans.filter((plan) => ['submitting', 'uncertain'].includes(plan.status)
