@@ -19,7 +19,7 @@ export async function supersedeCiRuns(client: pg.PoolClient, commits: CiCommits,
   for (const row of rows) {
     const old = CiRunRecordSchema.parse(row.record)
     if (old.commit === replacement.commit || old.noSupersede || old.supersededBy) continue
-    const branch = old.branch === undefined
+    const branch: string | null | undefined = old.branch === undefined
       ? await commits.branch?.(old.repository, replacement.defaultBranch, old.commit) : old.branch
     if (branch === undefined || branch === replacement.defaultBranch || branch === old.defaultBranch) continue
     const sameExecution = replacement.initiator.executionId !== null
