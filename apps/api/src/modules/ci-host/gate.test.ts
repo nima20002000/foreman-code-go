@@ -3,6 +3,34 @@ import type { CiRunInput } from '@foreman-code/contracts'
 import { planCiGate } from './gate.js'
 import type { HostCiComputer, HostCiEndpoint } from './service.js'
 
+function fleet(clouds: number): HostCiEndpoint {
+  const computers: HostCiComputer[] = [
+    { key: 'builder-main', label: 'Main builder', priority: 60, hostRef: { kind: 'main', mainId: 'main' } },
+    { key: 'builder-paired', label: 'Paired builder', priority: 50,
+      hostRef: { kind: 'device', mainId: 'main', deviceId: 'paired' } },
+    ...Array.from({ length: clouds }, (_, slot) => ({ key: `cloud-${slot}`, label: `Cloud ${slot}`, priority: 30,
+      hostRef: { kind: 'cloud' as const, mainId: 'main', provider: 'github' as const, slot },
+      userSystemd: { supported: true, reason: null } })),
+  ]
+  return {
+    computers: async () => computers,
+    request: async computer => ({ operation: 'status', ready: true, reasons: [],
+      cpuCount: computer.hostRef.kind === 'cloud' ? 4 : 16, memoryBytes: 32 * 2 ** 30,
+      slotsUsed: 0, slotsTotal: computer.hostRef.kind === 'cloud' ? 1 : 2, runs: [] }),
+  }
+}
+
+it('plans a production-sized gate within a second', async () => {
+  const files = Array.from({ length: 800 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)
+  const input: CiRunInput = { suite: 'integration', scope: 'full', gate: true, commandId: 'gate' }
+  const started = Date.now()
+  const parts = await planCiGate(input,
+    { files, durations: Object.fromEntries(files.map((file, index) => [file, 5_000 + (index % 40) * 3_000])) },
+    { files: ['apps/api/src/site.test.ts'], durations: {}, heavy: [] }, {}, fleet(44))
+  expect(Date.now() - started).toBeLessThan(1_000)
+  expect(parts.filter(part => part.suite === 'integration').flatMap(part => part.files).sort()).toEqual([...files].sort())
+})
+
 it.each([80_000, 120_000])('balances %i ms integration files against cloud checks', async durationMs => {
   const computers: HostCiComputer[] = [
     { key: 'builder-main', label: 'Main builder', priority: 60, hostRef: { kind: 'main', mainId: 'main' } },
