@@ -4,7 +4,7 @@ import { deferred } from '../../../test/helpers/deferred.js'
 const logging = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn() }))
 vi.mock('../diagnostics/logger.js', async importOriginal => ({
   ...await importOriginal<typeof import('../diagnostics/logger.js')>(),
-  componentLogger: () => ({ info: logging.info }),
+  componentLogger: () => ({ info: logging.info, warn: logging.warn }),
 }))
 import { createWorkerRuntimeDrain } from './installedWorkerDomains.js'
 

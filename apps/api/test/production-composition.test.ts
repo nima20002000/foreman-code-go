@@ -103,6 +103,7 @@ beforeEach(() => {
   vi.spyOn(InteractionService.prototype, 'respond').mockImplementation(respond)
   vi.spyOn(PostgresCommandCoordinator.prototype, 'recordDenied').mockResolvedValue(undefined)
   vi.spyOn(RunWorktrees.prototype, 'cleanup').mockResolvedValue(undefined)
+  vi.spyOn(BugReportService.prototype, 'detectStuckExecutions').mockResolvedValue(0)
   vi.spyOn(PostgresAccessService.prototype, 'authenticate').mockImplementation(async (token, audience) => {
     const allowed = Array.isArray(audience) ? audience.includes(principal.audience) : principal.audience === audience
     if (token !== 'test-operator' || !allowed) throw new DomainError('AUTH_REQUIRED', 'Authentication required.', 401)
