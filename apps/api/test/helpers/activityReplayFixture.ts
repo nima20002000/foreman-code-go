@@ -73,7 +73,7 @@ export async function setup(options: { operatorSandbox?: 'read-only' | 'workspac
   const directory = await privateFixtureDirectory('activity-replay-workspace-')
   closes.push(() => removeFixtureDirectory(directory))
   const workspace = await createActivityReplayWorkspace(directory)
-  const databaseUrl = new URL(process.env.TEST_DATABASE_URL!)
+  const databaseUrl = new URL(db.pool.options.connectionString!)
   databaseUrl.searchParams.set('options', `-c search_path=${db.schema}`)
   const config = loadConfig({ DATABASE_URL: databaseUrl.toString(), HARNESS_WORKSPACE_ROOT: workspace.harnessWorkspaceRoot,
     PORT: String(await freePort()), CODEX_BINARY: '/recorded-no-native-codex',  })

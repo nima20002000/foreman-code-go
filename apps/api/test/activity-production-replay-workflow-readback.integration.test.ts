@@ -7,6 +7,22 @@ import { closeActivityReplay, setup, completedRun } from './helpers/activityRepl
 afterEach(closeActivityReplay)
 
 describe.skipIf(!postgresEnabled)('Production activity replay: workflow-readback', { timeout: 120000 }, () => {
+  it('persists completed Run checkpoints in the fixture database used by authenticated readback', async () => {
+    const f = await setup()
+    const detail = await completedRun(f)
+    const checkpoints = await f.db.pool.query<{ thread_id: string }>(`
+      select distinct thread_id from "${f.db.schema}_cp".checkpoints where thread_id=$1`, [detail.run.id])
+    expect(checkpoints.rows).toEqual([{ thread_id: detail.run.id }])
+
+    const readback = await f.call('run_get', {
+      workspaceId: detail.run.workspaceId,
+      runId: detail.run.id,
+      detail: 'full',
+    })
+    expect(readback.isError).not.toBe(true)
+    expect(SavedRunDetailsSchema.parse(decodeMcpToolResult(readback)).run).toEqual(detail.run)
+  })
+
   it('Workflow: real Run snapshot/cursor and denied caller preserve original execution and delivery evidence', async () => {
     const f = await setup(), detail = await completedRun(f)
     expect(detail.activitySnapshot!.scope).toEqual({ kind: 'workflow_run', workspaceId: detail.run.workspaceId,
