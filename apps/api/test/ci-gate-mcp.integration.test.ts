@@ -185,6 +185,13 @@ it.each(['cloud', 'build'] as const)('requeues a cloud setup failure once on ano
         if (running) f.runs.set(host.id, { ...running, state: 'passed', exitCode: 0,
           finishedAt: new Date().toISOString() })
       }
+    } else {
+      // Add spare capacity after planning so it cannot receive an original gate part.
+      const spare: HostCiComputer = { key: 'cloud-spare', label: 'Spare cloud', priority: 30,
+        hostRef: { kind: 'cloud', mainId: 'main', provider: 'github', slot: 24 },
+        userSystemd: { supported: true, reason: null } }
+      f.computers.push(spare)
+      computers.push(spare)
     }
     // Keep the failed slot available so the retry must explicitly exclude it.
     f.computers.splice(0, f.computers.length, ...f.computers.filter(computer =>
@@ -197,6 +204,8 @@ it.each(['cloud', 'build'] as const)('requeues a cloud setup failure once on ano
     expect(read.run.computer!.hostRef).not.toEqual(part.computer!.hostRef)
     expect(read.run.computer!.hostRef.kind).toBe(destination === 'cloud' ? 'cloud' : 'main')
     expect(read.group?.state).not.toBe('failed')
+    expect(f.started.filter(value => value.request.operation === 'start'
+      && value.request.runId === read.run.setupRetry!.runId)).toHaveLength(1)
     const attempts = f.started.filter(value => value.request.operation === 'start'
       && value.request.runId === part.id)
     expect(attempts).toHaveLength(1)
@@ -440,11 +449,24 @@ it('admits a gate on the ready fleet when another build computer is disconnected
 })
 
 it('runs cloud checks before systemd integration overflow even when checks move between slots', async () => {
-  const f = await fixture({ cloudSlots: 4, files: [...exclusiveIntegrationFiles] })
+  const occupiedKeys = new Set(['builder-main', 'builder-paired', 'cloud-0', 'cloud-1', 'cloud-2', 'cloud-3'])
+  const unavailableKeys = new Set<string>()
+  const f = await fixture({ cloudSlots: 4, files: [...exclusiveIntegrationFiles], occupiedKeys, unavailableKeys })
+  const clock = vi.spyOn(Date, 'now')
   try {
-    const admitted = CiRunOutputSchema.parse(await f.value('ci_run', {
+    const input = {
       suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40), commandId: randomUUID(),
-    }))
+    }
+    const reader = await f.connect(true)
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    const admitted = CiRunOutputSchema.parse(await f.value('ci_run', input))
+    expect(CiRunOutputSchema.parse(await f.value('ci_run', input))).toEqual(admitted)
+    await f.ci.close()
+    // Overflow is created after build computers drain and their dispatch grace expires.
+    unavailableKeys.add('builder-main')
+    unavailableKeys.add('builder-paired')
+    occupiedKeys.clear()
+    clock.mockReturnValue(Date.now() + 90_001)
     await f.ci.dispatch()
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     const overflow = read.partitions!.filter(run => run.suite === 'integration'
@@ -455,6 +477,8 @@ it('runs cloud checks before systemd integration overflow even when checks move 
         && check.plannedHostKey === run.plannedHostKey)
       expect(checks.length).toBeGreaterThan(0)
       expect(run.state).toBe('queued')
+      expect((await database.pool.query('select record from ci_runs where id=$1', [run.id])).rows[0].record)
+        .toEqual(run)
     }
     const runningCloud = read.partitions!.filter(run => run.state === 'running'
       && run.computer?.hostRef.kind === 'cloud')
@@ -468,7 +492,10 @@ it('runs cloud checks before systemd integration overflow even when checks move 
     const launched = f.started.flatMap(item => item.request.operation === 'start'
       && item.request.suite === 'integration' ? item.request.files ?? [] : [])
     expect(launched.sort()).toEqual([...f.files].sort())
-  } finally { await f.close() }
+  } finally {
+    clock.mockRestore()
+    await f.close()
+  }
 })
 
 it('queues full requests and a second gate behind the first while affected requests keep using spare cloud slots', async () => {
