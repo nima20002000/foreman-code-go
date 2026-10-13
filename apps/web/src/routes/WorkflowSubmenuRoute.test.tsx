@@ -59,7 +59,8 @@ describe('workflow submenu route integration', () => {
   it('marks the URL-selected workflow active on the graph route', async () => {
     renderRoute('/workspaces/workspace-1?workflowId=workflow-content-pipeline')
 
-    const workflow = await screen.findByRole('button', { name: /^Research to review/ })
+    const submenu = await screen.findByRole('region', { name: 'Workspace workflows' })
+    const workflow = await within(submenu).findByRole('button', { name: /^Research to review/ })
     expect(workflow).toHaveAttribute('aria-current', 'page')
   })
 })
