@@ -61,8 +61,8 @@ describe('production remote review after graceful Main recovery', () => {
         executionId: reviewer!.intent.executionId,
         bindingHash: reviewer!.intent.bindingHash,
         owner: reviewer!.intent.owner,
-        native: { sessionId: reviewer!.native!.sessionId },
       })
+      expect(stops[0]!.native).toBeUndefined()
       expect((await fixture.executions(recovered.runId)).every(execution => execution.state === 'completed')).toBe(true)
       expect(fixture.registry.snapshot().launches.filter(launch => recovered.launchIds.includes(launch.launchId))
         .every(launch => launch.lifecycle !== 'active')).toBe(true)
