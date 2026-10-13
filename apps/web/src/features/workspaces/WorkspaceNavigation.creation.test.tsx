@@ -55,6 +55,7 @@ it('blocks a release reload for an edited workspace until the draft is closed', 
   await mounted.user.type(screen.getByRole('textbox', { name: 'Name' }), ' draft')
   vi.useFakeTimers({ shouldAdvanceTime: true })
   await release(mounted.queryClient)
+  expect(await screen.findByText('App updated. Your pending changes are kept until it can reload.')).toBeVisible()
   expect(mounted.reload).not.toHaveBeenCalled()
   await mounted.user.click(within(screen.getByRole('dialog', { name: 'New workspace' })).getByRole('button', { name: 'Close' }))
   await act(() => vi.advanceTimersByTimeAsync(5_000))

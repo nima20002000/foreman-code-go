@@ -470,6 +470,9 @@ it('returns to the first node execution page after six pages while retaining the
   const buttonText = (label: string) => (_content: string, element: Element | null) => element?.textContent === label
   await userEvent.click(await inspector.findByText(buttonText('Attempt 1 · node-execution'), { selector: 'button' }))
   expect(await inspector.findByLabelText('Execution node-execution')).toBeInTheDocument()
+  const hostCi = within(inspector.getByRole('region', { name: 'Agent CI results' }))
+  expect(await hostCi.findByText('No CI jobs in this Run yet')).toBeVisible()
+  expect(hostCi.queryByText(/CI history unavailable/)).not.toBeInTheDocument()
   for (let pageIndex = 1; pageIndex <= 5; pageIndex++) {
     await userEvent.click(inspector.getByText(buttonText('Load more executions'), { selector: 'button' }))
     const lastAttempt = `Attempt 1 · execution-${pageIndex * 25 + 25}`

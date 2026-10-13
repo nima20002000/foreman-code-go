@@ -60,6 +60,14 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
+it('opens the persisted draft for editing without a storage error', async () => {
+  const context = fixture()
+  vi.spyOn(nextDraftApi, 'context').mockResolvedValue(context)
+  mount(context)
+  expect(await screen.findByRole('button', { name: 'Authoring fixture' })).toBeVisible()
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})
+
 it.each(['draft read first', 'save reply first'] as const)(
   'does not report its own save as a conflict with %s', async (order) => {
     const context = fixture()

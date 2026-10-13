@@ -118,6 +118,8 @@ it.each(['Agent settings Save', 'Agent settings Save and run', 'one-pass Save'] 
     render(<QueryClientProvider client={client}><PersistedWorkflowBoundary workspaceId="workspace"
       workflowId="workflow" workflow={source.draft.graph} /></QueryClientProvider>)
     const user = userEvent.setup()
+    expect(await screen.findByRole('button', { name: 'Authoring fixture' })).toBeVisible()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     if (path === 'one-pass Save') {
       await user.click(await screen.findByRole('button', { name: 'Add agent or job to graph' }))
       await user.click(screen.getByRole('button', { name: 'Use one-pass dependencies' }))
