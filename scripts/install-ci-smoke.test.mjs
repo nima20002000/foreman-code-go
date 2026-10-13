@@ -5,8 +5,9 @@ import { createServer } from 'node:http'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 
-async function fixture(t, failure, token) {
+async function fixture(t, failure, token, { firstAdmissionDelayMs = 0 } = {}) {
   const computers = [
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'first' }, ready: true },
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'second' }, ready: true },
@@ -52,6 +53,7 @@ async function fixture(t, failure, token) {
       const input = JSON.parse(body)
       admissions.push(input)
       if (failure === 'lock' && admissions.length === 2) return
+      if (admissions.length === 1) await delay(firstAdmissionDelayMs)
       response.end(JSON.stringify({ ticketId: `ticket-${admissions.length}` }))
     } else if (request.method === 'DELETE') {
       canceled.push(request.url)
@@ -76,7 +78,36 @@ async function fixture(t, failure, token) {
 }
 
 const options = { workspaceId: 'workspace', commit: 'a'.repeat(40), probeDurationMs: 80,
-  timeoutMs: 1000, requestTimeoutMs: 60, pollMs: 10 }
+  timeoutMs: 1000, requestTimeoutMs: 60, admissionTimeoutMs: 60, pollMs: 10 }
+
+test('production smoke allows the first commit admission to take longer than five seconds', async t => {
+  const { runProductionCiSmoke } = await import('./install-ci-smoke.mjs')
+  const token = 'smoke-test-credential'
+  const f = await fixture(t, undefined, token, { firstAdmissionDelayMs: 5200 })
+  const messages = []
+  await runProductionCiSmoke({ origin: f.origin, release: await releaseFixture(t), token,
+    probeDurationMs: 80, timeoutMs: 15_000, pollMs: 25, log: message => messages.push(message) })
+  assert.equal(f.admissions.length, 6)
+  assert.ok(f.probes() > 3, 'Health probes continue while commit resolution is in progress')
+  assert.ok(messages.some(message => /admission 1.*POST.*\/ci.*\d+ ms/.test(message)))
+})
+
+test('a stalled health probe fails quickly while a slow admission is still in progress', async t => {
+  const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
+  const f = await fixture(t, 'stall', undefined, { firstAdmissionDelayMs: 200 })
+  const started = Date.now()
+  await assert.rejects(runInstallCiSmoke({ ...options, origin: f.origin, admissionTimeoutMs: 800 }),
+    /health probe.*GET \/health\/live.*timed out.*60 ms/)
+  assert.ok(Date.now() - started < 700)
+})
+
+test('a stuck admission has its own bounded timeout and identifies the slow step', async t => {
+  const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
+  const f = await fixture(t, 'lock')
+  await assert.rejects(runInstallCiSmoke({ ...options, origin: f.origin, admissionTimeoutMs: 100 }),
+    /admission 2.*POST.*\/ci.*timed out.*100 ms/)
+  assert.ok(f.canceled.length > 0)
+})
 
 test('CI smoke probes repeatedly, makes consecutive admissions and tests each ready executor', async t => {
   const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
