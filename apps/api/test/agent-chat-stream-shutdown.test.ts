@@ -1,4 +1,4 @@
-import Fastify from 'fastify'
+import Fastify, { type FastifyError } from 'fastify'
 import { expect, it, vi } from 'vitest'
 import { agentChatFixtures } from '@foreman-code/contracts/agent-chat'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -14,9 +14,9 @@ for (const stage of ['authentication', 'snapshot', 'established'] as const) {
   it(`drains chat streams during shutdown with a request in ${stage}`, async () => {
     const entered = deferred(), release = deferred(), swept = deferred()
     const app = Fastify()
-    app.decorateRequest('operatorPrincipal', null)
-    app.decorateRequest('reauthorizeOperator', null)
-    app.setErrorHandler((error, _request, reply) => {
+    app.decorateRequest('operatorPrincipal', null, [])
+    app.decorateRequest('reauthorizeOperator', null, [])
+    app.setErrorHandler<FastifyError>((error, _request, reply) => {
       reply.code(error instanceof DomainError ? error.status : 500).send({ code: error.code })
     })
     app.addHook('preHandler', async request => {
