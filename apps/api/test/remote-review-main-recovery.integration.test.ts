@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { retainedReviewRecovery, useRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
+import { receipts, retainedReviewRecovery, useRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { graphFixture, ownedGraph } from './eng04-graph-composition-fixture.js'
 import { repeatNativePending, REPEAT_NATIVE_PENDING_MESSAGE } from '../src/modules/interactions/repeatNativeEvidence.js'
@@ -43,6 +43,20 @@ describe('production remote review after graceful Main recovery', () => {
       const settled = await fixture.details(recovered.runId)
       expect(settled.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
       expect(settled.cleanupPending).not.toBe(true)
+      const cleanup = (await fixture.db.pool.query<{ requested_at: Date; pending: boolean }>(
+        'select requested_at,pending from run_cleanup_intents where run_id=$1', [recovered.runId],
+      )).rows[0]!
+      expect(cleanup.pending).toBe(false)
+      const reviewer = (await receipts(fixture, recovered.runId)).find(receipt => receipt.retainedReviewer)
+      expect(reviewer).toBeDefined()
+      expect(reviewer!.phase).toBe('confirmed_terminal')
+      const stops = reviewer!.controls.filter(control => control.action.kind === 'stop')
+      expect(stops).toHaveLength(1)
+      expect(stops[0]).toMatchObject({
+        commandId: `stop:${reviewer!.intent.operationId}:${cleanup.requested_at.toISOString()}`,
+        executionId: reviewer!.intent.executionId,
+        native: { sessionId: reviewer!.native!.sessionId },
+      })
       expect((await fixture.executions(recovered.runId)).every(execution => execution.state === 'completed')).toBe(true)
       expect(fixture.registry.snapshot().launches.filter(launch => recovered.launchIds.includes(launch.launchId))
         .every(launch => launch.lifecycle !== 'active')).toBe(true)
