@@ -6,6 +6,7 @@ import { CiDurationsSchema } from '@foreman-code/contracts'
 import { ciRepositoryCapabilities } from './repository.js'
 import { onlyCiInfrastructure } from './priority.js'
 import { gitFailure } from '../sources/gitErrors.js'
+import type { CiTestTree } from './resultCache.js'
 
 /** Main's clone of the workspace repository: the requested commit, an Agent's files as a commit on its base, or the
  * default branch head; whatever GitHub lacks is pushed so build computers can fetch it. */
@@ -84,6 +85,27 @@ export class GitCiCommits implements CiCommits {
     return { files: tree.stdout.trim().split('\n').filter(file =>
       /^apps\/api\/test\/[^/]+\.integration\.test\.ts$/.test(file)).sort(),
     durations: timings.code === 0 ? CiDurationsSchema.parse(JSON.parse(timings.stdout)) : {} }
+  }
+
+  async testTree(repository: string, commit: string): Promise<CiTestTree> {
+    const signal = AbortSignal.timeout(30_000)
+    const clone = await ensureCommit(this.git, repository, commit, signal)
+    const tree = await this.git.git(['ls-tree', '-r', '-z', commit], { cwd: clone, signal })
+    if (tree.code !== 0) throw new Error('Could not read the CI commit tree.')
+    const blobs = new Map<string, string>()
+    for (const entry of tree.stdout.split('\0').filter(Boolean)) {
+      const tab = entry.indexOf('\t')
+      const [mode, type, id] = entry.slice(0, tab).split(' ')
+      // Submodules have no blob; a test reaching one has no key.
+      if (type === 'blob') blobs.set(entry.slice(tab + 1), `${mode}:${id}`)
+    }
+    return { blobs, read: async path => {
+      const id = blobs.get(path)?.split(':')[1]
+      if (!id) throw new Error(`The CI commit has no file ${path}.`)
+      const blob = await this.git.git(['cat-file', 'blob', id], { cwd: clone, signal: AbortSignal.timeout(30_000) })
+      if (blob.code !== 0) throw new Error(`Could not read ${path} from the CI commit.`)
+      return blob.stdout
+    } }
   }
 
   async resolve(repository: string, defaultBranch: string, commit: string | undefined,

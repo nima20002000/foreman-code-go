@@ -67,13 +67,14 @@ interface RunMeta {
   serviceUnit?: string
   cancellationRequested?: boolean
   testResultsExpected?: boolean
+  notice?: string
 }
 
 type StartRequest = { runId: string; repository: string; commit: string; suite: CiSuite
   part?: CiPart | undefined; partition?: CiPartition | undefined; durations?: CiDurations | undefined;
   scope?: CiScope | undefined; files?: string[] | undefined; defaultBranch?: string | undefined;
   expectedDurationMs?: number | undefined; baseCommit?: string | undefined; gate?: boolean | undefined;
-  integrationShards?: number | undefined; buildAllowancePercent?: number | undefined }
+  integrationShards?: number | undefined; buildAllowancePercent?: number | undefined; notice?: string | undefined }
 
 const unitName = (runId: string) => `foreman-ci-${runId}`
 // GitHub CLI's own credential helper: a computer that is logged in to gh fetches without any app setup.
@@ -301,6 +302,7 @@ export class HostCiRunner {
       deriveFiles: (request.scope ?? 'affected') === 'affected' && request.files === undefined,
       ...(request.defaultBranch ? { defaultBranch: request.defaultBranch } : {}),
       ...(request.baseCommit ? { baseCommit: request.baseCommit } : {}),
+      ...(request.notice ? { notice: request.notice } : {}),
       ...(request.durations ? { durations: request.durations } : {}) }
     await this.writeMeta(meta)
     const ready = await withHostCiRunLock(directory, async () => {
@@ -678,6 +680,7 @@ export class HostCiRunner {
         + ` mv -- ${quote(join(run, 'exit.tmp'))} ${quote(join(run, 'exit'))}; exit "$code"; }`,
       ...(database ? [`trap '${pm} db:down' EXIT`] : []),
       `step() { echo "$1" > ${quote(join(run, 'step'))}; echo "::step $1"; }`,
+      ...(meta.notice ? [`echo ${quote(meta.notice)}`] : []),
       ...(meta.message ? [`echo ${quote(meta.message)}`] : []),
       'step install',
       ...(existsSync(join(source, 'pnpm-lock.yaml')) ? pnpmInstall(cache) : [`${pm} install || finish $?`]),
