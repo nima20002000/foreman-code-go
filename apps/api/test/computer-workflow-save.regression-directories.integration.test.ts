@@ -29,7 +29,6 @@ it('saves a completed computer workflow using each accepted native directory and
     agentWorkflowNode(graph.nodes[0]).initialPrompt = 'Use the updated instructions on the next Run.'
     const input = { ...scope, commandId: randomUUID(), executionSemanticsVersion: 3,
       expectedRevision: before.revision, expectedWorkflowVersionId: before.version.id,
-      expectedLocationRevision: details.run.executionLocation!.locationRevision,
       expectedAgentConfigurationVersionIds: before.version.agentConfigurationVersionIds, graph }
     const reader = await fixture.access.issue({ name: 'Workflow read only', audience: 'operator',
       expiresAt: new Date(Date.now() + 60_000), grants: [{ actions: ['workflows:read', 'graph:read'], scope: {} }] })

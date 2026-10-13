@@ -27,7 +27,7 @@ describe.skipIf(!postgresEnabled)('SCH-01/02 occurrence identity and final eligi
     return (await f.workflows.current.save(f.writer.principal, 'http', {
       ...f.scope, commandId: randomUUID(), executionSemanticsVersion: 3,
       expectedRevision: Number(row.revision), expectedWorkflowVersionId: f.fixture.version.id,
-      expectedLocationRevision: 1, expectedAgentConfigurationVersionIds: f.fixture.version.agentConfigurationVersionIds,
+      expectedAgentConfigurationVersionIds: f.fixture.version.agentConfigurationVersionIds,
       graph: { ...f.fixture.version.definition,
         executionPolicy: { ...policy, maxNodeExecutions: policy.maxNodeExecutions + 1 } },
     })).value

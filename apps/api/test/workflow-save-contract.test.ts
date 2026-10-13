@@ -13,7 +13,6 @@ describe('executable workflow save contract', () => {
         expectedRevision: 1,
         expectedWorkflowVersionId: null,
         expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds,
-        expectedLocationRevision: 1,
         graph: fixture.version.definition,
       }
       const parsed = CurrentWorkflowSaveInputSchema.parse(input)

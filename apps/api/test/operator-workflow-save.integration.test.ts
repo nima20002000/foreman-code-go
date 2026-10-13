@@ -25,7 +25,7 @@ it('creates and saves without echoed stamps, checks revisions and grants, and re
     void version
     const input = { workspaceId, workflowId: created.workflow.id, commandId: randomUUID(),
       executionSemanticsVersion: 3, expectedRevision: created.revision, expectedWorkflowVersionId: null,
-      expectedLocationRevision: 1, expectedAgentConfigurationVersionIds: f.f.version.agentConfigurationVersionIds,
+      expectedAgentConfigurationVersionIds: f.f.version.agentConfigurationVersionIds,
       graph: { ...definition, id: created.workflow.id, name: 'One worker', description: 'Saved description',
         executionPolicy: { ...definition.executionPolicy, agentActiveTimeoutMs: 60_000 } } }
     const reader = await f.access.issue({ name: 'Read-only workflow author', audience: 'operator',

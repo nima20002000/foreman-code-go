@@ -226,10 +226,9 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('provides authenticated Operator MCP p
     expect(agent.graphqlTools).toEqual(['context_get'])
     expect((await pool.query<{ tools: unknown }>(`select record->'graphqlTools' as tools from agent_configuration_versions where id=$1`,
       [agent.configurationVersionId])).rows[0]?.tools).toEqual(['context_get'])
-    const location = await call('workspace_get', c.ManagedWorkspaceSchema, { workspaceId })
     const saveInput = { workspaceId, workflowId, executionSemanticsVersion: 3, commandId: randomUUID(),
       expectedRevision: renamedWorkflow.revision, expectedWorkflowVersionId: null,
-      expectedAgentConfigurationVersionIds: { [agent.id]: agent.configurationVersionId }, expectedLocationRevision: location.locationRevision,
+      expectedAgentConfigurationVersionIds: { [agent.id]: agent.configurationVersionId },
       graph: { ...renamedWorkflow.workflow, entryNodeId: 'parity-node', nodes: [{ id: 'parity-node', agentId: agent.id, name: 'Coder',
         graphqlTools: { add: ['interaction_list'], remove: [] } }],
         edges: [], approval: { handler: 'user' }, executionCondition: { kind: 'manual', description: 'Operator managed' },

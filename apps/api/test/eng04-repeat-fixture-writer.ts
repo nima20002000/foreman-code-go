@@ -57,7 +57,6 @@ export async function createRepeatFixtureWriter(pool: pg.Pool, fixture: Agent3Fi
       workspaceId: fixture.scope.workspaceId, workflowId: fixture.scope.workflowId, commandId: randomUUID(),
       expectedRevision: revision, expectedWorkflowVersionId: head.current_version_id, executionSemanticsVersion: 3,
       expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds,
-      expectedLocationRevision: fixture.run.executionLocation.locationRevision,
       graph: { ...fixture.version.definition, repeat: { contractVersion: 1, blocks: [{ id: 'repair', nodeIds: [entry.id, exit.id], entryNodeId: entry.id,
         exitNodeId: exit.id, maxOccurrences, repeatOutcome: 'issues', earlyExitOutcome: 'pass', limitExit: { kind: 'branch_end' } }] } },
     }

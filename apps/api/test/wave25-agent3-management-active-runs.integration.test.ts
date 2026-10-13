@@ -45,7 +45,7 @@ describe.skipIf(!postgresEnabled)('Authenticated workflow management active runs
     const intent = CurrentEditReadResultSchema.parse(graphRpcValue(remote.result)).intent!
     expect(intent.affected).toHaveLength(1)
     expect(intent.affected[0]).toMatchObject({ runId: accepted.run.id, workflowId: other.workflow.id })
-    expect(intent.stagedDraft.runLocationPins.map((pin) => pin.runId)).toEqual([accepted.run.id])
+    expect(intent.affected.map((pin) => pin.runId)).toEqual([accepted.run.id])
     expect(intent.stops[0]!.input.runId).toBe(accepted.run.id)
   })
   it('active meaningful edits retain exact Stop plans across transport retries without fabricated receipts', async () => {

@@ -23,7 +23,7 @@ export async function candidate(f: SaveFixture, kind: ReviewerScopeCase) {
   return { target, baseline, input: CurrentWorkflowSaveInputSchema.parse({
     workspaceId: baseline.scope.workspaceId, workflowId: baseline.scope.workflowId,
     commandId: randomUUID(), executionSemanticsVersion: 3, expectedRevision: Number(row.revision),
-    expectedWorkflowVersionId: baseline.version.id, expectedLocationRevision: 1,
+    expectedWorkflowVersionId: baseline.version.id,
     expectedAgentConfigurationVersionIds: baseline.version.agentConfigurationVersionIds,
     graph: { ...target.version.definition, id: baseline.scope.workflowId, version: baseline.version.version,
       createdAt: baseline.version.definition.createdAt, updatedAt: baseline.version.definition.updatedAt,

@@ -114,7 +114,7 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL transaction ordering and co
     const policy = f.fixture.version.definition.executionPolicy
     if (!policy || typeof policy.maxNodeExecutions !== 'number') throw new Error('The sequential SCH-11 fixture must have an execution policy')
     return { ...f.scope, commandId: randomUUID(), executionSemanticsVersion: 3 as const,
-      expectedRevision: Number(row.revision), expectedWorkflowVersionId: f.fixture.version.id, expectedLocationRevision: 1,
+      expectedRevision: Number(row.revision), expectedWorkflowVersionId: f.fixture.version.id,
       expectedAgentConfigurationVersionIds: f.fixture.version.agentConfigurationVersionIds,
       // An executable change, not a presentation-only rename/layout save.
       graph: { ...f.fixture.version.definition, executionPolicy: { ...policy, maxNodeExecutions: policy.maxNodeExecutions + 1 } } }

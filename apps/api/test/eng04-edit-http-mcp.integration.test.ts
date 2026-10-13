@@ -2,7 +2,7 @@ import { AgentSchema } from '@foreman-code/contracts'
 import { randomUUID } from 'node:crypto'
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { CURRENT_WORKFLOW_TOOLS, CurrentEditReadResultSchema, CurrentWorkflowSaveResultSchema,
-  CurrentWorkflowReadResultSchema, workflowNodeNames } from '@foreman-code/contracts/wave25'
+  CurrentWorkflowReadResultSchema } from '@foreman-code/contracts/wave25'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { graphHeaders, graphRpc, graphRpcValue } from './eng04-graph-composition-fixture.js'
 import { writerFixture, type WriterFixture } from './eng04-writer-fixtures.js'
@@ -35,7 +35,6 @@ describe.skipIf(!postgresEnabled)('ENG04 current full-definition durable edit pa
       const stage = { ...t.input, action: 'stage_edits', draftId: `board-${t.input.workflowId}`,
         commandId: randomUUID(), expectedRevision: saved.revision,
         expectedWorkflowVersionId: saved.currentVersionId,
-        expectedNodePresentation: workflowNodeNames(saved.version.definition),
         graph, ...(change === 'Agent settings'
           ? { stagedAgents: [{ agent: edited, baseRevision: Number(row.metadata_revision) }] } : {}) }
       const reader = await t.credential([{ actions: ['workflows:read', 'graph:read'],
@@ -96,7 +95,6 @@ describe.skipIf(!postgresEnabled)('ENG04 current full-definition durable edit pa
     scope: { workspaceIds: [t.input.workspaceId] } }])
     const stage = { ...t.input, action: 'stage_edits', draftId: `editor-${randomUUID()}`, commandId: randomUUID(),
       expectedRevision: saved.revision, expectedWorkflowVersionId: saved.currentVersionId,
-      expectedNodePresentation: workflowNodeNames(saved.version.definition),
       graph: { ...saved.version.definition, nodes: saved.version.definition.nodes.map((node, index) =>
         index ? node : { ...node, [field]: 'Saved presentation' }) } }
     const response = await t.app.inject({ method: 'POST', url: `${t.url}/edits`,
@@ -144,7 +142,7 @@ describe.skipIf(!postgresEnabled)('ENG04 current full-definition durable edit pa
     }
   })
 
-  it.each(['http', 'mcp'] as const)('conflicts a stale rename after a %s save while retaining immutable pins', async (source) => {
+  it.each(['http', 'mcp'] as const)('accepts a later rename after a %s save while retaining immutable versions', async (source) => {
     const t = await writerFixture(db); fixtures.push(t)
     const response = await t.app.inject({ method: 'PUT', url: t.url,
       headers: graphHeaders(t.writer.token), payload: t.input })
@@ -152,7 +150,7 @@ describe.skipIf(!postgresEnabled)('ENG04 current full-definition durable edit pa
     const saved = CurrentWorkflowSaveResultSchema.parse(response.json()).value
     const input = { ...t.input, commandId: randomUUID(), expectedRevision: saved.revision,
       expectedWorkflowVersionId: saved.currentVersionId,
-      expectedNodePresentation: workflowNodeNames(saved.version.definition), graph: { ...saved.version.definition,
+      graph: { ...saved.version.definition,
         nodes: saved.version.definition.nodes.map((node, index) => index ? node : { ...node, name: 'First rename' }) } }
     const firstReply = source === 'http'
       ? (await t.app.inject({ method: 'PUT', url: t.url, headers: graphHeaders(t.writer.token), payload: input })).json()
@@ -160,28 +158,26 @@ describe.skipIf(!postgresEnabled)('ENG04 current full-definition durable edit pa
     const first = CurrentWorkflowSaveResultSchema.parse(firstReply)
     const competing = { ...input, commandId: randomUUID(), graph: { ...saved.version.definition,
       nodes: saved.version.definition.nodes.map((node, index) => index === 1 ? { ...node, label: 'Second rename' } : node) } }
-    const rejected = await t.app.inject({ method: 'PUT', url: t.url,
+    const later = await t.app.inject({ method: 'PUT', url: t.url,
       headers: graphHeaders(t.writer.token), payload: competing })
-    expect(rejected.statusCode, rejected.body).toBe(409)
-    expect(rejected.json().error.code).toBe('PRESENTATION_REVISION_CONFLICT')
+    expect(later.statusCode, later.body).toBe(200)
+    expect(CurrentWorkflowSaveResultSchema.parse(later.json()).value.presentation?.nodes).toEqual(competing.graph.nodes)
     const mcp = await t.call(CURRENT_WORKFLOW_TOOLS.save, { ...competing, commandId: randomUUID() })
-    expect(mcp.result?.isError).toBe(true)
-    expect(graphRpcValue(mcp.result)).toMatchObject({ error: { code: 'PRESENTATION_REVISION_CONFLICT' } })
+    expect(mcp.result?.isError).not.toBe(true)
+    expect(CurrentWorkflowSaveResultSchema.parse(graphRpcValue(mcp.result)).value.presentation?.nodes)
+      .toEqual(competing.graph.nodes)
     const persisted = graphRpcValue((await t.call('workflow_get', {
       workspaceId: t.input.workspaceId, workflowId: t.input.workflowId })).result)
     expect(persisted).toMatchObject({ revision: saved.revision, currentVersionId: saved.currentVersionId,
-      workflow: { nodes: first.value.presentation!.nodes } })
-    const corrected = { ...competing, commandId: randomUUID(),
-      expectedNodePresentation: workflowNodeNames(first.value.presentation!),
+      workflow: { nodes: competing.graph.nodes } })
+    const combined = { ...competing, commandId: randomUUID(),
       graph: { ...first.value.presentation!, nodes: first.value.presentation!.nodes.map((node, index) =>
         index === 1 ? { ...node, label: 'Second rename' } : node) } }
-    const second = CurrentWorkflowSaveResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.save, corrected)).result))
-    expect(second.value.presentation?.nodes).toEqual(corrected.graph.nodes)
+    const second = CurrentWorkflowSaveResultSchema.parse(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.save, combined)).result))
+    expect(second.value.presentation?.nodes).toEqual(combined.graph.nodes)
     expect(second.value.version).toEqual(saved.version)
     expect(graphRpcValue((await t.call(CURRENT_WORKFLOW_TOOLS.save, input)).result)).toEqual({ ...first, replayed: true })
-    const drag = { ...corrected, commandId: randomUUID(),
-      expectedNodePresentation: workflowNodeNames(second.value.presentation!),
-      expectedGeometry: second.value.presentation!.nodes.map(({ id, position, width, height }) => ({ id, position, width, height })),
+    const drag = { ...combined, commandId: randomUUID(),
       graph: { ...second.value.presentation!, nodes: second.value.presentation!.nodes.map((node, index) =>
         index ? node : { ...node, position: { x: 700, y: 80 } }) } }
     const moved = await t.app.inject({ method: 'PUT', url: t.url,
@@ -192,8 +188,8 @@ describe.skipIf(!postgresEnabled)('ENG04 current full-definition durable edit pa
       headers: graphHeaders(t.writer.token) })
     expect(readback.statusCode, readback.body).toBe(200)
     expect(readback.json()).toMatchObject({ workflow: { nodes: drag.graph.nodes } })
-    const executable = { ...corrected, commandId: randomUUID(),
-      expectedNodePresentation: workflowNodeNames(second.value.presentation!), graph: { ...second.value.presentation!,
+    const executable = { ...combined, commandId: randomUUID(),
+      graph: { ...second.value.presentation!,
         nodes: second.value.presentation!.nodes.map((node, index) => index ? node : { ...node, initialPrompt: 'Executable edit' }) } }
     const next = await t.app.inject({ method: 'PUT', url: t.url,
       headers: graphHeaders(t.writer.token), payload: executable })

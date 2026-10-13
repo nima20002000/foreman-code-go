@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { GraphEditStageInputV3Schema, preserveWorkflowGeometry, sameAuthoredWorkflow, sameWorkflowValue, workflowNodeNames,
+import { GraphEditStageInputV3Schema, preserveWorkflowGeometry, sameAuthoredWorkflow, sameWorkflowValue,
   type GraphEditIntentV3, type GraphEditReadResultV3 } from '@foreman-code/contracts/wave25'
 import { assertSession, sessionGeneration } from '../../../shared/api/sessionBoundary'
 import { queryKeys } from '../../../shared/api/query'
@@ -34,8 +34,7 @@ function remoteBaseMatches(current: NextDraftEdit, intent: GraphEditIntentV3) {
     && draft.publishedRevision === intent.expectedRevision && draft.baseWorkflowVersionId === intent.expectedWorkflowVersionId
     && intent.agentPins.every((pin) => {
       const source = current.context.agents.find((item) => item.agent.id === pin.agentId)
-      return pin.metadataRevision === null ? !source : source?.metadataRevision === pin.metadataRevision
-        && source.agent.configurationVersionId === pin.configurationVersionId
+      return pin.metadataRevision === null ? !source : source?.agent.configurationVersionId === pin.configurationVersionId
     })
 }
 
@@ -230,8 +229,7 @@ export function useGraphEditIntent(draftKey: string, edit: NextDraftEdit) {
         commandId: crypto.randomUUID(), expectedRevision: current.context.draft.publishedRevision,
         expectedWorkflowVersionId: current.context.draft.baseWorkflowVersionId, executionSemanticsVersion: 3,
         expectedAgentConfigurationVersionIds: pins.expectedAgentConfigurationVersionIds,
-        expectedNodePresentation: workflowNodeNames((current.context.savedDraft ?? current.context.draft).graph),
-        expectedLocationRevision: pins.expectedLocationRevision, graph: current.graph,
+        graph: current.graph,
         ...(stagedAgents.length ? { stagedAgents } : {}) })
       const reserved = reserveEditOutbox(draftKey, { request, target: current.graph,
         ...(current.agentEdits ? { agentTarget: current.agentEdits } : {}) })

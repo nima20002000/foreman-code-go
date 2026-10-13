@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { ApiClient } from '../../../shared/api/client'
 import { createNextDraftApi } from './transport'
 import { createCurrentBoardMock } from '../../../shared/mocks/currentBoard'
-import { CurrentWorkflowSaveResultSchema, workflowNodeNames } from '@foreman-code/contracts/wave25'
+import { CurrentWorkflowSaveResultSchema } from '@foreman-code/contracts/wave25'
 import { currentWorkflowFixture as makeWave25Fixture } from '../../../shared/mocks/currentWorkflow'
 import type { DraftRequest } from './state'
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -39,8 +39,7 @@ describe('workflow HTTP client boundary', () => {
     // Optional undefined form fields are absent on the JSON wire, not lost edits.
     expect(JSON.parse(String(init!.body))).toEqual({ graph: JSON.parse(JSON.stringify(target)), expectedRevision: draft.revision,
       expectedWorkflowVersionId: draft.baseWorkflowVersionId, commandId: 'shared-save', executionSemanticsVersion: 3,
-      expectedNodePresentation: JSON.parse(JSON.stringify(workflowNodeNames(draft.graph))),
-      expectedLocationRevision: 1, expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds })
+      expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds })
     expect(mock.versions.size).toBe(2)
     expect(mock.calls.some((call) => call.path.includes('/drafts'))).toBe(false)
   })
@@ -58,9 +57,9 @@ describe('workflow HTTP client boundary', () => {
     await client.request(`/api/management/workspaces/${saved.scope.workspaceId}/workflows/${saved.scope.workflowId}/definition`,
       CurrentWorkflowSaveResultSchema, { method: 'PUT', body: {
         commandId: 'operator-rename', executionSemanticsVersion: 3, expectedRevision: original.draft.publishedRevision,
-        expectedWorkflowVersionId: original.draft.baseWorkflowVersionId, expectedLocationRevision: 1,
+        expectedWorkflowVersionId: original.draft.baseWorkflowVersionId,
         expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds,
-        expectedNodePresentation: workflowNodeNames(original.draft.graph), graph } })
+        graph } })
     const reopened = await api.context(saved.scope.workspaceId, saved.scope.workflowId)
     expect(reopened.draft.graph.nodes.map((node) => node.name)).toEqual(graph.nodes.map((node) => node.name))
     const layout = await api.layoutBase(saved.scope.workspaceId, saved.scope.workflowId)
@@ -71,9 +70,6 @@ describe('workflow HTTP client boundary', () => {
         commandId: 'board-drag', executionSemanticsVersion: 3, expectedRevision: layout.draft.publishedRevision,
         expectedWorkflowVersionId: layout.draft.baseWorkflowVersionId,
         expectedAgentConfigurationVersionIds: layout.expectedAgentConfigurationVersionIds,
-        expectedLocationRevision: layout.expectedLocationRevision,
-        expectedNodePresentation: workflowNodeNames(layout.draft.graph),
-        expectedGeometry: layout.draft.graph.nodes.map(({ id, position, width, height }) => ({ id, position, width, height })),
         graph: moved } })
     expect(mock.managed(saved.scope.workflowId).workflow.nodes).toEqual(moved.nodes)
     expect(mock.versions.size).toBe(1)
@@ -102,8 +98,7 @@ describe('workflow HTTP client boundary', () => {
     const input = { workspaceId: saved.scope.workspaceId, workflowId: saved.scope.workflowId,
       workflowVersionId: saved.scope.workflowVersionId, executionSemanticsVersion: 3 as const,
       expectedWorkflowRevision: 1, expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds,
-      expectedLocationRevision: 1,
-      commandId: 'start-web-start', input: {} }
+      expectedLocationRevision: 1, commandId: 'start-web-start', input: {} }
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ run: saved.run, accepted: true, replayed: false }))
     const api = createBoardStartClient(new ApiClient({ fetch }))
     expect((await api.start(input)).run.id).toBe(saved.scope.runId)

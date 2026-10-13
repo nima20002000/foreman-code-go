@@ -63,7 +63,7 @@ it.each([
     const saved = CurrentWorkflowSaveResultSchema.parse(await call('workflow_save_v3', {
       workspaceId, workflowId: created.value.workflow.id, commandId: randomUUID(), executionSemanticsVersion: 3,
       expectedRevision: read.revision, expectedWorkflowVersionId: read.currentVersionId,
-      expectedLocationRevision: 1, expectedAgentConfigurationVersionIds: read.version.agentConfigurationVersionIds,
+      expectedAgentConfigurationVersionIds: read.version.agentConfigurationVersionIds,
       graph: { ...read.version.definition, description: 'Edited after creation' },
     }))
     expect(saved.value.revision).toBe(read.revision + 1)

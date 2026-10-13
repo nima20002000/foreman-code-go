@@ -60,7 +60,7 @@ describe.skipIf(!process.env.TEST_DATABASE_URL)('saved workflow artifact declara
         executionPolicy: { maxParallelism: 1, maxNodeExecutions: 2 } }
       const input = { ...scope, commandId: randomUUID(), executionSemanticsVersion: 3, expectedRevision: managed.revision,
         expectedWorkflowVersionId: null, expectedAgentConfigurationVersionIds: { ...f.saved.value.version.agentConfigurationVersionIds, [peer.id]: peerConfiguration.id },
-        expectedLocationRevision: 1, graph }
+        graph }
       const tools = await owner.listTools()
       const saveTool = tools.tools.find(tool => tool.name === CURRENT_WORKFLOW_TOOLS.save)!
       expect(JSON.stringify(saveTool.inputSchema)).toContain('artifactOutputs')

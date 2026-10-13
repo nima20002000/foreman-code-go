@@ -40,12 +40,9 @@ async function referenceAgent(workspaceId: string, agent: Agent) {
     SavedManagedWorkflowCommandResultSchema, {
       workspaceId, commandId: randomUUID(), name: 'Agent reference',
     })).value
-  const workspace = await callWorkspaceTool(fixture.owner.client, 'workspace_get',
-    contracts.ManagedWorkspaceSchema, { workspaceId })
   await callWorkspaceTool(fixture.owner.client, 'workflow_save_v3', CurrentWorkflowSaveResultSchema, {
     workspaceId, workflowId: created.workflow.id, commandId: randomUUID(), executionSemanticsVersion: 3,
     expectedRevision: created.revision, expectedWorkflowVersionId: null,
-    expectedLocationRevision: workspace.locationRevision,
     expectedAgentConfigurationVersionIds: { [agent.id]: agent.configurationVersionId },
     graph: {
       ...created.workflow, entryNodeId: 'worker',

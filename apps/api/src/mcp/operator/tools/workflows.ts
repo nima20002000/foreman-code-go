@@ -50,9 +50,9 @@ export const workflowTools = [
     enabled: s => !!s.workflows,
     description: 'Create a named semantics-3 workflow using global workflow defaults. '
       + 'Omit initialSave for an unsaved workflow, or provide initialSave '
-      + '{graph, expectedAgentConfigurationVersionIds, expectedLocationRevision} to atomically create and save. '
+      + '{graph, expectedAgentConfigurationVersionIds} to atomically create and save. '
       + 'The graph omits workflow identity, name, description, defaultWorktree and timestamps; '
-      + 'creation supplies those fields. Invalid graphs or stale pins leave no workflow. '
+      + 'creation supplies those fields. Invalid graphs or configuration references leave no workflow. '
       + 'Initial save additionally requires workflows:read/update, graph:read/edit/save, agents:read '
       + 'and workspace_locations:read, and referenced skill/harness/source grants, '
       + 'scoped to the workspace without workflow-ID restrictions. '

@@ -239,7 +239,7 @@ describe.skipIf(!postgresEnabled)('SCH-04 PostgreSQL dispatcher / common Start',
         const row = (await database.pool.query<{ revision: string }>('select revision::text from workflows where id=$1', [scope.workflowId])).rows[0]!
         const latest = (await workflows.current.save(writer.principal, 'http', {
           ...scope, commandId: randomUUID(), executionSemanticsVersion: 3, expectedRevision: Number(row.revision),
-          expectedWorkflowVersionId: fixture.version.id, expectedLocationRevision: 1,
+          expectedWorkflowVersionId: fixture.version.id,
           expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds,
           graph: { ...fixture.version.definition, name: 'A newer saved workflow' },
         })).value

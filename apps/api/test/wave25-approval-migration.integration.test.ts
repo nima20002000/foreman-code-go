@@ -26,7 +26,7 @@ describe.skipIf(!postgresEnabled)('Current persisted approval writer protection'
     const managed = await workflows.get(writer.principal, f.scope.workspaceId, f.scope.workflowId)
     const save = (graph: typeof f.version.definition) => workflows.current.save(writer.principal, 'http', {
       workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId, commandId: randomUUID(), executionSemanticsVersion: 3,
-      expectedRevision: managed.revision, expectedWorkflowVersionId: f.version.id, expectedLocationRevision: 1,
+      expectedRevision: managed.revision, expectedWorkflowVersionId: f.version.id,
       expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds, graph,
     })
     const read = async () => (await db.pool.query<{ record: unknown }>('select record from workflow_versions where id=$1', [f.version.id])).rows[0]!.record

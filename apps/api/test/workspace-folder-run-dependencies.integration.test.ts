@@ -49,7 +49,7 @@ describe.skipIf(!postgresEnabled)('workspace folder dependencies retained by acc
         const before = ManagedWorkspaceSchema.parse(decodeMcpToolResult((await f.client.callTool({ name: 'workspace_get',
           arguments: { workspaceId } }))))
         const savedResult = await f.client.callTool({ name: 'workflow_save_v3', arguments: {
-          ...await f.create(), expectedLocationRevision: before.locationRevision,
+          ...await f.create(),
         } })
         expect(savedResult.isError, JSON.stringify(savedResult)).not.toBe(true)
         const saved = CurrentWorkflowSaveResultSchema.parse(decodeMcpToolResult(savedResult)).value

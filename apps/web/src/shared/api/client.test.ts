@@ -111,7 +111,7 @@ describe('Phase 1 API boundary', () => {
     const client = new ApiClient({ fetch })
     const input = { commandId: 'save-exact', executionSemanticsVersion: 3, expectedRevision: 8,
       expectedWorkflowVersionId: null, expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds,
-      expectedLocationRevision: 1, graph: fixture.version.definition }
+      graph: fixture.version.definition }
     const path = `/api/management/workspaces/${value.workspaceId}/workflows/${value.workflowId}/definition`
     expect(await client.request(path, CurrentWorkflowSaveResultSchema, { method: 'PUT', body: input })).toEqual({ value, replayed: false })
     expect(await client.request(path, CurrentWorkflowSaveResultSchema, { method: 'PUT', body: input })).toEqual({ value, replayed: true })

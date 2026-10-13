@@ -105,7 +105,7 @@ export async function scheduleDevicePlacementFixture(f: Sch11Fixture,
   }
   await f.workflows.current.save(placement.writer.principal, 'http', { ...f.scope, commandId: randomUUID(),
     executionSemanticsVersion: 3, expectedRevision: workflow.revision,
-    expectedWorkflowVersionId: workflow.currentVersionId, expectedLocationRevision: bound.locationRevision,
+    expectedWorkflowVersionId: workflow.currentVersionId,
     expectedAgentConfigurationVersionIds: workflow.version.agentConfigurationVersionIds, graph })
   const workerExecution = new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' })
   return { ...placement, policy, root, workerExecution,

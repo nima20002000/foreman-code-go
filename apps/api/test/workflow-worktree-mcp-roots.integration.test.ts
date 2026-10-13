@@ -83,7 +83,6 @@ describe.runIf(postgresEnabled)('workflow worktrees through authenticated MCP: r
         workspaceId, workflowId: workflow.workflow.id, commandId: randomUUID(), executionSemanticsVersion: 3,
         expectedRevision: workflow.revision, expectedWorkflowVersionId: null,
         expectedAgentConfigurationVersionIds: { [agent.id]: agent.configurationVersionId },
-        expectedLocationRevision: workspace.locationRevision,
         graph: { ...workflow.workflow, entryNodeId: nodeId, executionPolicy: { maxParallelism: 1, maxNodeExecutions: 1 },
           nodes: [{ id: nodeId, kind: 'agent', name: 'Worker', agentId: agent.id, placement: f.placement.remote }] },
       } })).toMatchObject({ isError: true, content: [{ type: 'text', text: expect.stringContaining('SOURCE_ROOT_NOT_FOUND') }] })

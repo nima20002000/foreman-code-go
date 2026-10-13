@@ -11,7 +11,7 @@ export function journalRequest(edit: NextDraftEdit, commandId: string): GraphEdi
       baseRevision: agents.find((item) => item.agent.id === agent.id)?.metadataRevision ?? null }))
   return { action: 'stage_edits', workspaceId: draft.workspaceId, workflowId: draft.workflowId, draftId: draft.id,
     commandId, expectedRevision: draft.publishedRevision, expectedWorkflowVersionId: draft.baseWorkflowVersionId,
-    executionSemanticsVersion: 3, graph: edit.graph, expectedLocationRevision: 1,
+    executionSemanticsVersion: 3, graph: edit.graph,
     expectedAgentConfigurationVersionIds: Object.fromEntries(edit.graph.nodes.flatMap((node) => {
       if(node.kind==='job')return []
       const agent = edit.agentEdits?.[node.agentId] ?? agents.find((item) => item.agent.id === node.agentId)?.agent
@@ -24,8 +24,7 @@ export function journalIntent(request: GraphEditStageInputV3, context: NextDraft
   const save = { workspaceId: request.workspaceId, workflowId: request.workflowId, expectedRevision: request.expectedRevision,
     expectedWorkflowVersionId: request.expectedWorkflowVersionId, executionSemanticsVersion: request.executionSemanticsVersion,
     graph: request.graph, expectedAgentConfigurationVersionIds: request.expectedAgentConfigurationVersionIds,
-    expectedNodePresentation: request.expectedNodePresentation,
-    expectedLocationRevision: request.expectedLocationRevision, stagedAgents: request.stagedAgents }
+    stagedAgents: request.stagedAgents }
   const saveCommandId = `save-${request.commandId}`
   const resultant = { ...request.expectedAgentConfigurationVersionIds,
     ...Object.fromEntries((request.stagedAgents ?? []).map(({ agent }) => [agent.id, `saved-${agent.id}`])) }
@@ -38,17 +37,15 @@ export function journalIntent(request: GraphEditStageInputV3, context: NextDraft
     savedWorkflowRevision: request.expectedRevision,
     stagedDraft: { id: draftId, workspaceId: request.workspaceId, workflowId: request.workflowId,
       revision: request.expectedRevision, baseWorkflowVersionId: request.expectedWorkflowVersionId, graph: request.graph,
-      expectedNodePresentation: request.expectedNodePresentation,
       agentConfigurationVersionIds: request.expectedAgentConfigurationVersionIds, stagedAgents: request.stagedAgents,
       saveCommandId, resultantAgentConfigurationVersionIds: resultant,
-      locationRevision: request.expectedLocationRevision, locationDigest: hash,
-      runLocationPins: affected.map(({ runId }) => ({ runId, digest: hash })) },
+    },
     saveInput: { ...save, commandId: saveCommandId, resultantAgentConfigurationVersionIds: resultant }, saveInputHash: hash,
     agentPins: request.graph.nodes.filter(node=>node.kind!=='job').map(({ agentId }) => ({ agentId,
       metadataRevision: context.agents.find((item) => item.agent.id === agentId)?.metadataRevision ?? null,
       configurationVersionId: request.expectedAgentConfigurationVersionIds[agentId] ?? null })),
     affected, stops: affected.map(({ runId }) => ({ input: { workspaceId: request.workspaceId, runId,
-      commandId: `stop-${runId}-${request.commandId}` }, inputHash: hash })),
+      commandId: `stop-${runId}-${request.commandId}` } })),
     state: 'staged', saveAttempted: false, createdAt: now, updatedAt: now })
 }
 export function savedJournal(intent: GraphEditIntentV3, version = 2): GraphEditIntentV3 {

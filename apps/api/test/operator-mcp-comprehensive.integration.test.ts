@@ -45,7 +45,7 @@ describe.skipIf(!postgresEnabled)('Operator domain-service persistence on isolat
     const managed=(await workflows.create(principal,'mcp',{workspaceId:workspace.id,commandId:'fixture-workflow',name:'Current fixture'})).value
     const workflow=managed.workflow
     const input={workspaceId:workspace.id,workflowId:workflow.id,commandId:'fixture-save',executionSemanticsVersion:3,
-      expectedRevision:managed.revision,expectedWorkflowVersionId:null,expectedLocationRevision:1,
+      expectedRevision:managed.revision,expectedWorkflowVersionId:null,
       expectedAgentConfigurationVersionIds:{[agent.agent.id]:agent.agent.configurationVersionId!},
       graph:{...workflow,entryNodeId:'node',nodes:[{id:'node',agentId:agent.agent.id,name:'Worker'}],edges:[],
         approval:{handler:'user'},executionCondition:{kind:'manual'},executionPolicy:{maxParallelism:1,maxNodeExecutions:1}}}

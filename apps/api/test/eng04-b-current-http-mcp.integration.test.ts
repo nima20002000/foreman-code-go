@@ -5,7 +5,7 @@ import { ManagementActionSchema, type ManagementGrant } from '@foreman-code/cont
 import {
   CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
   CurrentWorkflowReadResultSchema, SavedManagedWorkflowCommandResultSchema, makeCurrentWorkflowFixture,
-  CANONICAL_RUN_GRAPH_MCP_TOOLS, RepeatGraphSnapshotV3Schema, CurrentEditReadResultSchema, workflowNodeNames,
+  CANONICAL_RUN_GRAPH_MCP_TOOLS, RepeatGraphSnapshotV3Schema, CurrentEditReadResultSchema,
   type CurrentFixtureForm,
 } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
@@ -92,7 +92,7 @@ describe.skipIf(!postgresEnabled)('ENG04-B unified current workflow HTTP/MCP', (
     const input = CurrentWorkflowSaveInputSchema.parse({ workspaceId: f.scope.workspaceId, workflowId: managed.workflow.id,
       commandId: randomUUID(), executionSemanticsVersion: 3, expectedRevision: managed.revision,
       expectedWorkflowVersionId: null, expectedAgentConfigurationVersionIds: Object.fromEntries(configurations.map((config) => [config.agentId, config.id])),
-      expectedLocationRevision: 1, graph })
+      graph })
     const url = `/api/management/workspaces/${input.workspaceId}/workflows/${input.workflowId}/definition`
     const call = async (name: string, args: unknown, token = writer.token) => graphRpc(app, token, 'tools/call', { name, arguments: args })
     return { app, input, url, writer, access, credential, commands, workflows, call, f, configurations, start, cancel }
@@ -159,10 +159,10 @@ describe.skipIf(!postgresEnabled)('ENG04-B unified current workflow HTTP/MCP', (
     expect(historical.json()).toMatchObject({ currentVersionId: second.value.currentVersionId, version: first.value.version })
     expect(CurrentWorkflowSaveResultSchema.parse((await httpSave(t)).json())).toEqual({ ...first, replayed: true })
   })
-  it('rejects stale revision/version/configuration/location pins without creating an immutable version', async () => {
+  it('rejects stale revision and version/configuration references without creating an immutable version', async () => {
     const t = await fixture()
     for (const changed of [{ expectedRevision: t.input.expectedRevision + 1 }, { expectedWorkflowVersionId: 'wrong-version' },
-      { expectedAgentConfigurationVersionIds: {} }, { expectedLocationRevision: 2 }]) {
+      { expectedAgentConfigurationVersionIds: {} }]) {
       const input = { ...t.input, ...changed, commandId: randomUUID() }
       const http = await httpSave(t, input)
       expect(http.statusCode).toBe(409)
@@ -316,7 +316,7 @@ describe.skipIf(!postgresEnabled)('ENG04-B unified current workflow HTTP/MCP', (
     const intent = CurrentEditReadResultSchema.parse(graphRpcValue(remote.result)).intent!
     expect(intent.affected).toHaveLength(1)
     expect(intent.affected[0]).toMatchObject({ runId: accepted.run.id, workflowId: other.workflow.id })
-    expect(intent.stagedDraft.runLocationPins.map((pin) => pin.runId)).toEqual([accepted.run.id])
+    expect(intent.affected.map((pin) => pin.runId)).toEqual([accepted.run.id])
     expect(intent.stops[0]!.input.runId).toBe(accepted.run.id)
   })
   it('MCP rejects a missing Agent mutation grant and stale displayed metadata before Stage', async () => {
@@ -333,7 +333,6 @@ describe.skipIf(!postgresEnabled)('ENG04-B unified current workflow HTTP/MCP', (
     const t = await fixture(form), first = await save(t)
     const stage = { ...t.input, action: 'stage_edits' as const, draftId: `editor-${randomUUID()}`, commandId: randomUUID(),
       expectedRevision: first.value.revision, expectedWorkflowVersionId: first.value.currentVersionId,
-      expectedNodePresentation: workflowNodeNames(first.value.version.definition),
       graph: { ...first.value.version.definition, nodes: first.value.version.definition.nodes.map((node, index) =>
         index === 0 ? { ...node, name: 'Staged node label', initialPrompt: 'Staged execution instruction' } : node) } }
     const http = await t.app.inject({ method: 'POST', url: `${t.url}/edits`, headers: graphHeaders(t.writer.token), payload: stage })
@@ -349,7 +348,6 @@ describe.skipIf(!postgresEnabled)('ENG04-B unified current workflow HTTP/MCP', (
     const direct = await httpSave(t, intent.saveInput)
     expect(direct.statusCode).toBe(409); expect(direct.json()).toMatchObject({ error: { code: 'GRAPH_EDIT_USE_INTENT' } })
     const layout = { ...t.input, commandId: randomUUID(), expectedRevision: first.value.revision,
-      expectedNodePresentation: workflowNodeNames(first.value.version.definition),
       expectedWorkflowVersionId: first.value.currentVersionId, graph: { ...first.value.version.definition,
         nodes: first.value.version.definition.nodes.map((node) => ({ ...node, position: { x: 103, y: 207 } })) } }
     const moved = CurrentWorkflowSaveResultSchema.parse((await httpSave(t, layout)).json())

@@ -32,7 +32,7 @@ describe('Agent active-time budget', () => {
     const parsed = CurrentWorkflowSaveInputSchema.parse({ workspaceId: graph.workspaceId, workflowId: graph.id,
       commandId: 'budget-command', executionSemanticsVersion: 3, expectedRevision: 1,
       expectedWorkflowVersionId: version.id, expectedAgentConfigurationVersionIds: version.agentConfigurationVersionIds,
-      expectedLocationRevision: 1, graph })
+      graph })
     expect(parsed.graph.executionPolicy?.agentActiveTimeoutMs).toBe(3_600_000)
     expect(sameExecutableWorkflow(version.definition, parsed.graph)).toBe(false)
   })

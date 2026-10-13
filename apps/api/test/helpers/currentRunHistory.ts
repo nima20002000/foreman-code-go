@@ -35,7 +35,7 @@ export async function currentRunHistory() {
       commandId: randomUUID(), name: 'History version one' })).value
     const input = { workspaceId: f.scope.workspaceId, workflowId: managed.workflow.id, commandId: randomUUID(),
       executionSemanticsVersion: 3, expectedRevision: managed.revision, expectedWorkflowVersionId: null,
-      expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds, expectedLocationRevision: 1,
+      expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds,
       graph: { ...managed.workflow, entryNodeId: f.version.entryNodeId, nodes: f.version.definition.nodes,
         edges: f.version.definition.edges, approval: f.version.approval, executionPolicy: f.version.definition.executionPolicy! } }
     const saved = await workflows.current.save(owner.principal, 'mcp', input)

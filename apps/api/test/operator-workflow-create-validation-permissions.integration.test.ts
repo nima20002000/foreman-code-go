@@ -10,7 +10,7 @@ import { initialSave, setupWorkflowCreateIntegration } from './helpers/operatorW
 
 const currentOperatorIntegration = setupWorkflowCreateIntegration()
 
-it('leaves no empty workflow after validation or stale-pin failures and accepts a corrected retry', async () => {
+it('leaves no empty workflow after validation failures and accepts a corrected retry', async () => {
   const f = await currentOperatorIntegration({ fixture: makeCurrentWorkflowFixture(randomUUID(), 'single') })
   try {
     const workspaceId = f.f.scope.workspaceId
@@ -26,7 +26,6 @@ it('leaves no empty workflow after validation or stale-pin failures and accepts 
     const before = await list()
     for (const [save, code] of [
       [{ ...input.initialSave!, graph: { ...input.initialSave!.graph, entryNodeId: 'missing-node' } }, 'GRAPH_INVALID'],
-      [{ ...input.initialSave!, expectedLocationRevision: 99 }, 'LOCATION_REVISION_CONFLICT'],
       [{ ...input.initialSave!, expectedAgentConfigurationVersionIds: {} }, 'AGENT_CONFIGURATION_CONFLICT'],
     ] as const) {
       const rejected = await f.client.callTool({ name: 'workflow_create', arguments: { ...input, initialSave: save } })

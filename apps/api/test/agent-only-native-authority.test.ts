@@ -38,7 +38,7 @@ function fixture() {
   const input: CurrentEditSaveInput = { workspaceId: saved.run.workspaceId, workflowId: saved.run.workflowId,
     executionSemanticsVersion: 3, commandId: 'mixed-agent-save', expectedRevision: 1,
     expectedWorkflowVersionId: version.id, expectedAgentConfigurationVersionIds: version.agentConfigurationVersionIds,
-    expectedLocationRevision: 1, graph: version.definition }
+    graph: version.definition }
   return { ...saved, version, job, requester, interaction, query, principal, input,
     sql: { query } as unknown as GraphSqlClient, client: { query } as unknown as pg.PoolClient }
 }

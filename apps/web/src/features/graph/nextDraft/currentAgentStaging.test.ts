@@ -34,7 +34,7 @@ function savedIntent(includeAgents: boolean) {
   const request = { action: 'stage_edits' as const, workspaceId: 'workspace', workflowId: 'workflow', draftId: 'draft',
     commandId: 'stage-agent', expectedRevision: 7, expectedWorkflowVersionId: 'workflow-version-1',
     executionSemanticsVersion: 3 as const, expectedAgentConfigurationVersionIds: { 'agent-0': 'configuration-0', 'agent-1': 'configuration-1' },
-    expectedLocationRevision: 1, graph: edit.graph }
+    graph: edit.graph }
   vi.spyOn(storage, 'readEditSubmission').mockReturnValue({ request, target: edit.graph, agentTarget: edit.agentEdits })
   vi.spyOn(storage, 'editSnapshotAcknowledged').mockReturnValue(false)
   vi.spyOn(storage, 'editSnapshotSubmitted').mockReturnValue(true)

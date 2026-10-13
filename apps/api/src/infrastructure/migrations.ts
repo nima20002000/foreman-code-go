@@ -1,3 +1,4 @@
+import { workflowAuthoringMigration } from './workflowAuthoringMigration.js'
 import { runWorktreesMigration } from './runWorktreesMigration.js'
 import { withTransaction } from './transaction.js'
 import { checkpointOwnerMigration } from './checkpointOwnerMigration.js'
@@ -935,6 +936,7 @@ export const migrations = [
   ciHostSlotsMigration,
   checkpointOwnerMigration,
   ciResultCacheMigration,
+  workflowAuthoringMigration,
 ] as const
 
 export async function applyApplicationMigrations(pool: pg.Pool): Promise<void> {

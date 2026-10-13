@@ -23,7 +23,7 @@ async function starter() {
     } })
     expect(location.isError).not.toBe(true)
     const savedResponse = await runtime.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.save,
-      arguments: { ...await runtime.create(), expectedLocationRevision: 2 } })
+      arguments: await runtime.create() })
     expect(savedResponse.isError).not.toBe(true)
     const saved = CurrentWorkflowSaveResultSchema.parse(decodeMcpToolResult(savedResponse)).value
     const input = RunStartV3InputSchema.parse({ workspaceId: saved.version.workspaceId,

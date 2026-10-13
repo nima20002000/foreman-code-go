@@ -68,10 +68,6 @@ export function sameExecutableWorkflow(left: PresentedWorkflow, right: Presented
   return sameWorkflowValue(executableWorkflowContent(left), executableWorkflowContent(right))
 }
 
-export function workflowNodeNames(graph: { nodes: ReadonlyArray<WorkflowDefinitionV3['nodes'][number]> }) {
-  return graph.nodes.map(({ id, name, label }) => ({ id, name, label }))
-}
-
 /** Hydrate mutable names and geometry after the executable definition is checked. */
 export function preserveWorkflowPresentation<T extends PresentedWorkflow>(definition: T, presentation: T): T {
   const current = new Map(presentation.nodes.map((node) => [node.id, node]))

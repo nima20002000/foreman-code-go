@@ -47,7 +47,7 @@ describe.skipIf(!postgresEnabled)('Selected historical Run chat PostgreSQL / HTT
       const currentRevision = Number((await f.db.pool.query<{ revision: string }>('select revision::text from workflows where id=$1', [workflowId])).rows[0]!.revision)
       const saved = (await f.services.workflows.current.save(f.writer.principal, 'http', {
         workspaceId, workflowId, commandId: randomUUID(), executionSemanticsVersion: 3,
-        expectedRevision: currentRevision, expectedWorkflowVersionId: f.f.version.id, expectedLocationRevision: location.value.locationRevision,
+        expectedRevision: currentRevision, expectedWorkflowVersionId: f.f.version.id,
         expectedAgentConfigurationVersionIds: Object.fromEntries(graph.nodes.map((node) => [node.agentId, f.f.version.agentConfigurationVersionIds[node.agentId]!])), graph,
       })).value
       expect(saved.version.definition.nodes.some((entry) => entry.id === y.id)).toBe(false)

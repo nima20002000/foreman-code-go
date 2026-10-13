@@ -31,7 +31,7 @@ describe.skipIf(!postgresEnabled)('local human Start recovery', { timeout: 60_00
         workspaceId: fixture.f.scope.workspaceId, commandId: randomUUID(), expectedLocationRevision: 1,
         runnerId: fixture.locations.runnerId, rootPath: fixture.db.directory,
       })
-      const candidate = { ...await fixture.create(), expectedLocationRevision: location.value.locationRevision }
+      const candidate = await fixture.create()
       const save = await fetch(new URL(
         `/api/management/workspaces/${candidate.workspaceId}/workflows/${candidate.workflowId}/definition`,
         fixture.address), { method: 'PUT',

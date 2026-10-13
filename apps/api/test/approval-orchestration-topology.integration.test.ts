@@ -31,7 +31,7 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
     const before = (await db.pool.query('select id from workflow_versions')).rows
     await expect(workflows.current.save(writer.principal, 'mcp', { workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId,
       commandId: randomUUID(), executionSemanticsVersion: 3, expectedRevision: managed.revision,
-      expectedWorkflowVersionId: f.version.id, expectedLocationRevision: 1,
+      expectedWorkflowVersionId: f.version.id,
       expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds, graph })).rejects.toThrow()
     expect((await db.pool.query('select id from workflow_versions')).rows).toEqual(before)
     expect((await db.pool.query('select principal_id from worker_credential_bindings')).rows).toHaveLength(0)

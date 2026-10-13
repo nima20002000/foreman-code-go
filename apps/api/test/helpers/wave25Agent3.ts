@@ -100,7 +100,7 @@ export async function seedAgent3(pool: pg.Pool, directory: string, fixture = mak
   const saved = (await workflows.current.save(writer.principal, 'http', JSON.parse(JSON.stringify({
     workspaceId: fixture.scope.workspaceId, workflowId: created.workflow.id,
     commandId: randomUUID(), executionSemanticsVersion: 3, expectedRevision: created.revision,
-    expectedWorkflowVersionId: null, expectedLocationRevision: location.locationRevision,
+    expectedWorkflowVersionId: null,
     expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds,
     graph: { ...fixture.version.definition, id: created.workflow.id, version: created.workflow.version,
       createdAt: created.workflow.createdAt, updatedAt: created.workflow.updatedAt },

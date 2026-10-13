@@ -85,10 +85,9 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('moves Agents and their saved workflow
       name: 'Reviewer', productRole: 'coder', configuration, assignedSkills: [{ skillId, version: skill.version.version }] })).value.agent
     const workflow = (await call('workflow_create', current.SavedManagedWorkflowCommandResultSchema,
       { workspaceId, commandId: randomUUID(), name: 'Review' })).value
-    const located = await call('workspace_get', c.ManagedWorkspaceSchema, { workspaceId })
     const saved = await call('workflow_save_v3', current.CurrentWorkflowSaveResultSchema, { workspaceId, workflowId: workflow.workflow.id,
       executionSemanticsVersion: 3, commandId: randomUUID(), expectedRevision: workflow.revision, expectedWorkflowVersionId: null,
-      expectedAgentConfigurationVersionIds: { [agent.id]: agent.configurationVersionId }, expectedLocationRevision: located.locationRevision,
+      expectedAgentConfigurationVersionIds: { [agent.id]: agent.configurationVersionId },
       graph: { ...workflow.workflow, entryNodeId: 'review', nodes: [{ id: 'review', agentId: agent.id, name: 'Reviewer' }], edges: [],
         approval: { handler: 'user' }, executionCondition: { kind: 'manual', description: 'Manual' },
         executionPolicy: { maxParallelism: 1, maxNodeExecutions: 5 } } })

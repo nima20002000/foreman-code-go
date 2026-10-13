@@ -76,7 +76,7 @@ export async function graphFixture(db: GraphTestDatabase, options: { insert?: bo
     const response = await app.inject({ method: 'PUT', url: `/api/management/workspaces/${f.scope.workspaceId}/workflows/${workflowId}/definition`,
       headers: graphHeaders(writer.token), payload: {
         workspaceId: f.scope.workspaceId, workflowId, commandId: randomUUID(), executionSemanticsVersion: 3,
-        expectedRevision: managed.revision, expectedWorkflowVersionId: null, expectedLocationRevision: 1,
+        expectedRevision: managed.revision, expectedWorkflowVersionId: null,
         expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds,
         // A fresh authorable workflow has no saved version yet. Preserve its
         // exact creation stamps; publication assigns the first immutable V3.

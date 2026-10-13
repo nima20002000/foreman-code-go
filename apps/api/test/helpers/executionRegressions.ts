@@ -37,7 +37,7 @@ export function regressionAuthoringFixture() {
     const input = {
       workspaceId: f.scope.workspaceId, workflowId: f.scope.workflowId, executionSemanticsVersion: 3,
       commandId: randomUUID(), expectedRevision: managed.revision, expectedWorkflowVersionId: f.version.id,
-      expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds, expectedLocationRevision: 1,
+      expectedAgentConfigurationVersionIds: f.version.agentConfigurationVersionIds,
       graph: f.version.definition,
     }
     return { db, f, commands, writer, workflows, input }

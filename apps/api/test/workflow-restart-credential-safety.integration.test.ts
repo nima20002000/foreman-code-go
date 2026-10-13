@@ -49,7 +49,7 @@ async function start(runtime: Runtime) {
   expect(locationResponse.isError).not.toBe(true)
   const location = WorkspaceLocationSetResultSchema.parse(decodeMcpToolResult(locationResponse)).value
   const savedResponse = await runtime.client.callTool({ name: CURRENT_WORKFLOW_TOOLS.save,
-    arguments: { ...await runtime.create(), expectedLocationRevision: location.locationRevision } })
+    arguments: await runtime.create() })
   expect(savedResponse.isError).not.toBe(true)
   const saved = CurrentWorkflowSaveResultSchema.parse(decodeMcpToolResult(savedResponse)).value
   const input = {

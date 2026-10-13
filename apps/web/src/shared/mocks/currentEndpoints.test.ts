@@ -2,7 +2,7 @@ import { nativeNode } from './nativeFixtureTypes'
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
-import { AgentMutationResultSchema, AgentVersionResultSchema, ManagedAgentPageSchema, ManagedWorkspaceSchema } from '@foreman-code/contracts/management'
+import { AgentMutationResultSchema, AgentVersionResultSchema, ManagedAgentPageSchema } from '@foreman-code/contracts/management'
 import { CurrentManagedWorkflowSchema, CurrentManagedWorkflowPageSchema, CurrentWorkflowReadResultSchema,
   CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema, CurrentWorkflowValidationSchema,
   CurrentWorkflowCapabilitiesSchema, GraphEditReadResultV3Schema, GraphEditStageInputV3Schema } from '@foreman-code/contracts/wave25'
@@ -28,13 +28,12 @@ async function request(path: string, method = 'GET', body?: unknown, status = 20
 async function savedInput(commandId: string) {
   const managed = CurrentManagedWorkflowSchema.parse(await request(workflowPath))
   const saved = CurrentWorkflowReadResultSchema.parse(await request(`${workflowPath}/definition`))
-  const workspace = ManagedWorkspaceSchema.parse(await request(workspacePath))
   const graph = structuredClone(managed.workflow)
   nativeNode(graph.nodes[0]!).initialPrompt = `Updated by ${commandId}`
   return CurrentWorkflowSaveInputSchema.parse({ workspaceId, workflowId, commandId, executionSemanticsVersion: 3,
     expectedRevision: managed.revision, expectedWorkflowVersionId: saved.currentVersionId,
     expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds,
-    expectedLocationRevision: workspace.locationRevision, graph })
+    graph })
 }
 beforeEach(() => { resetTestFixtures(); setMockScenario('normal') })
 afterEach(() => { resetTestFixtures(); setMockScenario('normal') })
@@ -49,7 +48,6 @@ describe('current Board endpoints in the shared MSW stack', () => {
     void _commandId
     const checked = CurrentWorkflowValidationSchema.parse(await request(`${workflowPath}/definition/validate`, 'POST', validation))
     expect(checked.expectedAgentConfigurationVersionIds).toEqual(input.expectedAgentConfigurationVersionIds)
-    expect(checked.expectedLocationRevision).toBe(input.expectedLocationRevision)
     const saved = CurrentWorkflowSaveResultSchema.parse(await request(`${workflowPath}/definition`, 'PUT', input))
     expect(saved.replayed).toBe(false)
     expect(saved.value.revision).toBe(input.expectedRevision + 1)
@@ -72,7 +70,7 @@ describe('current Board endpoints in the shared MSW stack', () => {
     expect(staged.intent!.saveInput).toMatchObject({ graph: stage.graph,
       expectedRevision: stage.expectedRevision, expectedWorkflowVersionId: stage.expectedWorkflowVersionId,
       expectedAgentConfigurationVersionIds: stage.expectedAgentConfigurationVersionIds,
-      expectedLocationRevision: stage.expectedLocationRevision })
+    })
     const replay = GraphEditReadResultV3Schema.parse(await request(path, 'POST', stage))
     expect(replay.intent!.id).toBe(staged.intent!.id)
     const discarded = GraphEditReadResultV3Schema.parse(await request(path, 'POST', {

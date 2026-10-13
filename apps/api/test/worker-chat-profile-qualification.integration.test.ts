@@ -7,7 +7,6 @@ import { AgentVersionResultSchema, ManagedAgentDetailSchema } from '@foreman-cod
 import { HostHarnessProfileEvidenceSchema } from '@foreman-code/contracts/harness-registry'
 import { CURRENT_WORKFLOW_TOOLS, CurrentEditReadResultSchema, CurrentWorkflowReadResultSchema }
   from '@foreman-code/contracts/wave25'
-import { WorkspaceBoundLocationReadbackSchema } from '@foreman-code/contracts/workspace-bound-location'
 import { HarnessQualificationRepository } from '../src/modules/harnesses/qualification/repository.js'
 import { remoteReviewProduction, waitForRemoteReview } from './helpers/remoteReviewProduction.js'
 
@@ -27,12 +26,9 @@ it('uses the selected Worker qualification when the general harness cache has a 
     const agent = AgentSchema.parse({ ...managed.agent, harness: profile.driverId, model: profile.configuration.model,
       harnessConfiguration: profile.configuration, harnessProfileSelection: { instanceId: profile.instanceId,
         instanceRevision: profile.instanceRevision, target: profile.target } })
-    const location = WorkspaceBoundLocationReadbackSchema.parse(await fixture.value('workspace_root_location_get',
-      { workspaceId }))
     const draftId = randomUUID()
     await fixture.value('workflow_edit_v3', { action: 'stage_edits', ...scope, draftId, commandId: randomUUID(),
       executionSemanticsVersion: 3, expectedRevision: before.revision, expectedWorkflowVersionId: before.version.id,
-      expectedLocationRevision: location.locationRevision,
       expectedAgentConfigurationVersionIds: before.version.agentConfigurationVersionIds,
       graph: before.version.definition, stagedAgents: [{ agent, baseRevision: managed.metadataRevision }] })
     const intent = CurrentEditReadResultSchema.parse(await fixture.value('workflow_edits_get_v3',

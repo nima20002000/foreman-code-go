@@ -54,7 +54,7 @@ export async function setup(options: {
         workspaceId, workflowId: created.value.workflow.id, commandId: randomUUID(), executionSemanticsVersion: 3,
         expectedRevision: created.value.revision, expectedWorkflowVersionId: null,
         expectedAgentConfigurationVersionIds: base.f.version.agentConfigurationVersionIds,
-        expectedLocationRevision: placement.locationRevision, graph,
+        graph,
       }
       return { input, created, saveInput }
     }

@@ -156,7 +156,7 @@ async function anotherWorkflow(f: Awaited<ReturnType<typeof fixture>>) {
   const saved = (await f.graph.workflows.current.save(f.graph.writer.principal, 'mcp', {
     workspaceId: f.graph.scope.workspaceId, workflowId: created.workflow.id, commandId: randomUUID(),
     executionSemanticsVersion: 3, expectedRevision: created.revision, expectedWorkflowVersionId: null,
-    expectedAgentConfigurationVersionIds: f.graph.version.agentConfigurationVersionIds, expectedLocationRevision: 1,
+    expectedAgentConfigurationVersionIds: f.graph.version.agentConfigurationVersionIds,
     graph: definition,
   })).value
   const next = makeCurrentWorkflowFixture(randomUUID(), 'single')

@@ -115,7 +115,7 @@ describe.runIf(postgresEnabled)('workflow worktrees through authenticated MCP: p
         workspaceId: next.workspaceId, workflowId: next.workflowId, executionSemanticsVersion: 3,
         expectedRevision: next.expectedRevision, expectedWorkflowVersionId: next.expectedWorkflowVersionId,
         expectedAgentConfigurationVersionIds: next.expectedAgentConfigurationVersionIds,
-        expectedLocationRevision: next.expectedLocationRevision, graph: next.graph,
+        graph: next.graph,
       } })).toMatchObject({ isError: true, content: [{ type: 'text', text: expect.stringContaining('SOURCE_UNAVAILABLE') }] })
       expect((await f.read(next.workflowId)).version).toEqual(retained.value.version)
     } finally { await f.close() }

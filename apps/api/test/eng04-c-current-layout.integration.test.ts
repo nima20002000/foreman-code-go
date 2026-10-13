@@ -19,7 +19,7 @@ import { insertCurrentRunFixture as insertFixtureRepeatRun } from './helpers/eng
 /** Real migrated PostgreSQL, issued bearer auth, typed writer, command/audit and
  * stateless Operator MCP. No native engine is composed; the active Run is an
  * explicit canonical SQL fixture, not native admission or closure proof. */
-describe.skipIf(!postgresEnabled)('ENG04-C current geometry CAS HTTP/MCP', () => {
+describe.skipIf(!postgresEnabled)('current layout HTTP/MCP', () => {
   let db: Awaited<ReturnType<typeof agent3Database>>
   const apps: ReturnType<typeof buildApp>[] = []
   beforeAll(async () => { db = await agent3Database() }, 60000)
@@ -70,7 +70,7 @@ describe.skipIf(!postgresEnabled)('ENG04-C current geometry CAS HTTP/MCP', () =>
     const input = CurrentWorkflowSaveInputSchema.parse({ workspaceId: f.scope.workspaceId, workflowId: managed.workflow.id,
       commandId: randomUUID(), executionSemanticsVersion: 3, expectedRevision: managed.revision,
       expectedWorkflowVersionId: null, expectedAgentConfigurationVersionIds: Object.fromEntries(configurations.map((config) => [config.agentId, config.id])),
-      expectedLocationRevision: 1, graph })
+      graph })
     const url = `/api/management/workspaces/${input.workspaceId}/workflows/${input.workflowId}/definition`
     const call = async (name: string, args: unknown, token = writer.token) => graphRpc(app, token, 'tools/call', { name, arguments: args })
     return { app, input, url, writer, access, credential, commands, workflows, call, f, configurations }
@@ -84,7 +84,7 @@ describe.skipIf(!postgresEnabled)('ENG04-C current geometry CAS HTTP/MCP', () =>
   async function count(t: Fixture, table: 'workflow_versions' | 'runs') {
     return Number((await db.pool.query<{ n: string }>(`select count(*)::text as n from ${table} where workflow_id=$1`, [t.input.workflowId])).rows[0]!.n)
   }
-  it('CAS rejects stale geometry while a Run remains active; exact MCP replay and persisted readback preserve version and authority', async () => {
+  it('accepts later layout writes while a Run remains active and preserves versions, replay and denied writes', async () => {
     const t = await fixture(), first = await save(t)
     await insertFixtureRepeatRun(db.pool, { ...t.f, configurations: t.configurations, run: { ...t.f.run,
       workflowId: t.input.workflowId, createdAt: new Date().toISOString(), agentConfigurationVersionIds: first.value.version.agentConfigurationVersionIds,
@@ -92,9 +92,8 @@ describe.skipIf(!postgresEnabled)('ENG04-C current geometry CAS HTTP/MCP', () =>
       executionLocation: { runnerId: 'runner-local', rootPath: db.directory, locationRevision: 1, identityHash: `sha256:${'1'.repeat(64)}` },
     } }, first.value, t.writer.principal.id, { input: {} })
     const original = first.value.version.definition
-    const expectedGeometry = original.nodes.map(({ id, position, width, height }) => ({ id, position, width, height }))
     const layout = { ...t.input, commandId: randomUUID(), expectedRevision: first.value.revision,
-      expectedWorkflowVersionId: first.value.currentVersionId, expectedGeometry,
+      expectedWorkflowVersionId: first.value.currentVersionId,
       graph: { ...original, nodes: original.nodes.map((node, index) => index ? node : {
         ...node, position: { x: 901, y: 42 }, width: 360, height: 280,
       }) } }
@@ -105,17 +104,18 @@ describe.skipIf(!postgresEnabled)('ENG04-C current geometry CAS HTTP/MCP', () =>
     expect(saved.value.currentVersionId).toBe(first.value.currentVersionId)
     const stale = { ...layout, commandId: randomUUID(), graph: { ...original,
       nodes: original.nodes.map((node, index) => index === 1 ? { ...node, position: { x: 1200, y: 99 } } : node) } }
-    const rejected = await httpSave(t, stale)
-    expect(rejected.statusCode, rejected.body).toBe(409)
-    expect(rejected.json()).toMatchObject({ error: { code: 'LAYOUT_REVISION_CONFLICT' } })
-    // A committed receipt is replayable despite its old geometry precondition.
+    const later = await httpSave(t, stale)
+    expect(later.statusCode, later.body).toBe(200)
+    expect(CurrentWorkflowSaveResultSchema.parse(later.json()).value.version).toEqual(first.value.version)
+    // Replaying an earlier command returns its result without applying it again.
     const replay = await t.call(CURRENT_WORKFLOW_TOOLS.save, layout)
     expect(graphRpcValue(replay.result)).toEqual({ ...saved, replayed: true })
     const read = await t.call('workflow_get', { workspaceId: t.input.workspaceId, workflowId: t.input.workflowId })
     expect(graphRpcValue(read.result)).toMatchObject({ revision: first.value.revision,
-      currentVersionId: first.value.currentVersionId, workflow: { nodes: layout.graph.nodes } })
+      currentVersionId: first.value.currentVersionId, workflow: { nodes: stale.graph.nodes } })
     expect(graphRpcValue(read.result)).toMatchObject({ workflow: { nodes: [
-      { id: original.nodes[0]!.id, position: { x: 901, y: 42 }, width: 360, height: 280 }, expect.anything(),
+      { id: original.nodes[0]!.id, position: original.nodes[0]!.position },
+      { id: original.nodes[1]!.id, position: { x: 1200, y: 99 } },
     ] } })
     const denied = await t.credential([{ actions: ['workflows:read', 'graph:read'], scope: { workspaceIds: [t.input.workspaceId] } }])
     expect((await t.call(CURRENT_WORKFLOW_TOOLS.save, layout, denied.token)).result?.isError).toBe(true)

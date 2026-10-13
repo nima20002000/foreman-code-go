@@ -152,7 +152,6 @@ export class WorkflowManagementService {
           workspaceId: input.workspaceId, workflowId: workflow.id, commandId: randomUUID(),
           executionSemanticsVersion: 3, expectedRevision: created.revision, expectedWorkflowVersionId: null,
           expectedAgentConfigurationVersionIds: input.initialSave.expectedAgentConfigurationVersionIds,
-          expectedLocationRevision: input.initialSave.expectedLocationRevision,
           graph: {
             ...input.initialSave.graph,
             id: workflow.id, workspaceId: workflow.workspaceId, name: workflow.name,

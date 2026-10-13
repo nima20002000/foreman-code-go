@@ -183,19 +183,16 @@ export async function saveWithoutY(f: HistoricalFixture) {
   const saved = (await f.services.workflows.current.save(f.writer.principal, 'http', {
     workspaceId, workflowId, commandId: randomUUID(), executionSemanticsVersion: 3,
     expectedRevision: revision, expectedWorkflowVersionId: f.f.version.id,
-    expectedLocationRevision: location.locationRevision,
     expectedAgentConfigurationVersionIds: Object.fromEntries(graph.nodes.map((node) =>
       [node.agentId, f.f.version.agentConfigurationVersionIds[node.agentId]!])), graph,
   })).value
   const layoutGraph = structuredClone(saved.version.definition)
-  const expectedGeometry = layoutGraph.nodes.map(({ id, position, width, height }) => ({ id, position, width, height }))
   layoutGraph.nodes[0]!.position = { x: 909, y: -33 }; layoutGraph.nodes[0]!.width = 480
   const layoutSaved = (await f.services.workflows.current.save(f.writer.principal, 'http', {
     workspaceId, workflowId, commandId: randomUUID(), executionSemanticsVersion: 3,
     expectedRevision: saved.revision, expectedWorkflowVersionId: saved.version.id,
-    expectedLocationRevision: location.locationRevision,
     expectedAgentConfigurationVersionIds: saved.version.agentConfigurationVersionIds,
-    expectedGeometry, graph: layoutGraph,
+    graph: layoutGraph,
   })).value
   return { saved: layoutSaved, location }
 }

@@ -26,7 +26,6 @@ export const CurrentJournalRunStateSchema = z.object({
 })
 export const CurrentJournalStopSchema = z.object({
   input: z.object({ workspaceId: GraphIdSchema, runId: GraphIdSchema, commandId: GraphIdSchema }).strict(),
-  inputHash: GraphDigestSchema,
   receipt: z.object({ runId: GraphIdSchema, status: z.enum(['accepted', 'already_terminal', 'not_owner']),
     processStopped: z.literal(false) }).strict().optional(),
 }).strict()

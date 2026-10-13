@@ -117,7 +117,7 @@ beforeEach(() => {
     expectedAgentConfigurationVersionIds: Object.fromEntries(graph.nodes.map(nativeNode).flatMap(({ agentId }) => {
       const pin = agents?.find((item) => item.agent.id === agentId)?.agent.configurationVersionId
       return pin ? [[agentId, pin]] : []
-    })), expectedLocationRevision: 1, agents: agents ?? [],
+    })), agents: agents ?? [],
   }))
   vi.spyOn(boardStartClient, 'start').mockRejectedValue(new Error('This regression must not Start a Run'))
 })

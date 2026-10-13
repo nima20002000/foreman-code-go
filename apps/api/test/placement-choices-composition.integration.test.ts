@@ -107,7 +107,7 @@ describe.skipIf(!postgresEnabled)('saved placement discovery and clearing throug
       delete node.placement
       const saveInput = { ...scope, commandId: randomUUID(), executionSemanticsVersion: 3,
         expectedRevision: before.revision, expectedWorkflowVersionId: before.currentVersionId,
-        expectedLocationRevision: 1, expectedAgentConfigurationVersionIds: before.version.agentConfigurationVersionIds, graph }
+        expectedAgentConfigurationVersionIds: before.version.agentConfigurationVersionIds, graph }
       const cleared = await operator.callTool({ name: CURRENT_WORKFLOW_TOOLS.save, arguments: saveInput })
       expect(cleared.isError, JSON.stringify(cleared)).not.toBe(true)
       const result = CurrentWorkflowSaveResultSchema.parse(decodeMcpToolResult(cleared))
