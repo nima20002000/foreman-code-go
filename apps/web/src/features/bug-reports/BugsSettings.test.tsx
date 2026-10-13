@@ -64,6 +64,29 @@ function serveReports(items: BugReport[] = [report()]) {
   )
 }
 
+it.each(['footer', 'escape', 'backdrop'] as const)('guards unsaved closing notes when dismissing through %s', async method => {
+  serveReports()
+  mount('/settings/bugs?reportId=bug-report-1')
+  const user = userEvent.setup()
+  const dialog = await screen.findByRole('dialog', { name: 'Workflow start fails' })
+  await user.type(within(dialog).getByRole('textbox', { name: 'Closing note' }), 'Needs another look')
+  if (method === 'footer') await user.click(within(dialog).getByRole('button', { name: 'Close report' }))
+  if (method === 'escape') await user.keyboard('{Escape}')
+  if (method === 'backdrop') {
+    fireEvent.pointerDown(dialog)
+    fireEvent.click(dialog)
+  }
+  const guard = await screen.findByRole('alertdialog', { name: 'Save changes before leaving?' })
+  expect(within(guard).getByText(/unsaved changes/)).toBeVisible()
+  await user.keyboard('{Escape}')
+  await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+  expect(within(dialog).getByRole('textbox', { name: 'Closing note' })).toHaveValue('Needs another look')
+  await user.click(within(dialog).getByRole('button', { name: 'Close report' }))
+  const discard = await screen.findByRole('alertdialog', { name: 'Save changes before leaving?' })
+  await user.click(within(discard).getByRole('button', { name: 'Discard' }))
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Workflow start fails' })).not.toBeInTheDocument())
+})
+
 it('opens Bugs from Settings and stores filters and report selection in the URL', async () => {
   const items = [report(), report({ id: 'bug-report-2', title: 'Context is confusing', severity: 'low', status: 'fixed' })]
   serveReports(items)

@@ -15,7 +15,7 @@ import { expect, it } from 'vitest'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { BugReportService } from '../src/modules/bug-reports/service.js'
-import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
+import { commandInputHash, PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 import { codexApprovalRuntime } from './helpers/codexApprovalRuntime.js'
 
@@ -102,6 +102,119 @@ function value(result: Awaited<ReturnType<Client['callTool']>>) {
   expect(result.isError).not.toBe(true)
   return decodeMcpToolResult(result)
 }
+
+it.each(['update-only', 'foreign-scope'] as const)('denies %s closes without disclosing reports or duplicating audits',
+  async permission => {
+    const f = await fixture()
+    try {
+      const owner = await f.operator(['bug_reports:report', 'bug_reports:read', 'bug_reports:update'])
+      const saved = BugReportSchema.parse(BugReportCreateResultSchema.parse(value(await owner.client.callTool({
+        name: 'bug_report', arguments: reportInput(),
+      }))).report)
+      const caller = permission === 'update-only'
+        ? await f.operator(['bug_reports:update'])
+        : await f.operator(['bug_reports:read', 'bug_reports:update'], 'foreign-workspace')
+      const denied = await caller.client.callTool({ name: 'bug_reports_close', arguments: {
+        commandId: randomUUID(), status: 'fixed', reports: [{ reportId: saved.id, expectedRevision: saved.revision }],
+      } })
+      expect(denied.isError).toBe(true)
+      expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
+      expect(value(await owner.client.callTool({ name: 'bug_report_get', arguments: { reportId: saved.id } })))
+        .toEqual(saved)
+      const audit = await f.db.pool.query('select action,outcome from management_audit where principal_id=$1',
+        [caller.principal.id])
+      expect(audit.rows).toHaveLength(1)
+      expect(audit.rows[0]).toMatchObject({ outcome: 'denied' })
+      if (permission === 'update-only') {
+        expect((await caller.client.listTools()).tools.map(tool => tool.name)).not.toContain('bug_reports_close')
+      }
+    } finally { await f.close() }
+  }, 60_000,
+)
+
+it('rejects duplicate closures that would cycle back to a report being closed', async () => {
+  const f = await fixture()
+  try {
+    const owner = await f.operator(['bug_reports:report', 'bug_reports:read', 'bug_reports:update'])
+    const reports = []
+    for (const title of ['First failure', 'Second failure']) {
+      reports.push(BugReportSchema.parse(BugReportCreateResultSchema.parse(value(await owner.client.callTool({
+        name: 'bug_report', arguments: { ...reportInput(), title },
+      }))).report))
+    }
+    const [first, second] = reports as [typeof reports[number], typeof reports[number]]
+    await owner.client.callTool({ name: 'bug_reports_close', arguments: {
+      commandId: randomUUID(), status: 'duplicate', duplicateOfId: second.id,
+      reports: [{ reportId: first.id, expectedRevision: first.revision }],
+    } })
+    const cyclic = await owner.client.callTool({ name: 'bug_reports_close', arguments: {
+      commandId: randomUUID(), status: 'duplicate', duplicateOfId: first.id,
+      reports: [{ reportId: second.id, expectedRevision: second.revision }],
+    } })
+    expect(cyclic.isError).toBe(true)
+    expect(JSON.stringify(cyclic.content)).toContain('INVALID_INPUT')
+    expect(value(await owner.client.callTool({ name: 'bug_report_get', arguments: { reportId: second.id } })))
+      .toEqual(second)
+    const repeat = BugReportCreateResultSchema.parse(value(await owner.client.callTool({
+      name: 'bug_report', arguments: { ...reportInput(), title: first.title },
+    })))
+    expect(repeat).toMatchObject({ outcome: 'repeat', report: { id: second.id, status: 'open', occurrenceCount: 2 } })
+  } finally { await f.close() }
+}, 60_000)
+
+it('conflicts when a close command is retried with a different note that redacts to the same text', async () => {
+  const f = await fixture()
+  try {
+    const owner = await f.operator(['bug_reports:report', 'bug_reports:read', 'bug_reports:update'])
+    const saved = BugReportSchema.parse(BugReportCreateResultSchema.parse(value(await owner.client.callTool({
+      name: 'bug_report', arguments: reportInput(),
+    }))).report)
+    const input = { commandId: randomUUID(), status: 'fixed', note: 'password=first-secret',
+      reports: [{ reportId: saved.id, expectedRevision: saved.revision }] }
+    const closed = BugReportCloseResultSchema.parse(value(await owner.client.callTool({
+      name: 'bug_reports_close', arguments: input,
+    })))
+    expect(closed.reports[0]!.resolution?.note).toBe('password=[REDACTED]')
+    const changed = await owner.client.callTool({ name: 'bug_reports_close', arguments: {
+      ...input, note: 'password=second-secret',
+    } })
+    expect(changed.isError).toBe(true)
+    expect(JSON.stringify(changed.content)).toContain('COMMAND_ID_CONFLICT')
+    expect(BugReportCloseResultSchema.parse(value(await owner.client.callTool({
+      name: 'bug_reports_close', arguments: input,
+    })))).toEqual({ ...closed, replayed: true })
+  } finally { await f.close() }
+}, 60_000)
+
+it.each(['fixed', 'wont-fix'] as const)('replays a saved pre-upgrade %s status update and refuses a new closure', async status => {
+  const f = await fixture()
+  try {
+    const owner = await f.operator(['bug_reports:report', 'bug_reports:read', 'bug_reports:update'])
+    const initial = BugReportSchema.parse(BugReportCreateResultSchema.parse(value(await owner.client.callTool({
+      name: 'bug_report', arguments: reportInput(),
+    }))).report)
+    const input = { commandId: randomUUID(), reportId: initial.id, expectedRevision: initial.revision, status }
+    const receiptInput = { ...input, commandId: commandInputHash(input.commandId) }
+    const saved = { ...initial, status, revision: initial.revision + 1 }
+    await f.db.pool.query('update bug_reports set record=$2::jsonb,status=$3,revision=$4 where id=$1',
+      [saved.id, JSON.stringify(saved), saved.status, saved.revision])
+    await f.db.pool.query(
+      `insert into management_command_receipts(principal_id,operation,command_id,target_key,input_hash,result)
+       values($1,'bug_reports.update',$2,$3,$4,$5::jsonb)`,
+      [owner.principal.id, receiptInput.commandId, saved.id, commandInputHash(receiptInput), JSON.stringify(saved)],
+    )
+    expect(BugReportUpdateResultSchema.parse(value(await owner.client.callTool({
+      name: 'bug_report_update', arguments: input,
+    })))).toEqual({ report: saved, replayed: true })
+    const fresh = await owner.client.callTool({ name: 'bug_report_update', arguments: {
+      ...input, commandId: randomUUID(), expectedRevision: saved.revision,
+    } })
+    expect(fresh.isError).toBe(true)
+    expect(JSON.stringify(fresh.content)).toContain('INVALID_INPUT')
+    expect(value(await owner.client.callTool({ name: 'bug_report_get', arguments: { reportId: saved.id } })))
+      .toEqual(saved)
+  } finally { await f.close() }
+}, 60_000)
 
 it.each(['open', 'fixed', 'wont-fix', 'duplicate'] as const)(
   'returns only summary fields to other reporters when repeating a %s report, including retries', async status => {

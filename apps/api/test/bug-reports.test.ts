@@ -84,13 +84,14 @@ describe('bug report HTTP persistence', () => {
     await database.pool.query(
       `update management_command_receipts set result=$2::jsonb
        where principal_id=$1 and operation='bug_reports.report'`,
-      [reporter.principal.id, JSON.stringify({ ...repeat, report: saved })],
+      [reporter.principal.id, JSON.stringify({ report: saved, deduplicated: true })],
     )
     const replay = BugReportCreateResultSchema.parse((await f.request(
       'POST', '/api/management/bug-reports', input, reporter.token,
     )).json())
     expect(replay.report).toEqual(summary)
     expect(replay.replayed).toBe(true)
+    expect(replay).toMatchObject({ outcome: 'repeat', message: expect.stringContaining(original.id) })
     expect(await f.bugReports.get(f.owner.principal, original.id)).toEqual(saved)
   })
 
