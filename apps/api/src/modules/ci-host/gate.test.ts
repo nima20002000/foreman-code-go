@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
-import type { CiRunInput } from '@foreman-code/contracts'
-import { planCiGate } from './gate.js'
+import type { CiRunInput, CiRunRecord } from '@foreman-code/contracts'
+import { gatePartStealer, planCiGate } from './gate.js'
 import type { HostCiComputer, HostCiEndpoint } from './service.js'
 
 function fleet(clouds: number): HostCiEndpoint {
@@ -58,4 +58,21 @@ it.each([80_000, 120_000])('balances %i ms integration files against cloud check
     times.set(part.plannedHostKey, (times.get(part.plannedHostKey) ?? 0) + part.expectedDurationMs)
   }
   expect(Math.max(...times.values())).toBeLessThanOrEqual(210_000)
+})
+
+it('lets a build computer whose own gate part started take unstarted cloud gate parts', () => {
+  const host: HostCiComputer = { key: 'builder-main', label: 'Main builder', priority: 60, hostRef: { kind: 'main', mainId: 'main' } }
+  const paired: HostCiComputer = { key: 'builder-paired', label: 'Paired builder', priority: 50,
+    hostRef: { kind: 'device', mainId: 'main', deviceId: 'paired' } }
+  const cloud: HostCiComputer = { key: 'cloud-0', label: 'Cloud 0', priority: 30,
+    hostRef: { kind: 'cloud', mainId: 'main', provider: 'github', slot: 0 } }
+  const part = (plannedHostKey: string, suite: 'integration' | 'unit' = 'integration') =>
+    ({ gate: true, suite, plannedHostKey }) as unknown as CiRunRecord
+  const queued = [part('cloud-0'), part('builder-paired'), part('cloud-0', 'unit')]
+  const steals = gatePartStealer([host, paired, cloud], queued)
+  expect(steals(queued[0]!, host)).toBe(true)
+  expect(steals(queued[0]!, paired)).toBe(false)
+  expect(steals(queued[0]!, cloud)).toBe(false)
+  expect(steals(queued[2]!, host)).toBe(false)
+  expect(steals(queued[1]!, host)).toBe(false)
 })
