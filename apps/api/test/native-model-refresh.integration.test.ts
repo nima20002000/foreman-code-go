@@ -1,28 +1,23 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
-import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
-import { randomUUID } from 'node:crypto'
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { HarnessOptionsResultSchema } from '@foreman-code/contracts/management'
-import pg from 'pg'
+import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
-import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 
 it('refreshes and reads back model options through authenticated HTTP and Operator MCP', async () => {
-  const connectionString = process.env.TEST_DATABASE_URL!
-  const schema = 'model_refresh_' + randomUUID().replaceAll('-', '')
-  const admin = new pg.Pool({ connectionString })
   const directory = await mkdtemp(join(tmpdir(), 'graphql-model-mcp-'))
   const cache = join(directory, 'catalog.json')
   await writeFile(cache, JSON.stringify(['provider/old-model']))
-  await createFixtureSchema(admin, schema)
-  const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
+  const database = await migratedDatabase()
+  const { pool } = database
   const access = new PostgresAccessService(pool)
   const clients: Client[] = []
   const modelOptions = async () => HarnessOptionsResultSchema.parse({
@@ -46,7 +41,6 @@ it('refreshes and reads back model options through authenticated HTTP and Operat
     database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined },
   }, operator: { access, services } })
   try {
-    await applyApplicationMigrations(pool)
     const readerGrant = await access.issue({ name: 'Model catalog reader', audience: 'operator',
       grants: [{ actions: ['harnesses:read'], scope: {} }], expiresAt: new Date(Date.now() + 120_000) })
     const updaterGrant = await access.issue({ name: 'Model catalog updater', audience: 'operator',
@@ -93,9 +87,7 @@ it('refreshes and reads back model options through authenticated HTTP and Operat
   } finally {
     await Promise.allSettled(clients.map((client) => client.close()))
     await app.close()
-    await pool.end()
-    await dropFixtureSchema(admin, schema)
-    await admin.end()
+    await database.close()
     await removeFixtureDirectory(directory)
   }
 }, 30_000)

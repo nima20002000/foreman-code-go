@@ -1,17 +1,16 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 import { callWorkspaceTool } from './helpers/workspaceMcp.js'
-import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from './helpers/testResources.js'
+import { removeFixtureDirectory } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, mkdir, writeFile, readFile, rename, lstat, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import pg from 'pg'
+import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import * as c from '@foreman-code/contracts/management'
 import { expect, it } from 'vitest'
 import { buildApp } from '../src/app.js'
-import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
@@ -27,10 +26,8 @@ it('discovers real unregistered folders without writes and safely deletes conten
   const directory = await mkdtemp(join(tmpdir(), 'workspace-storage-folders-'))
   const root = join(directory, 'workspaces'), external = join(directory, 'external')
   await mkdir(root); await mkdir(external)
-  const schema = 'storage_folders_' + randomUUID().replaceAll('-', '')
-  const admin = new pg.Pool({ connectionString })
-  await createFixtureSchema(admin, schema)
-  const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
+  const database = await migratedDatabase()
+  const { pool } = database
   const access = new PostgresAccessService(pool), commands = new PostgresCommandCoordinator(pool)
   const locations = new WorkspaceLocationService(pool, commands, undefined, 'runner-local', root)
   const defaults = new PostgresFoundationSettingsRepository(pool, root)
@@ -41,7 +38,6 @@ it('discovers real unregistered folders without writes and safely deletes conten
   }, operator: { access, services } })
   const clients: Client[] = []
   try {
-    await applyApplicationMigrations(pool)
     const expiresAt = new Date(Date.now() + 120_000)
     const owner = await access.issue({ name: 'Folder owner', audience: 'operator',
       grants: [{ actions: [...c.ManagementActionSchema.options], scope: {} }], expiresAt })
@@ -171,8 +167,8 @@ it('discovers real unregistered folders without writes and safely deletes conten
     expect((await pool.query("select 1 from management_audit where action='workspace.storage_folder.delete' and outcome='succeeded'")).rowCount).toBe(4)
   } finally {
     for (const client of clients) await client.close()
-    await app.close(); await pool.end()
-    await dropFixtureSchema(admin, schema); await admin.end()
+    await app.close()
+    await database.close()
     await removeFixtureDirectory(directory)
   }
 }, 30_000)
