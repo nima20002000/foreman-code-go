@@ -274,3 +274,22 @@ it('drains a dispatch already starting remote work before Run Stop completes', a
     await f.close()
   }
 }, 90_000)
+
+
+it('cancels persisted CI assignments using the accepted Stop intent and permits denied-caller readback', async () => {
+  const f = await fixture()
+  try {
+    const tickets = await f.createTickets(undefined, 3)
+    expect(tickets.filter(ticket => ticket.computer !== null)).toHaveLength(3)
+    const input = { runId: f.f.run.id, commandId: randomUUID() }
+    expect((await f.call(f.reader.token, 'run_stop', input)).result?.isError).toBe(true)
+    expect(f.cancellations).toEqual([])
+    expect(await f.value(f.writer.token, 'run_stop', input)).toMatchObject({ status: 'accepted' })
+    for (const ticket of tickets) {
+      const result = CiGetOutputSchema.parse(await f.value(f.reader.token, 'ci_get', { ticketId: ticket.id }))
+      expect(result.run.state).toBe('canceled')
+    }
+    expect(f.cancellations.sort()).toEqual(tickets.map(ticket => ticket.id).sort())
+    expect(await f.runs.getRepeatSnapshot(input.runId)).toMatchObject({ cleanupPending: false })
+  } finally { await f.close() }
+}, 90_000)
