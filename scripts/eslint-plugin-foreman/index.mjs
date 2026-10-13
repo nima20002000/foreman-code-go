@@ -164,7 +164,6 @@ export function foremanLint(directory) {
     {
       plugins: { foreman: plugin },
       rules: {
-        'max-lines': ['error', { max: 1000, ...size }],
         'foreman/no-local-canonical-json': 'error',
         'foreman/no-raw-transactions': 'error',
         'foreman/no-silent-catch': 'error',

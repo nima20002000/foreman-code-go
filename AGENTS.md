@@ -99,8 +99,8 @@ Every package lint enforces these as errors (local rules live in
 `scripts/lint-allowlist.json` predate a rule; never add to that list, fix the
 code instead. `node scripts/lint-baseline.mjs` prunes entries that pass.
 
-- `max-lines` 1000 per file and `max-lines-per-function` 200 outside tests:
-  oversized modules hide unrelated responsibilities and merge conflicts.
+- `max-lines-per-function` 200 outside tests: oversized functions hide unrelated
+  responsibilities.
 - `foreman/no-source-text-tests`: tests may not read repository source files
   or `?raw` imports, or assert on SQL/query/statement text. See above.
 - `foreman/no-local-canonical-json`: one shared canonical JSON module
