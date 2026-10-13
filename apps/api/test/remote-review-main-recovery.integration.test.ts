@@ -43,29 +43,24 @@ describe('production remote review after graceful Main recovery', () => {
       const settled = await fixture.details(recovered.runId)
       expect(settled.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
       expect(settled.cleanupPending).not.toBe(true)
-      const cleanup = (await fixture.db.pool.query<{ requested_at: Date; pending: boolean }>(
-        'select requested_at,pending from run_cleanup_intents where run_id=$1', [recovered.runId],
+      const cleanup = (await fixture.db.pool.query<{ pending: boolean }>(
+        'select pending from run_cleanup_intents where run_id=$1', [recovered.runId],
       )).rows[0]!
       expect(cleanup.pending).toBe(false)
       const reviewer = (await receipts(fixture, recovered.runId)).find(receipt => receipt.retainedReviewer)
       expect(reviewer).toBeDefined()
       expect(reviewer!.phase).toBe('confirmed_terminal')
       expect(reviewer!.stopFence).toBe(true)
-      const stops = reviewer!.controls.filter(control => control.action.kind === 'stop')
-      expect(stops).toHaveLength(1)
-      expect(stops[0]!.nativeTarget).toEqual({ kind: 'session', sessionId: reviewer!.native!.sessionId })
-      expect(stops[0]).toMatchObject({
-        commandId: `stop:${reviewer!.intent.operationId}:${cleanup.requested_at.toISOString()}`,
-        operationId: reviewer!.intent.operationId,
-        attemptId: reviewer!.intent.attemptId,
-        executionId: reviewer!.intent.executionId,
-        bindingHash: reviewer!.intent.bindingHash,
-        owner: reviewer!.intent.owner,
-      })
-      expect(stops[0]!.native).toBeUndefined()
+      expect(reviewer!.terminal).toMatchObject({ kind: 'cancelled', closureEvidenceDigest: expect.any(String) })
+      expect(reviewer!.terminal!.closureEvidenceDigest).toMatch(/^[a-f0-9]{64}$/)
+      const launches = fixture.registry.snapshot().launches
+        .filter(launch => recovered.launchIds.includes(launch.launchId))
+      expect(launches).toHaveLength(recovered.launchIds.length)
+      for (const launch of launches) {
+        expect(launch.lifecycle).toBe('closed')
+        expect(launch.closureEvidence).toBeDefined()
+      }
       expect((await fixture.executions(recovered.runId)).every(execution => execution.state === 'completed')).toBe(true)
-      expect(fixture.registry.snapshot().launches.filter(launch => recovered.launchIds.includes(launch.launchId))
-        .every(launch => launch.lifecycle !== 'active')).toBe(true)
     })
   }, 120_000)
 })

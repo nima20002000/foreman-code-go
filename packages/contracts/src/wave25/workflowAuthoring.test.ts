@@ -16,7 +16,7 @@ describe('workflow authoring', () => {
       graph: fixture.version.definition,
     }
     expect(CurrentWorkflowValidateInputSchema.safeParse(definition).success).toBe(true)
-    const save = { ...definition, commandId: 'save' }
+    const save = { ...definition, commandId: 'save-command' }
     expect(CurrentWorkflowSaveInputSchema.parse(save)).toEqual(save)
     const stage = { ...save, action: 'stage_edits', draftId: 'draft' }
     expect(CurrentEditStageInputSchema.parse(stage)).toEqual(stage)

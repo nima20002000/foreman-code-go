@@ -26,7 +26,7 @@ afterEach(async () => {
 async function computer(options: { github?: boolean; suiteExit?: number; watchdogReason?: string; pause?: boolean
   measured?: Record<string, number>; databaseExit?: number; selector?: boolean;
   change?: 'source' | 'infrastructure' | 'docs'; defaultBranch?: string; cpuCount?: number; hostSlots?: boolean
-  affectedUnitTests?: number } = {}) {
+  affectedUnitTests?: number; inspectSource?: boolean } = {}) {
   const temporaryRoot = process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp')
   await mkdir(temporaryRoot, { recursive: true })
   const root = await mkdtemp(join(temporaryRoot, 'host-ci-'))
@@ -40,6 +40,9 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
     typecheck: 'tsc', lint: 'eslint', build: 'tsc -b', test: 'vitest',
     'test:integration': 'node scripts/test-integration.mjs', 'db:up': 'node db.mjs',
     'test:scripts': 'node --test scripts/fixture.test.mjs' } }))
+  if (options.inspectSource) {
+    await writeFile(join(origin, 'program.mjs'), 'process.stdout.write(JSON.stringify({value: 1}))\n')
+  }
   await writeFile(join(origin, 'pnpm-lock.yaml'), '')
   for (const name of ['a', 'b', 'c', 'd']) await writeFile(join(origin, `apps/api/test/${name}.integration.test.ts`), '')
   await mkdir(join(origin, 'scripts'))
@@ -109,6 +112,7 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
     + 'echo "CI budget $FOREMAN_CODE_CI_CPU_COUNT $FOREMAN_CODE_CI_MEMORY_BYTES $FOREMAN_CODE_VERIFICATION_UNIT_WORKERS"\n'
     + 'echo "CI database $FOREMAN_CODE_CI_DATABASE_CPUS $FOREMAN_CODE_CI_DATABASE_MEMORY_BYTES"\n'
     + `${integration}${unitReport}`
+    + (options.inspectSource ? 'if [ "$2" = typecheck ]; then node program.mjs; fi\n' : '')
     + `if [ "$2" = db:up ]; then code=${options.databaseExit ?? 0};`
     + ' if [ "$code" = 0 ]; then touch "$TMPDIR/database-ready"; fi; exit "$code"; fi\n'
     + 'if [ "$2" = test ] || [ "$2" = test:integration ]'
@@ -428,6 +432,24 @@ describe('host CI runner', () => {
     expect(done.run).toMatchObject({ state: 'passed', step: 'unit-api' })
     expect(done.text).toContain('corepack pnpm --dir apps/api exec vitest run test/first.test.ts')
     expect(done.text).not.toContain('test/second.test.ts')
+  })
+
+  it('executes the accepted commit after the original checkout changes', async () => {
+    const f = await computer({ inspectSource: true })
+    const origin = join(f.root, 'origin')
+    await writeFile(join(origin, 'dependency.mjs'), 'export const value = 2\n')
+    await writeFile(join(origin, 'program.mjs'),
+      "import {value} from './dependency.mjs'; process.stdout.write(JSON.stringify({value}))\n")
+    const runId = randomUUID()
+    await f.runner.handle({ operation: 'start', runId, repository: 'example/project',
+      commit: f.commit, suite: 'typecheck', scope: 'full' })
+    const done = await f.settle(runId)
+    expect(done.run).toMatchObject({ state: 'passed', exitCode: 0 })
+    expect(done.text).toContain('{"value":1}')
+    expect(done.text).not.toContain('{"value":2}')
+    expect(f.git('rev-parse', 'HEAD')).toBe(f.commit)
+    const current = execFileSync(process.execPath, ['program.mjs'], { cwd: origin, encoding: 'utf8' })
+    expect(JSON.parse(current)).toEqual({ value: 2 })
   })
 
   it('fetches the commit, installs and runs the suite in its own checkout, then frees its slot', async () => {

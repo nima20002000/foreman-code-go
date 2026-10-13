@@ -217,12 +217,16 @@ describe("retention and tombstones", () => {
 });
 
 describe("owner retention preference commands", () => {
-  it("requires command and expected revision; applyToExisting is optional and explicit", () => {
+  it("accepts omitted revision while validating supplied values and applyToExisting", () => {
     expect(files.FileRetentionSaveInputSchema.parse(save).applyToExisting).toBeUndefined();
+    const { expectedRevision, ...withoutRevision } = save;
+    expect(files.FileRetentionSaveInputSchema.parse(withoutRevision)).toEqual(withoutRevision);
+    expect(files.FileRetentionSaveInputSchema.parse({ ...withoutRevision, expectedRevision }).expectedRevision)
+      .toBe(expectedRevision);
     expect(files.FileRetentionSaveInputSchema.parse({ ...save, applyToExisting: true }).applyToExisting).toBe(true);
     expect(files.FileRetentionSaveInputSchema.parse({ ...save, applyToExisting: false }).applyToExisting).toBe(false);
     for (const extra of [{ commandId: "short" }, { expectedRevision: -1 }, { expectedRevision: 0.5 },
-      { expectedRevision: undefined }, { durationSeconds: undefined }, { applyToExisting: null }]) {
+      { commandId: null }, { expectedRevision: null }, { durationSeconds: undefined }, { applyToExisting: null }]) {
       expect(files.FileRetentionSaveInputSchema.safeParse({ ...save, ...extra }).success).toBe(false);
     }
   });

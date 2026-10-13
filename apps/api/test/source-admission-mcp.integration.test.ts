@@ -258,8 +258,23 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     } })
     expect(unchangedRevision.isError).toBe(true)
     expect(JSON.stringify(unchangedRevision.content)).toContain('SOURCE_ROOT_REVISION_CONFLICT')
-    const wrong = await client.callTool({ name: 'source_approve', arguments: { ...approve, rootPath: '/home/other', runId: 'invented', agentId: 'invented' } })
-    expect(wrong.isError).toBe(true)
+    const ignoredInput = { ...approve, commandId: randomUUID(), rootPath: '/unrelated/source',
+      runId: 'invented', agentId: 'invented' }
+    const wrongHttp = await app.inject({ method: 'POST',
+      url: `/api/management/workspaces/${workspace.id}/sources/approve`, headers, payload: ignoredInput })
+    expect(wrongHttp.statusCode).toBe(400)
+    const tolerated = await client.callTool({ name: 'source_approve', arguments: ignoredInput })
+    expect(tolerated.isError, JSON.stringify(tolerated)).not.toBe(true)
+    const captured = SourceApproveResultSchema.parse(decodeMcpToolResult(tolerated)).value
+    expect(captured.workspaceId).toBe(workspace.id)
+    expect(captured.locationRevision).toBe(read.locationRevision)
+    expect(captured.originIdentityHash).toBe(read.originIdentityHash)
+    expect(captured.manifest.git).toEqual(read.manifest.git)
+    expect(captured.manifest.entries).toEqual(read.manifest.entries)
+    expect(ApprovedSourceSchema.parse(decodeMcpToolResult(await client.callTool({ name: 'source_get',
+      arguments: { workspaceId: workspace.id, approvedSourceId: captured.manifest.approvedSourceId,
+        snapshotId: captured.manifest.snapshotId, manifestDigest: captured.manifest.manifestDigest },
+    })))).toEqual(captured)
     const denied = await access.issue({ name: 'Other scope', audience: 'operator', grants: [{ actions: ['sources:read', 'source_roots:bind', 'workspace_locations:read'], scope: { workspaceIds: ['workspace-other'] } }], expiresAt: new Date(Date.now() + 120_000) })
     const deniedClient = await connect(denied.token)
     expect(failure(await deniedClient.callTool({ name: 'source_approve',
@@ -278,7 +293,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     const newCommit = (await qualifiedGit(project, ['rev-parse', 'HEAD'])).toString().trim()
     const second = await client.callTool({ name: 'source_approve', arguments: { ...approve, commandId: randomUUID(), commit: newCommit } }); expect(second.isError).not.toBe(true)
     expect(ApprovedSourceSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_get', arguments: { workspaceId: workspace.id, ...pin } })))).manifest.git?.commit).toBe(commit)
-    expect(SourceListResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_list', arguments: { workspaceId: workspace.id, detail: 'full' } })))).items).toHaveLength(2)
+    expect(SourceListResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_list', arguments: { workspaceId: workspace.id, detail: 'full' } })))).items).toHaveLength(3)
     const page = OperatorSourceListResultSchema.parse(decodeMcpToolResult(await client.callTool({
       name: 'source_list', arguments: { workspaceId: workspace.id, limit: 1 },
     })))
@@ -290,7 +305,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     expect(next.items).toHaveLength(1)
     expect(next.items[0]!.manifest.snapshotId).not.toBe(page.items[0]!.manifest.snapshotId)
     expect(SourceListResultSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_list',
-      arguments: { workspaceId: workspace.id, detail: 'full' } })))).items).toHaveLength(2)
+      arguments: { workspaceId: workspace.id, detail: 'full' } })))).items).toHaveLength(3)
     expect(ApprovedSourceSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_get',
       arguments: { workspaceId: workspace.id, ...pin } }))))).toEqual(read)
     const http = await app.inject({ method: 'POST', url: `/api/management/workspaces/${workspace.id}/sources/get`, headers: { authorization: `Bearer ${operator.token}` }, payload: pin })

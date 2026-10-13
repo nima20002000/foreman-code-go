@@ -36,7 +36,8 @@ it('saves settings without read-before-write and keeps explicit conflicts, repla
         first: { text: 'First initial prompt' }, last: { text: 'Last initial prompt' } },
       { update: 'workspace_defaults_update', get: 'workspace_defaults_get',
         schema: WorkspaceDefaultsUpdateResultSchema, readSchema: ManagedWorkspaceDefaultsSchema,
-        first: { suggestedName: 'First', description: '' }, last: { suggestedName: 'Last', description: '' } },
+        first: { suggestedName: 'First', description: '', parentPath: (await f.repository.getWorkspaceDefaults()).value.parentPath },
+        last: { suggestedName: 'Last', description: '', parentPath: (await f.repository.getWorkspaceDefaults()).value.parentPath } },
     ]
     for (const item of cases) {
       const first = item.schema.parse(decodeMcpToolResult(await client.callTool({ name: item.update,

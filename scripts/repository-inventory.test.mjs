@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { captureVerificationInventory } from './verification-runner.mjs'
 import { executionDurations } from './ci-selection.mjs'
@@ -45,8 +46,9 @@ test('CI uses learned durations and ignores obsolete repository snapshots', t =>
   assert.deepEqual(executionDurations('integration', root, { measured: 12 }), { snapshot: 25 })
 })
 
-test('integration expectations need no committed duration file', () => {
-  assert.equal(integrationDurationsPath({}), null)
+test('integration expectations use the retained snapshot unless explicitly overridden', () => {
+  const snapshot = fileURLToPath(new URL('./ci-learned-durations.json', import.meta.url))
+  assert.equal(integrationDurationsPath({}), existsSync(snapshot) ? snapshot : null)
   assert.equal(integrationDurationsPath({ FOREMAN_CODE_INTEGRATION_DURATIONS: '/runs/durations.json' }),
     '/runs/durations.json')
 })

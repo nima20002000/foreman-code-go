@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../src/config.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { createDatabase } from '../src/infrastructure/database.js'
+import { BugReportService } from '../src/modules/bug-reports/service.js'
 import { OperatorRuntimeOwner } from '../src/infrastructure/operatorRuntimeOwner.js'
 import { OperatorChatService } from '../src/modules/conversations/operatorChat.js'
 import { AutomaticReviewService } from '../src/modules/interactions/automaticReview.js'
@@ -23,6 +24,7 @@ let production: ReturnType<typeof buildProductionApp>
 
 beforeEach(() => {
   // Mock only the public lifecycle boundaries: no private task/runtime/credential maps.
+  vi.spyOn(BugReportService.prototype, 'detectStuckExecutions').mockResolvedValue(0)
   vi.spyOn(OperatorRuntimeOwner.prototype, 'acquire').mockResolvedValue()
   vi.spyOn(OperatorRuntimeOwner.prototype, 'close').mockResolvedValue()
   vi.spyOn(OperatorChatService.prototype, 'shutdown').mockResolvedValue()
@@ -36,12 +38,14 @@ beforeEach(() => {
 })
 afterEach(async () => {
   // Rejections are asserted in the relevant test; these mocked fixtures hold no lock/native process.
-  await production.app.close().catch(() => undefined)
+  await production.app.close().catch(() => {
+    // ignore: shutdown rejection is asserted by the test that triggers it.
+  })
   await Promise.all([database.close(), checkpoints.close()])
   vi.restoreAllMocks()
 })
 
-describe('PR17 F7 production shutdown composition', () => {
+describe('production shutdown composition', () => {
   it('keeps device channels open until their rsync writers have stopped', async () => {
     await production.app.close()
     vi.mocked(OperatorRuntimeOwner.prototype.close).mockClear()
@@ -171,7 +175,9 @@ describe('PR17 F7 production shutdown composition', () => {
     vi.mocked(OperatorRuntimeOwner.prototype.acquire).mockImplementation(() => { entered.resolve(); return pending.promise })
     const ensure = vi.spyOn(PostgresOperatorRepository.prototype, 'ensure')
     const initializing = production.initialize()
-    void initializing.catch(() => undefined)
+    void initializing.catch(() => {
+      // ignore: the startup rejection is asserted below after shutdown drains.
+    })
     await entered.promise
     const closing = production.shutdown()
     try {

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 import { integrationEnvironmentCapabilities, partitionIntegrationCapabilities,
   supportsInstalledWorkerHost } from './integration-capabilities.mjs'
@@ -1347,9 +1348,10 @@ test('only files that passed their first attempt contribute measured durations',
   ]), { passed: 41_000 })
 })
 
-test('integration expectations use only the CI runner duration snapshot', () => {
-  assert.equal(integrationDurationsPath({}), null)
-  assert.deepEqual(readDurations(integrationDurationsPath({})), {})
+test('integration expectations use the retained snapshot unless explicitly overridden', () => {
+  const snapshot = fileURLToPath(new URL('./ci-learned-durations.json', import.meta.url))
+  assert.equal(integrationDurationsPath({}), existsSync(snapshot) ? snapshot : null)
+  assert.deepEqual(readDurations(integrationDurationsPath({})), readDurations(snapshot))
   assert.equal(integrationDurationsPath({ FOREMAN_CODE_INTEGRATION_DURATIONS: '/runs/x/durations.json' }),
     '/runs/x/durations.json')
 })

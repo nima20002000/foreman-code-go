@@ -73,9 +73,16 @@ describe('parsed workflow snapshot composition', () => {
       approval: { handler: 'native' },
       definition: { ...version.definition, approval: { handler: 'native' } },
     })
-    const incompatible = configurations.map(configuration => AgentConfigurationVersionSchema.parse({
+    const defaults = configurations.map(configuration => AgentConfigurationVersionSchema.parse({
       ...configuration,
       harness: { ...configuration.harness, advanced: DEFAULT_CODEX_ADVANCED_CONFIGURATION },
+    }))
+    expect(ExecutableWorkflowV3Schema.safeParse({ version: nativeVersion, configurations: defaults }).success).toBe(true)
+    expect(() => assertExecutableWorkflow({ version: nativeVersion, configurations: defaults })).not.toThrow()
+    const incompatible = configurations.map(configuration => AgentConfigurationVersionSchema.parse({
+      ...configuration,
+      harness: { ...configuration.harness, advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION,
+        approvalPolicy: 'on-request', approvalsReviewer: 'user' } },
     }))
     const snapshot = { version: nativeVersion, configurations: incompatible }
     expect(() => assertExecutableWorkflow(snapshot))

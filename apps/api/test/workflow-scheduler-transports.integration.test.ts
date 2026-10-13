@@ -272,7 +272,6 @@ describe.skipIf(!postgresEnabled)('SCH-11 authenticated HTTP and MCP persisted s
     { name: 'invalid timezone', schedule: { ...futureOnce, timezone: 'EST' } },
     { name: 'zero-minute interval', schedule: { ...sch11Settings, mode: 'interval', every: 0, unit: 'minute', anchorAt: '2030-01-01T00:00:00.000Z' } },
     { name: 'past Once (even disabled)', schedule: { ...sch11Once, localDate: '2000-01-01', enabled: false } },
-    { name: 'caller-supplied cursor', schedule: { ...futureOnce, nextOccurrenceAt: '2099-01-01T10:00:00.000Z' } },
   ]
   it.each(invalid)('$name: HTTP and MCP reject invalid inputs without a receipt or mutation', async ({ schedule }) => {
     await f.save()
@@ -291,6 +290,25 @@ describe.skipIf(!postgresEnabled)('SCH-11 authenticated HTTP and MCP persisted s
       expect(error).toMatchObject({ code: -32602 })
     })
     expect(await sch11DomainState(f)).toEqual(before)
+  }, 60_000)
+
+  it('ignores an MCP caller cursor and persists the server-computed occurrence', async () => {
+    await f.save()
+    const client = await connect(f.writer.token)
+    const before = await sch11DomainState(f)
+    const body = { commandId: randomUUID(), expectedRevision: 1,
+      schedule: { ...futureOnce, nextOccurrenceAt: '2098-01-01T00:00:00.000Z' } }
+    expect((await http('PUT', '', body)).statusCode).toBe(400)
+    expect(await sch11DomainState(f)).toEqual(before)
+    const result = await client.callTool({ name: 'workflow_schedule_save', arguments: { ...f.scope, ...body } })
+    expect(result.isError, JSON.stringify(result)).not.toBe(true)
+    const saved = ScheduleSaveResultSchema.parse(decodeMcpToolResult(result))
+    expect(saved.value.revision).toBe(2)
+    expect(saved.value.nextOccurrenceAt).toBe('2099-01-01T10:00:00.000Z')
+    expect(await readback(client)).toEqual({ schedule: saved.value })
+    expect(ScheduleSaveResultSchema.parse(decodeMcpToolResult(await client.callTool({
+      name: 'workflow_schedule_save', arguments: { ...f.scope, ...body },
+    })))).toEqual({ ...saved, replayed: true })
   }, 60_000)
 
   it('HTTP route scope cannot be replaced by a workspace/workflow in its body', async () => {

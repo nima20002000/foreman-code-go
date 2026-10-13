@@ -218,8 +218,7 @@ function editResponse(node) {
     affected: [], stops: [], saveInputHash: digest, state: 'staged', saveAttempted: false, createdAt, updatedAt: createdAt,
     saveInput, stagedDraft: { id: draftId, workspaceId: request.workspaceId, workflowId: request.workflowId,
       revision: 0, baseWorkflowVersionId: null, graph: request.graph, agentConfigurationVersionIds: {},
-      saveCommandId: node.saveCommandId, resultantAgentConfigurationVersionIds: pins, stagedAgents: request.stagedAgents,
-      locationRevision: request.expectedLocationRevision, locationDigest: digest, runLocationPins: [] } }
+      saveCommandId: node.saveCommandId, resultantAgentConfigurationVersionIds: pins, stagedAgents: request.stagedAgents } }
   return { intent, current: [], canStop: false, affectedSetChanged: false }
 }
 
@@ -242,7 +241,7 @@ test('provisions four saved nodes and independently checked host profiles withou
         subject.harness === 'codex' ? 'read-only' : 'read-write')
       assert.deepEqual(saved.request.graph.nodes[0].placement.hostRef, selected.target.hostRef)
       assert.equal(saved.request.graph.nodes[0].placement.instanceId, selected.instanceId)
-      assert.equal(saved.request.expectedLocationRevision, 2)
+      assert.equal(Object.hasOwn(saved.request, 'expectedLocationRevision'), false)
       assert.equal(saved.request.graph.nodes[0].placement.locationRevision, '2')
       const related = f.calls.filter(call => call.args.workspaceId === subject.agent.workspaceId)
       assert.ok(related.findIndex(call => call.name === 'workspace_root_location_set')

@@ -19,7 +19,7 @@ const save = {
   executionSemanticsVersion: 3, commandId: 'save-retirement-command', expectedRevision: 1,
   expectedWorkflowVersionId: fixture.version.id,
   expectedAgentConfigurationVersionIds: fixture.version.agentConfigurationVersionIds,
-  expectedLocationRevision: 1, graph: definition,
+  graph: definition,
 }
 const start = {
   workspaceId: save.workspaceId, workflowId: save.workflowId, workflowVersionId: fixture.version.id,

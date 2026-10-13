@@ -164,7 +164,7 @@ test('Node test failures count as started tests instead of setup failures', asyn
       '--test-reporter=' + ${JSON.stringify(reporter)}, '--test-reporter-destination=' + file + '.json', file],
       { stdio: 'inherit', env: process.env })
     process.exit(result.status)
-  `)
+  `, { idleTimeoutMs: 10_000 })
   assert.equal(result.code, 1)
   assert.equal(result.failure?.testsStarted, true)
 })

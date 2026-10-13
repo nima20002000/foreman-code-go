@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { CurrentEditStageInputSchema } from '../../packages/contracts/dist/wave25/index.js'
 import { CLAUDE_MODEL, SCENARIOS, scenarioGraph, seed } from './scenarios.mjs'
 
 const claudeConfigDirectory = '/owned/claude-profile'
@@ -88,9 +90,11 @@ test('optional Codex changes exactly the parallel Right branch, with read-only s
   assert.deepEqual(codex.advanced.shellEnvironment.set, {})
 })
 // This is a request-contract test, NOT product/PG/native acceptance evidence.
-// Product schemas are exercised by the real --smoke path, not mocked as proof.
+// Stage requests use the product schema; persisted behavior is covered by the smoke integration test.
 test('seed uses real-route request shapes and reserved journal commands, never Run Start', async () => {
-  const state = await mkdtemp(join(await realpath('/tmp'), 'eng07-fixture-'))
+  const cache = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(cache, { recursive: true })
+  const state = await mkdtemp(join(cache, 'acceptance-fixture-'))
   const folder = join(state, 'ENG07 Acceptance'); await mkdir(folder)
   const original = globalThis.fetch
   const staged = [], calls = []
@@ -121,7 +125,7 @@ test('seed uses real-route request shapes and reserved journal commands, never R
     const parse = { parse: (value) => value }
     const demo = await seed({ apiUrl: 'http://127.0.0.1:3307', webUrl: 'http://127.0.0.1:5307',
       projectRoot: state, codexModel: 'owner-supplied-model', claudeConfigDirectory,
-      schemas: { CurrentEditStageInputSchema: parse, CurrentWorkflowReadResultSchema: parse } })
+      schemas: { CurrentEditStageInputSchema, CurrentWorkflowReadResultSchema: parse } })
     assert.equal(demo.workflowIds.length, 8); assert.equal(demo.agentCount, 27)
     assert.equal(calls.some((call) => call.path.includes('/runs')), false)
     const native = await readFile(join(folder, '.codex/config.toml'), 'utf8')
