@@ -1,7 +1,7 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { randomUUID } from 'node:crypto'
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 // eslint-disable-next-line no-restricted-imports -- A short observation window proves the held launcher prevents completion.
@@ -166,9 +166,12 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
       await copyFile(process.execPath, previousNode)
       await mkdir(join(releaseDirectory, 'artifacts'), { recursive: true, mode: 0o700 })
       await mkdir(join(workerHome, '.local/share/graphql/mcp'), { recursive: true, mode: 0o700 })
-      const bridge = await readFile(new URL('../../../scripts/graphql-mcp.mjs', import.meta.url))
-      await writeFile(workerLauncher, bridge, { mode: 0o600 })
-      await writeFile(join(releaseDirectory, 'artifacts/graphql-mcp.mjs'), bridge, { mode: 0o600 })
+      const bridge = new URL('../../../scripts/graphql-mcp.mjs', import.meta.url)
+      await copyFile(bridge, workerLauncher)
+      const workerBridge = join(releaseDirectory, 'artifacts/graphql-mcp.mjs')
+      await copyFile(bridge, workerBridge)
+      await chmod(workerLauncher, 0o600)
+      await chmod(workerBridge, 0o600)
       await writeFile(join(workerRoot, 'graphql-worker.service.previous'),
         `ExecStart=${previousNode} ${join(workerRoot, 'current/src/cli.mjs')} run --state ${stateDirectory}\n`,
         { mode: 0o600 })

@@ -160,7 +160,13 @@ describe.skipIf(!postgresEnabled)('SCH-04 PostgreSQL dispatcher / common Start',
       expect((await otherService.get(reader.principal, scope)).schedule).toEqual(saved)
       release.resolve()
       await work
-    } finally { release.resolve(); await work.catch(() => undefined); await otherPool.end() }
+    } finally {
+      release.resolve()
+      await work.catch(() => {
+        // ignore: cleanup joins the dispatcher without replacing an earlier test failure.
+      })
+      await otherPool.end()
+    }
     expect(await countRuns()).toBe(1)
     expect(await history()).toHaveLength(1)
   }, 60_000)
@@ -211,7 +217,12 @@ describe.skipIf(!postgresEnabled)('SCH-04 PostgreSQL dispatcher / common Start',
       await reached(prepared.promise, work)
       await service[operation](writer.principal, 'http', command())
       release.resolve(); await work
-    } finally { release.resolve(); await work.catch(() => undefined) }
+    } finally {
+      release.resolve()
+      await work.catch(() => {
+        // ignore: cleanup joins the dispatcher without replacing an earlier test failure.
+      })
+    }
     expect(await countRuns()).toBe(0)
     expect((await history())[0]).toMatchObject({ status: 'skipped', reason: 'disabled' })
     expect((await service.get(reader.principal, scope)).schedule?.enabled ?? false).toBe(false)
@@ -225,7 +236,12 @@ describe.skipIf(!postgresEnabled)('SCH-04 PostgreSQL dispatcher / common Start',
       await reached(prepared.promise, work)
       await database.pool.query('update management_principals set revoked_at=now() where id=$1', [writer.principal.id])
       release.resolve(); await work
-    } finally { release.resolve(); await work.catch(() => undefined) }
+    } finally {
+      release.resolve()
+      await work.catch(() => {
+        // ignore: cleanup joins the dispatcher without replacing an earlier test failure.
+      })
+    }
     expect(await countRuns()).toBe(0)
     expect((await history())[0]).toMatchObject({ status: 'rejected', reason: 'schedule_authorization_denied' })
   }, 60_000)

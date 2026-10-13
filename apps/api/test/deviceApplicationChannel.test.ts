@@ -71,7 +71,9 @@ function setup(handler: NonNullable<DeviceExtensionRegistration['handle']>, limi
   const main = new DeviceApplicationChannel({ side: 'main', binding, socket: mainSocket, signal: parent.signal, extensions, registrations: [mainRegistration], revalidate })
   const worker = new DeviceApplicationChannel({ side: 'worker', binding, socket: workerSocket, signal: parent.signal, extensions, registrations: [workerRegistration] })
   const tasks = [main.run(mainSocket.messages[Symbol.asyncIterator](), heartbeatMs * 2), worker.run(workerSocket.messages[Symbol.asyncIterator](), heartbeatMs)]
-  for (const task of tasks) void task.catch(() => {})
+  for (const task of tasks) void task.catch(() => {
+    // ignore: close aborts these carrier tasks and joins their results with allSettled.
+  })
   return { main, worker, rawMain, rawWorker, revalidate, close: async () => { parent.abort(); main.close(); worker.close(); await Promise.allSettled(tasks) } }
 }
 afterEach(() => vi.useRealTimers())
@@ -176,7 +178,9 @@ describe('authenticated namespace carrier mechanics', () => {
       if (frame.type !== 'application-ack' || frame.offset === 0) send(text)
     }
     const requests = Array.from({ length: 8 }, () => pair.main.request('execution-v1', 'x'.repeat(65_536)))
-    for (const request of requests) void request.catch(() => {})
+    for (const request of requests) void request.catch(() => {
+      // ignore: the original requests are awaited below or joined after channel cancellation.
+    })
     try {
       await flush()
       const chunks = pair.rawMain.frames.filter(frame => JSON.parse(frame).type === 'application-chunk')
@@ -283,7 +287,11 @@ describe('authenticated namespace carrier mechanics', () => {
     let finish!: (value: { payload: unknown }) => void; let handlerSignal!: AbortSignal
     const pair = setup(async (payload, context) => { if (payload === 'slow') { handlerSignal = context.signal; return new Promise((resolve) => { finish = resolve }) }; return { payload } })
     try {
-      const abort = new AbortController(), result = pair.main.request('execution-v1', 'slow', { signal: abort.signal }); void result.catch(() => {})
+      const abort = new AbortController()
+      const result = pair.main.request('execution-v1', 'slow', { signal: abort.signal })
+      void result.catch(() => {
+        // ignore: attach before cancellation; the original rejection is asserted below.
+      })
       await flush(); abort.abort(); await expect(result).rejects.toThrow('cancelled'); await flush(); expect(handlerSignal.aborted).toBe(true)
       finish({ payload: 'stale' }); await flush()
       expect(await pair.main.request('execution-v1', 'fresh')).toEqual({ payload: 'fresh' })
@@ -292,14 +300,23 @@ describe('authenticated namespace carrier mechanics', () => {
   it('joins the raw domain promise after cancellation has settled its transport wrapper', async () => {
     let finish!: (result: { payload: unknown }) => void
     const pair = setup(async () => new Promise((resolve) => { finish = resolve }))
-    const pending = pair.main.request('execution-v1', {}); void pending.catch(() => {}); await flush(); await pair.close(); await expect(pending).rejects.toThrow()
+    const pending = pair.main.request('execution-v1', {})
+    void pending.catch(() => {
+      // ignore: attach before channel cancellation; the original rejection is asserted below.
+    })
+    await flush()
+    await pair.close()
+    await expect(pending).rejects.toThrow()
     let joined = false; const drain = pair.worker.join().then(() => { joined = true }); await flush(); expect(joined).toBe(false)
     finish({ payload: 'late-and-fenced' }); await drain; expect(joined).toBe(true); await pair.main.join()
   })
   it('connection revocation rejects pending requests and fences handler generations', async () => {
     let handlerSignal!: AbortSignal
     const pair = setup(async (_payload, context) => { handlerSignal = context.signal; return new Promise(() => {}) })
-    const result = pair.main.request('execution-v1', 'pending'); void result.catch(() => {})
+    const result = pair.main.request('execution-v1', 'pending')
+    void result.catch(() => {
+      // ignore: attach before channel cancellation; the original rejection is asserted below.
+    })
     await flush(); await pair.close(); await expect(result).rejects.toThrow(); expect(handlerSignal.aborted).toBe(true)
     await expect(pair.main.request('execution-v1', 'stale')).rejects.toThrow()
   })
@@ -329,7 +346,10 @@ describe('authenticated namespace carrier mechanics', () => {
     const send = pair.rawWorker.send.bind(pair.rawWorker)
     pair.rawWorker.send = (text) => { if (JSON.parse(text).type !== 'application-ack') send(text) }
     try {
-      const pending = pair.main.request('execution-v1', { dispatch: true }); void pending.catch(() => {})
+      const pending = pair.main.request('execution-v1', { dispatch: true })
+      void pending.catch(() => {
+        // ignore: attach before advancing timers; the original timeout rejection is asserted below.
+      })
       await flush(); await vi.advanceTimersByTimeAsync(10_001); await expect(pending).rejects.toThrow('timeout')
       expect(handler).not.toHaveBeenCalled(); await flush(); pair.rawWorker.send = send
       expect(await pair.main.request('execution-v1', { dispatch: true })).toEqual({ payload: 'receipt' })
@@ -337,7 +357,10 @@ describe('authenticated namespace carrier mechanics', () => {
   })
   it('bounds concurrent requests even across awaited live authorization', async () => {
     const pair = setup(async () => new Promise(() => {}))
-    const requests = Array.from({ length: 8 }, () => pair.main.request('execution-v1', {})); for (const request of requests) void request.catch(() => {})
+    const requests = Array.from({ length: 8 }, () => pair.main.request('execution-v1', {}))
+    for (const request of requests) void request.catch(() => {
+      // ignore: the original requests are awaited below or joined after channel cancellation.
+    })
     await flush(); await expect(pair.main.request('execution-v1', {})).rejects.toThrow('backpressure'); await pair.close(); await Promise.allSettled(requests)
   })
   it('delivers exact-owner Stop with all ordinary outgoing slots occupied', async () => {
@@ -352,7 +375,9 @@ describe('authenticated namespace carrier mechanics', () => {
       return { payload: 'stopped' }
     })
     const requests = Array.from({ length: 8 }, () => pair.main.request('execution-v1', 'slow'))
-    for (const request of requests) void request.catch(() => {})
+    for (const request of requests) void request.catch(() => {
+      // ignore: the original requests are awaited below or joined after channel cancellation.
+    })
     try {
       await flush()
       expect(releases).toHaveLength(8)
@@ -378,7 +403,9 @@ describe('authenticated namespace carrier mechanics', () => {
       return { payload: 'late' }
     })
     const requests = Array.from({ length: 8 }, () => pair.main.request('execution-v1', 'slow', { timeoutMs: 20 }))
-    for (const request of requests) void request.catch(() => {})
+    for (const request of requests) void request.catch(() => {
+      // ignore: the original requests are awaited below or joined after channel cancellation.
+    })
     try {
       await flush()
       expect(signals).toHaveLength(8)
@@ -432,7 +459,9 @@ describe('authenticated namespace carrier mechanics', () => {
   it('refuses to reserve Stop capacity for a mismatched command owner', async () => {
     const pair = setup(async () => new Promise(() => {}))
     const requests = Array.from({ length: 8 }, () => pair.main.request('execution-v1', {}))
-    for (const request of requests) void request.catch(() => {})
+    for (const request of requests) void request.catch(() => {
+      // ignore: the original requests are awaited below or joined after channel cancellation.
+    })
     try {
       await flush()
       const stop = stopRequest()
@@ -455,7 +484,9 @@ describe('authenticated namespace carrier mechanics', () => {
       return { payload: 'stopped' }
     })
     const ordinary = Array.from({ length: 8 }, () => pair.main.request('execution-v1', 'occupied'))
-    for (const request of ordinary) void request.catch(() => {})
+    for (const request of ordinary) void request.catch(() => {
+      // ignore: these occupied requests are canceled and joined in the finally block.
+    })
     try {
       await flush()
       await expect(pair.main.request('execution-v1', stop)).resolves.toEqual({ payload: 'stopped' })
@@ -498,7 +529,9 @@ describe('authenticated namespace carrier mechanics', () => {
       if (frame.type !== 'application-ack' || frame.offset === 0 || !ordinaryIds.has(frame.id)) send(text)
     }
     const upload = pair.main.request('execution-v1', 'x'.repeat(65_536))
-    void upload.catch(() => {})
+    void upload.catch(() => {
+      // ignore: this blocked upload is canceled and joined in the finally block.
+    })
     try {
       await flush()
       await expect(pair.main.request('execution-v1', stopRequest())).resolves.toEqual({ payload: 'stopped' })
@@ -517,7 +550,9 @@ describe('authenticated namespace carrier mechanics', () => {
     const pair = setup(side === 'worker' ? slow : fast, undefined, 1000, side === 'main' ? slow : fast)
     const occupied = side === 'main' ? pair.main : pair.worker, caller = side === 'main' ? pair.worker : pair.main
     const requests = Array.from({ length: 8 }, () => caller.request('execution-v1', {}))
-    for (const request of requests) void request.catch(() => {})
+    for (const request of requests) void request.catch(() => {
+      // ignore: the original requests are awaited below or joined after channel cancellation.
+    })
     try {
       await flush(); expect(entered).toHaveBeenCalledTimes(8)
       await expect(caller.request('execution-v1', {})).rejects.toThrow('backpressure')
@@ -564,7 +599,9 @@ describe('authenticated namespace carrier mechanics', () => {
         }),
         uploader.request('execution-v1', payload, { signal: abort.signal }),
       ]
-      for (const upload of uploads) void upload.catch(() => {})
+      for (const upload of uploads) void upload.catch(() => {
+        // ignore: attach before aborting; the original upload rejections are asserted below.
+      })
       try {
         await flush()
         expect(uploadIds.size).toBe(2)

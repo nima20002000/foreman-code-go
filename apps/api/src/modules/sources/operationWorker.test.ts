@@ -38,7 +38,7 @@ async function fixture() {
   const origin = join(directory, 'origin'), environment = gitFixtureEnvironment()
   const run = (...args: string[]) => execFileSync('git', args, { cwd: origin, env: environment, encoding: 'utf8' }).trim()
   await mkdir(join(origin, 'src'), { recursive: true }); run('init', '-q', '-b', 'main')
-  await writeFile(join(origin, 'src/source.ts'), bytes); run('add', '.'); run('commit', '-qm', 'source')
+  await writeFile(join(origin, 'src/source.txt'), bytes); run('add', '.'); run('commit', '-qm', 'source')
   const commit = run('rev-parse', 'HEAD'), approvedSourceId = randomUUID()
   const capture = (snapshotId: string, at = commit) => captureGitSource({ root: origin, approvedSourceId, snapshotId, commit: at,
     repository: 'octo/site', executablePolicy: 'strip',
@@ -208,7 +208,7 @@ it('prepares a quota-required Job after the approved root is rebound to a new sn
   if (prepared.operation !== 'sources.prepare') throw new Error('Expected source preparation')
   expect(prepared.receipt).toMatchObject({ binding: f.root.binding, quota: installed.slot,
     verifiedManifestDigest: manifest.manifestDigest })
-  expect(await readFile(join(sourceMaterializationParent(prepared.receipt), 'tree/src/source.ts'))).toEqual(f.bytes)
+  expect(await readFile(join(sourceMaterializationParent(prepared.receipt), 'tree/src/source.txt'))).toEqual(f.bytes)
   expect(JSON.parse(await readFile(installed.location.path, 'utf8'))).toEqual(installed.configuration)
   expect(await f.service.handle(f.request, f.context)).toEqual(prepared)
 })
@@ -235,10 +235,10 @@ it('finds and removes an abandoned Worker materialization without Main preparati
     reservationId: grant.reservationId, reclamationId: grant.reclamationId }
   f.reclamationNativeClosed.mockResolvedValue(false)
   await expect(f.service.handle(request, f.context)).rejects.toMatchObject({ code: 'source-reconciliation-unconfirmed' })
-  expect(await readFile(join(f.namespace, prepared.receipt.materializationId, 'tree', 'src/source.ts'))).toEqual(f.bytes)
+  expect(await readFile(join(f.namespace, prepared.receipt.materializationId, 'tree', 'src/source.txt'))).toEqual(f.bytes)
   f.reclamationNativeClosed.mockResolvedValue(true)
   expect(await f.service.handle(request, f.context)).toMatchObject({ reclaimed: true, operationId: grant.operationId })
-  await expect(readFile(join(f.namespace, prepared.receipt.materializationId, 'tree', 'src/source.ts')))
+  await expect(readFile(join(f.namespace, prepared.receipt.materializationId, 'tree', 'src/source.txt')))
     .rejects.toMatchObject({ code: 'ENOENT' })
   expect(await f.service.handle(request, f.context)).toMatchObject({ reclaimed: true })
 })
@@ -267,7 +267,7 @@ it.each(['missing', 'saved'] as const)('removes a released copy with %s Main pre
   expect(await f.service.handle({ version: 1, operation: 'sources.reclaim-reservation',
     reservationId: grant.reservationId, reclamationId: grant.reclamationId }, f.context))
     .toMatchObject({ reclaimed: true, closures: [{ materializationId: prepared.receipt.materializationId }] })
-  await expect(readFile(join(f.namespace, prepared.receipt.materializationId, 'tree', 'src/source.ts')))
+  await expect(readFile(join(f.namespace, prepared.receipt.materializationId, 'tree', 'src/source.txt')))
     .rejects.toMatchObject({ code: 'ENOENT' })
 })
 
@@ -376,14 +376,14 @@ it('preserves strict pre-entry bytes and permits edits only on the same current 
   const request = { version: 1, operation: 'sources.verify', record: f.record, relativeCwd: 'src' }
   await f.service.handle(request, f.context)
   const edited = Buffer.from('export const editedByActualOwner = true\n')
-  await writeFile(join(f.tree, 'src/source.ts'), edited)
+  await writeFile(join(f.tree, 'src/source.txt'), edited)
   await writeFile(join(f.tree, 'src/new-output.ts'), 'actual owner output\n')
   await expect(f.service.handle(request, f.context)).rejects.toThrow()
   expect(f.nativeOwnerFor).not.toHaveBeenCalled()
   f.owner.activeNativeSession = f.proof
   const result = await f.service.handle(request, f.context)
   expect(result.operation).toBe('sources.verify')
-  expect(await readFile(join(f.tree, 'src/source.ts'))).toEqual(edited)
+  expect(await readFile(join(f.tree, 'src/source.txt'))).toEqual(edited)
   expect(f.assertCurrent.mock.calls.length).toBeGreaterThanOrEqual(4)
   expect(f.git.mock.calls.filter(([args]) => args[0] === 'clone')).toHaveLength(1)
 })
@@ -417,7 +417,7 @@ it.each(['token', 'generation', 'revision', 'expiry'] as const)('rejects a chang
 })
 it.each(['attempt', 'technical-attempt', 'session', 'owner', 'expiry', 'missing-installed', 'aborted'] as const)('denies mutable continuation with %s evidence', async defect => {
   const f = await continuationFixture(); f.owner.activeNativeSession = f.proof
-  await writeFile(join(f.tree, 'src/source.ts'), 'edited\n')
+  await writeFile(join(f.tree, 'src/source.txt'), 'edited\n')
   if (defect === 'attempt') f.installed.attemptId = randomUUID()
   if (defect === 'technical-attempt') f.installed.technicalAttempt++
   if (defect === 'session') f.installed.session.nativeSessionId = randomUUID()
@@ -460,7 +460,7 @@ it('rejects a replaced child CWD between continuation requests using its origina
 it('prepares actual accepted bytes, rechecks owner before activation, and recovers lost ACK without new transfer', async () => {
   const f = await fixture(), response = await f.service.handle(f.request, f.context)
   expect(response.operation).toBe('sources.prepare'); if (response.operation !== 'sources.prepare') throw new Error('wrong fixture operation')
-  expect(await readFile(join(f.namespace, response.receipt.materializationId, 'tree/src/source.ts'))).toEqual(f.bytes)
+  expect(await readFile(join(f.namespace, response.receipt.materializationId, 'tree/src/source.txt'))).toEqual(f.bytes)
   expect(f.currentOwner.mock.calls.length).toBeGreaterThan(3)
   const fetched = f.git.mock.calls.length
   expect(await f.service.handle(f.request, f.context)).toEqual(response); expect(f.git.mock.calls.length).toBe(fetched)
@@ -508,7 +508,7 @@ it('denies stale auth/expired ownership before local config or source package IO
 it('rejects corruption before activating a ready tree and rejects root replacement', async () => {
   // GitHub serving other bytes than the approved snapshot is refused before any tree exists.
   const f = await fixture()
-  await writeFile(join(f.origin, 'src/source.ts'), 'export const substituted = true\n'); f.run('commit', '-qam', 'substituted')
+  await writeFile(join(f.origin, 'src/source.txt'), 'export const substituted = true\n'); f.run('commit', '-qam', 'substituted')
   if (f.request.operation !== 'sources.prepare') throw new Error('wrong fixture operation')
   await expect(f.service.handle({ ...f.request, github: { ...f.request.github, commit: f.run('rev-parse', 'HEAD') } }, f.context))
     .rejects.toMatchObject({ code: 'SOURCE_PIN_CONFLICT' })

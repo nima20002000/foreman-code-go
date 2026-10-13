@@ -154,7 +154,9 @@ describe.runIf(postgresEnabled)('restart credential safety', () => {
       expect(cleanup.rows).toEqual([])
     } finally {
       release.resolve()
-      await shutdown?.catch(() => undefined)
+      await shutdown?.catch(() => {
+        // ignore: cleanup joins shutdown without masking the test failure and still restores its mocks.
+      })
       issued.mockRestore()
       renewal.mockRestore()
       await runtime.close()

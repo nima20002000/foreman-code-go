@@ -8,6 +8,7 @@ import { RunBoardSnapshotGetResultSchema } from '@foreman-code/contracts/run-sna
 import { AcceptedRepeatStartV1Schema, RunActivitiesPageSchema, makeCurrentWorkflowFixture,
   type AcceptedRepeatStartV1 } from '@foreman-code/contracts/wave25'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { beginTransaction, commitTransaction, rollbackTransaction } from '../src/infrastructure/transaction.js'
 import { buildApp } from '../src/app.js'
 import { HostCiService, type HostCiComputer, type HostCiEndpoint } from '../src/modules/ci-host/service.js'
 import { databaseHotQueriesMigration } from '../src/infrastructure/databaseHotQueriesMigration.js'
@@ -458,8 +459,8 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       const initial = await f.activity()
       const before = (await f.database.pool.query<{ sequence: string }>(
         'select sequence::text from run_activity where run_id=$1 order by run_activity.sequence', [f.graph.run.id])).rows
-      await first.query('begin')
-      await second.query('begin')
+      await beginTransaction(first)
+      await beginTransaction(second)
       const holder = (await first.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
       const waiter = (await second.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
       const canceledAt = new Date().toISOString()
@@ -478,12 +479,12 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       expect(blocked).toBe(true)
       const during = await f.activity({ cursor: initial.nextCursor })
       expect(during.items).toEqual([])
-      await first.query('commit')
+      await commitTransaction(first)
       const settled = await pending
       if (settled.error) throw settled.error
       const afterFirst = await f.activity({ cursor: during.nextCursor, limit: 1 })
       expect(afterFirst.items).toMatchObject([{ status: 'canceled', refs: { ciTicketId: ticketA.ticketId } }])
-      await second.query('commit')
+      await commitTransaction(second)
       const records = (await f.database.pool.query<{ record: unknown }>(
         'select record from ci_runs where id=any($1::uuid[])', [[ticketA.ticketId, ticketB.ticketId]])).rows
       expect(records.map(row => CiRunRecordSchema.parse(row.record))).toEqual(expect.arrayContaining([
@@ -502,9 +503,9 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       const denied = await f.call(f.denied.token, 'run_activities_get_v1', { ...f.request, cursor: initial.nextCursor })
       expect(denied.error || denied.result?.isError).toBeTruthy()
     } finally {
-      await first.query('rollback')
+      await rollbackTransaction(first)
       if (secondUpdate) await Promise.allSettled([secondUpdate])
-      await second.query('rollback')
+      await rollbackTransaction(second)
       first.release()
       second.release()
       await f.close()

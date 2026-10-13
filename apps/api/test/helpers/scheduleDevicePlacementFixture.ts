@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { publicKeyFingerprint } from '@foreman-code/contracts/device-identity-node'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
+import { withTransaction } from '../../src/infrastructure/transaction.js'
 import { PostgresDeviceAccessService, pairingProof } from '../../src/modules/devices/access.js'
 import { inspectInstalledCodex } from '../../src/modules/harnesses/installedCodexInspection.js'
 import { AgentPlacementProducer } from '../../src/modules/placement/agentProducer.js'
@@ -50,17 +51,11 @@ export async function scheduleDevicePlacementFixture(f: Sch11Fixture,
     }
     return worker(request)
   } })
-  const sql = await pool.connect()
-  try {
-    await sql.query('begin')
+  await withTransaction(pool, async sql => {
     await placement.policies.publishApprovedHostConfiguration(sql, allowlist, { mainId, hostRef,
       applicationInstallationId: allowlist.applicationInstallationId, configurationRevision: '1',
       configurationDigest: sourceSha256(Buffer.from(JSON.stringify(allowlist))) })
-    await sql.query('commit')
-  } catch (error) {
-    await sql.query('rollback')
-    throw error
-  } finally { sql.release() }
+  })
   const locations = new WorkspaceBoundLocationService(pool, f.commands, placement.policies, 'local')
   const bound = (await locations.set(placement.writer.principal, 'http', { workspaceId: f.scope.workspaceId,
     commandId: randomUUID(), hostRef, allowedBaseId: allowlist.bases[0]!.baseId, configurationRevision: '1',

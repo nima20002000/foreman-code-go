@@ -15,6 +15,7 @@ import { ManagementActionSchema, RunEventsPageSchema } from '@foreman-code/contr
 import { CurrentWorkflowSaveInputSchema, CurrentWorkflowSaveResultSchema,
   RunActivitiesPageSchema, RunHandoffsReadSchema, SavedManagedWorkflowCommandResultSchema, ManualRunStartResultSchema,
   makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
+import { beginTransaction, rollbackTransaction } from '../src/infrastructure/transaction.js'
 import { createDatabase } from '../src/infrastructure/database.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
 import { loadConfig } from '../src/config.js'
@@ -427,7 +428,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
         cleanupRun = { workspaceId: workspace.id, id: runId }
         if (restartOnArtifacts) {
           artifactBoundary = await pool.connect()
-          await artifactBoundary.query('begin')
+          await beginTransaction(artifactBoundary)
           // Publication uses the real file ledger. Only output binding's INSERT
           // waits here, then rolls back under its production lock timeout.
           await artifactBoundary.query('lock table management_command_receipts in share mode')
@@ -453,7 +454,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
                 where operation='remote.native-artifact.output' and result->'producer'->>'runId'=$1`,
               [runId])).rowCount).toBe(0)
               await production.shutdown()
-              await artifactBoundary!.query('rollback')
+              await rollbackTransaction(artifactBoundary!)
               artifactBoundary!.release()
               artifactBoundary = undefined
               production = buildProductionApp(config, database, checkpoints, false)
@@ -863,7 +864,7 @@ describe.skipIf(!enabled)('NIM-2691 real native workflow qualification', () => {
       artifactObserver.mockRestore()
       const cleanupErrors: unknown[] = []
       if (artifactBoundary) {
-        try { await artifactBoundary.query('rollback') }
+        try { await rollbackTransaction(artifactBoundary) }
         catch (error) { cleanupErrors.push(error) }
         finally { artifactBoundary.release() }
       }

@@ -27,7 +27,12 @@ export async function eventStream(url: string, token: string) {
   const reader = response.body.getReader(), decoder = new TextDecoder()
   let buffered = ''
   const queued: Array<Record<string, unknown>> = []
-  const close = async () => { controller.abort(); await reader.cancel().catch(() => {}) }
+  const close = async () => {
+    controller.abort()
+    await reader.cancel().catch(() => {
+      // ignore: aborting the fetch can already have errored the stream being canceled.
+    })
+  }
   closes.push(close)
   const next = async (accept: (event: Record<string, unknown>) => boolean) => {
     const timer = setTimeout(() => controller.abort(), 30000)

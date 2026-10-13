@@ -52,7 +52,12 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL transaction ordering and co
       await f.dispatcher().dispatch(edited)
       expect(await f.history()).toEqual([expect.objectContaining({ status: 'accepted', scheduleRevision: 2,
         dueAt: '2030-01-07T10:30:00.000Z' })])
-    } finally { release.resolve(); await work.catch(() => undefined) }
+    } finally {
+      release.resolve()
+      await work.catch(() => {
+        // ignore: cleanup joins the dispatcher without replacing an earlier test failure.
+      })
+    }
   }, 60_000)
 
   it.each(['disable', 'clear'] as const)('%s winning before claim leaves no speculative Start artifacts', async (operation) => {
@@ -69,7 +74,12 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL transaction ordering and co
         where operation='run.start' and result->>'workflowId'=$1`, [f.scope.workflowId])).rows).toEqual([])
       expect(await f.history()).toEqual([expect.objectContaining({ status: 'skipped', reason: 'disabled', scheduleRevision: 1 })])
       expect((await f.current())?.enabled ?? false).toBe(false)
-    } finally { release.resolve(); await work.catch(() => undefined) }
+    } finally {
+      release.resolve()
+      await work.catch(() => {
+        // ignore: cleanup joins the dispatcher without replacing an earlier test failure.
+      })
+    }
   }, 60_000)
 
   it.each(['disable', 'edit'] as const)('claim winning the row locks commits once; a blocked %s changes only future admissions', async (operation) => {
@@ -90,8 +100,9 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL transaction ordering and co
       mutation = operation === 'disable'
         ? peerService.disable(f.writer.principal, 'mcp', f.command())
         : peerService.save(f.writer.principal, 'mcp', { ...f.command(), schedule: { ...sch11Once, time: '10:30' } })
-      // Attach a handler immediately; a lock timeout must not be an unhandled rejection.
-      void mutation.catch(() => undefined)
+      void mutation.catch(() => {
+        // ignore: attach while row locks are held; the original mutation is awaited below.
+      })
       await sch11Blocked(database.pool, peerPid, await entered.promise)
       expect(await f.countRuns()).toBe(0)
       release.resolve(); await work
@@ -106,7 +117,16 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL transaction ordering and co
       const state = await sch11DomainState(f)
       await f.dispatcher().dispatch(saved)
       expect(await sch11DomainState(f)).toEqual(state)
-    } finally { release.resolve(); await work.catch(() => undefined); await mutation?.catch(() => undefined); await peer.pool.end() }
+    } finally {
+      release.resolve()
+      await work.catch(() => {
+        // ignore: cleanup joins the dispatcher without replacing an earlier test failure.
+      })
+      await mutation?.catch(() => {
+        // ignore: cleanup joins the peer operation whose outcome is checked in the test body.
+      })
+      await peer.pool.end()
+    }
   }, 60_000)
 
   async function versionInput() {
@@ -140,7 +160,12 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL transaction ordering and co
         join management_command_receipts c on c.operation='run.start' and c.result->>'id'=r.id where r.workflow_id=$1`, [f.scope.workflowId])
       expect(rows.rows).toEqual([{ workflow_version_id: newer.version.id,
         snapshot_version: newer.version.id, receipt_version: newer.version.id }])
-    } finally { release.resolve(); await work.catch(() => undefined) }
+    } finally {
+      release.resolve()
+      await work.catch(() => {
+        // ignore: cleanup joins the dispatcher without replacing an earlier test failure.
+      })
+    }
   }, 60_000)
 
   it('claim winning before a blocked meaningful save preserves its pin and rejects the now-unsettled edit', async () => {
@@ -160,7 +185,9 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL transaction ordering and co
     try {
       await reached(entered.promise, work)
       saving = peerWorkflows.current.save(f.writer.principal, 'mcp', input)
-      void saving.catch(() => undefined)
+      void saving.catch(() => {
+        // ignore: attach while row locks are held; the original save rejection is asserted below.
+      })
       await sch11Blocked(database.pool, peerPid, await entered.promise)
       release.resolve(); await work
       await expect(saving).rejects.toMatchObject({ code: 'WORKFLOW_RUNS_UNSETTLED' })
@@ -171,7 +198,16 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL transaction ordering and co
       expect(snapshot).toMatchObject({ kind: 'available', workflowVersionId: f.fixture.version.id })
       await f.dispatcher().dispatch(saved)
       expect((await database.pool.query('select record from run_board_snapshots where workflow_id=$1', [f.scope.workflowId])).rows[0]!.record).toEqual(snapshot)
-    } finally { release.resolve(); await work.catch(() => undefined); await saving?.catch(() => undefined); await peer.pool.end() }
+    } finally {
+      release.resolve()
+      await work.catch(() => {
+        // ignore: cleanup joins the dispatcher without replacing an earlier test failure.
+      })
+      await saving?.catch(() => {
+        // ignore: cleanup joins the peer operation whose outcome is checked in the test body.
+      })
+      await peer.pool.end()
+    }
   }, 60_000)
 
   it.each(['revoke', 'remove-start-grant'] as const)('rechecks %s between preparation and admission', async (change) => {
@@ -190,7 +226,12 @@ describe.skipIf(!postgresEnabled)('SCH-11 PostgreSQL transaction ordering and co
       expect((await f.current())?.nextOccurrenceAt).toBeNull()
       expect((await database.pool.query(`select 1 from management_command_receipts
         where operation='run.start' and result->>'workflowId'=$1`, [f.scope.workflowId])).rows).toEqual([])
-    } finally { release.resolve(); await work.catch(() => undefined) }
+    } finally {
+      release.resolve()
+      await work.catch(() => {
+        // ignore: cleanup joins the dispatcher without replacing an earlier test failure.
+      })
+    }
   }, 60_000)
 
   it('skips queued scheduled overlap and does not cancel or rewrite its accepted artifacts on disable', async () => {

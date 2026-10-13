@@ -26,16 +26,14 @@ import { waitForSuccessfulRunCleanup } from './helpers/runSettlement.testSupport
 vi.mock('../src/infrastructure/migrations.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/infrastructure/migrations.js')>()
   const { runSnapshotMigration } = await import('../src/infrastructure/runSnapshotMigration.js')
+  const { withTransaction } = await import('../src/infrastructure/transaction.js')
   return { ...actual, applyApplicationMigrations: async (...args: Parameters<typeof actual.applyApplicationMigrations>) => {
     await actual.applyApplicationMigrations(...args)
-    const client = await args[0].connect()
-    try {
-      await client.query('begin')
+    await withTransaction(args[0], async client => {
       const row = (await client.query<{ relation: string | null }>(
         "select to_regclass(current_schema() || '.run_board_snapshots')::text as relation")).rows[0]!
       if (!row.relation) await client.query(runSnapshotMigration.sql)
-      await client.query('commit')
-    } catch (error) { await client.query('rollback'); throw error } finally { client.release() }
+    })
   } }
 })
 

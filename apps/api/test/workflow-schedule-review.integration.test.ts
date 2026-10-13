@@ -51,7 +51,9 @@ describe.skipIf(!postgresEnabled)('SCH-01/02 occurrence identity and final eligi
       }
       await f.startUsing()(principal, input, guard)
     }).dispatch(saved)
-    void work.catch(() => undefined)
+    void work.catch(() => {
+      // ignore: attach while the dispatcher is paused; the original work is awaited below.
+    })
     try {
       await reached(failed.promise, work)
       const newer = await saveNewVersion()
@@ -64,7 +66,9 @@ describe.skipIf(!postgresEnabled)('SCH-01/02 occurrence identity and final eligi
           peerPrepared.resolve(); await releasePeer.promise
           await f.startUsing()(...args)
         }).dispatch(saved)
-        void peer.catch(() => undefined)
+        void peer.catch(() => {
+          // ignore: attach while the peer is paused; the original peer work is awaited below.
+        })
         await reached(peerPrepared.promise, peer)
         expect((await f.current())?.nextOccurrenceAt).toBe('2030-01-07T10:01:00.000Z')
       }
@@ -85,7 +89,12 @@ describe.skipIf(!postgresEnabled)('SCH-01/02 occurrence identity and final eligi
         snapshot_version: newer.version.id, receipt_version: newer.version.id }])
     } finally {
       releaseFailure.resolve(); releasePeer.resolve()
-      await work.catch(() => undefined); await peer?.catch(() => undefined)
+      await work.catch(() => {
+        // ignore: cleanup joins the dispatcher without replacing an earlier test failure.
+      })
+      await peer?.catch(() => {
+        // ignore: cleanup joins the peer without replacing an earlier test failure.
+      })
     }
   }, 60_000)
 
@@ -148,7 +157,9 @@ describe.skipIf(!postgresEnabled)('SCH-01/02 occurrence identity and final eligi
         }
       } })
     }).dispatch(saved)
-    void work.catch(() => undefined)
+    void work.catch(() => {
+      // ignore: attach while the dispatcher is paused; the original work is awaited below.
+    })
     try {
       const artifacts = await reached(overlapRead.promise, work)
       expect(artifacts).toMatchObject({ runs: 1, snapshots: 1, receipts: 1, accepted: 1 })
@@ -190,7 +201,9 @@ describe.skipIf(!postgresEnabled)('SCH-01/02 occurrence identity and final eligi
       }
     } finally {
       releaseOverlap.resolve(); releaseNext.resolve()
-      await work.catch(() => undefined)
+      await work.catch(() => {
+        // ignore: cleanup joins the dispatcher without replacing an earlier test failure.
+      })
     }
   }, 60_000)
 })

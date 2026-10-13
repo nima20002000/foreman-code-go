@@ -1,4 +1,7 @@
 import { sourceStorageCapacityFixture } from './helpers/sourceStorageCapacityFixture.js'
+import {
+  beginTransaction, commitTransaction, rollbackTransaction, withTransaction,
+} from '../src/infrastructure/transaction.js'
 import { sourceStorageLimits } from '../src/modules/sources/storageCapacity.js'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
@@ -262,21 +265,14 @@ it.each(['approved', 'failed'] as const)(
     try {
       await entered.promise
       const capacity = sourceStorageCapacityFixture({ filesystem: await f.store.storageIdentity() })
-      const sql = await f.pool.connect()
-      let reservation: SourceReservation
-      try {
-        await sql.query('begin')
+      const reservation = await withTransaction(f.pool, async sql => {
         await sql.query("set local statement_timeout='250ms'")
         const heldRow = await sql.query<{ state: string }>(`select state from source_storage_reservations
           where reservation_id=$1 for update`, [held.record.reservationId])
         expect(heldRow.rows[0]?.state).toBe('retained')
-        reservation = await f.sources.reservations.reserve(sql, { scopeId: held.record.scopeId,
+        return f.sources.reservations.reserve(sql, { scopeId: held.record.scopeId,
           ownerKind: 'capture', ownerId: randomUUID(), reservedBytes: 1 }, { capacity })
-        await sql.query('commit')
-      } finally {
-        await sql.query('rollback')
-        sql.release()
-      }
+      })
       expect((await f.captureReservation(reservation.ownerId)).state).toBe('preparing')
       const approved = await f.approve()
       expect((await f.read(approved.source)).manifest).toEqual(approved.source.manifest)
@@ -457,7 +453,7 @@ it('scans protected snapshots without waiting for the storage lock', async () =>
   const held = await f.reservation(protectedSources[0]!)
   const sql = await f.pool.connect()
   try {
-    await sql.query('begin')
+    await beginTransaction(sql)
     await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`source-storage:${held.record.scopeId}`])
     await f.sources.releaseUnusedSnapshots(undefined, true)
     for (const source of protectedSources) {
@@ -465,7 +461,7 @@ it('scans protected snapshots without waiting for the storage lock', async () =>
       expect((await f.reservation(source)).state).toBe('retained')
     }
   } finally {
-    await sql.query('rollback')
+    await rollbackTransaction(sql)
     sql.release()
   }
 }, 60_000)
@@ -892,7 +888,7 @@ it.each(['measurement', 'deletion'] as const)(
       // Both database row sets remain available while filesystem work is paused.
       const sql = await f.pool.connect()
       try {
-        await sql.query('begin')
+        await beginTransaction(sql)
         const approvals = await sql.query(`select snapshot_id from source_approvals
           where snapshot_id=any($1::uuid[]) for update skip locked`, [snapshotIds])
         const reservations = await sql.query(`select owner_id from source_storage_reservations
@@ -900,7 +896,7 @@ it.each(['measurement', 'deletion'] as const)(
         expect(approvals.rowCount).toBe(snapshotIds.length)
         expect(reservations.rowCount).toBe(snapshotIds.length)
       } finally {
-        await sql.query('rollback')
+        await rollbackTransaction(sql)
         sql.release()
       }
       const input = { ...f.approval, commandId: randomUUID() }
@@ -944,15 +940,15 @@ it('skips a snapshot while admission holds its shared lock, then releases it aft
   const source = (await f.approve(SOURCE_RETENTION_SECONDS * 3)).source
   const sql = await f.pool.connect()
   try {
-    await sql.query('begin')
+    await beginTransaction(sql)
     await f.sources.resolveApprovedSource(sql, f.owner.principal, f.workspaceId, f.pin(source))
     await f.sources.releaseUnusedSnapshots()
     expect((await f.read(source)).availability).toBe('retained')
-    await sql.query('commit')
+    await commitTransaction(sql)
     await f.sources.releaseUnusedSnapshots()
     expect((await f.reservation(source)).state).toBe('reclaimed')
   } finally {
-    await sql.query('rollback')
+    await rollbackTransaction(sql)
     sql.release()
   }
 }, 60_000)

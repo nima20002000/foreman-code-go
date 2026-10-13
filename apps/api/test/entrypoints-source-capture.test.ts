@@ -99,14 +99,18 @@ it('quiesces every bounded pending private write before quarantining a failed ca
         finally { active-- }
       }, commit: store.commit.bind(store), abort: async id => { expect(active).toBe(0); await store.abort(id) },
     } })
-    void captured.catch(() => {})
+    void captured.catch(() => {
+      // ignore: attach before releasing pending writes; the capture rejection is asserted below.
+    })
     await allEntered
     expect(peak).toBe(4); expect(abort).not.toHaveBeenCalled(); expect(publish).not.toHaveBeenCalled()
     release(); await expect(captured).rejects.toThrow('Private source writer failed.')
     expect(active).toBe(0); expect(abort).toHaveBeenCalledOnce(); expect(publish).not.toHaveBeenCalled()
   } finally {
     release?.()
-    await captured?.catch(() => {})
+    await captured?.catch(() => {
+      // ignore: cleanup joins the capture without replacing its asserted failure.
+    })
     vi.restoreAllMocks()
     await removeFixtureDirectory(directory)
   }

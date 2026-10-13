@@ -6,6 +6,7 @@ import {
   CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveResultSchema, RunStartV3InputSchema, RunStartV3ResultSchema,
   makeCurrentWorkflowFixture, type RunStartV3Input,
 } from '@foreman-code/contracts/wave25'
+import { beginTransaction, commitTransaction, rollbackTransaction } from '../src/infrastructure/transaction.js'
 import { createPool } from '../src/infrastructure/pool.js'
 import { LOCAL_RUNNER_ID } from '../src/modules/workspaces/location.js'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
@@ -101,7 +102,7 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
         expect(new Set(starters.map(({ input }) => input.workspaceId)).size).toBe(2)
         const key = lockKind === 'runner' ? `admission:runner:${LOCAL_RUNNER_ID}`
           : `admission:workspace:${starters[0]!.input.workspaceId}`
-        await holder.query('begin')
+        await beginTransaction(holder)
         await holder.query('select pg_advisory_xact_lock(hashtext($1))', [key])
         const deadline = await pool.query("select current_setting('statement_timeout') as timeout")
         expect(deadline.rows[0]?.timeout).toBe('1s')
@@ -120,7 +121,7 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
         pending = calls
         await vi.waitFor(() => { expect(prepared).toBe(starters.length) }, { timeout: 5_000, interval: 20 })
         await waitForQueuedStarts(lockKind === 'runner' ? starters.length : 1)
-        await holder.query('commit')
+        await commitTransaction(holder)
         const accepted = await Promise.all(calls)
         const ids: string[] = []
         for (const [index, response] of accepted.entries()) {
@@ -154,7 +155,7 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
           [starters.map(({ input }) => input.workflowId)])
         expect(runs.rows.map((row) => row.id).sort()).toEqual(ids.sort())
       } finally {
-        await holder.query('rollback')
+        await rollbackTransaction(holder)
         holder.release()
         await Promise.allSettled(pending)
         for (const snapshot of snapshots) snapshot.mockRestore()
@@ -169,7 +170,7 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
     let pending: Promise<unknown>[] = []
     try {
       const starter = (await createStarters(runtimes))[0]!
-      await holder.query('begin')
+      await beginTransaction(holder)
       await holder.query('select pg_advisory_xact_lock(hashtext($1))',
         [`command:${starter.runtime.writer.principal.id}:run.start:${starter.input.commandId}`])
       const calls = Array.from({ length: 4 }, () => starter.runtime.client.callTool({
@@ -177,7 +178,7 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
       }))
       pending = calls
       await waitForQueuedStarts(calls.length)
-      await holder.query('commit')
+      await commitTransaction(holder)
       const responses = await Promise.all(calls)
       const results = responses.map((response) => {
         expect(response.isError).not.toBe(true)
@@ -189,7 +190,7 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
       const runs = await database.pool.query('select id from runs where workflow_id=$1', [starter.input.workflowId])
       expect(runs.rows).toEqual([{ id: results[0]!.run.id }])
     } finally {
-      await holder.query('rollback')
+      await rollbackTransaction(holder)
       holder.release()
       await Promise.allSettled(pending)
       for (const runtime of runtimes.reverse()) await runtime.close()
@@ -203,7 +204,7 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
     let pending: Promise<unknown>[] = []
     try {
       const starter = (await createStarters(runtimes))[0]!
-      await holder.query('begin')
+      await beginTransaction(holder)
       await holder.query('select pg_advisory_xact_lock(hashtext($1))',
         [`command:${starter.runtime.writer.principal.id}:run.start:${starter.input.commandId}`])
       const remote = starter.runtime.client.callTool({ name: 'run_start', arguments: starter.input })
@@ -222,14 +223,14 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
         where operation='run.start' and principal_id=$1 and command_id=$2`,
       [starter.runtime.writer.principal.id, starter.input.commandId])
       expect(receipts.rows).toEqual([])
-      await holder.query('commit')
+      await commitTransaction(holder)
       const retry = await starter.runtime.client.callTool({ name: 'run_start', arguments: starter.input })
       expect(retry.isError).not.toBe(true)
       const accepted = RunStartV3ResultSchema.parse(decodeMcpToolResult(retry))
       expect(accepted).toMatchObject({ accepted: true, replayed: false })
       await assertPersisted(starter, accepted.run.id)
     } finally {
-      await holder.query('rollback')
+      await rollbackTransaction(holder)
       holder.release()
       await Promise.allSettled(pending)
       for (const runtime of runtimes.reverse()) await runtime.close()

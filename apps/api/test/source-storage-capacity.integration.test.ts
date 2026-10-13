@@ -82,17 +82,8 @@ it('serializes competing reservations and counts every outstanding writer agains
     totalBytes: 64 * 2 ** 30, availableBytes: 2 * 2 ** 30, cpuCount: 4,
   }))
   async function reserve() {
-    const sql = await pool.connect()
-    try {
-      await sql.query('begin')
-      const reservation = await reservations.reserve(sql, { scopeId, ownerKind: 'capture', ownerId: randomUUID(),
-        reservedBytes: 600 * 2 ** 20 })
-      await sql.query('commit')
-      return reservation
-    } catch (error) {
-      await sql.query('rollback')
-      throw error
-    } finally { sql.release() }
+    return withTransaction(pool, sql => reservations.reserve(sql, { scopeId, ownerKind: 'capture', ownerId: randomUUID(),
+      reservedBytes: 600 * 2 ** 20 }))
   }
   const results = await Promise.allSettled([reserve(), reserve()])
   expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)

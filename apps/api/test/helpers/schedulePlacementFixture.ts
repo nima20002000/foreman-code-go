@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { chmod, mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type pg from 'pg'
 import type { ScheduleConfiguration } from '@foreman-code/contracts/schedules'
+import { withTransaction } from '../../src/infrastructure/transaction.js'
 import { assertDeviceHostInstallation } from '../../src/modules/devices/hostAuthorization.js'
 import { AgentPlacementProducer } from '../../src/modules/placement/agentProducer.js'
 import { PostgresWorkspaceRootPolicies } from '../../src/modules/sources/rootPolicies.js'
@@ -18,19 +18,6 @@ import { WorkflowManagementService } from '../../src/modules/workflows/managemen
 import { sch11Actions, type Sch11Fixture } from './sch11Fixture.js'
 import { sch11Once } from './sch11ClockCases.js'
 import { scheduleHarnessFixture } from './scheduleHarnessFixture.js'
-
-async function transaction<T>(pool: pg.Pool, work: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
-  const sql = await pool.connect()
-  try {
-    await sql.query('begin')
-    const result = await work(sql)
-    await sql.query('commit')
-    return result
-  } catch (error) {
-    await sql.query('rollback')
-    throw error
-  } finally { sql.release() }
-}
 
 /** Admission uses persisted authorities and physical host discovery. */
 export async function schedulePlacementFixture(f: Sch11Fixture) {
@@ -74,7 +61,7 @@ export async function schedulePlacementFixture(f: Sch11Fixture) {
     return { policies, sources }
   }
   let authorities = createAuthorities()
-  const publishConfiguration = async (configurationRevision: string) => transaction(pool, sql => {
+  const publishConfiguration = async (configurationRevision: string) => withTransaction(pool, sql => {
     const configuration = { ...allowlist, configurationRevision }
     return authorities.policies.publishApprovedHostConfiguration(sql, configuration, { mainId, hostRef,
       applicationInstallationId: mainId, configurationRevision,

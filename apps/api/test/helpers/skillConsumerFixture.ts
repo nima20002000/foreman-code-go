@@ -9,6 +9,7 @@ import * as current from '@foreman-code/contracts/wave25'
 import type { FastifyInstance } from 'fastify'
 import type { z } from 'zod'
 import { afterAll, beforeAll, expect } from 'vitest'
+import { withTransaction } from '../../src/infrastructure/transaction.js'
 import { buildApp } from '../../src/app.js'
 import type { OperatorServices } from '../../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
@@ -155,9 +156,7 @@ export function skillConsumerFixture() {
         configurations: version.agentConfigurationVersionIds, entryNodeId: version.entryNodeId })
       return { agent, configuration, version, graph: version.definition }
     }))
-    const sql = await database.pool.connect()
-    try {
-      await sql.query('begin')
+    await withTransaction(database.pool, async sql => {
       await sql.query(`insert into agents(id,workspace_id,record)
         select item#>>'{agent,id}',$2,item->'agent' from jsonb_array_elements($1::jsonb) item`, [records, f.workspaceId])
       await sql.query(`insert into agent_configuration_versions(id,workspace_id,agent_id,version,record)
@@ -174,13 +173,7 @@ export function skillConsumerFixture() {
         select item#>>'{version,id}',$2,item#>>'{graph,id}',(item#>>'{version,version}')::integer,
           item#>>'{version,entryNodeId}',item->'version',3 from jsonb_array_elements($1::jsonb) item`,
       [records, f.workspaceId])
-      await sql.query('commit')
-    } catch (error) {
-      await sql.query('rollback')
-      throw error
-    } finally {
-      sql.release()
-    }
+    })
   }
 
   async function configurationOf(workspaceId: string, agentId: string) {

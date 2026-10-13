@@ -34,9 +34,9 @@ async function fixture(options: { executablePolicy?: 'strip' | 'preserve-approve
   const origin = join(base, 'origin'); await mkdir(join(origin, 'src'), { recursive: true })
   const bytes = Buffer.from('accepted source\n')
   git(origin, 'init', '-q', '-b', 'main')
-  await writeFile(join(origin, 'src/app.ts'), bytes)
-  await chmod(join(origin, 'src/app.ts'), 0o700)
-  if (options.attributes) await writeFile(join(origin, '.gitattributes'), '*.ts text eol=crlf filter=alter\n')
+  await writeFile(join(origin, 'src/app.txt'), bytes)
+  await chmod(join(origin, 'src/app.txt'), 0o700)
+  if (options.attributes) await writeFile(join(origin, '.gitattributes'), '*.txt text eol=crlf filter=alter\n')
   git(origin, 'add', '.'); git(origin, 'commit', '-qm', 'approved')
   const commit = git(origin, 'rev-parse', 'HEAD')
   const root = join(base, 'root'); await mkdir(root); await chmod(root, 0o700)
@@ -44,9 +44,9 @@ async function fixture(options: { executablePolicy?: 'strip' | 'preserve-approve
     capturePolicy: 'git-tree-v1', executablePolicy: options.executablePolicy ?? 'preserve-approved', deletions: [],
     git: { commit, tree: git(origin, 'rev-parse', 'HEAD^{tree}'), objectFormat: 'sha1', repository: 'octo/site' },
     entries: [
-      ...(options.attributes ? [{ path: '.gitattributes', kind: 'file' as const, byteSize: Buffer.byteLength('*.ts text eol=crlf filter=alter\n'),
-        sha256: sourceSha256(Buffer.from('*.ts text eol=crlf filter=alter\n')), executable: false }] : []),
-      { path: 'src/app.ts', kind: 'file', byteSize: bytes.length, sha256: sourceSha256(bytes),
+      ...(options.attributes ? [{ path: '.gitattributes', kind: 'file' as const, byteSize: Buffer.byteLength('*.txt text eol=crlf filter=alter\n'),
+        sha256: sourceSha256(Buffer.from('*.txt text eol=crlf filter=alter\n')), executable: false }] : []),
+      { path: 'src/app.txt', kind: 'file', byteSize: bytes.length, sha256: sourceSha256(bytes),
         executable: options.executablePolicy !== 'strip' }] })
   const handle = await openPrivateRoot(root), filesystem = await identity(handle); await handle.close()
   const binding: RootBinding = { version: 1, mainId: randomUUID(), deviceId: null, workerInstallationId: null,
@@ -56,7 +56,7 @@ async function fixture(options: { executablePolicy?: 'strip' | 'preserve-approve
   const ports: GitWorktreePorts = { cloneDirectory: repository => join(base, 'clones', ...repository.split('/')),
     git: (args, options) => system.git(args[0] === 'clone' ? ['clone', '--no-checkout', origin, args.at(-1)!] : args, options) }
   const materializer = () => new PrivateSourceMaterializer({ async read(_pin, entry) { return entry.path === '.gitattributes'
-    ? Buffer.from('*.ts text eol=crlf filter=alter\n') : bytes } }, async () => {}, undefined, ports)
+    ? Buffer.from('*.txt text eol=crlf filter=alter\n') : bytes } }, async () => {}, undefined, ports)
   const attempt = (): MaterializationAttempt => ({ placementHash: 'a'.repeat(64), executionId: randomUUID(), attemptId: randomUUID(),
     keyRevision: null, authorizationRevision: null })
   return { base, origin, ports, commit, manifest, binding, materializer, attempt }
@@ -75,13 +75,13 @@ it('gives each workflow agent its own verified worktree and branch instead of on
   expect(coderTree).not.toBe(reviewerTree)
   expect(await f.materializer().resolve(one, { binding: f.binding, attempt: coder.attempt })).toBe(coderTree)
   expect(git(coderTree, 'branch', '--show-current')).toBe(one.worktree?.branch)
-  expect(await readFile(join(reviewerTree, 'src/app.ts'), 'utf8')).toBe('accepted source\n')
+  expect(await readFile(join(reviewerTree, 'src/app.txt'), 'utf8')).toBe('accepted source\n')
   // The agent edits and commits on its branch; its receipt still verifies and recovers.
-  await writeFile(join(coderTree, 'src/app.ts'), 'coder edit\n')
+  await writeFile(join(coderTree, 'src/app.txt'), 'coder edit\n')
   git(coderTree, 'commit', '-qam', 'coder work')
   await f.materializer().verify(one, { binding: f.binding, attempt: coder.attempt })
   expect(await f.materializer().prepare(coder)).toEqual(one)
-  expect(await readFile(join(reviewerTree, 'src/app.ts'), 'utf8')).toBe('accepted source\n')
+  expect(await readFile(join(reviewerTree, 'src/app.txt'), 'utf8')).toBe('accepted source\n')
 })
 
 it('reuses retained Main snapshot bytes while isolating writable worktrees and detecting later snapshot corruption', async () => {
@@ -103,12 +103,12 @@ it('reuses retained Main snapshot bytes while isolating writable worktrees and d
   const first = sourceWorkingTreePath(receipts[0]!)
   const second = sourceWorkingTreePath(receipts[1]!)
   expect(first).not.toBe(second)
-  await writeFile(join(first, 'src/app.ts'), 'Agent edit\n')
-  expect(await readFile(join(second, 'src/app.ts'), 'utf8')).toBe('accepted source\n')
+  await writeFile(join(first, 'src/app.txt'), 'Agent edit\n')
+  expect(await readFile(join(second, 'src/app.txt'), 'utf8')).toBe('accepted source\n')
   const verifier = new PrivateSourceMaterializer(null, async () => {}, undefined, f.ports)
   await verifier.verify(receipts[0]!, { binding, attempt: inputs[0]!.attempt })
   expect(await materializer.prepare(inputs[0]!)).toEqual(receipts[0])
-  const source = join(snapshotRoot, manifest.snapshotId, 'bytes/src/app.ts')
+  const source = join(snapshotRoot, manifest.snapshotId, 'bytes/src/app.txt')
   await chmod(source, 0o600)
   await writeFile(source, Buffer.alloc(Buffer.byteLength('accepted source\n'), 'x'))
   await expect(verifier.verify(receipts[1]!, { binding, attempt: inputs[1]!.attempt }))
@@ -125,7 +125,7 @@ it('reclaims a closed Main reference copy while preserving dirty work and idempo
   const before = await measureRetainedMaterializationFootprint(receipt)
   await expect(releaseMaterializationClaim(receipt, async () => 'owned'))
     .rejects.toMatchObject({ code: 'SOURCE_ROOT_OWNED' })
-  expect(await readFile(join(reference, 'src/app.ts'), 'utf8')).toBe('accepted source\n')
+  expect(await readFile(join(reference, 'src/app.txt'), 'utf8')).toBe('accepted source\n')
   for (let replay = 0; replay < 2; replay++) {
     await releaseMaterializationClaim(receipt, async () => 'released')
     await expect(stat(reference)).rejects.toMatchObject({ code: 'ENOENT' })
@@ -193,7 +193,7 @@ it.each(['strip', 'preserve-approved'] as const)('applies the %s executable poli
   const f = await fixture({ executablePolicy })
   const receipt = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt(),
     sharedWritableTree: true, worktree: { repository: 'octo/site', branch: 'foreman/review/executable' } })
-  const path = join(sourceWorkingTreePath(receipt), 'src/app.ts')
+  const path = join(sourceWorkingTreePath(receipt), 'src/app.txt')
   expect(!!((await stat(path)).mode & 0o111)).toBe(executablePolicy === 'preserve-approved')
   expect(await readFile(path, 'utf8')).toBe('accepted source\n')
 })
@@ -204,7 +204,7 @@ it('materializes approved raw blobs without line-ending or smudge-filter convers
   git(clone, 'config', 'filter.alter.smudge', 'sed s/accepted/converted/')
   const receipt = await f.materializer().prepare({ manifest: f.manifest, binding: f.binding, attempt: f.attempt(),
     sharedWritableTree: true, worktree: { repository: 'octo/site', branch: 'foreman/review/attributes' } })
-  expect(await readFile(join(sourceWorkingTreePath(receipt), 'src/app.ts'), 'utf8')).toBe('accepted source\n')
+  expect(await readFile(join(sourceWorkingTreePath(receipt), 'src/app.txt'), 'utf8')).toBe('accepted source\n')
   expect(git(sourceWorkingTreePath(receipt), 'rev-parse', 'HEAD')).toBe(f.commit)
 })
 
@@ -213,10 +213,10 @@ it('prepares an approved unpublished commit on a fresh worker using the transfer
   const f = await fixture()
   const main = join(f.base, 'main')
   git(f.base, 'clone', '-q', f.origin, main)
-  await writeFile(join(main, 'src/app.ts'), 'private ancestor\n')
+  await writeFile(join(main, 'src/app.txt'), 'private ancestor\n')
   git(main, 'commit', '-qam', 'private ancestor')
   const ancestor = git(main, 'rev-parse', 'HEAD')
-  await writeFile(join(main, 'src/app.ts'), 'unpublished source\n')
+  await writeFile(join(main, 'src/app.txt'), 'unpublished source\n')
   git(main, 'commit', '-qam', 'local only')
   const commit = git(main, 'rev-parse', 'HEAD')
   const canonical = join(f.base, 'snapshots')
@@ -234,7 +234,7 @@ it('prepares an approved unpublished commit on a fresh worker using the transfer
   expect(receipt.worktree?.commit).toBe(commit)
   expect(receipt.worktree?.startCommit).toBeUndefined()
   expect(git(sourceWorkingTreePath(receipt), 'rev-parse', 'HEAD')).toBe(commit)
-  expect(await readFile(join(sourceWorkingTreePath(receipt), 'src/app.ts'), 'utf8')).toBe('unpublished source\n')
+  expect(await readFile(join(sourceWorkingTreePath(receipt), 'src/app.txt'), 'utf8')).toBe('unpublished source\n')
   expect(git(f.origin, 'rev-parse', 'HEAD')).toBe(f.commit)
   expect((await f.ports.git(['cat-file', '-e', ancestor],
     { cwd: f.ports.cloneDirectory('octo/site'), signal })).code).not.toBe(0)
@@ -298,7 +298,7 @@ it('cleans up committed local and Worker source worktrees and reports a dirty ch
       worktree: { repository: 'octo/site', branch: `foreman/site/${host}` } }
     const receipt = await f.materializer().prepare(input)
     const directory = sourceWorkingTreePath(receipt)
-    await writeFile(join(directory, 'src/app.ts'), `${host} result\n`)
+    await writeFile(join(directory, 'src/app.txt'), `${host} result\n`)
     expect(await closeSourceWorktree(receipt, AbortSignal.timeout(30_000), f.ports))
       .toMatchObject({ state: 'retained', message: expect.any(String) })
     git(directory, 'commit', '-qam', 'Run result')
@@ -312,7 +312,7 @@ it('cleans up committed local and Worker source worktrees and reports a dirty ch
 
 it('keeps local and Worker executions on their Run-start approval when the default branch advances', async () => {
   const f = await fixture()
-  await writeFile(join(f.origin, 'src/app.ts'), 'latest default source\n')
+  await writeFile(join(f.origin, 'src/app.txt'), 'latest default source\n')
   await writeFile(join(f.origin, 'new.txt'), 'new default file\n')
   git(f.origin, 'add', '.')
   git(f.origin, 'commit', '-qm', 'Advance default branch')
@@ -328,9 +328,9 @@ it('keeps local and Worker executions on their Run-start approval when the defau
     expect(receipt.worktree?.startCommit).toBeUndefined()
     expect(git(directory, 'rev-parse', 'HEAD')).toBe(f.commit)
     expect(git(directory, 'rev-parse', 'HEAD')).not.toBe(latest)
-    expect(await readFile(join(directory, 'src/app.ts'), 'utf8')).toBe('accepted source\n')
+    expect(await readFile(join(directory, 'src/app.txt'), 'utf8')).toBe('accepted source\n')
     await expect(readFile(join(directory, 'new.txt'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
-    expect(await readFile(join(binding.canonicalPath, receipt.materializationId, 'tree', 'src/app.ts'), 'utf8'))
+    expect(await readFile(join(binding.canonicalPath, receipt.materializationId, 'tree', 'src/app.txt'), 'utf8'))
       .toBe('accepted source\n')
     await f.materializer().verify(receipt, { binding, attempt })
     expect(await f.materializer().prepare(input)).toEqual(receipt)
