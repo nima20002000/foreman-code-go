@@ -29,6 +29,15 @@ it.each(['agent messages', 'operator messages', 'operator activity'] as const)(
     state.messages = []
     state.hasEarlierMessages = true
     const id = kind === 'agent messages' ? state.conversation!.id : 'chat'
+    let activeClient = client
+    let unmount: () => void
+    if (kind === 'agent messages') {
+      installChatSource()
+      const mounted = mountChat(state)
+      activeClient = mounted.client
+      unmount = mounted.unmount
+      await mounted.ready()
+    }
     server.use(http.get(kind === 'agent messages'
       ? '/api/workspaces/:workspaceId/agent-chat/conversations/:id/history'
       : '/api/operator/conversations/:id/history', ({ request }) => {
@@ -48,17 +57,12 @@ it.each(['agent messages', 'operator messages', 'operator activity'] as const)(
       count += 1
       return HttpResponse.json({ activities: [activity(sequence)], nextCursor: String(sequence) })
     }))
-    let activeClient = client
-    if (kind === 'agent messages') {
-      installChatSource()
-      const mounted = mountChat(state)
-      activeClient = mounted.client
-      await mounted.ready()
-    } else {
-      render(<QueryClientProvider client={client}>{kind === 'operator messages'
+    if (kind !== 'agent messages') {
+      const view = render(<QueryClientProvider client={client}>{kind === 'operator messages'
         ? <OperatorHistory conversationId="chat" renderMessages={messages => <>{messages.map(message => <p key={message.id}>{message.content}</p>)}</>} />
         : <OperatorTranscript conversationId="chat" messages={[]} partialText="" activeRequestId="request-one"
           activities={[activity(901)]} activityNextCursor="901" />}</QueryClientProvider>)
+      unmount = view.unmount
     }
     const button = kind === 'operator activity' ? 'Load earlier activity' : 'Load earlier messages'
     const content = kind === 'operator activity' ? 'Tool · Step' : 'History'
@@ -66,6 +70,8 @@ it.each(['agent messages', 'operator messages', 'operator activity'] as const)(
       fireEvent.click(await screen.findByRole('button', { name: button }))
       await screen.findByText(`${content} ${900 - index}`)
       await waitFor(() => expect(screen.getByRole('button', { name: button })).toBeEnabled())
+      expect(count).toBe(index + 1)
+      expect(initialReads).toBe(1)
     }
     expect(screen.queryByText(`${content} 900`)).not.toBeInTheDocument()
     expect(screen.getByRole('status', { name: 'History window' })).toHaveTextContent('Only part of earlier history is shown')
@@ -74,6 +80,7 @@ it.each(['agent messages', 'operator messages', 'operator activity'] as const)(
     expect(initialReads).toBe(2)
     expect(count).toBe(7)
     expect(screen.queryByRole('status', { name: 'History window' })).not.toBeInTheDocument()
+    unmount!()
     activeClient.clear()
     client.clear()
   },

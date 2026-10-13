@@ -35,8 +35,9 @@ it('finishes authoritative reads during sustained parsed activity traffic and pe
   vi.stubGlobal('EventSource', StreamSource)
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const initial = operatorState({ conversation: { ...operatorState().conversation, id: 'chat' },
-    messages: [{ id: 'answer', role: 'assistant', content: 'Initial answer' }] })
+    messages: [{ id: 'answer', conversationId: 'chat', role: 'assistant', content: 'Initial answer' }] })
   const response = deferred<void>()
+  const trailingResponse = deferred<void>()
   let reads = 0
   let aborted = false
   server.use(http.get('/api/operator/conversations/summaries', () => HttpResponse.json({ conversations: [] })),
@@ -46,8 +47,9 @@ it('finishes authoritative reads during sustained parsed activity traffic and pe
       request.signal.addEventListener('abort', () => { aborted = true })
       await response.promise
     }
+    if (reads === 3) await trailingResponse.promise
     return HttpResponse.json({ ...initial, revision: reads,
-      messages: [{ id: 'answer', role: 'assistant', content: reads === 1 ? 'Initial answer' : `Read ${reads}` }] })
+      messages: [{ ...initial.messages[0]!, content: reads === 1 ? 'Initial answer' : `Read ${reads}` }] })
   }))
   const view = render(<QueryClientProvider client={client}><Chat /></QueryClientProvider>)
   await screen.findByText('Initial answer')
@@ -63,7 +65,10 @@ it('finishes authoritative reads during sustained parsed activity traffic and pe
   expect(aborted).toBe(false)
   await act(async () => { response.resolve(); await response.promise })
   await screen.findByText('Read 2')
+  await waitFor(() => expect(reads).toBe(3))
+  await act(async () => { trailingResponse.resolve(); await trailingResponse.promise })
   await screen.findByText('Read 3')
+  expect(aborted).toBe(false)
   expect(reads).toBe(3)
   view.unmount()
   client.clear()
