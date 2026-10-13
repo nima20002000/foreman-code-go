@@ -29,7 +29,7 @@ describe('PR17 decision scope and Operator status', () => {
   })
   it('does not report a disconnected active turn as finished', () => {
     const text = operatorTurnStatus(operatorState(), 'reconnecting')
-    expect(text).toContain('Information may be stale')
+    expect(text).toContain('Connecting to activity updates.')
     expect(text).toContain('Operator is working')
     expect(text).not.toContain('finished')
   })

@@ -102,7 +102,7 @@ describe('attachment lifetime during local API failures', () => {
     const signal = pendingInput.signal
     failure = error
     await act(async () => { await queryClient.invalidateQueries({ queryKey: settingsExperienceKeys.access(), exact: true }) })
-    expect(await screen.findByRole('dialog', { name: 'Reconnecting to the server' })).toBeInTheDocument()
+    expect(await screen.findByRole('alert', { name: 'Server connection' })).toBeInTheDocument()
     expect(screen.getByTestId('chat-a')).toBeInTheDocument()
     await act(async () => { await Promise.resolve() }) // Include provider's deferred disposal.
     expect(signal.aborted).toBe(false)

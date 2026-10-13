@@ -89,6 +89,13 @@ function disclosure(label: string) {
   return { summary, details }
 }
 
+function jumpButton() {
+  const button = screen.getByText('Jump to latest').closest('button')!
+  expect(button).toHaveAccessibleName('Jump to latest')
+  expect(button).toBeVisible()
+  return button
+}
+
 function openFromKeyboard(summary: HTMLElement) {
   // JSDOM does not implement the browser's summary/Enter default action. Dispatch
   // the keyboard-generated activation click (detail 0), with real DOM focus and
@@ -148,8 +155,8 @@ describe('G6 B2-PF-03 stable activity disclosure identity', () => {
       assertPreserved()
       await mounted.replay(completed)
       assertPreserved()
-      expect(screen.getByRole('button', { name: 'Jump to latest' })).toBeInTheDocument()
-      await userEvent.click(screen.getByRole('button', { name: 'Jump to latest' }))
+      expect(jumpButton()).toBeInTheDocument()
+      await userEvent.click(jumpButton())
       expect(scroll.scrollTop).toBe(metrics.bottom())
       expect(details).toHaveAttribute('open')
     })
@@ -193,7 +200,7 @@ describe('G6 B-R04 activity/reply ordering and bottom-following', () => {
     const history = within(scroll).getByRole('list', { name: 'Conversation history' })
     expect(history.lastElementChild).toHaveTextContent('G6 reply 3')
     expect(scroll.scrollTop).toBe(metrics.bottom())
-    expect(screen.queryByRole('button', { name: 'Jump to latest' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Jump to latest')).not.toBeInTheDocument()
     for (let turn = 1; turn <= 3; turn++) {
       const reply = within(scroll).getByText(`G6 reply ${turn}`)
       const tool = within(scroll).getByText(`Ran G6 tool ${turn}/24`)
@@ -208,11 +215,11 @@ describe('G6 B-R04 activity/reply ordering and bottom-following', () => {
     expect(scroll.scrollTop).toBe(120)
     await mounted.replay(next)
     expect(scroll.scrollTop).toBe(120)
-    await userEvent.click(screen.getByRole('button', { name: 'Jump to latest' }))
+    await userEvent.click(jumpButton())
     expect(scroll.scrollTop).toBe(metrics.bottom())
     expect(metrics.rows().at(-1)).toHaveTextContent('G6 later reply')
     expect(history.lastElementChild).toHaveTextContent('G6 later reply')
     await mounted.replay(next)
-    expect(screen.queryByRole('button', { name: 'Jump to latest' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Jump to latest')).not.toBeInTheDocument()
   })
 })
