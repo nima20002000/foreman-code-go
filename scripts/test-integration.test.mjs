@@ -406,6 +406,17 @@ test('each resource independently bounds integration parallelism', () => {
   }
 })
 
+test('integration shards use their CI slot CPU and memory shares rather than the whole computer', () => {
+  const environment = { FOREMAN_CODE_CI_CPU_COUNT: '8', FOREMAN_CODE_CI_MEMORY_BYTES: String(6 * 1024 ** 3) }
+  const plan = integrationShardPlan(environment, shardResources)
+  assert.equal(plan.shards, 6)
+  assert.match(plan.reason, /CPU limit 8/)
+  assert.match(plan.reason, /memory limit 6/)
+  assert.match(plan.reason, /CI slot share/)
+  assert.equal(integrationShardPlan(environment, { ...shardResources, availableMemoryBytes: 3 * 1024 ** 3 }).shards, 3)
+  assert.throws(() => integrationShardPlan({ ...environment, FOREMAN_CODE_CI_CPU_COUNT: '0' }, shardResources), /CPU count/)
+})
+
 test('unknown or invalid resource measurements retain twelve without ignoring known smaller limits', () => {
   assert.equal(integrationShardPlan({}).shards, 12)
   for (const field of Object.keys(shardResources)) {

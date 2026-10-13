@@ -1,14 +1,15 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { availableParallelism, homedir, totalmem } from 'node:os'
+import { availableParallelism, freemem, homedir, totalmem } from 'node:os'
 import { join, matchesGlob } from 'node:path'
 import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, CiTestResultsSchema, integrationPartition,
   CiScopeSchema, CiSelectedFilesSchema, validCiSelection,
   type CiDurations, type CiHostReply, type CiHostRun, type CiSuite, type CiPart, type CiPartition, type CiScope } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import { ciRepositoryCapabilities } from './repository.js'
+import { hostCiCapacity } from './capacity.js'
 
 type Command = { code: number; stdout: string; stderr: string }
 export interface HostCiPorts {
@@ -16,6 +17,7 @@ export interface HostCiPorts {
   now(): Date
   cpus: number
   memoryBytes: number
+  availableMemoryBytes?(): number
 }
 
 /** The CircleCI CLI otherwise spawns a telemetry process for every call, and CI polling calls it constantly. */
@@ -35,6 +37,11 @@ export function systemHostCiPorts(environment: NodeJS.ProcessEnv = process.env):
     now: () => new Date(),
     cpus: availableParallelism(),
     memoryBytes: totalmem(),
+    availableMemoryBytes: () => {
+      if (process.platform !== 'linux') return freemem()
+      const available = /^MemAvailable:\s+(\d+)\s+kB$/m.exec(readFileSync('/proc/meminfo', 'utf8'))?.[1]
+      return available === undefined ? freemem() : Number(available) * 1024
+    },
   }
 }
 
@@ -43,6 +50,8 @@ interface RunMeta {
   startedAt: string; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
   message: string | null; cleaned: boolean; durations?: CiDurations
   scope?: CiScope; files?: string[]; part?: CiPart; defaultBranch?: string; baseCommit?: string; deriveFiles?: boolean
+  resources?: { cpuCount: number; memoryBytes: number }
+  isolatedDatabase?: boolean
 }
 
 type StartRequest = { runId: string; repository: string; commit: string; suite: CiSuite
@@ -54,12 +63,13 @@ const unitName = (runId: string) => `foreman-ci-${runId}`
 // GitHub CLI's own credential helper: a computer that is logged in to gh fetches without any app setup.
 const gitAuth = ['-c', 'credential.helper=', '-c', 'credential.helper=!gh auth git-credential']
 
-/** Runs CI suites directly on this computer, like a self-hosted runner. One run at a time; each run is a transient
+/** Runs CI suites directly on this computer, like a self-hosted runner. Each run is a transient
  * systemd user service, so it outlives a Worker restart, and its CPU and memory stay below the host reserve. */
 export class HostCiRunner {
   private readonly preparing = new Map<string, Promise<void>>()
   private startQueue = Promise.resolve()
   private startingRunId: string | null = null
+  private readonly repositoryQueues = new Map<string, Promise<void>>()
   private githubChecked: { at: number; ready: boolean; reason: string | null } | undefined
 
   constructor(private readonly root = join(homedir(), '.local/share/foreman-code/ci-host'),
@@ -133,22 +143,33 @@ export class HostCiRunner {
     }
     const runs = []
     const directory = join(this.root, 'runs')
-    const names = existsSync(directory) ? (await readdir(directory)).sort().slice(-50) : []
+    const names = existsSync(directory) ? (await readdir(directory)).sort() : []
     for (const runId of names) runs.push(await this.refresh(runId).catch(() => null))
+    const active = await this.active()
+    const availableMemoryBytes = this.ports.availableMemoryBytes?.() ?? this.ports.memoryBytes
+    const capacity = this.capacity(active, availableMemoryBytes)
+    const activeRuns = runs.filter(run => run && ['starting', 'running'].includes(run.state))
+    const finishedRuns = runs.filter(run => run && !['starting', 'running'].includes(run.state))
     return CiHostReplySchema.parse({ operation: 'status', ready: !reasons.length, reasons,
-      cpuCount: this.ports.cpus, memoryBytes: this.ports.memoryBytes, runs: runs.filter(Boolean) })
+      cpuCount: this.ports.cpus, memoryBytes: this.ports.memoryBytes, availableMemoryBytes,
+      slotsUsed: capacity.slotsUsed, slotsTotal: capacity.slotsTotal,
+      runs: [...activeRuns, ...finishedRuns.slice(-Math.max(0, 50 - activeRuns.length))].slice(0, 50) })
   }
 
-  private async active(): Promise<string | null> {
-    const preparing = this.preparing.keys().next().value
-    if (preparing) return preparing
+  private capacity(active: RunMeta[], availableMemoryBytes = this.ports.availableMemoryBytes?.() ?? this.ports.memoryBytes) {
+    return hostCiCapacity({ cpuCount: this.ports.cpus, memoryBytes: this.ports.memoryBytes, availableMemoryBytes },
+      active.map(run => run.resources ?? { cpuCount: this.ports.cpus, memoryBytes: this.ports.memoryBytes }))
+  }
+
+  private async active(): Promise<RunMeta[]> {
     const directory = join(this.root, 'runs')
-    if (!existsSync(directory)) return null
+    if (!existsSync(directory)) return []
+    const active = []
     for (const runId of await readdir(directory)) {
       const run = await this.refresh(runId).catch(() => null)
-      if (run && ['starting', 'running'].includes(run.state)) return runId
+      if (run && ['starting', 'running'].includes(run.state)) active.push(await this.readMeta(runId))
     }
-    return null
+    return active
   }
 
   private async start(request: StartRequest) {
@@ -169,14 +190,34 @@ export class HostCiRunner {
     const directory = this.runDirectory(request.runId)
     if (existsSync(join(directory, 'meta.json'))) return this.refresh(request.runId)
     this.startingRunId = request.runId
-    const busy = await this.active()
-    if (busy) throw new DomainError('CI_HOST_BUSY', 'This computer is already running a CI suite.', 409)
+    let active = await this.active()
+    let capacity = this.capacity(active)
+    if (capacity.slotsUsed >= capacity.slotsTotal) {
+      throw new DomainError('CI_HOST_BUSY',
+        `All CI slots are in use (${capacity.slotsUsed}/${capacity.slotsTotal}); waiting for CPU or memory capacity.`, 409)
+    }
     const github = await this.github()
     if (!github.ready) throw new DomainError('COMPUTER_GITHUB_REQUIRED', github.reason!, 409)
+    await this.prepareRepository(request)
+    const databaseSuite = ['unit', 'integration'].includes(request.suite)
+    const isolatedDatabase = databaseSuite && await this.supportsDatabaseIsolation(request)
+    active = await this.active()
+    capacity = this.capacity(active)
+    if (databaseSuite && !isolatedDatabase) {
+      capacity = { slotsUsed: active.length, slotsTotal: 1, cpuCount: this.ports.cpus,
+        memoryBytes: Math.min(this.ports.availableMemoryBytes?.() ?? this.ports.memoryBytes,
+          Math.floor(this.ports.memoryBytes - Math.max(2 ** 30, this.ports.memoryBytes * 0.1))) }
+    }
+    if (capacity.slotsUsed >= capacity.slotsTotal) {
+      throw new DomainError('CI_HOST_BUSY',
+        `All CI slots are in use (${capacity.slotsUsed}/${capacity.slotsTotal}); this commit needs exclusive database capacity.`, 409)
+    }
     await mkdir(directory, { recursive: true, mode: 0o700 })
     const meta: RunMeta = { runId: request.runId, repository: request.repository, commit: request.commit,
       suite: request.suite, partition: request.partition ?? null, startedAt: this.ports.now().toISOString(),
       state: 'starting', finishedAt: null, exitCode: null, message: null, cleaned: false,
+      resources: { cpuCount: capacity.cpuCount, memoryBytes: capacity.memoryBytes },
+      isolatedDatabase,
       ...(request.part ? { part: request.part } : {}),
       scope: request.scope ?? 'affected', ...(request.files !== undefined ? { files: request.files } : {}),
       deriveFiles: (request.scope ?? 'affected') === 'affected' && request.files === undefined,
@@ -198,32 +239,68 @@ export class HostCiRunner {
     return result.stdout
   }
 
-  /** Fetch the commit with this computer's GitHub login, check it out in its own worktree and start the suite. */
+  /** Fetch the commit with this computer's GitHub login and start the suite in a private checkout. */
   private async launch(meta: RunMeta) {
-    const clone = join(this.root, 'git', ...meta.repository.split('/'))
-    if (!existsSync(join(clone, '.git'))) {
-      await mkdir(join(clone, '..'), { recursive: true, mode: 0o700 })
-      await this.git(['clone', '--quiet', '--no-checkout', `https://github.com/${meta.repository}.git`, clone])
-    }
-    if ((await this.ports.run('git', ['cat-file', '-e', `${meta.commit}^{commit}`], { cwd: clone, env: this.environment })).code !== 0) {
-      await this.git(['fetch', '--quiet', '--no-tags', 'origin', meta.commit], clone)
-    }
+    const previous = this.repositoryQueues.get(meta.repository) ?? Promise.resolve()
+    let release!: () => void
+    const pending = new Promise<void>(resolve => { release = resolve })
+    this.repositoryQueues.set(meta.repository, pending)
+    await previous
     const source = join(this.runDirectory(meta.runId), 'src')
-    await this.git(['worktree', 'prune'], clone)
-    await this.git(['worktree', 'add', '--quiet', '--detach', source, meta.commit], clone)
+    try {
+      if ((await this.readMeta(meta.runId)).state !== 'starting') return
+      await this.checkout(meta, source)
+    } finally {
+      release()
+      if (this.repositoryQueues.get(meta.repository) === pending) this.repositoryQueues.delete(meta.repository)
+    }
     await this.selectFiles(meta, source)
     const script = await this.script(meta, source)
     await writeFile(join(this.runDirectory(meta.runId), 'run.sh'), script, { mode: 0o700 })
-    const reserve = Math.max(2 ** 30, this.ports.memoryBytes * 0.1)
+    if ((await this.readMeta(meta.runId)).state !== 'starting') return
+    const resources = meta.resources!
     const environment = ['PATH', 'HOME', 'USER', 'LANG', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS']
       .flatMap(key => this.environment[key] ? [`--setenv=${key}=${this.environment[key]}`] : [])
     const started = await this.ports.run('systemd-run', ['--user', '--quiet', '--collect', `--unit=${unitName(meta.runId)}`,
-      `--property=MemoryMax=${Math.floor(this.ports.memoryBytes - reserve)}`, `--property=CPUQuota=${this.ports.cpus * 100}%`,
-      // Desktop sessions default to umask 0002; suites expect the 0022 every cloud CI runner uses.
+      `--property=MemoryMax=${resources.memoryBytes}`, `--property=CPUQuota=${resources.cpuCount * 100}%`,
       '--property=UMask=0022', `--working-directory=${source}`, ...environment, '/bin/bash', join(this.runDirectory(meta.runId), 'run.sh')],
     { env: this.environment, timeoutMs: 30_000 })
     if (started.code !== 0) throw new Error(`The CI unit could not start: ${started.stderr.trim().slice(0, 500)}`)
+    if ((await this.readMeta(meta.runId)).state !== 'starting') {
+      await this.ports.run('systemctl', ['--user', 'stop', `${unitName(meta.runId)}.service`], { env: this.environment })
+      await this.cleanDatabase(meta)
+      return
+    }
     await this.writeMeta({ ...meta, state: 'running' })
+  }
+
+  private async prepareRepository(request: Pick<StartRequest, 'repository' | 'commit'>) {
+    const clone = join(this.root, 'git', ...request.repository.split('/'))
+    if (!existsSync(join(clone, '.git'))) {
+      await mkdir(join(clone, '..'), { recursive: true, mode: 0o700 })
+      await this.git(['clone', '--quiet', '--no-checkout', `https://github.com/${request.repository}.git`, clone])
+    }
+    if ((await this.ports.run('git', ['cat-file', '-e', `${request.commit}^{commit}`], { cwd: clone, env: this.environment })).code !== 0) {
+      await this.git(['fetch', '--quiet', '--no-tags', 'origin', request.commit], clone)
+    }
+  }
+
+  private async supportsDatabaseIsolation(request: Pick<StartRequest, 'repository' | 'commit'>) {
+    const clone = join(this.root, 'git', ...request.repository.split('/'))
+    const manifest = await this.ports.run('git', ['show', `${request.commit}:package.json`],
+      { cwd: clone, env: this.environment })
+    if (manifest.code !== 0) return false
+    const parsed = JSON.parse(manifest.stdout) as { foremanCi?: { hostSlots?: number } }
+    return parsed.foremanCi?.hostSlots === 1
+  }
+
+  private async checkout(meta: RunMeta, source: string) {
+    const clone = join(this.root, 'git', ...meta.repository.split('/'))
+    // A private Git directory gives each job its own test/build admission queue.
+    await this.git(['clone', '--quiet', '--shared', '--no-checkout', clone, source])
+    const origin = (await this.git(['remote', 'get-url', 'origin'], clone)).trim()
+    await this.git(['remote', 'set-url', 'origin', origin], source)
+    await this.git(['checkout', '--quiet', '--detach', meta.commit], source)
   }
 
   private async selectFiles(meta: RunMeta, source: string) {
@@ -339,6 +416,10 @@ export class HostCiRunner {
       || (affected && meta.files?.some(file => file.startsWith('apps/api/'))))
     const prerequisiteSuite = apiUnit ? 'unit-api' : meta.part ?? meta.suite
     const run = this.runDirectory(meta.runId)
+    const resources = meta.resources!
+    const workers = Math.max(1, Math.min(resources.cpuCount, Math.floor(resources.memoryBytes / 2 ** 30)))
+    const heapMb = Math.max(256, Math.min(6144, Math.floor(resources.memoryBytes / 2 / 2 ** 20)))
+    const database = capabilities.parts && meta.isolatedDatabase === true
     let integrationEnvironment = ''
     if (meta.suite === 'integration' && capabilities.integrationPartitions) {
       // Main's learned durations, with the commit's committed ones for files it has not measured yet.
@@ -365,22 +446,28 @@ export class HostCiRunner {
       }
     }
     return ['#!/bin/bash', 'set -o pipefail', `exec >>${quote(join(run, 'log'))} 2>&1`,
-      // The repository's own integration runner sizes its shards to this computer.
-      // Compiled test modules outlive the run's worktree, so the next run on this computer starts warm.
-      `export TMPDIR=${quote(join(run, 'tmp'))} CI=true NODE_OPTIONS=--max-old-space-size=6144`
+      `export TMPDIR=${quote(join(run, 'tmp'))} CI=true NODE_OPTIONS=--max-old-space-size=${heapMb}`
+        + ` FOREMAN_CODE_CI_CPU_COUNT=${resources.cpuCount} FOREMAN_CODE_CI_MEMORY_BYTES=${resources.memoryBytes}`
+        + ` FOREMAN_CODE_VERIFICATION_UNIT_WORKERS=${workers}`
         // The repository's suite hook writes structured test results here; integration has its own setting.
         + (capabilities.parts ? ` CI_HOST_RUNNER=1 FOREMAN_CODE_CI_DEDICATED=1`
           + (meta.suite === 'integration' ? '' : ` TEST_RESULTS_OUTPUT=${quote(join(run, 'test-results.json'))}`)
-          + ` FOREMAN_CODE_VITEST_CACHE=${quote(join(this.root, 'vitest-cache'))}` : '') + integrationEnvironment,
+          + ` FOREMAN_CODE_VITEST_CACHE=${quote(join(run, 'vitest-cache'))}` : '') + integrationEnvironment,
+      ...(database ? [`export FOREMAN_CODE_CI_HOST_RUN_ID=${quote(meta.runId)}`] : []),
       'mkdir -p "$TMPDIR"',
-      `finish() { echo "$1" > ${quote(join(run, 'exit.tmp'))};`
-        + ` mv -- ${quote(join(run, 'exit.tmp'))} ${quote(join(run, 'exit'))}; exit "$1"; }`,
+      `finish() { local code="$1";`
+        + (database ? ` ${pm} db:down || { [ "$code" != 0 ] || code=1; }; trap - EXIT;` : '')
+        + ` echo "$code" > ${quote(join(run, 'exit.tmp'))};`
+        + ` mv -- ${quote(join(run, 'exit.tmp'))} ${quote(join(run, 'exit'))}; exit "$code"; }`,
+      ...(database ? [`trap '${pm} db:down' EXIT`] : []),
       `step() { echo "$1" > ${quote(join(run, 'step'))}; echo "::step $1"; }`,
       ...(meta.message ? [`echo ${quote(meta.message)}`] : []),
       'step install', `${pm} install${existsSync(join(source, 'pnpm-lock.yaml')) ? ' --frozen-lockfile' : ''} || finish $?`,
       ...(command ? [`step ${meta.part ?? meta.suite}`,
         ...(command !== 'true' && capabilities.parts
           ? [`SUITE=${quote(prerequisiteSuite)} bash scripts/ci-suite.sh prepare || finish $?`] : []),
+        ...(database ? ['if [ -f "$TMPDIR/test-database-url" ]; then',
+          '  export FOREMAN_CODE_CI_TEST_ADMIN_URL="$(cat "$TMPDIR/test-database-url")"', 'fi'] : []),
         `${command} || finish $?`] : []),
       'finish 0', ''].join('\n')
   }
@@ -405,6 +492,18 @@ export class HostCiRunner {
     await this.writeMeta({ ...meta, state, exitCode, message, finishedAt: this.ports.now().toISOString() })
   }
 
+  private async cleanDatabase(meta: RunMeta) {
+    const directory = this.runDirectory(meta.runId)
+    const script = join(directory, 'src/scripts/test-db.mjs')
+    if (!existsSync(script) || meta.isolatedDatabase !== true) return
+    const result = await this.ports.run('node', [script, 'down'], {
+      cwd: join(directory, 'src'),
+      env: { ...this.environment, FOREMAN_CODE_CI_HOST_RUN_ID: meta.runId,
+        FOREMAN_CODE_VERIFICATION_ENVIRONMENT: '', TMPDIR: join(directory, 'tmp') },
+    })
+    if (result.code !== 0) throw new Error(`CI database cleanup failed: ${result.stderr.trim().slice(0, 500)}`)
+  }
+
   /** Reads the current state of a run, settling it once its unit has exited, and frees its worktree. */
   async refresh(runId: string): Promise<CiHostRun> {
     // Launch can finish while the metadata read is awaiting I/O.
@@ -421,17 +520,21 @@ export class HostCiRunner {
         const unit = await this.ports.run('systemctl', ['--user', 'is-active', `${unitName(runId)}.service`], { env: this.environment })
         if (!['active', 'activating'].includes(unit.stdout.trim())) {
           // The unit is gone without recording an exit: it was stopped or the computer restarted.
+          await this.cleanDatabase(meta)
           await this.finish(runId, 'lost', null, 'The CI unit ended without an exit status.')
         }
       }
     } else if (meta.state === 'starting' && !preparing) {
+      await this.cleanDatabase(meta)
       await this.finish(runId, 'lost', null, 'The Worker restarted while preparing this run.')
     }
     meta = await this.readMeta(runId)
-    if (!['starting', 'running'].includes(meta.state) && !meta.cleaned) {
+    if (!['starting', 'running'].includes(meta.state) && !meta.cleaned && !this.preparing.has(runId)) {
       const clone = join(this.root, 'git', ...meta.repository.split('/'))
       if (existsSync(join(directory, 'src'))) {
-        await this.ports.run('git', ['worktree', 'remove', '--force', join(directory, 'src')], { cwd: clone, env: this.environment })
+        if (!(await stat(join(directory, 'src/.git')).catch(() => null))?.isDirectory()) {
+          await this.ports.run('git', ['worktree', 'remove', '--force', join(directory, 'src')], { cwd: clone, env: this.environment })
+        }
         await rm(join(directory, 'src'), { recursive: true, force: true })
       }
       await rm(join(directory, 'tmp'), { recursive: true, force: true })
@@ -448,6 +551,10 @@ export class HostCiRunner {
     const meta = await this.readMeta(runId)
     if (['starting', 'running'].includes(meta.state)) {
       await this.ports.run('systemctl', ['--user', 'stop', `${unitName(runId)}.service`], { env: this.environment })
+      await this.finish(runId, 'canceled', null, 'Canceled.')
+      await this.preparing.get(runId)
+      await this.ports.run('systemctl', ['--user', 'stop', `${unitName(runId)}.service`], { env: this.environment })
+      await this.cleanDatabase(meta)
       await this.finish(runId, 'canceled', null, 'Canceled.')
     }
     return this.refresh(runId)

@@ -4,9 +4,49 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { randomUUID } from 'node:crypto'
 import { test } from 'node:test'
 
 const script = fileURLToPath(new URL('./ci-suite.sh', import.meta.url))
+
+test('concurrent host jobs start and remove separate disposable database servers on distinct loopback ports', t => {
+  const directory = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'ci-databases-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const callsFile = join(directory, 'docker-calls.jsonl')
+  writeFileSync(callsFile, '')
+  writeFileSync(join(directory, 'docker'), `#!${process.execPath}
+const { appendFileSync } = require('node:fs')
+const args = process.argv.slice(2)
+appendFileSync(process.env.CALLS_FILE, JSON.stringify({ args, port: process.env.FOREMAN_CODE_CI_DATABASE_PORT }) + '\\n')
+if (args.includes('port')) console.log('127.0.0.1:' + process.env.FIXTURE_PORT)
+`, { mode: 0o755 })
+  const projects = []
+  const urls = []
+  for (const port of [55001, 55002]) {
+    const runId = randomUUID()
+    const temporary = join(directory, runId)
+    mkdirSync(temporary)
+    const environment = { ...process.env, PATH: `${directory}${delimiter}${process.env.PATH}`, TMPDIR: temporary,
+      FOREMAN_CODE_CI_HOST_RUN_ID: runId, FOREMAN_CODE_VERIFICATION_ENVIRONMENT: '',
+      FIXTURE_PORT: String(port), CALLS_FILE: callsFile }
+    for (const action of ['up', 'down']) {
+      const result = spawnSync(process.execPath, [fileURLToPath(new URL('./test-db.mjs', import.meta.url)), action],
+        { env: environment, encoding: 'utf8' })
+      assert.equal(result.status, 0, result.stderr)
+    }
+    const url = new URL(readFileSync(join(temporary, 'test-database-url'), 'utf8'))
+    assert.equal(url.hostname, '127.0.0.1')
+    assert.equal(url.port, String(port))
+    urls.push(url.href)
+    projects.push(`foreman-ci-${runId}`)
+  }
+  assert.equal(new Set(urls).size, 2)
+  const calls = readFileSync(callsFile, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+  for (const project of projects) {
+    assert.ok(calls.some(({ args, port }) => args.includes(project) && args.includes('up') && port === '0'))
+    assert.ok(calls.some(({ args }) => args.includes(project) && args.includes('down') && args.includes('--volumes')))
+  }
+})
 
 function runSuite(t, suite, failCommand = '', scope = 'full', action = '', installedClis = true, selection = undefined,
   hostRunner = false) {

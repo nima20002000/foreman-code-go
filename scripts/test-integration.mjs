@@ -309,7 +309,18 @@ export async function readIntegrationResources(admin, host = {
 }
 
 export function integrationShardPlan(environment, resources = {}, fileCount = Infinity) {
-  const { cpuCount, availableMemoryBytes, maxConnections, reservedConnections, activeConnections } = resources
+  let { cpuCount, availableMemoryBytes } = resources
+  const { maxConnections, reservedConnections, activeConnections } = resources
+  const slotCpu = environment.FOREMAN_CODE_CI_CPU_COUNT
+  const slotMemory = environment.FOREMAN_CODE_CI_MEMORY_BYTES
+  if (slotCpu !== undefined) {
+    const budget = positiveInteger(Number(slotCpu), 'CI slot CPU count')
+    cpuCount = Math.min(cpuCount ?? budget, budget)
+  }
+  if (slotMemory !== undefined) {
+    const budget = positiveInteger(Number(slotMemory), 'CI slot memory bytes')
+    availableMemoryBytes = Math.min(availableMemoryBytes ?? budget, budget)
+  }
   const knownCpu = Number.isSafeInteger(cpuCount) && cpuCount > 0
   const knownMemory = Number.isSafeInteger(availableMemoryBytes) && availableMemoryBytes >= 0
   const knownDatabase = Number.isSafeInteger(maxConnections) && maxConnections > 0
@@ -331,6 +342,7 @@ export function integrationShardPlan(environment, resources = {}, fileCount = In
       + ` ${reservedConnections} reserved, ${activeConnections} occupied, ${connectionsPerShard} connections/shard)`
       : 'PostgreSQL limits unknown (fallback 12)',
   ]
+  if (slotCpu !== undefined || slotMemory !== undefined) reasons.push('limited to this CI slot share')
   if (limit < 1) throw new Error(`No integration shard fits available resources: ${reasons.join('; ')}`)
   const requested = readProductEnvironment(environment, 'INTEGRATION_SHARDS')
   const selected = reservedIntegrationShards(environment, limit)

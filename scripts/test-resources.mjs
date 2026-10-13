@@ -7,7 +7,19 @@ import { dirname, join, resolve } from 'node:path'
 import { resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { createTestPool } from '../apps/api/test/helpers/testPool.mjs'
 
-export const testAdminUrl = 'postgresql://graphql_test_admin:graphql_test_disposable_only@127.0.0.1:55439/postgres'
+const defaultTestAdminUrl = 'postgresql://graphql_test_admin:graphql_test_disposable_only@127.0.0.1:55439/postgres'
+function hostTestAdminUrl() {
+  const value = process.env.FOREMAN_CODE_CI_TEST_ADMIN_URL
+  if (value === undefined) return defaultTestAdminUrl
+  const url = new URL(value)
+  const expected = new URL(defaultTestAdminUrl)
+  if (!/^[0-9a-f-]{36}$/.test(process.env.FOREMAN_CODE_CI_HOST_RUN_ID ?? '')
+    || url.protocol !== expected.protocol || url.hostname !== expected.hostname
+    || url.username !== expected.username || url.password !== expected.password || url.pathname !== '/postgres'
+    || !url.port || url.search || url.hash) throw new Error('Invalid host CI disposable database URL')
+  return value
+}
+export const testAdminUrl = hostTestAdminUrl()
 const serverMarker = 'graphql-disposable-test-server'
 const rootMarker = '.graphql-test-owner.json'
 const cleanupDirectory = '.graphql-test-cleanup'
@@ -20,7 +32,7 @@ export function requireTestServerUrl(value) {
   const expected = new URL(testAdminUrl)
   if (url.protocol !== expected.protocol || url.hostname !== expected.hostname || url.port !== expected.port
     || url.username !== expected.username || url.password !== expected.password || url.search || url.hash) {
-    throw new Error('Tests require the dedicated disposable PostgreSQL server on 127.0.0.1:55439')
+    throw new Error(`Tests require the dedicated disposable PostgreSQL server on 127.0.0.1:${expected.port}`)
   }
   return url
 }
