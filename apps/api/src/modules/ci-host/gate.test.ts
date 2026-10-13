@@ -72,11 +72,27 @@ it.each([80_000, 120_000])('balances %i ms integration files against cloud check
   const integration = parts.filter(part => part.suite === 'integration')
   expect(integration.flatMap(part => part.files).sort()).toEqual([...files].sort())
   expect(integration.filter(part => part.plannedHostKey.startsWith('builder-'))).toHaveLength(2)
+  const checks = parts.filter(part => part.suite !== 'integration')
+  expect(checks).toHaveLength(9)
+  expect(integration).toHaveLength(17)
+  for (const part of integration) {
+    const cpuSlots = part.plannedHostKey.startsWith('builder-') ? 16 : 4
+    expect(part.integrationShards).toBe(cpuSlots)
+    const concurrentFiles = cpuSlots / 2
+    expect(part.expectedDurationMs).toBe(90_000 + Math.ceil(part.files.length / concurrentFiles) * durationMs)
+  }
+  const integrationTimes = integration.map(part => part.expectedDurationMs)
+  expect(Math.max(...integrationTimes) - Math.min(...integrationTimes)).toBeLessThanOrEqual(durationMs)
   const times = new Map<string, number>()
   for (const part of parts) {
     times.set(part.plannedHostKey, (times.get(part.plannedHostKey) ?? 0) + part.expectedDurationMs)
   }
-  expect(Math.max(...times.values())).toBeLessThanOrEqual(210_000)
+  expect(times.size).toBe(parts.length)
+  // Heavy files reserve two CPU slots; check executors cannot also run integration in this wave.
+  const concurrentFiles = 2 * (16 / 2) + (24 - checks.length) * (4 / 2)
+  const integrationWaves = Math.ceil(files.length / concurrentFiles)
+  const maxGateDurationMs = Math.max(210_000, 90_000 + integrationWaves * durationMs)
+  expect(Math.max(...times.values())).toBeLessThanOrEqual(maxGateDurationMs)
 })
 
 it('lets a build computer without a queued gate part take cloud parts and another build computer integration part', () => {
