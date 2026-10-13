@@ -63,7 +63,8 @@ export const BugReportGetInputSchema = z.object({ reportId: IdSchema }).strict()
 export const BugReportUpdateInputSchema = BugReportGetInputSchema.extend({
   commandId: CommandId,
   expectedRevision: z.number().int().positive(),
-  status: BugReportActiveStatusSchema,
+  /** Closed statuses can only replay a command saved before batch closing was introduced. */
+  status: BugReportActiveStatusSchema.or(BugReportClosedStatusSchema.exclude(['duplicate'])),
 }).strict()
 export const BugReportCloseInputSchema = z.object({
   commandId: CommandId,

@@ -45,6 +45,9 @@ describe('bug report contracts', () => {
     }
     expect(BugReportUpdateInputSchema.safeParse({
       reportId: 'bug-report-one', commandId: 'status-command', expectedRevision: 1, status: 'fixed',
+    }).success).toBe(true)
+    expect(BugReportUpdateInputSchema.safeParse({
+      reportId: 'bug-report-one', commandId: 'status-command', expectedRevision: 1, status: 'duplicate',
     }).success).toBe(false)
     for (const status of ['fixed', 'wont-fix', 'duplicate']) {
       expect(BugReportCloseInputSchema.parse({

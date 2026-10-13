@@ -87,6 +87,30 @@ it.each(['footer', 'escape', 'backdrop'] as const)('guards unsaved closing notes
   await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Workflow start fails' })).not.toBeInTheDocument())
 })
 
+it('saves a closing draft before leaving through the shared navigation guard', async () => {
+  const items = [report()]
+  const writes: BugReportCloseInput[] = []
+  serveReports(items)
+  server.use(http.post('*/api/management/bug-reports/close', async ({ request }) => {
+    const input = await request.json() as BugReportCloseInput
+    writes.push(input)
+    items[0] = { ...items[0]!, status: input.status, revision: 2,
+      resolution: { status: input.status, note: input.note!, closedAt: '2026-10-11T10:00:00.000Z' } }
+    return HttpResponse.json({ reports: items, replayed: false })
+  }))
+  const router = mount('/settings/bugs?reportId=bug-report-1')
+  const user = userEvent.setup()
+  const dialog = await screen.findByRole('dialog', { name: 'Workflow start fails' })
+  await user.type(within(dialog).getByRole('textbox', { name: 'Closing note' }), 'Fixed in the release')
+  act(() => { void router.navigate({ to: '/settings' }) })
+  const guard = await screen.findByRole('alertdialog', { name: 'Save changes before leaving?' })
+  await user.click(within(guard).getByRole('button', { name: 'Save' }))
+  await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
+  expect(writes).toEqual([{ commandId: expect.any(String), status: 'fixed', note: 'Fixed in the release',
+    reports: [{ reportId: 'bug-report-1', expectedRevision: 1 }] }])
+  expect(items[0]!.status).toBe('fixed')
+})
+
 it('opens Bugs from Settings and stores filters and report selection in the URL', async () => {
   const items = [report(), report({ id: 'bug-report-2', title: 'Context is confusing', severity: 'low', status: 'fixed' })]
   serveReports(items)

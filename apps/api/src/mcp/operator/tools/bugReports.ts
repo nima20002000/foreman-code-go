@@ -54,6 +54,8 @@ export function registerBugReportTools(server: McpServer, context: OperatorReque
     server.registerTool('bug_report_update', {
       description: 'Mark a Foreman Code bug report open or triaged using its expectedRevision; this also reopens a '
         + 'closed report. Close reports with bug_reports_close. '
+        + 'Previously saved fixed/wont-fix update commands can still be retried with their original input; new '
+        + 'closed-status updates are rejected. '
         + 'Retry the same commandId and payload after an uncertain response. A different command with a stale '
         + 'revision conflicts. Requires bug_reports:update in the report scope; read-only callers cannot update.',
       inputSchema: BugReportUpdateInputSchema,
@@ -68,7 +70,8 @@ export function registerBugReportTools(server: McpServer, context: OperatorReque
         + 'report in the same workspace. Optional note records a short reason such as the release or commit. Give each '
         + 'report its expectedRevision; any stale revision rejects the whole call. A later repeat of a fixed report '
         + 'reopens it as a regression. Retry the same commandId and payload after an uncertain response. Requires '
-        + 'bug_reports:update on every report (and bug_reports:read on the duplicate target); read-only callers cannot close.',
+        + 'bug_reports:read and bug_reports:update on every report (and bug_reports:read on the duplicate target); '
+        + 'read-only callers cannot close.',
       inputSchema: BugReportCloseInputSchema,
       outputSchema: BugReportCloseResultSchema,
       annotations: { ...readAnnotations, readOnlyHint: false },

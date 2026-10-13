@@ -1,5 +1,6 @@
 import {
   BugReportCloseInputSchema,
+  BugReportActiveStatusSchema,
   BugReportCreateInputSchema,
   BugReportListInputSchema,
   BugReportSchema,
@@ -25,6 +26,7 @@ import {
   listBugReports, readBugReport, recordBugReport, saveBugReport, type BugReportOutcome,
 } from './repository.js'
 import { redactBugReportText } from './redaction.js'
+import { replayCloseReceipt, replayReportReceipt } from './receipts.js'
 
 type CommandSource = 'http' | 'mcp'
 
@@ -103,6 +105,7 @@ export class BugReportService {
       commandId: input.commandId,
       targetKey: `bug-reports:${context.workspaceId}`,
       payload: { input, originalInputHash: commandInputHash(accepted) },
+      replayResult: value => replayReportReceipt(value, reportMessage),
       authorize: async sql => {
         current = await liveBugReportPrincipal(sql, principal)
         context = await reportingContext(sql, current, source, input)
@@ -188,6 +191,10 @@ export class BugReportService {
         requireAuthorization(live, 'bug_reports:update', reportScope(saved))
       },
       perform: async sql => {
+        if (!BugReportActiveStatusSchema.safeParse(input.status).success) {
+          throw new DomainError('INVALID_INPUT',
+            'Close reports with bug_reports_close; closed-status updates only replay saved commands.', 400)
+        }
         const previous = await readBugReport(sql, report.id, 'update')
         if (previous.revision !== input.expectedRevision) {
           throw new DomainError('REVISION_CONFLICT', 'The bug report changed. Read it again before updating its status.', 409)
@@ -225,6 +232,7 @@ export class BugReportService {
     } catch (error) {
       if (error instanceof DomainError && error.status === 403) {
         await this.commands.recordDenied(principal.id, source, 'bug_reports.close', 'bug-reports')
+        error.denialAudited = true
       }
       throw error
     }
@@ -233,6 +241,7 @@ export class BugReportService {
       commandId: commandInputHash(accepted.commandId),
       ...(accepted.note === undefined ? {} : { note: redactBugReportText(accepted.note) }),
     }
+    const originalInputHash = commandInputHash(accepted)
     const result = await this.commands.execute({
       principal: current,
       source,
@@ -240,8 +249,18 @@ export class BugReportService {
       commandId: input.commandId,
       targetKey: `bug-reports:close:${commandInputHash([...ids].sort())}`,
       payload: input,
-      authorize: async sql => authorizeClose(sql, await liveBugReportPrincipal(sql, principal), input),
+      replayResult: value => replayCloseReceipt(value, originalInputHash),
+      authorize: async sql => {
+        const live = await liveBugReportPrincipal(sql, principal)
+        if (input.duplicateOfId) {
+          const target = await readBugReport(sql, input.duplicateOfId)
+          requireAuthorization(live, 'bug_reports:read', reportScope(target))
+          await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`bug-report-duplicates:${target.workspaceId}`])
+        }
+        await authorizeClose(sql, live, input)
+      },
       perform: async sql => {
+        await requireAcyclicDuplicate(sql, input)
         const now = new Date().toISOString()
         const resolution = {
           status: input.status,
@@ -260,10 +279,10 @@ export class BugReportService {
           await saveBugReport(sql, updated)
           closed.set(updated.id, updated)
         }
-        return ids.map(id => closed.get(id)!)
+        return { reports: ids.map(id => closed.get(id)!), originalInputHash }
       },
     })
-    return { reports: result.value, replayed: result.replayed }
+    return { reports: result.value.reports, replayed: result.replayed }
   }
 
   private async liveCaller(principal: ManagementPrincipal, source: CommandSource, action: string) {
@@ -284,9 +303,24 @@ async function authorizeClose(sql: GraphSqlClient, principal: ManagementPrincipa
   if (target) requireAuthorization(principal, 'bug_reports:read', reportScope(target))
   for (const item of input.reports) {
     const report = await readBugReport(sql, item.reportId)
+    requireAuthorization(principal, 'bug_reports:read', reportScope(report))
     requireAuthorization(principal, 'bug_reports:update', reportScope(report))
     if (target && target.workspaceId !== report.workspaceId) {
       throw new DomainError('INVALID_INPUT', 'A duplicate must name a report in the same workspace.', 400)
     }
+  }
+}
+
+async function requireAcyclicDuplicate(sql: GraphSqlClient, input: BugReportCloseInput) {
+  if (!input.duplicateOfId) return
+  const seen = new Set(input.reports.map(report => report.reportId))
+  let targetId: string | undefined = input.duplicateOfId
+  while (targetId) {
+    if (seen.has(targetId)) {
+      throw new DomainError('INVALID_INPUT', 'Duplicate reports must point to a report without creating a cycle.', 400)
+    }
+    seen.add(targetId)
+    const target = await readBugReport(sql, targetId)
+    targetId = target.status === 'duplicate' ? target.resolution?.duplicateOfId : undefined
   }
 }

@@ -29,7 +29,7 @@ const actionTools: Array<[ManagementAction, OperatorToolName[]]> = [
   ['agents:read', ['agent_get', 'agent_list']],
   ['bug_reports:report', ['bug_report']],
   ['bug_reports:read', ['bug_report_get', 'bug_reports_list']],
-  ['bug_reports:update', ['bug_report_update', 'bug_reports_close']],
+  ['bug_reports:update', ['bug_report_update']],
   ['graph:read', []],
   ['graph:edit', []],
   ['graph:save', []],
@@ -125,7 +125,7 @@ describe('Operator tool registration permissions', () => {
   it('registers every supported tool for an unrestricted owner', () => {
     // These require more than one grant (respond also needs interactions:read).
     const expected = [...actionTools.flatMap(([, names]) => names), 'interaction_respond',
-      'run_handoffs_get_v1', 'run_start', 'workflow_reorder'].sort()
+      'run_handoffs_get_v1', 'run_start', 'workflow_reorder', 'bug_reports_close'].sort()
     expect(registered(context([{ actions: [...ManagementActionSchema.options], scope: {} }]))).toEqual(expected)
   })
 
@@ -152,6 +152,17 @@ describe('Operator tool registration permissions', () => {
 
   it('does not register tools without grants', () => {
     expect(registered(context())).toEqual([])
+  })
+
+  it('requires overlapping read and update scopes to advertise batch bug-report closing', () => {
+    expect(registered(context([
+      { actions: ['bug_reports:read'], scope: { workspaceIds: ['a'] } },
+      { actions: ['bug_reports:update'], scope: { workspaceIds: ['b'] } },
+    ]))).not.toContain('bug_reports_close')
+    expect(registered(context([
+      { actions: ['bug_reports:read'], scope: { workspaceIds: ['a'] } },
+      { actions: ['bug_reports:update'], scope: { workspaceIds: ['a'] } },
+    ]))).toContain('bug_reports_close')
   })
 
   it.each([

@@ -183,6 +183,14 @@ it('conflicts when a close command is retried with a different note that redacts
     expect(BugReportCloseResultSchema.parse(value(await owner.client.callTool({
       name: 'bug_reports_close', arguments: input,
     })))).toEqual({ ...closed, replayed: true })
+    await f.db.pool.query(
+      `update management_command_receipts set result=$3::jsonb
+       where principal_id=$1 and operation='bug_reports.close' and command_id=$2`,
+      [owner.principal.id, commandInputHash(input.commandId), JSON.stringify(closed.reports)],
+    )
+    expect(BugReportCloseResultSchema.parse(value(await owner.client.callTool({
+      name: 'bug_reports_close', arguments: input,
+    })))).toEqual({ ...closed, replayed: true })
   } finally { await f.close() }
 }, 60_000)
 
@@ -285,6 +293,12 @@ it('reports from a scoped Agent and lets Operator discover, read and triage pers
       harness: 'codex', reporter: { principalId: f.credential.principalId, audience: 'worker' },
       status: 'open', revision: 1, occurrenceCount: 1,
     } })
+    await f.db.pool.query(
+      `update management_command_receipts set result=$3::jsonb
+       where principal_id=$1 and operation='bug_reports.report' and command_id=$2`,
+      [f.credential.principalId, commandInputHash(input.commandId),
+        JSON.stringify({ report: first.report, deduplicated: false })],
+    )
     expect(BugReportCreateResultSchema.parse(value(await f.worker.callTool({ name: 'bug_report', arguments: input }))))
       .toEqual({ ...first, replayed: true })
     const repeat = BugReportCreateResultSchema.parse(value(await f.worker.callTool({ name: 'bug_report',
@@ -311,7 +325,7 @@ it('reports from a scoped Agent and lets Operator discover, read and triage pers
     expect(schema.permissionRequirements.actions).toEqual(['bug_reports:update'])
     expect(schema.inputSchema).toMatchObject({ properties: {
       commandId: expect.any(Object), expectedRevision: expect.any(Object),
-      status: { enum: ['open', 'triaged'] },
+      status: { anyOf: [{ enum: ['open', 'triaged'] }, { enum: ['fixed', 'wont-fix'] }] },
     } })
     expect(schema.outputSchema).toBeDefined()
     const read = BugReportSchema.parse(value(await writer.client.callTool({ name: 'bug_report_get',
