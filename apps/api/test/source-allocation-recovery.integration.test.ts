@@ -142,6 +142,33 @@ it('recovers only the closed owner of interrupted shared initialization on the s
   expect((await readdir(f.rootPath)).filter(name => name.endsWith('.pending'))).toEqual([])
 }, 60_000)
 
+
+it.each(['', '{"version":1'])(
+  'reclaims an interrupted readiness write containing %j without stranding the original owner', async readiness => {
+    const f = await fixture()
+    const original = f.owner()
+    let checks = 0
+    await expect(f.prepare(original, async () => {
+      checks += 1
+      if (checks === 4) throw new Error('Initializer stopped after copy')
+    }, false)).rejects.toThrow('Initializer stopped after copy')
+    const pending = (await readdir(f.rootPath)).find(name => name.endsWith('.json.pending'))!
+    const allocation = JSON.parse(await readFile(join(f.rootPath, pending), 'utf8')) as { id: string }
+    await writeFile(join(f.rootPath, `${pending}.ready`), readiness, { mode: 0o600 })
+    await expect(f.prepare(f.owner(), undefined, false))
+      .rejects.toMatchObject({ code: 'SOURCE_MATERIALIZATION_UNCERTAIN' })
+    const grant = f.grant(original)
+    await expect(f.reclaim(grant, false)).rejects.toMatchObject({ code: 'source-reconciliation-unconfirmed' })
+    expect(await readFile(join(f.rootPath, `${pending}.ready`), 'utf8')).toBe(readiness)
+    const reclaimed = await f.reclaim(grant)
+    expect(await f.reclaim(grant)).toEqual(reclaimed)
+    await expect(stat(join(f.rootPath, allocation.id))).rejects.toMatchObject({ code: 'ENOENT' })
+    const recovered = await f.prepare(f.owner(), undefined, false)
+    expect(await readFile(join(f.rootPath, recovered.sharedTree!.id, 'tree', 'app.txt'), 'utf8'))
+      .toBe('approved source\n')
+    expect((await readdir(f.rootPath)).filter(name => name.includes('.pending'))).toEqual([])
+  }, 60_000)
+
 it('reclaims a known closed owner beyond the root metadata scan limit', async () => {
   const f = await fixture()
   const original = f.owner()
