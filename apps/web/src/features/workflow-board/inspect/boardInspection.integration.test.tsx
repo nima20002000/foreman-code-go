@@ -122,7 +122,15 @@ describe('Run inspection inside the one mounted Board', () => {
           startedAt: null, finishedAt: null } }] })))
     const { cache } = await mount(href(scope))
     expect(await within(pinnedCanvas()).findByText(/CI build-api · running/)).toBeVisible()
-    await userEvent.click(screen.getByRole('button', { name: /CI server, 1 running/ }))
+    const browserErrors: unknown[] = []
+    const recordBrowserError = (event: ErrorEvent) => browserErrors.push(event.error)
+    window.addEventListener('error', recordBrowserError)
+    try {
+      await userEvent.click(screen.getByRole('button', { name: /CI server, 1 running/ }))
+    } finally {
+      window.removeEventListener('error', recordBrowserError)
+    }
+    expect(browserErrors).toEqual([])
     const dialog = await screen.findByRole('dialog', { name: 'CI server' })
     expect(within(dialog).getByRole('button', { name: /Show tests of build · build-api/ })).toBeVisible()
     responseStatus = 503

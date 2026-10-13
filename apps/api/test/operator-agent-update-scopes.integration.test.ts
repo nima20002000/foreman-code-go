@@ -86,6 +86,13 @@ it('allows workflow-scoped Agent readers to update through HTTP and MCP and deni
     expectedConfigurationVersionId: created.agent.configurationVersionId!,
     prompt: { system: 'HTTP instructions' },
   }
+  const readOnly = await fixture.issue([{ actions: ['agents:read'],
+    scope: { workspaceIds: [workspaceId], workflowIds: [workflowId] } }])
+  const deniedUpdate = await fixture.app.inject({ method: 'PATCH', url: agentUrl,
+    headers: { ...headers, authorization: `Bearer ${readOnly.token}` }, payload: httpInput })
+  expect(deniedUpdate.statusCode).toBe(403)
+  expect(deniedUpdate.json()).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+  await expectMcpAccessDenied(readOnly.client.callTool({ name: 'agent_update', arguments: httpInput }))
   const httpReply = await fixture.app.inject({ method: 'PATCH', url: agentUrl, headers, payload: httpInput })
   expect(httpReply.statusCode).toBe(200)
   const httpSaved = contracts.AgentMutationResultSchema.parse(httpReply.json())
