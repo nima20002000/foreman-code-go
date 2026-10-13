@@ -296,6 +296,7 @@ it('joins in-flight host preparation before confirming direct MCP cancellation',
       completed = true
       return value
     })
+    // eslint-disable-next-line no-restricted-syntax -- Proves cancellation cannot finish during blocked dispatch.
     await new Promise(resolve => setTimeout(resolve, 100))
     expect(completed).toBe(false)
     release()
@@ -1420,6 +1421,7 @@ it('preserves MCP cancellation when an in-flight refresh returns an unstarted ti
       canceled = true
       return value
     })
+    // eslint-disable-next-line no-restricted-syntax -- Proves cancellation cannot finish during blocked dispatch.
     await new Promise(resolve => setTimeout(resolve, 100))
     expect(canceled).toBe(false)
     const pending = await reader.callTool({ name: 'ci_get',

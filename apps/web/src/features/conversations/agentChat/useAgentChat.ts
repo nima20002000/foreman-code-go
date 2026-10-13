@@ -146,6 +146,7 @@ export function useAgentChat(inputContext: AgentChatContext) {
   const denial = useProtectedAccessError(query, commandDenial.current ?? historyDenial
     ?? (latestCommand && latestCommand.submittedAt > query.dataUpdatedAt ? latestCommand.error : undefined))
   const state = canRead && !denial && query.data && matches(query.data) ? query.data : undefined
+  const { data: historyData, refetch: refetchHistory } = history
   const historyRevision = useRef<{ identity: string; revision: number } | undefined>(undefined)
   useEffect(() => {
     const identity = JSON.stringify(historyKey)
@@ -154,10 +155,10 @@ export function useAgentChat(inputContext: AgentChatContext) {
     const previous = historyRevision.current
     historyRevision.current = { identity, revision }
     const advanced = previous?.identity === identity && revision > previous.revision
-    const mutable = history.data?.pages.some(batch => batch.pages.some(page =>
+    const mutable = historyData?.pages.some(batch => batch.pages.some(page =>
       page.messages.some(message => message.role === 'assistant' && message.nativeMessageComplete === false)))
-    if (advanced && mutable) void history.refetch()
-  }, [historyKey, state?.revision, history.data, history.refetch])
+    if (advanced && mutable) void refetchHistory()
+  }, [historyKey, state?.revision, historyData, refetchHistory])
   const currentReceipt = latestCommand?.result
     ? currentCommandReceipt(latestCommand.result, state)
     : receiptForCommand(state, latestCommand?.command)

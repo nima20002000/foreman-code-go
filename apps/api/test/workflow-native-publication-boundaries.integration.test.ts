@@ -54,7 +54,6 @@ describe.skipIf(!postgresEnabled)('workflow native publication boundaries', () =
     let delayed = false
     let renewal: Promise<unknown> | undefined
     let renewalError: unknown
-    let coordination: PostgresInteractionCoordinationRepository
     const f = await checkpointRuntimeFixture(1, 1, { approvalNodeIds: [],
       nativeSourcePersisted: async (sql, _evidence, source) => {
         if (delayed || source.original.type !== 'history') return
@@ -66,7 +65,7 @@ describe.skipIf(!postgresEnabled)('workflow native publication boundaries', () =
         }).catch(error => { renewalError = error })
         await sql.query('select pg_sleep(0.6)')
       } })
-    coordination = new PostgresInteractionCoordinationRepository(f.db.pool)
+    const coordination = new PostgresInteractionCoordinationRepository(f.db.pool)
     const reconcile = f.provider.reconcile.bind(f.provider)
     let shortened = false
     vi.spyOn(f.provider, 'reconcile').mockImplementation(async (...args) => {

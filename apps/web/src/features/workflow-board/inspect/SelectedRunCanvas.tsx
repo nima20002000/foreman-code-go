@@ -166,7 +166,8 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
     return ciList.isError ? { ...summary, state: 'unavailable' as const, label: `Last read: ${summary.label}` } : summary
   }, [ciRunJobs, ciUnavailable, ciList.isError])
   const ciFlights = useCiTransfers(ciList.isError ? undefined : ciRunJobs, useReducedMotion())
-  const transfers = ciDenied || ciList.isError ? new Map<string, EdgePulse[]>() : ciFlights
+  const transfers = useMemo(() => ciDenied || ciList.isError ? new Map<string, EdgePulse[]>() : ciFlights,
+    [ciDenied, ciList.isError, ciFlights])
   const ciDialogKey = JSON.stringify(['ci-server', scope.runId])
   const ciDialogOpen = useInspectionPresentation((state) => !!state.open[ciDialogKey])
   const setCiDialogOpen = (value: boolean) => useInspectionPresentation.getState().setOpen(ciDialogKey, value)
