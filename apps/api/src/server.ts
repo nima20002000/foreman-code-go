@@ -45,7 +45,8 @@ async function main() {
     config.checkpoints.schema,
     config.database,
   )
-  const { app, prepareSchema, initialize, reconcile, drainShutdown, startDeviceListener, registerFileStorage, rsync } = buildProductionApp(config, database, checkpoints,
+  const { app, prepareSchema, initialize, reconcile, drainShutdown, startDeviceListener, registerFileStorage, rsync,
+    shutdownPending } = buildProductionApp(config, database, checkpoints,
     componentLogger('http'), undefined, undefined,
     { codex: codexQualificationSuite },
     {
@@ -64,10 +65,21 @@ async function main() {
   const engineLog = componentLogger('engine')
   const reportReconciliationError = (error: unknown) => engineLog.error({ err: error }, 'run reconciliation failed')
 
+  // Shutdown waits for in-flight HTTP requests, then for every runtime step; name whatever still holds it.
+  const inFlight = new Map<string, string>()
+  app.addHook('onRequest', async request => { inFlight.set(request.id, `${request.method} ${request.url.split('?')[0]}`) })
+  app.addHook('onResponse', async request => { inFlight.delete(request.id) })
+  app.addHook('onRequestAbort', async request => { inFlight.delete(request.id) })
   app.addHook('preClose', async () => {
     startup.abort(new Error('Startup canceled by shutdown.'))
     lifecycle.info('api shutting down')
     if (reconciliationTimer) clearInterval(reconciliationTimer)
+    const waiting = setInterval(() => {
+      lifecycle.info({ requests: [...inFlight.values()].slice(0, 20), requestCount: inFlight.size,
+        steps: shutdownPending() }, 'shutdown still waiting')
+    }, 5000)
+    waiting.unref()
+    app.addHook('onClose', async () => { clearInterval(waiting) })
   })
   app.addHook('onClose', async () => { await drainShutdown() })
 
