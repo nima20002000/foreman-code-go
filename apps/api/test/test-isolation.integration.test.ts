@@ -1,17 +1,18 @@
+import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 import pg from 'pg'
 import { afterAll, beforeAll, expect, it } from 'vitest'
 import { createFixtureDatabase, createFixtureSchema, dropFixtureDatabase, dropFixtureSchema } from './helpers/testResources.js'
 import { assertOwnedExecutionDestinations } from './helpers/testResources.js'
-import { agent3Database, candidateFor, seedAgent3 } from './helpers/wave25Agent3.js'
+import { candidateFor, seedAgent3 } from './helpers/wave25Agent3.js'
 import { createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot, resetTestDatabase,
   testAdminPool, testAdminUrl } from '../../../scripts/test-resources.mjs'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { AgentConfigurationVersionSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
 
-let destinationFixture: Awaited<ReturnType<typeof agent3Database>>
-beforeAll(async () => { destinationFixture = await agent3Database() })
+let destinationFixture: Awaited<ReturnType<typeof migratedDatabase>>
+beforeAll(async () => { destinationFixture = await migratedDatabase() })
 afterAll(async () => { await destinationFixture?.close() })
 
 it('queues administrative queries without consuming their connection acquisition deadline', async () => {
@@ -126,7 +127,7 @@ it('checks persisted execution destinations again after reconnecting to the prep
     await assertOwnedExecutionDestinations(fixture.pool, selection)
     await fixture.pool.query('update workspaces set execution_location=$2::jsonb where id=$1',
       [selection.workspaceId, JSON.stringify({ runnerId: 'local', rootPath: outside.directory })])
-    restarted = new pg.Pool({ connectionString: process.env.TEST_DATABASE_URL,
+    restarted = new pg.Pool({ connectionString: fixture.databaseUrl,
       options: `-c search_path=${fixture.schema}`, max: 1 })
     await expect(assertOwnedExecutionDestinations(restarted, selection)).rejects.toThrow('owned root')
     expect((await restarted.query('select count(*)::int as count from runs')).rows[0].count).toBe(0)

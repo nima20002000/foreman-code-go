@@ -1,11 +1,12 @@
+import { migratedDatabase } from './helpers/migratedDatabase.js'
 import { afterAll, beforeAll, expect, it, vi } from 'vitest'
 import { agentChatFixtures } from '@foreman-code/contracts/agent-chat'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { AgentChatCommands } from '../src/modules/conversations/agentChatCommands.js'
-import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
+import { postgresEnabled } from './helpers/wave25Agent3.js'
 
-let database: Awaited<ReturnType<typeof agent3Database>>
-beforeAll(async () => { if (postgresEnabled) database = await agent3Database() })
+let database: Awaited<ReturnType<typeof migratedDatabase>>
+beforeAll(async () => { if (postgresEnabled) database = await migratedDatabase() })
 afterAll(async () => { if (database) await database.close() })
 
 /** Durable receipt/readback proof; real HTTP/MCP and factory replay remain orchestrator gates. */
