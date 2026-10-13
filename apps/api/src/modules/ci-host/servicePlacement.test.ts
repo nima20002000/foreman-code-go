@@ -404,15 +404,22 @@ it('dispatches a duration-planned single ordinary full slice to cloud', async ()
 })
 
 
-function tieredRuns(gate = false) {
-  const [fast, slow] = queuedRuns(2)
-  return [CiRunRecordSchema.parse({ ...fast, gate, partition: { index: 0, count: 1, weights: [1], tier: 'fast', slowFiles: ['slow'] } }),
-    CiRunRecordSchema.parse({ ...slow, gate, partition: { index: 0, count: 1, weights: [1], tier: 'slow', slowFiles: ['slow'] },
-      deferred: true })]
+function tieredRuns({ gate = false }: { gate?: boolean } = {}) {
+  const fastFile = 'apps/api/test/workflow.integration.test.ts'
+  const slowFile = 'apps/api/test/workflow-recovery.integration.test.ts'
+  return queuedRuns(2).map((run, index) => {
+    const file = index === 0 ? fastFile : slowFile
+    const tier = index === 0 ? 'fast' : 'slow'
+    const selection = gate
+      ? { partition: null, files: [file],
+        integrationShards: 8, plannedHostKey: cloud.key, requiresBuildComputer: false }
+      : { partition: { index: 0, count: 1, weights: [1], tier, slowFiles: [slowFile] } }
+    return CiRunRecordSchema.parse({ ...run, ...selection, gate, ...(index === 1 ? { deferred: true } : {}) })
+  })
 }
 
 it('dispatches the deferred gate selection with valid host requests after a fast failure', async () => {
-  const records = tieredRuns(true)
+  const records = tieredRuns({ gate: true })
   records[0] = CiRunRecordSchema.parse({ ...records[0]!, state: 'failed', exitCode: 1,
     finishedAt: '2026-10-12T00:05:00.000Z' })
   const failed = { ...records[0]! }
@@ -449,7 +456,7 @@ it('skips the slow tier of an affected request when another part failed', async 
 })
 
 it.each([false, true])('runs the slow tier after a fast failure in a full request with gate=%s', async gate => {
-  const records = tieredRuns().map(run => CiRunRecordSchema.parse({ ...run, gate }))
+  const records = tieredRuns({ gate })
   records[0] = CiRunRecordSchema.parse({ ...records[0]!, state: 'failed', exitCode: 1,
     finishedAt: '2026-10-12T00:05:00.000Z' })
   const failed = { ...records[0]! }
@@ -462,7 +469,7 @@ it.each([false, true])('runs the slow tier after a fast failure in a full reques
 })
 
 it.each([false, true])('waits for remaining fast parts after a full request failure with gate=%s', async gate => {
-  const [fast, slow] = tieredRuns().map(run => CiRunRecordSchema.parse({ ...run, gate }))
+  const [fast, slow] = tieredRuns({ gate })
   const running = CiRunRecordSchema.parse({ ...fast!, id: randomUUID(), state: 'running',
     computer: { hostRef: cloud.hostRef, label: cloud.label } })
   const records = [CiRunRecordSchema.parse({ ...fast!, state: 'failed', exitCode: 1,

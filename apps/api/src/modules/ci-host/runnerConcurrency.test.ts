@@ -196,7 +196,7 @@ describe('host CI runner concurrent starts', () => {
       await runner.handle(request)
       await writing.entered
       await expect(runner.handle({ operation: 'read', runId: request.runId, afterOffset: 0, maxBytes: 1 }))
-        .resolves.toMatchObject({ run: { state: 'starting' } })
+        .resolves.toMatchObject({ run: { runId: request.runId, state: 'running', exitCode: null, finishedAt: null } })
       await expect(runner.handle({ ...request, runId: randomUUID() }))
         .rejects.toMatchObject({ code: 'CI_HOST_BUSY' })
       const restarted = new HostCiRunner(root, ports)
