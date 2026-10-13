@@ -96,3 +96,34 @@ it('keeps an unpartitioned integration suite on a build computer', async () => {
   expect(f.started).toEqual([])
   expect(records[0]?.state).toBe('queued')
 })
+
+it.each(['github', 'circleci'] as const)('assigns systemd slices to %s when its executor declares support', async provider => {
+  const records = queuedRuns(2)
+  const capable = { ...cloud, hostRef: { ...cloud.hostRef, provider },
+    userSystemd: { supported: true, reason: null } }
+  const f = fleet(records, [capable])
+  await f.service.dispatch()
+  expect(f.started).toHaveLength(1)
+  expect(f.started[0]?.request).toMatchObject({ partition: { index: 0, hostIndexes: [0] } })
+  expect(records[0]).toMatchObject({ state: 'running', computer: { hostRef: { kind: 'cloud', provider } } })
+})
+
+it('runs an unpartitioned systemd selection on a capable cloud slot', async () => {
+  const records = queuedRuns(1)
+  records[0] = CiRunRecordSchema.parse({ ...records[0], scope: 'affected',
+    files: ['apps/api/test/native-service-restart.integration.test.ts'] })
+  const f = fleet(records, [{ ...cloud, userSystemd: { supported: true, reason: null } }])
+  await f.service.dispatch()
+  expect(f.started).toHaveLength(1)
+  expect(records[0]?.state).toBe('running')
+})
+
+it('plans systemd files on capable cloud capacity and keeps a build computer available for other slices', async () => {
+  const records = queuedRuns(2)
+  const f = fleet(records, [host, { ...cloud, userSystemd: { supported: true, reason: null } }])
+  await f.service.dispatch()
+  expect(f.started.find(item => item.computer.key === cloud.key)?.request)
+    .toMatchObject({ partition: { index: 0, hostIndexes: [0] } })
+  expect(f.started.find(item => item.computer.key === host.key)?.request)
+    .toMatchObject({ partition: { index: 1, hostIndexes: [0] } })
+})

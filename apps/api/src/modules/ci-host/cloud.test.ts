@@ -18,7 +18,7 @@ afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { rec
 /** A private repository and its public mirror as local bare repositories standing in for GitHub, with a gh that
  * records dispatches and replays the run states a test sets. */
 async function fixture(files: Record<string, string> = {}, options: { mirror?: boolean; provider?: 'github' | 'circleci'
-  mirrorWorkflows?: boolean; sourceWorkflows?: boolean } = {}) {
+  mirrorWorkflows?: boolean; sourceWorkflows?: boolean; userSystemd?: boolean } = {}) {
   const root = await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT ?? '/tmp', 'cloud-ci-'))
   roots.push(root)
   const environment = gitFixtureEnvironment()
@@ -150,6 +150,11 @@ async function fixture(files: Record<string, string> = {}, options: { mirror?: b
     return { code: 1, stdout: '', stderr: `unexpected gh ${args.join(' ')}` }
   } }
   const provider = options.provider === 'circleci' ? new CircleCiProvider(ports) : new GitHubActionsProvider(ports)
+  if (options.userSystemd === false) {
+    Object.defineProperty(provider, 'userSystemd', {
+      value: { supported: false, reason: 'Executor has no systemd user manager' },
+    })
+  }
   const reopen = () => new CloudCi('main-1', provider, async repository => options.mirror === false ? null
     : repository === 'octo/site' ? 'octo/site-ci' : null, join(root, 'ci-cloud'), ports, git,
     { home: '/home/owner', user: 'owner', host: 'owner-desktop' })
@@ -384,7 +389,7 @@ describe('GitHub Actions CI on a public mirror', () => {
   })
 
   it.each(['github', 'circleci'] as const)('refuses a host partition on %s before publishing or dispatching', async provider => {
-    const f = await fixture({}, { provider })
+    const f = await fixture({}, { provider, userSystemd: false })
     const head = f.mirrorGit('rev-parse', 'main')
     await expect(f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site',
       commit: f.commit, suite: 'integration', scope: 'full',
@@ -416,7 +421,7 @@ describe('GitHub Actions CI on a public mirror', () => {
 
   it.each(['github', 'circleci'] as const)('rejects user-systemd files without host metadata on %s', async provider => {
     const file = 'apps/api/test/native-service-restart.integration.test.ts'
-    const f = await fixture({ [file]: '' }, { provider })
+    const f = await fixture({ [file]: '' }, { provider, userSystemd: false })
     await expect(f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site',
       commit: f.commit, suite: 'integration', scope: 'affected', files: [file] }))
       .rejects.toMatchObject({ code: 'CI_CLOUD_UNAVAILABLE' })
@@ -425,6 +430,27 @@ describe('GitHub Actions CI on a public mirror', () => {
       .rejects.toMatchObject({ code: 'CI_CLOUD_UNAVAILABLE' })
     expect(f.dispatched).toHaveLength(0)
     expect(f.circle.triggered).toHaveLength(0)
+  })
+
+  it.each(['github', 'circleci'] as const)('dispatches systemd slices and single files when %s declares support', async provider => {
+    const file = 'apps/api/test/native-service-restart.integration.test.ts'
+    const f = await fixture({ [file]: '' }, { provider })
+    expect(f.cloud.computers()[0]?.userSystemd).toEqual({ supported: true, reason: null })
+    expect(await f.cloud.handle({ operation: 'status' }))
+      .toMatchObject({ userSystemd: { supported: true, reason: null } })
+    for (const partition of [undefined, { index: 0, count: 2, hostIndexes: [0] }]) {
+      await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site',
+        commit: f.commit, suite: 'integration', scope: 'affected', files: [file],
+        ...(partition ? { partition } : {}) })
+    }
+    const commands = provider === 'github' ? f.dispatched : f.circle.triggered
+    expect(commands).toHaveLength(2)
+    for (const command of commands) {
+      const slice = command.find(value => value.startsWith('slice='))!.slice('slice='.length)
+      const inventory = ['a', 'b', 'c', 'd', 'native-service-restart']
+        .map(name => `apps/api/test/${name}.integration.test.ts`).sort()
+      expect(selectByIndexes(inventory, slice)).toEqual([file])
+    }
   })
 
   it.each(['github', 'circleci'] as const)('spreads heavy integration files across every %s slice', async provider => {

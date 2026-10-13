@@ -39,6 +39,8 @@ jobs:
     resource_class: large
     environment:
       CI: 'true'
+      # The machine executor has systemd; the suite starts and probes its per-user manager.
+      CI_USER_SYSTEMD: '1'
       FOREMAN_CODE_CI_DEDICATED: '1'
       SUITE: << pipeline.parameters.suite >>
       SLICE: << pipeline.parameters.slice >>

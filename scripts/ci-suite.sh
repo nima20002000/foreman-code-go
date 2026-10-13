@@ -168,6 +168,9 @@ case "$SUITE" in
   build-other) pnpm -r --filter '!@foreman-code/api' --if-present build ;;
   typecheck|lint|build) pnpm "$SUITE" ;;
   integration)
+    if [ "${CI_USER_SYSTEMD:-0}" = 1 ] && [ "${CI_HOST_RUNNER:-0}" != 1 ]; then
+      source scripts/ci-user-systemd.sh
+    fi
     ready db; ready clis
     export FOREMAN_CODE_INTEGRATION_DURATIONS_OUTPUT="$DURATIONS_OUTPUT"
     if [ -n "$test_results" ]; then export FOREMAN_CODE_INTEGRATION_TEST_RESULTS_OUTPUT="$test_results"; fi

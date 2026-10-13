@@ -40,7 +40,7 @@ const CiRepositorySchema = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\
 /** `weights` gives each slice's relative speed (its computer's measured throughput), so slices finish together. */
 export const CiPartitionSchema = z.object({ index: z.number().int().nonnegative(), count: z.number().int().min(2).max(32),
   weights: z.array(z.number().positive().finite()).optional(),
-  /** Only user-systemd files run in these slices; ordinary files use the other slices. */
+  /** Only user-systemd files run in these slices on capable cloud executors or build computers; ordinary files use the others. */
   hostIndexes: z.array(z.number().int().nonnegative()).min(1).max(32).optional() }).strict()
   .refine(value => value.index < value.count, 'The partition index must be below its count.')
   .refine(value => !value.weights || value.weights.length === value.count, 'Give one weight per partition.')
@@ -105,11 +105,14 @@ const CiHostRunSchema = z.object({
   logBytes: z.number().int().nonnegative(), message: z.string().max(2000).nullable(),
 }).strict()
 export type CiHostRun = z.infer<typeof CiHostRunSchema>
+export const CiUserSystemdSchema = z.object({ supported: z.boolean(), reason: z.string().max(300).nullable() }).strict()
+export type CiUserSystemd = z.infer<typeof CiUserSystemdSchema>
 export const CiHostStatusSchema = z.object({
   operation: z.literal('status'), ready: z.boolean(), reasons: z.array(z.string().max(300)).max(10),
   cpuCount: z.number().int().positive(), memoryBytes: z.number().int().positive(),
   availableMemoryBytes: z.number().int().nonnegative().optional(),
   slotsUsed: z.number().int().nonnegative().optional(), slotsTotal: z.number().int().positive().optional(),
+  userSystemd: CiUserSystemdSchema.optional(),
   runs: z.array(CiHostRunSchema).max(50),
 }).strict()
 export type CiHostStatus = z.infer<typeof CiHostStatusSchema>
