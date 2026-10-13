@@ -12,20 +12,14 @@ import { measureRetainedMaterializationFootprint } from './retainedDirectoryUsag
 import { PrivateSourceMaterializer, releaseMaterializationClaim, reconcileSourcePreparation } from './materialization.js'
 import { verifyMaterializedWorkingDirectory } from './workingDirectory.js'
 import { createPrivateSourceRepository } from './repository.js'
-import type { MaterializationAttempt, SourceByteReader } from './ports.js'
-import type { SourceExecutionHostPort } from './service.js'
+import type { MaterializationAttempt, SourceAttemptAuthority, SourceByteReader, SourceExecutionHostPort, SourceNativeSessionCapture } from './ports.js'
+export type { SourceAttemptAuthority, SourceNativeSessionCapture } from './ports.js'
 import type { SourceActiveNativeSession } from '@foreman-code/contracts/source-operations'
 import type { SourceOperationOwner } from '@foreman-code/contracts/source-operations'
 import type { SourcePreparationClosure } from '@foreman-code/contracts/source-admission'
 import type { SourceStorageCapacity } from '@foreman-code/contracts/source-operations'
 import { readSourceStorageCapacity } from './storageCapacity.js'
 
-/** Installed lifetime capture only: never accepted from filesystem requests. */
-export interface SourceNativeSessionCapture {
-  proof: SourceActiveNativeSession
-  signal: AbortSignal
-  assertCurrent(): Promise<void> | void
-}
 export type SourceNativeSessionCaptureReader = (record: SourceMaterializationRecord) => Promise<SourceNativeSessionCapture | null>
 export type SourceActiveNativeSessionReader = (sql: GraphSqlClient, record: SourceMaterializationRecord) => Promise<SourceActiveNativeSession | null>
 /** Worker independently observes these original installed-host facts. Main owns
@@ -38,14 +32,6 @@ export interface SourceInstalledNativeOwner {
 }
 export type SourceInstalledNativeOwnerReader = (record: SourceMaterializationRecord) => Promise<SourceInstalledNativeOwner | null>
 
-export interface SourceAttemptAuthority {
-  authorize(sql: GraphSqlClient, principal: ManagementPrincipal, input: { workspaceId: string; root: SourceRootRecord; attempt: MaterializationAttempt; operationId: string }): Promise<void>
-  authorizeFinal(sql: GraphSqlClient, principal: ManagementPrincipal, record: SourceMaterializationRecord, finalDispatchBindingHash: string): Promise<void>
-  /** Rechecks exact accepted source/root/current host authorization on that host.
-   * It confers no native launch right; W08 final intent controls entry. */
-  revalidate(root: SourceRootRecord, attempt: MaterializationAttempt): Promise<void>
-  revalidateMaterialization(record: SourceMaterializationRecord): Promise<void>
-}
 export interface RemoteSourceMaterializationHost {
   storageCapacity?(root: SourceRootRecord, attempt: MaterializationAttempt): Promise<SourceStorageCapacity>
   prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt,

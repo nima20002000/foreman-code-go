@@ -12,7 +12,7 @@ import { InstalledVerificationRuntimeCaptureInputSchema, InstalledVerificationRu
 import type { JobResourceRequest, PreparedCiRuntime } from '@foreman-code/contracts'
 import { DEVICE_MIB, DEVICE_RESOURCE_HOST_RESERVE, DeviceResourceLimitsSchema, type DeviceResourceLimits }
   from '@foreman-code/contracts/device-resources'
-import { InstalledJobRuntimeConfigurationRecordSchema } from './installedRuntimeHost.js'
+import { InstalledJobRuntimeConfigurationRecordSchema } from './installedRuntimeConfiguration.js'
 import { readCiRuntimeInstallation, readCiRuntimeTemplate, relocateCiQuotaSlots } from './ciRuntimeInstallation.js'
 import { DomainError } from '../errors.js'
 

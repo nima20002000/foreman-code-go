@@ -12,8 +12,8 @@ import { jobInputSnapshotDigest } from '@foreman-code/contracts/job-inputs-node'
 import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { identity } from '../sources/privateFilesystem.js'
 import { canonical } from './repository.js'
-import type { JobSourcePort } from './executor.js'
-export type VerifiedJobSource=Awaited<ReturnType<JobSourcePort['verify']>>
+import type { VerifiedJobGitMounts } from './privateGitMounts.js'
+export type VerifiedJobSource={ privateRepositoryRoot: string; directoryIdentityHash: string; privateGit: true; diskQuotaBytes: number; gitMounts?:VerifiedJobGitMounts }
 /** Supplied only by W09's canonical authorization/transfer/materialization adapter. */
 export interface JobAcceptedInputPort {
   prepare(execution:JobExecutionRecord,source:VerifiedJobSource,signal:AbortSignal):Promise<JobInputDeliveryReceipt>

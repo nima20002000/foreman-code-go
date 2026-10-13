@@ -1,6 +1,13 @@
 import type { SourceManifest, SourceEntry, RootBinding, MaterializationReceipt, SourceSnapshotReference }
   from '@foreman-code/contracts/source-materialization'
 import type { FileHandle } from 'node:fs/promises'
+import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import type { SourceWorktreeRequest } from '@foreman-code/contracts/source-materialization'
+import type { SourceMaterializationRecord, SourcePreparationClosure, SourceRootRecord, VerifiedSourceWorkingTree }
+  from '@foreman-code/contracts/source-admission'
+import type { RetainedSourceFootprint, SourceActiveNativeSession, SourceOperationOwner, SourceStorageCapacity }
+  from '@foreman-code/contracts/source-operations'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 
 /** Main persists this exact approved pin; neither worker nor resolver chooses latest. */
 export type SourceSnapshotPin = Pick<SourceManifest, 'snapshotId' | 'manifestDigest' | 'approvedSourceId'>
@@ -30,4 +37,31 @@ export interface ExclusiveSourceCapture {
   readonly writerExcluded: true
   read(entry: { path: string; executable: boolean }): Promise<Uint8Array>
   validateExclusion(): Promise<void>
+}
+export interface SourceExecutionHostPort {
+  storageCapacity?(root: SourceRootRecord, attempt: MaterializationAttempt): Promise<SourceStorageCapacity>
+  /** W08/CI allocated this actual attempt; this SQL-only port checks its accepted
+   * owner and placement before source service can prepare a native directory. */
+  authorize(sql: GraphSqlClient, principal: ManagementPrincipal,
+    input: { workspaceId: string; root: SourceRootRecord; attempt: MaterializationAttempt; operationId: string }): Promise<void>
+  prepare(manifest: SourceManifest, root: SourceRootRecord, attempt: MaterializationAttempt, options?: { sharedWritableTree?: true; worktree?: SourceWorktreeRequest }): Promise<SourceMaterializationRecord['receipt']>
+  verifyWorkingDirectory(record: SourceMaterializationRecord, relativeCwd: string): Promise<VerifiedSourceWorkingTree>
+  verify(record: SourceMaterializationRecord): Promise<string>
+  releaseClaim(record: SourceMaterializationRecord, options?: { signal?: AbortSignal; deadlineAt?: string }): Promise<RetainedSourceFootprint>
+  authorizeFinal(sql: GraphSqlClient, principal: ManagementPrincipal, record: SourceMaterializationRecord, finalDispatchBindingHash: string): Promise<void>
+  reconcilePreparation?(reconciliationId: string, owner: SourceOperationOwner): Promise<SourcePreparationClosure>
+}
+/** Installed lifetime capture only: never accepted from filesystem requests. */
+export interface SourceNativeSessionCapture {
+  proof: SourceActiveNativeSession
+  signal: AbortSignal
+  assertCurrent(): Promise<void> | void
+}
+export interface SourceAttemptAuthority {
+  authorize(sql: GraphSqlClient, principal: ManagementPrincipal, input: { workspaceId: string; root: SourceRootRecord; attempt: MaterializationAttempt; operationId: string }): Promise<void>
+  authorizeFinal(sql: GraphSqlClient, principal: ManagementPrincipal, record: SourceMaterializationRecord, finalDispatchBindingHash: string): Promise<void>
+  /** Rechecks exact accepted source/root/current host authorization on that host.
+   * It confers no native launch right; W08 final intent controls entry. */
+  revalidate(root: SourceRootRecord, attempt: MaterializationAttempt): Promise<void>
+  revalidateMaterialization(record: SourceMaterializationRecord): Promise<void>
 }

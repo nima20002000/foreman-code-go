@@ -3,8 +3,12 @@ import { open, readFile, realpath, statfs } from 'node:fs/promises'
 import { normalize } from 'node:path'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import type { JobRuntimeNativeAdmissionRecord } from '@foreman-code/contracts/job-verification-runtime'
-import type { PodmanCommandRunner } from './executorPodman.js'
+import type { ChildProcess } from 'node:child_process'
 
+export interface PodmanCommandRunner {
+  run(argv: string[], timeoutMs?: number): Promise<{ exitCode: number; stdout: string }>
+  attach(argv: string[]): Promise<ChildProcess>
+}
 export interface OCIProcessIdentity { pid: number; startTicks: string; bootId: string }
 export interface OCICgroupBoundary { kind: 'cgroup-v2'; path: string; device: string; inode: string }
 export type OCIOwnerScope = {

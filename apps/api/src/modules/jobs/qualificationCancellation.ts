@@ -1,4 +1,4 @@
-import type { QualificationNativeOwner } from './qualification.js'
+import type { QualificationNativeOwner } from './qualificationPorts.js'
 import type { JobVerificationQualificationCandidateSchema } from '@foreman-code/contracts/job-verification-runtime'
 import type { z } from 'zod'
 import { setTimeout as delay } from 'node:timers/promises'

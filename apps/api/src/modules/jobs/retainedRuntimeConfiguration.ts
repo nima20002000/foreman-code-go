@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path'
 import type { z } from 'zod'
 import { DomainError } from '../errors.js'
 import { readProtectedRuntimeConfiguration, readProtectedRuntimeFile,
-  type InstalledRuntimeConfigurationLocation } from './installedRuntimeHost.js'
+  type InstalledRuntimeConfigurationLocation } from './installedRuntimeConfiguration.js'
 
 /** Refresh retains protected configurations so accepted jobs can still use their original image and source. */
 export async function findRetainedRuntimeConfiguration<T>(

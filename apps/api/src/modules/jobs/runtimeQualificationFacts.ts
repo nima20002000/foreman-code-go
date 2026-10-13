@@ -3,7 +3,7 @@ import type { JobRuntimeMeasurementRecord, JobRuntimeProfileRecord, JobRuntimeAp
 import { jobRuntimeProfileLimits, jobRuntimeQualificationAnchorAt } from '@foreman-code/contracts/job-verification-runtime'
 import { DomainError } from '../errors.js'
 import { canonical } from './repository.js'
-import { jobDigest } from './service.js'
+import { jobDigest } from './digest.js'
 
 export function runtimeQualificationFacts(measurement: JobRuntimeMeasurementRecord) {
   if (measurement.schemaVersion === 1) return {
