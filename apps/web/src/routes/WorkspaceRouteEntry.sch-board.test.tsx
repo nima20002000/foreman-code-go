@@ -14,6 +14,7 @@ import { boardDraftContextKey } from '../features/workflow-board/keys'
 import { pinnedRunHandlers, reply, runsUrl, versionReply } from '../features/run-board/testFixtures'
 import { installFlowLayout } from '../features/run-board/testFlowLayout'
 import { page, runA, runB } from '../features/runs-selector/testFixtures'
+import { installBrowserLocks } from '../test/browserLocks'
 import { bindMockInstallation } from '../shared/mocks/handlers'
 import { getMockFixture, setMockScenario } from '../shared/mocks/scenarios'
 import { server } from '../mocks/server'
@@ -88,6 +89,7 @@ function installNodeInspection() {
 }
 
 beforeEach(() => {
+  installBrowserLocks()
   unhandled.length = 0; server.events.on('request:unhandled', recordUnhandled)
   useGraphDraftStore.getState().clearAllDrafts()
   localStorage.clear(); sessionStorage.clear(); bindMockInstallation()
