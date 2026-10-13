@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { http, HttpResponse } from 'msw'
+import { WorkflowRunSummarySchema } from '@foreman-code/contracts'
 import { RunBoardSnapshotGetResultSchema } from '@foreman-code/contracts/run-snapshots'
 import { server } from '../../mocks/server'
 import { AgentChatPanel } from '../graph/AgentPanels'
@@ -200,4 +201,31 @@ it('keeps Run-wide Activities hidden when the selected snapshot is denied', asyn
   expect(screen.queryByRole('region', { name: 'Run-wide Activities' })).not.toBeInTheDocument()
   expect(reads).not.toHaveBeenCalled()
   expect(source.reads).toHaveLength(0)
+})
+
+
+it('does not select or count a completed polled Run from stale running workspace details', async () => {
+  installSelectedHandlers()
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  clients.push(client)
+  const selectRun = vi.fn()
+  const listReads = vi.fn(() => HttpResponse.json({ items: [{ runId: 'run-a', shortId: 'a',
+    startedAt: '2026-10-04T09:00:00.000Z', status: 'succeeded', trigger: 'manual' }], pageInfo: { nextCursor: null } }))
+  server.use(http.get(`*/api/management/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/runs`, listReads))
+  const active = WorkflowRunSummarySchema.parse({ id: 'run-a', workspaceId: scope.workspaceId,
+    workflowId: scope.workflowId, executionCondition: { kind: 'manual' },
+    executionState: 'running', outcome: 'pending', startedAt: '2026-10-04T09:00:00.000Z',
+    authRequired: false, browserWait: null, runnerHealth: { status: 'healthy' } })
+  function Count() { return <output aria-label="Active Runs">{useWorkflowBoard()?.activeRuns}</output> }
+  const root = createRootRoute({ component: Outlet })
+  const route = createRoute({ getParentRoute: () => root, path: '/workspaces/$workspaceId', validateSearch: RunsSelectorSearchSchema,
+    component: () => <WorkflowBoard {...scope} inspection={{}} selectInspection={() => undefined} selectRun={selectRun}
+      summaries={[active]}><Count /></WorkflowBoard> })
+  const router = createRouter({ routeTree: root.addChildren([route]), defaultPendingMinMs: 0,
+    history: createMemoryHistory({ initialEntries: [`/workspaces/${scope.workspaceId}?workflowId=${scope.workflowId}`] }) })
+  await router.load()
+  render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
+  await waitFor(() => expect(listReads).toHaveBeenCalled())
+  await waitFor(() => expect(screen.getByLabelText('Active Runs')).toHaveTextContent('0'))
+  expect(selectRun).not.toHaveBeenCalled()
 })
