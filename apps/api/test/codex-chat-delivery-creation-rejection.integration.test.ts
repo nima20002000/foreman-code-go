@@ -1,11 +1,51 @@
 import assert from 'node:assert/strict'
-import { describe, it } from 'vitest'
+import { describe, it, vi } from 'vitest'
+import { CodexStdioTransport } from '../src/modules/harnesses/codexStdioTransport.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
-import { until } from './fixtures/codex-test-helpers.js'
+import { calls, until } from './fixtures/codex-test-helpers.js'
 import { useCodexChatDelivery } from './codex-chat-delivery.helpers.js'
 
 describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP', { timeout: 60_000 }, () => {
   const fixture = useCodexChatDelivery()
+
+  it('agent recovers a late creation rejection received before the uncertain request unwinds', async () => {
+    const { native, request, sendAgent, readAgent } = fixture
+    const rpcRequest = CodexStdioTransport.prototype.request
+    const observed = vi.spyOn(CodexStdioTransport.prototype, 'request')
+      .mockImplementation(async function (this: CodexStdioTransport, ...args) {
+        try {
+          return await rpcRequest.call(this, ...args)
+        } catch (error) {
+          if (args[0] === 'thread/start') {
+            await native.flag('release-late-creation-rejection')
+            // Process exit confirms the late rejection was received and its transport closed.
+            await until(async () => (await calls(native.directory)).some(entry => entry.exited) || undefined)
+          }
+          throw error
+        }
+      })
+    try {
+      await native.flag('late-reject-thread-start')
+      const id = (await sendAgent(request('late-rejected', null))).state.conversation!.id
+      const failed = await until(async () => {
+        await fixture.agentChat.recover()
+        const state = await readAgent()
+        return state.turns.find(turn => turn.requestId === 'late-rejected' && turn.delivery === 'failed')
+      })
+      assert.equal(failed.error?.code, 'CODEX_APP_SERVER_REQUEST_FAILED')
+      assert.equal((await readAgent()).availability.canSend, true)
+      assert.equal((await native.wire('thread/start')).length, 1)
+      assert.equal((await native.wire('turn/start')).length, 0)
+      await native.unflag('late-reject-thread-start')
+      await sendAgent(request('retry', id))
+      await until(async () => (await readAgent()).turns.some(turn =>
+        turn.requestId === 'retry' && turn.delivery === 'completed') || undefined)
+      assert.equal((await native.wire('thread/start')).length, 2)
+      assert.equal((await native.wire('turn/start')).length, 1)
+    } finally {
+      observed.mockRestore()
+    }
+  })
 
   for (const kind of ['agent', 'operator'] as const) {
     it(`${kind} retains a late definitive creation rejection, cleans up, and permits explicit retry`, async () => {
