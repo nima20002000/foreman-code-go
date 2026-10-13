@@ -7,6 +7,11 @@ import { repositoryFileList, integrationFileList, selectByIndexes } from '../../
 import { executionSelection } from '../../../../../scripts/ci-selection.mjs'
 import { fixture } from './cloud.testSupport.js'
 
+vi.mock('node:fs/promises', async original => {
+  const actual = await original<typeof import('node:fs/promises')>()
+  return { ...actual, writeFile: vi.fn(actual.writeFile) }
+})
+
 const readRequest = (runId: string) => ({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 })
 const parameter = (args: string[], name: string) => args.find(value => value.startsWith(`${name}=`))?.slice(name.length + 1)
 
@@ -19,6 +24,28 @@ it.each(['github', 'circleci'] as const)('decodes explicit files from the publis
   const command = (provider === 'github' ? f.dispatched : f.circle.triggered)[0]!
   const checkout = await f.checkoutMirror(f.mirrorGit('rev-parse', 'main'))
   expect(selectByIndexes(repositoryFileList(checkout), parameter(command, 'files')!)).toEqual(selected)
+})
+
+it.each(['github', 'circleci'] as const)('publishes a later pinned commit from the cached source clone on %s', async provider => {
+  const f = await fixture({}, { provider })
+  await f.cloud.handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site', commit: f.commit,
+    suite: 'integration', scope: 'full' })
+  await f.write('README.md', 'Later source snapshot\n')
+  f.run('add', 'README.md')
+  f.run('commit', '-qm', 'update source snapshot')
+  const later = f.run('rev-parse', 'HEAD')
+  f.push('main')
+  const started = await f.reopen().handle({ operation: 'start', runId: randomUUID(), repository: 'octo/site',
+    commit: later, suite: 'integration', scope: 'full' })
+  expect(started).toMatchObject({ run: { provenance: { sourceCommit: later } } })
+  if (started.operation !== 'start' || !started.run.provenance) throw new Error('Missing snapshot provenance')
+  const { workflowCommit, workflowRef } = started.run.provenance
+  const command = (provider === 'github' ? f.dispatched : f.circle.triggered).at(-1)!
+  const refFlag = provider === 'github' ? '--ref' : '--branch'
+  expect(command[command.indexOf(refFlag) + 1]).toBe(workflowRef)
+  expect(f.mirrorGit('rev-parse', workflowRef)).toBe(workflowCommit)
+  expect(f.mirrorGit('rev-parse', `${workflowCommit}^{tree}`)).toBe(f.run('rev-parse', 'HEAD^{tree}'))
+  expect(f.mirrorGit('show', `${workflowCommit}:README.md`)).toBe('Later source snapshot')
 })
 
 it('keeps the source and workflow pairing across another publication, retry and restart', async () => {
@@ -126,12 +153,12 @@ it('preserves readable provider ownership during an interrupted metadata replace
   await f.cloud.handle(readRequest(runId))
   f.advance(4000)
   f.github.steps = [{ number: 1, name: 'Tests', status: 'in_progress', conclusion: null }]
-  const write = fs.writeFile
+  const { writeFile: write } = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
   let entered!: () => void
   const paused = new Promise<void>(resolve => { entered = resolve })
   let release!: () => void
   const gate = new Promise<void>(resolve => { release = resolve })
-  const interrupted = vi.spyOn(fs, 'writeFile').mockImplementation(async (path, data, options) => {
+  const interrupted = vi.mocked(fs.writeFile).mockImplementation(async (path, data, options) => {
     if (!String(path).includes('meta.json')) return write(path, data, options)
     await write(path, '{', options)
     entered()
@@ -148,7 +175,7 @@ it('preserves readable provider ownership during an interrupted metadata replace
   } finally {
     release()
     await failed
-    interrupted.mockRestore()
+    interrupted.mockImplementation(write)
   }
   await f.reopen().handle({ operation: 'cancel', runId })
   expect(f.github.canceled).toContain('8')

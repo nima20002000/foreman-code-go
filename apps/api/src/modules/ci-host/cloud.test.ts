@@ -512,8 +512,12 @@ describe('GitHub Actions CI on a public mirror', () => {
     const runId = randomUUID()
     expect(await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit, suite: 'integration', scope: 'full',
       partition: { index: 1, count: 2 } })).toMatchObject({ run: { runId, state: 'running' } })
-    expect(f.mirrorGit('rev-parse', `refs/heads/ci/${f.commit}^{tree}`)).toBe(f.run('rev-parse', 'HEAD^{tree}'))
-    expect(f.circle.triggered).toEqual([['run', 'trigger', '--project', 'gh/octo/site-ci', '--branch', `ci/${f.commit}`,
+    const snapshot = f.mirrorGit('rev-parse', `refs/heads/ci/${f.commit}`)
+    const workflowRef = `ci-snapshot/${snapshot}`
+    expect(f.mirrorGit('rev-parse', `${workflowRef}^{tree}`)).toBe(f.run('rev-parse', 'HEAD^{tree}'))
+    expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
+      .toMatchObject({ run: { provenance: { sourceCommit: f.commit, workflowCommit: snapshot, workflowRef } } })
+    expect(f.circle.triggered).toEqual([['run', 'trigger', '--project', 'gh/octo/site-ci', '--branch', workflowRef,
       '--parameter', `run_id=${runId}`, '--parameter', 'suite=integration',
       '--parameter', 'slice=s:1-2', '--parameter', 'expected_duration_ms=0', '--parameter', 'scope=full', '--json']])
     const read = () => f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536, durations: true })
