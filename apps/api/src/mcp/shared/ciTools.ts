@@ -107,6 +107,8 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'Worker update smoke reserves the updated computer while existing CI drains; queued CI resumes after validation. '
   + 'Every part fails after 60 seconds without test results/output or max(3x expectedDurationMs, 120 seconds). '
   + 'The watchdog kills the process tree; message and logs name the running test from Vitest start events. '
+  + 'A cloud part that fails before its first test starts is queued once on another eligible slot. '
+  + 'ci_get retains setupRetry with the reason, failedComputer and fresh executor runId; a second setup failure fails the ticket. '
   + 'Status and the log tail update on the dispatcher cadence (normally five seconds). Pre-upgrade tickets '
   + 'can have an empty cached tail; ci_logs_read still reads their logs. '
   + 'ci_get with testStatus (passed, failed, skipped) adds the ticket’s structured test results: '

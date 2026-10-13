@@ -74,9 +74,9 @@ export function workspaceMirrors(pool: pg.Pool): Mirrors {
 /** Main owns ticket completion even when the last attempt ran on a different provider. */
 export async function activeCiRuns(pool: pg.Pool): Promise<ActiveCiRuns> {
   const readAt = Date.now()
-  const rows = (await pool.query<{ id: string }>(
-    "select id from ci_runs where state in ('queued','starting','running')")).rows
-  return { ids: new Set(rows.map(row => row.id)), readAt }
+  const rows = (await pool.query<{ id: string; retry_id: string | null }>(
+    "select id,record#>>'{setupRetry,runId}' as retry_id from ci_runs where state in ('queued','starting','running')")).rows
+  return { ids: new Set(rows.flatMap(row => row.retry_id ? [row.id, row.retry_id] : [row.id])), readAt }
 }
 
 /** A cloud CI service on a workspace's public mirror as CI computers: one slot per concurrent job. A run pushes the
@@ -232,6 +232,7 @@ export class CloudCi {
       exitCode: run.exitCode, startedAt: run.startedAt, finishedAt: run.finishedAt, logBytes, message: run.message === null ? null : sanitizeCiText(run.message),
       ...(run.provenance ? { provenance: run.provenance } : {}),
       ...(run.mirrorPublication ? { mirrorPublication: run.mirrorPublication } : {}),
+      ...(run.testsStarted !== undefined ? { testsStarted: run.testsStarted } : {}),
       ...(run.collection ? { collection: run.collection.log && run.collection.artifacts ? 'complete' as const : 'pending' as const } : {}) }
   }
 
@@ -418,7 +419,7 @@ export class CloudCi {
 
   private async failPipeline(run: CloudRun, failure: { message: string; configError?: boolean }): Promise<CloudRun> {
     const failed: CloudRun = { ...run, state: 'failed', exitCode: 1, finishedAt: this.ports.now().toISOString(),
-      message: sanitizeCiText(failure.message), collection: { log: true, artifacts: true } }
+      message: sanitizeCiText(failure.message), testsStarted: false, collection: { log: true, artifacts: true } }
     delete failed.reconciliation
     // A rejected pipeline has no job logs or artifacts; keep the provider error as its final log.
     await writeFile(this.path(run.runId, 'log'), `${failed.message}\n`, { flag: 'a', mode: 0o600 })
@@ -982,7 +983,10 @@ export class CloudCi {
           if (tests.success) run = { ...run, testResults: tests.data }
         }
         const watchdog = CiWatchdogFailureSchema.safeParse(artifacts.watchdogFailure)
-        if (watchdog.success && run.state !== 'passed') run = { ...run, message: watchdog.data.message }
+        if (watchdog.success && run.state !== 'passed') {
+          run = { ...run, message: watchdog.data.message,
+            ...(watchdog.data.testsStarted !== undefined ? { testsStarted: watchdog.data.testsStarted } : {}) }
+        }
         collection.artifacts = true
       } catch (error) {
         log.warn({ err: error, runId: run.runId }, 'Final CI artifacts remain pending')
@@ -1011,10 +1015,19 @@ export class CloudCi {
     if (!status.done) return run
     this.polled.delete(runId)
     const passed = status.conclusion === 'success'
-    const terminal = await this.save({ ...run, state: passed ? 'passed' : status.conclusion === 'cancelled' ? 'canceled' : 'failed',
+    const failedSetup = status.conclusion === 'failure'
+      && !status.steps?.some(step => step.name === 'Suite' && step.state !== 'skipped')
+      ? status.steps?.find(step => step.state === 'failed') : undefined
+    let state: CloudRun['state'] = 'failed'
+    if (passed) state = 'passed'
+    else if (status.conclusion === 'cancelled') state = 'canceled'
+    const failure = failedSetup ? `${this.provider.label}: setup failed at ${failedSetup.name}.`
+      : `${this.provider.label}: ${status.conclusion}.`
+    const message = passed ? run.message : [run.message, status.message ?? failure].filter(Boolean).join(' ')
+    const terminal = await this.save({ ...run, state,
       exitCode: passed ? 0 : 1, finishedAt: status.finishedAt, collection: { log: false, artifacts: false },
-      message: passed ? run.message
-        : [run.message, status.message ?? `${this.provider.label}: ${status.conclusion}.`].filter(Boolean).join(' ') })
+      ...(failedSetup ? { testsStarted: false } : {}),
+      message })
     return this.collect(terminal)
   }
 }

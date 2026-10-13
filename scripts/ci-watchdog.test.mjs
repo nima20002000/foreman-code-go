@@ -117,9 +117,57 @@ async function watchdogFixture(t, source, overrides = {}) {
   const code = await runCiPart([process.execPath, '-e', source], { expectedDurationMs: 0,
     progressFile: join(directory, 'progress.jsonl'), messageFile, resultsFile,
     idleTimeoutMs: 1000, ...overrides })
-  return { code, reason: existsSync(messageFile) ? JSON.parse(readFileSync(messageFile, 'utf8')).message : null,
+  const failure = existsSync(messageFile) ? JSON.parse(readFileSync(messageFile, 'utf8')) : null
+  return { code, reason: failure?.message ?? null, failure,
     results: existsSync(resultsFile) ? JSON.parse(readFileSync(resultsFile, 'utf8')) : null }
 }
+
+test('a watchdog during module setup records that no test started', async t => {
+  const result = await watchdogFixture(t, `
+    const { appendFileSync } = require('node:fs')
+    appendFileSync(process.env.CI_PROGRESS_FILE, JSON.stringify({ type: 'start', kind: 'module',
+      id: 'module', file: 'setup.test.ts', name: '' }) + '\\n')
+    setInterval(() => {}, 1000)
+  `)
+  assert.equal(result.code, 1)
+  assert.equal(result.failure.testsStarted, false)
+})
+
+test('a setup command failure records that no test started', async t => {
+  const result = await watchdogFixture(t, 'process.exit(2)')
+  assert.equal(result.code, 2)
+  assert.equal(result.failure?.testsStarted, false)
+})
+
+test('a fast failure after a test finishes still records that a test started', async t => {
+  const result = await watchdogFixture(t, `
+    const { appendFileSync } = require('node:fs')
+    for (const type of ['start', 'finish']) {
+      appendFileSync(process.env.CI_PROGRESS_FILE, JSON.stringify({ type, kind: 'test',
+        id: 'test', file: 'completed.test.ts', name: 'runs once' }) + '\\n')
+    }
+    process.exit(1)
+  `)
+  assert.equal(result.code, 1)
+  assert.equal(result.failure?.testsStarted, true)
+})
+
+test('Node test failures count as started tests instead of setup failures', async t => {
+  const reporter = fileURLToPath(new URL('./ci-node-test-reporter.mjs', import.meta.url))
+  const result = await watchdogFixture(t, `
+    const { writeFileSync } = require('node:fs')
+    const { join, dirname } = require('node:path')
+    const { spawnSync } = require('node:child_process')
+    const file = join(dirname(process.env.CI_PROGRESS_FILE), 'node-case.test.mjs')
+    writeFileSync(file, "import { test } from 'node:test'; test('fails', () => { throw new Error('assertion failed') })")
+    const result = spawnSync(process.execPath, ['--test', '--test-reporter=spec', '--test-reporter-destination=stdout',
+      '--test-reporter=' + ${JSON.stringify(reporter)}, '--test-reporter-destination=' + file + '.json', file],
+      { stdio: 'inherit', env: process.env })
+    process.exit(result.status)
+  `)
+  assert.equal(result.code, 1)
+  assert.equal(result.failure?.testsStarted, true)
+})
 
 test('a single quiet test may run three minutes before the idle watchdog stops it', async () => {
   const { CI_IDLE_TIMEOUT_MS } = await import('./ci-watchdog.mjs')

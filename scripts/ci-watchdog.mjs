@@ -30,6 +30,7 @@ export async function runCiPart(command, { expectedDurationMs, progressFile, res
   let pending = ''
   let reason
   let stopping
+  let testsStarted = false
   const running = new Map()
   const output = (destination, bytes) => {
     if (!running.size) lastProgress = Date.now()
@@ -43,8 +44,7 @@ export async function runCiPart(command, { expectedDurationMs, progressFile, res
   }
   const signals = new Map(['SIGTERM', 'SIGINT'].map(signal => [signal, () => { void stop() }]))
   for (const [signal, handler] of signals) process.on(signal, handler)
-  const timer = setInterval(() => {
-    if (stopping) return
+  const readProgress = () => {
     const buffer = Buffer.alloc(65_536)
     let count
     while ((count = readSync(progress, buffer, 0, buffer.length, null)) > 0) {
@@ -53,6 +53,7 @@ export async function runCiPart(command, { expectedDurationMs, progressFile, res
       pending = lines.pop()
       for (const line of lines) {
         const event = JSON.parse(line)
+        if (event.kind === 'test' && (event.type === 'start' || event.type === 'finish')) testsStarted = true
         if (event.type === 'start') running.set(event.id, event)
         else if (event.type === 'finish') {
           running.delete(event.id)
@@ -60,6 +61,10 @@ export async function runCiPart(command, { expectedDurationMs, progressFile, res
         } else if (event.type === 'output') lastProgress = Date.now()
       }
     }
+  }
+  const timer = setInterval(() => {
+    if (stopping) return
+    readProgress()
     const elapsed = Date.now() - started
     const idle = Date.now() - lastProgress
     if (elapsed < deadlineMs && idle < idleTimeoutMs) return
@@ -71,7 +76,7 @@ export async function runCiPart(command, { expectedDurationMs, progressFile, res
     const labels = active.map(test => `${test.file}${test.name ? ` > ${test.name}` : ' (module setup/teardown)'}`)
     reason = `CI hang watchdog: ${limit}; running: ${labels.join('; ') || 'no test started (setup or command)'}`.slice(0, 1800)
     console.error(`[ci-watchdog] ${reason}`)
-    if (messageFile) writeFileSync(messageFile, JSON.stringify({ message: reason }))
+    if (messageFile) writeFileSync(messageFile, JSON.stringify({ message: reason, testsStarted }))
     void stop()
   }, 100)
   try {
@@ -80,6 +85,13 @@ export async function runCiPart(command, { expectedDurationMs, progressFile, res
       child.once('close', code => resolveExit(code ?? 1))
     })
     if (stopping) await stopping
+    readProgress()
+    if ((reason || code !== 0) && messageFile) {
+      writeFileSync(messageFile, JSON.stringify({
+        message: reason ?? `CI command failed with exit code ${code}${testsStarted ? '' : ' before the first test started'}.`,
+        testsStarted,
+      }))
+    }
     if (reason && resultsFile) {
       mkdirSync(dirname(resultsFile), { recursive: true })
       const byFile = new Map()

@@ -10,10 +10,11 @@ import { CI_START_ACK_TIMEOUT_MS, CI_START_MAX_ATTEMPTS, releaseCiDispatch, reje
   requestCiStart, withCiTicketLock } from './dispatch.js'
 import { sanitizeCiText, serializeCiJson } from './text.js'
 import { dispatchCloudTicket } from './cloudDispatch.js'
+import { ciExecutionRunId } from './executionAttempt.js'
 
 const log = componentLogger('jobs')
 export type CiDispatchState = Pick<CiRunSettlement, 'state' | 'step' | 'exitCode' | 'startedAt' | 'finishedAt' | 'message'
-  | 'collection' | 'provenance' | 'mirrorPublication'>
+  | 'collection' | 'provenance' | 'mirrorPublication' | 'testsStarted'>
 interface DispatchServices {
   pool: pg.Pool
   endpoint: HostCiEndpoint
@@ -87,7 +88,7 @@ export async function reconcileCiHostStart(services: DispatchServices, run: CiRu
     if (current.state !== 'starting' || current.startedAt || current.cancellation
       || !isDeepStrictEqual(current.computer?.hostRef, computer.hostRef)
       || current.dispatchedAt !== run.dispatchedAt || current.dispatchAttempts !== run.dispatchAttempts) return false
-    const observed = status?.runs.find(value => value.runId === current.id)
+    const observed = status?.runs.find(value => value.runId === ciExecutionRunId(current))
     if (observed) {
       if (observed.state === 'starting' && observed.step === 'dispatch') return false
       return services.settle(current, computer, observed, { client })

@@ -7,6 +7,7 @@ import { CLOUD_START_TIMEOUT_MS } from './cloudProviders.js'
 import { CI_START_MAX_ATTEMPTS, rejectedCiStart, releaseCiDispatch, requestCiStart } from './dispatch.js'
 import type { CiRunSettlement, HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
 import { serializeCiJson } from './text.js'
+import { ciExecutionRunId } from './executionAttempt.js'
 
 const log = componentLogger('jobs')
 type DispatchOutcome = { outcome: 'pending' | 'busy' | 'rejected' }
@@ -30,7 +31,7 @@ export async function expireCloudDispatch(endpoint: HostCiEndpoint, computer: Ho
   if ((observed?.state ?? run.state) !== 'starting'
     || Date.now() - Date.parse(at) < CLOUD_START_TIMEOUT_MS * CI_START_MAX_ATTEMPTS) return observed ?? null
   try {
-    await requestCloud(endpoint, computer, { operation: 'cancel', runId: run.id })
+    await requestCloud(endpoint, computer, { operation: 'cancel', runId: ciExecutionRunId(run) })
   } catch (error) {
     log.warn({ err: error, runId: run.id }, 'Expired cloud dispatch cleanup remains pending')
   }
@@ -44,7 +45,7 @@ export async function dispatchCloudTicket(sql: SqlQuery, endpoint: HostCiEndpoin
   const elapsed = Date.now() - Date.parse(run.dispatchedAt ?? run.queuedAt)
   if (attempts > 0) {
     try {
-      const reply = await requestCloud(endpoint, computer, { operation: 'read', runId: run.id,
+      const reply = await requestCloud(endpoint, computer, { operation: 'read', runId: ciExecutionRunId(run),
         afterOffset: 0, maxBytes: 1 })
       if (reply.operation !== 'read') throw new DomainError('CI_HOST_REPLY_INVALID', 'Expected cloud CI read.', 502)
       const observed = await expireCloudDispatch(endpoint, computer, run, reply.run) ?? reply.run
