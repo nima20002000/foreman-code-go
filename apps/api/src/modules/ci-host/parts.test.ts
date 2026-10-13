@@ -31,7 +31,7 @@ it('sizes unit shards from measured durations and caps them to the available fil
   const files = ['a', 'b', 'c'].map(name => `apps/api/test/${name}.test.ts`)
   const durations = Object.fromEntries(files.map(file => [file, 90_000]))
   const parts = planCiParts({ suite: 'unit', commandId: 'measured' }, durations, { files, durations, heavy: [] })
-  expect(parts.filter(part => part.part === 'unit-api')).toHaveLength(3)
+  expect(parts.filter(part => part.part === 'unit-api')).toHaveLength(2)
   expect(parts.filter(part => part.part === 'unit-web')).toHaveLength(0)
 })
 
@@ -60,4 +60,13 @@ it('reports unfinished and failed group members alongside passed parts', () => {
   expect(ciGroupState([{ state: 'passed' }, { state: 'running' }])).toBe('running')
   expect(ciGroupState([{ state: 'failed' }, { state: 'running' }])).toBe('failed')
   expect(ciGroupState([{ state: 'passed' }, { state: 'passed' }])).toBe('passed')
+})
+
+it.each(['apps/api/test', 'apps/web/src'])('grows %s shards to target 150 seconds of measured work', directory => {
+  const files = Array.from({ length: 60 }, (_, index) => `${directory}/feature-${index}.test.ts`)
+  const durations = Object.fromEntries(files.map(file => [file, 30_000]))
+  const parts = planCiParts({ suite: 'unit', scope: 'full', commandId: 'growth' }, durations,
+    { files, durations, heavy: [] })
+  const part = directory.startsWith('apps/api') ? 'unit-api' : 'unit-web'
+  expect(parts.filter(item => item.part === part)).toHaveLength(12)
 })

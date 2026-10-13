@@ -6,8 +6,8 @@ import { fixture } from './helpers/hostCiMcpFixture.js'
 it.each(['http', 'mcp'] as const)('returns and replays every maximum unit shard through %s', async transport => {
   const files = ['apps/api/test', 'apps/web/src'].flatMap(directory => Array.from({ length: 32 }, (_, index) =>
     `${directory}/measured${index}.test.ts`))
-  const durations = Object.fromEntries(files.map(file => [file, 120_000]))
-  const f = await fixture({ unitInventory: { files, durations, heavy: [] } })
+  const durations = Object.fromEntries(files.map(file => [file, 150_000]))
+  const f = await fixture({ unitInventory: { files, durations, heavy: [] }, cloud: { github: 32, circleci: 0 } })
   try {
     const input = { suite: 'unit', scope: 'full', commit: 'a'.repeat(40), commandId: `maximum-${transport}` }
     const reader = await f.connect(CI_GET_ACTIONS)
@@ -27,5 +27,38 @@ it.each(['http', 'mcp'] as const)('returns and replays every maximum unit shard 
     expect(read.partitions).toHaveLength(67)
     expect(new Set(read.partitions!.map(part => part.id))).toEqual(new Set(result.partitions!.map(part => part.ticketId)))
     expect((await f.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(67)
+  } finally { await f.close() }
+})
+
+it('caps learned unit sizing by free slots and persists the same plan through authenticated MCP', async () => {
+  const files = Array.from({ length: 12 }, (_, index) => `apps/api/src/feature-${index}.test.ts`)
+  const durations = Object.fromEntries(files.map(file => [file, 10_000]))
+  const f = await fixture({ unitInventory: { files, durations, heavy: [] }, cloud: { github: 4, circleci: 0 } })
+  const request = f.endpoint.request
+  f.endpoint.request = async (computer, input) => {
+    const reply = await request(computer, input)
+    if (reply.operation === 'status' && computer.hostRef.kind === 'cloud' && computer.hostRef.slot === 0) {
+      return { ...reply, slotsUsed: 1 }
+    }
+    return reply
+  }
+  try {
+    for (const file of files) {
+      await f.pool.query(`insert into ci_file_durations(repository,file,duration_ms,updated_at)
+        values($1,$2,$3,now())`, ['octo/site', file, 150_000])
+    }
+    const input = { suite: 'unit', scope: 'full', commit: 'a'.repeat(40), commandId: 'free-unit-slots' }
+    const reader = await f.connect(CI_GET_ACTIONS)
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    const result = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
+    expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(result)
+    const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: result.ticketId }))
+    const api = read.partitions!.filter(part => part.part === 'unit-api')
+    expect(api).toHaveLength(3)
+    expect(api.map(part => part.partition)).toEqual([0, 1, 2].map(index => ({ index, count: 3 })))
+    expect(read.partitions!.filter(part => part.part === 'unit-web-heavy')).toHaveLength(2)
+    expect(read.partitions!.filter(part => part.part === 'unit-other')).toHaveLength(1)
+    const stored = (await f.pool.query('select record from ci_runs where group_id=$1', [read.run.groupId])).rows
+    expect(stored.map(row => row.record)).toEqual(expect.arrayContaining(read.partitions!))
   } finally { await f.close() }
 })
