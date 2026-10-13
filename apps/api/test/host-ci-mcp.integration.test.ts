@@ -431,17 +431,26 @@ it.each([
 })
 
 it.each([
-  ['typecheck', 0], ['typecheck', 1250], ['integration', 0], ['integration', 1250],
+  ['typecheck', 0, 'checkout'], ['typecheck', 1250, 'checkout'],
+  ['integration', 0, 'checkout'], ['integration', 1250, 'checkout'],
+  ['typecheck', 0, 'launch'], ['typecheck', 1250, 'launch'],
+  ['integration', 0, 'launch'], ['integration', 1250, 'launch'],
 ] as const)(
-  'reports a missing generic %s script through MCP and persisted readback after a %i ms checkout delay',
-  async (suite, checkoutDelayMs) => {
-  const repository = await genericCiRepository({ beforeCheckout: async () => {
+  'reports a missing generic %s script through MCP and persisted readback after a %i ms %s delay',
+  async (suite, delayMs, stage) => {
+  const delay = async () => {
     // eslint-disable-next-line no-restricted-syntax
-    await new Promise(resolve => setTimeout(resolve, checkoutDelayMs))
-  } })
+    await new Promise(resolve => setTimeout(resolve, delayMs))
+  }
+  const repository = await genericCiRepository(stage === 'checkout'
+    ? { beforeCheckout: delay }
+    : { beforeLaunch: delay })
   const f = await fixture({ repositoryRunner: repository })
   try {
-    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite, commandId: `missing-${suite}` }))
+    const input = { suite, commandId: `missing-${suite}` }
+    const reader = await f.connect(CI_GET_ACTIONS)
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
     await expect.poll(async () => CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get',
       { ticketId: started.ticketId })).run.state, { timeout: 10_000 }).toBe('failed')
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
