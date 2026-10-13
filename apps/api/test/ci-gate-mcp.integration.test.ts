@@ -4,7 +4,9 @@ import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { CiGetOutputSchema, CiRunOutputSchema, exclusiveIntegrationFiles, userSystemdIntegrationFiles,
   type CiHostRun, type CiHostRequest } from '@foreman-code/contracts'
 import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest'
+import type pg from 'pg'
 import { buildApp } from '../src/app.js'
+import { createPool } from '../src/infrastructure/pool.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -19,7 +21,8 @@ beforeEach(async () => {
   await database.pool.query('truncate ci_runs, ci_file_durations, management_command_receipts, management_audit')
 })
 
-async function fixture(options: { cloudSlots?: number; files?: string[]; offlineKey?: string } = {}) {
+async function fixture(options: { cloudSlots?: number; files?: string[]; offlineKey?: string; pool?: pg.Pool } = {}) {
+  const pool = options.pool ?? database.pool
   const workspaceId = randomUUID()
   await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId,
     JSON.stringify({ id: workspaceId, name: 'Gate workspace', repository: {
@@ -38,8 +41,8 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
   const runs = new Map<string, CiHostRun>()
   const startedAt = new Date().toISOString()
   const started: { key: string; request: CiHostRequest }[] = []
-  const commands = new PostgresCommandCoordinator(database.pool)
-  const ci = new HostCiService(database.pool, commands, new RunCiAuthority(database.pool), {
+  const commands = new PostgresCommandCoordinator(pool)
+  const ci = new HostCiService(pool, commands, new RunCiAuthority(pool), {
     resolve: async (_repository, _branch, commit) => commit ?? 'a'.repeat(40),
     capabilities: async () => ({ parts: true, integrationPartitions: true, affected: true }),
     integrationInventory: async () => ({ files, durations: Object.fromEntries(files.map(file => [file, 120_000])) }),
@@ -64,7 +67,7 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
       return { operation: 'read', run, text: '', nextOffset: 0 }
     },
   })
-  const access = new PostgresAccessService(database.pool)
+  const access = new PostgresAccessService(pool)
   const app = buildApp({ logger: false,
     readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access, services: { commands, ci } as unknown as OperatorServices } })
@@ -110,6 +113,33 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
     await app.close()
   } }
 }
+
+it('admits consecutive gates from the same caller on different database connections', async () => {
+  const pool = createPool({ connectionString: database.databaseUrl, maxConnections: 8,
+    connectionTimeoutMs: 1_000, queryTimeoutMs: 1_000 }, 'gate-lock-test')
+  const held: pg.PoolClient[] = []
+  const f = await fixture({ pool })
+  try {
+    const gate = { suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40) }
+    const firstInput = { ...gate, commandId: randomUUID() }
+    const first = CiRunOutputSchema.parse(await f.value('ci_run', firstInput))
+    expect(CiRunOutputSchema.parse(await f.value('ci_run', firstInput))).toEqual(first)
+    await f.ci.dispatch()
+    // Retain every existing connection so the second command cannot reenter a leaked session lock.
+    while (pool.idleCount) held.push(await pool.connect())
+    const second = CiRunOutputSchema.parse(await f.value('ci_run', { ...gate, commandId: randomUUID() }))
+    expect(second.ticketId).not.toBe(first.ticketId)
+    for (const ticketId of [first.ticketId, second.ticketId]) {
+      const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId }))
+      expect(read.run).toMatchObject({ id: ticketId, gate: true })
+      expect(read.partitions!.length).toBeGreaterThan(1)
+    }
+  } finally {
+    for (const client of held) client.release()
+    await f.close()
+    await pool.end()
+  }
+})
 
 it('admits one complete gate, denies a reader, and persists the plan and measured critical path through MCP', async () => {
   const f = await fixture()
