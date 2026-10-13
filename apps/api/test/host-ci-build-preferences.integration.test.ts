@@ -141,7 +141,12 @@ it('honors persisted MCP build participation and priority while retaining assign
     expect((await db.pool.query('select record from ci_runs where id=$1', [protocolTicket.ticketId])).rows[0]!.record)
       .toEqual(protocolRead.run)
     const ungranted = await connect([])
-    expect((await ungranted.callTool({ name: 'ci_computers_list', arguments: { workspaceId } })).isError).toBe(true)
+    expect((await ungranted.listTools()).tools.map(tool => tool.name)).not.toContain('ci_computers_list')
+    const deniedList = await ungranted.callTool({ name: 'ci_computers_list', arguments: { workspaceId } })
+    expect(deniedList.isError).toBe(true)
+    expect(JSON.stringify(deniedList.content)).toContain('ACCESS_DENIED')
+    expect(await read(devices[1]!.target)).toEqual(high)
+    expect((await get(protocolTicket.ticketId)).run).toEqual(protocolRead.run)
     await call(writer, 'ci_cancel', { workspaceId, ticketId: protocolTicket.ticketId })
     outdated.clear()
     starts.length = 0

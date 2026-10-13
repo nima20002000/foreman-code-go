@@ -663,6 +663,34 @@ test('shutdown waits for an active staging operation and prevents a restart afte
   await releaseOwnership();
 });
 
+test('terminal maintenance outcomes identify the release running after success or rollback', async t => {
+  for (const rollback of [false, true]) {
+    await t.test(rollback ? 'rollback' : 'success', async t => {
+      const f = await fixture(t);
+      const startedAt = new Date().toISOString();
+      const updater = await new WorkerUpdater({ ...f.options, launchSupervisor: async () => {
+        await superviseWorkerUpdate(await readUpdateRecord(f.stateDirectory), {
+          prepareService: f.prepareService,
+          restart: () => f.restart('ready'),
+          smoke: async () => {
+            if (rollback) throw new Error('CI smoke failed');
+          },
+        });
+      } }).initialize();
+      t.after(() => updater.close());
+      await updater.start();
+      const installed = await readInstalledRelease({ root: f.root, facts, expected });
+      assert.deepEqual(await updater.maintenanceOutcome({ workerTargetVersion: '1.1.0', startedAt }), {
+        currentVersion: installed.manifest.version,
+        manifestSha256: installed.manifestSha256,
+        targetVersion: '1.1.0',
+        state: rollback ? 'rolled-back' : 'current',
+        lastError: rollback ? 'CI smoke failed' : null,
+      });
+    });
+  }
+});
+
 test('consecutive releases retain the first terminal maintenance outcome without an intermediate poll', async t => {
   const f = await fixture(t);
   const startedAt = new Date().toISOString();
