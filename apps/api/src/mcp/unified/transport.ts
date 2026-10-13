@@ -6,10 +6,10 @@ import { unavailableHostHarnessToolCall } from '../../modules/harnesses/instance
 import type { FileReferenceService } from '../../modules/files/references/service.js'
 import { MAX_REFERENCE_MCP_BODY_BYTES } from '../../modules/files/references/requests.js'
 import { unavailableFileReferenceToolCall } from '../operator/tools/fileReferences.js'
-import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
+import { toNodeHandler } from '@modelcontextprotocol/node'
 import type { ManagementAudience, ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
-import type { McpServer } from '@modelcontextprotocol/server'
+import { WebStandardStreamableHTTPServerTransport, type McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 
 import { requireLocalRequest } from '../../modules/access/http.js'
@@ -140,7 +140,7 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
     // Artifact calls are dispatched above. Discovery's execution locks are only
     // needed for catalogs, not unrelated status or interaction reads.
     if (!call.success) await artifacts?.register(server, request, principal)
-    const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
+    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
     reply.raw.once('close', () => { void Promise.allSettled([transport.close(), server.close()]) })
     await server.connect(transport)
     reply.hijack()
@@ -148,7 +148,11 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
       if (reply.raw.statusCode >= 400) request.log.warn({ statusCode: reply.raw.statusCode, audience: principal.audience, role,
         method: (request.body as { method?: unknown } | null)?.method ?? null }, 'MCP transport rejected request')
     })
-    await transport.handleRequest(request.raw, reply.raw, request.body)
+    // Fastify already consumed the body; the adapter must not drain the raw request again.
+    const handleRequest = toNodeHandler({
+      fetch: (webRequest, options) => transport.handleRequest(webRequest, options),
+    }, { onerror: error => request.log.error({ err: error }, 'MCP request adapter failed') })
+    await handleRequest(request.raw, reply.raw, request.body)
   })
   for (const method of ['GET', 'DELETE'] as const) {
     app.route({ method, url: GRAPHQL_MCP_PATH, handler: async (request, reply) => {
