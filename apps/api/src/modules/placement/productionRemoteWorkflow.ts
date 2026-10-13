@@ -1,3 +1,4 @@
+import { REMOTE_PREPARATION_EXTENSION } from '@foreman-code/contracts/remote-execution-rpc'
 import { NativeSessionReferenceSchema } from '@foreman-code/contracts'
 import { RemoteOperationStatusSchema } from '@foreman-code/contracts/remote-execution'
 import { hasPositiveRemoteEntryClosure, hasPositiveRemoteNonEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
@@ -70,9 +71,17 @@ export function createProductionRemoteWorkflow(input: {
   const carrier: MainWorkerCarrier = { capture(deviceId) {
     const endpoint = input.endpoint(), captured = endpoint.captureRequest(deviceId, 'execution-v1')
     if (!captured) throw new DomainError('REMOTE_DISPATCH_UNAVAILABLE', 'The actual authenticated execution carrier is unavailable.', 503)
+    const preparation = endpoint.captureRequest(deviceId, REMOTE_PREPARATION_EXTENSION.namespace)
+    const compatiblePreparation = preparation && sameWorkflowValue(preparation.binding, captured.binding)
+      ? preparation : undefined
     const { mainId, workerInstallationId, bootId, keyRevision, authorizationRevision, connectionGeneration } = captured.binding
     return { identity: { mainId, deviceId, workerInstallationId, bootId, keyRevision, authorizationRevision, connectionGeneration },
+      supports: namespace => namespace === 'execution-v1'
+        || namespace === REMOTE_PREPARATION_EXTENSION.namespace && compatiblePreparation !== undefined,
       request(namespace, payload, options) {
+        if (namespace === REMOTE_PREPARATION_EXTENSION.namespace && compatiblePreparation) {
+          return compatiblePreparation.request(payload, options)
+        }
         if (namespace !== 'execution-v1') throw new DomainError('REMOTE_BINDING_CONFLICT', 'The captured native carrier cannot change namespace.', 409)
         return captured.request(payload, options)
       } }

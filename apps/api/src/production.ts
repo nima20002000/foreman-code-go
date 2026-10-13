@@ -130,7 +130,7 @@ import { assertClaudeCredentialEndpoint } from './modules/harnesses/claudeSdk/mc
 import { PostgresClaudeInteractionAuthority } from './modules/harnesses/claudeSdk/domainAuthority.js'
 import { productionSelectedProfileManager } from './modules/harnesses/selectedProfileProduction.js'
 import { createProductionWorkerConversations } from './modules/conversations/workerProduction.js'
-import { WorkerConversationCallbackSchema } from '@foreman-code/contracts/remote-execution-rpc'
+import { REMOTE_PREPARATION_EXTENSION, WorkerConversationCallbackSchema } from '@foreman-code/contracts/remote-execution-rpc'
 import { credentialAuthority } from './modules/interactions/wave25/credentialAuthority.js'
 import type { GraphSqlClient } from './modules/run-graph/connection.js'
 import { currentOperatorAuthority } from './modules/access/runAuthority.js'
@@ -472,6 +472,7 @@ export function buildProductionApp(
       { namespace: CI_RUNTIME_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: CI_HOST_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'host-harness-check-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
+      { ...REMOTE_PREPARATION_EXTENSION, role: 'client' },
       { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
         handle: async (payload, context) => {
           if (WorkerConversationCallbackSchema.safeParse(payload).success) {
@@ -493,7 +494,7 @@ export function buildProductionApp(
           if (!handler) throw new DomainError('JOB_RUNTIME_UNAVAILABLE', 'The actual Job input authority is unavailable.', 503)
           return handler(payload, context)
         } },
-      ...(infrastructure?.deviceDomains?.extensions.filter(value => !['execution-v1', JOB_INPUT_NAMESPACE, BYTE_TRANSFER_NAMESPACE,
+      ...(infrastructure?.deviceDomains?.extensions.filter(value => !['execution-v1', REMOTE_PREPARATION_EXTENSION.namespace, JOB_INPUT_NAMESPACE, BYTE_TRANSFER_NAMESPACE,
         remoteTelemetry.extension.namespace].includes(value.namespace)) ?? []),
     ],
     async bindingLost(binding) {
