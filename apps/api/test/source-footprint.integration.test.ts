@@ -18,6 +18,7 @@ afterEach(async () => {
 })
 
 it('covers the complete parent structure of a directory-heavy source through capture and closure', async () => {
+  const started = performance.now()
   const directory = await mkdtemp(join(persistentFixtureRoot, 'source-footprint-'))
   directories.push(directory)
   const canonical = join(directory, 'canonical')
@@ -67,4 +68,5 @@ it('covers the complete parent structure of a directory-heavy source through cap
   await expect(materializer.verify(receipt, { binding, attempt })).rejects.toMatchObject({ code: 'ENOENT' })
   await releaseMaterializationClaim(receipt, async () => 'released')
   expect(await measureRetainedMaterializationFootprint(receipt)).toEqual(footprint)
-}, 120_000)
+  expect(performance.now() - started).toBeLessThan(30_000)
+}, 45_000)
