@@ -1,5 +1,6 @@
 import { CiGetOutputSchema, CiRunOutputSchema, type CiHostRun } from '@foreman-code/contracts'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { CI_GET_ACTIONS } from '../src/modules/jobs/ciAuthority.js'
 import { fixture } from './helpers/hostCiMcpFixture.js'
@@ -70,7 +71,8 @@ it('preserves MCP cancellation when an in-flight refresh returns an unstarted ti
   let entered!: () => void
   const blocked = new Promise<void>(resolve => { release = resolve })
   const reading = new Promise<void>(resolve => { entered = resolve })
-  let cancellation: Promise<unknown> | undefined
+  let dispatch: Promise<void> | undefined
+  let cancellation: ReturnType<typeof f.value> | undefined
   try {
     const tickets = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'integration', scope: 'full', partitions: 2, commandId: 'cancel-unstarted',
@@ -97,18 +99,23 @@ it('preserves MCP cancellation when an in-flight refresh returns an unstarted ti
       return { ...reply, run: { ...reply.run, state: 'queued', step: null,
         message: 'Dispatch retries exhausted; queued for another computer.' } }
     }
-    const dispatch = f.ci.dispatch()
+    dispatch = f.ci.dispatch()
     await reading
-    cancellation = f.value(f.operator, 'ci_cancel', { ticketId: started.ticketId })
-    expect(await cancellation).toMatchObject({ run: { state: 'canceled' } })
-    const canceled = await reader.callTool({ name: 'ci_get',
+    const commandId = randomUUID()
+    cancellation = f.value(f.operator, 'ci_cancel', { ticketId: started.ticketId, commandId })
+    expect(await cancellation)
+      .toMatchObject({ run: { state: 'canceled' } })
+    const pending = await reader.callTool({ name: 'ci_get',
       arguments: { workspaceId: f.workspaceId, ticketId: started.ticketId } })
-    expect(canceled.isError).not.toBe(true)
-    expect(CiGetOutputSchema.parse(decodeMcpToolResult(canceled)).run.state).toBe('canceled')
+    expect(pending.isError).not.toBe(true)
+    const canceledRun = CiGetOutputSchema.parse(decodeMcpToolResult(pending)).run
+    expect(canceledRun.state).toBe('canceled')
+    expect((await f.pool.query('select record,host_key from ci_runs where id=$1', [started.ticketId])).rows[0])
+      .toEqual({ record: canceledRun, host_key: null })
     release()
     await dispatch
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
-    expect(read.run.state).toBe('canceled')
+    expect(read.run).toEqual(canceledRun)
     expect((await f.pool.query('select record,host_key from ci_runs where id=$1', [started.ticketId])).rows[0])
       .toEqual({ record: read.run, host_key: null })
     expect(f.started).toHaveLength(1)
@@ -124,7 +131,11 @@ it('preserves MCP cancellation when an in-flight refresh returns an unstarted ti
     try {
       await cancellation
     } finally {
-      await f.close()
+      try {
+        await dispatch
+      } finally {
+        await f.close()
+      }
     }
   }
 })
