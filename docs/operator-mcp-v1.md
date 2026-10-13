@@ -4,6 +4,20 @@ Operator MCP is the authenticated local product-management interface delivered b
 
 The transport uses MCP protocol `2026-07-28` with the official TypeScript SDK packages `@modelcontextprotocol/server`, `@modelcontextprotocol/node`, `@modelcontextprotocol/fastify`, and the acceptance-test `@modelcontextprotocol/client`, all pinned at `2.0.0`. The packages require Node 20 or newer; this repository requires Node 22. The published packages use Zod 4-compatible standard schemas. Their July 27, 2026 publication date satisfies the repository's strict 48-hour package-age policy.
 
+## Settings writes
+
+`expectedRevision` is optional for app preferences, prompts, workspace/agent/workflow/harness defaults,
+host harness profile saves, file retention, computer sync, Claude plugin and marketplace changes,
+and native MCP changes or reconciliation. Omit it to apply the write to current state without a
+preceding read. Supply it for an optimistic concurrency check: a stale value returns
+`REVISION_CONFLICT` (HTTP 409). Accepted writes still advance persisted revisions.
+
+Reuse the same `commandId` and input after an uncertain response; a retry returns the original
+result rather than applying the write again. Readback returns current persisted state. Scope
+checks, read-only caller restrictions, sensitive-path and credential validation still apply.
+Workflow graph/version pins and host qualification checks retain their required revisions.
+Native MCP changes capture the observed configuration revision internally before applying.
+
 ## Start and migrate
 
 ```sh

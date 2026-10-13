@@ -16,7 +16,7 @@ export const workspaceDefaultsTools = [
     name: 'workspace_defaults_update',
     requires: [['settings:update', 'global']],
     enabled: s => !!s.settings,
-    description: 'Revision-check and save workspace creation defaults. Existing workspaces, paths and grants are unchanged.',
+    description: 'Save workspace creation defaults. Omit expectedRevision for last write wins; supply it to reject a stale revision. Existing workspaces, paths and grants are unchanged.',
     inputSchema: WorkspaceDefaultsUpdateInputSchema, outputSchema: WorkspaceDefaultsUpdateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: (context, input) => context.services.settings!.updateWorkspaceDefaults(context.principal, 'mcp', input),

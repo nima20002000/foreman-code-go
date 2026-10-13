@@ -191,9 +191,9 @@ export class ClaudePluginSettingsService {
     })
   }
 
-  private async checkRevision(client: pg.PoolClient, expected: string) {
+  private async checkRevision(client: pg.PoolClient, expected: string | undefined) {
     await client.query('select pg_advisory_xact_lock(hashtext($1))', ['claude-plugin-settings'])
-    if (revision(await readClaudePlugins(this.ports, AbortSignal.timeout(120_000))) !== expected) {
+    if (expected !== undefined && revision(await readClaudePlugins(this.ports, AbortSignal.timeout(120_000))) !== expected) {
       throw new DomainError('REVISION_CONFLICT', 'Claude plugins changed. Read the list again before editing.', 409)
     }
   }

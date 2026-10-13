@@ -10,7 +10,7 @@ export const ManagedGeneralSettingsSchema = z.object({
 }).strict()
 export const GeneralSettingsUpdateInputSchema = z.object({
   value: GeneralSettingsSchema,
-  expectedRevision: z.number().int().nonnegative(),
+  expectedRevision: z.number().int().nonnegative().optional().describe('Omit for last write wins; supply to reject a stale revision.'),
   commandId: z.string().trim().min(8).max(200),
 }).strict()
 export const GeneralSettingsUpdateResultSchema = z.object({

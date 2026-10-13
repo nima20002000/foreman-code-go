@@ -89,7 +89,7 @@ pins retain their exact values.
 
 `claude_setup_options_get` and its authenticated HTTP equivalent read the owning
 API endpoint. `harness_defaults_update` and `harness_instance_save` preserve their
-existing permissions, revisions, idempotency and audit contracts. Preset saves
+existing permissions, idempotency and audit contracts. `expectedRevision` is optional: omission applies the last write; a supplied stale revision rejects the save. Preset saves
 validate configuration but cannot themselves produce native qualification.
 Installed subscription metadata is discovered through an owned zero-input SDK
 control query. Missing model selections initialize from the native recommended

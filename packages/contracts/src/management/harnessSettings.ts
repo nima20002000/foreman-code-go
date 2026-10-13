@@ -42,7 +42,7 @@ const HarnessMcpPlanPresetSchema = z.enum(['graphql', 'linear', 'operator', 'wor
 /** `legacy`: old graphql-app/graphql-operator entries remain; applying the preset replaces them. */
 const HarnessMcpPresetStatus = z.enum(['missing', 'installed', 'disabled', 'mismatch', 'inherited', 'legacy'])
 const HarnessMcpManagedBase = z.object({ harness: Harness, preset: HarnessMcpManagedPresetSchema,
-  commandId: CommandId, expectedRevision: Revision })
+  commandId: CommandId, expectedRevision: Revision.optional().describe('Omit for last write wins; supply to reject a stale revision.') })
 export const HarnessMcpManagedInputSchema = z.union([
   HarnessMcpManagedBase.extend({ installed: z.boolean() }).strict(),
   HarnessMcpManagedBase.extend({ enabled: z.boolean() }).strict(),
@@ -60,7 +60,7 @@ export const HarnessMcpListResultSchema = z.object({
   checkedAt: z.string().datetime({ offset: true }), scope: z.literal('native-user'),
 }).strict()
 export type HarnessMcpList = z.infer<typeof HarnessMcpListResultSchema>
-export const HarnessMcpPlanInputSchema = z.object({ harness: Harness, commandId: CommandId, expectedRevision: Revision, change: HarnessMcpChangeSchema }).strict()
+export const HarnessMcpPlanInputSchema = z.object({ harness: Harness, commandId: CommandId, expectedRevision: Revision.optional().describe('Omit for last write wins; supply to reject a stale revision.'), change: HarnessMcpChangeSchema }).strict()
 export type HarnessMcpPlanInput = z.infer<typeof HarnessMcpPlanInputSchema>
 export const HarnessMcpPlanSchema = z.object({
   id: z.string().uuid(), harness: z.enum(['codex', 'opencode']), revision: Revision, change: HarnessMcpChangeSchema,
@@ -76,7 +76,7 @@ export const HarnessMcpPlanGetInputSchema = z.object({ planId: z.string().uuid()
 export const HarnessMcpDecisionInputSchema = z.object({ planId: z.string().uuid(), approve: z.boolean() }).strict()
 /** Explicit browser-owner settlement; never authorizes another native write. */
 export const HarnessMcpReconcileInputSchema = z.object({
-  planId: z.string().uuid(), commandId: CommandId, expectedRevision: Revision,
+  planId: z.string().uuid(), commandId: CommandId, expectedRevision: Revision.optional().describe('Omit for last write wins; supply to reject a stale revision.'),
   acceptObservedState: z.boolean().default(false),
 }).strict()
 export type HarnessMcpReconcileInput = z.infer<typeof HarnessMcpReconcileInputSchema>

@@ -39,7 +39,7 @@ export const ManagedWorkspaceDefaultsSchema = z.object({
 export const WorkspaceDefaultsUpdateInputSchema = z.object({
   value: WorkspaceDefaultsSchema,
   commandId: z.string().trim().min(8).max(200),
-  expectedRevision: z.number().int().nonnegative(),
+  expectedRevision: z.number().int().nonnegative().optional().describe('Omit for last write wins; supply to reject a stale revision.'),
 }).strict();
 export type WorkspaceDefaultsUpdateInput = z.infer<typeof WorkspaceDefaultsUpdateInputSchema>;
 export const WorkspaceDefaultsUpdateResultSchema = z.object({

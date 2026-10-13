@@ -130,7 +130,7 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
           expect(JSON.parse(await readFile(file, 'utf8'))[name]).toEqual(original)
         }
         for (const enabled of [false, true]) {
-          const toggle = { harness, preset, enabled, expectedRevision: (await listed(harness)).revision, commandId: randomUUID() }
+          const toggle = { harness, preset, enabled, commandId: randomUUID() }
           const togglePlan = HarnessMcpPlanSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'harness_mcp_managed_request', arguments: toggle }))))
           expect(togglePlan.change).toEqual({ kind: 'enable', name, enabled })
           expect(togglePlan.status).toBe('applied')

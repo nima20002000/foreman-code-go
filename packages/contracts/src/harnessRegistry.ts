@@ -81,7 +81,7 @@ function validateHostEnvironment(configuration: HarnessConfiguration, context: z
 
 
 export const HostHarnessOverrideSaveSchema = z.object({
-  commandId: z.uuid(), instanceId: z.uuid(), expectedRevision: z.number().int().nonnegative(),
+  commandId: z.uuid(), instanceId: z.uuid(), expectedRevision: z.number().int().nonnegative().optional().describe('Omit for last write wins; supply to reject a stale revision.'),
   target: HostHarnessOverrideTargetSchema, presetId: Identity, enabled: z.boolean(),
   configuration: z.lazy(() => SupportedHarnessConfigurationSchema),
 }).strict().superRefine((value, context) => validateHostEnvironment(value.configuration, context, ['configuration']))

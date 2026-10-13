@@ -54,6 +54,24 @@ describe.skipIf(!postgresEnabled)('Claude plugins through authenticated Operator
     expect((await operator.listTools()).tools.map(tool => tool.name)).toEqual(expect.arrayContaining([
       'claude_plugins_list', 'claude_plugin_change', 'claude_plugin_marketplace_add',
     ]))
+    const noRevisionMarketplace = { source: 'owner/extra', commandId: randomUUID() }
+    const added = await operator.callTool({ name: 'claude_plugin_marketplace_add', arguments: noRevisionMarketplace })
+    expect(ClaudePluginMarketplaceAddResultSchema.parse(decodeMcpToolResult(added)).marketplaces)
+      .toContainEqual({ name: 'extra', source: 'owner/extra' })
+    const noRevision = { pluginId: 'review@official', action: 'install', commandId: randomUUID() }
+    const installed = await operator.callTool({ name: 'claude_plugin_change', arguments: noRevision })
+    expect(ClaudePluginChangeResultSchema.parse(decodeMcpToolResult(installed)).status).toBe('applied')
+    expect(decodeMcpToolResult(await operator.callTool({ name: 'claude_plugin_change', arguments: noRevision })))
+      .toEqual(decodeMcpToolResult(installed))
+    fake.installed.get('review@official')!.enabled = false
+    const enabled = await operator.callTool({ name: 'claude_plugin_change', arguments: {
+      ...noRevision, action: 'enable', commandId: randomUUID(),
+    } })
+    expect(ClaudePluginChangeResultSchema.parse(decodeMcpToolResult(enabled)).plugin?.enabled).toBe(true)
+    expect((await read()).items.find(item => item.pluginId === 'review@official')?.enabled).toBe(true)
+    expect((await operator.callTool({ name: 'claude_plugin_change', arguments: {
+      ...noRevision, action: 'uninstall', commandId: randomUUID(),
+    } })).isError).not.toBe(true)
     const marketplaceInput = { source: 'owner/official', commandId: randomUUID(), expectedRevision: (await read()).revision }
     const marketplace = await operator.callTool({ name: 'claude_plugin_marketplace_add', arguments: marketplaceInput })
     expect(ClaudePluginMarketplaceAddResultSchema.parse(decodeMcpToolResult(marketplace)).marketplaces)

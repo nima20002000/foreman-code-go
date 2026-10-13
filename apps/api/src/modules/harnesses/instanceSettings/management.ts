@@ -61,7 +61,7 @@ export function registerHostHarnessOverrideTools(server: McpServer, service: Hos
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, input => invoke('harness_instance_check', () => service.check(principal, 'mcp', input)))
   if (hostHarnessToolAvailable(service, principal, 'harness_instance_save')) server.registerTool('harness_instance_save', {
-    description: 'Create or revision-check a host-specific harness override. Claude requires Full access; unsupported modes return validation errors and are never upgraded. Writes preserve immutable history; installed/authenticated/qualified are separate and saved configuration is unavailable until exact-target qualification.',
+    description: 'Create or replace a host-specific harness override. Omit expectedRevision for last write wins; supply it to reject a stale revision. Claude requires Full access; unsupported modes return validation errors and are never upgraded. Writes preserve immutable history; installed/authenticated/qualified are separate and saved configuration is unavailable until exact-target qualification.',
     inputSchema: HostHarnessOverrideSaveSchema, outputSchema: HostHarnessOverrideSaveResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, input => invoke('harness_instance_save', () => service.save(principal, 'mcp', input)))

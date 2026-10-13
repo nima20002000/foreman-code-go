@@ -101,7 +101,7 @@ export class FileRetentionService {
         perform: async (client) => {
           await lockFileRetentionOwner(client, principal.id)
           const current = await readFileRetentionPreference(client, principal.id)
-          if (current.revision !== request.expectedRevision) {
+          if (request.expectedRevision !== undefined && current.revision !== request.expectedRevision) {
             throw new DomainError('REVISION_CONFLICT', 'File retention changed. Read the current preference before saving.', 409,
               { expectedRevision: request.expectedRevision, actualRevision: current.revision })
           }

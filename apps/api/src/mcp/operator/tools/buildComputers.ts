@@ -161,7 +161,7 @@ export const buildComputerTools = [
     requires: [['settings:update', 'global']],
     enabled: s => !!s.computerSync,
     description: 'Enable or disable one workspace shared folder on one computer. Requires global settings:update. '
-      + 'Use expectedRevision from computer_sync_status and reuse commandId for uncertain saves. '
+      + 'Omit expectedRevision for last write wins; supply it to reject a stale revision. Reuse commandId for uncertain saves. '
       + 'Syncthing installs automatically, pairs through the app and uses Tailscale with Main as hub and simple versioning. '
       + 'Only computers selected for workspace Agents receive the folder; enabled preferences apply when they participate. '
       + 'Unavailable enabled peers defer folder replacement; saved preferences retry when they reconnect. '

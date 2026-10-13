@@ -66,7 +66,7 @@ Transport paths and MCP registration names are backend additions:
 | --- | --- | --- |
 | `GET /api/management/file-retention` | `file_retention_get` | Empty input; `{ preference }` |
 | `POST /api/management/file-retention/preview` | `file_retention_preview` | `{ durationSeconds }`; owner, preference revision, duration, `asOfUtc`, `expireNowCount` |
-| `POST /api/management/file-retention` | `file_retention_save` | `commandId`, `expectedRevision`, `durationSeconds`, optional `applyToExisting`; `{ value: { preference, updatedFileCount, expiredNowCount }, replayed }` |
+| `POST /api/management/file-retention` | `file_retention_save` | `commandId`, `durationSeconds`, optional `expectedRevision` and `applyToExisting`; `{ value: { preference, updatedFileCount, expiredNowCount }, replayed }` |
 
 Get rejects query owner selectors. All input schemas are strict. An unset
 preference reads as **604800 seconds / 7 days, revision 0** without inserting a
@@ -75,7 +75,7 @@ row. Durations are integer seconds, inclusive **3600 through 31536000**
 subsequent accepted new command advances the revision, including a same-value
 save. There is no sliding expiry or local-calendar arithmetic.
 
-Stale revisions return `REVISION_CONFLICT` / HTTP 409. Reusing a command ID
+Omitted `expectedRevision` applies the last write to current state. A supplied stale revision returns `REVISION_CONFLICT` / HTTP 409. Reusing a command ID
 with different normalized input returns `COMMAND_ID_CONFLICT` / 409. Omitted
 `applyToExisting` and explicit `false` normalize to the same command; HTTP and
 MCP share command identity. Identical replay returns the historical accepted
