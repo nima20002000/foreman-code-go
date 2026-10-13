@@ -86,8 +86,7 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
   return { service, started, writes: () => writes }
 }
 
-it.each(['not-ready', 'offline', 'extension-rejected', 'disabled'])
-  ('dispatches a queued gate part elsewhere after its planned computer becomes %s', async reason => {
+it.each(['not-ready', 'offline', 'extension-rejected', 'disabled'])('dispatches a queued gate part elsewhere after its planned computer becomes %s', async reason => {
     const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, gate: true,
       plannedHostKey: host.key, partition: null, integrationShards: 32, requiresBuildComputer: false,
       files: ['apps/api/test/workflow.integration.test.ts'],

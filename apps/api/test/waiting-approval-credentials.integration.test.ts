@@ -1,4 +1,4 @@
-import { setTimeout as delay } from 'node:timers/promises'
+import { readUntil } from './helpers/observableCondition.js'
 import { expect, it, vi } from 'vitest'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
@@ -34,7 +34,8 @@ it.each(['http', 'mcp'] as const)('retains the same requester credential across 
       Object.assign(f.services, { interactions: new OperatorInteractionService(runtime.service) })
       await runtime.engine.prepareInteraction(pending)
     }
-    await delay(125_000)
+    await readUntil(read, lease => lease.expires_at.getTime() > original.expires_at.getTime() + 125_000,
+      { timeoutMs: 140_000, description: 'two requester credential lifetimes' })
     expect(await read()).toMatchObject({ principal_id: original.principal_id, token_hash: original.token_hash,
       generation: original.generation, live: true })
     expect((await read()).expires_at.getTime()).toBeGreaterThan(original.expires_at.getTime())
@@ -94,8 +95,8 @@ it('issues and renews against database time despite API clock offsets and jumps'
     for (const offset of [120_000, -180_000, 0]) {
       clock.mockImplementation(() => wallNow() + offset)
       const before = await lease()
-      await delay(2_000)
-      const after = await lease()
+      const after = await readUntil(lease, value => value.expires_at.getTime() > before.expires_at.getTime(),
+        { timeoutMs: 10_000, description: 'credential renewal after API clock change' })
       expect(after.expires_at.getTime()).toBeGreaterThan(before.expires_at.getTime())
       expect(after.remaining_ms).toBeGreaterThan(30_000)
       expect(failures).toEqual([])
@@ -121,13 +122,26 @@ it('stops renewing the waiting requester after its accepted Run authority is rev
     await f.engine.start(f.f.run.id)
     const [pending] = (await f.pending()).filter(item => item.status === 'pending')
     if (!pending?.executionId) throw new Error('Expected a pending requester')
+    let renewalRejected = false
+    const renew = Wave25WorkerCredentialService.prototype.renewForExecution
+    const renewal = vi.spyOn(Wave25WorkerCredentialService.prototype, 'renewForExecution')
+      .mockImplementation(async function (this: Wave25WorkerCredentialService, ...args) {
+        try { return await renew.apply(this, args) }
+        catch (error) {
+          if (args[0] === pending.executionId) renewalRejected = true
+          throw error
+        }
+      })
     await f.access.revoke(f.authorizationPrincipalId)
-    await delay(2_000)
+    try {
+      await vi.waitFor(() => expect(renewalRejected).toBe(true), { timeout: 10_000, interval: 10 })
+    } finally { renewal.mockRestore() }
     const readExpiry = async () => (await f.db.pool.query<{ expires_at: Date }>(
       'select p.expires_at from management_principals p join worker_credential_bindings b on b.principal_id=p.id where b.execution_id=$1',
       [pending.executionId])).rows[0]!.expires_at.toISOString()
     const stopped = await readExpiry()
-    await delay(2_000)
+    // eslint-disable-next-line no-restricted-syntax -- Proves no further renewal occurs after authority loss.
+    await new Promise<void>(resolve => setTimeout(resolve, 2_000))
     expect(await readExpiry()).toBe(stopped)
     expect(f.provider.counts.responses).toBe(0)
     expect(f.provider.counts.starts).toBe(2)
