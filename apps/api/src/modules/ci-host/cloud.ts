@@ -13,7 +13,7 @@ import type { HostCiComputer } from './service.js'
 import { CLOUD_START_TIMEOUT_MS, CircleCiProvider, GitHubActionsProvider,
   type CloudDispatchInput, type CloudProvider, type CloudRun, type CloudStatus } from './cloudProviders.js'
 import { runsOnCircleCi } from './parts.js'
-import { pruneMirrorBranches } from './mirrorBranches.js'
+import { pruneMirrorBranches, type ActiveCiRuns } from './mirrorBranches.js'
 import { fallbackOnError } from '../diagnostics/ignoredError.js'
 
 const LOG_LIMIT = 4 * 1024 * 1024
@@ -44,10 +44,19 @@ export function workspaceMirrors(pool: pg.Pool): Mirrors {
   }
 }
 
+/** Main owns ticket completion even when the last attempt ran on a different provider. */
+export async function activeCiRuns(pool: pg.Pool): Promise<ActiveCiRuns> {
+  const readAt = Date.now()
+  const rows = (await pool.query<{ id: string }>(
+    "select id from ci_runs where state in ('queued','starting','running')")).rows
+  return { ids: new Set(rows.map(row => row.id)), readAt }
+}
+
 /** A cloud CI service on a workspace's public mirror as CI computers: one slot per concurrent job. A run pushes the
  * commit's files to the mirror as one commit without history, starts the provider's run of them, and reads the
  * result, log and measured durations back. */
 export class CloudCi {
+  private activeRuns: (() => Promise<ActiveCiRuns>) | undefined
   private checked: { at: number; ready: boolean } | undefined
   private readonly polled = new Map<string, number>()
   private backoff = { until: 0, ms: 0 }
@@ -64,6 +73,10 @@ export class CloudCi {
     private readonly ports: HostCiPorts = systemHostCiPorts(),
     private readonly git: GitWorktreePorts = systemGitWorktreePorts(),
     private readonly identity = { home: homedir(), user: userInfo().username, host: hostname() }) {}
+
+  setActiveRunLookup(lookup: () => Promise<ActiveCiRuns>) {
+    this.activeRuns = lookup
+  }
 
   computers(priority = 30): HostCiComputer[] {
     return Array.from({ length: this.provider.slots }, (_, slot) => ({ key: `${this.mainId}:cloud:${this.provider.id}:${slot}`,
@@ -104,7 +117,7 @@ export class CloudCi {
       if (run.providerRunId && ['starting', 'running'].includes(run.state)) await this.provider.cancel(run)
       const canceled = ['queued', 'starting', 'running'].includes(run.state)
         ? await this.save({ ...run, state: 'canceled', finishedAt: this.ports.now().toISOString(), message: 'Canceled.' }) : run
-      await this.prune(canceled)
+      await this.prune(canceled, canceled.runId)
       return CiHostReplySchema.parse({ operation: 'cancel', run: this.view(canceled, 0) })
     }
     this.reading.add(request.runId)
@@ -117,7 +130,7 @@ export class CloudCi {
 
   private async answer(request: Extract<CiHostRequest, { operation: 'read' }>, run: CloudRun) {
     const log = await readFile(this.path(run.runId, 'log')).catch(() => Buffer.alloc(0))
-    if (!['starting', 'running', 'queued'].includes(run.state)) await this.prune(run)
+    if (!['starting', 'running', 'queued'].includes(run.state)) await this.prune(run, run.runId)
     const text = log.subarray(request.afterOffset, request.afterOffset + request.maxBytes)
     return CiHostReplySchema.parse({ operation: 'read', run: this.view(run, log.length), text: text.toString('utf8'),
       nextOffset: request.afterOffset + text.length,
@@ -264,11 +277,17 @@ export class CloudCi {
     return this.save({ ...next, state: 'queued', providerRunId: null, finishedAt: null, exitCode: null })
   }
 
-  private async prune(run: Pick<CloudRun, 'repository' | 'mirror'>) {
+  private async prune(run: Pick<CloudRun, 'repository' | 'mirror'>, finishedRunId?: string) {
     const previous = mirrorPushes.get(run.mirror) ?? Promise.resolve()
     const cleanup = previous.then(async () => {
       const clone = await ensureClone(this.git, run.repository, AbortSignal.timeout(120_000))
-      const swept = await pruneMirrorBranches({ mirror: run.mirror,
+      let activeRuns = await this.activeRuns?.()
+      if (activeRuns && finishedRunId) {
+        const ids = new Set(activeRuns.ids)
+        ids.delete(finishedRunId)
+        activeRuns = { ...activeRuns, ids }
+      }
+      const swept = await pruneMirrorBranches({ mirror: run.mirror, activeRuns,
         roots: [this.root, join(this.root, '..', 'github'), join(this.root, '..', 'circleci')],
         keep: [...(publishingBranches.get(run.mirror) ?? [])].flatMap(value => {
           const branch = value.split('\n')[1]!
@@ -578,8 +597,14 @@ export class CloudCi {
 }
 
 /** GitHub Actions and CircleCI on the same public mirror. */
-export function cloudCis(mainId: string, mirrors: Mirrors, ports: HostCiPorts = systemHostCiPorts()): CloudCi[] {
-  return [new CloudCi(mainId, new GitHubActionsProvider(ports), mirrors), new CloudCi(mainId, new CircleCiProvider(ports), mirrors)]
+export function cloudCis(mainId: string, mirrors: Mirrors,
+  options: { ports?: HostCiPorts; activeRuns?: () => Promise<ActiveCiRuns> } = {}): CloudCi[] {
+  const ports = options.ports ?? systemHostCiPorts()
+  return [new GitHubActionsProvider(ports), new CircleCiProvider(ports)].map(provider => {
+    const cloud = new CloudCi(mainId, provider, mirrors)
+    if (options.activeRuns) cloud.setActiveRunLookup(options.activeRuns)
+    return cloud
+  })
 }
 
 interface Peer { HostName?: string; TailscaleIPs?: string[] }

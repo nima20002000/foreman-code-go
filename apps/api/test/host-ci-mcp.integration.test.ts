@@ -25,6 +25,7 @@ import { repeatStartPublication } from '../src/modules/run-graph/repeatStartPubl
 import { insertRepeatRun } from '../src/modules/runs/repeatStartAdmission.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { migratedDatabase } from './helpers/migratedDatabase.js'
+import { activeCiRuns } from '../src/modules/ci-host/cloud.js'
 import { onlyCiInfrastructure } from '../src/modules/ci-host/priority.js'
 
 let database: Awaited<ReturnType<typeof migratedDatabase>>
@@ -1757,5 +1758,24 @@ it('resolves branches of existing tickets before superseding them and protects e
       .toBe('queued')
     expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: feature.ticketId })).run)
       .toMatchObject({ state: 'canceled', supersededBy: next.ticketId })
+  } finally { await f.close() }
+})
+
+
+it('indexes only active Main tickets after authenticated MCP writes and persisted completion', async () => {
+  const f = await fixture()
+  try {
+    const reader = await f.connect(CI_GET_ACTIONS)
+    const input = { suite: 'install', commandId: randomUUID() }
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    expect((await activeCiRuns(f.pool)).ids.size).toBe(0)
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
+    expect((await activeCiRuns(f.pool)).ids.has(started.ticketId)).toBe(true)
+    await expect.poll(async () => CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get',
+      { ticketId: started.ticketId })).run.state).toBe('running')
+    f.finish(started.ticketId, 0, 'finished')
+    await expect.poll(async () => CiGetOutputSchema.parse(await f.value(reader, 'ci_get',
+      { ticketId: started.ticketId })).run.state).toBe('passed')
+    expect((await activeCiRuns(f.pool)).ids.has(started.ticketId)).toBe(false)
   } finally { await f.close() }
 })

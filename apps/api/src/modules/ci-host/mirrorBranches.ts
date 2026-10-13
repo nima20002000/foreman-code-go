@@ -5,7 +5,11 @@ import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 
 const ciBranch = /^refs\/heads\/(?:ci|ci-default)\/.+$/
+export interface ActiveCiRuns { ids: ReadonlySet<string>; readAt: number }
+
 interface MirrorRun {
+  runId: string
+  startedAt: string
   mirror: string
   commit: string
   baseCommit?: string
@@ -29,6 +33,7 @@ export async function pruneMirrorBranches(options: {
   roots: string[]
   git: (args: string[]) => Promise<string>
   keep?: string[]
+  activeRuns?: ActiveCiRuns | undefined
 }) {
   const remote = `https://github.com/${options.mirror}.git`
   const listed = await options.git(['ls-remote', '--heads', remote, 'refs/heads/ci/*', 'refs/heads/ci-default/*'])
@@ -38,6 +43,10 @@ export async function pruneMirrorBranches(options: {
       if (!directory.isDirectory()) continue
       const run = JSON.parse(await readFile(join(root, 'runs', directory.name, 'meta.json'), 'utf8')) as MirrorRun
       if (run.mirror !== options.mirror || !['starting', 'running', 'queued'].includes(run.state)) continue
+      const index = options.activeRuns
+      // A new dispatch after the index was read stays protected until the next sweep.
+      const newer = index && Date.parse(run.startedAt) > index.readAt
+      if (index && !index.ids.has(run.runId) && !newer) continue
       const branch = run.dispatch?.input.branch ?? run.mirrorBranch
       if (branch) keep.add(`refs/heads/${branch}`)
       else {
@@ -71,13 +80,26 @@ export async function pruneMirrorBranches(options: {
 // The maintenance command calls the same sweep used when cloud tickets finish.
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [mirror, ...roots] = process.argv.slice(2)
+  const flag = roots.indexOf('--active-runs-file')
+  let activeRuns: ActiveCiRuns | undefined
+  if (flag >= 0) {
+    const file = roots[flag + 1]
+    if (!file) throw new Error('--active-runs-file requires a JSON index file.')
+    const index = JSON.parse(await readFile(file, 'utf8')) as { ids: unknown; readAt: unknown }
+    if (!Array.isArray(index.ids) || !index.ids.every(id => typeof id === 'string')
+      || typeof index.readAt !== 'number' || !Number.isFinite(index.readAt) || index.readAt < 0) {
+      throw new Error('The active run index must contain string ids and a readAt timestamp.')
+    }
+    activeRuns = { ids: new Set(index.ids), readAt: index.readAt }
+    roots.splice(flag, 2)
+  }
   if (!mirror || !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(mirror) || !roots.length) {
     throw new Error('Usage: mirrorBranches <owner/repository> <provider-root> [provider-root...]')
   }
   const execute = promisify(execFile)
-  const removed = await pruneMirrorBranches({ mirror, roots, git: async args => {
+  const swept = await pruneMirrorBranches({ mirror, roots, activeRuns, git: async args => {
     const result = await execute('git', args, { maxBuffer: 4 * 1024 * 1024 })
     return result.stdout.trim()
   } })
-  console.log(JSON.stringify({ removed: removed.removed.length }))
+  console.log(JSON.stringify({ removed: swept.removed.length }))
 }
