@@ -119,6 +119,42 @@ it.each(['running', 'waiting'] as const)(
   },
 )
 
+it.each([
+  { state: 'running' as const, missingWrite: false },
+  { state: 'running' as const, missingWrite: true },
+  { state: 'waiting' as const, missingWrite: false },
+  { state: 'waiting' as const, missingWrite: true },
+])('preserves a cold $state Main session during another restart (missing detachment write=$missingWrite)',
+  async ({ state, missingWrite }) => {
+    const f = currentRestartUnit(false, { hostRef: { kind: 'main' } } as AcceptedNodePlacement)
+    connections.push(f.connection)
+    const first = f.cold()
+    await first.attachOriginal()
+    f.state.failCloseWrite = missingWrite
+    if (missingWrite) await expect(first.coordinator.closeForRestart()).rejects.toBeInstanceOf(AggregateError)
+    else await first.coordinator.closeForRestart()
+    f.state.failCloseWrite = false
+    f.execution().state = state
+    const execution = structuredClone(f.execution())
+    const before = { resolutions: f.state.resolutions, attaches: f.state.attaches,
+      registrations: f.state.beginCalls, waits: f.state.budgetWaits }
+    const restarted = f.cold()
+    expect(await restarted.coordinator.preserveActiveForRestart(f.owner)).toBe(true)
+    expect(f.state.budgetWaits).toBe(before.waits + 1)
+    expect(f.rows()).toHaveLength(1)
+    expect(f.rows()[0]).toMatchObject({ detached: true, closed: false, detached_reference: f.session })
+    expect(f.state.resolutions).toBe(before.resolutions)
+    expect(f.state.attaches).toBe(before.attaches)
+    expect(f.state.beginCalls).toBe(before.registrations)
+    expect(f.execution()).toEqual(execution)
+    expect(f.state.cleanup).toBe(false)
+    expect(f.state.creates).toBe(0)
+    expect(f.state.turns).toBe(0)
+    expect(restarted.coordinator.passiveOwnedNativeSessions()).toEqual([])
+    await restarted.coordinator.closeForRestart()
+  },
+)
+
 afterEach(async () => {
   await Promise.all(connections.splice(0).map((connection) => connection.close()))
   vi.useRealTimers()

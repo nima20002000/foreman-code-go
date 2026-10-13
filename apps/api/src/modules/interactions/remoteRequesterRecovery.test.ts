@@ -111,6 +111,7 @@ async function recoverRequester(detached: boolean, state: 'waiting' | 'running' 
     continuation.detached = false
     return continuation.generation
   })
+  const beginWait = vi.fn(async () => {})
   let resident = false
   const coordinator = new ApprovalExecutionCoordinator({
     getExecution: async () => execution, getExecutionConfiguration: async () => configuration,
@@ -123,7 +124,7 @@ async function recoverRequester(detached: boolean, state: 'waiting' | 'running' 
     assertOrchestratorConnection: async () => ({ orchestratorNodeId: base.version.definition.nodes[0]!.id }),
   } as unknown as Args[1], {
     ensure: async () => {}, resume: async () => {}, remaining: async () => 60_000,
-    assertActive: async () => {}, beginWait: async () => {},
+    assertActive: async () => {}, beginWait,
   } as unknown as Args[2], {
     resolve: () => ({ manager, get processState() { return resident ? 'resident' : 'needs_start' },
       markResident() { resident = true } }),
@@ -157,7 +158,7 @@ async function recoverRequester(detached: boolean, state: 'waiting' | 'running' 
     } as unknown as RepeatNativeObservationStore,
   })
   return { coordinator, interaction, owner, acquireOwnership, attach, releaseRetention, coordination,
-    observeOriginal, begin, restore, continuation, create, startTurn }
+    observeOriginal, begin, restore, continuation, create, startTurn, beginWait, requestCleanup }
 }
 
 it('keeps a live remote turn without a graceful detachment receipt after Main loses its owner', async () => {
@@ -184,6 +185,26 @@ it('observes the original running remote lifetime without reserving another gene
     await f.coordinator.closeForRestart()
   }
 })
+
+it.each(['running', 'waiting'] as const)(
+  'preserves the cold original %s remote session during another restart without allocating a manager', async state => {
+    const f = await recoverRequester(false, state, { observeWithoutCleanup: true })
+    try {
+      expect(await f.coordinator.preserveActiveForRestart(f.owner)).toBe(true)
+      expect(f.beginWait).toHaveBeenCalledWith(f.interaction.executionId)
+      expect(f.requestCleanup).not.toHaveBeenCalled()
+      expect(f.begin).not.toHaveBeenCalled()
+      expect(f.attach).not.toHaveBeenCalled()
+      expect(f.restore).not.toHaveBeenCalled()
+      expect(f.continuation.generation).toBe('1')
+      expect(f.create).not.toHaveBeenCalled()
+      expect(f.startTurn).not.toHaveBeenCalled()
+      expect(f.coordinator.passiveOwnedNativeSessions()).toEqual([])
+    } finally {
+      await f.coordinator.closeForRestart()
+    }
+  },
+)
 
 it('waits for the orphaned Main writer before observing the original remote turn', async () => {
   vi.useFakeTimers()

@@ -62,7 +62,7 @@ export function currentRestartUnit(reviewer = false, acceptedPlacement?: Accepte
     failBegin: false, failCloseWrite: false, loseCommitReply: false, failNativeClose: false, loseAtFinalFence: false,
     finalizationWrites: 0, revocations: 0, retirementCalls: 0, closeWrites: 0, beginCalls: 0,
     preflightCalls: 0, restores: 0, closes: 0, restartCloses: 0, attaches: 0, cancels: 0, creates: 0, turns: 0, reads: 0,
-    resolutions: 0, budgetStops: 0, interactionCancels: 0 }
+    resolutions: 0, budgetStops: 0, budgetWaits: 0, interactionCancels: 0 }
   // The reviewer fixture starts after a positively closed workflow lifetime.
   // Keep that real predecessor in the SQL model so all generation checks see it.
   const priorWorkflow: RestartClosureRow = {
@@ -247,7 +247,7 @@ export function currentRestartUnit(reviewer = false, acceptedPlacement?: Accepte
     },
     cancelPendingForRun: async () => { state.interactionCancels++; return 0 } }
   const budgets = { ensure: async () => undefined, resume: async () => undefined, remaining: async () => 60_000,
-    assertActive: async () => undefined, beginWait: async () => undefined, stop: async () => { state.budgetStops++ } }
+    assertActive: async () => undefined, beginWait: async () => { state.budgetWaits++ }, stop: async () => { state.budgetStops++ } }
   const credentials = { prepare: async () => {
     state.preflightCalls++
     await beforePreflight()
