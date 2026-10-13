@@ -3,8 +3,8 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { CiGetOutputSchema, CiRunOutputSchema, exclusiveIntegrationFiles, userSystemdIntegrationFiles,
   type CiHostRun, type CiHostRequest } from '@foreman-code/contracts'
-import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest'
-import type pg from 'pg'
+import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest'
+import pg from 'pg'
 import { buildApp } from '../src/app.js'
 import { createPool } from '../src/infrastructure/pool.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
@@ -145,21 +145,22 @@ it('persists gate check reassignment to an idle build computer through MCP when 
 it.each([false, true])('admits consecutive gates on different connections after a lost lock reply: %s', async lostReply => {
   const pool = createPool({ connectionString: database.databaseUrl, maxConnections: 32,
     connectionTimeoutMs: 1_000, queryTimeoutMs: 1_000 }, 'gate-lock-test')
-  let loseReply = lostReply
-  pool.on('connect', client => {
-    const query = client.query
-    client.query = function (this: pg.PoolClient, ...args: unknown[]) {
-      const result = Reflect.apply(query, this, args)
-      const values = args[1]
-      if (!loseReply || !Array.isArray(values) || typeof values[0] !== 'string'
-        || !values[0].startsWith('ci-admission:')) return result
-      loseReply = false
-      // The server acquired the lock, but the driver did not deliver its acknowledgment.
-      return (result as Promise<unknown>).then(() => { throw new Error('Query read timeout') })
-    } as pg.PoolClient['query']
-  })
-  const held: pg.PoolClient[] = []
   const f = await fixture({ pool })
+  let loseReply = lostReply
+  const query = pg.Client.prototype.query
+  // Admission uses a dedicated pool, so inject the driver fault on every client.
+  const queryFault = vi.spyOn(pg.Client.prototype, 'query').mockImplementation(function (
+    this: pg.Client, ...args: unknown[]
+  ) {
+    const result = Reflect.apply(query, this, args)
+    const values = args[1]
+    if (!loseReply || !Array.isArray(values) || typeof values[0] !== 'string'
+      || !values[0].startsWith('ci-admission:')) return result
+    loseReply = false
+    // The server acquired the lock, but the driver did not deliver its acknowledgment.
+    return (result as Promise<unknown>).then(() => { throw new Error('Query read timeout') })
+  } as typeof pg.Client.prototype.query)
+  const held: pg.PoolClient[] = []
   try {
     const gate = { suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40) }
     const firstInput = { ...gate, commandId: randomUUID() }
@@ -176,6 +177,7 @@ it.each([false, true])('admits consecutive gates on different connections after 
     while (pool.idleCount) held.push(await pool.connect())
     const second = CiRunOutputSchema.parse(await f.value('ci_run', { ...gate, commandId: randomUUID() }))
     expect(second.ticketId).not.toBe(first.ticketId)
+    await f.ci.dispatch()
     for (const ticketId of [first.ticketId, second.ticketId]) {
       const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId }))
       expect(read.run).toMatchObject({ id: ticketId, gate: true })
@@ -184,6 +186,7 @@ it.each([false, true])('admits consecutive gates on different connections after 
       expect(stored).toEqual(read.run)
     }
   } finally {
+    queryFault.mockRestore()
     for (const client of held) client.release()
     await f.close()
     await pool.end()
@@ -243,7 +246,7 @@ it('admits a gate on the ready fleet when another build computer is disconnected
   } finally { await f.close() }
 })
 
-it('runs cloud checks before systemd integration overflow assigned to the same slot', async () => {
+it('runs cloud checks before systemd integration overflow even when checks move between slots', async () => {
   const f = await fixture({ cloudSlots: 4, files: [...exclusiveIntegrationFiles] })
   try {
     const admitted = CiRunOutputSchema.parse(await f.value('ci_run', {
@@ -259,12 +262,13 @@ it('runs cloud checks before systemd integration overflow assigned to the same s
         && check.plannedHostKey === run.plannedHostKey)
       expect(checks.length).toBeGreaterThan(0)
       expect(run.state).toBe('queued')
-      expect(checks.some(check => check.state === 'running')).toBe(true)
     }
     const runningCloud = read.partitions!.filter(run => run.state === 'running'
       && run.computer?.hostRef.kind === 'cloud')
     expect(runningCloud).toHaveLength(4)
     expect(runningCloud.every(run => run.suite !== 'integration')).toBe(true)
+    const runningSlots = runningCloud.map(run => run.computer!.hostRef)
+    expect(new Set(runningSlots.map(ref => JSON.stringify(ref))).size).toBe(4)
     await f.finishGate(admitted.ticketId)
     const finished = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     expect(finished.group?.state).toBe('passed')
