@@ -35,7 +35,7 @@ it.each([30_001, 60_001])('waits for a historical native chat turn that complete
     expect(settled).toBe(false)
     const pendingReads = read.mock.calls.length
     state.turns[0]!.delivery = 'completed'
-    await vi.advanceTimersByTimeAsync(25)
+    await vi.advanceTimersToNextTimerAsync()
     expect(settled).toBe(true)
     expect(await result).toMatchObject({ turns: [expect.objectContaining({ delivery: 'completed' })] })
     expect(read).toHaveBeenCalledTimes(pendingReads + 1)
