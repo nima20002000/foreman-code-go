@@ -105,6 +105,7 @@ process.exit(result.status ?? 1)
     }
     return { commits: new GitCiCommits(git), endpoint, cloudAttempts, commit: head.stdout.trim(),
       async close() {
+        await runner.beginDrain()
         await Promise.all(processes)
         await rm(root, { recursive: true, force: true })
       } }
