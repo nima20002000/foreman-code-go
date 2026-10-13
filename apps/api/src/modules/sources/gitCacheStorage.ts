@@ -31,13 +31,24 @@ async function writeStorage(root: FileHandle, storage: GitCacheStorage): Promise
   await root.sync()
 }
 
-async function measureStorage(root: FileHandle): Promise<GitCacheStorage> {
+async function measureStorage(root: FileHandle, signal?: AbortSignal): Promise<GitCacheStorage> {
   const filesystem = await identity(root)
-  const disk = await statfs(anchored(root), { bigint: true })
-  const retainedBytes = await measureRetainedDirectory(root, filesystem)
-  return GitCacheStorageSchema.parse({ version: 1, filesystem, retainedBytes,
-    reservedBytes: 0, limitBytes: Math.min(SOURCE_GIT_CACHE_LIMITS.bytes, Number(disk.blocks * disk.bsize / 4n)),
-    availableBytes: Number(disk.bavail * disk.bsize), observedAt: new Date().toISOString() })
+  for (;;) {
+    signal?.throwIfAborted()
+    let retainedBytes: number
+    try {
+      retainedBytes = await measureRetainedDirectory(root, filesystem)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      // Clone publication and cleanup can rename or remove staging entries outside the transfer lock.
+      // Rescan the whole cache so published bytes are still counted under their new names.
+      continue
+    }
+    const disk = await statfs(anchored(root), { bigint: true })
+    return GitCacheStorageSchema.parse({ version: 1, filesystem, retainedBytes,
+      reservedBytes: 0, limitBytes: Math.min(SOURCE_GIT_CACHE_LIMITS.bytes, Number(disk.blocks * disk.bsize / 4n)),
+      availableBytes: Number(disk.bavail * disk.bsize), observedAt: new Date().toISOString() })
+  }
 }
 
 async function packFiles(common: string): Promise<string[]> {
@@ -97,7 +108,7 @@ export async function runGitWithCacheStorage(cacheRoot: string, args: string[], 
   const root = await openPrivateRoot(storagePath, false)
   try {
     return await withPrivateDirectoryLock(root, async guard => {
-      const measured = await measureStorage(root)
+      const measured = await measureStorage(root, options.signal)
       const reservedBytes = SOURCE_GIT_CACHE_LIMITS.transferBytes
       const margin = Math.max(SOURCE_GIT_CACHE_LIMITS.diskMarginBytes, Math.ceil(measured.availableBytes * 0.1))
       await writeStorage(root, measured)
