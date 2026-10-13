@@ -143,7 +143,7 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment: lifecycle', () => {
       const readonly = await f.connect(reader.token)
       expect((await readonly.listTools()).tools.map(tool => tool.name)).not.toContain('ci_enrollment_update')
       const denied = await readonly.callTool({ name: 'ci_enrollment_update', arguments: {
-        ...input, commandId: randomUUID(), expectedRevision: 1, enabled: true,
+        ...input, commandId: undefined, expectedRevision: 1, enabled: true,
       } })
       expect(denied.isError).toBe(true)
       expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
@@ -155,7 +155,7 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment: lifecycle', () => {
         expiresAt: new Date(Date.now() + 600_000) })
       const foreign = await f.connect(outsider.token)
       expect((await foreign.callTool({ name: 'ci_enrollment_update', arguments: {
-        ...input, commandId: randomUUID(), expectedRevision: 1, enabled: true,
+        ...input, commandId: undefined, expectedRevision: 1, enabled: true,
       } })).isError).toBe(true)
       expect((await f.db.pool.query(`select outcome from management_audit
         where principal_id=$1 and action='ci_enrollment_update'`, [reader.principal.id])).rows)
@@ -164,7 +164,7 @@ describe.skipIf(!postgresEnabled)('automatic CI enrollment: lifecycle', () => {
         where principal_id=$1 and action='ci_enrollment_update' and outcome='succeeded'`, [f.owner.principal.id]))
         .rows[0]!.count).toBe(1)
       const enabled = await client.callTool({ name: 'ci_enrollment_update', arguments: {
-        ...input, commandId: randomUUID(), expectedRevision: 1, enabled: true,
+        ...input, commandId: undefined, expectedRevision: 1, enabled: true,
       } })
       expect(enabled.isError, JSON.stringify(enabled.content)).not.toBe(true)
       await f.enrollment.close()

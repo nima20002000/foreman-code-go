@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { CI_HOST_NAMESPACE, CI_HOST_START_PROTOCOL_VERSION, CiComputersOutputSchema, CiGetOutputSchema, CiHostRequestSchema,
   CiRunOutputSchema, CiRunRecordSchema, type CiHostReply, type CiHostRequest, type CiHostRun } from '@foreman-code/contracts'
-import { BuildComputerStatusSchema } from '@foreman-code/contracts/build-computers'
+import { BuildComputerStatusSchema, BuildComputerBatchResultSchema } from '@foreman-code/contracts/build-computers'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
@@ -101,15 +101,23 @@ it('honors persisted MCP build participation and priority while retaining assign
       buildAllowancePercent = 100) => {
       const old = await read(target)
       const saved = BuildComputerStatusSchema.parse(await call(writer, 'build_computer_update', {
-        commandId: randomUUID(), target, expectedRevision: old.preference.revision,
+        target, expectedRevision: old.preference.revision,
         buildEnabled, buildPriority, buildAllowancePercent,
       }))
       expect(await read(target)).toEqual(saved)
       return saved
     }
+    const saveBatch = async (target: DeviceProvisioningTarget) => {
+      const old = await read(target)
+      const result = BuildComputerBatchResultSchema.parse(await call(writer, 'build_computers_update', { updates: [{
+        target, expectedRevision: old.preference.revision, buildEnabled: old.preference.buildEnabled,
+        buildPriority: old.preference.buildPriority,
+      }] }))
+      expect(await read(target)).toEqual(BuildComputerStatusSchema.parse(result.computers[0]))
+    }
     const list = async () => CiComputersOutputSchema.parse(await call(reader, 'ci_computers_list', { workspaceId }))
     const start = async () => CiRunOutputSchema.parse(await call(writer, 'ci_run', {
-      workspaceId, suite: 'install', commandId: randomUUID(),
+      workspaceId, suite: 'install',
     }))
     const get = async (ticketId: string) => {
       await ci!.dispatch()
@@ -118,6 +126,7 @@ it('honors persisted MCP build participation and priority while retaining assign
 
     expect((await list()).computers).toEqual([])
     await save(main, false, 100)
+    await saveBatch(main)
     await save(devices[0]!.target, true, 20)
     const high = await save(devices[1]!.target, true, 90, 50)
     await save(devices[2]!.target, false, 100)
@@ -125,14 +134,14 @@ it('honors persisted MCP build participation and priority while retaining assign
       devices[1]!.target.hostRef, devices[0]!.target.hostRef,
     ])
     const denied = await reader.callTool({ name: 'build_computer_update', arguments: {
-      commandId: randomUUID(), target: devices[1]!.target, expectedRevision: high.preference.revision,
+      target: devices[1]!.target, expectedRevision: high.preference.revision,
       buildEnabled: false, buildPriority: 0,
     } })
     expect(denied.isError).toBe(true)
     expect(JSON.stringify(denied.content)).toContain('ACCESS_DENIED')
     expect(await read(devices[1]!.target)).toEqual(high)
     expect((await reader.callTool({ name: 'ci_run', arguments: {
-      workspaceId, suite: 'install', commandId: randomUUID(),
+      workspaceId, suite: 'install',
     } })).isError).toBe(true)
     expect((await db.pool.query('select count(*)::int as count from ci_runs')).rows[0]!.count).toBe(0)
 
