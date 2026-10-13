@@ -84,6 +84,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue: cleanup-histor
       const submitted = await submit(f, definition)
       await f.jobs.wakeQueue()
       const newer = await f.jobs.getQueueTicket(reader.principal, f.workspaceId, submitted.id)
+      expect(newer).toMatchObject({ state: 'waiting', selectedComputer: null, cleanupStatus: 'none' })
       await f.jobs.cancelQueued(writer.principal, 'mcp', f.workspaceId, { commandId: randomUUID(),
         ticketId: newer.id, expectedRevision: newer.revision })
     }
