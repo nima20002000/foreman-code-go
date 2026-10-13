@@ -81,7 +81,7 @@ export function WorkspaceShell({
 }: WorkspaceShellProps) {
   const workspacesQuery = useWorkspacePages(workspaces === undefined)
   const navigationWorkspaces = workspaces ?? workspacesQuery.data?.pages.flatMap((page) => page.items.map((item) => item.workspace))
-  const { navigationCollapsed, navigationWidth, resizeWidth, navigationMotion, setCollapsed,
+  const { navigationCollapsed, navigationWidth, resizeWidth, navigationMotion,
     startResize, resizeWithKeyboard, resetWidth } = useNavigationResize()
   const rememberedWorkspaceId = useNavigationUiStore((state) => state.activeWorkspaceId)
   const navigationWorkspaceId = activeGlobalSection
@@ -297,6 +297,6 @@ function useNavigationResize() {
     setNavigationWidth(DEFAULT_NAVIGATION_WIDTH, 'manual')
     setCollapsed(false, 'manual')
   }
-  return { navigationCollapsed, navigationWidth, resizeWidth, navigationMotion, setCollapsed,
+  return { navigationCollapsed, navigationWidth, resizeWidth, navigationMotion,
     startResize, resizeWithKeyboard, resetWidth }
 }
