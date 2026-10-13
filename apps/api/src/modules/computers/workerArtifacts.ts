@@ -154,12 +154,16 @@ export function createWorkerArtifactExtension(options: { directory: string; vers
         root, artifact.manifestSha256, options.version,
       )
       if (!sameTarget(manifest.target, artifact.target)) throw new DeviceApplicationError('extension-rejected')
+      if (request.operation === 'ci-smoke') {
+        const enabled = await options.buildEnabled?.(context.binding) ?? false
+        if (enabled && !index.github) throw new DeviceApplicationError('extension-rejected')
+        return { payload: { operation: 'ci-smoke', ciSmoke: enabled
+          ? { repository: index.github!.repository, commit: manifest.commit } : null } }
+      }
       if (request.operation === 'release') {
         return { payload: { operation: 'release', release: {
           version: options.version, manifestSha256: artifact.manifestSha256, manifest,
           ...(index.github ? { github: index.github } : {}),
-          ...(index.github && await options.buildEnabled?.(context.binding)
-            ? { ciSmoke: { repository: index.github.repository, commit: manifest.commit } } : {}),
         } } }
       }
       const file = manifest.files.find(entry => entry.path === request.path)

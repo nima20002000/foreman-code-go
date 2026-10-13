@@ -156,6 +156,7 @@ export async function waitForWorkerReady({ stateDirectory, version, workerInstal
   const deadline = Date.now() + timeoutMs;
   do {
     const status = await readStatus(stateDirectory);
+    if (status?.phase === 'blocked' && status.failure) throw new Error(status.failure);
     if (status?.active === true && status.phase === 'ready' && status.appVersion === version
       && status.workerInstallationId === workerInstallationId) return;
     await wait(pollMs);
@@ -226,6 +227,7 @@ export async function launchUpdateSupervisor(stateDirectory, { run = execute } =
   await writeUpdateRecord(stateDirectory, record);
   await run('/usr/bin/systemd-run', ['--user', '--collect', '--unit', unit, '--property=Type=exec',
     '--property=Restart=on-failure', '--property=RestartSec=1',
+    ...(process.env.FOREMAN_INSTALL_SKIP_CI_SMOKE === '1' ? ['--setenv=FOREMAN_INSTALL_SKIP_CI_SMOKE=1'] : []),
     process.execPath, helper, stateDirectory], { timeout: 10_000, maxBuffer: 4096, env: environment() });
   const deadline = Date.now() + 10_000;
   do {

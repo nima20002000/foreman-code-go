@@ -88,10 +88,11 @@ it('only includes CI smoke for an enabled authenticated build computer and pins 
         expect(binding).toEqual(context.binding)
         return enabled
       } })
-    const reply = WorkerArtifactReplySchema.parse((await extension.handle!({ operation: 'release', target }, context)).payload)
-    expect(reply.operation).toBe('release')
-    if (reply.operation !== 'release') throw new Error('Expected release')
-    expect(reply.release?.ciSmoke).toEqual(enabled ? { repository: github.repository, commit: f.manifest.commit } : undefined)
+    const reply = WorkerArtifactReplySchema.parse((await extension.handle!({ operation: 'ci-smoke',
+      manifestSha256: f.manifestSha256 }, context)).payload)
+    expect(reply.operation).toBe('ci-smoke')
+    if (reply.operation !== 'ci-smoke') throw new Error('Expected smoke configuration')
+    expect(reply.ciSmoke).toEqual(enabled ? { repository: github.repository, commit: f.manifest.commit } : null)
   }
 })
 
@@ -102,7 +103,7 @@ it('keeps release announcements readable by retained Workers before updating the
   const extension = createWorkerArtifactExtension({ directory: f.artifacts, version: f.manifest.version,
     buildEnabled: async () => true })
   const payload = (await extension.handle!({ operation: 'release', target }, context)).payload
-  const retainedRelease = WorkerArtifactReplySchema.options[0].shape.release.unwrap().omit({ ciSmoke: true }).strict()
-  const retainedReply = WorkerArtifactReplySchema.options[0].extend({ release: retainedRelease.nullable() })
-  expect(retainedReply.safeParse(payload).success).toBe(true)
+  expect(payload).toEqual({ operation: 'release', release: {
+    version: f.manifest.version, manifestSha256: f.manifestSha256, manifest: f.manifest, github,
+  } })
 })
