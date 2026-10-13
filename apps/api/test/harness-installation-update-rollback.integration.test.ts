@@ -10,7 +10,9 @@ import {
 
 describe('installed harness updates', () => {
   it('keeps a Worker Run on its original profile proof through a payload update and rollback', async () => {
-    const fixture = await installationUpdateFixture({ workflow: 'single', executionHost: 'worker' })
+    const fixture = await installationUpdateFixture({ workflow: 'single', executionHost: 'worker',
+      // Exercise passive update detection at the production cadence without saturating native fixture IO.
+      installationRefreshIntervalMs: 5_000 })
     let blocked = false
     try {
       const reader = await profileReader(fixture)

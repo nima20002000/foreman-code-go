@@ -62,7 +62,7 @@ export class CodexApprovalProvider extends ActivityProductionReplay {
               cwd: thread.settings.cwd, status: 'completed', exitCode: 0, aggregatedOutput: '' }
             turn.items.push(item)
             channel.notify('item/completed', { threadId: sessionId, turnId: turn.id, item })
-            this.finishFromHistory(`execution:${this.executionId}`, sessionId, output)
+            this.completeReview(`execution:${this.executionId}`, sessionId, output)
           })
         },
       }
