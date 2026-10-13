@@ -42,8 +42,10 @@ describe('explicit telemetry grants', () => {
     expect(DEFAULT_MANAGEMENT_ACTIONS).not.toContain('devices:provision')
     expect(DEFAULT_MANAGEMENT_ACTIONS).not.toContain('provider_accounts:read')
     expect(DEFAULT_MANAGEMENT_ACTIONS).not.toContain('provider_accounts:manage')
+    expect(DEFAULT_MANAGEMENT_ACTIONS).not.toContain('jobs:prioritize')
     expect(DEFAULT_MANAGEMENT_ACTIONS).toEqual(ManagementActionSchema.options.filter(action =>
       action !== 'devices:metrics:read' && action !== 'devices:provision'
-      && action !== 'provider_accounts:read' && action !== 'provider_accounts:manage'))
+      && action !== 'provider_accounts:read' && action !== 'provider_accounts:manage'
+      && action !== 'jobs:prioritize'))
   })
 })
