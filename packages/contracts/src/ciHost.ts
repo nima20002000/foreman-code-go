@@ -27,9 +27,11 @@ function validCiPart(value: { suite: CiSuite; part?: CiPart | null | undefined; 
 }
 export const CiScopeSchema = z.enum(['affected', 'full'])
 export type CiScope = z.infer<typeof CiScopeSchema>
+/** Most files one CI run records; a larger derived selection runs its part in full instead. */
+export const CI_SELECTED_FILES_MAX = 2000
 export const CiSelectedFilesSchema = z.array(z.string().min(1).max(300)
   .regex(/^(?:apps\/(?:api|web|worker)|packages\/contracts|scripts)\/[A-Za-z0-9_./-]+$/)
-  .refine(file => !file.split('/').some(part => part === '..' || part === '.' || part === ''))).max(2000)
+  .refine(file => !file.split('/').some(part => part === '..' || part === '.' || part === ''))).max(CI_SELECTED_FILES_MAX)
 
 export function validCiSelection(value: { suite: CiSuite; scope?: CiScope | undefined; files?: string[] | undefined }) {
   if (value.scope === 'full') return !value.files?.length

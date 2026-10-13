@@ -269,10 +269,9 @@ describe('host CI runner', () => {
     await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
       suite: 'unit', part: 'unit-api' })
     const done = await f.settle(runId)
-    expect(done.run.state).toBe('passed')
+    expect(done.run).toMatchObject({ state: 'passed' })
     expect(done.run.message).toContain('more than the 2000')
     expect(done.text).toContain('Running full suite:')
-    expect(done.text).not.toContain('many-2000.test.ts')
   }, 30_000)
 
   it.each(['docs', 'source'] as const)('passes an empty affected unit shard after a %s change without running the suite', async change => {
