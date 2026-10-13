@@ -616,14 +616,17 @@ describe('GitHub Actions CI on a public mirror', () => {
 })
 
 
-it.each(['github', 'circleci'] as const)('keeps the watchdog reason and expected deadline on %s', async provider => {
+it.each((['github', 'circleci'] as const).flatMap(provider => [
+  { provider, reason: 'CI hang watchdog: no test progress for 60000 ms; running: loop.test.ts > planner never returns',
+    expected: 'CI hang watchdog: no test progress for 60000 ms; running: loop.test.ts > planner never returns' },
+  { provider, reason: 'CI hang watchdog:\0 café 🚀\ud800', expected: 'CI hang watchdog: café 🚀\ufffd' },
+]))('keeps a valid watchdog reason and expected deadline on $provider: $expected', async ({ provider, reason, expected }) => {
   const f = await fixture({}, { provider })
   const runId = randomUUID()
   await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
     suite: 'unit', scope: 'full', expectedDurationMs: 210_000 })
   const command = provider === 'github' ? f.dispatched[0]! : f.circle.triggered[0]!
   expect(command).toContain('expected_duration_ms=210000')
-  const reason = 'CI hang watchdog: no test progress for 60000 ms; running: loop.test.ts > planner never returns'
   f.github.listed = [{ databaseId: 91, displayTitle: `ci ${runId}` }]
   f.github.status = 'completed'
   f.github.conclusion = 'failure'
@@ -634,7 +637,86 @@ it.each(['github', 'circleci'] as const)('keeps the watchdog reason and expected
   f.circle.log = f.circle.output
   f.circle.watchdogFailure = { message: reason }
   const result = await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 })
-  expect(result).toMatchObject({ run: { state: 'failed', message: reason }, text: expect.stringContaining(reason) })
+  expect(result).toMatchObject({ run: { state: 'failed', message: expected }, text: expect.stringContaining(expected) })
+  expect(result.operation === 'read' && result.text).not.toContain('\0')
   expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 }))
-    .toMatchObject({ run: { state: 'failed', message: reason }, text: expect.stringContaining(reason) })
+    .toMatchObject({ run: { state: 'failed', message: expected }, text: expect.stringContaining(expected) })
+})
+
+it.each(['github', 'circleci'] as const)('prunes stale mirror branches and keeps shared %s branches until every ticket finishes', async provider => {
+  const f = await fixture({}, { provider })
+  const stale = `ci/${'a'.repeat(40)}`
+  f.mirrorGit('update-ref', `refs/heads/${stale}`, 'main')
+  f.mirrorGit('update-ref', 'refs/heads/ci/retired-run', 'main')
+  f.mirrorGit('update-ref', 'refs/heads/feature/keep', 'main')
+  const first = randomUUID()
+  const second = randomUUID()
+  const request = { operation: 'start' as const, repository: 'octo/site', commit: f.commit,
+    suite: 'lint' as const, scope: 'affected' as const, files: [] }
+  await f.cloud.handle({ ...request, runId: first })
+  await f.cloud.handle({ ...request, runId: second })
+  const refs = () => f.mirrorGit('for-each-ref', '--format=%(refname)', 'refs/heads/')
+  expect(refs()).not.toContain(`refs/heads/${stale}`)
+  expect(refs()).not.toContain('refs/heads/ci/retired-run')
+  expect(refs()).toContain('refs/heads/feature/keep')
+  await f.cloud.handle({ operation: 'cancel', runId: first })
+  expect(refs()).toContain(`refs/heads/ci/${f.commit}`)
+  await f.reopen().handle({ operation: 'cancel', runId: second })
+  expect(refs()).not.toContain(`refs/heads/ci/${f.commit}`)
+  await f.reopen().handle({ ...request, runId: randomUUID() })
+  expect(refs()).toContain(`refs/heads/ci/${f.commit}`)
+})
+
+it.each(['success', 'failure'] as const)('removes mirror branches after a %s result without losing persisted results', async conclusion => {
+  const f = await fixture()
+  const runId = randomUUID()
+  await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
+    suite: 'lint', scope: 'affected', files: [] })
+  f.github.listed = [{ databaseId: 8, displayTitle: `ci ${runId}` }]
+  f.github.status = 'completed'
+  f.github.conclusion = conclusion
+  const read = { operation: 'read' as const, runId, afterOffset: 0, maxBytes: 65_536 }
+  const state = conclusion === 'success' ? 'passed' : 'failed'
+  expect(await f.cloud.handle(read)).toMatchObject({ run: { state }, text: expect.stringContaining('all green') })
+  expect(f.mirrorGit('for-each-ref', '--format=%(refname)', 'refs/heads/ci/')).toBe('')
+  expect(await f.reopen().handle(read)).toMatchObject({ run: { state }, text: expect.stringContaining('all green') })
+})
+
+
+it('republishes a branch removed by maintenance after a previous automatic cleanup failed', async () => {
+  const f = await fixture({}, { provider: 'circleci' })
+  const request = { operation: 'start' as const, repository: 'octo/site', commit: f.commit,
+    suite: 'lint' as const, scope: 'affected' as const, files: [] }
+  const runId = randomUUID()
+  await f.cloud.handle({ ...request, runId })
+  f.cleanup.unavailable = true
+  f.circle.outcome = 'succeeded'
+  expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 }))
+    .toMatchObject({ run: { state: 'passed' } })
+  const branch = `refs/heads/ci/${f.commit}`
+  expect(f.mirrorGit('rev-parse', branch)).toMatch(/^[a-f0-9]{40}$/)
+  // Maintenance in another process deletes the ref without touching the live publisher's memory.
+  f.mirrorGit('update-ref', '-d', branch)
+  f.cleanup.unavailable = false
+  await f.cloud.handle({ ...request, runId: randomUUID() })
+  expect(f.mirrorGit('rev-parse', branch)).toMatch(/^[a-f0-9]{40}$/)
+})
+
+
+it('releases stale provider records only when no active Main ticket still uses their branch', async () => {
+  const f = await fixture()
+  const first = randomUUID()
+  const second = randomUUID()
+  const start = { operation: 'start' as const, repository: 'octo/site', commit: f.commit,
+    suite: 'lint' as const, scope: 'affected' as const, files: [] }
+  await f.cloud.handle({ ...start, runId: first })
+  await f.cloud.handle({ ...start, runId: second })
+  const branch = `refs/heads/ci/${f.commit}`
+  await f.prune(new Set([second]))
+  expect(f.mirrorGit('rev-parse', branch)).toMatch(/^[a-f0-9]{40}$/)
+  await f.prune(new Set())
+  expect(f.mirrorGit('for-each-ref', '--format=%(refname)', 'refs/heads/ci/')).toBe('')
+  // Sweeping refs does not rewrite the provider's saved observations.
+  expect(await f.reopen().handle({ operation: 'read', runId: first, afterOffset: 0, maxBytes: 1 }))
+    .toMatchObject({ run: { state: 'starting' } })
 })

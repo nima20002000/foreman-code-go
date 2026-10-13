@@ -7,6 +7,7 @@ import { afterEach } from 'vitest'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import type { GitWorktreePorts } from '../sources/gitWorktree.js'
 import { CloudCi } from './cloud.js'
+import { pruneMirrorBranches } from './mirrorBranches.js'
 import { CircleCiProvider, GitHubActionsProvider } from './cloudProviders.js'
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 
@@ -53,10 +54,15 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
   const commit = run(work, 'rev-parse', 'HEAD')
   const local = (value: string) => value === 'https://github.com/octo/site.git' ? origin
     : value === 'https://github.com/octo/site-ci.git' ? mirror : value
+  const cleanup = { unavailable: false }
   const git: GitWorktreePorts = {
     cloneDirectory: repository => join(root, 'clones', ...repository.split('/')),
     // Asynchronous like Main's git, so concurrent starts really overlap.
     git: (args, options) => new Promise(resolve => {
+      if (cleanup.unavailable && args[0] === 'push' && args.includes('--atomic')) {
+        resolve({ code: 1, stdout: '', stderr: 'fixture remote is unavailable for cleanup' })
+        return
+      }
       execFile('git', args.map(local), { cwd: options.cwd, env: { ...environment, ...options.env }, encoding: 'utf8' },
         (error, stdout, stderr) => {
           resolve({ code: error ? (typeof error.code === 'number' ? error.code : 1) : 0, stdout, stderr })
@@ -172,7 +178,16 @@ export async function fixture(files: Record<string, string> = {}, options: { mir
     { home: '/home/owner', user: 'owner', host: 'owner-desktop' })
   const cloud = reopen()
   const mirrorGit = (...args: string[]) => run(mirror, ...args)
-  return { cloud, reopen, root, commit, dispatched, github, circle, mirrorGit, run: (...args: string[]) => run(work, ...args),
+  return { cloud, reopen, root, commit, dispatched, github, circle, cleanup, mirrorGit, run: (...args: string[]) => run(work, ...args),
+    async prune(activeIds: Set<string>) {
+      return pruneMirrorBranches({ mirror: 'octo/site-ci', roots: [join(root, 'ci-cloud')],
+        activeRuns: { ids: activeIds, readAt: Date.now() },
+        git: async args => {
+          const result = await git.git(args, { cwd: work, signal: AbortSignal.timeout(30_000) })
+          if (result.code !== 0) throw new Error(result.stderr)
+          return result.stdout.trim()
+        } })
+    },
     advance: (milliseconds: number) => { now += milliseconds },
     write: (path: string, text: string) => writeFile(join(work, path), text),
     push: (...refs: string[]) => run(work, 'push', '-q', origin, ...refs),

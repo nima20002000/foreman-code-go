@@ -167,8 +167,8 @@ export class PostgresAccessService {
     return { principal: fromRow(result.rows[0]!), token }
   }
 
-  async revoke(principalId: string): Promise<boolean> {
-    const result = await this.pool.query(
+  async revoke(principalId: string, client?: pg.ClientBase): Promise<boolean> {
+    const result = await (client ?? this.pool).query(
       'update management_principals set revoked_at = coalesce(revoked_at, now()) where id = $1',
       [principalId],
     )

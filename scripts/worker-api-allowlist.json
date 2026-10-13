@@ -19,6 +19,7 @@
   "apps/api/src/modules/ci-host/runner.ts",
   "apps/api/src/modules/ci-host/capacity.ts",
   "apps/api/src/modules/ci-host/warmSetup.ts",
+  "apps/api/src/modules/ci-host/text.ts",
   "apps/api/src/modules/computers/accountProbe.ts",
   "apps/api/src/modules/computers/claudePlugins.ts",
   "apps/api/src/modules/computers/githubLogin.ts",

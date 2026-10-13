@@ -10,6 +10,7 @@ export interface CloudRun {
   message: string | null; durations?: CiDurations; testResults?: CiTestResults
   scope?: CiScope; files?: string[]; part?: CiPart; baseCommit?: string
   dispatch?: { input: CloudDispatchInput; attempts: number; at: string }
+  mirrorBranch?: string
   workflowStarted?: boolean
   provenance?: CiHostRun['provenance']
   collection?: { log: boolean; artifacts: boolean }
@@ -28,7 +29,7 @@ export interface CloudStep { key: string; name: string; state: 'running' | 'pass
 export type CloudStatus = ({ done: false } | { done: true; conclusion: 'success' | 'failure' | 'cancelled'; finishedAt: string })
   & { steps?: CloudStep[]; output?: { key: string; text: string } }
 export interface CloudDispatchInput {
-  mirror: string; branch: string; runId: string; suite: CiExecutionSuite; slice: string
+  mirror: string; branch: string; snapshotCommit?: string; runId: string; suite: CiExecutionSuite; slice: string
   expectedDurationMs?: number
   scope?: CiScope; files?: string; defaultBranch?: string; baseCommit?: string; partition?: string; durations?: string
   workflowRef?: string; workflowCommit?: string
