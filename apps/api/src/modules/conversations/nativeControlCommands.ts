@@ -56,7 +56,7 @@ export class NativeConversationControlCommands<State> {
     if (this.closing) return Promise.reject(new DomainError(`${this.contract.prefix}_CLOSING`, `${this.contract.label} is shutting down.`, 503))
     const task = this.reserve(principal, source, conversationId, requestId, payload, perform, readCurrent, acceptedControl, responseEvidence)
     this.pending.add(task)
-    void task.finally(() => { this.pending.delete(task) }).catch(() => undefined)
+    void task.finally(() => { this.pending.delete(task) }).catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
     return task
   }
 

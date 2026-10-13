@@ -4,6 +4,7 @@ import { ArtifactEdgeBindingSchema, type ArtifactEdgeBinding } from '@foreman-co
 import { DomainError } from '../../errors.js'
 import type { FileQuery } from '../repository.js'
 import type { ArtifactEdgeRepository } from './edges.js'
+import { ignoreError } from '../../diagnostics/ignoredError.js'
 
 export class PostgresArtifactEdgeRepository implements ArtifactEdgeRepository {
   constructor(private readonly pool: pg.Pool) {}

@@ -22,6 +22,7 @@ import type { JobInputAuthority } from './authority.js'
 import { inputHash, makeManifest, manifestBytes, recipient, snapshotDigest, verificationContextBytes, verificationContextPin } from './manifest.js'
 import { outputTransferContext } from '../jobs/outputAdmission.js'
 import { JOB_INPUT_NAMESPACE } from './protocol.js'
+import { ignoreError } from '../../diagnostics/ignoredError.js'
 export { JOB_INPUT_NAMESPACE } from './protocol.js'
 /** Main canonical pin/grant authority. Neither callers nor workers supply paths or bytes. */
 export class CanonicalJobInputs {

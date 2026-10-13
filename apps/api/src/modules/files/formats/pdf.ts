@@ -1,5 +1,6 @@
 import { checkOutput, documentText, fail, FORMAT_LIMITS, TextBudget } from "./policy.js";
 import type { DocumentEdit, DocumentText, TextSection } from "./types.js";
+import { ignoreError } from '../../diagnostics/ignoredError.js'
 
 function envelope(bytes: Uint8Array): void {
   const header = Buffer.from(bytes.subarray(0, 12)).toString("latin1");
@@ -66,7 +67,7 @@ export async function readPdf(bytes: Uint8Array): Promise<DocumentText> {
           }
         }
       } finally {
-        if (!complete) await reader.cancel(new Error("PDF text extraction stopped")).catch(() => {});
+        if (!complete) await reader.cancel(new Error("PDF text extraction stopped")).catch(ignoreError('lifecycle', 'cancel PDF reader'));
         reader.releaseLock();
         page.cleanup();
       }
@@ -81,7 +82,7 @@ export async function readPdf(bytes: Uint8Array): Promise<DocumentText> {
     throw error;
   } finally {
     // Parent owns process teardown too; an internal destroy error must not hide the actual parse state.
-    await task.destroy().catch(() => {});
+    await task.destroy().catch(ignoreError('lifecycle', 'task.destroy', { module: 'files/formats/pdf' }));
   }
 }
 export async function editPdf(bytes: Uint8Array, edit: DocumentEdit): Promise<Uint8Array> {

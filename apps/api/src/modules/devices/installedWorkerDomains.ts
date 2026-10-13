@@ -78,6 +78,7 @@ import { createWorkerResourceTelemetryExtension } from '../resource-telemetry/in
 import { createLinuxResourceCollector } from '../resource-telemetry/collector/ports.js'
 import { createInstalledWorkerConversations } from '../conversations/installedWorkerConversations.js'
 import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
+import { fallbackOnError } from '../diagnostics/ignoredError.js'
 
 /** Shipped worker domains consume actual protected installation selections and
  * sole Main authority. No database, Run scheduler, generated grant or ready flag. */
@@ -365,7 +366,8 @@ export async function createInstalledWorkerDomains(input: {
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
         throw new DomainError('COMPUTER_ACCOUNTS_STALE', 'Account facts require the actual authenticated worker channel.', 409)
       }
-      const selected = await readInstalledWorkflowConfiguration(input.configuration).catch(() => null)
+      const selected = await readInstalledWorkflowConfiguration(input.configuration)
+        .catch(fallbackOnError(null, 'devices', 'read installed workflow configuration'))
       const binaries = { ...(selected?.codexBinary ? { codex: selected.codexBinary } : {}),
         ...(selected?.claude ? { claude: selected.claude.binary } : {}) }
       return { payload: await probeComputerAccounts(systemPorts(process.env, binaries),
@@ -380,7 +382,8 @@ export async function createInstalledWorkerDomains(input: {
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
         throw new DomainError('COMPUTER_MAINTENANCE_STALE', 'Computer maintenance requires the actual authenticated worker channel.', 409)
       }
-      maintenance ??= readInstalledWorkflowConfiguration(input.configuration).catch(() => null).then(selected => {
+      maintenance ??= readInstalledWorkflowConfiguration(input.configuration)
+        .catch(fallbackOnError(null, 'devices', 'read installed workflow configuration')).then(selected => {
         // Maintenance reads the binaries this Worker actually runs; an update moves the Codex selection with it.
         const binaries: Record<string, string> = { ...(selected?.codexBinary ? { codex: selected.codexBinary } : {}),
           ...(selected?.claude ? { claude: selected.claude.binary } : {}) }

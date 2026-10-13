@@ -11,6 +11,7 @@ import { executeJob, executeVerificationJob, jobSupervisorIdentity, type JobExec
 import type { PodmanJobSupervisor } from '../../jobs/executorPodman.js'
 import type { RemoteOperationJournal } from './operationJournal.js'
 import { jobContainerNonEntryObserved } from '../../jobs/executorJournal.js'
+import { logIgnoredError } from '../../diagnostics/ignoredError.js'
 
 const digest = (value: unknown) => createHash('sha256').update(canonicalGraphJson(value)).digest('hex')
 type RuntimeSupervisor = JobSupervisor<JobExecutionRecord>
@@ -140,10 +141,10 @@ export class RemoteJobExecutionHost {
     const controller = new AbortController()
     const task = this.execute(intent, execution, controller.signal).catch(async error => {
       componentLogger('jobs').error({ err: error, operationId: intent.operationId }, 'Job execution or publication needs reconciliation')
-      try { await this.ports.journal.jobUncertain(intent.operationId, 'Original OCI execution requires reconciliation') } catch { /* Faulted journal already blocks new entry. */ }
+      try { await this.ports.journal.jobUncertain(intent.operationId, 'Original OCI execution requires reconciliation') } catch (journalError) { logIgnoredError('jobs', 'record uncertain job execution', journalError, { operationId: intent.operationId }) } // A faulted journal already blocks new entry.
     })
     this.tasks.set(intent.operationId, { controller, task })
-    void task.finally(() => { if (this.tasks.get(intent.operationId)?.task === task) this.tasks.delete(intent.operationId) }).catch(() => {})
+    void task.finally(() => { if (this.tasks.get(intent.operationId)?.task === task) this.tasks.delete(intent.operationId) }).catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
     return this.ports.journal.jobStatus(intent.operationId)
   }
   private async execute(intent: RemoteJobDispatchIntent, execution: JobExecutionRecord, signal: AbortSignal) {
@@ -162,7 +163,7 @@ export class RemoteJobExecutionHost {
           await this.ports.journal.jobAcknowledgeLaunch(intent.operationId, { containerId, supervisorIdentity: name,
             processIdentityDigest: digest({ executionId: execution.id, attemptId: execution.attemptId, operationId: execution.operationId, containerId, supervisorIdentity: name }), startedAt: new Date().toISOString() })
         },
-      }, source: this.ports.source, inputs: this.ports.inputs, supervisor, appendLog: async chunk => { await this.ports.journal.jobAppendLog(intent.operationId, chunk); try { await this.flushLogs(intent.operationId) } catch { /* Durable spool remains pending across transport loss. */ } },
+      }, source: this.ports.source, inputs: this.ports.inputs, supervisor, appendLog: async chunk => { await this.ports.journal.jobAppendLog(intent.operationId, chunk); try { await this.flushLogs(intent.operationId) } catch { /* ignore: durable spool remains pending across transport loss. */ } },
       collectOutputs: async () => {},
       ...(this.ports.prepareOutputs ? { prepareOutputs: this.ports.prepareOutputs } : {}),
     }
@@ -241,7 +242,7 @@ export class RemoteJobExecutionHost {
       processStopped: true, resultDigest: digest(result), logGapPossible, logsTruncated: result.logsTruncated, outputCollectionError: result.outputCollectionError, artifactDigests: [] }
   }
   private async reconcile(receipt: RemoteJobOperationReceiptRecord) {
-    try { await this.flushLogs(receipt.intent.operationId) } catch { /* Explicit durable pending log cursor remains. */ }
+    try { await this.flushLogs(receipt.intent.operationId) } catch { /* ignore: explicit durable pending log cursor remains. */ }
     if (this.tasks.has(receipt.intent.operationId)) return this.ports.journal.jobStatus(receipt.intent.operationId)
     if (receipt.terminal) { await this.publish(receipt); return this.ports.journal.jobStatus(receipt.intent.operationId) }
     if (!receipt.entryAttempted) {

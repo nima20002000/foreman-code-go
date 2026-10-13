@@ -178,7 +178,7 @@ export function createInstalledNativeQualifier(input: {
     qualify(value: HostHarnessOverride, request: { checkId: string; signal: AbortSignal }) {
       if (stopping.signal.aborted || cleanups.size && !flights.size) return Promise.reject(new DomainError('HARNESS_QUALIFICATION_CLEANUP_PENDING', 'Native qualification cleanup must finish before another check.', 409))
       const task = perform(value, request.checkId, request.signal)
-      flights.add(task); void task.finally(() => flights.delete(task)).catch(() => undefined)
+      flights.add(task); void task.finally(() => flights.delete(task)).catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
       return task
     },
     async close() {

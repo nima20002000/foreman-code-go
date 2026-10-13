@@ -66,7 +66,7 @@ async function main() {
     try {
       const manifest = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
       Object.assign(facts, { appVersion: manifest.version, protocolVersion: manifest.protocolVersion, identityFormat: manifest.identityFormat, commit: manifest.commit, lockfileSha256: manifest.lockfileSha256 });
-    } catch { /* An absent artifact manifest is represented by null version fields. */ }
+    } catch { /* ignore: an absent artifact manifest is represented by null version fields. */ }
     try {
       await requirePrivateDirectory(stateDirectory);
       // Doctor is read-only, including when the worker has never initialized identity.

@@ -1,7 +1,6 @@
 import { asRecord } from '../../shared/records.js'
 import { pluginHash, pluginCanonical, pluginSourceIdentities, pluginCatalogRevision,
   type NativePluginCatalog, type PluginConfiguration } from './codexPluginIdentity.js'
-import { z } from 'zod'
 import { CodexPluginSummarySchema, type CodexPluginSummary } from '@foreman-code/contracts/management'
 
 export { pluginHash, pluginCanonical } from './codexPluginIdentity.js'

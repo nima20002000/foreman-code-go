@@ -44,6 +44,7 @@ import { recordNativeNonSubmission, type NativeNonSubmission } from './nativeNon
 import { OperatorConversationRecordSchema, publicOperatorConversation } from './operatorConversationRecord.js'
 import { legacyProviderAccountBinding, readProviderAccountBinding, saveProviderAccountBinding }
   from '../provider-accounts/acceptedBindings.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 export type TurnPhase = 'accepted' | 'creating' | 'ready' | 'submitting' | 'submitted'
 export interface ConversationRow {

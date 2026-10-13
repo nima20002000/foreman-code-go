@@ -337,7 +337,7 @@ export class RemoteOperationJournal {
       this.data = next
       return structuredClone(result)
     })
-    this.tail = task.catch(() => {})
+    this.tail = task.catch(() => { /* ignore: the previous caller receives its failure; the queue must still admit the next operation. */ })
     return task
   }
   private receipt(data: z.infer<typeof JournalSchema>, operationId: string) {

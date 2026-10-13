@@ -5,6 +5,7 @@ import { transact } from './wave25/transaction.js'
 import { recoverApprovalFailure } from './wave25/failureRecovery.js'
 import { DomainError } from '../errors.js'
 import { publicReviewStopError, reviewNeedsStop } from './reviewPolicy.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 type FailureReference = { reviewJobId: string } | { interactionId: string; errorCode: 'APPROVAL_DIRECT_CONNECTION_REQUIRED' }
 

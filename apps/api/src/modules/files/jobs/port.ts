@@ -22,6 +22,7 @@ import type { FileMutationSource } from '../repository.js'
 import { JobOutputPublicationInputSchema, type JobOutputPublicationInput } from '@foreman-code/contracts/job-output-transfer'
 import type { FileStorageService } from '../service.js'
 import { completedBytes } from '../tools/transfers.js'
+import { ignoreError } from '../../diagnostics/ignoredError.js'
 
 export type { JobOutputPublicationInput } from '@foreman-code/contracts/job-output-transfer'
 export interface TrustedJobOutputReader {

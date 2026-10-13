@@ -28,6 +28,7 @@ import { buildWorkHandoffGraph } from './workHandoffGraph.js'
 import { workHandoffNodeAction } from './workHandoffNode.js'
 import { ExecutionLimiter } from './limiter.js'
 import { componentLogger } from '../diagnostics/logger.js'
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 
 /** Adapt the existing exact-session native driver, not a second native runtime.
  * The shell supplies the same ApprovalExecutionCoordinator/SingleWriterSessionManager
@@ -382,7 +383,7 @@ export function startIntervalChecks(input: {
         if (!scheduling.aborted) componentLogger('engine').warn({ err: error, workflowNodeId: node.id }, 'interval check failed')
       }
       if (scheduling.aborted) return
-      await delay(waitMs, undefined, { signal: scheduling }).catch(() => undefined)
+      await delay(waitMs, undefined, { signal: scheduling }).catch(() => { /* ignore: aborting the wait is how scheduling stops early */ })
     }
   })())
   return () => stopped.abort()
@@ -606,7 +607,7 @@ export async function executeRepeatRuntime(input: {
     failed.abort(error)
     const closing = cancel()
     let drained = false
-    try { await drain(true); drained = true } catch { /* retain uncertain cleanup */ }
+    try { await drain(true); drained = true } catch (drainError) { logIgnoredError('engine', 'drain repeat work after failure', drainError, { runId: input.runId }) } // Uncertain cleanup is retained.
     const clean = await closing
     input.owner.assertOwned()
     await input.lifecycle.settleRun(current.stopRequested, input.signal.aborted && !current.stopRequested)

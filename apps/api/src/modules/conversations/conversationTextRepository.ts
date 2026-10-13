@@ -4,6 +4,7 @@ import type pg from 'pg'
 import { MessageSchema, type ActivityScope } from '@foreman-code/contracts'
 import type { ActivityTextOperation } from '@foreman-code/contracts/activity-text'
 import type { ActivityMutationFence } from './operatorActivityRepository.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 export type TextMutationResult = { status: 'committed' | 'ignored' | 'reconciliation_required'; revision: string; messageRevision?: string }
 interface Provenance {

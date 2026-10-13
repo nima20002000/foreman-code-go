@@ -31,13 +31,13 @@ async function importSnapshot(gitDirectory: string, input: AsyncIterable<Buffer>
       env: { PATH: '/usr/bin:/bin', HOME: '/nonexistent', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_NO_REPLACE_OBJECTS: '1' },
     }, error => error ? reject(error) : resolve())
   })
-  void finished.catch(() => {})
+  void finished.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
   const closed = new Promise<void>(resolve => child!.once('close', () => resolve()))
   try { await Promise.all([pipeline(Readable.from(input), child!.stdin!, { signal }), finished]) }
   finally {
     if (child!.exitCode === null && child!.signalCode === null) child!.kill('SIGKILL')
     child!.stdin?.destroy()
-    await finished.catch(() => {})
+    await finished.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
     await closed
   }
 }

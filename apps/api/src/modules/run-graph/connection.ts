@@ -157,7 +157,7 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
           readOnly ? { isolation: 'repeatable read', readOnly: true } : { isolation: 'read committed' }))
         const result = await work(sql)
         for (const finalize of state.finalizers) { assertGraphTransaction(sql); await finalize() }
-        if (pending) { state.failed = true; await pending.catch(() => undefined) }
+        if (pending) { state.failed = true; await pending.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ }) }
         assertGraphTransaction(sql)
         this.#assertOwner()
         committing = true
@@ -165,7 +165,7 @@ export class ExclusiveGraphConnection implements GraphSqlClient {
         state.committed = true
         return result
       } catch (error) {
-        if (pending) await pending.catch(() => undefined)
+        if (pending) await pending.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
         if (committing && !isDatabaseTimeout(error)) {
           // COMMIT outcome can be unknown: do not retry the callback.
           this.#unusable = true

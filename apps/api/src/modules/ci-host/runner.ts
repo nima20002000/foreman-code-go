@@ -10,6 +10,7 @@ import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, CiTestResult
 import { DomainError } from '../errors.js'
 import { ciRepositoryCapabilities } from './repository.js'
 import { hostCiCapacity } from './capacity.js'
+import { fallbackOnError } from '../diagnostics/ignoredError.js'
 
 type Command = { code: number; stdout: string; stderr: string }
 export interface HostCiPorts {
@@ -96,7 +97,8 @@ export class HostCiRunner {
     // A finished test run reports the file durations and test results it measured, so Main can learn and show them.
     const finished = !['starting', 'running'].includes(run.state)
     const report = (name: string) => readFile(join(this.runDirectory(request.runId), name), 'utf8')
-      .then(text => JSON.parse(text) as unknown).catch(() => null)
+      .then(text => JSON.parse(text) as unknown)
+      .catch(fallbackOnError(null, 'jobs', 'read CI report', { runId: request.runId, report: name }, ['ENOENT']))
     const measured = request.durations && finished ? CiDurationsSchema.safeParse(await report('measured-durations.json')) : null
     const tests = request.testResults && finished ? CiTestResultsSchema.safeParse(await report('test-results.json')) : null
     return CiHostReplySchema.parse({ operation: 'read', run, text, nextOffset,
@@ -144,7 +146,9 @@ export class HostCiRunner {
     const runs = []
     const directory = join(this.root, 'runs')
     const names = existsSync(directory) ? (await readdir(directory)).sort() : []
-    for (const runId of names) runs.push(await this.refresh(runId).catch(() => null))
+    for (const runId of names) runs.push(await this.refresh(runId).catch(fallbackOnError(
+      null, 'jobs', 'refresh CI run', { runId }, ['ENOENT'],
+    )))
     const active = await this.active()
     const availableMemoryBytes = this.ports.availableMemoryBytes?.() ?? this.ports.memoryBytes
     const capacity = this.capacity(active, availableMemoryBytes)
@@ -166,7 +170,7 @@ export class HostCiRunner {
     if (!existsSync(directory)) return []
     const active = []
     for (const runId of await readdir(directory)) {
-      const run = await this.refresh(runId).catch(() => null)
+      const run = await this.refresh(runId).catch(fallbackOnError(null, 'jobs', 'refresh CI run', { runId }, ['ENOENT']))
       if (run && ['starting', 'running'].includes(run.state)) active.push(await this.readMeta(runId))
     }
     return active
@@ -530,7 +534,7 @@ export class HostCiRunner {
     let meta = await this.readMeta(runId)
     const directory = this.runDirectory(runId)
     if (meta.state === 'running') {
-      const exit = await readFile(join(directory, 'exit'), 'utf8').catch(() => null)
+      const exit = await readFile(join(directory, 'exit'), 'utf8').catch(fallbackOnError(null, 'jobs', 'read CI exit status', { runId }, ['ENOENT']))
       // A unit launched before atomic exit publication can expose an empty file mid-write.
       if (exit !== null && exit.trim() !== '') {
         const code = Number(exit.trim())
@@ -560,7 +564,7 @@ export class HostCiRunner {
       meta = { ...meta, cleaned: true }
       await this.writeMeta(meta)
     }
-    const log = await stat(join(directory, 'log')).catch(() => null)
+    const log = await stat(join(directory, 'log')).catch(fallbackOnError(null, 'jobs', 'stat CI log', { runId }, ['ENOENT']))
     const step = (await readFile(join(directory, 'step'), 'utf8').catch(() => '')).trim() || null
     return { runId, state: meta.state, step, exitCode: meta.exitCode, startedAt: meta.startedAt,
       finishedAt: meta.finishedAt, logBytes: log?.size ?? 0, message: meta.message }

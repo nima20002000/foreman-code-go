@@ -1,6 +1,7 @@
 import pg from 'pg'
 import { ExclusiveGraphConnection, assertGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 const JOB_OWNER_NAMESPACE=810038
 /** Same PostgreSQL session-lock authority primitive as Runs, with a real job namespace.
  * This acquires no scheduling capability and never fabricates a Run identity. */
@@ -35,6 +36,6 @@ export class JobOwnership {
   }
   async release():Promise<void> {
     if(this.released)return;this.released=true
-    try {await this.connection.close()} finally {await this.client.end().catch(()=>undefined);this.client.removeListener('error',this.handleLoss);this.client.removeListener('end',this.handleLoss)}
+    try {await this.connection.close()} finally {await this.client.end().catch(ignoreError('jobs', 'close job ownership client', { executionId: this.executionId }));this.client.removeListener('error',this.handleLoss);this.client.removeListener('end',this.handleLoss)}
   }
 }

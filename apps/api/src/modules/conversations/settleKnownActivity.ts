@@ -4,6 +4,7 @@ import { ActivityNativeIdentitySchema, OperatorActivitySchema, type ActivityNati
 import type { OperatorActivityChange } from './operatorActivity.js'
 import { nativePersistenceRedactor, type NativePersistenceRedactor } from '../interactions/nativePersistence.js'
 import { DomainError } from '../errors.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 /** A known independent child/item may settle after its parent. This never inserts work or changes the current native owner. */
 export async function settleKnownActivity(pool: pg.Pool, conversationId: string, requestId: string | undefined, change: OperatorActivityChange | Omit<OperatorActivityChange, 'requestId'>,

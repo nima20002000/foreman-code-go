@@ -13,6 +13,8 @@ import { harnessHostKey, type HarnessInstanceSettingsRepository } from './reposi
 import { nativeProfileCheckId } from './profileChecks.js'
 import type { HostHarnessOverrideAuthority } from './authority.js'
 import type { GraphSqlClient } from '../../run-graph/connection.js'
+import type { ProviderAccountConfigurationService } from '../providerAccountConfiguration.js'
+import { fallbackOnError } from '../../diagnostics/ignoredError.js'
 
 export type { HostHarnessOverrideAuthority }
 /** Account resolution port, implemented by ProviderAccountConfigurationService. */
@@ -57,7 +59,7 @@ export class HostHarnessOverrideService {
     if (!value.enabled) return { ...value, qualification: 'disabled' }
     if (this.profileChecks?.pending(value.target.hostRef)) return { ...value, qualification: 'qualifying' }
     // Missing/remote failed evidence remains unavailable, never substitutes local discovery.
-    const evidence = await this.evidence(value, client).catch(() => null)
+    const evidence = await this.evidence(value, client).catch(fallbackOnError(null, 'harness', 'read harness qualification evidence'))
     const qualification = !evidence ? 'unqualified' : harnessHostKey(evidence.target.hostRef) !== harnessHostKey(value.target.hostRef)
       || evidence.target.applicationInstallationId !== value.target.applicationInstallationId
       || evidence.target.harnessInstallationId !== value.target.harnessInstallationId

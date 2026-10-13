@@ -26,7 +26,7 @@ async function sdkNativeExecutable(entrypoint: string): Promise<string | undefin
     : [`${process.platform}-${process.arch}`]
   for (const target of packages) {
     try { return await realpath(requireSdk.resolve(`@anthropic-ai/claude-agent-sdk-${target}/claude${suffix}`)) }
-    catch { /* Only the pinned SDK's alternative native package is considered. */ }
+    catch { /* ignore: only the pinned SDK's alternative native package is considered. */ }
   }
   return undefined
 }

@@ -34,7 +34,7 @@ export function mountProductionWorkflowArtifacts(input: Parameters<typeof create
   const audited = new WeakSet<FastifyRequest>()
   const audit = async (request: FastifyRequest, name: string, principal?: ManagementPrincipal) => {
     if (audited.has(request)) return
-    principal ??= await receiver.authorization.authenticate(request).catch(() => undefined)
+    principal ??= await receiver.authorization.authenticate(request).catch(() => { /* ignore: a failed authentication leaves the principal unset and the denial is recorded below */ return undefined })
     await input.commands.recordDenied(principal?.id, request.url.startsWith('/mcp') ? 'mcp' : 'http', name, `artifact:${name}`)
     audited.add(request)
   }

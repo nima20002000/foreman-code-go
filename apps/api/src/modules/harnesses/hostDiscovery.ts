@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { isAbsolute, join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 import { inventoryPayloadFingerprints, type PayloadFingerprintCache } from './payloadFingerprintCache.js'
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 
 export interface TargetEnvironment {
   readonly generation: string
@@ -63,7 +64,7 @@ export async function discoverLauncher(requested: string, environment: TargetEnv
             if (!command || command.startsWith('-')) throw new Error('Unsupported env shebang options')
             let found: string | null = null
             for (const directory of directories) {
-              try { const path = await realpath(join(directory, command)); await access(path, constants.X_OK); if ((await stat(path)).isFile()) { found = path; break } } catch { /* Try the next target PATH entry. */ }
+              try { const path = await realpath(join(directory, command)); await access(path, constants.X_OK); if ((await stat(path)).isFile()) { found = path; break } } catch { /* ignore: try the next target PATH entry. */ }
             }
             if (!found) throw new Error('Missing env interpreter')
             evidence.interpreter = found
@@ -117,7 +118,15 @@ export function probeTrustedVersion(input: {
     const child = spawn(input.launcher, ['--version'], { cwd: input.neutralCwd, env: environment, stdio: ['ignore', 'pipe', 'pipe'], detached: true, shell: false })
     let stdout = ''; let stderr = ''; let bytes = 0
     let status: VersionProbeResult['status'] = 'observed'
-    const stop = () => { if (child.pid) { try { process.kill(-child.pid, 'SIGKILL') } catch { child.kill('SIGKILL') } } }
+    const stop = () => {
+      if (!child.pid) return
+      try {
+        process.kill(-child.pid, 'SIGKILL')
+      } catch (error) {
+        logIgnoredError('harness', 'kill version probe process group', error, { pid: child.pid }, ['ESRCH'])
+        child.kill('SIGKILL')
+      }
+    }
     const timer = setTimeout(() => { status = 'timeout'; stop() }, timeout)
     const receive = (chunk: Buffer, stream: 'stdout' | 'stderr') => {
       const remaining = Math.max(0, limit - bytes)

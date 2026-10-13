@@ -9,6 +9,7 @@ import {
 import { canonicalRunGraphReadApi } from '../modules/run-graph/repeatReadService.js'
 import type { RunGraphReadApi } from '../modules/run-graph/readService.js'
 import { RunGraphError, runGraphErrorResponse, runGraphErrorStatus } from '../modules/run-graph/errors.js'
+import { ignoreError } from '../modules/diagnostics/ignoredError.js'
 
 const Params = z.object({ workspaceId: GraphIdSchema, workflowId: GraphIdSchema, runId: GraphIdSchema }).strict()
 export type GraphHttpDenialAudit = (principalId: string | undefined, code: string, route: string) => Promise<void>
@@ -24,7 +25,7 @@ export function registerRunGraphRoutes(app: FastifyInstance, reads: RunGraphRead
     } catch (error) {
       const safe = error instanceof RunGraphError ? error : new RunGraphError('GRAPH_INVARIANT_VIOLATION')
       if (safe.code === 'GRAPH_READ_ACCESS_DENIED') {
-        await recordDenied(request.operatorPrincipal?.id, safe.code, route).catch(() => undefined)
+        await recordDenied(request.operatorPrincipal?.id, safe.code, route).catch(ignoreError('http', 'record denied run graph read audit', { route }))
       }
       return reply.code(runGraphErrorStatus(safe.code)).send(runGraphErrorResponse(safe))
     }

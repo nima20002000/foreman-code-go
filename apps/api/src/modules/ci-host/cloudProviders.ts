@@ -3,6 +3,8 @@ import { basename, join } from 'node:path'
 import type { CiDurations, CiExecutionSuite, CiHostRun, CiPart, CiScope, CiSuite, CiTestResults } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { HostCiPorts } from './runner.js'
+import type { CloudRun } from './cloud.js'
+import { fallbackOnError } from '../diagnostics/ignoredError.js'
 
 export interface CloudRun {
   runId: string; repository: string; mirror: string; commit: string; suite: CiSuite; startedAt: string
@@ -86,7 +88,7 @@ async function readArtifacts(directory: string): Promise<CloudArtifacts> {
     const path = await findFile(directory, name)
     return path ? JSON.parse(await readFile(path, 'utf8')) as unknown : null
   }
-  return { durations: await read('durations.json').catch(() => null), testResults: await read('test-results.json').catch(() => null) }
+  return { durations: await read('durations.json').catch(fallbackOnError(null, 'jobs', 'read CI durations artifact')), testResults: await read('test-results.json').catch(fallbackOnError(null, 'jobs', 'read CI test results artifact')) }
 }
 
 const WORKFLOW = 'ci.yml'

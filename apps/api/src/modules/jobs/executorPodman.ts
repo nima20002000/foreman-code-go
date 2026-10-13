@@ -16,6 +16,7 @@ import type { JobQualificationCandidate } from '@foreman-code/contracts/job-runt
 import type { JobExecution } from '@foreman-code/contracts'
 import { jobSupervisorIdentity, requireVerificationRuntime, type JobLaunchPlan, type JobSupervisor,
   type QualifiedJobProfile, type RuntimeJobExecution, type VerificationExecution } from './executor.js'
+import { ignoreError, fallbackOnError } from '../diagnostics/ignoredError.js'
 
 export interface PodmanIsolationInput {
   identity: string
@@ -289,7 +290,7 @@ export class PodmanJobSupervisor<Execution extends RuntimeJobExecution = JobExec
     const end = this.timing ? await this.timing.deadlineMs() : Date.now() + execution.acceptedSpec.policy.executionTimeoutMs
     if (!this.watchdogs.has(execution.operationId)) {
       const timer = setTimeout(() => {
-        void (async () => { try { await this.timing?.markTimeout() } finally { await stop() } })().catch(() => {})
+        void (async () => { try { await this.timing?.markTimeout() } finally { await stop() } })().catch(ignoreError('jobs', 'stop container after timeout', { operationId: execution.operationId }))
       }, Math.max(0, end - Date.now()))
       timer.unref(); this.watchdogs.set(execution.operationId, timer)
     }
@@ -404,7 +405,7 @@ export class PodmanJobSupervisor<Execution extends RuntimeJobExecution = JobExec
       if (waited.exitCode !== 0 || Number(waited.stdout.trim()) !== row.State.ExitCode) throw new Error('Container wait evidence mismatch.')
       return { exitCode: row.State.ExitCode, signal: null, ...(await this.timing?.isTimedOut() ? { timedOut: true } : {}), ...(row.State.Error ? { execError: 'Container command launch failed.' } : {}) }
     })
-    void exited.catch(() => {})
+    void exited.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
     try {
       const entryDeadline=Math.min(end,Date.now()+plan.execution.acceptedSpec.policy.preparationTimeoutMs)
       while(true){
@@ -419,7 +420,10 @@ export class PodmanJobSupervisor<Execution extends RuntimeJobExecution = JobExec
       const release=await this.commands.run(['exec',containerId,'node','-e',JOB_COMMAND_RELEASE,'--',JOB_COMMAND_GATE],Math.min(plan.execution.acceptedSpec.policy.preparationTimeoutMs,Math.max(1,end-Date.now())))
       if(release.exitCode!==0)throw new Error('Original Job command release unconfirmed.')
     } catch (error) {
-      if(await owned.close(plan.execution.acceptedSpec.policy.cancellationGraceMs).catch(() => false))this.clearWatch(plan.execution)
+      const closed = await owned.close(plan.execution.acceptedSpec.policy.cancellationGraceMs).catch(fallbackOnError(
+        false, 'jobs', 'close failed job container', { operationId: plan.execution.operationId },
+      ))
+      if (closed) this.clearWatch(plan.execution)
       throw error
     }
     return { containerId, stdout, stderr, exited, proveStopped, stop }

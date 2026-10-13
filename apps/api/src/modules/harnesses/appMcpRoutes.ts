@@ -8,7 +8,7 @@ export class AppMcpRoutes {
   constructor(private readonly pool: pg.Pool, private readonly endpoint: string, private readonly launcher = appLauncherPath()) {}
   refresh(): Promise<void> {
     const next = this.pending.then(() => this.refreshRoutes())
-    this.pending = next.catch(() => undefined)
+    this.pending = next.catch(() => { /* ignore: the previous caller receives its failure; the queue must still admit the next operation. */ })
     return next
   }
   private async refreshRoutes(): Promise<void> {

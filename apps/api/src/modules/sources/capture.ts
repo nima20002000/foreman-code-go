@@ -47,7 +47,7 @@ function gitObjectReader(root: string, objectFormat: string, signal: AbortSignal
     child.once('error', reject)
     child.once('close', code => { closed = true; if (code === 0) resolve(); else reject(new SourceError('SOURCE_GIT_OBJECT_UNAVAILABLE', 'The exact Git object reader did not complete.')) })
   })
-  void finished.catch(() => {})
+  void finished.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
   child.stderr.resume(); child.stdin.on('error', () => {})
   const chunks = child.stdout[Symbol.asyncIterator]()
   let chunk: Buffer = Buffer.alloc(0), offset = 0

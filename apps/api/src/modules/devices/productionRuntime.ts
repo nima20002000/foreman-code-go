@@ -179,7 +179,7 @@ export class ProductionDeviceRuntime {
   }
   async drain(): Promise<void> {
     this.stop()
-    await this.initialization?.catch(() => undefined)
+    await this.initialization?.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
     const results = await Promise.allSettled([this.listener?.close(), this.endpoint?.join(), ...this.pending])
     const errors = results.slice(0, 2).flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
     if (errors.length) throw new AggregateError(errors, 'Device transport cleanup was incomplete.')

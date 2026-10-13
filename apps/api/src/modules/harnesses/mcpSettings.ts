@@ -15,6 +15,7 @@ import { NativeMcpNotSubmittedError } from './nativeMcpDelivery.js'
 import { qualificationError } from './qualificationErrors.js'
 import { assertNoUnresolvedPluginWrites, lockNativeConfigurationFile } from './nativeSettingsWrites.js'
 import { MCP_INSPECTION_TIMEOUT_MS } from './mcpDetection.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 type Harness = 'codex'
 type RecordedMcpHarness = Harness | 'opencode'

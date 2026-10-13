@@ -26,6 +26,7 @@ import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
 import { legacyProviderAccountBinding, readProviderAccountBinding, type AcceptedProviderAccountBindings }
   from '../provider-accounts/acceptedBindings.js'
 import type { AcceptedProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 type Queryable = Pick<pg.PoolClient, 'query'>
 type State = NonNullable<Awaited<ReturnType<PostgresAgentChatRepository['state']>>>
