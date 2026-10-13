@@ -45,10 +45,12 @@ export const GRAPHQL_AGENT_TOOLS = {
       + "Scope defaults to affected. Omit files for runner selection against the workspace default branch merge-base; "
       + "caller files remain supported with an explicit commit. Missing selectors, shared infrastructure changes and "
       + "the default branch head run the full suite and report the reason. Scope full always runs everything. "
-      + "Retry the same commandId and payload. Integration supports 2–32 partitions on separate computers.",
+      + "Retry the same commandId and payload. Integration supports 2–32 partitions on separate computers. "
+      + "Requires jobs:cancel with the CI start grants. Newer descendant commits supersede active work of the same "
+      + "suite and requester on the same branch or Agent execution. Main and noSupersede=true tickets are kept.",
     roles: ["operator", "orchestrator", "coder"],
   },
-  ci_get: { label: "Read CI result", description: "Read CI run state, queued waiting reason in message, current step, computer, exit code and bounded log tail by ticketId.", roles: ["operator", "orchestrator", "coder"] },
+  ci_get: { label: "Read CI result", description: "Read CI run state, queued waiting reason in message, current step, computer, exit code and bounded log tail by ticketId. Superseded tickets report supersededBy and a replacement ticket message.", roles: ["operator", "orchestrator", "coder"] },
   ci_computers_list: { label: "List CI computers", description: "Read authorized build computers with readiness, GitHub login, size, used/total CI slots and running CI runs.", roles: ["operator", "orchestrator", "coder"] },
   ci_cancel: { label: "Cancel CI", description: "Cancel a queued or running CI run by ticketId. Requires jobs:cancel. Poll ci_get to confirm the outcome.", roles: ["operator", "orchestrator", "coder"] },
   ci_logs_read: { label: "Read CI logs", description: "Read CI log text by ticketId. Omit afterOffset for the last maxBytes, or continue with nextOffset.", roles: ["operator", "orchestrator", "coder"] },

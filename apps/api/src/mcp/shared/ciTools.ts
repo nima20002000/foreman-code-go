@@ -114,7 +114,7 @@ export function registerCiTools(server: McpServer, context: CiContext) {
     description: CI_CAPABILITY_DETAIL,
     inputSchema: operator ? OperatorCiRunInputSchema : CiRunInputSchema,
     outputSchema: CiRunOutputSchema,
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
   }, input => invoke('ci_run', () => ci.run(context.principal, input)))
   if (available('ci_get')) server.registerTool('ci_get', {
     description: CI_CAPABILITY_DETAIL,

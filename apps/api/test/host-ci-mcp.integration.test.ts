@@ -848,7 +848,8 @@ it('queues a run while every computer is busy and starts it on the first one tha
     const third = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'install', commandId: 'three' }))
     await f.ci.dispatch()
     expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: third.ticketId })).run)
-      .toMatchObject({ state: 'queued', message: 'No ready computer for install; laptop: busy; builder: busy' })
+      .toMatchObject({ state: 'queued',
+        message: 'No ready computer for install; laptop: all CI slots in use (1/1); builder: all CI slots in use (1/1)' })
     f.finish(first.ticketId, 0, 'ok\n')
     await f.ci.dispatch()
     const moved = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: third.ticketId }))
@@ -894,7 +895,7 @@ it('queues only user-systemd files through MCP while ordinary files run on cloud
     const host = waiting.partitions!.find(run => run.partition!.hostIndexes!.includes(run.partition!.index))!
     const sibling = waiting.partitions!.find(run => run.id !== host.id)!
     expect(host).toMatchObject({ state: 'queued', computer: null,
-      message: 'Waiting for a build computer: this integration slice needs one; laptop: busy' })
+      message: 'Waiting for a build computer: this integration slice needs one; laptop: all CI slots in use (1/1)' })
     expect(sibling).toMatchObject({ state: 'running', computer: { hostRef: { kind: 'cloud' } } })
     expect(integrationPartition(host.files, {}, host.partition!).sort()).toEqual([...systemd].sort())
     expect(integrationPartition(sibling.files, {}, sibling.partition!).sort()).toEqual([...ordinary].sort())
@@ -1069,7 +1070,8 @@ it('runs two host-only tickets on one computer and queues a third through authen
   const f = await fixture({ hostSlots: 2, cloud: true })
   f.computers.splice(1, 1)
   try {
-    const request = { suite: 'integration', scope: 'affected', files: [[...userSystemdIntegrationFiles][0]!] }
+    const request = { suite: 'integration', scope: 'affected', commit: 'a'.repeat(40),
+      files: [[...userSystemdIntegrationFiles][0]!] }
     const denied = await f.connect([...CI_GET_ACTIONS])
     expect((await f.call(denied, 'ci_run', { ...request, commandId: randomUUID() })).isError).toBe(true)
     const tickets = []
@@ -1401,6 +1403,8 @@ it('supersedes every queued and running part through MCP and preserves the repla
     return reply
   }
   try {
+    const tools = await f.operator.listTools()
+    expect(tools.tools.find(tool => tool.name === 'ci_run')?.annotations?.destructiveHint).toBe(true)
     const old = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
       suite: 'typecheck', commit: oldCommit, commandId: 'old-checks',
     }))
