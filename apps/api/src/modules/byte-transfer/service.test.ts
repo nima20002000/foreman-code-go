@@ -221,11 +221,28 @@ describe('bounded authenticated transfer staging', () => {
     await expect(f.service.status(f.intent.transferId, f.context)).rejects.toThrow('Unsafe')
   })
   it('bounds cleanup and preserves cancellation tombstones after expiry', async () => {
-    const f = await fixture(); await f.service.start(f.intent, f.context); f.time(60_001)
+    const f = await fixture()
+    const other = { ...f.intent, transferId: randomUUID() }
+    await f.service.start(f.intent, f.context)
+    await f.service.start(other, f.context)
+    f.time(60_001)
+    expect(await f.service.cleanupExpired(1)).toBe(1)
+    expect(await f.service.inventory()).toHaveLength(1)
     expect(await f.service.cleanupExpired(1)).toBe(1)
     expect(await f.service.cleanupExpired(1)).toBe(0)
-    await expect(readFile(join(f.root, `${f.intent.transferId}.part`))).rejects.toThrow()
-    expect(JSON.parse(await readFile(join(f.root, `${f.intent.transferId}.json`), 'utf8')).payload.progress.state).toBe('cancelled')
+    expect(await f.service.inventory()).toEqual([])
+    await f.service.close()
+    const restarted = f.create()
+    expect(await restarted.inventory()).toEqual([])
+    for (const intent of [f.intent, other]) {
+      await expect(restarted.cancel(intent.transferId, { ...f.context, deviceId: randomUUID() }))
+        .rejects.toThrow('principal')
+      expect((await restarted.cancel(intent.transferId, f.context)).state).toBe('cancelled')
+      await expect(restarted.start({
+        ...intent,
+        expiresAt: new Date(Date.parse(intent.expiresAt) + 60_000).toISOString(),
+      }, f.context)).rejects.toThrow('immutable')
+    }
   })
   it('reclaims expired unfinished transfers before admitting another one for the device', async () => {
     const f = await fixture()
@@ -238,9 +255,21 @@ describe('bounded authenticated transfer staging', () => {
     f.time(60_001)
     const next = { ...f.intent, transferId: randomUUID(), expiresAt: new Date(Date.now() + 120_000).toISOString() }
     await f.service.start(next, f.context)
+    expect(await f.service.inventory()).toEqual([next])
+    await f.service.close()
+    const restarted = f.create()
+    expect(await restarted.inventory()).toEqual([next])
+    await restarted.append(next.transferId, f.context, f.chunk(0))
+    await restarted.append(next.transferId, f.context, f.chunk(4))
+    expect((await restarted.finish(next.transferId, f.context)).sha256).toBe(next.sha256)
     for (const transferId of stale) {
-      await expect(readFile(join(f.root, `${transferId}.part`))).rejects.toThrow()
-      expect(JSON.parse(await readFile(join(f.root, `${transferId}.json`), 'utf8')).payload.progress.state).toBe('cancelled')
+      expect(await restarted.cancel(transferId, f.context)).toMatchObject({
+        transferId,
+        state: 'cancelled',
+        durableOffset: 4,
+        verifiedBytes: 0,
+      })
+      await expect(restarted.start({ ...next, transferId }, f.context)).rejects.toThrow('immutable')
     }
   })
   it('rejects symlink ancestors and hardlinked/symlink partial files', async () => {
