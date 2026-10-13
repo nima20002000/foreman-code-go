@@ -9,6 +9,7 @@ if (!Number.isSafeInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 256) {
 
 export default defineConfig({
   test: {
+    ...(process.env.CI_PROGRESS_FILE ? { runner: '../../packages/contracts/ci-test-runner.mjs', reporters: ['default', '../../scripts/ci-progress-reporter.mjs'] } : {}),
     globalSetup: ['../../scripts/vitest-heavy-setup.mjs', '../../scripts/vitest-test-resources.mjs'],
     setupFiles: ['./test/setupResources.ts'],
     // Leave CPU headroom for the Vitest coordinator and application processes.

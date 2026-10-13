@@ -80,7 +80,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   for (const command of commands) {
     const report = output && command.includes('vitest') ? `${output}.${reports.length}.vitest.json` : null
     if (report) reports.push(report)
-    const reported = report ? [...command, '--reporter=default', '--reporter=json', `--outputFile.json=${report}`] : command
+    const progressReporter = command.includes('vitest') && process.env.CI_PROGRESS_FILE
+      ? [`--reporter=${resolve('scripts/ci-progress-reporter.mjs')}`] : []
+    const reported = report
+      ? [...command, '--reporter=default', '--reporter=json', `--outputFile.json=${report}`, ...progressReporter]
+      : [...command, ...(progressReporter.length ? ['--reporter=default', ...progressReporter] : [])]
     const code = await run(reported)
     if (code) { process.exitCode = code; break }
   }

@@ -3,8 +3,9 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { availableParallelism, freemem, homedir, totalmem } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import { join, matchesGlob } from 'node:path'
-import { CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, CiTestResultsSchema, integrationPartition,
+import { CiWatchdogFailureSchema, CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, CiTestResultsSchema, integrationPartition,
   CiScopeSchema, CiSelectedFilesSchema, validCiSelection,
   type CiDurations, type CiHostReply, type CiHostRun, type CiSuite, type CiPart, type CiPartition, type CiScope } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
@@ -53,6 +54,7 @@ interface RunMeta {
   message: string | null; cleaned: boolean; durations?: CiDurations
   scope?: CiScope; files?: string[]; part?: CiPart; defaultBranch?: string; baseCommit?: string; deriveFiles?: boolean
   resources?: { cpuCount: number; memoryBytes: number; memoryBudget?: number }
+  expectedDurationMs?: number
   isolatedDatabase?: boolean
   gate?: boolean; integrationShards?: number
 }
@@ -60,7 +62,7 @@ interface RunMeta {
 type StartRequest = { runId: string; repository: string; commit: string; suite: CiSuite
   part?: CiPart | undefined; partition?: CiPartition | undefined; durations?: CiDurations | undefined;
   scope?: CiScope | undefined; files?: string[] | undefined; defaultBranch?: string | undefined;
-  baseCommit?: string | undefined; gate?: boolean | undefined; integrationShards?: number | undefined }
+  expectedDurationMs?: number | undefined; baseCommit?: string | undefined; gate?: boolean | undefined; integrationShards?: number | undefined }
 
 const unitName = (runId: string) => `foreman-ci-${runId}`
 // GitHub CLI's own credential helper: a computer that is logged in to gh fetches without any app setup.
@@ -234,6 +236,7 @@ export class HostCiRunner {
       state: 'starting', finishedAt: null, exitCode: null, message: null, cleaned: false,
       resources: { cpuCount: capacity.cpuCount, memoryBytes: capacity.memoryBytes, memoryBudget: capacity.memoryBudget },
       isolatedDatabase,
+      ...(request.expectedDurationMs !== undefined ? { expectedDurationMs: request.expectedDurationMs } : {}),
       ...(request.gate ? { gate: true, integrationShards: Math.min(request.integrationShards!,
         gateIntegrationShards(capacity.cpuCount, capacity.memoryBytes)) } : {}),
       ...(request.part ? { part: request.part } : {}),
@@ -478,6 +481,12 @@ export class HostCiRunner {
         command = slice.length ? `${command} --files ${slice.map(quote).join(' ')}` : 'true'
       }
     }
+    const sourceWatchdog = join(source, 'scripts/ci-watchdog.mjs')
+    const watchdog = existsSync(sourceWatchdog) ? sourceWatchdog
+      : fileURLToPath(new URL('../../../../../scripts/ci-watchdog.mjs', import.meta.url))
+    const watchedCommand = `CI_EXPECTED_DURATION_MS=${meta.expectedDurationMs ?? 0}`
+        + ` CI_WATCHDOG_DIRECTORY=${quote(run)} CI_WATCHDOG_MESSAGE_FILE=${quote(join(run, 'watchdog-message.json'))}`
+        + ` node ${quote(watchdog)} -- bash -c ${quote(command)}`
     return ['#!/bin/bash', 'set -o pipefail', `exec >>${quote(join(run, 'log'))} 2>&1`,
       `export TMPDIR=${quote(join(run, 'tmp'))} CI=true NODE_OPTIONS=--max-old-space-size=${heapMb}`
         + ` FOREMAN_CODE_CI_CONTRACTS_CACHE=${quote(join(cache, 'contracts'))}`
@@ -513,7 +522,7 @@ export class HostCiRunner {
       ...(command ? [`step ${meta.part ?? meta.suite}`,
         ...(database ? ['if [ -f "$TMPDIR/test-database-url" ]; then',
           '  export FOREMAN_CODE_CI_TEST_ADMIN_URL="$(cat "$TMPDIR/test-database-url")"', 'fi'] : []),
-        `${command} || finish $?`] : []),
+        `${watchedCommand} || finish $?`] : []),
       'finish 0', ''].join('\n')
   }
 
@@ -560,7 +569,10 @@ export class HostCiRunner {
       // A unit launched before atomic exit publication can expose an empty file mid-write.
       if (exit !== null && exit.trim() !== '') {
         const code = Number(exit.trim())
-        await this.finish(runId, code === 0 ? 'passed' : 'failed', Number.isInteger(code) ? code : 1, meta.message)
+        const watchdogMessage = await readFile(join(directory, 'watchdog-message.json'), 'utf8')
+          .catch(fallbackOnError(null, 'jobs', 'read CI watchdog message', { runId }, ['ENOENT']))
+        await this.finish(runId, code === 0 ? 'passed' : 'failed', Number.isInteger(code) ? code : 1,
+          watchdogMessage ? CiWatchdogFailureSchema.parse(JSON.parse(watchdogMessage)).message : meta.message)
       } else {
         const unit = await this.ports.run('systemctl', ['--user', 'is-active', `${unitName(runId)}.service`], { env: this.environment })
         if (!['active', 'activating'].includes(unit.stdout.trim())) {

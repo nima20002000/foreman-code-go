@@ -27,6 +27,9 @@ parameters:
   partition:
     type: string
     default: ''
+  expected_duration_ms:
+    type: string
+    default: '0'
   durations:
     type: string
     default: '{}'
@@ -50,9 +53,11 @@ jobs:
       DEFAULT_BRANCH: << pipeline.parameters.default_branch >>
       BASE_COMMIT: << pipeline.parameters.base_commit >>
       CI_PARTITION: << pipeline.parameters.partition >>
+      CI_EXPECTED_DURATION_MS: << pipeline.parameters.expected_duration_ms >>
       CI_DURATIONS: << pipeline.parameters.durations >>
       DURATIONS_OUTPUT: .logs/ci-durations/durations.json
       TEST_RESULTS_OUTPUT: .logs/ci-durations/test-results.json
+      CI_WATCHDOG_MESSAGE_FILE: .logs/ci-durations/watchdog-message.json
     steps:
       - checkout
       - run:
