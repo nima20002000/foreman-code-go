@@ -174,7 +174,10 @@ export class HostCiRunner {
     for (const runId of names) runs.push(await this.refresh(runId).catch(fallbackOnError(
       null, 'jobs', 'refresh CI run', { runId }, ['ENOENT'],
     )))
-    const active = await this.active()
+    const active: RunMeta[] = []
+    for (const run of runs) {
+      if (run && ['starting', 'running'].includes(run.state)) active.push(await this.readMeta(run.runId))
+    }
     const availableMemoryBytes = this.ports.availableMemoryBytes?.() ?? this.ports.memoryBytes
     const capacity = this.capacity(active, availableMemoryBytes)
     const activeRuns = runs.filter(run => run && ['starting', 'running'].includes(run.state))

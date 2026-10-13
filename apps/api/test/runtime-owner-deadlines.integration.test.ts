@@ -10,16 +10,16 @@ async function stalledReplies(afterReady: number) {
   const query = pg.Client.prototype.query as unknown as
     (this: pg.Client, ...args: unknown[]) => Promise<pg.QueryResult>
   const release = deferred()
-  let ownerClient: pg.Client | undefined
+  const ownerClients = new Set<pg.Client>()
   let replies = 0
   // Keep the guarded disposable endpoint; suppress delivery after PostgreSQL executes the query.
   const spy = vi.spyOn(pg.Client.prototype, 'query').mockImplementation((function (
     this: pg.Client, ...args: unknown[]
   ) {
     const response = query.apply(this, args)
-    if (!ownerClient && args[0] !== 'select pg_try_advisory_lock($1) as acquired') return response
-    ownerClient ??= this
-    if (this !== ownerClient || ++replies < afterReady) return response
+    if (!ownerClients.size && args[0] !== 'select pg_try_advisory_lock($1) as acquired') return response
+    if (!ownerClients.size) ownerClients.add(this)
+    if (!ownerClients.has(this) || ++replies < afterReady) return response
     return response.then(async result => {
       await release.promise
       return result

@@ -3,6 +3,7 @@ import { basename, join } from 'node:path'
 import type { CiDurations, CiExecutionSuite, CiHostRun, CiPart, CiScope, CiSuite, CiTestResults, CiUserSystemd } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { HostCiPorts } from './runner.js'
+import { providerCommand } from './providerPoll.js'
 
 export interface CloudRun {
   runId: string; repository: string; mirror: string; commit: string; suite: CiSuite; startedAt: string
@@ -78,6 +79,10 @@ function rateLimited(label: string, text: string) {
 }
 
 async function command(ports: HostCiPorts, label: string, file: string, args: string[], timeoutMs = 120_000) {
+  return providerCommand(ports, file, args, () => executeCommand(ports, label, file, args, timeoutMs))
+}
+
+async function executeCommand(ports: HostCiPorts, label: string, file: string, args: string[], timeoutMs: number) {
   const result = await ports.run(file, args, { timeoutMs })
   if (result.code !== 0) {
     const limited = rateLimited(label, result.stderr)

@@ -31,7 +31,7 @@ async function retainedWorkingTree(directory: FileHandle, root: SourceRootRecord
   authorize: () => Promise<void>, git?: GitWorktreePorts): Promise<RetainedSourceFootprint | null> {
   let receipt = owner.record?.receipt
   let copy: FileHandle
-  let allocation: Awaited<ReturnType<typeof readSecondaryAllocation>> = null
+  let allocation: Awaited<ReturnType<typeof readSecondaryAllocation>>
   try {
     copy = await openChildDirectory(directory, materializationId)
   } catch (error) {

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { once } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import type { NativeSessionReference } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
@@ -17,6 +18,8 @@ describe.runIf(postgresEnabled)('workflow startup preservation', () => {
     const opening = deferred()
     const publish = deferred()
     const captured = deferred()
+    const bound = deferred()
+    const firstBatch = deferred()
     const originalConnection = runtime.provider.connection.bind(runtime.provider)
     const detached: NativeSessionReference[] = []
     let original: NativeSessionReference | undefined
@@ -28,6 +31,17 @@ describe.runIf(postgresEnabled)('workflow startup preservation', () => {
           opening.resolve()
           await publish.promise
           return original
+        },
+        startTurn: async function* (session, input, signal) {
+          bound.resolve()
+          await firstBatch.promise
+          for await (const event of manager.startTurn(session, input, signal)) {
+            yield event
+            // Keep the original turn active after its first batch commits.
+            if (!signal) throw new Error('Expected the workflow lifetime signal')
+            if (!signal.aborted) await once(signal, 'abort')
+            signal.throwIfAborted()
+          }
         },
         canDetachForRestart: () => true,
         closeForRestart: async session => { detached.push(session) },
@@ -42,14 +56,15 @@ describe.runIf(postgresEnabled)('workflow startup preservation', () => {
         (error: unknown) => error,
       )
       await opening.promise
-      const before = (await runtime.db.pool.query<{ record: { id: string; state: string } }>(
-        'select record from harness_executions where run_id=$1', [runtime.f.run.id])).rows[0]!.record
+      const before = (await runtime.runs.listRepeatExecutions(runtime.f.run.id))[0]!.execution
       expect(before).toMatchObject({ state: 'starting' })
       expect(before).not.toHaveProperty('nativeSessionId')
       const executionPages = runtime.runs.executionPages.bind(runtime.runs)
       const pages = vi.spyOn(runtime.runs, 'executionPages').mockImplementation(async function* (...args) {
         for await (const executions of executionPages(...args)) {
           captured.resolve()
+          // Preservation requires a committed binding, even when the page is stale.
+          await bound.promise
           yield executions
         }
       })
@@ -57,17 +72,23 @@ describe.runIf(postgresEnabled)('workflow startup preservation', () => {
       shutdown = runtime.engine.shutdown()
       await captured.promise
       publish.resolve()
+      await bound.promise
+      firstBatch.resolve()
       await shutdown
       const startupError = await startup
       expect(startupError).toBeInstanceOf(DomainError)
       expect(startupError).toMatchObject({ code: 'ENGINE_RESTART' })
       expect(detached).toEqual([original])
-      const cleanup = await runtime.db.pool.query(
-        'select run_id from run_cleanup_intents where run_id=$1 and pending', [runtime.f.run.id])
-      expect(cleanup.rows).toEqual([])
-      const after = (await runtime.db.pool.query<{ record: { state: string } }>(
-        'select record from harness_executions where id=$1', [before.id])).rows[0]!.record
-      expect(after).toMatchObject({ id: before.id, nativeSessionId: original!.nativeSessionId })
+      expect(await runtime.runs.hasPendingCleanup(runtime.f.run.id)).toBe(false)
+      expect(runtime.provider.closedSessions.has(original!.nativeSessionId)).toBe(false)
+      expect(await runtime.runs.get(runtime.f.run.id)).toMatchObject({
+        id: runtime.f.run.id, workflowVersionId: fixture.version.id, outcome: 'pending',
+      })
+      const after = (await runtime.runs.getExecution(before.id))!
+      expect(after).toMatchObject({
+        id: before.id, nativeSessionId: original!.nativeSessionId,
+        agentConfigurationVersionId: before.agentConfigurationVersionId, attempt: before.attempt,
+      })
       expect(['running', 'waiting']).toContain(after.state)
       expect(runtime.provider.counts).toMatchObject({ sessions: 1, starts: 1 })
       const closure = await runtime.db.pool.query<{ detached_reference: unknown }>(
@@ -75,6 +96,8 @@ describe.runIf(postgresEnabled)('workflow startup preservation', () => {
       expect(closure.rows).toEqual([{ detached_reference: original }])
     } finally {
       publish.resolve()
+      firstBatch.resolve()
+      shutdown ??= runtime.engine.shutdown()
       await Promise.allSettled([startup, shutdown])
       restorePages()
       connections.mockRestore()

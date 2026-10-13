@@ -13,14 +13,24 @@ import { DomainError } from '../../errors.js'
 import { createClaudeCurrentPinResolver, discoverInstalledClaudeSdk, type ClaudeSdkEntrypoint } from './currentPin.js'
 import { CLAUDE_PROFILE_CHECK_REVISION } from './profileRevision.js'
 
+let muslRuntime: boolean | undefined
+
+function usesMusl() {
+  if (process.platform !== 'linux') return false
+  if (muslRuntime === undefined) {
+    const report = process.report.getReport()
+    muslRuntime = Boolean(report && typeof report === 'object' && 'header' in report
+      && !(report.header as { glibcVersionRuntime?: string }).glibcVersionRuntime)
+  }
+  return muslRuntime
+}
+
 /** Pinned SDK 0.3.284's own native package algorithm, inspected in its installed
  * source. Selection resolves package files only; no module execution or PATH CLI. */
 async function sdkNativeExecutable(entrypoint: string): Promise<string | undefined> {
   const requireSdk = createRequire(entrypoint)
   const suffix = process.platform === 'win32' ? '.exe' : ''
-  const report = process.platform === 'linux' ? process.report.getReport() : undefined
-  const musl = report && typeof report === 'object' && 'header' in report
-    && !(report.header as { glibcVersionRuntime?: string }).glibcVersionRuntime
+  const musl = usesMusl()
   const packages = process.platform === 'linux'
     ? (musl ? [`linux-${process.arch}-musl`, `linux-${process.arch}`] : [`linux-${process.arch}`, `linux-${process.arch}-musl`])
     : [`${process.platform}-${process.arch}`]
