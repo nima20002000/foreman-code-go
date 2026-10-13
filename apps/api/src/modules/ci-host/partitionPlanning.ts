@@ -4,10 +4,12 @@ import { CiRunRecordSchema, requiresUserSystemd, userSystemdIntegrationFiles,
 import type { HostCiComputer, HostCiEndpoint } from './service.js'
 import { isGitHubComputer, supportsUserSystemd } from './computerCapabilities.js'
 import { fallbackOnError } from '../diagnostics/ignoredError.js'
+import { executorSpeedKey, readExecutorSpeeds } from './executorSpeed.js'
+import { buildComputerIntegrationShards } from './capacity.js'
 
 /** Sizes a partitioned run's slices by the measured speed of the computers that will run them, so they finish
  * together: each free computer takes one slice, weighted by its throughput; slices without a computer yet get the
- * mean. Throughput is share of the suite per wall second from that computer's last integration slice. */
+ * mean. Throughput is summed file time per wall time from recent completed gate parts. */
 export async function weighCiPartitions(pool: pg.Pool, endpoint: HostCiEndpoint,
   queued: CiRunRecord[], free: HostCiComputer[],
   read: (id: string, workspaceId: string) => Promise<CiRunRecord>): Promise<CiRunRecord[]> {
@@ -84,35 +86,29 @@ export async function weighCiPartitions(pool: pg.Pool, endpoint: HostCiEndpoint,
 
 async function throughput(pool: pg.Pool, endpoint: HostCiEndpoint,
   computers: HostCiComputer[]): Promise<Map<string, number>> {
-  const rows = (await pool.query<{ record: unknown }>(`select record from ci_runs
-    where state in ('passed','failed') and record->>'suite'='integration' and record->'partition' is not null
-      and record->>'finishedAt' is not null order by created_at desc limit 200`)).rows
-    .map(row => CiRunRecordSchema.parse(row.record))
+  const measurements = await readExecutorSpeeds(pool, endpoint)
   const speed = new Map<string, number>()
-  for (const run of rows) {
-    const key = computers.find(value => JSON.stringify(value.hostRef) === JSON.stringify(run.computer?.hostRef))?.key
-    if (!key || speed.has(key) || !run.startedAt || !run.finishedAt || run.step !== 'integration' || run.scope === 'affected') continue
-    const seconds = (Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000
-    // Fail-fast runs say nothing about speed.
-    if (seconds < 120) continue
-    const partition = run.partition!
-    if (partition.hostIndexes?.includes(partition.index)) continue
-    const weights = partition.weights ?? Array.from({ length: partition.count }, () => 1)
-    const ordinaryWeight = weights.reduce((sum, value, index) =>
-      sum + (partition.hostIndexes?.includes(index) ? 0 : value), 0)
-    const share = weights[partition.index]! / ordinaryWeight
-    speed.set(key, share / seconds)
-  }
   for (const computer of computers) {
-    if (speed.has(computer.key)) continue
-    // No measurement yet: CPU count relative to the measured computers' typical speed per CPU.
+    const measured = measurements.get(executorSpeedKey(computer))
+    if (measured && typeof measured !== 'number') speed.set(computer.key, measured.conservativeThroughput)
+  }
+  if (speed.size === computers.length) return speed
+  const statuses = await Promise.all(computers.map(async computer => {
     const status = await endpoint.request(computer, { operation: 'status' })
       .catch(fallbackOnError(null, 'jobs', 'read CI computer status', { computer: computer.key }))
-    if (status?.operation === 'status' && speed.size) {
-      const perCpu = [...speed.values()].reduce((sum, value) => sum + value, 0) / speed.size / 12
-      speed.set(computer.key, perCpu * Math.max(1, Math.floor(status.cpuCount / (status.slotsTotal ?? 1))))
-    }
+    return { computer, status: status?.operation === 'status' ? status : null }
+  }))
+  let measuredWork = 0
+  let measuredShards = 0
+  for (const { computer, status } of statuses) {
+    if (!status || !speed.has(computer.key)) continue
+    measuredWork += speed.get(computer.key)!
+    measuredShards += buildComputerIntegrationShards(status, computer.buildAllowancePercent)
+  }
+  const perShard = measuredShards ? measuredWork / measuredShards : 1
+  for (const { computer, status } of statuses) {
+    if (speed.has(computer.key) || !status) continue
+    speed.set(computer.key, perShard * buildComputerIntegrationShards(status, computer.buildAllowancePercent))
   }
   return speed
 }
-

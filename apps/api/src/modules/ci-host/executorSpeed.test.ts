@@ -1,8 +1,10 @@
 import { expect, it } from 'vitest'
+import type pg from 'pg'
 import { CiRunRecordSchema, type CiRunInput, type CiRunRecord } from '@foreman-code/contracts'
 import { planCiGate } from './gate.js'
-import { estimateExecutorSpeeds } from './executorSpeed.js'
+import { estimateExecutorSpeeds, readExecutorSpeeds } from './executorSpeed.js'
 import type { HostCiComputer, HostCiEndpoint } from './service.js'
+import { weighCiPartitions } from './partitionPlanning.js'
 
 const computers: HostCiComputer[] = [
   { key: 'builder-main', label: 'Main builder', priority: 60, hostRef: { kind: 'main', mainId: 'main' } },
@@ -89,4 +91,79 @@ it('treats computers without speed history as nominal', async () => {
   expect(Math.abs(mainWork - pairedWork)).toBeLessThanOrEqual(30_000)
   expect(main.speedFactor ?? 1).toBe(1)
   expect(Math.abs(main.expectedDurationMs - paired.expectedDurationMs)).toBeLessThanOrEqual(30_000)
+})
+
+it.each([
+  { cpuCount: 8, wallTimes: [800_000, 800_000, 800_000, 100_000] },
+  { cpuCount: 32, wallTimes: [800_000, 800_000, 800_000, 100_000] },
+  { cpuCount: 32, wallTimes: [800_000, 100_000, 100_000, 100_000] },
+])('bounds a build part by measured throughput with $cpuCount reported CPUs and $wallTimes history',
+  async ({ cpuCount, wallTimes }) => {
+  const builder = computers[0]!
+  const historyFiles = Array.from({ length: 148 }, (_, index) => `apps/api/test/history-${index}.integration.test.ts`)
+  const rows = wallTimes.map(actualMs => ({
+    record: gatePart(builder, builder.key, 272_000, actualMs, { files: historyFiles, integrationShards: 12,
+      speedFactor: 0.5 }),
+    test_results: { summary: { passed: 148, failed: 0, skipped: 0 }, truncated: false,
+      files: historyFiles.map(file => ({ file, status: 'passed', durationMs: 20_000, tests: [] })) },
+    durations: Object.fromEntries(historyFiles.map(file => [file, 20_000])),
+  }))
+  const pool = { query: async () => ({ rows }) } as unknown as pg.Pool
+  const fleet: HostCiEndpoint = {
+    computers: async () => [builder, ...Array.from({ length: 24 }, (_, slot) => ({
+      ...computers[3]!, key: `cloud-${slot}`, hostRef: { kind: 'cloud' as const, mainId: 'main',
+        provider: 'github' as const, slot },
+    }))],
+    request: async computer => ({ operation: 'status', ready: true, reasons: [],
+      cpuCount: computer.hostRef.kind === 'cloud' ? 4 : cpuCount, memoryBytes: 64 * 2 ** 30,
+      slotsUsed: 0, slotsTotal: 1, runs: [] }),
+  }
+  const speeds = await readExecutorSpeeds(pool, fleet)
+  const files = Array.from({ length: 700 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)
+  const parts = await planCiGate({ suite: 'integration', scope: 'full', gate: true, commandId: 'throughput' },
+    { files, durations: Object.fromEntries(files.map(file => [file, 20_000])) },
+    { files: ['apps/api/src/site.test.ts'], durations: {}, heavy: [] }, {}, fleet, speeds)
+  expect(parts.filter(part => part.suite === 'integration').flatMap(part => part.files).sort())
+    .toEqual([...files].sort())
+  const host = parts.find(part => part.plannedHostKey === builder.key)!
+  const cloudEnd = Math.max(...parts.filter(part => part.plannedHostKey !== builder.key)
+    .map(part => part.expectedDurationMs))
+  const measuredEnd = host.files.length * 20_000 / (148 * 20_000 / 800_000)
+  expect(measuredEnd).toBeLessThanOrEqual(cloudEnd)
+  expect(host.expectedDurationMs).toBeGreaterThanOrEqual(measuredEnd)
+})
+
+it('uses the same measured file throughput for persisted partition weights', async () => {
+  const builder = computers[0]!
+  const cloud = computers[3]!
+  const files = Array.from({ length: 20 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)
+  const queued = [0, 1].map(index => gatePart(builder, builder.key, 100_000, 100_000, {
+    gate: false, state: 'queued', computer: null, scope: 'affected', files,
+    startedAt: null, finishedAt: null, partition: { index, count: 2 },
+  }))
+  const history = [builder, cloud].map(computer => ({
+    record: gatePart(computer, computer.key, 100_000, 200_000, { files, partition: { index: 0, count: 1 } }),
+    test_results: { summary: { passed: 20, failed: 0, skipped: 0 }, truncated: false,
+      files: files.map(file => ({ file, status: 'passed', durationMs: computer === builder ? 20_000 : 40_000,
+        tests: [] })) },
+  }))
+  let reads = 0
+  const pool = { query: async (_query: string, values?: unknown[]) => {
+    reads += 1
+    if (reads === 1) return { rows: queued.map(record => ({ record })) }
+    if (reads === 2) return { rows: history }
+    const plan = JSON.parse(values![0] as string) as { id: string; patch: Partial<CiRunRecord> }[]
+    return { rows: plan.map(item => ({ record: { ...queued.find(run => run.id === item.id)!, ...item.patch } })) }
+  } } as unknown as pg.Pool
+  const fleet: HostCiEndpoint = {
+    computers: async () => [builder, cloud],
+    request: async computer => ({ operation: 'status', ready: true, reasons: [],
+      cpuCount: computer === builder ? 32 : 4, memoryBytes: 64 * 2 ** 30, runs: [] }),
+  }
+  const planned = await weighCiPartitions(pool, fleet, queued, [builder, cloud],
+    async id => queued.find(run => run.id === id)!)
+  const host = planned.find(run => run.plannedHostKey === builder.key)!
+  const cloudPart = planned.find(run => run.plannedHostKey === cloud.key)!
+  const weights = host.partition!.weights!
+  expect(weights[host.partition!.index]! / weights[cloudPart.partition!.index]!).toBeCloseTo(0.5)
 })

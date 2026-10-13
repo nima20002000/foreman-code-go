@@ -22,6 +22,47 @@ beforeEach(async () => {
   await database.pool.query('truncate ci_runs, ci_file_durations, management_command_receipts, management_audit')
 })
 
+it('persists a throughput-sized gate through MCP and rejects a read-only caller', async () => {
+  const files = Array.from({ length: 700 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)
+  const f = await fixture({ files })
+  try {
+    const builder = f.computers[0]!
+    const historyFiles = files.slice(0, 148)
+    for (const wallMs of [800_000, 800_000, 800_000, 100_000]) {
+      const started = Date.now() - 3_600_000
+      const record = CiRunRecordSchema.parse({ id: randomUUID(), workspaceId: f.workspaceId, groupId: randomUUID(),
+        suite: 'integration', scope: 'full', gate: true, part: null, partition: null, files: historyFiles,
+        repository: 'octo/site', commit: 'b'.repeat(40), state: 'passed',
+        computer: { hostRef: builder.hostRef, label: builder.label }, step: 'integration', exitCode: 0, message: null,
+        queuedAt: new Date(started).toISOString(), startedAt: new Date(started).toISOString(),
+        finishedAt: new Date(started + wallMs).toISOString(), initiator: { principalId: 'operator', executionId: null },
+        plannedHostKey: builder.key, expectedDurationMs: 272_000, speedFactor: 0.5, integrationShards: 12 })
+      const results = { summary: { passed: 148, failed: 0, skipped: 0 }, truncated: false,
+        files: historyFiles.map(file => ({ file, status: 'passed', durationMs: 20_000, tests: [] })) }
+      await database.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record,test_results)
+        values($1,$2,$3,'passed',$4::jsonb,$5::jsonb)`,
+      [record.id, f.workspaceId, record.groupId, JSON.stringify(record), JSON.stringify(results)])
+    }
+    const input = { suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40), commandId: randomUUID() }
+    const reader = await f.connect(true)
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    expect((await database.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(4)
+    const admitted = CiRunOutputSchema.parse(await f.value('ci_run', input))
+    expect(CiRunOutputSchema.parse(await f.value('ci_run', input))).toEqual(admitted)
+    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
+    const host = read.partitions!.find(run => run.plannedHostKey === builder.key)!
+    const cloudEnd = Math.max(...read.partitions!.filter(run => run.plannedHostKey?.startsWith('cloud-'))
+      .map(run => run.expectedDurationMs!))
+    const measuredEnd = host.files.length * 120_000 / (148 * 20_000 / 800_000)
+    expect(measuredEnd).toBeLessThanOrEqual(cloudEnd)
+    expect(host.expectedDurationMs).toBeGreaterThanOrEqual(measuredEnd)
+    expect(read.partitions!.filter(run => run.suite === 'integration').flatMap(run => run.files).sort())
+      .toEqual([...files].sort())
+    const stored = (await database.pool.query('select record from ci_runs where id=$1', [host.id])).rows[0].record
+    expect(stored).toEqual(host)
+  } finally { await f.close() }
+})
+
 async function fixture(options: { cloudSlots?: number; files?: string[]; offlineKey?: string; pool?: pg.Pool;
   occupiedKeys?: Set<string>; unavailableKeys?: Set<string>; allowance?: number } = {}) {
   const pool = options.pool ?? database.pool

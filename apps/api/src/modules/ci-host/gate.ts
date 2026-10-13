@@ -32,19 +32,6 @@ export interface GatePart {
   speedFactor?: number
 }
 
-function integrationTime(files: string[], shards: number, duration: (file: string) => number) {
-  const lanes = Array.from({ length: shards }, () => 0)
-  let serial = 0
-  for (const file of [...files].sort((left, right) => duration(right) - duration(left))) {
-    if (exclusive.has(file)) serial += duration(file)
-    else {
-      const index = lanes.indexOf(Math.min(...lanes))
-      lanes[index] = lanes[index]! + duration(file)
-    }
-  }
-  return serial + Math.max(...lanes)
-}
-
 export async function readCiComputerStatus(endpoint: HostCiEndpoint, computer: HostCiComputer) {
   const status = await endpoint.request(computer, { operation: 'status' }).catch(error => {
     log.warn({ err: error, computer: computer.key }, 'CI computer status unavailable')
@@ -66,9 +53,8 @@ async function gateComputers(endpoint: HostCiEndpoint, reservedCloudSlots: numbe
   return available.filter((value): value is GateComputer => value !== null)
 }
 
-/** One wave: every ready executor takes at most one part. Each build computer takes one integration part sized by
- * its CPU, memory and build allowance (its shards); cloud slots take one check or one integration part each.
- * Learned executor speeds scale each computer's integration time, so all parts end at about the same time.
+/** One wave: every ready executor takes at most one part. Measured build throughput sizes integration parts;
+ * CPU, memory and build allowance bound execution shards. Cloud slots take one check or integration part each.
  * Not-ready computers and reserved cloud slots stay out of the plan, so no part waits on them. */
 export async function planCiGate(input: CiRunInput, integration: CiIntegrationInventory,
   unit: CiUnitInventory, durations: CiDurations, endpoint: HostCiEndpoint,
@@ -103,13 +89,42 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
   const files = [...new Set(integration.files)].sort((left, right) => duration(right) - duration(left) || left.localeCompare(right))
   // Longest-first list scheduling over hosts and clouds with incremental shard loads: each file goes where it finishes
   // earliest (hosts win ties), so clouds only take integration that shortens the gate's critical path.
-  const load = new Map(integrationFleet.map(item => [item, { lanes: Array.from({ length: item.shards }, () => 0), serial: 0 }]))
-  const factor = (item: GateComputer) => speeds.get(executorSpeedKey(item.computer)) ?? 1
+  const load = new Map(integrationFleet.map(item => [item,
+    { lanes: Array.from({ length: item.shards }, () => 0), serial: 0, work: 0 }]))
+  const factor = (item: GateComputer) => {
+    const speed = speeds.get(executorSpeedKey(item.computer))
+    return typeof speed === 'number' ? speed : speed?.factor ?? 1
+  }
+  const measuredTime = (item: GateComputer, work: number, nominal: number,
+    estimate: 'typical' | 'conservative' = 'typical') => {
+    const speed = speeds.get(executorSpeedKey(item.computer))
+    if (item.computer.hostRef.kind === 'cloud' || !speed || typeof speed === 'number') {
+      return factor(item) * nominal
+    }
+    const throughput = estimate === 'conservative' ? speed.conservativeThroughput : speed.throughput
+    return Math.max(nominal, work / throughput)
+  }
   const finishWith = (item: GateComputer, file: string) => {
     const state = load.get(item)!
     const serial = exclusive.has(file) ? state.serial + duration(file) : state.serial
     const lanes = exclusive.has(file) ? Math.max(...state.lanes) : Math.max(Math.max(...state.lanes), Math.min(...state.lanes) + duration(file))
-    return item.checkMs + factor(item) * (SETUP_MS + serial + lanes)
+    return item.checkMs + measuredTime(item, state.work + duration(file), SETUP_MS + serial + lanes)
+  }
+  const finish = (item: GateComputer, estimate: 'typical' | 'conservative' = 'typical') => {
+    if (!item.files.length) return item.checkMs
+    const state = load.get(item)!
+    return item.checkMs + measuredTime(item, state.work,
+      SETUP_MS + state.serial + Math.max(...state.lanes), estimate)
+  }
+  const addFile = (item: GateComputer, file: string) => {
+    const state = load.get(item)!
+    state.work += duration(file)
+    if (exclusive.has(file)) state.serial += duration(file)
+    else {
+      const index = state.lanes.indexOf(Math.min(...state.lanes))
+      state.lanes[index] = state.lanes[index]! + duration(file)
+    }
+    item.files.push(file)
   }
   const exclusiveCount = (item: GateComputer) => item.files.filter(file => exclusive.has(file) || requiresUserSystemd(file)).length
   for (const file of files) {
@@ -119,20 +134,33 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
     const target = eligible.map((item, order) => ({ item, order, finish: finishWith(item, file) }))
       .sort((left, right) => left.finish - right.finish
         || (serial ? exclusiveCount(left.item) - exclusiveCount(right.item) : 0) || left.order - right.order)[0]!.item
-    const state = load.get(target)!
-    if (exclusive.has(file)) state.serial += duration(file)
-    else {
-      const index = state.lanes.indexOf(Math.min(...state.lanes))
-      state.lanes[index] = state.lanes[index]! + duration(file)
+    addFile(target, file)
+  }
+  // A recent slowdown bounds host work even if the typical estimate is optimistic.
+  const integrationClouds = integrationFleet.filter(item => item.computer.hostRef.kind === 'cloud')
+  for (const host of hosts) {
+    while (host.files.length && finish(host, 'conservative') > Math.max(...clouds.map(item => finish(item)))) {
+      const file = [...host.files].reverse().find(file => integrationClouds.some(item =>
+        !requiresUserSystemd(file) || item.computer.userSystemd?.supported))
+      if (!file) break
+      const target = [...integrationClouds].filter(item =>
+        !requiresUserSystemd(file) || item.computer.userSystemd?.supported)
+        .sort((left, right) => finishWith(left, file) - finishWith(right, file))[0]!
+      const remaining = host.files.filter(value => value !== file)
+      host.files = []
+      load.set(host, { lanes: Array.from({ length: host.shards }, () => 0), serial: 0, work: 0 })
+      for (const remainingFile of remaining) addFile(host, remainingFile)
+      addFile(target, file)
     }
-    target.files.push(file)
   }
   for (const item of integrationFleet.filter(item => item.files.length)) {
+    const measured = typeof speeds.get(executorSpeedKey(item.computer)) === 'object'
+    const appliedFactor = (item.computer.hostRef.kind === 'cloud' || !measured) && factor(item) !== 1
     result.push({ suite: 'integration', part: null, partition: null, files: item.files,
       plannedHostKey: item.computer.key, integrationShards: item.shards,
-      expectedDurationMs: Math.round(factor(item) * (SETUP_MS + integrationTime(item.files, item.shards, duration))),
+      expectedDurationMs: Math.ceil(finish(item, 'conservative')),
       requiresBuildComputer: item.files.some(requiresUserSystemd),
-      ...(factor(item) !== 1 ? { speedFactor: factor(item) } : {}) })
+      ...(appliedFactor ? { speedFactor: factor(item) } : {}) })
   }
   return result
 }
