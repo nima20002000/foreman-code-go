@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import { ExclusiveGraphConnection } from '../../run-graph/connection.js'
 import type { RunOwnership } from '../ownership.js'
-import { VerifiedRemoteEvidence, type RemoteCommitAuthority, type RemoteResultCommitPort } from './resultBridge.js'
+import { VerifiedRemoteEvidence, type RemoteCommitFacts, type RemoteResultCommitPort } from './resultBridge.js'
 import { persistVerifiedRemoteReceipt } from './persistence.js'
 const digest = 'a'.repeat(64), mainId = randomUUID(), deviceId = randomUUID()
 const connection = { mainId, deviceId, workerInstallationId: randomUUID(), bootId: randomUUID(), keyRevision: 1, authorizationRevision: 1, connectionGeneration: 1 }
@@ -24,7 +24,7 @@ function fixture(revokeAtCommit: boolean) {
   } } as unknown as pg.ClientBase
   const db = new ExclusiveGraphConnection(raw, () => {})
   const owner = { runId: 'run', assertOwned: () => {}, readOneShotFence: async () => ({ ownerId: 'unit-owner', fence: 'unit-fence' }) } as unknown as RunOwnership
-  const authority = { intent: receipt.intent, placement: { hostRef: { kind: 'device', mainId, deviceId }, bindingHash: digest, registration: { workerInstallationId: connection.workerInstallationId, keyRevision: 1, authorizationRevision: 1 } }, originalConnection: connection, originalIncarnationId: receipt.workerIncarnationId, grantIsLive: true, lastSequence: 0, lastReceipt: null, terminal: null, native: null } as RemoteCommitAuthority
+  const authority = { intent: receipt.intent, placement: { hostRef: { kind: 'device', mainId, deviceId }, bindingHash: digest, registration: { workerInstallationId: connection.workerInstallationId, keyRevision: 1, authorizationRevision: 1 } }, originalConnection: connection, originalIncarnationId: receipt.workerIncarnationId, grantIsLive: true, lastSequence: 0, lastReceipt: null, terminal: null, native: null } as RemoteCommitFacts
   const port: RemoteResultCommitPort = { transaction: (_operation, work) => db.transaction(sql => work({ authority: async () => authority, reject: async () => {}, accept: verified => persistVerifiedRemoteReceipt(sql, owner, verified, async () => { if (++checks === 2 && revokeAtCommit) throw new Error('revoked before COMMIT') }) })) }
   return { db, port, committed: () => committed, checks: () => checks }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { VerifiedRemoteEvidence, type RemoteCommitAuthority, type RemoteResultCommitPort } from './resultBridge.js'
+import { VerifiedRemoteEvidence, type RemoteCommitFacts, type RemoteResultCommitPort } from './resultBridge.js'
 import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import { remoteEntryClosureDigest } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 const digest = 'a'.repeat(64)
@@ -9,7 +9,7 @@ const connection = { mainId, deviceId, workerInstallationId: randomUUID(), bootI
 const receipt: RemoteOperationReceipt = { schemaVersion: 1, intent: { schemaVersion: 1, protocolVersion: 1, mainId, runId: 'run', nodeId: 'node', executionId: 'execution', occurrenceId: 'occurrence', occurrenceIndex: 0, technicalAttempt: 1, operationId: 'operation', attemptId: 'attempt', bindingHash: digest, inputDigest: `sha256:${digest}`, owner: { grantId: 'grant', epoch: '1' } }, connection, workerIncarnationId: randomUUID(), sequence: 4, phase: 'confirmed_terminal', entryAttempted: true, turnEntryAttempted: true, stopFence: false, controls: [], native: { sessionId: 'session', turnId: 'turn', processIdentityDigest: digest }, terminal: { kind: 'completed', closureEvidenceDigest: digest, resultDigest: digest } }
 function fixture() {
   const state = { accepts: 0, retains: 0, rejects: [] as string[] }
-  const authority = { intent: receipt.intent, placement: { hostRef: { kind: 'device', mainId, deviceId }, bindingHash: digest, registration: { workerInstallationId: connection.workerInstallationId, keyRevision: 1, authorizationRevision: 1 } }, originalConnection: connection, originalIncarnationId: receipt.workerIncarnationId, grantIsLive: true, lastSequence: 0, lastReceipt: null, terminal: null, native: null } as RemoteCommitAuthority
+  const authority = { intent: receipt.intent, placement: { hostRef: { kind: 'device', mainId, deviceId }, bindingHash: digest, registration: { workerInstallationId: connection.workerInstallationId, keyRevision: 1, authorizationRevision: 1 } }, originalConnection: connection, originalIncarnationId: receipt.workerIncarnationId, grantIsLive: true, lastSequence: 0, lastReceipt: null, terminal: null, native: null } as RemoteCommitFacts
   const port: RemoteResultCommitPort = { transaction: async (_operationId, work) => work({ authority: async () => authority, retain: async value => { expect(value).toBeInstanceOf(VerifiedRemoteEvidence); state.retains++ }, reject: async (_receipt, reason) => { state.rejects.push(reason) }, accept: async value => { state.accepts++; authority.lastSequence = value.receipt.sequence; authority.lastReceipt = value.receipt; authority.terminal = value.receipt.terminal ?? null; authority.native = value.receipt.native ?? null } }) }
   return { state, authority, port }
 }

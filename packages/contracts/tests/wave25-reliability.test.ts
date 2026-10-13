@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { makeCurrentGraphFixture } from './currentGraphFixture.js'
 import {
   canonicalGraphJson, graphJsonBytes, assertGraphEffectAuthority,
-  GraphEffectAuthoritySchema, GraphEffectFenceSchema, NativeGraphProjectionFenceSchema,
+  GraphEffectAccessStateSchema, GraphEffectFenceSchema, NativeGraphProjectionFenceSchema,
   assertNativeGraphProjectionAuthority, NativeTerminalEvidenceSchema, NativeWorkReliabilitySchema,
   assertNativeWorkTransition, nativeSubmissionRecovery, parseNativeGraphObservation,
   NATIVE_GRAPH_EVIDENCE_MAX_BYTES, classifyGraphObservation, GraphRunStateSchema, GraphNodeStateSchema,
@@ -16,7 +16,7 @@ function fences() {
   const expected = GraphEffectFenceSchema.parse({ scope: fixture.scope,
     effect: { kind: 'execution.launch', entityId: fixture.identities[0]!.executionId }, effectDigest: digest,
     ownerId: 'existing-owner', fence: '9007199254740993', connectionGeneration: '4' })
-  const current = GraphEffectAuthoritySchema.parse({ ...expected, ownership: 'held', access: 'effect', security: 'valid', effectClosed: false, submission: 'not_submitted' })
+  const current = GraphEffectAccessStateSchema.parse({ ...expected, ownership: 'held', access: 'effect', security: 'valid', effectClosed: false, submission: 'not_submitted' })
   return { fixture, expected, current }
 }
 function observation() {

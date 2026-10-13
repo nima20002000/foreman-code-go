@@ -87,7 +87,7 @@ export function requireAuthorization(
   }
 }
 
-interface AccountAuthorityRow {
+interface AccountAccessRow {
   id: string
   name: string
   audience: string
@@ -105,10 +105,10 @@ export async function requireLiveAccountAuthorization(sql: GraphSqlClient, princ
   while (id) {
     if (seen.has(id) || seen.size >= 16) throw new DomainError('AUTH_INVALID', 'The delegation chain is invalid.', 403)
     seen.add(id)
-    const result: pg.QueryResult<AccountAuthorityRow> = await sql.query<AccountAuthorityRow>(
+    const result: pg.QueryResult<AccountAccessRow> = await sql.query<AccountAccessRow>(
       'select id,name,audience,grants,expires_at,revoked_at,delegated_from from management_principals where id=$1 for share',
       [id])
-    const row: AccountAuthorityRow | undefined = result.rows[0]
+    const row: AccountAccessRow | undefined = result.rows[0]
     if (!row) throw new DomainError('AUTH_REVOKED', 'The account authority is unavailable.', 403)
     const principal = ManagementPrincipalSchema.parse({ id: row.id, name: row.name, audience: row.audience,
       grants: row.grants, expiresAt: row.expires_at.toISOString(), revokedAt: row.revoked_at?.toISOString() ?? null })

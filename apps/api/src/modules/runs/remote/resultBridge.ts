@@ -4,7 +4,7 @@ import type { DispatchIntent, AcceptedNodePlacement } from '@foreman-code/contra
 import { RemoteOperationReceiptSchema, type RemoteOperationReceipt, type RemoteNativeIdentity, type RemoteTerminalEvidence } from '@foreman-code/contracts/remote-execution'
 import { hasPositiveRemoteEntryClosure, hasPositiveRemoteNonEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 
-export interface RemoteCommitAuthority {
+export interface RemoteCommitFacts {
   intent: DispatchIntent
   placement: AcceptedNodePlacement
   originalConnection: DeviceConnectionIdentity
@@ -17,7 +17,7 @@ export interface RemoteCommitAuthority {
   terminal: RemoteTerminalEvidence | null
 }
 export interface RemoteResultTransaction {
-  authority(operationId: string): Promise<RemoteCommitAuthority | null>
+  authority(operationId: string): Promise<RemoteCommitFacts | null>
   /** Bounded audit evidence only; cannot mutate execution state or schedule a node. */
   reject(receipt: RemoteOperationReceipt, reason: string): Promise<void>
   /** Canonical writer receives correlated evidence, never a trusted native capture cast. */
@@ -29,7 +29,7 @@ export interface RemoteResultCommitPort {
   transaction<T>(operationId: string, work: (transaction: RemoteResultTransaction) => Promise<T>): Promise<T>
 }
 export class VerifiedRemoteEvidence {
-  private constructor(readonly receipt: RemoteOperationReceipt, readonly authority: RemoteCommitAuthority) {}
+  private constructor(readonly receipt: RemoteOperationReceipt, readonly authority: RemoteCommitFacts) {}
   static async commit(raw: unknown, authenticatedConnection: DeviceConnectionIdentity, port: RemoteResultCommitPort) {
     const receipt = RemoteOperationReceiptSchema.parse(raw)
     return port.transaction(receipt.intent.operationId, async transaction => {
@@ -51,7 +51,7 @@ export class VerifiedRemoteEvidence {
 }
 
 function rejectionReason(receipt: RemoteOperationReceipt, authenticated: DeviceConnectionIdentity,
-  authority: RemoteCommitAuthority | null): string | null {
+  authority: RemoteCommitFacts | null): string | null {
   if (!authority) return 'unknown_operation'
   if (!authority.grantIsLive) return 'revoked_grant'
   if (!sameRegisteredWorker(receipt.connection, authenticated)) return 'unauthenticated_connection'

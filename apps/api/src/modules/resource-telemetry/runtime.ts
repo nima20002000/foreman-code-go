@@ -5,13 +5,13 @@ import { newCollectorGeneration } from './collector/lifecycle.js'
 import { createLinuxResourceCollector } from './collector/ports.js'
 import { passiveRegistryOwnershipReader, type PassiveNativeRegistry, type TrustedNativeScopes } from './collector/registryAdapter.js'
 import { ResourceTelemetryService, TelemetryRejected } from './ingestion/service.js'
-import type { TelemetryClock, TelemetryOwnershipAuthority, TelemetryReadAuthority, TelemetrySessionAuthority } from './ingestion/ports.js'
+import type { TelemetryClock, TelemetryOwnershipReader, TelemetryReadAuthority, TelemetrySessionReader } from './ingestion/ports.js'
 import { ResourceTelemetrySelectors, type TelemetryTargetAuthority } from './readback/selector.js'
 
 export interface ResourceTelemetryRuntimeInput {
   localContext: Extract<TrustedTelemetryContext, { kind: 'main-local' }>
-  sessions: TelemetrySessionAuthority
-  ownership: TelemetryOwnershipAuthority
+  sessions: TelemetrySessionReader
+  ownership: TelemetryOwnershipReader
   reads: TelemetryReadAuthority
   targets: TelemetryTargetAuthority
   registry: PassiveNativeRegistry

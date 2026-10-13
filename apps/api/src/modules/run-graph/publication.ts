@@ -6,7 +6,7 @@ import {
   canonicalGraphJson, graphJsonBytes, sameGraphScope, GraphDigestSchema, GraphEvidenceSchema, GraphFactSchema,
   RUN_GRAPH_LIMITS, RunGraphScopeSchema,
   GraphEffectSchema, GraphEffectFenceSchema, assertGraphEffectAuthority, RunGraphErrorCodeSchema,
-  type GraphEffect, type GraphEffectFence, type GraphEffectAuthority, type GraphEffectIdentity,
+  type GraphEffect, type GraphEffectFence, type GraphEffectAccessState, type GraphEffectIdentity,
   type GraphEvidence, type GraphFact, type RunGraphEvent, type RunGraphScope,
   CanonicalRunGraphScopeSchema, sameCanonicalGraphScope, RepeatGraphScopeV3Schema,
   RepeatGraphFactV3Schema, RepeatGraphEffectV3Schema, RepeatGraphEventContentV3Schema, RepeatGraphBatchV3Schema,
@@ -104,7 +104,7 @@ export interface GraphEffectGuard {
    * Return exact scope/subject/session binding, live owner/fence/generation and
    * qualified security. Cached snapshots or echoing expected is NOT an implementation.
    */
-  readCurrentLocked(sql: GraphTransactionSql, scope: RunGraphScope, effect: GraphEffectIdentity): Promise<GraphEffectAuthority>
+  readCurrentLocked(sql: GraphTransactionSql, scope: RunGraphScope, effect: GraphEffectIdentity): Promise<GraphEffectAccessState>
 }
 export interface GraphEffectChange extends GraphSourceChange { effect: GraphEffect }
 interface StagedEffect { effect: GraphEffect | RepeatGraphEffectV3; semanticDigest: string }

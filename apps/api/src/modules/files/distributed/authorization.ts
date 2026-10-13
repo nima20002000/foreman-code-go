@@ -1,4 +1,4 @@
-import type { ArtifactAttempt, ArtifactAuthority, ArtifactEdgeBinding } from '@foreman-code/contracts/artifact-edges'
+import type { ArtifactAttempt, ArtifactGrantReference, ArtifactEdgeBinding } from '@foreman-code/contracts/artifact-edges'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { readLiveManagementPrincipal } from '../../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../../access/policy.js'
@@ -9,7 +9,7 @@ import type { ArtifactEdgeAuthorization } from './edges.js'
 export interface AcceptedArtifactAttemptFence {
   /** W08 must resolve durable dispatch intent and lock its current owner grant, plus W07
    * registration/key and accepted root. A caller-supplied attempt is only an assertion. */
-  assertCurrent(attempt: ArtifactAttempt, authority: ArtifactAuthority, query: FileQuery): Promise<void>
+  assertCurrent(attempt: ArtifactAttempt, authority: ArtifactGrantReference, query: FileQuery): Promise<void>
   /** Bind outputKey to the producer attempt's persisted accepted output, not arbitrary file metadata. */
   assertPublishedOutput(binding: ArtifactEdgeBinding, query: FileQuery): Promise<void>
 }
