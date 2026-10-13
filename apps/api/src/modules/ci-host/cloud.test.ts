@@ -800,14 +800,17 @@ describe('GitHub Actions CI on a public mirror', () => {
 })
 
 
-it.each(['github', 'circleci'] as const)('keeps the watchdog reason and expected deadline on %s', async provider => {
+it.each((['github', 'circleci'] as const).flatMap(provider => [
+  { provider, reason: 'CI hang watchdog: no test progress for 60000 ms; running: loop.test.ts > planner never returns',
+    expected: 'CI hang watchdog: no test progress for 60000 ms; running: loop.test.ts > planner never returns' },
+  { provider, reason: 'CI hang watchdog:\0 café 🚀\ud800', expected: 'CI hang watchdog: café 🚀\ufffd' },
+]))('keeps a valid watchdog reason and expected deadline on $provider: $expected', async ({ provider, reason, expected }) => {
   const f = await fixture({}, { provider })
   const runId = randomUUID()
   await f.cloud.handle({ operation: 'start', runId, repository: 'octo/site', commit: f.commit,
     suite: 'unit', scope: 'full', expectedDurationMs: 210_000 })
   const command = provider === 'github' ? f.dispatched[0]! : f.circle.triggered[0]!
   expect(command).toContain('expected_duration_ms=210000')
-  const reason = 'CI hang watchdog: no test progress for 60000 ms; running: loop.test.ts > planner never returns'
   f.github.listed = [{ databaseId: 91, displayTitle: `ci ${runId}` }]
   f.github.status = 'completed'
   f.github.conclusion = 'failure'
@@ -818,9 +821,10 @@ it.each(['github', 'circleci'] as const)('keeps the watchdog reason and expected
   f.circle.log = f.circle.output
   f.circle.watchdogFailure = { message: reason }
   const result = await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 })
-  expect(result).toMatchObject({ run: { state: 'failed', message: reason }, text: expect.stringContaining(reason) })
+  expect(result).toMatchObject({ run: { state: 'failed', message: expected }, text: expect.stringContaining(expected) })
+  expect(result.operation === 'read' && result.text).not.toContain('\0')
   expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 }))
-    .toMatchObject({ run: { state: 'failed', message: reason }, text: expect.stringContaining(reason) })
+    .toMatchObject({ run: { state: 'failed', message: expected }, text: expect.stringContaining(expected) })
 })
 
 it.each(['github', 'circleci'] as const)('prunes stale mirror branches and keeps shared %s branches until every ticket finishes', async provider => {

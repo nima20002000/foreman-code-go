@@ -1150,6 +1150,33 @@ it('runs two host-only tickets on one computer and queues a third through authen
   } finally { await f.close() }
 })
 
+it('settles NUL log output and dispatches the next queued ticket with persisted MCP readback', async () => {
+  const f = await fixture()
+  f.computers.splice(1, 1)
+  const read = async (ticketId: string) => CiGetOutputSchema.parse(decodeMcpToolResult(await f.operator.callTool({
+    name: 'ci_get', arguments: { workspaceId: f.workspaceId, ticketId },
+  })))
+  try {
+    const first = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+      suite: 'lint', commandId: 'nul-log', noSupersede: true,
+    }))
+    await f.ci.dispatch()
+    const second = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
+      suite: 'lint', commandId: 'after-nul-log', noSupersede: true,
+    }))
+    await f.ci.close()
+    expect((await read(second.ticketId)).run.state).toBe('queued')
+    f.finish(first.ticketId, 0, 'finished\0 café\n', undefined, 'Done.\0\ud800')
+    await f.ci.dispatch()
+    const finished = await read(first.ticketId)
+    expect(finished).toMatchObject({ run: { state: 'passed', message: 'Done.\ufffd' }, logTail: 'finished café\n' })
+    expect((await read(second.ticketId)).run.state).toBe('running')
+    const denied = await f.connect(['workflows:read'])
+    expect((await denied.callTool({ name: 'ci_get',
+      arguments: { workspaceId: f.workspaceId, ticketId: first.ticketId } })).isError).toBe(true)
+  } finally { await f.close() }
+})
+
 it('lists cloud CI slots beside build computers through MCP', async () => {
   const f = await fixture({ cloud: true })
   try {
