@@ -462,6 +462,7 @@ export function buildProductionApp(
       { namespace: COMPUTER_ACCOUNTS_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 65_536, maxBinaryBytes: 0 },
       { namespace: COMPUTER_MAINTENANCE_NAMESPACE, version: COMPUTER_MAINTENANCE_VERSION, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       createProductionWorkerArtifactExtension({
+        pool: database.pool,
         environment: process.env,
         releaseDirectory: fileURLToPath(new URL('../../../', import.meta.url)),
       }),
