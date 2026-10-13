@@ -197,8 +197,10 @@ it.each([
       computer: { hostRef: replacement.hostRef }, dispatchHostKey: replacement.key,
       dispatchedAt: expect.any(String), dispatchAttempts: 1, dispatchRequest: f.started[0]!.request })
     expect(records[0]).toMatchObject({ state: 'running', plannedHostKey: host.key, integrationShards: 32,
-      expectedDurationMs: 120_000, computer: { hostRef: replacement.hostRef },
-      dispatchRequest: { integrationShards: 16, files: records[0]!.files } })
+      step: 'integration', expectedDurationMs: 120_000, computer: { hostRef: replacement.hostRef } })
+    expect(records[0]?.dispatchRequest).toBeUndefined()
+    expect(records[0]?.dispatchHostKey).toBeUndefined()
+    expect(records[0]?.dispatchedAt).toBeUndefined()
     if (ownPart === 'passed') expect(records[1]?.state).toBe('passed')
   })
 
