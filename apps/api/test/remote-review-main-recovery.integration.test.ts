@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deliveredReview, retainedReviewRecovery, reviewInProgress, useRemoteReviewFixture,
-  waitForRemoteReview } from './helpers/remoteReviewProductionCases.js'
+import { retainedReviewRecovery, useRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { graphFixture, ownedGraph } from './eng04-graph-composition-fixture.js'
 import { repeatNativePending, REPEAT_NATIVE_PENDING_MESSAGE } from '../src/modules/interactions/repeatNativeEvidence.js'
@@ -36,30 +35,17 @@ it('keeps pending native settlement retryable and rolls back the incomplete Run 
   }
 }, 60_000)
 
-describe('production remote review completion', () => {
-  const withRemoteReviewFixture = useRemoteReviewFixture()
-  it('finishes the last response and releases the idle retained reviewer before Run completion', async () => {
-    await withRemoteReviewFixture(async fixture => {
-      const active = await reviewInProgress(fixture)
-      await fixture.provider.releaseReview()
-      await deliveredReview(fixture, active.interaction.id)
-      await waitForRemoteReview(async () => {
-        await fixture.reconcile()
-        return fixture.executions(active.run.id)
-      }, executions => executions.every(execution => execution.state === 'completed'), 'completed workflow executions')
-      await fixture.reconcile()
-      const settled = await fixture.details(active.run.id)
-      expect(settled.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
-      expect(settled.cleanupPending).not.toBe(true)
-      expect(fixture.registry.snapshot().launches.filter(launch => active.owners.some(owner =>
-        owner.launchId === launch.launchId)).every(launch => launch.lifecycle !== 'active')).toBe(true)
-    })
-  }, 60_000)
-})
-
 describe.each(['graceful', 'expired-receipt'] as const)('production remote review after %s Main recovery', recovery => {
   const withRemoteReviewFixture = useRemoteReviewFixture()
   it('continues the original retained review with the Worker alive', async () => {
-    await withRemoteReviewFixture(fixture => retainedReviewRecovery(fixture, recovery))
+    await withRemoteReviewFixture(async fixture => {
+      const recovered = await retainedReviewRecovery(fixture, recovery)
+      const settled = await fixture.details(recovered.runId)
+      expect(settled.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
+      expect(settled.cleanupPending).not.toBe(true)
+      expect((await fixture.executions(recovered.runId)).every(execution => execution.state === 'completed')).toBe(true)
+      expect(fixture.registry.snapshot().launches.filter(launch => recovered.launchIds.includes(launch.launchId))
+        .every(launch => launch.lifecycle !== 'active')).toBe(true)
+    })
   }, 120_000)
 })
