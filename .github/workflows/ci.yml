@@ -9,7 +9,7 @@ on:
         description: Main's CI run id
         required: true
       ref:
-        description: The mirror branch holding the commit's files
+        description: The published snapshot commit to test
         required: true
       suite:
         description: install, typecheck, lint, unit, build, integration or a check part (scripts/ci-suite.sh)
@@ -73,14 +73,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
-          fetch-depth: 0
+          fetch-depth: ${{ inputs.base_commit != '' && 2 || 1 }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22.23.2
       # The pinned pnpm through corepack, as on our computers; Worker tests read it offline from corepack's cache.
       - run: corepack enable && corepack install
       - id: cache-inputs
-        run: echo "contracts=$(node scripts/ci-contracts.mjs key "$PWD")" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "contracts=$(node scripts/ci-contracts.mjs key "$PWD")" >> "$GITHUB_OUTPUT"
+          # A stable per-shard key, so each shard's warm cache is reused by the same shard of later runs.
+          echo "shard=$(printf '%s|%s' "$SLICE" "$CI_PARTITION" | sha1sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - run: scripts/ci-suite.sh start
       # Installed packages without the pnpm store: half the size, so the restore is twice as fast.
       - id: packages
@@ -95,19 +98,21 @@ jobs:
             !**/node_modules/.cache
             !apps/web/node_modules/.tmp
           key: packages-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}
-      - id: store
+      # The offline policy check reads the package metadata even on a packages hit, so it has its own small cache.
+      - id: metadata
         uses: actions/cache@v4
         with:
-          path: |
-            node_modules/.pnpm-store
-            .logs/pnpm-metadata
-          key: pnpm-store-metadata-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}
+          path: .logs/pnpm-metadata
+          key: pnpm-metadata-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}
+      # A complete packages hit needs no store; a miss restores it so the offline install can fill packages.
+      - id: store
+        if: steps.packages.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: node_modules/.pnpm-store
+          key: pnpm-store-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}
       - name: Install from cached store
         run: |
-          # A store missing beside restored packages is only filled by a fresh install.
-          if [ "${{ steps.packages.outputs.cache-hit }}" = true ] && [ "${{ steps.store.outputs.cache-hit }}" != true ]; then
-            rm -rf node_modules apps/*/node_modules packages/*/node_modules
-          fi
           pnpm install --offline --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink || {
             [ "${{ steps.store.outputs.cache-hit }}" != true ] || exit 1
             pnpm install --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink
@@ -128,7 +133,7 @@ jobs:
           key: api-build-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('apps/api/src/**', '!apps/api/src/**/*.test.ts', '!apps/api/src/**/__tests__/**', 'apps/api/tsconfig*.json', 'apps/api/package.json', 'packages/contracts/src/**', '!packages/contracts/src/**/*.test.ts', '!packages/contracts/src/**/*.spec.ts', 'packages/contracts/tsconfig*.json', 'packages/contracts/package.json', 'scripts/copy-api-runtime.mjs') }}
       # Both suites check the same no-emit web projects; share semantic results instead of checking them twice.
       - name: Web TypeScript cache
-        if: startsWith(inputs.suite, 'typecheck') || startsWith(inputs.suite, 'build')
+        if: (startsWith(inputs.suite, 'typecheck') || startsWith(inputs.suite, 'build')) && inputs.suite != 'typecheck-api' && inputs.suite != 'build-api'
         uses: actions/cache@v4
         with:
           path: apps/web/node_modules/.cache/tsc
@@ -144,7 +149,7 @@ jobs:
             apps/*/node_modules/.cache
             packages/*/node_modules/.cache
             !apps/web/node_modules/.cache/tsc
-          key: ci-v2-${{ runner.os }}-node22.23.2-${{ inputs.suite }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ci-v2-${{ runner.os }}-node22.23.2-${{ inputs.suite }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ steps.cache-inputs.outputs.shard }}
           restore-keys: ci-v2-${{ runner.os }}-node22.23.2-${{ inputs.suite }}-${{ hashFiles('pnpm-lock.yaml') }}-
       - name: Suite
         run: scripts/ci-suite.sh
@@ -153,7 +158,7 @@ jobs:
           TEST_RESULTS_OUTPUT: ${{ runner.temp }}/test-results.json
           CI_WATCHDOG_MESSAGE_FILE: ${{ runner.temp }}/watchdog-message.json
       - name: Save suite caches
-        if: always() && steps.suite-cache.conclusion == 'success'
+        if: always() && steps.suite-cache.conclusion == 'success' && steps.suite-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: |

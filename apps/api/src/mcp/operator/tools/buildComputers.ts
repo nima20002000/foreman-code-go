@@ -77,6 +77,7 @@ export const buildComputerTools = [
       + 'update-harnesses (install or update Codex/Claude to the latest version), update-system (sudo apt-get update and a '
       + 'non-interactive upgrade with new dependencies, respecting phased rollout and explicit holds; re-reads pending updates), '
       + 'update-worker (drain active work, verify and install the matching Main version, then restart through the Worker supervisor; '
+      + 'enabled build computers must pass a tiny integration CI smoke within 160 seconds after readiness; '
       + 'failed releases roll back and report the error; Main uses production:install), restart (sudo reboot; targets are required), '
       + 'sync-mcp (add Main\'s user-level Codex and Claude MCP '
       + 'servers that other computers lack; secret values are not copied, those servers need a login on each computer), or '
