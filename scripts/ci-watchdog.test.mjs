@@ -12,7 +12,6 @@ const reporter = join(repository, 'scripts/ci-progress-reporter.mjs')
 
 test('CI suite kills a synchronous looping Vitest test and reports its file and name', { timeout: 85_000 }, async t => {
   const directory = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'ci-hang-'))
-  t.after(() => rmSync(directory, { recursive: true, force: true }))
   mkdirSync(join(directory, 'bin'))
   symlinkSync(join(repository, 'packages/contracts/node_modules'), join(directory, 'node_modules'))
   writeFileSync(join(directory, 'loop.test.ts'), `import { test } from 'vitest'
@@ -41,13 +40,14 @@ if (process.argv.includes('test')) {
     cwd: repository, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, PATH: `${directory}/bin:${process.env.PATH}`, SUITE: 'unit-other', SCOPE: 'full',
       CI_HOST_RUNNER: '0', CI_USER_SYSTEMD: '0', CI_STATE: join(directory, 'state'),
-      CI_EXPECTED_DURATION_MS: '1000', CI_WATCHDOG_ACTIVE: '', CI_PROGRESS_FILE: '',
+      CI_EXPECTED_DURATION_MS: '1000', CI_WATCHDOG_DIRECTORY: join(directory, 'watchdog'), CI_WATCHDOG_ACTIVE: '', CI_PROGRESS_FILE: '',
       FIXTURE_ROOT: directory, FIXTURE_VITEST: join(repository, 'packages/contracts/node_modules/vitest/vitest.mjs') },
   })
   t.after(async () => {
     await stopGroup(child.pid, { graceMs: 100 })
     const pidFile = join(directory, 'descendant.pid')
     if (existsSync(pidFile)) await stopGroup(Number(readFileSync(pidFile, 'utf8')), { graceMs: 100 })
+    rmSync(directory, { recursive: true, force: true })
   })
   let output = ''
   child.stdout.on('data', bytes => { output += bytes })
@@ -55,7 +55,11 @@ if (process.argv.includes('test')) {
   // This outer test remains responsive while the fixture's event loop is blocked.
   const heartbeat = setInterval(() => console.log('Waiting for the looping CI fixture to fail'), 5000)
   t.after(() => clearInterval(heartbeat))
-  const deadline = setTimeout(() => { void stopGroup(child.pid, { graceMs: 100 }) }, 75_000)
+  const deadline = setTimeout(() => {
+    void stopGroup(child.pid, { graceMs: 100 })
+    const pidFile = join(directory, 'descendant.pid')
+    if (existsSync(pidFile)) void stopGroup(Number(readFileSync(pidFile, 'utf8')), { graceMs: 100 })
+  }, 75_000)
   t.after(() => clearTimeout(deadline))
   const started = Date.now()
   const code = await new Promise((resolve, reject) => {
