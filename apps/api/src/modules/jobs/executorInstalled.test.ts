@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { mkdir, mkdtemp, open, realpath, rename, rm, symlink } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, open, realpath, rename, rm, symlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RemoteJobDispatchIntent } from '@foreman-code/contracts/remote-job-execution'
 import { jobSpecDigests } from '@foreman-code/contracts/jobs-node'
 import { jobExecution } from '../../../test/helpers/jobFixture.js'
+import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import type { NativeProcessRegistry } from '../harnesses/recovery/processRegistry.js'
 import { identity } from '../sources/privateFilesystem.js'
@@ -42,7 +42,7 @@ async function filesystem(path: string) {
   try { return await identity(handle) } finally { await handle.close() }
 }
 async function fixture(qualifiedFilesystem?: { device?: string; mountId?: string }) {
-  const root = await mkdtemp(join(tmpdir(), 'hrt-installed-job-')); roots.push(root)
+  const root = await privateFixtureDirectory('installed-job-'); roots.push(root)
   const execution = jobExecution(), parent = join(root, execution.acceptedSpec.source.materializationId)
   execution.acceptedSpec.target.mainInstallationId = execution.acceptedSpec.target.mainId
   await mkdir(parent, { mode: 0o700 })
@@ -115,6 +115,50 @@ async function fixture(qualifiedFilesystem?: { device?: string; mountId?: string
   return { root, execution, source, mounts, journal, qualified, inspect, verify, check, ports, host, intent, registry, inputs }
 }
 describe('installed Job original Git/scheduler propagation', () => {
+  it('releases a completed admission so later work with the same spec remains unambiguous', async () => {
+    const f = await fixture()
+    await f.host.deliver(f.intent, f.execution)
+    await f.host.drain()
+    expect(await f.journal.jobStatus(f.intent.operationId)).toMatchObject({ status: 'known', receipt: {
+      terminal: { outcome: 'preparation_failed', processStopped: true }, publication: 'complete',
+    } })
+    const successor = structuredClone(f.execution)
+    successor.id = randomUUID()
+    successor.attemptId = randomUUID()
+    successor.operationId = randomUUID()
+    const intent: RemoteJobDispatchIntent = {
+      ...f.intent,
+      executionId: successor.id,
+      attemptId: successor.attemptId,
+      operationId: successor.operationId,
+      subject: { kind: 'manual-job', workspaceId: successor.workspaceId,
+        jobExecutionId: successor.id, definitionId: successor.acceptedSpec.definitionId },
+    }
+    await f.journal.jobAccept(intent, successor, {
+      kind: 'main', mainId: intent.mainId,
+      mainInstallationId: successor.acceptedSpec.target.mainInstallationId, bootId: bootIdentity(),
+    }, randomUUID())
+    Object.assign(f.mounts, { executionId: successor.id,
+      attemptId: successor.attemptId, operationId: successor.operationId })
+    expect(successor.acceptedSpec).toEqual(f.execution.acceptedSpec)
+    if (typeof f.ports.supervisor !== 'function') throw new Error('Installed supervisor factory missing')
+    await f.ports.supervisor(successor)
+    await expect(f.ports.source.verify(successor.acceptedSpec, new AbortController().signal)).resolves.toBe(f.source)
+  })
+
+  it('reconstructs a completed supervisor from retained qualification instead of retaining its runtime state', async () => {
+    const f = await fixture()
+    if (typeof f.ports.supervisor !== 'function') throw new Error('Installed supervisor factory missing')
+    const original = await f.ports.supervisor(f.execution)
+    expect(await f.ports.supervisor(f.execution)).toBe(original)
+    await f.host.deliver(f.intent, f.execution)
+    await f.host.drain()
+    const reads = vi.mocked(f.journal.qualifiedJobRuntime).mock.calls.length
+    const recovered = await f.ports.supervisor(f.execution)
+    expect(vi.mocked(f.journal.qualifiedJobRuntime).mock.calls.length).toBeGreaterThan(reads)
+    expect(recovered.qualifiedProfile).toEqual(original.qualifiedProfile)
+  })
+
   it.each([false, true])('closes only recorded controller roles for an absent unentered container (unrecorded active %s)', async unknownActive => {
     const f = await fixture(), owner = `job:${f.execution.operationId}:${f.execution.owner.grantId}:${f.execution.owner.epoch}`
     const control = `${owner}:control`, exits = new Map<object, number>()

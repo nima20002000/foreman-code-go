@@ -2,7 +2,7 @@ import { constants } from 'node:fs'
 import { isDeepStrictEqual } from 'node:util'
 import { basename, dirname } from 'node:path'
 import { lstat, mkdir, open, readdir, rename, rmdir, unlink, type FileHandle } from 'node:fs/promises'
-import { SourceManifestSchema, type SourceManifest, type SourceEntry, type RootBinding } from '@foreman-code/contracts/source-materialization'
+import { SOURCE_MANIFEST_MAX_BYTES, SourceManifestSchema, type SourceManifest, type SourceEntry, type RootBinding } from '@foreman-code/contracts/source-materialization'
 import { anchored, entryParent, identity, openChildDirectory, openPrivateRoot,
   withPrivateDirectoryLock } from './privateFilesystem.js'
 import { readSourceStorageCapacity } from './storageCapacity.js'
@@ -185,7 +185,7 @@ export class PrivateSourceSnapshotStore implements SourceSnapshotSink, SourceByt
       const file = await open(anchored(snapshot, 'manifest.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
       try {
         const stat = await file.stat()
-        if (!stat.isFile() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw new SourceError('SOURCE_MANIFEST_INVALID', 'Invalid canonical manifest record.')
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > SOURCE_MANIFEST_MAX_BYTES) throw new SourceError('SOURCE_MANIFEST_INVALID', 'Invalid canonical manifest record.')
         const manifest = verifySourceManifest(JSON.parse(await file.readFile('utf8')))
         if (manifest.snapshotId !== snapshotId) throw new SourceError('SOURCE_PIN_CONFLICT', 'Canonical source snapshot identity changed.')
         return manifest

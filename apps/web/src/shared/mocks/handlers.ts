@@ -256,6 +256,7 @@ export const handlers: RequestHandler[] = [
   ...agentChatHandlers,
   currentAuthoringHandler,
   http.get('/api/runtime/identity', () => HttpResponse.json(mockRuntimeIdentity)),
+  http.get('/api/runtime/build-identity/v1', () => HttpResponse.json({ version: 1, buildId: 'a'.repeat(64), contractsId: 'b'.repeat(64) })),
   http.get('/api/provider-accounts/targets', () => HttpResponse.json({ targets: [{
     target: { hostRef: { kind: 'main', mainId: mockRuntimeIdentity.installationId },
       applicationInstallationId: mockRuntimeIdentity.installationId, keyRevision: null, authorizationRevision: null },

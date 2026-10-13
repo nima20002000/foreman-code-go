@@ -83,8 +83,10 @@ export class ReadonlyJobInputDelivery {
     }finally{await receipts?.close();await root.close()}
   }
   async prepare(execution:JobExecutionRecord,verified:VerifiedJobInputDeliverySource,signal:AbortSignal):Promise<JobInputDeliveryReceipt>{
+    signal.throwIfAborted()
     if(resolve(verified.privateRepositoryRoot)!==execution.acceptedSpec.target.destination.canonicalProjectRoot||verified.directoryIdentityHash!==execution.acceptedSpec.target.destination.directoryIdentityHash||!verified.privateGit)throw new DomainError('JOB_INPUT_DESTINATION_CONFLICT','Input delivery requires the exact previously verified private source.',409)
     const admission=JobInputAdmissionSchema.parse(await this.source.admit(execution,signal,await this.systemInput?.(execution,verified,signal)))
+    signal.throwIfAborted()
     if(inputHash(recipient(execution))!==inputHash(admission.manifest.recipient)||snapshotDigest(execution)!==admission.manifest.inputSnapshotDigest)throw new DomainError('JOB_INPUT_SNAPSHOT_CONFLICT','Delivery cannot replace accepted job input.',409)
     if(admission.manifest.totalBytes+admission.manifest.manifestByteSize+Buffer.byteLength(JSON.stringify(admission.manifest.workflowInput))>verified.diskQuotaBytes)throw new DomainError('JOB_INPUT_DISK_BUDGET','Input delivery exceeds the qualified private volume budget.',413)
     const root=await directory(verified.privateRepositoryRoot),rootIdentity=await identity(root)
@@ -126,6 +128,7 @@ export class ReadonlyJobInputDelivery {
               const length = Math.min(8192, descriptor.byteSize - offset)
               const range = reader ? await reader.read(offset, length)
                 : await this.source.read(execution, admission, descriptor.relativePath, offset, length, signal)
+              signal.throwIfAborted()
               const bytes = Buffer.from(range)
               if (bytes.length !== length) {
                 throw new DomainError('JOB_INPUT_BYTES_UNAVAILABLE', 'Input stream ended before its exact pins.', 410)
@@ -133,6 +136,7 @@ export class ReadonlyJobInputDelivery {
               checksum.update(bytes)
               let written = 0
               while (written < bytes.length) {
+                signal.throwIfAborted()
                 const output = await handle.write(bytes, written, bytes.length - written, offset + written)
                 if (!output.bytesWritten) throw new Error('Input storage made no progress.')
                 written += output.bytesWritten
@@ -141,6 +145,7 @@ export class ReadonlyJobInputDelivery {
             if (checksum.digest('hex') !== descriptor.sha256) {
               throw new DomainError('JOB_INPUT_HASH_CONFLICT', 'Delivered bytes differ from the immutable accepted pins.', 410)
             }
+            signal.throwIfAborted()
             await handle.sync()
           } finally {
             try { await reader?.close() }
@@ -150,6 +155,7 @@ export class ReadonlyJobInputDelivery {
         }finally{for(const handle of owned.reverse())await handle.close()}
       }
       await this.source.recheck(execution,admission,signal)
+      signal.throwIfAborted()
       if(inputHash(await identity(root))!==inputHash(rootIdentity))throw new DomainError('JOB_INPUT_DESTINATION_CONFLICT','Private source identity changed during delivery.',409)
       const receipt=JobInputDeliveryReceiptSchema.parse({version:1,recipient:recipient(execution),bindingId:admission.manifest.bindingId,inputSnapshotDigest:admission.manifest.inputSnapshotDigest,manifestSha256:admission.manifest.manifestSha256,manifestByteSize:admission.manifest.manifestByteSize,directory:{relativePath:JOB_INPUT_DIRECTORY,...destination},files,
         ...(verificationContextPin(admission.manifest)?{verificationContext:verificationContextPin(admission.manifest)}:{}),readonlyMountRequired:true})

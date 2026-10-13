@@ -322,12 +322,51 @@ describe('noninteractive worker job executor (supervisor doubles, not live isola
     expect((await executeJob(execution(), denied, new AbortController().signal)).outcome).toBe('preparation_failed')
     expect(denied.authority.claim).not.toHaveBeenCalled()
   })
-  it('enforces preparation budget before claim even when source verification stalls', async () => {
-    const p = ports(); const job = execution(); job.acceptedSpec.policy.preparationTimeoutMs = 5; repin(job)
-    p.source.verify = () => new Promise(() => {})
-    expect((await executeJob(job, p, new AbortController().signal)).outcome).toBe('preparation_failed')
-    expect(p.authority.claim).not.toHaveBeenCalled()
-  })
+  it.each(['source', 'inputs'] as const)(
+    'joins an abort-ignoring %s producer before confirming preparation closure', async stage => {
+      const p = ports()
+      const job = execution()
+      const cancel = new AbortController()
+      let release!: () => void
+      let began!: () => void
+      const gate = new Promise<void>(resolve => { release = resolve })
+      const started = new Promise<void>(resolve => { began = resolve })
+      const originalSource = p.source.verify
+      const originalInputs = p.inputs.prepare
+      if (stage === 'source') {
+        p.source.verify = async (spec, signal) => {
+          began()
+          await gate
+          return originalSource(spec, signal)
+        }
+      } else {
+        p.inputs.prepare = async (current, source, signal) => {
+          began()
+          await gate
+          return originalInputs(current, source, signal)
+        }
+      }
+      vi.useFakeTimers()
+      let settled = false
+      const executing = executeJob(job, p, cancel.signal).then(result => {
+        settled = true
+        return result
+      })
+      try {
+        await started
+        await vi.advanceTimersByTimeAsync(job.acceptedSpec.policy.preparationTimeoutMs)
+        expect(settled).toBe(false)
+        expect(p.authority.claim).not.toHaveBeenCalled()
+        release()
+        expect(await executing).toMatchObject({ outcome: 'preparation_failed', processStopped: true })
+        expect(p.supervisor.launch).not.toHaveBeenCalled()
+      } finally {
+        release()
+        await executing
+        vi.useRealTimers()
+      }
+    },
+  )
   it('does not rewrite a natural exit when cancellation arrives after observed completion', async () => {
     const p = ports(); const cancel = new AbortController()
     p.authority.launched = async () => { await Promise.resolve(); cancel.abort() }

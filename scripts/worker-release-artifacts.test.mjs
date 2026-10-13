@@ -102,7 +102,7 @@ async function fixture(t) {
   const git = args => execFileSync('git', args, { cwd: repository, stdio: ['ignore', 'pipe', 'pipe'] })
   await mkdir(join(repository, 'apps/worker/artifacts'), { recursive: true })
   await mkdir(join(repository, 'apps/api'), { recursive: true })
-  await writeFile(join(repository, 'package.json'), JSON.stringify({ version: '0.0.57' }))
+  await writeFile(join(repository, 'package.json'), JSON.stringify({ version: '0.0.57', packageManager: 'pnpm@11.27.0' }))
   await writeFile(join(repository, 'apps/api/package.json'), JSON.stringify({ version: '0.1.0' }))
   const targets = [target, { ...target, node: 'v22.23.2' },
     { ...target, osRelease: '26.04', libc: 'glibc-2.43' },
@@ -179,4 +179,22 @@ test('rejects unsupported reviewed targets before building', async t => {
     'commit', '-qm', 'unsupported target'], { cwd: f.repository })
   const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.repository, encoding: 'utf8' }).trim()
   assert.throws(() => readCommittedWorkerTargets(f.repository, commit), /linux-x64/)
+})
+
+test('blocks a toolchain pin change before publishing updates to format-one workers', async t => {
+  const f = await fixture(t)
+  await writeFile(join(f.repository, 'package.json'), JSON.stringify({ version: '0.0.57', packageManager: 'pnpm@11.28.0' }))
+  execFileSync('git', ['add', 'package.json'], { cwd: f.repository })
+  execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'change toolchain'], { cwd: f.repository })
+  const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: f.repository, encoding: 'utf8' }).trim()
+  const run = async (...args) => {
+    await f.run(...args)
+    const path = join(args[1][2], 'manifest.json')
+    const manifest = JSON.parse(await readFile(path))
+    await writeFile(path, `${JSON.stringify({ ...manifest, commit }, null, 2)}\n`)
+  }
+  const publish = async () => { throw new Error('Incompatible release reached publication') }
+  await assert.rejects(buildWorkerReleaseArtifacts({ ...f, run, publish }), /bridge release/)
+  assert.equal(f.calls.length, 0)
+  await assert.rejects(stat(f.productManifestPath), { code: 'ENOENT' })
 })

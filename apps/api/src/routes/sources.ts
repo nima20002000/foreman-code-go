@@ -19,7 +19,9 @@ export function registerSourceRoutes(app: FastifyInstance, service: PostgresSour
     service.get(requirePrincipal(request), 'http', merge(request.params, request.body)))
   app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/sources/approve', request =>
     service.approve(requirePrincipal(request), 'http', merge(request.params, request.body)))
-  app.get<{ Params: Params }>('/api/management/workspaces/:workspaceId/source-roots', request => service.rootList(requirePrincipal(request), 'http', request.params))
+  app.get<{ Params: Params; Querystring: { limit?: string } }>('/api/management/workspaces/:workspaceId/source-roots', request =>
+    service.rootList(requirePrincipal(request), 'http', { ...request.params,
+      ...(request.query.limit !== undefined ? { limit: Number(request.query.limit) } : {}) }))
   app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/source-roots/get', request => service.rootGet(requirePrincipal(request), 'http', merge(request.params, request.body)))
   app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/source-roots/bind', request => service.bindRoot(requirePrincipal(request), 'http', merge(request.params, request.body)))
   app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/source-preparations/get', request => service.preparationGet(requirePrincipal(request), 'http', merge(request.params, request.body)))

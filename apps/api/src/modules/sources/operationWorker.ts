@@ -9,7 +9,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { assertWorktreeReceipt } from './worktreeRequest.js'
 import { z } from 'zod'
 import { ApprovedRootAllowlistSchema, type ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
-import { SourceFilesystemOperationSchema, SourceOperationOwnerSchema, SourceOperationResponseSchema,
+import { SOURCE_MATERIALIZATION_RECORD_MAX_BYTES, SourceFilesystemOperationSchema, SourceOperationOwnerSchema, SourceOperationResponseSchema,
   SOURCE_OPERATION_EXTENSION, type SourceFilesystemOperation, type SourceOperationOwner, type SourceOperationResponse } from '@foreman-code/contracts/source-operations'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { SourceManifest, MaterializationReceipt } from '@foreman-code/contracts/source-materialization'
@@ -91,7 +91,7 @@ async function localManifest(receipt: MaterializationReceipt): Promise<SourceMan
       const record = await open(anchored(reservation, 'receipt.json'), constants.O_RDONLY | constants.O_NOFOLLOW)
       try {
         const stat = await record.stat()
-        if (!stat.isFile() || stat.nlink !== 1 || stat.size > 2 * 1024 * 1024) throw new SourceError('SOURCE_RECEIPT_INVALID', 'Invalid private materialization record.')
+        if (!stat.isFile() || stat.nlink !== 1 || stat.size > SOURCE_MATERIALIZATION_RECORD_MAX_BYTES) throw new SourceError('SOURCE_RECEIPT_INVALID', 'Invalid private materialization record.')
         const value = JSON.parse(await record.readFile('utf8')) as { receipt: unknown; manifest: unknown }
         const manifest = verifySourceManifest(value.manifest)
         if (!isDeepStrictEqual(value.receipt, receipt) || manifest.manifestDigest !== receipt.verifiedManifestDigest || manifest.snapshotId !== receipt.binding.snapshotId)

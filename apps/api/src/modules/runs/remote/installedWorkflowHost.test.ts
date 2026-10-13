@@ -21,6 +21,7 @@ import {
 import { sourceSha256 } from '../../sources/manifest.js'
 import { DEVICE_APPLICATION_JSON_BYTES } from '@foreman-code/contracts/device-application'
 import { remoteWorkflowSourceDigest } from './workflowPhysicalReadout.js'
+import { MainClock } from '../../devices/workerClock.js'
 import {
   journals,
   directory,
@@ -216,6 +217,84 @@ describe('positive installed native closure consumption',()=>{
 })
 
 describe('installed host resident execution continuity', () => {
+  it.each([-90_000, 50_000, 90_000])(
+    'closes a retained reviewer at Main expiry through disconnect and a %s ms worker offset', async offset => {
+      const mainTime = Date.now()
+      let elapsed = 0
+      const mainClock = new MainClock(() => elapsed)
+      mainClock.observe(mainTime)
+      const wallClock = vi.spyOn(Date, 'now').mockReturnValue(mainTime + offset)
+      const f = await runningInstalledFixture('generation', {
+        retainReviewer: true, mainNow: () => mainClock.now(),
+      })
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        f.finish('succeeded')
+        await vi.waitFor(async () => expect(await f.journal.status(f.intent.operationId))
+          .toMatchObject({ receipt: { retainedReviewer: { agentId: 'agent' } } }))
+        await vi.waitFor(() => expect(vi.getTimerCount()).toBe(1))
+        f.disconnect()
+        wallClock.mockReturnValue(mainTime + 300_000)
+        elapsed = 10_000
+        await vi.advanceTimersByTimeAsync(10_000)
+        await vi.waitFor(() => expect(vi.getTimerCount()).toBe(1))
+        expect(await f.journal.status(f.intent.operationId)).toMatchObject({ receipt: {
+          retainedReviewer: { expiresAt: new Date(mainTime + 60_000).toISOString() },
+        } })
+        expect(f.cancel).not.toHaveBeenCalled()
+        wallClock.mockReturnValue(mainTime - 300_000)
+        elapsed = 60_000
+        await vi.advanceTimersByTimeAsync(10_000)
+        await vi.waitFor(async () => expect(await f.journal.status(f.intent.operationId))
+          .toMatchObject({ receipt: { terminal: { kind: 'cancelled' } } }))
+        expect(f.cancel).toHaveBeenCalledOnce()
+      } finally {
+        vi.useRealTimers()
+        wallClock.mockRestore()
+        f.reconnect(f.context.binding)
+        f.cleanup()
+        await f.stop()
+        await f.host.close()
+      }
+    },
+  )
+
+  it('extends the reviewer deadline on successful Main renewal before a disconnection', async () => {
+    const mainTime = Date.now()
+    let elapsed = 0
+    const mainClock = new MainClock(() => elapsed)
+    mainClock.observe(mainTime)
+    const f = await runningInstalledFixture('generation', { retainReviewer: true, mainNow: () => mainClock.now() })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      f.finish('succeeded')
+      await vi.waitFor(async () => expect(await f.journal.status(f.intent.operationId))
+        .toMatchObject({ receipt: { retainedReviewer: { agentId: 'agent' } } }))
+      await vi.waitFor(() => expect(vi.getTimerCount()).toBe(1))
+      elapsed = 40_000
+      await vi.advanceTimersByTimeAsync(10_000)
+      await vi.waitFor(async () => expect(await f.journal.status(f.intent.operationId))
+        .toMatchObject({ receipt: { retainedReviewer: {
+          expiresAt: new Date(mainTime + 100_000).toISOString(),
+        } } }))
+      f.disconnect()
+      elapsed = 60_000
+      await vi.advanceTimersByTimeAsync(10_000)
+      await vi.waitFor(() => expect(vi.getTimerCount()).toBe(1))
+      expect(f.cancel).not.toHaveBeenCalled()
+      elapsed = 100_000
+      await vi.advanceTimersByTimeAsync(10_000)
+      await vi.waitFor(async () => expect(await f.journal.status(f.intent.operationId))
+        .toMatchObject({ receipt: { terminal: { kind: 'cancelled' } } }))
+    } finally {
+      vi.useRealTimers()
+      f.reconnect(f.context.binding)
+      f.cleanup()
+      await f.stop()
+      await f.host.close()
+    }
+  })
+
   it.each(['status', 'reattach'] as const)(
     'reads the original retained reviewer through %s before App rebinding', async method => {
       const f = await runningInstalledFixture('generation', { retainReviewer: true })

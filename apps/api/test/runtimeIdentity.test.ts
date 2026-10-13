@@ -1,6 +1,7 @@
 import { buildApp } from '../src/app.js'
 import { describe, expect, it, vi } from 'vitest'
 import { readRuntimeIdentity } from '../src/infrastructure/runtimeIdentity.js'
+import { RuntimeIdentitySchema } from '@foreman-code/contracts'
 import { createRuntimeIdentity } from '@foreman-code/contracts/runtime-identity-node'
 import type pg from 'pg'
 
@@ -41,4 +42,36 @@ describe('runtime installation identity', () => {
     const pool = { query: vi.fn().mockResolvedValue({ rows: [] }) } as unknown as Pick<pg.Pool, 'query'>
     await expect(readRuntimeIdentity(pool, process.cwd(), 'postgres://localhost/demo')).rejects.toThrow()
   })
+})
+
+it('keeps the shipped strict identity response frozen when runtime facts grow', async () => {
+  const identity = createRuntimeIdentity(process.cwd(), 'postgres://localhost/demo', first)
+  const app = buildApp({
+    readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
+    runtimeIdentity: async () => ({ ...identity, futureBuildFact: 'additional metadata' }),
+  })
+  try {
+    for (const url of ['/health/identity', '/api/runtime/identity']) {
+      const response = await app.inject({ method: 'GET', url })
+      expect(response.statusCode).toBe(200)
+      expect(RuntimeIdentitySchema.parse(response.json())).toEqual(identity)
+    }
+  } finally { await app.close() }
+})
+
+it('publishes build compatibility separately without adding facts to the shipped identity endpoint', async () => {
+  const identity = createRuntimeIdentity(process.cwd(), 'postgres://localhost/demo', first)
+  const build = { version: 1 as const, buildId: 'c'.repeat(64), contractsId: 'd'.repeat(64) }
+  const app = buildApp({
+    readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
+    runtimeIdentity: async () => identity,
+    runtimeBuildIdentity: () => build,
+  })
+  try {
+    const response = await app.inject({ method: 'GET', url: '/api/runtime/build-identity/v1' })
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual(build)
+    expect(response.headers['cache-control']).toBe('no-store')
+    expect((await app.inject({ method: 'GET', url: '/api/runtime/identity' })).json()).toEqual(identity)
+  } finally { await app.close() }
 })

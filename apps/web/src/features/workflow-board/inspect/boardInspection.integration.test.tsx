@@ -41,9 +41,22 @@ function href(scope: RepeatGraphScopeV3, inspection: WorkspaceBoardInspection = 
 }
 function domInfrastructure() {
   const queues = new Map<string, Promise<unknown>>()
-  Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: (key: string, action: () => unknown) => {
+  Object.defineProperty(navigator, 'locks', { configurable: true, value: { request: (
+    key: string,
+    work: (() => unknown) | LockOptions,
+    claim?: (lock: Lock | null) => unknown,
+  ) => {
+    const lock: Lock = { name: key, mode: 'exclusive' }
+    if (typeof work !== 'function' && work.ifAvailable && queues.has(key)) {
+      return Promise.resolve().then(() => claim!(null))
+    }
+    const action = typeof work === 'function' ? work : () => claim!(lock)
     const result = (queues.get(key) ?? Promise.resolve()).then(action)
-    queues.set(key, result.catch(() => undefined))
+    const settled = result.then(release, release)
+    queues.set(key, settled)
+    function release() {
+      if (queues.get(key) === settled) queues.delete(key)
+    }
     return result
   } } })
   vi.stubGlobal('ResizeObserver', class {
@@ -68,11 +81,24 @@ async function mount(url: string) {
   await router.load()
   const view = render(<QueryClientProvider client={cache}><RouterProvider router={router} /></QueryClientProvider>)
   await screen.findByTestId('unified-workflow-board')
+  await screen.findByRole('region', { name: 'Workflow authoring' })
   return { ...view, cache, router, history }
 }
 const pinnedCanvas = () => screen.getByRole('region', { name: 'Selected Run pinned topology' })
 const inspector = () => screen.getByRole('region', { name: 'Exact execution inputs and results' })
 const eventCalls = () => fixture.mock.calls.filter((call) => call.method === 'GET' && call.path.endsWith('/events'))
+function clickCiServer(button: HTMLElement) {
+  const browserErrors: unknown[] = []
+  const recordBrowserError = (event: ErrorEvent) => browserErrors.push(event.error)
+  window.addEventListener('error', recordBrowserError)
+  try {
+    // JSDOM does not provide the pointer view required by canvas panning.
+    fireEvent.click(button)
+  } finally {
+    window.removeEventListener('error', recordBrowserError)
+  }
+  expect(browserErrors).toEqual([])
+}
 async function openDetails() {
   const close = screen.queryByRole('button', { name: 'Close runs' })
   if (!close) await userEvent.setup().click(await screen.findByRole('button', { name: 'Activities' }))
@@ -96,6 +122,7 @@ beforeEach(async () => {
 })
 afterEach(() => {
   cleanup()
+  window.dispatchEvent(new Event('pagehide'))
   clients.splice(0).forEach((cache) => cache.clear()); clearBoardStopStorage()
   useGraphDraftStore.setState({ nextDrafts: {} })
   useInspectionPresentation.setState({ open: {} })
@@ -105,6 +132,80 @@ afterEach(() => {
 })
 
 describe('Run inspection inside the one mounted Board', () => {
+  it('opens the idle CI server dialog without browser event errors', async () => {
+    const scope = fixture.runs.before.scope
+    server.use(http.get(`/api/management/workspaces/${scope.workspaceId}/ci`, () =>
+      HttpResponse.json({ runId: scope.runId, truncated: false, jobs: [] })))
+    await mount(href(scope))
+    clickCiServer(await screen.findByRole('button', { name: /^CI server, Idle/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'CI server' })
+    expect(within(dialog).getByText('No CI jobs in this Run yet')).toBeVisible()
+    expect(within(dialog).getByRole('tab', { name: 'Tests' })).toBeDisabled()
+    expect(within(dialog).getByRole('tab', { name: 'Log' })).toBeDisabled()
+  })
+
+  it.each([401, 403])('removes cached CI jobs and node activity after CI-only HTTP %s denial', async status => {
+    const scope = fixture.runs.before.scope
+    const route = `/api/management/workspaces/${scope.workspaceId}/ci`
+    const ticketId = '00000000-0000-4000-8000-000000000001'
+    let responseStatus = 200
+    server.use(http.get(route, () => responseStatus !== 200
+      ? HttpResponse.json({ error: { code: 'FORBIDDEN', message: 'CI read denied' } }, { status: responseStatus })
+      : HttpResponse.json({ runId: scope.runId, truncated: false, jobs: [{ ticketId,
+        scope: 'affected', placement: 'host', message: null, tests: { passed: 0, failed: 1, skipped: 0 },
+        requester: { executionId: 'ci-owner', agentId: fixture.first.agentId,
+          nodeId: fixture.first.id, nodeName: 'CI Agent' },
+        ci: { id: ticketId, groupId: '00000000-0000-4000-8000-000000000002',
+          suite: 'build', part: 'build-api', partition: null, state: 'running', computer: null,
+          step: null, exitCode: null, queuedAt: '2026-10-01T00:00:00.000Z',
+          startedAt: null, finishedAt: null } }] })))
+    const { cache } = await mount(href(scope))
+    expect(await within(pinnedCanvas()).findByText(/CI build-api · running/)).toBeVisible()
+    clickCiServer(screen.getByRole('button', { name: /CI server, 1 running/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'CI server' })
+    expect(within(dialog).getByRole('button', { name: /Show tests of build · build-api/ })).toBeVisible()
+    responseStatus = 503
+    await act(async () => { await cache.refetchQueries({ queryKey: [...runInspectionQueryKey(scope), 'ci-jobs'] }) })
+    expect(await within(dialog).findByText('The list shows the last jobs read.')).toBeVisible()
+    expect(within(dialog).getByRole('button', { name: /Show tests of build · build-api/ })).toBeVisible()
+    for (const next of [status, 503]) {
+      responseStatus = next
+      await act(async () => { await cache.refetchQueries({ queryKey: [...runInspectionQueryKey(scope), 'ci-jobs'] }) })
+      await waitFor(() => expect(within(pinnedCanvas()).queryByText(/CI build-api · running/)).not.toBeInTheDocument())
+      expect(within(dialog).queryByRole('button', { name: /Show tests of build · build-api/ })).not.toBeInTheDocument()
+      expect(within(dialog).getByRole('tab', { name: 'Tests' })).toBeDisabled()
+      expect(within(dialog).getByRole('tab', { name: 'Log' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: /CI server, CI unavailable/ })).toBeVisible()
+      expect(within(pinnedCanvas()).getByRole('heading', {
+        name: `Before repeat · Run ${scope.runId} · version ${scope.workflowVersionId}`,
+      })).toBeVisible()
+    }
+  })
+
+  it('loads a pinned Run after claiming tab ownership and returns to the same authoring surface', async () => {
+    const scope = fixture.runs.before.scope
+    const user = userEvent.setup()
+    await mount(href(scope))
+    const authoring = await screen.findByRole('region', { name: 'Workflow authoring' })
+    const pinned = await screen.findByRole('region', { name: 'Selected Run pinned topology' })
+    expect(pinned).toHaveTextContent(scope.workflowVersionId)
+    expect(await within(pinned).findByRole('button', {
+      name: `Inspect Run node ${fixture.first.name ?? fixture.first.label ?? fixture.first.id}`,
+    })).toBeVisible()
+    expect(screen.getByLabelText('Editable workflow graph')).toHaveAttribute('aria-hidden', 'true')
+
+    await user.click(screen.getByRole('button', { name: /^Runs$/ }))
+    await user.click(await screen.findByRole('menuitemradio', { name: 'New run' }))
+
+    await waitFor(() => expect(screen.queryByRole('region', {
+      name: 'Selected Run pinned topology',
+    })).not.toBeInTheDocument())
+    expect(screen.getByRole('region', { name: 'Workflow authoring' })).toBe(authoring)
+    expect(screen.getByLabelText('Editable workflow graph')).toHaveAttribute('aria-hidden', 'false')
+    expect(screen.getByRole('button', { name: 'Start saved version' })).toBeVisible()
+    expect(fixture.mock.calls.filter((call) => call.method === 'POST')).toEqual([])
+  })
+
   it('shows the originating Agent CI lifecycle on the pinned canvas', async () => {
     const scope = fixture.runs.before.scope
     const ref = { kind: 'ci', workspaceId: scope.workspaceId, workflowId: scope.workflowId,
@@ -695,4 +796,30 @@ describe('CI server on the Board', () => {
     expect(node).toHaveAttribute('data-state', 'running')
     expect(pinnedCanvas().querySelector('.ci-transfer')).toBeNull()
   })
+})
+
+it('inspects an immutable Run node named ci-server independently of its CI tower', async () => {
+  const uncaughtError = vi.fn()
+  window.addEventListener('error', uncaughtError)
+  try {
+    fixture = await inspectionBoardFixture('ci-node-collision', 'ci-server')
+    server.use(...fixture.mock.handlers)
+    await mount(href(fixture.runs.before.scope))
+    const canvas = pinnedCanvas()
+    const owner = await within(canvas).findByRole('button', { name: `Inspect Run node ${fixture.first.name}` })
+    expect(owner.closest('.react-flow__node')).toHaveAttribute('data-id', 'ci-server')
+    // jsdom mouse-down events lack the window view required by the canvas drag handlers.
+    fireEvent.click(owner)
+    await openDetails()
+    await userEvent.setup().selectOptions(within(inspector()).getByRole('combobox', { name: 'Run node' }), 'ci-server')
+    expect(within(inspector()).getByRole('combobox', { name: 'Run node' })).toHaveValue('ci-server')
+    const tower = await within(canvas).findByRole('button', { name: /^CI server, Idle/ })
+    expect(tower.closest('.react-flow__node')).not.toBe(owner.closest('.react-flow__node'))
+    fireEvent.click(tower)
+    expect(await screen.findByRole('dialog', { name: 'CI server' })).toBeVisible()
+    expect(fixture.runs.before.version.definition.nodes[0]!.id).toBe('ci-server')
+    expect(uncaughtError).not.toHaveBeenCalled()
+  } finally {
+    window.removeEventListener('error', uncaughtError)
+  }
 })
