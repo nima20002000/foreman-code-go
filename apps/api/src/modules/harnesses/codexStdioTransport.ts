@@ -6,7 +6,7 @@ import { attachDetachedStdio, detachRecoveredChild, hasDetachedStdioProcess,
   nativeProcessExit, type NativeProcessRecovery } from './recovery/processRegistry.js'
 import { redactKnownSecrets } from './secrets.js'
 import { openCodexRuntimeTiming } from './codexRuntimeTiming.js'
-import { ignoreError } from '../diagnostics/ignoredError.js'
+import { ignoreError, logIgnoredError } from '../diagnostics/ignoredError.js'
 
 export type JsonObject = Record<string, unknown>
 export type RequestId = string | number
@@ -371,7 +371,10 @@ export class CodexStdioTransport {
   private async closeTiming() {
     // Optional diagnostics cannot change native execution or physical-closure results.
     try { await this.timing?.close() }
-    catch { runtimeTimingPoint('harness', 'native.api_timing_unavailable', { eventType: 'receiver_close_failed' }) }
+    catch (error) {
+      runtimeTimingPoint('harness', 'native.api_timing_unavailable', { eventType: 'receiver_close_failed' })
+      logIgnoredError('harness', 'close timing receiver', error, { connectionId: this.requestPrefix })
+    }
   }
 
   private async closeModelInspection(): Promise<void> {

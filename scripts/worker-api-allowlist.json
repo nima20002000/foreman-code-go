@@ -56,6 +56,7 @@
   "apps/api/src/modules/devices/rsyncWriterControl.ts",
   "apps/api/src/modules/devices/workerClock.ts",
   "apps/api/src/modules/devices/workerConnection.ts",
+  "apps/api/src/modules/diagnostics/ignoredError.ts",
   "apps/api/src/modules/diagnostics/logger.ts",
   "apps/api/src/modules/diagnostics/runtimeTiming.ts",
   "apps/api/src/modules/errors.ts",
