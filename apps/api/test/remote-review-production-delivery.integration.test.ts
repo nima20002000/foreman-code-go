@@ -34,7 +34,7 @@ describe('production remote review and native recovery through authenticated MCP
       })
       let closing: Promise<void> | undefined
       let timeout: ReturnType<typeof setTimeout> | undefined
-      let closedBeforeDisconnect = false
+      let closedBeforeDisconnect: boolean
       try {
         await once(socket, 'secureConnect')
         closing = transport.close()
