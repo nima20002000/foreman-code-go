@@ -1671,7 +1671,7 @@ export function buildProductionApp(
   }, appMcpEndpoint)
   const operatorExtensions = createOperatorExtensions({
     pool: database.pool, commands, catalog: harnessCatalog, native: nativeConfigurations,
-    detection, locations,
+    detection, locations, workflows: operatorServices.workflows.current,
     provisioningRoot: projectRoot, harnessProfiles: harnessInstances,
     accountConfigurations,
   })
@@ -1716,11 +1716,13 @@ export function buildProductionApp(
   }
   let httpClosing = false
   const startupLifetime = new AbortController()
+  let schemaPreparation: Promise<void> | undefined
   let initialization: Promise<void> | undefined
   let nativeDefaultsInitialization: Promise<void> | undefined
   let reconciliation: Promise<void> | undefined
   let applicationClose: Promise<void> | undefined
   let stopComputerTimers = () => {}
+  let stopSyncTimer = () => {}
   const runtimeOwner = new OperatorRuntimeOwner(config.database.connectionString, (error) => {
     app.log.error({ err: error }, 'native runtime ownership lost; stopping execution')
     beginShutdown()
@@ -1732,6 +1734,10 @@ export function buildProductionApp(
   })
   const lifecycle = new RuntimeShutdown({
     stop: [
+      { name: 'shared file sync admission', run: () => {
+        stopSyncTimer()
+        runtimeServices.computerSync?.stopAdmission()
+      } },
       { name: 'computer maintenance admission', run: () => {
         stopComputerTimers()
         runtimeServices.computerMaintenance?.stopAdmission()
@@ -1756,6 +1762,8 @@ export function buildProductionApp(
       { name: 'workflow engine', run: () => engine.shutdown() },
     ],
     drain: [
+      { name: 'startup schema preparation', run: () => schemaPreparation?.then(() => undefined, () => undefined) },
+      { name: 'shared file sync work', run: () => runtimeServices.computerSync?.join() },
       { name: 'live harness qualification', run: () => harnessQualifications?.join() },
       // Initialization errors belong to initialize()'s caller, not to cleanup.
       // Wait for its last DB/filesystem operation even if startup was canceled.
@@ -1821,6 +1829,18 @@ export function buildProductionApp(
         template.nativeTools ?? null,
       )
     })
+  }
+  const prepareSchema = (): Promise<void> => {
+    if (closing) return Promise.reject(new DomainError('NATIVE_RUNTIME_CLOSING', 'The native runtime is shutting down.', 503))
+    schemaPreparation ??= Promise.resolve().then(async () => {
+      await runtimeOwner.acquire()
+      assertOpen()
+      await startupDatabase(() => database.migrate())
+      assertOpen()
+      await startupDatabase(() => checkpoints.setup())
+      assertOpen()
+    })
+    return schemaPreparation
   }
   const initialize = (): Promise<void> => {
     if (closing) return Promise.reject(new DomainError('NATIVE_RUNTIME_CLOSING', 'The native runtime is shutting down.', 503))
@@ -2045,7 +2065,10 @@ export function buildProductionApp(
           accountChanged: target => runtimeServices.computerAccounts!.invalidate(target),
         })
       runtimeServices.computerSync = new ComputerSyncService(database.pool, machine.installationId,
-        () => deviceRuntime.endpointForDomains(), commands)
+        () => deviceRuntime.endpointForDomains(), commands, undefined, () => {
+          assertOpen()
+          if (!runtimeOwner.active) throw new DomainError('NATIVE_RUNTIME_UNAVAILABLE', 'Shared file sync requires the runtime owner.', 503)
+        })
       registerComputerSyncRoutes(app, runtimeServices.computerSync)
       const syncTimer = setInterval(() => {
         void runtimeServices.computerSync!.poll().catch(error => {
@@ -2053,7 +2076,8 @@ export function buildProductionApp(
         })
       }, 30_000)
       syncTimer.unref()
-      app.addHook('onClose', async () => { clearInterval(syncTimer) })
+      stopSyncTimer = () => { clearInterval(syncTimer) }
+      if (closing) { stopSyncTimer(); runtimeServices.computerSync.stopAdmission() }
       runtimeServices.buildComputers = jobRuntime.buildComputers
       registerBuildComputerRoutes(app, jobRuntime.buildComputers)
       runtimeServices.jobs = jobRuntime.jobs
@@ -2235,7 +2259,7 @@ export function buildProductionApp(
     applicationClose ??= Promise.resolve().then(() => app.close())
     return applicationClose
   }
-  return { app, engine, initialize, reconcile, shutdown, drainShutdown, rsync,
+  return { app, engine, prepareSchema, initialize, reconcile, shutdown, drainShutdown, rsync,
     registerFileStorage: () => {
       fileStorage ??= registerProductionFileStorage(app, database.pool, config)
       mountArtifacts()

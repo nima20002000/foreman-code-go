@@ -1,3 +1,4 @@
+import { OperatorRuntimeOwner } from '../infrastructure/operatorRuntimeOwner.js'
 import { errorMessage } from '../shared/errorMessage.js'
 import { loadProductEnvFile } from '@foreman-code/contracts/product-environment-node'
 
@@ -17,8 +18,13 @@ async function main() {
   }
   const config = loadConfig(process.env)
   const database = createDatabase(config.database)
+  const lifetime = new AbortController()
+  const maintenance = new OperatorRuntimeOwner(config.database.connectionString, error => lifetime.abort(error))
   try {
+    await maintenance.acquire()
+    lifetime.signal.throwIfAborted()
     await database.migrate()
+    lifetime.signal.throwIfAborted()
     const access = new PostgresAccessService(database.pool)
     if (input.command === 'revoke') {
       const { principalId } = input
@@ -36,7 +42,9 @@ async function main() {
       name, audience, grants: computerMetrics ? [grant, { actions: ['devices:metrics:read'], scope: {} }] : [grant], expiresAt: new Date(Date.now() + days * 86_400_000),
     })
     process.stdout.write(`Principal: ${issued.principal.id}\nAudience: ${issued.principal.audience}\nExpires: ${issued.principal.expiresAt}\nToken (shown once): ${issued.token}\n`)
-  } finally { await database.close() }
+  } finally {
+    try { await database.close() } finally { await maintenance.close() }
+  }
 }
 
 main().catch((error: unknown) => {
