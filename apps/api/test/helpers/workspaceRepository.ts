@@ -14,7 +14,7 @@ import { systemGitWorktreePorts, type GitWorktreePorts } from '../../src/modules
 import { WorkspaceBoundLocationService } from '../../src/modules/workspace-roots/service.js'
 import { registerWorkspaceRootRoutes } from '../../src/modules/workspace-roots/transports.js'
 import { WorkspaceRepositoryService } from '../../src/modules/workspaces/repositoryService.js'
-import { registerWorkspaceRepositoryRoutes } from '../../src/modules/workspaces/repositoryRoutes.js'
+import { registerWorkspaceRepositoryRoutes } from '../../src/routes/workspaceRepository.js'
 import { workspaceMcpFixture } from './workspaceMcp.js'
 import { gitFixtureEnvironment } from './gitFixture.js'
 
