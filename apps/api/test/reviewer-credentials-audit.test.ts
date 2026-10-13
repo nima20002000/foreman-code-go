@@ -223,7 +223,7 @@ it('credential renewal returns the database expiry and a monotonic deadline', as
   const expiresAt = new Date(databaseNow.getTime() + 60_000)
   const pool = {
     async query() {
-      return { rows: [{ expires_at: expiresAt }] }
+      return { rows: [{ expires_at: expiresAt, database_now: databaseNow }] }
     },
   } as unknown as pg.Pool
   const service = new WorkerCredentialService(pool, {} as PostgresAccessService, 60_000)
