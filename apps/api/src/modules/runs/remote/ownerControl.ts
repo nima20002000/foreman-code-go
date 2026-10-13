@@ -35,7 +35,7 @@ export async function prepareRemoteOwnerControl(sql: GraphTransactionSql, owner:
       }
       // A completed reviewer closes at the workflow boundary while its Run still owns the session.
       const completed = await sql.query(`select 1 from harness_executions e
-        where e.id=$1 and e.run_id=$2 and e.state='completed'
+        where e.id=$1 and e.run_id=$2 and e.record->>'state'='completed'
           and not exists(select 1 from review_jobs j where j.execution_id=e.id and j.state<>'completed'
             and (j.state<>'failed' or j.record->'cleanup'->>'completedAt' is null)) for share of e`,
       [binding.intent.executionId, owner.runId])
