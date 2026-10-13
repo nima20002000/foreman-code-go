@@ -85,6 +85,10 @@ never keep or add slop to satisfy them. Never skip, weaken, or delete a test to
 get a green run. A removed test needs a replacement that covers the same
 behavior.
 
+Every bug fix ships its own regression test, through a public interface, that
+fails on the code before the fix and passes after it. Show the failing run on
+the pre-fix commit before merging the fix.
+
 Keep generated output, local environment files, caches, and credentials out of
 Git. Make focused changes and preserve unrelated worktree edits.
 
