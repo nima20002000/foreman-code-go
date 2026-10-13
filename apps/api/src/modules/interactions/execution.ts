@@ -1824,8 +1824,10 @@ export class ApprovalExecutionCoordinator {
     }
     if (this.stoppingRuns.has(execution.runId)) throw new Error('The Run is stopping.')
     const resolved = this.resolveManager(resolutionContext, options.restartOwner)
+    const retryingAttachment = resolved.lifecycle === 'starting'
+      && this.ownedSessions.get(execution.id)?.pendingApprovalRestoration
     // Claim outside cleanup: losing a concurrent startup race does not own its credentials.
-    if (resolved.processState === 'needs_start') resolved.beginStart?.()
+    if (resolved.processState === 'needs_start' && !retryingAttachment) resolved.beginStart?.()
     const owned = this.ownSession(execution, resolutionContext, resolved.manager)
     if (options.restartOwner) owned.runOwner = options.restartOwner
     if (continuing) {
