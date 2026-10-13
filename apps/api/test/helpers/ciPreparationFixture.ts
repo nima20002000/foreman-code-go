@@ -1,3 +1,6 @@
+import { mkdir, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 import { readUntil } from './observableCondition.js'
 import Fastify from 'fastify'
 import type pg from 'pg'
@@ -185,7 +188,12 @@ export async function ciPreparationFixture(options: {
     currentRuntimePaths: async () => ['/ci/managed/installer/qualification-source-aaaaaaaaaaaa'],
     now: () => new Date(),
   }
-  let worker = new CiRuntimeWorker('/ci/state', workerPorts as never, new AbortController().signal)
+  const runtimeDirectory = await privateFixtureDirectory('ci-preparation-')
+  const workerDirectory = join(runtimeDirectory, 'worker')
+  const mainDirectory = join(runtimeDirectory, 'main')
+  await mkdir(workerDirectory, { mode: 0o700 })
+  await mkdir(mainDirectory, { mode: 0o700 })
+  let worker = new CiRuntimeWorker(workerDirectory, workerPorts as never, new AbortController().signal)
   let restartedOperation: string | undefined
   let statusDrops = options.statusDrops ?? 0
   let ackLost = false
@@ -195,7 +203,7 @@ export async function ciPreparationFixture(options: {
       const payload = raw as CiRuntimeRequest
       if (refreshRecord && restartedOperation !== refreshRecord.operationId) {
         restartedOperation = refreshRecord.operationId
-        worker = new CiRuntimeWorker('/ci/state', workerPorts as never, new AbortController().signal)
+        worker = new CiRuntimeWorker(workerDirectory, workerPorts as never, new AbortController().signal)
       }
       if (payload.operation === 'status' && statusDrops-- > 0) throw new DeviceConnectionError('transport')
       const state = await worker.handle(payload)
@@ -279,12 +287,12 @@ export async function ciPreparationFixture(options: {
   }
   // Main's own CI runtime restarts with Main after its refresh, like a Worker.
   const mainPorts = { ...workerPorts, managedRuntimeRoot: async () => '/main/runtime' }
-  let mainRuntime = new CiRuntimeWorker('/main/runtime', mainPorts as never, new AbortController().signal)
+  let mainRuntime = new CiRuntimeWorker(mainDirectory, mainPorts as never, new AbortController().signal)
   let mainRestartedOperation: string | undefined
   const main = options.main === 'installed' ? () => ({ handle: async (payload: unknown) => {
     if (refreshRecord && mainRestartedOperation !== refreshRecord.operationId) {
       mainRestartedOperation = refreshRecord.operationId
-      mainRuntime = new CiRuntimeWorker('/main/runtime', mainPorts as never, new AbortController().signal)
+      mainRuntime = new CiRuntimeWorker(mainDirectory, mainPorts as never, new AbortController().signal)
     }
     return mainRuntime.handle(payload)
   } }) : undefined
@@ -294,6 +302,11 @@ export async function ciPreparationFixture(options: {
   const ciRuntime = createProvisioner()
   const services = { ...data.services, commands, jobRuntimeProfiles: profileService, ciRuntime } as unknown as OperatorServices
   const app = Fastify()
+  app.addHook('onClose', async () => {
+    await worker.close()
+    await mainRuntime.close()
+    await rm(runtimeDirectory, { recursive: true, force: true })
+  })
   const access = { authenticate: async (token: string) => {
     const principal = { operator: data.operator, readonly: data.readonly, reader }[token]
     if (!principal) throw new DomainError('AUTH_INVALID', 'Invalid bearer token.', 401)
