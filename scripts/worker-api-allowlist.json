@@ -379,5 +379,9 @@
   "apps/api/src/modules/sources/secondaryAllocation.ts",
   "apps/api/src/modules/jobs/ciRuntimeState.ts",
   "apps/api/src/modules/sources/sourceCleanupMetadata.ts",
-  "apps/api/src/modules/harnesses/claudeSdk/sessionFailure.ts"
+  "apps/api/src/modules/harnesses/claudeSdk/sessionFailure.ts",
+  "apps/api/src/modules/ci-host/reports.ts",
+  "apps/api/src/modules/ci-host/runnerLock.ts",
+  "apps/api/src/modules/sources/gitCacheStorage.ts",
+  "apps/api/src/modules/sources/gitProcess.ts"
 ]
