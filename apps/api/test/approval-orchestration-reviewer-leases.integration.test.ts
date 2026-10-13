@@ -34,10 +34,13 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       const token = f.credential.environment.variables.GRAPHQL_MCP_TOKEN!
       await expect(f.access.authenticate(token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
       const native = (await f.repository.coordination.workflowSession(f.reviewer.id))!
+      expect(native).toMatchObject({ finalized: true, reviewerActive: false })
       await expect(f.credentials.bindReviewerJob(f.reviewer.id, f.credential, f.job))
         .rejects.toMatchObject({ code: 'REVIEWER_AUTHORITY_LOST' })
       await expect(f.access.authenticate(token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
       await f.credentials.bindReviewerJob(f.reviewer.id, f.credential, successor)
+      const rebound = await f.repository.coordination.workflowSession(f.reviewer.id)
+      expect(rebound).toEqual({ ...native, reviewerActive: true })
       const recovered = await f.access.authenticate(token, 'worker')
       expect(recovered).toEqual(f.principal)
       const binding = (await f.pool.query(`select approval_review_job_id,approval_review_lease_fence::text
