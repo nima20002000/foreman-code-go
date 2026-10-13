@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import type pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { CiListOutputSchema, CiTestsOutputSchema, CiComputersOutputSchema, CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema, CiRunRecordSchema,
+import { CiListOutputSchema, CiTestsOutputSchema, CiComputersOutputSchema, CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema, CiRunRecordSchema, CiHostRequestSchema,
   integrationPartition, userSystemdIntegrationFiles, type CiHostRequest, type CiHostReply, type CiHostRun } from '@foreman-code/contracts'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
@@ -1106,6 +1106,9 @@ it.each(['mcp', 'http'] as const)('reads queued user-systemd slices through %s w
       return CiGetOutputSchema.parse(decodeMcpToolResult(result))
     }
     const waiting = await read()
+    const selectedSlices = waiting.partitions!.map(run => integrationPartition(run.files, {}, run.partition!))
+    expect(selectedSlices.every(slice => slice.length > 0)).toBe(true)
+    expect(selectedSlices.flat().sort()).toEqual([...systemd, ...ordinary].sort())
     const host = waiting.partitions!.find(run => run.partition!.hostIndexes!.includes(run.partition!.index))!
     const sibling = waiting.partitions!.find(run => run.id !== host.id)!
     expect(host).toMatchObject({ state: 'queued', computer: null,
@@ -1241,6 +1244,9 @@ it('keeps every selected file in a nonempty slice when most files require user s
     const slices = read.partitions!.map(run => integrationPartition(run.files, {}, run.partition!))
     expect(slices.every(slice => slice.length === 1)).toBe(true)
     expect(slices.flat().sort()).toEqual([...systemd, ordinary].sort())
+    for (const run of read.partitions!) {
+      expect((await f.pool.query('select record from ci_runs where id=$1', [run.id])).rows[0].record).toEqual(run)
+    }
     expect(read.partitions!.filter(run => run.state === 'queued')).toHaveLength(2)
     expect(read.partitions!.filter(run => run.state === 'running')).toHaveLength(1)
     expect(f.started[0]).toMatchObject({ computer: 'CircleCI 1',
@@ -2061,6 +2067,7 @@ it.each(['mcp', 'http'] as const)('dispatches affected smoke selections with val
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
     expect(read.run).toMatchObject({ state: 'running', scope: 'affected', files: input.files,
       smokeComputer: computer.hostRef, computer: { hostRef: computer.hostRef } })
+    expect(CiHostRequestSchema.safeParse(f.started[0]!.request).success).toBe(true)
     expect(f.started).toEqual([{ computer: computer.label, request: expect.objectContaining({
       operation: 'start', runId: started.ticketId, scope: 'full', gate: true,
       files: input.files, integrationShards: 23,
@@ -2086,6 +2093,7 @@ it('targets one smoke computer through authenticated MCP and HTTP with grants, r
       expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', request))).toEqual(started)
       const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
       expect(read.run.computer?.hostRef).toEqual(computer.hostRef)
+      expect(CiHostRequestSchema.safeParse(f.started.at(-1)!.request).success).toBe(true)
       expect(read.run).toMatchObject({ smokeComputer: computer.hostRef, integrationShards: 23 })
       expect(f.started.at(-1)).toMatchObject({ computer: computer.label,
         request: { operation: 'start', runId: started.ticketId, integrationShards: 23 } })
