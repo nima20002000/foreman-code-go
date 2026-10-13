@@ -19,6 +19,8 @@ const jobEnv = (cwd) => {
   delete env.FOREMAN_CODE_HEAVY_JOB_COMMON
   delete env.FOREMAN_CODE_HEAVY_JOB_TOKEN
   delete env.FOREMAN_CODE_HEAVY_BASE_TMPDIR
+  delete env.FOREMAN_CODE_CI_CONTRACTS_CACHE
+  delete env.CI_HOST_RUNNER
   return env
 }
 const run = (cwd, args, { signal, onQueued } = {}) => new Promise((resolve) => {
@@ -88,12 +90,12 @@ test('checkout paths with spaces, Unicode and percent characters retain queue ow
 test('temporary directories exclude other writers under a shared group umask', t => {
   const f = fixture()
   t.after(() => rmSync(f.home, { recursive: true, force: true }))
-  const command = 'const fs=require("node:fs"),path=require("node:path");console.log(JSON.stringify([process.env.TMPDIR,path.dirname(process.env.TMPDIR)].map(value=>fs.statSync(value).mode&0o777)))'
+  const command = 'const fs=require("node:fs"),path=require("node:path");console.log("modes="+JSON.stringify([process.env.TMPDIR,path.dirname(process.env.TMPDIR)].map(value=>fs.statSync(value).mode&0o777)))'
   const entry = `process.umask(0o002);process.argv=[process.execPath,${JSON.stringify(join(f.first, 'scripts/heavy-job.mjs'))},'--',process.execPath,'-e',${JSON.stringify(command)}];await import(${JSON.stringify(pathToFileURL(join(f.first, 'scripts/heavy-job.mjs')).href)})`
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', entry],
     { cwd: f.first, env: jobEnv(f.first), encoding: 'utf8', timeout: 10000 })
   assert.equal(result.status, 0, result.stderr)
-  const modes = JSON.parse(result.stdout.trim().split('\n').at(-1))
+  const modes = JSON.parse(result.stdout.split('\n').find(line => line.startsWith('modes=')).slice('modes='.length))
   assert.deepEqual(modes, [0o700, 0o700])
 })
 function mockProc(f, declarations) {
@@ -567,11 +569,13 @@ const waitFor = async (check) => {
   }
   throw new Error('Timed out waiting for scheduler state')
 }
-function heldJob(f, label, cwd = f.first) {
+function heldJob(f, label, cwd = f.first, environment = {}) {
   const started = join(f.home, `${label}-started`)
   const released = join(f.home, `${label}-released`)
   const script = `const fs=require('fs');const watcher=fs.watch(${JSON.stringify(f.home)},()=>{if(fs.existsSync(${JSON.stringify(released)})) watcher.close()});fs.writeFileSync(${JSON.stringify(started)},'yes')`
-  const child = spawn(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e', script], { cwd, env: jobEnv(cwd), stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e', script], {
+    cwd, env: { ...jobEnv(cwd), ...environment }, stdio: ['ignore', 'pipe', 'pipe'],
+  })
   let output = ''
   const queued = Promise.withResolvers()
   child.stdout.on('data', (data) => {
@@ -592,6 +596,72 @@ function configureSlots(f, value) {
   mkdirSync(f.state, { recursive: true })
   writeFileSync(join(f.state, 'slots'), String(value))
 }
+
+test('host CI worktrees run concurrently while nested commands retain their own admission', async () => {
+  const f = fixture()
+  const jobs = []
+  try {
+    jobs.push(heldJob(f, 'first', f.first, { CI_HOST_RUNNER: '1' }))
+    await waitFile(jobs[0].started)
+    jobs.push(heldJob(f, 'second', f.second, { CI_HOST_RUNNER: '1' }))
+    await waitFile(jobs[1].started)
+    for (const job of jobs) job.release()
+    for (const job of jobs) assert.equal((await job.exited).code, 0)
+  } finally {
+    await stopJobs(jobs)
+    rmSync(f.home, { recursive: true, force: true })
+  }
+})
+
+test('Vitest setup uses the private admission queue in a host CI worktree', { timeout: 6000 }, () => {
+  const f = fixture()
+  try {
+    copyFileSync(hookSource, join(f.second, 'scripts/vitest-heavy-setup.mjs'))
+    const entry = `const { default: setup } = await import('./scripts/vitest-heavy-setup.mjs');
+      const teardown = await setup();
+      console.log('suite admitted');
+      await teardown();`
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', entry], {
+      cwd: f.second,
+      env: { ...jobEnv(f.second), CI_HOST_RUNNER: '1' },
+      encoding: 'utf8',
+      timeout: 4000,
+    })
+    assert.equal(result.status, 0, result.stdout + result.stderr)
+    assert.match(result.stdout, /suite admitted/)
+    assert.equal((result.stdout.match(/\[heavy-job\] running /g) ?? []).length, 1)
+  } finally {
+    rmSync(f.home, { recursive: true, force: true })
+  }
+})
+
+test('host CI worktrees remove abandoned temporary directories after a crashed job', { timeout: 20000 }, async () => {
+  const f = fixture()
+  try {
+    const env = { ...jobEnv(f.second), CI_HOST_RUNNER: '1' }
+    const crash = spawnSync(process.execPath, ['scripts/heavy-job.mjs', '--', process.execPath, '-e',
+      "console.log('temporary=' + process.env.TMPDIR); setTimeout(() => process.kill(process.ppid, 'SIGKILL'), 100)"],
+    { cwd: f.second, env, encoding: 'utf8', timeout: 3000 })
+    assert.equal(crash.signal, 'SIGKILL', crash.stderr)
+    const abandoned = crash.stdout.split('\n').find(line => line.startsWith('temporary=')).slice('temporary='.length)
+    utimesSync(abandoned, new Date(0), new Date(0))
+    // Stale running reservations have a ten-second recovery delay.
+    await new Promise(resolve => setTimeout(resolve, 10100))
+    const idleNamespace = join(f.home, 'idle-namespace.mjs')
+    writeFileSync(idleNamespace, `import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      const readDirectory = fs.readdirSync;
+      fs.readdirSync = (path, ...args) => path === '/proc' ? [] : readDirectory(path, ...args);
+      syncBuiltinESMExports();`)
+    const next = spawnSync(process.execPath, ['--import', idleNamespace,
+      'scripts/heavy-job.mjs', '--', process.execPath, '-e', 'process.exit(0)'],
+      { cwd: f.second, env, encoding: 'utf8', timeout: 3000 })
+    assert.equal(next.status, 0, next.stdout + next.stderr)
+    assert.equal(existsSync(abandoned), false)
+  } finally {
+    rmSync(f.home, { recursive: true, force: true })
+  }
+})
 
 for (const setting of ['1', '0', '9', 'garbage']) test(`slot setting ${setting} keeps single-slot admission`, { timeout: 8000 }, async () => {
   const f = fixture(), jobs = []

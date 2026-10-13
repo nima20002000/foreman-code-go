@@ -55,6 +55,7 @@ jobs:
       # ubuntu-latest is a full systemd VM; the suite probes a delegated user service before integration.
       CI_USER_SYSTEMD: '1'
       FOREMAN_CODE_CI_DEDICATED: '1'
+      FOREMAN_CODE_CI_CONTRACTS_CACHE: .logs/ci-contracts-cache
       SUITE: ${{ inputs.suite }}
       SLICE: ${{ inputs.slice }}
       SCOPE: ${{ inputs.scope }}
@@ -73,6 +74,8 @@ jobs:
           node-version: 22.23.2
       # The pinned pnpm through corepack, as on our computers; Worker tests read it offline from corepack's cache.
       - run: corepack enable && corepack install
+      - id: cache-inputs
+        run: echo "contracts=$(node scripts/ci-contracts.mjs key "$PWD")" >> "$GITHUB_OUTPUT"
       - run: scripts/ci-suite.sh start
       # Installed packages without the pnpm store: half the size, so the restore is twice as fast.
       - id: packages
@@ -87,19 +90,23 @@ jobs:
             !**/node_modules/.cache
             !apps/web/node_modules/.tmp
           key: packages-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}
-      # Only suites that build the Worker artifact read the store (its package index and native packages for other
-      # platforms); it stays inside node_modules where the install recorded it.
       - id: store
-        if: inputs.suite == 'integration' || inputs.suite == 'unit-other' || inputs.suite == 'unit-api' || inputs.suite == 'unit'
         uses: actions/cache@v4
         with:
-          path: node_modules/.pnpm-store
-          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-      - if: steps.packages.outputs.cache-hit != 'true' || (steps.store.conclusion == 'success' && steps.store.outputs.cache-hit != 'true')
+          path: |
+            node_modules/.pnpm-store
+            .logs/pnpm-metadata
+          key: pnpm-store-metadata-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}
+      - name: Install from cached store
         run: |
           # A store missing beside restored packages is only filled by a fresh install.
-          if [ "${{ steps.packages.outputs.cache-hit }}" = true ]; then rm -rf node_modules apps/*/node_modules packages/*/node_modules; fi
-          pnpm install --frozen-lockfile --store-dir node_modules/.pnpm-store
+          if [ "${{ steps.packages.outputs.cache-hit }}" = true ] && [ "${{ steps.store.outputs.cache-hit }}" != true ]; then
+            rm -rf node_modules apps/*/node_modules packages/*/node_modules
+          fi
+          pnpm install --offline --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink || {
+            [ "${{ steps.store.outputs.cache-hit }}" != true ] || exit 1
+            pnpm install --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink
+          }
       # Emitting compilers restore output and build info together, only for identical inputs so deleted source
       # cannot leave stale compiled modules. Keeping build info in dist also invalidates it on a local cleanup.
       - name: Contracts build cache
@@ -107,7 +114,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: packages/contracts/dist
-          key: contracts-build-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}-${{ hashFiles('packages/contracts/src/**', '!packages/contracts/src/**/*.test.ts', '!packages/contracts/src/**/*.spec.ts', 'packages/contracts/tsconfig*.json', 'packages/contracts/package.json') }}
+          key: contracts-build-${{ runner.os }}-${{ steps.cache-inputs.outputs.contracts }}
       - name: API build cache
         if: inputs.suite == 'build' || inputs.suite == 'build-api'
         uses: actions/cache@v4

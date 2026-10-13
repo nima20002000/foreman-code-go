@@ -42,6 +42,7 @@ jobs:
       # The machine executor has systemd; the suite starts and probes its per-user manager.
       CI_USER_SYSTEMD: '1'
       FOREMAN_CODE_CI_DEDICATED: '1'
+      FOREMAN_CODE_CI_CONTRACTS_CACHE: .logs/ci-contracts-cache
       SUITE: << pipeline.parameters.suite >>
       SLICE: << pipeline.parameters.slice >>
       SCOPE: << pipeline.parameters.scope >>
@@ -50,8 +51,8 @@ jobs:
       BASE_COMMIT: << pipeline.parameters.base_commit >>
       CI_PARTITION: << pipeline.parameters.partition >>
       CI_DURATIONS: << pipeline.parameters.durations >>
-      DURATIONS_OUTPUT: /tmp/ci-durations/durations.json
-      TEST_RESULTS_OUTPUT: /tmp/ci-durations/test-results.json
+      DURATIONS_OUTPUT: .logs/ci-durations/durations.json
+      TEST_RESULTS_OUTPUT: .logs/ci-durations/test-results.json
     steps:
       - checkout
       - run:
@@ -67,30 +68,43 @@ jobs:
             corepack enable
             node --version
       - run: scripts/ci-suite.sh start
+      - run:
+          name: Contracts cache inputs
+          command: mkdir -p .logs && node scripts/ci-contracts.mjs key "$PWD" > .logs/ci-contracts-key
       # Keep the pnpm store inside node_modules so cache hits retain the package integrity index.
       - restore_cache:
           keys:
-            - packages-with-store-node22.23.2-{{ checksum "pnpm-lock.yaml" }}
+            - packages-with-store-metadata-node22.23.2-{{ checksum "pnpm-lock.yaml" }}
       - run: |
           if [ -d node_modules/.pnpm ]; then
             echo "packages restored"
+            pnpm install --offline --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink
           else
-            pnpm install --frozen-lockfile --store-dir node_modules/.pnpm-store
+            pnpm install --offline --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink ||
+              pnpm install --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink
           fi
       - save_cache:
-          key: packages-with-store-node22.23.2-{{ checksum "pnpm-lock.yaml" }}
+          key: packages-with-store-metadata-node22.23.2-{{ checksum "pnpm-lock.yaml" }}
           paths:
             - node_modules
+            - .logs/pnpm-metadata
             - apps/api/node_modules
             - apps/web/node_modules
             - apps/worker/node_modules
             - packages/contracts/node_modules
       - restore_cache:
           keys:
+            - contracts-build-{{ checksum ".logs/ci-contracts-key" }}
+      - restore_cache:
+          keys:
             - ci-<< pipeline.parameters.suite >>-{{ checksum "pnpm-lock.yaml" }}-
       - run:
           name: Suite
-          command: mkdir -p /tmp/ci-durations && scripts/ci-suite.sh
+          command: mkdir -p .logs/ci-durations && scripts/ci-suite.sh
+      - save_cache:
+          key: contracts-build-{{ checksum ".logs/ci-contracts-key" }}
+          paths:
+            - packages/contracts/dist
       - save_cache:
           key: ci-<< pipeline.parameters.suite >>-{{ checksum "pnpm-lock.yaml" }}-{{ .Revision }}
           when: always
@@ -102,7 +116,7 @@ jobs:
             - apps/worker/node_modules/.cache
             - packages/contracts/node_modules/.cache
       - store_artifacts:
-          path: /tmp/ci-durations
+          path: .logs/ci-durations
           destination: durations
       - store_artifacts:
           path: .logs/test-integration

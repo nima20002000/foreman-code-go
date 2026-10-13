@@ -516,7 +516,8 @@ export function options(argv, environment = process.env) {
 
 async function main() {
   options(process.argv.slice(2))
-  const commonResult = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: root, encoding: 'utf8' })
+  const commonResult = spawnSync('git', ['rev-parse', '--path-format=absolute',
+    process.env.CI_HOST_RUNNER === '1' ? '--git-dir' : '--git-common-dir'], { cwd: root, encoding: 'utf8' })
   if (commonResult.status !== 0) throw new Error('Could not find the project heavy-job queue')
   const common = realpathSync(commonResult.stdout.trim())
   if (!hasHeavyJobAdmission(process.env, common)) {

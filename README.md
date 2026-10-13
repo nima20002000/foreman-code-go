@@ -57,6 +57,21 @@ limit and stops its process group before releasing the slot. Each job owns a
 temporary directory and removes it on exit; only marked, unused directories
 older than ten minutes are eligible for stale cleanup.
 
+Host CI jobs use separate worktrees and admission queues on each build computer.
+The runner keeps a repository checkout, pnpm store, release-age metadata and
+dependency snapshots between jobs. It installs offline with a frozen lockfile;
+only a lockfile that has not been warmed may fill the store online. Snapshot
+copies isolate writable dependencies from the store and other jobs. Database
+startup overlaps installation, with a separate database project and port per job.
+The job log reports `[ci-setup] setup completed in ... ms` before starting its suite.
+
+Contracts builds are cached by the contracts Git tree, lockfile, root TypeScript
+configuration and Node runtime. Set `FOREMAN_CODE_CI_CONTRACTS_CACHE` to enable
+this cache through the normal contracts build script. Each job restores its own
+output; concurrent builds publish one completed cache entry under a lock.
+GitHub Actions and CircleCI also cache pnpm's store and release-age metadata by
+lockfile, and contracts output by the same contracts cache key.
+
 `corepack pnpm lines` counts physical lines in tracked code files, including
 blank lines and comments. It reports source code, default/integration/acceptance/
 smoke test files, test helpers and fixtures, and tooling separately. Test types
