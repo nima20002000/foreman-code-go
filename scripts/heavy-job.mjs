@@ -12,8 +12,8 @@ import { fileURLToPath } from 'node:url'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(import.meta.url)
 const git = (...args) => spawnSync('git', args, { cwd: root, encoding: 'utf8' })
-const commonResult = git('rev-parse', '--path-format=absolute',
-  process.env.CI_HOST_RUNNER === '1' ? '--git-dir' : '--git-common-dir')
+const queueDirectoryArgument = process.env.CI_HOST_RUNNER === '1' ? '--git-dir' : '--git-common-dir'
+const commonResult = git('rev-parse', '--path-format=absolute', queueDirectoryArgument)
 if (commonResult.status !== 0) throw new Error(commonResult.stderr || 'Cannot find Git common directory')
 const common = realpathSync(commonResult.stdout.trim())
 const state = join(common, 'graphql-heavy-jobs')
@@ -97,8 +97,9 @@ function cleanTemps() {
     const path = join(tempRoot, entry)
     const marker = readJson(join(path, 'owner.json'))
     if (!isDirectory(path) || ageMs(path) < 10 * 60_000 || !marker || marker.common !== common || alive(marker) || groupUsed(marker.pgid, true) || tokenUsed(marker.token, 0, true) || usedPath(path)) continue
-    // Verify whether the recorded checkout still belongs to this common Git directory.
-    const check = spawnSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: marker.worktree, encoding: 'utf8' })
+    // Verify the recorded checkout still belongs to this admission queue.
+    const check = spawnSync('git', ['rev-parse', '--path-format=absolute', queueDirectoryArgument],
+      { cwd: marker.worktree, encoding: 'utf8' })
     if (check.status === 0 && realpathSync(check.stdout.trim()) !== common) continue
     rmSync(path, { recursive: true, force: true })
   }
