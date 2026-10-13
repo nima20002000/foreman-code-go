@@ -12,7 +12,8 @@ import { fileURLToPath } from 'node:url'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(import.meta.url)
 const git = (...args) => spawnSync('git', args, { cwd: root, encoding: 'utf8' })
-const commonResult = git('rev-parse', '--path-format=absolute', '--git-common-dir')
+const commonResult = git('rev-parse', '--path-format=absolute',
+  process.env.CI_HOST_RUNNER === '1' ? '--git-dir' : '--git-common-dir')
 if (commonResult.status !== 0) throw new Error(commonResult.stderr || 'Cannot find Git common directory')
 const common = realpathSync(commonResult.stdout.trim())
 const state = join(common, 'graphql-heavy-jobs')
@@ -277,7 +278,12 @@ async function main() {
   if (timeoutIndex >= 0 && (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)) throw new Error('Invalid timeout')
   const stopGraceMs = graceIndex >= 0 ? Number(options[graceIndex + 1]) : 30_000
   if (!Number.isSafeInteger(stopGraceMs) || stopGraceMs <= 0) throw new Error('Invalid stop grace')
-  const command = process.argv.slice(divider + 1)
+  let command = process.argv.slice(divider + 1)
+  if (buildKind === 'contracts' && process.env.FOREMAN_CODE_CI_CONTRACTS_CACHE) {
+    const cache = resolve(root, process.env.FOREMAN_CODE_CI_CONTRACTS_CACHE)
+    command = [process.execPath, fileURLToPath(new URL('./ci-contracts.mjs', import.meta.url)),
+      'build', root, cache, '--', ...command]
+  }
   const reported = process.env.FOREMAN_CODE_VERIFICATION_ROOT === root
     && (buildKind || command[0] === 'vitest' || command[0] === 'tsc' || command[0] === 'eslint'
       || (command[0].endsWith('/node') || command[0] === 'node') && command.includes('--test'))

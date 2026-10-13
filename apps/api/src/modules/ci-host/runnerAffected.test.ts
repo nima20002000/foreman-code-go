@@ -79,7 +79,8 @@ it.each([false, true])('runs only affected integration files and balances partit
     await launched
     expect(await runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 })).toMatchObject({ run: { state: 'passed' } })
     const commands = (await readFile(calls, 'utf8')).trim().split('\n').map(line => JSON.parse(line) as string[])
-    expect(commands.slice(0, 2)).toEqual([['pnpm', 'install', '--frozen-lockfile'], ['pnpm', 'db:up']])
+    expect(commands).toContainEqual(expect.arrayContaining(['pnpm', 'install', '--offline', '--frozen-lockfile']))
+    expect(commands).toContainEqual(['pnpm', 'db:up'])
     expect(commands).toContainEqual(['pnpm', 'test:integration', '--files', files[1]!])
     expect(commands.filter(command => command[1] === 'test:integration')).toHaveLength(1)
   } finally {
