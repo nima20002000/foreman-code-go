@@ -92,6 +92,7 @@ function dispatchFixture(settlementError?: Error) {
       return { rows: records.filter(record => ['starting', 'running'].includes(record.state))
         .map(record => ({ id: record.id, record, host_key: computer.key })) }
     }
+    if (sql.includes("'gate'='true'")) return { rows: [] }
     return { rows: records.filter(record => record.id === parameters?.[0] || record.groupId === parameters?.[0])
       .map(record => ({ record, log_tail: tails.get(record.id) ?? '' })) }
   }
@@ -123,6 +124,16 @@ it.each(['lint', 'typecheck'] as const)('dispatches an ordinary queued $suite ch
   })
   expect(f.endpoint.request).toHaveBeenCalledWith(computer, expect.objectContaining({
     operation: 'start', runId: f.queued.id, suite,
+  }))
+})
+
+it('dispatches a queued ticket after settling ordinary output', async () => {
+  const f = dispatchFixture()
+  await f.create().dispatch()
+  expect((await f.create().get(caller, { ticketId: f.active.id })).run.state).toBe('passed')
+  expect((await f.create().get(caller, { ticketId: f.queued.id })).run.state).toBe('running')
+  expect(f.endpoint.request).toHaveBeenCalledWith(computer, expect.objectContaining({
+    operation: 'start', runId: f.queued.id,
   }))
 })
 

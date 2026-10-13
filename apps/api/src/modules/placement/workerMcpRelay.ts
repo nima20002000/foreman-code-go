@@ -65,7 +65,7 @@ export function createWorkerNativeOutputAuthorizationPort(
     return WorkerNativeOutputDeclarationsPolicySchema.parse(await authority.authorizeNativeOutputDeclarations(input, connection, sql))
   } }
 }
-/** Main-only domain handler on W07's authenticated worker-mcp-v1 namespace. It
+/** Main-only domain handler on the authenticated worker MCP namespace. It
  * validates the original execution lease before the existing MCP transport
  * repeats normal role/tool/scope authorization. No new credential is minted. */
 export class MainWorkerMcpRelay {

@@ -73,7 +73,7 @@ function projected(resource: AuthorizedResource, kind: ScopeKind): AuthorizedRes
 }
 function usable(scope: ManagementScope, kind: ScopeKind): boolean {
   if (Object.values(scope).some((ids) => ids?.length === 0)) return false
-  if (kind === 'global') return !scope.workspaceIds && !scope.workflowIds && !scope.runIds
+  if (kind === 'global') return Object.values(scope).every(ids => ids === undefined)
   if (kind === 'workspace') return !scope.workflowIds && !scope.runIds
   if (kind === 'workflow') return !scope.runIds
   return true
