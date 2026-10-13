@@ -173,7 +173,7 @@ export async function startTestDatabase(environment) {
   execFileSync(`${POSTGRES}/initdb`, ['-D', `${root}/data`, '-U', 'graphql_test_admin', '--pwfile', `${root}/password`,
     '-A', 'scram-sha-256', '-E', 'UTF8', '--locale=C.UTF-8', '--no-sync'], { env, stdio: ['ignore', 'ignore', 'inherit'] });
   const server = spawn(`${POSTGRES}/postgres`, ['-D', `${root}/data`, '-h', '127.0.0.1', '-p', '55439', '-k', `${root}/socket`,
-    '-c', 'max_connections=300', '-c', 'max_locks_per_transaction=512', '-c', 'fsync=off', '-c', 'synchronous_commit=off',
+    '-c', 'max_connections=800', '-c', 'max_locks_per_transaction=512', '-c', 'fsync=off', '-c', 'synchronous_commit=off',
     '-c', 'full_page_writes=off', '-c', 'dynamic_shared_memory_type=mmap', '-c', 'log_min_messages=warning'], { env, stdio: ['ignore', 'ignore', 'inherit'] });
   const exited = new Promise(resolve => server.once('exit', resolve));
   const psql = (database, sql) => execFileSync(`${POSTGRES}/psql`, ['-h', '127.0.0.1', '-p', '55439', '-U', 'graphql_test_admin',

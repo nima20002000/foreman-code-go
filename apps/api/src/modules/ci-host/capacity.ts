@@ -2,8 +2,9 @@ const gib = 2 ** 30
 const coresPerSlot = 6
 const memoryPerSlot = 6 * gib
 
+/** Integration shards mostly wait on PostgreSQL and child processes: measured ~0.5 core and well under 0.5 GiB each. */
 export function gateIntegrationShards(cpuCount: number, memoryBytes: number): number {
-  return Math.max(1, Math.min(64, Math.floor(cpuCount * 0.75), Math.floor((memoryBytes - gib) / gib)))
+  return Math.max(1, Math.min(64, Math.floor(cpuCount * 2), Math.floor((memoryBytes - gib) / (gib / 2))))
 }
 
 export function hostCiCapacity(resources: {

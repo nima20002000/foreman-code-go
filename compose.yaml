@@ -5,7 +5,7 @@ services:
     image: postgres:17-alpine
     # Parallel integration slots each run full migrations; stock limits exhaust the lock table.
     # Local demo/test data is disposable, so durability is traded for speed (a host crash can corrupt it).
-    command: ["postgres", "-c", "max_connections=300", "-c", "max_locks_per_transaction=512",
+    command: ["postgres", "-c", "max_connections=800", "-c", "max_locks_per_transaction=512",
       "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
     environment:
       POSTGRES_DB: graphql
