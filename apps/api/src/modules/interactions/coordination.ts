@@ -1,4 +1,3 @@
-import type { ReviewNativeCapture } from './reviewNativeCapture.js'
 import { DurableInteractionSchema, type DurableInteraction, IdSchema, TimestampSchema, NativeSessionLaneSchema, NativeSessionReferenceSchema, ReviewJobSchema, type NativeHarnessEvent, type NativeSessionReference, type NativeSessionLane, type ReviewJob } from '@foreman-code/contracts'
 import type pg from 'pg'
 
@@ -15,6 +14,7 @@ const recoverableJob = `(state in ('pending','leased','blocked_busy','blocked_di
   and (record->>'retryAfter' is null or (record->>'retryAfter')::timestamptz <= clock_timestamp())`
 
 export interface WriterFence { id: string; token: string }
+export interface ReviewNativeCapture { readonly executionId: string }
 export interface LaneLeaseOwnership { owner: string; connectionGeneration: number }
 
 function leaseInput(id: string, owner: string, token: string, expiresAt: string) {

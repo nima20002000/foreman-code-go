@@ -1,5 +1,13 @@
 import { createHash } from 'node:crypto'
-import type { NativePluginCatalog, PluginConfiguration } from './codexPluginCatalog.js'
+import { z } from 'zod'
+
+const NativeEntry = z.object({ pluginId: z.string(), name: z.string(), marketplaceName: z.string(),
+  version: z.string().nullable().optional(), installed: z.boolean(), enabled: z.boolean(),
+  source: z.object({ source: z.string() }).passthrough(), marketplaceSource: z.unknown().optional(),
+  installPolicy: z.string(), authPolicy: z.string() }).passthrough()
+export const NativePluginCatalogSchema = z.object({ installed: z.array(NativeEntry).max(10_000), available: z.array(NativeEntry).max(10_000) }).passthrough()
+export type NativePluginCatalog = z.infer<typeof NativePluginCatalogSchema>
+export type PluginConfiguration = { file: string; userConfig: Record<string, unknown>; verified?: boolean }
 
 export const pluginCanonical = (value: unknown): string => {
   const sort = (entry: unknown): unknown => Array.isArray(entry) ? entry.map(sort)

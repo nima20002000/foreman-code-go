@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { MaintenanceCommandRecordSchema, type MaintenanceTask } from '@foreman-code/contracts/computer-maintenance'
-import type { MaintenancePorts } from './maintenance.js'
+import type { MaintenancePorts } from './maintenancePorts.js'
 
 export class MaintenanceCommandStore {
   private writes: Promise<void> = Promise.resolve()

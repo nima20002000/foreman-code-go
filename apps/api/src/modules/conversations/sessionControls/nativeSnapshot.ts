@@ -1,4 +1,4 @@
-import type { SessionControlBinding } from './store.js'
+import type { SessionControlBinding } from './binding.js'
 import type { NativeSessionReference } from '@foreman-code/contracts'
 import { HarnessExecutionError } from '../../harnesses/errors.js'
 import type { NativeHarnessSessionManager } from '../../harnesses/port.js'

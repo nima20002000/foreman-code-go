@@ -1,8 +1,9 @@
 import { withInteractionResponse, type DurableInteraction, type NativeSessionReference } from '@foreman-code/contracts'
 import { createHash } from 'node:crypto'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
-import type { ChatResponseIdentity } from '@foreman-code/contracts/interaction-activity'
-import type { NativeHistory } from '../harnesses/port.js'
+import type { NativeHistory, NativeResponseDeliveryEvidence } from '../harnesses/port.js'
+
+export type { NativeResponseDeliveryEvidence } from '../harnesses/port.js'
 
 /** A lease may expire during attachment, but never authorizes another native send. */
 export const INTERACTION_DELIVERY_LEASE_MS = 60_000
@@ -22,24 +23,6 @@ export interface NativeDeliveryOutcome {
   state: 'delivered' | 'uncertain' | 'failed'
   error?: string
   evidence?: NativeResponseDeliveryEvidence
-}
-
-/**
- * Only a qualified adapter may produce these receipts from provider acknowledgements
- * or provider history. Local pending-list eviction and generic terminal events are
- * not evidence. Identity and the exact durable response must survive reconnects.
- */
-export interface NativeResponseDeliveryEvidence {
-  source: 'provider_acknowledgement' | 'provider_history'
-  harness: DurableInteraction['harness']
-  providerVersion: string
-  nativeSessionId: string
-  nativeRequestId: string
-  nativeRequestType: string
-  optionId: string
-  semantic: NonNullable<DurableInteraction['selectedSemantic']>
-  responseDigest?: string | undefined
-  nativeIdentity?: ChatResponseIdentity
 }
 
 export function responseValueDigest(value: unknown): string {

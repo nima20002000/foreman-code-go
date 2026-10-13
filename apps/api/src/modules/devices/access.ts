@@ -10,10 +10,9 @@ import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { initializePairedBuildComputer } from '../settings/buildComputers.js'
+import { DeviceAccessError } from './accessError.js'
 
-export class DeviceAccessError extends DomainError {
-  constructor(readonly code: 'unauthorized' | 'revoked' | 'expired' | 'conflict' | 'forbidden' | 'wrong_main') { super(code, `Device access rejected: ${code}`, 403) }
-}
+export { DeviceAccessError }
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 export type PairDeviceInput = DevicePairingRequest
 export { pairingProof } from '@foreman-code/contracts/device-identity-node'

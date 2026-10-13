@@ -2,31 +2,20 @@ import { recoverPersistedClaudeCompaction } from '../../harnesses/claudeSdk/reco
 import { randomUUID } from 'node:crypto'
 import { mergeContextSnapshot } from './context.js'
 import { isNativeReadUnavailable, readNativeCapabilities, readNativeSnapshot } from './nativeSnapshot.js'
+import type { SessionControlBinding } from './binding.js'
 import type pg from 'pg'
 import {
   CompactionStateSchema, SessionControlRequestSchema, SessionControlStateSchema, SessionPreferencesSchema,
   compactionBlocksSend, unavailableSessionControls,
-  type SessionControlState, type SessionControlRequest, type NativeSessionReference, type SessionControlCapabilities,
+  type SessionControlState, type SessionControlRequest,
 } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
-import type { NativeHarnessSessionManager } from '../../harnesses/port.js'
 import { DomainError } from '../../errors.js'
 import { NativeConversationControlCommands } from '../nativeControlCommands.js'
 import { componentLogger } from '../../diagnostics/logger.js'
 import { isDefiniteCompactionRejection } from '../../harnesses/errors.js'
 
-export interface SessionControlBinding {
-  conversationId: string
-  principalId: string
-  defaultSubject: string
-  profileKey: string
-  initialMode?: SessionControlState['desiredMode']
-  busyReason: string | null
-  session?: NativeSessionReference | undefined
-  manager?: NativeHarnessSessionManager | undefined
-  recoverCompaction?(state: NonNullable<SessionControlState['compaction']>): Promise<NonNullable<SessionControlState['compaction']>>
-  pendingCapabilities?: SessionControlCapabilities
-}
+export type { SessionControlBinding }
 
 const reservationOwner = randomUUID()
 

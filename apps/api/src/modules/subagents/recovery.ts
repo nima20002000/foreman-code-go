@@ -3,7 +3,7 @@ import { appendNativeEvent } from '../runs/nativeEvents.js'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { RunSubagentCommandReceiptSchema } from '@foreman-code/contracts/subagents'
-import type { RunSubagentService } from './service.js'
+import type { SubagentServicePort } from './types.js'
 
 /** Main startup has no proof whether pre-crash native dispatch ran. Never replay prompts or declare termination. */
 export async function recoverSubagentCommands(pool: pg.Pool): Promise<number> {
@@ -16,7 +16,7 @@ export async function recoverSubagentCommands(pool: pg.Pool): Promise<number> {
   return result.rowCount ?? 0
 }
 /** Only exact provider correlation readback can resolve uncertain delivery. This never sends input. */
-export async function reconcileSubagentCommand(service: RunSubagentService, principal: ManagementPrincipal,
+export async function reconcileSubagentCommand(service: SubagentServicePort, principal: ManagementPrincipal,
   input: { workspaceId: string; runId: string; subagentId: string; receiptId: string }, source: 'http' | 'mcp' = 'http') {
   const captured = await service.scoped(principal, input, 'runs:read', async scope => {
     const child = await service.child(scope, input)
@@ -65,7 +65,7 @@ export async function reconcileSubagentCommand(service: RunSubagentService, prin
 
 
 /** The first response is a SQL snapshot. Native history backfill runs separately, and uses only the original admitted parent on its owning computer. */
-export async function backfillRunSubagents(service: RunSubagentService, principal: ManagementPrincipal, input: { workspaceId: string; runId: string }) {
+export async function backfillRunSubagents(service: SubagentServicePort, principal: ManagementPrincipal, input: { workspaceId: string; runId: string }) {
   if (!service.nativeRecovery) return
   const sources = await service.scoped(principal, input, 'runs:read', async scope => (await scope.sql.query<{ id: string; reference: unknown; child_cursor: string | null }>(
     `select e.id,s.reference,b.child_cursor from harness_executions e join execution_native_sessions s on s.execution_id=e.id

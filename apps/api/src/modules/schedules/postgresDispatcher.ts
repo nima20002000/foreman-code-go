@@ -15,7 +15,7 @@ import {
 import { readScheduleAuthority } from './authority.js'
 import { decideDueSchedule, planDueSchedule, type DueScheduleStep } from './dispatchPlan.js'
 import { PostgresWorkflowScheduleRepository } from './postgres.js'
-import type { ScheduleStartGuard } from './startGuard.js'
+import type { ScheduleStartGuard } from '../runs/repeatStartAdmission.js'
 import type { RepeatStartPreparation } from '../runs/repeatStartAdmission.js'
 
 interface PreparedStart {

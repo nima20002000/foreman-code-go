@@ -5,7 +5,7 @@ import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture, type RunWorktr
 import { readCurrentRunDetails } from '../src/modules/runs/currentRead.js'
 import { readAcceptedRepeatRunLocked, readRecordedRepeatRunSnapshot } from '../src/modules/runs/repeatStartRead.js'
 import { readRepeatExecutionLocked } from '../src/modules/runs/repeatPostgres.js'
-import { RUN_ACTIVITIES_BOUNDS_SQL, RUN_ACTIVITIES_PAGE_SQL } from '../src/modules/runs/activities.js'
+import { RUN_ACTIVITIES_BOUNDS_SQL, RUN_ACTIVITIES_PAGE_SQL } from '../src/modules/runs/activitiesSql.js'
 import { RUN_NATIVE_ACTIVITY_FACTS_SQL } from '../src/modules/runs/nativeActivitySnapshot.js'
 
 // The immutable publication readers are ports here; live grants, transaction

@@ -18,7 +18,6 @@ import {
   type WorkerPairingConfiguration,
 } from '@foreman-code/contracts/device-identity'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
-import type { DeviceApplicationResult } from '@foreman-code/contracts/device-application'
 import { DEVICE_APPLICATION_JSON_BYTES } from '@foreman-code/contracts/device-application'
 import type { DispatchIntent, AcceptedNodePlacement, NativeExecutionPlacement } from '@foreman-code/contracts/node-placement'
 import { RemoteNativeIdentitySchema, RemoteTerminalEvidenceSchema, RemoteOperationReceiptSchema, type RemoteReviewerRequest,
@@ -56,18 +55,17 @@ import { RemoteExecutionHost } from './executionHost.js'
 import { createRemoteExecutionHandler } from './executionRouter.js'
 import { RemoteJobExecutionRpcRequestRecordSchema } from '@foreman-code/contracts/remote-job-execution'
 import { RemoteExecutionRpcRequestSchema, type RemoteExecutionRpcRequest } from '@foreman-code/contracts/remote-execution-rpc'
-import type { DeviceExtensionRegistration, DeviceExtensionContext, DeviceApplicationRequestOptions } from '../../devices/deviceApplicationChannel.js'
+import type { DeviceExtensionRegistration, DeviceExtensionContext } from '../../devices/deviceApplicationChannel.js'
 import { prepareWorkerApplicationAccess } from './workerApplicationAccess.js'
 import { createWorkerMcpEndpoint } from './workerMcpEndpoint.js'
 import { readInstalledWorkflowConfiguration, type InstalledWorkflowConfigurationLocation } from './installedWorkflowConfiguration.js'
 import { RuntimeLeafAttestationSchema, assertRuntimeLeafPath, type RuntimeLeafAttestation } from './runtimeLeaf.js'
 import { InstalledWorkflowPhysicalReadouts, matchingOriginalRegistryLaunch,assertOriginalPhysicalDirectories, remoteWorkflowSourceDigest, remoteWorkflowNativeHistory } from './workflowPhysicalReadout.js'
 import { createInstalledNativeOutputs, type InstalledNativeOutputProviders } from './installedNativeOutput.js'
-import type { CodexNativeOutputTurnPin } from '../../harnesses/codexNativeOutput.js'
 import type { WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
-import { createInstalledWorkflowNativeOutputProviders } from './installedWorkflowNativeOutputs.js'
+import { createInstalledWorkflowNativeOutputProviders, type CapturedWorkflowMainRequest, type InstalledWorkflowNativeOutputContext } from './installedWorkflowNativeOutputs.js'
 import { AgentFilePublishInputSchema, AgentFilePublishResultSchema,
-  type AgentFilePublishInput, type AgentFilePublishResult } from '@foreman-code/contracts/files'
+  type AgentFilePublishResult } from '@foreman-code/contracts/files'
 import { workflowArtifactDigestsByOutputKey, type WorkflowArtifactOutputsV1 } from '@foreman-code/contracts/workflow-artifact-result'
 import { pageNativeHistory, nativeHistoryPageSource } from './nativeHistoryPage.js'
 import { pagePhysicalReadout } from './workflowPhysicalReadout.js'
@@ -223,21 +221,7 @@ export async function attestInstalledWorkflowRuntimeLeaf(input:{sources:SourceOp
 
 type QualificationReader=ReturnType<typeof createInstalledCodexQualificationReader>
 type QualificationCapture=Awaited<ReturnType<QualificationReader['capture']>>
-export interface CapturedWorkflowMainRequest {
-  readonly binding:Readonly<DeviceSessionBinding>
-  request(payload:unknown,options?:DeviceApplicationRequestOptions):Promise<DeviceApplicationResult>
-}
-export interface InstalledWorkflowNativeOutputContext {
-  intent: DispatchIntent
-  placement: AcceptedNodePlacement
-  binding: Readonly<DeviceSessionBinding>
-  materialization: SourceMaterializationRecord
-  applicationAccess(): RemoteApplicationAccess
-  publicationCompleted(publication: AgentFilePublishInput, result: AgentFilePublishResult): void
-  /** Real original registry/ACK evidence; deliberately does not inspect passive
-   * originalSessionLifetime while the producer's starting gate is active. */
-  assertCurrent(pin?: CodexNativeOutputTurnPin, signal?: AbortSignal): Promise<void>
-}
+export type { CapturedWorkflowMainRequest, InstalledWorkflowNativeOutputContext }
 export interface InstalledWorkflowHostOptions {
   stateDirectory:string
   pairing:WorkerPairingConfiguration

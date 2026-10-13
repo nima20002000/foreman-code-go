@@ -11,7 +11,7 @@ import { ensureClone, fetchRepositoryBranch, systemGitWorktreePorts, type GitWor
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 import type { HostCiComputer } from './service.js'
 import { CLOUD_START_TIMEOUT_MS, CircleCiProvider, GitHubActionsProvider,
-  type CloudDispatchInput, type CloudProvider, type CloudStatus } from './cloudProviders.js'
+  type CloudDispatchInput, type CloudProvider, type CloudRun, type CloudStatus } from './cloudProviders.js'
 import { runsOnCircleCi } from './parts.js'
 
 const LOG_LIMIT = 4 * 1024 * 1024
@@ -23,17 +23,7 @@ const MAX_BACKOFF_MS = 10 * 60_000
 const POLL_CONCURRENCY = 3
 const log = componentLogger('jobs')
 
-export interface CloudRun {
-  runId: string; repository: string; mirror: string; commit: string; suite: CiSuite; startedAt: string
-  providerRunId: string | null; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
-  message: string | null; durations?: CiDurations; testResults?: CiTestResults
-  scope?: CiScope; files?: string[]; part?: CiPart; baseCommit?: string
-  dispatch?: { input: CloudDispatchInput; attempts: number; at: string }
-  workflowStarted?: boolean
-  /** Live progress kept while the run is followed: steps already written to the log, the running step's output
-   * bytes written so far, and bytes written in all. */
-  live?: { step: string | null; seen: string[]; output?: { key: string; bytes: number }; bytes: number }
-}
+export type { CloudRun }
 type Mirrors = (repository: string) => Promise<string | null>
 /** Pushes to one mirror, across both services, run one at a time: concurrent force-pushes of the mirror's main fail
  * the remote's old-value check ("incorrect old value provided"), and concurrent fetches race on its local ref. */

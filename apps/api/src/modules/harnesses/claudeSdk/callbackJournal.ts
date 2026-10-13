@@ -1,6 +1,23 @@
 import type pg from 'pg'
-import type { ClaudeCallbackIdentity } from './interactions.js'
 import { HarnessExecutionError } from '../errors.js'
+
+export interface ClaudeCallbackIdentity {
+  /** Current owned SDK callback lifetime, supplied by the native manager. */
+  generation?: string
+  nativeRequestType?: 'can_use_tool'
+  ownerPrincipalId: string
+  nativeSessionId: string
+  nativeTurnId?: string
+  nativeMessageId?: string
+  clientCorrelationId?: string
+  attemptId: string
+  toolUseId: string
+  /** Control request ID, distinct from tool_use and message IDs; absent on PreToolUse hooks. */
+  nativeRequestId?: string
+  agentId?: string
+  parentToolUseId?: string
+  mcpServer?: { name: string; source: string }
+}
 
 export interface ClaudeCallbackRecord {
   identity: ClaudeCallbackIdentity

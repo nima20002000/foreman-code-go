@@ -13,12 +13,9 @@ import {
 import { toolFailure } from '../../shared/results.js'
 import { invokeOperatorTool } from '../invoke.js'
 import type { OperatorRequestContext } from '../types.js'
+import { FILE_REFERENCE_TOOL_NAMES, type FileReferenceToolName } from '../toolNames.js'
 
-/** Backend extension names: the frozen OperatorToolName enumeration predates file references. */
-export const FILE_REFERENCE_TOOL_NAMES = [
-  'reference_files_list', 'reference_file_read', 'reference_file_add', 'reference_file_remove',
-] as const
-export type FileReferenceToolName = typeof FILE_REFERENCE_TOOL_NAMES[number]
+export { FILE_REFERENCE_TOOL_NAMES, type FileReferenceToolName }
 
 function compatibleScope(left: ManagementScope, right: ManagementScope): ManagementScope | undefined {
   const result: ManagementScope = {}

@@ -6,7 +6,7 @@ import { WorkerNativeOutputCommandSchema, WorkerNativeOutputReplySchema, WORKER_
 import { HarnessExecutionError } from './errors.js'
 import type { RequestId } from './codexStdioTransport.js'
 import { harnessProfile } from './qualification/profiles.js'
-import { warnCodexFileError } from './codexFiles/runtime.js'
+import { warnCodexFileError } from './codexFiles/errorLog.js'
 
 export interface CodexNativeOutputSandbox {
   cwd: string

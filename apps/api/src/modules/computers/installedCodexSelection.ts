@@ -5,7 +5,7 @@ import { access, open, readdir, rename, rm } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { z } from 'zod'
-import type { MaintenancePorts } from './maintenance.js'
+import type { MaintenancePorts } from './maintenancePorts.js'
 import {
   readInstalledWorkflowConfiguration, type InstalledWorkflowConfigurationLocation,
 } from '../runs/remote/installedWorkflowConfiguration.js'

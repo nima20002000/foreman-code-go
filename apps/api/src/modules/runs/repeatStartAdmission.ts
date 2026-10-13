@@ -1,7 +1,6 @@
 import { insertAcceptedPlacements } from '../placement/persistence.js'
 import type { RunPlacementAdmissionPort, PreparedRunPlacementAdmission } from '../placement/startPort.js'
 import { randomUUID } from 'node:crypto'
-import type { ScheduleStartGuard } from '../schedules/startGuard.js'
 import type pg from 'pg'
 import { IdSchema } from '@foreman-code/contracts'
 import type { RunDropdownTrigger } from '@foreman-code/contracts/run-snapshots'
@@ -58,6 +57,15 @@ export interface RepeatStartOptions {
   triggerJobId?: string
   /** Internal SCH-04 composition only, never a field in public Start input. */
   schedule?: ScheduleStartGuard
+}
+/** Internal composition only. Never accepted from an HTTP/MCP request. Both
+ * callbacks run on manual Start's branded transaction; throwing rolls it back. */
+export interface ScheduleStartGuard {
+  readonly occurrenceId: string
+  readonly signal?: AbortSignal
+  readonly preparation: RepeatStartPreparation
+  beforeAcceptance(sql: GraphTransactionSql): Promise<void>
+  afterAcceptance(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3): Promise<void>
 }
 export interface RepeatStartOutcome { value: AcceptedWorkflowRunV3; replayed: boolean }
 export interface RepeatStartPreparation {

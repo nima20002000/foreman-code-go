@@ -5,7 +5,7 @@ import { withInteractionResponse, type DurableInteraction, type InteractionRespo
 import { requireAuthorization } from '../../access/policy.js'
 import type { NativeResponseJournal } from '../../harnesses/recovery/responseJournal.js'
 import type { InteractionNativeRuntime } from '../runtimePorts.js'
-import type { InteractionResponder } from '../service.js'
+import type { InteractionResponder } from '../responder.js'
 import type { GraphResumeClaim } from '../deliveryPostgres.js'
 import { INTERACTION_DELIVERY_LEASE_MS, matchingDeliveryEvidence, selectedInteractionResponse,
   type InteractionDeliveryClaim, type NativeDeliveryOutcome } from '../delivery.js'

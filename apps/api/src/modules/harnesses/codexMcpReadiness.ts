@@ -1,10 +1,10 @@
 import { codexRequest } from './codexProtocol.js'
-import type { CodexTransport } from './codexAppServer.js'
+import type { CodexStdioTransport } from './codexStdioTransport.js'
 import { HarnessExecutionError } from './errors.js'
 
 /** Read the session's runtime catalog, since configured servers can fail during startup. */
 export async function requireCodexAppMcp(
-  transport: CodexTransport, threadId: string, serverName: string, signal: AbortSignal,
+  transport: Pick<CodexStdioTransport, 'request'>, threadId: string, serverName: string, signal: AbortSignal,
 ): Promise<void> {
   const cursors = new Set<string>()
   let cursor: string | undefined

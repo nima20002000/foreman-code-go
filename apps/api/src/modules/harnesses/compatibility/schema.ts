@@ -1,4 +1,4 @@
-import { CODEX_RESPONSE_FIELDS, protocolFromBundle } from '../codexProtocol.js'
+import { CODEX_RESPONSE_FIELDS, protocolFromBundle } from '../codexProtocolBundle.js'
 import { CompatibilityCheckError } from './errors.js'
 
 type ObjectValue = Record<string, unknown>

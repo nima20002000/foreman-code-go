@@ -1,5 +1,5 @@
 import { MaintenanceTaskSchema, type MaintenanceTask } from '@foreman-code/contracts/computer-maintenance'
-import type { MaintenancePorts } from './maintenance.js'
+import type { MaintenancePorts } from './maintenancePorts.js'
 
 /** Acknowledged tasks remain readable even when the process that ran them stops. */
 export class MaintenanceTaskStore {

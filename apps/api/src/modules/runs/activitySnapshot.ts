@@ -3,7 +3,7 @@ import { ActivitySnapshotV1Schema, type ActivitySnapshotV1, type ActivitySourceR
   type InteractionSummary, type WorkRef, type WorkSummary, type CiActivity } from '@foreman-code/contracts'
 import { REPEAT_GRAPH_LIMITS, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
-import { RUN_ACTIVITIES_BOUNDS_SQL, RUN_ACTIVITIES_PAGE_SQL } from './activities.js'
+import { RUN_ACTIVITIES_BOUNDS_SQL, RUN_ACTIVITIES_PAGE_SQL } from './activitiesSql.js'
 import { readNativeActivityFacts, projectNativeActivityFacts } from './nativeActivitySnapshot.js'
 import { AGENT_CI_SNAPSHOT_SQL, ciActivityFromRecord } from './agentCiSnapshot.js'
 import { publicRunActivity, type ActivityReadRow } from './activityProjection.js'

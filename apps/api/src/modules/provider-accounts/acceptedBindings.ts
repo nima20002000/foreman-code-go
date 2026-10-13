@@ -5,7 +5,7 @@ import { AcceptedProviderAccountBindingSchema, type AcceptedProviderAccountBindi
 import type { HarnessProfileSelection } from '@foreman-code/contracts/harness-registry'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
-import type { ProviderAccountResolver } from './service.js'
+import type { ProviderAccountResolver } from './ports.js'
 
 export type AccountBindingOwner = 'run-node' | 'operator-command' | 'agent-conversation'
 
