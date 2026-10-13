@@ -1,6 +1,7 @@
 import { once } from 'node:events'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { connect as connectTcp } from 'node:net'
 import { connect } from 'node:tls'
 import { afterAll, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest'
 import { Client } from '@modelcontextprotocol/client'
@@ -103,6 +104,9 @@ describe('production remote review and native recovery through authenticated MCP
 
   it('closes MCP clients while Main is available and completes fixture cleanup', async () => {
     await withRemoteReviewFixture(async fixture => {
+      const origin = new URL(fixture.origin())
+      const idle = connectTcp({ host: origin.hostname, port: Number(origin.port) })
+      await once(idle, 'connect')
       const availability: boolean[] = []
       const closeClient = Client.prototype.close
       const closingClients = vi.spyOn(Client.prototype, 'close').mockImplementation(async function (this: Client) {
@@ -118,8 +122,11 @@ describe('production remote review and native recovery through authenticated MCP
       })
       let timeout: ReturnType<typeof setTimeout> | undefined
       try {
+        const closing = fixture.close()
+        const repeated = fixture.close()
+        expect(repeated).toBe(closing)
         await Promise.race([
-          fixture.close(),
+          closing,
           new Promise<never>((_, reject) => {
             timeout = setTimeout(() => reject(new Error('Remote review fixture cleanup did not complete.')), 60_000)
           }),
@@ -127,6 +134,7 @@ describe('production remote review and native recovery through authenticated MCP
         expect(availability.length).toBeGreaterThanOrEqual(2)
         expect(availability.every(available => available)).toBe(true)
       } finally {
+        idle.destroy()
         clearTimeout(timeout)
         closingClients.mockRestore()
       }
