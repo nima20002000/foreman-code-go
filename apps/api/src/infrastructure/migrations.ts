@@ -1,4 +1,5 @@
 import { workflowAuthoringMigration } from './workflowAuthoringMigration.js'
+import { ciGrantMigration } from './ciGrantMigration.js'
 import { runWorktreesMigration } from './runWorktreesMigration.js'
 import { withTransaction } from './transaction.js'
 import { checkpointOwnerMigration } from './checkpointOwnerMigration.js'
@@ -934,6 +935,7 @@ export const migrations = [
   checkpointOwnerMigration,
   ciResultCacheMigration,
   workflowAuthoringMigration,
+  ciGrantMigration,
 ] as const
 
 export function assertMigrationVersions(entries: readonly { version: number }[]): void {
