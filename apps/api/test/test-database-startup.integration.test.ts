@@ -55,8 +55,8 @@ it('refuses private database startup without the runtime-owned running server', 
 })
 
 // The verification runtime has no Docker; it owns one private PostgreSQL per job instead.
-it.skipIf(process.env.FOREMAN_CODE_VERIFICATION_ENVIRONMENT === 'isolated-job-v1')(
-  'starts separate initialized databases for concurrent host CI jobs from a private checkout', async () => {
+it.skipIf(process.env.FOREMAN_CODE_VERIFICATION_ENVIRONMENT === 'isolated-job-v1').each([0, 1])(
+  'starts separate initialized databases for concurrent host CI jobs from a private checkout, stopping job %i', async stoppedIndex => {
     const checkout = await mkdtemp(join(tmpdir(), 'private-checkout-'))
     await mkdir(join(checkout, 'scripts'), { mode: 0o700 })
     // Host CI checkouts are private: the container user cannot read these files.
@@ -84,13 +84,15 @@ it.skipIf(process.env.FOREMAN_CODE_VERIFICATION_ENVIRONMENT === 'isolated-job-v1
           where datname in ('postgres', 'graphql_test_control')`)).rows)
           .toEqual([{ owner: 'graphql-disposable-test-server' }, { owner: 'graphql-disposable-test-server' }])
       }
-      const first = clients.shift()!
+      const [first] = clients.splice(stoppedIndex, 1)
       const second = clients[0]!
-      await first.query('create table first_job_only (value text)')
+      const pid = (await second.query('select pg_backend_pid() as pid')).rows[0].pid
+      await first!.query('create table first_job_only (value text)')
       expect((await second.query(`select to_regclass('first_job_only') as relation`)).rows).toEqual([{ relation: null }])
-      await first.end()
-      await database('down', jobs[0]!.env)
+      await first!.end()
+      await database('down', jobs[stoppedIndex]!.env)
       expect((await second.query('select 1 as alive')).rows).toEqual([{ alive: 1 }])
+      expect((await second.query('select pg_backend_pid() as pid')).rows).toEqual([{ pid }])
     } finally {
       for (const client of clients) await client.end()
       for (const job of jobs) await database('down', job.env)
