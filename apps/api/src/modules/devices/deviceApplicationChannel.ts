@@ -47,6 +47,7 @@ export class DeviceApplicationChannel {
   private readonly abort = new AbortController()
   private readonly tasks = new Set<Promise<unknown>>()
   private readonly extensions: DeviceNegotiatedExtension[]
+  private readonly bufferBytes: number
   private readonly registrations: DeviceExtensionRegistration[]
   private readonly binding: Readonly<DeviceSessionBinding>
   private readonly pending = new Map<string, Pending>()
@@ -72,6 +73,8 @@ export class DeviceApplicationChannel {
   }) {
     if (options.mainTime !== undefined) this.mainClock.observe(options.mainTime)
     this.extensions = options.extensions.map((item) => Object.freeze({ ...item }))
+    this.bufferBytes = Math.max(DEVICE_APPLICATION_BUFFER_BYTES,
+      ...this.extensions.map(item => item.maxJsonBytes + item.maxBinaryBytes + DEVICE_APPLICATION_STOP_BYTES))
     this.registrations = options.registrations.map((item) => Object.freeze({ ...item }))
     this.binding = Object.freeze({ ...options.binding })
     const close = () => this.close(new DeviceConnectionError('transport'))
@@ -216,7 +219,7 @@ export class DeviceApplicationChannel {
     if (json.byteLength > extension.maxJsonBytes || (bytes?.byteLength ?? 0) > extension.maxBinaryBytes) throw new DeviceApplicationError('payload-too-large')
     const size = json.byteLength + (bytes?.byteLength ?? 0)
     if (stop && kind === 'request' && size > DEVICE_APPLICATION_STOP_BYTES) throw new DeviceApplicationError('payload-too-large')
-    const byteLimit = DEVICE_APPLICATION_BUFFER_BYTES - (stop ? 0 : DEVICE_APPLICATION_STOP_BYTES)
+    const byteLimit = this.bufferBytes - (stop ? 0 : DEVICE_APPLICATION_STOP_BYTES)
     if (this.outboundBytes + size > byteLimit) throw new DeviceApplicationError('backpressure')
     this.outboundBytes += size
     const upload = new AbortController(), cancel = () => upload.abort()
@@ -300,7 +303,7 @@ export class DeviceApplicationChannel {
       const assembling = [...this.assemblies.values()].filter(item => (item.kind === 'request') === (kind === 'request') && item.stop === stop).length
       const occupied = [...active.values()].filter(item => item.stop === stop).length
       const countLimit = stop ? DEVICE_APPLICATION_STOP_IN_FLIGHT : DEVICE_APPLICATION_IN_FLIGHT
-      const byteLimit = DEVICE_APPLICATION_BUFFER_BYTES - (stop ? 0 : DEVICE_APPLICATION_STOP_BYTES)
+      const byteLimit = this.bufferBytes - (stop ? 0 : DEVICE_APPLICATION_STOP_BYTES)
       if (assembling + occupied >= countLimit || this.inboundBytes + total > byteLimit
         || stop && kind === 'request' && (total > DEVICE_APPLICATION_STOP_BYTES || binaryBytes !== 0)) {
         sendFrame(this.options.socket, { type: 'application-reject', id, code: 'backpressure' })

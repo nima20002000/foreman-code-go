@@ -1,3 +1,4 @@
+import { AGENT_SNAPSHOT_MAX_BYTES } from '@foreman-code/contracts/source-materialization'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
@@ -6,8 +7,6 @@ import { SourceError } from './manifest.js'
 import type { GitWorktreePorts } from './gitWorktree.js'
 import { gitFailure } from './gitErrors.js'
 
-/** Bundles of an Agent's own changes are small; larger work belongs on GitHub. */
-export const AGENT_SNAPSHOT_MAX_BYTES = 700 * 1024
 const COMMIT = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u
 const author = { GIT_AUTHOR_NAME: 'Foreman Code', GIT_AUTHOR_EMAIL: 'ci@foreman-code.invalid',
   GIT_COMMITTER_NAME: 'Foreman Code', GIT_COMMITTER_EMAIL: 'ci@foreman-code.invalid' }

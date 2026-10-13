@@ -61,7 +61,9 @@ import { COMPUTER_ACCOUNTS_NAMESPACE, COMPUTER_GITHUB_NAMESPACE, ComputerAccount
 import { createComputerSyncExtension } from '../computers/syncExtension.js'
 import { SyncthingComputer } from '../computers/syncthingComputer.js'
 import { GitHubLoginRunner } from '../computers/githubLogin.js'
-import { AGENT_SNAPSHOT_NAMESPACE, AgentSnapshotRequestSchema, AgentSnapshotResultSchema } from '@foreman-code/contracts/source-materialization'
+import {
+  AGENT_SNAPSHOT_JSON_BYTES, AGENT_SNAPSHOT_NAMESPACE, AgentSnapshotRequestSchema, AgentSnapshotResultSchema,
+} from '@foreman-code/contracts/source-materialization'
 import { snapshotAgentWorktree } from '../sources/agentSnapshot.js'
 import { CI_HOST_NAMESPACE, CI_RUNTIME_NAMESPACE } from '@foreman-code/contracts'
 import { HostCiRunner, hostCiDirectory, systemHostCiPorts } from '../ci-host/runner.js'
@@ -422,7 +424,7 @@ export async function createInstalledWorkerDomains(input: {
         : { operation: 'start', task: await owner.start(request.task, request.commandId) }) }
     },
   })
-  extensions.push({ namespace: AGENT_SNAPSHOT_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
+  extensions.push({ namespace: AGENT_SNAPSHOT_NAMESPACE, version: 1, role: 'server', maxJsonBytes: AGENT_SNAPSHOT_JSON_BYTES, maxBinaryBytes: 0,
     async handle(payload, context) {
       const request = AgentSnapshotRequestSchema.parse(payload)
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
