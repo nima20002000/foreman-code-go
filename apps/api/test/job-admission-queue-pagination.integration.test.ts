@@ -44,7 +44,7 @@ describe.skipIf(!postgresEnabled)('durable build admission queue: pagination', (
         expect(await f.jobs.getQueueTicket(reader.principal, f.workspaceId, ticket.id)).toEqual(currentTicket)
       }
       const cancelled = await f.jobs.cancelQueued(writer.principal, 'http', f.workspaceId,
-        { commandId: randomUUID(), ticketId: ticket.id, expectedRevision: ticket.revision })
+        { commandId: randomUUID(), ticketId: ticket.id, expectedRevision: currentTicket.revision })
       expect(cancelled.state).toBe('terminal')
       expect(cancelled.terminalReason).toBe('cancelled')
       expect(await f.jobs.getQueueTicket(reader.principal, f.workspaceId, ticket.id)).toEqual(cancelled)
