@@ -121,7 +121,7 @@ function fakeComputers(github: Record<string, boolean> = {}, cloud: boolean | { 
 export async function fixture(options: { repository?: boolean; github?: Record<string, boolean>; unitInventory?: CiUnitInventory
   integrationInventory?: CiIntegrationInventory
   cloud?: boolean | { github: number; circleci: number }; agent?: boolean; hostSlots?: number; cloudSystemd?: boolean
-  changedFiles?: string[]; priorityGrant?: boolean
+  changedFiles?: string[]
   supersession?: { branch(commit: string): string | null; isAncestor(ancestor: string, commit: string): boolean }
   repositoryRunner?: { commits: CiCommits; endpoint: HostCiEndpoint } } = {}) {
   const saved = options.agent ? makeCurrentWorkflowFixture(randomUUID()) : undefined
@@ -192,8 +192,7 @@ export async function fixture(options: { repository?: boolean; github?: Record<s
   if (runtime) {
     try {
       await runtime.db.pool.query(`update management_principals set grants=grants || $2::jsonb where id=$1`,
-        [runtime.authorizationPrincipalId, JSON.stringify([{ actions: [...CI_RUN_ACTIONS, ...CI_GET_ACTIONS,
-          ...(options.priorityGrant ? ['jobs:prioritize'] : [])],
+        [runtime.authorizationPrincipalId, JSON.stringify([{ actions: [...CI_RUN_ACTIONS, ...CI_GET_ACTIONS],
           scope: { workspaceIds: [workspaceId] } }])])
       runtime.f.run = await withExclusiveGraphConnection(runtime.db.pool, connection => connection.transaction(async sql => {
         const client = sql as unknown as pg.PoolClient

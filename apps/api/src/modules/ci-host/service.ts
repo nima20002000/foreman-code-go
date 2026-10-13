@@ -123,8 +123,7 @@ export class HostCiService {
       if (source === 'http') await this.commands.recordDenied(caller.id, source, 'ci.run', input.workspaceId ?? 'ci')
       throw new DomainError('ACCESS_DENIED', 'Only an Operator can request a CI gate or target a smoke computer.', 403)
     }
-    const actions = input.priority === 'high' && caller.audience !== 'operator'
-      ? [...CI_RUN_ACTIONS, 'jobs:prioritize' as const] : CI_RUN_ACTIONS
+    const actions = CI_RUN_ACTIONS
     const scope = await this.authority.resolve(caller, input.workspaceId, actions).catch(async error => {
       if (source === 'http' && error instanceof DomainError && [401, 403, 404].includes(error.status)) {
         await this.commands.recordDenied(caller.id, source, 'ci.run', input.workspaceId ?? 'ci')
@@ -397,7 +396,7 @@ export class HostCiService {
   async cancel(caller: ManagementPrincipal,
     input: { workspaceId?: string | undefined; ticketId: string; commandId?: string | undefined },
     source: 'http' | 'mcp' = 'mcp'): Promise<{ run: CiRunRecord }> {
-    const scope = await this.authority.resolve(caller, input.workspaceId, ['jobs:cancel'])
+    const scope = await this.authority.resolve(caller, input.workspaceId, CI_RUN_ACTIONS)
     const run = await this.read(input.ticketId, scope.workspaceId)
     assertCiReadAccess(caller, scope.executionId, run)
     this.stoppingRuns += 1

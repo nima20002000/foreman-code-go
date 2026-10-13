@@ -24,7 +24,7 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'The log reports setup milliseconds before the suite. '
   + 'gate=true with suite=integration, scope=full and no file or partition selection requests a complete '
   + 'typecheck+lint+unit+integration gate. Only Operators, including orchestrators using Operator credentials, can request gates; '
-  + 'all existing CI start, cancellation and workspace grants still apply. Gates cannot be superseded. '
+  + 'The ci action and workspace scope apply. Gates cannot be superseded. '
   + 'Integration files are assigned longest-first from recorded durations: each build computer runs one exclusive gate job '
   + 'with CPU/memory-sized internal shards (12 on a sufficiently provisioned 16-core computer). '
   + 'Cloud slots run checks first and integration overflow that reduces the predicted build-computer critical path. '
@@ -40,8 +40,7 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'scope defaults to affected; scope=full always runs everything. '
   + 'Deferred slow integration parts wait for fast parts to finish. Full and gate requests continue after fast failures '
   + 'to report both tiers; affected requests skip the slow tier after a fast failure. Canceled or lost fast parts stop it. '
-  + 'priority defaults to normal. Requesting high requires Operator role or an explicit workspace jobs:prioritize grant '
-  + 'on the Agent’s live authorization principal, in addition to all CI run grants. '
+  + 'priority defaults to normal. Any caller authorized for ci can request high priority. '
   + 'Commits changing only CI infrastructure automatically receive high priority based on their Git changes, '
   + 'independent of caller files. Cloud and build-computer queues order high before normal, oldest first within each. '
   + 'ci_get returns persisted priority and priorityReason, plus queue position and waiting reason for queued tickets. '
@@ -63,7 +62,7 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'Caller files remain supported; '
   + 'ci-remote continues to compute and send its selection. '
   + 'ci_get reads back the persisted baseCommit, scope and files. Empty affected selections pass without launching a runner. '
-  + 'Requires the same CI run grants for either scope. Integration automatically targets four minutes of measured test time '
+  + 'Requires ci for either scope. Integration automatically targets four minutes of measured test time '
   + 'per part, bounded by free CI slots; partitions (2–64, integration only) caps that count. Heavy measured files stay alone '
   + 'when capacity permits. ci_get includes expectedDurationMs (test time plus 90 seconds setup); runner-derived affected '
   + 'selections use full-suite estimates. Requires scripts/ci-suite.sh and scripts/ci-files.mjs. '
@@ -88,7 +87,7 @@ export const CI_CAPABILITY_DETAIL = 'ci_run runs one suite (install, typecheck, 
   + 'failed, skipped or unreported results are never cached; full scope, gates, smoke and runner-selected runs run every file. '
   + 'Poll every ticket in partitions. Retrying commandId returns the '
   + 'original tickets. ci_get returns state (queued, starting, running, passed, failed, canceled, lost), current step, '
-  + 'ci_run requires jobs:cancel as well as the CI start grants. A newer descendant commit cancels active tickets '
+  + 'ci_run requires the ci action. A newer descendant commit cancels active tickets '
   + 'of the same suite, repository, workspace and requester on the same confirmed branch or Agent execution. '
   + 'Main, unrelated branches and noSupersede=true tickets are kept. ci_get returns supersededBy and '
   + 'the message superseded by <ticket>; follow that replacement ticket and all its partitions. '
@@ -136,7 +135,7 @@ const actions: Record<CiTool, ManagementAction[]> = {
   ci_run: CI_RUN_ACTIONS,
   ci_get: CI_GET_ACTIONS,
   ci_computers_list: CI_GET_ACTIONS,
-  ci_cancel: ['jobs:cancel'],
+  ci_cancel: CI_RUN_ACTIONS,
   ci_logs_read: CI_GET_ACTIONS,
   ci_list: [...CI_GET_ACTIONS, 'runs:read'],
 }
@@ -189,7 +188,7 @@ export function registerCiTools(server: McpServer, context: CiContext) {
     outputSchema: CiComputersOutputSchema, annotations: read,
   }, input => invoke('ci_computers_list', () => ci.computers(context.principal, input)))
   if (available('ci_cancel')) server.registerTool('ci_cancel', {
-    description: 'Cancel a queued or running CI run by ticketId. Requires jobs:cancel. Optional commandId identifies '
+    description: 'Cancel a queued or running CI run by ticketId. Requires ci. Optional commandId identifies '
       + 'the audited request; replay does not duplicate the successful transition. ' + CI_CAPABILITY_DETAIL,
     inputSchema: operator ? OperatorCiCancelInputSchema : CiCancelInputSchema,
     outputSchema: CiCancelOutputSchema,

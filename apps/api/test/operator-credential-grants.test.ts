@@ -22,5 +22,8 @@ describe('explicit operator credential grants', () => {
     expect(() => parseCredentialArguments([
       'issue', '--name', 'Worker', '--audience', 'worker', '--grant', 'ci',
     ])).toThrow()
+    expect(() => parseCredentialArguments([
+      'issue', '--name', 'Worker', '--audience', 'worker', '--grant', 'devices:metrics:read',
+    ])).toThrow()
   })
 })
