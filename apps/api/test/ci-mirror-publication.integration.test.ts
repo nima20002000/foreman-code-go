@@ -41,7 +41,7 @@ it('admits MCP requests and runs own-computer work while cloud publication is pe
     capabilities: async () => ({ parts: false, integrationPartitions: false, affected: false }),
   } } })
   await f.pool.query(`update workspaces set record=record || $2::jsonb where id=$1`,
-    [f.workspaceId, JSON.stringify({ ciMirror: { owner: 'octo', name: 'site-ci' } })])
+    [f.workspaceId, JSON.stringify({ ciMirror: { provider: 'github', owner: 'octo', name: 'site-ci' } })])
   const input = { suite: 'lint', scope: 'full', commit: mirror.commit, noSupersede: true }
   const run = async () => CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
     ...input, commandId: randomUUID(),
@@ -68,7 +68,8 @@ it('admits MCP requests and runs own-computer work while cloud publication is pe
     expect(localRun.runId).toBe(own.ticketId)
     expect(mirror.dispatched).toHaveLength(0)
     release()
-    await expect.poll(read).toMatchObject({ mirrorPublication: { state: 'ready' } })
+    await expect.poll(read, { timeout: 5000 }).toMatchObject({ mirrorPublication: { state: 'ready' } })
+    await mirror.cloud.waitForMirrorCleanup('octo/site', 'octo/site-ci')
     const persisted = (await f.pool.query('select record from ci_runs where id=$1', [cloudRun.ticketId])).rows[0].record
     expect(persisted.mirrorPublication.state).toBe('ready')
     expect(mirror.dispatched).toHaveLength(1)

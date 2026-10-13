@@ -37,9 +37,10 @@ it.each(['github', 'circleci'] as const)('records pending publication and answer
     expect(f.dispatched).toHaveLength(0)
     expect(f.circle.triggered).toHaveLength(0)
     release()
-    await expect.poll(async () => (await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 })))
+    await expect.poll(async () => (await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 })), { timeout: 5000 })
       .toMatchObject({ run: { mirrorPublication: { state: 'ready', snapshotCommit: expect.any(String),
         timings: { pushMs: expect.any(Number), totalMs: expect.any(Number) } } } })
+    await f.cloud.waitForMirrorCleanup('octo/site', 'octo/site-ci')
     expect(provider === 'github' ? f.dispatched : f.circle.triggered).toHaveLength(1)
   } finally {
     release()
@@ -94,9 +95,27 @@ it('records privacy rejection without publishing or dispatching', async () => {
   expect(await f.cloud.handle({ operation: 'start', runId, workspaceId: 'ci-workspace',
     repository: 'octo/site', commit: f.commit, suite: 'lint', deferMirror: true }))
     .toMatchObject({ run: { mirrorPublication: { state: 'pending' } } })
-  await expect.poll(async () => f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
+  await expect.poll(async () => f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }), { timeout: 5000 })
     .toMatchObject({ run: { state: 'failed', mirrorPublication: { state: 'failed' },
       message: expect.stringContaining('Not published to the public CI mirror') } })
   expect(f.mirrorGit('rev-parse', 'main')).toBe(head)
   expect(f.dispatched).toHaveLength(0)
+})
+
+it('retains cloud ownership when the dispatch reply is lost after publication succeeds', async () => {
+  const f = await fixture()
+  const original = f.ports.run.bind(f.ports)
+  vi.spyOn(f.ports, 'run').mockImplementation(async (file, args, options) => {
+    const result = await original(file, args, options)
+    if (file === 'gh' && args[0] === 'workflow' && args[1] === 'run') throw new Error('Dispatch reply lost')
+    return result
+  })
+  const runId = randomUUID()
+  expect(await f.cloud.handle({ operation: 'start', runId, workspaceId: 'ci-workspace',
+    repository: 'octo/site', commit: f.commit, suite: 'lint', scope: 'full', deferMirror: true }))
+    .toMatchObject({ run: { mirrorPublication: { state: 'pending' } } })
+  await f.cloud.waitForMirrorCleanup('octo/site', 'octo/site-ci')
+  expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
+    .toMatchObject({ run: { state: 'starting', mirrorPublication: { state: 'ready' } } })
+  expect(f.dispatched).toHaveLength(1)
 })
