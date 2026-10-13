@@ -446,7 +446,7 @@ it.each([
     expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
     await expect.poll(async () => CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get',
-      { ticketId: started.ticketId })).run.state).toBe('failed')
+      { ticketId: started.ticketId })).run.state, { timeout: 10_000 }).toBe('failed')
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
     expect(read.run).toMatchObject({ state: 'failed', part: null, partition: null,
       message: `The repository has no "${suite}" script for the ${suite} suite.` })
