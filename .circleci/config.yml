@@ -28,8 +28,8 @@ parameters:
     type: string
     default: ''
   expected_duration_ms:
-    type: string
-    default: '0'
+    type: integer
+    default: 0
   durations:
     type: string
     default: '{}'

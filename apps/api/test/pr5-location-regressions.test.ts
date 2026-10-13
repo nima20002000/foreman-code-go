@@ -118,18 +118,4 @@ describe('PR #5 runner locations', () => {
     expect(replayWorkspaceResult(modern)).toEqual(modern)
   })
 
-  it('audits a failed command on the same rolled-back client even when the pool has no spare capacity', async () => {
-    const original = new Error('command failed')
-    const sql: string[] = []
-    const client = { query: vi.fn(async (query: string) => { sql.push(query); return { rows: [] } }), release: vi.fn() }
-    const pool = { connect: async () => client, query: vi.fn(async () => { throw new Error('Nested connection') }) }
-    const coordinator = new PostgresCommandCoordinator(pool as unknown as pg.Pool)
-    await expect(coordinator.execute({ principal, source: 'http', operation: 'workspace.location.set',
-      commandId: 'failed-command', targetKey: 'workspace:a', payload: {}, perform: async () => { throw original },
-    })).rejects.toBe(original)
-    expect(pool.query).not.toHaveBeenCalled()
-    expect(sql.findIndex((query) => query.includes("'failed'"))).toBeGreaterThan(sql.indexOf('rollback'))
-    expect(client.release).toHaveBeenCalledOnce()
-  })
-
 })

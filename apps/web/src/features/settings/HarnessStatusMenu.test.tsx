@@ -130,7 +130,9 @@ describe('HarnessStatusMenu', () => {
       const link = await screen.findByRole('button', { name: `${name}: ${label}` })
       const open = vi.spyOn(window, 'open').mockReturnValue(null)
       fireEvent.click(link, { ctrlKey: true })
-      expect(open).toHaveBeenCalledWith(expect.stringContaining(`/settings/harnesses?harness=${name.toLowerCase()}`), '_blank')
+      expect(open).toHaveBeenCalledExactlyOnceWith(
+        `/settings/harnesses?harness=${name.toLowerCase()}&section=model`, '_blank', 'noopener',
+      )
       open.mockRestore()
       expect(link.querySelector('.harness-status-light')).toHaveClass(`harness-status-light--${state}`)
       await expectDetails(link, new RegExp(`${name}.*${label}.*profile qualification are checked separately`))

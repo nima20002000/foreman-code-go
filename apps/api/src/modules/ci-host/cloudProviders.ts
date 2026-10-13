@@ -262,8 +262,7 @@ export class CircleCiProvider implements CloudProvider {
   async find(run: CloudRun) {
     if (!run.providerRunId) return null
     try {
-      const view = JSON.parse(await this.circleci(['run', 'get', run.providerRunId, '--json'], 15_000)) as
-        { workflows?: unknown[] }
+      const view = await this.pipeline(run, 15_000)
       return view.workflows?.length ? run.providerRunId : null
     } catch (error) {
       const elapsed = this.ports.now().getTime() - Date.parse(run.dispatch?.at ?? run.startedAt)
@@ -274,11 +273,18 @@ export class CircleCiProvider implements CloudProvider {
     }
   }
 
-  private async pipeline(run: CloudRun) {
-    return JSON.parse(await this.circleci(['run', 'get', run.providerRunId!, '--json'])) as {
-      phase?: string; outcome?: string; stopped_at?: string
+  private async pipeline(run: CloudRun, timeoutMs?: number) {
+    const view = JSON.parse(await this.circleci(['run', 'get', run.providerRunId!, '--json'], timeoutMs)) as {
+      phase?: string; outcome?: string; current_outcome?: string; stopped_at?: string
+      errors?: { type: string; message: string }[]
       workflows?: { phase?: string; outcome?: string; stopped_at?: string; jobs?: { id: string }[] }[]
     }
+    if (view.errors?.length && (view.phase === 'ended' || view.current_outcome === 'not_run')) {
+      const message = view.errors.map(error => `${error.type}: ${error.message}`).join('; ')
+      throw new DomainError('CI_CLOUD_PIPELINE_FAILED', `${this.label} pipeline failed: ${message}`, 502,
+        { configError: view.errors.some(error => error.type === 'config') })
+    }
+    return view
   }
 
   private async job(run: CloudRun) {

@@ -1,5 +1,6 @@
 import type { PublicProjectionReader } from '../src/modules/run-graph/publicProjectionReader.js'
 import { readPublicProjectionLocked } from '../src/modules/run-graph/compactSnapshot.js'
+import { CURRENT_NATIVE_ACTIVITIES_SQL } from '../src/modules/run-graph/currentActivity.js'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import type pg from 'pg'
@@ -189,10 +190,10 @@ export class ProjectionDatabase {
         ? [{ id: this.scope.runId, workspace_id: this.scope.workspaceId, workflow_id: this.scope.workflowId }] : [])
       // Empty, ordinary workflow cut. Each named query is an explicit physical
       // table read: no catch-all SELECT branch, native proof or history fallback.
+      if (q === CURRENT_NATIVE_ACTIVITIES_SQL.replace(/\s+/g, ' ').trim()) return result()
       for (const prefix of [
         'select distinct on (e.workflow_node_id) e.id',
         'select d.record from run_repeat_resolutions',
-        'select a.execution_id,a.workflow_node_id,a.attempt,a.work_kind',
         'with interactions as ( select e.workflow_node_id as node_id,count(*)::text,',
         'select b.record,b.bound_at from run_repeat_bindings',
         'select i.record from durable_interactions',

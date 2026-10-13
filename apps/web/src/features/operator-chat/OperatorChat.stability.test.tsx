@@ -280,13 +280,17 @@ it.each(['event', 'reconnect', 'history'] as const)('settles an observed tool ou
     activityNextCursor: trigger === 'history' ? '2' : null }
   let complete = false
   const exact = vi.fn()
+  const historyRead = vi.fn()
   server.use(http.get('/api/operator/conversations/:id/activity', ({ request }) => {
     const params = new URL(request.url).searchParams
     if (params.get('activityId') === running.id) {
       exact(params.get('requestId'))
       return HttpResponse.json({ activities: [{ ...running, status: 'completed', output: 'Saved result', revision: 2 }], nextCursor: null })
     }
-    return HttpResponse.json({ activities: [complete ? { ...running, status: 'completed', revision: 2 } : running], nextCursor: null })
+    historyRead(params.get('before'))
+    return HttpResponse.json({ activities: [complete
+      ? { ...running, status: 'completed', output: 'Saved result', revision: 2 }
+      : running], nextCursor: null })
   }))
   mount()
   await screen.findByRole('textbox', { name: 'Message' })
@@ -299,13 +303,15 @@ it.each(['event', 'reconnect', 'history'] as const)('settles an observed tool ou
     data: { revision: 2, activity: { ...running, status: 'completed', revision: 2 } } }))
   else act(() => listeners.reconnect())
   await waitFor(() => expect(exact).toHaveBeenCalledWith('accepted-turn'))
-  await waitFor(() => {
-    const cached = client.getQueryData<OperatorConversationState>(['operator-chat', 'conversation', 'a'])
-    const history = client.getQueriesData<{ pages: Array<{ activities: typeof running[] }> }>({
-      predicate: query => query.queryKey[0] === 'operator-chat' && query.queryKey[1] === 'activity',
-    })[0]?.[1]
-    const tool = trigger === 'history' ? history?.pages[0]?.activities[0] : cached?.activities?.find(item => item.id === running.id)
-    expect(tool).toMatchObject({ status: 'completed', revision: 2 })
-    expect(screen.queryByText('Running')).not.toBeInTheDocument()
-  })
+  await screen.findByText('Tool · Newer command 99')
+  if (trigger !== 'history') {
+    await waitFor(() => expect(screen.queryByText('Tool · Old command')).not.toBeInTheDocument())
+    fireEvent.click(await screen.findByRole('button', { name: 'Load earlier activity' }))
+  }
+  const tool = await screen.findByText('Tool · Old command')
+  fireEvent.click(tool.closest('summary')!)
+  expect(await screen.findByText('Saved result')).toBeVisible()
+  expect(historyRead).toHaveBeenCalledExactlyOnceWith('2')
+  expect(screen.getAllByText('Tool · Old command')).toHaveLength(1)
+  expect(screen.queryByText('Running')).not.toBeInTheDocument()
 })
