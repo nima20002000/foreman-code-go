@@ -5,6 +5,25 @@ import { access, interactions, native, production, project, registerProductionLi
 
 registerProductionLifecycleFixture()
 
+it('persists a checkpoint-bound approval wait with separate application and checkpoint schemas', async () => {
+  const { run, pending } = await start('user')
+  const response = await production.app.inject({
+    method: 'GET',
+    url: `/api/user/interactions/${pending.id}`,
+  })
+  expect(response.statusCode, response.body).toBe(200)
+  expect(response.json().interaction).toMatchObject({
+    id: pending.id,
+    runId: run.id,
+    status: 'pending',
+    deliveryState: 'not_started',
+    graphThreadId: run.id,
+    graphInterruptId: expect.any(String),
+  })
+  expect((await runs.get(run.id))?.executionState).toBe('waiting')
+  expect(native.responses).toBe(0)
+})
+
 for (const change of ['location', 'authority'] as const) it(`rejects a waiting continuation before inspection, attachment or delivery after ${change} changes`, async () => {
   const { run, issuer, pending } = await start('user')
   const before = { ...native }
