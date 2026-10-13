@@ -38,6 +38,8 @@ describe.skipIf(!postgresEnabled)('BR1-004: approval failure lifecycle publicati
       await expect(f.runs.finishCleanup(f.run.id, false, owner)).rejects.toMatchObject({ code: 'REPEAT_CLEANUP_PENDING' })
     } finally { await owner.release() }
     const stillUnsettled = await compare()
+    expect(stillUnsettled.state).toEqual(failed.state)
+    expect(stillUnsettled.asOfSequence).toBe(failed.asOfSequence)
     expect(stillUnsettled.state.run.cleanupPending).toBe(true)
     expect(stillUnsettled.state.nodes.find((node) => node.state.workflowNodeId === f.reviewer.workflowNodeId)!.attention.cleanupPending).toBe(true)
   }, 30000)
