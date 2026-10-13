@@ -113,7 +113,7 @@ it('reconciles a changed Agent profile through authenticated MCP and admits the 
     const first = CurrentWorkflowSaveResultSchema.parse(await call('workflow_save_v3', initial))
     const another = await base.create()
     const otherInput = { ...another, expectedAgentConfigurationVersionIds: initial.expectedAgentConfigurationVersionIds,
-      expectedLocationRevision: placement.locationRevision, graph: { ...another.graph, nodes: initial.graph.nodes } }
+      graph: { ...another.graph, nodes: initial.graph.nodes } }
     const other = CurrentWorkflowSaveResultSchema.parse(await call('workflow_save_v3', otherInput))
     const selected = await saveProfile('changed-model')
     const updateInput = { workspaceId, agentId, commandId: randomUUID(), expectedRevision: created.metadataRevision,

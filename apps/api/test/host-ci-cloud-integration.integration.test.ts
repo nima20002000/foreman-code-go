@@ -132,18 +132,20 @@ it('uses every cloud slot for ordinary integration files and persists throughput
   const durations = Object.fromEntries(files.map(file => [file, 1000]))
   try {
     const circle = f.computers.filter(computer => computer.hostRef.provider === 'circleci')
-    for (const [index, seconds] of [[0, 200], [1, 400]] as const) {
-      const computer = circle[index]!
+    const github = f.computers.find(computer => computer.hostRef.provider === 'github')!
+    const historyFile = 'apps/api/test/history.integration.test.ts'
+    for (const [computer, seconds] of [[circle[0]!, 200], [github, 400]] as const) {
       const finishedAt = new Date(Date.now() - 60_000).toISOString()
       const startedAt = new Date(Date.parse(finishedAt) - seconds * 1000).toISOString()
       const history = CiRunRecordSchema.parse({ id: randomUUID(), workspaceId: f.workspaceId,
         suite: 'integration', commit: 'b'.repeat(40), repository: 'octo/site',
-        partition: { index: index + 1, count: 3, weights: [100, 1, 1], hostIndexes: [0] },
+        gate: true, scope: 'full', files: [historyFile], partition: null,
         groupId: randomUUID(), state: 'passed', step: 'integration', exitCode: 0, message: null,
         computer: { hostRef: computer.hostRef, label: computer.label }, queuedAt: startedAt, startedAt, finishedAt,
         initiator: { principalId: 'principal-history', executionId: null } })
-      await f.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record)
-        values($1,$2,$3,'passed',$4::jsonb)`, [history.id, f.workspaceId, history.groupId, JSON.stringify(history)])
+      await f.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record,durations)
+        values($1,$2,$3,'passed',$4::jsonb,$5::jsonb)`,
+        [history.id, f.workspaceId, history.groupId, JSON.stringify(history), JSON.stringify({ [historyFile]: 400_000 })])
     }
     for (const file of files) {
       await f.pool.query('insert into ci_file_durations(repository,file,duration_ms) values($1,$2,$3)',
@@ -168,9 +170,12 @@ it('uses every cloud slot for ordinary integration files and persists throughput
     const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
     expect(read.partitions).toHaveLength(8)
     const faster = read.partitions!.find(run => run.computer?.label === circle[0]!.label)!
-    const slower = read.partitions!.find(run => run.computer?.label === circle[1]!.label)!
+    const slower = read.partitions!.find(run => run.computer?.label === github.label)!
     const weights = faster.partition!.weights!
     expect(weights[faster.partition!.index]! / weights[slower.partition!.index]!).toBeCloseTo(2, 1)
+    for (const run of read.partitions!.filter(run => run.computer?.hostRef.provider === 'circleci')) {
+      expect(weights[run.partition!.index]).toBe(weights[faster.partition!.index])
+    }
     const work = (run: typeof faster) => integrationPartition(run.files, durations, run.partition!).length
     expect(work(faster) / work(slower)).toBeGreaterThan(1.7)
     expect(work(faster) / work(slower)).toBeLessThan(2.3)

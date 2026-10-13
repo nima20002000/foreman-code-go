@@ -56,6 +56,7 @@ it.each([false, true])('fails an ended CircleCI pipeline with errors on the next
   if (reply.operation !== 'start') throw new Error('Expected a start reply')
   const message = 'Type error for argument expected_duration_ms: expected type: string, actual value: "221366" (type integer)'
   f.circle.runView = { phase: 'ended', current_outcome: 'not_run', errors: [{ type: 'config', message }], workflows: [] }
+  f.advance(4_000)
   const main = cloudService(f.cloud, reply.run, f.commit)
   await main.service.dispatch()
   expect(await main.read()).toMatchObject({ run: { state: 'failed', exitCode: 1, message: expect.stringContaining(message) } })
@@ -85,7 +86,7 @@ it('runs the same published files on CircleCI and reads its result, log and dura
     .toMatchObject({ run: { provenance: { sourceCommit: f.commit, workflowCommit: snapshot, workflowRef } } })
   expect(f.circle.triggered).toEqual([['run', 'trigger', '--project', 'gh/octo/site-ci', '--branch', workflowRef,
     '--parameter', `run_id=${runId}`, '--parameter', 'suite=integration',
-    '--parameter', 'slice=s:1-2', '--parameter', 'expected_duration_ms=0', '--parameter', 'scope=full', '--json']])
+    '--parameter', 'slice=s:1,3', '--parameter', 'expected_duration_ms=0', '--parameter', 'scope=full', '--json']])
   const read = () => f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536, durations: true })
   expect(await read()).toMatchObject({ run: { state: 'running' } })
   f.circle.outcome = 'failed'; f.circle.durations = { 'apps/api/test/c.integration.test.ts': 180 }

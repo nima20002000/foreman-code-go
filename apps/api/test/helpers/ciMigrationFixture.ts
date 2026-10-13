@@ -1,11 +1,21 @@
 import { randomUUID } from 'node:crypto'
 import { CiPreparationRecordSchema } from '../../src/modules/jobs/ciPreparationRepository.js'
 import { buildComputerKey, buildComputerTarget } from '../../src/modules/settings/buildComputers.js'
+import { workflowAuthoringMigration } from '../../src/infrastructure/workflowAuthoringMigration.js'
+import { withTransaction } from '../../src/infrastructure/transaction.js'
 import { graphFixture } from '../eng04-graph-composition-fixture.js'
 import { currentDatabase } from './eng04CurrentDatabase.js'
 import { commit, builder, mainId, preparationProfile, qualifiedPreparationProfile } from './ciPreparationFixture.js'
 
 export async function ciMigrationFixture(database: Awaited<ReturnType<typeof currentDatabase>>) {
+  // Current authoring is independent of the historical CI schema exercised by this fixture.
+  await withTransaction(database.pool, async sql => {
+    const applied = await sql.query('select 1 from application_migrations where version=$1',
+      [workflowAuthoringMigration.version])
+    if (applied.rowCount) return
+    await sql.query(workflowAuthoringMigration.sql)
+    await sql.query('insert into application_migrations(version) values($1)', [workflowAuthoringMigration.version])
+  })
   const workflow = await graphFixture(database, { form: 'sequential' })
   try {
     await database.pool.query('update application_installation set id=$1 where singleton=true', [mainId])

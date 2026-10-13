@@ -643,7 +643,7 @@ it.each([
     for (const [index, run] of planned.entries()) {
       expect(run).toMatchObject(canceled[index]!)
       expect(run).toMatchObject({ state: 'canceled', partition: { index, count: partitions } })
-      expect(run.partition?.weights).toEqual(Array.from({ length: partitions }, () => 1))
+      expect(run.partition?.weights).toEqual(Array.from({ length: partitions }, () => 8))
       expect(run.partition?.weights).toHaveLength(partitions)
       expect(run.partition).toMatchObject({ weights: planned[0]!.partition!.weights, hostIndexes })
     }

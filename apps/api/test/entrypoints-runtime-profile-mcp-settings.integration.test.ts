@@ -128,16 +128,25 @@ describe.skipIf(!postgresEnabled)('runtime profile authenticated HTTP/MCP parity
         payload: { ...edit, commandId: randomUUID() } })
       expect(conflict.statusCode, conflict.body).toBe(409)
       expect(conflict.json().error.code).toBe('REVISION_CONFLICT')
-      const invalid = await client.callTool({ name: 'job_runtime_profile_save', arguments: {
-        workspaceId: f.workspaceId, ...edit, commandId: randomUUID(), expectedRevision: 2,
+      const suppliedReview = await client.callTool({ name: 'job_runtime_profile_save', arguments: {
+        workspaceId: f.workspaceId, ...edit, commandId: randomUUID(), expectedRevision: second.revision,
         spec: { ...edit.spec, approvalConfig: { approvalLifetimeMs: JOB_VERIFICATION_APPROVAL_LIFETIME_MS,
           review: { reviewedByPrincipalId: f.owner.principal.id, reviewedAt: new Date().toISOString(), decisionDigest: 'a'.repeat(64) } } },
       } })
+      expect(suppliedReview.isError, JSON.stringify(suppliedReview.content)).not.toBe(true)
+      const third = verificationSaveResult.parse(decodeMcpToolResult(suppliedReview)).profile
+      expect(third.revision).toBe(3)
+      expect(third.spec).toEqual(second.spec)
+      expect(third.approvalConfig).toEqual(second.approvalConfig)
+      const invalid = await client.callTool({ name: 'job_runtime_profile_save', arguments: {
+        workspaceId: f.workspaceId, ...edit, commandId: randomUUID(), expectedRevision: third.revision,
+        spec: { ...edit.spec, approvalConfig: { approvalLifetimeMs: 0 } },
+      } })
       expect(invalid.isError).toBe(true)
-      expect((await f.db.pool.query('select record from job_runtime_profiles where id=$1', [first.id])).rows[0].record).toEqual(second)
+      expect((await f.db.pool.query('select record from job_runtime_profiles where id=$1', [first.id])).rows[0].record).toEqual(third)
       const history = (await f.db.pool.query('select record from job_runtime_profile_versions where profile_id=$1 order by revision',
         [first.id])).rows.map(row => row.record)
-      expect(history).toEqual([first, second])
+      expect(history).toEqual([first, second, third])
       expect(f.producer.run).not.toHaveBeenCalled()
     } finally { await f.close() }
   }, 120_000)
