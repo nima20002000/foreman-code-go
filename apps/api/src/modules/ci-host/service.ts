@@ -31,6 +31,7 @@ import { collectCiResults } from './resultCollection.js'
 import { sanitizeCiText, serializeCiJson } from './text.js'
 import { isGitHubComputer, needsSystemdExecutor, supportsUserSystemd } from './computerCapabilities.js'
 import { weighCiPartitions } from './partitionPlanning.js'
+import { readQueuedCiRuns } from './queuedRuns.js'
 
 /** CI reads are idempotent: one retry after a lock or statement timeout, then a typed retryable error. */
 async function retryRead<T>(work: () => Promise<T>): Promise<T> {
@@ -768,20 +769,6 @@ export class HostCiService {
     return queued.filter(run => !run.deferred || !waiting.has(run.groupId))
   }
 
-  private async queuedRuns() {
-    // Check parts must remain visible even behind more than one batch of integration partitions.
-    const queuedRows = (await this.pool.query<{ record: unknown; durations: CiDurations | null }>(
-      `select record,durations from ci_runs where id in
-        (select id from ci_runs where state='queued' and record->>'supersededBy' is null order by ${CI_QUEUE_ORDER} limit 50)
-        or id in (select id from ci_runs where state='queued' and record->>'supersededBy' is null
-          and record->>'suite'<>'integration'
-          order by ${CI_QUEUE_ORDER} limit 50)
-        order by ${CI_QUEUE_ORDER}`)).rows
-    const parsed = queuedRows.map(row => CiRunRecordSchema.parse(row.record))
-    const durations = new Map(queuedRows.map((row, index) => [parsed[index]!.id, row.durations]))
-    return { parsed, durations }
-  }
-
   private async gateReservation() {
     const rows = (await this.pool.query<{ record: unknown }>(`select record from ci_runs
       where state in ('queued','starting','running','failed','lost') and record->>'gate'='true'
@@ -948,7 +935,7 @@ export class HostCiService {
     const used = new Map<string, number>()
     for (const row of busyRows) used.set(row.host_key, (used.get(row.host_key) ?? 0) + 1)
     const { gate, reservedHosts } = await this.gateReservation()
-    const { parsed, durations } = await this.queuedRuns()
+    const { parsed, durations } = await readQueuedCiRuns(this.pool)
     const hasQueuedGate = parsed.some(run => run.gate)
     const totals = new Map<string, number>()
     const gateShards = new Map<string, number>()
