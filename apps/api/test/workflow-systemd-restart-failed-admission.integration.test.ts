@@ -8,10 +8,19 @@ describe('installed Main-local workflows across systemd restart', () => {
     const fixture = await installationUpdateFixture({ workflow: 'interval', executionHost: 'main',
       installedMainService: true, sourceAccessMode: 'read-only' })
     try {
-      const response = await fetch(new URL('/api/runtime/build-identity/v1', fixture.origin()))
+      const buildIdentityUrl = () => new URL('/api/runtime/build-identity/v1', fixture.origin())
+      const readBuildIdentity = () => fetch(buildIdentityUrl())
+      const denied = await fetch(buildIdentityUrl(), {
+        headers: { authorization: 'Bearer invalid-fixture-credential' },
+      })
+      expect(denied.status).toBe(401)
+      const response = await readBuildIdentity()
       expect(response.status).toBe(200)
-      expect(RuntimeBuildIdentitySchema.safeParse(await response.json()).success).toBe(true)
+      const identity = RuntimeBuildIdentitySchema.parse(await response.json())
       await assertInstalledWorkflowRestart('failed admission', fixture)
+      const restartedResponse = await readBuildIdentity()
+      expect(restartedResponse.status).toBe(200)
+      expect(RuntimeBuildIdentitySchema.parse(await restartedResponse.json())).toEqual(identity)
     } finally {
       await fixture.close()
     }
