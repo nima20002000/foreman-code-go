@@ -192,7 +192,7 @@ export class ProjectionDatabase {
       for (const prefix of [
         'select distinct on (e.workflow_node_id) e.id',
         'select d.record from run_repeat_resolutions',
-        'select a.execution_id,a.workflow_node_id,a.attempt,a.work_kind',
+        'with latest_workflow_executions as materialized (',
         'with interactions as ( select e.workflow_node_id as node_id,count(*)::text,',
         'select b.record,b.bound_at from run_repeat_bindings',
         'select i.record from durable_interactions',
