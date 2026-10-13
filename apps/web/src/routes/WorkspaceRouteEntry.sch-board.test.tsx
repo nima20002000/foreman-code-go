@@ -15,6 +15,7 @@ import { boardDraftContextKey } from '../features/workflow-board/keys'
 import { pinnedRunHandlers, reply, runsUrl, versionReply } from '../features/run-board/testFixtures'
 import { installFlowLayout } from '../features/run-board/testFlowLayout'
 import { page, runA, runB } from '../features/runs-selector/testFixtures'
+import { runsSelectorApi } from '../features/runs-selector/client'
 import { bindMockInstallation } from '../shared/mocks/handlers'
 import { getMockFixture, setMockScenario } from '../shared/mocks/scenarios'
 import { server } from '../mocks/server'
@@ -340,6 +341,8 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
 
       await choose('run-a')
       await savedY()
+      await waitFor(() => expect(workspaceReads).toBe(initialWorkspaceReads + 1))
+      expect(within(editor).getByRole('heading', { name: 'Retained local name' })).toBeVisible()
       await waitFor(() => expect(client.isFetching({ queryKey: boardDraftContextKey(scope.workspaceId, scope.workflowId) })).toBe(0))
       const historyReads = context.mock.calls.length
       await act(async () => { await vi.advanceTimersByTimeAsync(3_200) })
@@ -365,6 +368,8 @@ describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 },
       resources: fixture.resources, browserProfiles: fixture.browserProfiles, runners: fixture.runners,
       runs: [{ ...fixture.runs[0], id: 'run-a', executionState: 'running', outcome: 'pending', finishedAt: undefined }],
     })))
+    const listed = await runsSelectorApi.list({ ...scope, limit: 20 })
+    expect(listed.items.find(run => run.runId === 'run-a')).toMatchObject({ status: 'running' })
     const { router } = await mount()
     await savedY()
     expect(router.state.location.search).toMatchObject({ runId: 'run-a', workflowVersionId: 'version-a',

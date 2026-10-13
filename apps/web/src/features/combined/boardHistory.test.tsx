@@ -425,6 +425,7 @@ describe('Selected Board history', { timeout: 20_000 }, () => {
     )
     await mountSelected()
     await screen.findByText('Reply execution-run-a')
+    expect(screen.getByRole('button', { name: 'Attach files' })).toBeEnabled()
     await userEvent.setup().upload(screen.getByLabelText('Choose attachments'), new File(['late'], 'late.md', { type: 'text/markdown' }))
     await waitFor(() => expect(staged.size).toBe(1))
     await act(async () => { await selected.selectRun('run-b') })
