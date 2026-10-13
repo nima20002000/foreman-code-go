@@ -786,6 +786,7 @@ it.each(['github', 'circleci'] as const)('prunes stale mirror branches and keeps
   const f = await fixture({}, { provider })
   const stale = `ci/${'a'.repeat(40)}`
   f.mirrorGit('update-ref', `refs/heads/${stale}`, 'main')
+  f.mirrorGit('update-ref', 'refs/heads/ci/retired-run', 'main')
   f.mirrorGit('update-ref', 'refs/heads/feature/keep', 'main')
   const first = randomUUID()
   const second = randomUUID()
@@ -795,6 +796,7 @@ it.each(['github', 'circleci'] as const)('prunes stale mirror branches and keeps
   await f.cloud.handle({ ...request, runId: second })
   const refs = () => f.mirrorGit('for-each-ref', '--format=%(refname)', 'refs/heads/')
   expect(refs()).not.toContain(`refs/heads/${stale}`)
+  expect(refs()).not.toContain('refs/heads/ci/retired-run')
   expect(refs()).toContain('refs/heads/feature/keep')
   await f.cloud.handle({ operation: 'cancel', runId: first })
   expect(refs()).toContain(`refs/heads/ci/${f.commit}`)
