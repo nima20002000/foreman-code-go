@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { CiComputersOutputSchema, CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema, CiRunRecordSchema,
+import { CiListOutputSchema, CiTestsOutputSchema, CiComputersOutputSchema, CiGetOutputSchema, CiLogsOutputSchema, CiRunOutputSchema, CiRunRecordSchema,
   integrationPartition, userSystemdIntegrationFiles, type CiHostRequest, type CiHostReply, type CiHostRun } from '@foreman-code/contracts'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
@@ -1785,3 +1785,39 @@ it('persists a CI watchdog failure for authenticated MCP status and log readback
     }
   } finally { await f.close() }
 })
+
+
+it('exposes an Agent’s Host CI ticket and structured results through the Board route contracts', async () => {
+  const f = await fixture({ agent: true })
+  try {
+    const started = CiRunOutputSchema.parse(await f.value(f.agent!, 'ci_run', {
+      suite: 'unit', commit: 'a'.repeat(40), scope: 'affected', files: ['apps/web/src/example.test.tsx'],
+      commandId: randomUUID(),
+    }))
+    const ticket = CiGetOutputSchema.parse(await f.value(f.agent!, 'ci_get', { ticketId: started.ticketId }))
+    const executionId = ticket.run.initiator.executionId!
+    const row = (await f.pool.query<{ run_id: string }>('select run_id from harness_executions where id=$1', [executionId])).rows[0]!
+    const tests = { summary: { passed: 0, failed: 1, skipped: 0 }, truncated: false, files: [{
+      file: 'apps/web/src/example.test.tsx', status: 'failed', durationMs: 10,
+      tests: [{ name: 'renders output', status: 'failed', durationMs: 10, message: 'Expected output' }],
+    }] }
+    await f.pool.query('update ci_runs set test_results=$2::jsonb where id=$1', [started.ticketId, JSON.stringify(tests)])
+    const caller = await f.credential([...CI_GET_ACTIONS, 'runs:read'])
+    const headers = { authorization: `Bearer ${caller.token}` }
+    const listed = await f.app.inject({ method: 'GET',
+      url: `/api/management/workspaces/${f.workspaceId}/ci?runId=${row.run_id}`, headers })
+    expect(listed.statusCode).toBe(200)
+    const jobs = CiListOutputSchema.parse(listed.json()).jobs
+    expect(jobs).toContainEqual(expect.objectContaining({ ticketId: started.ticketId,
+      requester: expect.objectContaining({ executionId }), tests: tests.summary }))
+    const results = await f.app.inject({ method: 'GET',
+      url: `/api/management/workspaces/${f.workspaceId}/ci/${started.ticketId}/tests?status=failed`, headers })
+    expect(CiTestsOutputSchema.parse(results.json()).tests).toEqual(tests)
+    const operator = await f.connect([...CI_GET_ACTIONS, 'runs:read'])
+    expect(CiListOutputSchema.parse(await f.value(operator, 'ci_list', { runId: row.run_id })).jobs).toEqual(jobs)
+    const denied = await f.credential(['runs:read'])
+    expect((await f.app.inject({ method: 'GET',
+      url: `/api/management/workspaces/${f.workspaceId}/ci?runId=${row.run_id}`,
+      headers: { authorization: `Bearer ${denied.token}` } })).statusCode).toBe(403)
+  } finally { await f.close() }
+}, 120_000)
