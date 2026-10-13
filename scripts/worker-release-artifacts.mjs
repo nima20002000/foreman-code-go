@@ -102,8 +102,8 @@ export async function buildWorkerReleaseArtifacts({
   const targets = readCommittedWorkerTargets(repository, commit)
   await mkdir(directory, { mode: 0o700 })
   try {
-    const artifacts = []
-    for (const { path, target } of targets) {
+    // Targets build independently; all of them settle before a failure removes the shared storage.
+    const builds = await Promise.allSettled(targets.map(async ({ path, target }) => {
       const staging = await mkdtemp(join(directory, '.build-'))
       // The builder requires a fresh directory that it creates itself.
       await rm(staging, { recursive: true })
@@ -114,8 +114,11 @@ export async function buildWorkerReleaseArtifacts({
       const manifestSha256 = await verifyArtifact(staging, target, version, commit)
       await chmod(staging, 0o700)
       await rename(staging, join(directory, manifestSha256))
-      artifacts.push({ target, manifestSha256 })
-    }
+      return { target, manifestSha256 }
+    }))
+    const failed = builds.find(build => build.status === 'rejected')
+    if (failed) throw failed.reason
+    const artifacts = builds.map(build => build.value)
     const github = publish ? await publish({ repository, directory, commit, artifacts, run }) : undefined
     const index = { format: 1, version, ...(github ? { github } : {}), artifacts }
     await writeFile(join(directory, 'index.json'), `${JSON.stringify(index, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
