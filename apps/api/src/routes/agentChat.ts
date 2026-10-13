@@ -40,7 +40,12 @@ export function registerAgentChatRoutes(app: FastifyInstance, chat: AgentChatSer
   app.post<{ Params: ConversationParams; Body: unknown }>('/api/workspaces/:workspaceId/agent-chat/conversations/:conversationId/session-controls', async request =>
     SessionControlStateSchema.parse(await chat.changeSessionControls(requirePrincipal(request), request.params.workspaceId, request.params.conversationId, SessionControlRequestSchema.parse(request.body))))
   const streams = new Map<() => void, string>()
-  app.addHook('preClose', async () => { for (const stop of streams.keys()) stop(); streams.clear() })
+  let closing = false
+  app.addHook('preClose', async () => {
+    closing = true
+    for (const stop of streams.keys()) stop()
+    streams.clear()
+  })
 
   app.get<{ Params: WorkspaceParams; Querystring: unknown }>(root, async (request) =>
     AgentChatStateSchema.parse(await chat.read(requirePrincipal(request), request.params.workspaceId, AgentChatQuerySchema.parse(request.query))))
@@ -82,6 +87,7 @@ export function registerAgentChatRoutes(app: FastifyInstance, chat: AgentChatSer
   })
 
   app.get<{ Params: ConversationParams }>(`${root}/conversations/:conversationId/events`, async (request, reply) => {
+    if (closing) throw new DomainError('STREAM_CLOSING', 'Chat streams are closing.', 503)
     let principal = requirePrincipal(request)
     if (!request.reauthorizeOperator) throw new DomainError('AUTH_REQUIRED', 'Stream reauthorization is unavailable.', 401)
     if (streams.size >= MAX_STREAMS || [...streams.values()].filter((owner) => owner === principal.id).length >= MAX_OWNER_STREAMS) {

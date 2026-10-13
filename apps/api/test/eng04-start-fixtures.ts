@@ -81,7 +81,8 @@ export function startSqlFixture() {
   const releases: boolean[] = []
   const state = { filesystemCalls: 0, publications: 0, activeTransactions: 0, count: '0',
     loseCommit: false, missingSource: false, denyClock: false, stopped: false, cleanupPending: false,
-    failBoardSnapshot: false, filesystemError: false, onSnapshot: undefined as (() => void) | undefined,
+    failBoardSnapshot: false, filesystemError: false, maintenanceActive: false,
+    onSnapshot: undefined as (() => void) | undefined,
     rows: undefined as ((sql: string, values: unknown[], rows: Record<string, unknown>[]) => Record<string, unknown>[]) | undefined }
   const result = (sql: string, values: unknown[], rows: Record<string, unknown>[]) => {
     const actual = state.rows ? state.rows(sql, values, structuredClone(rows)) : structuredClone(rows)
@@ -114,6 +115,7 @@ export function startSqlFixture() {
         return answer()
       }
       const db = this.transaction ?? database
+      if (sql.includes('pg_try_advisory_xact_lock_shared')) return answer([{ available: !state.maintenanceActive }])
       if (sql.includes('pg_try_advisory_xact_lock')) return answer([{ locked: true }])
       if (sql.startsWith('select 1 where clock_timestamp()')) return answer(state.denyClock ? [] : [{}])
       if (sql.includes('from management_principals where id=$1')) return answer(db.principals.filter((row) => row.id === values[0]))

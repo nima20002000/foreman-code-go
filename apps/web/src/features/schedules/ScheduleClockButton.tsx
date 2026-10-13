@@ -4,6 +4,7 @@ import { Icon, IconButton } from '../../shared/ui/nocturne'
 import { sessionGeneration } from '../../shared/api/sessionBoundary'
 import { createScheduleEditorStore } from './editorStore'
 import { ScheduleModal } from './ScheduleModal'
+import { useScheduleCommand } from './queries'
 import './schedules.css'
 
 export interface ScheduleClockButtonProps {
@@ -29,8 +30,11 @@ function SavedScheduleClock({ workspaceId, workflowId }: { workspaceId: string; 
   const [store] = useState(createScheduleEditorStore)
   const open = useStore(store, (state) => state.open)
   const trigger = useRef<HTMLButtonElement>(null)
+  const command = useScheduleCommand({ workspaceId, workflowId })
+  const historyLocked = !!command.command?.history && (command.pending || command.unconfirmed)
   return <>
     <IconButton ref={trigger} label="Schedule workflow" size="sm" variant="ghost"
+      disabled={historyLocked} title={historyLocked ? 'Confirm the pending schedule change on the Board first.' : undefined}
       aria-haspopup="dialog" aria-expanded={open} onClick={() => store.getState().show()}>
       <Icon name="clock" size={16} />
     </IconButton>

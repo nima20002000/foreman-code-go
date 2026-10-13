@@ -32,6 +32,19 @@ describe('one durable journal for exact current V3 Start replay', () => {
     expect(first).toEqual(v3()); expect(second).toEqual(first)
     expect(navigator.locks.request).toHaveBeenCalledWith(boardStartJournalKey(key), expect.any(Function))
   })
+  it('acknowledges both tabs after they reserved the same accepted command', async () => {
+    const [first, second] = await Promise.all([reserveBoardStart(key, v3()), reserveBoardStart(key, previousPins())])
+    expect(await acknowledgeBoardStart(key, first)).toBe('removed')
+    expect(await acknowledgeBoardStart(key, second)).toBe('absent')
+    expect(readBoardStart(key)).toBeUndefined()
+  })
+  it('reports an older accepted command as superseded without removing a newer reservation', async () => {
+    const first = await reserveBoardStart(key, previousPins())
+    await acknowledgeBoardStart(key, first)
+    const newer = await reserveBoardStart(key, v3())
+    expect(await acknowledgeBoardStart(key, first)).toBe('superseded')
+    expect(readBoardStart(key)).toEqual(newer)
+  })
   it('does not clear the journal for a different payload with the same command ID', async () => {
     const request = await reserveBoardStart(key, v3())
     await expect(acknowledgeBoardStart(key, { ...request, workflowVersionId: 'moving-head' })).rejects.toThrow()
