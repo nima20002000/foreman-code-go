@@ -13,6 +13,7 @@ import { assertCiReadAccess } from './runAccess.js'
 import { RUN_CI_JOBS_SQL, runCiJob, storedCiTestResults, type RunCiJobRow } from './runJobs.js'
 import type { HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
 import { readHostCiLog } from './logRead.js'
+import { ciExecutionRunId } from './executionAttempt.js'
 
 /** CI reads are idempotent: one retry after a lock or statement timeout, then a typed retryable error. */
 export async function retryRead<T>(work: () => Promise<T>): Promise<T> {
@@ -143,6 +144,6 @@ export class HostCiReads {
     const maxBytes = input.maxBytes ?? CI_LOG_MAX_BYTES
     if (!run.computer) return { text: '', nextOffset: 0, logBytes: 0, maxBytes }
     const computer = await this.host.computer(run.computer.hostRef)
-    return readHostCiLog(this.host.endpoint, computer, run.id, { ...input, maxBytes })
+    return readHostCiLog(this.host.endpoint, computer, ciExecutionRunId(run), { ...input, maxBytes })
   }
 }

@@ -82,9 +82,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (report) reports.push(report)
     const progressReporter = command.includes('vitest') && process.env.CI_PROGRESS_FILE
       ? [`--reporter=${resolve('scripts/ci-progress-reporter.mjs')}`] : []
-    const reported = report
+    let reported = report
       ? [...command, '--reporter=default', '--reporter=json', `--outputFile.json=${report}`, ...progressReporter]
       : [...command, ...(progressReporter.length ? ['--reporter=default', ...progressReporter] : [])]
+    if (command.includes('--test') && process.env.CI_PROGRESS_FILE) {
+      reported = command.flatMap(argument => argument === '--test' ? [argument,
+        '--test-reporter=spec', '--test-reporter-destination=stdout',
+        `--test-reporter=${resolve('scripts/ci-node-test-reporter.mjs')}`,
+        '--test-reporter-destination=/dev/null'] : [argument])
+    }
     const code = await run(reported)
     if (code) { process.exitCode = code; break }
   }

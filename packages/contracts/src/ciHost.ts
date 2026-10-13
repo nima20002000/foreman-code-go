@@ -92,7 +92,9 @@ export type CiTestResults = z.infer<typeof CiTestResultsSchema>
 export const CiCachedFileSchema = z.object({ file: z.string().min(1).max(300), ticketId: z.uuid(), commit: CommitSchema }).strict()
 export type CiCachedFile = z.infer<typeof CiCachedFileSchema>
 
-export const CiWatchdogFailureSchema = z.object({ message: z.string().max(2000) }).strict()
+export const CiWatchdogFailureSchema = z.object({
+  message: z.string().max(2000), testsStarted: z.boolean().optional(),
+}).strict()
 
 export const CiMirrorPublicationSchema = z.object({
   state: z.enum(['pending', 'ready', 'failed']),
@@ -152,6 +154,8 @@ const CiHostRunSchema = z.object({
   logBytes: z.number().int().nonnegative(), message: z.string().max(2000).nullable(),
   collection: CiCollectionSchema.optional(), provenance: CiProvenanceSchema.optional(),
   mirrorPublication: CiMirrorPublicationSchema.optional(),
+  /** Absent when the executor cannot establish whether a test case ran. */
+  testsStarted: z.boolean().optional(),
 }).strict()
 export type CiHostRun = z.infer<typeof CiHostRunSchema>
 export const CiUserSystemdSchema = z.object({ supported: z.boolean(), reason: z.string().max(300).nullable() }).strict()
@@ -234,6 +238,10 @@ export const CiRunRecordSchema = z.object({
   deferred: z.boolean().optional(),
   /** Providers that accepted a dispatch but exhausted retries without creating work. */
   unstartedProviders: z.array(z.enum(['github', 'circleci'])).max(2).optional(),
+  /** One fresh executor attempt after a cloud failure before its first test case. */
+  setupRetry: z.object({
+    runId: CiHostRunIdSchema, failedComputer: CiComputerRefSchema, reason: z.string().max(2000),
+  }).strict().optional(),
 }).strict().refine(validCiPart, 'The part and partition must belong to the requested suite.')
 export type CiRunRecord = z.infer<typeof CiRunRecordSchema>
 

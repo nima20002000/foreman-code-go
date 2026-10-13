@@ -4,6 +4,7 @@ import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import type { HostCiComputer, HostCiEndpoint } from './service.js'
 import { serializeCiJson } from './text.js'
+import { ciExecutionRunId } from './executionAttempt.js'
 
 const log = componentLogger('jobs')
 
@@ -13,7 +14,7 @@ export async function collectCiResults(pool: pg.Pool, endpoint: HostCiEndpoint, 
   let results: Extract<CiHostReply, { operation: 'read' }> | undefined
   let collection: CiHostRun['collection'] = 'pending'
   try {
-    const fetched = await endpoint.request(computer, { operation: 'read', runId: run.id,
+    const fetched = await endpoint.request(computer, { operation: 'read', runId: ciExecutionRunId(run),
       afterOffset: 0, maxBytes: 1, testResults: true, durations: true })
     if (fetched.operation === 'read') {
       results = fetched

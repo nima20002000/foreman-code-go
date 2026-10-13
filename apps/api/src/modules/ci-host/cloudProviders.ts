@@ -13,6 +13,7 @@ export interface CloudRun {
   runId: string; repository: string; mirror: string; commit: string; suite: CiSuite; startedAt: string
   providerRunId: string | null; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
   message: string | null; durations?: CiDurations; testResults?: CiTestResults
+  testsStarted?: boolean
   scope?: CiScope; files?: string[]; part?: CiPart; baseCommit?: string
   dispatch?: { input: CloudDispatchInput; attempts: number; at: string }
   reconciliation?: { attempts: number; at: string; previousMessage: string | null }
@@ -375,21 +376,29 @@ export class CircleCiProvider implements CloudProvider {
       .filter((value): value is string => value !== undefined).sort().at(-1)
     const hasFinalOutcome = finalOutcomes.some(outcome => outcome !== undefined)
     // Terminal parent status wins over child records that CircleCI has not updated yet.
-    if (ended && (hasFinalOutcome || workflows.every(workflow => !workflow.jobs?.length))) {
+    if (ended && workflows.every(workflow => !workflow.jobs?.length)) {
       return this.completed(finalOutcomes, stopped, [])
     }
-    const jobs = await Promise.all(workflows.flatMap(workflow => workflow.jobs ?? []).map(async job => ({
-      id: job.id,
-      detail: JSON.parse(await this.circleci(['job', 'get', job.id, '--json'])) as {
-        phase: string; outcome?: string; stopped_at?: string
-        executions?: { steps?: { num: number; name: string; phase: string; outcome?: string }[] }[]
-      },
-    })))
+    let jobs
+    try {
+      jobs = await Promise.all(workflows.flatMap(workflow => workflow.jobs ?? []).map(async job => ({
+        id: job.id,
+        detail: JSON.parse(await this.circleci(['job', 'get', job.id, '--json'])) as {
+          phase: string; outcome?: string; stopped_at?: string
+          executions?: { steps?: { num: number; name: string; phase: string; outcome?: string }[] }[]
+        },
+      })))
+    } catch (error) {
+      // The parent outcome still settles a finished pipeline when its step details are unavailable.
+      if (ended && hasFinalOutcome) return this.completed(finalOutcomes, stopped, [])
+      throw error
+    }
     const raw = jobs.flatMap(job => job.detail.executions?.flatMap(execution =>
       (execution.steps ?? []).map(step => ({ ...step, jobId: job.id }))) ?? [])
     const key = (step: { jobId: string; num: number }) => `${step.jobId}:${step.num}`
     const steps = raw.map(step => ({ key: key(step), name: step.name, state: step.phase !== 'ended' ? 'running' as const
       : step.outcome === 'succeeded' ? 'passed' as const : step.outcome === 'skipped' ? 'skipped' as const : 'failed' as const }))
+    if (ended && hasFinalOutcome) return this.completed(finalOutcomes, stopped, steps)
     const pending = !ended && (view.phase !== undefined && view.phase !== 'ended'
       || workflows.some(workflow => workflow.phase !== undefined && workflow.phase !== 'ended'
         || !workflow.jobs?.length && workflow.phase !== 'ended' && view.phase !== 'ended')
