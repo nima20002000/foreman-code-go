@@ -1120,7 +1120,7 @@ it.each(['mcp', 'http'] as const)('reads queued user-systemd slices through %s w
     await f.ci.dispatch()
     const unready = (await read()).partitions!.find(run => run.id === host.id)!
     expect(unready).toMatchObject({ state: 'queued',
-      message: 'Waiting for a build computer: this integration slice needs one; laptop: Log in to GitHub.' })
+      message: 'Waiting for a build computer: this integration slice needs one; laptop: Log in to GitHub on this computer (gh auth login).' })
     expect((await f.pool.query('select record from ci_runs where id=$1', [host.id])).rows[0].record).toEqual(unready)
     await f.ci.dispatch()
     expect((await read()).partitions!.find(run => run.id === host.id)).toEqual(unready)
