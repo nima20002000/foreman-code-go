@@ -41,7 +41,7 @@ function fixture(suite: 'lint' | 'integration' = 'lint') {
       return { rows: [], rowCount: 1 }
     }
     if (sql.includes('durations from ci_runs')) return { rows: [] }
-    if (sql.startsWith('select id,host_key')) return { rows: [{ id: record.id, host_key: computer.key }] }
+    if (sql.startsWith('select id,host_key')) return { rows: [{ id: record.id, host_key: computer.key, record }] }
     return { rows: [{ record, log_tail: logTail, host_key: computer.key }] }
   }), connect: async () => ({ query: pool.query, release: () => {} }) } as unknown as pg.Pool
   const resolve = vi.fn(async (principal: ManagementPrincipal) => {
@@ -345,4 +345,119 @@ it('retries an unknown start reply on the assigned executor without requeueing',
   expect(starts).toEqual([
     { computer, runId: f.queued.id }, { computer, runId: f.queued.id },
   ])
+})
+
+
+it('requeues an unacknowledged gate start missing from computer status and dispatches the same ticket again', async () => {
+  const f = dispatchFixture()
+  f.records.splice(0, 1)
+  f.records[0] = CiRunRecordSchema.parse({ ...f.queued, suite: 'integration', gate: true,
+    plannedHostKey: computer.key, integrationShards: 8, requiresBuildComputer: false,
+    files: ['apps/api/test/workflow.integration.test.ts'] })
+  const request = vi.mocked(f.endpoint.request).getMockImplementation()!
+  const starts: { hostKey: string; runId: string }[] = []
+  vi.mocked(f.endpoint.request).mockImplementation(async (target, input) => {
+    if (input.operation === 'start') {
+      starts.push({ hostKey: target.key, runId: input.runId })
+      if (starts.length === 1) throw new Error('Start reply lost during reconnect')
+    }
+    return request(target, input)
+  })
+  await f.create().dispatch()
+  expect((await f.create().get(caller, { ticketId: f.queued.id })).run)
+    .toMatchObject({ state: 'starting', startedAt: null, step: 'dispatch' })
+
+  await f.create().computers(caller, { workspaceId: 'workspace' })
+  expect((await f.create().get(caller, { ticketId: f.queued.id })).run)
+    .toMatchObject({ state: 'queued', computer: null, startedAt: null, step: null })
+  vi.mocked(f.endpoint.computers).mockResolvedValue([computer, {
+    key: 'device:replacement', hostRef: { kind: 'device', mainId: 'main', deviceId: 'replacement' },
+    label: 'Replacement builder', priority: 100,
+  }])
+  await f.create().dispatch()
+  expect((await f.create().get(caller, { ticketId: f.queued.id })).run).toMatchObject({ state: 'running' })
+  expect(starts).toEqual([
+    { hostKey: computer.key, runId: f.queued.id }, { hostKey: computer.key, runId: f.queued.id },
+  ])
+})
+
+it('fails a ticket with a clear reason after repeated missing start acknowledgements across service restarts', async () => {
+  const f = dispatchFixture()
+  f.records.splice(0, 1)
+  const request = vi.mocked(f.endpoint.request).getMockImplementation()!
+  let starts = 0
+  vi.mocked(f.endpoint.request).mockImplementation(async (target, input) => {
+    if (input.operation === 'start') {
+      starts++
+      throw new Error('Start delivery lost')
+    }
+    return request(target, input)
+  })
+  for (let attempt = 0; attempt < 4; attempt++) await f.create().dispatch()
+  expect(starts).toBe(3)
+  expect((await f.create().get(caller, { ticketId: f.queued.id })).run).toMatchObject({
+    state: 'failed', message: expect.stringContaining('not acknowledged after 3 attempts'),
+    finishedAt: expect.any(String),
+  })
+})
+
+it('bounds a hanging start and requeues it when status is unavailable, ignoring a late reply', async () => {
+  vi.useFakeTimers()
+  const f = dispatchFixture()
+  f.records.splice(0, 1)
+  const request = vi.mocked(f.endpoint.request).getMockImplementation()!
+  let acknowledge!: () => void
+  const delayed = new Promise<void>(resolve => { acknowledge = resolve })
+  let starts = 0
+  vi.mocked(f.endpoint.request).mockImplementation(async (target, input) => {
+    if (input.operation === 'start' && ++starts === 1) await delayed
+    return request(target, input)
+  })
+  const service = f.create()
+  try {
+    const settled = vi.fn()
+    const dispatch = service.dispatch().then(settled)
+    await vi.advanceTimersByTimeAsync(120_001)
+    expect(settled).toHaveBeenCalledOnce()
+    await dispatch
+    vi.mocked(f.endpoint.request).mockRejectedValue(new Error('Computer offline'))
+    await service.computers(caller, { workspaceId: 'workspace' })
+    expect((await service.get(caller, { ticketId: f.queued.id })).run)
+      .toMatchObject({ state: 'queued', computer: null, startedAt: null })
+    acknowledge()
+    await vi.advanceTimersByTimeAsync(0)
+    expect((await service.get(caller, { ticketId: f.queued.id })).run.state).toBe('queued')
+    vi.mocked(f.endpoint.request).mockImplementation(request)
+    await service.dispatch()
+    expect((await service.get(caller, { ticketId: f.queued.id })).run.state).toBe('running')
+  } finally {
+    acknowledge()
+    await service.close()
+    vi.useRealTimers()
+  }
+})
+
+it('accepts computer status as acknowledgement without sending a duplicate start', async () => {
+  const f = dispatchFixture()
+  f.records.splice(0, 1)
+  const request = vi.mocked(f.endpoint.request).getMockImplementation()!
+  let known = false
+  let starts = 0
+  vi.mocked(f.endpoint.request).mockImplementation(async (target, input) => {
+    if (input.operation === 'start') {
+      starts++
+      known = true
+      throw new Error('Start reply lost')
+    }
+    if (input.operation === 'status' && known) {
+      return { operation: 'status', ready: true, reasons: [], cpuCount: 8, memoryBytes: 16 * 2 ** 30,
+        slotsUsed: 1, slotsTotal: 2, runs: [{ runId: f.queued.id, state: 'running', step: 'lint',
+          startedAt: f.active.startedAt!, finishedAt: null, exitCode: null, logBytes: 0, message: null }] }
+    }
+    return request(target, input)
+  })
+  await f.create().dispatch()
+  await f.create().computers(caller, { workspaceId: 'workspace' })
+  expect((await f.create().get(caller, { ticketId: f.queued.id })).run).toMatchObject({ state: 'running' })
+  expect(starts).toBe(1)
 })
