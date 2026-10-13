@@ -1368,7 +1368,8 @@ export class ApprovalExecutionCoordinator {
 
   private async awaitWorkflowStartup(owned: OwnedNativeSession, owner: RunOwnership): Promise<boolean> {
     const starting = owned.starting
-    if (!starting || !owned.opening && !owned.session) return true
+    // Unbound startup drains during closure, after restart intent fences publication.
+    if (!starting || !owned.execution.nativeSessionId || !owned.opening && !owned.session) return true
     const manager = owned.manager
     const generation = owned.generation + (owned.opening ? 1 : 0)
     const closureGeneration = owned.closureGeneration

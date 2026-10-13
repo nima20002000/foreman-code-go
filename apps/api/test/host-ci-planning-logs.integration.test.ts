@@ -140,6 +140,29 @@ it('admits selected-file CI with a pinned commit and persists the selection thro
   } finally { await f.close() }
 })
 
+it('cancels a queued ticket through MCP before pending computer discovery completes', async () => {
+  const f = await fixture()
+  const release = f.pauseDispatch()
+  try {
+    const started = await f.start(false)
+    const before = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: started.ticketId }))
+    expect(before.run).toMatchObject({ state: 'queued', computer: null })
+    const denied = await f.connect(CI_GET_ACTIONS)
+    expect((await f.call(denied, 'ci_cancel', { ticketId: started.ticketId })).isError).toBe(true)
+    const canceled = await f.value('ci_cancel', { ticketId: started.ticketId })
+    expect(canceled).toMatchObject({ run: { id: started.ticketId, state: 'canceled', computer: null } })
+    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: started.ticketId }))
+    expect(read.run.state).toBe('canceled')
+    expect(read.partitions!.filter(run => run.id !== started.ticketId).every(run => run.state === 'queued'))
+      .toBe(true)
+    expect(await f.stored(read.run.groupId)).toEqual(expect.arrayContaining(read.partitions!))
+    release()
+    await f.ci.dispatch()
+    expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: started.ticketId })).run.state)
+      .toBe('canceled')
+  } finally { release(); await f.close() }
+})
+
 it('plans all admitted slices after an early sibling cancellation and keeps the plan on readback', async () => {
   const f = await fixture()
   const release = f.pauseDispatch()
@@ -239,10 +262,13 @@ it('retains persisted host capacity through failed cancellation and unavailable 
     f.control.state = ''
     const denied = await f.connect(CI_GET_ACTIONS)
     expect((await f.call(denied, 'ci_cancel', { ticketId: active.id })).isError).toBe(true)
-    await f.value('ci_cancel', { ticketId: active.id })
+    const cancellation = await f.call(await f.connect(['jobs:cancel']), 'ci_cancel', { ticketId: active.id })
+    expect(cancellation.isError).toBe(true)
+    expect(decodeMcpToolResult(cancellation)).toMatchObject({ error: { code: 'CI_CANCEL_PENDING' } })
     await f.ci.dispatch()
     const pending = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: active.id }))
-    expect(pending.run).toMatchObject({ state: 'running', finishedAt: null })
+    expect(pending.run).toMatchObject({ state: 'running', finishedAt: null,
+      cancellation: { reason: 'direct', source: 'mcp' } })
     expect(pending.partitions!.filter(run => run.id !== active.id).every(run => run.state === 'queued')).toBe(true)
     const occupied = (await database.pool.query<{ host_key: string | null }>(
       'select host_key from ci_runs where id=$1', [active.id])).rows[0]!

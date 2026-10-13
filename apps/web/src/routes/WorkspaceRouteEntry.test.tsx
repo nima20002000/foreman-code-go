@@ -20,6 +20,7 @@ import { bindMockInstallation } from '../shared/mocks/handlers'
 import { savedClaudeConfiguration } from '../features/settings/claudeSettings.fixtures'
 import { savedPlacementFixture } from '../features/node-placement/fixtures'
 import { createCurrentBoardMock } from '../shared/mocks/currentBoard'
+import { installBrowserLocks } from '../test/browserLocks'
 import canvasStyles from '../shared/ui/nocturne/canvas.css?inline'
 
 function readyWorkspace() {
@@ -74,6 +75,7 @@ async function renderWorkspace(initialEntry: string) {
 
 describe('WorkspaceRouteEntry integration', () => {
   beforeEach(() => {
+    installBrowserLocks()
     useGraphDraftStore.getState().clearAllDrafts(); localStorage.clear(); bindMockInstallation(); sessionStorage.clear()
     server.use(http.get('/api/management/workspaces/workspace-1', () => HttpResponse.json(readyWorkspace())))
     server.use(
@@ -104,6 +106,26 @@ describe('WorkspaceRouteEntry integration', () => {
     sessionStorage.clear()
     vi.unstubAllEnvs()
     vi.useRealTimers()
+  })
+
+  it('opens saved authoring in a fresh tab after reloading the selected workflow', async () => {
+    const entry = '/workspaces/workspace-1?workflowId=workflow-content-pipeline&agentId=agent-researcher'
+    const first = await renderWorkspace(entry)
+    expect(await workflowBoard('Research to review')).toBeVisible()
+    first.unmount()
+    first.queryClient.clear()
+    useGraphDraftStore.getState().clearAllDrafts()
+    sessionStorage.clear()
+
+    const reloaded = await renderWorkspace(entry)
+    const board = await workflowBoard('Research to review')
+    expect(within(board).getByLabelText('Editable workflow graph')).toBeVisible()
+    expect(reloaded.router.state.location.search.workflowId).toBe('workflow-content-pipeline')
+    expect(reloaded.router.state.location.search.agentId).toBe('agent-researcher')
+    await waitFor(() => expect(screen.getByRole('button', {
+      name: (name) => name.startsWith('Researcher,'),
+    })).toHaveAttribute('aria-pressed', 'true'))
+    expect(screen.queryByRole('heading', { name: 'Authoring unavailable' })).not.toBeInTheDocument()
   })
 
   it('renders the saved workflow and keeps a valid agent selection in the URL', async () => {
@@ -165,9 +187,6 @@ describe('WorkspaceRouteEntry integration', () => {
   it('opens an unselected reloaded Claude Agent settings panel while cross-computer choices are unavailable', async () => {
     // Apply the canvas CSS so userEvent checks the same pointer access as the browser.
     render(<style>{canvasStyles}</style>)
-    vi.stubGlobal('navigator', { ...navigator, locks: {
-      request: async (_name: string, work: () => Promise<unknown>) => work(),
-    } })
     const fixture = getMockFixture('workspace-1')!
     const agent = fixture.agents.find((item) => item.id === 'agent-researcher')!
     agent.harness = 'claude'

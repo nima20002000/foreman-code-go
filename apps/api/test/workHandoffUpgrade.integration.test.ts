@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { HarnessExecutionContextSchema, HarnessExecutionRequestSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
 import { WorkActivationIdentitySchema, WorkActivationInputSchema, WorkReturnSchema } from '@foreman-code/contracts/wave25'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
+import { checkpointOwnerMigration } from '../src/infrastructure/checkpointOwnerMigration.js'
 import { workParentRequestMigration } from '../src/infrastructure/workParentRequestMigration.js'
 import { repeatExecutionIdentity, repeatId, workActivationSlotId } from '../src/modules/runs/repeatResolution.js'
 import { workflowNativeReservation } from '../src/modules/runs/workflowNativeEntry.js'
@@ -11,6 +12,21 @@ import { currentInitialPrompt } from '../src/modules/runs/currentRouting.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
 import { finished, workHandoffFixture } from './helpers/workHandoffFixture.js'
 import { digest, text, transaction } from './eng04-migration-fixtures.js'
+
+async function databaseBeforeContinuationUpgrade() {
+  const db = await currentDatabase({ beforeMigration: workParentRequestMigration.version })
+  try {
+    // Current repository services need checkpoint ownership while historical inputs are staged.
+    await transaction(db.pool, async sql => {
+      await sql.query(checkpointOwnerMigration.sql)
+      await sql.query('insert into application_migrations(version) values($1)', [checkpointOwnerMigration.version])
+    })
+    return db
+  } catch (error) {
+    await db.close()
+    throw error
+  }
+}
 
 function nativeReturnFromPrompt(prompt: string) {
   const contextLine = /^TRUSTED WORKFLOW EXECUTION CONTEXT\n(.+)$/m.exec(prompt)?.[1]
@@ -25,7 +41,7 @@ function nativeReturnFromPrompt(prompt: string) {
 
 describe.skipIf(!postgresEnabled)('saved continuation inputs across an upgrade', () => {
   it('reuses a populated pre-parent-request continuation and returns to its original caller', async () => {
-    const db = await currentDatabase({ beforeMigration: workParentRequestMigration.version })
+    const db = await databaseBeforeContinuationUpgrade()
     const t = await workHandoffFixture(db.pool, 'continuation-upgrade', (version) => ({ ...version,
       definition: { ...version.definition, handoffs: { contractVersion: 1 },
         executionPolicy: { maxParallelism: 1, maxNodeExecutions: 20 },
@@ -111,6 +127,8 @@ describe.skipIf(!postgresEnabled)('saved continuation inputs across an upgrade',
       expect(executionContext.parentRequest).toEqual({ requestId: ab.request.requestId, requesterNodeId: a.workflowNodeId })
       await t.restart()
       expect(await t.store.readWorkExecutionContext(replay.execution.id)).toEqual(executionContext)
+      const restartedReplay = await t.queue(activationId)
+      expect(restartedReplay).toEqual(replay)
       const configuration = (await db.pool.query<{ record: unknown }>(
         'select record from agent_configuration_versions where id=$1', [execution.agentConfigurationVersionId])).rows[0]
       assert.ok(configuration)
