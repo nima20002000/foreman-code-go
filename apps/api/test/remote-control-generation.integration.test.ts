@@ -1,39 +1,35 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { NATIVE_INTERACTION_FIXTURES } from '@foreman-code/contracts'
 import { RemoteOwnerControlSchema } from '@foreman-code/contracts/remote-execution'
-import { CodexAppServerSessionManager } from '../src/modules/harnesses/codexAppServer.js'
-import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
-import { currentRunHistory } from './helpers/currentRunHistory.js'
+import * as nativeProcess from '../src/modules/harnesses/process.js'
+import { codexApprovalRuntime } from './helpers/codexApprovalRuntime.js'
 
 afterEach(() => vi.restoreAllMocks())
 
 async function remoteControlDatabase() {
-  const createSession = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession')
-    .mockRejectedValue(new Error('Database snapshot checks must not start native sessions'))
-  const history = await currentRunHistory()
-  const f = history.db
+  const spawnProcess = vi.spyOn(nativeProcess, 'spawnOwnedStdioProcess').mockImplementation(() => {
+    throw new Error('Remote snapshot checks must use protocol replay without native processes')
+  })
+  const runtime = await codexApprovalRuntime('user')
   try {
-    const interaction = {
-      ...structuredClone(NATIVE_INTERACTION_FIXTURES.codex),
-      workspaceId: history.run.workspaceId,
-      workflowId: history.run.workflowId,
-      runId: history.run.id,
-      graphThreadId: history.run.id,
-      requestingAgentId: history.f.configurations[0]!.agentId,
+    await runtime.engine.start(runtime.f.run.id)
+    const [interaction] = await runtime.pending()
+    if (!interaction) throw new Error('Expected an original workflow approval request')
+    return {
+      pool: runtime.db.pool,
+      close: () => runtime.close(),
+      interaction,
+      repository: runtime.repository,
+      spawnProcess,
     }
-    const repository = new PostgresInteractionRepository(f.pool)
-    const created = await repository.create(interaction)
-    return { ...f, interaction, repository, created, createSession }
   } catch (error) {
-    await f.close()
+    await runtime.close()
     throw error
   }
 }
 
-it('persists a pending remote interaction and its run activity without native sessions', async () => {
+it('persists a pending remote interaction and its run activity without native processes', async () => {
   const f = await remoteControlDatabase()
   try {
-    expect(f.created).toEqual({ interaction: f.interaction, created: true })
     expect(await f.repository.get(f.interaction.id)).toEqual(f.interaction)
     const activity = await f.pool.query(`select kind, payload from run_activity where run_id=$1`,
       [f.interaction.runId])
@@ -41,7 +37,7 @@ it('persists a pending remote interaction and its run activity without native se
       kind: 'interaction_pending',
       payload: expect.objectContaining({ interactionId: f.interaction.id, status: 'pending' }),
     })
-    expect(f.createSession).not.toHaveBeenCalled()
+    expect(f.spawnProcess).not.toHaveBeenCalled()
   } finally {
     await f.close()
   }
@@ -100,6 +96,6 @@ it('persists generation-zero remote admission and keeps its original snapshot im
       values($1,2,'submitted',$2,$3,'other-correlation',$4::jsonb,'original-owner',1,-1)`,
     [interaction.id, interaction.nativeSessionId, interaction.nativeRequestId, JSON.stringify(command)]))
       .rejects.toMatchObject({ code: '23514' })
-    expect(f.createSession).not.toHaveBeenCalled()
+    expect(f.spawnProcess).not.toHaveBeenCalled()
   } finally { await f.close() }
 }, 30_000)
