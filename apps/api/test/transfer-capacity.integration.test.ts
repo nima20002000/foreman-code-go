@@ -24,6 +24,7 @@ it('admits new transfers after retiring the record limit and preserves replay de
       await service.start(current, context)
       await service.finish(current.transferId, context)
       await service.retire(current.transferId)
+      if (index === 0) expect(await service.inventory()).toEqual([])
     }
     await service.close()
     service = new ResumableByteTransferService(root, { authorize: async () => {} })

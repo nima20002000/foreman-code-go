@@ -142,6 +142,35 @@ describe('bounded authenticated transfer staging', () => {
     const record = JSON.parse(await readFile(join(g.root, `${g.intent.transferId}.json`), 'utf8'))
     expect(record.payload.progress.state).toBe('cancelled')
   })
+  it('removes retired transfers from active inventory while preserving restart replay denials', async () => {
+    const f = await fixture(Buffer.alloc(0))
+    await f.service.start(f.intent, f.context)
+    await f.service.finish(f.intent.transferId, f.context)
+    await f.service.retire(f.intent.transferId)
+    expect(await f.service.inventory()).toEqual([])
+    await f.service.retire(f.intent.transferId)
+    await f.service.close()
+    const restarted = f.create()
+    expect(await restarted.inventory()).toEqual([])
+    await expect(restarted.start(f.intent, f.context)).rejects.toThrow('cancelled')
+    await expect(restarted.start({ ...f.intent, sha256: 'c'.repeat(64) }, f.context)).rejects.toThrow('immutable')
+    const next = { ...f.intent, transferId: randomUUID() }
+    expect((await restarted.start(next, f.context)).state).toBe('allocated')
+  })
+
+  it('keeps external reservations in active inventory when canonical bytes are retired', async () => {
+    const f = await fixture(Buffer.alloc(0))
+    await f.service.start(f.intent, f.context)
+    await f.service.reserve(f.intent, f.context, { kind: 'rsync-source', byteSize: 0 })
+    await f.service.retire(f.intent.transferId)
+    expect(await f.service.inventory()).toEqual([f.intent])
+    expect(await f.service.hasReservation(f.intent, 'rsync-source')).toBe(true)
+    await f.service.release(f.intent, 'rsync-source')
+    await f.service.retire(f.intent.transferId)
+    expect(await f.service.inventory()).toEqual([])
+    expect(await f.service.hasReservation(f.intent, 'rsync-source')).toBe(false)
+  })
+
   it('accepts zero bytes, tombstones cancellation and rejects other principals', async () => {
     const f = await fixture(Buffer.alloc(0)); await f.service.start(f.intent, f.context)
     await expect(f.service.status(f.intent.transferId, { ...f.context, deviceId: randomUUID() })).rejects.toThrow('principal')
