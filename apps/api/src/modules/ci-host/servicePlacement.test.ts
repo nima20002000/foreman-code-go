@@ -61,6 +61,31 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[]) {
   return { service, started, writes: () => writes }
 }
 
+it.each([
+  { suite: 'integration', requiresBuildComputer: true,
+    files: ['apps/api/test/native-service-restart.integration.test.ts'] },
+  { suite: 'integration', requiresBuildComputer: false,
+    files: ['apps/api/test/workflow.integration.test.ts'] },
+  { suite: 'unit', requiresBuildComputer: false,
+    files: ['apps/api/src/modules/ci-host/servicePlacement.test.ts'] },
+] as const)('prefers an idle build computer for affected $suite with requiresBuildComputer=$requiresBuildComputer',
+  async ({ suite, requiresBuildComputer, files }) => {
+    const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run,
+      suite, scope: 'affected', files, requiresBuildComputer,
+    }))
+    const circleci = { ...cloud, userSystemd: { supported: true, reason: null } }
+    const github: HostCiComputer = {
+      ...circleci, key: 'cloud:github', label: 'GitHub',
+      hostRef: { kind: 'cloud', mainId: 'main', provider: 'github', slot: 0 },
+    }
+    const f = fleet(records, [circleci, github, host])
+    await f.service.dispatch()
+    expect(f.started).toHaveLength(1)
+    expect(f.started[0]?.computer.key).toBe(host.key)
+    expect(f.started[0]?.request).toMatchObject({ operation: 'start', suite, scope: 'affected', files })
+    expect(records[0]).toMatchObject({ state: 'running', computer: { hostRef: host.hostRef } })
+  })
+
 it('assigns host slices to build computers even when a cloud computer has higher priority', async () => {
   const records = queuedRuns(2)
   const f = fleet(records, [cloud, host])
