@@ -684,7 +684,6 @@ it.each(['github', 'circleci'] as const)('prunes stale mirror branches and keeps
   expect(await f.cloud.handle({ ...request, runId: first }))
     .toMatchObject({ operation: 'start', run: { state: activeState } })
   expectMirrorDispatch(provider, (provider === 'github' ? f.dispatched : f.circle.triggered)[0])
-  expect((provider === 'github' ? f.dispatched : f.circle.triggered)[0]).toContain('octo/site-ci')
   expect(await f.cloud.handle({ ...request, runId: second }))
     .toMatchObject({ operation: 'start', run: { state: activeState } })
   expectMirrorDispatch(provider, (provider === 'github' ? f.dispatched : f.circle.triggered).at(-1))
@@ -732,7 +731,6 @@ it.each(['configured', 'admitted'] as const)(
   expect(await f.cloud.handle({ ...request, runId }))
     .toMatchObject({ operation: 'start', run: { state: 'running' } })
   expectMirrorDispatch('circleci', f.circle.triggered[0])
-  expect(f.circle.triggered[0]).toContain('octo/site-ci')
   f.cleanup.unavailable = true
   f.circle.outcome = 'succeeded'
   expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 }))
@@ -795,7 +793,6 @@ it.each(['github', 'circleci'] as const)('keeps publication scoped after cancell
   expect(commands).toHaveLength(2)
   for (const command of commands) {
     expectMirrorDispatch(provider, command)
-    expect(command).toContain('octo/site-ci')
   }
   expect(await f.reopen().handle({ operation: 'read', runId: second, afterOffset: 0, maxBytes: 1 }))
     .toMatchObject({ operation: 'read', run: { state: activeState, provenance: { sourceCommit: f.commit } } })
