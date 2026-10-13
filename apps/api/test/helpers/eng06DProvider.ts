@@ -184,6 +184,9 @@ export class RecoveryProvider {
         provider.finish(session, { outcome: 'canceled' }); session.wake?.(); return true
       },
       async close(reference) { provider.close(reference) },
+      canDetachForRestart(reference) {
+        return owned?.nativeSessionId === reference.nativeSessionId && provider.lookup(reference).alive
+      },
       async closeForRestart(reference) { provider.close(reference) },
       async dispose() { if (owned) provider.close(owned) },
     }

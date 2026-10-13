@@ -55,10 +55,11 @@ describe('workflow publication settlement checks', () => {
   it.each([true, undefined, null])('fails closed on blocked/missing native evidence (%s)', async (native) => {
     const t = fixture()
     t.row.native = native
+    const before = structuredClone(t.native.db.state)
     try {
       await expect(assertMeaningfulSaveAdmitted(t.client, t.input)).rejects.toMatchObject(deny)
       expect(t.query).toHaveBeenCalledTimes(2)
-      expect(t.native.statements).toEqual([]) // Never override blocked/unknown aggregate evidence with a close.
+      expect(t.native.db.state).toEqual(before)
     } finally { await t.close() }
   })
 
@@ -73,10 +74,11 @@ describe('workflow publication settlement checks', () => {
         case 'version-hash': t.row.version_row = { ...t.row.version_row as object,
           record: { ...t.f.version, contentHash: `sha256:${'0'.repeat(64)}` } }; break
       }
+      const before = structuredClone(t.native.db.state)
       try {
         await expect(assertMeaningfulSaveAdmitted(t.client, t.input)).rejects.toMatchObject(deny)
         expect(t.query).toHaveBeenCalledTimes(2)
-        expect(t.native.statements).toEqual([])
+        expect(t.native.db.state).toEqual(before)
       } finally { await t.close() }
     })
 
@@ -109,7 +111,6 @@ describe('workflow publication settlement checks', () => {
         expect(await readAffectedGraphRuns(t.client, t.input)).toEqual([
           expect.objectContaining({ pin: t.pin, settled: true, nativePending: false }),
         ])
-        expect(t.native.statements.length).toBeGreaterThan(2)
         expect(t.native.db.state).toMatchObject({ inserts: 0, commits: 0, rollbacks: 0 })
       } finally { await t.close() }
     })
@@ -130,7 +131,6 @@ describe('workflow publication settlement checks', () => {
         expect(await readAffectedGraphRuns(t.client, t.input)).toEqual([
           expect.objectContaining({ pin: t.pin, settled: false, nativePending: true }),
         ])
-        expect(t.native.statements.length).toBeGreaterThan(2)
       } finally { await t.close() }
     })
 

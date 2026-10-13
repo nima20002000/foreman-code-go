@@ -20,8 +20,14 @@ describe.skipIf(!postgresEnabled)('conversation snapshot consistency', () => {
         harness: 'codex', origin: { kind: 'fresh' }, workingDirectory: database.directory,
         runtimeDirectory: database.directory,
       }, async () => {})
-      await database.pool.query(`update operator_conversations set active_request_id='request',
-        native_session_id='session',active_native_turn_id='turn' where id=$1`, [conversation.id])
+      await repository.admit({ key: agentChatKey(context), context, delivery: 'queued', request: {
+        requestId: 'request', content: 'Input', attachments: [], intent: 'next_turn',
+        expectedConversationId: conversation.id,
+        context: { workflowId: context.workflowId, workflowNodeId: node.id, agentId: node.agentId },
+      } })
+      expect(await repository.claim(conversation.id, 'request')).toBe(true)
+      await repository.bindSession(conversation.id, '0.154.0', 'session')
+      expect(await repository.accepted(conversation.id, 'request', 'turn')).toBe(true)
       const activity = new PostgresOperatorActivityRepository(database.pool)
       const item = { id: 'tool', requestId: 'request', kind: 'tool' as const, title: 'Original', status: 'running' as const }
       const fence = { nativeSessionId: 'session', nativeTurnId: 'turn' }

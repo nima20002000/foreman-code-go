@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import {
-  RUN_INSPECTION_TOOLS, RunExecutionDetailSchema, RunExecutionsPageSchema, RunExecutionBindingsPageSchema, RunVersionDetailSchema, makeCurrentWorkflowFixture,
+  RUN_INSPECTION_TOOLS, RunExecutionsListInputSchema, RunExecutionDetailSchema, RunExecutionsPageSchema, RunExecutionBindingsPageSchema, RunVersionDetailSchema, makeCurrentWorkflowFixture,
 } from '@foreman-code/contracts/wave25'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
@@ -55,9 +55,12 @@ describe.skipIf(!postgresEnabled)('PostgreSQL authenticated Run inspection: repe
         }
       }
       const unknownNode = RunExecutionsPageSchema.parse(await parity(f, r.client, r.token,
-        RUN_INSPECTION_TOOLS.executions, { ...args, workflowNodeId: "node' OR true --" }))
+        RUN_INSPECTION_TOOLS.executions, { ...args, workflowNodeId: 'missing-node' }))
       expect(unknownNode.items).toEqual([])
       expect(unknownNode.pageInfo.nextCursor).toBeNull()
+      expect(RunExecutionsListInputSchema.safeParse({
+        ...args, workflowNodeId: "node' OR true --",
+      }).success).toBe(false)
       expect((await f.db.pool.query(
         'select record from harness_executions where run_id=$1 order by id', [args.runId])).rows).toEqual(beforeReads)
       const detailArgs = { ...args, executionId: secondEntry.executionId }
