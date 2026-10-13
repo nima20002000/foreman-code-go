@@ -11,7 +11,7 @@ import { gitFixtureEnvironment } from './gitFixture.js'
 
 /** Real git and package scripts, with local origins and a process standing in for the systemd service. */
 export async function genericCiRepository(options: { lockfile?: string; integration?: boolean; cloud?: boolean
-  suiteExit?: number; suiteHook?: boolean } = {}) {
+  suiteExit?: number; suiteHook?: boolean; beforeLaunch?: () => Promise<void> } = {}) {
   const base = process.env.FOREMAN_CODE_TEST_ROOT ?? process.env.TMPDIR
   if (!base) throw new Error('A disposable test root is required.')
   const root = await mkdtemp(join(base, 'generic-ci-'))
@@ -79,6 +79,7 @@ process.exit(result.status ?? 1)
       if (file === 'gh') return { code: 0, stdout: '', stderr: '' }
       if (file === 'git') return system.run(file, args.map(localUrl), { ...settings, env: environment })
       if (file === 'systemd-run') {
+        await options.beforeLaunch?.()
         const cwd = args.find(value => value.startsWith('--working-directory='))!.slice('--working-directory='.length)
         const completion = system.run('bash', [args.at(-1)!], { cwd, env: environment })
         processes.add(completion)
@@ -104,6 +105,7 @@ process.exit(result.status ?? 1)
     }
     return { commits: new GitCiCommits(git), endpoint, cloudAttempts, commit: head.stdout.trim(),
       async close() {
+        await runner.beginDrain()
         await Promise.all(processes)
         await rm(root, { recursive: true, force: true })
       } }
