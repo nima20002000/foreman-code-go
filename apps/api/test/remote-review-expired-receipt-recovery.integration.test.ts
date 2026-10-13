@@ -12,6 +12,17 @@ describe('production remote review after expired-receipt Main recovery', () => {
       expect((await fixture.executions(recovered.runId)).every(execution => execution.state === 'completed')).toBe(true)
       expect(fixture.registry.snapshot().launches.filter(launch => recovered.launchIds.includes(launch.launchId))
         .every(launch => launch.lifecycle !== 'active')).toBe(true)
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        await expect(Promise.race([
+          fixture.close(),
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error('Recovered review fixture shutdown timed out.')), 30_000)
+          }),
+        ])).resolves.toBeUndefined()
+      } finally {
+        clearTimeout(timer)
+      }
     })
   }, 120_000)
 })
