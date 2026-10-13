@@ -134,8 +134,9 @@ it.each([false, true])('moves a systemd gate integration part to a free provider
     expect(records[0]?.state).toBe(supported ? 'running' : 'queued')
     if (supported) {
       expect(f.started[0]?.computer.key).toBe(replacement.key)
-      expect(f.started[0]?.request).toMatchObject({ gate: true, files: records[0]!.files, integrationShards: 16 })
+      expect(f.started[0]?.request).toMatchObject({ gate: true, files: records[0]!.files, integrationShards: 8 })
       expect(records[0]?.plannedHostKey).toBe(cloud.key)
+      expect(records[0]?.integrationShards).toBe(32)
     }
   })
 
@@ -150,10 +151,10 @@ it.each(gateChecks)('keeps a gate $suite check queued while the build computer s
   expect(f.started).toHaveLength(1)
   expect(f.started[0]?.computer.key).toBe(host.key)
   expect(f.started[0]?.request).toMatchObject({ operation: 'start', runId: records[1]!.id,
-    suite: 'integration', gate: true, scope: 'full', integrationShards: 16,
+    suite: 'integration', gate: true, scope: 'full', integrationShards: 8,
     files: ['apps/api/test/workflow.integration.test.ts'] })
   expect(records[0]).toMatchObject({ state: 'queued', computer: null })
-  expect(records[1]).toMatchObject({ state: 'running', plannedHostKey: host.key,
+  expect(records[1]).toMatchObject({ state: 'running', plannedHostKey: host.key, integrationShards: 16,
     computer: { hostRef: host.hostRef } })
 })
 
@@ -191,7 +192,7 @@ it.each([
     expect(f.started).toHaveLength(1)
     expect(f.started[0]?.computer.key).toBe(replacement.key)
     expect(f.started[0]?.request).toMatchObject({ operation: 'start', runId: records[0]!.id,
-      suite: 'integration', gate: true, scope: 'full', files: records[0]!.files, integrationShards: 16 })
+      suite: 'integration', gate: true, scope: 'full', files: records[0]!.files, integrationShards: 8 })
     expect(f.started[0]?.assigned).toMatchObject({ state: 'starting', step: 'dispatch',
       plannedHostKey: host.key, integrationShards: 32, expectedDurationMs: 120_000,
       computer: { hostRef: replacement.hostRef }, dispatchHostKey: replacement.key,
@@ -245,8 +246,9 @@ it.each(['not-ready', 'offline', 'extension-rejected', 'disabled'])(
     expect(f.started).toHaveLength(1)
     expect(f.started[0]?.computer.key).toBe(replacement.key)
     expect(f.started[0]?.request).toMatchObject({ operation: 'start', runId: records[0]!.id,
-      gate: true, files: records[0]!.files, integrationShards: 16 })
-    expect(records[0]).toMatchObject({ state: 'running', computer: { hostRef: replacement.hostRef } })
+      gate: true, files: records[0]!.files, integrationShards: 8 })
+    expect(records[0]).toMatchObject({ state: 'running', plannedHostKey: host.key, integrationShards: 32,
+      computer: { hostRef: replacement.hostRef } })
     expect(records[0]?.files).toEqual(['apps/api/test/workflow.integration.test.ts'])
     expect(records[0]?.gate).toBe(true)
   },
@@ -264,8 +266,9 @@ it.each([false, true])('reassigns a systemd gate part only to a capable cloud sl
   expect(records[0]?.state).toBe(supported ? 'running' : 'queued')
   if (supported) {
     expect(f.started[0]?.computer.key).toBe(cloud.key)
-    expect(f.started[0]?.request).toMatchObject({ gate: true, files: records[0]!.files, integrationShards: 16 })
+    expect(f.started[0]?.request).toMatchObject({ gate: true, files: records[0]!.files, integrationShards: 8 })
     expect(records[0]?.computer?.hostRef).toEqual(cloud.hostRef)
+    expect(records[0]).toMatchObject({ plannedHostKey: host.key, integrationShards: 32 })
   }
 })
 
