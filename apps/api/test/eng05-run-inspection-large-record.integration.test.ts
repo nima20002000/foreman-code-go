@@ -8,14 +8,13 @@ import { RunManagementService } from '../src/modules/runs/management.js'
 import { randomUUID } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import {
-  RUN_INSPECTION_TOOLS, RUN_INSPECTION_LIMITS, RunRecordDetailSchema, WorkflowRunV3Schema, makeCurrentWorkflowFixture,
+  RUN_INSPECTION_TOOLS, RUN_INSPECTION_LIMITS, RUN_GRAPH_LIMITS, RunRecordDetailSchema, WorkflowRunV3Schema, makeCurrentWorkflowFixture,
 } from '@foreman-code/contracts/wave25'
 import { currentOperatorIntegration } from './helpers/currentOperatorIntegration.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import {
   requestScope, reader, parity, path, terminal, denied,
 } from './helpers/runInspection.js'
-
 
 async function rejectOversizedHistoryDuringContention(f: Awaited<ReturnType<typeof currentOperatorIntegration>>) {
   const readPool = new pg.Pool({ ...f.db.pool.options,
@@ -58,9 +57,11 @@ async function rejectOversizedHistoryDuringContention(f: Awaited<ReturnType<type
 describe.skipIf(!postgresEnabled)('PostgreSQL authenticated Run inspection: large-record', () => {
   it('discloses the exact Run-only record over HTTP/MCP when aggregate execution history exceeds 2 MiB', async () => {
     const fixture = makeCurrentWorkflowFixture(randomUUID(), 'parallel')
-    // Four real executions each retain this input. No execution/receipt rows are
-    // fabricated; each individual accepted input stays below the existing 4 MiB bound.
-    fixture.run.input = { instruction: 'Retain the exact original Run input', payload: 'x'.repeat(768 * 1024) }
+    // Four real executions retain more than 2 MiB before adding their envelopes and the Run record.
+    fixture.run.input = { instruction: 'Retain the exact original Run input',
+      payload: 'x'.repeat(RUN_GRAPH_LIMITS.snapshotBytes / 4) }
+    expect(Buffer.byteLength(JSON.stringify(fixture.run.input), 'utf8') * 4)
+      .toBeGreaterThan(RUN_GRAPH_LIMITS.snapshotBytes)
     const f = await currentOperatorIntegration({ fixture, approvalNodeIds: [] })
     try {
       const args = requestScope(f), name = RUN_INSPECTION_TOOLS.record
@@ -104,6 +105,15 @@ describe.skipIf(!postgresEnabled)('PostgreSQL authenticated Run inspection: larg
       const forbidden = await reader(f, [{ actions: ['capabilities:read'], scope: {} }])
       expect((await forbidden.client.listTools()).tools.map((tool) => tool.name)).not.toContain(name)
       await denied(f, forbidden.client, forbidden.token, name, args, 403, 'ACCESS_DENIED')
+      const deniedAggregate = await f.app.inject({ method: 'GET',
+        url: `/api/management/workspaces/${args.workspaceId}/runs/${args.runId}`,
+        headers: { authorization: `Bearer ${forbidden.token}` } })
+      expect(deniedAggregate.statusCode).toBe(403)
+      const deniedMcpAggregate = await forbidden.client.callTool({
+        name: 'run_get', arguments: { ...args, detail: 'full' },
+      })
+      expect(deniedMcpAggregate.isError).toBe(true)
+      expect(decodeMcpToolResult(deniedMcpAggregate)).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
       const audits = (await f.db.pool.query<{ source: string }>(
         'select source from management_audit where principal_id=$1', [forbidden.principal.id])).rows
       expect(audits.map((row) => row.source)).toEqual(expect.arrayContaining(['http', 'mcp']))
