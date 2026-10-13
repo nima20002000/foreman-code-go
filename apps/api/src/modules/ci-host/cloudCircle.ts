@@ -37,7 +37,18 @@ export class CircleRest {
       await response.body?.cancel()
       throw new DomainError('CI_CLOUD_RUN_NOT_FOUND', 'CircleCI run is not visible.', 502)
     }
-    await this.http.check(response, detail => `CircleCI did not accept circleci ${args[0]} ${args[1]}: ${detail}`)
+    const lookupDenied = args[1] === 'get' && (args[0] === 'run' || args[0] === 'job')
+      && (response.status === 401 || response.status === 403)
+    try {
+      await this.http.check(response, detail => lookupDenied
+        ? `CircleCI execution is not readable: ${detail}`
+        : `CircleCI did not accept circleci ${args[0]} ${args[1]}: ${detail}`)
+    } catch (error) {
+      if (lookupDenied && error instanceof DomainError && error.code === 'CI_CLOUD_FAILED') {
+        throw new DomainError('CI_CLOUD_RUN_UNREADABLE', error.message, error.status)
+      }
+      throw error
+    }
     return response
   }
 

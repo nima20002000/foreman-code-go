@@ -477,7 +477,9 @@ export class CircleCiProvider implements CloudProvider {
       view = JSON.parse(await this.circleci(['run', 'get', run.providerRunId!, '--json'])) as typeof view
     } catch (error) {
       if (error instanceof DomainError && error.code === 'CI_CLOUD_RUN_ENDED') return
-      if (!(error instanceof DomainError && error.code === 'CI_CLOUD_RUN_NOT_FOUND')) throw error
+      if (!(error instanceof DomainError
+        && ['CI_CLOUD_RUN_NOT_FOUND', 'CI_CLOUD_RUN_UNREADABLE'].includes(error.code))) throw error
+      // Cancellation of the known pipeline does not require a successful status lookup.
       view = null
     }
     if (view?.phase === 'ended' && !view.workflows?.length) return
