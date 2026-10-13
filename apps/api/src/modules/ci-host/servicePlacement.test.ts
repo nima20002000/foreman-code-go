@@ -165,8 +165,8 @@ it('does not start a gate check on a build computer with an occupied CI slot', a
   expect(records[0]).toMatchObject({ state: 'queued', computer: null })
 })
 
-it.each(['not-ready', 'offline', 'extension-rejected', 'disabled'])
-  ('dispatches a queued gate part elsewhere after its planned computer becomes %s', async reason => {
+it.each(['not-ready', 'offline', 'extension-rejected', 'disabled'])(
+  'dispatches a queued gate part elsewhere after its planned computer becomes %s', async reason => {
     const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, gate: true,
       plannedHostKey: host.key, partition: null, integrationShards: 32, requiresBuildComputer: false,
       files: ['apps/api/test/workflow.integration.test.ts'],
@@ -188,7 +188,10 @@ it.each(['not-ready', 'offline', 'extension-rejected', 'disabled'])
     expect(f.started[0]?.request).toMatchObject({ operation: 'start', runId: records[0]!.id,
       gate: true, files: records[0]!.files, integrationShards: 16 })
     expect(records[0]).toMatchObject({ state: 'running', computer: { hostRef: replacement.hostRef } })
-  })
+    expect(records[0]?.files).toEqual(['apps/api/test/workflow.integration.test.ts'])
+    expect(records[0]?.gate).toBe(true)
+  },
+)
 
 it.each([false, true])('reassigns a systemd gate part only to a capable cloud slot: supported=%s', async supported => {
   const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, gate: true,

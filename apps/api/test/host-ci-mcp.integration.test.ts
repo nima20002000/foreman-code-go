@@ -296,6 +296,7 @@ it('joins in-flight host preparation before confirming direct MCP cancellation',
       completed = true
       return value
     })
+    // eslint-disable-next-line no-restricted-syntax -- Proves cancellation cannot finish during blocked dispatch.
     await new Promise(resolve => setTimeout(resolve, 100))
     expect(completed).toBe(false)
     release()
@@ -344,15 +345,20 @@ it.each([
   }
 })
 
-it('runs generic integration once despite requested partitions and falls back from an unconfigured cloud mirror', async () => {
-  const repository = await genericCiRepository({ integration: true, cloud: true })
+it.each([0, 1250])(
+  'runs generic integration once despite requested partitions and falls back from an unconfigured cloud mirror after a %i ms launch delay',
+  async launchDelayMs => {
+  const repository = await genericCiRepository({ integration: true, cloud: true, beforeLaunch: async () => {
+    // eslint-disable-next-line no-restricted-syntax
+    await new Promise(resolve => setTimeout(resolve, launchDelayMs))
+  } })
   const f = await fixture({ repositoryRunner: repository })
   try {
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run',
       { suite: 'integration', partitions: 4, commandId: 'generic-integration' }))
     expect(started.partitions).toBeUndefined()
     await expect.poll(async () => CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get',
-      { ticketId: started.ticketId })).run.state).toBe('passed')
+      { ticketId: started.ticketId })).run.state, { timeout: 10_000 }).toBe('passed')
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
     expect(read.run).toMatchObject({ part: null, partition: null, state: 'passed',
       computer: { hostRef: { kind: 'main' } } })
@@ -367,9 +373,15 @@ it('runs generic integration once despite requested partitions and falls back fr
   }
 })
 
-it.each(['unit', 'lint'] as const)(
-  'runs generic %s for an empty affected selection and preserves HTTP and MCP readback', async suite => {
-  const repository = await genericCiRepository({ cloud: true })
+it.each([
+  ['unit', 0], ['unit', 1250], ['lint', 0], ['lint', 1250],
+] as const)(
+  'runs generic %s for an empty affected selection and preserves HTTP and MCP readback after a %i ms launch delay',
+  async (suite, launchDelayMs) => {
+  const repository = await genericCiRepository({ cloud: true, beforeLaunch: async () => {
+    // eslint-disable-next-line no-restricted-syntax
+    await new Promise(resolve => setTimeout(resolve, launchDelayMs))
+  } })
   const computers = repository.endpoint.computers.bind(repository.endpoint)
   // Make the unconfigured mirror the only candidate until fallback has been exercised.
   repository.endpoint.computers = async () => {
@@ -390,7 +402,7 @@ it.each(['unit', 'lint'] as const)(
     expect(response.statusCode).toBe(200)
     const started = CiRunOutputSchema.parse(response.json())
     await expect.poll(async () => CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get',
-      { ticketId: started.ticketId })).run.state).toBe('passed')
+      { ticketId: started.ticketId })).run.state, { timeout: 10_000 }).toBe('passed')
     const read = await f.app.inject({ method: 'GET', url: `${url}/${started.ticketId}`, headers })
     expect(read.statusCode).toBe(200)
     const result = CiGetOutputSchema.parse(read.json())
@@ -1420,6 +1432,7 @@ it('preserves MCP cancellation when an in-flight refresh returns an unstarted ti
       canceled = true
       return value
     })
+    // eslint-disable-next-line no-restricted-syntax -- Proves cancellation cannot finish during blocked dispatch.
     await new Promise(resolve => setTimeout(resolve, 100))
     expect(canceled).toBe(false)
     const pending = await reader.callTool({ name: 'ci_get',
