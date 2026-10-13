@@ -40,7 +40,18 @@ describe('installed harness updates', () => {
       expect(active.executions[0]!.nativeSessionId).toBe(turn.sessionId)
       const pins = await pinnedPlacements(fixture, started.run.id)
       await fixture.provider.updatePayload()
-      await waitForRemoteReview(() => profiles(fixture, reader), values =>
+      await waitForRemoteReview(async () => {
+        const values = await profiles(fixture, reader)
+        for (const value of values) {
+          if (value.target.installationFingerprint === original.target.installationFingerprint) continue
+          expect(value.qualificationFailure, JSON.stringify({
+            qualification: value.qualification,
+            failure: value.qualificationFailure,
+            nativeFailures: fixture.failures(),
+          })).toBeUndefined()
+        }
+        return values
+      }, values =>
         values.length === before.length && values.every(value => value.qualification === 'qualified'
           && value.revision === original.revision + 1
           && value.target.installationFingerprint !== original.target.installationFingerprint),
