@@ -223,11 +223,13 @@ it('honors persisted MCP build participation and priority while retaining assign
     expect((await reader.callTool({ name: 'ci_run', arguments: smokeInput })).isError).toBe(true)
     const smoke = CiRunOutputSchema.parse(await call(writer, 'ci_run', smokeInput))
     const smokeRead = await get(smoke.ticketId)
-    expect(smokeRead.run).toMatchObject({ state: 'running', integrationShards: 4 })
+    expect(smokeRead.run).toMatchObject({ state: 'running', integrationShards: 4,
+      smokeComputer: smokeInput.smokeComputer, computer: { hostRef: smokeInput.smokeComputer } })
     expect(requests.get(smoke.ticketId))
       .toMatchObject({ gate: true, integrationShards: 4, buildAllowancePercent: 50 })
-    expect((await db.pool.query('select record from ci_runs where id=$1', [smoke.ticketId])).rows[0]!.record)
-      .toEqual(smokeRead.run)
+    const storedSmoke = (await db.pool.query('select record from ci_runs where id=$1', [smoke.ticketId])).rows[0]!.record
+    expect(storedSmoke).not.toHaveProperty('smokeComputer')
+    expect(storedSmoke).toEqual(smokeRead.run)
   } finally {
     await Promise.allSettled(clients.map(client => client.close()))
     await ci?.close()
