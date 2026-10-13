@@ -3,7 +3,7 @@ import type { CiRunInput } from '@foreman-code/contracts'
 import { planCiGate } from './gate.js'
 import type { HostCiComputer, HostCiEndpoint } from './service.js'
 
-it('moves overflow across a tied shard boundary to reduce the gate critical path', async () => {
+it.each([80_000, 120_000])('moves %i ms overflow across tied shards until checks determine the critical path', async durationMs => {
   const computers: HostCiComputer[] = [
     { key: 'builder-main', label: 'Main builder', priority: 60, hostRef: { kind: 'main', mainId: 'main' } },
     { key: 'builder-paired', label: 'Paired builder', priority: 50,
@@ -20,7 +20,7 @@ it('moves overflow across a tied shard boundary to reduce the gate critical path
   }
   const files = Array.from({ length: 48 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)
   const input: CiRunInput = { suite: 'integration', scope: 'full', gate: true, commandId: 'gate' }
-  const parts = await planCiGate(input, { files, durations: Object.fromEntries(files.map(file => [file, 120_000])) },
+  const parts = await planCiGate(input, { files, durations: Object.fromEntries(files.map(file => [file, durationMs])) },
     { files: ['apps/api/src/site.test.ts', 'apps/web/src/site.test.tsx'], durations: {}, heavy: [] }, {}, endpoint)
   const integration = parts.filter(part => part.suite === 'integration')
   expect(integration.flatMap(part => part.files).sort()).toEqual([...files].sort())
@@ -29,5 +29,5 @@ it('moves overflow across a tied shard boundary to reduce the gate critical path
   for (const part of parts) {
     times.set(part.plannedHostKey, (times.get(part.plannedHostKey) ?? 0) + part.expectedDurationMs)
   }
-  expect(Math.max(...times.values())).toBeLessThan(300_000)
+  expect(Math.max(...times.values())).toBeLessThanOrEqual(210_000)
 })
