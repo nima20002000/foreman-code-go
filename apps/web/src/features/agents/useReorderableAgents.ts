@@ -182,7 +182,7 @@ export function useReorderableAgents(
       const label = items.find((item) => item.id === id)?.label ?? id
       announce(`Moved ${label} to position ${targetIndex + 1} of ${next.length}`)
     },
-    [announce, items, orderedIds, setOrder, workspaceId, dragRef, listRef, setPreviewIds, suppressClickRef],
+    [announce, items, orderedIds, setOrder, workspaceId],
   )
 
   const getCardProps = useCallback(

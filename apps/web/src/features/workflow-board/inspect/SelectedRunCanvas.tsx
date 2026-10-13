@@ -250,7 +250,7 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
     previous.current = next
     return result
   }, [topology, states, record, recordLoading, facts, jobExecutions, board.inspection.runNodeId, choreography.nodes, cis, waits, checks, checking])
-  const { canvasNodes, presentedNodes, onNodesChange, flushGeometry, resize, finishResize } =
+  const { canvasNodes, presentedNodes, onNodesChange, resize, finishResize } =
     useRunCanvasGeometry({ nodes, layout, version, geometry })
   const ciServerNode = useMemo(() => ciServerFlowNode(canvasNodes, ciSummary,
     () => useInspectionPresentation.getState().setOpen(ciDialogKey, true)), [ciSummary, canvasNodes, ciDialogKey])
@@ -381,5 +381,5 @@ function useRunCanvasGeometry({ nodes, layout, version, geometry }: {
     setCanvasNodes(adapter.finishResize(change.id, change.width!, change.height!, change.position))
     flushGeometry()
   }
-  return { canvasNodes, presentedNodes, onNodesChange, flushGeometry, resize, finishResize }
+  return { canvasNodes, presentedNodes, onNodesChange, resize, finishResize }
 }
