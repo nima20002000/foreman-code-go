@@ -6,7 +6,7 @@ import {
   type NativeSessionReference,
   NativeQuestionSchema, NativeInteractionInputSchema, withInteractionResponse,
 } from '@foreman-code/contracts'
-import { canonical } from './codexProtocol.js'
+import { canonicalJsonNumericKeysFirstLegacy } from '@foreman-code/contracts/canonical-json'
 import { isObject, text, type JsonObject, type RequestId, type RpcRequest } from './codexStdioTransport.js'
 
 /** Process-local identity; numeric and string RPC IDs remain distinct. */
@@ -28,7 +28,7 @@ export function translateCodexInteraction(context: {
   const responses: Map<string, { option: ApprovalResponseOption; nativeResponse: JsonObject }> = new Map()
   const add = (option: Omit<ApprovalResponseOption, 'optionId'>, nativeResponse: JsonObject) => {
     if ((context.configuration.advanced?.sessionPersistence ?? DEFAULT_CODEX_ADVANCED_CONFIGURATION.sessionPersistence) === 'ephemeral' && option.semantic === 'allow_session') return
-    const optionId = `codex-${createHash('sha256').update(canonical([nativeRequestId, nativeResponse])).digest('hex').slice(0, 24)}`
+    const optionId = `codex-${createHash('sha256').update(canonicalJsonNumericKeysFirstLegacy([nativeRequestId, nativeResponse])).digest('hex').slice(0, 24)}`
     // Empty optional descriptions are omitted rather than violating the shared schema.
     const { scopeSummary, ...rest } = option
     const parsed = ApprovalResponseOptionSchema.parse({ optionId, ...rest, ...(scopeSummary?.trim() ? { scopeSummary } : {}) })
@@ -131,12 +131,12 @@ function addCommandDecision(
   else if (decision === 'cancel') add(simpleOption('cancel', 'Cancel turn', 'request', true), { decision })
   else if (isObject(decision) && isObject(decision.acceptWithExecpolicyAmendment)) {
     add({ ...simpleOption('persistent_policy_change', 'Allow and save command policy', 'persistent_config'),
-      scopeSummary: canonical(decision.acceptWithExecpolicyAmendment), mutatesPersistentPolicy: true }, { decision })
+      scopeSummary: canonicalJsonNumericKeysFirstLegacy(decision.acceptWithExecpolicyAmendment), mutatesPersistentPolicy: true }, { decision })
   } else if (isObject(decision) && isObject(decision.applyNetworkPolicyAmendment)) {
     const amendment = isObject(decision.applyNetworkPolicyAmendment.network_policy_amendment)
       ? decision.applyNetworkPolicyAmendment.network_policy_amendment : decision.applyNetworkPolicyAmendment
     add({ ...simpleOption('persistent_policy_change', `Save network ${String(amendment.action ?? 'policy')} rule for ${String(amendment.host ?? 'the offered target')}`, 'persistent_config'),
-      scopeSummary: canonical(amendment), mutatesPersistentPolicy: true }, { decision })
+      scopeSummary: canonicalJsonNumericKeysFirstLegacy(amendment), mutatesPersistentPolicy: true }, { decision })
   }
 }
 

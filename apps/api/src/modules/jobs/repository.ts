@@ -1,4 +1,4 @@
-import { canonical } from './digest.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { JobLogChunkSchema, type JobLogChunk } from '@foreman-code/contracts/jobs'
 import {
@@ -59,7 +59,7 @@ export class JobRepository {
     if (current.revision !== ticket.revision) {
       throw new DomainError('REVISION_CONFLICT', 'The queued Job changed since it was read.', 409)
     }
-    if (canonical(current) === canonical(ticket)) return current
+    if (canonicalJson(current) === canonicalJson(ticket)) return current
     const value = JobQueueTicketSchema.parse({ ...ticket, revision: ticket.revision + 1 })
     const result = await sql.query(`update job_admission_queue set record=$3::jsonb
       where workspace_id=$1 and id=$2 and (record->>'revision')::bigint=$4`,
@@ -84,8 +84,8 @@ export class JobRepository {
       const root = SourceRootRecordSchema.parse(selection.root)
       if (root.binding.workspaceId !== ticket.workspaceId
         || root.selection.rootPolicyId !== spec.target.destination.rootPolicyId
-        || canonical(root.selection.hostRef) !== canonical(spec.target.hostRef)
-        || canonical(root.registration) !== canonical(spec.target.registration)
+        || canonicalJson(root.selection.hostRef) !== canonicalJson(spec.target.hostRef)
+        || canonicalJson(root.registration) !== canonicalJson(spec.target.registration)
         || root.binding.canonicalPath !== spec.target.destination.canonicalProjectRoot
         || root.source.snapshotId !== spec.source.snapshotId || root.source.manifestDigest !== spec.source.manifestDigest) {
         throw new DomainError('JOB_COMPUTER_SELECTION_CONFLICT', 'The reserved root differs from its selected computer.', 409)
@@ -159,7 +159,7 @@ export class JobRepository {
     const row = (await sql.query<{ record: unknown; accepted_spec: unknown }>(`select record,accepted_spec from job_executions where workspace_id=$1 and id=$2${lock ? ' for update' : ''}`, [workspaceId,id])).rows[0]
     if (!row) throw new DomainError('JOB_NOT_FOUND', 'The execution was not found in this workspace.', 404)
     const execution = JobExecutionRecordSchema.parse(row.record)
-    if (execution.id !== id || execution.workspaceId !== workspaceId || canonical(execution.acceptedSpec) !== canonical(row.accepted_spec)) throw new DomainError('JOB_SCOPE_CONFLICT','Job acceptance conflicts with persistence.',409)
+    if (execution.id !== id || execution.workspaceId !== workspaceId || canonicalJson(execution.acceptedSpec) !== canonicalJson(row.accepted_spec)) throw new DomainError('JOB_SCOPE_CONFLICT','Job acceptance conflicts with persistence.',409)
     return execution
   }
   async workflowExecutions(sql: JobSql, workspaceId: string, workflowId: string,
@@ -212,5 +212,4 @@ export class JobRepository {
     return rows.rows.map(row => JobLogChunkSchema.parse({executionId, attemptId: row.attempt_id, sequence:Number(row.sequence), stream:row.stream, text:row.text, byteSize:row.byte_size, createdAt:row.created_at.toISOString()}))
   }
 }
-export { canonical } from './digest.js'
-export function sameLog(left: JobLogChunk, right: JobLogChunk): boolean { return canonical(left) === canonical(right) }
+export function sameLog(left: JobLogChunk, right: JobLogChunk): boolean { return canonicalJson(left) === canonicalJson(right) }

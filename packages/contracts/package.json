@@ -193,6 +193,10 @@
       "types": "./dist/jobRuntime.d.ts",
       "import": "./dist/jobRuntime.js"
     },
+    "./canonical-json": {
+      "types": "./dist/canonicalJson.d.ts",
+      "import": "./dist/canonicalJson.js"
+    },
     "./command-identity-node": {
       "types": "./dist/commandIdentityNode.d.ts",
       "import": "./dist/commandIdentityNode.js"

@@ -4,7 +4,7 @@ import type { CiRuntimeRequest, CiRuntimeWorkerState } from '@foreman-code/contr
 import type { JobRuntimeProfiles } from './runtimeProfiles.js'
 import type { PostgresSourceService } from '../sources/service.js'
 import { DomainError } from '../errors.js'
-import { canonical } from './digest.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import type { CiPreparationRecord } from './ciPreparationRepository.js'
 import { temporaryCiConnectionError } from './ciRuntimeErrors.js'
 
@@ -124,7 +124,7 @@ async function bindPreparedRoot(record: CiPreparationRecord, ports: CiPreparatio
       { workspaceId: record.input.workspaceId, limit: 100 })).items
       .find(root => root.binding.rootId === record.profile.root.binding.rootId)
     if (!current) throw new DomainError('SOURCE_ROOT_NOT_FOUND', 'The build computer’s root is no longer bound.', 404)
-    if (canonical(current.source) === canonical(pin)) {
+    if (canonicalJson(current.source) === canonicalJson(pin)) {
       record.root = current
     } else {
       record.rootInput = { workspaceId: record.input.workspaceId, source: pin, selection: current.selection,
@@ -141,7 +141,7 @@ async function bindPreparedRoot(record: CiPreparationRecord, ports: CiPreparatio
 
 async function savePreparedProfiles(record: CiPreparationRecord, ports: CiPreparationStepPorts): Promise<void> {
   if (!record.saves) {
-    const runtime = (profile: JobVerificationProfile) => canonical({ resources: profile.spec.resources,
+    const runtime = (profile: JobVerificationProfile) => canonicalJson({ resources: profile.spec.resources,
       network: profile.spec.policy.network, toolchain: profile.spec.policy.toolchainDigest,
       approval: profile.spec.approvalConfig })
     const profiles = (await ports.profiles.list(await ports.principal(), record.input.workspaceId)).profiles

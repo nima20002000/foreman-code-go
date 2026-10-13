@@ -5,7 +5,8 @@ import { WorkspaceRootPolicySchema, type WorkspaceRootPolicy } from '@foreman-co
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
-import { jobDigest, canonical } from '../jobs/digest.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
+import { jobDigest } from '../jobs/digest.js'
 import { sourceSha256 } from '../sources/manifest.js'
 import { authorizeSource } from '../sources/authority.js'
 import { assertBuildComputerTarget } from '../settings/buildComputers.js'
@@ -32,7 +33,7 @@ export class ManagedWorkspaceRootService {
   async ensure(principal: ManagementPrincipal, source: 'http' | 'mcp', workspaceId: string,
     target: DeviceProvisioningTarget): Promise<WorkspaceRootPolicy> {
     let choices = await this.locations.choices(principal, { workspaceId })
-    const sameHost = (host: WorkspaceRootPolicy['hostRef']) => canonical(host) === canonical(target.hostRef)
+    const sameHost = (host: WorkspaceRootPolicy['hostRef']) => canonicalJson(host) === canonicalJson(target.hostRef)
     const existing = choices.policies.find(policy => sameHost(policy.hostRef)
       && policy.applicationInstallationId === target.applicationInstallationId && policy.accessMode === 'read-write'
       && (target.hostRef.kind === 'main' || policy.registration?.keyRevision === target.keyRevision

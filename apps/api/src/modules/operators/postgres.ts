@@ -14,6 +14,7 @@ import {
 } from '@foreman-code/contracts'
 import type pg from 'pg'
 import type { HarnessProfileSelection } from '@foreman-code/contracts/harness-registry'
+import { canonicalJsonNumericKeysFirstLegacy, canonicalJsonValueLegacy } from '@foreman-code/contracts/canonical-json'
 
 import { inTransaction } from '../../infrastructure/transaction.js'
 import { PostgresFoundationSettingsRepository } from '../settings/foundation.js'
@@ -26,15 +27,8 @@ import { composeInstructionText, instructionsTooLarge } from '../skills/instruct
 const OPERATOR_ID = 'application-operator'
 
 // Sort provider-owned map keys too: schema parsing normalizes fields, not record key order.
-function canonical(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonical)
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)
-      .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => [key, canonical(item)]))
-  }
-  return value
-}
-function hash(value: unknown) { return `sha256:${createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')}` }
+// Persisted configuration hashes depend on the frozen numeric-keys-first legacy form.
+function hash(value: unknown) { return `sha256:${createHash('sha256').update(canonicalJsonNumericKeysFirstLegacy(value)).digest('hex')}` }
 
 function acceptedConfiguration(value: HarnessConfiguration): HarnessConfiguration {
   if (value.harness === 'opencode') throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
@@ -105,7 +99,7 @@ export class PostgresOperatorRepository {
     const profile = defaults.harnessProfileSelection ? { harnessProfileSelection: defaults.harnessProfileSelection } : {}
     // Saved defaults were authorized and resolved when saved; keep those exact references.
     const skills = await operatorSkillContent(client, defaults.assignedSkills, defaults.assignedSkills)
-    const content = { harness: canonical(harness), ...skills, ...profile, ...nativePolicy }
+    const content = { harness: canonicalJsonValueLegacy(harness), ...skills, ...profile, ...nativePolicy }
     const contentHash = 'assignedSkills' in skills || defaults.harnessProfileSelection || defaults.nativeTools
       ? `sha256:${createHash('sha256').update(JSON.stringify(content)).digest('hex')}` : hash(harness)
     const configuration = OperatorConfigurationVersionSchema.parse({
@@ -162,7 +156,7 @@ export class PostgresOperatorRepository {
       const version = Number(versionRow.rows[0]?.version ?? 1)
       const createdAt = new Date().toISOString()
       const profile = selection ? { harnessProfileSelection: selection } : {}
-      const content = { harness: canonical(harness), showThinking, ...skills, ...profile, ...nativePolicy }
+      const content = { harness: canonicalJsonValueLegacy(harness), showThinking, ...skills, ...profile, ...nativePolicy }
       const contentHash = `sha256:${createHash('sha256').update(JSON.stringify(content)).digest('hex')}`
       const configuration = OperatorConfigurationVersionSchema.parse({
         id: `${OPERATOR_ID}-config-v${version}-${randomUUID()}`, operatorId: OPERATOR_ID, version,

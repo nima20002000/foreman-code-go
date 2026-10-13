@@ -18,7 +18,8 @@ import type { BuildComputerPreference } from '@foreman-code/contracts/build-comp
 import { type BuildComputerSettings, buildComputerKey, buildComputerTarget } from '../settings/buildComputers.js'
 import type { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { DomainError } from '../errors.js'
-import { canonical, type JobSql } from './repository.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
+import type { JobSql } from './repository.js'
 import { matchesRuntimePolicy } from './runtimeSelection.js'
 import { SOURCE_AGGREGATE_LIMITS, verificationSourceStorageBytes } from '../sources/reservations.js'
 import { SourceStorageCapacitySchema, type SourceStorageCapacity } from '@foreman-code/contracts/source-operations'
@@ -85,18 +86,18 @@ export function compatibleJobComputer(candidate: JobComputerCandidate, request: 
   const common = (spec: JobDefinitionSpecRecord) => ({ source: spec.source, argv: spec.argv,
     inputs: spec.inputs, outputs: spec.outputs, relativeCwd: spec.relativeCwd ?? null,
     ...('verification' in spec ? { verification: spec.verification } : {}) })
-  if (canonical(common(candidate.spec)) !== canonical(common(request))) return false
-  if (!isAutoJobSpecRecord(request)) return canonical(candidate.spec) === canonical(request)
+  if (canonicalJson(common(candidate.spec)) !== canonicalJson(common(request))) return false
+  if (!isAutoJobSpecRecord(request)) return canonicalJson(candidate.spec) === canonicalJson(request)
   return matchesRuntimePolicy(request, candidate.profile, candidate.spec.policy)
-    && canonical(jobRuntimeProfileLimits(candidate.profile)) === canonical(request.limits)
+    && canonicalJson(jobRuntimeProfileLimits(candidate.profile)) === canonicalJson(request.limits)
 }
 /** Local first: a preferred computer (an Agent's own) leads; the rest keep build priority order. */
 export function orderForPlacement(candidates: EnrolledCandidate[], placement?: JobPlacementIntent | null): EnrolledCandidate[] {
   const ordered = orderBuildComputers(candidates)
   if (placement?.kind !== 'prefer') return ordered
-  const preferred = canonical(placement.hostRef)
-  return [...ordered.filter(candidate => canonical(candidate.spec.target.hostRef) === preferred),
-    ...ordered.filter(candidate => canonical(candidate.spec.target.hostRef) !== preferred)]
+  const preferred = canonicalJson(placement.hostRef)
+  return [...ordered.filter(candidate => canonicalJson(candidate.spec.target.hostRef) === preferred),
+    ...ordered.filter(candidate => canonicalJson(candidate.spec.target.hostRef) !== preferred)]
 }
 export function orderBuildComputers(candidates: EnrolledCandidate[]): EnrolledCandidate[] {
   return candidates.filter(candidate => candidate.ready && candidate.preference.buildEnabled).sort((left, right) => {
@@ -276,7 +277,7 @@ export class JobComputerSelection {
     for (const candidate of candidates) {
       if (!compatibleJobComputer(candidate, request)
         || (placementOverride?.kind === 'explicit'
-          && canonical(placedRoot(candidate.spec.target)) !== canonical(placedRoot(placementOverride.target)))) {
+          && canonicalJson(placedRoot(candidate.spec.target)) !== canonicalJson(placedRoot(placementOverride.target)))) {
         reasons.push('incompatible')
         continue
       }

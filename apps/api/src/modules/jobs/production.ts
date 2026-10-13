@@ -57,7 +57,7 @@ import { JobBuildQueueConfigurationSchema, type JobBuildQueueConfiguration } fro
 import { isAutoJobSpec } from '@foreman-code/contracts/jobs'
 import { JobRuntimeProfileSchema } from '@foreman-code/contracts/job-runtime'
 import { JobResourceRequestSchema, type JobResourceRequest } from '@foreman-code/contracts/job-verification-policy'
-import { canonical } from './repository.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import { JobRuntimeMetadataRecovery } from './runtimeMetadataRecovery.js'
 
 export interface ProductionJobInfrastructure {
@@ -120,7 +120,7 @@ export function createReviewedBuildQueueConfiguration(
     async resources(sql, definition) {
       if ('verification' in definition.spec) {
         const resources = definition.spec.verification.resources
-        if (!configuration.envelopes.some(envelope => canonical(envelope) === canonical(resources))) {
+        if (!configuration.envelopes.some(envelope => canonicalJson(envelope) === canonicalJson(resources))) {
           throw new DomainError('JOB_QUEUE_ENVELOPE_REVIEW_REQUIRED', 'No reviewed resource envelope covers this verification.', 409)
         }
         return JobResourceRequestSchema.parse(resources)
@@ -134,12 +134,12 @@ export function createReviewedBuildQueueConfiguration(
         if (!row) throw new DomainError('JOB_RUNTIME_PROFILE_VERSION_NOT_FOUND', 'The saved build profile version is unavailable.', 409)
         const profile = JobRuntimeProfileSchema.parse(row.record)
         if (profile.id !== isolationPolicyId || profile.revision !== isolationPolicyRevision
-          || profile.workspaceId !== definition.workspaceId || canonical(profile.policy) !== canonical(definition.spec.policy)) {
+          || profile.workspaceId !== definition.workspaceId || canonicalJson(profile.policy) !== canonicalJson(definition.spec.policy)) {
           throw new DomainError('JOB_QUEUE_PROFILE_CONFLICT', 'The saved build profile differs from the definition policy or workspace.', 409)
         }
         limits = profile.limits
       }
-      const envelope = configuration.envelopes.find(candidate => canonical(candidate.limits) === canonical(limits))
+      const envelope = configuration.envelopes.find(candidate => canonicalJson(candidate.limits) === canonicalJson(limits))
       if (!envelope) throw new DomainError('JOB_QUEUE_ENVELOPE_REVIEW_REQUIRED', 'No reviewed resource envelope covers this build.', 409)
       return JobResourceRequestSchema.parse(envelope)
     },

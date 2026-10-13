@@ -13,7 +13,8 @@ import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { PostgresSourceService } from '../sources/service.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 import { DomainError } from '../errors.js'
-import { canonical, type JobSql } from './repository.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
+import type { JobSql } from './repository.js'
 import { jobDigest } from './service.js'
 import { readJobRuntimeProfileVersion } from './runtimeProfileVersion.js'
 import type { JobRuntimeInventory } from './sourcePreparation.js'
@@ -142,11 +143,11 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
           throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED',
             'Verification qualification must capture the approved commit and verification profile.', 409)
         }
-        if(fingerprint.profileId!==profile.id||fingerprint.profileRevision!==profile.revision||fingerprint.specDigest!==profile.specDigest||canonical(fingerprint.root)!==canonical(profile.root)||canonical(fingerprint.hostRef)!==canonical(profile.root.selection.hostRef)||canonical(fingerprint.registration)!==canonical(profile.root.registration)||canonical(fingerprint.limits)!==canonical(jobRuntimeProfileLimits(profile)))throw new DomainError('JOB_RUNTIME_FINGERPRINT_CONFLICT','Installed metadata does not match this profile revision.',409)
+        if(fingerprint.profileId!==profile.id||fingerprint.profileRevision!==profile.revision||fingerprint.specDigest!==profile.specDigest||canonicalJson(fingerprint.root)!==canonicalJson(profile.root)||canonicalJson(fingerprint.hostRef)!==canonicalJson(profile.root.selection.hostRef)||canonicalJson(fingerprint.registration)!==canonicalJson(profile.root.registration)||canonicalJson(fingerprint.limits)!==canonicalJson(jobRuntimeProfileLimits(profile)))throw new DomainError('JOB_RUNTIME_FINGERPRINT_CONFLICT','Installed metadata does not match this profile revision.',409)
         if (profile.schemaVersion === 2 && (fingerprint.schemaVersion !== 3
-          || canonical(fingerprint.resources) !== canonical(profile.spec.resources)
-          || canonical(fingerprint.approvalConfig) !== canonical(profile.approvalConfig)
-          || canonical(fingerprint.network) !== canonical(profile.spec.policy.network))) {
+          || canonicalJson(fingerprint.resources) !== canonicalJson(profile.spec.resources)
+          || canonicalJson(fingerprint.approvalConfig) !== canonicalJson(profile.approvalConfig)
+          || canonicalJson(fingerprint.network) !== canonicalJson(profile.spec.policy.network))) {
           throw new DomainError('JOB_RUNTIME_FINGERPRINT_CONFLICT','Verification metadata differs from its saved configuration.',409)
         }
         if (profile.schemaVersion === 1 && fingerprint.schemaVersion === 3) {
@@ -362,8 +363,8 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
     const profile = await readJobRuntimeProfileVersion(sql, root.binding.workspaceId,
       spec.policy.isolationPolicyId, spec.policy.isolationPolicyRevision)
     if (usesRetiredHarness(profile)) throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
-    const sameNamespace=canonical(profile.root.selection.hostRef)===canonical(root.selection.hostRef)&&canonical(profile.root.registration)===canonical(root.registration)&&profile.root.selection.rootPolicyId===root.selection.rootPolicyId&&profile.root.selection.rootPolicyRevision===root.selection.rootPolicyRevision&&canonical(profile.root.binding.filesystem)===canonical(root.binding.filesystem)&&profile.root.binding.canonicalPath===root.binding.canonicalPath
-    if(profile.status!=='qualified'||!profile.measurement||profile.revision!==spec.policy.isolationPolicyRevision||canonical(jobRuntimeProfilePolicy(profile))!==canonical(spec.policy)||!sameNamespace)throw new DomainError('JOB_RUNTIME_UNQUALIFIED','The exact policy/root/host has no current actual qualification.',409)
+    const sameNamespace=canonicalJson(profile.root.selection.hostRef)===canonicalJson(root.selection.hostRef)&&canonicalJson(profile.root.registration)===canonicalJson(root.registration)&&profile.root.selection.rootPolicyId===root.selection.rootPolicyId&&profile.root.selection.rootPolicyRevision===root.selection.rootPolicyRevision&&canonicalJson(profile.root.binding.filesystem)===canonicalJson(root.binding.filesystem)&&profile.root.binding.canonicalPath===root.binding.canonicalPath
+    if(profile.status!=='qualified'||!profile.measurement||profile.revision!==spec.policy.isolationPolicyRevision||canonicalJson(jobRuntimeProfilePolicy(profile))!==canonicalJson(spec.policy)||!sameNamespace)throw new DomainError('JOB_RUNTIME_UNQUALIFIED','The exact policy/root/host has no current actual qualification.',409)
     if ('verification' in spec) {
       if (profile.schemaVersion !== 2 || !profile.measurement) throw new DomainError('JOB_RUNTIME_UNQUALIFIED','A verification Job requires its measured verification profile.',409)
       requireReviewedVerificationConfiguration(profile)
@@ -373,7 +374,7 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
       // Any commit with the qualified dependency files runs; changed dependencies wait for a new qualification.
       await verificationDependencyBasis(sql, root.binding.workspaceId, profile, spec.source)
       const measured = profile.measurement.suites.find(value => value.suite === spec.verification.suite)
-      if (!measured || canonical(measured.resources) !== canonical(spec.verification.resources)
+      if (!measured || canonicalJson(measured.resources) !== canonicalJson(spec.verification.resources)
         || spec.verification.parameters.unitWorkers > Math.min(measured.maxUnitWorkers, JOB_VERIFICATION_OWNER_CONFIGURATION.unitWorkers)
         || spec.verification.parameters.integrationShards > measured.maxIntegrationShards) {
         throw new DomainError('JOB_SUITE_UNQUALIFIED','The requested suite or budget has not been measured on this profile.',409)
@@ -402,7 +403,7 @@ export function verificationProfileReadiness(input: {
   if (profile.spec.policy.network.mode !== 'none') return denied('network_enforcement_unavailable')
   if (!input.currentFingerprint) return denied('runtime_context_unavailable')
   const current = JobVerificationRuntimeFingerprintSchema.parse(input.currentFingerprint)
-  if (canonical(current) !== canonical(measurement.fingerprint)
+  if (canonicalJson(current) !== canonicalJson(measurement.fingerprint)
     || jobDigest(current) !== measurement.identity.fingerprintDigest) return denied('runtime_context_changed')
   if (current.quota.workloadHardLimitBytes > current.resources.limits.diskBytes
     || current.quota.workloadHardInodes > current.resources.mutableInodes

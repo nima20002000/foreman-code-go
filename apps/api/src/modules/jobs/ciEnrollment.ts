@@ -18,7 +18,8 @@ import type { CiEnrollmentInventory, CiEnrollmentTarget } from './ciEnrollmentIn
 import { ciEnrollmentDisabled, lockCiEnrollment } from './ciEnrollmentInventory.js'
 import { ciEnrollmentProfileInput, ciEnrollmentTemplateDigest, requireCiEnrollmentStorage } from './ciEnrollmentProfiles.js'
 import { JobOwnership } from './ownership.js'
-import { canonical, jobDigest } from './digest.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
+import { jobDigest } from './digest.js'
 import type { JobSql } from './repository.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 
@@ -193,7 +194,7 @@ export class CiEnrollment {
 
   private targetState(computer: CiEnrollmentTarget, state?: CiEnrollmentComputer): CiEnrollmentComputer {
     if (!state) return this.initial(computer)
-    if (canonical(state.target) === canonical(computer.target)) {
+    if (canonicalJson(state.target) === canonicalJson(computer.target)) {
       return { ...state, ...(computer.executionMode ? { executionMode: computer.executionMode } : {}) }
     }
     return { ...this.initial(computer), revision: state.revision, enabled: state.enabled }

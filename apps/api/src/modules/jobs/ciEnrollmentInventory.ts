@@ -14,7 +14,8 @@ import type { ManagedWorkspaceRootService } from '../workspace-roots/managedRoot
 import { DomainError } from '../errors.js'
 import type { CiRuntimeWorker } from './ciRuntimeWorker.js'
 import { readHostCiStatus } from '../ci-host/status.js'
-import { canonical, jobDigest } from './digest.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
+import { jobDigest } from './digest.js'
 import type { JobSql } from './repository.js'
 
 export interface CiEnrollmentTarget {
@@ -83,7 +84,7 @@ export class ProductionCiEnrollmentInventory implements CiEnrollmentInventory {
     const current = () => this.endpoint().currentBinding(target.hostRef.kind === 'device' ? target.hostRef.deviceId : '')
     const matches = () => channel.binding.workerInstallationId === target.applicationInstallationId
       && channel.binding.keyRevision === target.keyRevision && channel.binding.authorizationRevision === target.authorizationRevision
-      && canonical(channel.binding) === canonical(current())
+      && canonicalJson(channel.binding) === canonicalJson(current())
     if (!matches()) throw new DomainError('CI_ENROLLMENT_OFFLINE', 'The computer connection changed.', 409)
     const result = await channel.request({ operation: 'status' }, { timeoutMs: 30_000 })
     if (!matches()) throw new DomainError('CI_ENROLLMENT_OFFLINE', 'The computer connection changed.', 409)
@@ -95,8 +96,8 @@ export class ProductionCiEnrollmentInventory implements CiEnrollmentInventory {
     await assertBuildComputerTarget(this.pool, target)
     this.workerExecution.requireEnabled(target.hostRef)
     const roots = (await this.sources.rootList(principal, 'mcp', { workspaceId, limit: 100 })).items
-    const matching = roots.find(root => canonical(root.selection.hostRef) === canonical(target.hostRef)
-      && canonical(root.source) === canonical(template.source)
+    const matching = roots.find(root => canonicalJson(root.selection.hostRef) === canonicalJson(target.hostRef)
+      && canonicalJson(root.source) === canonicalJson(template.source)
       && root.binding.accessMode === 'exclusive-write'
       && (target.hostRef.kind === 'main' || root.binding.workerInstallationId === target.applicationInstallationId
         && root.registration?.keyRevision === target.keyRevision
@@ -106,14 +107,14 @@ export class ProductionCiEnrollmentInventory implements CiEnrollmentInventory {
       join workspace_root_policies p on p.root_policy_id=h.root_policy_id and p.root_policy_revision=h.root_policy_revision
       where h.workspace_id=$1 and p.revoked_at is null`, [workspaceId])
     const policy = rows.rows.map(row => WorkspaceRootPolicySchema.parse(row.record))
-      .find(value => canonical(value.hostRef) === canonical(target.hostRef) && value.accessMode === 'read-write'
+      .find(value => canonicalJson(value.hostRef) === canonicalJson(target.hostRef) && value.accessMode === 'read-write'
         && value.applicationInstallationId === target.applicationInstallationId
         && (target.hostRef.kind === 'main' || value.registration?.keyRevision === target.keyRevision
           && value.registration?.authorizationRevision === target.authorizationRevision))
       ?? await this.managedRoots.ensure(principal, 'mcp', workspaceId, target)
     const selection = { hostRef: policy.hostRef, rootPolicyId: policy.rootPolicyId,
       rootPolicyRevision: policy.rootPolicyRevision, locationRevision: policy.locationRevision }
-    const current = roots.find(root => canonical(root.selection.hostRef) === canonical(target.hostRef)
+    const current = roots.find(root => canonicalJson(root.selection.hostRef) === canonicalJson(target.hostRef)
       && root.selection.rootPolicyId === policy.rootPolicyId)
     const previousRevision = current?.binding.bindingRevision ?? 0
     const commandId = `enroll-root-${jobDigest({ workspaceId, selection, source: template.source,

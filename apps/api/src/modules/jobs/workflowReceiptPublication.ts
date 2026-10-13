@@ -7,7 +7,8 @@ import type { RepeatScope } from '../runs/repeatResolution.js'
 import { beforeGraphCommit,type GraphTransactionSql } from '../run-graph/connection.js'
 import { repeatId } from '../runs/repeatResolution.js'
 import { DomainError } from '../errors.js'
-import { canonical,JobRepository } from './repository.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
+import { JobRepository } from './repository.js'
 import { deriveJobReceiptLocked,type JobCanonicalOutputVerifier } from './receiptProjection.js'
 
 /** Caller already holds the actual Job owner/receipt fence and opens the existing
@@ -28,7 +29,7 @@ export async function publishWorkflowJobReceiptLocked(publication:RunGraphPublic
   if(!changed.replayed)Object.assign(execution,next)
   beforeGraphCommit(sql,async()=>{
     const stored=await new JobRepository().execution(sql,execution.workspaceId,execution.id)
-    if(canonical(stored)!==canonical(next))throw new DomainError('JOB_RECEIPT_PIN_CONFLICT','The original receipt state changed before its graph commit.',409)
+    if(canonicalJson(stored)!==canonicalJson(next))throw new DomainError('JOB_RECEIPT_PIN_CONFLICT','The original receipt state changed before its graph commit.',409)
   })
 }
 

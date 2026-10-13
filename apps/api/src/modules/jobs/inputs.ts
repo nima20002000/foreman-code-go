@@ -11,7 +11,7 @@ import {
 import { jobInputSnapshotDigest } from '@foreman-code/contracts/job-inputs-node'
 import type { JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { identity } from '../sources/privateFilesystem.js'
-import { canonical } from './repository.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import type { JobSourcePort } from './executor.js'
 export type VerifiedJobSource=Awaited<ReturnType<JobSourcePort['verify']>>
 /** Supplied only by W09's canonical authorization/transfer/materialization adapter. */
@@ -26,7 +26,7 @@ function deny(message:string):never {throw new Error(`Accepted job inputs reject
 export function requireJobInputReceipt(execution:JobExecutionRecord,source:VerifiedJobSource,raw:unknown):JobInputDeliveryReceipt {
   const receipt=JobInputDeliveryReceiptSchema.parse(raw),spec=execution.acceptedSpec
   const recipient={workspaceId:execution.workspaceId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,owner:execution.owner,bindingHash:spec.bindingHash,specDigest:spec.specDigest,materializationId:spec.source.materializationId,materializationDigest:spec.source.materializationDigest}
-  if(canonical(receipt.recipient)!==canonical(recipient)||receipt.inputSnapshotDigest!==jobInputSnapshotDigest(execution))deny('original execution, source, owner or input snapshot changed')
+  if(canonicalJson(receipt.recipient)!==canonicalJson(recipient)||receipt.inputSnapshotDigest!==jobInputSnapshotDigest(execution))deny('original execution, source, owner or input snapshot changed')
   if(!source.privateGit||source.privateRepositoryRoot!==spec.target.destination.canonicalProjectRoot||source.directoryIdentityHash!==spec.target.destination.directoryIdentityHash)deny('private source changed')
   if(!Number.isFinite(source.diskQuotaBytes)||source.diskQuotaBytes<=0)deny('qualified input filesystem budget missing')
   if(receipt.manifestByteSize>4*1024*1024||receipt.files.reduce((sum,file)=>sum+file.byteSize,receipt.verificationContext?.byteSize??0)>Math.min(source.diskQuotaBytes,136*1024*1024))deny('accepted input byte budget exceeded')
@@ -79,7 +79,7 @@ export async function verifyJobInputDirectory(execution:JobExecutionRecord,sourc
     if(hash(Buffer.from(JSON.stringify(rootIdentity)))!==source.directoryIdentityHash)deny('actual private source identity changed')
     directory=await open(`/proc/self/fd/${root.fd}/${JOB_INPUT_DIRECTORY}`,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW)
     const observed=await identity(directory)
-    if(canonical(observed)!==canonical({device:receipt.directory.device,inode:receipt.directory.inode,mountId:receipt.directory.mountId})||observed.device!==rootIdentity.device||observed.mountId!==rootIdentity.mountId)deny('actual input directory identity or bounded filesystem changed')
+    if(canonicalJson(observed)!==canonicalJson({device:receipt.directory.device,inode:receipt.directory.inode,mountId:receipt.directory.mountId})||observed.device!==rootIdentity.device||observed.mountId!==rootIdentity.mountId)deny('actual input directory identity or bounded filesystem changed')
     const physicalFiles = receipt.verificationContext ? [...receipt.files, receipt.verificationContext] : receipt.files
     await requireExactInputTree(directory,physicalFiles,signal)
     if (receipt.verificationContext) await readRetainedFile(directory,receipt.verificationContext.relativePath,
@@ -87,14 +87,14 @@ export async function verifyJobInputDirectory(execution:JobExecutionRecord,sourc
     let manifestBytes:Buffer|undefined,workflowBytes:Buffer|undefined
     for(const file of receipt.files){const bytes=await readRetainedFile(directory,file.relativePath,file,signal,file.relativePath==='manifest.json'||file.relativePath==='workflow-input.json');if(file.relativePath==='manifest.json')manifestBytes=bytes;if(file.relativePath==='workflow-input.json')workflowBytes=bytes}
     const manifest=JobBuildInputManifestSchema.parse(JSON.parse(manifestBytes!.toString('utf8')))
-    if (canonical(manifest.verificationContext ?? null) !== canonical(receipt.verificationContext ?? null)) {
+    if (canonicalJson(manifest.verificationContext ?? null) !== canonicalJson(receipt.verificationContext ?? null)) {
       deny('verification context pin differs from the retained manifest')
     }
-    if(manifest.inputSnapshotDigest!==receipt.inputSnapshotDigest||canonical(manifest.workflowInput)!==canonical(execution.acceptedSpec.workflowInput)||canonical(JSON.parse(workflowBytes!.toString('utf8')))!==canonical(execution.acceptedSpec.workflowInput))deny('actual accepted workflow JSON changed')
+    if(manifest.inputSnapshotDigest!==receipt.inputSnapshotDigest||canonicalJson(manifest.workflowInput)!==canonicalJson(execution.acceptedSpec.workflowInput)||canonicalJson(JSON.parse(workflowBytes!.toString('utf8')))!==canonicalJson(execution.acceptedSpec.workflowInput))deny('actual accepted workflow JSON changed')
     const declared=new Map(receipt.files.map(file=>[file.relativePath,file])),paths=manifest.files.map(file=>file.relativePath)
     if(new Set(paths).size!==paths.length||paths.includes('manifest.json')||paths.includes('workflow-input.json')||paths.length+2!==receipt.files.length)deny('manifest file set differs from retained receipt')
     for(const file of manifest.files){const retained=declared.get(file.relativePath);if(!retained||retained.sha256!==file.sha256||retained.byteSize!==file.byteSize)deny('manifest pin differs from exact retained bytes')}
-    for(const input of execution.acceptedSpec.inputs){const file=manifest.files.find(file=>file.relativePath===`files/${input.path}`);if(!file||canonical({fileId:file.fileId,revisionId:file.revisionId,sha256:file.sha256,byteSize:file.byteSize})!==canonical({fileId:input.fileId,revisionId:input.revisionId,sha256:input.sha256,byteSize:input.byteSize}))deny('declared manual input pin missing or changed')}
+    for(const input of execution.acceptedSpec.inputs){const file=manifest.files.find(file=>file.relativePath===`files/${input.path}`);if(!file||canonicalJson({fileId:file.fileId,revisionId:file.revisionId,sha256:file.sha256,byteSize:file.byteSize})!==canonicalJson({fileId:input.fileId,revisionId:input.revisionId,sha256:input.sha256,byteSize:input.byteSize}))deny('declared manual input pin missing or changed')}
     if(execution.workflow===null&&manifest.files.length!==execution.acceptedSpec.inputs.length)deny('manual job cannot borrow undeclared workflow files')
     signal.throwIfAborted();return path
   }finally{await directory?.close();await root.close()}

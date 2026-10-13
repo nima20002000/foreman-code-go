@@ -8,7 +8,7 @@ import { HarnessExecutionSchema, NativeSessionReferenceSchema } from '@foreman-c
 import { AgentChatContextSchema, AgentChatStateSchema, SendAgentChatMessageResponseSchema, type AgentChatState } from '@foreman-code/contracts/agent-chat'
 import { WorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 
-import { canonical } from '../src/modules/harnesses/codexProtocol.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import { readNativeSource } from './helpers/agentChatNativeSource.js'
 
 /** Opt-in against an ALREADY RUNNING, task-owned local API and a genuinely terminal
@@ -41,10 +41,10 @@ async function protectedState(pool: pg.Pool, schema: string, checkpointSchema: s
     const state: Record<string, string[]> = {}
     for (const table of tables) {
       const rows = (await client.query<{ row: unknown }>(`select to_jsonb(t) as row from ${identifier(table.schema)}.${identifier(table.name)} t`)).rows
-      state[`${table.schema}.${table.name}`] = rows.map((row) => canonical(row.row)).sort()
+      state[`${table.schema}.${table.name}`] = rows.map((row) => canonicalJson(row.row)).sort()
     }
     await client.query('commit')
-    return canonical(state)
+    return canonicalJson(state)
   } finally {
     await client.query('rollback').catch(() => undefined)
     client.release()

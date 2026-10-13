@@ -1,7 +1,8 @@
 import { JobExecutionRecordSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { RemoteJobOperationReceiptRecordSchema, type RemoteJobOperationReceiptRecord } from '@foreman-code/contracts/remote-job-execution'
 import { DomainError } from '../errors.js'
-import { canonical, JobRepository, type JobSql } from './repository.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
+import { JobRepository, type JobSql } from './repository.js'
 export interface JobCanonicalOutputVerifier {verifyRequiredOutputs(sql:JobSql,execution:JobExecutionRecord):Promise<void>}
 /** Inside the original main owner transaction. Native exit and output delivery remain separate facts. */
 export async function deriveJobReceiptLocked(sql:JobSql,original:JobExecutionRecord,raw:RemoteJobOperationReceiptRecord,outputs:JobCanonicalOutputVerifier):Promise<JobExecutionRecord> {
@@ -11,11 +12,11 @@ export async function deriveJobReceiptLocked(sql:JobSql,original:JobExecutionRec
     :{kind:'manual-job',workspaceId:execution.workspaceId,jobExecutionId:execution.id,definitionId:execution.acceptedSpec.definitionId}
   if(receipt.intent.executionId!==execution.id||receipt.intent.attemptId!==execution.attemptId||receipt.intent.operationId!==execution.operationId
     ||receipt.intent.mainId!==execution.acceptedSpec.target.mainId||receipt.intent.bindingHash!==execution.acceptedSpec.bindingHash
-    ||receipt.intent.inputDigest!==`sha256:${execution.acceptedSpec.specDigest}`||canonical(receipt.intent.subject)!==canonical(subject)
-    ||canonical(receipt.intent.owner)!==canonical(execution.owner)||receipt.execution.id!==execution.id||receipt.execution.workspaceId!==execution.workspaceId
+    ||receipt.intent.inputDigest!==`sha256:${execution.acceptedSpec.specDigest}`||canonicalJson(receipt.intent.subject)!==canonicalJson(subject)
+    ||canonicalJson(receipt.intent.owner)!==canonicalJson(execution.owner)||receipt.execution.id!==execution.id||receipt.execution.workspaceId!==execution.workspaceId
     ||receipt.execution.attemptId!==execution.attemptId||receipt.execution.operationId!==execution.operationId
-    ||canonical(receipt.execution.owner)!==canonical(execution.owner)||canonical(receipt.execution.workflow)!==canonical(execution.workflow)) throw new DomainError('JOB_RECEIPT_PIN_CONFLICT','Observed receipt does not match accepted job facts.',409)
-  if(canonical(receipt.execution.acceptedSpec)!==canonical(execution.acceptedSpec)) throw new DomainError('JOB_RECEIPT_SPEC_CONFLICT','Observed job specification changed after acceptance.',409)
+    ||canonicalJson(receipt.execution.owner)!==canonicalJson(execution.owner)||canonicalJson(receipt.execution.workflow)!==canonicalJson(execution.workflow)) throw new DomainError('JOB_RECEIPT_PIN_CONFLICT','Observed receipt does not match accepted job facts.',409)
+  if(canonicalJson(receipt.execution.acceptedSpec)!==canonicalJson(execution.acceptedSpec)) throw new DomainError('JOB_RECEIPT_SPEC_CONFLICT','Observed job specification changed after acceptance.',409)
   execution.transport='connected';execution.lastSeenAt=receipt.observedAt;execution.updatedAt=receipt.observedAt
   if(receipt.native?.startedAt) {
     if(execution.startedAt&&execution.startedAt!==receipt.native.startedAt)throw new DomainError('JOB_PROCESS_IDENTITY_CONFLICT','Original process start observation is immutable.',409)
@@ -24,7 +25,7 @@ export async function deriveJobReceiptLocked(sql:JobSql,original:JobExecutionRec
   if(receipt.terminal) {
     const terminal=receipt.terminal
     const process={phase:'terminal' as const,outcome:terminal.outcome,exitCode:terminal.exitCode,signal:terminal.signal,processStopped:terminal.processStopped}
-    if(execution.process.phase==='terminal'&&(canonical(execution.process)!==canonical(process)||execution.finishedAt!==terminal.finishedAt)) throw new DomainError('JOB_TERMINAL_CONFLICT','Original process result is immutable.',409)
+    if(execution.process.phase==='terminal'&&(canonicalJson(execution.process)!==canonicalJson(process)||execution.finishedAt!==terminal.finishedAt)) throw new DomainError('JOB_TERMINAL_CONFLICT','Original process result is immutable.',409)
     execution.process=process;execution.finishedAt=terminal.finishedAt
     if(terminal.logGapPossible)execution.resultIssue='log_delivery_unknown'
     else if(execution.resultIssue==='log_delivery_unknown')execution.resultIssue=null

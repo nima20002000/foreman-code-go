@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import { ZodError } from 'zod'
 import type { NativeSessionReference } from '@foreman-code/contracts'
 import { componentLogger } from '../../diagnostics/logger.js'
@@ -42,10 +43,7 @@ export function warnCodexFileError(error: unknown): void {
   log.warn(errorIdentity(error), 'Codex file operation failed')
 }
 function identity(value: unknown): string {
-  const sorted = (entry: unknown): unknown => Array.isArray(entry) ? entry.map(sorted)
-    : entry && typeof entry === 'object' ? Object.fromEntries(Object.entries(entry)
-      .sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, sorted(child)])) : entry
-  return createHash('sha256').update(JSON.stringify(sorted(value))).digest('hex')
+  return createHash('sha256').update(canonicalJson(value)).digest('hex')
 }
 
 /** Local executable registration, separate from Codex's thread-level schema

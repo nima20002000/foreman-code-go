@@ -7,10 +7,11 @@ import { RemoteJobDispatchIntentSchema } from '@foreman-code/contracts/remote-jo
 import { assertGraphTransaction,beforeGraphCommit,type GraphTransactionSql } from '../run-graph/connection.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import { DomainError } from '../errors.js'
-import { canonical,JobRepository,type JobSql } from './repository.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
+import { JobRepository, type JobSql } from './repository.js'
 
 export function requireCleanupPins(execution:JobExecutionRecord,cleanup:JobRunCleanup) {
-  if(!execution.workflow||cleanup.workspaceId!==execution.workspaceId||cleanup.workflowId!==execution.workflow.workflowId||cleanup.runId!==execution.workflow.runId||cleanup.nodeId!==execution.workflow.nodeId||cleanup.nodeExecutionId!==execution.workflow.nodeExecutionId||cleanup.executionId!==execution.id||cleanup.attemptId!==execution.attemptId||cleanup.operationId!==execution.operationId||cleanup.bindingHash!==execution.acceptedSpec.bindingHash||canonical(cleanup.jobOwner)!==canonical(execution.owner))throw new DomainError('JOB_CLEANUP_PIN_CONFLICT','Owned cleanup cannot stop another placement, attempt or operation.',409)
+  if(!execution.workflow||cleanup.workspaceId!==execution.workspaceId||cleanup.workflowId!==execution.workflow.workflowId||cleanup.runId!==execution.workflow.runId||cleanup.nodeId!==execution.workflow.nodeId||cleanup.nodeExecutionId!==execution.workflow.nodeExecutionId||cleanup.executionId!==execution.id||cleanup.attemptId!==execution.attemptId||cleanup.operationId!==execution.operationId||cleanup.bindingHash!==execution.acceptedSpec.bindingHash||canonicalJson(cleanup.jobOwner)!==canonicalJson(execution.owner))throw new DomainError('JOB_CLEANUP_PIN_CONFLICT','Owned cleanup cannot stop another placement, attempt or operation.',409)
 }
 async function requireRunJobMapping(sql:JobSql,execution:JobExecutionRecord,workflowVersionId:string) {
   const workflow=execution.workflow
@@ -38,11 +39,11 @@ export async function requestRunJobCleanup(sql:GraphTransactionSql,execution:Job
   const row=(await sql.query<{intent:unknown;cancel_command_id:string|null;cancel_cleanup:unknown}>(`select intent,cancel_command_id,cancel_cleanup from job_dispatch_intents where execution_id=$1 for update`,[execution.id])).rows[0]
   if(!row)throw new DomainError('JOB_DISPATCH_MISSING','The original job intent is missing.',409)
   const intent=RemoteJobDispatchIntentSchema.parse(row.intent)
-  if(intent.subject.kind!=='workflow-node'||intent.subject.runId!==owner.runId||intent.bindingHash!==execution.acceptedSpec.bindingHash||intent.attemptId!==execution.attemptId||intent.operationId!==execution.operationId||canonical(intent.owner)!==canonical(execution.owner))throw new DomainError('JOB_CLEANUP_PIN_CONFLICT','The job cleanup target changed.',409)
+  if(intent.subject.kind!=='workflow-node'||intent.subject.runId!==owner.runId||intent.bindingHash!==execution.acceptedSpec.bindingHash||intent.attemptId!==execution.attemptId||intent.operationId!==execution.operationId||canonicalJson(intent.owner)!==canonicalJson(execution.owner))throw new DomainError('JOB_CLEANUP_PIN_CONFLICT','The job cleanup target changed.',409)
   if(row.cancel_cleanup){const existing=JobRunCleanupSchema.parse(row.cancel_cleanup);requireCleanupPins(execution,existing);return existing}
   if(reason==='run-stop'&&!actual.stopped)throw new DomainError('JOB_CLEANUP_REASON_CONFLICT','A user Stop reason requires the actual persisted Run Stop.',409)
   const cleanup=JobRunCleanupSchema.parse({schemaVersion:1,id:randomUUID(),commandId:row.cancel_command_id??randomUUID(),workspaceId:execution.workspaceId,workflowId:actual.run.workflowId,workflowVersionId:actual.run.workflowVersionId,runId:owner.runId,nodeId:execution.workflow.nodeId,nodeExecutionId:execution.workflow.nodeExecutionId,executionId:execution.id,attemptId:execution.attemptId,operationId:execution.operationId,bindingHash:execution.acceptedSpec.bindingHash,jobOwner:execution.owner,runOwner:actual.fence,reason:actual.stopped?'run-stop':reason,cleanupRequestedAt:actual.requestedAt,requestedAt:new Date().toISOString()})
-  beforeGraphCommit(sql,async()=>{const current=await readAuthority();if(canonical(current.fence)!==canonical(actual.fence)||current.run.workflowVersionId!==cleanup.workflowVersionId||current.requestedAt!==cleanup.cleanupRequestedAt)throw new DomainError('JOB_CLEANUP_AUTHORITY_CHANGED','The original Run cleanup authority changed before commit.',409)})
+  beforeGraphCommit(sql,async()=>{const current=await readAuthority();if(canonicalJson(current.fence)!==canonicalJson(actual.fence)||current.run.workflowVersionId!==cleanup.workflowVersionId||current.requestedAt!==cleanup.cleanupRequestedAt)throw new DomainError('JOB_CLEANUP_AUTHORITY_CHANGED','The original Run cleanup authority changed before commit.',409)})
   await sql.query('update job_dispatch_intents set cancel_command_id=$2,cancel_cleanup=$3::jsonb where execution_id=$1',[execution.id,cleanup.commandId,JSON.stringify(cleanup)])
   const repository=new JobRepository(),current=await repository.execution(sql,execution.workspaceId,execution.id,true)
   requireCleanupPins(current,cleanup)

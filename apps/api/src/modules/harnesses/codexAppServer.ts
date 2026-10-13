@@ -41,8 +41,9 @@ import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, Na
 import { runCommand } from './process.js'
 import { appMcpTokenEnvironment, inheritedAgentEnvironment, isControllerEnvironmentVariable } from './secrets.js'
 import { agentInstructionBundle } from '../skills/instructions.js'
+import { canonicalJsonNumericKeysFirstLegacy } from '@foreman-code/contracts/canonical-json'
 import {
-  assertCodexUnchanged, canonical, codexRequest, qualifyCodex,
+  assertCodexUnchanged, codexRequest, qualifyCodex,
   type QualifiedCodex,
 } from './codexProtocol.js'
 import { resolveCodexInteractionResponse, translateCodexInteraction } from './codexInteractions.js'
@@ -290,11 +291,11 @@ function ownerId(input: NativeSessionStart): string {
   return sessionStartOwner(input)
 }
 function binding(input: NativeSessionStart): string {
-  if (input.kind === 'operator') return canonical({ kind: 'operator', ownerId: ownerId(input), cwd: input.workingDirectory })
-  if (input.kind === 'agent-chat') return canonical({ kind: input.kind, conversationId: input.conversationId,
+  if (input.kind === 'operator') return canonicalJsonNumericKeysFirstLegacy({ kind: 'operator', ownerId: ownerId(input), cwd: input.workingDirectory })
+  if (input.kind === 'agent-chat') return canonicalJsonNumericKeysFirstLegacy({ kind: input.kind, conversationId: input.conversationId,
     ownerId: ownerId(input), workspaceId: input.configuration.workspaceId,
     workflowId: input.workflowId, workflowNodeId: input.workflowNodeId, cwd: input.workingDirectory })
-  return canonical({ kind: 'workflow', ownerId: ownerId(input), workspaceId: input.request.workspaceId,
+  return canonicalJsonNumericKeysFirstLegacy({ kind: 'workflow', ownerId: ownerId(input), workspaceId: input.request.workspaceId,
       runId: input.request.runId, workflowNodeId: input.request.workflowNodeId, cwd: input.request.workingDirectory })
 }
 /** App-owned developer instructions: the accepted configuration's pinned bundle, never the live catalog.
@@ -307,7 +308,7 @@ function instructions(input: NativeSessionStart): string | null {
   return [sessionStartSystemPrompt(input)?.value.text, agentInstructions].filter(Boolean).join('\n\n') || null
 }
 function credentialIdentity(input: NativeSessionStart): string {
-  return canonical(input.environment ?? null)
+  return canonicalJsonNumericKeysFirstLegacy(input.environment ?? null)
 }
 function validateEnvironmentVariables(input?: NativeSessionStart['environment']): void {
   for (const key of Object.keys(input?.variables ?? {})) {
@@ -401,7 +402,7 @@ function threadParameters(
 }
 function sameSet(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
   if (!left || !right) return left === right
-  return canonical([...new Set(left)].sort()) === canonical([...new Set(right)].sort())
+  return canonicalJsonNumericKeysFirstLegacy([...new Set(left)].sort()) === canonicalJsonNumericKeysFirstLegacy([...new Set(right)].sort())
 }
 function stringArray(value: unknown): string[] | undefined {
   if (value == null) return undefined
@@ -410,7 +411,7 @@ function stringArray(value: unknown): string[] | undefined {
 }
 function requestKey(generation: number, id: RequestId): string { return `${generation}:${typeof id}:${String(id)}` }
 function itemNotificationKey(generation: number, method: string, turnId: unknown, itemId: unknown, itemType: unknown): string {
-  return createHash('sha256').update(canonical([generation, method, turnId, itemId, itemType])).digest('hex')
+  return createHash('sha256').update(canonicalJsonNumericKeysFirstLegacy([generation, method, turnId, itemId, itemType])).digest('hex')
 }
 function stagedNativeOutputTerminal(runtime: Runtime, turnId: string): boolean {
   return runtime.starting?.staged.some(event => 'method' in event && event.method === 'turn/completed'
@@ -609,7 +610,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   }
 
   private creationIdentity(input: NativeSessionStart, source?: NativeSessionReference): string {
-    return canonical({ binding: binding(input), configuration: accepted(input),
+    return canonicalJsonNumericKeysFirstLegacy({ binding: binding(input), configuration: accepted(input),
       systemPrompt: sessionStartSystemPrompt(input) ?? null,
       environment: input.environment ?? null, source: source ?? null,
       sessionPreferences: input.sessionPreferences ?? this.startupPreferences ?? null })
@@ -625,7 +626,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
   private creationKey(input: NativeSessionStart): string {
     const correlation = sessionStartCorrelation(input)
     if (!correlation) throw new HarnessExecutionError('CODEX_CORRELATION_REQUIRED', 'Session creation requires a stable correlation ID.')
-    return canonical([binding(input), correlation])
+    return canonicalJsonNumericKeysFirstLegacy([binding(input), correlation])
   }
 
   private async create(input: NativeSessionStart, creation: Creation, key: string, signal?: AbortSignal): Promise<NativeSessionReference> {
@@ -831,7 +832,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       const detached = this.processRecovery && hasDetachedStdioProcess(this.processRecovery)
       const prepared = detached
         ? await this.dependencies.withDiagnostics({ binary: this.binary, cwd: sessionStartDirectory(input),
-          configurationIdentity: canonical(configuration(input)),
+          configurationIdentity: canonicalJsonNumericKeysFirstLegacy(configuration(input)),
           scopedCredentialVariables: Object.keys(input.environment?.variables ?? {}),
           ...(signal ? { signal } : {}) }, io => this.prepareInput(input, signal, io))
         : await this.prepareInput(input, signal)
@@ -1101,7 +1102,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
       if (runtime.phase !== 'idle' || runtime.streamActive || runtime.interactions.size > 0) {
         throw new HarnessExecutionError('CODEX_TURN_ACTIVE', 'This session has an active or uncertain turn or interaction.')
       }
-      if (input.sessionPreferences && canonical(input.sessionPreferences) !== canonical(runtime.sessionPreferences ?? runtime.input.sessionPreferences ?? SessionPreferencesSchema.parse({}))) {
+      if (input.sessionPreferences && canonicalJsonNumericKeysFirstLegacy(input.sessionPreferences) !== canonicalJsonNumericKeysFirstLegacy(runtime.sessionPreferences ?? runtime.input.sessionPreferences ?? SessionPreferencesSchema.parse({}))) {
         await this.applySessionPreferences(session, input.sessionPreferences, signal)
       }
       if (!input.clientCorrelationId.trim()) throw new HarnessExecutionError('CODEX_CORRELATION_REQUIRED', 'Turn startup requires a stable correlation ID.')
@@ -2029,11 +2030,11 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (runtime.binding !== binding(input) || runtime.ownerId !== ownerId(input)) {
       throw new HarnessExecutionError('CODEX_SESSION_OWNER_MISMATCH', 'The loaded session belongs to a different owner or scope.')
     }
-    if (runtime.configurationIdentity !== canonical(accepted(input))) {
+    if (runtime.configurationIdentity !== canonicalJsonNumericKeysFirstLegacy(accepted(input))) {
       throw new HarnessExecutionError('CODEX_SESSION_CONFIGURATION_MISMATCH', 'The loaded session has a different accepted configuration snapshot.')
     }
-    if (canonical(sessionStartSystemPrompt(runtime.input) ?? null)
-      !== canonical(sessionStartSystemPrompt(input) ?? null)) {
+    if (canonicalJsonNumericKeysFirstLegacy(sessionStartSystemPrompt(runtime.input) ?? null)
+      !== canonicalJsonNumericKeysFirstLegacy(sessionStartSystemPrompt(input) ?? null)) {
       throw new HarnessExecutionError('CODEX_SESSION_CONFIGURATION_MISMATCH',
         'The loaded session has a different accepted system prompt snapshot.')
     }
@@ -2074,7 +2075,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     }, async (io) => {
       await io.assertUnchanged(runtime.qualified)
       const prepared = await this.prepareInput(source, signal, io, runtime.qualified.binary)
-      const pin = (value: QualifiedCodex) => canonical([value.binary, value.identity, value.providerVersion,
+      const pin = (value: QualifiedCodex) => canonicalJsonNumericKeysFirstLegacy([value.binary, value.identity, value.providerVersion,
         value.schemaManifestSha256, value.stableSchemaGitBlob, value.referenceSchemaManifestSha256])
       if (pin(prepared.qualified) !== pin(runtime.qualified)) throw new HarnessExecutionError(
         'CODEX_SESSION_QUALIFICATION_MISMATCH', 'Idle inspection must retain the exact native executable and schema qualification.')
@@ -2256,7 +2257,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         || !sameSet(stringArray(actual.enabled_tools), expected.enabledTools)
         || !sameSet(stringArray(actual.disabled_tools) ?? [], expected.disabledTools ?? [])
         || (text(actual.default_tools_approval_mode) !== expected.defaultToolsApprovalMode)
-        || canonical(normalizedTools) !== canonical(expectedTools)
+        || canonicalJsonNumericKeysFirstLegacy(normalizedTools) !== canonicalJsonNumericKeysFirstLegacy(expectedTools)
       if (mismatch) throw new HarnessExecutionError(
         expected.required && (actual.enabled === false || actual.required !== true) ? 'CODEX_REQUIRED_MCP_UNAVAILABLE' : 'CODEX_MCP_POLICY_MISMATCH',
         'Native MCP enabled/required/tool policies differ from the accepted configuration; no native configuration was rewritten.',
@@ -2275,7 +2276,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const sandboxType = { 'read-only': 'readOnly', 'workspace-write': 'workspaceWrite', 'danger-full-access': 'dangerFullAccess' }[value.sandbox]
     let mismatch = response.model !== value.model || response.reasoningEffort !== value.reasoningEffort
       || normalize(String(response.cwd)) !== normalize(prepared.workingDirectory)
-      || canonical(response.approvalPolicy) !== canonical(draft.approvalPolicy)
+      || canonicalJsonNumericKeysFirstLegacy(response.approvalPolicy) !== canonicalJsonNumericKeysFirstLegacy(draft.approvalPolicy)
       || response.approvalsReviewer !== draft.approvalsReviewer || sandbox.type !== sandboxType
       || (value.serviceTier === 'priority' ? !['fast', 'priority'].includes(String(response.serviceTier)) : ![null, 'default'].includes(response.serviceTier as string | null))
     if (value.sandbox === 'workspace-write') {
@@ -2305,7 +2306,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     return {
       ...(prepared.contextBudgetLimit ? { contextBudgetLimit: prepared.contextBudgetLimit } : {}),
       connectionId: this.dependencies.id(), schemaIdentity: prepared.qualified.schemaManifestSha256, arrivalOrdinal: 0, attached,
-      binding: binding(prepared.input), ownerId: ownerId(prepared.input), configurationIdentity: canonical(accepted(prepared.input)),
+      binding: binding(prepared.input), ownerId: ownerId(prepared.input), configurationIdentity: canonicalJsonNumericKeysFirstLegacy(accepted(prepared.input)),
       input: prepared.input, workingDirectory: prepared.workingDirectory, configuration: prepared.harnessConfiguration,
       scopedCredentialVariable: prepared.scopedCredentialVariable, transport, session, generation: 0,
       approvedAppMcpServerName: prepared.approvedAppMcpServerName,
@@ -2727,7 +2728,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     if (!['inProgress', 'completed', 'failed', 'interrupted'].includes(String(turn.status))) return
     for (const value of turn.items) {
       if (isObject(value) && text(value.id) && !['userMessage', 'agentMessage'].includes(String(value.type))) {
-        const fingerprint = createHash('sha256').update(canonical(['snapshot', turn.id, value])).digest('hex')
+        const fingerprint = createHash('sha256').update(canonicalJsonNumericKeysFirstLegacy(['snapshot', turn.id, value])).digest('hex')
         if (!runtime.seenNotifications.has(fingerprint)) {
           runtime.seenNotifications.add(fingerprint)
           if (runtime.seenNotifications.size > MAX_EVENTS) runtime.seenNotifications.delete(runtime.seenNotifications.values().next().value!)
@@ -2795,7 +2796,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
         return
       }
     }
-    const signature = createHash('sha256').update(canonical([request.method, params])).digest('hex')
+    const signature = createHash('sha256').update(canonicalJsonNumericKeysFirstLegacy([request.method, params])).digest('hex')
     const existing = runtime.interactions.get(key)
     const resolved = runtime.resolvedRequests.get(key)
     const file = runtime.fileRequests.get(key)
@@ -2862,7 +2863,7 @@ export class CodexAppServerSessionManager implements NativeHarnessSessionManager
     const transport = runtime.transport
     const generation = runtime.generation
     const key = requestKey(generation, request.id)
-    const signature = createHash('sha256').update(canonical([request.method, params])).digest('hex')
+    const signature = createHash('sha256').update(canonicalJsonNumericKeysFirstLegacy([request.method, params])).digest('hex')
     const prior = runtime.fileRequests.get(key)
     if (prior?.pending || prior?.conflictingIdentity) return
     if ([...runtime.resolvedRequests.values()].filter((entry) => entry.pending).length >= MAX_INTERACTIONS) {

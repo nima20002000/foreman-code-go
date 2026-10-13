@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { canonicalJsonLocaleOrderLegacy } from './canonicalJson.js'
 import type { DeviceSessionBinding } from './deviceConnection.js'
 import { DispatchIntentSchema, MachineReferenceSchema } from './nodePlacement.js'
 import { RemoteJobDispatchIntentSchema } from './remoteJobExecution.js'
@@ -55,13 +56,9 @@ export type TelemetrySelector = z.infer<typeof TelemetrySelectorSchema>
 export type TelemetryHost = z.infer<typeof TelemetryHostSchema>
 export type TelemetryIdentity = z.infer<typeof TelemetryIdentitySchema>
 export type TelemetryOwner = z.infer<typeof TelemetryOwnerSchema>
-/** Sort every object level so input property order cannot alter selection identity. */
-export function telemetryCanonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(telemetryCanonical).join(',')}]`
-  if (value !== null && typeof value === 'object') return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, child]) => `${JSON.stringify(key)}:${telemetryCanonical(child)}`).join(',')}}`
-  return JSON.stringify(value) as string
-}
+/** Sort every object level so input property order cannot alter selection identity.
+ * Persisted selector keys depend on the frozen legacy format. */
+export const telemetryCanonical: (value: unknown) => string = canonicalJsonLocaleOrderLegacy
 export function telemetrySelectorKey(selector: TelemetrySelector): string {
   return `resource-telemetry/v1:${telemetryCanonical(TelemetrySelectorSchema.parse(selector))}`
 }

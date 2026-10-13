@@ -18,7 +18,8 @@ import { requireAuthorization } from '../access/policy.js'
 import { beforeGraphCommit } from '../run-graph/connection.js'
 import { DomainError } from '../errors.js'
 import { JobOwnership } from './ownership.js'
-import { canonical, JobRepository, type JobSql } from './repository.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
+import { JobRepository, type JobSql } from './repository.js'
 import type { JobDispatchPort } from './ports.js'
 import type { JobRuntimeAuthority } from './authority.js'
 import type { JobWorkerFence } from './worker.js'
@@ -287,15 +288,15 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
   private async acceptReceipt(sql:JobSql,execution:JobExecutionRecord,receipt:RemoteJobOperationReceiptRecord):Promise<boolean> {
     receipt=RemoteJobOperationReceiptRecordSchema.parse(receipt)
     const row=(await sql.query<{intent:unknown;receipt_sequence:string;last_receipt:unknown}>('select intent,receipt_sequence::text,last_receipt from job_dispatch_intents where execution_id=$1 for update',[execution.id])).rows[0]!
-    if(canonical(row.intent)!==canonical(receipt.intent))throw new DomainError('JOB_RECEIPT_PIN_CONFLICT','Remote receipt does not match the accepted operation/attempt/subject.',409)
+    if(canonicalJson(row.intent)!==canonicalJson(receipt.intent))throw new DomainError('JOB_RECEIPT_PIN_CONFLICT','Remote receipt does not match the accepted operation/attempt/subject.',409)
     if(row.last_receipt) {
       const previous=RemoteJobOperationReceiptRecordSchema.parse(row.last_receipt)
-      if(canonical(previous.connection)!==canonical(receipt.connection)||previous.workerIncarnationId!==receipt.workerIncarnationId)throw new DomainError('JOB_RECEIPT_IDENTITY_CONFLICT','Original worker receipt identity cannot change during recovery.',409)
+      if(canonicalJson(previous.connection)!==canonicalJson(receipt.connection)||previous.workerIncarnationId!==receipt.workerIncarnationId)throw new DomainError('JOB_RECEIPT_IDENTITY_CONFLICT','Original worker receipt identity cannot change during recovery.',409)
       if(previous.native && (!receipt.native||previous.native.containerId!==receipt.native.containerId||previous.native.supervisorIdentity!==receipt.native.supervisorIdentity||previous.native.processIdentityDigest!==receipt.native.processIdentityDigest||previous.native.startedAt!==receipt.native.startedAt))throw new DomainError('JOB_NATIVE_IDENTITY_CONFLICT','Original supervised container/process identity cannot change.',409)
       if(previous.terminal && (!receipt.terminal||previous.terminal.outcome!==receipt.terminal.outcome||previous.terminal.exitCode!==receipt.terminal.exitCode||previous.terminal.signal!==receipt.terminal.signal||previous.terminal.finishedAt!==receipt.terminal.finishedAt||previous.terminal.closureEvidenceDigest!==receipt.terminal.closureEvidenceDigest))throw new DomainError('JOB_TERMINAL_CONFLICT','Original observed process closure cannot change.',409)
     }
     if(receipt.sequence<=Number(row.receipt_sequence)) {
-      if(receipt.sequence===Number(row.receipt_sequence)&&canonical(receipt)===canonical(row.last_receipt))return false
+      if(receipt.sequence===Number(row.receipt_sequence)&&canonicalJson(receipt)===canonicalJson(row.last_receipt))return false
       throw new DomainError('JOB_RECEIPT_STALE','Remote receipt is stale or conflicts with an acknowledged sequence.',409)
     }
     await sql.query('update job_dispatch_intents set receipt_sequence=$2,last_receipt=$3::jsonb where execution_id=$1',[execution.id,receipt.sequence,JSON.stringify(receipt)])
@@ -325,13 +326,13 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
         definitionId: execution.acceptedSpec.definitionId }
     if (execution.id !== input.executionId || execution.workspaceId !== input.workspaceId
       || execution.attemptId !== input.attemptId || execution.operationId !== input.operationId
-      || execution.acceptedSpec.bindingHash !== input.bindingHash || canonical(execution.owner) !== canonical(input.owner)
-      || canonical(execution.acceptedSpec) !== canonical(row.accepted_spec)
+      || execution.acceptedSpec.bindingHash !== input.bindingHash || canonicalJson(execution.owner) !== canonicalJson(input.owner)
+      || canonicalJson(execution.acceptedSpec) !== canonicalJson(row.accepted_spec)
       || intent.executionId !== execution.id || intent.attemptId !== execution.attemptId
       || intent.operationId !== execution.operationId || intent.bindingHash !== input.bindingHash
       || intent.inputDigest !== `sha256:${execution.acceptedSpec.specDigest}`
       || intent.mainId !== execution.acceptedSpec.target.mainId
-      || canonical(intent.subject) !== canonical(subject) || canonical(intent.owner) !== canonical(execution.owner)) {
+      || canonicalJson(intent.subject) !== canonicalJson(subject) || canonicalJson(intent.owner) !== canonicalJson(execution.owner)) {
       throw new DomainError('JOB_CLOSURE_PIN_CONFLICT', 'Non-entry closure differs from the accepted Job attempt.', 409)
     }
     if (execution.process.phase !== 'terminal' || !execution.process.processStopped
@@ -353,19 +354,19 @@ export class PostgresJobDispatch implements JobDispatchPort,JobRuntimeAuthority 
     const subject=execution.workflow?{kind:'workflow-node',workspaceId:execution.workspaceId,...execution.workflow}
       :{kind:'manual-job',workspaceId:execution.workspaceId,jobExecutionId:execution.id,definitionId:execution.acceptedSpec.definitionId}
     if(execution.workspaceId!==input.workspaceId||execution.id!==input.executionId||execution.attemptId!==input.attemptId||execution.operationId!==input.operationId
-      ||execution.acceptedSpec.bindingHash!==input.bindingHash||canonical(execution.owner)!==canonical(input.owner)
-      ||canonical(execution.acceptedSpec)!==canonical(row.accepted_spec)||canonical(receipt.execution.acceptedSpec)!==canonical(execution.acceptedSpec)
+      ||execution.acceptedSpec.bindingHash!==input.bindingHash||canonicalJson(execution.owner)!==canonicalJson(input.owner)
+      ||canonicalJson(execution.acceptedSpec)!==canonicalJson(row.accepted_spec)||canonicalJson(receipt.execution.acceptedSpec)!==canonicalJson(execution.acceptedSpec)
       ||intent.executionId!==execution.id||intent.attemptId!==execution.attemptId||intent.operationId!==execution.operationId
       ||intent.bindingHash!==execution.acceptedSpec.bindingHash||intent.inputDigest!==`sha256:${execution.acceptedSpec.specDigest}`
-      ||intent.mainId!==execution.acceptedSpec.target.mainId||canonical(intent.subject)!==canonical(subject)||canonical(intent.owner)!==canonical(execution.owner)
-      ||canonical(receipt.intent)!==canonical(intent)||receipt.sequence!==Number(row.receipt_sequence)) {
+      ||intent.mainId!==execution.acceptedSpec.target.mainId||canonicalJson(intent.subject)!==canonicalJson(subject)||canonicalJson(intent.owner)!==canonicalJson(execution.owner)
+      ||canonicalJson(receipt.intent)!==canonicalJson(intent)||receipt.sequence!==Number(row.receipt_sequence)) {
       throw new DomainError('JOB_CLOSURE_PIN_CONFLICT','Closure receipt does not match the exact accepted job intent and main projection.',409)
     }
     if(receipt.phase!=='confirmed_terminal'||!receipt.terminal?.processStopped||execution.process.phase!=='terminal'||!execution.process.processStopped)return null
     const terminal=receipt.terminal,target=execution.acceptedSpec.target,connection=receipt.connection
     if(execution.finishedAt!==terminal.finishedAt||execution.process.outcome!==terminal.outcome||execution.process.exitCode!==terminal.exitCode||execution.process.signal!==terminal.signal
       ||connection.mainId!==target.mainId||receipt.execution.id!==execution.id||receipt.execution.workspaceId!==execution.workspaceId
-      ||receipt.execution.operationId!==execution.operationId||receipt.execution.attemptId!==execution.attemptId||canonical(receipt.execution.owner)!==canonical(execution.owner)
+      ||receipt.execution.operationId!==execution.operationId||receipt.execution.attemptId!==execution.attemptId||canonicalJson(receipt.execution.owner)!==canonicalJson(execution.owner)
       ||(receipt.entryAttempted?!receipt.native:receipt.native!==undefined||!['cancelled','preparation_failed','spawn_failed'].includes(terminal.outcome))) {
       throw new DomainError('JOB_CLOSURE_EVIDENCE_CONFLICT','Original physical closure is inconsistent with the accepted main execution.',409)
     }

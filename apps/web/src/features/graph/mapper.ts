@@ -1,3 +1,4 @@
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import type { WorkflowDefinitionV3, WorkflowNodeV3 } from '@foreman-code/contracts/wave25'
 import type {
   Agent,
@@ -305,19 +306,6 @@ export function hasConnection(
   return edges.some((edge) => edge.source === source && edge.target === target)
 }
 
-function stableValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stableValue)
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .filter(([, entry]) => entry !== undefined)
-        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-        .map(([key, entry]) => [key, stableValue(entry)]),
-    )
-  }
-  return value
-}
-
 /**
  * Materializes the position and size the canvas derives for each node. A draft
  * that only carries those derived values still compares equal to the saved
@@ -343,8 +331,8 @@ export function normalizeWorkflow(workflow: WorkflowDefinitionV3): WorkflowDefin
  * persisted change.
  */
 export function sameWorkflow(left: WorkflowDefinitionV3, right: WorkflowDefinitionV3): boolean {
-  return JSON.stringify(stableValue(normalizeWorkflow(left)))
-    === JSON.stringify(stableValue(normalizeWorkflow(right)))
+  return canonicalJson(normalizeWorkflow(left))
+    === canonicalJson(normalizeWorkflow(right))
 }
 
 export function withoutAgentReferences(
