@@ -28,8 +28,13 @@ describe('profile-scoped Start after Worker reconnect', () => {
     }
     const saveGraph = async (graph: WorkflowDefinitionV3) => {
       const current = CurrentWorkflowReadResultSchema.parse(await fixture.value(CURRENT_WORKFLOW_TOOLS.saved, scope))
+      const definition = {
+        ...graph,
+        version: current.version.definition.version,
+        createdAt: current.version.definition.createdAt,
+      }
       return CurrentWorkflowSaveResultSchema.parse(await fixture.value(CURRENT_WORKFLOW_TOOLS.save, {
-        ...scope, commandId: randomUUID(), executionSemanticsVersion: 3, graph,
+        ...scope, commandId: randomUUID(), executionSemanticsVersion: 3, graph: definition,
         expectedRevision: current.revision, expectedWorkflowVersionId: current.version.id,
         expectedAgentConfigurationVersionIds: current.version.agentConfigurationVersionIds,
         expectedLocationRevision: locationRevision,
