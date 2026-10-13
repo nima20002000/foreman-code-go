@@ -321,9 +321,12 @@ function markSubmittedSnapshots(scope: string, value: EditIntentOutbox): void {
   for (let i = 0; i < local.length; i++) {
     const name = local.key(i)
     if (!name?.startsWith(start) || name === ownName) continue
-    // A corrupt sibling snapshot is never trusted or repaired here. It simply
-    // receives no lineage marker and therefore cannot advance another form.
-    try { const snapshot = read(name, SnapshotSchema); if (snapshot) mark(name, snapshot) } catch { /* fail closed for that sibling */ }
+    try {
+      const snapshot = read(name, SnapshotSchema)
+      if (snapshot) mark(name, snapshot)
+    } catch {
+      // ignore: an unreadable sibling gets no submission marker and cannot advance another form.
+    }
   }
 }
 export function matchesEditIntent(value: EditIntentOutbox, intent: GraphEditIntentV3): boolean {
@@ -412,6 +415,8 @@ export function clearEditIntentStorage() {
         const name = window.localStorage.key(i)
         if (name?.startsWith(start)) window.localStorage.removeItem(name)
       }
-    } catch { /* Session rotation also makes old protected keys inaccessible. */ }
+    } catch {
+      // ignore: session rotation also makes old protected keys inaccessible.
+    }
   }
 }

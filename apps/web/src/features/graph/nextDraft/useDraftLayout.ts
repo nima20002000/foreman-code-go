@@ -140,5 +140,7 @@ export function clearCurrentLayoutJournals() {
       const key = localStorage.key(index)
       if (key?.startsWith(prefix)) localStorage.removeItem(key)
     }
-  } catch { /* The protected principal namespace is also removed by session teardown. */ }
+  } catch {
+    // ignore: session rotation also makes old protected layout keys inaccessible.
+  }
 }
