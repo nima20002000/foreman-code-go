@@ -195,6 +195,32 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     expect(bound.binding.deviceId).toBeNull(); expect(bound.binding.workerInstallationId).toBeNull()
     const rootRead = SourceRootRecordSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'source_root_get', arguments: { workspaceId: workspace.id, rootId: bound.binding.rootId, bindingRevision: 1 } }))))
     expect(rootRead).toEqual(bound)
+    const extraRootId = randomUUID()
+    const extra = SourceRootRecordSchema.parse({ ...bound, binding: { ...bound.binding, rootId: extraRootId } })
+    await pool.query('insert into source_root_catalog(root_id,workspace_id,scope_hash) values($1,$2,$3)',
+      [extraRootId, workspace.id, sourceSha256(Buffer.from(extraRootId))])
+    await pool.query('insert into source_root_bindings(root_id,binding_revision,workspace_id,snapshot_id,record) values($1,1,$2,$3,$4::jsonb)',
+      [extraRootId, workspace.id, pin.snapshotId, JSON.stringify(extra)])
+    await pool.query('update source_root_catalog set current_binding_revision=1 where root_id=$1', [extraRootId])
+    const headers = { authorization: `Bearer ${operator.token}` }
+    const rootUrl = `/api/management/workspaces/${workspace.id}/source-roots`
+    const httpRoots = await app.inject({ method: 'GET', url: `${rootUrl}?limit=1`, headers })
+    expect(httpRoots.statusCode).toBe(200)
+    const limited = SourceRootListResultSchema.parse(httpRoots.json())
+    expect(limited.items).toHaveLength(1)
+    const mcpLimited = SourceRootListResultSchema.parse(decodeMcpToolResult(await client.callTool({
+      name: 'source_root_list', arguments: { workspaceId: workspace.id, limit: 1 },
+    })))
+    expect(limited).toEqual(mcpLimited)
+    expect(SourceRootListResultSchema.parse((await app.inject({ method: 'GET', url: rootUrl, headers })).json()).items)
+      .toHaveLength(2)
+    for (const limit of ['0', '-1', '101', '1.5', 'invalid', '']) {
+      const rejected = await app.inject({ method: 'GET', url: `${rootUrl}?limit=${limit}`, headers })
+      expect(rejected.statusCode).toBe(400)
+      expect(rejected.json().error.code).toBe('INVALID_REQUEST')
+      expect((await client.callTool({ name: 'source_root_list',
+        arguments: { workspaceId: workspace.id, limit: Number(limit) } })).isError).toBe(true)
+    }
     const sourceReader = await access.issue({ name: 'Source reader without locations', audience: 'operator',
       grants: [{ actions: ['sources:read', 'source_roots:read'], scope: { workspaceIds: [workspace.id] } }],
       expiresAt: new Date(Date.now() + 120_000) })

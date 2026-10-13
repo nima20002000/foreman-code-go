@@ -9,7 +9,7 @@ import * as contracts from '@foreman-code/contracts/management'
 import pg from 'pg'
 import type { z } from 'zod'
 
-import { buildApp } from '../../src/app.js'
+import { buildApp, type BuildAppOptions } from '../../src/app.js'
 import { applyApplicationMigrations } from '../../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../../src/modules/commands/postgres.js'
@@ -19,16 +19,21 @@ import { WorkspaceManagementService } from '../../src/modules/workspaces/managem
 import type { OperatorServices } from '../../src/mcp/operator/types.js'
 import { closeTestResources } from '../support/cleanup.js'
 
+type WorkspaceFixtureServices = {
+  pool: pg.Pool
+  access: PostgresAccessService
+  commands: PostgresCommandCoordinator
+  parentPath: string
+  services: OperatorServices
+}
+
 export async function workspaceMcpFixture(options: {
   connectionString?: string
   port?: number
-  configure?(fixture: {
+  runtimeIdentity?: BuildAppOptions['runtimeIdentity']
+  configureServices?(fixture: WorkspaceFixtureServices): Promise<void>
+  configure?(fixture: WorkspaceFixtureServices & {
     app: ReturnType<typeof buildApp>
-    pool: pg.Pool
-    access: PostgresAccessService
-    commands: PostgresCommandCoordinator
-    parentPath: string
-    services: OperatorServices
   }): Promise<void>
 } = {}) {
   const connectionString = options.connectionString ?? process.env.TEST_DATABASE_URL
@@ -49,15 +54,13 @@ export async function workspaceMcpFixture(options: {
   const defaults = new PostgresFoundationSettingsRepository(pool, parentPath)
   const workspaces = new WorkspaceManagementService(pool, commands, locations, defaults, parentPath)
   const services = { commands, locations, workspaces } as unknown as OperatorServices
-  const app = buildApp({ logger: false, readiness: {
-    database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined },
-  }, operator: { access, services } })
+  let app: ReturnType<typeof buildApp> | undefined
 
   let closing: Promise<void> | undefined
   function close() {
     return closing ??= closeTestResources([
       ...clients.map(client => () => client.close()),
-      () => app.close(),
+      async () => { await app?.close() },
       () => pool.end(),
       () => dropFixtureSchema(admin, schema),
       () => admin.end(),
@@ -67,6 +70,10 @@ export async function workspaceMcpFixture(options: {
   try {
     await createFixtureSchema(admin, schema)
     await applyApplicationMigrations(pool)
+    await options.configureServices?.({ pool, access, commands, parentPath, services })
+    app = buildApp({ logger: false, readiness: {
+      database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined },
+    }, operator: { access, services }, ...(options.runtimeIdentity ? { runtimeIdentity: options.runtimeIdentity } : {}) })
     await options.configure?.({ app, pool, access, commands, parentPath, services })
     const address = await app.listen({ host: '127.0.0.1', port: options.port ?? 0 })
     async function connect(token: string) {

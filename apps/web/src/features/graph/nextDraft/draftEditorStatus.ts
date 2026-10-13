@@ -1,6 +1,6 @@
 import type { useManagedWorkspaceQuery } from '../../../shared/api/query'
 import { boardStartPins } from '../../workflow-board/startPreflight'
-import { nextDraftDirty, type NextDraftEdit } from './state'
+import { canUndoNextDraft, nextDraftDirty, type NextDraftEdit } from './state'
 import type { editorAgents } from './agentEdits'
 import type { Panel } from './useDraftEditorCore'
 import type { DraftStartState } from './useDraftStart'
@@ -24,9 +24,10 @@ export function deriveDraftEditorStatus({ edit, editIntent, agents, startState, 
   const { preflight, canStart, startOutbox, storageFailed, pendingStart } = startState
   const dirty = nextDraftDirty(edit)
   const needsSave = dirty || !context.draft.baseWorkflowVersionId
-  const canUndo = (dirty && edit.history.length > 0) || !!undoAction
+  const canUndo = canUndoNextDraft(edit) || !!undoAction
   const canRedo = (edit.future?.length ?? 0) > 0 || redoCount > 0
-  const startReloadRequired = !!edit.startRejectedVersionId && edit.startRejectedVersionId === context.draft.baseWorkflowVersionId
+  const startReloadRequired = !!edit.startCanceled
+    || (!!edit.startRejectedVersionId && edit.startRejectedVersionId === context.draft.baseWorkflowVersionId)
   let preflightReason: string | undefined
   try {
     if (preflight.isError) throw preflight.error

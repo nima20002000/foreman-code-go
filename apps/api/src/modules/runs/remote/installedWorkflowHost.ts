@@ -1,3 +1,4 @@
+import { workflowPreparationExtension } from './preparationExtension.js'
 import type { ProviderAccountResolver, ResolvedProviderAccount } from '../../provider-accounts/service.js'
 import { assertWorkerProviderAccountBinding } from '../../provider-accounts/workerOperations.js'
 import { managedProviderEnvironment, resolveRuntimeProviderAccount } from '../../harnesses/providerAccountRuntime.js'
@@ -344,11 +345,14 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         if (status.status !== 'known' || !status.receipt.retainedReviewer || status.receipt.terminal) return
         try {
           const policy = await workerReviewerAuthorizer(forBinding(resident.context.binding))(resident.intent, resident.placement)
-          if (!policy) unavailable('reviewer_run_finished')
-          await log.renewReviewer(resident.intent.operationId, policy!)
+          if (!policy) {
+            await resident.host!.closeRetainedReviewer(resident.intent.operationId)
+            return
+          }
+          await log.renewReviewer(resident.intent.operationId, policy)
         } catch (error) {
           resident.reviewFailure = error
-          if (Date.parse(status.receipt.retainedReviewer.expiresAt) <= Date.now()) {
+          if (log.reviewerExpired(status.receipt.retainedReviewer.expiresAt)) {
             await resident.host!.closeRetainedReviewer(resident.intent.operationId)
             delete resident.reviewFailure
             return
@@ -1152,5 +1156,6 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
     await Promise.allSettled([...active])
     await Promise.all([...hosts.values()].map(host => host.drain()))
   }
+  extensions.push(workflowPreparationExtension(extensions[0]!))
   return {kind:'configured' as const,extensions,nativeOwnerFor,preparationClosed,reservationClosed,close,drainForUpdate}
 }

@@ -442,6 +442,25 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
     }
   }
 
+  withCredentialLease<T>(session: NativeSessionReference, signal: AbortSignal,
+    renew: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const work = this.controlTail.catch(() => {
+      // ignore: the previous control caller receives its failure; renewal still needs its own authority check.
+    }).then(async () => {
+      const active = this.active.get(session.nativeSessionId)
+      if (active) await waitForSignal(active.finished, signal)
+      signal.throwIfAborted()
+      return this.withLane(session, `credential-${randomUUID()}`, signal, async (_manager, lease) => {
+        await lease.guard.check()
+        const result = await renew(lease.guard.signal)
+        await lease.guard.check()
+        return result
+      })
+    })
+    this.controlTail = work
+    return work
+  }
+
   async requireIdle(manager: NativeHarnessSessionManager, session: NativeSessionReference,
     correlationId: string, lease: SessionWriteLease, signal: AbortSignal = lease.guard.signal,
     preflightCorrelationId?: string): Promise<void> {

@@ -54,6 +54,12 @@ export async function loadWorkerRsyncEntrypoint(input: { path: string; pairing: 
   }
   const receiver = new ResumableByteTransferService(`${selected.stagingRoot}/canonical`, authenticatedTransferAuthority(
     deviceId => { const binding = input.current(); return binding?.deviceId === deviceId ? binding : undefined }, accepted))
+  try {
+    await receiver.recoverOwnership()
+  } catch (error) {
+    await receiver.close()
+    throw error
+  }
   const providers: InstalledRsyncProviders = { ...selected, accepted, receiver, resolveSource: domainSource,
     acknowledged: domainAcknowledged, quiescent: stopped(input.ownership) }
   return { kind: 'configured' as const, providers, close: () => receiver.close() }
@@ -84,5 +90,5 @@ export function createMainRsyncEntrypoint(input: { installation: Extract<MainRsy
     } })
   const providers: InstalledMainRsyncProviders = { stagingRoot: selected.endpoint.localRoot, accepted: input.accepted, receiver,
     selection: selection.selection, peer: { capture }, resolveSource: domainSource, acknowledged: domainAcknowledged, quiescent: stopped(input.ownership) }
-  return { providers, close: () => receiver.close() }
+  return { providers, recover: () => receiver.recoverOwnership(), close: () => receiver.close() }
 }

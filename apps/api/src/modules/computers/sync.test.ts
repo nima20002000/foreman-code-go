@@ -12,6 +12,8 @@ import { PostgresAccessService } from '../access/postgres.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
 import { PostgresAppInteractionService } from '../interactions/app.js'
+import { RuntimeShutdown } from '../../infrastructure/runtimeShutdown.js'
+import { deferred } from '../../../test/helpers/deferred.js'
 import { ComputerSyncService } from './sync.js'
 import { SyncthingComputer, sharedFolderId } from './syncthingComputer.js'
 import { DeviceApplicationError, deviceApplicationFailure } from '../devices/deviceApplicationError.js'
@@ -388,7 +390,7 @@ it('omits slow local shared-folder status at the context budget and stops furthe
   expect(rest).not.toHaveBeenCalled()
 })
 
-it('forwards the same shared-folder budget to remote status requests', async () => {
+it('cancels remote shared-folder status requests when the context budget expires', async () => {
   const f = await fixture()
   const budget = new AbortController()
   const timeout = AbortSignal.timeout.bind(AbortSignal)
@@ -406,7 +408,52 @@ it('forwards the same shared-folder budget to remote status requests', async () 
   })
   const read = f.service.sharedFolder('workspace-a', { kind: 'device', deviceId: f.devices[0]!.deviceId })
   await started
-  expect(remoteSignal).toBe(budget.signal)
-  budget.abort(new DOMException('Context budget expired', 'TimeoutError'))
+  expect(remoteSignal?.aborted).toBe(false)
+  const reason = new DOMException('Context budget expired', 'TimeoutError')
+  budget.abort(reason)
   expect(await read).toBeNull()
+  expect(remoteSignal?.aborted).toBe(true)
+  expect(remoteSignal?.reason).toBe(reason)
 })
+
+for (const target of ['local', 'remote'] as const) {
+  it(`joins a pending ${target} sync configuration before releasing resources`, async () => {
+    const f = await fixture()
+    await f.service.reconcile()
+    const entered = deferred(), release = deferred()
+    const signals: AbortSignal[] = []
+    const hold = async (signal?: AbortSignal) => {
+      if (signal) signals.push(signal)
+      entered.resolve()
+      await release.promise
+      signal?.throwIfAborted()
+      return { installed: true, running: true, deviceId: mainSyncId, folders: [], message: null }
+    }
+    if (target === 'local') {
+      vi.spyOn(f.computers[0]!, 'handle').mockImplementation((_request, options) => hold(options?.signal))
+    } else {
+      vi.spyOn(f.endpoint, 'request').mockImplementation(async (_id, _namespace, _payload, options) =>
+        ({ payload: await hold(options?.signal) }))
+    }
+    const polling = f.service.poll().then(() => undefined, error => error)
+    await entered.promise
+    const dispose = vi.fn(), released = vi.fn()
+    const shutdown = new RuntimeShutdown({
+      stop: [{ name: 'shared file admission', run: () => f.service.stopAdmission() }],
+      drain: [{ name: 'shared file work', run: () => f.service.join() }],
+      dispose: [{ name: 'database and devices', run: dispose }], releaseOwnership: async () => { released() },
+    })
+    const closing = shutdown.finish()
+    try {
+      expect(signals).toHaveLength(1)
+      expect(signals[0]!.aborted).toBe(true)
+      expect(dispose).not.toHaveBeenCalled()
+      expect(released).not.toHaveBeenCalled()
+      await expect(f.service.reconcile()).rejects.toMatchObject({ code: 'SYNC_CLOSING' })
+    } finally { release.resolve(); await Promise.all([polling, closing]) }
+    expect(dispose).toHaveBeenCalledOnce()
+    expect(released).toHaveBeenCalledOnce()
+    await f.service.poll()
+    expect(signals).toHaveLength(1)
+  })
+}

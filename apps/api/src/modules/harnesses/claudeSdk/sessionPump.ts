@@ -1,4 +1,5 @@
 /** Native SDK output pump: session observation, events, ownership and terminal results. */
+import { closeOutput, failRuntime } from './sessionFailure.js'
 import { claudeCompactionResultMatches } from './compactionResults.js'
 import { claudeContextSnapshot } from './sessionControls.js'
 import { HarnessExecutionError } from '../errors.js'
@@ -54,7 +55,7 @@ export async function pump(ctx: ClaudeManagerContext, runtime: Runtime): Promise
         }
       }
       observeResultCapacity(ctx, runtime, frame)
-      if (settleCompactionResult(runtime, frame)) continue
+      if (await settleCompactionResult(runtime, frame)) continue
       if (isBackgroundWork(frame)) {
         await record(ctx, runtime, 'claude.background.unsupported', { nativeSessionId: frame.session_id,
           ...(typeof frame.task_id === 'string' ? { nativeTaskId: frame.task_id } : {}) })
@@ -132,23 +133,11 @@ export async function pump(ctx: ClaudeManagerContext, runtime: Runtime): Promise
         if (active === matched) delete runtime.active
       }
     }
-    runtime.closed = true
-    delete runtime.httpCredentialAcknowledgement
+    closeOutput(runtime, new Error('Claude output closed before compaction completed'),
+      new Error('Claude stream ended without an exact result; submission remains uncertain'))
     if (!runtime.session && !runtime.replacingForResume) runtime.rejectInit(new Error('Claude stream ended before native initialization'))
-    runtime.compaction?.fail(new Error('Claude output closed before compaction completed'))
-    runtime.active?.events.close(new Error('Claude stream ended without an exact result; submission remains uncertain'))
   } catch (error) {
-    runtime.failure = error
-    runtime.closed = true
-    delete runtime.httpCredentialAcknowledgement
-    await record(ctx, runtime, 'claude.session.failed', {
-      nativeSessionId: runtime.session?.nativeSessionId,
-      error: { code: 'CLAUDE_NATIVE_STREAM_ERROR',
-        message: error instanceof Error ? error.message : 'The native Claude query failed.' },
-    })
-    runtime.rejectInit(error)
-    runtime.active?.events.close(error)
-    await runtime.sdk.close()
+    await failRuntime(ctx, runtime, error)
   }
 }
 
@@ -183,7 +172,7 @@ function observeResultCapacity(ctx: ClaudeManagerContext, runtime: Runtime, fram
 }
 
 /** Settles a pending manual compaction from its command result; true when the frame was consumed. */
-function settleCompactionResult(runtime: Runtime, frame: Frame): boolean {
+async function settleCompactionResult(runtime: Runtime, frame: Frame): Promise<boolean> {
   if (runtime.compaction && runtime.session
     && claudeCompactionResultMatches(frame, runtime.session.nativeSessionId, runtime.compaction.promptUuid)) {
     const control = runtime.compaction
@@ -191,6 +180,7 @@ function settleCompactionResult(runtime: Runtime, frame: Frame): boolean {
     else if (control.boundary) control.state = { ...control.state, status: 'completed', message: 'Context compacted.' }
     else control.state = { ...control.state,
       status: 'no-op', message: 'Claude completed the command without a compaction boundary.' }
+    await control.progress(control.state)
     control.finish()
     return true
   }

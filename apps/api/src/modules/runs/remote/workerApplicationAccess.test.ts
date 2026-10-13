@@ -19,7 +19,7 @@ describe('worker selected-main application lease with authenticated carrier doub
   it('authorizes the original lease before returning only its token and forwards every call to main', async () => {
     const value = fixture(), requests: unknown[] = []
     const prepared = await prepareWorkerApplicationAccess({ request: async (namespace, raw) => {
-      expect(namespace).toBe('worker-mcp-v1'); requests.push(raw)
+      expect(namespace).toBe('worker-mcp-v2'); requests.push(raw)
       return { payload: requests.length === 1 ? value.lease : { statusCode: 200, contentType: 'application/json', body: '{"ok":true}' } }
     } }, value.intent, value.placement, value.applicationAccess)
     expect(prepared.environment).toEqual({ agentId: 'agent', variables: { GRAPHQL_MCP_TOKEN: 'exact-main-lease' } })

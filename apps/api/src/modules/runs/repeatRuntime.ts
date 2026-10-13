@@ -1,4 +1,5 @@
-import { isDatabaseTimeout, retryDatabaseTimeout } from '../../infrastructure/databaseTimeout.js'
+import { isDatabasePoolTimeout } from '../../infrastructure/databaseReadRetry.js'
+import { isDatabaseTimeout, retryDatabaseTimeout, retryDatabaseOperation } from '../../infrastructure/databaseTimeout.js'
 import { beginRuntimeTiming, timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
@@ -216,7 +217,10 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
         return
       }
       const node = context.version.definition.nodes.find((item) => item.id === execution.workflowNodeId)
-      const configuration = await context.workflows.getAgentConfiguration(execution.agentConfigurationVersionId)
+      const configuration = await retryDatabaseOperation(
+        () => context.workflows.getAgentConfiguration(execution.agentConfigurationVersionId),
+        (error) => isDatabaseTimeout(error) || isDatabasePoolTimeout(error), { signal, check },
+      )
       check()
       if (!node || node.kind === 'job' || !configuration || configuration.id !== context.version.agentConfigurationVersionIds[node.agentId]
         || configuration.agentId !== node.agentId || configuration.workspaceId !== run.workspaceId) {
@@ -397,6 +401,7 @@ export async function executeRepeatRuntime(input: {
   jobs?: { store: import('../jobs/workflowNode.js').WorkflowJobNodeStore; driver: import('../jobs/workflowRuntimePorts.js').WorkflowJobDriver }
   runId: string; version: WorkflowVersionV3
   owner: Pick<RunOwnership, 'assertOwned'>; signal: AbortSignal
+  checkpointOwnerGeneration?: string | undefined
   store: Pick<RepeatRunRepository, 'admit' | 'acceptTerminal' | 'enterBlock' | 'readOccurrence' | 'transition'
     | 'resolveExcluded' | 'completeRun' | 'ensureWorkEntry' | 'admitWorkActivation' | 'acceptWorkTerminal'
     | 'admitWorkRequest' | 'returnWork' | 'recordWorkUnresolved' | 'resolveWaitingWorkJoins' | 'completeWorkRun'>
@@ -506,6 +511,9 @@ export async function executeRepeatRuntime(input: {
     },
   }) : null
   const repeat = work ? null : buildRepeatGraph({ ...input, signal, track, limiter })
+  const checkpointOwner = { checkpoint_owner_generation: input.checkpointOwnerGeneration }
+  if (work) Object.assign(work.config.configurable, checkpointOwner)
+  if (repeat) Object.assign(repeat.config.configurable, checkpointOwner)
   const readCheckpoint = (): Promise<import('./repeatGraph.js').RepeatCheckpoint> => bookkeeping(async () => work
     ? await work.graph.getState(work.config) as import('./repeatGraph.js').RepeatCheckpoint
     : await repeat!.graph.getState(repeat!.config))

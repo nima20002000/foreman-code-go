@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { WorkerArtifactManifestSchema, WorkerArtifactReplySchema, WorkerUpdateStatusSchema,
@@ -9,9 +8,14 @@ import { WorkerArtifactManifestSchema, WorkerArtifactReplySchema, WorkerUpdateSt
 import { readWorkerSmokeConfiguration } from './ciInstallSmoke.mjs';
 import { WorkerError } from './diagnostics.mjs';
 import { validateManifest, stageRunningVersion } from './installation.mjs';
-import { readUpdateRecord, writeUpdateRecord, locateWorkerLaunch, launchUpdateSupervisor } from './updateSupervisor.mjs';
+import { readUpdateRecord, writeUpdateRecord, locateWorkerLaunch, launchUpdateSupervisor,
+  workerPointerMatches } from './updateSupervisor.mjs';
 import { DeviceConnectionError } from '../../../apps/api/src/modules/devices/deviceWire.ts';
 import { DeviceApplicationError } from '../../../apps/api/src/modules/devices/deviceApplicationError.ts';
+import { extractWorkerArchive, fetchGitHubAsset, workerArchiveLimits, requireArchiveCapacity }
+  from './workerArtifactArchive.mjs';
+
+export { fetchGitHubAsset };
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const expected = { protocolVersion: 1, identityFormat: 1 };
@@ -21,39 +25,19 @@ const automaticRetryErrors = new Set(['worker_update_interrupted', 'worker_updat
 export const workerUpdateExtension = { namespace: WORKER_UPDATE_NAMESPACE, version: WORKER_UPDATE_VERSION,
   role: 'client', maxJsonBytes: WORKER_UPDATE_MAX_JSON_BYTES, maxBinaryBytes: WORKER_UPDATE_MAX_BINARY_BYTES };
 
-const runCommand = (file, args, signal) => new Promise((resolve, reject) => {
-  execFile(file, args, { signal, timeout: 600_000, maxBuffer: 1024 * 1024 }, error => error ? reject(error) : resolve());
-});
-
-/** Downloads <manifestSha256>.tar.gz from the release's GitHub release with this computer's gh login. */
-export async function fetchGitHubAsset({ github, asset, destination, signal }) {
-  await runCommand('gh', ['release', 'download', github.tag, '--repo', github.repository, '--pattern', asset,
-    '--output', destination], signal).catch(() => { throw new WorkerError('worker_update_github_unavailable'); });
-}
-
 /** The release asset is only a carrier: every installed byte is still checked against the announced manifest. */
 async function downloadFromGitHub({ release, announced, directory, signal, fetchAsset }) {
   const scratch = await mkdtemp(join(dirname(directory), '.worker-github-'));
   try {
-    const archive = join(scratch, 'artifact.tar.gz'), extracted = join(scratch, 'artifact');
-    await mkdir(extracted, { mode: 0o700 });
-    await fetchAsset({ github: release.github, asset: `${release.manifestSha256}.tar.gz`, destination: archive, signal });
-    await runCommand('tar', ['-xzf', archive, '-C', extracted, '--no-same-owner', '--no-same-permissions'], signal)
-      .catch(() => { throw new WorkerError('artifact_archive_invalid'); });
-    const manifestBytes = await readFile(join(extracted, 'manifest.json'));
-    if (hash(manifestBytes) !== release.manifestSha256) throw new WorkerError('manifest_checksum_mismatch');
-    const manifest = WorkerArtifactManifestSchema.parse(JSON.parse(manifestBytes.toString('utf8')));
-    if (!isDeepStrictEqual(manifest, announced)) throw new WorkerError('manifest_metadata_mismatch');
-    await writeFile(join(directory, 'manifest.json'), manifestBytes, { mode: 0o600 });
-    for (const file of manifest.files) {
-      signal?.throwIfAborted();
-      const bytes = await readFile(join(extracted, file.path));
-      if (bytes.length !== file.size || hash(bytes) !== file.sha256) throw new WorkerError('artifact_checksum_mismatch');
-      const path = join(directory, file.path);
-      await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-      await writeFile(path, bytes, { mode: 0o600 });
-    }
-    return manifest;
+    const archive = join(scratch, 'artifact.tar.gz');
+    const limits = workerArchiveLimits(announced);
+    await requireArchiveCapacity(scratch, limits);
+    await fetchAsset({ github: release.github, asset: `${release.manifestSha256}.tar.gz`, destination: archive,
+      signal, maxBytes: limits.compressedBytes });
+    return await extractWorkerArchive({ archive, announced, release, directory, limits, signal });
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -138,9 +122,30 @@ export class WorkerUpdater {
       if (retained) {
         this.record = retained;
         this.statusValue = WorkerUpdateStatusSchema.parse({ ...retained.status, currentVersion: this.options.version });
+        await this.recoverAdmission(retained);
       }
       return { ...this.statusValue };
     });
+  }
+
+  async recoverAdmission(record) {
+    const plan = record.restart;
+    if (!this.handoff || record.status.state !== 'failed' || plan?.requestId !== this.handoff
+      || record.supervisorStarted !== this.handoff
+      || !record.outcomes?.some(outcome => outcome.requestId === this.handoff && outcome.status.state === 'failed')) return;
+    this.options.assertStateOwnership();
+    const unchanged = plan.restartAttempted === false
+      && plan.previousVersion === this.options.version
+      && plan.workerInstallationId === this.options.workerInstallationId
+      && plan.previousDirectory === this.options.releaseDirectory
+      && await workerPointerMatches(plan.pointer, this.options.releaseDirectory);
+    this.options.assertStateOwnership();
+    if (unchanged) {
+      this.options.resume();
+      this.handoff = undefined;
+      return;
+    }
+    this.statusValue = { ...this.statusValue, lastError: 'worker_update_recovery_required' };
   }
 
   save(change, details = {}) {
@@ -197,6 +202,9 @@ export class WorkerUpdater {
     await this.status();
     this.lifetime.signal.throwIfAborted();
     if (this.statusValue.state === 'restarting') throw new WorkerError('worker_update_restart_pending');
+    if (this.statusValue.lastError === 'worker_update_recovery_required') {
+      throw new WorkerError('worker_update_recovery_required');
+    }
     const captured = connection()?.captureRequest(WORKER_UPDATE_NAMESPACE);
     if (!captured) {
       if (retry) throw new WorkerError('worker_update_channel_unavailable');
@@ -253,9 +261,11 @@ export class WorkerUpdater {
         assertStateOwnership, updatePolicy: async () => true });
       this.lifetime.signal.throwIfAborted();
       assertStateOwnership();
+      this.handoff = randomUUID();
       await this.save({ state: 'restarting' }, { restart: { ...launch, directory: installed.directory,
         ...(ciSmoke ? { ciSmoke } : {}),
-        requestId: randomUUID(), previousVersion: version, workerInstallationId: this.options.workerInstallationId } });
+        requestId: this.handoff, restartAttempted: false, previousVersion: version,
+        workerInstallationId: this.options.workerInstallationId } });
       await (this.options.launchSupervisor ?? launchUpdateSupervisor)(stateDirectory);
       return `Worker ${release.version} restart is scheduled.`;
     } catch (error) {

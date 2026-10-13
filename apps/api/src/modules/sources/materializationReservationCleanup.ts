@@ -129,13 +129,14 @@ export class MaterializationReservationCleanup {
         const root = roots.find(root => root.binding.rootId === record.receipt.binding.rootId
           && root.binding.bindingRevision === record.receipt.binding.bindingRevision)
         if (!root) throw new DomainError('SOURCE_ROOT_NOT_FOUND', 'The original cleanup root is missing.', 409)
-        owner = SourceOperationOwnerSchema.parse({ identity: { operationId: reservation.ownerId,
+        owner = SourceOperationOwnerSchema.parse({ ...(owner ?? {}), identity: { operationId: reservation.ownerId,
           ownerPrincipalId: root.ownerPrincipalId, expiresAt: new Date(Date.now() + 300_000).toISOString() },
         root, source: root.source, record, physicalClosureConfirmed: false,
         attempt: { executionId: record.receipt.executionId, attemptId: record.receipt.attemptId,
           placementHash: record.receipt.placementHash, keyRevision: record.receipt.keyRevision,
           authorizationRevision: record.receipt.authorizationRevision } })
       }
+      if (owner) owner = SourceOperationOwnerSchema.parse({ ...owner, preparationClosed: true })
       const grant = SourceReservationReclamationSchema.parse({ reservationId, scopeId: reservation.scopeId,
         operationId: reservation.ownerId, reclamationId: reservation.reclamation?.reclamationId
           ?? reconciliation?.reconciliation_id ?? randomUUID(),
@@ -163,6 +164,13 @@ export class MaterializationReservationCleanup {
           await this.authorize(sql, grant.reservationId, grant.reclamationId)
           const reservation = (await sql.query<{ record: SourceReservation }>(
             'select record from source_storage_reservations where reservation_id=$1 for update', [grant.reservationId])).rows[0]!.record
+          const original = grant.owner
+          if (original) {
+            const closure = result.closures.find(value => value.executionId === original.attempt.executionId
+              && value.rootId === original.root.binding.rootId
+              && value.bindingRevision === original.root.binding.bindingRevision)
+            reservation.preparationClosure = validateSourcePreparationClosure(grant.reclamationId, original, closure)
+          }
           const reservations = new PostgresSourceReservations()
           if (result.retained) {
             await reservations.retainMaterialization(sql, reservation,
@@ -170,7 +178,9 @@ export class MaterializationReservationCleanup {
           } else {
             await reservations.reclaimed(sql, reservation, async () => true)
           }
-          await sql.query("update source_execution_materializations set state='closed' where operation_id=$1", [grant.operationId])
+          await sql.query(`update source_execution_materializations set state='closed',
+            worktree_cleanup=coalesce($2::jsonb,worktree_cleanup) where operation_id=$1`,
+          [grant.operationId, result.retained?.worktree ? JSON.stringify(result.retained.worktree) : null])
           await sql.query('update job_computer_selections set released_at=clock_timestamp() where operation_id=$1 and released_at is null',
             [grant.operationId])
           const pending = (await sql.query<{ reconciliation_id: string; owner: unknown }>(`select reconciliation_id,owner

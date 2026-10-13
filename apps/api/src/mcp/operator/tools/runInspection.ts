@@ -54,11 +54,11 @@ export function registerRunInspectionTools(server: McpServer, context: OperatorR
     inputSchema: RunExecutionsListInputSchema, outputSchema: RunExecutionsPageSchema, annotations,
   }, async (input) => invokeOperatorTool(context, RUN_INSPECTION_TOOLS.executions, () => reads.executions(context.principal, input)))
   if (runInspectionToolAvailable(context, RUN_INSPECTION_TOOLS.execution)) server.registerTool(RUN_INSPECTION_TOOLS.execution, {
-    description: 'Read one exact V3 execution and accepted input (maximum 4 MiB), verifying durable identity and canonical receipts. Includes continuedFromExecutionId for a resumed same-node activation. Accepted successful result is distinct from an unaccepted terminal report (maximum 64 KiB). Private authorized detail only; never raw native events, credentials or session paths.',
+    description: 'Read one exact V3 execution and accepted input (maximum 4 MiB), verifying durable identity and canonical receipts. Includes the accepted tick index and interval for an interval check, and continuedFromExecutionId for a resumed same-node activation. Accepted successful result is distinct from an unaccepted terminal report (maximum 64 KiB). Private authorized detail only; never raw native events, credentials or session paths.',
     inputSchema: RunExecutionGetInputSchema, outputSchema: RunExecutionDetailSchema, annotations,
   }, async (input) => invokeOperatorTool(context, RUN_INSPECTION_TOOLS.execution, () => reads.executionDetail(context.principal, input)))
   if (runInspectionToolAvailable(context, RUN_INSPECTION_TOOLS.bindings)) server.registerTool(RUN_INSPECTION_TOOLS.bindings, {
-    description: 'Page one execution\'s exact accepted predecessor/external/carry bindings and source results. Default 10, maximum 25, immutable ordinal order. Source identities and accepted-result receipts are checked in the same Run. No synthetic occurrence for ordinary work; no recursive history expansion.',
+    description: 'Page one execution\'s exact accepted predecessor/external/carry bindings and source results. Default 10, maximum 25, immutable ordinal order. Interval checks return their accepted input digest with an empty binding page. Source identities and accepted-result receipts are checked in the same Run. No synthetic occurrence for ordinary work; no recursive history expansion.',
     inputSchema: RunExecutionBindingsListInputSchema, outputSchema: RunExecutionBindingsPageSchema, annotations,
   }, async (input) => invokeOperatorTool(context, RUN_INSPECTION_TOOLS.bindings, () => reads.bindings(context.principal, input)))
   if (runInspectionToolAvailable(context, RUN_INSPECTION_TOOLS.version)) server.registerTool(RUN_INSPECTION_TOOLS.version, {

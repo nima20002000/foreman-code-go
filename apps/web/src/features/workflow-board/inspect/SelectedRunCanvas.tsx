@@ -154,13 +154,19 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
     refetchInterval: (query) => isRunAccessError(query.state.error) ? false
       : live || query.state.data?.jobs.some(isActiveCiJob) ? 1500 : false,
   })
-  const ciRunJobs = ciList.data?.runId === scope.runId ? ciList.data.jobs : undefined
-  const cis = useMemo(() => ciNodeActivities(ciRunJobs ?? []), [ciRunJobs])
+  const ciDenied = useProtectedAccessError(ciList)
+  const ciRunJobs = !ciDenied && ciList.data?.runId === scope.runId ? ciList.data.jobs : undefined
+  const cis = useMemo(() => ciNodeActivities(ciList.isError ? [] : ciRunJobs ?? []), [ciRunJobs, ciList.isError])
   // Shown with the Agents from the first render, so the first fit includes it; unknown until its first read.
-  const ciUnavailable = ciList.isError && !ciRunJobs
-  const ciSummary = useMemo(() => ciRunJobs ? ciServerSummary(ciRunJobs) : { ...ciServerSummary([]), state: 'unavailable' as const,
-    label: ciUnavailable ? 'CI unavailable' : 'Loading CI' }, [ciRunJobs, ciUnavailable])
-  const transfers = useCiTransfers(ciRunJobs, useReducedMotion())
+  const ciUnavailable = Boolean(ciDenied || ciList.isError && !ciRunJobs)
+  const ciSummary = useMemo(() => {
+    if (!ciRunJobs) return { ...ciServerSummary([]), state: 'unavailable' as const,
+      label: ciUnavailable ? 'CI unavailable' : 'Loading CI' }
+    const summary = ciServerSummary(ciRunJobs)
+    return ciList.isError ? { ...summary, state: 'unavailable' as const, label: `Last read: ${summary.label}` } : summary
+  }, [ciRunJobs, ciUnavailable, ciList.isError])
+  const ciFlights = useCiTransfers(ciList.isError ? undefined : ciRunJobs, useReducedMotion())
+  const transfers = ciDenied || ciList.isError ? new Map<string, EdgePulse[]>() : ciFlights
   const ciDialogKey = JSON.stringify(['ci-server', scope.runId])
   const ciDialogOpen = useInspectionPresentation((state) => !!state.open[ciDialogKey])
   const setCiDialogOpen = (value: boolean) => useInspectionPresentation.getState().setOpen(ciDialogKey, value)
@@ -301,7 +307,7 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
       </ReactFlow></Choreography.Provider></RunAgentPanels.Provider></ReactFlowProvider>
     </div> : null}
     <CiServerDialog open={ciDialogOpen} onOpenChange={setCiDialogOpen} scope={scope} jobs={ciRunJobs ?? []} names={names}
-      truncated={ciList.data?.truncated ?? false} error={ciList.isError} loading={ciList.isPending} />
+      truncated={!ciDenied && (ciList.data?.truncated ?? false)} error={Boolean(ciDenied || ciList.isError)} loading={ciList.isPending} />
   </section>
 }
 

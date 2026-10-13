@@ -4,7 +4,9 @@ import { HarnessExecutionError } from '../errors.js'
 import { unavailableNativeResponse, type NativeResponseAvailability } from '../responseAvailability.js'
 import type { ClaudeResponseAvailabilityQuery, ClaudeNativeCallbackContext, ClaudeCallbackAuthority,
   ClaudePendingNotification } from './callbackAvailability.js'
-import type { ClaudeManagerContext } from './sessionTypes.js'
+import { componentLogger } from '../../diagnostics/logger.js'
+import { failRuntime } from './sessionFailure.js'
+import type { ClaudeManagerContext, Runtime, Turn } from './sessionTypes.js'
 import { record } from './sessionState.js'
 
 export function findCallbackContext(ctx: ClaudeManagerContext, toolUseId: string, nativeSessionId?: string): ClaudeNativeCallbackContext | undefined {
@@ -49,7 +51,7 @@ export function callbackAuthority(ctx: ClaudeManagerContext, context: ClaudeNati
 export function observeSubagentHook(ctx: ClaudeManagerContext, sessionId: string, agentId: string, agentType: string, status: 'running' | 'unknown'): void {
   const runtime = ctx.resident.get(sessionId)
   if (!runtime?.session || !agentId || agentId.length > 512 || runtime.closed || ctx.disposed) return
-  void record(ctx, runtime, 'claude.subagent', { nativeSessionId: sessionId, agentId, agentType: agentType.slice(0, 512), status }, runtime.active)
+  publishCallback(ctx, runtime, 'claude.subagent', { nativeSessionId: sessionId, agentId, agentType: agentType.slice(0, 512), status }, runtime.active)
 }
 
 export function notifyPendingChanged(ctx: ClaudeManagerContext, notification: ClaudePendingNotification): void {
@@ -57,9 +59,21 @@ export function notifyPendingChanged(ctx: ClaudeManagerContext, notification: Cl
   const turn = runtime?.turns.get(notification.clientCorrelationId)
   if (!runtime || runtime.closed || runtime.generation !== notification.generation || !turn?.submitted
     || turn.nativeMessageId !== notification.nativeMessageId || turn.terminal) return
-  void record(ctx, runtime, 'interaction.pending', { nativeSessionId: notification.nativeSessionId,
+  publishCallback(ctx, runtime, 'interaction.pending', { nativeSessionId: notification.nativeSessionId,
     nativeMessageId: notification.nativeMessageId, nativeRequestId: notification.nativeRequestId,
     nativeRequestType: notification.nativeRequestType, generation: notification.generation }, turn)
+}
+
+function publishCallback(
+  ctx: ClaudeManagerContext, runtime: Runtime, type: string, payload: Record<string, unknown>, turn?: Turn,
+): void {
+  void record(ctx, runtime, type, payload, turn).catch(async error => {
+    // The fact is already in history; a closed or detached observer ends only its live publication.
+    if (runtime.closed || turn && !turn.observing) return
+    await failRuntime(ctx, runtime, error)
+  }).catch((error: unknown) => {
+    componentLogger('harness').error({ err: error }, 'Claude callback publication cleanup failed')
+  })
 }
 
 export async function waitNativeCallbackContext(ctx: ClaudeManagerContext, toolUseId: string, signal: AbortSignal, nativeSessionId?: string): Promise<ClaudeNativeCallbackContext> {

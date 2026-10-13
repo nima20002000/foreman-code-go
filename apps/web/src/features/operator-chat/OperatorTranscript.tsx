@@ -1,12 +1,13 @@
 import { useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import type { Message, OperatorActivity } from '@foreman-code/contracts'
 import { Button, Icon } from '../../shared/ui/nocturne'
-import { useInfiniteQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { identityEpoch } from '../../shared/api/protectedChatStorage'
 import { getOperatorActivity, mergeOperatorActivity } from '../../shared/api/operatorActivity'
 import { useNativeHarnessOptions } from '../../shared/api/harnessSettings'
 import { OperatorMessages } from './OperatorMessages'
 import { OperatorHistory } from './OperatorHistory'
+import { HistoryWindowNotice } from '../conversations/HistoryWindowNotice'
 import type { OperatorTextProjection } from './operatorTextProjection'
 
 function AcceptedModelMessages(props: ComponentProps<typeof OperatorMessages>) {
@@ -26,8 +27,10 @@ export function OperatorTranscript({ messages, partialText, thinkingText = '', h
   approval?: ReactNode | ((onBrowse: () => void) => ReactNode);
   approvalRevision?: string;
 }) {
+  const client = useQueryClient()
+  const activityKey = ['operator-chat', 'activity', conversationId ?? '', identityEpoch()] as const
   const earlierActivity = useInfiniteQuery({
-    maxPages: 5, queryKey: ['operator-chat', 'activity', conversationId ?? '', identityEpoch()],
+    maxPages: 5, queryKey: activityKey,
     queryFn: ({ pageParam, signal }) => getOperatorActivity(conversationId ?? '', pageParam ? { before: pageParam } : {}, { signal }),
     initialPageParam: activityNextCursor ?? undefined,
     getNextPageParam: (page) => page.nextCursor ?? undefined,
@@ -79,6 +82,11 @@ export function OperatorTranscript({ messages, partialText, thinkingText = '', h
         if (followLatest.current) setHasNewContent(false)
       }}>
       <div ref={contentRef}>
+        {earlierActivity.data && earlierActivity.data.pageParams[0] !== (activityNextCursor ?? undefined)
+          ? <HistoryWindowNotice pending={earlierActivity.isFetching} onReload={() => {
+            onBrowse()
+            void client.resetQueries({ queryKey: activityKey, exact: true }).then(() => earlierActivity.fetchNextPage())
+          }} /> : null}
         {(activityNextCursor && !earlierActivity.data) || earlierActivity.hasNextPage ? <Button size="sm" variant="ghost" disabled={earlierActivity.isFetching}
           onClick={() => { onBrowse(); void earlierActivity.fetchNextPage() }}>Load earlier activity</Button> : null}
         {earlierActivity.isError ? <p role="alert">Earlier activity could not be loaded. <Button size="sm" onClick={() => { onBrowse(); void earlierActivity.fetchNextPage() }}>Retry activity</Button></p> : null}

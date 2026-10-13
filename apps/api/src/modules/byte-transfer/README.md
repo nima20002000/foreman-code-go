@@ -32,7 +32,7 @@ fsync, which precede ACK. Duplicate committed ranges are read back and compared.
 Each resume checks the durable prefix and truncates only uncommitted tails. If the
 first journal was never committed, the freshly authorized original intent can
 restart its private part at offset zero under both transfer and allocation locks;
-crash-left locks still require stopped-owner reconciliation.
+crash-left locks are reconciled only when their original process has stopped.
 Missing/corrupt committed bytes fail closed; C must cancel/restart the byte attempt
 under the same accepted logical operation. Final SHA256 and byte count are checked
 independently, including on repeated finish after lost ACK. `resolveVerifiedReceipt`
@@ -46,10 +46,30 @@ owned; files must be regular, singly linked and opened with O_NOFOLLOW. Peers mu
 not run under the service uid or possess its private directory descriptor. This
 is not a security boundary against a compromised service uid.
 
-Per-transfer and allocation directory locks reject competing writers across
-receiver processes. Crash-left `.lock` directories fail closed. The supervising
-owner must confirm its prior process is dead before removing stale locks; no
-age-only stealing. Journals and uncommitted part files survive restart.
+Per-transfer and allocation locks persist their original Linux boot, PID/start
+ticks, root identity and lock inode. Complete private owner files are published
+with a non-replacing hard link before work starts. Unique guard records serialize
+lock acquisition and recovery across receiver processes. Startup removes only
+artifacts whose original process has stopped or whose host boot has changed,
+after checking their root and inode. Reader pins use the same owner records and
+remain charged while the original process is live. Journals and uncommitted part
+files survive restart. Installed Worker loading and Main initialization run this
+recovery before admitting work; every service also recovers on first use.
+Supervisor retirement persists `deletionRequested` before unlink. Recovery and
+quota retries finish only those requested deletions; a
+cancelled progress state alone does not authorize retirement or release its charge.
+Complete unpublished `.canonical-owner-*.tmp` records are reclaimed with the same
+stopped-process, root and inode checks. An interrupted temporary record with
+incomplete metadata remains retained for manual reconciliation; it cannot serve
+as a lock or reader pin.
+
+Unowned directory locks or reader pins from an older installation, corrupt owner
+records and replaced artifacts fail closed. They require manual reconciliation:
+stop every process using that canonical store, verify the private root and each
+original artifact inode against retained ownership evidence, and remove only
+those positively identified locks or pins. Sync the canonical directory after
+removal. If the original identity cannot be established, retain the artifact and
+its accounting; elapsed time or an empty runtime map does not establish closure.
 `cleanupExpired(1..64)` bounds tombstone/deletion batches. C invokes trusted
 `retire(id)` for confirmed revocations and invokes cleanup from its existing
 cleanup supervisor. Tombstones precede unlink; retries do not extend file lifetime.
@@ -74,7 +94,7 @@ qualification: they are not used here.
 Outstanding orchestrator acceptance: actual W07 binary carrier negotiation and
 control/Stop/heartbeat fairness; authenticated endpoint denied/readback coverage;
 main persisted intent and C publication/retention wiring; source immutable sender
-adapter; real two-process crash-lock reconciliation; peak memory and aggregate
+adapter; two-process crash/restart runtime verification; peak memory and aggregate
 quota calibration; actual ENOSPC/EIO; real PC/laptop source/edge execution after
 W07-HUMAN approval. These unit ports alone do not close those live gates.
 

@@ -18,3 +18,17 @@ export function mergeOperatorActivity(...sources: readonly (readonly OperatorAct
   }
   return [...entries.values()].sort((a, b) => BigInt(a.sequence) < BigInt(b.sequence) ? -1 : BigInt(a.sequence) > BigInt(b.sequence) ? 1 : 0)
 }
+
+/** Keep the newest contiguous suffix; older records remain available from its server sequence. */
+export function retainRecentOperatorActivity(entries: OperatorActivity[]) {
+  const encoder = new TextEncoder()
+  let bytes = 2
+  let start = entries.length
+  while (start > 0 && entries.length - start < 100) {
+    const size = encoder.encode(JSON.stringify(entries[start - 1])).byteLength + (start < entries.length ? 1 : 0)
+    if (bytes + size > 256 * 1024) break
+    bytes += size
+    start -= 1
+  }
+  return { activities: entries.slice(start), removed: start > 0 }
+}

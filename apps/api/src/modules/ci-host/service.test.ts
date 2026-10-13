@@ -34,7 +34,7 @@ function fixture(suite: 'lint' | 'integration' = 'lint') {
     initiator: { principalId: 'worker', executionId: 'execution' },
   })
   let logTail = 'persisted log\n'
-  const pool = { query: vi.fn(async (sql: string, parameters?: unknown[]) => {
+  const pool = { options: { max: 10 }, query: vi.fn(async (sql: string, parameters?: unknown[]) => {
     if (sql.startsWith('update ci_runs')) {
       record = CiRunRecordSchema.parse(JSON.parse(parameters![3] as string))
       if (typeof parameters![5] === 'string') logTail = parameters![5]
@@ -43,7 +43,7 @@ function fixture(suite: 'lint' | 'integration' = 'lint') {
     if (sql.includes('durations from ci_runs')) return { rows: [] }
     if (sql.startsWith('select id,host_key')) return { rows: [{ id: record.id, host_key: computer.key }] }
     return { rows: [{ record, log_tail: logTail, host_key: computer.key }] }
-  }) } as unknown as pg.Pool
+  }), connect: async () => ({ query: pool.query, release: () => {} }) } as unknown as pg.Pool
   const resolve = vi.fn(async (principal: ManagementPrincipal) => {
     if (!principal.grants.length) throw new DomainError('ACCESS_DENIED', 'CI read denied.', 403)
     return { principal, workspaceId: 'workspace', executionId: 'execution' }
@@ -70,6 +70,7 @@ function dispatchFixture(settlementError?: Error) {
   const records: CiRunRecord[] = [active, queued]
   const tails = new Map<string, string>()
   const query = async (sql: string, parameters?: unknown[]) => {
+    if (sql.startsWith('select pg_try_advisory_xact_lock')) return { rows: [{ acquired: true }] }
     if (sql.startsWith('update ci_runs')) {
       const next = CiRunRecordSchema.parse(JSON.parse(parameters![3] as string))
       if (next.id === active.id && settlementError) throw settlementError
@@ -83,7 +84,7 @@ function dispatchFixture(settlementError?: Error) {
       if (typeof tail === 'string') tails.set(next.id, tail)
       return { rows: [], rowCount: 1 }
     }
-    if (sql.includes("'supersededBy' is not null") || sql.includes("'gate'='true'")) return { rows: [] }
+    if (sql.includes("'supersededBy' is not null") || sql.includes("and record->>'gate'='true'")) return { rows: [] }
     if (sql.includes("state='queued'")) {
       return { rows: records.filter(record => record.state === 'queued').map(record => ({ record, durations: null })) }
     }
@@ -91,6 +92,7 @@ function dispatchFixture(settlementError?: Error) {
       return { rows: records.filter(record => ['starting', 'running'].includes(record.state))
         .map(record => ({ id: record.id, record, host_key: computer.key })) }
     }
+    if (sql.includes("'gate'='true'")) return { rows: [] }
     return { rows: records.filter(record => record.id === parameters?.[0] || record.groupId === parameters?.[0])
       .map(record => ({ record, log_tail: tails.get(record.id) ?? '' })) }
   }
@@ -111,6 +113,29 @@ function dispatchFixture(settlementError?: Error) {
   })
   return { ...f, active, queued, records, output }
 }
+
+it.each(['lint', 'typecheck'] as const)('dispatches an ordinary queued $suite check without a gate ticket', async suite => {
+  const f = dispatchFixture()
+  f.records.splice(0, 1)
+  f.records[0] = CiRunRecordSchema.parse({ ...f.queued, suite })
+  await f.create().dispatch()
+  expect((await f.create().get(caller, { ticketId: f.queued.id })).run).toMatchObject({
+    id: f.queued.id, suite, state: 'running', computer: { hostRef: computer.hostRef },
+  })
+  expect(f.endpoint.request).toHaveBeenCalledWith(computer, expect.objectContaining({
+    operation: 'start', runId: f.queued.id, suite,
+  }))
+})
+
+it('dispatches a queued ticket after settling ordinary output', async () => {
+  const f = dispatchFixture()
+  await f.create().dispatch()
+  expect((await f.create().get(caller, { ticketId: f.active.id })).run.state).toBe('passed')
+  expect((await f.create().get(caller, { ticketId: f.queued.id })).run.state).toBe('running')
+  expect(f.endpoint.request).toHaveBeenCalledWith(computer, expect.objectContaining({
+    operation: 'start', runId: f.queued.id,
+  }))
+})
 
 it.each([
   { text: 'finished\0 café 🚀\n', message: 'Done.\0 café 🚀',
@@ -148,7 +173,7 @@ it('persists sanitized dispatch errors on queued tickets', async () => {
   const f = dispatchFixture()
   const request = vi.mocked(f.endpoint.request).getMockImplementation()!
   vi.mocked(f.endpoint.request).mockImplementation(async (computer, input) => {
-    if (input.operation === 'start') throw new Error('Executor\0 unavailable\ud800')
+    if (input.operation === 'start') throw new DomainError('BUILD_COMPUTER_DISABLED', 'Executor\0 unavailable\ud800', 409)
     return request(computer, input)
   })
   await f.create().dispatch()
@@ -293,4 +318,31 @@ it('retries a CI read once after a statement timeout, then reports a retryable e
   f.resolve.mockRejectedValueOnce(canceled()).mockRejectedValueOnce(canceled())
   await expect(f.create().get(caller, { ticketId: f.read().record.id })).rejects.toMatchObject({
     code: 'DATABASE_READ_TIMEOUT', status: 503, details: { retryable: true, sqlState: '57014' } })
+})
+
+it('retries an unknown start reply on the assigned executor without requeueing', async () => {
+  const f = dispatchFixture()
+  const request = vi.mocked(f.endpoint.request).getMockImplementation()!
+  const starts: { computer: HostCiComputer; runId: string }[] = []
+  vi.mocked(f.endpoint.request).mockImplementation(async (computer, input) => {
+    if (input.operation === 'start') {
+      starts.push({ computer, runId: input.runId })
+      if (starts.length === 1) throw new Error('Start reply lost')
+    }
+    return request(computer, input)
+  })
+  const service = f.create()
+  await service.dispatch()
+  expect((await service.get(caller, { ticketId: f.queued.id })).run).toMatchObject({
+    state: 'starting', computer: { hostRef: computer.hostRef },
+    dispatchRequest: { operation: 'start', runId: f.queued.id },
+  })
+  expect(starts).toEqual([{ computer, runId: f.queued.id }])
+  await service.dispatch()
+  expect((await service.get(caller, { ticketId: f.queued.id })).run).toMatchObject({
+    state: 'running', computer: { hostRef: computer.hostRef },
+  })
+  expect(starts).toEqual([
+    { computer, runId: f.queued.id }, { computer, runId: f.queued.id },
+  ])
 })

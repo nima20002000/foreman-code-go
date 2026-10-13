@@ -28,12 +28,28 @@ function queuedRuns(count: number) {
 function fleet(records: CiRunRecord[], available: HostCiComputer[]) {
   const started: { computer: HostCiComputer; request: CiHostRequest }[] = []
   let writes = 0
-  const pool = { query: async (sql: string, parameters?: unknown[]) => {
+  const pool = { options: { max: 10 }, query: async (sql: string, parameters?: unknown[]) => {
+    if (sql.startsWith('select pg_try_advisory_xact_lock')) return { rows: [{ acquired: true }] }
+    if (sql.startsWith('select record from ci_runs where id=')) {
+      return { rows: records.filter(record => record.id === parameters![0]).map(record => ({ record })) }
+    }
     if (sql.startsWith('update ci_runs')) {
       writes++
+      if (parameters?.length === 2) {
+        const plans = JSON.parse(parameters[0] as string) as { id: string; patch: Partial<CiRunRecord> }[]
+        const rows = plans.map(plan => {
+          const index = records.findIndex(item => item.id === plan.id)
+          records[index] = CiRunRecordSchema.parse({ ...records[index], ...plan.patch })
+          return { record: records[index] }
+        })
+        return { rows, rowCount: rows.length }
+      }
       const record = CiRunRecordSchema.parse(JSON.parse(parameters![3] as string))
       records[records.findIndex(item => item.id === record.id)] = record
       return { rows: [], rowCount: 1 }
+    }
+    if (sql.includes('where group_id=any')) {
+      return { rows: records.map(record => ({ record })) }
     }
     if (sql.includes('as group_id')) {
       return { rows: records.filter(record => !record.deferred).map(record => ({ group_id: record.groupId, state: record.state })) }
@@ -47,7 +63,7 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[]) {
     if (sql.includes("state in ('passed','failed')")) return { rows: [] }
     return { rows: records.filter(record => ['starting', 'running'].includes(record.state))
       .map(record => ({ record, host_key: record.computer?.hostRef.kind === 'cloud' ? cloud.key : host.key })) }
-  } } as unknown as pg.Pool
+  }, connect: async () => ({ query: pool.query, release: () => {} }) } as unknown as pg.Pool
   const endpoint: HostCiEndpoint = {
     computers: async () => available,
     request: async (computer, request) => {

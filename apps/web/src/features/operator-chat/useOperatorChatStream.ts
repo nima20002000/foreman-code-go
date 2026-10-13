@@ -1,3 +1,4 @@
+import { getOperatorConversation } from '../../shared/api/client'
 import { useEffect, type Dispatch, type RefObject, type SetStateAction } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ActivityChangeEnvelopeV1Schema, OperatorActivitySchema } from '@foreman-code/contracts'
@@ -24,17 +25,25 @@ export function useOperatorChatStream({ enabled, open, selectedId, accessDenied,
     if (!enabled || !open || !selectedId || accessDenied) return
     let disposed = false
     const readback = createStreamReadback(async () => {
-      await queryClient.cancelQueries({ queryKey: detailKey(selectedId), exact: true })
       if (disposed) return
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: detailKey(selectedId) }),
+        queryClient.invalidateQueries({ queryKey: detailKey(selectedId) }, { cancelRefetch: false }),
         queryClient.invalidateQueries({ queryKey: listKey }),
         queryClient.invalidateQueries({ queryKey: ['operator-chat', 'history', identityEpoch(), selectedId] }),
       ])
     })
     const refresh = readback.request
     const close = subscribeOperatorChat(selectedId, {
+      recover: async () => {
+        await queryClient.cancelQueries({ queryKey: detailKey(selectedId), exact: true })
+        if (disposed) throw new DOMException('Conversation changed.', 'AbortError')
+        const state = await queryClient.fetchQuery({ queryKey: detailKey(selectedId), retry: false, staleTime: 0,
+          queryFn: ({ signal }) => getOperatorConversation(selectedId, { signal }) })
+        if (disposed) throw new DOMException('Conversation changed.', 'AbortError')
+        acceptState(selectedId, state)
+      },
       snapshot: (state) => {
+        readGeneration.current++
         void queryClient.cancelQueries({ queryKey: detailKey(selectedId), exact: true })
         acceptState(selectedId, state)
         refresh()
@@ -42,12 +51,6 @@ export function useOperatorChatStream({ enabled, open, selectedId, accessDenied,
       reconnect: () => { setPartial((current) => current?.conversationId === selectedId ? undefined : current); refresh() },
       connection: (state) => setConnection((current) => current?.id === selectedId && current.state === state ? current : { id: selectedId, state }),
       event: (event) => {
-        if (event.type !== 'delta') {
-          readGeneration.current++
-          void queryClient.cancelQueries({ queryKey: detailKey(selectedId), exact: true }).catch(() => {
-            // ignore: The stream schedules fresh readback even if cancellation is already complete.
-          })
-        }
         const state = queryClient.getQueryData<OperatorConversationState>(detailKey(selectedId))
         if (event.type === 'activity') {
           const activity = OperatorActivitySchema.safeParse(event.data.activity)

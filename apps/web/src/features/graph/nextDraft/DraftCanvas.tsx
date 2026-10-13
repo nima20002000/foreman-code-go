@@ -238,7 +238,7 @@ export const DraftCanvas = forwardRef<DraftCanvasHandle, {
         isValidConnection={(connection) => connection.source !== connection.target}
         onConnectStart={() => setConnecting(true)} onConnectEnd={() => setConnecting(false)}
         onClickConnectStart={() => setConnecting(true)} onClickConnectEnd={() => setConnecting(false)}
-        onNodeClick={(_, node) => { if (node.id !== CI_SERVER_NODE_ID) selectNode(node.id) }}
+        onNodeClick={(_, node) => { if (node.type !== 'ciServer') selectNode(node.id) }}
         onPaneClick={() => inspect(() => { setOpen(undefined); presentation.getState().setFocusedNodeId(undefined); presentation.getState().setFocusedEdgeId(undefined) })}
         onConnect={(connection) => {
           connectNodes(connection.source, connection.target)

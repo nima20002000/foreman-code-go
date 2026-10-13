@@ -205,11 +205,16 @@ async function prepareWithinBudget<T>(budgetMs: number, cancellation: AbortSigna
   const onCancel = () => abort.abort()
   cancellation.addEventListener('abort', onCancel, { once: true })
   const deadline = setTimeout(() => abort.abort(), budgetMs)
+  const preparation = Promise.resolve().then(() => prepare(abort.signal))
   try {
-    return await Promise.race([prepare(abort.signal), new Promise<never>((_resolve, reject) => {
+    return await Promise.race([preparation, new Promise<never>((_resolve, reject) => {
       abort.signal.addEventListener('abort', () => reject(new Error('Preparation interrupted.')), { once: true })
       if (cancellation.aborted) abort.abort()
     })])
+  } catch (error) {
+    // Aborted preparation can still own input writers until its original promise settles.
+    await Promise.allSettled([preparation])
+    throw error
   } finally { clearTimeout(deadline); cancellation.removeEventListener('abort', onCancel) }
 }
 
@@ -243,7 +248,9 @@ export async function executeJob(input: JobExecution, ports: JobExecutorPorts, c
         throw new Error('Accepted private source/root identity changed.')
       }
       requireJobGitMounts(execution,source)
-      const inputs=requireJobInputReceipt(execution,source,await ports.inputs.prepare(execution,source,signal))
+      const deliveredInputs = await ports.inputs.prepare(execution, source, signal)
+      signal.throwIfAborted()
+      const inputs = requireJobInputReceipt(execution, source, deliveredInputs)
       await ports.prepareOutputs?.(execution, signal)
       if(signal.aborted)throw new Error('Input delivery interrupted.')
       const cwd = spec.relativeCwd ? `${source.privateRepositoryRoot}/${spec.relativeCwd}` : source.privateRepositoryRoot
@@ -292,7 +299,9 @@ export async function executeVerificationJob(
       }
       requireJobGitMounts(execution, source)
       const inputs = await ports.inputs.prepare(execution, source, signal)
+      signal.throwIfAborted()
       await ports.inputs.verify(execution, source, inputs, signal)
+      signal.throwIfAborted()
       await ports.prepareOutputs(execution, signal)
       signal.throwIfAborted()
       const cwd = spec.relativeCwd ? `${source.privateRepositoryRoot}/${spec.relativeCwd}` : source.privateRepositoryRoot

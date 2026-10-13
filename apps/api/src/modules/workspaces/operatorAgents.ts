@@ -9,6 +9,7 @@ import {
   type AgentCreateInput, type AgentUpdateInput, type AgentCloneInput, type ManagementPrincipal,
 } from '@foreman-code/contracts/management'
 import { isDeepStrictEqual } from 'node:util'
+import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { hasAction, isAuthorized, requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
@@ -88,9 +89,10 @@ export class OperatorAgentMutationService {
   }
 
   private async authorizeWrite(client: pg.PoolClient, principal: ManagementPrincipal, workspaceId: string, agentId: string) {
-    requireAuthorization(principal,'agents:update',{workspaceId})
     await lockActiveWorkspace(client,workspaceId)
     await lockAgentConfigurations(client,[agentId])
+    principal = await readLiveManagementPrincipal(client, principal.id)
+    requireAuthorization(principal,'agents:update',{workspaceId})
     const current = await readAgentForReuse(client,principal,workspaceId,agentId)
     for (const workflowId of current.workflowIds) {
       requireAuthorization(principal,'graph:read',{workspaceId,workflowId})
@@ -100,15 +102,25 @@ export class OperatorAgentMutationService {
     return current
   }
 
-  create(principal: ManagementPrincipal, raw: AgentCreateInput) {
+  create(principal: ManagementPrincipal, raw: AgentCreateInput, source: 'http' | 'mcp' = 'mcp') {
     const input = AgentCreateInputSchema.parse(raw)
     requireAuthorization(principal,'agents:create',{workspaceId:input.workspaceId})
     requireAuthorization(principal,'agents:read',{workspaceId:input.workspaceId})
-    return this.commands.execute({principal,source:'mcp',operation:'agent.create',commandId:input.commandId,
+    let livePrincipal = principal
+    return this.commands.execute({principal,source,operation:'agent.create',commandId:input.commandId,
       targetKey:`workspace:${input.workspaceId}:agent:${input.agentId}`,payload:input,
+      resourceLock: `admission:workspace:${input.workspaceId}`,
+      authorize: async client => {
+        livePrincipal = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(livePrincipal, 'agents:create', { workspaceId: input.workspaceId })
+        requireAuthorization(livePrincipal, 'agents:read', { workspaceId: input.workspaceId })
+      },
       perform:async(client) => {
         await lockActiveWorkspace(client,input.workspaceId)
         await lockAgentConfigurations(client,[input.agentId])
+        livePrincipal = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(livePrincipal, 'agents:create', { workspaceId: input.workspaceId })
+        requireAuthorization(livePrincipal, 'agents:read', { workspaceId: input.workspaceId })
         const existing = await client.query('select id from agents where id=$1',[input.agentId])
         if (existing.rows.length) throw new DomainError('AGENT_ID_CONFLICT','The Agent ID already exists.',409)
         const defaults = await new PostgresFoundationSettingsRepository(this.pool).getAgentDefaults(client)
@@ -118,29 +130,39 @@ export class OperatorAgentMutationService {
           configuration = await this.accountConfigurations.resolve(configuration, harnessProfileSelection, { sql: client })
         }
         if (this.accountConfigurations) harnessProfileSelection = await this.accountConfigurations.profile({
-          principal, source: 'mcp', configuration, selection: harnessProfileSelection, commandId: input.commandId, client, check: true,
+          principal: livePrincipal, source, configuration, selection: harnessProfileSelection, commandId: input.commandId, client, check: true,
         })
-        authorizeAgentConfiguration(principal,input.workspaceId,configuration,input.assignedSkills)
+        authorizeAgentConfiguration(livePrincipal,input.workspaceId,configuration,input.assignedSkills)
         if (!harnessProfileSelection) await this.harnesses.qualifyConfiguration(configuration)
+        livePrincipal = await readLiveManagementPrincipal(client, principal.id)
         const agent = await saveAgentConfiguration(client,input.workspaceId,agentWithConfiguration(AgentSchema.parse({
           id:input.agentId,name:input.name,productRole:input.productRole,description:input.description,role:input.role,
           prompt:input.prompt ?? {},assignedSkills:input.assignedSkills ?? [], harnessProfileSelection,
           nativeTools: input.nativeTools ?? defaults.value[input.productRole].nativeTools,
           ...(input.graphqlTools ? {graphqlTools:input.graphqlTools} : {}),
-        }),configuration), false, this.validateProfile(principal))
+        }),configuration), false, this.validateProfile(livePrincipal))
         const revision = await client.query<{metadata_revision:string}>('select metadata_revision from agents where id=$1',[agent.id])
         return {agent,metadataRevision:Number(revision.rows[0]!.metadata_revision)}
       },
     })
   }
 
-  update(principal: ManagementPrincipal, raw: AgentUpdateInput) {
+  update(principal: ManagementPrincipal, raw: AgentUpdateInput, source: 'http' | 'mcp' = 'mcp') {
     const input = AgentUpdateInputSchema.parse(raw)
     requireAuthorization(principal,'agents:update',{workspaceId:input.workspaceId})
-    return this.commands.execute({principal,source:'mcp',operation:'agent.update',commandId:input.commandId,
+    let livePrincipal = principal
+    return this.commands.execute({principal,source,operation:'agent.update',commandId:input.commandId,
       targetKey:`workspace:${input.workspaceId}:agent:${input.agentId}`,payload:input,
+      resourceLock: `admission:workspace:${input.workspaceId}`,
+      authorize: async client => {
+        livePrincipal = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(livePrincipal, 'agents:update', { workspaceId: input.workspaceId })
+        if (!isAuthorized(livePrincipal, 'agents:read', { workspaceId: input.workspaceId })) {
+          await readAgentForReuse(client, livePrincipal, input.workspaceId, input.agentId)
+        }
+      },
       perform:async(client) => {
-        const current = await this.authorizeWrite(client,principal,input.workspaceId,input.agentId)
+        const current = await this.authorizeWrite(client,livePrincipal,input.workspaceId,input.agentId)
         this.assertRevision(current,input.expectedRevision,input.expectedConfigurationVersionId)
         let configuration = input.configuration ?? current.agent.harnessConfiguration!
         let harnessProfileSelection = input.harnessProfileSelection ?? current.agent.harnessProfileSelection
@@ -148,9 +170,9 @@ export class OperatorAgentMutationService {
           configuration = await this.accountConfigurations.resolve(configuration, harnessProfileSelection, { sql: client })
         }
         if (this.accountConfigurations) harnessProfileSelection = await this.accountConfigurations.profile({
-          principal, source: 'mcp', configuration, selection: harnessProfileSelection, commandId: input.commandId, client, check: true,
+          principal: livePrincipal, source, configuration, selection: harnessProfileSelection, commandId: input.commandId, client, check: true,
         })
-        authorizeAgentConfiguration(principal,input.workspaceId,configuration,input.assignedSkills ?? current.agent.assignedSkills)
+        authorizeAgentConfiguration(livePrincipal,input.workspaceId,configuration,input.assignedSkills ?? current.agent.assignedSkills)
         if (!harnessProfileSelection && !isDeepStrictEqual(withAdvancedDefaults(configuration),withAdvancedDefaults(current.agent.harnessConfiguration!))) {
           await this.harnesses.qualifyConfiguration(configuration)
         }
@@ -163,7 +185,7 @@ export class OperatorAgentMutationService {
           ...(input.graphqlTools !== undefined ? {graphqlTools:input.graphqlTools} : {}),
           ...(input.nativeTools !== undefined ? {nativeTools:input.nativeTools} : {}),
         }),configuration)
-        const result = await this.persist(client,input.workspaceId,edited,principal)
+        const result = await this.persist(client,input.workspaceId,edited,livePrincipal)
         return { ...result, affectedWorkflowIds: current.workflowIds }
       },
     })
@@ -172,12 +194,26 @@ export class OperatorAgentMutationService {
   clone(principal: ManagementPrincipal, raw: AgentCloneInput) {
     const input = AgentCloneInputSchema.parse(raw)
     requireAuthorization(principal,'agents:create',{workspaceId:input.workspaceId})
+    let livePrincipal = principal
     return this.commands.execute({principal,source:'mcp',operation:'agent.clone',commandId:input.commandId,
       targetKey:`workspace:${input.workspaceId}:agent:${input.agentId}`,payload:input,
+      resourceLock: `admission:workspace:${input.workspaceId}`,
+      authorize: async client => {
+        livePrincipal = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(livePrincipal, 'agents:create', { workspaceId: input.workspaceId })
+        if (!isAuthorized(livePrincipal, 'agents:read', { workspaceId: input.workspaceId })) {
+          await readAgentForReuse(client, livePrincipal, input.workspaceId, input.sourceAgentId)
+        }
+      },
       perform:async(client) => {
         await lockActiveWorkspace(client,input.workspaceId)
         await lockAgentConfigurations(client,[input.agentId,input.sourceAgentId])
-        const current = await readAgentForReuse(client,principal,input.workspaceId,input.sourceAgentId)
+        livePrincipal = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(livePrincipal, 'agents:create', { workspaceId: input.workspaceId })
+        if (!isAuthorized(livePrincipal, 'agents:read', { workspaceId: input.workspaceId })) {
+          await readAgentForReuse(client, livePrincipal, input.workspaceId, input.sourceAgentId)
+        }
+        const current = await readAgentForReuse(client,livePrincipal,input.workspaceId,input.sourceAgentId)
         this.assertRevision(current,input.expectedSourceRevision,input.expectedSourceConfigurationVersionId)
         const existing = await client.query('select id from agents where id=$1',[input.agentId])
         if (existing.rows.length) throw new DomainError('AGENT_ID_CONFLICT','The clone Agent ID already exists.',409)
@@ -185,17 +221,18 @@ export class OperatorAgentMutationService {
         const configuration = this.accountConfigurations
           ? await this.accountConfigurations.resolve(source.harnessConfiguration!, source.harnessProfileSelection, { sql: client })
           : source.harnessConfiguration!
-        const selection = this.accountConfigurations ? await this.accountConfigurations.profile({ principal, source: 'mcp',
+        const selection = this.accountConfigurations ? await this.accountConfigurations.profile({ principal: livePrincipal, source: 'mcp',
           configuration, selection: source.harnessProfileSelection, commandId: input.commandId, client, check: true,
         }) : source.harnessProfileSelection
-        authorizeAgentConfiguration(principal,input.workspaceId,configuration,source.assignedSkills)
+        authorizeAgentConfiguration(livePrincipal,input.workspaceId,configuration,source.assignedSkills)
         if (!selection) await this.harnesses.qualifyConfiguration(configuration)
+        livePrincipal = await readLiveManagementPrincipal(client, principal.id)
         const agent = await saveAgentConfiguration(client,input.workspaceId,AgentSchema.parse({
           id:input.agentId,name:input.name,description:source.description,role:source.role,productRole:source.productRole,
           harnessConfiguration:configuration,harnessProfileSelection:selection,prompt:source.prompt,assignedSkills:source.assignedSkills,
           graphqlTools:source.graphqlTools,
           nativeTools: source.nativeTools,
-        }),false,this.validateProfile(principal))
+        }),false,this.validateProfile(livePrincipal))
         const revision = await client.query<{metadata_revision:string}>('select metadata_revision from agents where id=$1',[agent.id])
         return {agent,metadataRevision:Number(revision.rows[0]!.metadata_revision)}
       },
@@ -204,10 +241,19 @@ export class OperatorAgentMutationService {
 
   restore(principal: ManagementPrincipal, input: {workspaceId:string;agentId:string;versionId:string;commandId:string;expectedRevision:number;expectedConfigurationVersionId:string}) {
     requireAuthorization(principal,'agents:update',{workspaceId:input.workspaceId})
+    let livePrincipal = principal
     return this.commands.execute({principal,source:'mcp',operation:'agent.configuration.restore',commandId:input.commandId,
       targetKey:`workspace:${input.workspaceId}:agent:${input.agentId}`,payload:input,
+      resourceLock: `admission:workspace:${input.workspaceId}`,
+      authorize: async client => {
+        livePrincipal = await readLiveManagementPrincipal(client, principal.id)
+        requireAuthorization(livePrincipal, 'agents:update', { workspaceId: input.workspaceId })
+        if (!isAuthorized(livePrincipal, 'agents:read', { workspaceId: input.workspaceId })) {
+          await readAgentForReuse(client, livePrincipal, input.workspaceId, input.agentId)
+        }
+      },
       perform:async(client) => {
-        const current = await this.authorizeWrite(client,principal,input.workspaceId,input.agentId)
+        const current = await this.authorizeWrite(client,livePrincipal,input.workspaceId,input.agentId)
         this.assertRevision(current,input.expectedRevision,input.expectedConfigurationVersionId)
         const rows = await client.query<{record:unknown}>('select record from agent_configuration_versions where workspace_id=$1 and agent_id=$2 and id=$3',[input.workspaceId,input.agentId,input.versionId])
         if (!rows.rows[0]) throw new DomainError('AGENT_VERSION_NOT_FOUND','The historical Agent version was not found.',404)
@@ -218,14 +264,14 @@ export class OperatorAgentMutationService {
         const configuration = this.accountConfigurations
           ? await this.accountConfigurations.resolve(version.harness, version.harnessProfileSelection, { sql: client })
           : version.harness
-        const selection = this.accountConfigurations ? await this.accountConfigurations.profile({ principal, source: 'mcp',
+        const selection = this.accountConfigurations ? await this.accountConfigurations.profile({ principal: livePrincipal, source: 'mcp',
           configuration, selection: version.harnessProfileSelection, commandId: input.commandId, client, check: true,
         }) : version.harnessProfileSelection
-        authorizeAgentConfiguration(principal,input.workspaceId,configuration,version.assignedSkills)
+        authorizeAgentConfiguration(livePrincipal,input.workspaceId,configuration,version.assignedSkills)
         if (!selection) await this.harnesses.qualifyConfiguration(configuration)
         return this.persist(client,input.workspaceId,agentWithConfiguration(AgentSchema.parse({...current.agent,
           prompt:version.prompt,assignedSkills:version.assignedSkills,graphqlTools:version.graphqlTools,
-          nativeTools:version.nativeTools,harnessProfileSelection:selection}),configuration),principal)
+          nativeTools:version.nativeTools,harnessProfileSelection:selection}),configuration),livePrincipal)
       },
     })
   }
@@ -235,6 +281,7 @@ export class OperatorAgentMutationService {
     if (current.agent.configurationVersionId !== expectedConfigurationVersionId) throw new DomainError('AGENT_CONFIGURATION_CONFLICT','The Agent configuration changed.',409)
   }
   private async persist(client:pg.PoolClient,workspaceId:string,edited:Agent,principal:ManagementPrincipal) {
+    principal = await readLiveManagementPrincipal(client, principal.id)
     const agent = await saveAgentConfiguration(client,workspaceId,edited,true,this.validateProfile(principal))
     const rows = await client.query<{metadata_revision:string}>(
       'update agents set metadata_revision=metadata_revision+1 where workspace_id=$1 and id=$2 returning metadata_revision',[workspaceId,agent.id],

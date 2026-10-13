@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { chmod, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { artifactFiles, validateWorkerTarget, workerReleaseVersion } from './worker-artifact-files.mjs'
+import { artifactFiles, validateWorkerTarget, workerReleaseVersion, assertWorkerUpdateToolchain } from './worker-artifact-files.mjs'
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 
@@ -88,10 +88,17 @@ export async function publishWorkerArtifactsToGitHub({ repository, directory, co
   }
 }
 
-export async function buildWorkerReleaseArtifacts({ repository, directory, productManifestPath, run, publish }) {
+export async function buildWorkerReleaseArtifacts({
+  repository, directory, productManifestPath, run, publish, expectedCommit,
+}) {
   const commit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository, encoding: 'utf8' }).trim()
+  if (expectedCommit !== undefined && commit !== expectedCommit) {
+    throw new Error('Worker source differs from the captured release commit.')
+  }
   const productManifest = committedBytes(repository, commit, 'package.json')
-  const version = workerReleaseVersion(JSON.parse(productManifest))
+  const product = JSON.parse(productManifest)
+  assertWorkerUpdateToolchain(product)
+  const version = workerReleaseVersion(product)
   const targets = readCommittedWorkerTargets(repository, commit)
   await mkdir(directory, { mode: 0o700 })
   try {

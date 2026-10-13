@@ -36,7 +36,8 @@ import { selectInstalledCodex } from '../computers/installedCodexSelection.js'
 import { isDeepStrictEqual } from 'node:util'
 import type { WorkerPairingConfiguration } from '@foreman-code/contracts/device-identity'
 import { ApprovedRootAllowlistSchema, type ApprovedRootAllowlist } from '@foreman-code/contracts/workspace-root-policies'
-import { HarnessDiscoveryRequestSchema } from '@foreman-code/contracts/harness-registry'
+import { HarnessDiscoveryRequestSchema, HARNESS_PROFILE_CHECK_NAMESPACE } from '@foreman-code/contracts/harness-registry'
+import { EXECUTION_AUTHORITY_EXTENSION } from '@foreman-code/contracts/execution-authority'
 import {
   SOURCE_OPERATION_EXTENSION,
   SourceOperationResponseSchema,
@@ -44,6 +45,7 @@ import {
 } from '@foreman-code/contracts/source-operations'
 import type { DeviceExtensionRegistration, DeviceExtensionContext } from './deviceApplicationChannel.js'
 import type { DeviceConnectionSupervisor } from './connectionSupervisor.js'
+import { MainClock } from './workerClock.js'
 import { createAuthenticatedTransferReceiver, transferContextForBinding } from '../byte-transfer/carrier.js'
 import { sourceTransfersOnMain } from '../sources/operationCarrier.js'
 import { SourceOperationWorkerService } from '../sources/operationWorker.js'
@@ -100,12 +102,22 @@ export async function createInstalledWorkerDomains(input: {
   workerUpdate?: NonNullable<MaintenancePorts['workerUpdate']>
 }) {
   const lifetime = new AbortController()
+  let configuration = input.configuration
+  const configurationLocation = input.configuration ?? {
+    path: join(input.stateDirectory, 'workflow-runtime.json'), ownerUid: process.getuid!(),
+  }
   const active = new Map<Promise<unknown>, string>()
   let maintenance: Promise<ComputerMaintenance> | undefined
   const registry = new NativeProcessRegistry(join(input.stateDirectory, 'workflow-native-processes'))
   const jobRegistry = new NativeProcessRegistry(join(input.stateDirectory, 'job-runtime-native-processes'))
   let jobJournalOpening: Promise<RemoteOperationJournal> | undefined
-  const ownership = { now: () => input.connection()?.mainNow() ?? Date.now(),
+  const mainClock = new MainClock()
+  const observedMainTime = () => {
+    const observed = input.connection()?.mainNow()
+    if (observed !== undefined) mainClock.observe(observed)
+    return mainClock.observed ? mainClock.now() : undefined
+  }
+  const ownership = { now: () => observedMainTime() ?? Date.now(),
     retentionNow: () => input.connection()?.mainNow(),
     ...(input.assertStateOwnership ? { assertExclusiveOwner: input.assertStateOwnership } : {}) }
   const jobJournal = () => jobJournalOpening ??= RemoteOperationJournal.open(
@@ -138,8 +150,8 @@ export async function createInstalledWorkerDomains(input: {
     return ApprovedRootAllowlistSchema.parse(value)
   }
   const approved = await input.approvedRoots()
-  const profileChecks = approved ? await createInstalledWorkerProfileChecks({ stateDirectory: input.stateDirectory,
-    configuration: input.configuration, pairing: input.pairing, current, registry }) : null
+  let profileChecks = approved ? await createInstalledWorkerProfileChecks({ stateDirectory: input.stateDirectory,
+    configuration, pairing: input.pairing, current, registry }) : null
   let jobOutputRsync: Awaited<ReturnType<typeof createInstalledJobOutputRsync>> | undefined
   let jobInputRsync: ReturnType<typeof createInstalledJobInputRsync> | undefined
   const sourceAcknowledgement = input.rsync && createWorkerSourceRsyncAcknowledgement({
@@ -177,7 +189,7 @@ export async function createInstalledWorkerDomains(input: {
     receiptRoot: join(input.stateDirectory, 'job-input-receipts'), admissionRoot: join(input.stateDirectory, 'job-input-rsync-admissions') })
   const extensions: DeviceExtensionRegistration[] = rsync.extensions.map(extension => ({ ...extension, role: 'duplex' as const }))
   const providerAccounts = input.providerAccounts ?? createInstalledWorkerAccounts({
-    stateDirectory: input.stateDirectory, configuration: input.configuration, current, registry,
+    stateDirectory: input.stateDirectory, configuration: configurationLocation, current, registry,
     target: { hostRef: { kind: 'device', mainId: input.pairing.mainId, deviceId: input.pairing.deviceId },
       applicationInstallationId: input.pairing.workerInstallationId, keyRevision: input.pairing.keyRevision,
       authorizationRevision: input.pairing.authorizationRevision },
@@ -190,6 +202,7 @@ export async function createInstalledWorkerDomains(input: {
   }
   let receiver: ReturnType<typeof createAuthenticatedTransferReceiver> | undefined
   let native: Awaited<ReturnType<typeof createInstalledWorkflowHost>> | undefined
+  let openWorkflow: ((location: InstalledWorkflowConfigurationLocation) => Promise<void>) | undefined
   if (approved) {
     receiver = createAuthenticatedTransferReceiver({ stagingRoot: join(input.stateDirectory, 'source-transfer-staging'),
       current: deviceId => { const binding = input.connection()?.currentBinding(); return binding?.deviceId === deviceId ? binding : undefined },
@@ -286,12 +299,17 @@ export async function createInstalledWorkerDomains(input: {
         executionTransfersClosed: (record, signal) => rsync.backend.retireMaterialization(record, signal),
       } : {}),
     })
-    native = await createInstalledWorkflowHost({ stateDirectory: input.stateDirectory, pairing: input.pairing, bootId: input.bootId,
-      configuration: input.configuration, currentBinding: () => input.connection()?.currentBinding(),
+    const createWorkflow = (location: InstalledWorkflowConfigurationLocation | null) =>
+      createInstalledWorkflowHost({ stateDirectory: input.stateDirectory, pairing: input.pairing, bootId: input.bootId,
+      configuration: location, currentBinding: () => input.connection()?.currentBinding(),
       captureRequest: namespace => input.connection()?.captureRequest(namespace), sources, approvedRoots: roots,
       ...(input.nativeOutputs ? { nativeOutputs: input.nativeOutputs } : {}),
       codexSuiteRevision: input.codexSuiteRevision,
       signal: lifetime.signal, registry, journal, ...(accounts ? { accounts } : {}) })
+    native = await createWorkflow(configuration)
+    openWorkflow = async location => {
+      if (native?.kind !== 'configured') native = await createWorkflow(location)
+    }
     extensions.push({ ...receiver.extension, role: 'duplex' }, { ...SOURCE_OPERATION_EXTENSION, role: 'duplex', async handle(payload, context) {
       return { payload: await sources.handle(payload, { ...context, signal: AbortSignal.any([context.signal, lifetime.signal]) }) }
     } }, ...(native.kind === 'configured' ? native.extensions : []))
@@ -366,7 +384,7 @@ export async function createInstalledWorkerDomains(input: {
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
         throw new DomainError('COMPUTER_ACCOUNTS_STALE', 'Account facts require the actual authenticated worker channel.', 409)
       }
-      const selected = await readInstalledWorkflowConfiguration(input.configuration)
+      const selected = await readInstalledWorkflowConfiguration(configuration)
         .catch(fallbackOnError(null, 'devices', 'read installed workflow configuration'))
       const binaries = { ...(selected?.codexBinary ? { codex: selected.codexBinary } : {}),
         ...(selected?.claude ? { claude: selected.claude.binary } : {}) }
@@ -382,7 +400,7 @@ export async function createInstalledWorkerDomains(input: {
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
         throw new DomainError('COMPUTER_MAINTENANCE_STALE', 'Computer maintenance requires the actual authenticated worker channel.', 409)
       }
-      maintenance ??= readInstalledWorkflowConfiguration(input.configuration)
+      maintenance ??= readInstalledWorkflowConfiguration(configuration)
         .catch(fallbackOnError(null, 'devices', 'read installed workflow configuration')).then(selected => {
         // Maintenance reads the binaries this Worker actually runs; an update moves the Codex selection with it.
         const binaries: Record<string, string> = { ...(selected?.codexBinary ? { codex: selected.codexBinary } : {}),
@@ -390,7 +408,7 @@ export async function createInstalledWorkerDomains(input: {
         return new ComputerMaintenance({ ...systemMaintenancePorts(process.env, binaries),
           ...(input.workerUpdate ? { workerUpdate: input.workerUpdate } : {}),
           async selectInstalledCodex(signal) {
-            const binary = await selectInstalledCodex(input.configuration, process.env.HOME ?? homedir(), signal)
+            const binary = await selectInstalledCodex(configuration, process.env.HOME ?? homedir(), signal)
             if (binary) binaries.codex = binary
             return binary
           } })
@@ -437,13 +455,15 @@ export async function createInstalledWorkerDomains(input: {
       HarnessDiscoveryRequestSchema.parse(payload)
       if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The actual installed inventory requires its original worker channel.', 409)
       const signal = AbortSignal.any([context.signal, lifetime.signal])
-      const configuration = input.refreshWorkflowConfiguration
+      const refreshed = input.refreshWorkflowConfiguration
         ? await input.refreshWorkflowConfiguration(signal) : input.configuration
       if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The installed inventory generation changed.', 409)
-      const inspected = await inspectInstalledCodex({ binding: context.binding, configuration,
+      if (refreshed && approved) await activateWorkflowConfiguration(refreshed)
+      if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The installed inventory generation changed.', 409)
+      const inspected = await inspectInstalledCodex({ binding: context.binding, configuration: refreshed,
         fingerprintCache: inventoryPayloadFingerprints, environment: process.env, cwd: input.stateDirectory,
         signal: AbortSignal.any([context.signal, lifetime.signal]) })
-      const claude = await inspectInstalledClaude({ binding: context.binding, configuration,
+      const claude = await inspectInstalledClaude({ binding: context.binding, configuration: refreshed,
         fingerprintCache: inventoryPayloadFingerprints, environment: process.env, cwd: input.stateDirectory,
         signal: AbortSignal.any([context.signal, lifetime.signal]) })
       if (!isDeepStrictEqual(current(), context.binding)) throw new DomainError('HARNESS_INVENTORY_STALE', 'The installed inventory generation changed.', 409)
@@ -482,12 +502,34 @@ export async function createInstalledWorkerDomains(input: {
     return host
   })()
   const execution = extensions.find(extension => extension.namespace === 'execution-v1')
-  const conversations = approved ? await createInstalledWorkerConversations({ stateDirectory: input.stateDirectory,
-    configuration: input.configuration, registry, journal, approvedRoots: roots, current,
+  const createConversations = () => createInstalledWorkerConversations({ stateDirectory: input.stateDirectory,
+    configuration, registry, journal, approvedRoots: roots, current,
     capture: () => input.connection()?.captureRequest('execution-v1'), request,
-    codexSuiteRevision: input.codexSuiteRevision, signal: lifetime.signal, ...(accounts ? { accounts } : {}) }) : null
-  if (conversations && !extensions.some(extension => extension.namespace === WORKER_MCP_EXTENSION.namespace)) {
+    codexSuiteRevision: input.codexSuiteRevision, signal: lifetime.signal, ...(accounts ? { accounts } : {}) })
+  let conversations = approved ? await createConversations() : null
+  let activation: Promise<void> | undefined
+  const activateWorkflowConfiguration = async (location: InstalledWorkflowConfigurationLocation) => {
+    if (!isDeepStrictEqual(location, configurationLocation)) {
+      throw new DomainError('HARNESS_INVENTORY_STALE', 'The protected workflow selection location changed.', 409)
+    }
+    activation ??= (async () => {
+      await readInstalledWorkflowConfiguration(location)
+      lifetime.signal.throwIfAborted()
+      configuration = location
+      await openWorkflow?.(location)
+      profileChecks ??= await createInstalledWorkerProfileChecks({ stateDirectory: input.stateDirectory,
+        configuration, pairing: input.pairing, current, registry })
+      conversations ??= await createConversations()
+    })()
+    try { await activation }
+    finally { activation = undefined }
+  }
+  const workflowSupport = Boolean(approved && input.refreshWorkflowConfiguration)
+  if ((conversations || workflowSupport) && !extensions.some(extension => extension.namespace === WORKER_MCP_EXTENSION.namespace)) {
     extensions.push({ ...WORKER_MCP_EXTENSION, role: 'client' })
+  }
+  if (workflowSupport && !extensions.some(extension => extension.namespace === EXECUTION_AUTHORITY_EXTENSION.namespace)) {
+    extensions.push({ ...EXECUTION_AUTHORITY_EXTENSION, role: 'client' })
   }
   if (input.jobConfiguration && approved) {
     const outputExtension = extensions.find(extension => extension.namespace === JOB_OUTPUT_NAMESPACE)
@@ -498,26 +540,38 @@ export async function createInstalledWorkerDomains(input: {
     }
     extensions.push({namespace:JOB_INPUT_NAMESPACE,version:1,role:'client',maxJsonBytes:1_048_576,maxBinaryBytes:8192})
   }
-  if (input.jobConfiguration && approved || conversations) {
-    const workflow = execution?.handle
+  if (input.jobConfiguration && approved || conversations || workflowSupport) {
     const handler: DeviceExtensionRegistration = { namespace: 'execution-v1', version: 1, role: 'duplex', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
       async handle(payload, context) {
         if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) throw new DomainError('JOB_RUNTIME_CONNECTION_CHANGED', 'Execution requires its actual authenticated worker channel.', 409)
         const job = input.jobConfiguration && RemoteJobExecutionRpcRequestRecordSchema.safeParse(payload).success ? await openJobs() : jobs
+        const conversationHost = conversations
         return { payload: await createRemoteExecutionHandler({ handle: async raw => {
+          const workflow = native?.kind === 'configured'
+            ? native.extensions.find(extension => extension.namespace === 'execution-v1')?.handle : undefined
           if (!workflow) throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE', 'The installed Workflow runtime is unavailable.', 409)
           return (await workflow(raw, context)).payload
-        } }, job, conversations ? { handle: raw => conversations.handle(raw, context.binding, context.signal) } : undefined)(payload) }
+        } }, job, conversationHost ? { handle: raw => conversationHost.handle(raw, context.binding, context.signal) } : undefined)(payload) }
       },
     }
     if (execution) extensions.splice(extensions.indexOf(execution), 1, handler)
     else extensions.push(handler)
   }
-  if (profileChecks) extensions.push(profileChecks.extension)
+  if (profileChecks || workflowSupport) extensions.push({
+    namespace: HARNESS_PROFILE_CHECK_NAMESPACE, version: 1, role: 'server', maxJsonBytes: 1_048_576, maxBinaryBytes: 0,
+    async handle(payload, context) {
+      if (context.bytes !== undefined || !isDeepStrictEqual(current(), context.binding)) {
+        throw new DomainError('HARNESS_INVENTORY_STALE', 'Profile checks require the authenticated worker channel.', 409)
+      }
+      if (!profileChecks) throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE', 'Install a workflow harness first.', 409)
+      return profileChecks.extension.handle(payload, context)
+    },
+  })
   const updateDrain = createWorkerRuntimeDrain({ signal: lifetime.signal,
-    active: () => [...active].filter(([, namespace]) => namespace !== COMPUTER_MAINTENANCE_NAMESPACE
-      && namespace !== CI_RUNTIME_NAMESPACE).map(([task]) => task),
+    active: () => [...active].filter(([, namespace]) => namespace !== COMPUTER_MAINTENANCE_NAMESPACE)
+      .map(([task]) => task),
     drainJobs: async () => {
+      await Promise.all([hostCi.beginDrain(), ciRuntime.beginDrain()])
       if (jobOpening) await (await jobOpening).beginDrain()
       if (native?.kind === 'configured') await native.drainForUpdate()
       await conversations?.drainForUpdate()
@@ -525,6 +579,7 @@ export async function createInstalledWorkerDomains(input: {
     drainQualifications: async () => { await qualification?.drain() },
     drainMaintenance: async () => { if (maintenance) await (await maintenance).drainForWorkerUpdate() },
     quiescent: async () => {
+      if (!hostCi.isUpdateIdle() || !ciRuntime.isUpdateIdle()) return false
       const logs = await Promise.all([journalOpening, jobJournalOpening])
       if (!(await Promise.all(logs.map(log => log?.isWorkerUpdateIdle() ?? true))).every(Boolean)) return false
       const nativeActive = [registry, jobRegistry].some(value => value.snapshot().launches.some(launch =>
@@ -554,11 +609,19 @@ export async function createInstalledWorkerDomains(input: {
     async drainForUpdate() {
       await updateDrain.run()
     },
-    resumeAfterUpdate() { updateDrain.resume(); jobs?.resumeAdmissions() },
-    ...(rsync.kind === 'configured' ? { rsync: rsync.backend, rsyncWriters: rsync.rsyncWriters, rsyncOwnership: rsync.ownership } : {}), workflowAvailable: native?.kind === 'configured', sourceAvailable: Boolean(receiver),
+    resumeAfterUpdate() {
+      updateDrain.resume()
+      jobs?.resumeAdmissions()
+      hostCi.resumeAdmissions()
+      ciRuntime.resumeAdmissions()
+    },
+    ...(rsync.kind === 'configured' ? { rsync: rsync.backend, rsyncWriters: rsync.rsyncWriters, rsyncOwnership: rsync.ownership } : {}),
+    get workflowAvailable() { return native?.kind === 'configured' }, sourceAvailable: Boolean(receiver),
     close() { return shutdown ??= (async () => {
       lifetime.abort()
+      await Promise.allSettled([activation])
       const failures: unknown[] = []
+      try { await hostCi.beginDrain() } catch (error) { failures.push(error) }
       try { await ciRuntime.close() } catch (error) { failures.push(error) }
       try { await providerAccounts?.native.close() } catch (error) { failures.push(error) }
       try { await profileChecks?.close() } catch (error) { failures.push(error) }
@@ -623,9 +686,13 @@ function isWorkerAdmission(namespace: string, payload: unknown): boolean {
       .includes(String(payload.method))
   }
   if (namespace === 'byte-transfer-v1' && 'method' in payload) return payload.method === 'start'
+  if (namespace === 'rsync-stage-v1' && 'method' in payload) {
+    return ['source-prepare', 'receiver-prepare', 'writer-prepare', 'writer-activate'].includes(String(payload.method))
+  }
   if (!('operation' in payload)) return false
   return namespace === SOURCE_OPERATION_EXTENSION.namespace && payload.operation === 'sources.prepare'
     || namespace === COMPUTER_MAINTENANCE_NAMESPACE && payload.operation === 'start'
     || namespace === 'job-runtime-qualification-v1' && ['start', 'run'].includes(String(payload.operation))
     || namespace === CI_RUNTIME_NAMESPACE && payload.operation === 'prepare'
+    || namespace === CI_HOST_NAMESPACE && payload.operation === 'start'
 }

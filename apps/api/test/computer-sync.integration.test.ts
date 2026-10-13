@@ -21,7 +21,7 @@ describe.skipIf(!postgresEnabled)('Syncthing through authenticated Operator MCP'
     mainId = (await database.pool.query<{ id: string }>('select id from application_installation')).rows[0]!.id
   }, 60_000)
   afterAll(async () => { await database?.close() })
-  async function fixture() {
+  async function fixture(options: { withoutSync?: boolean } = {}) {
     const access = new PostgresAccessService(database.pool)
     const commands = new PostgresCommandCoordinator(database.pool)
     const writer = await access.issue({ name: 'Sync writer', audience: 'operator', expiresAt: new Date(Date.now() + 3600000),
@@ -57,7 +57,7 @@ describe.skipIf(!postgresEnabled)('Syncthing through authenticated Operator MCP'
       request: async (_device: string, _namespace: string, payload: unknown) => ({ payload: await remote.handle(SyncChannelRequestSchema.parse(payload).request) }) }
     const createService = () => new ComputerSyncService(database.pool, mainId, () => endpoint, commands, local)
     const sync = createService()
-    const services = { computerSync: sync, commands } as unknown as OperatorServices
+    const services = { ...(options.withoutSync ? {} : { computerSync: sync }), commands } as unknown as OperatorServices
     const app = buildApp({ logger: false, readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       operator: { access, services } })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
@@ -79,6 +79,48 @@ describe.skipIf(!postgresEnabled)('Syncthing through authenticated Operator MCP'
       close: async () => { await Promise.all(clients.map(client => client.close())); await app.close();
         await main.close(); await worker.close() } }
   }
+
+  it('hides global sync tools from workspace grants and audits denied HTTP and MCP writes', async () => {
+    const f = await fixture()
+    try {
+      const access = new PostgresAccessService(database.pool)
+      const scoped = await access.issue({ name: 'Scoped sync caller', audience: 'operator',
+        expiresAt: new Date(Date.now() + 300_000),
+        grants: [{ actions: ['settings:read', 'settings:update', 'capabilities:read'],
+          scope: { workspaceIds: [f.workspaceId] } }] })
+      const client = await f.connect(scoped.token)
+      const names = (await client.listTools()).tools.map(tool => tool.name)
+      expect(names).not.toContain('computer_sync_status')
+      expect(names).not.toContain('computer_sync_update')
+      const input = { target: f.target, workspaceId: f.workspaceId, enabled: false,
+        expectedRevision: 0, commandId: randomUUID() }
+      for (const name of ['computer_sync_status', 'computer_sync_update']) {
+        const result = await client.callTool({ name, arguments: name.endsWith('status') ? { target: f.target } : input })
+        expect(result).toMatchObject({ isError: true })
+        expect(JSON.parse((result.content as Array<{ text: string }>)[0]!.text))
+          .toMatchObject({ error: { code: 'ACCESS_DENIED' } })
+      }
+      const response = await f.app.inject({ method: 'POST', url: '/api/management/computers/sync/update',
+        headers: { authorization: `Bearer ${scoped.token}` }, payload: input })
+      expect(response.statusCode).toBe(403)
+      expect((await database.pool.query('select workspace_id from computer_sync_preferences where workspace_id=$1',
+        [f.workspaceId])).rows).toEqual([])
+    } finally { await f.close() }
+  })
+
+  it('returns a typed unavailable error when sync is absent even if devices are also absent', async () => {
+    const f = await fixture({ withoutSync: true })
+    try {
+      const client = await f.connect(f.writer.token)
+      expect((await client.listTools()).tools.map(tool => tool.name)).not.toContain('computer_sync_status')
+      for (const name of ['computer_sync_status', 'computer_sync_update']) {
+        const result = await client.callTool({ name, arguments: {} })
+        expect(result.isError).toBe(true)
+        expect(JSON.parse((result.content as Array<{ text: string }>)[0]!.text))
+          .toMatchObject({ error: { code: 'COMPUTER_SYNC_UNAVAILABLE' } })
+      }
+    } finally { await f.close() }
+  })
 
   it('exchanges device IDs, persists on/off, discovers tools, denies writes and audits the MCP command', async () => {
     const f = await fixture()
