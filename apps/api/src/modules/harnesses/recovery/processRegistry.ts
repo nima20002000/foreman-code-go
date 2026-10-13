@@ -910,7 +910,7 @@ export async function detachRecoveredChild(child: ChildProcessWithoutNullStreams
   const launch = launchRecord(readRecord(join(directory, 'intent.json')))
   const birth = birthRecord(readRecord(join(directory, 'birth.json')), launch)
   await controlGuardian(launch, birth, 'detach', signal)
-  const detached = readDetachedNativeProcess(registration.scope)
+  const detached = readDetachedNativeProcess({ ...registration.scope, launchId: registration.id })
   if (!detached || detached.launchId !== registration.id) throw new Error('Native process detachment is unconfirmed.')
   if (child.connected) child.disconnect()
   child.stdin.destroy()
