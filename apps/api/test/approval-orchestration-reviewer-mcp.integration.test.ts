@@ -83,7 +83,9 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       }
       expect(f.counts().responses).toBe(0)
       dispatch = f.native.reviewers.dispatchNext(f.reviewerId, 'current-mcp-proof')
-      void dispatch.catch(() => undefined)
+      void dispatch.catch(() => {
+        // ignore: br1002At and the awaited dispatch below observe the rejection.
+      })
       await br1002At(cuts.started.promise, dispatch)
       const credential = await f.credentials.issueForReviewer(f.reviewer.id)
       const reviewer = await connect('/mcp', credential.environment.variables.GRAPHQL_MCP_TOKEN!)
@@ -119,7 +121,9 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       cuts.release()
       publishHistory.resolve()
       finishHistory.resolve()
-      await dispatch?.catch(() => undefined)
+      await dispatch?.catch(() => {
+        // ignore: preserve the test failure while closing the clients and runtime.
+      })
       cuts.restore()
       historySpy.mockRestore()
       await Promise.allSettled(clients.map((client) => client.close()))
