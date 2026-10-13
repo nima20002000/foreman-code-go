@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createHash, randomUUID } from 'node:crypto'
 import { copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile, readdir, lstat, type FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 import { isDeepStrictEqual } from 'node:util'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { SourcePreparationClosure, SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
@@ -17,7 +18,9 @@ import { createProductionRsyncComposition, type ProductionRsyncProviders } from 
 
 const bytes = Buffer.from('exact accepted immutable package\n'), hash = (data: Uint8Array) => createHash('sha256').update(data).digest('hex')
 async function fixture(direction: TransferIntent['direction'] = 'to-worker', options: { realQuota?: boolean; cleanupProof?: boolean } = {}) {
-  const root = await mkdtemp('/tmp/graphql-rsync-production-')
+  const cache = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(cache, { recursive: true })
+  const root = await mkdtemp(join(cache, 'rsync-production-'))
   const localRoot = join(root, 'main'), remoteRoot = join(root, 'worker')
   await mkdir(localRoot, { mode: 0o700 }); await mkdir(remoteRoot, { mode: 0o700 })
   const binary = join(root, 'binary'); await writeFile(binary, 'fixture binary', { mode: 0o600 })
@@ -204,7 +207,17 @@ describe('production rsync leaf', () => {
         sourceBindingHash: 'e'.repeat(64) }, AbortSignal.timeout(5000))).rejects.toThrow('does not own')
       await f.worker.retireMaterialization(record, AbortSignal.timeout(5000))
       await expect(f.workerReceiver.status(f.i.transferId, context)).rejects.toThrow('cancelled')
-      expect(await f.workerReceiver.inventory()).toContainEqual(f.i)
+      expect(await f.workerReceiver.inventory()).toEqual([])
+      await f.worker.retireMaterialization(record, AbortSignal.timeout(5000))
+      await expect(f.workerReceiver.start(f.i, context)).rejects.toThrow('cancelled')
+      await f.workerReceiver.close()
+      const restarted = new ResumableByteTransferService(join(f.root, 'worker-canonical'), f.accepted)
+      try {
+        await expect(restarted.start(f.i, context)).rejects.toThrow('cancelled')
+        expect(await restarted.inventory()).toEqual([])
+      } finally {
+        await restarted.close()
+      }
     } finally { await f.dispose() }
   })
 

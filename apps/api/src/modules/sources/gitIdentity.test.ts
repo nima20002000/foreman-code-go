@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type pg from 'pg'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -56,8 +56,14 @@ async function mergeAsAgent(f: Awaited<ReturnType<typeof fixture>>, path: string
   f.git(path, 'add', 'agent.txt')
   f.git(path, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'agent work')
   const before = f.git(path, 'rev-parse', 'HEAD')
-  const topicCommit = f.git(path, 'rev-parse', topic)
-  f.git(path, 'merge', '--no-ff', '--no-edit', topic)
+  let topicCommit: string
+  if (topic.startsWith('origin/')) {
+    topicCommit = f.git(f.origin, 'rev-parse', topic.slice('origin/'.length))
+    f.git(path, 'fetch', '--no-tags', '--no-write-fetch-head', 'origin', topicCommit)
+  } else {
+    topicCommit = f.git(path, 'rev-parse', topic)
+  }
+  f.git(path, 'merge', '--no-ff', '--no-edit', topicCommit)
   expect(f.git(path, 'show', '-s', '--format=%P')).toBe(`${before} ${topicCommit}`)
   const committer = f.git(path, 'show', '-s', '--format=%cn <%ce>')
   f.git(path, 'commit', '--allow-empty', '-qm', 'agent follow-up')
@@ -135,4 +141,14 @@ it('sets identity on a Main Run worktree and repairs it when the persisted workt
   f.git(path, 'commit', '--allow-empty', '-qm', 'resumed agent')
   expect(f.git(path, 'show', '-s', '--format=%cn <%ce>')).toBe('Foreman Code Agent <agent@foreman-code.invalid>')
   expect(f.git(path, 'rev-parse', 'HEAD^')).toBe(merged)
+})
+
+it('merges a nondefault branch into an Agent worktree without inheriting host identity', async () => {
+  const f = await fixture()
+  const path = join(f.root, 'agent')
+  await addGitWorktree(f.ports, { repository: 'octo/site', branch: 'foreman/merge' },
+    f.baseCommit, path, AbortSignal.timeout(30_000))
+  expect(await mergeAsAgent(f, path, 'origin/topic')).toBe('Foreman Code Agent <agent@foreman-code.invalid>')
+  expect(await readFile(join(path, 'topic.txt'), 'utf8')).toBe('topic\n')
+  expect(await readFile(join(path, 'agent.txt'), 'utf8')).toBe('agent work\n')
 })
