@@ -236,6 +236,9 @@ export function registerManagementRoutes(app: FastifyInstance, services: Operato
     reply.code(202)
     return result
   })
+  app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/runs/start-resolution',
+    async request => services.runs.resolveStart(requirePrincipal(request), 'http',
+      ManualRunStartInputSchema.parse(routeInput(request.params, request.body))))
   app.post<{ Params: Params; Body: unknown }>('/api/management/workspaces/:workspaceId/runs/:runId/stop', async (request) =>
     services.runs.stop(requirePrincipal(request), 'http', RunStopInputSchema.parse(routeInput(request.params, request.body))))
 }

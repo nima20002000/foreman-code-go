@@ -17,11 +17,17 @@ interface BoardUndoState {
   notice?: { scope: string; id: string; text: string }
   /** Current draft history length per scope, published by the Board editor. */
   depth: Record<string, number>
+  /** Serializes a history step through its stack move; TanStack owns its server command. */
+  pending: Record<string, boolean>
+  /** Acknowledged history revisions detect intervening edits; they do not mirror polling results. */
+  scheduleRevisions: Record<string, number>
 }
 
 export const boardScope = (workspaceId: string, workflowId: string) => JSON.stringify([workspaceId, workflowId])
 
-export const useBoardUndo = create<BoardUndoState>(() => ({ actions: {}, redo: {}, changes: {}, depth: {} }))
+export const useBoardUndo = create<BoardUndoState>(() => ({
+  actions: {}, redo: {}, changes: {}, depth: {}, pending: {}, scheduleRevisions: {},
+}))
 
 export function recordBoardAction(scope: string, action: Omit<BoardAction, 'id' | 'depth'>) {
   useBoardUndo.setState((state) => ({
@@ -66,6 +72,29 @@ export function popBoardRedo(scope: string): Redo | undefined {
       { ...next.action, depth: state.depth[scope] ?? 0 }] } }))
   }
   return next
+}
+
+export function peekBoardRedo(scope: string): Redo | undefined {
+  return useBoardUndo.getState().redo[scope]?.at(-1)
+}
+
+/** Move a server-backed step only after its command is acknowledged. */
+export async function executeBoardAction(scope: string, direction: 'undo' | 'redo', draftDepth: number): Promise<boolean> {
+  if (useBoardUndo.getState().pending[scope]) return false
+  const redo = direction === 'redo' ? peekBoardRedo(scope) : undefined
+  let action = pendingBoardAction(scope, draftDepth)
+  if (direction === 'redo') action = redo?.kind === 'action' ? redo.action : undefined
+  if (!action) return false
+  useBoardUndo.setState(state => ({ pending: { ...state.pending, [scope]: true } }))
+  try {
+    await action[direction]()
+    if (direction === 'undo') popBoardAction(scope, action)
+    else if (peekBoardRedo(scope) === redo) popBoardRedo(scope)
+    announceBoardChange(scope, `${direction === 'undo' ? 'Undid' : 'Redid'} ${action.label}`)
+    return true
+  } finally {
+    useBoardUndo.setState(state => ({ pending: { ...state.pending, [scope]: false } }))
+  }
 }
 
 /** Shows the bottom-right notice and keeps the change in this Board's change list. */

@@ -5,7 +5,7 @@ import {
 } from '@foreman-code/contracts/management'
 import { OperatorRunListInputSchema, OperatorRunGetInputSchema, OperatorRunGetResultSchema } from '@foreman-code/contracts/operator-mcp'
 import { compactRunDetails } from '../runSummary.js'
-import { ManualRunStartInputSchema, ManualRunStartResultSchema, SavedRunPageSchema,
+import { ManualRunStartInputSchema, ManualRunStartResultSchema, RunStartResolutionResultSchema, SavedRunPageSchema,
   RunActivitiesInputSchema, RunActivitiesPageSchema, RunHandoffsReadInputSchema,
   RunHandoffsReadSchema } from '@foreman-code/contracts/wave25'
 import { defineOperatorTool } from '../definition.js'
@@ -88,6 +88,20 @@ export const runTools = [
     outputSchema: ManualRunStartResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: (context, input) => context.services.runs.start(context.principal, 'mcp', input),
+  }),
+  defineOperatorTool({
+    name: 'run_start_resolve',
+    requires: [['runs:start', 'workflow'], ['workspace_locations:read', 'workspace']],
+    enabled: s => !!s.runs,
+    description: 'Resolve the original Start using its unchanged commandId and complete input. Under the Start command lock, '
+      + 'returns the original accepted Run or permanently cancels a command that has no accepted receipt. '
+      + 'A canceled command can never admit a Run, including delayed submissions from another tab. '
+      + 'After cancellation, read current settings and require a new explicit Start with a new commandId. '
+      + 'Missing or contradictory success evidence remains an error; retain the original command and retry resolution. '
+      + 'Requires live workflow-scoped runs:start and workspace location read, including replay.',
+    inputSchema: ManualRunStartInputSchema, outputSchema: RunStartResolutionResultSchema,
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    run: (context, input) => context.services.runs.resolveStart(context.principal, 'mcp', input),
   }),
   defineOperatorTool({
     name: 'run_stop',
