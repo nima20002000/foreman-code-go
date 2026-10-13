@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { buildWorkerReleaseArtifacts, publishWorkerArtifactsToGitHub,
+import { buildWorkerReleaseArtifacts, publishInstalledWorkerArtifacts, publishWorkerArtifactsToGitHub,
   readCommittedWorkerTargets } from './worker-release-artifacts.mjs'
 
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
@@ -231,4 +231,33 @@ test('blocks a toolchain pin change before publishing updates to format-one work
   await assert.rejects(buildWorkerReleaseArtifacts({ ...f, run, publish }), /bridge release/)
   assert.equal(f.calls.length, 0)
   await assert.rejects(stat(f.productManifestPath), { code: 'ENOENT' })
+})
+
+test('an installed release publishes to GitHub after the install and then records the release in its index', async t => {
+  const f = await fixture(t)
+  const index = await buildWorkerReleaseArtifacts(f)
+  assert.equal(index.github, undefined)
+  const calls = []
+  const publish = async options => { calls.push(options); return { repository: 'example/fixture', tag: `worker-${f.commit}` } }
+  // Uploading took ~78 s inside every install; Workers download through Main until the index names the release.
+  const published = await publishInstalledWorkerArtifacts({ directory: f.directory, repositoryName: 'example/fixture',
+    commit: f.commit, run: f.run, publish })
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].name, 'example/fixture')
+  assert.deepEqual(calls[0].artifacts, index.artifacts)
+  assert.deepEqual(published, { ...index, github: { repository: 'example/fixture', tag: `worker-${f.commit}` } })
+  assert.deepEqual(JSON.parse(await readFile(join(f.directory, 'index.json'))), published)
+  assert.equal((await stat(join(f.directory, 'index.json'))).mode & 0o077, 0)
+  await publishInstalledWorkerArtifacts({ directory: f.directory, repositoryName: 'example/fixture',
+    commit: f.commit, run: f.run, publish })
+  assert.equal(calls.length, 1)
+})
+
+test('a failed background upload leaves the installed index for Main downloads', async t => {
+  const f = await fixture(t)
+  const index = await buildWorkerReleaseArtifacts(f)
+  const publish = async () => { throw new Error('GitHub unavailable') }
+  await assert.rejects(publishInstalledWorkerArtifacts({ directory: f.directory, repositoryName: 'example/fixture',
+    commit: f.commit, run: f.run, publish }), /GitHub unavailable/)
+  assert.deepEqual(JSON.parse(await readFile(join(f.directory, 'index.json'))), index)
 })
