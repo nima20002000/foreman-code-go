@@ -324,6 +324,8 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
       nodes: graph.nodes.map((node) => ({ ...node, name: 'Saved node name' })) })))
     await requestSave(user)
     await waitFor(() => expect(nextDraftDirty(edit())).toBe(false))
+    expect(stage).toHaveBeenCalledOnce()
+    expect(stage.mock.calls[0]?.[0].graph.nodes[0]?.name).toBe('Saved node name')
     expect(edit().graph.nodes[0]?.name).toBe('Saved node name')
     expect(edit().context.draft.baseWorkflowVersionId).toBe(original.draft.baseWorkflowVersionId)
     expect(edit().context.draft.publishedRevision).toBe(original.draft.publishedRevision)
