@@ -151,6 +151,23 @@ export async function switchWorkerPointer(pointer, directory) {
   } finally { await rm(temporary, { force: true }); }
 }
 
+export async function workerPointerMatches(pointer, directory) {
+  try {
+    const info = await lstat(pointer.path);
+    if (info.uid !== process.getuid()) return false;
+    if (pointer.kind === 'symlink' && info.isSymbolicLink()) {
+      return await realpath(pointer.path) === await realpath(directory);
+    }
+    if (pointer.kind === 'file' && info.isFile() && !(info.mode & 0o022)) {
+      return await realpath((await readFile(pointer.path, 'utf8')).trim()) === await realpath(directory);
+    }
+    return false;
+  } catch (error) {
+    if (['ENOENT', 'ENOTDIR', 'EACCES', 'ELOOP'].includes(error.code)) return false;
+    throw error;
+  }
+}
+
 export async function waitForWorkerReady({ stateDirectory, version, workerInstallationId,
   timeoutMs = 60_000, pollMs = 250, readStatus = readWorkerStatus }) {
   const deadline = Date.now() + timeoutMs;
@@ -179,13 +196,19 @@ export async function superviseWorkerUpdate(record, ports = {}) {
     record.outcomes = [...(record.outcomes ?? []).filter(value => value.requestId !== plan.requestId), outcome].slice(-20);
     await persist(plan.stateDirectory, record);
   };
+  const restartWorker = async () => {
+    // A surviving process may resume only when neither restart was attempted.
+    plan.restartAttempted = true;
+    await persist(plan.stateDirectory, record);
+    await restart(plan.service);
+  };
   try {
     await prepareService(plan);
     await switchPointer(plan.pointer, plan.directory);
     if (plan.pointer.kind === 'symlink') {
       await switchPointer({ kind: 'symlink', path: join(plan.root, 'previous') }, plan.previousDirectory);
     }
-    await restart(plan.service);
+    await restartWorker();
     await ready({ stateDirectory: plan.stateDirectory, version: record.status.targetVersion,
       workerInstallationId: plan.workerInstallationId });
     await save('current', record.status.targetVersion, null);
@@ -193,7 +216,7 @@ export async function superviseWorkerUpdate(record, ports = {}) {
     const failure = error instanceof WorkerError ? error.code : 'worker_update_start_failed';
     try {
       await switchPointer(plan.pointer, plan.previousDirectory);
-      await restart(plan.service);
+      await restartWorker();
       await ready({ stateDirectory: plan.stateDirectory, version: plan.previousVersion,
         workerInstallationId: plan.workerInstallationId });
       await save('rolled-back', plan.previousVersion, failure);
