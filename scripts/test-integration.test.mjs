@@ -1078,7 +1078,6 @@ for (const [name, reservedReview] of [
   assert.deepEqual(overlaps, [])
 })
 
-
 test('gate identity is explicit and full scope alone keeps diagnostic retests', () => {
   assert.equal(integrationGate({ FOREMAN_CODE_CI_GATE: '1' }), true)
   assert.equal(integrationGate({ FOREMAN_CODE_CI_INTEGRATION_SHARDS: '4' }), true)
