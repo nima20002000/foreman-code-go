@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { expect, it, vi } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { WorkerPairingConfigurationSchema } from '@foreman-code/contracts/device-identity'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { workerConversationFixture } from '../conversations/workerFixtures.test-support.js'
@@ -15,6 +15,8 @@ import { transferContextForBinding } from '../byte-transfer/carrier.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
 import { HostCiRunner } from '../ci-host/runner.js'
 import type { TransferIntent } from '@foreman-code/contracts/byte-transfer'
+import { NativeProcessRegistry, type NativeLaunchObservation } from '../harnesses/recovery/processRegistry.js'
+import { workerConversationProcessDigest } from '../conversations/workerNativeOwner.js'
 
 it('waits for uncertain native conversation work without treating an idle open session as active update work', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'worker-update-journal-'))
@@ -152,3 +154,102 @@ it('rejects Host CI and accepted rsync writer starts after drain while keeping c
     await rm(stateDirectory, { recursive: true, force: true })
   }
 })
+
+
+const recoveryDirectories: string[] = []
+afterEach(async () => {
+  for (const directory of recoveryDirectories.splice(0)) await rm(directory, { recursive: true, force: true })
+})
+
+it.each(['turn', 'compaction', 'closing', 'access-change'] as const)(
+  'finishes an idle update with retained %s recovery state after original native closure', async pending => {
+    const stateDirectory = await mkdtemp(join(persistentFixtureRoot, 'worker-drain-recovery-'))
+    recoveryDirectories.push(stateDirectory)
+    const project = join(stateDirectory, 'project')
+    await mkdir(project, { mode: 0o700 })
+    const f = workerConversationFixture()
+    const connection = { ...f.connection, bootId: bootIdentity() }
+    const pairing = WorkerPairingConfigurationSchema.parse({ formatVersion: 1,
+      mainId: connection.mainId, deviceId: connection.deviceId,
+      workerInstallationId: connection.workerInstallationId, keyRevision: 1, authorizationRevision: 1,
+      endpoint: 'wss://unconnected.example/device/connect', mainPublicKeyFingerprint: 'a'.repeat(64),
+      credential: 'b'.repeat(64), expiresAt: '2099-01-01T00:00:00Z' })
+    const approved = await qualifyApprovedRootAllowlist({ schemaVersion: 1,
+      hostRef: { kind: 'device', mainId: pairing.mainId, deviceId: pairing.deviceId },
+      applicationInstallationId: pairing.workerInstallationId, configurationRevision: '1',
+      bases: [{ baseId: randomUUID(), canonicalPath: project, accessModes: ['read-write'] }],
+      managedRuntimeRoot: stateDirectory })
+    const launch: NativeLaunchObservation = {
+      owner: `conversation:${f.binding.owner.conversationId}`, launchId: randomUUID(), bootId: connection.bootId,
+      guardian: { pid: 200, startTicks: '2000' }, provider: { pid: 201, startTicks: '2001' },
+      boundary: { kind: 'cgroup-v2', path: '/fixture/native-boundary', device: '1', inode: '2' },
+      lifecycle: 'closed', closureEvidence: 'cgroup_v2_empty',
+    }
+    const nativeOwner = { ...f.nativeOwner, processIdentityDigest: workerConversationProcessDigest(f.binding, launch) }
+    const path = join(stateDirectory, 'workflow-operations.json')
+    const journal = await RemoteOperationJournal.open(path, { initializeNewInstallation: true })
+    let retained
+    try {
+      await journal.conversations.receive(f.binding, connection)
+      await journal.conversations.reserveCreation(f.binding, 'create', commandInputHash('create'))
+      await journal.conversations.bindSession(f.binding, f.session, nativeOwner)
+      if (pending === 'turn') {
+        await journal.conversations.reserveTurn(f.binding, 'turn', commandInputHash('turn'))
+        await journal.conversations.submitted(f.binding, 'turn', { nativeTurnId: 'native-turn' })
+        await journal.conversations.finishTurn(f.binding, 'turn')
+      } else if (pending === 'compaction') {
+        const compact = await journal.conversations.reserveCompact(f.binding, 'compact', commandInputHash('compact'))
+        await journal.conversations.compactProgress(f.binding, { ...compact.state, status: 'uncertain' })
+      } else if (pending === 'closing') {
+        await journal.conversations.closeRequested(f.binding)
+      } else {
+        await journal.conversations.reserveApplicationAccess(f.binding,
+          { ...f.binding, appMcpAccess: 'scoped' }, 'access', f.session)
+      }
+      retained = await journal.conversations.read(f.binding)
+      expect(await journal.isWorkerUpdateIdle()).toBe(false)
+    } finally { await journal.close() }
+    const location = { path: join(stateDirectory, 'workflow-runtime.json'), ownerUid: process.getuid!() }
+    await writeFile(location.path, JSON.stringify({ schemaVersion: 1, codexBinary: process.execPath,
+      expectedVersion: 'codex-cli 0.162.0', payloadPaths: [], appMcpLauncher: '/installed/launcher.mjs',
+    }), { mode: 0o600 })
+    // The registry double supplies a qualified closure observation; no native process is launched.
+    const snapshot = vi.spyOn(NativeProcessRegistry.prototype, 'snapshot')
+      .mockReturnValue({ revision: 'fixture:1', launches: [] })
+    const domains = await createInstalledWorkerDomains({ stateDirectory, pairing, bootId: connection.bootId,
+      configuration: location, approvedRoots: async () => approved, codexSuiteRevision: 'fixture',
+      connection: () => ({ currentBinding: () => connection, mainNow: () => Date.now(), captureRequest: () => undefined }) })
+    let drained = false
+    const draining = domains.drainForUpdate().then(() => { drained = true })
+    void draining.catch(() => { /* The cleanup aborts a drain that fails the bounded completion assertion. */ })
+    try {
+      const blockingSnapshots = [
+        [],
+        [{ ...launch, launchId: randomUUID() }],
+        [launch, { ...launch, launchId: randomUUID(), lifecycle: 'closure-unconfirmed' as const,
+          closureEvidence: undefined }],
+      ]
+      for (const launches of blockingSnapshots) {
+        snapshot.mockReturnValue({ revision: 'fixture:1', launches })
+        await new Promise(resolve => setTimeout(resolve, 150))
+        expect(drained).toBe(false)
+      }
+      snapshot.mockReturnValue({ revision: 'fixture:2', launches: [launch] })
+      await expect.poll(() => drained, { timeout: 2000 }).toBe(true)
+      const discovery = domains.extensions.find(extension => extension.namespace === 'harness-discovery-v1')!
+      await expect(discovery.handle!({}, { binding: connection, signal: AbortSignal.timeout(1000) }))
+        .rejects.toMatchObject({ code: 'WORKER_RUNTIME_DRAINING' })
+    } finally {
+      await domains.close()
+      await Promise.allSettled([draining])
+      snapshot.mockRestore()
+    }
+    const reopened = await RemoteOperationJournal.open(path)
+    try {
+      expect(await reopened.conversations.read(f.binding)).toEqual(retained)
+      expect(await reopened.isWorkerUpdateIdle()).toBe(false)
+    } finally {
+      await reopened.close()
+      await rm(stateDirectory, { recursive: true, force: true })
+    }
+  })

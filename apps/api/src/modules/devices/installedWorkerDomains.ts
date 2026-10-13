@@ -574,29 +574,75 @@ export async function createInstalledWorkerDomains(input: {
       return profileChecks.extension.handle(payload, context)
     },
   })
+  const updateWaits = new Set<string>()
+  const drainStage = async (stage: string, run: () => Promise<void>) => {
+    updateWaits.add(stage)
+    try { await run() }
+    finally { updateWaits.delete(stage) }
+  }
   const updateDrain = createWorkerRuntimeDrain({ signal: lifetime.signal,
+    waitingOn: () => [...updateWaits, ...new Set([...active.values()]
+      .filter(namespace => namespace !== COMPUTER_MAINTENANCE_NAMESPACE))],
     active: () => [...active].filter(([, namespace]) => namespace !== COMPUTER_MAINTENANCE_NAMESPACE)
       .map(([task]) => task),
     drainJobs: async () => {
-      await Promise.all([hostCi.beginDrain(), ciRuntime.beginDrain()])
-      if (jobOpening) await (await jobOpening).beginDrain()
-      if (native?.kind === 'configured') await native.drainForUpdate()
-      await conversations?.drainForUpdate()
+      await Promise.all([
+        drainStage('host-ci-preparation', () => hostCi.beginDrain()),
+        drainStage('ci-runtime-preparation', () => ciRuntime.beginDrain()),
+      ])
+      if (jobOpening) {
+        const opening = jobOpening
+        await drainStage('jobs', async () => { await (await opening).beginDrain() })
+      }
+      if (native?.kind === 'configured') {
+        const workflow = native
+        await drainStage('workflow-turns', () => workflow.drainForUpdate())
+      }
+      if (conversations) {
+        const conversationHost = conversations
+        await drainStage('conversation-tasks', () => conversationHost.drainForUpdate())
+      }
     },
     drainQualifications: async () => { await qualification?.drain() },
     drainMaintenance: async () => { if (maintenance) await (await maintenance).drainForWorkerUpdate() },
     quiescent: async () => {
-      if (!hostCi.isUpdateIdle() || !ciRuntime.isUpdateIdle()) return false
-      const logs = await Promise.all([journalOpening, jobJournalOpening])
-      if (!(await Promise.all(logs.map(log => log?.isWorkerUpdateIdle() ?? true))).every(Boolean)) return false
-      const nativeActive = [registry, jobRegistry].some(value => value.snapshot().launches.some(launch =>
-        launch.lifecycle !== 'closed' && !launch.owner.startsWith('conversation:')))
-      if (nativeActive) return false
-      if (receiver && !await receiver.receiver.isRuntimeQuiescent()) return false
+      updateWaits.clear()
+      if (!hostCi.isUpdateIdle()) {
+        updateWaits.add('host-ci-preparation')
+        return false
+      }
+      if (!ciRuntime.isUpdateIdle()) {
+        updateWaits.add('ci-runtime-preparation')
+        return false
+      }
+      const workflowLaunches = registry.snapshot().launches
+      const jobLaunches = jobRegistry.snapshot().launches
+      for (const [name, opening, launches] of [
+        ['workflow-journal', journalOpening, workflowLaunches],
+        ['job-journal', jobJournalOpening, jobLaunches],
+      ] as const) {
+        updateWaits.add(name)
+        const log = await opening
+        if (log && !await log.isWorkerUpdateIdle(launches)) return false
+        updateWaits.delete(name)
+      }
+      const nativeActive = [...workflowLaunches, ...jobLaunches].some(launch =>
+        launch.lifecycle !== 'closed' && !launch.owner.startsWith('conversation:'))
+      if (nativeActive) {
+        updateWaits.add('native-processes')
+        return false
+      }
+      if (receiver) {
+        updateWaits.add('byte-transfer-receiver')
+        if (!await receiver.receiver.isRuntimeQuiescent()) return false
+        updateWaits.delete('byte-transfer-receiver')
+      }
       if (rsync.kind === 'configured') {
+        updateWaits.add('rsync-writers')
         const transfers = await Promise.allSettled(rsync.ownership.inventory().map(intent =>
           rsync.ownership.quiescent(intent, lifetime.signal)))
         if (transfers.some(result => result.status === 'rejected')) return false
+        updateWaits.delete('rsync-writers')
       }
       return true
     } })
@@ -658,18 +704,32 @@ export function createWorkerRuntimeDrain(ports: {
   drainQualifications(): Promise<void>
   drainMaintenance(): Promise<void>
   quiescent(): Promise<boolean>
+  waitingOn?(): string[]
 }) {
   let draining = false
   return {
     async run() {
       draining = true
-      // In-flight dispatches finish admission before the Job host stops accepting work.
-      await Promise.allSettled(ports.active())
-      await ports.drainJobs()
-      await ports.drainQualifications()
-      await ports.drainMaintenance()
-      while (!await ports.quiescent()) await wait(100, undefined, { signal: ports.signal })
-      ports.signal.throwIfAborted()
+      const startedAt = Date.now()
+      let stage = 'dispatches'
+      const diagnostics = setInterval(() => {
+        componentLogger('devices').info({ stage, elapsedMs: Date.now() - startedAt,
+          waitingOn: ports.waitingOn?.() ?? [] }, 'Worker runtime update is still draining')
+      }, 30_000)
+      diagnostics.unref()
+      try {
+        // In-flight dispatches finish admission before the Job host stops accepting work.
+        await Promise.allSettled(ports.active())
+        stage = 'jobs'
+        await ports.drainJobs()
+        stage = 'qualifications'
+        await ports.drainQualifications()
+        stage = 'maintenance'
+        await ports.drainMaintenance()
+        stage = 'quiescence'
+        while (!await ports.quiescent()) await wait(100, undefined, { signal: ports.signal })
+        ports.signal.throwIfAborted()
+      } finally { clearInterval(diagnostics) }
     },
     resume() { draining = false },
     isDraining() { return draining },
