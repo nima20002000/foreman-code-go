@@ -26,6 +26,8 @@ vi.mock('../src/modules/runs/workflowLifecycle.js', () => ({
   persistWorkflowApprovalWait: async () => [{ id: 'approval-a1', status: checkpoints.delivered ? 'delivered' : 'pending',
     deliveryState: checkpoints.delivered ? 'delivered' : 'pending' }],
   settleWorkflowRun: async () => lifecycleCalls.settle?.(),
+  // Registration fixtures have no submitted executions requiring restart cleanup.
+  settleWorkForRestart: async () => true,
 }))
 vi.mock('../src/modules/runs/approvalCheckpointResume.js', () => ({
   consumeDeliveredApprovals: async (_owner: unknown, _checkpointer: unknown, _interactions: unknown, _delivered: unknown, claim?: GraphResumeClaim) => {
