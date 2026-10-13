@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { connect } from 'node:tls'
 import { afterAll, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest'
+import { Client } from '@modelcontextprotocol/client'
 import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { deliveredReview, receipts, reviewInProgress, useRemoteReviewFixture,
@@ -99,4 +100,36 @@ describe('production remote review and native recovery through authenticated MCP
       expect(completed.run.outcome).toBe('succeeded')
     })
   }, 240_000)
+
+  it('closes MCP clients while Main is available and completes fixture cleanup', async () => {
+    await withRemoteReviewFixture(async fixture => {
+      const availability: boolean[] = []
+      const closeClient = Client.prototype.close
+      const closingClients = vi.spyOn(Client.prototype, 'close').mockImplementation(async function (this: Client) {
+        try {
+          const response = await fetch(`${fixture.origin()}/health/live`)
+          await response.text()
+          availability.push(response.ok)
+        } catch {
+          // Main being unavailable is the behavior this regression detects.
+          availability.push(false)
+        }
+        await closeClient.call(this)
+      })
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([
+          fixture.close(),
+          new Promise<never>((_, reject) => {
+            timeout = setTimeout(() => reject(new Error('Remote review fixture cleanup did not complete.')), 60_000)
+          }),
+        ])
+        expect(availability.length).toBeGreaterThanOrEqual(2)
+        expect(availability.every(available => available)).toBe(true)
+      } finally {
+        clearTimeout(timeout)
+        closingClients.mockRestore()
+      }
+    })
+  }, 65_000)
 })
