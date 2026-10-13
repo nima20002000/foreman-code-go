@@ -46,6 +46,7 @@ import { waitForChildReady } from './remoteReviewReadiness.js'
 import { measureIntegrationPhase, reportIntegrationPhase } from './integrationPhase.js'
 import { remoteReviewWorkerArtifacts } from './remoteReviewWorkerArtifacts.js'
 import { remoteReviewChanges } from './remoteReviewChanges.js'
+import { remoteReviewReconciliation } from './remoteReviewReconciliation.js'
 import { installedRestartService } from './installedRestartService.js'
 import type { RuntimeTimingRecord } from '../../src/modules/diagnostics/runtimeTiming.js'
 
@@ -719,7 +720,8 @@ export async function remoteReviewProduction(options: {
       if (!response.ok) throw new Error(`Installed API reconciliation failed: ${await response.text()}`)
     }
     const reconcile = () => mainService ? serviceReconciliation('reconcile') : requestReconciliation('reconcile')
-    const reconcileReviews = () => mainService ? serviceReconciliation('reconcile-reviews') : requestReconciliation('reconcile-reviews')
+    const reconcileReviews = remoteReviewReconciliation(() => mainService
+      ? serviceReconciliation('reconcile-reviews') : requestReconciliation('reconcile-reviews'))
     async function details(runId: string) {
       const response = await fetch(`${origin}/api/management/workspaces/${saved.scope.workspaceId}/runs/${runId}`, {
         headers: { authorization: `Bearer ${writer.token}` } })
