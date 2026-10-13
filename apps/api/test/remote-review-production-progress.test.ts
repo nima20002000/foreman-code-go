@@ -84,13 +84,18 @@ it('recovers native delivery after the reviewer accepts its decision and complet
     job = ReviewJobSchema.parse({ ...job, state: 'completed', completedAt: time })
   }
   const fixture = {
-    provider: { calls: async () => [] },
+    provider: {
+      calls: async () => [],
+      async retryReview() {
+        expect(job.state).toBe('completed')
+        interaction = DurableInteractionSchema.parse({ ...interaction,
+          status: 'delivered', deliveryState: 'delivered', deliveredAt: time,
+        })
+      },
+    },
     reconcileReviews,
     async reconcile() {
-      await reconcileReviews()
-      interaction = DurableInteractionSchema.parse({ ...interaction,
-        status: 'delivered', deliveryState: 'delivered', deliveredAt: time,
-      })
+      throw new Error('Application maintenance is unavailable.')
     },
     async value() { return { interaction } },
     db: { pool: { query: async () => ({ rows: [{ record: job }] }) } },
