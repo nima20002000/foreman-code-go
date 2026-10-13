@@ -1,4 +1,4 @@
-import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { decodeMcpToolResult, OperatorRunGetResultSchema } from '@foreman-code/contracts/operator-mcp'
 import { randomUUID } from 'node:crypto'
 import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -65,6 +65,14 @@ describe.skipIf(!postgresEnabled)('workspace folder dependencies retained by acc
         await vi.waitFor(async () => {
           expect(await f.runs.get(runId)).toMatchObject({ executionState: 'waiting' })
         }, { timeout: 10_000 })
+        const acceptedRun = await f.client.callTool({ name: 'run_get', arguments: {
+          workspaceId, runId, detail: 'full',
+        } })
+        expect(acceptedRun.isError, JSON.stringify(acceptedRun)).not.toBe(true)
+        expect(OperatorRunGetResultSchema.parse(decodeMcpToolResult(acceptedRun))).toMatchObject({
+          run: { id: runId, executionState: 'waiting', executionLocation: { rootPath: project } },
+        })
+        expect(f.dispatchErrors).toEqual([])
         const original = (await f.runs.getRepeatSnapshot(runId)).run
         const executions = await readCurrentExecutions(f.runs, runId)
         const pending = (await f.repository.list({ runId, limit: 100 })).find(item => item.status === 'pending')!
