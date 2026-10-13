@@ -119,3 +119,40 @@ it.each(['codex'] as const)('admits the exact selected %s profile without manufa
   f.value.instanceRevision = 'new-profile-revision'
   await expect(admission.revalidate('actual-owner', accepted)).rejects.toThrow('stale')
 })
+
+it.each(['codex', 'claude'] as const)(
+  'keeps the admitted %s binding when an unchanged profile is successfully rechecked', async driver => {
+    const f = fixture()
+    if (driver === 'codex') {
+      const { DEFAULT_HARNESS_DEFAULTS } = await import('@foreman-code/contracts')
+      const configuration = DEFAULT_HARNESS_DEFAULTS.codex
+      f.value.driverId = driver
+      f.value.configuration = configuration
+      f.proof.driverId = driver
+      delete f.proof.claudeProof
+      Object.assign(f.registry, {
+        selection: { ...f.registry.selection, driverId: driver },
+        instance: { ...f.registry.instance, configuration },
+      })
+    }
+    const admission = new AcceptedHarnessProfileAdmission(
+      f.settings as unknown as HarnessInstanceSettingsRepository,
+      f.proofs as unknown as HostHarnessProfileEvidenceRepository, f.authority,
+    )
+    const accepted = await admission.admit('owner', f.selector)
+    f.proof.checkedAt = '2026-10-01T00:01:00Z'
+    await expect(admission.revalidate('owner', accepted)).resolves.toBeUndefined()
+    expect(accepted.persistedProof.checkedAt).toBe('2026-10-01T00:00:00Z')
+
+    f.proof.qualified = false
+    await expect(admission.revalidate('owner', accepted))
+      .rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+    f.proof.qualified = true
+    f.proof.connectionGeneration = 'replacement-connection'
+    Object.assign(f.registry.installation, { connectionGeneration: 'replacement-connection' })
+    await expect(admission.revalidate('owner', accepted))
+      .rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+    vi.mocked(f.authority.authorize).mockRejectedValue(new Error('revoked owner'))
+    await expect(admission.revalidate('owner', accepted)).rejects.toThrow('revoked owner')
+  },
+)
