@@ -1,9 +1,8 @@
 import type { ActivityTextOperation } from '@foreman-code/contracts/activity-text'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 
 export const TEXT_STREAM_LIMITS = { bytes: 64 * 1024, items: 1024, latencyMs: 50 } as const
-const canonical = (value: unknown): unknown => value && typeof value === 'object' && !Array.isArray(value)
-  ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)])) : value
-const keyOf = (operation: ActivityTextOperation) => JSON.stringify(canonical(operation.identity))
+const keyOf = (operation: ActivityTextOperation) => canonicalJson(operation.identity)
 
 /** Request-owned presentation buffer. Persistence must precede push(final) and every barrier.
  * Unknown source order is delivered separately; it is never assigned a synthetic sequence. */

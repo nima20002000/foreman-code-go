@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import { z } from 'zod'
 import type { CodexHarnessConfiguration, NativeSessionReference } from '@foreman-code/contracts'
 import { WorkerNativeOutputCommandSchema, WorkerNativeOutputReplySchema, WORKER_NATIVE_OUTPUT_TOOL_NAMES,
@@ -79,11 +80,7 @@ export function codexNativeOutputDeclarations(configuration: CodexHarnessConfigu
     inputSchema: z.toJSONSchema(schemas[operation]!, { target: 'draft-7', io: 'input' }), deferLoading: false }))
 }
 const refused = () => ({ success: false, contentItems: [{ type: 'inputText' as const, text: 'Native output operation unavailable or denied.' }] })
-const digest = (value: unknown): string => {
-  const sorted = (entry: unknown): unknown => Array.isArray(entry) ? entry.map(sorted)
-    : entry && typeof entry === 'object' ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, sorted(child)])) : entry
-  return createHash('sha256').update(JSON.stringify(sorted(value))).digest('hex')
-}
+const digest = (value: unknown): string => createHash('sha256').update(canonicalJson(value)).digest('hex')
 /** Bounded turn-local receipts. They never grant authority to an artifact/output key. */
 export class CodexRuntimeNativeOutputTurn {
   private pin?: CodexNativeOutputTurnPin

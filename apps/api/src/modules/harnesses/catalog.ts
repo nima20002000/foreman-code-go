@@ -1,6 +1,6 @@
 import { assertClaudeFullAccess } from './nativeWorkflowConfiguration.js'
 import { isDeepStrictEqual } from 'node:util'
-import { canonical } from './codexProtocol.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import { QualificationCache } from './qualificationCache.js'
 import { qualificationError } from './qualificationErrors.js'
 
@@ -38,14 +38,14 @@ export class HarnessCatalogService {
 
   private currentStatus(value: HarnessConfiguration,
     options: { signal?: AbortSignal; allowStale?: boolean } = {}) {
-    return this.statuses.get(canonical(withAdvancedDefaults(value)),
+    return this.statuses.get(canonicalJson(withAdvancedDefaults(value)),
       (active) => this.inspectConfiguration(value, active), options)
   }
 
   private async inspectConfiguration(value: HarnessConfiguration, signal?: AbortSignal) {
     assertClaudeFullAccess(value)
     try {
-      return await this.checks.get(canonical(withAdvancedDefaults(value)), async (active) => {
+      return await this.checks.get(canonicalJson(withAdvancedDefaults(value)), async (active) => {
         const qualification = HarnessQualificationSchema.parse(
           await this.qualifier.qualify(value, this.qualificationDirectory,
             AbortSignal.any([active, AbortSignal.timeout(60_000)])))

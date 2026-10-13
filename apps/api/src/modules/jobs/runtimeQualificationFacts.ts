@@ -2,7 +2,7 @@ import type { JobRuntimeMeasurementRecord, JobRuntimeProfileRecord, JobRuntimeAp
   from '@foreman-code/contracts/job-verification-runtime'
 import { jobRuntimeProfileLimits, jobRuntimeQualificationAnchorAt } from '@foreman-code/contracts/job-verification-runtime'
 import { DomainError } from '../errors.js'
-import { canonical } from './repository.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import { jobDigest } from './service.js'
 
 export function runtimeQualificationFacts(measurement: JobRuntimeMeasurementRecord) {
@@ -26,11 +26,11 @@ export function validateRuntimeQualification(approval: JobRuntimeApprovalRecord,
   const facts = runtimeQualificationFacts(measurement)
   if (facts.approvalId !== approval.id || facts.qualificationId !== approval.qualificationId
     || facts.fingerprintDigest !== approval.fingerprintDigest || facts.fingerprintDigest !== jobDigest(measurement.fingerprint)
-    || canonical(measurement.fingerprint) !== canonical(approval.fingerprint)
+    || canonicalJson(measurement.fingerprint) !== canonicalJson(approval.fingerprint)
     || facts.profileId !== approval.profileId || facts.profileRevision !== approval.profileRevision
-    || canonical(facts.root) !== canonical(approval.fingerprint.root)
-    || canonical(facts.hostRef) !== canonical(approval.fingerprint.hostRef)
-    || canonical(facts.registration) !== canonical(approval.fingerprint.registration)
+    || canonicalJson(facts.root) !== canonicalJson(approval.fingerprint.root)
+    || canonicalJson(facts.hostRef) !== canonicalJson(approval.fingerprint.hostRef)
+    || canonicalJson(facts.registration) !== canonicalJson(approval.fingerprint.registration)
     || Date.parse(measurement.expiresAt) > Date.parse(approval.expiresAt)
     || !options.allowExpired && Date.parse(measurement.expiresAt) <= Date.now()) {
     throw new DomainError('JOB_RUNTIME_FINGERPRINT_CONFLICT',
@@ -61,7 +61,7 @@ export function qualificationTimeoutMs(profile: JobRuntimeProfileRecord, approva
     + policy.executionTimeoutMs + policy.cancellationGraceMs + policy.publicationTimeoutMs + policy.cleanupTimeoutMs)
   if (!Number.isSafeInteger(timeout)
     || Date.parse(approval.expiresAt) - Date.now() < timeout
-    || canonical(jobRuntimeProfileLimits(profile)) !== canonical(approval.fingerprint.limits)) {
+    || canonicalJson(jobRuntimeProfileLimits(profile)) !== canonicalJson(approval.fingerprint.limits)) {
     throw new DomainError('JOB_VERIFICATION_APPROVAL_TOO_SHORT',
       'The remaining reviewed approval does not cover every suite and its cleanup.', 409)
   }

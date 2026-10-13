@@ -2,7 +2,7 @@ import { CI_HOST_NAMESPACE, CiHostStatusSchema, type CiHostStatus } from '@forem
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import { DomainError } from '../errors.js'
-import { canonical } from '../jobs/digest.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 
 export async function readHostCiStatus(endpoint: DeviceEndpoint,
   target: DeviceProvisioningTarget): Promise<CiHostStatus | null> {
@@ -13,7 +13,7 @@ export async function readHostCiStatus(endpoint: DeviceEndpoint,
   const matches = () => channel.binding.workerInstallationId === target.applicationInstallationId
     && channel.binding.keyRevision === target.keyRevision
     && channel.binding.authorizationRevision === target.authorizationRevision
-    && canonical(channel.binding) === canonical(endpoint.currentBinding(deviceId))
+    && canonicalJson(channel.binding) === canonicalJson(endpoint.currentBinding(deviceId))
   if (!matches()) throw new DomainError('CI_ENROLLMENT_OFFLINE', 'The computer connection changed.', 409)
   const result = await channel.request({ operation: 'status' }, { timeoutMs: 30_000 })
   if (!matches()) throw new DomainError('CI_ENROLLMENT_OFFLINE', 'The computer connection changed.', 409)

@@ -1,7 +1,7 @@
 import { jobPolicyRequirementsRecord, type JobDefinitionSpecRecord } from '@foreman-code/contracts/job-verification'
 import type { JobRuntimeProfileRecord } from '@foreman-code/contracts/job-verification-runtime'
 import { jobRuntimeProfilePolicy } from '@foreman-code/contracts/job-verification-runtime'
-import { canonical } from './digest.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 
 export function matchesRuntimePolicy(spec: JobDefinitionSpecRecord, profile: JobRuntimeProfileRecord,
   runtimePolicy = jobRuntimeProfilePolicy(profile)): boolean {
@@ -12,7 +12,7 @@ export function matchesRuntimePolicy(spec: JobDefinitionSpecRecord, profile: Job
     const { imageDigest: profileImage, ...candidate } = policy
     void requestedImage
     void profileImage
-    return canonical(requested) === canonical(candidate)
+    return canonicalJson(requested) === canonicalJson(candidate)
   }
-  return canonical(spec.policy) === canonical(policy)
+  return canonicalJson(spec.policy) === canonicalJson(policy)
 }

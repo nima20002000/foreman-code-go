@@ -9,6 +9,7 @@ import { z } from 'zod'
 import { HarnessExecutionError } from './errors.js'
 import { requireHarnessQualification } from './qualification/gate.js'
 import { rememberQualifiedProfile, QUALIFICATION_TARGET_PROFILE } from './qualification/profiles.js'
+import { canonicalJsonNumericKeysFirstLegacy } from '@foreman-code/contracts/canonical-json'
 import { isObject, object, type CodexProtocol, type JsonObject, type RpcRequest } from './codexStdioTransport.js'
 import { runCommand } from './process.js'
 import { CompatibilityCheckError } from './compatibility/errors.js'
@@ -32,15 +33,6 @@ export async function codexRequest<M extends CodexClientMethod>(
 }
 
 const BUNDLE = 'codex_app_server_protocol.schemas.json'
-
-export function canonical(value: unknown): string {
-  const sort = (entry: unknown): unknown => {
-    if (Array.isArray(entry)) return entry.map(sort)
-    if (!isObject(entry)) return entry
-    return Object.fromEntries(Object.keys(entry).sort().filter((key) => entry[key] !== undefined).map((key) => [key, sort(entry[key])]))
-  }
-  return JSON.stringify(sort(value)) ?? 'null'
-}
 
 export interface QualifiedCodex {
   binary: string
@@ -82,19 +74,19 @@ export async function codexExecutableIdentity(binary: string, options: { fresh?:
     fingerprint = await executableFingerprints.fingerprint(path)
   }
   const after = await stat(path)
-  if (canonical([value.dev, value.ino, value.size, value.mode, value.mtimeMs, value.ctimeMs])
-    !== canonical([after.dev, after.ino, after.size, after.mode, after.mtimeMs, after.ctimeMs])
+  if (canonicalJsonNumericKeysFirstLegacy([value.dev, value.ino, value.size, value.mode, value.mtimeMs, value.ctimeMs])
+    !== canonicalJsonNumericKeysFirstLegacy([after.dev, after.ino, after.size, after.mode, after.mtimeMs, after.ctimeMs])
     || await realpath(binary) !== path) {
     throw new HarnessExecutionError('CODEX_EXECUTABLE_CHANGED', 'Codex changed while reading its executable identity.')
   }
-  return canonical([path, value.dev, value.ino, value.size, value.mode, value.mtimeMs, fingerprint])
+  return canonicalJsonNumericKeysFirstLegacy([path, value.dev, value.ino, value.size, value.mode, value.mtimeMs, fingerprint])
 }
 
 export async function codexBinaryIdentity(binary: string, options: { fresh?: boolean } = {}): Promise<string> {
   const payload = await passiveDriverPayloads('codex', binary, process.platform, process.arch,
     options.fresh ? undefined : executableFingerprints)
   const paths = [...new Set([await realpath(binary), ...payload.paths])].sort()
-  return canonical(await Promise.all(paths.map(path => codexExecutableIdentity(path, options))))
+  return canonicalJsonNumericKeysFirstLegacy(await Promise.all(paths.map(path => codexExecutableIdentity(path, options))))
 }
 
 export async function assertCodexUnchanged(qualified: Pick<QualifiedCodex, 'binary' | 'identity'>,
@@ -378,7 +370,7 @@ export async function qualifyCodex(
         `Codex ${actual} requires managed ChatGPT authentication for execution.`)
     }
   }
-  const key = canonical([resolved, actual, fingerprint])
+  const key = canonicalJsonNumericKeysFirstLegacy([resolved, actual, fingerprint])
   let result = verifiedProtocols.get(key)
   if (!result) {
     const directory = await mkdtemp(join(tmpdir(), 'graphql-codex-schema-'))

@@ -12,7 +12,8 @@ import {
 } from '@foreman-code/contracts/job-verification'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { DomainError } from '../errors.js'
-import { canonical, JobRepository, type JobSql } from './repository.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
+import { JobRepository, type JobSql } from './repository.js'
 import type { JobPreparationPort, JobQueueConfiguration } from './ports.js'
 import type pg from 'pg'
 import { JobQueueTicketSchema, type JobQueueTicket } from '@foreman-code/contracts/job-admission'
@@ -236,7 +237,7 @@ export class JobQueuePreparation {
     }
     const selection = (await sql.query<{ limits: unknown }>(
       'select limits from job_computer_selections where execution_id=$1', [ticket.executionId])).rows[0]!
-    if (canonical(selection.limits) !== canonical(ticket.resources.limits)) {
+    if (canonicalJson(selection.limits) !== canonicalJson(ticket.resources.limits)) {
       throw new DomainError('JOB_RESOURCE_REQUEST_CONFLICT', 'The reviewed build envelope differs from the runtime limits.', 409)
     }
     for (const barrier of barriers.filter(barrier => claim.selectedHost && barrier.hosts.includes(claim.selectedHost))) {
@@ -364,11 +365,11 @@ export class JobPreparationService implements JobPreparationPort {
   async validate(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:JobDefinitionSpecRecord) {
     if (isAutoJobSpecRecord(spec)) return { valid: false, reasons: ['AUTO_SOURCE_VALIDATION_UNAVAILABLE'], sideEffects: false as const }
     const choices=await this.choices(sql,principal,workspaceId),reasons:string[]=[]
-    const target=choices.targets.find(choice=>canonical(choice.target)===canonical(spec.target))
+    const target=choices.targets.find(choice=>canonicalJson(choice.target)===canonicalJson(spec.target))
     if(!target)reasons.push('TARGET_AUTHORITY_CHANGED')
     else if(!target.ready)reasons.push(...target.reasons)
-    if(!choices.sources.some(source=>canonical(source)===canonical(spec.source)))reasons.push('SOURCE_REVISION_UNAVAILABLE')
-    if(!choices.policies.some(policy=>canonical(policy)===canonical(spec.policy)))reasons.push('ISOLATION_POLICY_UNAVAILABLE')
+    if(!choices.sources.some(source=>canonicalJson(source)===canonicalJson(spec.source)))reasons.push('SOURCE_REVISION_UNAVAILABLE')
+    if(!choices.policies.some(policy=>canonicalJson(policy)===canonicalJson(spec.policy)))reasons.push('ISOLATION_POLICY_UNAVAILABLE')
     return {valid:reasons.length===0,reasons,sideEffects:false as const}
   }
   async accept(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,spec:ResolvedJobDefinitionSpecRecord,identity:{executionId:string;attemptId:string;operationId:string}) {

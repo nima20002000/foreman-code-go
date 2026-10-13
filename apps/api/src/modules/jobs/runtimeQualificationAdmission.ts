@@ -8,7 +8,8 @@ import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
-import { canonical, type JobSql } from './repository.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
+import type { JobSql } from './repository.js'
 import { jobQualificationFingerprint } from './qualification.js'
 import { lockActiveWorkspace } from '../workspaces/admission.js'
 
@@ -41,14 +42,14 @@ export async function readInstalledJobQualificationAdmission(sql: JobSql, input:
     || current.profileId !== approval.profileId || current.profileRevision !== approval.profileRevision
     || row.run_command_id !== input.runCommandId || row.run_principal_id !== input.runPrincipalId
     || current.qualificationId !== approval.qualificationId || current.fingerprintDigest !== approval.fingerprintDigest
-    || canonical(current.fingerprint) !== canonical(approval.fingerprint)
+    || canonicalJson(current.fingerprint) !== canonicalJson(approval.fingerprint)
     || admission.approvalId !== approval.id || admission.qualificationId !== approval.qualificationId
     || admission.workspaceId !== approval.workspaceId || admission.profileId !== approval.profileId
     || admission.profileRevision !== approval.profileRevision || admission.fingerprintDigest !== approval.fingerprintDigest
     || admission.runCommandId !== input.runCommandId || admission.runPrincipalId !== input.runPrincipalId
     || admission.expiresAt !== approval.expiresAt || admission.bootId !== approval.fingerprint.bootId
-    || canonical(admission.hostRef) !== canonical(approval.fingerprint.hostRef)
-    || canonical(admission.registration) !== canonical(approval.fingerprint.registration)
+    || canonicalJson(admission.hostRef) !== canonicalJson(approval.fingerprint.hostRef)
+    || canonicalJson(admission.registration) !== canonicalJson(approval.fingerprint.registration)
     || admission.mainInstallationId !== approval.fingerprint.mainInstallationId) changed()
   requireAuthorization(await readLiveManagementPrincipal(sql,input.runPrincipalId),
     'job_definitions:write',{workspaceId:approval.workspaceId})
@@ -56,7 +57,7 @@ export async function readInstalledJobQualificationAdmission(sql: JobSql, input:
     admission.hostRef.kind === 'main' ? admission.mainInstallationId : admission.registration!.workerInstallationId)
   const registrationPin = registration ? { workerInstallationId: registration.workerInstallationId,
     keyRevision: registration.keyRevision,authorizationRevision: registration.authorizationRevision } : null
-  if (canonical(registrationPin) !== canonical(admission.registration)) changed()
+  if (canonicalJson(registrationPin) !== canonicalJson(admission.registration)) changed()
   return admission
 }
 /** Called inside the existing Main transaction, committed before native entry.
@@ -74,13 +75,13 @@ export async function admitInstalledJobQualification(sql: JobSql, input: JobRunt
     if (candidate.approvalId !== approval.id || candidate.fingerprint.root.binding.workspaceId !== approval.workspaceId
       || candidate.operationId !== approval.qualificationId || candidate.qualificationId !== approval.qualificationId
       || jobQualificationFingerprint(candidate) !== approval.fingerprintDigest
-      || canonical(candidate.fingerprint) !== canonical(approval.fingerprint)) changed()
+      || canonicalJson(candidate.fingerprint) !== canonicalJson(approval.fingerprint)) changed()
     return readInstalledJobQualificationAdmission(sql,{ approval,runCommandId: input.runCommandId,
       runPrincipalId: input.runPrincipalId })
   }
   if (approval.id!==candidate.approvalId||approval.workspaceId!==candidate.fingerprint.root.binding.workspaceId||approval.status !== 'qualifying' || row.run_command_id !== input.runCommandId || row.run_principal_id !== input.runPrincipalId || Date.parse(approval.expiresAt) <= Date.now() ||
     candidate.operationId !== approval.qualificationId || candidate.qualificationId !== approval.qualificationId ||
-    jobQualificationFingerprint(candidate) !== approval.fingerprintDigest || canonical(candidate.fingerprint) !== canonical(approval.fingerprint)) changed()
+    jobQualificationFingerprint(candidate) !== approval.fingerprintDigest || canonicalJson(candidate.fingerprint) !== canonicalJson(approval.fingerprint)) changed()
   const runner=await readLiveManagementPrincipal(sql, input.runPrincipalId)
   requireAuthorization(runner, 'job_definitions:write', { workspaceId: approval.workspaceId })
   const profileRow = (await sql.query<{ record: unknown }>(`select v.record from job_runtime_profile_versions v
@@ -89,10 +90,10 @@ export async function admitInstalledJobQualification(sql: JobSql, input: JobRunt
   if (!profileRow) changed()
   const profile = JobRuntimeProfileRecordSchema.parse(profileRow.record)
   if ('approvedAt' in candidate && candidate.approvedAt !== jobRuntimeQualificationAnchorAt(approval)) changed()
-  if ('profile' in candidate && canonical(candidate.profile) !== canonical(profile)) changed()
+  if ('profile' in candidate && canonicalJson(candidate.profile) !== canonicalJson(profile)) changed()
   if (profile.id !== approval.profileId || profile.revision !== approval.profileRevision || profile.workspaceId !== approval.workspaceId ||
-    profile.specDigest !== approval.fingerprint.specDigest || canonical(profile.root) !== canonical(approval.fingerprint.root)) changed()
-  if(canonical(await input.resolveRoot(sql,profile,runner))!==canonical(profile.root))changed()
+    profile.specDigest !== approval.fingerprint.specDigest || canonicalJson(profile.root) !== canonicalJson(approval.fingerprint.root)) changed()
+  if(canonicalJson(await input.resolveRoot(sql,profile,runner))!==canonicalJson(profile.root))changed()
   const root=profile.root
   const currentRoot=(await sql.query(`select 1 from source_root_catalog c join workspace_root_policies p on p.workspace_id=c.workspace_id
     where c.root_id=$1 and c.workspace_id=$2 and c.current_binding_revision=$3
@@ -100,13 +101,13 @@ export async function admitInstalledJobQualification(sql: JobSql, input: JobRunt
     [root.binding.rootId,approval.workspaceId,root.binding.bindingRevision,root.selection.rootPolicyId,root.selection.rootPolicyRevision])).rows[0]
   if(!currentRoot||root.binding.accessMode!=='exclusive-write')changed()
   const current = await input.readCurrent(sql, profile)
-  if (canonical(current.fingerprint) !== canonical(approval.fingerprint)) changed()
+  if (canonicalJson(current.fingerprint) !== canonicalJson(approval.fingerprint)) changed()
   const fingerprint = current.fingerprint
   const registration = await assertDeviceHostInstallation(sql, fingerprint.hostRef,
     fingerprint.hostRef.kind === 'main' ? fingerprint.mainInstallationId : fingerprint.registration!.workerInstallationId)
   const registrationPin = registration ? { workerInstallationId: registration.workerInstallationId, keyRevision: registration.keyRevision,
     authorizationRevision: registration.authorizationRevision } : null
-  if (canonical(registrationPin) !== canonical(fingerprint.registration)) changed()
+  if (canonicalJson(registrationPin) !== canonicalJson(fingerprint.registration)) changed()
   const context = { schemaVersion: fingerprint.schemaVersion,
     ...Object.fromEntries(Object.keys(DeviceExecutionAdmissionFields).filter(field => field in fingerprint)
       .map(field => [field, Reflect.get(fingerprint, field)])), kind: 'job-runtime-qualification' as const, approvalId: approval.id,
@@ -119,7 +120,7 @@ export async function admitInstalledJobQualification(sql: JobSql, input: JobRunt
   if (row.native_admission) {
     const saved = JobRuntimeNativeAdmissionRecordSchema.parse(row.native_admission)
     const expected = { ...context, leaseId: saved.leaseId, admittedAt: saved.admittedAt }
-    if (canonical(saved) !== canonical(expected)) changed()
+    if (canonicalJson(saved) !== canonicalJson(expected)) changed()
     return saved
   }
   if(options.requireExisting)changed()
@@ -131,11 +132,11 @@ export async function admitInstalledJobQualification(sql: JobSql, input: JobRunt
 /** Recheck the original persisted lease without ever creating one. */
 export async function assertInstalledJobQualification(sql:JobSql,input:JobRuntimeNativeAdmissionInput,admission:JobRuntimeNativeAdmissionRecord):Promise<void> {
   const saved=await admitInstalledJobQualification(sql,input,{ access: 'launch', requireExisting: true })
-  if(canonical(saved)!==canonical(admission))changed()
+  if(canonicalJson(saved)!==canonicalJson(admission))changed()
 }
 
 export async function assertInstalledJobQualificationRead(sql: JobSql, input: JobRuntimeNativeAdmissionInput,
   admission: JobRuntimeNativeAdmissionRecord): Promise<void> {
   const saved = await admitInstalledJobQualification(sql, input, { access: 'read', requireExisting: true })
-  if (canonical(saved) !== canonical(admission)) changed()
+  if (canonicalJson(saved) !== canonicalJson(admission)) changed()
 }

@@ -34,7 +34,8 @@ import { DomainError } from '../errors.js'
 import { jobCanWait, releaseUnstartedJobComputer, type JobComputerSelection,
   type JobPreparationIdentity } from './computerSelection.js'
 import { jobPlacementRequest } from './placementRequest.js'
-import { canonical, JobRepository, type JobSql } from './repository.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
+import { JobRepository, type JobSql } from './repository.js'
 import type { JobArtifactPort, JobDispatchPort, JobPreparationPort } from './ports.js'
 import type { JobQueueConfiguration } from './ports.js'
 import type { CiRuntimeProvisioner } from './ciRuntimeProvisioner.js'
@@ -143,7 +144,7 @@ export class JobService {
     const scope = await this.repository.executionScope(this.pool, workspaceId, executionId)
     return this.read(principal, workspaceId, action, async (sql, live) => {
       const persistedScope = await this.repository.executionScope(sql, workspaceId, executionId)
-      if (canonical(scope) !== canonical(persistedScope)) {
+      if (canonicalJson(scope) !== canonicalJson(persistedScope)) {
         throw new DomainError('JOB_SCOPE_CONFLICT', 'The job workflow relationship changed during the read.', 409)
       }
       return work(sql, live)
@@ -214,7 +215,7 @@ export class JobService {
     const scope = await this.repository.runScope(this.pool, workspaceId, runId)
     return this.read(principal, workspaceId, 'jobs:read', async sql => {
       const persistedScope = await this.repository.runScope(sql, workspaceId, runId)
-      if (canonical(scope) !== canonical(persistedScope)) {
+      if (canonicalJson(scope) !== canonicalJson(persistedScope)) {
         throw new DomainError('JOB_SCOPE_CONFLICT', 'The job Run relationship changed during the read.', 409)
       }
       const row = (await sql.query<{ reference: unknown; job_execution_id: string }>(
@@ -380,7 +381,7 @@ export class JobService {
     const scope = await this.repository.queueTicketScope(this.pool, workspaceId, id)
     return this.read(principal, workspaceId, 'jobs:read', async sql => {
       const persistedScope = await this.repository.queueTicketScope(sql, workspaceId, id)
-      if (canonical(scope) !== canonical(persistedScope)) {
+      if (canonicalJson(scope) !== canonicalJson(persistedScope)) {
         throw new DomainError('JOB_SCOPE_CONFLICT', 'The queued Job relationship changed during the read.', 409)
       }
       return this.repository.queuePosition(sql, await this.repository.queueTicket(sql, workspaceId, id))
@@ -407,7 +408,7 @@ export class JobService {
       if (input.initiatingExecutionId) {
         const persistedScope = await this.repository.initiatingExecutionScope(sql, workspaceId,
           input.initiatingExecutionId)
-        if (canonical(originScope) !== canonical(persistedScope)) {
+        if (canonicalJson(originScope) !== canonicalJson(persistedScope)) {
           throw new DomainError('JOB_SCOPE_CONFLICT', 'The initiating Agent relationship changed during the read.', 409)
         }
         if (input.workflowId && originScope.workflowId && input.workflowId !== originScope.workflowId) {
@@ -653,15 +654,15 @@ export class JobService {
     const {executionId:id,attemptId,operationId}=identity
     const request=await this.resolvedDefinition(sql, definition, identity)
     const computerSelection = await this.ports.placement?.selection(sql, identity)
-    if (canonical(computerSelection ?? null) !== canonical(spec.computerSelection ?? null)) {
+    if (canonicalJson(computerSelection ?? null) !== canonicalJson(spec.computerSelection ?? null)) {
       throw new DomainError('JOB_COMPUTER_SELECTION_CONFLICT', 'Preparation changed its original computer selection.', 409)
     }
     const {materializationId:_materialization,materializationDigest:_digest,...source}=spec.source
     void _materialization;void _digest
     const selection=(target:ResolvedJobDefinitionSpecRecord['target'])=>({mainId:target.mainId,hostRef:target.hostRef,registration:target.registration,mainInstallationId:target.mainInstallationId,
       rootPolicyId:target.destination.rootPolicyId,rootPolicyRevision:target.destination.rootPolicyRevision,locationRevision:target.destination.locationRevision})
-    if(canonical(source)!==canonical(request.source)||canonical(selection(spec.target))!==canonical(selection(request.target))
-      ||canonical({argv:spec.argv,inputs:spec.inputs,policy:spec.policy,outputs:spec.outputs,relativeCwd:spec.relativeCwd??null,verification:'verification' in spec?spec.verification:null})!==canonical({argv:request.argv,inputs:request.inputs,policy:request.policy,outputs:request.outputs,relativeCwd:request.relativeCwd??null,verification:'verification' in request?request.verification:null})) {
+    if(canonicalJson(source)!==canonicalJson(request.source)||canonicalJson(selection(spec.target))!==canonicalJson(selection(request.target))
+      ||canonicalJson({argv:spec.argv,inputs:spec.inputs,policy:spec.policy,outputs:spec.outputs,relativeCwd:spec.relativeCwd??null,verification:'verification' in spec?spec.verification:null})!==canonicalJson({argv:request.argv,inputs:request.inputs,policy:request.policy,outputs:request.outputs,relativeCwd:request.relativeCwd??null,verification:'verification' in request?request.verification:null})) {
       throw new DomainError('JOB_ACCEPTANCE_PIN_CONFLICT','Preparation cannot change the saved source selection, command, policy or target authority.',409)
     }
     const acceptedSpec = 'verification' in spec

@@ -18,7 +18,7 @@ import { WorkerExecutionPolicy } from '../../src/modules/settings/workerExecutio
 import { JobComputerSelection, releaseClosedJobComputers } from '../../src/modules/jobs/computerSelection.js'
 import { PostgresSourceReservations } from '../../src/modules/sources/reservations.js'
 import { JobService } from '../../src/modules/jobs/service.js'
-import { canonical } from '../../src/modules/jobs/repository.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import { JobWorkerService } from '../../src/modules/jobs/worker.js'
 import type { JobQueueConfiguration } from '../../src/modules/jobs/ports.js'
 
@@ -126,7 +126,7 @@ export async function buildQueueFixture(pool: pg.Pool, principal: ManagementPrin
   const inventory = { candidates: vi.fn(async (_sql: JobSql, _principal: ManagementPrincipal,
     _workspaceId: string, spec: import('@foreman-code/contracts/jobs').JobDefinitionSpec) => ({ candidates: computers.map(computer => ({
       ...computer.candidate, spec: { ...computer.candidate.spec, argv: spec.argv },
-    })).filter(candidate => isAutoJobSpec(spec) || canonical(candidate.spec.target) === canonical(spec.target)),
+    })).filter(candidate => isAutoJobSpec(spec) || canonicalJson(candidate.spec.target) === canonicalJson(spec.target)),
     diagnosticCodes: [] })) }
   const workerExecution = new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' })
   const placement = new JobComputerSelection(settings, inventory, workerExecution)

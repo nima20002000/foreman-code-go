@@ -1,11 +1,9 @@
 import { createHash } from 'node:crypto'
+import { canonicalJsonNumericKeysFirstLegacy } from '@foreman-code/contracts/canonical-json'
 import type { NativePluginCatalog, PluginConfiguration } from './codexPluginCatalog.js'
 
-export const pluginCanonical = (value: unknown): string => {
-  const sort = (entry: unknown): unknown => Array.isArray(entry) ? entry.map(sort)
-    : entry && typeof entry === 'object' ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, value]) => [key, sort(value)])) : entry
-  return JSON.stringify(sort(value)) ?? 'null'
-}
+/** Persisted plugin identities depend on the frozen numeric-keys-first legacy form. */
+export const pluginCanonical: (value: unknown) => string = canonicalJsonNumericKeysFirstLegacy
 export const pluginHash = (value: unknown): string => `sha256:${createHash('sha256').update(pluginCanonical(value)).digest('hex')}`
 export function pluginCatalogRevision(native: NativePluginCatalog, hints: readonly string[], configuration: PluginConfiguration, status: 'complete' | 'partial'): string {
   const normalized = [...native.installed, ...native.available].map((entry) => ({ ...entry, version: entry.version ?? null }))

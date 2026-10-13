@@ -13,7 +13,8 @@ import type { PostgresSourceService } from '../sources/service.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { requireAuthorization } from '../access/policy.js'
 import { DomainError } from '../errors.js'
-import { canonical,type JobSql } from './repository.js'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
+import type { JobSql } from './repository.js'
 import { JobRuntimeProfiles } from './runtimeProfiles.js'
 import type { JobRuntimeQualificationResult } from './runtimeProfilePorts.js'
 import { createPhysicalJobRuntimeProducer,type QualificationNativeOwner } from './qualification.js'
@@ -44,7 +45,7 @@ export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:Post
     const current=JobRuntimeApprovalRecordSchema.parse(row.record)
     const expiredEntry = intent === 'execute' && Date.parse(current.expiresAt) <= Date.now()
     if (current.status !== 'qualifying' || current.fingerprintDigest !== approval.fingerprintDigest
-      || canonical(current.fingerprint) !== canonical(approval.fingerprint)
+      || canonicalJson(current.fingerprint) !== canonicalJson(approval.fingerprint)
       || current.qualificationId !== approval.qualificationId || !row.run_command_id || !row.run_principal_id
       || expiredEntry) {
       throw new DomainError('JOB_RUNTIME_QUALIFICATION_OWNER_CHANGED',
@@ -100,12 +101,12 @@ export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:Post
         await transaction(async sql=>{
           await authorized(sql,approval)
           const current=await input.host.currentMetadata(sql,profile)
-          if(!current||canonical(current)!==canonical(candidate.fingerprint))throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','Current installed HRT metadata changed.',409)
+          if(!current||canonicalJson(current)!==canonicalJson(candidate.fingerprint))throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','Current installed HRT metadata changed.',409)
         })
       },
       reserve:async(candidate:JobQualificationCandidateRecord,signal:AbortSignal)=>{
         await immutableProfile(approval)
-        if(candidate.operationId!==approval.qualificationId||candidate.approvalId!==approval.id||candidate.qualificationId!==approval.qualificationId||canonical(candidate.fingerprint)!==canonical(approval.fingerprint))throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','The native reservation differs from its original qualified operation.',409)
+        if(candidate.operationId!==approval.qualificationId||candidate.approvalId!==approval.id||candidate.qualificationId!==approval.qualificationId||canonicalJson(candidate.fingerprint)!==canonicalJson(approval.fingerprint))throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','The native reservation differs from its original qualified operation.',409)
         return input.host.reserveQualification({approval,profile,candidate,...await admitNative(candidate),operationId:approval.qualificationId,signal})
       },
     }}
@@ -139,7 +140,7 @@ export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:Post
       const assertAdmission = async () => {
         const saved = await transaction(sql => readInstalledJobQualificationAdmission(sql,{ approval,
           runCommandId: nativeAdmission.runCommandId,runPrincipalId: nativeAdmission.runPrincipalId }))
-        if (canonical(saved) !== canonical(nativeAdmission)) throw new DomainError(
+        if (canonicalJson(saved) !== canonicalJson(nativeAdmission)) throw new DomainError(
           'JOB_RUNTIME_NATIVE_ADMISSION_CONFLICT','The original qualification admission changed.',409)
       }
       await assertAdmission()
@@ -150,7 +151,7 @@ export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:Post
     if (approval.schemaVersion === 1 && approval.fingerprint.hostRef.kind === 'main') return localProducer.run(approval, signal)
     if(!input.host.capture||!input.host.runAdmitted)throw new DomainError('JOB_RUNTIME_UNAVAILABLE','The installed worker qualification carrier is unavailable.',503)
     const profile=await immutableProfile(approval,intent),fingerprint=await input.host.capture(profile),descriptor=await input.host.descriptor(profile)
-    if(canonical(fingerprint)!==canonical(approval.fingerprint))throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','The installed worker fingerprint changed.',409)
+    if(canonicalJson(fingerprint)!==canonicalJson(approval.fingerprint))throw new DomainError('JOB_RUNTIME_CONTEXT_CHANGED','The installed worker fingerprint changed.',409)
     let backingBytes: number | null = jobRuntimeProfileLimits(profile).diskBytes
     let verification: { volumeCapacityBytes: number; profile: JobRuntimeProfileRecord; approvedAt: string | null } | undefined
     if (fingerprint.schemaVersion === 3) {
@@ -197,13 +198,13 @@ export function createJobRuntimeProfileService(input:{pool:pg.Pool;commands:Post
       if (!rootPolicy) return { ready:false,reasons:['root_context_changed'] }
       if (profile.schemaVersion === 1) return localProducer.revalidate(sql, profile)
       const current = await input.host.currentMetadata(sql, profile)
-      if (!current || canonical(current) !== canonical(measurement.fingerprint)) {
+      if (!current || canonicalJson(current) !== canonicalJson(measurement.fingerprint)) {
         componentLogger('jobs').warn({ profileId: profile.id, currentAvailable: !!current,
           changedFields: current ? Object.keys(measurement.fingerprint).filter(key =>
-            canonical(Reflect.get(current, key)) !== canonical(Reflect.get(measurement.fingerprint, key))) : [] },
+            canonicalJson(Reflect.get(current, key)) !== canonicalJson(Reflect.get(measurement.fingerprint, key))) : [] },
         'Job runtime fingerprint comparison failed')
       }
-      return current && canonical(current) === canonical(measurement.fingerprint)
+      return current && canonicalJson(current) === canonicalJson(measurement.fingerprint)
         ? { ready: true, reasons: [] } : { ready: false, reasons: ['context_changed'] }
     },
   }
