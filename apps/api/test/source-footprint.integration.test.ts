@@ -18,6 +18,7 @@ afterEach(async () => {
 })
 
 it('covers the complete parent structure of a directory-heavy source through capture and closure', async () => {
+  const started = performance.now()
   const directory = await mkdtemp(join(persistentFixtureRoot, 'source-footprint-'))
   directories.push(directory)
   const canonical = join(directory, 'canonical')
@@ -25,7 +26,8 @@ it('covers the complete parent structure of a directory-heavy source through cap
   await mkdir(canonical, { mode: 0o700 })
   await mkdir(root, { mode: 0o700 })
   const bytes = Buffer.from('x')
-  const paths = Array.from({ length: 1000 }, (_, index) =>
+  // 1,024 unique parents still exceed the file-only allowance after the reference tree is removed.
+  const paths = Array.from({ length: 64 }, (_, index) =>
     [String(index).padStart(4, '0'), ...Array.from({ length: 15 }, (_, depth) => `d${depth}`), 'file.ts'].join('/'))
   const manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
     capturePolicy: 'exclusive-explicit-bytes-v1', executablePolicy: 'strip', deletions: [],
@@ -67,4 +69,5 @@ it('covers the complete parent structure of a directory-heavy source through cap
   await expect(materializer.verify(receipt, { binding, attempt })).rejects.toMatchObject({ code: 'ENOENT' })
   await releaseMaterializationClaim(receipt, async () => 'released')
   expect(await measureRetainedMaterializationFootprint(receipt)).toEqual(footprint)
-}, 120_000)
+  expect(performance.now() - started).toBeLessThan(30_000)
+}, 45_000)
