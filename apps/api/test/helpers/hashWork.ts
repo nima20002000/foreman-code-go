@@ -1,7 +1,8 @@
 import type { Hash } from 'node:crypto'
 import { vi } from 'vitest'
 
-export const hashWork = vi.hoisted(() => ({ bytes: 0, limit: Infinity }))
+const hashWork = vi.hoisted(() => ({ bytes: 0, limit: Infinity }))
+export { hashWork }
 
 vi.mock('node:crypto', async importOriginal => {
   const actual = await importOriginal<typeof import('node:crypto')>()

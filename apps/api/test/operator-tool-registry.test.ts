@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { ManagementActionSchema, ManagementPrincipalSchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
@@ -138,7 +139,7 @@ const scopeDimensions = ['workspaceIds', 'workflowIds', 'runIds', 'mainIds', 'de
 it.each(scopeDimensions)('hides global harness options from a %s scoped authenticated caller', async dimension => {
   const caller = principal(`scoped-${dimension}`, [
     { actions: ['capabilities:read'], scope: {} },
-    { actions: ['harnesses:read'], scope: { [dimension]: ['resource'] } },
+    { actions: ['harnesses:read'], scope: { [dimension]: [randomUUID()] } },
   ])
   expect(ManagementPrincipalSchema.safeParse(caller).success).toBe(true)
   const f = await endpoint(caller)
@@ -155,7 +156,7 @@ it.each(scopeDimensions)('hides global harness options from a %s scoped authenti
 
 it('hides global tools for combined host and account constraints but keeps the unscoped positive control', async () => {
   const caller = principal('combined', [{ actions: ['harnesses:read'],
-    scope: { deviceIds: ['device'], mainIds: ['main'], providerAccountIds: ['account'] } }])
+    scope: { deviceIds: [randomUUID()], mainIds: [randomUUID()], providerAccountIds: [randomUUID()] } }])
   expect(ManagementPrincipalSchema.safeParse(caller).success).toBe(true)
   const f = await endpoint(caller)
   expect(await listedNames(await f.connect(caller.id))).not.toContain('harness_options_get')

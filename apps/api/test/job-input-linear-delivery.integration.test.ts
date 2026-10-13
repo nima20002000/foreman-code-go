@@ -25,7 +25,7 @@ it('copies a real 20 MiB canonical input with linear hash work and verifies the 
   const bytes = Buffer.alloc(20 * 1024 * 1024, 97)
   const sha256 = createHash('sha256').update(bytes).digest('hex')
   const execution = jobExecution()
-  execution.acceptedSpec.inputs = [{ path: 'input.txt', fileId: 'file', revisionId: 'revision', sha256, byteSize: bytes.length }]
+  execution.acceptedSpec.inputs = [{ path: 'input.md', fileId: 'file', revisionId: 'revision', sha256, byteSize: bytes.length }]
   const handle = await open(project, constants.O_RDONLY | constants.O_DIRECTORY)
   try {
     execution.acceptedSpec.target.destination.canonicalProjectRoot = project
@@ -33,7 +33,7 @@ it('copies a real 20 MiB canonical input with linear hash work and verifies the 
       .update(JSON.stringify(await identity(handle))).digest('hex')
   } finally { await handle.close() }
   const pin = { fileId: 'file', revisionId: 'revision', sha256, byteSize: bytes.length }
-  const manifest = makeManifest(execution, [{ relativePath: 'files/input.txt', pin,
+  const manifest = makeManifest(execution, [{ relativePath: 'files/input.md', pin,
     scope: { kind: 'workspace_reference', workspaceId: execution.workspaceId }, senderPrincipalId: 'actor',
     senderGrantsDigest: 'a'.repeat(64), delegation: null }])
   const admission = JobInputAdmissionSchema.parse({ version: 1, manifest, principalId: 'actor',
@@ -43,7 +43,7 @@ it('copies a real 20 MiB canonical input with linear hash work and verifies the 
     storageRoot: join(root, 'store'), receiptRoot: join(root, 'receipts') })
   const stored = new FileByteStorage(join(root, 'store'), MAX_FILE_BYTES)
   const storageKey = randomUUID()
-  const revision = { filename: 'input.txt', mediaType: 'text/plain' as const, sha256, byteSize: bytes.length }
+  const revision = { filename: 'input.md', mediaType: 'text/markdown' as const, sha256, byteSize: bytes.length }
   const fileRead = vi.spyOn(PostgresFileRepository.prototype, 'read').mockResolvedValue({
     storageKey, value: { revision },
   } as never)
@@ -61,14 +61,14 @@ it('copies a real 20 MiB canonical input with linear hash work and verifies the 
     const receipt = await ports.local.prepare(execution, { privateRepositoryRoot: project,
       directoryIdentityHash: execution.acceptedSpec.target.destination.directoryIdentityHash,
       privateGit: true, diskQuotaBytes: bytes.length + 1024 * 1024 }, new AbortController().signal)
-    expect(receipt.files).toContainEqual({ relativePath: 'files/input.txt', sha256, byteSize: bytes.length })
+    expect(receipt.files).toContainEqual({ relativePath: 'files/input.md', sha256, byteSize: bytes.length })
     expect(hashWork.bytes).toBeLessThan(bytes.length * 3)
     expect(recheck.mock.calls.length).toBeGreaterThan(bytes.length / 8192)
     hashWork.limit = Infinity
-    expect(await readFile(join(project, '.graphql-job-inputs/files/input.txt'))).toEqual(bytes)
+    expect(await readFile(join(project, '.graphql-job-inputs/files/input.md'))).toEqual(bytes)
     expect(fileRead).toHaveBeenCalled()
     const controller = new AbortController()
-    const reader = await ports.main.openRead(execution, admission, 'files/input.txt', controller.signal)
+    const reader = await ports.main.openRead(execution, admission, 'files/input.md', controller.signal)
     try {
       expect(await reader.read(0, 8192)).toEqual(bytes.subarray(0, 8192))
       recheck.mockRejectedValueOnce(new Error('Recipient revoked'))

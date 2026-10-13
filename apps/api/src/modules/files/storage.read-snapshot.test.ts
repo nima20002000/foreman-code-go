@@ -12,7 +12,7 @@ it('fences positioned immutable reads against backing changes and enforces bound
   await mkdir(parent, { recursive: true, mode: 0o700 })
   const root = await mkdtemp(join(parent, 'file-read-snapshot-'))
   const bytes = Buffer.from('original file bytes')
-  const expected = { filename: 'input.txt', mediaType: 'text/plain' as const, byteSize: bytes.length,
+  const expected = { filename: 'input.md', mediaType: 'text/markdown' as const, byteSize: bytes.length,
     sha256: createHash('sha256').update(bytes).digest('hex') }
   const storage = new FileByteStorage(root, 1024)
   const key = randomUUID()
