@@ -18,13 +18,12 @@ export class RunWorktrees {
     private readonly ports: GitWorktreePorts = systemGitWorktreePorts()) {}
 
   async prepare(run: AcceptedWorkflowRunV3, signal = AbortSignal.timeout(60_000)): Promise<RunWorktree | undefined> {
-    return withTransaction(this.pool, async (sql) => {
+    const allocation = await withTransaction(this.pool, async (sql) => {
       await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`run-worktree:${run.id}`])
       const previous = await this.read(sql, run.id)
       if (previous) {
         if (previous.record.state !== 'active') throw new DomainError('RUN_WORKTREE_CLOSED', 'The Run worktree is already closed.', 409)
-        await this.verify(previous.record, signal)
-        return previous.record
+        return previous
       }
       const started = (await sql.query<{ directory: string }>(
         `select record->>'workingDirectory' as directory from harness_executions
@@ -53,18 +52,36 @@ export class RunWorktrees {
       const namespace = createHash('sha256').update(run.workspaceId).digest('hex')
       const branch = `foreman/run-${createHash('sha256').update(run.id).digest('hex')}`
       const workingDirectory = join(this.managedRoot, namespace, branch.slice('foreman/'.length))
-      await mkdir(join(workingDirectory, '..'), { recursive: true, mode: 0o700 })
-      const listed = await runWorkspaceGit(this.ports, ['worktree', 'list', '--porcelain'], repositoryRoot, signal)
-      // A crash between allocation and SQL commit can leave the original checkout behind.
-      if (!listed.split('\n').includes(`worktree ${workingDirectory}`)) {
-        await runWorkspaceGit(this.ports, ['worktree', 'add', '-b', branch, workingDirectory, baseCommit], repositoryRoot, signal)
-      }
-      const actualBase = await runWorkspaceGit(this.ports, ['rev-parse', 'HEAD'], workingDirectory, signal)
-      const record = RunWorktreeSchema.parse({ workingDirectory, branch, baseCommit: actualBase, state: 'active' })
-      await this.verify(record, signal)
+      const record = RunWorktreeSchema.parse({ workingDirectory, branch, baseCommit, state: 'active' })
+      // Commit ownership before any filesystem allocation, including a lost Git acknowledgement.
       await sql.query('insert into run_worktrees(run_id,repository_root,record) values($1,$2,$3::jsonb)',
         [run.id, repositoryRoot, JSON.stringify(record)])
-      return record
+      return { root: repositoryRoot, record }
+    })
+    if (!allocation) return undefined
+    return withTransaction(this.pool, async (sql) => {
+      await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`run-worktree:${run.id}`])
+      const tree = await this.read(sql, run.id)
+      if (!tree || tree.record.state !== 'active') {
+        throw new DomainError('RUN_WORKTREE_CLOSED', 'The Run worktree is already closed.', 409)
+      }
+      const { workingDirectory, branch, baseCommit } = tree.record
+      const listed = await runWorkspaceGit(this.ports, ['worktree', 'list', '--porcelain'], tree.root, signal)
+      if (!listed.split('\n').includes(`worktree ${workingDirectory}`)) {
+        const terminal = (await sql.query<{ execution_state: string }>(
+          'select execution_state from runs where id=$1 for share', [run.id])).rows[0]
+        if (!terminal || ['completed', 'interrupted'].includes(terminal.execution_state)) {
+          throw new DomainError('RUN_WORKTREE_CLOSED', 'A terminal Run cannot allocate a worktree.', 409)
+        }
+        await mkdir(join(workingDirectory, '..'), { recursive: true, mode: 0o700 })
+        const existing = await this.ports.git(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`],
+          { cwd: tree.root, signal })
+        const args = existing.code === 0 ? ['worktree', 'add', workingDirectory, branch]
+          : ['worktree', 'add', '-b', branch, workingDirectory, baseCommit]
+        await runWorkspaceGit(this.ports, args, tree.root, signal)
+      }
+      await this.verify(tree.record, signal)
+      return tree.record
     })
   }
 
@@ -95,6 +112,12 @@ export class RunWorktrees {
   private async cleanupRun(runId: string): Promise<void> {
     return withTransaction(this.pool, async (sql) => {
       await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`run-worktree:${runId}`])
+      const eligible = await sql.query(`select 1 from runs r where r.id=$1
+        and r.execution_state in ('completed','interrupted')
+        and not exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending)
+        and not exists(select 1 from execution_native_sessions n join harness_executions e on e.id=n.execution_id
+          where e.run_id=r.id and n.workflow_finalized_at is null) for share`, [runId])
+      if (eligible.rowCount !== 1) return
       const tree = await this.read(sql, runId)
       if (tree?.record.state === 'active') {
         const record = await removeCommittedWorktree(this.ports, tree.root, tree.record, AbortSignal.timeout(30_000))

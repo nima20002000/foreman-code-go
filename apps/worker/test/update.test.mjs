@@ -1,8 +1,11 @@
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, writeFile, rm, readlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { build } from 'esbuild';
+import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { setTimeout as wait } from 'node:timers/promises';
@@ -16,6 +19,23 @@ import { recoverPendingWorkerUpdate, writeUpdateRecord, migrateWorkerService } f
 import { renderUserService } from '../src/service.mjs';
 import { DeviceConnectionError } from '../../../apps/api/src/modules/devices/deviceWire.ts';
 import { DeviceApplicationError } from '../../../apps/api/src/modules/devices/deviceApplicationError.ts';
+import { COMPUTER_MAINTENANCE_NAMESPACE } from '@foreman-code/contracts/computer-maintenance';
+let bundleDirectory;
+let createWorkerRuntimeDrain;
+before(async () => {
+  bundleDirectory = await mkdtemp(join(persistentFixtureRoot, 'worker-update-module-'));
+  const output = join(bundleDirectory, 'drain.mjs');
+  const domains = new URL('../../../apps/api/src/modules/devices/installedWorkerDomains.ts', import.meta.url);
+  await build({ stdin: {
+    contents: `export { createWorkerRuntimeDrain } from ${JSON.stringify(fileURLToPath(domains))};`,
+    resolveDir: fileURLToPath(new URL('../../../', import.meta.url)),
+  }, outfile: output, bundle: true, platform: 'node', format: 'esm', target: 'node22', external: ['sharp'],
+  banner: { js: "import { createRequire as testCreateRequire } from 'node:module'; const require = testCreateRequire(import.meta.url);" } });
+  ({ createWorkerRuntimeDrain } = await import(pathToFileURL(output).href));
+});
+after(async () => {
+  if (bundleDirectory) await rm(bundleDirectory, { recursive: true, force: true });
+});
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const facts = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.2',
@@ -134,7 +154,7 @@ test('downloads a release from its GitHub release asset and still verifies every
   assert.equal(manifest.version, '1.2.0');
   assert.equal(await readFile(join(installed, 'src/cli.mjs'), 'utf8'), "console.log('1.2.0');\n");
 
-  await writeFile(join(built.directory, 'src/cli.mjs'), "console.log('tampered');\n");
+  await writeFile(join(built.directory, 'src/cli.mjs'), "console.log('2.1.0');\n");
   spawnSync('tar', ['-czf', archive, '-C', built.directory, '.']);
   await assert.rejects(downloadWorkerArtifact({ release, request, directory: join(base, 'tampered'), facts, fetchAsset }),
     { code: 'artifact_checksum_mismatch' });
@@ -268,6 +288,104 @@ test('supervisor launch failure keeps the old pointer and resumes admissions wit
   assert.equal((await readInstalledRelease({ root: f.root, facts, expected })).manifest.version, '1.0.0');
   assert.equal(resumed, 1);
   assert.equal((await updater.status()).lastError, 'worker_update_supervisor_unavailable');
+});
+
+test('runtime drain blocks maintenance starts until recovery resumes admission', async () => {
+  let finishJobs;
+  const jobsFinished = new Promise(resolve => { finishJobs = resolve; });
+  const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal,
+    active: () => [], drainJobs: () => jobsFinished, drainQualifications: async () => {},
+    drainMaintenance: async () => {}, quiescent: async () => true });
+  const completion = drain.run();
+  try {
+    assert.throws(() => drain.assertAdmission(COMPUTER_MAINTENANCE_NAMESPACE, { operation: 'start' }),
+      { code: 'WORKER_RUNTIME_DRAINING' });
+    assert.doesNotThrow(() => drain.assertAdmission(COMPUTER_MAINTENANCE_NAMESPACE, { operation: 'status' }));
+  } finally {
+    finishJobs();
+    await completion;
+  }
+  assert.throws(() => drain.assertAdmission(COMPUTER_MAINTENANCE_NAMESPACE, { operation: 'start' }),
+    { code: 'WORKER_RUNTIME_DRAINING' });
+  assert.doesNotThrow(() => drain.assertAdmission(COMPUTER_MAINTENANCE_NAMESPACE, { operation: 'status' }));
+  drain.resume();
+  assert.doesNotThrow(() => drain.assertAdmission(COMPUTER_MAINTENANCE_NAMESPACE, { operation: 'start' }));
+});
+
+test('runtime drain fences workflow and Job admission while allowing status reads', async () => {
+  const drained = [];
+  const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal,
+    active: () => [],
+    drainJobs: async () => { drained.push('jobs'); },
+    drainQualifications: async () => { drained.push('qualifications'); },
+    drainMaintenance: async () => { drained.push('maintenance'); },
+    quiescent: async () => true });
+  const completion = drain.run();
+  for (const method of ['prepare', 'start-turn', 'job-dispatch']) {
+    assert.throws(() => drain.assertAdmission('execution-v1', { method }),
+      { code: 'WORKER_RUNTIME_DRAINING' });
+  }
+  assert.doesNotThrow(() => drain.assertAdmission('execution-v1', { method: 'status' }));
+  await completion;
+  assert.deepEqual(drained, ['jobs', 'qualifications', 'maintenance']);
+  assert.throws(() => drain.assertAdmission('execution-v1', { method: 'prepare' }),
+    { code: 'WORKER_RUNTIME_DRAINING' });
+  drain.resume();
+  for (const method of ['prepare', 'start-turn', 'job-dispatch']) {
+    assert.doesNotThrow(() => drain.assertAdmission('execution-v1', { method }));
+  }
+});
+
+test('terminal supervisor failure resumes maintenance Retry only for the unchanged original release', async t => {
+  const f = await fixture(t);
+  const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal,
+    active: () => [], drainJobs: async () => {}, drainQualifications: async () => {},
+    drainMaintenance: async () => {}, quiescent: async () => true });
+  let resumed = 0;
+  const updater = await new WorkerUpdater({ ...f.options, drain: () => drain.run(),
+    resume: () => { resumed++; drain.resume(); }, launchSupervisor: async stateDirectory => {
+      const record = await readUpdateRecord(stateDirectory);
+      record.supervisorStarted = record.restart.requestId;
+      await writeUpdateRecord(stateDirectory, record);
+    } }).initialize();
+  t.after(() => updater.close());
+  await updater.start();
+  assert.throws(() => drain.assertAdmission(COMPUTER_MAINTENANCE_NAMESPACE, { operation: 'start' }),
+    { code: 'WORKER_RUNTIME_DRAINING' });
+  let switches = 0;
+  await assert.rejects(superviseWorkerUpdate(await readUpdateRecord(f.stateDirectory), {
+    prepareService: f.prepareService,
+    switchPointer: async () => { switches++; throw new Error('Pointer storage unavailable'); },
+    restart: async () => { throw new Error('Restart must not be attempted'); },
+  }), { code: 'worker_update_rollback_failed' });
+  assert.equal(switches, 2);
+  assert.equal((await updater.status()).state, 'failed');
+  assert.equal(resumed, 1);
+  assert.doesNotThrow(() => drain.assertAdmission(COMPUTER_MAINTENANCE_NAMESPACE, { operation: 'start' }));
+  await updater.status();
+  assert.equal(resumed, 1);
+  assert.equal(await updater.start({ retry: true }), 'Worker 1.1.0 restart is scheduled.');
+});
+
+test('terminal supervisor failure cannot resume an ambiguous release pointer', async t => {
+  const f = await fixture(t);
+  let resumed = 0;
+  const updater = await new WorkerUpdater({ ...f.options, resume: () => { resumed++; } }).initialize();
+  t.after(() => updater.close());
+  await updater.start();
+  const record = await readUpdateRecord(f.stateDirectory);
+  record.supervisorStarted = record.restart.requestId;
+  await writeUpdateRecord(f.stateDirectory, record);
+  await assert.rejects(superviseWorkerUpdate(record, {
+    prepareService: f.prepareService,
+    switchPointer: async () => {
+      await rm(record.restart.pointer.path);
+      throw new Error('Pointer outcome unavailable');
+    },
+  }), { code: 'worker_update_rollback_failed' });
+  assert.equal((await updater.status()).lastError, 'worker_update_recovery_required');
+  assert.equal(resumed, 0);
+  await assert.rejects(updater.start({ retry: true }), { code: 'worker_update_recovery_required' });
 });
 
 test('the next Worker retries an update cut short by a Worker stop, but not an update that failed', async t => {

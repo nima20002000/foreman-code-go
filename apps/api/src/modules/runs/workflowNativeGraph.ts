@@ -1,3 +1,4 @@
+import { renewWorkflowNativePublicationLease } from './workflowNativeLease.js'
 import { DurableInteractionSchema, HarnessExecutionSchema, type DurableInteraction, type HarnessExecution, type HarnessNativeEvent,
   type NativeSessionReference } from '@foreman-code/contracts'
 import { RunGraphScopeSchema, WorkflowRunV3Schema, type RunGraphScope, type NativeGraphProjectionKey } from '@foreman-code/contracts/wave25'
@@ -5,7 +6,7 @@ import type { RunOwnership } from './ownership.js'
 import { currentRunGraphPublication } from '../run-graph/publication.js'
 import { appendNativeGraphEvent } from '../run-graph/nativeIngestion.js'
 import { nativeDisconnectObservation, normalizeNativeProducerEvent } from '../run-graph/nativeProducerNormalization.js'
-import { appendNormalizedNativeEvent } from './nativeEvents.js'
+import { appendNormalizedNativeEvent, readPersistedNativeSequence } from './nativeEvents.js'
 import { readNativeGraphActivity, readNativeGraphCorrelation, type NativeGraphProjectionGuard } from '../run-graph/records.js'
 import { PostgresNativeGraphProjectionWriter } from '../run-graph/nativeWriter.js'
 import { DomainError } from '../errors.js'
@@ -44,6 +45,7 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
   void _continuation
   assertGraphTransaction(sql)
   owner.assertOwned()
+  if (lease) await renewWorkflowNativePublicationLease(sql, owner, lease.id)
   let scope: RunGraphScope
   let execution: HarnessExecution
   if (context) {
@@ -72,6 +74,7 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
       'select record from durable_interactions where id=$1 for update', [approval.interaction.id])).rows[0]?.record) : undefined
     const raw = await appendNormalizedNativeEvent(sql, normalized)
     if (raw.rejected || !lease || execution.state === 'completed' || !execution.nativeSessionId) return
+    const nativeSequence = await readPersistedNativeSequence(sql, normalized.event)
     const lane = (await sql.query<{ record: { leaseToken?: string; leaseExpiresAt?: string; connectionGeneration: number;
       correlationId?: string;
       currentTurnOrMessageId?: string }; live: boolean; harness: string; native_session_id: string; owner_agent_id: string }>(
@@ -104,6 +107,7 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
     const guard: NativeGraphProjectionGuard = { expected: { scope, key, ownerId: lease.token,
       fence: ownerFence.fence, connectionGeneration: generation },
     readCurrentLocked: async (transaction) => {
+      await renewWorkflowNativePublicationLease(transaction, owner, lease.id)
       const currentFence = await owner.readOneShotFence(transaction)
       const currentExecution = (await transaction.query<{ record: unknown }>(
         'select record from harness_executions where id=$1 and run_id=$2 for update', [execution.id, owner.runId])).rows[0]
@@ -126,6 +130,7 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
         access: held ? 'project' : 'observe' }
     } }
     beforeGraphCommit(sql, async () => {
+      await renewWorkflowNativePublicationLease(sql, owner, lease.id)
       await owner.readOneShotFence(sql)
       const held = await sql.query(`select 1 from native_session_lanes where id=$1
         and record->>'leaseToken'=$2 and (record->>'leaseExpiresAt')::timestamptz>clock_timestamp()
@@ -141,8 +146,8 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
         key, correlationKey, provider: lane.harness as 'codex' | 'claude', nativeSessionId: execution.nativeSessionId,
         connectionId: normalized.event.connectionId ?? null, connectionGeneration: lane.record.connectionGeneration,
         nativeTurnId: lease.providerId ?? null, nativeRequestId: null,
-        interactionId: null, reviewJobId: null, firstNativeSequence: String(normalized.event.sequence),
-        lastNativeSequence: String(normalized.event.sequence), terminalNativeSequence: null, metadataRevision: '0',
+        interactionId: null, reviewJobId: null, firstNativeSequence: nativeSequence,
+        lastNativeSequence: nativeSequence, terminalNativeSequence: null, metadataRevision: '0',
       }, guard)
     }
     if (prior && normalized.event.type === 'turn.capacity_retry'
@@ -151,7 +156,7 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
       await writer.persistCorrelation(sql, scope, null, {
         ...prior, correlationKey: `${turnCorrelation}:retry:${prior.nativeTurnId}`,
         nativeTurnId: null, terminalNativeSequence: null, metadataRevision: '0',
-        firstNativeSequence: String(normalized.event.sequence), lastNativeSequence: String(normalized.event.sequence),
+        firstNativeSequence: nativeSequence, lastNativeSequence: nativeSequence,
       }, guard)
       const activity = await readNativeGraphActivity(sql, scope, key)
       if (activity) await writer.persistActivity(sql, scope, activity.projectionRevision, {

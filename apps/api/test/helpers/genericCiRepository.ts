@@ -93,14 +93,16 @@ process.exit(result.status ?? 1)
       label: 'Build computer', priority: 60 }
     const cloud = new CloudCi(computer.hostRef.mainId, new GitHubActionsProvider(ports), async () => 'octo/site-ci',
       join(root, 'cloud'), ports, git)
+    const cloudAttempts: string[] = []
     const endpoint: HostCiEndpoint = {
       computers: async () => options.cloud ? [...cloud.computers().slice(0, 1), computer] : [computer],
       request: async (target, request) => {
         if (target.hostRef.kind !== 'cloud') return runner.handle(request)
+        if (request.operation === 'start') cloudAttempts.push(request.runId)
         return cloud.handle(request)
       },
     }
-    return { commits: new GitCiCommits(git), endpoint, commit: head.stdout.trim(),
+    return { commits: new GitCiCommits(git), endpoint, cloudAttempts, commit: head.stdout.trim(),
       async close() {
         await Promise.all(processes)
         await rm(root, { recursive: true, force: true })

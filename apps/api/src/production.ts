@@ -62,7 +62,7 @@ import { readLiveManagementPrincipal } from './modules/access/liveManagementPrin
 import { readSourceCurrentNativeSession } from './modules/sources/activeNativeSession.js'
 import type { SourceActiveNativeSessionReader, SourceNativeSessionCaptureReader } from './modules/sources/executionHosts.js'
 import { EXECUTION_AUTHORITY_EXTENSION } from '@foreman-code/contracts/execution-authority'
-import { WORKER_MCP_EXTENSION } from '@foreman-code/contracts/worker-mcp-relay'
+import { WORKER_MCP_EXTENSION, encodeWorkerMcpResult } from '@foreman-code/contracts/worker-mcp-relay'
 import { AgentPlacementProducer } from './modules/placement/agentProducer.js'
 import { RunPlacementReadService } from './modules/placement/readService.js'
 import { NodePlacementChoicesService } from './modules/placement/choicesService.js'
@@ -411,17 +411,17 @@ export function buildProductionApp(
         return executionAuthority.handle(payload, context)
       } },
       { namespace: WORKER_MCP_EXTENSION.namespace, version: WORKER_MCP_EXTENSION.version, role: 'server',
-        maxJsonBytes: WORKER_MCP_EXTENSION.maxJsonBytes, maxBinaryBytes: 0, async handle(payload, context) {
+        maxJsonBytes: WORKER_MCP_EXTENSION.maxJsonBytes, maxBinaryBytes: WORKER_MCP_EXTENSION.maxBinaryBytes, async handle(payload, context) {
+          if (context.bytes !== undefined) throw new DomainError('WORKER_MCP_SCOPE_CONFLICT', 'MCP requests cannot carry binary bytes.', 403)
           if (payload && typeof payload === 'object' && 'operation' in payload
             && typeof payload.operation === 'string' && payload.operation.startsWith('conversation-mcp.')) {
-            if (context.bytes !== undefined) throw new DomainError('WORKER_CONVERSATION_MCP_DENIED', 'Chat MCP cannot carry transfer bytes.', 403)
-            return { payload: await workerChats.mcp.handle(payload, context.binding, context.signal) }
+            return encodeWorkerMcpResult(await workerChats.mcp.handle(payload, context.binding, context.signal))
           }
           if (!mainWorkerMcp) throw new DomainError('WORKER_MCP_UNAVAILABLE', 'The original Main worker MCP authority has not initialized.', 503)
           context.signal.throwIfAborted()
           const result = await mainWorkerMcp.handle(payload, context.binding, context.signal)
           context.signal.throwIfAborted()
-          return { payload: result }
+          return encodeWorkerMcpResult(result)
         } },
       { ...SOURCE_OPERATION_EXTENSION, role: 'duplex', async handle(payload, context) {
         const handler = jobRuntime?.sourceExtension.handle

@@ -25,6 +25,11 @@ function key(value: string): string {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value)) throw new Error('Invalid internal storage key.')
   return value
 }
+export interface FileReadSnapshot {
+  read(offset: number, length: number): Promise<Buffer>
+  close(): Promise<void>
+}
+
 export interface FileUploadCandidate { storageKey: string; attemptId: string }
 
 /** Same-volume, app-private staging and immutable objects. No request supplies a host path.
@@ -186,6 +191,55 @@ export class FileByteStorage {
     await this.syncDirectory(join(this.root, 'objects'))
     await unlink(this.verified(storageKey)).catch((error: unknown) => { if (!missing(error)) throw error })
     await this.syncDirectory(this.staging(storageKey)).catch((error: unknown) => { if (!missing(error)) throw error })
+  }
+
+  /** One verified descriptor for a bounded caller-owned read, with positioned access. */
+  async openRead(storageKey: string, expected: ExpectedFileBytes): Promise<FileReadSnapshot> {
+    await this.initialize()
+    let handle: FileHandle
+    try { handle = await this.openRegular(this.object(storageKey)) }
+    catch (error) {
+      if (!missing(error)) throw error
+      throw new DomainError('FILE_BYTES_UNAVAILABLE', 'The pinned file bytes are unavailable.', 410)
+    }
+    try {
+      const stamp = async () => {
+        const stat = await handle.stat({ bigint: true })
+        return [stat.dev, stat.ino, stat.size, stat.mtimeNs, stat.ctimeNs].join(':')
+      }
+      const before = await stamp()
+      await this.verify(handle, expected, false)
+      if (await stamp() !== before) throw new DomainError('FILE_HASH_MISMATCH', 'The pinned file changed during verification.', 410)
+      let closed = false
+      const unchanged = async () => {
+        if (closed || await stamp() !== before) {
+          throw new DomainError('FILE_BYTES_UNAVAILABLE', 'The pinned file changed during delivery.', 410)
+        }
+      }
+      return {
+        async read(offset, length) {
+          if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1
+            || offset + length > expected.byteSize) {
+            throw new DomainError('FILE_RANGE_INVALID', 'The range is outside the pinned file.', 416)
+          }
+          await unchanged()
+          const bytes = Buffer.alloc(length)
+          let received = 0
+          while (received < length) {
+            const result = await handle.read(bytes, received, length - received, offset + received)
+            if (!result.bytesRead) throw new DomainError('FILE_BYTES_UNAVAILABLE', 'The pinned file is truncated.', 410)
+            received += result.bytesRead
+          }
+          await unchanged()
+          return bytes
+        },
+        async close() {
+          if (closed) return
+          closed = true
+          await handle.close()
+        },
+      }
+    } catch (error) { await handle.close(); throw error }
   }
 
   /** Rehash the same open descriptor that is streamed, detecting missing/corrupted backing bytes. */
