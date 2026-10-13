@@ -11,7 +11,7 @@ export const CiManagedSetupSchema = z.object({
   updatedAt: z.string().datetime(),
 }).strict()
 export const CiEnrollmentUpdateSchema = CiEnrollmentReadSchema.extend({
-  commandId: IdSchema,
+  commandId: IdSchema.optional().describe('Optional retry identity; generated server-side when omitted.'),
   target: DeviceProvisioningTargetSchema,
   expectedRevision: z.number().int().nonnegative(),
   enabled: z.boolean(),

@@ -147,11 +147,12 @@ export class HostCiService {
 
   private async enqueue(caller: ManagementPrincipal, input: CiRunInput,
     source: 'mcp' | 'http', scope: Awaited<ReturnType<CiAuthority['resolve']>>, actions: ManagementAction[]) {
+    const commandId = input.commandId ?? randomUUID()
     let prepared: PreparedCiRuns | undefined
     let supersession: Map<string, boolean> | undefined
     let superseded: CiRunRecord[] = []
     const outcome = await this.commands.execute({ principal: caller, source, operation: 'ci.run',
-      commandId: input.commandId, targetKey: scope.workspaceId, payload: input,
+      commandId, targetKey: scope.workspaceId, payload: input,
       prepare: async () => {
         prepared ??= await this.prepareRuns(caller, input, scope)
         supersession = input.gate ? undefined
@@ -190,7 +191,7 @@ export class HostCiService {
         const result = CiRunOutputSchema.parse({ ticketId: runs[0]!.id,
           ...(runs.length > 1 ? { partitions: runs.map(run => ({ ticketId: run.id })) } : {}),
           ...(cachedFiles?.length ? { cachedFiles } : {}) })
-        if (!input.gate) await supersedeCiRuns(client, runs[0]!, superseded, { source, commandId: input.commandId })
+        if (!input.gate) await supersedeCiRuns(client, runs[0]!, superseded, { source, commandId })
         for (const run of runs) {
           await client.query(`insert into ci_runs(id,workspace_id,group_id,state,record,durations,result_cache_keys,log_tail)
             values($1,$2,$3,$6,$4::jsonb,$5::jsonb,$7::jsonb,$8)`, [run.id, run.workspaceId, groupId, serializeCiJson(run),
@@ -199,7 +200,7 @@ export class HostCiService {
         }
         await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
           values($1,$2,'ci.priority',$3,'succeeded',$4::jsonb)`, [caller.id, source, scope.workspaceId,
-          JSON.stringify({ commandId: input.commandId, groupId, commit, priority, priorityReason,
+          JSON.stringify({ commandId, groupId, commit, priority, priorityReason,
             requestedPriority: input.priority ?? 'normal',
             ...(input.smokeComputer ? { smokeComputer: input.smokeComputer } : {}) })])
         return result

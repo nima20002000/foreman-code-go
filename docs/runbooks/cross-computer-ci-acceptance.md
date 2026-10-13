@@ -72,7 +72,8 @@ are 32 scenario Agent executions across both rounds, plus the host profile check
    GitHub login flow or `gh auth login` locally). Both accounts must be able to fetch the source repositories;
    Main must also push snapshots and mirrors. Read `build_computer_get` with the current provisioning target. Enable
    both build computers with `build_computer_update`, preserving the current target identity, using the read revision
-   as `expectedRevision`, `buildEnabled: true`, an ordinary priority (for example 50) and a fresh `commandId`.
+   as `expectedRevision`, `buildEnabled: true`, an ordinary priority (for example 50) and an optional
+   `commandId` (generated server-side when omitted).
    Read `ci_computers_list` for each workspace: both physical host refs must appear with `ready: true`. Host CI runs
    directly in runner Git worktrees under user systemd; retired verification-template qualification, OCI Job queue
    tickets and `build_computer_prepare` are not prerequisites for this Host CI acceptance.
