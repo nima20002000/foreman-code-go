@@ -42,15 +42,14 @@ describe.runIf(postgresEnabled)('Run isolation and authenticated MCP readback', 
       const references = []
       for (const runId of starts) {
         await expect.poll(async () => {
-          const run = await f.base.runs.get(runId)
-          if (run?.executionState === 'completed') {
-            const details = result(await f.client.callTool({ name: 'run_get', arguments: {
-              workspaceId: f.input.workspaceId, runId, detail: 'full' } }))
-            if ('detail' in details) throw new Error('Expected full Run details')
+          const details = result(await f.client.callTool({ name: 'run_get', arguments: {
+            workspaceId: f.input.workspaceId, runId, detail: 'full' } }))
+          if ('detail' in details) throw new Error('Expected full Run details')
+          if (details.run.executionState === 'completed') {
             const failures = details.executions.map(execution => ({ id: execution.id, result: execution.result }))
             throw new Error(`Run completed before approval: ${JSON.stringify(failures)}`)
           }
-          return run?.executionState
+          return details.run.executionState
         }, { timeout: 30000 }).toBe('waiting')
         const persisted = result(await f.client.callTool({ name: 'run_get', arguments: {
           workspaceId: f.input.workspaceId, runId, detail: 'full' } }))

@@ -22,6 +22,24 @@ it.each(['failed', 'canceled'] as const)('reports a %s historical chat turn on i
   } finally { vi.useRealTimers() }
 })
 
+it('waits for a historical native chat turn that completes after thirty seconds', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+  const state = structuredClone(agentChatFixtures.active)
+  const result = waitForHistoricalChatTurn(async () => state, 'request-1', 'Worker chat fork completion')
+    .catch(error => error as Error)
+  try {
+    await vi.advanceTimersByTimeAsync(30_001)
+    state.turns[0]!.delivery = 'completed'
+    await vi.advanceTimersByTimeAsync(25)
+    expect(await result).toMatchObject({ turns: [expect.objectContaining({ delivery: 'completed' })] })
+    expect(vi.getTimerCount()).toBe(0)
+  } finally {
+    await vi.advanceTimersByTimeAsync(90_001)
+    await result
+    vi.useRealTimers()
+  }
+})
+
 it('bounds a pending fake-provider chat turn to fifteen seconds', async () => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
   let settled = false
