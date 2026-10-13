@@ -92,12 +92,12 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
     const services = { commands, workspaces, locations, sources } as unknown as OperatorServices
     app = buildApp({ logger: false, readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } }, operator: { access, services } })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
-    const operator = await access.issue({ name: 'Scoped source Operator', audience: 'operator', grants: [{ actions: ['capabilities:read', 'sources:read', 'sources:approve', 'source_roots:read', 'source_roots:bind', 'workspace_locations:read'], scope: { workspaceIds: [workspace.id] } }], expiresAt: new Date(Date.now() + 240_000) })
+    const operator = await access.issue({ name: 'Scoped source Operator', audience: 'operator', grants: [{ actions: ['capabilities:read', 'sources:read', 'source_roots:read', 'source_roots:bind', 'workspace_locations:read'], scope: { workspaceIds: [workspace.id] } }], expiresAt: new Date(Date.now() + 240_000) })
     await pool.query('update management_principals set delegated_from=$2 where id=$1', [operator.principal.id, owner.principal.id])
     async function connect(token: string) { const client = new Client({ name: 'source-fixture', version: '1.0.0' }); clients.push(client)
       await client.connect(new StreamableHTTPClientTransport(new URL('/mcp', address), { authProvider: { token: async () => token } })); return client }
     const client = await connect(operator.token)
-    const approve = { workspaceId: workspace.id, commandId: randomUUID(), expectedLocationRevision: Number(policy.locationRevision), commit, approveTrackedTree: true, executablePolicy: 'strip' }
+    const approve = { workspaceId: workspace.id, commandId: randomUUID(), expectedLocationRevision: Number(policy.locationRevision), commit, executablePolicy: 'strip' }
     const tools = await client.listTools()
     expect(tools.tools.find(tool => tool.name === 'source_approve')?.inputSchema.properties)
       .toHaveProperty('approveTrackedTree')

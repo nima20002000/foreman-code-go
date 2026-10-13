@@ -9,7 +9,10 @@ const input = {
   executablePolicy: 'strip',
 }
 
-describe('source approval choice', () => {
+describe('tracked source capture', () => {
+  it('accepts capture without a path approval choice', () => {
+    expect(SourceApproveInputSchema.parse(input)).toEqual(input)
+  })
   it('accepts revision zero for repository capture before a workspace folder is configured', () => {
     expect(SourceApproveInputSchema.parse({ ...input, expectedLocationRevision: 0, approveTrackedTree: true })
       .expectedLocationRevision).toBe(0)
