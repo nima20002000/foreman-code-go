@@ -235,7 +235,7 @@ export class ApiClient {
       if (isAbortError(error)) throw error
       throw new ApiError({
         code: 'NETWORK_ERROR',
-        message: 'The API request could not be completed.',
+        message: 'Updating — reconnecting…',
         details: { cause: error instanceof Error ? error.message : String(error) },
       })
     }
@@ -256,12 +256,17 @@ export class ApiClient {
       const parsedError = ApiErrorResponseSchema.safeParse(payload)
       if (parsedError.success) {
         reloadChangedInstallation(parsedError.data.error.code)
-        throw new ApiError(parsedError.data.error, response.status)
+        throw new ApiError({
+          ...parsedError.data.error,
+          message: response.status === 502 || response.status === 503
+            ? 'Updating — reconnecting…' : parsedError.data.error.message,
+        }, response.status)
       }
       throw new ApiError(
         {
           code: 'HTTP_ERROR',
-          message: `The API request failed with status ${response.status}.`,
+          message: response.status === 502 || response.status === 503
+            ? 'Updating — reconnecting…' : `The API request failed with status ${response.status}.`,
         },
         response.status,
       )
