@@ -264,16 +264,16 @@ describe('host CI runner', () => {
     expect(done.text).not.toContain('apps/web')
   })
 
-  it('runs a part whose affected selection exceeds the recordable file limit as its full suite', async () => {
-    // A typecheck-api part selected thousands of files and was rejected before running anything.
+  it('preserves affected selections with more than 2000 files', async () => {
     const f = await computer({ selector: true, change: 'source', affectedUnitTests: 2001 })
     const runId = randomUUID()
     await f.runner.handle({ operation: 'start', runId, repository: 'example/project', commit: f.commit,
       suite: 'unit', part: 'unit-api' })
     const done = await f.settle(runId)
     expect(done.run).toMatchObject({ state: 'passed' })
-    expect(done.run.message).toContain('more than the 2000')
-    expect(done.text).toContain('Running full suite:')
+    expect(done.run.message).toBe('Selected 2002 affected files for unit-api.')
+    expect(done.text).toContain('many-2000.test.ts')
+    expect(done.text).not.toContain('Running full suite:')
   }, 30_000)
 
   it.each(['docs', 'source'] as const)('passes an empty affected unit shard after a %s change without running the suite', async change => {

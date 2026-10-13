@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import { CiRunInputSchema, OperatorCiRunInputSchema } from './ci.js'
-import { CiHostRequestSchema, CiPartitionSchema } from './ciHost.js'
+import { CiHostRequestSchema, CiPartitionSchema, CiSelectedFilesSchema } from './ciHost.js'
 
 const input = { suite: 'unit', scope: 'affected', files: ['apps/api/src/feature.test.ts'],
   commit: 'a'.repeat(40), commandId: 'affected' }
@@ -74,4 +74,23 @@ it('rejects unpinned caller selections, traversal, unsupported selected suites a
   expect(CiRunInputSchema.safeParse({ ...input, files: ['apps/web/src/feature.integration.test.tsx'] }).success).toBe(true)
   expect(CiRunInputSchema.safeParse({ ...input, files: [] }).success).toBe(true)
   expect(CiRunInputSchema.safeParse({ suite: 'unit', scope: 'full', commandId: 'full' }).success).toBe(true)
+})
+
+it('accepts safe selected paths from any repository without a file-count limit', () => {
+  const files = ['package.json', 'docs/guide.md', '.github/workflows/ci.yml', 'src/feature.test.ts',
+    'lib/a file.test.ts', 'docs/راهنما.md', `src/${'a'.repeat(301)}.ts`]
+  expect(CiSelectedFilesSchema.parse(files)).toEqual(files)
+  const selection = Array.from({ length: 2001 }, (_, index) => `src/feature-${index}.ts`)
+  const request = { ...input, suite: 'typecheck', files: selection }
+  expect(CiRunInputSchema.parse(request)).toEqual(request)
+  expect(OperatorCiRunInputSchema.parse({ ...request, workspaceId: 'workspace-ci' })).toMatchObject(request)
+  expect(CiHostRequestSchema.parse({ operation: 'start', runId: '00000000-0000-4000-8000-000000000001',
+    repository: 'example/project', suite: request.suite, commit: request.commit,
+    scope: request.scope, files: selection })).toMatchObject({ files: selection })
+})
+
+it.each(['../escape.ts', 'src/../escape.ts', '/src/file.ts', 'C:/src/file.ts',
+  'src\\..\\escape.ts', 'src/./file.ts', 'src//file.ts', 'src/file.ts\0', ''])
+('rejects unsafe selected paths: %s', file => {
+  expect(CiSelectedFilesSchema.safeParse([file]).success).toBe(false)
 })
