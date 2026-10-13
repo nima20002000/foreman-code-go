@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, rm } from 'node:fs/promises'
 import { basename, join } from 'node:path'
-import type { CiDurations, CiExecutionSuite, CiHostRun, CiPart, CiScope, CiSuite, CiTestResults, CiUserSystemd } from '@foreman-code/contracts'
+import type { CiHostRequest, CiDurations, CiExecutionSuite, CiHostRun, CiPart, CiScope, CiSuite, CiTestResults, CiUserSystemd } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { HostCiPorts } from './runner.js'
 import { providerCommand } from './providerPoll.js'
@@ -16,6 +16,8 @@ export interface CloudRun {
   scope?: CiScope; files?: string[]; part?: CiPart; baseCommit?: string
   dispatch?: { input: CloudDispatchInput; attempts: number; at: string }
   reconciliation?: { attempts: number; at: string; previousMessage: string | null }
+  publicationRequest?: Extract<CiHostRequest, { operation: 'start' }>
+  mirrorPublication?: CiHostRun['mirrorPublication']
   mirrorBranch?: string
   workflowStarted?: boolean
   lastProgressAt?: string

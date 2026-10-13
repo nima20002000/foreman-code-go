@@ -579,7 +579,8 @@ export class HostCiService {
 
   private async settle(run: CiRunRecord, computer: HostCiComputer, state: { state: string; step: string | null
     exitCode: number | null; startedAt: string | null; finishedAt: string | null; message: string | null
-    collection?: CiHostRun['collection']; provenance?: CiHostRun['provenance'] },
+    collection?: CiHostRun['collection']; provenance?: CiHostRun['provenance'];
+    mirrorPublication?: CiHostRun['mirrorPublication'] },
     options: { logTail?: string | undefined; audit?: CiCancellation | undefined; client?: pg.PoolClient | undefined } = {}) {
     const { logTail, audit, client } = options
     const requeued = state.state === 'queued'
@@ -595,6 +596,7 @@ export class HostCiService {
       cancellation: terminal ? undefined : run.cancellation,
       ...(state.collection ? { collection: state.collection } : {}),
       ...(state.provenance ? { provenance: state.provenance } : {}),
+      ...(state.mirrorPublication ? { mirrorPublication: state.mirrorPublication } : {}),
       ...(unstartedProviders.size ? { unstartedProviders: [...unstartedProviders] } : {}) })
     const hostKey = ['starting', 'running'].includes(next.state) ? computer.key : null
     const saved = await this.saveCancellation(`update ci_runs set state=$2, host_key=$3, record=$4::jsonb,

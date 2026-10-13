@@ -13,7 +13,7 @@ import { dispatchCloudTicket } from './cloudDispatch.js'
 
 const log = componentLogger('jobs')
 export type CiDispatchState = Pick<CiRunSettlement, 'state' | 'step' | 'exitCode' | 'startedAt' | 'finishedAt' | 'message'
-  | 'collection' | 'provenance'>
+  | 'collection' | 'provenance' | 'mirrorPublication'>
 interface DispatchServices {
   pool: pg.Pool
   endpoint: HostCiEndpoint

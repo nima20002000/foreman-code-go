@@ -1,11 +1,11 @@
 import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { homedir, hostname, userInfo } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type pg from 'pg'
 import { CiWatchdogFailureSchema, CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, CiTestResultsSchema, WorkspaceSchema,
   integrationPartition, requiresUserSystemd,
-  type CiDurations, type CiHostReply, type CiHostRequest, type CiHostRun, type CiPartition, type CiSuite, type CiPart, type CiScope } from '@foreman-code/contracts'
+  type CiDurations, type CiHostReply, type CiHostRequest, type CiHostRun, type CiPartition } from '@foreman-code/contracts'
 import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
@@ -39,12 +39,15 @@ type Mirrors = (workspaceId: string) => Promise<string | null>
 /** Pushes to one mirror, across both services, run one at a time: concurrent force-pushes of the mirror's main fail
  * the remote's old-value check ("incorrect old value provided"), and concurrent fetches race on its local ref. */
 const mirrorPushes = new Map<string, Promise<unknown>>()
+const pendingPublications = new Map<string, Promise<void>>()
+const cloudOperations = new Map<string, Promise<unknown>>()
 const publishingBranches = new Map<string, Set<string>>()
 interface Publication {
   git: (args: string[]) => Promise<string>
   branch: string
   snapshot: string
   workflowRef: string
+  mirrorPublication: NonNullable<CiHostRun['mirrorPublication']>
   workflows: string[]
   defaultBranch?: string
   baseCommit?: string
@@ -87,7 +90,6 @@ export class CloudCi {
   private backoff = { until: 0, ms: 0 }
   private following = 0
   private readonly waiting: (() => void)[] = []
-  private readonly operations = new Map<string, Promise<unknown>>()
   private readonly reading = new Set<string>()
 
   constructor(private readonly mainId: string, readonly provider: CloudProvider, private readonly mirrors: Mirrors,
@@ -103,6 +105,8 @@ export class CloudCi {
   /** Waits for background sweeps before their repository can be removed. Call after ticket operations finish. */
   async waitForMirrorCleanup(repository: string, mirror: string) {
     const key = this.mirrorKey(repository, mirror)
+    await Promise.all([...pendingPublications].filter(([id]) => id.startsWith(`${this.root}\n`))
+      .map(([, task]) => task))
     let cleanup = mirrorMaintenance.get(key)?.cleanup
     while (cleanup) {
       await cleanup
@@ -126,18 +130,23 @@ export class CloudCi {
         cpuCount: this.provider.cpus, memoryBytes: this.provider.memoryBytes,
         userSystemd: this.provider.userSystemd, runs: [] })
     }
-    if (request.operation === 'read' && this.reading.has(request.runId)) {
-      // Another read is following the provider; this one answers from the kept state and log instead of queueing.
+    if (request.operation === 'read' && (this.reading.has(request.runId)
+      || pendingPublications.has(`${this.root}\n${request.runId}`))) {
+      // Publication and provider work answer reads from the journal while they continue in the background.
       return this.answer(request, await this.read(request.runId))
     }
-    const previous = this.operations.get(request.runId) ?? Promise.resolve()
-    // A previous failure belongs to its caller and must not block the next read or cancellation.
-    const operation = previous.then(() => this.handleRun(request), () => this.handleRun(request))
-    this.operations.set(request.runId, operation)
+    return this.serializeRun(request.runId, () => this.handleRun(request))
+  }
+
+  private async serializeRun<T>(runId: string, work: () => Promise<T>): Promise<T> {
+    const key = `${this.root}\n${runId}`
+    const previous = cloudOperations.get(key) ?? Promise.resolve()
+    const operation = previous.then(work, work)
+    cloudOperations.set(key, operation)
     try {
       return await operation
     } finally {
-      if (this.operations.get(request.runId) === operation) this.operations.delete(request.runId)
+      if (cloudOperations.get(key) === operation) cloudOperations.delete(key)
     }
   }
 
@@ -149,7 +158,8 @@ export class CloudCi {
         run = await this.save({ ...run, state: 'canceled', finishedAt: this.ports.now().toISOString(), message: 'Canceled.',
           cancellation: run.cancellation ?? { at: this.ports.now().toISOString(), canceledIds: [] } })
       }
-      const canceled = run.cancellation ? await this.cancelAttempts(run) : run
+      const canceled = run.cancellation && run.mirrorPublication?.state !== 'pending'
+        ? await this.cancelAttempts(run) : run
       this.schedulePrune(canceled, canceled.runId)
       return CiHostReplySchema.parse({ operation: 'cancel', run: this.view(canceled, 0) })
     }
@@ -211,24 +221,24 @@ export class CloudCi {
   private view(run: CloudRun, logBytes: number): CiHostRun {
     let step: string | null = run.part ?? run.suite
     if (run.state === 'running' && run.live?.step) step = run.live.step
-    if (run.state === 'starting') step = 'dispatch'
+    if (run.state === 'starting') step = run.mirrorPublication?.state === 'pending' ? 'publish mirror' : 'dispatch'
     if (run.state === 'queued') step = null
     return { runId: run.runId, state: run.state, step,
       exitCode: run.exitCode, startedAt: run.startedAt, finishedAt: run.finishedAt, logBytes, message: run.message === null ? null : sanitizeCiText(run.message),
       ...(run.provenance ? { provenance: run.provenance } : {}),
+      ...(run.mirrorPublication ? { mirrorPublication: run.mirrorPublication } : {}),
       ...(run.collection ? { collection: run.collection.log && run.collection.artifacts ? 'complete' as const : 'pending' as const } : {}) }
   }
 
-  private async start(request: { runId: string; repository: string; commit: string; suite: CiSuite
-    workspaceId?: string | undefined; ciMirror?: string | null | undefined;
-    part?: CiPart | undefined; partition?: CiPartition | undefined; durations?: CiDurations | undefined; scope?: CiScope | undefined;
-    files?: string[] | undefined; defaultBranch?: string | undefined; baseCommit?: string | undefined;
-    gate?: boolean | undefined; integrationShards?: number | undefined; expectedDurationMs?: number | undefined }): Promise<CiHostRun> {
+  private async start(request: Extract<CiHostRequest, { operation: 'start' }>): Promise<CiHostRun> {
     const existing = await this.read(request.runId).catch(error => {
       if (error instanceof DomainError && error.code === 'CI_RUN_UNKNOWN') return null
       throw error
     })
-    if (existing) return this.view(existing, 0)
+    if (existing) {
+      if (existing.publicationRequest && existing.state === 'starting') this.publishInBackground(existing)
+      return this.view(existing, 0)
+    }
     if (!this.provider.userSystemd.supported && request.suite === 'integration'
       && (request.partition?.hostIndexes?.includes(request.partition.index)
       || !request.partition && request.files?.some(requiresUserSystemd))) {
@@ -244,6 +254,48 @@ export class CloudCi {
     if (!mirror || !await this.ready()) {
       throw new DomainError('CI_CLOUD_UNAVAILABLE', `This workspace has no CI mirror, or Main is not logged in to ${this.provider.label}.`, 409)
     }
+    if (request.deferMirror) {
+      const startedAt = this.ports.now().toISOString()
+      const pending = await this.save({ runId: request.runId, repository: request.repository, mirror,
+        commit: request.commit, suite: request.suite, startedAt, state: 'starting', providerRunId: null,
+        finishedAt: null, exitCode: null, message: 'Publishing the checked CI mirror snapshot.',
+        publicationRequest: request, mirrorPublication: { state: 'pending', startedAt, finishedAt: null } })
+      this.publishInBackground(pending)
+      return this.view(pending, 0)
+    }
+    return this.publishAndStart(request, mirror)
+  }
+
+  private publishInBackground(run: CloudRun) {
+    const key = `${this.root}\n${run.runId}`
+    if (pendingPublications.has(key)) return
+    const task = this.publishAndStart(run.publicationRequest!, run.mirror).then(() => undefined).catch(async error => {
+      log.warn({ err: error, runId: run.runId }, 'CI mirror publication failed')
+      await this.serializeRun(run.runId, async () => {
+        const latest = await this.read(run.runId)
+        if (latest.state !== 'starting') return
+        if (latest.mirrorPublication?.state === 'ready' && latest.dispatch) {
+          await this.save({ ...latest, message: 'Cloud dispatch reply was not confirmed; ownership retained.' })
+          return
+        }
+        const unavailable = error instanceof DomainError && error.code === 'CI_CLOUD_UNAVAILABLE'
+        const failed: CloudRun = { ...latest, state: unavailable ? 'queued' : 'failed',
+          finishedAt: unavailable ? null : this.ports.now().toISOString(),
+          message: sanitizeCiText(error instanceof Error ? error.message : String(error)).slice(0, 2000),
+          mirrorPublication: latest.mirrorPublication?.state === 'ready' ? latest.mirrorPublication
+            : { ...latest.mirrorPublication!, state: 'failed', finishedAt: this.ports.now().toISOString() } }
+        delete failed.publicationRequest
+        await this.save(failed)
+      })
+    }).catch(error => {
+      log.error({ err: error, runId: run.runId }, 'CI mirror failure could not be recorded; recovery will retry')
+    }).finally(() => {
+      pendingPublications.delete(key)
+    })
+    pendingPublications.set(key, task)
+  }
+
+  private async publishAndStart(request: Extract<CiHostRequest, { operation: 'start' }>, mirror: string) {
     const scope = request.scope ?? 'affected'
     const deriveFiles = scope === 'affected' && request.files === undefined
     const branchName = deriveFiles && request.baseCommit ? `ci/${request.commit}-${request.baseCommit}`
@@ -259,65 +311,84 @@ export class CloudCi {
       maintenance.keep.add(`ci-default/${request.commit}`)
     }
     try {
-      const { git, branch, snapshot, workflowRef, defaultBranch, baseCommit } = await this.publish(request.repository, mirror, request.commit,
+      const publication = await this.publish(request.repository, mirror, request.commit,
         deriveFiles && !request.baseCommit ? request.defaultBranch ?? 'main' : undefined,
         deriveFiles ? request.baseCommit : undefined, request.durations ?? {})
-      this.schedulePrune({ repository: request.repository, mirror })
-      const selectOnRunner = deriveFiles && (defaultBranch !== undefined || baseCommit !== undefined)
-      const message = deriveFiles && !selectOnRunner
-        ? 'Running full suite: ' + (request.baseCommit
-          ? 'baseCommit is unavailable or is not an ancestor of the resolved commit.'
-          : 'No merge-base with the workspace default branch is available.') : null
-      let slice = request.suite === 'integration' && !selectOnRunner
-        && (request.gate || request.partition || !deriveFiles && scope === 'affected')
-        ? await this.slice(git, snapshot, request.partition, request.durations ?? {}, request.files) : ''
-      if ((!request.files || scope !== 'affected') && request.partition && request.part) {
-        slice = `${request.partition.index + 1}/${request.partition.count}`
+      if (request.deferMirror) {
+        return await this.serializeRun(request.runId, async () => {
+          const latest = await this.read(request.runId)
+          const completed = { ...latest, mirrorPublication: publication.mirrorPublication }
+          delete completed.publicationRequest
+          await this.save(completed)
+          if (latest.state !== 'starting' || latest.cancellation) return this.view(completed, 0)
+          return this.startPublished(request, mirror, publication)
+        })
       }
-      const files = scope === 'affected' && request.files !== undefined && request.suite !== 'integration'
-        ? await this.selectedIndexes(git, snapshot, request.files) : undefined
-      // The snapshot carries learned timings even when a provider parameter cannot hold them.
-      const limit = this.provider.parameterLimit ?? Number.POSITIVE_INFINITY
-      let partition = selectOnRunner && request.partition ? JSON.stringify(request.partition) : undefined
-      if (slice.length > limit && request.suite === 'integration' && request.partition
-        && (scope === 'full' || message !== null) && request.files === undefined) {
-        slice = ''
-        partition = JSON.stringify(request.partition)
-      }
-      const durations = selectOnRunner && request.durations ? JSON.stringify(request.durations) : undefined
-      const input: CloudDispatchInput = { mirror, branch, workflowRef, workflowCommit: snapshot, runId: request.runId, suite: request.part ?? request.suite, slice,
-        expectedDurationMs: request.expectedDurationMs ?? 0,
-        scope: message ? 'full' : scope, ...(files !== undefined ? { files } : {}),
-        ...(defaultBranch ? { defaultBranch } : {}),
-        ...(baseCommit ? { baseCommit } : {}),
-        ...(partition ? { partition } : {}),
-        ...(durations && durations.length <= limit ? { durations } : {}) }
-      validateProviderParameters(this.provider, input)
-      let run = await this.save({ mirrorBranch: branch, runId: request.runId, repository: request.repository, mirror, commit: request.commit,
-        suite: request.suite, ...(request.part ? { part: request.part } : {}), startedAt: this.ports.now().toISOString(), providerRunId: null, state: 'starting',
-        scope, ...(request.files !== undefined ? { files: request.files } : {}),
-        ...(request.baseCommit ? { baseCommit: request.baseCommit } : {}),
-        provenance: { sourceCommit: request.commit, workflowCommit: snapshot, workflowRef },
-        finishedAt: null, exitCode: null, message })
-      run = await this.trigger(run, input)
-      if (run.providerRunId) {
-        try {
-          if (await this.provider.find(run)) run = await this.save({ ...run, state: 'running', workflowStarted: true })
-        } catch (error) {
-          if (error instanceof DomainError
-            && ['CI_CLOUD_PIPELINE_FAILED', 'CI_CLOUD_RUN_ENDED'].includes(error.code)) {
-            run = await this.failPipeline(run, { message: error.message, configError: error.details?.configError === true })
-          } else {
-            // The trigger was accepted, so a lookup failure must not dispatch the ticket to another computer.
-            log.warn({ err: error, runId: run.runId }, 'Cloud CI workflow lookup failed; dispatch remains pending')
-          }
-        }
-      }
-      return this.view(run, 0)
+      return await this.startPublished(request, mirror, publication)
     } finally {
       reservations.delete(reservation)
       if (!reservations.size) publishingBranches.delete(mirror)
     }
+  }
+
+  private async startPublished(request: Extract<CiHostRequest, { operation: 'start' }>,
+    mirror: string, publication: Publication): Promise<CiHostRun> {
+    const { git, branch, snapshot, workflowRef, defaultBranch, baseCommit, mirrorPublication } = publication
+    const scope = request.scope ?? 'affected'
+    const deriveFiles = scope === 'affected' && request.files === undefined
+    this.schedulePrune({ repository: request.repository, mirror })
+    const selectOnRunner = deriveFiles && (defaultBranch !== undefined || baseCommit !== undefined)
+    const message = deriveFiles && !selectOnRunner
+      ? 'Running full suite: ' + (request.baseCommit
+        ? 'baseCommit is unavailable or is not an ancestor of the resolved commit.'
+        : 'No merge-base with the workspace default branch is available.') : null
+    let slice = request.suite === 'integration' && !selectOnRunner
+      && (request.gate || request.partition || !deriveFiles && scope === 'affected')
+      ? await this.slice(git, snapshot, request.partition, request.durations ?? {}, request.files) : ''
+    if ((!request.files || scope !== 'affected') && request.partition && request.part) {
+      slice = `${request.partition.index + 1}/${request.partition.count}`
+    }
+    const files = scope === 'affected' && request.files !== undefined && request.suite !== 'integration'
+      ? await this.selectedIndexes(git, snapshot, request.files) : undefined
+    // The snapshot carries learned timings even when a provider parameter cannot hold them.
+    const limit = this.provider.parameterLimit ?? Number.POSITIVE_INFINITY
+    let partition = selectOnRunner && request.partition ? JSON.stringify(request.partition) : undefined
+    if (slice.length > limit && request.suite === 'integration' && request.partition
+      && (scope === 'full' || message !== null) && request.files === undefined) {
+      slice = ''
+      partition = JSON.stringify(request.partition)
+    }
+    const durations = selectOnRunner && request.durations ? JSON.stringify(request.durations) : undefined
+    const input: CloudDispatchInput = { mirror, branch, workflowRef, workflowCommit: snapshot, runId: request.runId, suite: request.part ?? request.suite, slice,
+      expectedDurationMs: request.expectedDurationMs ?? 0,
+      scope: message ? 'full' : scope, ...(files !== undefined ? { files } : {}),
+      ...(defaultBranch ? { defaultBranch } : {}),
+      ...(baseCommit ? { baseCommit } : {}),
+      ...(partition ? { partition } : {}),
+      ...(durations && durations.length <= limit ? { durations } : {}) }
+    validateProviderParameters(this.provider, input)
+    let run = await this.save({ mirrorBranch: branch, runId: request.runId, repository: request.repository, mirror, commit: request.commit,
+      suite: request.suite, ...(request.part ? { part: request.part } : {}), startedAt: this.ports.now().toISOString(), providerRunId: null, state: 'starting',
+      scope, ...(request.files !== undefined ? { files: request.files } : {}),
+      ...(request.baseCommit ? { baseCommit: request.baseCommit } : {}),
+      provenance: { sourceCommit: request.commit, workflowCommit: snapshot, workflowRef },
+      finishedAt: null, exitCode: null, message, mirrorPublication,
+      dispatch: { input, attempts: 0, at: this.ports.now().toISOString() } })
+    run = await this.trigger(run, input)
+    if (run.providerRunId) {
+      try {
+        if (await this.provider.find(run)) run = await this.save({ ...run, state: 'running', workflowStarted: true })
+      } catch (error) {
+        if (error instanceof DomainError
+          && ['CI_CLOUD_PIPELINE_FAILED', 'CI_CLOUD_RUN_ENDED'].includes(error.code)) {
+          run = await this.failPipeline(run, { message: error.message, configError: error.details?.configError === true })
+        } else {
+          // The trigger was accepted, so a lookup failure must not dispatch the ticket to another computer.
+          log.warn({ err: error, runId: run.runId }, 'Cloud CI workflow lookup failed; dispatch remains pending')
+        }
+      }
+    }
+    return this.view(run, 0)
   }
 
   private async trigger(run: CloudRun, input: CloudDispatchInput) {
@@ -351,7 +422,7 @@ export class CloudCi {
   }
 
   private async recoverUnstarted(run: CloudRun) {
-    const dispatchedAt = run.dispatch?.at ?? run.startedAt
+    const dispatchedAt = run.dispatch?.at ?? run.mirrorPublication?.finishedAt ?? run.startedAt
     if (this.ports.now().getTime() - Date.parse(dispatchedAt) < CLOUD_START_TIMEOUT_MS) return run
     // Retire the pipeline before retrying so it cannot acquire a workflow later.
     if (run.providerRunId) {
@@ -468,7 +539,10 @@ export class CloudCi {
     let published = publications.get(key)
     if (!published) {
       const queued = (mirrorPushes.get(mirror) ?? Promise.resolve()).catch(() => { /* ignore: the previous caller receives its failure; the queue must still admit the next operation. */ })
-      const pushed = queued.then(() => this.push(repository, mirror, commit, defaultBranch, baseCommit, durations))
+      const queuedAt = performance.now()
+      const startedAt = this.ports.now().toISOString()
+      const pushed = queued.then(() => this.push(repository, mirror, commit, defaultBranch, baseCommit, durations,
+        { queuedAt, startedAt }))
       published = pushed
       mirrorPushes.set(mirror, pushed)
       void pushed.catch(() => { /* ignore: the push failure is reported to the caller awaiting it; this only clears the queue entry */ }).then(() => { if (mirrorPushes.get(mirror) === pushed) mirrorPushes.delete(mirror) })
@@ -487,11 +561,21 @@ export class CloudCi {
   }
 
   private async push(repository: string, mirror: string, commit: string, defaultBranch: string | undefined,
-    baseCommit: string | undefined, durations: CiDurations) {
+    baseCommit: string | undefined, durations: CiDurations, queued: { queuedAt: number; startedAt: string }) {
+    const startedAt = queued.startedAt
+    const started = performance.now()
+    const queueMs = started - queued.queuedAt
     const signal = AbortSignal.timeout(600_000)
     const clone = await ensureCommit(this.git, repository, commit, signal)
+    const objects = await this.git.git(['rev-parse', '--git-path', 'objects'], { cwd: clone, signal })
+    if (objects.code !== 0) throw new DomainError('CI_CLOUD_FAILED', 'Could not read source objects.', 502)
+    const sourceMs = performance.now() - started
+    const fetching = performance.now()
+    // A separate persistent mirror clone negotiates against public refs only. Source objects are read locally.
+    const mirrorClone = await ensureClone(this.git, mirror, signal)
+    const sourceObjects = { GIT_ALTERNATE_OBJECT_DIRECTORIES: resolve(clone, objects.stdout.trim()) }
     const git = async (args: string[], env?: Record<string, string>) => {
-      const result = await this.git.git(args, { cwd: clone, signal: AbortSignal.timeout(600_000), ...(env ? { env } : {}) })
+      const result = await this.git.git(args, { cwd: mirrorClone, signal: AbortSignal.timeout(600_000), env: { ...sourceObjects, ...env } })
       if (result.code !== 0) {
         // Git's own reason, without any credentials in a URL.
         const detail = result.stderr.replace(/\/\/[^/@\s]+@/g, '//').trim().slice(-500)
@@ -499,8 +583,10 @@ export class CloudCi {
       }
       return result.stdout.trim()
     }
-    const base = `refs/foreman/mirror/${mirror}`
-    await git(['fetch', '--quiet', '--no-tags', `https://github.com/${mirror}.git`, `+main:${base}`])
+    const base = 'refs/remotes/origin/main'
+    await git(['fetch', '--quiet', '--no-tags', 'origin', `+main:${base}`])
+    const reusedSnapshot = await git(['rev-parse', base])
+    let fetchMs = performance.now() - fetching
     const workflow = this.provider.id === 'github' ? '.github/workflows/ci.yml' : '.circleci/config.yml'
     const workflows = ['.github/workflows/ci.yml', '.circleci/config.yml']
     const entries = (await git(['ls-tree', base, '--', ...workflows])).split('\n')
@@ -509,7 +595,12 @@ export class CloudCi {
       throw new DomainError('CI_CLOUD_UNAVAILABLE',
         `The CI mirror has no ${workflow} workflow for ${this.provider.label}. Use a build computer or configure the mirror.`, 409)
     }
+    const guarding = performance.now()
     await this.guard(clone, commit, signal)
+    const initialGuardMs = performance.now() - guarding
+    let guardMs = initialGuardMs
+    const snapshotting = performance.now()
+    let branchFetchMs = 0
     // A source without the mirror's provider workflows gets the mirror's copies.
     const treeOf = async (source: string) => {
       const sourceWorkflows = new Set((await git(['ls-tree', source, '--', ...workflows])).split('\n')
@@ -541,9 +632,11 @@ export class CloudCi {
     const author = { GIT_AUTHOR_NAME: mirror.split('/')[0]!, GIT_AUTHOR_EMAIL: `${mirror.split('/')[0]}@users.noreply.github.com`,
       GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date }
     const identity = { ...author, GIT_COMMITTER_NAME: author.GIT_AUTHOR_NAME, GIT_COMMITTER_EMAIL: author.GIT_AUTHOR_EMAIL }
-    const snapshotOf = async (source: string, parent: string) => git([
-      'commit-tree', await treeOf(source), '-p', parent, '-m', `Snapshot ${source.slice(0, 12)}`,
-    ], identity)
+    const snapshotOf = async (source: string, parent: string) => {
+      const tree = await git(['rev-parse', await treeOf(source)])
+      if (tree === await git(['rev-parse', `${parent}^{tree}`])) return git(['rev-parse', parent])
+      return git(['commit-tree', tree, '-p', parent, '-m', `Snapshot ${source.slice(0, 12)}`], identity)
+    }
     let parent = base
     let comparison: { branch: string; commit: string } | undefined
     let runnerBaseCommit: string | undefined
@@ -551,18 +644,25 @@ export class CloudCi {
     if (baseCommit) {
       const ancestor = await this.git.git(['merge-base', '--is-ancestor', baseCommit, commit], { cwd: clone, signal })
       if (ancestor.code === 0) {
+        const checking = performance.now()
         await this.guard(clone, baseCommit, signal)
+        guardMs += performance.now() - checking
         parent = await snapshotOf(baseCommit, base)
         runnerBaseCommit = parent
       }
     } else if (defaultBranch) {
+      const branchFetching = performance.now()
       head = await fetchRepositoryBranch(this.git, clone, repository, defaultBranch, signal)
+      branchFetchMs = performance.now() - branchFetching
+      fetchMs += branchFetchMs
       const mergeBase = await this.git.git(['merge-base', commit, head], { cwd: clone, signal })
       if (mergeBase.code === 0) {
         const sourceBase = mergeBase.stdout.trim()
         // Publish only checked trees; the source repository's private commit history stays private.
+        const checking = performance.now()
         await this.guard(clone, sourceBase, signal)
         await this.guard(clone, head, signal)
+        guardMs += performance.now() - checking
         parent = await snapshotOf(sourceBase, base)
         if (commit !== head) runnerBaseCommit = parent
         comparison = { branch: `ci-default/${commit}`, commit: await snapshotOf(head, parent) }
@@ -574,9 +674,18 @@ export class CloudCi {
     else snapshot = await snapshotOf(commit, parent)
     const branch = baseCommit ? `ci/${commit}-${baseCommit}` : `ci/${commit}`
     const workflowRef = `ci-snapshot/${snapshot}`
+    const snapshotMs = Math.max(0, performance.now() - snapshotting - (guardMs - initialGuardMs) - branchFetchMs)
+    const pushing = performance.now()
     await git(['push', '--quiet', '--force', `https://github.com/${mirror}.git`, `${snapshot}:refs/heads/${branch}`,
       `${snapshot}:refs/heads/main`, `${snapshot}:refs/heads/${workflowRef}`, ...(comparison ? [`${comparison.commit}:refs/heads/${comparison.branch}`] : [])])
-    return { git, branch, snapshot, workflowRef, workflows: entries.map(entry => entry.split('\t')[1]!),
+    const timings = { queueMs, sourceMs, fetchMs, guardMs, snapshotMs, pushMs: performance.now() - pushing,
+      totalMs: performance.now() - started + queueMs }
+    const mirrorPublication: NonNullable<CiHostRun['mirrorPublication']> = {
+      state: 'ready', startedAt, finishedAt: this.ports.now().toISOString(), snapshotCommit: snapshot,
+      reusedSnapshot, timings,
+    }
+    log.info({ commit, mirror, timings }, 'CI mirror snapshot published')
+    return { git, branch, snapshot, workflowRef, mirrorPublication, workflows: entries.map(entry => entry.split('\t')[1]!),
       ...(comparison ? { defaultBranch: comparison.branch } : {}),
       ...(runnerBaseCommit ? { baseCommit: runnerBaseCommit } : {}) }
   }
@@ -659,6 +768,10 @@ export class CloudCi {
   /** Follows the provider's run at most every few seconds, pausing while the service's rate limit is spent. */
   private async refresh(runId: string): Promise<CloudRun> {
     const run = await this.read(runId)
+    if (run.publicationRequest && run.state === 'starting') {
+      this.publishInBackground(run)
+      return run
+    }
     const pendingCollection = run.collection && (!run.collection.log || !run.collection.artifacts)
     if (!['starting', 'running'].includes(run.state) && !run.cancellation && !pendingCollection) return run
     const now = this.ports.now().getTime()
@@ -768,7 +881,7 @@ export class CloudCi {
       const runId = ids[(this.reconcileCursor + offset) % ids.length]!
       try {
         const run = await this.read(runId)
-        if (this.stalled(run) || run.cancellation || run.collection && (!run.collection.log || !run.collection.artifacts)) {
+        if (run.publicationRequest && run.state === 'starting' || this.stalled(run) || run.cancellation || run.collection && (!run.collection.log || !run.collection.artifacts)) {
           await this.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 })
         }
       } catch (error) {
