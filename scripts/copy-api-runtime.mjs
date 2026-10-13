@@ -27,11 +27,11 @@ export async function copyApiRuntime(repository, output) {
   await mkdir(dirname(entrypoint), { recursive: true })
   await writeFile(entrypoint,
     "export { buildCiRuntimeContext, ciRuntimeInputDigest, parseCiLock } from '../../ci-runtime/apps/worker/artifacts/ci-runtime/context.mjs'\n")
+  await writeFile(join(output, 'runtime-build.json'), `${JSON.stringify(createRuntimeBuildIdentity(repository))}\n`)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const repository = fileURLToPath(new URL('../', import.meta.url))
   const output = join(repository, 'apps/api/dist')
   await copyApiRuntime(repository, output)
-  await writeFile(join(output, 'runtime-build.json'), `${JSON.stringify(createRuntimeBuildIdentity(repository))}\n`)
 }
