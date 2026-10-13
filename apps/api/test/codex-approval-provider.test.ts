@@ -5,10 +5,20 @@ import { input } from './fixtures/codex-test-helpers.js'
 import { deliveryFixture } from './helpers/wave25ApprovalFixture.js'
 import { CodexApprovalProvider } from './helpers/codexApprovalProvider.js'
 
-function fixture(executionId: string) {
+function fixture(executionId: string, completion: 'notifications' | 'history' = 'notifications') {
   const provider = new CodexApprovalProvider(executionId, false)
+  const dependencies = provider.dependencies()
+  const transport = dependencies.transport
+  dependencies.transport = (...args) => {
+    const [binary, cwd, environment, protocol, onRequest, onNotification, ...rest] = args
+    return transport(binary, cwd, environment, protocol, onRequest, (method, params) => {
+      // Simulate a missed terminal notification while retaining the provider's completed turn.
+      if (completion === 'history' && method === 'turn/completed') return
+      onNotification(method, params)
+    }, ...rest)
+  }
   const manager = new CodexAppServerSessionManager('/recorded-no-native-codex', undefined, undefined,
-    undefined, 'scoped', undefined, provider.dependencies())
+    undefined, 'scoped', undefined, dependencies)
   const source = input(process.cwd())
   source.request.executionId = executionId
   return { provider, manager, source }
@@ -17,7 +27,7 @@ function fixture(executionId: string) {
 describe('Codex approval provider replay', () => {
   it.each(['notifications', 'history'] as const)(
     'delivers one native callback and settles the original turn through %s', async completion => {
-      const f = fixture('approval-worker')
+      const f = fixture('approval-worker', completion)
       const abort = new AbortController()
       let settled: Promise<unknown> | undefined
       try {
