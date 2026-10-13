@@ -430,13 +430,23 @@ it.each([
   }
 })
 
-it.each(['typecheck', 'integration'] as const)('reports a missing generic %s script through MCP and persisted readback', async suite => {
-  const repository = await genericCiRepository()
+it.each([
+  ['typecheck', 0], ['typecheck', 1250], ['integration', 0], ['integration', 1250],
+] as const)(
+  'reports a missing generic %s script through MCP and persisted readback after a %i ms launch delay',
+  async (suite, launchDelayMs) => {
+  const repository = await genericCiRepository({ beforeLaunch: async () => {
+    // eslint-disable-next-line no-restricted-syntax
+    await new Promise(resolve => setTimeout(resolve, launchDelayMs))
+  } })
   const f = await fixture({ repositoryRunner: repository })
   try {
-    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite, commandId: `missing-${suite}` }))
+    const input = { suite, commandId: `missing-${suite}` }
+    const reader = await f.connect(CI_GET_ACTIONS)
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
     await expect.poll(async () => CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get',
-      { ticketId: started.ticketId })).run.state).toBe('failed')
+      { ticketId: started.ticketId })).run.state, { timeout: 10_000 }).toBe('failed')
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
     expect(read.run).toMatchObject({ state: 'failed', part: null, partition: null,
       message: `The repository has no "${suite}" script for the ${suite} suite.` })
