@@ -54,6 +54,8 @@ const startupFile = 'apps/api/test/dev-startup.integration.test.ts'
 export const exclusiveIntegrationFiles = [startupFile,
   // Checkpoint routing must settle within its fixed deadline under CI load.
   'apps/api/test/eng03-b-durability-routing.integration.test.ts',
+  // Pending settlement and sibling approval resume share a fixed completion deadline.
+  'apps/api/test/engine-pending-sibling-settlement.integration.test.ts',
   // Two sequential native executions must settle within the fixed completion deadline.
   'apps/api/test/computer-workflow-save.regression-directories.integration.test.ts',
   // Sequential native startup and decision delivery share the fixed file deadline.
