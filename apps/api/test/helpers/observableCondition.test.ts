@@ -84,3 +84,27 @@ it('rechecks subscribed conditions when progress has no commit notification', as
   expect(unsubscribe).toHaveBeenCalledTimes(2)
   expect(vi.getTimerCount()).toBe(0)
 })
+
+it('observes subscribed external progress before a short deadline', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
+  const started = performance.now()
+  let ready = false
+  let completedAfter: number | undefined
+  const unsubscribe = vi.fn()
+  const read = vi.fn(async () => ready)
+  setTimeout(() => { ready = true }, 10)
+  const result = readUntil(read, Boolean, {
+    timeoutMs: 100,
+    description: 'external fixture progress',
+    subscribe: () => unsubscribe,
+  }).then(value => {
+    completedAfter = performance.now() - started
+    return value
+  })
+  await vi.advanceTimersByTimeAsync(100)
+  await expect(result).resolves.toBe(true)
+  expect(completedAfter).toBe(25)
+  expect(read).toHaveBeenCalledTimes(2)
+  expect(unsubscribe).toHaveBeenCalledTimes(2)
+  expect(vi.getTimerCount()).toBe(0)
+})
