@@ -1,7 +1,7 @@
-import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
+import { SOURCE_MATERIALIZATION_RECORD_MAX_BYTES, type SourceManifest } from '@foreman-code/contracts/source-materialization'
 
 const entryAllowance = 8192
-const metadataAllowance = 2 * 1024 * 1024
+const metadataAllowance = SOURCE_MATERIALIZATION_RECORD_MAX_BYTES
 
 export function sourceStructureBytes(paths: readonly string[], copies = 1): number {
   const directories = new Set<string>()

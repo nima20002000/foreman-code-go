@@ -162,12 +162,19 @@ function resolveRequestUrl(baseUrl: string, path: string): string {
 export class ApiClient {
   private readonly baseUrl: string
   private readonly fetchImpl?: FetchLike
+  private runtimeCompatibility?: () => boolean
 
   constructor(options: ApiClientOptions = {}) {
     this.baseUrl = options.baseUrl ?? ''
     // Do not bind the global fetch at module construction time: the unit-test
     // interceptor starts during the setup hook after modules load.
     this.fetchImpl = options.fetch
+  }
+
+  /** Query remains the owner of build facts; the client reads them at the request boundary. */
+  bindRuntimeCompatibility(check: () => boolean): () => void {
+    this.runtimeCompatibility = check
+    return () => { if (this.runtimeCompatibility === check) this.runtimeCompatibility = undefined }
   }
 
   async request<T>(
@@ -200,6 +207,10 @@ export class ApiClient {
     options: RequestOptions & { method?: string; body?: unknown }): Promise<T> {
     const { body, method = 'GET', headers, signal, ...init } = options
     const generation = sessionGeneration()
+    const identityRead = path === '/api/runtime/identity' || path === '/api/runtime/build-identity/v1' || path === '/api/local-human'
+    if (!identityRead && this.runtimeCompatibility?.() === false) {
+      throw new ApiError({ code: 'APP_UPDATED', message: 'The app has updated. Your pending changes are kept until the app can reload.' }, 409)
+    }
     if (sessionIsSwitching()) throw new SessionChangedError()
     const requestSignal = signal ? AbortSignal.any([signal, sessionSignal()]) : sessionSignal()
     const requestHeaders = new Headers(headers)

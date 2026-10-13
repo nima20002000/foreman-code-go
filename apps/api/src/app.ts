@@ -5,7 +5,7 @@ import {
   ApiErrorResponseSchema,
   ServiceHealthSchema,
   type ServiceHealth,
-  type RuntimeIdentity,
+  type RuntimeIdentity, type RuntimeBuildIdentity, RuntimeBuildIdentitySchema, frozenRuntimeIdentity,
 } from '@foreman-code/contracts'
 import Fastify, { LogController, type FastifyBaseLogger, type FastifyInstance } from 'fastify'
 import { localhostHostValidation, localhostOriginValidation } from '@modelcontextprotocol/fastify'
@@ -37,6 +37,7 @@ export interface ReadinessDependencies {
 
 export interface BuildAppOptions {
   runtimeIdentity?: () => Promise<RuntimeIdentity>
+  runtimeBuildIdentity?: () => RuntimeBuildIdentity
   localHuman?: LocalHumanAccess
   browserOrigin?: string
   readiness: ReadinessDependencies
@@ -153,8 +154,15 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   )
 
   if (options.runtimeIdentity) {
-    app.get('/health/identity', async (_request, reply) => { reply.header('cache-control', 'no-store'); return options.runtimeIdentity!() })
-    app.get('/api/runtime/identity', async (_request, reply) => { reply.header('cache-control', 'no-store'); return options.runtimeIdentity!() })
+    app.get('/health/identity', async (_request, reply) => { reply.header('cache-control', 'no-store'); return frozenRuntimeIdentity(await options.runtimeIdentity!()) })
+    app.get('/api/runtime/identity', async (_request, reply) => { reply.header('cache-control', 'no-store'); return frozenRuntimeIdentity(await options.runtimeIdentity!()) })
+  }
+
+  if (options.runtimeBuildIdentity) {
+    app.get('/api/runtime/build-identity/v1', async (_request, reply) => {
+      reply.header('cache-control', 'no-store')
+      return RuntimeBuildIdentitySchema.parse(options.runtimeBuildIdentity!())
+    })
   }
 
   app.get('/health/live', async () => ServiceHealthSchema.parse({ status: 'ok', service: 'graphql-api' }))

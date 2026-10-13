@@ -5,6 +5,7 @@
   "type": "module",
   "files": ["dist"],
   "exports": {
+    "./runtime-build-identity-node": { "types": "./dist/runtimeBuildIdentityNode.d.mts", "import": "./dist/runtimeBuildIdentityNode.mjs" },
     "./worktree-settings": { "types": "./dist/worktreeSettings.d.ts", "import": "./dist/worktreeSettings.js" },
     "./workspace-git": { "types": "./dist/workspaceGit.d.ts", "import": "./dist/workspaceGit.js" },
     "./provider-accounts": { "types": "./dist/providerAccounts.d.ts", "import": "./dist/providerAccounts.js" },
