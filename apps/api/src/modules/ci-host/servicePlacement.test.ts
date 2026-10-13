@@ -84,7 +84,7 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
         if (reason === 'offline' || reason === 'extension-rejected') throw new Error(reason)
         return { operation: 'status', ready: !reason, reasons: reason ? [reason] : [],
           cpuCount: options.cpuCounts?.get(computer.key) ?? 8,
-          memoryBytes: (options.cpuCounts?.get(computer.key) ?? 16) * 2 ** 30, runs: [],
+          memoryBytes: (options.cpuCounts?.get(computer.key) ?? 16) * 2 * 2 ** 30, runs: [],
           slotsTotal: slots.get(computer.key) ?? 1, slotsUsed: occupied.has(computer.key) ? 1 : 0 }
       }
       if (request.operation !== 'start') throw new Error('Unexpected fixture request')

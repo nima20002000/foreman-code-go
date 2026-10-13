@@ -29,7 +29,7 @@ it.each(['mcp', 'http'] as const)('dispatches affected smoke selections with val
     expect(CiHostRequestSchema.safeParse(f.started[0]!.request).success).toBe(true)
     expect(f.started).toEqual([{ computer: computer.label, request: expect.objectContaining({
       operation: 'start', runId: started.ticketId, scope: 'full', gate: true,
-      files: input.files, integrationShards: 16,
+      files: input.files, integrationShards: 7,
     }) }])
     const stored = (await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
       [started.ticketId])).rows[0]!.record
@@ -53,14 +53,14 @@ it('targets one smoke computer through authenticated MCP and HTTP with grants, r
       const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
       expect(read.run.computer?.hostRef).toEqual(computer.hostRef)
       expect(CiHostRequestSchema.safeParse(f.started.at(-1)!.request).success).toBe(true)
-      expect(read.run).toMatchObject({ smokeComputer: computer.hostRef, integrationShards: 16 })
+      expect(read.run).toMatchObject({ smokeComputer: computer.hostRef, integrationShards: 7 })
       expect(f.started.at(-1)).toMatchObject({ computer: computer.label,
-        request: { operation: 'start', runId: started.ticketId, integrationShards: 16 } })
+        request: { operation: 'start', runId: started.ticketId, integrationShards: 7 } })
       const stored = (await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
         [started.ticketId])).rows[0]!.record
       const retainedReleaseSchema = z.object(CiRunRecordSchema.shape).omit({ smokeComputer: true }).strict()
       expect(retainedReleaseSchema.safeParse(stored).success).toBe(true)
-      expect(CiRunRecordSchema.parse(stored).integrationShards).toBe(16)
+      expect(CiRunRecordSchema.parse(stored).integrationShards).toBe(7)
       f.finish(started.ticketId, 0, 'one test passed')
       expect(CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId })).run.state)
         .toBe('passed')
@@ -76,6 +76,31 @@ it('targets one smoke computer through authenticated MCP and HTTP with grants, r
       headers: { authorization: `Bearer ${token.token}` } })
     expect(httpRead.json().run.smokeComputer).toEqual(f.computers[1]!.hostRef)
     expect(httpRead.json().run.computer.hostRef).toEqual(f.computers[1]!.hostRef)
+  } finally { await f.close() }
+})
+
+it('persists two memory-limited shards through authenticated MCP on a sixteen-CPU host', async () => {
+  const f = await fixture()
+  try {
+    const requestHost = f.endpoint.request.bind(f.endpoint)
+    f.endpoint.request = async (computer, request) => {
+      const reply = await requestHost(computer, request)
+      return reply.operation === 'status' ? { ...reply, cpuCount: 16, memoryBytes: 6 * 2 ** 30 } : reply
+    }
+    const reader = await f.connect(CI_GET_ACTIONS)
+    const input = {
+      suite: 'integration', scope: 'affected', commit: 'a'.repeat(40), commandId: 'memory-limited-smoke',
+      files: ['apps/api/test/ci-smoke.integration.test.ts'], smokeComputer: f.computers[0]!.hostRef,
+    }
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    expect(f.started).toHaveLength(0)
+    const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
+    const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
+    expect(read.run).toMatchObject({ state: 'running', integrationShards: 2 })
+    expect(f.started[0]!.request).toMatchObject({ operation: 'start', integrationShards: 2 })
+    const stored = (await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
+      [started.ticketId])).rows[0]!.record
+    expect(CiRunRecordSchema.parse(stored).integrationShards).toBe(2)
   } finally { await f.close() }
 })
 
