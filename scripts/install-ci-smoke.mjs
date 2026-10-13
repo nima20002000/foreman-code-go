@@ -6,17 +6,20 @@ import { isDeepStrictEqual } from 'node:util'
 
 const smokeFile = 'apps/api/test/ci-smoke.integration.test.ts'
 
-function httpClient(origin, signal, timeoutMs) {
+function httpClient(origin, signal, timeoutMs, token) {
   return async (path, options = {}) => {
     const timeout = AbortSignal.timeout(timeoutMs)
     try {
       const response = await fetch(`${origin}${path}`, { ...options,
-        headers: { origin, 'content-type': 'application/json' },
+        headers: { origin, 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
         signal: AbortSignal.any([signal, timeout]) })
       const body = await response.text()
       if (!response.ok) throw new Error(`${options.method ?? 'GET'} ${path}: HTTP ${response.status}: ${body}`)
       return body ? JSON.parse(body) : {}
     } catch (error) {
+      if (token && error.message.includes(token)) {
+        error = new Error(error.message.replaceAll(token, '[redacted]'))
+      }
       if (timeout.aborted || signal.reason?.name === 'TimeoutError') {
         throw new Error(`${options.method ?? 'GET'} ${path} timed out: ${error.message}`)
       }
@@ -40,11 +43,11 @@ function smokeTargets(computers) {
   })
 }
 
-export async function runInstallCiSmoke({ origin, workspaceId, commit, probeDurationMs = 30_000,
+export async function runInstallCiSmoke({ origin, workspaceId, commit, token, probeDurationMs = 30_000,
   timeoutMs = 165_000, requestTimeoutMs = 5000, pollMs = 1000 }) {
   const controller = new AbortController()
   const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)])
-  const request = httpClient(origin, signal, requestTimeoutMs)
+  const request = httpClient(origin, signal, requestTimeoutMs, token)
   const root = `/api/management/workspaces/${encodeURIComponent(workspaceId)}/ci`
   const tickets = new Set()
   let ciFinished = false
@@ -105,8 +108,11 @@ export async function runInstallCiSmoke({ origin, workspaceId, commit, probeDura
   try {
     await Promise.all([probes(), run()])
   } catch (error) {
+    if (token && error.message.includes(token)) {
+      error = new Error(error.message.replaceAll(token, '[redacted]'))
+    }
     controller.abort(error)
-    const cleanup = httpClient(origin, AbortSignal.timeout(3000), 3000)
+    const cleanup = httpClient(origin, AbortSignal.timeout(3000), 3000, token)
     await Promise.all([...tickets].map(async ticketId => {
       try { await cleanup(`${root}/${ticketId}`, { method: 'DELETE' }) }
       catch (failure) { console.error(`CI smoke cancellation ${ticketId}: ${failure.message}`) }
@@ -118,13 +124,14 @@ export async function runInstallCiSmoke({ origin, workspaceId, commit, probeDura
   }
 }
 
-export async function runProductionCiSmoke({ origin, release }) {
+export async function runProductionCiSmoke({ origin, release, token, ...smokeOptions }) {
   if (process.env.FOREMAN_INSTALL_SKIP_CI_SMOKE === '1') {
     console.log('CI smoke explicitly skipped (FOREMAN_INSTALL_SKIP_CI_SMOKE=1).')
     return
   }
   const { repository, commit } = JSON.parse(await readFile(join(release, 'ci-smoke.json'), 'utf8'))
-  const request = httpClient(origin, AbortSignal.timeout(5000), 5000)
+  if (!token) throw new Error('Production CI smoke requires an application credential.')
+  const request = httpClient(origin, AbortSignal.timeout(5000), 5000, token)
   let cursor
   let workspace
   do {
@@ -134,6 +141,6 @@ export async function runProductionCiSmoke({ origin, release }) {
     cursor = page.pageInfo.nextCursor
   } while (!workspace && cursor)
   if (!workspace) throw new Error(`CI smoke requires a configured workspace for ${repository}.`)
-  await runInstallCiSmoke({ origin, workspaceId: workspace.workspace.id, commit })
+  await runInstallCiSmoke({ ...smokeOptions, origin, workspaceId: workspace.workspace.id, commit, token })
   console.log('CI smoke passed: responsive API, consecutive admissions and every ready executor.')
 }
