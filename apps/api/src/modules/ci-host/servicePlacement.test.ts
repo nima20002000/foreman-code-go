@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
-import { CiHostRequestSchema, CiRunRecordSchema, type CiHostRequest, type CiRunRecord } from '@foreman-code/contracts'
-import { expect, it } from 'vitest'
+import { CiHostRequestSchema, CiRunRecordSchema, type CiDurations, type CiHostRequest, type CiRunRecord } from '@foreman-code/contracts'
+import { afterEach, expect, it, vi } from 'vitest'
 import { HostCiService, type CiCommits, type HostCiComputer, type HostCiEndpoint } from './service.js'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { CiAuthority } from '../jobs/ciAuthority.js'
+
+afterEach(() => { vi.restoreAllMocks() })
 
 const host: HostCiComputer = {
   key: 'main:builder', hostRef: { kind: 'main', mainId: 'main' }, label: 'Builder', priority: 0,
@@ -26,13 +28,18 @@ function queuedRuns(count: number) {
 }
 
 function fleet(records: CiRunRecord[], available: HostCiComputer[],
-  unavailable = new Map<string, string>(), occupied = new Set<string>(), slots = new Map<string, number>()) {
+  unavailable = new Map<string, string>(), occupied = new Set<string>(), slots = new Map<string, number>(),
+  options: { cpuCounts?: Map<string, number>; durations?: CiDurations; reservedCloudSlots?: number } = {}) {
   const started: { computer: HostCiComputer; request: CiHostRequest; assigned: CiRunRecord }[] = []
   let writes = 0
   const pool = { options: { max: 10 }, query: async (sql: string, parameters?: unknown[]) => {
     if (sql.startsWith('select pg_try_advisory_xact_lock')) return { rows: [{ acquired: true }] }
     if (sql.startsWith('select record from ci_runs where id=')) {
       return { rows: records.filter(record => record.id === parameters![0]).map(record => ({ record })) }
+    }
+    if (sql.startsWith('insert into ci_runs')) {
+      records.push(CiRunRecordSchema.parse(JSON.parse(parameters![3] as string)))
+      return { rows: [], rowCount: 1 }
     }
     if (sql.startsWith('update ci_runs')) {
       writes++
@@ -46,6 +53,9 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
         return { rows, rowCount: rows.length }
       }
       const record = CiRunRecordSchema.parse(JSON.parse(parameters![3] as string))
+      const previous = records.find(item => item.id === record.id)
+      if (sql.includes("state='queued'") && (previous?.state !== 'queued'
+        || JSON.stringify(previous) !== parameters![4])) return { rows: [], rowCount: 0 }
       records[records.findIndex(item => item.id === record.id)] = record
       return { rows: [], rowCount: 1 }
     }
@@ -56,7 +66,8 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
       return { rows: records.filter(record => !record.deferred).map(record => ({ group_id: record.groupId, state: record.state })) }
     }
     if (sql.includes("state='queued'")) {
-      return { rows: records.filter(record => record.state === 'queued').map(record => ({ record, durations: null })) }
+      return { rows: records.filter(record => record.state === 'queued')
+        .map(record => ({ record, durations: options.durations ?? null })) }
     }
     if (sql.includes("'gate'='true'")) {
       return { rows: records.filter(record => record.gate).map(record => ({ record })) }
@@ -72,7 +83,8 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
         const reason = unavailable.get(computer.key)
         if (reason === 'offline' || reason === 'extension-rejected') throw new Error(reason)
         return { operation: 'status', ready: !reason, reasons: reason ? [reason] : [],
-          cpuCount: 8, memoryBytes: 16 * 2 ** 30, runs: [],
+          cpuCount: options.cpuCounts?.get(computer.key) ?? 8,
+          memoryBytes: (options.cpuCounts?.get(computer.key) ?? 16) * 2 ** 30, runs: [],
           slotsTotal: slots.get(computer.key) ?? 1, slotsUsed: occupied.has(computer.key) ? 1 : 0 }
       }
       if (request.operation !== 'start') throw new Error('Unexpected fixture request')
@@ -83,7 +95,8 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[],
         exitCode: null, startedAt: '2026-10-12T00:00:01.000Z', finishedAt: null, logBytes: 0, message: null } }
     },
   }
-  const service = new HostCiService(pool, {} as PostgresCommandCoordinator, {} as CiAuthority, {} as CiCommits, endpoint)
+  const service = new HostCiService(pool, {} as PostgresCommandCoordinator, {} as CiAuthority, {} as CiCommits,
+    endpoint, undefined, options)
   return { service, started, writes: () => writes }
 }
 
@@ -92,6 +105,104 @@ const gateChecks = [
   { suite: 'lint', part: 'lint-api' },
   { suite: 'unit', part: 'unit-api' },
 ] as const
+
+function buildGateRun(files = ['apps/api/test/feature.integration.test.ts']) {
+  return CiRunRecordSchema.parse({ ...queuedRuns(1)[0], gate: true, noSupersede: true,
+    priority: 'high', priorityReason: 'gate', plannedHostKey: host.key, integrationShards: 12,
+    expectedDurationMs: 300_000, files, requiresBuildComputer: false })
+}
+
+it.each(['not-ready', 'offline', 'disabled'])(
+  'keeps a build-sized gate part off cloud while its planned computer is %s during the grace period', async reason => {
+    const records = [buildGateRun()]
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse(records[0]!.queuedAt) + 90_000)
+    const available = reason === 'disabled' ? [cloud] : [host, cloud]
+    const f = fleet(records, available, new Map([[host.key, reason]]), new Set(), new Map(),
+      { cpuCounts: new Map([[cloud.key, 4]]) })
+    await f.service.dispatch()
+    expect(f.started).toEqual([])
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({ state: 'queued', plannedHostKey: host.key, integrationShards: 12 })
+  })
+
+it.each([8, 12, 16])('requires planned capacity before a %i-shard spare can steal a build gate part', async cpuCount => {
+  const replacement: HostCiComputer = { key: 'device:spare', label: 'Spare builder', priority: 0,
+    hostRef: { kind: 'device', mainId: 'main', deviceId: 'spare' } }
+  const records = [buildGateRun()]
+  const elapsed = cpuCount >= 12 ? 91_000 : 30_000
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse(records[0]!.queuedAt) + elapsed)
+  const f = fleet(records, [host, replacement, cloud], new Map([[host.key, 'not-ready']]), new Set(), new Map(),
+    { cpuCounts: new Map([[replacement.key, cpuCount], [cloud.key, 4]]) })
+  await f.service.dispatch()
+  expect(f.started).toHaveLength(cpuCount >= 12 ? 1 : 0)
+  if (cpuCount >= 12) {
+    expect(f.started[0]?.computer.key).toBe(replacement.key)
+    expect(f.started[0]?.request).toMatchObject({ files: records[0]!.files, integrationShards: cpuCount })
+    expect(records[0]).toMatchObject({ plannedHostKey: host.key, integrationShards: 12 })
+  } else expect(records[0]?.state).toBe('queued')
+})
+
+it('uses the spare build allowance when checking capacity for a gate takeover', async () => {
+  const replacement: HostCiComputer = { key: 'device:spare', label: 'Spare builder', priority: 0,
+    hostRef: { kind: 'device', mainId: 'main', deviceId: 'spare' }, buildAllowancePercent: 50 }
+  const records = [buildGateRun()]
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse(records[0]!.queuedAt) + 30_000)
+  const f = fleet(records, [host, replacement], new Map(), new Set([host.key]), new Map(),
+    { cpuCounts: new Map([[replacement.key, 16]]) })
+  await f.service.dispatch()
+  expect(f.started).toEqual([])
+  expect(records[0]).toMatchObject({ state: 'queued', plannedHostKey: host.key, integrationShards: 12 })
+})
+
+it('splits an unavailable build gate after 90 seconds by file duration and fills only free unreserved cloud slots', async () => {
+  const files = Array.from({ length: 80 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)
+  const durations = Object.fromEntries(files.map((file, index) => [file, index < 24 ? 60_000 : 5_000]))
+  const records = [buildGateRun(files)]
+  const original = { ...records[0]! }
+  const clouds = Array.from({ length: 4 }, (_, slot) => ({ ...cloud, key: `cloud:circleci:${slot}`,
+    hostRef: { ...cloud.hostRef, slot } }))
+  const occupied = new Set([clouds[2]!.key])
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse(original.queuedAt) + 90_001)
+  const f = fleet(records, [host, ...clouds], new Map([[host.key, 'not-ready']]), occupied, new Map(),
+    { durations, cpuCounts: new Map(clouds.map(computer => [computer.key, 4])), reservedCloudSlots: 1 })
+  await f.service.dispatch()
+  expect(records.length).toBeGreaterThan(1)
+  expect(records.some(record => record.id === original.id)).toBe(true)
+  expect(records.flatMap(record => record.files).sort()).toEqual([...files].sort())
+  for (const record of records) {
+    expect(record).toMatchObject({ groupId: original.groupId, workspaceId: original.workspaceId,
+      commit: original.commit, gate: true, noSupersede: true, queuedAt: original.queuedAt,
+      integrationShards: 4, partition: null, initiator: original.initiator })
+    const measured = record.files.reduce((sum, file) => sum + durations[file]!, 0)
+    expect(measured).toBeLessThanOrEqual(240_000)
+    expect(record.expectedDurationMs).toBe(90_000 + measured)
+  }
+  expect(f.started).toHaveLength(2)
+  expect(f.started.map(item => item.computer.key).sort()).toEqual([clouds[0]!.key, clouds[1]!.key])
+  expect(records.filter(record => record.state === 'queued').length).toBeGreaterThan(0)
+  for (const item of f.started) {
+    expect(item.request).toMatchObject({ operation: 'start', gate: true, scope: 'full', integrationShards: 4,
+      durations, files: item.assigned.files })
+    expect(item.assigned.files.length).toBeLessThan(files.length)
+  }
+  const ids = records.map(record => record.id).sort()
+  for (const record of records.filter(record => record.state === 'running')) record.state = 'passed'
+  for (const computer of clouds) occupied.add(computer.key)
+  await f.service.dispatch()
+  expect(records.map(record => record.id).sort()).toEqual(ids)
+  expect(f.started).toHaveLength(2)
+})
+
+it('keeps an expired build gate intact while its planned computer is ready but occupied', async () => {
+  const records = [buildGateRun()]
+  vi.spyOn(Date, 'now').mockReturnValue(Date.parse(records[0]!.queuedAt) + 91_000)
+  const f = fleet(records, [host, cloud], new Map(), new Set([host.key]), new Map(),
+    { cpuCounts: new Map([[cloud.key, 4]]) })
+  await f.service.dispatch()
+  expect(f.started).toEqual([])
+  expect(records).toHaveLength(1)
+  expect(records[0]).toMatchObject({ state: 'queued', plannedHostKey: host.key })
+})
 
 it.each(gateChecks)('runs a gate $suite part on another free slot of its planned provider', async check => {
   const planned: HostCiComputer = { ...cloud, key: 'cloud:github:0', label: 'GitHub slot 0',
@@ -187,12 +298,13 @@ it.each([
         computer: { hostRef: replacement.hostRef, label: replacement.label },
         startedAt: '2026-10-12T00:00:01.000Z', finishedAt: '2026-10-12T00:01:00.000Z' })
     } else records.pop()
-    const f = fleet(records, [host, replacement, cloud], new Map(), new Set([host.key]))
+    const f = fleet(records, [host, replacement, cloud], new Map(), new Set([host.key]), new Map(),
+      { cpuCounts: new Map([[replacement.key, 32]]) })
     await f.service.dispatch()
     expect(f.started).toHaveLength(1)
     expect(f.started[0]?.computer.key).toBe(replacement.key)
     expect(f.started[0]?.request).toMatchObject({ operation: 'start', runId: records[0]!.id,
-      suite: 'integration', gate: true, scope: 'full', files: records[0]!.files, integrationShards: 8 })
+      suite: 'integration', gate: true, scope: 'full', files: records[0]!.files, integrationShards: 32 })
     expect(f.started[0]?.assigned).toMatchObject({ state: 'starting', step: 'dispatch',
       plannedHostKey: host.key, integrationShards: 32, expectedDurationMs: 120_000,
       computer: { hostRef: replacement.hostRef }, dispatchHostKey: replacement.key,
@@ -219,7 +331,8 @@ it.each(['queued-own-part', 'occupied-slot', 'not-ready'])(
     if (reason === 'occupied-slot') occupied.add(replacement.key)
     const unavailable = new Map<string, string>()
     if (reason === 'not-ready') unavailable.set(replacement.key, reason)
-    const f = fleet(records, [host, replacement, cloud], unavailable, occupied, new Map([[replacement.key, 2]]))
+    const f = fleet(records, [host, replacement, cloud], unavailable, occupied, new Map([[replacement.key, 2]]),
+      { cpuCounts: new Map([[replacement.key, 32]]) })
     await f.service.dispatch()
     expect(records[0]).toMatchObject({ state: 'queued', computer: null })
     expect(f.started).toHaveLength(reason === 'queued-own-part' ? 1 : 0)
@@ -239,14 +352,15 @@ it.each(['not-ready', 'offline', 'extension-rejected', 'disabled'])(
       hostRef: { kind: 'device', mainId: 'main', deviceId: 'replacement' } }
     const available = [host, replacement, cloud]
     const unavailable = new Map<string, string>()
-    const f = fleet(records, available, unavailable, new Set([host.key]))
+    const f = fleet(records, available, unavailable, new Set([host.key]), new Map(),
+      { cpuCounts: new Map([[replacement.key, 32]]) })
     if (reason === 'disabled') available.splice(0, 1)
     else unavailable.set(host.key, reason)
     await f.service.dispatch()
     expect(f.started).toHaveLength(1)
     expect(f.started[0]?.computer.key).toBe(replacement.key)
     expect(f.started[0]?.request).toMatchObject({ operation: 'start', runId: records[0]!.id,
-      gate: true, files: records[0]!.files, integrationShards: 8 })
+      gate: true, files: records[0]!.files, integrationShards: 32 })
     expect(records[0]).toMatchObject({ state: 'running', plannedHostKey: host.key, integrationShards: 32,
       computer: { hostRef: replacement.hostRef } })
     expect(records[0]?.files).toEqual(['apps/api/test/workflow.integration.test.ts'])
@@ -254,7 +368,7 @@ it.each(['not-ready', 'offline', 'extension-rejected', 'disabled'])(
   },
 )
 
-it.each([false, true])('reassigns a systemd gate part only to a capable cloud slot: supported=%s', async supported => {
+it.each([false, true])('splits an expired systemd gate part only onto a capable cloud slot: supported=%s', async supported => {
   const records = queuedRuns(1).map(run => CiRunRecordSchema.parse({ ...run, gate: true,
     plannedHostKey: host.key, partition: null, integrationShards: 32, requiresBuildComputer: true,
     files: ['apps/api/test/native-service-restart.integration.test.ts'],
@@ -268,7 +382,7 @@ it.each([false, true])('reassigns a systemd gate part only to a capable cloud sl
     expect(f.started[0]?.computer.key).toBe(cloud.key)
     expect(f.started[0]?.request).toMatchObject({ gate: true, files: records[0]!.files, integrationShards: 8 })
     expect(records[0]?.computer?.hostRef).toEqual(cloud.hostRef)
-    expect(records[0]).toMatchObject({ plannedHostKey: host.key, integrationShards: 32 })
+    expect(records[0]).toMatchObject({ plannedHostKey: cloud.key, integrationShards: 8 })
   }
 })
 

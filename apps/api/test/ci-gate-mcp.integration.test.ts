@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
-import { CiGetOutputSchema, CiRunOutputSchema, exclusiveIntegrationFiles, userSystemdIntegrationFiles,
+import { CiGetOutputSchema, CiRunOutputSchema, CiRunRecordSchema, exclusiveIntegrationFiles, userSystemdIntegrationFiles,
   type CiHostRun, type CiHostRequest } from '@foreman-code/contracts'
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 import pg from 'pg'
@@ -23,7 +23,7 @@ beforeEach(async () => {
 })
 
 async function fixture(options: { cloudSlots?: number; files?: string[]; offlineKey?: string; pool?: pg.Pool;
-  occupiedKeys?: Set<string>; allowance?: number } = {}) {
+  occupiedKeys?: Set<string>; unavailableKeys?: Set<string>; allowance?: number } = {}) {
   const pool = options.pool ?? database.pool
   const workspaceId = randomUUID()
   await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId,
@@ -54,7 +54,8 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
     computers: async () => computers,
     request: async (computer, request) => {
       if (computer.key === options.offlineKey) throw new Error('Computer disconnected')
-      if (request.operation === 'status') return { operation: 'status', ready: true, reasons: [],
+      if (request.operation === 'status') return { operation: 'status', ready: !options.unavailableKeys?.has(computer.key),
+        reasons: options.unavailableKeys?.has(computer.key) ? ['Worker draining'] : [],
         cpuCount: computer.hostRef.kind === 'cloud' ? 4 : 16, memoryBytes: 16 * 2 ** 30,
         slotsTotal: computer.hostRef.kind === 'cloud' ? 1 : 2,
         slotsUsed: options.occupiedKeys?.has(computer.key) ? 1 : 0, runs: [] }
@@ -110,12 +111,62 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
     }
     throw new Error('The gate did not finish every assigned job')
   }
-  return { ci, started, files, computers, connect, call, value, operator, finishGate, close: async () => {
+  return { ci, started, files, computers, workspaceId, connect, call, value, operator, finishGate, close: async () => {
     await Promise.all(clients.map(client => client.close()))
     await ci.close()
     await app.close()
   } }
 }
+
+it('keeps a draining build gate off cloud until the grace expires, then persists and completes its cloud parts through MCP', async () => {
+  const files = Array.from({ length: 80 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)
+  const durations = Object.fromEntries(files.map((file, index) => [file, index < 24 ? 60_000 : 5_000]))
+  const f = await fixture({ cloudSlots: 4, files,
+    unavailableKeys: new Set(['builder-main', 'builder-paired']) })
+  const now = Date.now()
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(now)
+  try {
+    const reader = await f.connect(true)
+    expect((await f.call(reader, 'ci_run', { suite: 'integration', scope: 'full', gate: true,
+      commandId: randomUUID() })).isError).toBe(true)
+    expect((await database.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
+    const root = CiRunRecordSchema.parse({ id: randomUUID(), workspaceId: f.workspaceId, groupId: randomUUID(),
+      suite: 'integration', part: null, partition: null, scope: 'full', files,
+      repository: 'octo/site', commit: 'a'.repeat(40), gate: true, noSupersede: true,
+      plannedHostKey: 'builder-main', integrationShards: 16, expectedDurationMs: 300_000,
+      priority: 'high', priorityReason: 'gate', state: 'queued', computer: null, step: null,
+      exitCode: null, message: null, queuedAt: new Date(now).toISOString(), startedAt: null, finishedAt: null,
+      initiator: { principalId: 'operator', executionId: null }, requiresBuildComputer: false })
+    await database.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record,durations)
+      values($1,$2,$3,'queued',$4::jsonb,$5::jsonb)`,
+    [root.id, root.workspaceId, root.groupId, JSON.stringify(root), JSON.stringify(durations)])
+    clock.mockReturnValue(now + 90_000)
+    await f.ci.dispatch()
+    expect(f.started).toEqual([])
+    expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: root.id })).run)
+      .toMatchObject({ state: 'queued', files, plannedHostKey: 'builder-main', integrationShards: 16 })
+    clock.mockReturnValue(now + 90_001)
+    await f.ci.dispatch()
+    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: root.id }))
+    expect(read.partitions!.length).toBeGreaterThan(4)
+    expect(read.partitions!.flatMap(run => run.files).sort()).toEqual([...files].sort())
+    expect(f.started).toHaveLength(4)
+    for (const run of read.partitions!) {
+      expect(run).toMatchObject({ gate: true, groupId: root.groupId, integrationShards: 4,
+        plannedHostKey: expect.stringMatching(/^cloud-/), partition: null })
+      const stored = (await database.pool.query('select record from ci_runs where id=$1', [run.id])).rows[0].record
+      expect(stored).toEqual(run)
+    }
+    await f.finishGate(root.id)
+    const finished = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: root.id }))
+    expect(finished.group?.state).toBe('passed')
+    const executed = f.started.flatMap(item => item.request.operation === 'start' ? item.request.files ?? [] : [])
+    expect(executed.sort()).toEqual([...files].sort())
+  } finally {
+    clock.mockRestore()
+    await f.close()
+  }
+})
 
 it('persists gate check reassignment to an idle build computer through MCP when cloud slots are busy', async () => {
   const occupiedKeys = new Set(['cloud-0', 'cloud-1'])

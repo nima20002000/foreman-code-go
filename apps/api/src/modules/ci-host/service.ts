@@ -22,6 +22,7 @@ import { fallbackOnError } from '../diagnostics/ignoredError.js'
 import { CI_QUEUE_ORDER, ciQueueReason, compareCiQueue } from './priority.js'
 import { prepareCiSupersession, validateCiSupersession, supersedeCiRuns } from './supersession.js'
 import { gatePartStealer, gateQueueBlock, planCiGate, readCiComputerStatus } from './gate.js'
+import { buildComputerGatePart, splitUnavailableGateParts } from './gateFallback.js'
 import { buildComputerIntegrationShards, gateDispatchShards } from './capacity.js'
 import { saveQueuedCiRun, ciMessages, withCiTicketLock } from './dispatch.js'
 import { reconcileCiHostStart, sendCiDispatch, type CiDispatchState } from './dispatchRecovery.js'
@@ -770,6 +771,19 @@ export class HostCiService {
       ? Number(needsSystemdExecutor(right)) - Number(needsSystemdExecutor(left)) : 0) || compareCiQueue(left, right))
     const stealsGatePart = gatePartStealer(computers, queued)
     const reservedCloud = reservedCloudSlotKeys(computers, this.reservedCloudSlots)
+    const canTakeGatePart = (run: CiRunRecord, computer: HostCiComputer) => {
+      if (!gateShards.has(computer.key)) return false
+      if (computer.key === run.plannedHostKey) return true
+      if (buildComputerGatePart(run, computers)) {
+        return computer.hostRef.kind !== 'cloud'
+          && gateShards.get(computer.key)! >= run.integrationShards!
+          && stealsGatePart(run, computer)
+      }
+      return !run.plannedHostKey || !gateShards.has(run.plannedHostKey) || stealsGatePart(run, computer)
+    }
+    queued = await splitUnavailableGateParts(this.pool, queued, { computers, shards: gateShards, durations,
+      reservedCloud, gate, freeSlots, canTake: canTakeGatePart,
+      idle: computer => (used.get(computer.key) ?? 0) === 0 })
     // Reserve slots before awaiting a start so concurrent dispatches cannot spend the same capacity.
     await Promise.all(queued.map(async run => {
       const smokeTarget = smokeTargets.get(run.groupId)
@@ -794,14 +808,12 @@ export class HostCiService {
       const selection = (run.gate || smokeTarget) && run.suite === 'integration'
         ? { gate: true, scope: 'full' as const, integrationShards: run.integrationShards!, files: run.files }
         : affectedFiles
-      const plannedGateReady = run.plannedHostKey && gateShards.has(run.plannedHostKey)
       const order = computers.filter(computer => runsOnCircleCi(run)
         || computer.hostRef.kind !== 'cloud' || computer.hostRef.provider !== 'circleci')
         .filter(computer => !hostRequired || supportsUserSystemd(computer))
         .filter(computer => !run.dispatchHostKey || computer.key === run.dispatchHostKey)
         .filter(computer => !smokeTarget || isDeepStrictEqual(computer.hostRef, smokeTarget))
-        .filter(computer => !run.gate || gateShards.has(computer.key)
-          && (!plannedGateReady || computer.key === run.plannedHostKey || stealsGatePart(run, computer)))
+        .filter(computer => !run.gate || canTakeGatePart(run, computer))
         .filter(computer => run.gate || computer.hostRef.kind === 'cloud' || !reservedHosts.has(computer.key))
         .filter(computer => computer.hostRef.kind !== 'cloud' || !computer.hostRef.provider
           || !run.unstartedProviders?.includes(computer.hostRef.provider))
