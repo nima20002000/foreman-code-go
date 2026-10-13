@@ -411,7 +411,7 @@ test('install keeps only the current and previous release', async () => {
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
-for (const failure of ['CI setup: missing package metadata', 'API response timed out', 'second ci_run timed out']) {
+for (const failure of ['CI setup: missing package metadata', 'API response timed out', 'second ci_run timed out', 'new API start failed']) {
   test(`install rolls back a healthy release when smoke reports ${failure}`, async () => {
     const directory = await mkdtemp(join(tmpdir(), 'production-ci-rollback-'))
     const current = join(directory, 'current')
@@ -432,7 +432,7 @@ for (const failure of ['CI setup: missing package metadata', 'API response timed
       let reported
       try {
         await waitForProductionReady({ origin, expected, timeoutMs: 1000,
-          smoke: async () => { throw new Error(failure) },
+          [failure === 'new API start failed' ? 'start' : 'smoke']: async () => { throw new Error(failure) },
           rollback: () => rename(join(directory, 'previous'), current) })
       } catch (error) { reported = error.message }
       assert.equal(await readlink(current), 'previous-release', 'A broken CI release must not stay active')

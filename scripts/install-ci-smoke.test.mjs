@@ -10,8 +10,11 @@ async function fixture(t, failure) {
     { hostRef: { kind: 'cloud', mainId: 'main', provider: 'github', slot: 0 }, ready: true },
     { hostRef: { kind: 'cloud', mainId: 'main', provider: 'github', slot: 1 }, ready: true },
     { hostRef: { kind: 'cloud', mainId: 'main', provider: 'circleci', slot: 0 }, ready: true },
-    { hostRef: { kind: 'main', mainId: 'main' }, ready: false },
   ]
+  if (failure === 'unready') {
+    computers[1].ready = false
+    computers[1].reasons = ['CI setup: git unavailable']
+  }
   const admissions = []
   const canceled = []
   let probes = 0
@@ -38,7 +41,8 @@ async function fixture(t, failure) {
     } else {
       const input = admissions[Number(request.url.split('-').at(-1)) - 1]
       const failed = failure === 'setup' && input?.smokeComputer?.deviceId === 'second'
-      response.end(JSON.stringify({ run: { state: failed ? 'failed' : 'passed', exitCode: failed ? 1 : 0,
+      response.end(JSON.stringify({ run: { state: failure === 'stall' && input?.smokeComputer ? 'running' : failed ? 'failed' : 'passed',
+        exitCode: failed ? 1 : 0,
         message: failed ? 'ERR_PNPM_NO_OFFLINE_META: package metadata missing' : null,
         computer: { hostRef: input?.smokeComputer }, files: input?.files },
         logTail: failed ? 'setup failed: ERR_PNPM_NO_OFFLINE_META' : 'one test passed' }))
@@ -78,3 +82,26 @@ for (const failure of ['setup', 'lock', 'stall']) {
     assert.ok(f.canceled.length > 0)
   })
 }
+
+test('CI smoke fails for an enabled build computer that became unready', async t => {
+  const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
+  const f = await fixture(t, 'unready')
+  await assert.rejects(runInstallCiSmoke({ ...options, origin: f.origin }), /CI setup: git unavailable/)
+  assert.equal(f.admissions.filter(input => input.smokeComputer).length, 0)
+})
+
+test('only the explicit install opt-out bypasses CI smoke', async t => {
+  const { runProductionCiSmoke } = await import('./install-ci-smoke.mjs')
+  const previous = process.env.FOREMAN_INSTALL_SKIP_CI_SMOKE
+  t.after(() => {
+    if (previous === undefined) delete process.env.FOREMAN_INSTALL_SKIP_CI_SMOKE
+    else process.env.FOREMAN_INSTALL_SKIP_CI_SMOKE = previous
+  })
+  const input = { origin: 'http://127.0.0.1:9', release: '/missing-release' }
+  process.env.FOREMAN_INSTALL_SKIP_CI_SMOKE = '1'
+  await runProductionCiSmoke(input)
+  for (const value of ['0', 'true', '']) {
+    process.env.FOREMAN_INSTALL_SKIP_CI_SMOKE = value
+    await assert.rejects(runProductionCiSmoke(input), { code: 'ENOENT' })
+  }
+})
