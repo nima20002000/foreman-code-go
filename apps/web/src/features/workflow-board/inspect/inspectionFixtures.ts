@@ -19,7 +19,6 @@ export async function inspectionBoardFixture(suffix = 'inspect', firstNodeId?: s
     source.version.definition.nodes[0]!.id = firstNodeId
     source.version.definition.entryNodeId = firstNodeId
     source.version.entryNodeId = firstNodeId
-    source.run.entryNodeId = firstNodeId
     if (source.version.definition.repeat) {
       source.version.definition.repeat.blocks = source.version.definition.repeat.blocks.map(block => ({ ...block,
         nodeIds: block.nodeIds.map(id => id === original ? firstNodeId : id),
