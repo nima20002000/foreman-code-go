@@ -1,4 +1,5 @@
 import type { RetainedSourceFootprint, SourceStorageCapacity } from '@foreman-code/contracts/source-operations'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import type { SourceWorktreeRequest } from '@foreman-code/contracts/source-materialization'
 import { createHash, randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
@@ -98,9 +99,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
     private readonly executions: SourceExecutionHostPort, private readonly closure: SourceClosureProofPort,
     private readonly lifecycle: SourceLifecycle = {}) {}
   private async transaction<T>(work: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
-    const sql = await this.pool.connect()
-    try { await sql.query('begin'); const result = await work(sql); await sql.query('commit'); return result }
-    catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
+    return withTransaction(this.pool, work)
   }
   private async host(sql: Sql): Promise<void> {
     const row = (await sql.query<{ id: string }>('select id from application_installation where singleton=true for share')).rows[0]

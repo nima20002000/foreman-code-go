@@ -1,4 +1,5 @@
 import { admitSessionMessage } from './sessionControls/messageAdmission.js'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import type { NativeMessageSubmission } from '../harnesses/port.js'
 import { recordNativeNonSubmission, type NativeNonSubmission } from './nativeNonSubmission.js'
 import { createHash, randomUUID } from 'node:crypto'
@@ -188,9 +189,7 @@ export class PostgresAgentChatRepository {
   }
   async ensureForControls(key: string, create: NewAgentConversation,
     authorize: (client: pg.PoolClient) => Promise<void>): Promise<AgentConversationRow> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       await client.query('select pg_advisory_xact_lock(hashtext($1))', [`agent-chat:${key}`])
       await authorize(client)
       let row = await this.byKey(key, client)
@@ -210,12 +209,8 @@ export class PostgresAgentChatRepository {
         row = (await this.get(id, client))!
         await this.acceptAccount(client, row)
       }
-      await client.query('commit')
       return row
-    } catch (error) {
-      await client.query('rollback')
-      throw error
-    } finally { client.release() }
+    })
   }
 
   async get(id: string, query: Queryable = this.pool): Promise<AgentConversationRow | undefined> {
@@ -232,13 +227,10 @@ export class PostgresAgentChatRepository {
 
   /** Restore ownership for receipts left orphaned by an older process. Never re-submit them. */
   async restoreUnsettled(id: string): Promise<AgentConversationRow | undefined> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       const row = (await client.query<AgentConversationRow>(`select * from operator_conversations
         where id=$1 and kind='agent' and deleted_at is null for update`, [id])).rows[0]
       if (row?.harness === 'opencode') {
-        await client.query('commit')
         return row
       }
       if (row && !row.active_request_id) {
@@ -264,12 +256,8 @@ export class PostgresAgentChatRepository {
         if (activity.rowCount) await this.bump(id, client)
       }
       const restored = row ? await this.get(id, client) : undefined
-      await client.query('commit')
       return restored
-    } catch (error) {
-      await client.query('rollback').catch(() => undefined)
-      throw error
-    } finally { client.release() }
+    })
   }
 
   async turn(id: string, requestId: string, query: Queryable = this.pool): Promise<AgentChatTurn | undefined> {
@@ -322,9 +310,7 @@ export class PostgresAgentChatRepository {
     delivery: 'queued' | 'submitting'; targetNativeTurnId?: string
     assertCurrent?: (transaction: pg.PoolClient) => Promise<void>
   }): Promise<{ conversationId: string; turn: AgentChatTurn; replayed: boolean; created: boolean; interruptTarget?: AgentChatInterruptTarget; replayWarning?: AgentChatReplayWarning }> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       await client.query('select pg_advisory_xact_lock(hashtext($1))', [`agent-chat:${input.key}`])
       let row = await this.byKey(input.key, client)
       const hash = agentChatInputHash(input.request)
@@ -354,7 +340,6 @@ export class PostgresAgentChatRepository {
           if (input.request.intent === 'steer' && !sameSteerTarget || prior.input_hash !== hash && !legacySteerReplay && !legacyUrgentReadback) {
             throw new DomainError('AGENT_CHAT_REQUEST_CONFLICT', 'This request ID was already used with a different message.', 409)
           }
-          await client.query('commit')
           return { conversationId: row.id, turn: turn(prior), replayed: true, created: false,
             ...(legacyUrgentReadback ? { replayWarning: {
               code: 'AGENT_CHAT_LEGACY_TARGET_UNVERIFIABLE' as const,
@@ -433,19 +418,13 @@ export class PostgresAgentChatRepository {
       // Durable cancel belongs to the pre-admission owner, not to the newly queued urgent input.
       if (interruptTarget) await this.requestCancel(row.id, interruptTarget.requestId, client)
       await this.bump(row.id, client)
-      await client.query('commit')
       return { conversationId: row.id, turn: turn(inserted), replayed: false, created, ...(interruptTarget ? { interruptTarget } : {}) }
-    } catch (error) {
-      await client.query('rollback').catch(() => undefined)
-      throw error
-    } finally { client.release() }
+    })
   }
 
   /** A definitely rejected steer leaves no receipt or message behind. */
   async discard(id: string, requestId: string): Promise<void> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       // Keep the conversation → receipt lock order used by acceptance and settlement.
       await client.query(`select id from operator_conversations where id=$1 and kind='agent' for update`, [id])
       const removed = await client.query<{ message_id: string }>(`delete from operator_conversation_turns
@@ -454,36 +433,26 @@ export class PostgresAgentChatRepository {
         await client.query('delete from operator_conversation_messages where conversation_id=$1 and id=$2', [id, removed.rows[0].message_id])
         await this.bump(id, client)
       }
-      await client.query('commit')
-    } catch (error) {
-      await client.query('rollback').catch(() => undefined)
-      throw error
-    } finally { client.release() }
+    })
   }
 
   /** Claim the conversation for this turn. False when another turn is active or the turn left the queue. */
   async claim(id: string, requestId: string): Promise<boolean> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       const row = (await client.query<AgentConversationRow>(`select * from operator_conversations where id=$1 and kind='agent' for update`, [id])).rows[0]
-      if (!row || row.active_request_id || row.record.sessionUnavailable) { await client.query('commit'); return false }
+      if (!row || row.active_request_id || row.record.sessionUnavailable) return false
       // A legacy orphan must be reconciled before any queued input can own this session.
       const unresolved = await client.query(`select 1 from operator_conversation_turns
         where conversation_id=$1 and intent <> 'steer' and delivery in ('submitting','accepted','unknown') limit 1`, [id])
-      if (unresolved.rowCount) { await client.query('commit'); return false }
+      if (unresolved.rowCount) return false
       const claimed = await client.query(`update operator_conversation_turns set delivery='submitting',started_at=coalesce(started_at,now()),updated_at=now()
         where conversation_id=$1 and request_id=$2 and delivery='queued'`, [id, requestId])
-      if (claimed.rowCount !== 1) { await client.query('commit'); return false }
+      if (claimed.rowCount !== 1) return false
       await client.query(`update operator_conversations set active_request_id=$2,active_native_turn_id=null,active_phase='accepted',
         cancel_requested=false,turn_state='starting',last_error=null,last_result=null,pending_interaction=null,
         revision=revision+1,updated_at=now() where id=$1`, [id, requestId])
-      await client.query('commit')
       return true
-    } catch (error) {
-      await client.query('rollback').catch(() => undefined)
-      throw error
-    } finally { client.release() }
+    })
   }
 
   async beginSessionCreation(id: string, requestId: string): Promise<boolean> {
@@ -558,11 +527,9 @@ export class PostgresAgentChatRepository {
 
 
   async accepted(id: string, requestId: string, nativeTurnId: string): Promise<boolean> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       const row = (await client.query<AgentConversationRow>(`select * from operator_conversations where id=$1 and kind='agent' for update`, [id])).rows[0]
-      if (!row || row.active_request_id !== requestId) { await client.query('commit'); return false }
+      if (!row || row.active_request_id !== requestId) return false
       if (row.active_native_turn_id && row.active_native_turn_id !== nativeTurnId) {
         throw new DomainError('AGENT_CHAT_NATIVE_TURN_MISMATCH', 'Native evidence addressed a different turn.', 409)
       }
@@ -570,7 +537,6 @@ export class PostgresAgentChatRepository {
         where conversation_id=$1 and request_id=$2 and delivery in ('submitting','unknown')`, [id, requestId, nativeTurnId])
       if (!updated.rowCount && row.active_native_turn_id === nativeTurnId && row.record.startupDelivered
         && row.record.startupReceipt?.nativeSessionId === row.native_session_id) {
-        await client.query('commit')
         return false
       }
       // Acceptance and startup delivery are one commit, including positive recovery evidence.
@@ -579,18 +545,12 @@ export class PostgresAgentChatRepository {
           coalesce(record->'startupReceipt',jsonb_build_object('requestId',$2::text,'nativeSessionId',native_session_id))),
         turn_state=case when cancel_requested then 'canceling' else 'active' end,last_error=null,revision=revision+1,updated_at=now()
         where id=$1 and active_request_id=$2`, [id, requestId, nativeTurnId])
-      await client.query('commit')
       return updated.rowCount === 1
-    } catch (error) {
-      await client.query('rollback').catch(() => undefined)
-      throw error
-    } finally { client.release() }
+    })
   }
   /** A steer receipt accepted into the active turn. */
   async steerAccepted(id: string, requestId: string, nativeTurnId: string): Promise<void> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       // Serialize with finish(), including when its terminal pass won before the steer ACK arrived.
       await client.query(`select id from operator_conversations where id=$1 and kind='agent' for update`, [id])
       const terminal = (await client.query<{ delivery: 'completed' | 'failed' | 'canceled' }>(`select delivery from operator_conversation_turns
@@ -600,11 +560,7 @@ export class PostgresAgentChatRepository {
         where conversation_id=$1 and request_id=$2 and intent='steer' and target_native_turn_id=$3
           and delivery in ('submitting','unknown')`, [id, requestId, nativeTurnId, terminal?.delivery ?? 'accepted'])
       await this.bump(id, client)
-      await client.query('commit')
-    } catch (error) {
-      await client.query('rollback').catch(() => undefined)
-      throw error
-    } finally { client.release() }
+    })
   }
   /** Accepted steers settle with their target. Unconfirmed steers require ACK/history evidence first;
    * steerAccepted reads the target's durable receipt even after restart or a subsequent turn. */
@@ -625,9 +581,7 @@ export class PostgresAgentChatRepository {
 
   /** Plain Stop linearizes its expected-turn check, queue cancellation and active cancel intent. */
   async interrupt(id: string, expectedNativeTurnId?: string): Promise<AgentChatInterruptTarget | undefined> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       const row = (await client.query<AgentConversationRow>(`select * from operator_conversations where id=$1 and kind='agent' for update`, [id])).rows[0]
       if (!row) throw new DomainError('CONVERSATION_NOT_FOUND', 'Conversation was not found.', 404)
       if (expectedNativeTurnId && row.active_native_turn_id !== expectedNativeTurnId) {
@@ -636,31 +590,25 @@ export class PostgresAgentChatRepository {
       const target = row.active_request_id ? { requestId: row.active_request_id, nativeTurnId: row.active_native_turn_id } : undefined
       await this.cancelQueued(id, undefined, client)
       if (target) await this.requestCancel(id, target.requestId, client)
-      await client.query('commit')
       return target
-    } catch (error) {
-      await client.query('rollback').catch(() => undefined)
-      throw error
-    } finally { client.release() }
+    })
   }
 
   /** Terminal settlement of the active turn; clears the conversation's active identity. */
   async finish(id: string, requestId: string, result: ExecutionResult, nativeMessageId?: string, rejectedSessionCreation = false): Promise<boolean> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       const row = (await client.query<AgentConversationRow>(`select * from operator_conversations where id=$1 and kind='agent' for update`, [id])).rows[0]
-      if (!row || row.active_request_id !== requestId) { await client.query('commit'); return false }
+      if (!row || row.active_request_id !== requestId) return false
       if (rejectedSessionCreation) {
         // A negative creation result only retires ITS unbound marker, never a later owner/binding.
         if (row.native_session_id || row.active_native_turn_id || row.record.sessionUnavailable
           || row.record.sessionCreation?.requestId !== requestId || result.outcome === 'succeeded') {
-          await client.query('commit'); return false
+          return false
         }
         const retired = await client.query(`update operator_conversations set record=record - 'sessionCreation'
           where id=$1 and kind='agent' and active_request_id=$2 and native_session_id is null
             and record->'sessionCreation'->>'requestId'=$2`, [id, requestId])
-        if (retired.rowCount !== 1) { await client.query('commit'); return false }
+        if (retired.rowCount !== 1) return false
         if (row.cancel_requested) result = { outcome: 'canceled' }
       }
       const delivery = result.outcome === 'succeeded' ? 'completed' : result.outcome
@@ -695,19 +643,13 @@ export class PostgresAgentChatRepository {
         record=record - 'nativeNonSubmission',cancel_requested=false,pending_interaction=null,
         turn_state=$2,last_error=$3,last_result=$4::jsonb,revision=revision+1,updated_at=now()
         where id=$1`, [id, result.outcome === 'failed' ? 'error' : 'idle', result.error?.message ?? null, JSON.stringify(result)])
-      await client.query('commit')
       return true
-    } catch (error) {
-      await client.query('rollback').catch(() => undefined)
-      throw error
-    } finally { client.release() }
+    })
   }
 
   /** Acceptance or settlement cannot be proven. The receipt is kept and never resubmitted automatically. */
   async unknown(id: string, requestId: string, message: string): Promise<void> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       // Match accepted()/finish(): never hold a receipt lock while waiting for its conversation.
       await client.query(`select id from operator_conversations where id=$1 and kind='agent' for update`, [id])
       const receipt = await client.query(`update operator_conversation_turns set delivery='unknown',delivery_error=$3::jsonb,updated_at=now()
@@ -722,11 +664,7 @@ export class PostgresAgentChatRepository {
       const owner = await client.query(`update operator_conversations set turn_state='uncertain',last_error=$3,revision=revision+1,updated_at=now()
         where id=$1 and active_request_id=$2`, [id, requestId, message])
       if (receipt.rowCount && !owner.rowCount) await this.bump(id, client) // A steer changes readback, not active ownership.
-      await client.query('commit')
-    } catch (error) {
-      await client.query('rollback').catch(() => undefined)
-      throw error
-    } finally { client.release() }
+    })
   }
 
   /** Missing evidence never releases ownership, cancellation or pending native interactions. */
@@ -744,11 +682,9 @@ export class PostgresAgentChatRepository {
   async state(id: string, options: { recoverOverflow?: boolean } = {}): Promise<{
     fileSourceRevisions?: ActivitySourceRevision[]; commandActivity?: Awaited<ReturnType<typeof readActivityCommands>>; publicationReceipts?: ConversationPublicationReceipt[]; row: AgentConversationRow; turns: AgentChatTurn[]; messages: Message[]; hasEarlierMessages: boolean; hasMoreTurns?: true; selection: { workflowVersionId: string; attemptKey: string } | null; latestRequestId: string | null; activeStartedAt: Date | null; unfinishedActivities: Awaited<ReturnType<PostgresOperatorActivityRepository['unfinished']>>['activities']; hasMoreActivities?: true; activityPage: Awaited<ReturnType<PostgresOperatorActivityRepository['page']>> & { itemProvenance?: Record<string, unknown> }
   } | undefined> {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin isolation level repeatable read read only')
+    return withTransaction(this.pool, async (client) => {
       const row = await this.get(id, client)
-      if (!row) { await client.query('commit'); return undefined }
+      if (!row) return undefined
       // Open receipts have priority over recent terminal history, in one SQL snapshot.
       // Fetch one extra open receipt to detect overflow before selecting an explicit recovery window.
       const receiptRows = (await client.query<TurnRow>(`with open as (
@@ -804,12 +740,8 @@ export class PostgresAgentChatRepository {
         ...(overflow ? { hasMoreTurns: true as const } : {}),
         ...(unfinished.hasMore ? { hasMoreActivities: true as const } : {}) }
       const commandActivity = await readActivityCommands(client, id, agentActivityScope(loaded), String(row.revision))
-      await client.query('commit')
       return { ...loaded, commandActivity }
-    } catch (error) {
-      await client.query('rollback').catch(() => undefined)
-      throw error
-    } finally { client.release() }
+    }, { isolation: 'repeatable read', readOnly: true })
   }
   async receipts(id: string, before: string | undefined, limit: number, query: Queryable = this.pool): Promise<{ turns: AgentChatTurn[]; nextCursor: string | null }> {
     if (query === this.pool && before !== undefined) return withConversationPageRead(this.pool, (sql) => this.receipts(id, before, limit, sql))

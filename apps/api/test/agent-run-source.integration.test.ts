@@ -2,7 +2,6 @@ import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CiGetOutputSchema, CiRunOutputSchema } from '@foreman-code/contracts'
@@ -113,7 +112,7 @@ describe.runIf(postgresEnabled)('GitHub Run-start sources and Agent CI through a
           scope: { workspaceIds: [workspaceId] } }])])
       f.f.run = await withExclusiveGraphConnection(f.db.pool, connection => connection.transaction(async sql => {
         const owner = await currentOperatorAuthority(sql, f.authorizationPrincipalId)
-        const authority = await acceptRunAuthority(sql as unknown as pg.PoolClient, owner.principal)
+        const authority = await acceptRunAuthority(sql, owner.principal)
         const run = AcceptedWorkflowRunV3Schema.parse({ ...f.f.run, id: randomUUID(),
           authorizationPrincipalId: authority.principal.id })
         const version = f.f.version
@@ -130,7 +129,7 @@ describe.runIf(postgresEnabled)('GitHub Run-start sources and Agent CI through a
           workspace: { id: workspaceId, archived: false, location: run.executionLocation }, draft: null,
         } })
         const admitted = await insertRepeatRun(sql, accepted, repeatStartPublication)
-        await bindRunAuthority(sql as unknown as pg.PoolClient, admitted.id, authority)
+        await bindRunAuthority(sql, admitted.id, authority)
         return admitted
       }))
       f.f.scope.runId = f.f.run.id

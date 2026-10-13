@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import type { JobInitiatingAgent } from '@foreman-code/contracts/jobs'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import { currentOperatorAuthority } from '../access/runAuthority.js'
@@ -33,9 +34,7 @@ export class RunCiAuthority implements CiAuthority {
   async resolve(caller: ManagementPrincipal, requestedWorkspace: string | undefined, actions: ManagementAction[]) {
     // Reads verify the binding from one lock-free snapshot; only mutating CI calls lock the Run.
     const mutating = actions.some(action => !action.endsWith(':read'))
-    const sql = await this.pool.connect()
-    try {
-      await sql.query(mutating ? 'begin' : 'begin isolation level repeatable read read only')
+    return withTransaction(this.pool, async (sql) => {
       let principalId = caller.id
       let workspaceId = requestedWorkspace
       let executionId: string | undefined
@@ -80,11 +79,7 @@ export class RunCiAuthority implements CiAuthority {
         ? new Date(Math.min(Date.parse(caller.expiresAt), Date.parse(accepted.expiresAt))).toISOString()
         : accepted.expiresAt }
       for (const action of actions) requireAuthorization(principal, action, { workspaceId })
-      await sql.query('commit')
       return { principal, workspaceId, executionId, initiatingAgent }
-    } catch (error) {
-      await sql.query('rollback')
-      throw error
-    } finally { sql.release() }
+    }, mutating ? {} : { isolation: 'repeatable read', readOnly: true })
   }
 }

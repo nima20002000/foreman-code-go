@@ -1,7 +1,7 @@
 import type { JobAuthoringChoicesRecord } from '@foreman-code/contracts/job-verification'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import { join } from 'node:path'
 import type pg from 'pg'
-import type { SourceManifest } from '@foreman-code/contracts/source-materialization'
 import type { WorkspaceRootPolicyPort } from '../sources/rootPolicyPorts.js'
 import type { InstalledSourceExecutionHosts } from '../sources/executionHosts.js'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -300,15 +300,12 @@ export class CanonicalJobPrivateRepositories implements JobPrivateRepositoryPort
     private readonly remote:{preparePrivateRepository(principal:ManagementPrincipal,record:SourceMaterializationRecord):Promise<void>}) {}
   async prepare(principal:ManagementPrincipal,record:SourceMaterializationRecord) {
     if(record.receipt.binding.deviceId!==null)return this.remote.preparePrivateRepository(principal,record)
-    const sql=await this.pool.connect()
-    let manifest:SourceManifest
-    try {
-      await sql.query('begin')
+    const manifest=await withTransaction(this.pool,async(sql)=>{
       const row=(await sql.query<{record:unknown}>('select record from source_root_bindings where root_id=$1 and binding_revision=$2 for share',[record.receipt.binding.rootId,record.receipt.binding.bindingRevision])).rows[0]
       const root=SourceRootRecordSchema.parse(row?.record)
       const source=await this.sources.resolveApprovedSource(sql,principal,record.receipt.binding.workspaceId,root.source)
-      manifest=source.manifest;await sql.query('commit')
-    } catch(error){await sql.query('rollback');throw error}finally{sql.release()}
+      return source.manifest
+    })
     await this.sources.verifyPreparation({principal,record})
     await this.hosts.privateRepository(record,manifest)
   }

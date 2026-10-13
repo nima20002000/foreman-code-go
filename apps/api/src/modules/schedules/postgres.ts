@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import type { SqlQuery, TransactionSql } from '../../infrastructure/transaction.js'
 import { z } from 'zod'
 import {
   ScheduleGetInputSchema, ScheduleInstantSchema, ScheduleOccurrenceSchema, WorkflowScheduleSchema,
@@ -13,7 +14,7 @@ import {
   type ScheduleOccurrenceListInput, type ScheduleOccurrencePage,
 } from './transportSchemas.js'
 
-type Sql = Pick<pg.Pool, 'query'>
+type Sql = SqlQuery
 interface SlotRow { revision: string; record: unknown; updated_by_principal_id: string }
 export interface ScheduleSlot {
   /** Retained even after clear, so a later create cannot reuse a saved revision. */
@@ -51,7 +52,7 @@ export class PostgresWorkflowScheduleRepository {
 
   /** Same lock order as workflow management: workspace -> workflow -> schedule.
    * Also serializes creates when there is no schedule row to lock yet. */
-  async lock(client: pg.PoolClient, scope: ScheduleGetInput): Promise<ScheduleSlot | null> {
+  async lock(client: TransactionSql, scope: ScheduleGetInput): Promise<ScheduleSlot | null> {
     await lockActiveWorkspace(client, scope.workspaceId)
     const workflow = (await client.query<{ archived_at: Date | null }>(
       'select archived_at from workflows where workspace_id=$1 and id=$2 for update',
@@ -65,7 +66,7 @@ export class PostgresWorkflowScheduleRepository {
   }
 
   /** Caller holds lock(). A single row remains the sole authority, including disabled/cleared states. */
-  async put(client: pg.PoolClient, value: WorkflowSchedule, principalId: string): Promise<void> {
+  async put(client: TransactionSql, value: WorkflowSchedule, principalId: string): Promise<void> {
     const accepted = WorkflowScheduleSchema.parse(value)
     await client.query(`insert into workflow_schedules
       (workspace_id,workflow_id,revision,record,enabled,next_occurrence_at,updated_by_principal_id)
@@ -77,7 +78,7 @@ export class PostgresWorkflowScheduleRepository {
       accepted.nextOccurrenceAt, principalId])
   }
 
-  async clear(client: pg.PoolClient, scope: ScheduleGetInput, revision: number, principalId: string): Promise<void> {
+  async clear(client: TransactionSql, scope: ScheduleGetInput, revision: number, principalId: string): Promise<void> {
     await client.query(`update workflow_schedules set revision=$3,record=null,enabled=false,next_occurrence_at=null,
       cleared_at=clock_timestamp(),updated_at=clock_timestamp(),updated_by_principal_id=$4
       where workspace_id=$1 and workflow_id=$2`, [scope.workspaceId, scope.workflowId, revision, principalId])
@@ -128,7 +129,7 @@ export class PostgresWorkflowScheduleRepository {
   /** Insert immutable facts in the dispatcher's transaction, alongside Run creation/snapshot capture.
    * No Run is started here. Changed outcomes for an existing identity conflict; never overwrite.
    * nowUtc is the dispatcher's trusted server clock, not a public request field. */
-  async recordOccurrence(client: pg.PoolClient, raw: ScheduleOccurrence, nowUtc: string): Promise<{
+  async recordOccurrence(client: TransactionSql, raw: ScheduleOccurrence, nowUtc: string): Promise<{
     value: ScheduleOccurrence; replayed: boolean
   }> {
     const value = ScheduleOccurrenceSchema.parse(raw)
@@ -161,7 +162,7 @@ export class PostgresWorkflowScheduleRepository {
 
   /** Optional SCH-04 cursor CAS, in the same transaction as admission/recordOccurrence.
    * Processing a due occurrence does not change the editable schedule revision. */
-  async advanceCursor(client: pg.PoolClient, scope: ScheduleGetInput, expectedRevision: number,
+  async advanceCursor(client: TransactionSql, scope: ScheduleGetInput, expectedRevision: number,
     previousDueAt: string, nextDueAt: string | null): Promise<void> {
     const accepted = ScheduleGetInputSchema.parse(scope)
     const previous = ScheduleInstantSchema.parse(previousDueAt)

@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import { JobLogChunkSchema, JobProcessStateSchema, type JobLogChunk } from '@foreman-code/contracts/jobs'
 import { type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
 import { DomainError } from '../errors.js'
@@ -16,16 +17,12 @@ export class JobWorkerService {
   private readonly repository=new JobRepository()
   constructor(private readonly pool:pg.Pool,private readonly authority:JobWorkerAuthority) {}
   private async update<T>(workspaceId:string,id:string,fence:JobWorkerFence,work:(sql:pg.PoolClient,execution:JobExecutionRecord)=>Promise<T>):Promise<T> {
-    const sql=await this.pool.connect(); let releaseError:Error|undefined
-    try {
-      await sql.query('begin')
+    return withTransaction(this.pool,async(sql)=>{
       const execution=await this.repository.execution(sql,workspaceId,id,true)
       if(execution.attemptId!==fence.attemptId||execution.owner.grantId!==fence.owner.grantId||execution.owner.epoch!==fence.owner.epoch) throw new DomainError('JOB_STALE_ATTEMPT','The job attempt or ownership fence is stale.',409)
       await this.authority.require(sql,execution,fence)
-      const value=await work(sql,execution); await this.authority.require(sql,execution,fence); await sql.query('commit'); return value
-    } catch(error) {
-      await sql.query('rollback').catch((failure:unknown)=>{releaseError=failure instanceof Error?failure:new Error('Worker rollback failed.')}); throw error
-    } finally {sql.release(releaseError)}
+      const value=await work(sql,execution); await this.authority.require(sql,execution,fence); return value
+    })
   }
   async appendLog(workspaceId:string,id:string,fence:JobWorkerFence,raw:JobLogChunk) {
     const chunk=JobLogChunkSchema.parse(raw)

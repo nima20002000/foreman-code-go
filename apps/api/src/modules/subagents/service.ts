@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import { z } from 'zod'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import { subagentCapabilities, RunSubagentSchema, RunSubagentGetInputSchema, RunSubagentsListInputSchema, RunSubagentItemsInputSchema,
@@ -67,9 +68,7 @@ export class RunSubagentService {
   async scoped<T>(principal: ManagementPrincipal, input: { workspaceId: string; runId: string }, action: ManagementAction,
     work: (scope: SubagentReadScope) => Promise<T>,
     options: { projectionLock?: 'if-available' } = {}): Promise<T> {
-    const sql = await this.pool.connect()
-    try {
-      await sql.query('begin')
+    return withTransaction(this.pool, async (sql) => {
       // Listing reads immutable ownership and a committed stop state; commands still lock the Run.
       const runLock = options.projectionLock === 'if-available' ? '' : ' for share'
       const row = (await sql.query<{ workflow_id: string; workflow_version_id: string; stopped: boolean }>(`select workflow_id,workflow_version_id,
@@ -91,14 +90,8 @@ export class RunSubagentService {
       }
       const result = await work({ sql, principal: live, stopped: row.stopped,
         workflowId: row.workflow_id, workflowVersionId: row.workflow_version_id, projectionLocked })
-      await sql.query('commit')
       return result
-    } catch (error) {
-      await sql.query('rollback')
-      throw error
-    } finally {
-      sql.release()
-    }
+    })
   }
   async child(scope: SubagentReadScope, input: z.infer<typeof RunSubagentGetInputSchema>) {
     const row = (await scope.sql.query<{ record: unknown }>('select record from run_subagents where id=$1 and run_id=$2 for update', [input.subagentId, input.runId])).rows[0]

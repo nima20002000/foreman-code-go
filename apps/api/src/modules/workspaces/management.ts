@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { withClientTransaction } from '../../infrastructure/transaction.js'
 
 import {
   ManagedWorkspaceSchema,
@@ -96,15 +97,11 @@ export class WorkspaceManagementService {
         targetKey: 'workspaces:new', payload: input,
         afterRollback: async (client) => {
           if (!provisioning || !input.parentPath) return
-          await client.query('begin')
-          try {
+          const parentPath = input.parentPath
+          await withClientTransaction(client, async () => {
             await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])
-            await provisioning.reconcile(client, input.parentPath)
-            await client.query('commit')
-          } catch (error) {
-            await client.query('rollback')
-            throw error
-          }
+            await provisioning.reconcile(client, parentPath)
+          })
         },
         authorize: async (client) => {
           await client.query('select pg_advisory_xact_lock(hashtext($1))', [WORKSPACE_FOLDER_LIFECYCLE_LOCK])

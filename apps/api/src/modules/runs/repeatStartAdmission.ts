@@ -296,7 +296,7 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
     ...(options.schedule ? { scheduleOccurrenceId: options.schedule.occurrenceId } : {}) })
   const target = `workflow:${input.workflowId}:version:${input.workflowVersionId}`
   const liveAuthority = async (sql: GraphTransactionSql) => {
-    const live = await readLiveManagementPrincipal(sql as unknown as Pick<pg.ClientBase, 'query'>, principal.id)
+    const live = await readLiveManagementPrincipal(sql, principal.id)
     authorize(live)
     const valid = await sql.query('select 1 where clock_timestamp() < $1::timestamptz',
       [new Date(Math.min(Date.parse(principal.expiresAt), Date.parse(live.expiresAt))).toISOString()])
@@ -334,20 +334,19 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
       if (replayed) return { value: replayed, replayed: true }
       await waitForRunStartLock(sql, `admission:runner:${prepared.location.runnerId}`, lockWait)
       await waitForRunStartLock(sql, `admission:workspace:${input.workspaceId}`, lockWait)
-      const client = sql as unknown as pg.PoolClient // Existing SQL-only helpers; never expose a raw transaction.
-      await assertWorkflowRecovered(client, input.workspaceId, input.workflowId)
+      await assertWorkflowRecovered(sql, input.workspaceId, input.workflowId)
       const live = await sql.query<{ count: string }>(`select count(*)::text as count from runs r where r.runner_id=$1
         and (r.execution_state in ('queued','running','waiting') or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending))`,
       [prepared.location.runnerId])
       const count = live.rows[0]?.count
       if (!count || !/^[0-9]+$/.test(count)) return conflict('RUNNER_ADMISSION_UNCERTAIN', 'Runner capacity could not be established.')
       if (BigInt(count) >= BigInt(maximumResidentRuns)) return conflict('RUNNER_ADMISSION_FULL', 'The runner has reached its bounded active-Run capacity.')
-      const authority = await acceptRunAuthority(client, principal)
+      const authority = await acceptRunAuthority(sql, principal)
       authorize(authority.principal)
       await options.schedule?.beforeAcceptance(sql)
       // acceptRunAuthority creates a NEW tokenless principal. Pass that exact
       // principal to the helper; patching the caller snapshot's ID is not a proof.
-      const snapshot = await readLockedRepeatStartSnapshot(client, authority.principal, input, prepared)
+      const snapshot = await readLockedRepeatStartSnapshot(sql, authority.principal, input, prepared)
       const version = snapshot.executable.version
       const workerExecution = publication.workerExecution ?? new WorkerExecutionPolicy()
       for (const node of version.definition.nodes) {
@@ -364,14 +363,14 @@ export async function admitRepeatRun(pool: pg.Pool, locations: WorkspaceLocation
         ...publication, ...(prepared.accountBindings ? { preparedAccountBindings: prepared.accountBindings } : {}),
       },
         source === 'schedule' ? 'schedule' : 'manual', preparedPlacements)
-      await bindRunAuthority(client, run.id, authority)
+      await bindRunAuthority(sql, run.id, authority)
       await sql.query(`insert into management_command_receipts(principal_id,operation,command_id,target_key,input_hash,result)
         values($1,'run.start',$2,$3,$4,$5::jsonb)`, [principal.id, input.commandId, target, hash, canonicalGraphJson(run)])
       await sql.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
         values($1,$2,'run.start',$3,'succeeded',$4::jsonb)`, [principal.id, source, target, JSON.stringify({ commandId: input.commandId })])
       beforeGraphCommit(sql, async () => {
         await liveAuthority(sql)
-        const accepted = await readLiveManagementPrincipal(client, authority.principal.id)
+        const accepted = await readLiveManagementPrincipal(sql, authority.principal.id)
         authorize(accepted)
         const valid = await sql.query('select 1 where clock_timestamp() < $1::timestamptz', [accepted.expiresAt])
         if (valid.rowCount !== 1) throw new DomainError('AUTH_REVOKED', 'Accepted Run authority expired before commit.', 403)

@@ -1,8 +1,8 @@
-import type pg from 'pg'
+import type { TransactionSql } from '../../infrastructure/transaction.js'
 import { DomainError } from '../errors.js'
 
 /** Called under the existing workspace admission lock by both start services. */
-export async function assertWorkflowRecovered(client: pg.ClientBase, workspaceId: string, workflowId: string): Promise<void> {
+export async function assertWorkflowRecovered(client: TransactionSql, workspaceId: string, workflowId: string): Promise<void> {
   const blocked = await client.query(
     `select 1 from runs r where r.workspace_id=$1 and r.workflow_id=$2
        and (r.execution_state='interrupted' or exists (

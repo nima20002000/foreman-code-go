@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import { RunExecutionStateSchema, RunOutcomeSchema } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
@@ -55,9 +56,7 @@ export class RunHistoryService {
     authorize: (candidate: ManagementPrincipal) => void,
     work: (client: pg.PoolClient, live: ManagementPrincipal) => Promise<T>): Promise<T> {
     authorize(principal)
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       // Delegation/grant rows remain share-locked until this read commits.
       const live = await readLiveManagementPrincipal(client, principal.id)
       authorize(live)
@@ -65,14 +64,8 @@ export class RunHistoryService {
       // Expiry can pass while SQL is in flight even though revocation is locked.
       authorize(principal)
       authorize(live)
-      await client.query('commit')
       return result
-    } catch (error) {
-      await client.query('rollback')
-      throw error
-    } finally {
-      client.release()
-    }
+    })
   }
 
   async list(principal: ManagementPrincipal, raw: unknown): Promise<RunDropdownPage> {

@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import {
   FileRetentionGetInputSchema, FileRetentionGetResultSchema,
   FileRetentionSaveInputSchema, FileRetentionSaveResultSchema,
@@ -58,21 +59,12 @@ export class FileRetentionService {
   private async read<T>(principal: ManagementPrincipal, source: Source, action: string,
     work: (client: pg.PoolClient) => Promise<T>): Promise<T> {
     return this.audited(principal, source, action, async () => {
-      const client = await this.pool.connect()
-      let releaseError: Error | undefined
-      try {
-        await client.query('begin')
+      return withTransaction(this.pool, async (client) => {
         await this.authorize(client, principal, false)
         await lockFileRetentionOwner(client, principal.id)
         const result = await work(client)
-        await client.query('commit')
         return result
-      } catch (error) {
-        try { await client.query('rollback') } catch (rollbackError) {
-          releaseError = rollbackError instanceof Error ? rollbackError : new Error('Retention read rollback failed.')
-        }
-        throw error
-      } finally { client.release(releaseError) }
+      })
     })
   }
 

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { withTransaction } from './transaction.js'
 
 import {
   AgentConfigurationVersionSchema,
@@ -201,9 +202,7 @@ const workflowVersion = WorkflowVersionV3Schema.parse({
 ExecutableWorkflowV3Schema.parse({ version: workflowVersion, configurations: parsedConfigurations })
 
 export async function ensureAcceptanceSeed(pool: pg.Pool): Promise<void> {
-  const client = await pool.connect()
-  try {
-    await client.query('begin')
+  return withTransaction(pool, async (client) => {
     await client.query(
       'insert into workspaces (id, record) values ($1, $2::jsonb) on conflict (id) do nothing',
       [workspace.id, JSON.stringify(workspace)],
@@ -232,11 +231,5 @@ export async function ensureAcceptanceSeed(pool: pg.Pool): Promise<void> {
        values ($1, $2, $3, $4, $5, $6::jsonb, 3) on conflict (id) do nothing`,
       [workflowVersion.id, workspace.id, workflow.id, workflowVersion.version, workflowVersion.entryNodeId, JSON.stringify(workflowVersion)],
     )
-    await client.query('commit')
-  } catch (error) {
-    await client.query('rollback')
-    throw error
-  } finally {
-    client.release()
-  }
+  })
 }

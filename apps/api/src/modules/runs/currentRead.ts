@@ -61,7 +61,7 @@ export function readCurrentRunDetails(pool: pg.Pool, principal: ManagementPrinci
     const cleanup = (await sql.query<{ pending: boolean }>(
       'select exists(select 1 from run_cleanup_intents where run_id=$1 and pending) as pending', [runId])).rows[0]
     if (!cleanup || typeof cleanup.pending !== 'boolean') throw new DomainError('RUN_DETAIL_INVALID', 'Cleanup status is unavailable.', 409)
-    const activitySnapshot = await readRunActivitySnapshot(sql as unknown as Pick<pg.PoolClient, 'query'>,
+    const activitySnapshot = await readRunActivitySnapshot(sql,
       { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id, workflowVersionId: run.workflowVersionId }, snapshot.version)
     const treeRows = await sql.query<{ record: unknown }>('select record from run_worktrees where run_id=$1', [run.id])
     const worktrees = treeRows.rows.map(row => RunWorktreeSchema.parse(row.record))

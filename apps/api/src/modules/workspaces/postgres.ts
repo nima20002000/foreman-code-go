@@ -4,6 +4,7 @@ import {
   WorkflowRunSummarySchema,
   type Agent,
 } from '@foreman-code/contracts'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
@@ -102,22 +103,14 @@ export class PostgresWorkspaceRepository {
     })
   }
   private async currentSummaries(workspaceId: string, principal: ManagementPrincipal) {
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       const live = await readLiveManagementPrincipal(client, principal.id)
       requireWorkspaceRead(live, workspaceId)
       const summaries = await readRunSummaries(client, workspaceId)
       requireWorkspaceRead(principal, workspaceId)
       requireWorkspaceRead(live, workspaceId)
-      await client.query('commit')
       return summaries
-    } catch (error) {
-      await client.query('rollback')
-      throw error
-    } finally {
-      client.release()
-    }
+    })
   }
 
 }

@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { withTransaction } from '../../../infrastructure/transaction.js'
 import { RunFileProvenanceSchema, type AgentFileReadInput } from '@foreman-code/contracts/files'
 import { DomainError } from '../../errors.js'
 import type { FileQuery } from '../repository.js'
@@ -20,9 +21,7 @@ export class PostgresReferenceReadRepository implements ReferenceReadRepository 
     const fact = context.runId === undefined ? undefined : RunFileProvenanceSchema.parse({
       runId: context.runId, executionId: context.executionId, ...ref, readAt,
     })
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       // Same lock order as management: authority first, file second. No filesystem I/O under these locks.
       await reauthorize(client)
       const result = await client.query<{ state: string }>(`select f.state from files f
@@ -33,7 +32,6 @@ export class PostgresReferenceReadRepository implements ReferenceReadRepository 
         for share of f`, [ref.fileId, ref.revisionId, context.workspaceId, context.workflowId])
       const state = result.rows[0]?.state
       if (state !== 'ready') {
-        await client.query('commit')
         return state === 'pending' || state === 'removed' ? state : 'not_found'
       }
       if (fact) {
@@ -56,11 +54,7 @@ export class PostgresReferenceReadRepository implements ReferenceReadRepository 
           values($1,$2,$3,$4,$5::timestamptz) on conflict (run_id,execution_id,file_id) do nothing`,
         [fact.runId, fact.executionId, fact.fileId, fact.revisionId, fact.readAt])
       }
-      await client.query('commit')
       return 'ready'
-    } catch (error) {
-      await client.query('rollback').catch(() => undefined)
-      throw error
-    } finally { client.release() }
+    })
   }
 }

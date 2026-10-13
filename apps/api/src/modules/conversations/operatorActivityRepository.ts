@@ -1,4 +1,5 @@
 import { OperatorActivityPageSchema, OperatorActivityQuerySchema, OperatorActivitySchema, type OperatorActivity, type OperatorActivityQuery, ActivityNativeIdentitySchema, WorkRefSchema, type ActivityNativeIdentity, type WorkRef } from '@foreman-code/contracts'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
 import type { NativeMessageSubmission } from '../harnesses/port.js'
 import type { NativePersistenceRedactor } from '../interactions/nativePersistence.js'
@@ -42,19 +43,18 @@ export class PostgresOperatorActivityRepository {
     for (const sequence of [fence.source?.sequence, fence.source?.nativeSequence]) {
       if (sequence !== undefined && !/^(0|[1-9][0-9]*)$/.test(sequence)) throw new Error('Invalid native source sequence.')
     }
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    let reconciliationRequired = false
+    const appended = await withTransaction(this.pool, async (client) => {
       const owner = await client.query(`select id,harness from operator_conversations where id=$1 and active_request_id=$2 and deleted_at is null
         and ($3::text is null or native_session_id=$3) and ($4::text is null or active_native_turn_id=$4) for update`,
       [conversationId, requestId, fence.nativeSessionId ?? fence.native?.sessionId ?? null, fence.nativeTurnId ?? fence.native?.turnId ?? null])
-      if (!owner.rowCount || fence.native && owner.rows[0]?.harness !== fence.native.harness) { await client.query('commit'); return undefined }
+      if (!owner.rowCount || fence.native && owner.rows[0]?.harness !== fence.native.harness) return undefined
       if (owner.rows[0]?.harness === 'claude') {
         const receipt = fence.nativeSubmission
         const admitted = receipt?.kind === 'message' && fence.nativeTurnId === undefined && fence.native?.turnId === undefined
           && (await client.query(`select 1 from operator_conversation_turns where conversation_id=$1 and request_id=$2
             and payload->'nativeSubmission'=$3::jsonb for update`, [conversationId, requestId, JSON.stringify(receipt)])).rowCount
-        if (!admitted) { await client.query('commit'); return undefined }
+        if (!admitted) return undefined
       }
       const prior = (await client.query<{ record: OperatorActivityChange; source_provenance: ActivityMutationFence['source'] }>(
         `select record,source_provenance from operator_conversation_activity where conversation_id=$1 and request_id=$2 and activity_id=$3 for update`,
@@ -93,15 +93,14 @@ export class PostgresOperatorActivityRepository {
         || prior.record.status === value.status && !orderedNative && !orderedTransport)
       if (stale || terminal && changed && (!fence.authoritativeReconciliation || prior.record.status !== value.status)
         || ambiguous && !fence.authoritativeReconciliation || prior?.record.status === 'running' && value.status === 'pending') {
-        await client.query('commit')
-        if (ambiguous && !stale && !fence.authoritativeReconciliation) fence.onReconciliationRequired?.()
+        reconciliationRequired = Boolean(ambiguous && !stale && !fence.authoritativeReconciliation)
         return undefined
       }
       if (!changed) {
         // An identical newer native observation advances the private watermark, never public revisions.
         if ((orderedNative || orderedTransport) && !fence.authoritativeReconciliation) await client.query(`update operator_conversation_activity set source_provenance=$4::jsonb
           where conversation_id=$1 and request_id=$2 and activity_id=$3`, [conversationId, requestId, value.id, JSON.stringify(source)])
-        await client.query('commit'); return undefined
+        return undefined
       }
       const applied = (await client.query<{ record: unknown; sequence: string; revision: string }>(`
         insert into operator_conversation_activity as activity (conversation_id,request_id,activity_id,record,source_provenance)
@@ -110,12 +109,10 @@ export class PostgresOperatorActivityRepository {
           source_provenance=excluded.source_provenance,revision=activity.revision+1
         returning record,sequence::text,revision::text`, [conversationId, requestId, value.id, JSON.stringify(merged), JSON.stringify(source)])).rows[0]!
       const revision = (await client.query<{ revision: string }>(`update operator_conversations set revision=revision+1 where id=$1 returning revision::text`, [conversationId])).rows[0]!.revision
-      await client.query('commit')
       return { activity: OperatorActivitySchema.parse({ ...(applied.record as object), sequence: applied.sequence, revision: Number(applied.revision) }), revision: Number(revision), scopeRevision: revision, itemRevision: applied.revision }
-    } catch (error) {
-      await client.query('rollback').catch(() => undefined)
-      throw error
-    } finally { client.release() }
+    })
+    if (reconciliationRequired) fence.onReconciliationRequired?.()
+    return appended
   }
 
   async page(conversationId: string, input: Partial<OperatorActivityQuery> = {}, query: Queryable = this.pool): Promise<{ activities: OperatorActivity[]; nextCursor: string | null; itemRevisions: Record<string, string> }> {

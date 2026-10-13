@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { withClientTransaction } from '../../infrastructure/transaction.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import { PostgresSourceReservations, type SourceReservation } from './reservations.js'
 import type { PrivateSourceSnapshotStore } from './store.js'
@@ -154,29 +155,27 @@ async function releaseSnapshot(pool: pg.Pool, store: SnapshotStore,
   await store.withCaptureLock(candidate.snapshot_id, async () => {
     const sql = await pool.connect()
     try {
-      await sql.query('begin')
-      const snapshot = await lockSnapshot(sql, candidate, scopeId)
-      if (!snapshot || (snapshot.availability === 'retained'
-        && !(await releasableSnapshots(sql, [candidate.snapshot_id], underPressure)).has(candidate.snapshot_id))) {
-        await sql.query('commit')
-        return
-      }
-      await sql.query("update source_snapshots set availability='unavailable' where snapshot_id=$1", [candidate.snapshot_id])
-      // A crash leaves charged bytes, never usable missing bytes.
-      await sql.query('commit')
+      const unavailable = await withClientTransaction(sql, async () => {
+        const snapshot = await lockSnapshot(sql, candidate, scopeId)
+        if (!snapshot || (snapshot.availability === 'retained'
+          && !(await releasableSnapshots(sql, [candidate.snapshot_id], underPressure)).has(candidate.snapshot_id))) {
+          return false
+        }
+        await sql.query("update source_snapshots set availability='unavailable' where snapshot_id=$1", [candidate.snapshot_id])
+        // A crash leaves charged bytes, never usable missing bytes.
+        return true
+      })
+      if (!unavailable) return
       await store.remove(candidate.snapshot_id)
-      await sql.query('begin')
-      const fenced = await lockSnapshot(sql, candidate, scopeId)
-      if (fenced?.availability === 'unavailable') {
-        await new PostgresSourceReservations().reclaimed(sql, fenced.reservation, async () => true)
-        await sql.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
-          values($1,'system','source.snapshot.release',$2,'succeeded',$3::jsonb)`,
-        [candidate.requested_by, fenced.workspace_id, JSON.stringify({ snapshotId: candidate.snapshot_id })])
-      }
-      await sql.query('commit')
-    } catch (error) {
-      await sql.query('rollback')
-      throw error
+      await withClientTransaction(sql, async () => {
+        const fenced = await lockSnapshot(sql, candidate, scopeId)
+        if (fenced?.availability === 'unavailable') {
+          await new PostgresSourceReservations().reclaimed(sql, fenced.reservation, async () => true)
+          await sql.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
+            values($1,'system','source.snapshot.release',$2,'succeeded',$3::jsonb)`,
+          [candidate.requested_by, fenced.workspace_id, JSON.stringify({ snapshotId: candidate.snapshot_id })])
+        }
+      })
     } finally { sql.release() }
   })
 }

@@ -80,7 +80,7 @@ export async function markRepeatRunRunning(owner: RunOwnership,
         or p.id=(select owner_principal_id from run_authority_principals where principal_id=$1 and run_id=$2)
         order by p.id for share`, [run.authorizationPrincipalId, run.id])
       await locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId,
-        sql as unknown as Pick<pg.PoolClient, 'query'>, atCommit)
+        sql, atCommit)
       if (!sameRepeatValue(fence, await owner.readOneShotFence(sql))) throw new DomainError('RUN_OWNERSHIP_LOST', 'The exact Run owner changed before lifecycle COMMIT.', 409)
     }
     await authorize()

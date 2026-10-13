@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { NodePlacementChoicesInputSchema, NodePlacementChoicesResultSchema, type NodePlacementChoicesInput, type NodePlacementChoice, type NodePlacementChoicesResult } from '@foreman-code/contracts/placement-readback'
@@ -29,9 +30,7 @@ export class NodePlacementChoicesService {
       }
     }
     authorize(principal)
-    const client = await this.pool.connect()
-    try {
-      await client.query('begin')
+    return withTransaction(this.pool, async (client) => {
       const live = await readLiveManagementPrincipal(client, principal.id)
       authorize(live)
       const main = (await client.query<{ id: string }>(
@@ -48,14 +47,8 @@ export class NodePlacementChoicesService {
         'PLACEMENT_CONFIGURATION_CONFLICT', 'Placement choices require the saved node configuration.', 409)
       authorize(principal)
       authorize(live)
-      await client.query('commit')
       return { live, mainId: main.id }
-    } catch (error) {
-      await client.query('rollback')
-      throw error
-    } finally {
-      client.release()
-    }
+    })
   }
   async get(principal: ManagementPrincipal, raw: unknown): Promise<NodePlacementChoicesResult> {
     const input = NodePlacementChoicesInputSchema.parse(raw)

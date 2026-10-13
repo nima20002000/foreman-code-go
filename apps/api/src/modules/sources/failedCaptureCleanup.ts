@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { withClientTransaction, rollbackTransaction } from '../../infrastructure/transaction.js'
 import { DomainError } from '../errors.js'
 import { PostgresSourceReservations, type SourceReservation } from './reservations.js'
 import type { PrivateSourceSnapshotStore } from './store.js'
@@ -50,31 +51,29 @@ async function reconcileCapture(sql: pg.PoolClient, store: CaptureStore, candida
   }
   const replayable = await canReplay(sql, store, candidate, row)
   const bytes = await store.retainedCaptureBytes(candidate.snapshot_id)
-  await sql.query('begin')
-  const storage = (await sql.query<{ locked: boolean }>(
-    'select pg_try_advisory_xact_lock(hashtext($1)) as locked',
-    [`source-storage:${row.record.scopeId}`])).rows[0]
-  const claimed = storage?.locked ? await readCapture(sql, candidate, { lock: 'skip-locked' }) : undefined
-  if (!claimed) {
-    await sql.query('commit')
-    return
-  }
-  if (!replayable || claimed.expired) {
-    await sql.query("update source_approvals set state='failed' where snapshot_id=$1 and state='capturing'",
-      [candidate.snapshot_id])
-  }
   const reservations = new PostgresSourceReservations()
-  await reservations.retain(sql, row.record, 'retained', bytes + 16 * 1024)
-  // Persist the failed approval fence and release storage/row locks before filesystem deletion.
-  await sql.query('commit')
-  if (!claimed.expired) return
+  const claimed = await withClientTransaction(sql, async () => {
+    const storage = (await sql.query<{ locked: boolean }>(
+      'select pg_try_advisory_xact_lock(hashtext($1)) as locked',
+      [`source-storage:${row.record.scopeId}`])).rows[0]
+    const claimed = storage?.locked ? await readCapture(sql, candidate, { lock: 'skip-locked' }) : undefined
+    if (!claimed) return undefined
+    if (!replayable || claimed.expired) {
+      await sql.query("update source_approvals set state='failed' where snapshot_id=$1 and state='capturing'",
+        [candidate.snapshot_id])
+    }
+    await reservations.retain(sql, row.record, 'retained', bytes + 16 * 1024)
+    // Persist the failed approval fence and release storage/row locks before filesystem deletion.
+    return claimed
+  })
+  if (!claimed?.expired) return
   await store.remove(candidate.snapshot_id)
-  await sql.query('begin')
-  await reservations.reclaimed(sql, row.record, async () => true)
-  await sql.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
-    values($1,'system','source.capture.release',$2,'succeeded',$3::jsonb)`,
-  [candidate.requested_by, row.workspace_id, JSON.stringify({ snapshotId: candidate.snapshot_id })])
-  await sql.query('commit')
+  await withClientTransaction(sql, async () => {
+    await reservations.reclaimed(sql, row.record, async () => true)
+    await sql.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
+      values($1,'system','source.capture.release',$2,'succeeded',$3::jsonb)`,
+    [candidate.requested_by, row.workspace_id, JSON.stringify({ snapshotId: candidate.snapshot_id })])
+  })
 }
 
 /** Command ownership spans commits; filesystem locks also exclude writers during database disconnects. */
@@ -105,7 +104,7 @@ export async function reconcileFailedCaptures(pool: pg.Pool, store: CaptureStore
         }
       }
     } catch (error) {
-      await sql.query('rollback')
+      await rollbackTransaction(sql)
       if (!(error instanceof Error) || !('code' in error) || error.code !== 'SOURCE_CLAIM_LOCK_FAILED') report(error)
     } finally {
       if (commandLocked) {

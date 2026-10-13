@@ -21,7 +21,7 @@ import {
 import { RemoteExecutionSettingsSchema, DEFAULT_REMOTE_EXECUTION_SETTINGS,
   type RemoteExecutionSettings } from '@foreman-code/contracts/management'
 
-import { inTransaction } from '../../infrastructure/transaction.js'
+import { inTransaction, withTransaction } from '../../infrastructure/transaction.js'
 
 import { DomainError } from '../errors.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
@@ -111,7 +111,7 @@ export class PostgresFoundationSettingsRepository {
   }
 
   async updateWorkspaceDefaults(value: WorkspaceDefaults, expectedRevision: number, client?: pg.ClientBase): Promise<VersionedSetting<WorkspaceDefaults>> {
-    if (!client) return inTransaction(this.pool, undefined, (transaction) => this.updateWorkspaceDefaults(value, expectedRevision, transaction))
+    if (!client) return withTransaction(this.pool, (transaction) => this.updateWorkspaceDefaults(value, expectedRevision, transaction))
     await client.query('select pg_advisory_xact_lock(hashtext($1))', ['workspace-folder-lifecycle'])
     const accepted = WorkspaceDefaultsSchema.parse(value)
     if (this.projectRoot && accepted.parentPath) {

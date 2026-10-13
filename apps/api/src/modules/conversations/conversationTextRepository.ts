@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
 import { MessageSchema, type ActivityScope } from '@foreman-code/contracts'
 import type { ActivityTextOperation } from '@foreman-code/contracts/activity-text'
@@ -27,9 +28,7 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
   operation: ActivityTextOperation, fence: ActivityMutationFence = {}): Promise<TextMutationResult | undefined> {
   const identity = operation.identity
   if (identity.requestId !== requestId || operation.final && operation.mode !== 'replace') return undefined
-  const client = await pool.connect()
-  try {
-    await client.query('begin')
+  return withTransaction(pool, async (client) => {
     const row = (await client.query<Owner>(`select kind,revision::text,harness,workspace_id,workflow_id,workflow_node_id,agent_id,
       origin_run_id,origin_execution_id,native_session_id,active_native_turn_id from operator_conversations
       where id=$1 and active_request_id=$2 and deleted_at is null for update`, [conversationId, requestId])).rows[0]
@@ -39,7 +38,7 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
       || fence.connectionId !== undefined && fence.connectionId !== operation.source?.connectionId
       || fence.nativeSessionId !== undefined && fence.nativeSessionId !== row.native_session_id
       || fence.nativeTurnId !== undefined && fence.nativeTurnId !== row.active_native_turn_id) {
-      await client.query('commit'); return undefined
+      return undefined
     }
     if (row.harness === 'claude') {
       const receipt = fence.nativeSubmission
@@ -47,14 +46,14 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
         && receipt.nativeSessionId === identity.sessionId
         && (await client.query(`select 1 from operator_conversation_turns where conversation_id=$1 and request_id=$2
           and payload->'nativeSubmission'=$3::jsonb for update`, [conversationId, requestId, JSON.stringify(receipt)])).rowCount
-      if (!admitted) { await client.query('commit'); return undefined }
+      if (!admitted) return undefined
     }
     if (identity.scope.kind === 'selected_run_chat') {
       const selected = identity.scope.selection
       const exact = await client.query(`select 1 from runs r join harness_executions e on e.run_id=r.id
         where r.id=$1 and r.workflow_version_id=$2 and e.id=$3 and e.attempt::text=$4`,
       [selected.runId, selected.workflowVersionId, selected.executionId, selected.attemptKey])
-      if (!exact.rowCount) { await client.query('commit'); return undefined }
+      if (!exact.rowCount) return undefined
     }
     const nativeId = identity.itemId
     const prior = (await client.query<{ id: string; record: Record<string, unknown>; content: string; text_provenance: Provenance | null; revision: string }>(
@@ -66,7 +65,7 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
     if (prior && (prior.record.requestId !== requestId || prior.record.nativeParentMessageId !== undefined && prior.record.nativeParentMessageId !== identity.parentId || stored && (stored.sessionId !== identity.sessionId || stored.generation !== identity.generation
       || stored.turnId !== identity.turnId || JSON.stringify(stored.nativeSubmission) !== JSON.stringify(fence.nativeSubmission) || stored.itemId !== identity.itemId || stored.partId !== identity.partId
       || stored.parentId !== identity.parentId || stored.channel !== identity.channel))) {
-      await client.query('commit'); return undefined
+      return undefined
     }
     const source = operation.source
     const previous = stored?.source
@@ -78,16 +77,16 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
       || comparableTransport && source!.sequence! <= previous!.sequence!
     const alreadyFinal = prior && (stored?.final === true || prior.record.nativeMessageComplete !== false)
     if (stale || alreadyFinal && !operation.final) {
-      await client.query('commit'); return result('ignored')
+      return result('ignored')
     }
     if (alreadyFinal && prior?.content !== operation.text && !fence.authoritativeReconciliation) {
-      await client.query('commit'); return result('reconciliation_required')
+      return result('reconciliation_required')
     }
     // Append requires a proven order. A new/changed connection is not a source sequence.
     const orderedFirst = !prior && (source?.nativeSequence !== undefined || source?.connectionId !== undefined && source.sequence !== undefined)
     if (operation.mode === 'append' && !orderedFirst && !comparableNative && !comparableTransport
       || prior && !operation.final && !comparableNative && !comparableTransport) {
-      await client.query('commit'); return result('reconciliation_required')
+      return result('reconciliation_required')
     }
     const content = operation.mode === 'append' ? (prior?.content ?? '') + operation.text : operation.text
     const provenance: Provenance = { ...identity, ...(fence.nativeSubmission ? { nativeSubmission: fence.nativeSubmission } : {}), final: operation.final, ...(source ? { source } : {}) }
@@ -95,7 +94,7 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
       && JSON.stringify(operation.truncation) === JSON.stringify(prior.record.truncation)) {
       if (source && (comparableNative || comparableTransport)) await client.query(`update operator_conversation_messages set text_provenance=$3::jsonb
         where conversation_id=$1 and native_message_id=$2`, [conversationId, nativeId, JSON.stringify(provenance)])
-      await client.query('commit'); return result('ignored')
+      return result('ignored')
     }
     const boundary = prior?.record.afterActivitySequence ?? (await client.query<{ sequence: string }>(
       'select coalesce(max(sequence),0)::text as sequence from operator_conversation_activity where conversation_id=$1 and request_id=$2', [conversationId, requestId])).rows[0]!.sequence
@@ -114,7 +113,6 @@ export async function appendConversationTextOperation(pool: pg.Pool, conversatio
         record=excluded.record,text_provenance=excluded.text_provenance returning activity_record_revision::text as revision`,
     [message.id, conversationId, message.role, content, nativeId, JSON.stringify(record), JSON.stringify(provenance)])).rows[0]!
     const revision = (await client.query<{ revision: string }>('update operator_conversations set revision=revision+1,updated_at=now() where id=$1 returning revision::text', [conversationId])).rows[0]!.revision
-    await client.query('commit')
     return { status: 'committed', revision, messageRevision: written.revision }
-  } catch (error) { await client.query('rollback').catch(() => undefined); throw error } finally { client.release() }
+  })
 }

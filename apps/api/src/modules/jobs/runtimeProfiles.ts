@@ -1,4 +1,5 @@
 import { JOB_VERIFICATION_OWNER_CONFIGURATION } from '@foreman-code/contracts/job-verification-policy'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import { SourceRootRecordSchema } from '@foreman-code/contracts/source-admission'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
@@ -44,9 +45,7 @@ export class JobRuntimeProfiles implements JobRuntimeInventory {
     private readonly producer:JobRuntimeQualificationProducer,
     private readonly changed?: () => void) {}
   private async transaction<T>(work:(sql:pg.PoolClient)=>Promise<T>) {
-    const sql=await this.pool.connect()
-    try {await sql.query('begin');const value=await work(sql);await sql.query('commit');return value}
-    catch(error){await sql.query('rollback');throw error}finally{sql.release()}
+    return withTransaction(this.pool, work)
   }
   private async authorize(sql:JobSql,principal:ManagementPrincipal,workspaceId:string,write=false) {
     requireAuthorization(principal,write?'job_definitions:write':'job_definitions:read',{workspaceId})

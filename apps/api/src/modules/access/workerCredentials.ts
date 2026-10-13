@@ -1,4 +1,5 @@
 import { HarnessExecutionSchema, WorkflowRunSchema } from '@foreman-code/contracts'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
 
 import { DomainError } from '../errors.js'
@@ -31,24 +32,7 @@ export class WorkerCredentialService {
   }
 
   private async transaction<T>(perform: (client: pg.PoolClient) => Promise<T>): Promise<T> {
-    for (let attempt = 0; ; attempt += 1) {
-      const client = await this.pool.connect()
-      let releaseError: Error | undefined
-      try {
-        await client.query('begin')
-        const value = await perform(client)
-        await client.query('commit')
-        return value
-      } catch (error) {
-        try { await client.query('rollback') } catch (rollbackError) {
-          releaseError = rollbackError instanceof Error ? rollbackError : new Error('Credential rollback failed.')
-        }
-        const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
-        if (releaseError || attempt >= 2 || (code !== '40P01' && code !== '40001')) throw error
-      } finally {
-        client.release(releaseError)
-      }
-    }
+    return withTransaction(this.pool, perform, { conflictRetries: 2 })
   }
 
   issueForExecution(executionId: string): Promise<IssuedWorkerCredential> {

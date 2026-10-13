@@ -4,7 +4,7 @@ import type pg from 'pg'
 import { AgentDefaultsSchema, DEFAULT_AGENT_DEFAULTS, DEFAULT_HARNESS_DEFAULTS, HarnessDefaultsSchema, operatorHarnessDefaults,
   type HarnessDefaults, type AgentHarness } from '@foreman-code/contracts'
 import { UnavailableHarnessDefaultsSchema, type HarnessOptions } from '@foreman-code/contracts/management'
-import { inTransaction } from '../../infrastructure/transaction.js'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import { latestNativeModel, nativeModelDefaults } from './modelDefaults.js'
 import { DomainError } from '../errors.js'
 import { detectedClaudeProfilePath } from './claudeSdk/productionMetadata.js'
@@ -58,7 +58,7 @@ export async function initializeNativeDefaults(input: {
     }
     available.set(harness, options)
   }))
-  return inTransaction(input.pool, undefined, async client => {
+  return withTransaction(input.pool, async client => {
     await client.query('select pg_advisory_xact_lock(hashtext($1))', ['setting:harness-defaults'])
     await client.query('select pg_advisory_xact_lock(hashtext($1))', ['setting:agent-defaults-v1'])
     const current = await client.query<{ key: string; record: unknown; revision: string }>(

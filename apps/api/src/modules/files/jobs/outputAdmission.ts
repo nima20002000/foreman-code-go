@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { withTransaction } from '../../../infrastructure/transaction.js'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import type pg from 'pg'
@@ -35,10 +36,7 @@ export class PostgresJobOutputAdmission implements AcceptedJobTransferResolver {
     private readonly reserve: (input: JobOutputPublicationInput, source: FileMutationSource) => Promise<FileWithRevision>,
     private readonly clock: () => Date = () => new Date()) { this.commands = new PostgresCommandCoordinator(pool) }
   private async transaction<T>(perform: (sql: JobSql) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect(); let broken = false
-    try { await client.query('begin'); const value = await perform(client); await client.query('commit'); return value }
-    catch (error) { await client.query('rollback').catch(() => {broken=true}); throw error }
-    finally { client.release(broken) }
+    return withTransaction(this.pool, perform)
   }
   private current(deviceId: string): Readonly<DeviceSessionBinding> {
     const binding = this.endpoint.currentBinding(deviceId,JOB_OUTPUT_NAMESPACE), frame = this.frames.getStore()

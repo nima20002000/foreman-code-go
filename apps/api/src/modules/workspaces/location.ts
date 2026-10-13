@@ -1,5 +1,6 @@
 export { requiredLocationAccess } from './locationAccess.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { constants } from 'node:fs'
@@ -250,22 +251,13 @@ export class WorkspaceLocationService {
 
   async inspectionSnapshot(workspaceId: string, signal?: AbortSignal): Promise<RunExecutionLocation> {
     signal?.throwIfAborted()
-    const client = await this.pool.connect()
-    let snapshot: RunExecutionLocation
-    try {
-      await client.query('begin')
+    const snapshot = await withTransaction(this.pool, async (client) => {
       const rows = await client.query<{ location_revision: string }>(
         'select location_revision from workspaces where id=$1 for update', [workspaceId],
       )
       if (!rows.rows[0]) throw new DomainError('WORKSPACE_NOT_FOUND', 'The workspace was not found.', 404)
-      snapshot = await this.snapshot(client, workspaceId, Number(rows.rows[0].location_revision), 'read-only', signal)
-      await client.query('commit')
-    } catch (error) {
-      await client.query('rollback')
-      throw error
-    } finally {
-      client.release()
-    }
+      return this.snapshot(client, workspaceId, Number(rows.rows[0].location_revision), 'read-only', signal)
+    })
     await this.revalidateSnapshot(workspaceId, snapshot, 'read-only', signal)
     return snapshot
   }

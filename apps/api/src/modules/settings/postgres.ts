@@ -9,7 +9,7 @@ import {
 import type pg from 'pg'
 import type { ConfiguredHarnessInstance } from '../harnesses/instanceRegistry.js'
 import { UnavailableHarnessDefaultsSchema } from '@foreman-code/contracts/management'
-import { inTransaction } from '../../infrastructure/transaction.js'
+import { withTransaction } from '../../infrastructure/transaction.js'
 
 import { DomainError } from '../errors.js'
 
@@ -120,7 +120,7 @@ export class PostgresSettingsRepository {
 
   async saveHarnessDefaults(input: HarnessDefaults): Promise<HarnessDefaults> {
     const defaults = HarnessDefaultsSchema.parse(input)
-    await inTransaction(this.pool, undefined, async client => {
+    await withTransaction(this.pool, async client => {
       await client.query('select pg_advisory_xact_lock(hashtext($1))', ['setting:harness-defaults'])
       await client.query(
         `insert into application_settings (key, record, revision, updated_at)

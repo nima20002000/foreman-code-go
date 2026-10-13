@@ -265,7 +265,7 @@ export async function persistWorkDirectionWait(owner: RunOwnership,
       where run_id=$1 and state<>'completed' limit 1`, [run.id])
     if (incomplete.rowCount) return fail('WORK_ACTIVATIONS_UNRESOLVED')
     const authorize = () => locations.revalidateRunAuthorization(run.authorizationPrincipalId,
-      run.workspaceId, run.workflowId, sql as unknown as Pick<pg.PoolClient, 'query'>)
+      run.workspaceId, run.workflowId, sql)
     await authorize()
     beforeGraphCommit(sql, authorize)
     await assertWorkflowRunSettlementLocked(sql, run, owner)

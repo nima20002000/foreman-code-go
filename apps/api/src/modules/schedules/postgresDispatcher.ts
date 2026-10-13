@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { withTransaction, type SqlQuery } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import {
@@ -97,27 +98,15 @@ export class PostgresScheduleDispatcher {
     }
   }
   private async transaction<T>(work: (client: pg.PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.pool.connect()
-    let releaseError: Error | undefined
-    try {
-      await client.query('begin')
-      const result = await work(client)
-      await client.query('commit')
-      return result
-    } catch (error) {
-      await client.query('rollback').catch((failure: unknown) => {
-        releaseError = failure instanceof Error ? failure : new Error('Schedule rollback failed.')
-      })
-      throw error
-    } finally { client.release(releaseError) }
+    return withTransaction(this.pool, work)
   }
-  private async existing(client: pg.PoolClient, schedule: WorkflowSchedule, dueAt: string) {
+  private async existing(client: SqlQuery, schedule: WorkflowSchedule, dueAt: string) {
     const row = (await client.query<{ record: unknown }>(`select record from workflow_schedule_occurrences
       where workspace_id=$1 and workflow_id=$2 and due_at=$3`,
     [schedule.workspaceId, schedule.workflowId, dueAt])).rows[0]
     return row ? ScheduleOccurrenceSchema.parse(row.record) : null
   }
-  private async overlapping(client: pg.PoolClient, schedule: WorkflowSchedule, exceptRunId?: string): Promise<boolean> {
+  private async overlapping(client: SqlQuery, schedule: WorkflowSchedule, exceptRunId?: string): Promise<boolean> {
     const found = await client.query(`select 1 from workflow_schedule_occurrences occurrence
       join runs run on run.id=occurrence.run_id
       where occurrence.workspace_id=$1 and occurrence.workflow_id=$2 and occurrence.status='accepted'
@@ -243,14 +232,13 @@ export class PostgresScheduleDispatcher {
     const { schedule, dueAt } = prepared
     const validate = async (sql: GraphTransactionSql, exceptRunId?: string) => {
       signal?.throwIfAborted()
-      const client = sql as unknown as pg.PoolClient // SQL-only helpers on the SAME branded G1 transaction
-      const principal = await readScheduleAuthority(client, schedule)
+      const principal = await readScheduleAuthority(sql, schedule)
       if (principal.id !== prepared.principal.id) throw retry()
-      const slot = await this.repository.lock(client, schedule)
+      const slot = await this.repository.lock(sql, schedule)
       if (!slot?.value?.enabled || slot.value.revision !== schedule.revision) throw retry()
       if (exceptRunId === undefined && slot.value.nextOccurrenceAt !== dueAt) throw retry()
-      if (exceptRunId === undefined && await this.existing(client, schedule, dueAt)) throw retry()
-      const overlap = await this.overlapping(client, schedule, exceptRunId)
+      if (exceptRunId === undefined && await this.existing(sql, schedule, dueAt)) throw retry()
+      const overlap = await this.overlapping(sql, schedule, exceptRunId)
       // Sample time after the final awaited read, including in beforeGraphCommit.
       const decision = decideDueSchedule(schedule, dueAt, this.clock().toISOString(), true, overlap)
       signal?.throwIfAborted()
@@ -262,14 +250,13 @@ export class PostgresScheduleDispatcher {
       ...(signal ? { signal } : {}),
       beforeAcceptance: (sql) => validate(sql),
       afterAcceptance: async (sql, run) => {
-        const client = sql as unknown as pg.PoolClient
         const now = this.clock().toISOString()
-        await this.repository.recordOccurrence(client, ScheduleOccurrenceSchema.parse({
+        await this.repository.recordOccurrence(sql, ScheduleOccurrenceSchema.parse({
           workspaceId: schedule.workspaceId, workflowId: schedule.workflowId,
           id: scheduleOccurrenceId(schedule.workflowId, dueAt), dueAt, scheduleRevision: schedule.revision,
           status: 'accepted', reason: null, runId: run.id, workflowVersionId: run.workflowVersionId,
         }), now)
-        await this.repository.advanceCursor(client, { workspaceId: schedule.workspaceId, workflowId: schedule.workflowId },
+        await this.repository.advanceCursor(sql, { workspaceId: schedule.workspaceId, workflowId: schedule.workflowId },
           schedule.revision, dueAt,
           nextOccurrences(schedule, dueAt, 1)[0] ?? null)
         // A long publication can outlive grace or a newer due instant. Abort ALL

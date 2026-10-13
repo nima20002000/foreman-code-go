@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import {
   BuildComputerPreferenceSchema, BuildComputerReadSchema, BuildComputerUpdateSchema,
   BuildComputerBatchUpdateSchema, type BuildComputerBatchResult, type BuildComputerChange,
@@ -108,19 +109,13 @@ export class BuildComputerSettings {
       await this.commands.recordDenied(principal.id, source, 'build.computer.read', buildComputerKey(target))
       throw error
     }
-    const sql = await this.pool.connect()
-    try {
-      await sql.query('begin')
+    return withTransaction(this.pool, async (sql) => {
       await this.authorize(sql, principal, 'settings:read')
       await assertBuildComputerTarget(sql, target)
       const result = await this.status(sql, target)
       await this.authorize(sql, principal, 'settings:read')
-      await sql.query('commit')
       return result
-    } catch (error) {
-      await sql.query('rollback')
-      throw error
-    } finally { sql.release() }
+    })
   }
   async update(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: unknown): Promise<BuildComputerStatus> {
     const input = BuildComputerUpdateSchema.parse(raw)
