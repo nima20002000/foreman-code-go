@@ -12,6 +12,11 @@ export function requiresUserSystemd(file) {
  * @param {import('./ciHost.js').CiPartition} partition
  * @returns {string[]} */
 export function integrationPartition(files, durations, partition) {
+  if (partition.tier) {
+    // A tiered request plans its fast and slow files separately; each part sees only its own tier.
+    const slow = new Set(partition.slowFiles ?? [])
+    files = files.filter(file => slow.has(file) === (partition.tier === 'slow'))
+  }
   const valid = value => typeof value === 'number' && Number.isFinite(value) && value > 0
   const known = files.map(file => durations[file]).filter(valid).sort((a, b) => a - b)
   const fallback = known.length ? known[Math.floor(known.length / 2)] : 1

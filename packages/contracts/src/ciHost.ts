@@ -38,7 +38,10 @@ export function validCiSelection(value: { suite: CiSuite; scope?: CiScope | unde
 const CommitSchema = z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/)
 const CiRepositorySchema = z.string().regex(/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/)
 /** `weights` gives each slice's relative speed (its computer's measured throughput), so slices finish together. */
-export const CiPartitionSchema = z.object({ index: z.number().int().nonnegative(), count: z.number().int().min(2).max(64),
+export const CiPartitionSchema = z.object({ index: z.number().int().nonnegative(), count: z.number().int().min(1).max(64),
+  /** Slow tier: files measured at or above the slow threshold run only after the rest of the request passed. */
+  tier: z.enum(['fast', 'slow']).optional(),
+  slowFiles: z.array(z.string().min(1).max(300)).max(300).optional(),
   /** Keep files at or above this measured duration alone when capacity permits. */
   targetDurationMs: z.number().positive().finite().optional(),
   weights: z.array(z.number().positive().finite()).optional(),
@@ -155,6 +158,8 @@ export const CiRunRecordSchema = z.object({
   expectedDurationMs: z.number().nonnegative().finite().optional(),
   /** The planned slice contains files requiring a build computer. */
   requiresBuildComputer: z.boolean().optional(),
+  /** A slow-tier part: it starts only after every other part of its request passed, and is skipped otherwise. */
+  deferred: z.boolean().optional(),
   /** Providers that accepted a dispatch but exhausted retries without creating work. */
   unstartedProviders: z.array(z.enum(['github', 'circleci'])).max(2).optional(),
 }).strict().refine(validCiPart, 'The part and partition must belong to the requested suite.')

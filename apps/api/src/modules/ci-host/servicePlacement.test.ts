@@ -35,6 +35,9 @@ function fleet(records: CiRunRecord[], available: HostCiComputer[]) {
       records[records.findIndex(item => item.id === record.id)] = record
       return { rows: [], rowCount: 1 }
     }
+    if (sql.includes('as group_id')) {
+      return { rows: records.filter(record => !record.deferred).map(record => ({ group_id: record.groupId, state: record.state })) }
+    }
     if (sql.includes("state='queued'")) {
       return { rows: records.filter(record => record.state === 'queued').map(record => ({ record, durations: null })) }
     }
@@ -151,4 +154,33 @@ it('dispatches a duration-planned single ordinary full slice to cloud', async ()
   expect(f.started).toHaveLength(1)
   expect(f.started[0]!.computer.key).toBe(cloud.key)
   expect(records[0]!.state).toBe('running')
+})
+
+
+function tieredRuns() {
+  const [fast, slow] = queuedRuns(2)
+  return [CiRunRecordSchema.parse({ ...fast, partition: { index: 0, count: 1, weights: [1], tier: 'fast', slowFiles: ['slow'] } }),
+    CiRunRecordSchema.parse({ ...slow, partition: { index: 0, count: 1, weights: [1], tier: 'slow', slowFiles: ['slow'] },
+      deferred: true })]
+}
+
+it('starts the slow tier only after every other part of its request passed', async () => {
+  const records = tieredRuns()
+  const f = fleet(records, [cloud, { ...cloud, key: 'cloud:circleci:1', hostRef: { ...cloud.hostRef, slot: 1 } }])
+  await f.service.dispatch()
+  expect(f.started.map(item => item.request.operation === 'start' ? item.request.runId : null)).toEqual([records[0]!.id])
+  records[0] = CiRunRecordSchema.parse({ ...records[0]!, state: 'passed', finishedAt: '2026-10-12T00:05:00.000Z' })
+  await f.service.dispatch()
+  expect(f.started.map(item => item.request.operation === 'start' ? item.request.runId : null))
+    .toEqual([records[0]!.id, records[1]!.id])
+})
+
+it('skips the slow tier with a reason when another part of its request failed', async () => {
+  const records = tieredRuns()
+  records[0] = CiRunRecordSchema.parse({ ...records[0]!, state: 'failed', finishedAt: '2026-10-12T00:05:00.000Z' })
+  const f = fleet(records, [cloud])
+  await f.service.dispatch()
+  expect(f.started).toHaveLength(0)
+  expect(records[1]).toMatchObject({ state: 'canceled',
+    message: expect.stringContaining('slow tests run only after every other test of this request passed') })
 })
