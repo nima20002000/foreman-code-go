@@ -39,6 +39,10 @@ describe.skipIf(!postgresEnabled)('Codex chat delivery through authenticated MCP
       })
       assert.equal(failed.error?.code, 'CODEX_APP_SERVER_REQUEST_FAILED')
       assert.equal((await readAgent()).availability.canSend, true)
+      const denied = await fixture.denied.callTool({ name: 'agent_chat_read', arguments: {
+        workspaceId: fixture.workspaceId, query: fixture.context,
+      } })
+      assert.equal(denied.isError, true)
       assert.equal((await native.wire('thread/start')).length, 1)
       assert.equal((await native.wire('turn/start')).length, 0)
       await native.unflag('late-reject-thread-start')
