@@ -27,6 +27,7 @@ it('admits new transfers after retiring the record limit and preserves replay de
       admissionSyncs = 0
       await service.start(current, context)
       expect(admissionSyncs).toBeLessThanOrEqual(BYTE_TRANSFER_POLICY.maxActiveGlobal + 2)
+      expect((await service.inventory()).length).toBeLessThanOrEqual(BYTE_TRANSFER_POLICY.maxActiveGlobal)
       await service.finish(current.transferId, context)
       await service.retire(current.transferId)
     }
