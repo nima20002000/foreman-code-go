@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { routedApprovalFixture } from './helpers/routedApprovalFixture.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { approvalDatabase } from './helpers/wave25ApprovalDatabase.js'
+import { retainRemoteReviewerCredential } from '../src/modules/interactions/retainedRemoteReviewer.js'
+import { withExclusiveGraphConnection } from '../src/modules/run-graph/connection.js'
 import { approvalResponse } from './helpers/approvalResponse.js'
 import { PostgresAppInteractionService } from '../src/modules/interactions/app.js'
 
@@ -35,6 +37,17 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       await expect(f.access.authenticate(token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
       const native = (await f.repository.coordination.workflowSession(f.reviewer.id))!
       expect(native).toMatchObject({ finalized: true, reviewerActive: false })
+      const bindingBefore = (await f.pool.query(`select approval_review_job_id,approval_review_lease_fence
+        from worker_credential_bindings where principal_id=$1`, [f.principal.id])).rows[0]
+      await withExclusiveGraphConnection(f.pool, connection => connection.transaction(sql =>
+        retainRemoteReviewerCredential(sql, f.reviewer, {
+          generation: '1', principalId: f.principal.id, session: native.session,
+        })))
+      await expect(f.access.authenticate(token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+      const retainedBinding = (await f.pool.query(`select approval_review_job_id,approval_review_lease_fence
+        from worker_credential_bindings where principal_id=$1`, [f.principal.id])).rows[0]
+      expect(retainedBinding).toEqual(bindingBefore)
+      expect(retainedBinding.approval_review_job_id).toBe(f.job.id)
       await expect(f.credentials.bindReviewerJob(f.reviewer.id, f.credential, f.job))
         .rejects.toMatchObject({ code: 'REVIEWER_AUTHORITY_LOST' })
       await expect(f.access.authenticate(token, 'worker')).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
