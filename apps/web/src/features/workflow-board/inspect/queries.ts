@@ -9,6 +9,7 @@ export const runInspectionQueryKey = (scope: RepeatGraphScopeV3) =>
   ['workbench', 'run-inspection', sessionGeneration(), scope.workspaceId, scope.workflowId, scope.runId, scope.workflowVersionId, 3] as const
 
 const explicitHistory = {
+  meta: { refetchOnApiReconnect: false },
   retry: false, staleTime: Infinity, gcTime: 60_000, refetchOnWindowFocus: false,
   refetchOnReconnect: false, refetchOnMount: false, maxPages: 5,
 } as const
