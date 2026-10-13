@@ -31,6 +31,8 @@ it('restores the original native credential after service restart without alloca
     nativeSessionId: session.nativeSessionId, ownerAgentId: execution.agentId,
     connectionGeneration: 1, revision: 0, observedAt: execution.createdAt, observedStatus: 'idle' })
   const issued = await new Wave25WorkerCredentialService(pool, access, 60_000).issueForExecution(execution.id)
+  // A deadline from the previous process has no meaning in the restarted process's monotonic clock.
+  issued.renewalDeadline = -1
   const before = (await pool.query('select id,token_hash,expires_at from management_principals where id=$1',
     [issued.principalId])).rows[0]
   const restarted = new WorkerCredentialService(pool, new PostgresAccessService(pool), 60_000)
