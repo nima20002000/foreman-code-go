@@ -100,7 +100,7 @@ export const providerAccountTools = [
     requires: manageRequires,
     enabled: s => !!s.providerAccounts,
     discoverable: canManage,
-    description: 'Reserve an authentication intent before native dispatch. A human completes provider authorization. Reuse the original command after an unknown response. Requires provider_accounts:read/manage.',
+    description: 'Reserve an authentication intent valid for one hour before native dispatch. A human completes provider authorization. Reuse the original command and expiry after an unknown response. Requires provider_accounts:read/manage.',
     inputSchema: ProviderAccountAuthenticationPrepareInputSchema.extend({ accountId: ProviderAccountGetInputSchema.shape.accountId }),
     outputSchema: ProviderAccountAuthenticationResultSchema, annotations: writeAnnotations,
     run: (context, { accountId, ...input }) => context.services.providerAccounts!.prepareAuthentication(context.principal, 'mcp', accountId, input),
@@ -187,7 +187,7 @@ export const providerAccountTools = [
     requires: manageRequires,
     enabled: s => !!s.providerAccounts,
     discoverable: canManage,
-    description: 'Prepare the original provider sign-in operation on the owning computer. A human completes browser authorization there. Rediscover the same operation with provider_account_auth_list after an unknown response.' + ' Requires target-specific provider_accounts:read and provider_accounts:manage. expectedRevision is the '
+    description: 'Prepare the original provider sign-in operation, valid for one hour, on the owning computer. A human completes browser authorization there. Rediscover the same operation with provider_account_auth_list after an unknown response.' + ' Requires target-specific provider_accounts:read and provider_accounts:manage. expectedRevision is the '
       + 'accounts snapshot revision; retry the same commandId and input. Credentials stay on the owning computer.',
     inputSchema: ProviderAccountToolCommandSchema, outputSchema: ProviderAccountUpdateResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true,

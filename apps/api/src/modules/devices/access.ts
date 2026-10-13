@@ -82,7 +82,7 @@ export class PostgresDeviceAccessService {
     const grant = createHmac('sha256', secretResult.rows[0]!.secret).update(JSON.stringify([principal.id, input.commandId, commandInputHash(input)])).digest('base64url')
     const result = await new PostgresCommandCoordinator(this.pool).execute({ principal, source, operation: 'device_pairing_grant_create', commandId: input.commandId,
       targetKey: this.mainId, payload: input, authorize: client => this.management(client, principal, true), perform: async client => {
-        const expiresAt = new Date(Date.now() + 300_000).toISOString()
+        const expiresAt = new Date(Date.now() + 60 * 60_000).toISOString()
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [`device-installation:${input.workerInstallationId}`])
         const existing = await client.query<{ record: DeviceRegistration }>('select record from device_registrations where worker_installation_id=$1 for update', [input.workerInstallationId])
         if (existing.rows[0]) {
@@ -117,7 +117,9 @@ export class PostgresDeviceAccessService {
       if (!row.consumed_request_id && row.expires_at.getTime() <= Date.now()) throw new DeviceAccessError('expired')
       const credential = digest(JSON.stringify(['graphql-worker-credential-v1', input.grant, input.requestId]))
       const registration = { ...row.record, status: 'paired' as const }
-      const expiresAt = row.consumed_request_id ? row.credential_expires_at.toISOString() : new Date(Date.now() + 30 * 86400_000).toISOString()
+      const expiresAt = row.consumed_request_id
+        ? row.credential_expires_at.toISOString()
+        : new Date(Date.now() + 100 * 365 * 86400_000).toISOString()
       if (!row.consumed_request_id) {
         await client.query('update device_registrations set record=$2,credential_hash=$3,credential_expires_at=$4 where id=$1', [registration.deviceId, registration, digest(credential), expiresAt])
         await client.query('update device_pairing_grants set consumed_request_id=$2,consumed_at=now() where token_hash=$1', [digest(input.grant), input.requestId])

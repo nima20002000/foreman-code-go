@@ -14,7 +14,11 @@ export function encodeWorkerEnrollmentCode(value:WorkerEnrollmentCode):string {r
 export function decodeWorkerEnrollmentCode(code:string):WorkerEnrollmentCode {return WorkerEnrollmentCodeSchema.parse(decode('GQLWE1.',code))}
 
 export const DeviceSetupApproveInputSchema=z.object({commandId:z.string().min(8).max(200),identityRequestCode:z.string().min(1).max(DEVICE_SETUP_CODE_MAX),endpoint:WorkerEnrollmentInputSchema.shape.endpoint,scopes:z.array(DeviceScopeSchema).min(1).max(3),expectedAuthorizationRevision:z.number().int().positive().optional()}).strict().refine(value=>{const endpoint=new URL(value.endpoint);return endpoint.protocol==='wss:'&&endpoint.pathname==='/device/connect'},'Use the approved LAN WSS device endpoint.')
-export const DeviceSetupApproveResultSchema=z.object({registration:DeviceRegistrationSchema,enrollmentCode:z.string().max(DEVICE_SETUP_CODE_MAX),expiresAt:z.string().datetime()}).strict()
+export const DeviceSetupApproveResultSchema=z.object({
+  registration:DeviceRegistrationSchema,
+  enrollmentCode:z.string().max(DEVICE_SETUP_CODE_MAX),
+  expiresAt:z.string().datetime().describe('Enrollment code expiry, one hour after creation; retries retain the original expiry.'),
+}).strict()
 export type DeviceSetupApproveInput=z.infer<typeof DeviceSetupApproveInputSchema>
 
 export const DeviceSetupOptionsSchema=z.object({endpoint:WorkerEnrollmentInputSchema.shape.endpoint.nullable(),available:z.boolean(),tlsTrust:DeviceTlsTrustSchema.optional(),reason:z.enum(['listener-unconfigured','endpoint-unconfigured','listener-not-started']).nullable()}).strict().superRefine((value,ctx)=>{if(value.available&&(value.endpoint===null||value.reason!==null)||!value.available&&value.reason===null)ctx.addIssue({code:'custom',message:'Actual setup configuration availability and reason must agree.'});if(value.endpoint!==null){const endpoint=new URL(value.endpoint);if(endpoint.protocol!=='wss:'||endpoint.pathname!=='/device/connect')ctx.addIssue({code:'custom',path:['endpoint'],message:'Use the explicit approved LAN WSS device endpoint.'})}})
