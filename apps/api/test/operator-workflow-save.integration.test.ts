@@ -81,7 +81,7 @@ it('creates and saves without echoed stamps, checks revisions and grants, and re
   } finally { await f.close() }
 }, 120_000)
 
-it('names the missing Codex approvalPolicy and accepts an explicitly saved native policy', async () => {
+it('accepts default native approval handling and rejects explicitly interactive policies', async () => {
   const f = await currentOperatorIntegration({ agentManagement: true,
     fixture: makeCurrentWorkflowFixture(randomUUID(), 'single') })
   const call = async (name: string, args: Record<string, unknown>) => {
@@ -101,25 +101,37 @@ it('names the missing Codex approvalPolicy and accepts an explicitly saved nativ
     input.expectedAgentConfigurationVersionIds = { [agentId]: agent.agent.configurationVersionId! }
     input.graph = { ...input.graph, approval: { handler: 'native' },
       nodes: input.graph.nodes.map(node => ({ ...node, agentId })), edges: [] }
-    const invalid = await f.client.callTool({ name: 'workflow_save_v3', arguments: input })
-    expect(invalid.isError).toBe(true)
-    const message = JSON.stringify(invalid.content)
-    expect(message).toContain(agentId)
-    expect(message).toContain('advanced.approvalPolicy')
-    expect(message).toContain('never')
-    expect(message).toContain('new configuration version')
-    const updated = AgentMutationResultSchema.parse(await call('agent_update', {
+    const first = CurrentWorkflowSaveResultSchema.parse(await call('workflow_save_v3', input))
+    const read = () => call('workflow_saved_get_v3', { workspaceId, workflowId: input.workflowId })
+      .then(value => CurrentWorkflowReadResultSchema.parse(value))
+    expect((await read()).version).toEqual(first.value.version)
+    expect(first.value.version.approval.handler).toBe('native')
+    const interactive = AgentMutationResultSchema.parse(await call('agent_update', {
       workspaceId, agentId, commandId: randomUUID(), expectedRevision: agent.metadataRevision,
       expectedConfigurationVersionId: agent.agent.configurationVersionId,
+      configuration: { ...configuration, advanced: {
+        ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'on-request', approvalsReviewer: 'user',
+      } },
+    })).value
+    const edited = { ...input, commandId: randomUUID(), expectedRevision: first.value.revision,
+      expectedWorkflowVersionId: first.value.currentVersionId,
+      expectedAgentConfigurationVersionIds: { [agentId]: interactive.agent.configurationVersionId } }
+    const invalid = await f.client.callTool({ name: 'workflow_save_v3', arguments: edited })
+    expect(invalid.isError).toBe(true)
+    expect(JSON.stringify(invalid.content)).toContain('GRAPH_INVALID')
+    expect((await read()).version).toEqual(first.value.version)
+    const updated = AgentMutationResultSchema.parse(await call('agent_update', {
+      workspaceId, agentId, commandId: randomUUID(), expectedRevision: interactive.metadataRevision,
+      expectedConfigurationVersionId: interactive.agent.configurationVersionId,
       configuration: { ...configuration, advanced: { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'never' } },
     })).value
-    const saved = CurrentWorkflowSaveResultSchema.parse(await call('workflow_save_v3', { ...input,
+    const saved = CurrentWorkflowSaveResultSchema.parse(await call('workflow_save_v3', { ...edited,
       commandId: randomUUID(), expectedAgentConfigurationVersionIds: { [agentId]: updated.agent.configurationVersionId },
     }))
-    const read = CurrentWorkflowReadResultSchema.parse(await call('workflow_saved_get_v3', {
-      workspaceId, workflowId: input.workflowId,
-    }))
-    expect(read.version).toEqual(saved.value.version)
-    expect(read.version.approval.handler).toBe('native')
+    const persisted = await read()
+    expect(persisted.version).toEqual(saved.value.version)
+    expect(persisted.version.approval.handler).toBe('native')
+    expect(persisted.version.agentConfigurationVersionIds)
+      .toEqual({ [agentId]: updated.agent.configurationVersionId })
   } finally { await f.close() }
 }, 120_000)

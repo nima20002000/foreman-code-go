@@ -1,4 +1,5 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { AgentConfigurationVersionSchema } from '@foreman-code/contracts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { buildApp } from '../src/app.js'
@@ -11,9 +12,33 @@ import { approvalReviewCuts } from './helpers/approvalReviewCuts.js'
 import { br1002At } from './helpers/wave25Br1002Cuts.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
 import { rejectableDeferred } from './helpers/deferred.js'
+import { codexApprovalRuntime } from './helpers/codexApprovalRuntime.js'
 
 afterEach(() => vi.restoreAllMocks())
 describe.skipIf(!postgresEnabled)('current durable approval orchestration', () => {
+  it('saves explicit approval policies for the reviewer and requesting worker while retaining read-only sandboxes', async () => {
+    const f = await codexApprovalRuntime('orchestrator')
+    try {
+      const pins = Object.values(f.f.version.agentConfigurationVersionIds)
+      const saved = await f.db.pool.query<{ record: unknown }>(
+        'select record from agent_configuration_versions where id = any($1::text[])', [pins],
+      )
+      const configurations = saved.rows.map(row => AgentConfigurationVersionSchema.parse(row.record))
+      expect(configurations).toHaveLength(pins.length)
+      for (const configuration of configurations) {
+        expect(configuration.harness).toMatchObject({
+          harness: 'codex', sandbox: 'read-only', advanced: {
+            approvalPolicy: 'on-request',
+            approvalsReviewer: configuration.productRole === 'orchestrator' ? 'auto_review' : 'user',
+            additionalWritableDirectories: [],
+          },
+        })
+      }
+      expect((await f.runs.get(f.f.run.id))?.agentConfigurationVersionIds)
+        .toEqual(f.f.version.agentConfigurationVersionIds)
+    } finally { await f.close() }
+  }, 60_000)
+
   it('delivers an authenticated designated reviewer MCP decision only after exact native review settlement', async () => {
     const f = await routedApprovalFixture()
     const commands = new PostgresCommandCoordinator(f.db.pool)
@@ -58,7 +83,9 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       }
       expect(f.counts().responses).toBe(0)
       dispatch = f.native.reviewers.dispatchNext(f.reviewerId, 'current-mcp-proof')
-      void dispatch.catch(() => undefined)
+      void dispatch.catch(() => {
+        // ignore: br1002At and the awaited dispatch below observe the rejection.
+      })
       await br1002At(cuts.started.promise, dispatch)
       const credential = await f.credentials.issueForReviewer(f.reviewer.id)
       const reviewer = await connect('/mcp', credential.environment.variables.GRAPHQL_MCP_TOKEN!)
@@ -94,7 +121,9 @@ describe.skipIf(!postgresEnabled)('current durable approval orchestration', () =
       cuts.release()
       publishHistory.resolve()
       finishHistory.resolve()
-      await dispatch?.catch(() => undefined)
+      await dispatch?.catch(() => {
+        // ignore: preserve the test failure while closing the clients and runtime.
+      })
       cuts.restore()
       historySpy.mockRestore()
       await Promise.allSettled(clients.map((client) => client.close()))
