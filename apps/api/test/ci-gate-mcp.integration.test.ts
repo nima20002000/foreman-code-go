@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
-import { CiGetOutputSchema, CiRunOutputSchema, userSystemdIntegrationFiles,
+import { CiGetOutputSchema, CiRunOutputSchema, exclusiveIntegrationFiles, userSystemdIntegrationFiles,
   type CiHostRun, type CiHostRequest } from '@foreman-code/contracts'
 import { afterAll, beforeAll, beforeEach, expect, it } from 'vitest'
 import { buildApp } from '../src/app.js'
@@ -19,7 +19,7 @@ beforeEach(async () => {
   await database.pool.query('truncate ci_runs, ci_file_durations, management_command_receipts, management_audit')
 })
 
-async function fixture() {
+async function fixture(options: { cloudSlots?: number; files?: string[]; offlineKey?: string } = {}) {
   const workspaceId = randomUUID()
   await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId,
     JSON.stringify({ id: workspaceId, name: 'Gate workspace', repository: {
@@ -29,11 +29,11 @@ async function fixture() {
     { key: 'builder-main', label: 'Main builder', priority: 60, hostRef: { kind: 'main', mainId: 'main' } },
     { key: 'builder-paired', label: 'Paired builder', priority: 50,
       hostRef: { kind: 'device', mainId: 'main', deviceId: 'paired' } },
-    ...Array.from({ length: 24 }, (_, slot) => ({ key: `cloud-${slot}`, label: `Cloud ${slot}`, priority: 30,
+    ...Array.from({ length: options.cloudSlots ?? 24 }, (_, slot) => ({ key: `cloud-${slot}`, label: `Cloud ${slot}`, priority: 30,
       hostRef: { kind: 'cloud' as const, mainId: 'main', provider: 'github' as const, slot },
       userSystemd: { supported: true, reason: null } })),
   ]
-  const files = [...userSystemdIntegrationFiles,
+  const files = options.files ?? [...userSystemdIntegrationFiles,
     ...Array.from({ length: 48 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)]
   const runs = new Map<string, CiHostRun>()
   const started: { key: string; request: CiHostRequest }[] = []
@@ -47,6 +47,7 @@ async function fixture() {
   }, {
     computers: async () => computers,
     request: async (computer, request) => {
+      if (computer.key === options.offlineKey) throw new Error('Computer disconnected')
       if (request.operation === 'status') return { operation: 'status', ready: true, reasons: [],
         cpuCount: computer.hostRef.kind === 'cloud' ? 4 : 16, memoryBytes: 16 * 2 ** 30,
         slotsTotal: computer.hostRef.kind === 'cloud' ? 1 : 2, slotsUsed: 0, runs: [] }
@@ -132,6 +133,41 @@ it('admits one complete gate, denies a reader, and persists the plan and measure
     ]), criticalPath: { actualDurationMs: expect.any(Number) } } })
     const stored = (await database.pool.query('select record from ci_runs where group_id=$1', [read.run.groupId])).rows
     expect(stored.map(row => row.record)).toEqual(expect.arrayContaining(finished.partitions!))
+  } finally { await f.close() }
+})
+
+it('admits a gate on the ready fleet when another build computer is disconnected', async () => {
+  const f = await fixture({ offlineKey: 'builder-paired' })
+  try {
+    const admitted = CiRunOutputSchema.parse(await f.value('ci_run', {
+      suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40), commandId: randomUUID(),
+    }))
+    await f.ci.dispatch()
+    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
+    expect(read.gate!.computers.some(computer => computer.key === 'builder-paired')).toBe(false)
+    expect(read.partitions!.filter(run => run.suite === 'integration').flatMap(run => run.files).sort())
+      .toEqual([...f.files].sort())
+  } finally { await f.close() }
+})
+
+it('runs cloud checks before systemd integration overflow assigned to the same slot', async () => {
+  const f = await fixture({ cloudSlots: 4, files: [...exclusiveIntegrationFiles] })
+  try {
+    const admitted = CiRunOutputSchema.parse(await f.value('ci_run', {
+      suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40), commandId: randomUUID(),
+    }))
+    await f.ci.dispatch()
+    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
+    const overflow = read.partitions!.filter(run => run.suite === 'integration'
+      && run.plannedHostKey?.startsWith('cloud-'))
+    expect(overflow.length).toBeGreaterThan(0)
+    for (const run of overflow) {
+      const checks = read.partitions!.filter(check => check.suite !== 'integration'
+        && check.plannedHostKey === run.plannedHostKey)
+      expect(checks.length).toBeGreaterThan(0)
+      expect(run.state).toBe('queued')
+      expect(checks.some(check => check.state === 'running')).toBe(true)
+    }
   } finally { await f.close() }
 })
 

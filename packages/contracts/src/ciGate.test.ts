@@ -1,10 +1,21 @@
 import { expect, it } from 'vitest'
+import { CiHostRequestSchema } from './ciHost.js'
 import { CiRunInputSchema, OperatorCiRunInputSchema } from './ci.js'
 
 it('accepts a full gate through the shared CI request contract', () => {
   const input = { suite: 'integration', scope: 'full', gate: true, commandId: 'gate', commit: 'a'.repeat(40) }
   expect(OperatorCiRunInputSchema.parse({ ...input, workspaceId: 'workspace' })).toMatchObject(input)
   expect(CiRunInputSchema.parse(input)).toMatchObject(input)
+})
+
+it('rejects gate flags on host jobs outside full integration', () => {
+  const request = { operation: 'start', runId: '11111111-1111-4111-8111-111111111111',
+    repository: 'octo/site', commit: 'a'.repeat(40), gate: true }
+  for (const suite of ['typecheck', 'lint', 'unit']) {
+    expect(CiHostRequestSchema.safeParse({ ...request, suite, scope: 'full' }).success).toBe(false)
+  }
+  expect(CiHostRequestSchema.safeParse({ ...request, suite: 'integration', scope: 'full',
+    files: ['apps/api/test/site.integration.test.ts'], integrationShards: 12 }).success).toBe(true)
 })
 
 it('rejects gate requests that select only part of the gate', () => {
