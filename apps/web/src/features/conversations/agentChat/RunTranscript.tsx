@@ -20,19 +20,28 @@ export function RunTranscript({ feed, name, onBrowse }: {
       const history = data.history?.executionId === execution.executionId ? data.history : undefined
       const items = history?.items ?? data.items.filter(item => item.executionId === execution.executionId)
       const hasEarlierItems = history?.hasEarlierItems ?? execution.hasEarlierItems
+      const historyRead = feed.readState(execution.executionId)
       const label = `${execution.label} · ${states[execution.state] ?? execution.state}`
       return <section key={execution.executionId} className="agent-chat-execution" aria-label={label}>
         {labelled ? <p className="agent-chat-execution-label" role="heading" aria-level={3}>{label}</p> : null}
         {history ? <p className="agent-chat-note">Earlier activity <Button size="sm" variant="ghost"
           onClick={() => { onBrowse(); feed.backToLatest() }}>Back to latest activity</Button></p> : null}
-        {hasEarlierItems ? <Button size="sm" variant="ghost"
-          onClick={() => { onBrowse(); void feed.loadEarlier(execution.executionId) }}>Load earlier activity</Button> : null}
+        {hasEarlierItems ? <Button size="sm" variant="ghost" disabled={historyRead.pending}
+          onClick={() => { onBrowse(); feed.loadEarlier(execution.executionId) }}>
+          {historyRead.pending ? 'Loading earlier activity…' : 'Load earlier activity'}
+        </Button> : null}
+        {historyRead.failed ? <p role="alert">Earlier activity could not be loaded.{' '}
+          <Button size="sm" variant="ghost" onClick={() => { onBrowse(); feed.loadEarlier(execution.executionId) }}>
+            Retry earlier activity
+          </Button>
+        </p> : null}
         {!items.length && executionIsLive(execution) ? <p className="agent-chat-note">Waiting for the first activity…</p> : null}
         <ol className="agent-chat-messages" aria-label="Execution activity">
           {items.map(item => <li key={item.id}>{item.entry.kind === 'message'
             ? <AgentChatMessage message={item.entry.message} name={name} />
             : <AgentChatActivity entry={item.entry.activity} onBrowse={onBrowse}
-              onExpand={() => { void feed.expand(item.executionId, item.id) }} />}</li>)}
+              expandState={feed.readState(item.executionId, item.id)}
+              onExpand={() => feed.expand(item.executionId, item.id)} />}</li>)}
         </ol>
       </section>
     })}
