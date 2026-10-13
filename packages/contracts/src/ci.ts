@@ -69,7 +69,9 @@ export const CiGetInputSchema = CiTicketInputSchema.extend({
 }).strict()
 export const OperatorCiGetInputSchema = CiGetInputSchema.extend({ workspaceId: IdSchema }).strict()
 export const CiGetOutputSchema = z.object({
-  run: CiRunRecordSchema, partitions: z.array(CiRunRecordSchema).optional(), logTail: z.string(),
+  run: CiRunRecordSchema,
+  partitions: z.array(CiRunRecordSchema).optional().describe('Run records ordered by suite, part and numeric shard index.'),
+  logTail: z.string(),
   queue: z.object({ position: z.number().int().positive(), reason: z.string() }).strict().nullable().optional(),
   group: z.object({ groupId: CiRunRecordSchema.shape.groupId, state: CiRunRecordSchema.shape.state }).strict().optional(),
   tests: CiTestResultsSchema.nullable().optional(),

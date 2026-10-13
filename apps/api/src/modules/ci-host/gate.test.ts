@@ -125,3 +125,27 @@ it.each([
   for (const cloud of clouds) expect(cloud.integrationShards).toBe(4)
   expect(parts.filter(part => part.suite === 'integration').flatMap(part => part.files).sort()).toEqual([...files].sort())
 })
+
+it.each([2, 10])('bounds gate unit shards by %i free cloud slots', async slots => {
+  const files = Array.from({ length: 30 }, (_, index) => `apps/api/src/feature-${index}.test.ts`)
+  const durations = Object.fromEntries(files.map(file => [file, 30_000]))
+  const parts = await planCiGate({ suite: 'integration', scope: 'full', gate: true, commandId: 'unit-capacity' },
+    { files: ['apps/api/test/feature.integration.test.ts'], durations: {} },
+    { files, durations, heavy: [] }, durations, fleet(slots))
+  expect(parts.filter(part => part.part === 'unit-api')).toHaveLength(Math.min(6, slots))
+  expect(parts.filter(part => part.part === 'unit-web-heavy')).toHaveLength(2)
+  expect(parts.filter(part => part.part === 'unit-other')).toHaveLength(1)
+})
+
+it.each([
+  { reportedSlots: 8, expectedShards: 3 },
+  { reportedSlots: 2, expectedShards: 2 },
+])('keeps reserved slots out of gate unit sizing with $reportedSlots reported free slots',
+  async ({ reportedSlots, expectedShards }) => {
+    const files = Array.from({ length: 12 }, (_, index) => `apps/api/src/feature-${index}.test.ts`)
+    const durations = Object.fromEntries(files.map(file => [file, 150_000]))
+    const parts = await planCiGate({ suite: 'integration', scope: 'full', gate: true, commandId: 'reserved-unit-capacity' },
+      { files: ['apps/api/test/feature.integration.test.ts'], durations: {} },
+      { files, durations, heavy: [] }, durations, fleet(4), new Map(), 1, reportedSlots)
+    expect(parts.filter(part => part.part === 'unit-api')).toHaveLength(expectedShards)
+  })

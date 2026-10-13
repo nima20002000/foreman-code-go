@@ -7,7 +7,7 @@ import { CI_GET_ACTIONS, CI_RUN_ACTIONS } from '../src/modules/jobs/ciAuthority.
 import { fixture } from './helpers/hostCiMcpFixture.js'
 
 it('splits affected unit files without sending an empty part to a computer', async () => {
-  const f = await fixture()
+  const f = await fixture({ cloud: { github: 3, circleci: 0 } })
   try {
     const files = ['apps/api/test/a.test.ts', 'apps/api/test/b.test.ts', 'apps/api/test/c.test.ts']
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
@@ -18,7 +18,7 @@ it('splits affected unit files without sending an empty part to a computer', asy
     expect(read.partitions!.every(run => run.part === 'unit-api' && run.files.length === 1)).toBe(true)
     expect(read.partitions!.flatMap(run => run.files).sort()).toEqual(files)
     await f.ci.dispatch()
-    expect(f.started).toHaveLength(2)
+    expect(f.started).toHaveLength(3)
     for (const item of f.started) expect(item.request).toMatchObject({ part: 'unit-api', scope: 'affected',
       files: expect.any(Array), partition: { count: 3 } })
   } finally { await f.close() }
@@ -27,7 +27,7 @@ it('splits affected unit files without sending an empty part to a computer', asy
 it('sizes persisted unit parts from committed timings and then from learned unit timings', async () => {
   const files = Array.from({ length: 6 }, (_, index) => `apps/api/test/unit-${index}.test.ts`)
   const durations = Object.fromEntries(files.map(file => [file, 150_000]))
-  const f = await fixture({ unitInventory: { files, durations, heavy: [] } })
+  const f = await fixture({ unitInventory: { files, durations, heavy: [] }, cloud: { github: 6, circleci: 0 } })
   try {
     const reader = await f.connect(CI_GET_ACTIONS)
     const input = { suite: 'unit', scope: 'full', commandId: 'timed-parts' }

@@ -16,6 +16,7 @@ const log = componentLogger('jobs')
 interface GateComputer {
   computer: HostCiComputer
   shards: number
+  freeSlots: number
   checkMs: number
   files: string[]
 }
@@ -58,7 +59,8 @@ async function gateComputers(endpoint: HostCiEndpoint, reservedCloudSlots: numbe
     const status = await readCiComputerStatus(endpoint, computer)
     if (!status?.ready) return null
     const shards = buildComputerIntegrationShards(status, computer.buildAllowancePercent)
-    const available: GateComputer = { computer, shards, checkMs: 0, files: [] }
+    const freeSlots = Math.max(0, (status.slotsTotal ?? 1) - (status.slotsUsed ?? 0))
+    const available: GateComputer = { computer, shards, freeSlots, checkMs: 0, files: [] }
     return available
   }))
   return available.filter((value): value is GateComputer => value !== null)
@@ -69,15 +71,17 @@ async function gateComputers(endpoint: HostCiEndpoint, reservedCloudSlots: numbe
  * Reserved cloud slots stay out of the plan so non-gate tickets can start while the gate runs. */
 export async function planCiGate(input: CiRunInput, integration: CiIntegrationInventory,
   unit: CiUnitInventory, durations: CiDurations, endpoint: HostCiEndpoint,
-  speeds: ExecutorSpeeds = new Map(), reservedCloudSlots = 0): Promise<GatePart[]> {
+  speeds: ExecutorSpeeds = new Map(), reservedCloudSlots = 0, unitSlots?: number): Promise<GatePart[]> {
   const fleet = await gateComputers(endpoint, reservedCloudSlots)
   const hosts = fleet.filter(item => item.computer.hostRef.kind !== 'cloud')
   const clouds = fleet.filter(item => item.computer.hostRef.kind === 'cloud')
   if (!hosts.length || !clouds.length || !integration.files.length) {
     throw new DomainError('CI_GATE_CAPACITY_REQUIRED', 'A gate needs a ready build computer, cloud CI, and integration files.', 409)
   }
+  const availableSlots = clouds.reduce((sum, item) => sum + item.freeSlots, 0)
+  const slots = Math.min(unitSlots ?? availableSlots, availableSlots)
   const checks = (['typecheck', 'lint', 'unit'] as const).flatMap(suite =>
-    planCiParts({ ...input, gate: false, suite, scope: 'full' }, durations, unit).map(part => ({ ...part, suite })))
+    planCiParts({ ...input, gate: false, suite, scope: 'full' }, durations, unit, slots).map(part => ({ ...part, suite })))
   const result: GatePart[] = checks.map(part => {
     const eligible = clouds.filter(item => item.computer.hostRef.provider !== 'circleci' || runsOnCircleCi(part))
     const target = [...eligible].sort((left, right) => left.checkMs - right.checkMs)[0]
