@@ -302,20 +302,67 @@ it.each(['success', 'failed', 'canceled'])('preserves terminal CircleCI %s state
   const server = await http((request, response) => {
     if (request.url === '/api/v2/pipeline/42/workflow') return json(response,
       { items: [{ id: 'workflow', status, stopped_at: finishedAt }] })
-    if (request.url === '/api/v3/jobs/job') return json(response, { data: { attributes: {
-      name: 'Tests', phase: 'ended', outcome: status === 'success' ? 'succeeded' : status,
-      ended_at: finishedAt, parallel_executions: [{ steps: [
-        { num: 1, name: 'Tests', phase: 'ended', outcome: status === 'success' ? 'succeeded' : status },
-      ] }],
-    } } })
+    if (request.url === '/api/v3/jobs/job') return json(response, { message: 'Job unavailable' }, 500)
     circleHandler(request, response)
   })
   const cli = ports()
   const provider = new CircleCiProvider(cli.value, { ...server, circleToken: async () => 'circle-test-token' })
   const conclusion = status === 'success' ? 'success' : status === 'canceled' ? 'cancelled' : 'failure'
-  expect(await provider.status(run)).toEqual({ done: true, conclusion, finishedAt,
-    steps: [{ key: 'job:1', name: 'Tests', state: status === 'success' ? 'passed' : 'failed' }] })
+  expect(await provider.status(run)).toEqual({ done: true, conclusion, finishedAt, steps: [] })
+  expect(server.requests.some(request => request.url === '/api/v3/jobs/job')).toBe(false)
   expect(cli.calls).not.toHaveBeenCalled()
+})
+
+it.each([
+  { outcome: 'succeeded', state: 'passed' },
+  { outcome: 'failed', state: 'failed' },
+  { outcome: 'canceled', state: 'failed' },
+  { outcome: 'skipped', state: 'skipped' },
+])('reports completed CircleCI steps as $state while the workflow is running', async ({ outcome, state }) => {
+  const server = await http((request, response) => {
+    if (request.url === '/api/v3/jobs/job') return json(response, { data: { attributes: {
+      name: 'Tests', phase: 'ended', outcome, ended_at: finishedAt,
+      parallel_executions: [{ steps: [{ num: 1, name: 'Tests', phase: 'ended', outcome }] }],
+    } } })
+    circleHandler(request, response)
+  })
+  const cli = ports()
+  const provider = new CircleCiProvider(cli.value, { ...server, circleToken: async () => 'circle-test-token' })
+  expect(await provider.status(run)).toEqual({ done: false, steps: [{ key: 'job:1', name: 'Tests', state }] })
+  expect(cli.calls).not.toHaveBeenCalled()
+})
+
+it.each([401, 403])('classifies CircleCI HTTP %s lookup denials and still attempts cancellation', async status => {
+  const server = await http((_request, response) => json(response, { message: 'circle-test-token denied' }, status))
+  const cli = ports()
+  cli.calls.mockResolvedValue({ code: 0, stdout: '', stderr: '' })
+  const provider = new CircleCiProvider(cli.value, { ...server, circleToken: async () => 'circle-test-token' })
+  await expect(provider.find(run)).rejects.toMatchObject({
+    code: 'CI_CLOUD_RUN_UNREADABLE', message: expect.stringContaining('[redacted] denied'),
+  })
+  await expect(provider.cancel(run)).resolves.toBeUndefined()
+  expect(cli.calls).toHaveBeenCalledExactlyOnceWith('circleci', ['run', 'cancel', '42', '--force'],
+    { timeoutMs: 120_000 })
+})
+
+it('keeps CircleCI rate limits from triggering cancellation', async () => {
+  const server = await http((_request, response) => json(response, { message: 'rate limit' }, 429))
+  const cli = ports()
+  const provider = new CircleCiProvider(cli.value, { ...server, circleToken: async () => 'circle-test-token' })
+  await expect(provider.cancel(run)).rejects.toMatchObject({ code: 'CI_CLOUD_RATE_LIMITED' })
+  expect(cli.calls).not.toHaveBeenCalled()
+})
+
+it('propagates CircleCI cancellation denials after an unreadable lookup', async () => {
+  const server = await http((_request, response) => json(response, { message: 'Forbidden' }, 403))
+  const cli = ports()
+  cli.calls.mockResolvedValue({ code: 1, stdout: '', stderr: 'permission denied' })
+  const provider = new CircleCiProvider(cli.value, { ...server, circleToken: async () => 'circle-test-token' })
+  await expect(provider.cancel(run)).rejects.toMatchObject({
+    code: 'CI_CLOUD_FAILED', message: 'CircleCI did not accept circleci run cancel: permission denied',
+  })
+  expect(cli.calls).toHaveBeenCalledExactlyOnceWith('circleci', ['run', 'cancel', '42', '--force'],
+    { timeoutMs: 120_000 })
 })
 
 it('keeps full CircleCI log output, empty streams, progress redraws and report labels', async () => {
