@@ -24,8 +24,8 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
   async computers(): Promise<HostCiComputer[]> {
     await Promise.all(this.clouds.map(cloud => cloud.reconcile()))
     const rows = (await this.pool.query<{ host_key: string; target: DeviceProvisioningTarget
-      build_enabled: boolean; build_priority: number }>(
-      'select host_key,target,build_enabled,build_priority from build_computer_preferences')).rows
+      build_enabled: boolean; build_priority: number; build_allowance_percent: number }>(
+      'select host_key,target,build_enabled,build_priority,build_allowance_percent from build_computer_preferences')).rows
     const devices = this.devices()
     const computers: HostCiComputer[] = []
     for (const row of rows) {
@@ -39,22 +39,27 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
         throw error
       }
       if (hostRef.kind === 'main') {
-        computers.push({ key: row.host_key, hostRef, label: 'Main computer', priority: row.build_priority })
+        computers.push({ key: row.host_key, hostRef, label: 'Main computer', priority: row.build_priority,
+          buildAllowancePercent: row.build_allowance_percent })
         continue
       }
       if (hostRef.kind !== 'device' || !hostRef.deviceId) continue
       if (!devices?.capabilities(hostRef.deviceId).some(value => value.namespace === CI_HOST_NAMESPACE && value.mainCanRequest)) continue
-      computers.push({ key: row.host_key, hostRef, label: `Computer ${hostRef.deviceId.slice(0, 8)}`, priority: row.build_priority })
+      computers.push({ key: row.host_key, hostRef, label: `Computer ${hostRef.deviceId.slice(0, 8)}`, priority: row.build_priority,
+        buildAllowancePercent: row.build_allowance_percent })
     }
     return [...computers, ...this.clouds.flatMap(cloud => cloud.computers())]
       .sort((left, right) => right.priority - left.priority)
   }
 
   async request(computer: HostCiComputer, request: CiHostRequest): Promise<CiHostReply> {
-    if (request.operation === 'start' && computer.hostRef.kind !== 'cloud'
-      && !(await this.computers()).some(value => value.key === computer.key
-        && JSON.stringify(value.hostRef) === JSON.stringify(computer.hostRef))) {
-      throw new DomainError('BUILD_COMPUTER_DISABLED', 'This computer is no longer available for builds.', 409)
+    if (request.operation === 'start' && computer.hostRef.kind !== 'cloud') {
+      const saved = (await this.computers()).find(value => value.key === computer.key
+        && JSON.stringify(value.hostRef) === JSON.stringify(computer.hostRef))
+      if (!saved) {
+        throw new DomainError('BUILD_COMPUTER_DISABLED', 'This computer is no longer available for builds.', 409)
+      }
+      request = { ...request, buildAllowancePercent: saved.buildAllowancePercent ?? 100 }
     }
     if (computer.hostRef.kind === 'main') return this.local.handle(request)
     if (computer.hostRef.kind === 'cloud') {

@@ -3,11 +3,12 @@ import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 export { integrationPartition, requiresUserSystemd } from './ciPartition.mjs'
 export { userSystemdIntegrationFiles, exclusiveIntegrationFiles } from './integrationScheduling.mjs'
 import { WorkspaceRepositorySchema } from './workspaceRepository.js'
+import { BuildComputerAllowanceSchema } from './buildComputers.js'
 
 /** Host CI: a build computer runs a suite directly in a git worktree of the commit, like a self-hosted runner.
  * It fetches with its own GitHub CLI login and installs packages normally; a systemd unit caps CPU and memory. */
 export const CI_HOST_NAMESPACE = 'ci-host-v1'
-export const CI_HOST_START_PROTOCOL_VERSION = 2
+export const CI_HOST_START_PROTOCOL_VERSION = 3
 export const CI_LOG_MAX_BYTES = 65_536
 export const CI_UNIT_SHARD_LIMIT = 32
 export const CI_HEAVY_WEB_SHARDS = 2
@@ -98,6 +99,7 @@ const CiHostStartSchema = z.object({
   suite: CiSuiteSchema, part: CiPartSchema.optional(), partition: CiPartitionSchema.optional(), durations: CiDurationsSchema.optional(),
   scope: CiScopeSchema.optional(), files: CiSelectedFilesSchema.optional(),
   expectedDurationMs: z.number().nonnegative().finite().optional(),
+  buildAllowancePercent: BuildComputerAllowanceSchema.optional(),
   gate: z.boolean().optional(), integrationShards: z.number().int().min(1).max(64).optional(),
   defaultBranch: WorkspaceRepositorySchema.shape.defaultBranch.optional(),
   baseCommit: CommitSchema.optional(),
@@ -134,7 +136,7 @@ export const CiUserSystemdSchema = z.object({ supported: z.boolean(), reason: z.
 export type CiUserSystemd = z.infer<typeof CiUserSystemdSchema>
 export const CiHostStatusSchema = z.object({
   operation: z.literal('status'), ready: z.boolean(), reasons: z.array(z.string().max(300)).max(10),
-  /** Start protocol 2 accepts workspace mirror metadata and ignores unknown optional start fields. */
+  /** Start protocol 3 enforces the saved CPU and memory build allowance on host starts. */
   startProtocolVersion: z.number().int().positive().optional(),
   cpuCount: z.number().int().positive(), memoryBytes: z.number().int().positive(),
   availableMemoryBytes: z.number().int().nonnegative().optional(),

@@ -344,9 +344,9 @@ export function integrationShardPlan(environment, resources = {}, fileCount = In
     && Number.isSafeInteger(activeConnections) && activeConnections >= 0
   // One worker uses the default ten-connection pool plus admin and peer connections.
   const connectionsPerShard = 16
-  // Shards mostly wait on PostgreSQL and child processes: measured ~0.5 core and well under 0.5 GiB each.
+  // Each shard reserves one logical CPU and 0.5 GiB of memory.
   const memoryPerShard = 1024 ** 3 / 2
-  const cpuLimit = knownCpu ? cpuCount * 2 : 12
+  const cpuLimit = knownCpu ? cpuCount : 12
   const memoryLimit = knownMemory ? Math.floor(availableMemoryBytes / memoryPerShard) : 12
   const freeConnections = knownDatabase ? maxConnections - reservedConnections - activeConnections : null
   const databaseLimit = knownDatabase ? Math.floor(freeConnections / connectionsPerShard) : 12

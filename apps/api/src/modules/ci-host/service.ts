@@ -22,7 +22,7 @@ import { fallbackOnError } from '../diagnostics/ignoredError.js'
 import { CI_QUEUE_ORDER, ciQueueReason, compareCiQueue } from './priority.js'
 import { prepareCiSupersession, validateCiSupersession, supersedeCiRuns } from './supersession.js'
 import { gatePartStealer, gateQueueBlock, planCiGate, readCiComputerStatus } from './gate.js'
-import { gateIntegrationShards } from './capacity.js'
+import { buildComputerIntegrationShards, gateDispatchShards } from './capacity.js'
 import { ciGateReport } from './gateReport.js'
 import { claimCiDispatch, releaseCiDispatch, saveQueuedCiRun, ciMessages, rejectedCiStart, withCiTicketLock,
   requestCiStart, CI_START_ACK_TIMEOUT_MS, CI_START_MAX_ATTEMPTS } from './dispatch.js'
@@ -259,7 +259,7 @@ export class HostCiService {
       if (status.operation !== 'status' || !status.ready) {
         throw new DomainError('CI_SMOKE_COMPUTER_UNAVAILABLE', 'The smoke computer is not ready.', 409)
       }
-      smokeShards = gateIntegrationShards(status.cpuCount, Math.floor(status.memoryBytes * 0.9))
+      smokeShards = buildComputerIntegrationShards(status, smokeTarget.buildAllowancePercent)
       const fleet = await this.endpoint.computers()
       if (integration && fleet.some(computer => computer.hostRef.kind !== 'cloud')
         && fleet.some(computer => computer.hostRef.kind === 'cloud')) {
@@ -936,7 +936,7 @@ export class HostCiService {
       if (status) {
         used.set(computer.key, Math.max(used.get(computer.key) ?? 0, status.slotsUsed ?? 0))
         if (status.ready) {
-          gateShards.set(computer.key, gateIntegrationShards(status.cpuCount, Math.floor(status.memoryBytes * 0.9)))
+          gateShards.set(computer.key, buildComputerIntegrationShards(status, computer.buildAllowancePercent))
         }
       }
     })
@@ -1021,8 +1021,7 @@ export class HostCiService {
         }
         used.set(computer.key, (used.get(computer.key) ?? 0) + (exclusiveGate ? totals.get(computer.key) ?? 1 : 1))
         if (usesGitHubIntegration) integrationOnGitHub.add(computer.key)
-        const shards = run.gate && run.suite === 'integration' && computer.key !== run.plannedHostKey
-          ? { integrationShards: gateShards.get(computer.key)! } : {}
+        const shards = gateDispatchShards(run, computer.key, gateShards.get(computer.key)!)
         const assigned = await claimCiDispatch(this.pool, run, computer, {
           operation: 'start', runId: run.id, workspaceId: run.workspaceId, ciMirror: run.ciMirror ?? null,
           repository: run.repository, commit: run.commit, suite: run.suite,

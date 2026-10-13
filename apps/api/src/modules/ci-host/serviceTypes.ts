@@ -5,7 +5,8 @@ import type { CiUnitInventory } from './parts.js'
 
 export type HostRef = CiRunRecord['computer'] extends infer C ? C extends { hostRef: infer H } ? H : never : never
 export interface HostCiComputer {
-  key: string; hostRef: HostRef; label: string; priority: number; userSystemd?: CiUserSystemd
+  key: string; hostRef: HostRef; label: string; priority: number
+  buildAllowancePercent?: number; userSystemd?: CiUserSystemd
 }
 export interface HostCiEndpoint {
   /** Paired computers that serve host CI now. */
