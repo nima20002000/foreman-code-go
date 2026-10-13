@@ -5,15 +5,18 @@ import { savedClaudeConfiguration } from '../settings/claudeSettings.fixtures'
 import { OperatorAccessPicker } from './OperatorAccessPicker'
 
 describe('Operator access in agent settings', () => {
-  it('changes Codex sandbox and clears incompatible writable settings', () => {
-    const onChange = vi.fn().mockResolvedValue(true)
-    const value = { ...DEFAULT_HARNESS_DEFAULTS.codex, sandbox: 'workspace-write' as const,
-      advanced: { ...DEFAULT_HARNESS_DEFAULTS.codex.advanced!, additionalWritableDirectories: ['/tmp/project'] } }
-    render(<OperatorAccessPicker value={value} disabled={false} onChange={onChange} />)
-    fireEvent.change(screen.getByRole('combobox', { name: 'Sandbox' }), { target: { value: 'danger-full-access' } })
-    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ sandbox: 'danger-full-access',
-      advanced: expect.objectContaining({ additionalWritableDirectories: [], approvalPolicy: 'on-request' }) }))
-  })
+  it.each(['on-request', 'never'] as const)(
+    'changes Codex sandbox and clears incompatible writable settings while preserving %s approvals',
+    approvalPolicy => {
+      const onChange = vi.fn().mockResolvedValue(true)
+      const value = { ...DEFAULT_HARNESS_DEFAULTS.codex, sandbox: 'workspace-write' as const,
+        advanced: { ...DEFAULT_HARNESS_DEFAULTS.codex.advanced!, additionalWritableDirectories: ['/workspace/project'], approvalPolicy } }
+      render(<OperatorAccessPicker value={value} disabled={false} onChange={onChange} />)
+      fireEvent.change(screen.getByRole('combobox', { name: 'Sandbox' }), { target: { value: 'danger-full-access' } })
+      expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ sandbox: 'danger-full-access',
+        advanced: expect.objectContaining({ additionalWritableDirectories: [], approvalPolicy }) }))
+    },
+  )
 
   it('saves approval routing separately from sandbox access', () => {
     const onChange = vi.fn().mockResolvedValue(true)
