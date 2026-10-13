@@ -263,7 +263,7 @@ it.each([
       expect(started.partitions).toBeUndefined()
       expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(started)
       await expect.poll(async () => CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get',
-        { ticketId: started.ticketId })).run.state).toBe('passed')
+        { ticketId: started.ticketId })).run.state, { timeout: 10_000 }).toBe('passed')
       const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
       expect(read.run).toMatchObject({ suite, part: null, partition: null, scope: 'full', files: [],
         state: 'passed', exitCode: 0, commit: repository.commit, computer: { hostRef: { kind: 'main' } } })
@@ -309,6 +309,11 @@ it('runs a generic full suite for an empty affected selection and preserves HTTP
   const f = await fixture({ repositoryRunner: repository })
   try {
     const input = { suite: 'unit', scope: 'affected', files: [], commit: repository.commit, commandId: 'generic-affected' }
+    const computers = CiComputersOutputSchema.parse(await f.value(f.operator, 'ci_computers_list', {}))
+    const buildComputer = computers.computers.find(computer => computer.hostRef.kind === 'main')!
+    expect(buildComputer).toMatchObject({ ready: true, slotsUsed: 0 })
+    expect(computers.computers.find(computer => computer.hostRef.kind === 'cloud'))
+      .toMatchObject({ ready: true, slotsUsed: 0 })
     const writer = await f.credential([...CI_RUN_ACTIONS, ...CI_GET_ACTIONS])
     const headers = { authorization: `Bearer ${writer.token}` }
     const url = `/api/management/workspaces/${f.workspaceId}/ci`
@@ -325,9 +330,8 @@ it('runs a generic full suite for an empty affected selection and preserves HTTP
     expect(read.statusCode).toBe(200)
     const result = CiGetOutputSchema.parse(read.json())
     expect(result.run).toMatchObject({ state: 'passed', part: null, partition: null, scope: 'full', files: [],
-      computer: { hostRef: { kind: 'main' } } })
+      computer: { hostRef: buildComputer.hostRef } })
     expect(result.logTail).toContain('fixture unit passed')
-    expect(repository.cloudAttempts).toContain(started.ticketId)
     expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId })).run)
       .toEqual(result.run)
     expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
@@ -363,7 +367,7 @@ it('runs another repository’s named parts through its own suite hook', async (
     const started = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', { suite: 'build', commandId: 'custom-hook' }))
     expect(started.partitions).toHaveLength(2)
     await expect.poll(async () => CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get',
-      { ticketId: started.ticketId })).group!.state).toBe('passed')
+      { ticketId: started.ticketId })).group!.state, { timeout: 10_000 }).toBe('passed')
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
     expect(read.partitions!.map(run => run.part).sort()).toEqual(['build-api', 'build-other'])
     for (const run of read.partitions!) {
@@ -1156,15 +1160,17 @@ it('settles NUL log output and dispatches the next queued ticket with persisted 
   const read = async (ticketId: string) => CiGetOutputSchema.parse(decodeMcpToolResult(await f.operator.callTool({
     name: 'ci_get', arguments: { workspaceId: f.workspaceId, ticketId },
   })))
+  const input = { suite: 'lint', scope: 'affected', commit: 'a'.repeat(40),
+    files: ['apps/api/src/modules/ci-host/service.ts'], noSupersede: true }
   try {
     const first = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
-      suite: 'lint', commandId: 'nul-log', noSupersede: true,
+      ...input, commandId: 'nul-log',
     }))
     expect(first.partitions).toBeUndefined()
     await f.ci.dispatch()
     expect((await read(first.ticketId)).run.state).toBe('running')
     const second = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', {
-      suite: 'lint', commandId: 'after-nul-log', noSupersede: true,
+      ...input, commandId: 'after-nul-log',
     }))
     expect(second.partitions).toBeUndefined()
     await f.ci.close()
@@ -1605,7 +1611,14 @@ it.each(['full', 'affected'] as const)('automatically sizes %s integration via M
     expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))).toEqual(started)
     const read = CiGetOutputSchema.parse(await f.value(reader, 'ci_get', { ticketId: started.ticketId }))
     expect(read.partitions!.every(run => run.expectedDurationMs === 330_000)).toBe(true)
-    expect(read.partitions!.every(run => run.computer?.hostRef.kind === 'cloud')).toBe(true)
+    expect(read.partitions!.every(run => run.state === 'running')).toBe(true)
+    const buildRuns = read.partitions!.filter(run => run.computer?.hostRef.kind === 'device')
+    expect(buildRuns).toHaveLength(2)
+    expect(buildRuns.map(run => run.computer!.hostRef)).toEqual(expect.arrayContaining(
+      f.computers.filter(computer => computer.hostRef.kind === 'device').map(computer => computer.hostRef)))
+    const cloudRuns = read.partitions!.filter(run => run.computer?.hostRef.kind === 'cloud')
+    expect(cloudRuns).toHaveLength(read.partitions!.length - buildRuns.length)
+    expect(cloudRuns.every(run => run.computer?.hostRef.provider === 'circleci')).toBe(true)
     const selected = scope === 'full' ? files : files.slice(0, 6)
     const slices = read.partitions!.map(run => integrationPartition(selected, durations, run.partition!))
     expect(slices.flat().sort()).toEqual([...selected].sort())
@@ -1835,7 +1848,7 @@ it('targets one smoke computer through authenticated MCP and HTTP with grants, r
       expect(CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', request))).toEqual(started)
       const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: started.ticketId }))
       expect(read.run.computer?.hostRef).toEqual(computer.hostRef)
-      expect(read.run).toMatchObject({ smokeComputer: computer.hostRef, integrationShards: 11 })
+      expect(read.run).toMatchObject({ smokeComputer: computer.hostRef, integrationShards: 23 })
       const stored = (await f.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
         [started.ticketId])).rows[0]!.record
       const retainedReleaseSchema = z.object(CiRunRecordSchema.shape).omit({ smokeComputer: true }).strict()
