@@ -1,11 +1,18 @@
-import { BugReportStatusSchema, type BugReport } from '@foreman-code/contracts/management'
-import type { RefObject } from 'react'
+import {
+  BugReportActiveStatusSchema,
+  BugReportClosedStatusSchema,
+  type BugReport,
+  type BugReportClosedStatus,
+} from '@foreman-code/contracts/management'
+import { useState, type RefObject } from 'react'
 import { isAccessFailure } from '../../shared/api/accessErrors'
 import { sessionIsSwitching } from '../../shared/api/sessionBoundary'
-import { Alert, Badge, Button, Dialog, LoadingState, Select } from '../../shared/ui/nocturne'
+import { Alert, Badge, Button, Dialog, LoadingState, Select, TextField } from '../../shared/ui/nocturne'
 import { useUnsavedChanges } from '../../shared/ui/unsavedChanges'
-import { useBugReport } from './bugReportQueries'
-import { severityLabels, statusLabels, statusOptions } from './bugReportPresentation'
+import { useBugReport, type BugReportChange } from './bugReportQueries'
+import {
+  activeStatusOptions, closedStatusOptions, severityLabels, statusLabels,
+} from './bugReportPresentation'
 
 function ReportContent({ report }: { report: BugReport }) {
   return <div className="bug-report-content">
@@ -30,6 +37,14 @@ function ReportContent({ report }: { report: BugReport }) {
       <div><dt>Occurrences</dt><dd>{report.occurrenceCount}</dd></div>
       {report.workflowId && <div><dt>Workflow</dt><dd>{report.workflowId}</dd></div>}
       {report.runId && <div><dt>Run</dt><dd>{report.runId}</dd></div>}
+      {report.resolution && <>
+        <div><dt>{report.status === report.resolution.status ? 'Closed as' : 'Previously closed as'}</dt>
+          <dd>{statusLabels[report.resolution.status]}{' '}
+            (<time dateTime={report.resolution.closedAt}>{new Date(report.resolution.closedAt).toLocaleString()}</time>)
+          </dd></div>
+        {report.resolution.duplicateOfId && <div><dt>Duplicate of</dt><dd>{report.resolution.duplicateOfId}</dd></div>}
+        {report.resolution.note && <div><dt>Closing note</dt><dd>{report.resolution.note}</dd></div>}
+      </>}
     </dl>
   </div>
 }
@@ -42,43 +57,91 @@ export function BugReportDialog({ reportId, returnFocusRef, onClose }: {
   const { report, update, denied, uncertain, refresh, retry } = useBugReport(reportId)
   const value = denied ? undefined : report.data
   const updateDenied = isAccessFailure(update.error)
-  useUnsavedChanges({
+  const [closeAs, setCloseAs] = useState<BugReportClosedStatus>('fixed')
+  const [note, setNote] = useState('')
+  const [duplicateOfId, setDuplicateOfId] = useState('')
+  const active = value?.status === 'open' || value?.status === 'triaged'
+  const locked = update.isPending || uncertain
+  const invalidDuplicate = closeAs === 'duplicate' && !duplicateOfId.trim()
+  const clearCloseDraft = () => {
+    setCloseAs('fixed')
+    setNote('')
+    setDuplicateOfId('')
+  }
+  const closingChange = (current: BugReport): BugReportChange => ({ kind: 'close', input: {
+    commandId: crypto.randomUUID(),
+    reports: [{ reportId, expectedRevision: current.revision }],
+    status: closeAs,
+    ...(note.trim() ? { note: note.trim() } : {}),
+    ...(closeAs === 'duplicate' ? { duplicateOfId: duplicateOfId.trim() } : {}),
+  } })
+  const leave = useUnsavedChanges({
     label: 'Bug report status',
-    dirty: false,
+    dirty: Boolean(active && (closeAs !== 'fixed' || note || duplicateOfId)),
     busy: update.isPending,
     uncertain,
-    saveDisabled: denied || updateDenied,
+    saveDisabled: denied || updateDenied || !value || (!uncertain && invalidDuplicate),
     error: update.isError ? update.error.message : undefined,
-    save: retry,
-    discard() {},
+    save: async () => {
+      if (uncertain) {
+        await retry()
+        if (update.variables?.kind === 'close') clearCloseDraft()
+      } else if (value) {
+        await update.mutateAsync(closingChange(value))
+        clearCloseDraft()
+      }
+    },
+    discard: clearCloseDraft,
   })
-  const locked = update.isPending || uncertain
+  const requestClose = () => { if (!locked) void leave(onClose) }
+  const editDisabled = report.isError || update.isPending || update.isError || sessionIsSwitching()
+  const change = (next: BugReportChange) => update.mutate(next, {
+    onSuccess: () => { if (next.kind === 'close') clearCloseDraft() },
+  })
   return <Dialog open title={value?.title ?? 'Bug report'} size="lg" busy={update.isPending}
     returnFocusRef={returnFocusRef}
-    dismissible={!uncertain} onOpenChange={open => { if (!open && !locked) onClose() }}
-    footer={<Button disabled={locked} onClick={onClose}>Close report</Button>}>
+    dismissible={!uncertain} onOpenChange={open => { if (!open) requestClose() }}
+    footer={<Button disabled={locked} onClick={requestClose}>Close report</Button>}>
     {report.isPending && <LoadingState label="Reading bug report…" />}
     {report.isError && <Alert live tone="danger" title={report.error.message}
       action={<Button disabled={update.isPending} onClick={() => void refresh()}>Refresh report</Button>} />}
     {value && <>
       <ReportContent report={value} />
-      <Select label="Report status" hint="Status changes save immediately."
-        value={value.status} options={statusOptions}
-        disabled={report.isError || update.isPending || update.isError || sessionIsSwitching()}
-        onChange={event => update.mutate({
+      <Select label="Report status"
+        hint={active ? 'Status changes save immediately.' : 'Choose Open or Triaged to reopen this report.'}
+        value={value.status}
+        options={active ? activeStatusOptions
+          : [{ value: value.status, label: statusLabels[value.status], disabled: true }, ...activeStatusOptions]}
+        disabled={editDisabled}
+        onChange={event => change({ kind: 'status', input: {
           commandId: crypto.randomUUID(),
           reportId,
           expectedRevision: value.revision,
-          status: BugReportStatusSchema.parse(event.target.value),
-        })} />
+          status: BugReportActiveStatusSchema.parse(event.target.value),
+        } })} />
+      {active && <form className="bug-report-close" aria-label="Close and archive report" onSubmit={event => {
+        event.preventDefault()
+        change(closingChange(value))
+      }}>
+        <Select label="Close as" value={closeAs} options={closedStatusOptions} disabled={editDisabled}
+          onChange={event => setCloseAs(BugReportClosedStatusSchema.parse(event.target.value))} />
+        {closeAs === 'duplicate' && <TextField label="Duplicate of report ID" required value={duplicateOfId}
+          disabled={editDisabled} onChange={event => setDuplicateOfId(event.target.value)} />}
+        <TextField label="Closing note" hint="Optional, such as the release or commit." maxLength={1000}
+          value={note} disabled={editDisabled} onChange={event => setNote(event.target.value)} />
+        <Button type="submit" disabled={editDisabled || invalidDuplicate}>
+          Close and archive
+        </Button>
+      </form>}
     </>}
     {update.isPending && <p role="status">Saving status…</p>}
-    {update.isSuccess && !report.isError && <p role="status">Status saved.</p>}
+    {update.isSuccess && !report.isError && <p role="status">
+      {update.variables?.kind === 'close' ? 'Report closed and archived.' : 'Status saved.'}</p>}
     {update.isError && <Alert live tone="danger" title={update.error.message}>
       {updateDenied && <p>Your access does not allow status changes.</p>}
       {uncertain ? <>
         <p>The save is unconfirmed. Retry the same change before leaving.</p>
-        <Button disabled={denied || updateDenied} onClick={() => update.variables && update.mutate(update.variables)}>
+        <Button disabled={denied || updateDenied} onClick={() => update.variables && change(update.variables)}>
           Retry status save
         </Button>
       </> : <Button disabled={report.isFetching} onClick={() => void refresh()}>Refresh report</Button>}

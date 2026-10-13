@@ -11,7 +11,6 @@ import { DomainError } from '../errors.js'
 import { redactBugReportText } from './redaction.js'
 
 export interface ReportContext {
-  reporterIdentity: string
   workspaceId: string
   workflowId?: string
   runId?: string
@@ -85,7 +84,6 @@ export async function reportingContext(
         where b.principal_id=$1 for share of b`, [principal.id])).rows[0]
     if (!binding || source !== 'mcp') throw new DomainError('ACCESS_DENIED', 'An active Agent binding is required.', 403)
     const context = {
-      reporterIdentity: `agent:${principal.agentId}`,
       workspaceId: binding.workspace_id,
       workflowId: binding.workflow_id,
       runId: binding.run_id,
@@ -102,8 +100,8 @@ export async function reportingContext(
   }
   const context = await operatorReportScope(sql, principal, input)
   requireAuthorization(principal, 'bug_reports:report', context)
-  const operator = (await sql.query<{ harness: string; operator_id: string; owner_principal_id: string }>(
-    `select cfg.record->'harness'->>'harness' as harness,c.operator_id,c.owner_principal_id
+  const operator = (await sql.query<{ harness: string }>(
+    `select cfg.record->'harness'->>'harness' as harness
      from operator_chat_credentials credential
      join operator_conversations c on c.id=credential.conversation_id
      join operator_configuration_versions cfg on cfg.id=c.operator_configuration_version_id
@@ -114,17 +112,14 @@ export async function reportingContext(
     const local = await sql.query('select 1 from local_human_principal where principal_id=$1', [principal.id])
     if (local.rowCount === 1) reporter.audience = 'user'
   }
-  const reporterIdentity = operator
-    ? `operator:${operator.owner_principal_id}:${operator.operator_id}`
-    : `principal:${principal.id}`
-  return { ...context, reporter, reporterIdentity, harness: operator?.harness ?? null }
+  return { ...context, reporter, harness: operator?.harness ?? null }
 }
 
 async function operatorReportScope(
   sql: GraphSqlClient,
   principal: ManagementPrincipal,
   input: BugReportCreateInput,
-): Promise<Omit<ReportContext, 'reporter' | 'harness' | 'reporterIdentity'>> {
+): Promise<Omit<ReportContext, 'reporter' | 'harness'>> {
   let workspaceId = input.workspaceId
   let workflowId = input.workflowId
   if (input.runId) {

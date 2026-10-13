@@ -14,6 +14,7 @@ import { ManagedPromptSettingSchema, PromptSettingUpdateResultSchema } from '@fo
 import { reviewAuthMcpDatabase } from './helpers/reviewAuthMcpDatabase.js'
 
 import { registerAgentTools } from '../src/mcp/operator/tools/agents.js'
+import { registerBugReportTools } from '../src/mcp/operator/tools/bugReports.js'
 import { registerHarnessTools } from '../src/mcp/operator/tools/harnesses.js'
 import { registerInteractionTools } from '../src/mcp/operator/tools/interactions.js'
 import { registerRunTools } from '../src/mcp/operator/tools/runs.js'
@@ -26,6 +27,9 @@ import type { OperatorRequestContext } from '../src/mcp/operator/types.js'
 // Independent expectations, not generated from the production permission catalog.
 const actionTools: Array<[ManagementAction, OperatorToolName[]]> = [
   ['agents:read', ['agent_get', 'agent_list']],
+  ['bug_reports:report', ['bug_report']],
+  ['bug_reports:read', ['bug_report_get', 'bug_reports_list']],
+  ['bug_reports:update', ['bug_report_update']],
   ['graph:read', []],
   ['graph:edit', []],
   ['graph:save', []],
@@ -61,14 +65,14 @@ function context(grants: ManagementGrant[] = []): OperatorRequestContext {
       expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null, grants,
     },
     // No service callback is executed in these registration-only tests.
-    services: { settings: {}, interactions: {}, runs: {}, workflows: {} },
+    services: { settings: {}, interactions: {}, runs: {}, workflows: {}, bugReports: {} },
   } as unknown as OperatorRequestContext
 }
 
 function registered(context: OperatorRequestContext): string[] {
   const names: string[] = []
   const server = { registerTool: (name: string) => { names.push(name) } } as unknown as McpServer
-  for (const register of [registerAgentTools, registerHarnessTools,
+  for (const register of [registerAgentTools, registerBugReportTools, registerHarnessTools,
     registerInteractionTools, registerRunTools, registerSettingsTools,
     registerWorkflowTools, registerWorkspaceTools, registerWorkspaceDefaultsTools]) {
     register(server, context)
@@ -120,7 +124,8 @@ describe('Operator tool registration permissions', () => {
 
   it('registers every supported tool for an unrestricted owner', () => {
     // These require more than one grant (respond also needs interactions:read).
-    const expected = [...actionTools.flatMap(([, names]) => names), 'interaction_respond', 'run_handoffs_get_v1', 'run_start'].sort()
+    const expected = [...actionTools.flatMap(([, names]) => names), 'interaction_respond',
+      'run_handoffs_get_v1', 'run_start', 'workflow_reorder', 'bug_reports_close'].sort()
     expect(registered(context([{ actions: [...ManagementActionSchema.options], scope: {} }]))).toEqual(expected)
   })
 
@@ -147,6 +152,17 @@ describe('Operator tool registration permissions', () => {
 
   it('does not register tools without grants', () => {
     expect(registered(context())).toEqual([])
+  })
+
+  it('requires overlapping read and update scopes to advertise batch bug-report closing', () => {
+    expect(registered(context([
+      { actions: ['bug_reports:read'], scope: { workspaceIds: ['a'] } },
+      { actions: ['bug_reports:update'], scope: { workspaceIds: ['b'] } },
+    ]))).not.toContain('bug_reports_close')
+    expect(registered(context([
+      { actions: ['bug_reports:read'], scope: { workspaceIds: ['a'] } },
+      { actions: ['bug_reports:update'], scope: { workspaceIds: ['a'] } },
+    ]))).toContain('bug_reports_close')
   })
 
   it.each([

@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import {
+  BugReportCloseResultSchema,
   BugReportCreateResultSchema,
   BugReportPageSchema,
   BugReportSchema,
@@ -17,6 +18,7 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { bugReportsMigration } from '../src/infrastructure/bugReportsMigration.js'
+import { bugReportLifecycleMigration } from '../src/infrastructure/bugReportLifecycleMigration.js'
 import { PostgresOperatorRepository } from '../src/modules/operators/postgres.js'
 import { PostgresOperatorConversationRepository } from '../src/modules/conversations/operatorChatRepository.js'
 
@@ -66,6 +68,70 @@ async function fixture(pool = database.pool) {
 }
 
 describe('bug report HTTP persistence', () => {
+  it('preserves populated pre-lifecycle reports and matches their migrated titles on repeat', async () => {
+    const upgrading = await currentDatabase({ beforeMigration: bugReportLifecycleMigration.version })
+    try {
+      const f = await fixture(upgrading.pool)
+      const saved = []
+      for (const status of ['triaged', 'fixed'] as const) {
+        const content: Partial<BugReportCreateInput> = { ...f.input({ title: `Legacy   ${status} failure` }) }
+        delete content.commandId
+        const report = BugReportSchema.parse({
+          ...content, id: `bug-report-${randomUUID()}`, status, revision: 2, occurrenceCount: 2,
+          reporter: { principalId: f.owner.principal.id, name: f.owner.principal.name, audience: 'operator' },
+          harness: null, createdAt: '2026-10-10T10:00:00.000Z', updatedAt: '2026-10-11T10:00:00.000Z',
+          lastReportedAt: '2026-10-11T10:00:00.000Z',
+        })
+        await upgrading.pool.query(
+          `insert into bug_reports(id,workspace_id,fingerprint,status,severity,revision,record,created_at)
+           values($1,$2,$3,$4,$5,$6,$7::jsonb,$8)`,
+          [report.id, report.workspaceId, randomUUID(), report.status, report.severity,
+            report.revision, JSON.stringify(report), report.createdAt],
+        )
+        saved.push(report)
+      }
+      await applyApplicationMigrations(upgrading.pool)
+      await applyApplicationMigrations(upgrading.pool)
+      for (const original of saved) {
+        expect(await f.bugReports.get(f.owner.principal, original.id)).toEqual(original)
+        const repeated = await f.bugReports.report(f.owner.principal, 'http',
+          f.input({ title: original.title.toUpperCase().replace(/ +/g, ' ') }))
+        expect(repeated).toMatchObject({ deduplicated: true,
+          outcome: original.status === 'fixed' ? 'reopened' : 'repeat',
+          report: { id: original.id, status: original.status === 'fixed' ? 'open' : 'triaged',
+            occurrenceCount: 3, revision: 3, tried: original.tried, happened: original.happened } })
+      }
+    } finally { await upgrading.close() }
+  })
+
+  it('returns only a summary for another reporter and strips old full-report command receipts on replay', async () => {
+    const f = await fixture()
+    const original = BugReportSchema.parse(BugReportCreateResultSchema.parse((await f.request(
+      'POST', '/api/management/bug-reports', f.input(),
+    )).json()).report)
+    const reporter = await f.issue([{ actions: ['bug_reports:report'], scope: { workspaceIds: [f.workspaceId] } }])
+    const input = f.input()
+    const response = await f.request('POST', '/api/management/bug-reports', input, reporter.token)
+    expect(response.statusCode).toBe(200)
+    const repeat = BugReportCreateResultSchema.parse(response.json())
+    const summary = { id: original.id, status: original.status, title: original.title }
+    expect(repeat.report).toEqual(summary)
+    const saved = await f.bugReports.get(f.owner.principal, original.id)
+    expect(saved).toMatchObject({ occurrenceCount: 2, revision: 2 })
+    await database.pool.query(
+      `update management_command_receipts set result=$2::jsonb
+       where principal_id=$1 and operation='bug_reports.report'`,
+      [reporter.principal.id, JSON.stringify({ report: saved, deduplicated: true })],
+    )
+    const replay = BugReportCreateResultSchema.parse((await f.request(
+      'POST', '/api/management/bug-reports', input, reporter.token,
+    )).json())
+    expect(replay.report).toEqual(summary)
+    expect(replay.replayed).toBe(true)
+    expect(replay).toMatchObject({ outcome: 'repeat', message: expect.stringContaining(original.id) })
+    expect(await f.bugReports.get(f.owner.principal, original.id)).toEqual(saved)
+  })
+
   it('deduplicates repeated reports, replays commands, and reads saved status with revision conflicts', async () => {
     const f = await fixture()
     const input = f.input()
@@ -91,7 +157,7 @@ describe('bug report HTTP persistence', () => {
     const conflict = await f.request('POST', url, { ...update, commandId: `status-${randomUUID()}` })
     expect(conflict.statusCode).toBe(409)
     expect(conflict.json()).toMatchObject({ error: { code: 'REVISION_CONFLICT' } })
-    expect((await f.request('POST', url, { ...update, status: 'fixed' })).statusCode).toBe(409)
+    expect((await f.request('POST', url, { ...update, status: 'open' })).statusCode).toBe(409)
     const persistedService = new BugReportService(database.pool, new PostgresCommandCoordinator(database.pool))
     expect(await persistedService.get(f.owner.principal, initial.report.id)).toEqual(changed.report)
     const readback = BugReportSchema.parse((await f.request('GET', url.replace('/status', ''))).json())
@@ -194,7 +260,7 @@ describe('bug report HTTP persistence', () => {
     }
   })
 
-  it('deduplicates delegated Operator reports across fresh conversation credentials and preserves owner scope', async () => {
+  it('counts same-title reports from fresh delegated credentials and other owners in the workspace', async () => {
     const f = await fixture()
     const { configuration } = await new PostgresOperatorRepository(database.pool).ensure()
     const conversations = new PostgresOperatorConversationRepository(database.pool)
@@ -215,13 +281,45 @@ describe('bug report HTTP persistence', () => {
     const nextDelegate = await reportingDelegate()
     const repeat = BugReportCreateResultSchema.parse((await f.request('POST', '/api/management/bug-reports',
       f.input(), nextDelegate.token)).json())
-    expect(repeat).toMatchObject({ deduplicated: true, report: { id: first.report.id, occurrenceCount: 2 } })
+    expect(repeat).toMatchObject({ deduplicated: true })
+    expect(repeat.report).toEqual({ id: first.report.id, status: first.report.status, title: first.report.title })
+    expect(await f.bugReports.get(f.owner.principal, first.report.id)).toMatchObject({ occurrenceCount: 2 })
     const otherOwner = await f.issue([{ actions: ['bug_reports:report'], scope: { workspaceIds: [f.workspaceId] } }])
     const otherDelegate = await reportingDelegate(otherOwner.principal.id)
     const other = BugReportCreateResultSchema.parse((await f.request('POST', '/api/management/bug-reports',
       f.input(), otherDelegate.token)).json())
-    expect(other.deduplicated).toBe(false)
-    expect(other.report.id).not.toBe(first.report.id)
+    expect(other).toMatchObject({ deduplicated: true, outcome: 'repeat' })
+    expect(other.report).toEqual({ id: first.report.id, status: first.report.status, title: first.report.title })
+    expect(await f.bugReports.get(f.owner.principal, first.report.id)).toMatchObject({ occurrenceCount: 3 })
+    const distinct = BugReportCreateResultSchema.parse((await f.request('POST', '/api/management/bug-reports',
+      f.input({ title: 'A different failure' }), otherDelegate.token)).json())
+    expect(distinct).toMatchObject({ deduplicated: false, outcome: 'created' })
+  })
+
+  it('closes reports over HTTP into history and keeps them out of the default list', async () => {
+    const f = await fixture()
+    const created = BugReportSchema.parse(BugReportCreateResultSchema.parse((await f.request(
+      'POST', '/api/management/bug-reports', f.input(),
+    )).json()).report)
+    const close = { commandId: `close-${randomUUID()}`, status: 'wont-fix', note: 'Works as designed',
+      reports: [{ reportId: created.id, expectedRevision: created.revision }] }
+    const reader = await f.issue([{ actions: ['bug_reports:read'], scope: { workspaceIds: [f.workspaceId] } }])
+    const denied = await f.request('POST', '/api/management/bug-reports/close', close, reader.token)
+    expect(denied.statusCode).toBe(403)
+    const closed = BugReportCloseResultSchema.parse((await f.request('POST', '/api/management/bug-reports/close',
+      close)).json())
+    expect(closed.reports[0]).toMatchObject({ status: 'wont-fix', revision: created.revision + 1,
+      resolution: { status: 'wont-fix', note: 'Works as designed' } })
+    const active = BugReportPageSchema.parse((await f.request('GET',
+      `/api/management/bug-reports?workspaceId=${f.workspaceId}`)).json())
+    expect(active.items).toEqual([])
+    const history = BugReportPageSchema.parse((await f.request('GET',
+      `/api/management/bug-reports?workspaceId=${f.workspaceId}&view=history`)).json())
+    expect(history.items).toEqual(closed.reports)
+    const repeat = BugReportCreateResultSchema.parse((await f.request('POST', '/api/management/bug-reports',
+      f.input())).json())
+    expect(repeat).toMatchObject({ outcome: 'repeat', report: { id: created.id, status: 'wont-fix', occurrenceCount: 2 } })
+    expect(repeat.message).toContain('wont-fix')
   })
 
   it('lists newest reports with filters and pagination while preserving each complete scoped grant', async () => {
@@ -263,7 +361,7 @@ describe('bug report HTTP persistence', () => {
     const created = BugReportCreateResultSchema.parse((await f.request('POST', '/api/management/bug-reports', input)).json())
     const reader = await f.issue([{ actions: ['bug_reports:read'], scope: { workspaceIds: [f.workspaceId] } }])
     const denied = await f.request('POST', `/api/management/bug-reports/${created.report.id}/status`, {
-      commandId: `denied-${randomUUID()}`, expectedRevision: 1, status: 'fixed',
+      commandId: `denied-${randomUUID()}`, expectedRevision: 1, status: 'triaged',
     }, reader.token)
     expect(denied.statusCode).toBe(403)
     expect(denied.json()).toMatchObject({ error: { code: 'ACCESS_DENIED' } })
@@ -288,12 +386,13 @@ describe('bug report HTTP persistence', () => {
     const input = f.input()
     const response = await f.app.inject({ method: 'POST', url: '/api/management/bug-reports', payload: input })
     expect(response.statusCode).toBe(201)
-    expect(BugReportCreateResultSchema.parse(response.json()).report.reporter.audience).toBe('user')
+    expect(BugReportSchema.parse(BugReportCreateResultSchema.parse(response.json()).report).reporter.audience).toBe('user')
     const reporter = await f.issue([{ actions: ['bug_reports:report'], scope: { workspaceIds: [f.workspaceId] } }])
-    const unscoped = f.input()
+    const unscoped = f.input({ title: 'Inferred workspace failure' })
     delete unscoped.workspaceId
-    expect(BugReportCreateResultSchema.parse((await f.request('POST', '/api/management/bug-reports', unscoped,
-      reporter.token)).json()).report.workspaceId).toBe(f.workspaceId)
+    expect(BugReportSchema.parse(BugReportCreateResultSchema.parse((await f.request(
+      'POST', '/api/management/bug-reports', unscoped, reporter.token,
+    )).json()).report).workspaceId).toBe(f.workspaceId)
     expect((await f.request('POST', '/api/management/bug-reports', unscoped)).statusCode).toBe(400)
   })
 })

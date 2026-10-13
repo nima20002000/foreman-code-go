@@ -1,4 +1,6 @@
 import {
+  BugReportActiveStatusSchema,
+  BugReportClosedStatusSchema,
   BugReportSchema,
   type BugReport,
   type BugReportPage,
@@ -26,34 +28,59 @@ export async function saveBugReport(sql: GraphSqlClient, report: BugReport): Pro
   )
 }
 
+export type BugReportOutcome = 'created' | 'repeat' | 'reopened'
+
+/** The repeat key: a report's title, ignoring case and whitespace. */
+export function bugReportTitleKey(title: string): string {
+  return title.trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+async function lockBugReport(sql: GraphSqlClient, where: string, parameters: unknown[]): Promise<BugReport | undefined> {
+  const row = (await sql.query<{ record: unknown }>(
+    `select record from bug_reports where ${where} for update`, parameters,
+  )).rows[0]
+  return row ? BugReportSchema.parse(row.record) : undefined
+}
+
+/**
+ * Count a repeat on the workspace report with the same title, preferring an active one and following a
+ * duplicate to the report it names. A repeat of a fixed report reopens it. Otherwise insert the new report.
+ */
 export async function recordBugReport(
   sql: GraphSqlClient,
   report: BugReport,
-  fingerprint: string,
-): Promise<{ report: BugReport; deduplicated: boolean }> {
-  await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`bug-report:${fingerprint}`])
-  const existing = (await sql.query<{ record: unknown }>(
-    'select record from bug_reports where fingerprint=$1 for update', [fingerprint],
-  )).rows[0]
-  if (existing) {
-    const previous = BugReportSchema.parse(existing.record)
-    const updated = {
+): Promise<{ report: BugReport; outcome: BugReportOutcome }> {
+  const titleKey = bugReportTitleKey(report.title)
+  await sql.query('select pg_advisory_xact_lock(hashtext($1))', [`bug-report:${report.workspaceId}:${titleKey}`])
+  let previous = await lockBugReport(sql,
+    `workspace_id=$1 and title_key=$2
+     order by status in ('open','triaged') desc, created_at desc, id desc limit 1`,
+    [report.workspaceId, titleKey])
+  const seen = new Set<string>()
+  while (previous?.status === 'duplicate' && previous.resolution?.duplicateOfId && !seen.has(previous.id)) {
+    seen.add(previous.id)
+    previous = await lockBugReport(sql, 'id=$1', [previous.resolution.duplicateOfId]) ?? previous
+  }
+  if (previous) {
+    const reopened = previous.status === 'fixed'
+    const updated: BugReport = {
       ...previous,
+      ...(reopened ? { status: 'open' as const } : {}),
       occurrenceCount: previous.occurrenceCount + 1,
       lastReportedAt: report.lastReportedAt,
       updatedAt: report.updatedAt,
       revision: previous.revision + 1,
     }
     await saveBugReport(sql, updated)
-    return { report: updated, deduplicated: true }
+    return { report: updated, outcome: reopened ? 'reopened' : 'repeat' }
   }
   await sql.query(
-    `insert into bug_reports(id,workspace_id,workflow_id,run_id,fingerprint,status,severity,revision,record,created_at)
+    `insert into bug_reports(id,workspace_id,workflow_id,run_id,title_key,status,severity,revision,record,created_at)
      values($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)`,
-    [report.id, report.workspaceId, report.workflowId ?? null, report.runId ?? null, fingerprint,
+    [report.id, report.workspaceId, report.workflowId ?? null, report.runId ?? null, titleKey,
       report.status, report.severity, report.revision, JSON.stringify(report), report.createdAt],
   )
-  return { report, deduplicated: false }
+  return { report, outcome: 'created' }
 }
 
 export async function listBugReports(
@@ -63,6 +90,10 @@ export async function listBugReports(
   parameters: unknown[],
 ): Promise<BugReportPage> {
   const conditions = [`(${grantFilter})`]
+  if (input.view || !input.status) {
+    parameters.push(input.view === 'history' ? BugReportClosedStatusSchema.options : BugReportActiveStatusSchema.options)
+    conditions.push(`status=any($${parameters.length}::text[])`)
+  }
   for (const [field, column] of Object.entries({ workspaceId: 'workspace_id', status: 'status', severity: 'severity' })) {
     const value = input[field as 'workspaceId' | 'status' | 'severity']
     if (value) {

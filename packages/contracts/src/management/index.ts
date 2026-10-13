@@ -623,7 +623,7 @@ export const DEVICE_PROVISIONING_HUMAN_LIMITS = [
 ] as const;
 
 export const OperatorToolNameSchema = z.enum([
-  'bug_report', 'bug_reports_list', 'bug_report_get', 'bug_report_update',
+  'bug_report', 'bug_reports_list', 'bug_report_get', 'bug_report_update', 'bug_reports_close',
   "ci_run", "ci_get", "ci_computers_list", "ci_cancel", "ci_logs_read", "ci_list",
   ...Object.keys(GRAPHQL_OPERATOR_TOOLS) as (keyof typeof GRAPHQL_OPERATOR_TOOLS)[],
   ...DEVICE_PROVISIONING_OPERATOR_TOOL_NAMES,
