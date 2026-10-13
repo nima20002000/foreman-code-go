@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { access, chmod, copyFile, cp, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink } from 'node:fs/promises'
+import { access, chmod, copyFile, cp, mkdir, mkdtemp, open, readFile, realpath, rename, rm, symlink } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -11,7 +11,7 @@ import { readMigrationSchema } from './production-schema.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { renderUserService } from '../apps/worker/src/service.mjs'
 import { workerPath } from '../apps/worker/src/harnessPath.mjs'
-import { buildWorkerReleaseArtifacts, publishWorkerArtifactsToGitHub } from './worker-release-artifacts.mjs'
+import { buildWorkerReleaseArtifacts } from './worker-release-artifacts.mjs'
 import {
   copyVerificationRuntime, deployProductionApi, desktopLaunchEnvironment, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
   pruneReleases, removeUninstalledRelease, readActiveRuns, readProductionIdentity, waitForIdleRuns, renderEnvironment, waitForProductionReady, withInstallationLock,
@@ -106,9 +106,10 @@ async function stageRelease({ source: buildSource, commit }, runBuild) {
     await publish(join(release, 'ci-smoke.json'), JSON.stringify({ commit, repository }))
     await copyFile(process.execPath, join(release, 'node'))
     await chmod(join(release, 'node'), 0o700)
+    // GitHub publishing runs after the cutover (publishWorkerArtifactsLater) so the upload never delays an install.
     await buildWorkerReleaseArtifacts({ repository: buildSource, expectedCommit: commit,
       directory: join(release, 'worker-artifacts'), productManifestPath: join(release, 'package.json'),
-      run: runBuild, publish: publishWorkerArtifactsToGitHub })
+      run: runBuild })
     const provenance = { api: commit, web: commit, contracts: commit, worker: commit }
     await publish(join(release, 'source.json'), JSON.stringify(provenance) + '\n')
     return release
@@ -295,6 +296,7 @@ async function finishInstallation({ release, previousRelease, firstInstall, envi
       })
     } else await cutover()
     await recordStartupConfiguration(startupFile)
+    await publishWorkerArtifactsLater(release)
     const pruned = await pruneReleases(join(app, 'releases'), [release, previousRelease])
     if (pruned.length) console.log(`Removed ${pruned.length} old release(s); kept the current and previous release.`)
     console.log(`Foreman Code backend installed: ${origin}/workspaces`)
@@ -307,6 +309,19 @@ async function finishInstallation({ release, previousRelease, firstInstall, envi
   } finally {
     if (!cutoverBegan) await removeUninstalledRelease(release, current)
   }
+}
+
+// Paired Workers download through Main until this detached upload records the GitHub release in the index.
+async function publishWorkerArtifactsLater(release) {
+  const { commit, repository } = JSON.parse(await readFile(join(release, 'ci-smoke.json'), 'utf8'))
+  const log = await open(join(state, 'logs', 'worker-artifact-publish.log'), 'a', 0o600)
+  try {
+    spawn(join(release, 'node'), [join(release, 'scripts/worker-release-artifacts.mjs'), 'publish',
+      join(release, 'worker-artifacts'), repository, commit], { detached: true, stdio: ['ignore', log.fd, log.fd] }).unref()
+  } finally {
+    await log.close()
+  }
+  console.log(`Publishing Worker artifacts to GitHub in the background (log: ${state}/logs/worker-artifact-publish.log).`)
 }
 
 async function handoffDashboard() {
