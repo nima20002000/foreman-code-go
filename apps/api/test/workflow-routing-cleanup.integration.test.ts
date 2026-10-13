@@ -12,8 +12,15 @@ describe.skipIf(!postgresEnabled)('routing workflow cleanup', () => {
     const f = await scenarioHarness(scenario)
     const finishCleanup = f.base.runs.finishCleanup.bind(f.base.runs)
     const timeout = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' })
+    let recordAtTimeout: ReturnType<typeof RunRecordDetailSchema.parse> | undefined
     const cleanup = vi.spyOn(f.base.runs, 'finishCleanup')
-      .mockRejectedValueOnce(timeout)
+      .mockImplementationOnce(async (runId) => {
+        recordAtTimeout = RunRecordDetailSchema.parse(await f.http('GET', `${runPath({
+          workspaceId: f.base.f.scope.workspaceId,
+          runId,
+        })}/record`))
+        throw timeout
+      })
       .mockImplementation(finishCleanup)
     const closeReviewers = f.base.native.finishIdleReviewers.bind(f.base.native)
     const reviewers = vi.spyOn(f.base.native, 'finishIdleReviewers').mockImplementation(closeReviewers)
@@ -37,10 +44,24 @@ describe.skipIf(!postgresEnabled)('routing workflow cleanup', () => {
       }
       recover()
       timer = setInterval(recover, 5_000)
+      // Workflow execution and its database work precede the cleanup retry deadline.
+      await vi.waitFor(async () => {
+        const completed = RunRecordDetailSchema.parse(await f.http('GET', `${runPath(started.scope)}/record`))
+        expect(completed.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
+      }, { timeout: 75_000, interval: 100 })
       const record = await f.settled(started.scope)
       clearInterval(timer)
       await recovery
       expect(cleanup.mock.calls.length).toBeGreaterThanOrEqual(2)
+      expect(recordAtTimeout).toMatchObject({
+        run: { id: started.scope.runId, executionState: 'completed', outcome: 'succeeded' },
+        cleanupPending: true,
+        stopRequested: false,
+      })
+      for (const [runId, failed] of cleanup.mock.calls) {
+        expect(runId).toBe(started.scope.runId)
+        expect(failed).toBe(false)
+      }
       expect(record).toMatchObject({
         run: { executionState: 'completed', outcome: 'succeeded' },
         cleanupPending: false,

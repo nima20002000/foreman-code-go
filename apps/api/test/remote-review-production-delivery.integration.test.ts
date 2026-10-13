@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest'
 import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
-import { deliveredReview, receipts, reviewInProgress, useRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
+import { deliveredReview, receipts, reviewInProgress, useRemoteReviewFixture,
+  waitForRemoteReview } from './helpers/remoteReviewProductionCases.js'
 
 let diagnosticOutput: MockInstance<typeof console.info>
 beforeAll(() => {
@@ -51,6 +52,12 @@ describe('production remote review and native recovery through authenticated MCP
       // Phase reporting must stay bounded while the native workflow runs.
       const output = diagnosticOutput.mock.calls.map(arguments_ => JSON.stringify(arguments_)).join('\n')
       expect(Buffer.byteLength(output)).toBeLessThan(64 * 1024)
+      const completed = await waitForRemoteReview(async () => {
+        await fixture.reconcileReviews()
+        return fixture.details(active.run.id)
+      }, details => details.run.executionState === 'completed' && details.cleanupPending !== true,
+      'completed Run and native cleanup after remote decision delivery', fixture.subscribeNativeChanges)
+      expect(completed.run.outcome).toBe('succeeded')
     })
   }, 240_000)
 })
