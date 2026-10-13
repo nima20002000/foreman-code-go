@@ -6,7 +6,7 @@ import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import ts from 'typescript'
-import { apiServiceTemplate, deployProductionApi }
+import { apiServiceTemplate, deployProductionApi, publish }
   from '../../../../scripts/local-production-runtime.mjs'
 import { renderUserService } from '../../../worker/src/service.mjs'
 import { copyApiRuntime } from '../../../../scripts/copy-api-runtime.mjs'
@@ -15,6 +15,10 @@ import { readUntil } from './observableCondition.js'
 const execute = promisify(execFile)
 const repository = fileURLToPath(new URL('../../../..', import.meta.url))
 const serviceUser = userInfo()
+
+export async function publishRestartUnit(unitPath: string, service: string) {
+  await publish(unitPath, service, 0o600)
+}
 
 async function sources(directory: string): Promise<string[]> {
   const files: string[] = []
@@ -97,8 +101,7 @@ export async function installedRestartService(directory: string, configuration: 
     .replace('Restart=always', 'Restart=no')
   const service = renderUserService(template, { node: join(release, 'node'), app,
     state: directory, home: serviceUser.homedir, path: environment.PATH ?? '/usr/bin:/bin' })
-  await mkdir(dirname(unitPath), { recursive: true, mode: 0o700 })
-  await writeFile(unitPath, service, { mode: 0o600 })
+  await publishRestartUnit(unitPath, service)
   const systemctl = (...args: string[]) => execute('systemctl', ['--user', ...args], {
     env: { ...process.env, XDG_RUNTIME_DIR: `/run/user/${serviceUser.uid}`,
       DBUS_SESSION_BUS_ADDRESS: `unix:path=/run/user/${serviceUser.uid}/bus` },
