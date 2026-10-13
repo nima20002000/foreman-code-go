@@ -187,7 +187,11 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
       },
       extensions: [...extensions, ...(updater ? [workerUpdateExtension] : []),
         ...(execution?.extensions ?? []), ...(installed?.extensions ?? []), ...rootExtensions] });
-    return { ...connection, status: () => workerCiStartupStatus(connection.status(), startupCi) };
+    return {
+      start: () => connection.start(),
+      stop: () => connection.stop(),
+      status: () => workerCiStartupStatus(connection.status(), startupCi),
+    };
   } });
   return { ...runtime, managedSetup, updating: () => Boolean(updater?.active) };
 }
