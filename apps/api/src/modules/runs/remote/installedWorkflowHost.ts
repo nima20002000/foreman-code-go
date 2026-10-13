@@ -947,10 +947,19 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
               || matchingOriginalRegistryLaunch(registry, resident.native.launch).lifecycle !== 'active') {
               unavailable('original_reviewer_observation_owner_missing')
             }
-            const policy = await workerReviewerAuthorizer(forBinding(context.binding))(frame.intent, frame.placement)
-            if (!policy) unavailable('original_reviewer_observation_denied')
-            const renewed = await log.renewReviewer(frame.intent.operationId, policy!)
-            reviewerObservationExpiresAt = renewed.retainedReviewer!.expiresAt
+            const request = forBinding(context.binding)
+            const authorize = workerExecutionAuthorizer(request)
+            const authority = await authorize(frame.intent, frame.placement, 'read')
+            if (!authority?.cleanupOnly) {
+              const policy = await workerReviewerAuthorizer(request)(frame.intent, frame.placement)
+              if (policy) {
+                const renewed = await log.renewReviewer(frame.intent.operationId, policy)
+                reviewerObservationExpiresAt = renewed.retainedReviewer!.expiresAt
+              } else {
+                const latest = await authorize(frame.intent, frame.placement, 'read')
+                if (!latest?.cleanupOnly) unavailable('original_reviewer_observation_denied')
+              }
+            }
           }
         }
         const response=await createRemoteExecutionHandler(host)(frame)

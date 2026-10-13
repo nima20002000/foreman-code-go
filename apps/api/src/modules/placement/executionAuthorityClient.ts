@@ -21,8 +21,18 @@ export function workerExecutionAuthorizer(request: (namespace: string, payload: 
 export function workerReviewerAuthorizer(request: (namespace: string, payload: unknown) => Promise<{ payload: unknown; bytes?: Uint8Array }>) {
   return async (intent: DispatchIntent, placement: AcceptedNodePlacement, review?: RemoteReviewerRequest) => {
     const action = review ? 'review' : 'retain-reviewer'
-    const reply = await request(EXECUTION_AUTHORITY_EXTENSION.namespace,
-      ExecutionAuthorityRequestSchema.parse({ version: 1, intent, placement, action, ...(review ? { review } : {}) }))
+    const input = ExecutionAuthorityRequestSchema.parse({ version: 1, intent, placement, action,
+      ...(review ? { review } : {}) })
+    let reply: Awaited<ReturnType<typeof request>>
+    try {
+      reply = await request(EXECUTION_AUTHORITY_EXTENSION.namespace, input)
+    } catch (error) {
+      if (review) throw error
+      // Main can commit Stop before the worker records its local Stop fence.
+      const authority = await workerExecutionAuthorizer(request)(intent, placement, 'read')
+      if (authority?.cleanupOnly) return undefined
+      throw error
+    }
     if (reply.bytes?.byteLength) denied()
     const { reviewer, ...result } = ExecutionAuthorityResultSchema.parse(reply.payload)
     if (!sameWorkflowValue(result, { version: 1, action, operationId: intent.operationId,
