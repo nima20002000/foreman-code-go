@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { PostgresInteractionRepository } from '../src/modules/interactions/postgres.js'
 import { deliveredReview, receipts, reviewInProgress, useRemoteReviewFixture } from './helpers/remoteReviewProductionCases.js'
 
@@ -8,6 +9,15 @@ describe('production remote review and native recovery through authenticated MCP
   it('persists a delivered remote decision and denies a read-only caller on the same product endpoint', async () => {
     await withRemoteReviewFixture(async fixture => {
       const active = await reviewInProgress(fixture)
+      const run = SavedRunDetailsSchema.parse(await fixture.value('run_get', {
+        workspaceId: active.run.workspaceId, runId: active.run.id, detail: 'full',
+      }))
+      expect(run.executions.find(execution => execution.id === active.reviewer.id)).toMatchObject({
+        state: 'completed', result: { outcome: 'succeeded' }, nativeSessionId: active.reviewer.nativeSessionId,
+      })
+      expect(run.executions.find(execution => execution.id === active.requester.id)).toMatchObject({
+        state: 'waiting', nativeSessionId: active.interaction.nativeSessionId,
+      })
       const reader = await fixture.access.issue({ name: 'Remote review reader', audience: 'operator',
         expiresAt: new Date(Date.now() + 300_000), grants: [{ actions: ['interactions:read'],
           scope: { runIds: [active.run.id] } }] })
