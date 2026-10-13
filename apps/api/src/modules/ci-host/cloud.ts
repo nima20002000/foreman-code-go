@@ -50,8 +50,8 @@ interface Publication {
 interface MirrorMaintenance {
   at: number
   cleanup: Promise<void> | undefined
-  afterFinish?: () => void
   keep: Set<string>
+  pendingFinishedRuns: Set<string>
 }
 const mirrorPublications = new Map<string, Map<string, Promise<Publication>>>()
 const mirrorMaintenance = new Map<string, MirrorMaintenance>()
@@ -388,39 +388,42 @@ export class CloudCi {
   private schedulePrune(run: Pick<CloudRun, 'repository' | 'mirror'>, finishedRunId?: string) {
     const key = this.mirrorKey(run.repository, run.mirror)
     const maintenance: MirrorMaintenance = mirrorMaintenance.get(key)
-      ?? { at: -Infinity, cleanup: undefined, keep: new Set<string>() }
+      ?? { at: -Infinity, cleanup: undefined, keep: new Set<string>(), pendingFinishedRuns: new Set<string>() }
     mirrorMaintenance.set(key, maintenance)
     const now = this.ports.now().getTime()
-    if (now - maintenance.at < PRUNE_INTERVAL_MS) return
     if (maintenance.cleanup) {
-      // Coalesce due ticket completions into one pass after the active sweep.
-      if (finishedRunId) maintenance.afterFinish = () => this.schedulePrune(run, finishedRunId)
+      if (finishedRunId) maintenance.pendingFinishedRuns.add(finishedRunId)
       return
     }
+    if (now - maintenance.at < PRUNE_INTERVAL_MS) return
+    const finishedRuns = new Set(maintenance.pendingFinishedRuns)
+    if (finishedRunId) finishedRuns.add(finishedRunId)
+    maintenance.pendingFinishedRuns.clear()
     maintenance.keep.clear()
     for (const reservation of publishingBranches.get(run.mirror) ?? []) {
       const branch = reservation.split('\n')[1]!
       maintenance.keep.add(branch)
       maintenance.keep.add(`ci-default/${branch.slice('ci/'.length).split('-')[0]}`)
     }
-    const cleanup = this.prune(run, finishedRunId)
+    const cleanup = this.prune(run, finishedRuns)
     maintenance.at = now
     maintenance.cleanup = cleanup
     void cleanup.then(() => {
       maintenance.cleanup = undefined
-      const afterFinish = maintenance.afterFinish
-      delete maintenance.afterFinish
-      afterFinish?.()
+      if (maintenance.pendingFinishedRuns.size) {
+        maintenance.at = -Infinity
+        this.schedulePrune(run)
+      }
     })
   }
 
-  private async prune(run: Pick<CloudRun, 'repository' | 'mirror'>, finishedRunId?: string) {
+  private async prune(run: Pick<CloudRun, 'repository' | 'mirror'>, finishedRuns: ReadonlySet<string>) {
     try {
       const clone = await ensureClone(this.git, run.repository, AbortSignal.timeout(120_000))
       let activeRuns = await this.activeRuns?.()
-      if (activeRuns && finishedRunId) {
+      if (activeRuns && finishedRuns.size) {
         const ids = new Set(activeRuns.ids)
-        ids.delete(finishedRunId)
+        for (const runId of finishedRuns) ids.delete(runId)
         activeRuns = { ...activeRuns, ids }
       }
       const publications = this.publications(run.repository, run.mirror)
@@ -799,6 +802,11 @@ export class CloudCi {
     if (!collection.artifacts) {
       try {
         const artifacts = await this.provider.artifacts(run, join(this.root, 'runs', run.runId, 'artifact'))
+        if (artifacts.suiteLog !== undefined) {
+          const contents = Buffer.from(artifacts.suiteLog).subarray(-LOG_LIMIT)
+          await writeFile(this.path(run.runId, 'log'), contents, { mode: 0o600 })
+          collection.log = true
+        }
         if (run.suite === 'integration' || run.suite === 'unit') {
           const durations = CiDurationsSchema.safeParse(artifacts.durations)
           if (durations.success && (run.suite === 'integration' || run.part === 'unit-api' || run.part === 'unit-web')) {

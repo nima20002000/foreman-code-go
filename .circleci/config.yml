@@ -128,7 +128,14 @@ jobs:
             - ci-<< pipeline.parameters.suite >>-{{ checksum "pnpm-lock.yaml" }}-
       - run:
           name: Suite
-          command: mkdir -p .logs/ci-durations && scripts/ci-suite.sh
+          command: |
+            set -o pipefail
+            mkdir -p .logs/ci-durations
+            scripts/ci-suite.sh 2>&1 | tee .logs/ci-durations/suite.log
+      # Publish results before cache saves and any early halt.
+      - store_artifacts:
+          path: .logs/ci-durations
+          destination: durations
       - save_cache:
           key: ci-<< pipeline.parameters.suite >>-{{ checksum "pnpm-lock.yaml" }}-{{ .Revision }}
           when: always
@@ -139,9 +146,6 @@ jobs:
             - apps/web/node_modules/.tmp
             - apps/worker/node_modules/.cache
             - packages/contracts/node_modules/.cache
-      - store_artifacts:
-          path: .logs/ci-durations
-          destination: durations
       # Keep summaries and failing files' logs; the per-slot copies and the archive of them are successful-file noise.
       - run:
           name: Trim integration logs

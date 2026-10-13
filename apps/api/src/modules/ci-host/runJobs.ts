@@ -30,8 +30,8 @@ export function runCiJob(row: RunCiJobRow): CiRunJob {
     tests: tests.success ? tests.data : null }
 }
 
-/** Stored results limited to tests with the given statuses. Files keep their own status; a file whose tests were
- * left out by the bounds is kept when its own status matches. The summary still counts every test. */
+/** Stored results limited to tests with the given statuses. A file is also kept when its own status matches,
+ * even without matching assertions. The summary still counts every test. */
 export function storedCiTestResults(stored: unknown, statuses?: readonly CiTestStatus[]): CiTestResults | null {
   const parsed = stored ? CiTestResultsSchema.safeParse(stored) : null
   if (!parsed?.success) return null
@@ -39,7 +39,7 @@ export function storedCiTestResults(stored: unknown, statuses?: readonly CiTestS
   const wanted = new Set(statuses)
   const files = parsed.data.files.flatMap(file => {
     const tests = file.tests.filter(test => wanted.has(test.status))
-    return tests.length || (!file.tests.length && wanted.has(file.status)) ? [{ ...file, tests }] : []
+    return tests.length || wanted.has(file.status) ? [{ ...file, tests }] : []
   })
   return { ...parsed.data, files }
 }
