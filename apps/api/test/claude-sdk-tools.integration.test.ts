@@ -104,7 +104,6 @@ it.each([
         beforePermission: async () => {
           if (gatePermission) {
             permissionWaiting = true
-            await new Promise(resolve => setTimeout(resolve, 1250))
             await permissionReady
           }
         },

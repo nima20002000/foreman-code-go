@@ -67,23 +67,14 @@ it('stops renewing the waiting requester after its accepted Run authority is rev
     await f.engine.start(f.f.run.id)
     const [pending] = (await f.pending()).filter(item => item.status === 'pending')
     if (!pending?.executionId) throw new Error('Expected a pending requester')
-    let renewalRejected = false
     expect((await f.native.inspectInteractionActivity(pending)).response)
       .toMatchObject({ qualified: true, usable: true })
-    const renew = Wave25WorkerCredentialService.prototype.renewForExecution
-    const renewal = vi.spyOn(Wave25WorkerCredentialService.prototype, 'renewForExecution')
-      .mockImplementation(async function (this: Wave25WorkerCredentialService, ...args) {
-        try { return await renew.apply(this, args) }
-        catch (error) {
-          if (args[0] === pending.executionId) renewalRejected = true
-          throw error
-        }
-      })
     await f.access.revoke(f.authorizationPrincipalId)
-    try {
-      await vi.waitFor(() => expect(renewalRejected).toBe(true), { timeout: 10_000, interval: 10 })
-    } finally { renewal.mockRestore() }
-    expect((await f.native.inspectInteractionActivity(pending)).response)
+    const inactive = await readUntil(() => f.native.inspectInteractionActivity(pending),
+      activity => !activity.response.usable, {
+        timeoutMs: 10_000, description: 'waiting requester losing revoked Run authority',
+      })
+    expect(inactive.response)
       .toMatchObject({ qualified: false, usable: false, path: null })
     const readExpiry = async () => (await f.db.pool.query<{ expires_at: Date }>(
       'select p.expires_at from management_principals p join worker_credential_bindings b on b.principal_id=p.id where b.execution_id=$1',
