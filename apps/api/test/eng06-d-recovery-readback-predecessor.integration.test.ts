@@ -20,7 +20,7 @@ describe.skipIf(!postgresEnabled)('ENG06-D recovery readback over real HTTP and 
       expect(before.details).toHaveLength(2)
       expect(accepted).toBeDefined(); expect(waiting).toBeDefined()
       expect(accepted.acceptedResult).toMatchObject({ status: 'accepted', value: accepted.reportedResult })
-      await f.restart(); await f.settled()
+      await f.restart({ mode: 'crash' }); await f.settled()
       const after = await readback(f), retained = after.details.find((item) => item.execution.executionId === accepted.execution.executionId)!
       expect(after.record.run).toMatchObject({ executionState: 'completed', outcome: 'failed',
         result: { outcome: 'failed', error: { code: 'EXECUTION_INTERRUPTED', retryable: false } } })
@@ -34,7 +34,7 @@ describe.skipIf(!postgresEnabled)('ENG06-D recovery readback over real HTTP and 
       expect(interrupted.acceptedInput).toEqual(waiting.acceptedInput)
       expect(interrupted.acceptedResult).toEqual({ status: 'not_accepted' })
       expect(f.provider.counts.starts).toBe(2); expect(f.provider.counts.attaches).toBe(0)
-      await assertRecoveryReceipts(f, [waiting.execution.executionId])
+      await assertRecoveryReceipts(f, [waiting.execution.executionId], { detached: false })
       expect(f.shutdownErrors).toEqual([])
     } finally { await f.close() }
   }, 90000)
