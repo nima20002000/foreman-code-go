@@ -582,7 +582,7 @@ function configureMainTransport(composition: ProductionComposition) {
         throw new DomainError('RSYNC_TRANSFER_DENIED', 'The original accepted transfer or authenticated generation changed.', 403)
     },
   }
-  const entrypoint = composition.entrypoint = infrastructure?.rsyncInstallation?.kind === 'configured' && !infrastructure.rsync
+  const entrypoint: ProductionComposition['entrypoint'] = composition.entrypoint = infrastructure?.rsyncInstallation?.kind === 'configured' && !infrastructure.rsync
     ? createMainRsyncEntrypoint({ installation: infrastructure.rsyncInstallation, endpoint: () => composition.deviceRuntime.endpointForDomains(), accepted: acceptedRsync,
       setup: { checkAcceptedTransfer: (...args) => {
         if (!composition.trustedConnections) throw new DomainError('RSYNC_COMPOSITION_UNAVAILABLE', 'The original Main trusted connection authority has not initialized.', 503)
@@ -592,7 +592,7 @@ function configureMainTransport(composition: ProductionComposition) {
         return composition.trustedConnections.readAcceptedTransfer(...args)
       } },
       ownership: () => rsync.kind === 'configured' ? rsync.ownership : undefined }) : undefined
-  const installedRsync = composition.installedRsync = infrastructure?.rsync ?? entrypoint?.providers
+  const installedRsync: ProductionComposition['installedRsync'] = composition.installedRsync = infrastructure?.rsync ?? entrypoint?.providers
   const rsyncProviders: InstalledMainRsyncProviders | undefined=installedRsync?{...installedRsync,acknowledged:async(...args:Parameters<NonNullable<InstalledMainRsyncProviders['acknowledged']>>)=>{
     const [intent,context]=args
     const binding=composition.deviceRuntime.endpointForDomains().captureRequest(intent.deviceId,RSYNC_STAGE_EXTENSION.namespace)?.binding
@@ -608,7 +608,7 @@ function configureMainTransport(composition: ProductionComposition) {
       await composition.jobRuntime.inputs.main.acknowledged(intent.transferId,binding)
     }else await installedRsync.acknowledged(...args)
   }}:undefined
-  const rsync = composition.rsync = createInstalledRsyncComposition({ side: 'main', providers: rsyncProviders,
+  const rsync: ProductionComposition['rsync'] = composition.rsync = createInstalledRsyncComposition({ side: 'main', providers: rsyncProviders,
     current: deviceId => composition.deviceRuntime.endpointForDomains().captureRequest(deviceId, RSYNC_STAGE_EXTENSION.namespace)?.binding })
   composition.remoteTelemetry = createMainResourceTelemetryBindings(() => composition.telemetry?.service)
 }
@@ -787,7 +787,7 @@ function configureProviderAccounts(composition: ProductionComposition) {
   const commands = composition.commands = new PostgresCommandCoordinator(database.pool)
   composition.bugReports = new BugReportService(database.pool, commands)
   const accountCredentials = new LocalProviderCredentials(resolve(config.harnesses.workspaceRoot, 'provider-accounts'))
-  const selectedAccounts = composition.selectedAccounts = accountSelection ?? createProductionAccountSelection({
+  const selectedAccounts: ProductionComposition['selectedAccounts'] = composition.selectedAccounts = accountSelection ?? createProductionAccountSelection({
     path: resolve(config.harnesses.workspaceRoot, 'provider-account-qualifications.json'),
     managedPaths: accountId => accountCredentials.paths(accountId),
     validate: () => composition.harnessRegistry.refreshMain(),
@@ -801,12 +801,12 @@ function configureProviderAccounts(composition: ProductionComposition) {
     },
   })
   const accountCommands = new NativeProviderAccountCommands(selectedAccounts)
-  const accountNative = processRegistry instanceof NativeProcessRegistry
+  const accountNative: NativeProviderAccountOperations | NativeProviderAccountCommands = processRegistry instanceof NativeProcessRegistry
     ? new NativeProviderAccountOperations(accountCommands,
       new NativeAccountJournal(resolve(config.harnesses.workspaceRoot, 'provider-account-operations')), processRegistry,
       input => providerAccounts.assertAuthenticationEligibility(input.operation))
     : accountCommands
-  const providerAccounts = composition.providerAccounts = new ProviderAccountsService(database.pool,
+  const providerAccounts: ProductionComposition['providerAccounts'] = composition.providerAccounts = new ProviderAccountsService(database.pool,
     new ProviderAccountsRepository(database.pool, () => accountCredentials.hostId()), accountCredentials,
     accountNative, commands)
   providerAccounts.bindTarget(async sql => {
@@ -951,9 +951,9 @@ function configureWorkflowRepositories(composition: ProductionComposition) {
   composition.workspaces = new PostgresWorkspaceRepository(database.pool, workflows, runs)
   const settings = composition.settings = new PostgresSettingsRepository(database.pool)
   const hostProfileEvidence = composition.hostProfileEvidence = new HostHarnessProfileEvidenceRepository(database.pool)
-  const claudeDiscovery = composition.claudeDiscovery = createClaudeProductionDiscovery({ registry: () => harnessRegistry, factories: () => composition.nativeFactories,
+  const claudeDiscovery: ProductionComposition['claudeDiscovery'] = composition.claudeDiscovery = createClaudeProductionDiscovery({ registry: () => harnessRegistry, factories: () => composition.nativeFactories,
     workingDirectory: config.harnesses.workspaceRoot })
-  const harnessRegistry = composition.harnessRegistry = new ProductionHarnessRegistry(database.pool, mainBinaries,
+  const harnessRegistry: ProductionComposition['harnessRegistry'] = composition.harnessRegistry = new ProductionHarnessRegistry(database.pool, mainBinaries,
     (client) => settings.getManagedHarnessDefaults(client), hostProfileEvidence,
     (deviceId) => { const view = deviceRuntime.presenceFor(deviceId); return view?.phase === 'ready' ? view.binding : null },
     process.env, infrastructure?.inventoryDiscovery ?? { launcher: discoverInventoryLauncher, payloads: inventoryDriverPayloads,

@@ -406,7 +406,9 @@ describe.skipIf(process.platform === 'win32')('Codex app-server regressions agai
     const lifetime = manager.originalSessionLifetime(session, source)!
     await flag('read-delay')
     const read = manager.reattachOriginalSession(session, source, lifetime.residency)
-    void read.catch(() => undefined)
+    void read.catch(() => {
+      // ignore: this only prevents an unhandled rejection; the read outcome is asserted below.
+    })
     await until(async () => (await wire('thread/read')).length > 0)
     const launched = (await processesForRequests(f.directory, 'thread/start'))[0]
     assert(launched && typeof launched.pid === 'number')
