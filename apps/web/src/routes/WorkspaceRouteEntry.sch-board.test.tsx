@@ -158,6 +158,20 @@ afterEach(() => {
 })
 
 describe('Workspace Board route, editor and HTTP boundary', { timeout: 20_000 }, () => {
+  it('opens a cold draft, inspects a saved Run and returns without sending a write', async () => {
+    const { router } = await mount()
+    const editor = await authoring()
+    await choose('run-a')
+    expect(await savedY()).toBeVisible()
+    expect(screen.getByRole('region', { name: 'Selected Run pinned topology' })).toBeVisible()
+    expect(router.state.location.search.runId).toBe('run-a')
+    await choose(null)
+    await waitFor(() => expect(editor).toBeVisible())
+    expect(within(editor).getByRole('heading', { name: 'Research to review' })).toBeVisible()
+    expect(router.state.location.search.runId).toBeUndefined()
+    expect(writes).toEqual([])
+  })
+
   it('inspects a saved Agent missing from the current workflow and reopens its generated URL', async () => {
     const reads = installNodeInspection()
     const current = getMockFixture(scope.workspaceId)!.workflows.find(item => item.id === scope.workflowId)!
