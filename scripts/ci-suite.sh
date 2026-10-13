@@ -117,16 +117,16 @@ if [ "$scope" = affected ] && [ -z "${SELECTED_FILES:-}" ] && { [ "$SUITE" != in
   fi
 fi
 
-# A full partitioned run whose file list does not fit a provider parameter computes its own partition from the
-# commit's durations; every partition uses the same inputs, so together they cover each file exactly once.
+# A full partition whose indexes exceed a provider parameter uses the timings retained in its snapshot.
 if [ "$scope" = full ] && [ "$SUITE" = integration ] && [ -z "${SLICE:-}" ] && [ -n "${CI_PARTITION:-}" ] && [ -z "$selected_list" ]; then
   mkdir -p "$state"
   selected_list="$state/selected-files.json"
   node --input-type=module -e '
-    import { readFileSync, writeFileSync, existsSync } from "node:fs"
+    import { writeFileSync } from "node:fs"
     import { integrationPartition } from "./packages/contracts/src/ciPartition.mjs"
     import { integrationFileList } from "./scripts/ci-files.mjs"
-    const durations = existsSync("scripts/integration-durations.json") ? JSON.parse(readFileSync("scripts/integration-durations.json", "utf8")) : {}
+    import { executionDurations } from "./scripts/ci-selection.mjs"
+    const durations = executionDurations("integration", process.cwd(), JSON.parse(process.env.CI_DURATIONS || "{}"))
     const partition = JSON.parse(process.env.CI_PARTITION)
     writeFileSync(process.argv[1], JSON.stringify(integrationPartition(integrationFileList(process.cwd()), durations, partition)))
   ' "$selected_list"
