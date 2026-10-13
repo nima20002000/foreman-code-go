@@ -107,8 +107,14 @@ export abstract class CodexManagerTurns extends CodexManagerControls {
       const restarting = signal?.reason instanceof DomainError && signal.reason.code === 'ENGINE_RESTART'
       if (!restarting) starting.cancelRequested = true
       starting.preparationController.abort(signal?.reason)
-      void this.finishTurnResources(runtime).catch(() => undefined)
-      if (!restarting && runtime.activeTurnId && !runtime.terminalResult) void this.interrupt(runtime).catch(() => undefined)
+      void this.finishTurnResources(runtime).catch(() => {
+        // ignore: resources stay owned for the next admission or explicit close to retry.
+      })
+      if (!restarting && runtime.activeTurnId && !runtime.terminalResult) {
+        void this.interrupt(runtime).catch(() => {
+          // ignore: abort cannot await delivery; interrupt records uncertainty for reconciliation.
+        })
+      }
     }
     signal?.addEventListener('abort', abort, { once: true })
     let cursor = runtime.sequence
@@ -465,7 +471,9 @@ export abstract class CodexManagerTurns extends CodexManagerControls {
     if (runtime.starting) {
       runtime.starting.cancelRequested = true
       runtime.starting.preparationController.abort()
-      void this.finishTurnResources(runtime).catch(() => undefined)
+      void this.finishTurnResources(runtime).catch(() => {
+        // ignore: resources stay owned for the next admission or explicit close to retry.
+      })
       const id = await deadline(runtime.starting.nativeIdentity, signal, undefined, this.dependencies)
       if (!id) return false
     }
@@ -522,7 +530,7 @@ export abstract class CodexManagerTurns extends CodexManagerControls {
 
   async reconcileResponse(
     session: NativeSessionReference,
-    response: import('./port.js').NativeResponseIdentity,
+    response: import('../port.js').NativeResponseIdentity,
     signal?: AbortSignal,
   ): Promise<NativeHistory> {
     signal?.throwIfAborted()

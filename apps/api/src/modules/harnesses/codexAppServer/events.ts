@@ -92,7 +92,9 @@ export abstract class CodexManagerEvents extends CodexManagerPreparation {
     if (turn.status === 'failed' && retry?.canAdvanceIdentity && isCodexCapacityError(turn.error)
       && retry.attempt < CODEX_CAPACITY_ATTEMPTS && !retry.controller.signal.aborted) retry.failure = result
     runtime.phase = 'idle'
-    void this.finishTurnResources(runtime).catch(() => undefined)
+    void this.finishTurnResources(runtime).catch(() => {
+      // ignore: resources stay owned for the next admission or explicit close to retry.
+    })
     for (const [key, waiting] of runtime.interactions) {
       if (waiting.pending.turn.nativeTurnId === turn.id) this.resolveInteraction(runtime, key, waiting, 'cleared')
     }
@@ -377,7 +379,9 @@ export abstract class CodexManagerEvents extends CodexManagerPreparation {
   protected handleDisconnect(runtime: Runtime): void {
     runtime.closed = true
     runtime.starting?.preparationController.abort()
-    void this.finishTurnResources(runtime).catch(() => undefined)
+    void this.finishTurnResources(runtime).catch(() => {
+      // ignore: resources stay owned for the next admission or explicit close to retry.
+    })
     if (runtime.phase === 'starting' || runtime.phase === 'active') runtime.phase = 'uncertain'
     for (const waiting of runtime.interactions.values()) waiting.delivery = 'uncertain'
     this.record(runtime, 'transport.disconnected', { unresolvedInteractions: runtime.interactions.size })

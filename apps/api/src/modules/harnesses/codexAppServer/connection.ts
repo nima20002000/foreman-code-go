@@ -126,7 +126,9 @@ export abstract class CodexManagerConnection extends CodexManagerEvents {
       await candidate.activate(runtime)
     } catch (error) {
       runtime.closed = true
-      await candidate.transport.close().catch(() => undefined)
+      await candidate.transport.close().catch(() => {
+        // ignore: preserve the resume failure; shutdown retries the owned transport.
+      })
       throw error
     }
   }
@@ -151,7 +153,9 @@ export abstract class CodexManagerConnection extends CodexManagerEvents {
     runtime.starting = undefined
     starting.resolveIdentity(undefined)
     starting.staged.length = 0
-    void this.finishTurnResources(runtime).catch(() => undefined)
+    void this.finishTurnResources(runtime).catch(() => {
+      // ignore: resources stay owned for the next admission or explicit close to retry.
+    })
     this.record(runtime, 'turn.start_rejected', { correlationId: starting.correlationId })
   }
 
@@ -248,7 +252,9 @@ export abstract class CodexManagerConnection extends CodexManagerEvents {
     if (!turnId || runtime.terminalResult) return Promise.resolve(false)
     if (runtime.starting) { runtime.starting.cancelRequested = true; runtime.starting.preparationController.abort() }
     // Cancellation withdraws file authority even when native interrupt delivery is uncertain.
-    void this.finishTurnResources(runtime).catch(() => undefined)
+    void this.finishTurnResources(runtime).catch(() => {
+      // ignore: resources stay owned for the next admission or explicit close to retry.
+    })
     if (runtime.cancellation?.turnId === turnId) return runtime.cancellation.promise
     const promise = (async () => {
       for (let attempt = 0; attempt <= INTERRUPT_STARTUP_RETRIES; attempt += 1) {

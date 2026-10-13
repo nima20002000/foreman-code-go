@@ -59,7 +59,7 @@ export interface SubagentReadScope {
 export interface SubagentServicePort {
   readonly pool: pg.Pool
   readonly controls: SubagentControlResolver
-  readonly nativeRecovery?: SubagentNativeRecoverySource
+  readonly nativeRecovery?: SubagentNativeRecoverySource | undefined
   reportRecoveryFailure(failure: SubagentRecoveryFailure): void
   scoped<T>(principal: ManagementPrincipal, input: { workspaceId: string; runId: string }, action: ManagementAction,
     work: (scope: SubagentReadScope) => Promise<T>, options?: { projectionLock?: 'if-available' }): Promise<T>

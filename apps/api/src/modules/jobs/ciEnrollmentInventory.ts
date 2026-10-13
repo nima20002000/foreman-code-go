@@ -16,7 +16,6 @@ import type { CiRuntimeWorker } from './ciRuntimeWorker.js'
 import { readHostCiStatus } from '../ci-host/status.js'
 import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import { jobDigest } from './digest.js'
-import type { JobSql } from './repository.js'
 
 export interface CiEnrollmentTarget {
   target: DeviceProvisioningTarget

@@ -17,7 +17,9 @@ export async function ownedControl<T>(ctx: ClaudeManagerContext, runtime: Runtim
     runtime.closed = true
     delete runtime.httpCredentialAcknowledgement
     closing ??= runtime.sdk.close()
-    void closing.catch(() => undefined)
+    void closing.catch(() => {
+      // ignore: finally awaits the same close promise and propagates its failure.
+    })
   }
   const timer = setTimeout(close, ctx.options.initializationTimeoutMs ?? 10_000)
   signal?.addEventListener('abort', close, { once: true })
@@ -53,7 +55,7 @@ export function managedHttpCredential(ctx: ClaudeManagerContext, start: NativeSe
   try {
     if (typeof config.url === 'string') endpoint = new URL(config.url)
     if (ctx.options.expectedMcp?.url) expectedEndpoint = new URL(ctx.options.expectedMcp.url)
-  } catch { /* Invalid locators cannot establish credential scope. */ }
+  } catch { /* ignore: invalid locators fail the credential scope validation below. */ }
   if (!token || authorization.length !== 1 || authorization[0]![1] !== `Bearer ${token}` || !endpoint
     || !['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash
     || ctx.options.expectedMcp?.url && endpoint.toString() !== expectedEndpoint?.toString()) {

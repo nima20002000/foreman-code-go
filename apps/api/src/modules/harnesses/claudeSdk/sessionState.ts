@@ -142,7 +142,9 @@ export function makeRuntime(ctx: ClaudeManagerContext, start: NativeSessionStart
   let rejectInit!: Runtime['rejectInit']
   const initialized = new Promise<NativeSessionReference>((resolve, reject) => { resolveInit = resolve; rejectInit = reject })
   // The rejection is observed even if native startup fails before await initialized.
-  void initialized.catch(() => undefined)
+  void initialized.catch(() => {
+    // ignore: startup awaits the original promise; observe early rejection here.
+  })
   const runtime = {
     start: structuredClone(start),
     generation: randomUUID(),

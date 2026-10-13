@@ -142,7 +142,11 @@ export abstract class CodexManagerSessions extends CodexManagerTurns {
             creation.rejection = error
             await candidate!.transport.close()
           } else await publish(value)
-        })().catch(() => { void candidate!.transport.close().catch(() => undefined) })
+        })().catch(() => {
+          void candidate!.transport.close().catch(() => {
+            // ignore: late-response cleanup stays owned for shutdown to retry.
+          })
+        })
       })
       return await publish(result)
     } catch (error) {
@@ -151,7 +155,11 @@ export abstract class CodexManagerSessions extends CodexManagerTurns {
       if (!notCreated && isUncertain(error) && candidate && !this.shutdownController.signal.aborted) {
         creation.status = 'uncertain'
         // Keep a bounded late-response window. Expiry never authorizes a retry.
-        expiration = this.dependencies.schedule(() => { void candidate!.transport.close().catch(() => undefined) }, 300_000)
+        expiration = this.dependencies.schedule(() => {
+          void candidate!.transport.close().catch(() => {
+            // ignore: late-response cleanup stays owned for shutdown to retry.
+          })
+        }, 300_000)
         creation.timer = expiration
         expiration.unref()
       } else {
@@ -438,8 +446,18 @@ export abstract class CodexManagerSessions extends CodexManagerTurns {
       const transport = this.dependencies.transport(
         qualified.binary, process.cwd(), environment, qualified.protocol,
         async (request) => { await transport.reject(request.id, -32601, 'Execution requests are not supported by the login transport.') },
-        (method) => { if (method === 'account/login/completed') void this.closeLoginControl().catch(() => undefined) },
-        () => { void this.closeLoginControl().catch(() => undefined) },
+        (method) => {
+          if (method === 'account/login/completed') {
+            void this.closeLoginControl().catch(() => {
+              // ignore: failed cleanup retains the login control for explicit close or shutdown.
+            })
+          }
+        },
+        () => {
+          void this.closeLoginControl().catch(() => {
+            // ignore: failed cleanup retains the login control for explicit close or shutdown.
+          })
+        },
       )
       this.loginControl = { transport }
       try {
@@ -449,10 +467,19 @@ export abstract class CodexManagerSessions extends CodexManagerTurns {
         if (!loginId) throw new HarnessExecutionError('CODEX_LOGIN_START_INVALID', 'Codex did not return a login identity.')
         if (!this.loginControl) throw new HarnessExecutionError('CODEX_LOGIN_DISCONNECTED', 'The login transport disconnected.')
         this.loginControl.loginId = loginId
-        this.loginControl.timer = this.dependencies.schedule(() => { void this.closeLoginControl().catch(() => undefined) }, 15 * 60_000)
+        this.loginControl.timer = this.dependencies.schedule(() => {
+          void this.closeLoginControl().catch(() => {
+            // ignore: failed cleanup retains the login control for explicit close or shutdown.
+          })
+        }, 15 * 60_000)
         this.loginControl.timer.unref()
         return response
-      } catch (error) { await this.closeLoginControl().catch(() => undefined); throw error }
+      } catch (error) {
+        await this.closeLoginControl().catch(() => {
+          // ignore: preserve the login failure; explicit close or shutdown retries cleanup.
+        })
+        throw error
+      }
     } finally { this.loginStarting = false }
   }
 
@@ -482,7 +509,9 @@ export abstract class CodexManagerSessions extends CodexManagerTurns {
     for (const creation of this.creations.values()) {
       this.dependencies.cancelTimer(creation.timer)
       if (creation.transport) cleanups.push(creation.transport.close())
-      if (creation.promise) cleanups.push(creation.promise.catch(() => undefined).then(async () => {
+      if (creation.promise) cleanups.push(creation.promise.catch(() => {
+        // ignore: creation failure belongs to its caller; shutdown still closes its transport.
+      }).then(async () => {
         await creation.transport?.close()
       }))
     }
