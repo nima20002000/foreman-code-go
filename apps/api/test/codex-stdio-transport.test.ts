@@ -200,7 +200,7 @@ lines.on('line', (line) => {
 })
 `)
     const disconnected: Error[] = []
-    const value = await transport({ onDisconnect: error => { disconnected.push(error) } })
+    const value = await transport({ timeout: 5_000, onDisconnect: error => { disconnected.push(error) } })
     const controller = new AbortController()
     await assert.rejects(value.request('test/frame', {}, controller.signal), (error: unknown) => {
       assert(error instanceof CodexRpcError)
