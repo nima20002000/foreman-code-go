@@ -30,7 +30,22 @@ it('renews only the bound reviewer principal and execution and persists the same
   } finally { await f.close() }
 }, 60_000)
 
-it.each(['expired', 'principal revoked', 'binding revoked', 'reviewer changed', 'session not finalized', 'run closed'])(
+it('keeps the saved reviewer and its renewable credential after rejecting a reviewer pin change', async () => {
+  const f = await routedApprovalFixture()
+  try {
+    const service = new WorkerCredentialService(f.db.pool, f.access, 60_000)
+    const credential = await f.credentials.issueForReviewer(f.reviewer.id)
+    await expect(f.db.pool.query(`update runs set record=jsonb_set(record,
+      '{approval,designatedOrchestratorAgentId}',to_jsonb($2::text)) where id=$1`,
+    [f.run.id, f.requester.agentId])).rejects.toMatchObject({ code: 'P0001' })
+    expect((await f.runs.get(f.run.id))?.approval).toEqual(f.run.approval)
+    await expect(service.renewForExecution(f.reviewer.id, credential)).resolves.toEqual(expect.any(String))
+    expect((await f.access.authenticate(credential.environment.variables.GRAPHQL_MCP_TOKEN!, 'worker')).agentId)
+      .toBe(f.reviewer.agentId)
+  } finally { await f.close() }
+}, 60_000)
+
+it.each(['expired', 'principal revoked', 'binding revoked', 'reviewer identity changed', 'session not finalized', 'run closed'])(
   'refuses reviewer renewal when %s and leaves persisted expiry unchanged', async condition => {
     const f = await routedApprovalFixture()
     try {
@@ -45,7 +60,7 @@ it.each(['expired', 'principal revoked', 'binding revoked', 'reviewer changed', 
       } else if (condition === 'binding revoked') {
         await f.db.pool.query('update worker_credential_bindings set revoked_at=clock_timestamp() where principal_id=$1',
           [credential.principalId])
-      } else if (condition === 'reviewer changed') {
+      } else if (condition === 'reviewer identity changed') {
         await f.db.pool.query(`update runs set record=jsonb_set(record,
           '{approval,designatedOrchestratorAgentId}',to_jsonb($2::text)) where id=$1`,
         [f.run.id, f.requester.agentId])
@@ -55,12 +70,15 @@ it.each(['expired', 'principal revoked', 'binding revoked', 'reviewer changed', 
       } else {
         await f.db.pool.query('update runs set worker_credentials_closed_at=clock_timestamp() where id=$1', [f.run.id])
       }
+      expect((await f.runs.get(f.run.id))?.approval).toEqual(f.run.approval)
       const readExpiry = async () => (await f.db.pool.query(
         'select expires_at from management_principals where id=$1', [credential.principalId])).rows[0]!.expires_at
       const before = await readExpiry()
       await expect(service.renewForExecution(f.reviewer.id, credential))
         .rejects.toMatchObject({ code: 'WORKER_CREDENTIAL_NOT_RENEWABLE' })
       expect(await readExpiry()).toEqual(before)
+      await expect(f.access.authenticate(credential.environment.variables.GRAPHQL_MCP_TOKEN!, 'worker'))
+        .rejects.toMatchObject({ status: 401 })
     } finally { await f.close() }
   }, 60_000,
 )
