@@ -103,9 +103,9 @@ describe('host CI runner concurrent starts', () => {
     expect(launches[0]!.args).toContain('--property=CPUQuota=1600%')
   })
 
-  it('removes a canceled checkout only after preparation has stopped', async () => {
+  it('releases the slot of a canceled run only after preparation has stopped', async () => {
     const checkout = barrier()
-    const { root, runner, request } = await computer(undefined, 16, true, checkout.pause)
+    const { runner, request } = await computer(undefined, 16, true, checkout.pause)
     await runner.handle(request)
     await checkout.entered
     const canceled = runner.cancel(request.runId)
@@ -118,8 +118,7 @@ describe('host CI runner concurrent starts', () => {
       checkout.release()
     }
     await expect(canceled).resolves.toMatchObject({ state: 'canceled' })
-    const { access } = await import('node:fs/promises')
-    await expect(access(join(root, 'runs', request.runId, 'src'))).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(runner.status()).resolves.toMatchObject({ slotsUsed: 0 })
   })
 
   it('admits two different jobs into two slots, queues a third, and releases one slot on cancellation', async () => {

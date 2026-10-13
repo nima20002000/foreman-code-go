@@ -1,51 +1,24 @@
-import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 export const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
 
-/** Cache copies have independent inodes so builds cannot mutate another job's dependencies. */
-export function warmPnpmInstall(source: string, cache: string, run: string): string[] {
-  const lockfile = readFileSync(join(source, 'pnpm-lock.yaml'))
-  const lock = createHash('sha256').update(process.version).update(lockfile).digest('hex')
-  const inputs = createHash('sha256').update(lock)
-  for (const name of ['.npmrc', 'pnpm-workspace.yaml']) {
-    if (existsSync(join(source, name))) inputs.update(name).update(readFileSync(join(source, name)))
-  }
-  const modules = join(cache, 'modules', inputs.digest('hex'))
-  const ready = join(cache, 'locks', `${lock}.ready`)
-  const install = `corepack pnpm install --frozen-lockfile --store-dir ${shellQuote(join(cache, 'pnpm-store'))}`
-    + ` --cache-dir ${shellQuote(join(cache, 'pnpm-metadata'))}`
-    + ' --package-import-method=hardlink'
+/** Installs into the checkout's own node_modules from the shared store. A persistent slot already holds the
+ * previous part's dependencies, so this is incremental. The workspace's import method (clone-or-copy) keeps the
+ * checkout's files independent of the store, so a suite that mutates dependencies cannot corrupt the store. */
+export function pnpmInstall(cache: string): string[] {
+  const install = `corepack pnpm install --frozen-lockfile --config.confirm-modules-purge=false`
+    + ` --store-dir ${shellQuote(join(cache, 'pnpm-store'))} --cache-dir ${shellQuote(join(cache, 'pnpm-metadata'))}`
   return [
-    `mkdir -p ${shellQuote(join(cache, 'locks'))} ${shellQuote(join(cache, 'modules'))}`,
-    `exec {cache_lock}>${shellQuote(join(cache, 'locks', `${lock}.lock`))}`,
+    `mkdir -p ${shellQuote(join(cache, 'locks'))}`,
+    `exec {cache_lock}>${shellQuote(join(cache, 'locks', 'install.lock'))}`,
     'flock "$cache_lock" || finish $?',
-    `modules=${shellQuote(modules)}`,
-    // Leftover dependency directories from an interrupted job would make the snapshot copy fail on existing paths.
-    'while IFS= read -r -d "" directory; do rm -rf "$directory"; done < <(find . -type d -name node_modules -prune -print0)',
-    'if [ -d "$modules" ] && ! cp -a --reflink=auto "$modules/." .; then',
-    "  echo '[ci-cache] dependency snapshot unusable; installing fresh'",
-    '  while IFS= read -r -d "" directory; do rm -rf "$directory"; done < <(find . -type d -name node_modules -prune -print0)',
-    '  rm -rf "$modules"',
-    'fi',
+    // Dependency snapshots from the previous per-run copy scheme are no longer read.
+    `rm -rf ${shellQuote(join(cache, 'modules'))}`,
     `${install} --offline || {`,
     // A warmed store can still miss metadata (pruned or partial cache); refill it online instead of failing the job.
     `  echo '[ci-cache] filling store online'`,
     `  ${install} || finish $?`,
     '}',
-    `touch ${shellQuote(ready)}`,
-    'if [ ! -d "$modules" ]; then',
-    `  snapshot=${shellQuote(join(run, 'modules'))}`,
-    '  mkdir -p "$snapshot" || finish $?',
-    '  while IFS= read -r -d "" directory; do',
-    '    mkdir -p "$snapshot/$(dirname "$directory")" || finish $?',
-    '    cp -a --reflink=auto "$directory" "$snapshot/$directory" || finish $?',
-    '  done < <(find . -type d -name node_modules -prune -print0)',
-    '  mv "$snapshot" "$modules" || finish $?',
-    '  while IFS= read -r -d "" directory; do rm -rf "$directory"; done < <(find . -type d -name node_modules -prune -print0)',
-    '  cp -a --reflink=auto "$modules/." . || finish $?',
-    'fi',
     'flock -u "$cache_lock"',
     'exec {cache_lock}>&-',
   ]
