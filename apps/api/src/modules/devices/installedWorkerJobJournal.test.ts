@@ -44,6 +44,8 @@ describe('original installed Job qualification composition, no native entry', ()
 
 it('recovers the original Job host before routing an authenticated Job frame, with no native entry', async () => {
   vi.clearAllMocks()
+  let elapsed = 0
+  vi.spyOn(performance, 'now').mockImplementation(() => elapsed)
   const pairing = WorkerPairingConfigurationSchema.parse({ formatVersion: 1, mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1,
     endpoint: 'wss://unconnected.example/device/connect', mainPublicKeyFingerprint: 'a'.repeat(64), credential: 'b'.repeat(64), expiresAt: new Date(Date.now() + 60_000).toISOString() })
   const binding = DeviceSessionBindingSchema.parse({ mainId: pairing.mainId, deviceId: pairing.deviceId, workerInstallationId: pairing.workerInstallationId,
@@ -87,7 +89,9 @@ it('recovers the original Job host before routing an authenticated Job frame, wi
   await expect(execution.handle!(request, { ...context, binding: { ...binding, connectionGeneration: 4 } })).rejects.toThrow('actual authenticated')
   connected = false
   expect(clock.retentionNow()).toBeUndefined()
-  expect(clock.now()).toBeTypeOf('number')
+  elapsed = 500
+  vi.spyOn(Date, 'now').mockReturnValue(mainTime - 120_000)
+  expect(clock.now()).toBe(mainTime + 500)
   await mounted.close()
   expect(ports.shutdown).toHaveBeenCalledOnce()
   vi.restoreAllMocks()

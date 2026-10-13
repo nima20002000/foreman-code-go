@@ -1,9 +1,9 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, writeFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { gitFixtureEnvironment } from './helpers/gitFixture.js'
 import { publishCommit } from '../src/modules/sources/githubPublisher.js'
 import { snapshotAgentWorktree, importAgentSnapshot } from '../src/modules/sources/agentSnapshot.js'
@@ -52,7 +52,7 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       expect(f.calls.bind).toEqual([expect.objectContaining({ source: newPin,
         selection: expect.objectContaining({ hostRef: { kind: 'main', mainId } }) })])
       expect(f.calls.saves.map(value => [value.id, value.spec.policy.imageDigest])).toEqual([['p-main', newImage]])
-      expect(f.calls.refresh).toEqual([expect.objectContaining({ stateDirectory: '/main/runtime' })])
+      expect(f.calls.refresh).toEqual([expect.objectContaining({ stateDirectory: f.mainStateDirectory })])
       const read = await f.call('build_computer_prepare_get', { workspaceId: f.workspaceId, profileId: 'p-main' }, 'reader')
       expect(BuildComputerPrepareStatusSchema.parse(decodeMcpToolResult(read))).toMatchObject({ state: 'qualified', deviceId: mainId })
     } finally { await f.app.close() }
@@ -164,7 +164,7 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       expect(f.calls.bind).toEqual([expect.objectContaining({ source: newPin, expectedBindingRevision: 1, accessMode: 'exclusive-write' })])
       expect(f.calls.saves.map(value => [value.id, value.spec.bindingRevision, value.spec.policy.imageDigest]).sort())
         .toEqual([['p-install', 2, newImage], ['p-unit', 2, newImage]])
-      expect(f.calls.refresh).toEqual([expect.objectContaining({ stateDirectory: '/ci/state', root: expect.objectContaining({ source: newPin }),
+      expect(f.calls.refresh).toEqual([expect.objectContaining({ stateDirectory: f.stateDirectory, root: expect.objectContaining({ source: newPin }),
         resources: expect.objectContaining({ limits: expect.objectContaining({ cpuLimit: 4 }) }) })])
       expect(f.calls.qualified.sort()).toEqual(['p-install', 'p-unit'])
       // Readback: Laptop's profile was not touched; Builder's carry the commit.
@@ -360,7 +360,7 @@ describe('runtime preparation ownership and recovery', () => {
 
 it.each(['unpublished Agent commit', 'published commit', 'computer without GitHub', 'Main without push access'] as const)(
   'prepares a build computer from GitHub only, through authenticated MCP: %s', async scenario => {
-    const directory = await mkdtemp(join(tmpdir(), 'ci-github-'))
+    const directory = await privateFixtureDirectory('ci-github-')
     let f: Awaited<ReturnType<typeof fixture>> | undefined
     const git = (cwd: string, ...args: string[]) => execFileSync('git', args,
       { cwd, encoding: 'utf8', env: gitFixtureEnvironment() }).trim()
