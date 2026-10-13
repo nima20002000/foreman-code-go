@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { withTransaction } from '../../infrastructure/transaction.js'
 import type pg from 'pg'
-import { CI_HOST_NAMESPACE, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiHostReplySchema, CiListOutputSchema, CiRunRecordSchema,
+import { CI_HOST_NAMESPACE, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiHostReplySchema, CiListOutputSchema, CiRunRecordSchema, CiRunOutputSchema,
   WorkspaceSchema,
   requiresUserSystemd, userSystemdIntegrationFiles,
   type CiDurations, type CiHostRequest, type CiHostReply, type CiListOutput, type CiRunRecord, type CiRunInput,
@@ -201,6 +201,8 @@ export class HostCiService {
           exitCode: empty ? 0 : null, message: empty ? 'No affected files for this suite.' : null,
           queuedAt: now, startedAt: empty ? now : null, finishedAt: empty ? now : null,
           initiator: { principalId: caller.id, executionId: scope.executionId ?? null } }))
+        const result = CiRunOutputSchema.parse({ ticketId: runs[0]!.id,
+          ...(runs.length > 1 ? { partitions: runs.map(run => ({ ticketId: run.id })) } : {}) })
         if (scope.executionId) {
           // Hold the Run lock through ticket insertion so Stop sees every admitted ticket.
           const row = (await client.query<{ stopped: boolean }>(`select
@@ -223,7 +225,7 @@ export class HostCiService {
           values($1,$2,'ci.priority',$3,'succeeded',$4::jsonb)`, [caller.id, source, scope.workspaceId,
           JSON.stringify({ commandId: input.commandId, groupId, commit, priority, priorityReason,
             requestedPriority: input.priority ?? 'normal' })])
-        return { ticketId: runs[0]!.id, ...(runs.length > 1 ? { partitions: runs.map(run => ({ ticketId: run.id })) } : {}) }
+        return result
       },
     })
     return outcome.value
@@ -475,7 +477,13 @@ export class HostCiService {
     const scope = await this.authority.resolve(caller, input.workspaceId, ['jobs:cancel'])
     const run = await this.read(input.ticketId, scope.workspaceId)
     assertCiReadAccess(caller, scope.executionId, run)
-    return this.cancelTicket(scope.workspaceId, run.id)
+    this.stoppingRuns += 1
+    try {
+      await this.dispatching
+      return await this.cancelTicket(scope.workspaceId, run.id)
+    } finally {
+      this.stoppingRuns -= 1
+    }
   }
 
   /** The persisted, authorized Stop intent authorizes cleanup of its Agents' tickets. */

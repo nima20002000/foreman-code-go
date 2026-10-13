@@ -10,7 +10,7 @@ import { componentLogger } from '../diagnostics/logger.js'
 import { ensureClone, fetchRepositoryBranch, systemGitWorktreePorts, type GitWorktreePorts } from '../sources/gitWorktree.js'
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 import type { HostCiComputer } from './service.js'
-import { CLOUD_START_TIMEOUT_MS, CircleCiProvider, GitHubActionsProvider,
+import { CLOUD_START_TIMEOUT_MS, CircleCiProvider, GitHubActionsProvider, validateProviderParameters,
   type CloudDispatchInput, type CloudProvider, type CloudRun, type CloudStatus } from './cloudProviders.js'
 import { runsOnCircleCi } from './parts.js'
 import { fallbackOnError } from '../diagnostics/ignoredError.js'
@@ -189,11 +189,6 @@ export class CloudCi {
     }
     const files = scope === 'affected' && request.files !== undefined && request.suite !== 'integration'
       ? await this.selectedIndexes(git, request.commit, request.files) : undefined
-    let run = await this.save({ runId: request.runId, repository: request.repository, mirror, commit: request.commit,
-      suite: request.suite, ...(request.part ? { part: request.part } : {}), startedAt: this.ports.now().toISOString(), providerRunId: null, state: 'starting',
-      scope, ...(request.files !== undefined ? { files: request.files } : {}),
-      ...(request.baseCommit ? { baseCommit: request.baseCommit } : {}),
-      finishedAt: null, exitCode: null, message })
     // Providers cap pipeline parameter length: a full partition too long to list is computed on the runner from the
     // commit's durations instead, and oversized learned durations stay behind.
     const limit = this.provider.parameterLimit ?? Number.POSITIVE_INFINITY
@@ -211,6 +206,12 @@ export class CloudCi {
       ...(baseCommit ? { baseCommit } : {}),
       ...(partition ? { partition } : {}),
       ...(durations && durations.length <= limit ? { durations } : {}) }
+    validateProviderParameters(this.provider, input)
+    let run = await this.save({ runId: request.runId, repository: request.repository, mirror, commit: request.commit,
+      suite: request.suite, ...(request.part ? { part: request.part } : {}), startedAt: this.ports.now().toISOString(), providerRunId: null, state: 'starting',
+      scope, ...(request.files !== undefined ? { files: request.files } : {}),
+      ...(request.baseCommit ? { baseCommit: request.baseCommit } : {}),
+      finishedAt: null, exitCode: null, message })
     run = await this.trigger(run, input)
     if (run.providerRunId) {
       try {
@@ -235,7 +236,12 @@ export class CloudCi {
     if (this.ports.now().getTime() - Date.parse(dispatchedAt) < CLOUD_START_TIMEOUT_MS) return run
     // Retire the pipeline before retrying so it cannot acquire a workflow later.
     if (run.providerRunId) {
-      await this.provider.cancel(run)
+      try {
+        await this.provider.cancel(run)
+      } catch (error) {
+        if (error instanceof DomainError && error.code === 'CI_CLOUD_RATE_LIMITED') throw error
+        return this.reconcileLookupFailure(run, error)
+      }
       if (await this.provider.find(run)) return this.save({ ...run, state: 'running', workflowStarted: true })
     }
     const retry = run.dispatch && run.dispatch.attempts < MAX_DISPATCH_ATTEMPTS
@@ -243,7 +249,9 @@ export class CloudCi {
       + (retry ? `Retrying dispatch (${run.dispatch!.attempts + 1}/${MAX_DISPATCH_ATTEMPTS}).`
         : 'Dispatch retries exhausted; queued for another computer.')
     await writeFile(this.path(run.runId, 'log'), `${message}\n`, { flag: 'a', mode: 0o600 })
-    const next = await this.save({ ...run, message })
+    const recovered = { ...run, message }
+    delete recovered.reconciliation
+    const next = await this.save(recovered)
     if (retry) return this.trigger(next, run.dispatch!.input)
     return this.save({ ...next, state: 'queued', providerRunId: null, finishedAt: null, exitCode: null })
   }
@@ -432,6 +440,8 @@ export class CloudCi {
     const run = await this.read(runId)
     if (!['starting', 'running'].includes(run.state)) return run
     const now = this.ports.now().getTime()
+    if (run.reconciliation && (run.reconciliation.attempts >= MAX_DISPATCH_ATTEMPTS
+      || now - Date.parse(run.reconciliation.at) < POLL_MS)) return run
     if (now < this.backoff.until) return run
     if (run.state === 'running' && run.workflowStarted && now - (this.polled.get(runId) ?? -Infinity) < POLL_MS) return run
     if (this.following >= POLL_CONCURRENCY) await new Promise<void>(resolve => { this.waiting.push(resolve) })
@@ -441,8 +451,17 @@ export class CloudCi {
       if (this.ports.now().getTime() < this.backoff.until) return run
       const next = await this.follow(run)
       this.backoff = { until: 0, ms: 0 }
+      if (next.reconciliation && next.state !== 'starting') {
+        const recovered = { ...next,
+          message: next.message === run.message ? next.reconciliation.previousMessage : next.message }
+        delete recovered.reconciliation
+        return this.save(recovered)
+      }
       return next
     } catch (error) {
+      if (error instanceof DomainError && error.code === 'CI_CLOUD_RUN_NOT_FOUND') {
+        return this.reconcileLookupFailure(run, error)
+      }
       if (!(error instanceof DomainError && error.code === 'CI_CLOUD_RATE_LIMITED')) throw error
       const ms = Math.min(MAX_BACKOFF_MS, Math.max(30_000, this.backoff.ms * 2))
       this.backoff = { until: now + ms, ms }
@@ -454,6 +473,17 @@ export class CloudCi {
       if (next) next()
       else this.following--
     }
+  }
+
+  private async reconcileLookupFailure(run: CloudRun, error: unknown): Promise<CloudRun> {
+    const attempts = (run.reconciliation?.attempts ?? 0) + 1
+    const message = `${this.provider.label} execution could not be reconciled: `
+      + (error instanceof Error ? error.message : String(error)).slice(0, 500)
+      + (attempts >= MAX_DISPATCH_ATTEMPTS ? ' Automatic recovery stopped; Operator cancellation is required.'
+        : ` Ownership retained; recovery attempt ${attempts}/${MAX_DISPATCH_ATTEMPTS}.`)
+    log.warn({ err: error, runId: run.runId, attempts }, 'Cloud CI execution needs reconciliation')
+    return this.save({ ...run, message, reconciliation: { attempts, at: this.ports.now().toISOString(),
+      previousMessage: run.reconciliation ? run.reconciliation.previousMessage : run.message } })
   }
 
   /** Writes the steps the run has started, and new output of the running step, to its log. */

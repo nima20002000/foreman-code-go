@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { CI_LOG_MAX_BYTES, CiActivitySchema, CiRunRecordSchema, CiSuiteSchema, CiScopeSchema, CiSelectedFilesSchema,
+import { CI_LOG_MAX_BYTES, CI_MAX_RUN_TICKETS, CiActivitySchema, CiRunRecordSchema, CiSuiteSchema, CiScopeSchema, CiSelectedFilesSchema,
   CiTestResultsSchema, CiPrioritySchema, CiPriorityReasonSchema,
   CiTestStatusSchema, CiTestSummarySchema, CiUserSystemdSchema, validCiSelection } from './ciHost.js'
 import { IdSchema } from './schemaPrimitives.js'
@@ -50,7 +50,7 @@ export const OperatorCiRunInputSchema = CiRunInputObjectSchema.extend({ workspac
   .refine(validGate, gateIssue)
 const CiRunTicketSchema = z.object({ ticketId: IdSchema }).strict()
 /** `partitions` lists every part or integration partition; the first is also `ticketId`. Poll each with ci_get. */
-export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(CiRunTicketSchema).min(2).max(66).optional() }).strict()
+export const CiRunOutputSchema = CiRunTicketSchema.extend({ partitions: z.array(CiRunTicketSchema).min(2).max(CI_MAX_RUN_TICKETS).optional() }).strict()
 const CiTicketInputSchema = z.object({ ticketId: IdSchema }).strict()
 /** Statuses to include; the results' summary always counts every test. */
 export const CiTestStatusFilterSchema = z.array(CiTestStatusSchema).min(1).max(3)
