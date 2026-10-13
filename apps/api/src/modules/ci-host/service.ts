@@ -646,6 +646,17 @@ export class HostCiService {
     return this.dispatching
   }
 
+  private async gateReservation() {
+    const rows = (await this.pool.query<{ record: unknown }>(`select record from ci_runs
+      where state in ('queued','starting','running') and record->>'gate'='true'
+      order by record->>'queuedAt',group_id,id`)).rows
+    const runs = rows.map(row => CiRunRecordSchema.parse(row.record))
+    const gate = runs[0]
+    const reservedHosts = new Set(runs.filter(run => run.groupId === gate?.groupId && run.suite === 'integration')
+      .map(run => run.plannedHostKey))
+    return { gate, reservedHosts }
+  }
+
   private async dispatchOnce() {
     await this.cancelSuperseded()
     const computers = await this.endpoint.computers()
@@ -697,10 +708,7 @@ export class HostCiService {
       `select host_key,record from ci_runs where state in ('starting','running')`)).rows
     const used = new Map<string, number>()
     for (const row of busyRows) used.set(row.host_key, (used.get(row.host_key) ?? 0) + 1)
-    const gateRows = (await this.pool.query<{ record: unknown }>(`select record from ci_runs
-      where state in ('queued','starting','running') and record->>'gate'='true'
-      order by record->>'queuedAt',group_id,id`)).rows
-    const gate = gateRows.length ? CiRunRecordSchema.parse(gateRows[0]!.record) : undefined
+    const { gate, reservedHosts } = await this.gateReservation()
     const totals = new Map<string, number>()
     await inBatches(computers, 8, async computer => {
       if (computer.hostRef.kind === 'cloud') {
@@ -739,9 +747,6 @@ export class HostCiService {
     queued.sort((left, right) => (left.priority === right.priority
       && !left.gate && !right.gate
       ? Number(needsSystemdExecutor(right)) - Number(needsSystemdExecutor(left)) : 0) || compareCiQueue(left, right))
-    const reservedHosts = new Set(gateRows.map(row => CiRunRecordSchema.parse(row.record))
-      .filter(run => run.groupId === gate?.groupId && run.suite === 'integration')
-      .map(run => run.plannedHostKey))
     // Reserve slots before awaiting a start so concurrent dispatches cannot spend the same capacity.
     await Promise.all(queued.map(async run => {
       const blocked = gateQueueBlock(run, gate)

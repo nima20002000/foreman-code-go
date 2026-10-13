@@ -3,7 +3,7 @@ import type { CiRunInput } from '@foreman-code/contracts'
 import { planCiGate } from './gate.js'
 import type { HostCiComputer, HostCiEndpoint } from './service.js'
 
-it.each([80_000, 120_000])('moves %i ms overflow across tied shards until checks determine the critical path', async durationMs => {
+it.each([80_000, 120_000])('balances %i ms integration files against cloud checks', async durationMs => {
   const computers: HostCiComputer[] = [
     { key: 'builder-main', label: 'Main builder', priority: 60, hostRef: { kind: 'main', mainId: 'main' } },
     { key: 'builder-paired', label: 'Paired builder', priority: 50,

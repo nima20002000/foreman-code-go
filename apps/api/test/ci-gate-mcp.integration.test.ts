@@ -185,7 +185,7 @@ it('runs cloud checks before systemd integration overflow assigned to the same s
 })
 
 it('queues full requests and a second gate behind the first while affected requests keep using spare cloud slots', async () => {
-  const f = await fixture()
+  const f = await fixture({ cloudSlots: 40 })
   try {
     const gate = { suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40) }
     const first = CiRunOutputSchema.parse(await f.value('ci_run', { ...gate, commandId: randomUUID() }))
