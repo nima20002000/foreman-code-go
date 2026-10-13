@@ -119,11 +119,15 @@ export function sourceMaterializationParent(receipt: MaterializationReceipt): st
 
 /** Main asks an Agent's computer for its current files as its base commit when unchanged, or a git bundle when changed. */
 export const AGENT_SNAPSHOT_NAMESPACE = 'agent-snapshot-v1'
+export const AGENT_SNAPSHOT_MAX_BYTES = 32 * 1024 * 1024
+const AGENT_SNAPSHOT_BASE64_BYTES = Math.ceil(AGENT_SNAPSHOT_MAX_BYTES / 3) * 4
+/** Includes the commit and JSON envelope alongside the base64 bundle. */
+export const AGENT_SNAPSHOT_JSON_BYTES = AGENT_SNAPSHOT_BASE64_BYTES + 1024
 export const AgentSnapshotRequestSchema = z.object({
   path: z.string().startsWith('/').max(4096),
   baseCommit: z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/),
 }).strict()
 export const AgentSnapshotResultSchema = z.object({
   commit: z.string().regex(/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/),
-  bundleBase64: z.string().max(960 * 1024).nullable(),
+  bundleBase64: z.string().max(AGENT_SNAPSHOT_BASE64_BYTES).nullable(),
 }).strict()

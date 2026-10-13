@@ -42,6 +42,7 @@ export const GRAPHQL_AGENT_TOOLS = {
     label: "Run CI",
     description: "Run install, typecheck, lint, unit, build or integration on a build computer. "
       + "Tests the requested commit, the Agent's current files published to GitHub, or the default branch head. "
+      + "Edited Agent files use snapshot bundles up to 32 MiB before publication. "
       + "Scope defaults to affected. Omit files for runner selection against the workspace default branch merge-base; "
       + "Priority defaults to normal; high requires Operator role or jobs:prioritize. CI-only commits are automatically high. "
       + "caller files remain supported with an explicit commit. Missing selectors, shared infrastructure changes and "

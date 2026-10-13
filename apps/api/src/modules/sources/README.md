@@ -135,7 +135,11 @@ workspace repository edits do not alter accepted Runs. The source package carrie
 raw commit and tree objects alongside the approved file bytes. It does not carry
 ancestor commits or their files. Workers import those objects into their managed
 clone before worktree creation, including unpublished Agent snapshots used for CI
-runtime preparation. Runtime preparation sends the same bounded source package in
+runtime preparation. Changed Agent worktrees can produce snapshot bundles up to
+32 MiB; unchanged worktrees reuse the base commit without a bundle. The Worker
+channel budgets include base64 overhead and preserve bounded chunks and scope
+checks. Larger changed bundles require pushing the branch instead.
+Runtime preparation sends the same bounded source package in
 chunks over its authenticated Worker channel.
 
 Agent worktrees are created without checkout, then populated from the verified

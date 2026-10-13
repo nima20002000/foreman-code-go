@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { AGENT_SNAPSHOT_JSON_BYTES, AGENT_SNAPSHOT_NAMESPACE } from './sourceMaterialization.js'
 
 /** Application namespaces share the authenticated W07 socket, never workflow authority. */
 export const DEVICE_APPLICATION_MAX_EXTENSIONS = 32
@@ -78,10 +79,12 @@ export function parseExtensionDescriptors(value: unknown): DeviceExtensionDescri
   return value.map((item: unknown) => {
     if (!item || typeof item !== 'object') throw new Error('Invalid device extension')
     const descriptor = item as DeviceExtensionDescriptor
+    const maxJsonBytes = descriptor.namespace === AGENT_SNAPSHOT_NAMESPACE
+      ? AGENT_SNAPSHOT_JSON_BYTES : DEVICE_APPLICATION_JSON_BYTES
     if (!/^[a-z][a-z0-9:-]{0,63}$/.test(descriptor.namespace) || seen.has(descriptor.namespace)
       || !Number.isSafeInteger(descriptor.version) || descriptor.version < 1
       || !['client', 'server', 'duplex'].includes(descriptor.role)
-      || !Number.isSafeInteger(descriptor.maxJsonBytes) || descriptor.maxJsonBytes < 256 || descriptor.maxJsonBytes > DEVICE_APPLICATION_JSON_BYTES
+      || !Number.isSafeInteger(descriptor.maxJsonBytes) || descriptor.maxJsonBytes < 256 || descriptor.maxJsonBytes > maxJsonBytes
       || !Number.isSafeInteger(descriptor.maxBinaryBytes) || descriptor.maxBinaryBytes < 0 || descriptor.maxBinaryBytes > DEVICE_APPLICATION_BINARY_BYTES) throw new Error('Invalid device extension')
     seen.add(descriptor.namespace)
     return { namespace: descriptor.namespace, version: descriptor.version, role: descriptor.role, maxJsonBytes: descriptor.maxJsonBytes, maxBinaryBytes: descriptor.maxBinaryBytes }

@@ -3,7 +3,9 @@ import { withTransaction } from './infrastructure/transaction.js'
 import { ComputerActivityService } from './modules/computers/activity.js'
 import { registerComputerActivityRoutes } from './routes/computerActivity.js'
 import { ComputerAccountsService } from './modules/computers/accounts.js'
-import { AGENT_SNAPSHOT_NAMESPACE, AgentSnapshotResultSchema } from '@foreman-code/contracts/source-materialization'
+import {
+  AGENT_SNAPSHOT_JSON_BYTES, AGENT_SNAPSHOT_NAMESPACE, AgentSnapshotResultSchema,
+} from '@foreman-code/contracts/source-materialization'
 import { snapshotAgentWorktree } from './modules/sources/agentSnapshot.js'
 import { CiRuntimeProvisioner } from './modules/jobs/ciRuntimeProvisioner.js'
 import { CiEnrollment } from './modules/jobs/ciEnrollment.js'
@@ -469,7 +471,7 @@ export function buildProductionApp(
       }),
       { namespace: COMPUTER_GITHUB_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 16_384, maxBinaryBytes: 0 },
       { namespace: COMPUTER_SYNC_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
-      { namespace: AGENT_SNAPSHOT_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
+      { namespace: AGENT_SNAPSHOT_NAMESPACE, version: 1, role: 'client', maxJsonBytes: AGENT_SNAPSHOT_JSON_BYTES, maxBinaryBytes: 0 },
       { namespace: CI_RUNTIME_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: CI_HOST_NAMESPACE, version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
       { namespace: 'host-harness-check-v1', version: 1, role: 'client', maxJsonBytes: 1_048_576, maxBinaryBytes: 0 },
