@@ -46,5 +46,8 @@ it('pins the full cross-harness Operator configuration and preserves it on exact
     expect((await repository.configuration(pin))?.harness).toEqual(intended)
     await expect(repository.beginTurn(conversation.id, { ...input, content: 'changed' }, principal.id)).rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
     expect((await pool.query('select request_id from operator_conversation_turns')).rowCount).toBe(1)
+    const reopened = new PostgresOperatorConversationRepository(pool)
+    expect(await reopened.acceptedConfiguration(conversation.id, input.requestId))
+      .toMatchObject({ id: pin, harness: intended })
   } finally { await pool.end(); await dropFixtureSchema(admin, schema); await admin.end() }
 }, 30_000)
