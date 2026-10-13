@@ -95,7 +95,13 @@ it.each([
         arguments_ = { fileId: ready.value.file.fileId, revisionId: ready.value.revision.revisionId }
       }
       const transport = claudeSdkToolTransport(directory, () => [{ name: scenario === 'files' ? 'files.read' : 'workspace_create',
-        arguments: arguments_, server: serverName, source: scenario === 'files' ? 'sdk' : 'dynamic' }])
+        arguments: arguments_, server: serverName, source: scenario === 'files' ? 'sdk' : 'dynamic' }], {
+        beforePermission: async () => {
+          if (scenario === 'management' && serverName === 'graphql') {
+            await new Promise(resolve => setTimeout(resolve, 1250))
+          }
+        },
+      })
       const start = { kind: 'operator' as const, correlationId: `operator:${conversation.id}:${requestId}`, configuration,
         workingDirectory: directory, environment: { agentId: configuration.operatorId, variables: {} } }
       const f = productionClaudeFixture('operator', undefined, endpoint, scenario === 'files' ? productionFileTools(app) : undefined,

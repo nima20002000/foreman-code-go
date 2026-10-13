@@ -17,6 +17,7 @@ import { ciPreparationFixture, mainId } from './ciPreparationFixture.js'
 export async function persistedMainPreparationFixture(database: Awaited<ReturnType<typeof currentDatabase>>,
   options: Parameters<typeof ciPreparationFixture>[0] & {
     onMainRefresh?(): Promise<void>
+    mainInstallationId?: string
     acquire?: typeof JobOwnership.acquire
   } = {}) {
   const fixture = await ciPreparationFixture({ ...options, main: 'installed' })

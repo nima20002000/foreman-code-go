@@ -23,7 +23,8 @@ interface Wire {
 
 /** Recorded CLI wire traffic only. The official SDK owns hook dispatch, permission
  * responses, in-process MCP transport and server connection; HTTP calls use its delivered config. */
-export function claudeSdkToolTransport(cwd: string, calls: (content: string) => ToolCall[]) {
+export function claudeSdkToolTransport(cwd: string, calls: (content: string) => ToolCall[],
+  options: { beforePermission?(): Promise<void> } = {}) {
   const results: Array<{ name: string; result: unknown; allowed: boolean }> = []
   const offers: string[] = []
   const queries: Array<{ resume: unknown; closed: boolean }> = []
@@ -76,6 +77,7 @@ export function claudeSdkToolTransport(cwd: string, calls: (content: string) => 
           send({ type: 'assistant', uuid: randomUUID(), session_id: nativeId, parent_tool_use_id: null,
             user_message_uuid: message.uuid, message: { id: randomUUID(), role: 'assistant',
               content: [{ type: 'tool_use', id: toolId, name: `mcp__${call.server}__${call.name}`, input: call.arguments }] } })
+          await options.beforePermission?.()
           let allowed = await hook('PreToolUse', call, toolId)
           if (allowed) {
             const decision = await request({ subtype: 'can_use_tool', tool_name: `mcp__${call.server}__${call.name}`,
