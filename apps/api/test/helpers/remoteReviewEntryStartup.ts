@@ -12,8 +12,13 @@ type Startup = {
 }
 
 export async function waitForRequesterSession(startup: Startup) {
-  return readUntil(async () => {
-    const calls = await startup.readCalls()
+  const options = {
+    timeoutMs: 90_000,
+    minimumReadIntervalMs: 1_000,
+    ...(startup.subscribe ? { subscribe: startup.subscribe } : {}),
+  }
+  const readExecutions = async () => {
+    await startup.reconcile()
     const executions = await startup.readExecutions()
     const failed = executions.find(execution => execution.result?.outcome === 'failed')
     if (failed) {
@@ -21,11 +26,18 @@ export async function waitForRequesterSession(startup: Startup) {
         executionId: failed.id, state: failed.state, errorCode: failed.result?.error?.code,
       })}`)
     }
-    return calls
+    return executions
+  }
+  // The execution edge admits the requester after the reviewer's workflow turn settles.
+  await readUntil(async () => (await readExecutions()).find(execution =>
+    execution.workflowNodeId === startup.entryNodeId),
+  reviewer => reviewer?.state === 'completed' && reviewer.result?.outcome === 'succeeded', {
+    ...options, description: 'completed reviewer workflow turn',
+  })
+  return readUntil(async () => {
+    await readExecutions()
+    return startup.readCalls()
   }, calls => calls.some(call => 'requesterSessionBlocked' in call), {
-    timeoutMs: 90_000,
-    minimumReadIntervalMs: 1_000,
-    description: 'requester thread creation before session acknowledgment',
-    ...(startup.subscribe ? { subscribe: startup.subscribe } : {}),
+    ...options, description: 'requester thread creation before session acknowledgment',
   })
 }
