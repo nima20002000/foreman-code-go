@@ -126,7 +126,7 @@ async function fixture(options: { repository?: boolean; github?: Record<string, 
       graphqlTools: ['context_get' as const, 'ci_run' as const, 'ci_get' as const, 'ci_logs_read' as const,
         'ci_computers_list' as const] }))
   }
-  const runtime = saved ? await codexApprovalRuntime('user', { fixture: saved }) : undefined
+  const runtime = saved ? await codexApprovalRuntime('user', { fixture: saved, database }) : undefined
   const db = runtime?.db ?? database
   const access = runtime?.access ?? new PostgresAccessService(db.pool)
   const workspaceId = runtime?.f.scope.workspaceId ?? randomUUID()
@@ -874,6 +874,33 @@ it('defaults authenticated Agent MCP to affected scope, reads explicit full scop
   } finally { await f.close() }
 }, 60_000)
 
+it('retains an Agent ticket for an authorized Operator after the Agent runtime closes', async () => {
+  const agent = await fixture({ agent: true })
+  let completed: z.infer<typeof CiGetOutputSchema>
+  try {
+    const started = CiRunOutputSchema.parse(await agent.value(agent.agent!, 'ci_run', {
+      suite: 'install', scope: 'full', commandId: 'retained-agent-ticket',
+    }))
+    await agent.ci.dispatch()
+    agent.finish(started.ticketId, 0, 'install passed\n')
+    completed = CiGetOutputSchema.parse(await agent.value(agent.agent!, 'ci_get', { ticketId: started.ticketId }))
+    expect(completed.run.state).toBe('passed')
+  } finally { await agent.close() }
+
+  const operator = await fixture()
+  try {
+    const input = { workspaceId: agent.workspaceId, ticketId: completed.run.id }
+    expect((await operator.call(operator.operator, 'ci_get', input)).isError).toBe(true)
+    const reader = await operator.connect(CI_GET_ACTIONS, { workspaceIds: [agent.workspaceId] })
+    const read = CiGetOutputSchema.parse(await operator.value(reader, 'ci_get', input))
+    expect(read.run).toEqual(completed.run)
+    expect(read.logTail).toBe('install passed\n')
+    const stored = await database.pool.query<{ record: unknown }>('select record from ci_runs where id=$1',
+      [read.run.id])
+    expect(stored.rows[0]?.record).toEqual(read.run)
+  } finally { await operator.close() }
+}, 60_000)
+
 it('splits integration over two build computers, reports progress and logs, and replays a retried command', async () => {
   const f = await fixture()
   try {
@@ -1027,7 +1054,7 @@ it.each(['github', 'circleci'] as const)('runs user-systemd slices on capable %s
   } finally { await f.close() }
 })
 
-it('queues only user-systemd files through MCP while ordinary files run on cloud, then clears the wait on start', async () => {
+it.each(['mcp', 'http'] as const)('reads queued user-systemd slices through %s while ordinary files run on cloud, then clears the wait on start', async transport => {
   const readiness = { laptop: true }
   const f = await fixture({ github: readiness, cloud: true })
   f.computers.splice(1, 1)
@@ -1053,7 +1080,15 @@ it('queues only user-systemd files through MCP while ordinary files run on cloud
     expect(slices.partitions).toHaveLength(2)
     await f.ci.dispatch()
     await f.ci.close()
+    const credential = await f.credential(CI_GET_ACTIONS)
     const read = async () => {
+      if (transport === 'http') {
+        const response = await f.app.inject({ method: 'GET',
+          url: `/api/management/workspaces/${f.workspaceId}/ci/${slices.ticketId}`,
+          headers: { authorization: `Bearer ${credential.token}` } })
+        expect(response.statusCode).toBe(200)
+        return CiGetOutputSchema.parse(response.json())
+      }
       const result = await reader.callTool({ name: 'ci_get', arguments: {
         workspaceId: f.workspaceId, ticketId: slices.ticketId,
       } })
@@ -1087,7 +1122,7 @@ it('queues only user-systemd files through MCP while ordinary files run on cloud
     const unavailable = CiComputersOutputSchema.parse(await f.value(reader, 'ci_computers_list', {}))
     const buildComputer = unavailable.computers.find(computer => computer.hostRef.kind !== 'cloud')!
     expect(buildComputer.ready).toBe(false)
-    expect(buildComputer.reasons).toHaveLength(1)
+    expect(buildComputer.reasons).toEqual(['Log in to GitHub on this computer (gh auth login).'])
     expect(unavailable.queue).toContainEqual({ ticketId: host.id, priority: 'normal', priorityReason: 'normal',
       position: 1, reason: unready.message })
     const denied = await f.connect(['workflows:read'])
