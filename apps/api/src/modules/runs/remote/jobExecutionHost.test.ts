@@ -41,6 +41,8 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
     containerPresent: false, removals: 0, removalFailures: 0,
     collectionError: null as Error | null }
   let executionGate: Promise<void> | undefined
+  let preparationGate: Promise<void> | undefined
+  let preparationBegan: ((signal: AbortSignal) => void) | undefined
   let started = false, released = false
   const waiting: Array<() => void> = []
   const cid='c'.repeat(64),policy=execution.acceptedSpec.policy
@@ -77,7 +79,9 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
   const supervisor=new PodmanJobSupervisor(profile,runner,async()=>ownership)
   const host=new RemoteJobExecutionHost({journal,connection:{kind:'main',mainId:intent.mainId,mainInstallationId:execution.acceptedSpec.target.mainInstallationId,bootId:randomUUID()},incarnationId:randomUUID(),supervisor,
     source:{verify:async()=>({privateRepositoryRoot:execution.acceptedSpec.target.destination.canonicalProjectRoot,directoryIdentityHash:execution.acceptedSpec.target.destination.directoryIdentityHash,privateGit:true,diskQuotaBytes:1024,gitMounts})},
-    inputs:{prepare:async current=>{
+    inputs:{prepare:async (current, _source, signal)=>{
+      preparationBegan?.(signal)
+      await preparationGate
       const spec=current.acceptedSpec,hash=(bytes:Buffer)=>createHash('sha256').update(bytes).digest('hex')
       const manifest=Buffer.from(JSON.stringify(JobBuildInputManifestSchema.parse({version:1,inputSnapshotDigest:jobInputSnapshotDigest(current),workflowInput:spec.workflowInput,files:[]}))),workflow=Buffer.from(JSON.stringify(spec.workflowInput))
       const inputRoot=join(sourceRoot,JOB_INPUT_DIRECTORY);await mkdir(inputRoot,{mode:0o700});await writeFile(join(inputRoot,'manifest.json'),manifest,{mode:0o444});await writeFile(join(inputRoot,'workflow-input.json'),workflow,{mode:0o444})
@@ -87,9 +91,60 @@ async function fixture(loseClosureAck = false, denyPublication = false, wrongInp
     authorize:async(_intent,_execution,action)=>{if(denyPublication&&action==='publish')throw new Error('cleanup cannot publish');if(!state.allowed)throw new Error('revoked')},appendLog:async()=>{},observeReceipt:async receipt=>{state.reports.push(`${receipt.phase}:${receipt.publication}`);if(state.loseCollectionAck&&receipt.publication==='collecting')throw new Error('lost collecting ACK');if(receipt.terminal){if(state.loseClosureAck)throw new Error('lost process ACK');state.closureAccepted=true}},
     collectOutputs:async()=>{expect(state.closureAccepted).toBe(true);state.collected++;if(state.collectionError)throw state.collectionError} });hosts.push(host)
   return {root,journal,execution,intent,state,host,supervisor,
-    holdExecution(gate: Promise<void>) { executionGate = gate } }
+    holdExecution(gate: Promise<void>) { executionGate = gate },
+    holdPreparation(gate: Promise<void>, onStart: (signal: AbortSignal) => void) {
+      preparationGate = gate
+      preparationBegan = onStart
+    } }
 }
 describe('actual OCI job adapter with command doubles, no installed runtime claim',()=>{
+  it.each(['deadline', 'cancel'] as const)(
+    'keeps terminal publication and drain pending while an input writer ignores %s', async interruption => {
+      const f = await fixture()
+      let release!: () => void
+      let began!: (signal: AbortSignal) => void
+      const gate = new Promise<void>(resolve => { release = resolve })
+      const started = new Promise<AbortSignal>(resolve => { began = resolve })
+      f.holdPreparation(gate, began)
+      vi.useFakeTimers()
+      try {
+        await f.host.deliver(f.intent, f.execution)
+        const preparationSignal = await started
+        if (interruption === 'deadline') {
+          await vi.advanceTimersByTimeAsync(f.execution.acceptedSpec.policy.preparationTimeoutMs)
+        } else {
+          await f.host.handle({ method: 'job-control', intent: f.intent, command: {
+            schemaVersion: 1, protocolVersion: 1, commandId: randomUUID(),
+            executionId: f.execution.id, attemptId: f.execution.attemptId, operationId: f.execution.operationId,
+            bindingHash: f.execution.acceptedSpec.bindingHash, subject: f.intent.subject,
+            owner: f.execution.owner, action: { kind: 'stop' },
+          } })
+        }
+        expect(preparationSignal.aborted).toBe(true)
+        let drained = false
+        const draining = f.host.beginDrain().then(() => { drained = true })
+        vi.useRealTimers()
+        await new Promise<void>(resolve => { setTimeout(resolve, 25) })
+        expect(drained).toBe(false)
+        expect(await f.journal.jobStatus(f.intent.operationId)).toMatchObject({ status: 'known', receipt: {
+          terminal: null, publication: 'pending', entryAttempted: false,
+        } })
+        expect(f.state.closureAccepted).toBe(false)
+        release()
+        await draining
+        expect(await f.journal.jobStatus(f.intent.operationId)).toMatchObject({ status: 'known', receipt: {
+          terminal: { outcome: interruption === 'deadline' ? 'preparation_failed' : 'cancelled', processStopped: true },
+          publication: 'complete', entryAttempted: false,
+        } })
+        expect(f.state.creates).toBe(0)
+      } finally {
+        release()
+        vi.useRealTimers()
+        await f.host.drain()
+      }
+    },
+  )
+
   it('recovers a closed never-started container without inventing a command exit result', async () => {
     const f = await fixture()
     await f.journal.jobAccept(f.intent, f.execution, { kind: 'main', mainId: f.intent.mainId,
