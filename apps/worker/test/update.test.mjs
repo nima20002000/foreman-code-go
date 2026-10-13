@@ -19,6 +19,7 @@ import { recoverPendingWorkerUpdate, writeUpdateRecord, migrateWorkerService } f
 import { renderUserService } from '../src/service.mjs';
 import { DeviceConnectionError } from '../../../apps/api/src/modules/devices/deviceWire.ts';
 import { DeviceApplicationError } from '../../../apps/api/src/modules/devices/deviceApplicationError.ts';
+import { COMPUTER_MAINTENANCE_NAMESPACE } from '@foreman-code/contracts/computer-maintenance';
 let bundleDirectory;
 let createWorkerRuntimeDrain;
 before(async () => {
@@ -297,18 +298,18 @@ test('runtime drain blocks maintenance starts until recovery resumes admission',
     drainMaintenance: async () => {}, quiescent: async () => true });
   const completion = drain.run();
   try {
-    assert.throws(() => drain.assertAdmission('computer-maintenance-v1', { operation: 'start' }),
+    assert.throws(() => drain.assertAdmission(COMPUTER_MAINTENANCE_NAMESPACE, { operation: 'start' }),
       { code: 'WORKER_RUNTIME_DRAINING' });
-    assert.doesNotThrow(() => drain.assertAdmission('computer-maintenance-v1', { operation: 'status' }));
+    assert.doesNotThrow(() => drain.assertAdmission(COMPUTER_MAINTENANCE_NAMESPACE, { operation: 'status' }));
   } finally {
     finishJobs();
     await completion;
   }
-  assert.throws(() => drain.assertAdmission('computer-maintenance-v1', { operation: 'start' }),
+  assert.throws(() => drain.assertAdmission(COMPUTER_MAINTENANCE_NAMESPACE, { operation: 'start' }),
     { code: 'WORKER_RUNTIME_DRAINING' });
-  assert.doesNotThrow(() => drain.assertAdmission('computer-maintenance-v1', { operation: 'status' }));
+  assert.doesNotThrow(() => drain.assertAdmission(COMPUTER_MAINTENANCE_NAMESPACE, { operation: 'status' }));
   drain.resume();
-  assert.doesNotThrow(() => drain.assertAdmission('computer-maintenance-v1', { operation: 'start' }));
+  assert.doesNotThrow(() => drain.assertAdmission(COMPUTER_MAINTENANCE_NAMESPACE, { operation: 'start' }));
 });
 
 test('runtime drain fences workflow and Job admission while allowing status reads', async () => {
@@ -349,7 +350,7 @@ test('terminal supervisor failure resumes maintenance Retry only for the unchang
     } }).initialize();
   t.after(() => updater.close());
   await updater.start();
-  assert.throws(() => drain.assertAdmission('computer-maintenance-v1', { operation: 'start' }),
+  assert.throws(() => drain.assertAdmission(COMPUTER_MAINTENANCE_NAMESPACE, { operation: 'start' }),
     { code: 'WORKER_RUNTIME_DRAINING' });
   let switches = 0;
   await assert.rejects(superviseWorkerUpdate(await readUpdateRecord(f.stateDirectory), {
@@ -360,7 +361,7 @@ test('terminal supervisor failure resumes maintenance Retry only for the unchang
   assert.equal(switches, 2);
   assert.equal((await updater.status()).state, 'failed');
   assert.equal(resumed, 1);
-  assert.doesNotThrow(() => drain.assertAdmission('computer-maintenance-v1', { operation: 'start' }));
+  assert.doesNotThrow(() => drain.assertAdmission(COMPUTER_MAINTENANCE_NAMESPACE, { operation: 'start' }));
   await updater.status();
   assert.equal(resumed, 1);
   assert.equal(await updater.start({ retry: true }), 'Worker 1.1.0 restart is scheduled.');
