@@ -378,6 +378,16 @@ export async function retainedReviewRecovery(fixture: Fixture, recovery: 'crash'
     && Date.parse(receipt.retainedReviewer!.expiresAt) > Date.parse(beforeRenewal.retainedReviewer!.expiresAt),
   'periodic retained reviewer renewal with the original process credential')
   await fixture.provider.releaseReview()
+  const decisionCall = await waitForRemoteReview(async () => {
+    const calls = await fixture.provider.calls()
+    const denied = calls.find(call => call.reviewDecisionError !== undefined)
+    expect(denied, 'the retained reviewer must remain authorized after Main recovery').toBeUndefined()
+    return calls.find(call => call.reviewDecision !== undefined)
+  }, call => call !== undefined, 'authenticated retained reviewer decision response')
+  expect(decisionCall?.reviewDecision).toMatchObject({
+    interactionId: pending.id,
+    value: { interaction: { id: pending.id, selectedOptionId: option.optionId, selectedSemantic: 'approve_once' } },
+  })
   const delivered = await deliveredReview(fixture, active.interaction.id)
   expect(delivered.job.nativeSessionId).toBe(active.job.nativeSessionId)
   expect(delivered.job.providerTurnOrMessageId).toBe(active.job.providerTurnOrMessageId)
