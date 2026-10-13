@@ -412,6 +412,26 @@ test('install keeps only the current and previous release', async () => {
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+test('install moves pruned releases aside and deletes them without waiting', async () => {
+  const parent = await mkdtemp(join(tmpdir(), 'releases-'))
+  const root = join(parent, 'releases')
+  try {
+    for (const name of ['release-old', 'release-prev', 'release-now']) await mkdir(join(root, name), { recursive: true })
+    await writeFile(join(root, 'release-old', 'dependency'), 'x')
+    const background = []
+    // Deleting an old release's dependency tree took ~20 s of every install.
+    const removed = await pruneReleases(root, [join(root, 'release-now'), join(root, 'release-prev')],
+      { removeInBackground: directory => background.push(directory) })
+    assert.deepEqual(removed.map(path => path.slice(root.length + 1)), ['release-old'])
+    assert.deepEqual((await readdir(root)).sort(), ['release-now', 'release-prev'])
+    assert.equal(background.length, 1)
+    const moved = await readdir(background[0])
+    assert.equal(moved.length, 1)
+    assert.match(moved[0], /^release-old/)
+    assert.equal(await readFile(join(background[0], moved[0], 'dependency'), 'utf8'), 'x')
+  } finally { await rm(parent, { recursive: true, force: true }) }
+})
+
 async function installFixture(t) {
   const parent = process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp')
   await mkdir(parent, { recursive: true })
