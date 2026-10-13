@@ -46,7 +46,7 @@ it.each([undefined, 221366])('sends declared CircleCI pipeline parameters with c
   expect(parameters.expected_duration_ms).toBe(duration ?? 0)
 })
 
-it.each([false, true])('fails an ended CircleCI pipeline with errors on the next read, workflow started: %s', async started => {
+it.each([false, true])('requeues an ended CircleCI pipeline with errors once, workflow started: %s', async started => {
   const f = await fixture({}, { provider: 'circleci' })
   f.circle.phantoms = started ? 0 : 1
   const runId = randomUUID()
@@ -59,10 +59,18 @@ it.each([false, true])('fails an ended CircleCI pipeline with errors on the next
   f.advance(4_000)
   const main = cloudService(f.cloud, reply.run, f.commit)
   await main.service.dispatch()
-  expect(await main.read()).toMatchObject({ run: { state: 'failed', exitCode: 1, message: expect.stringContaining(message) } })
+  const requeued = await main.read()
+  expect(requeued).toMatchObject({ run: { id: runId, state: 'queued', computer: null,
+    exitCode: null, startedAt: null, finishedAt: null, message: expect.stringContaining(message),
+    setupRetry: { runId: expect.any(String),
+      failedComputer: { kind: 'cloud', mainId: 'main', provider: 'circleci', slot: 0 },
+      reason: expect.stringContaining(`config: ${message}`) } } })
+  expect(requeued.run.setupRetry!.runId).not.toBe(runId)
   expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 }))
-    .toMatchObject({ run: { state: 'failed', exitCode: 1, finishedAt: expect.any(String) },
+    .toMatchObject({ run: { state: 'failed', exitCode: 1, finishedAt: expect.any(String), testsStarted: false },
       text: expect.stringContaining(`config: ${message}`) })
+  await main.service.dispatch()
+  expect(await main.read()).toMatchObject({ run: { state: 'queued', setupRetry: requeued.run.setupRetry } })
   expect(f.circle.triggered).toHaveLength(1)
 })
 

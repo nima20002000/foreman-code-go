@@ -161,9 +161,12 @@ test('Node test failures count as started tests instead of setup failures', asyn
     const { spawnSync } = require('node:child_process')
     const file = join(dirname(process.env.CI_PROGRESS_FILE), 'node-case.test.mjs')
     writeFileSync(file, "import { test } from 'node:test'; test('fails', () => { throw new Error('assertion failed') })")
+    const environment = { ...process.env }
+    // The independent suite needs its reporters instead of the parent test's IPC channel.
+    delete environment.NODE_TEST_CONTEXT
     const result = spawnSync(process.execPath, ['--test', '--test-reporter=spec', '--test-reporter-destination=stdout',
       '--test-reporter=' + ${JSON.stringify(reporter)}, '--test-reporter-destination=' + file + '.json', file],
-      { stdio: 'inherit', env: process.env })
+      { stdio: 'inherit', env: environment })
     const report = JSON.parse(readFileSync(file + '.json', 'utf8'))
     assert.deepEqual(report.testResults.flatMap(file => file.assertionResults.map(test => [test.fullName, test.status])),
       [['fails', 'failed']])
