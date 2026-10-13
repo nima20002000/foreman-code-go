@@ -6,7 +6,7 @@ import { withProviderPoll } from './providerPoll.js'
 import { CI_HOST_NAMESPACE, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiComputerRefSchema, CiHostReplySchema, CiListOutputSchema, CiRunRecordSchema, CiRunOutputSchema,
   WorkspaceSchema,
   requiresUserSystemd,
-  type CiDurations, type CiHostRequest, type CiHostReply, type CiHostRun, type CiListOutput, type CiRunRecord, type CiRunInput,
+  type CiDurations, type CiHostRequest, type CiHostReply, type CiHostRun, type CiHostStatus, type CiListOutput, type CiRunRecord, type CiRunInput,
   type CiTestResults, type CiTestStatus, type CiUserSystemd, type CiCancellation, type Workspace } from '@foreman-code/contracts'
 import type { ManagementAction, ManagementPrincipal } from '@foreman-code/contracts/management'
 import type { PostgresCommandCoordinator } from '../commands/postgres.js'
@@ -26,7 +26,8 @@ import { prepareCiSupersession, validateCiSupersession, supersedeCiRuns } from '
 import { gatePartStealer, gateQueueBlock, planCiGate, readCiComputerStatus } from './gate.js'
 import { gateIntegrationShards } from './capacity.js'
 import { ciGateReport } from './gateReport.js'
-import { claimCiDispatch, releaseCiDispatch, saveQueuedCiRun, ciMessages, rejectedCiStart, withCiTicketLock } from './dispatch.js'
+import { claimCiDispatch, releaseCiDispatch, saveQueuedCiRun, ciMessages, rejectedCiStart, withCiTicketLock,
+  requestCiStart, CI_START_ACK_TIMEOUT_MS, CI_START_MAX_ATTEMPTS } from './dispatch.js'
 import { collectCiResults } from './resultCollection.js'
 import { sanitizeCiText, serializeCiJson } from './text.js'
 import { isGitHubComputer, supportsUserSystemd } from './computerCapabilities.js'
@@ -97,10 +98,33 @@ export class HostCiService {
   private dispatching: Promise<void> | undefined
   private timer: NodeJS.Timeout | undefined
   private stoppingRuns = 0
+  private readonly endpoint: HostCiEndpoint
 
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly authority: CiAuthority, private readonly commits: CiCommits,
-    private readonly endpoint: HostCiEndpoint, private readonly snapshots?: AgentSnapshots) {}
+    endpoint: HostCiEndpoint, private readonly snapshots?: AgentSnapshots) {
+    this.endpoint = {
+      computers: () => endpoint.computers(),
+      request: async (computer, request) => {
+        if (request.operation !== 'status' || computer.hostRef.kind === 'cloud') {
+          return endpoint.request(computer, request)
+        }
+        const assigned = (await this.pool.query<{ record: unknown; host_key: string }>(
+          `select record,host_key from ci_runs where state in ('starting','running')`)).rows
+          .filter(row => row.host_key === computer.key)
+        let status: CiHostStatus | null = null
+        try {
+          const reply = await endpoint.request(computer, request)
+          if (reply.operation === 'status') status = reply
+          return reply
+        } finally {
+          for (const row of assigned) {
+            await this.reconcileHostStart(CiRunRecordSchema.parse(row.record), computer, status)
+          }
+        }
+      },
+    }
+  }
 
   start(intervalMs = 5000) {
     this.timer ??= setInterval(() => { void this.dispatch() }, intervalMs)
@@ -628,13 +652,20 @@ export class HostCiService {
         return { ticketId: run.id, priority: run.priority, priorityReason: run.priorityReason,
           position: row.position, reason: ciQueueReason(run) }
       })
-      const active = (await this.pool.query<{ id: string; host_key: string }>(
-        `select id,host_key from ci_runs where state in ('starting','running') and host_key is not null
+      const active = (await this.pool.query<{ id: string; host_key: string; record: unknown }>(
+        `select id,host_key,record from ci_runs where state in ('starting','running') and host_key is not null
           order by created_at,id`)).rows
       const result = []
       for (const computer of await this.endpoint.computers()) {
-        const running = active.filter(run => run.host_key === computer.key).map(run => run.id)
+        const assigned = active.filter(run => run.host_key === computer.key)
         const status = await this.endpoint.request(computer, { operation: 'status' }).catch(error => error as Error)
+        const running = []
+        for (const row of assigned) {
+          const previous = CiRunRecordSchema.parse(row.record)
+          const current = previous.state === 'starting' && !previous.startedAt
+            ? await this.read(row.id, previous.workspaceId) : previous
+          if (['starting', 'running'].includes(current.state)) running.push(row.id)
+        }
         result.push(status instanceof Error
           ? { label: computer.label, hostRef: computer.hostRef, priority: computer.priority,
             ready: false, reasons: [status.message], running, slotsUsed: running.length,
@@ -669,11 +700,11 @@ export class HostCiService {
   }
 
   private async settle(run: CiRunRecord, computer: HostCiComputer, state: { state: string; step: string | null
-    exitCode: number | null; startedAt: string; finishedAt: string | null; message: string | null
+    exitCode: number | null; startedAt: string | null; finishedAt: string | null; message: string | null
     collection?: CiHostRun['collection']; provenance?: CiHostRun['provenance'] },
     options: { logTail?: string | undefined; audit?: CiCancellation | undefined; client?: pg.PoolClient | undefined } = {}) {
     const { logTail, audit, client } = options
-    const requeued = state.state === 'queued' && computer.hostRef.kind === 'cloud'
+    const requeued = state.state === 'queued'
     const unstartedProviders = new Set(run.unstartedProviders ?? [])
     if (requeued && computer.hostRef.provider) unstartedProviders.add(computer.hostRef.provider)
     const messages = ciMessages(run, state.message === null ? null : sanitizeCiText(state.message))
@@ -682,6 +713,7 @@ export class HostCiService {
       computer: requeued ? null : { hostRef: computer.hostRef, label: computer.label },
       startedAt: requeued ? null : run.startedAt ?? state.startedAt,
       finishedAt: state.finishedAt, ...messages, dispatchRequest: undefined,
+      dispatchedAt: undefined, dispatchHostKey: undefined,
       cancellation: terminal ? undefined : run.cancellation,
       ...(state.collection ? { collection: state.collection } : {}),
       ...(state.provenance ? { provenance: state.provenance } : {}),
@@ -777,10 +809,12 @@ export class HostCiService {
   }
 
   private async sendAssignedDispatch(run: CiRunRecord, computer: HostCiComputer, client: pg.PoolClient) {
-    if (!run.dispatchRequest) throw new Error('CI dispatch request is missing.')
+    const request = run.dispatchRequest
+    if (!request) throw new Error('CI dispatch request is missing.')
     let reply: Extract<CiHostReply, { operation: 'start' }>
     try {
-      const response = CiHostReplySchema.parse(await this.endpoint.request(computer, run.dispatchRequest))
+      const start = () => this.endpoint.request(computer, request)
+      const response = CiHostReplySchema.parse(await (computer.hostRef.kind === 'cloud' ? start() : requestCiStart(start)))
       if (response.operation !== 'start') {
         throw new DomainError('CI_HOST_REPLY_INVALID', 'The build computer replied out of order.', 502)
       }
@@ -796,7 +830,18 @@ export class HostCiService {
           startedAt: now, finishedAt: now, message: (error as Error).message }, { client })
         return 'settled'
       }
-      if (!await releaseCiDispatch(client, run, computer, (error as Error).message)) return 'pending'
+      const attempts = run.dispatchAttempts ?? 1
+      const uncertainRetry = computer.hostRef.kind !== 'cloud' && attempts > 1
+      if (uncertainRetry && attempts >= CI_START_MAX_ATTEMPTS) {
+        const now = new Date().toISOString()
+        await this.settle(run, computer, { state: 'failed', step: 'dispatch', exitCode: null,
+          startedAt: null, finishedAt: now,
+          message: `CI start was not acknowledged after ${attempts} attempts. ${(error as Error).message}` },
+        { client })
+        return 'settled'
+      }
+      if (!await releaseCiDispatch(client, run, computer, (error as Error).message,
+        { clearRetry: !uncertainRetry })) return 'pending'
       return (error as DomainError).code === 'CI_HOST_BUSY' ? 'busy' : 'rejected'
     }
     // A persistence failure keeps the pre-dispatch assignment for same-executor recovery.
@@ -804,17 +849,50 @@ export class HostCiService {
     return 'settled'
   }
 
+  private async reconcileHostStart(run: CiRunRecord, computer: HostCiComputer, status: CiHostStatus | null) {
+    if (computer.hostRef.kind === 'cloud' || run.state !== 'starting' || run.startedAt || run.cancellation) return false
+    const outcome = await withCiTicketLock(this.pool, run.id, async client => {
+      const current = await this.read(run.id, run.workspaceId, client)
+      if (current.state !== 'starting' || current.startedAt || current.cancellation
+        || !isDeepStrictEqual(current.computer?.hostRef, computer.hostRef)
+        || current.dispatchedAt !== run.dispatchedAt || current.dispatchAttempts !== run.dispatchAttempts) return false
+      const observed = status?.runs.find(value => value.runId === current.id)
+      if (observed) {
+        // Preflight status acknowledges delivery before there is a persisted run to read.
+        if (observed.state === 'starting' && observed.step === 'dispatch') return false
+        return this.settle(current, computer, observed, { client })
+      }
+      const elapsed = Date.now() - Date.parse(current.dispatchedAt ?? current.queuedAt)
+      if (!status && elapsed < CI_START_ACK_TIMEOUT_MS) return false
+      const attempts = current.dispatchAttempts ?? 1
+      const reason = status ? 'The computer reports no such CI run.' : 'The start acknowledgement timed out.'
+      if (attempts >= CI_START_MAX_ATTEMPTS) {
+        const now = new Date().toISOString()
+        return this.settle(current, computer, { state: 'failed', step: 'dispatch', exitCode: null,
+          startedAt: null, finishedAt: now,
+          message: `CI start was not acknowledged after ${attempts} attempts. ${reason}` }, { client })
+      }
+      return releaseCiDispatch(client, current, computer, `${reason} Queued to retry on the same computer.`)
+    })
+    return outcome ?? false
+  }
+
   private async refreshRun(row: { record: unknown; host_key: string | null }, computers: HostCiComputer[]) {
     const run = CiRunRecordSchema.parse(row.record)
-    const computer = computers.find(value => value.key === row.host_key)
+    let computer = computers.find(value => value.key === row.host_key)
       ?? computers.find(value => run.collection === 'pending' && run.computer
         && value.hostRef.kind === run.computer.hostRef.kind && value.hostRef.mainId === run.computer.hostRef.mainId
         && value.hostRef.deviceId === run.computer.hostRef.deviceId && value.hostRef.provider === run.computer.hostRef.provider
         && value.hostRef.slot === run.computer.hostRef.slot)
       ?? (run.computer && run.computer.hostRef.kind !== 'cloud' ? await this.computer(run.computer.hostRef) : null)
     if (!computer) return
+    if (row.host_key) computer = { ...computer, key: row.host_key }
     if (run.cancellation) {
       await this.cancelTicket(run.workspaceId, run.id, run.cancellation)
+      return
+    }
+    if (computer.hostRef.kind !== 'cloud' && run.state === 'starting' && !run.startedAt) {
+      await readCiComputerStatus(this.endpoint, computer)
       return
     }
     if (run.dispatchRequest) {
@@ -936,6 +1014,7 @@ export class HostCiService {
       const order = computers.filter(computer => runsOnCircleCi(run)
         || computer.hostRef.kind !== 'cloud' || computer.hostRef.provider !== 'circleci')
         .filter(computer => !hostRequired || supportsUserSystemd(computer))
+        .filter(computer => !run.dispatchHostKey || computer.key === run.dispatchHostKey)
         .filter(computer => !smokeTarget || isDeepStrictEqual(computer.hostRef, smokeTarget))
         .filter(computer => !run.gate || gateShards.has(computer.key)
           && (!plannedGateReady || computer.key === run.plannedHostKey || stealsGatePart(run, computer)))

@@ -163,6 +163,10 @@ export const CiComputerRefSchema = z.object({ kind: z.enum(['main', 'device', 'c
 export const CiRunRecordSchema = z.object({
   id: CiHostRunIdSchema, workspaceId: IdSchema, suite: CiSuiteSchema, commit: CommitSchema, repository: CiRepositorySchema,
   ciMirror: CiRepositorySchema.nullable().optional(),
+  /** Unacknowledged host starts stay on the same computer so late delivery cannot launch a second run. */
+  dispatchHostKey: z.string().optional(),
+  dispatchAttempts: z.number().int().nonnegative().optional(),
+  dispatchedAt: TimestampSchema.optional(),
   /** Kept until the assigned executor confirms start; retries use this same request and executor. */
   dispatchRequest: CiHostStartSchema.optional(),
   /** Kept until the assigned executor confirms cancellation or another terminal result. */

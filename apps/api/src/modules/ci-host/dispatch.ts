@@ -7,6 +7,8 @@ import { sanitizeCiText, serializeCiJson } from './text.js'
 
 const dispatchLimits = new WeakMap<pg.Pool, ExecutionLimiter>()
 const dispatchSignal = new AbortController().signal
+export const CI_START_ACK_TIMEOUT_MS = 120_000
+export const CI_START_MAX_ATTEMPTS = 3
 
 /** Serialize remote entry and closure across Main processes without blocking cancellation intent writes. */
 export async function withCiTicketLock<T>(pool: pg.Pool, ticketId: string, work: (client: pg.PoolClient) => Promise<T>) {
@@ -32,21 +34,27 @@ export async function saveQueuedCiRun(pool: pg.Pool, previous: CiRunRecord, next
   return Boolean(saved.rowCount)
 }
 
-/** Only the winning database claim may enter an executor. Unknown delivery keeps this assignment. */
+/** Only the winning database claim may enter an executor. */
 export async function claimCiDispatch(pool: pg.Pool, run: CiRunRecord, computer: HostCiComputer,
   request: Extract<CiHostRequest, { operation: 'start' }>): Promise<CiRunRecord | null> {
   const next = CiRunRecordSchema.parse({ ...run, state: 'starting', step: 'dispatch', message: null,
-    computer: { hostRef: computer.hostRef, label: computer.label }, dispatchRequest: request })
+    computer: { hostRef: computer.hostRef, label: computer.label }, dispatchRequest: request,
+    ...(computer.hostRef.kind !== 'cloud' ? { dispatchHostKey: computer.key,
+      dispatchAttempts: (run.dispatchAttempts ?? 0) + 1, dispatchedAt: new Date().toISOString() } : {}) })
   const saved = await pool.query(`update ci_runs set state=$2, host_key=$3, record=$4::jsonb
     where id=$1 and state='queued' and host_key is null and record=$5::jsonb`,
   [run.id, next.state, computer.key, serializeCiJson(next), JSON.stringify(run)])
   return saved.rowCount ? next : null
 }
 
-/** This is only safe after the executor definitely rejected entry. */
-export async function releaseCiDispatch(sql: SqlQuery, run: CiRunRecord, computer: HostCiComputer, message: string) {
+/** Uncertain host deliveries retain dispatchHostKey for same-computer retries. */
+export async function releaseCiDispatch(sql: SqlQuery, run: CiRunRecord, computer: HostCiComputer, message: string,
+  options: { clearRetry?: boolean } = {}) {
   const next = CiRunRecordSchema.parse({ ...run, state: 'queued', computer: null, step: null,
-    dispatchRequest: undefined, message: sanitizeCiText(message).slice(0, 2000) })
+    startedAt: null, finishedAt: null,
+    dispatchHostKey: options.clearRetry ? undefined : run.dispatchHostKey ?? computer.key,
+    dispatchAttempts: options.clearRetry ? undefined : run.dispatchAttempts ?? 1,
+    dispatchRequest: undefined, dispatchedAt: undefined, message: sanitizeCiText(message).slice(0, 2000) })
   const saved = await sql.query(`update ci_runs set state=$2, host_key=null, record=$4::jsonb
     where id=$1 and state='starting' and host_key=$3 and record=$5::jsonb`,
   [run.id, next.state, computer.key, serializeCiJson(next), JSON.stringify(run)])
@@ -68,4 +76,17 @@ export function rejectedCiStart(error: unknown) {
   if (!error || typeof error !== 'object' || !('code' in error)) return false
   return ['CI_HOST_BUSY', 'COMPUTER_GITHUB_REQUIRED', 'CI_CLOUD_UNAVAILABLE',
     'BUILD_COMPUTER_DISABLED', 'CI_MIRROR_PRIVATE_DATA'].includes(String(error.code))
+}
+
+/** The request may finish later; its reply cannot settle a ticket after this deadline. */
+export async function requestCiStart<T>(request: () => Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([request(), new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('CI start acknowledgement timed out.')), CI_START_ACK_TIMEOUT_MS)
+      timer.unref()
+    })])
+  } finally {
+    clearTimeout(timer)
+  }
 }
