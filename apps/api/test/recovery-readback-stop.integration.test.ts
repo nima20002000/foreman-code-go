@@ -15,7 +15,7 @@ describe.skipIf(!postgresEnabled)('Run recovery readback through HTTP and authen
       const f = await recoveryFixture(form, () => 'park')
       try {
         f.launch(); const before = await parked(f)
-        await f.restart()
+        await f.restart({ mode: 'crash' })
         const input = { ...scope(f), commandId: randomUUID() }
         const send = async () => {
           if (via === 'mcp') return toolValue(await f.transport.client.callTool({ name: 'run_stop', arguments: input }), f.diagnostics()) as {
@@ -43,7 +43,7 @@ describe.skipIf(!postgresEnabled)('Run recovery readback through HTTP and authen
         expect(after.details[0]!.acceptedResult).toEqual({ status: 'not_accepted' })
         expect(after.details[0]!.reportedResult).toEqual({ outcome: 'canceled' })
         expect(f.provider.counts.attaches).toBe(0)
-        await assertRecoveryReceipts(f, [before.details[0]!.execution.executionId])
+        await assertRecoveryReceipts(f, [before.details[0]!.execution.executionId], { detached: false })
         expect(f.provider.counts.starts).toBe(1); expect(f.provider.counts.sessions).toBe(1)
         expect((await f.base.db.pool.query('select id from runs where workflow_id=$1', [f.base.f.scope.workflowId])).rows).toHaveLength(1)
         expect(f.shutdownErrors).toEqual([])
