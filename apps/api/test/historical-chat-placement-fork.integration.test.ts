@@ -9,7 +9,7 @@ import { historicalChatPlacement, historicalChatSource, forkHistoricalChat,
 const execute = promisify(execFile)
 
 it.each(['failed', 'canceled'] as const)('reports a %s historical chat turn on its first read', async delivery => {
-  vi.useFakeTimers()
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
   const state = structuredClone(agentChatFixtures.failed)
   state.turns[0]!.delivery = delivery
   const read = vi.fn(async () => state)
@@ -23,7 +23,7 @@ it.each(['failed', 'canceled'] as const)('reports a %s historical chat turn on i
 })
 
 it('bounds a pending fake-provider chat turn to fifteen seconds', async () => {
-  vi.useFakeTimers()
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
   let settled = false
   const result = waitForHistoricalChatTurn(async () => agentChatFixtures.active, 'request-1', 'Worker chat fork completion')
     .catch(error => { settled = true; return error as Error })
@@ -45,7 +45,7 @@ it('reports a historical chat read error without polling again', async () => {
 })
 
 it.each(['error', 'unavailable'] as const)('reports a %s historical chat session on its first read', async sessionState => {
-  vi.useFakeTimers()
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] })
   const state = structuredClone(agentChatFixtures.active)
   state.sessionState = sessionState
   state.availability = { canSend: false, reason: 'harness_unavailable', message: 'Native chat was rejected.' }

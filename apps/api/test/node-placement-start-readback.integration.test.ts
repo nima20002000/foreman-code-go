@@ -62,7 +62,7 @@ describe.skipIf(!postgresEnabled)('mixed computer placement readback', () => {
       expect(accepted.accepted).toBe(true)
       expect(accepted.replayed).toBe(false)
       expect(await f.start(via === 'http' ? 'mcp' : 'http', input)).toEqual({ ...accepted, replayed: true })
-      const rootResult = await f.client.callTool({ name: 'source_roots_list', arguments: { workspaceId: input.workspaceId } })
+      const rootResult = await f.client.callTool({ name: 'source_root_list', arguments: { workspaceId: input.workspaceId } })
       expect(rootResult.isError).not.toBe(true)
       const roots = SourceRootListResultSchema.parse(decodeMcpToolResult(rootResult)).items
       const expected = [f.placement.local, f.placement.remote]
