@@ -9,8 +9,6 @@ import { GraphIdSchema, IdSchema } from './schemaPrimitives.js'
 import { WorkflowArtifactOutputsV1Schema } from './workflowArtifactDeclarations.js'
 import { AcceptedProviderAccountBindingSchema } from './providerAccounts.js'
 
-/** v0 interface checkpoint uses wire version 1; unknown versions fail closed. */
-export const PLACEMENT_CONTRACT_VERSION = 1 as const
 export const PlacementDigestSchema = z.string().regex(/^[a-f0-9]{64}$/)
 const Revision = z.string().regex(/^[1-9][0-9]*$/)
 export const MachineReferenceSchema = DeviceProvisioningHostReferenceSchema
@@ -69,7 +67,6 @@ export const AcceptedNodePlacementSchema = z.object({
 })
 /** New execution entry requires policy and revocable device approval; the base schema is immutable history. */
 export const CurrentAcceptedNodePlacementSchema = AcceptedNodePlacementSchema.safeExtend(DeviceExecutionAdmissionFields)
-export type CurrentAcceptedNodePlacement = z.infer<typeof CurrentAcceptedNodePlacementSchema>
 export type AcceptedNodePlacement = z.infer<typeof AcceptedNodePlacementSchema>
 export const DispatchIntentSchema = z.object({
   schemaVersion: z.literal(1), protocolVersion: z.literal(1), mainId: z.uuid(), runId: IdSchema,
@@ -80,9 +77,7 @@ export const DispatchIntentSchema = z.object({
   owner: z.object({ grantId: IdSchema, epoch: Revision }).strict(),
 }).strict()
 export const CurrentDispatchIntentSchema = DispatchIntentSchema.safeExtend(DeviceExecutionAdmissionFields)
-export type CurrentDispatchIntent = z.infer<typeof CurrentDispatchIntentSchema>
 export type DispatchIntent = z.infer<typeof DispatchIntentSchema>
-export const PlacementStatusSchema = z.enum(['unavailable', 'revoked', 'placement_conflict', 'acknowledgment_unknown', 'recovery_required'])
 export const WorkerObservationSchema = z.object({
   schemaVersion: z.literal(1), protocolVersion: z.literal(1), operationId: IdSchema,
   attemptId: IdSchema, executionId: IdSchema, bindingHash: PlacementDigestSchema,

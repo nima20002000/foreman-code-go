@@ -12,7 +12,7 @@ import {
 /** Board-local authoring vocabulary. The Board diffs its local V3 graph into these
  * operations; Agent operations call the Agent service and the complete graph is
  * saved through the shared current definition writer. There is no server draft. */
-export const WorkflowNodeV3Schema = CurrentWorkflowNodeSchema
+const WorkflowNodeV3Schema = CurrentWorkflowNodeSchema
 export type WorkflowNodeV3 = z.infer<typeof WorkflowNodeV3Schema>
 export const GraphDraftOperationV3Schema = z.union([
   z.object({ type: z.literal('workflow.set_worktree'), worktree: WorkflowWorktreeSettingsSchema.nullable() }).strict(),

@@ -4,7 +4,7 @@ import {
 } from './protocol.js'
 import { sameGraphScope, type PublicGraphProjection, type GraphFact } from './graphPrimitives.js'
 
-export type GraphFixtureApplyResult = {
+type GraphFixtureApplyResult = {
   kind: 'applied' | 'duplicate' | 'discarded' | 'reset'
   snapshot: RunGraphSnapshot
   appliedEventIds: string[]

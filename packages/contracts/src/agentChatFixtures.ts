@@ -2,7 +2,7 @@ import type { AgentChatCapabilities, AgentChatState, AgentChatTurn, AgentConvers
 
 /** Frozen NIM-2682 fixtures shared by backend tests and web MSW handlers. Deterministic, no secrets. */
 const at = "2026-09-27T12:00:00.000Z";
-export const agentChatFixtureContext = {
+const agentChatFixtureContext = {
   workspaceId: "workspace-fixture", workflowId: "workflow-fixture", workflowNodeId: "node-coder", agentId: "agent-coder",
 } as const;
 
@@ -14,7 +14,7 @@ export const claudeChatCapabilities: AgentChatCapabilities = {
   harness: "claude", providerVersion: "2.1.128", steer: "unavailable",
   interruptAndSend: true, queueNextTurn: true, resume: true, unavailable: {},
 };
-export const steerUnavailableCapabilities: AgentChatCapabilities = {
+const steerUnavailableCapabilities: AgentChatCapabilities = {
   ...claudeChatCapabilities, steer: "unavailable",
   unavailable: { steer: "Claude cannot add input to a running turn. Queue it or interrupt and send." },
 };

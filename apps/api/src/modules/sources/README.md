@@ -29,7 +29,7 @@ cannot restore the bytes. HTTP and authenticated Operator MCP share this behavio
 
 `resolve` verifies the exact persisted receipt, root and complete accepted source again. Native launch must consume it immediately under the same reconciled ownership and enforce the binding's read-only/exclusive-write harness security. File modes alone do not grant or implement a same-UID sandbox. `createPrivateSourceRepository` generates a new private Git object store adjacent to the verified tree, with no copied hooks, config, credentials, shared `.git`, or source history. CI receives explicit workTree/gitDirectory; the generated commit is separate from sourceCommit and cannot masquerade as the original Git identity.
 
-The committed driver is `runSourceMaterializationFixture` in `acceptanceDriver.ts`. W09-C supplies its authenticated SourceByteReader and W07/W08 authorization callback. The runnable focused local fixture command is:
+The runnable focused local fixture command is:
 
 ```sh
 corepack pnpm --filter @foreman-code/api exec vitest run src/modules/sources/sourceMaterialization.test.ts --maxWorkers=1

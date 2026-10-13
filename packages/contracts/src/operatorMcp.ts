@@ -38,7 +38,7 @@ export const OperatorExecutionSummarySchema = z.object(HarnessExecutionSchema.sh
   id: true, runId: true, workflowNodeId: true, agentId: true, agentConfigurationVersionId: true,
   attempt: true, state: true, createdAt: true, startedAt: true, finishedAt: true,
 }).extend({ failure: ExecutionResultSchema.shape.error, continuedFromExecutionId: z.string().min(1).optional() })
-export const OperatorActivitySummarySchema = z.object({
+const OperatorActivitySummarySchema = z.object({
   id: z.string(), kind: z.string(), title: z.string().max(256), status: z.string().optional(),
   order: z.string(),
 }).strict()
@@ -54,7 +54,7 @@ export const OperatorRunCompactSchema = z.object({
 export const OperatorRunGetResultSchema = z.union([OperatorRunCompactSchema, SavedRunDetailsSchema])
 
 
-export const WorkspaceSummarySchema = z.object({
+const WorkspaceSummarySchema = z.object({
   workspace: ManagedWorkspaceSchema.shape.workspace.pick({ id: true, name: true }),
   revision: ManagedWorkspaceSchema.shape.revision,
   archivedAt: ManagedWorkspaceSchema.shape.archivedAt,
@@ -66,7 +66,7 @@ export const WorkspaceSummaryPageSchema = z.object({
   detail: z.literal('compact'), items: z.array(WorkspaceSummarySchema), pageInfo: ManagementPageInfoSchema,
 }).strict()
 
-export const WorkflowSummarySchema = SavedManagedWorkflowSchema.omit({ workflow: true }).extend({
+const WorkflowSummarySchema = SavedManagedWorkflowSchema.omit({ workflow: true }).extend({
   workflow: z.object({
     id: SavedManagedWorkflowSchema.shape.workflow.shape.id,
     workspaceId: SavedManagedWorkflowSchema.shape.workflow.shape.workspaceId,

@@ -5,12 +5,12 @@ import { IdSchema } from './schemaPrimitives.js'
 /** Tracked files one approved source snapshot may hold; the manifest's 2 MiB metadata budget still applies. */
 export const SOURCE_ENTRY_LIMIT = 8192
 export const SourceHashSchema = z.string().regex(/^[a-f0-9]{64}$/)
-export const SourceEntrySchema = z.object({
+const SourceEntrySchema = z.object({
   path: z.string().min(1).max(1024), kind: z.literal('file'),
   byteSize: z.number().int().nonnegative().max(16 * 1024 * 1024),
   sha256: SourceHashSchema, executable: z.boolean(),
 }).strict()
-export const SourceGitMetadataSchema = z.object({
+const SourceGitMetadataSchema = z.object({
   byteSize: z.number().int().positive().max(16 * 1024 * 1024), sha256: SourceHashSchema,
 }).strict()
 export const SourceManifestSchema = z.object({

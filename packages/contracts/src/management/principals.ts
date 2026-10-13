@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { IdSchema, TimestampSchema } from '../schemaPrimitives.js'
 
-export const ManagementAudienceSchema = z.enum(["operator", "worker", "user"]);
+const ManagementAudienceSchema = z.enum(["operator", "worker", "user"]);
 export type ManagementAudience = z.infer<typeof ManagementAudienceSchema>;
 
 export const ManagementActionSchema = z.enum([
@@ -70,7 +70,7 @@ export const DEFAULT_MANAGEMENT_ACTIONS = ManagementActionSchema.options.filter(
     && action !== 'provider_accounts:read' && action !== 'provider_accounts:manage',
 );
 
-export const ManagementScopeSchema = z
+const ManagementScopeSchema = z
   .object({
     workspaceIds: z.array(IdSchema).max(500).optional(),
     workflowIds: z.array(IdSchema).max(500).optional(),
@@ -112,4 +112,3 @@ export const ManagementPrincipalSchema = z
     }
   });
 export type ManagementPrincipal = z.infer<typeof ManagementPrincipalSchema>;
-

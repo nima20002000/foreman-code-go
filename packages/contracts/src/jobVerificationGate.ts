@@ -3,10 +3,10 @@ import { JobDefinitionSourceSchema } from './jobs.js'
 import { JobVerificationPassSchema, JobVerificationSuiteSchema } from './jobVerification.js'
 import { IdSchema } from './schemaPrimitives.js'
 
-export const JobVerificationGateOutcomeSchema = z.enum([
+const JobVerificationGateOutcomeSchema = z.enum([
   'queued', 'running', 'awaiting-approval', 'failed', 'cancelled', 'timed_out', 'incomplete', 'passed',
 ])
-export const JobVerificationGatePlanSchema = z.object({
+const JobVerificationGatePlanSchema = z.object({
   schemaVersion: z.literal(1),
   workflowId: IdSchema,
   workflowVersionId: IdSchema,
@@ -65,4 +65,3 @@ export const JobVerificationGateResultSchema = z.object({
     context.addIssue({ code: 'custom', message: 'A gate passes only when every required suite Job passes.' })
   }
 })
-export type JobVerificationGateResult = z.infer<typeof JobVerificationGateResultSchema>

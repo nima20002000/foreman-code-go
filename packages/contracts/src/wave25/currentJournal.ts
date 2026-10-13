@@ -30,7 +30,7 @@ export const CurrentJournalStopSchema = z.object({
   receipt: z.object({ runId: GraphIdSchema, status: z.enum(['accepted', 'already_terminal', 'not_owner']),
     processStopped: z.literal(false) }).strict().optional(),
 }).strict()
-export const CurrentJournalAgentPinSchema = z.object({
+const CurrentJournalAgentPinSchema = z.object({
   agentId: GraphIdSchema, metadataRevision: z.number().int().nonnegative().nullable(),
   configurationVersionId: GraphIdSchema.nullable(),
 }).strict()

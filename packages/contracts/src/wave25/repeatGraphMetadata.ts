@@ -26,16 +26,15 @@ export function sameCanonicalGraphScope(a: CanonicalRunGraphScope, b: CanonicalR
 export const REPEAT_GRAPH_LIMITS = Object.freeze({
   occurrences: 2000, executions: 16000, resolutions: 16000, bindings: 16001, decisions: 2000,
 })
-export const RepeatGraphRefV3Schema = z.object({
+const RepeatGraphRefV3Schema = z.object({
   nodeId: GraphIdSchema, occurrence: RepeatOccurrenceIdentityV1Schema.nullable(),
 }).strict()
-export type RepeatGraphRefV3 = z.infer<typeof RepeatGraphRefV3Schema>
 export const RepeatGraphExecutionIdentityV3Schema = extendGraphExecutionIdentitySchema({
   // Null is the outside DAG. Never replace it with a technical-attempt ordinal.
   occurrence: RepeatOccurrenceIdentityV1Schema.nullable(),
 })
-export type RepeatGraphExecutionIdentityV3 = z.infer<typeof RepeatGraphExecutionIdentityV3Schema>
-export const RepeatGraphRunStateV3Schema = GraphRunStateSchema
+type RepeatGraphExecutionIdentityV3 = z.infer<typeof RepeatGraphExecutionIdentityV3Schema>
+const RepeatGraphRunStateV3Schema = GraphRunStateSchema
 export const RepeatGraphExecutionV3Schema = z.object({
   identity: RepeatGraphExecutionIdentityV3Schema, inputDigest: GraphDigestSchema,
   /** Present only for the new versioned work-handoff policy. */
@@ -87,7 +86,7 @@ export const RepeatGraphBindingV3Schema = z.object({
   }
 })
 export type RepeatGraphBindingV3 = z.infer<typeof RepeatGraphBindingV3Schema>
-export const RepeatGraphResultV3Schema = z.object({
+const RepeatGraphResultV3Schema = z.object({
   execution: RepeatGraphExecutionIdentityV3Schema, resultDigest: GraphDigestSchema,
 }).strict()
 export const RepeatGraphFactV3Schema = z.discriminatedUnion('type', [
@@ -135,12 +134,12 @@ export const RepeatGraphEventContentV3Schema = z.object({
     context.addIssue({ code: 'custom', message: 'Exchange retirement requires durable settlement evidence.' })
   }
 })
-export const RepeatGraphEventV3Schema = RepeatGraphEventContentV3Schema.superRefine((event, context) => {
+const RepeatGraphEventV3Schema = RepeatGraphEventContentV3Schema.superRefine((event, context) => {
   if (graphJsonBytes(event) > RUN_GRAPH_LIMITS.eventBytes) context.addIssue({ code: 'custom', message: 'REPEAT_GRAPH_EVENT_TOO_LARGE' })
 })
 export type RepeatGraphEventV3 = z.infer<typeof RepeatGraphEventV3Schema>
 
-export function repeatGraphFactIdentities(fact: RepeatGraphFactV3 | GraphFact | { type: 'workflow.presentation'; delta: z.infer<typeof PublicGraphDeltaSchema> }): RepeatGraphExecutionIdentityV3[] {
+function repeatGraphFactIdentities(fact: RepeatGraphFactV3 | GraphFact | { type: 'workflow.presentation'; delta: z.infer<typeof PublicGraphDeltaSchema> }): RepeatGraphExecutionIdentityV3[] {
   switch (fact.type) {
     case 'repeat.execution': return [fact.execution.identity]
     case 'repeat.result.accepted': return [fact.result.execution]
@@ -214,11 +213,11 @@ export const RepeatGraphResetV3Schema = z.object({
   }
 })
 export type RepeatGraphResetV3 = z.infer<typeof RepeatGraphResetV3Schema>
-export const RepeatGraphEventsResponseV3Schema = z.discriminatedUnion('kind', [RepeatGraphPageV3Schema, RepeatGraphResetV3Schema])
+const RepeatGraphEventsResponseV3Schema = z.discriminatedUnion('kind', [RepeatGraphPageV3Schema, RepeatGraphResetV3Schema])
 export const RepeatGraphReadRequestV3Schema = z.object({ protocolVersion: z.literal(1), scope: RepeatGraphScopeV3Schema }).strict()
 export const RepeatGraphEventsRequestV3Schema = RepeatGraphReadRequestV3Schema.extend({ afterSequence: GraphSequenceSchema }).strict()
-export const RepeatGraphHttpSnapshotQueryV3Schema = z.object({ workflowVersionId: GraphIdSchema, executionSemanticsVersion: z.literal('3') }).strict()
-export const RepeatGraphHttpEventsQueryV3Schema = RepeatGraphHttpSnapshotQueryV3Schema.extend({ afterSequence: GraphSequenceSchema }).strict()
+const RepeatGraphHttpSnapshotQueryV3Schema = z.object({ workflowVersionId: GraphIdSchema, executionSemanticsVersion: z.literal('3') }).strict()
+const RepeatGraphHttpEventsQueryV3Schema = RepeatGraphHttpSnapshotQueryV3Schema.extend({ afterSequence: GraphSequenceSchema }).strict()
 
 export const RepeatGraphStateV3Schema = z.object({
   ...PublicGraphProjectionSchema.shape,
@@ -320,7 +319,7 @@ export const RepeatGraphStateV3Schema = z.object({
   }
 })
 export type RepeatGraphStateV3 = z.infer<typeof RepeatGraphStateV3Schema>
-export const RepeatGraphTopologyV3Schema = PublicGraphTopologySchema.safeExtend({
+const RepeatGraphTopologyV3Schema = PublicGraphTopologySchema.safeExtend({
   repeat: RepeatPlanV1Schema.optional(),
   nodes: z.array(z.union(PublicGraphTopologySchema.shape.nodes.element.options.map(schema=>schema.extend({
     choice: z.object({ outcomes: z.array(z.object({ outcome: ChoiceOutcomeSchema, target: ChoiceTargetSchema }).strict())
@@ -332,7 +331,7 @@ export const RepeatGraphTopologyV3Schema = PublicGraphTopologySchema.safeExtend(
     context.addIssue({ code: 'custom', message: 'REPEAT_GRAPH_TOPOLOGY_CONFLICT' })
   }
 })
-export type RepeatGraphTopologyV3 = z.infer<typeof RepeatGraphTopologyV3Schema>
+type RepeatGraphTopologyV3 = z.infer<typeof RepeatGraphTopologyV3Schema>
 const RepeatGraphSnapshotBaseV3Schema = z.object({
   kind: z.enum(['snapshot', 'current']), protocolVersion: z.literal(1), scope: RepeatGraphScopeV3Schema,
   asOfSequence: GraphSequenceSchema, retentionFloor: GraphSequenceSchema,

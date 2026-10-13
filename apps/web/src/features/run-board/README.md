@@ -194,12 +194,6 @@ corepack pnpm build
 # Also run the repository's integration/acceptance gates where services exist.
 ```
 
-The independently runnable smoke check requires only the repository's Node runtime:
-
-```sh
-node --experimental-strip-types --test apps/web/src/features/run-board/source.smoke.mjs
-```
-
 At 320px the CSS constrains the viewport, offers pan/zoom/Fit, and avoids a minimum
 board width. The test simulates a 320px container; it does **not** prove actual
 browser layout. Native browser verification is still required.

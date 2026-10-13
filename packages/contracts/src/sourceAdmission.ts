@@ -4,10 +4,12 @@ import { IdSchema } from './schemaPrimitives.js'
 import { SOURCE_ENTRY_LIMIT, SourceManifestSchema, SourceHashSchema, RootBindingSchema, MaterializationReceiptSchema } from './sourceMaterialization.js'
 import { RootFilesystemIdentitySchema } from './workspaceRootPolicies.js'
 
-export const SourceActionSchema = z.enum(['sources:read', 'sources:approve', 'sources:reconcile', 'source_roots:read', 'source_roots:bind'])
-export const SourceToolNameSchema = z.enum(['source_list', 'source_get', 'source_approve', 'source_root_bind', 'source_root_get', 'source_root_list', 'source_preparation_get', 'source_preparation_reconcile'])
-export type SourceAction = z.infer<typeof SourceActionSchema>
-export type SourceToolName = z.infer<typeof SourceToolNameSchema>
+export type SourceAction =
+  | 'sources:read'
+  | 'sources:approve'
+  | 'sources:reconcile'
+  | 'source_roots:read'
+  | 'source_roots:bind'
 export const SourcePinSchema = z.object({ approvedSourceId: z.uuid(), snapshotId: z.uuid(), manifestDigest: SourceHashSchema }).strict()
 export type ApprovedSourcePin = z.infer<typeof SourcePinSchema>
 export const SourceApproveInputSchema = z.object({ workspaceId: IdSchema, commandId: z.string().min(8).max(200),
@@ -17,7 +19,6 @@ export const SourceApproveInputSchema = z.object({ workspaceId: IdSchema, comman
 }).strict().refine(input => (input.approvedPaths !== undefined) !== (input.approveTrackedTree === true), {
   message: 'Provide approvedPaths or approveTrackedTree: true, but not both.',
 })
-export type SourceApproveInput = z.infer<typeof SourceApproveInputSchema>
 export const ApprovedSourceSchema = z.object({ version: z.literal(1), workspaceId: IdSchema, ownerPrincipalId: IdSchema,
   approvedByPrincipalId: IdSchema, locationRevision: z.number().int().nonnegative(),
   mainId: z.uuid(), originIdentityHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
@@ -29,11 +30,11 @@ export const SourceGetInputSchema = z.object({ workspaceId: IdSchema, ...SourceP
 export const SourceListInputSchema = z.object({ workspaceId: IdSchema, limit: z.number().int().positive().max(100).default(100),
   afterSnapshotId: z.uuid().optional() }).strict()
 export const SourceListResultSchema = z.object({ items: z.array(ApprovedSourceSchema).max(100), nextSnapshotId: z.uuid().nullable() }).strict()
-export const SourceHostSchema = z.discriminatedUnion('kind', [
+const SourceHostSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('main'), mainId: z.uuid() }).strict(),
   z.object({ kind: z.literal('device'), mainId: z.uuid(), deviceId: z.uuid() }).strict(),
 ])
-export const SourceRootSelectionSchema = z.object({ hostRef: SourceHostSchema, rootPolicyId: IdSchema,
+const SourceRootSelectionSchema = z.object({ hostRef: SourceHostSchema, rootPolicyId: IdSchema,
   rootPolicyRevision: z.string().regex(/^[1-9][0-9]*$/), locationRevision: z.string().regex(/^[1-9][0-9]*$/),
 }).strict()
 export type SourceRootSelection = z.infer<typeof SourceRootSelectionSchema>
@@ -41,7 +42,6 @@ export const SourceRootBindInputSchema = z.object({ workspaceId: IdSchema, comma
   source: SourcePinSchema, selection: SourceRootSelectionSchema,
   expectedBindingRevision: z.number().int().nonnegative(), accessMode: z.enum(['read-only', 'exclusive-write']),
 }).strict()
-export type SourceRootBindInput = z.infer<typeof SourceRootBindInputSchema>
 export const SourceRootRecordSchema = z.object({ version: z.literal(1), source: SourcePinSchema,
   selection: SourceRootSelectionSchema, binding: RootBindingSchema, ownerPrincipalId: IdSchema,
   authorizedByPrincipalId: IdSchema, registration: z.object({ workerInstallationId: z.uuid(), keyRevision: z.number().int().positive(), authorizationRevision: z.number().int().positive() }).strict().nullable(), attestationId: IdSchema, attestationDigest: SourceHashSchema,
@@ -82,7 +82,6 @@ export const SourcePreparationSchema = z.object({ workspaceId: IdSchema, operati
   reservationId: z.uuid(), reservationState: z.enum(['preparing', 'owned', 'uncertain', 'retained', 'reclaimed']),
   reservedBytes: z.number().int().nonnegative(), materializationId: z.uuid().nullable(), closure: SourcePreparationClosureSchema.nullable(),
 }).strict()
-export type SourcePreparation = z.infer<typeof SourcePreparationSchema>
 export const SourcePreparationReconcileResultSchema = z.object({ value: SourcePreparationSchema, replayed: z.boolean() }).strict()
 
 export const SourceRootListInputSchema = z.object({ workspaceId: IdSchema, limit: z.number().int().positive().max(100).default(100) }).strict()
@@ -93,7 +92,6 @@ export const SourceCwdAttestationSchema = z.object({ version: z.literal(1), mate
   relativeCwd: z.string().max(1024), canonicalCwd: z.string().startsWith('/'), filesystem: RootFilesystemIdentitySchema,
   directoryIdentityHash: SourceHashSchema, accessMode: z.enum(['read-only', 'exclusive-write']), attestationDigest: SourceHashSchema,
 }).strict()
-export type SourceCwdAttestation = z.infer<typeof SourceCwdAttestationSchema>
 
 export const VerifiedSourceWorkingTreeSchema = z.object({ materializationId: z.uuid(), materializationDigest: SourceHashSchema,
   canonicalProjectRoot: z.string().startsWith('/'), canonicalCwd: z.string().startsWith('/'), directoryIdentityHash: SourceHashSchema,

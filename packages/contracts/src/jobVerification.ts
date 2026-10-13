@@ -17,12 +17,12 @@ import {
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 import { JobDependencyBasisSchema } from './jobVerificationSeed.js'
 
-export const JOB_VERIFICATION_SUITES = [
+const JOB_VERIFICATION_SUITES = [
   'install', 'typecheck', 'lint', 'unit', 'build', 'integration', 'browser', 'native-acceptance', 'full-gate-local',
 ] as const
 export const JobVerificationSuiteSchema = z.enum(JOB_VERIFICATION_SUITES)
 /** One slice of a suite's integration files: a CI run split across computers runs each slice as its own Job. */
-export const JobVerificationPartitionSchema = z.object({
+const JobVerificationPartitionSchema = z.object({
   index: DeviceSafeIntegerSchema, count: DeviceSafeIntegerSchema.min(2).max(12),
 }).strict().refine(value => value.index < value.count, 'The partition index must be below its count.')
 export const JobVerificationParametersSchema = z.object({
@@ -30,7 +30,7 @@ export const JobVerificationParametersSchema = z.object({
   integrationShards: DeviceSafeIntegerSchema.min(1).max(64),
   partition: JobVerificationPartitionSchema.optional(),
 }).strict()
-export const JobVerificationOutputSchema = JobOutputSpecSchema.extend({
+const JobVerificationOutputSchema = JobOutputSpecSchema.extend({
   kind: z.enum(['suite-summary', 'junit', 'vitest-json', 'logs-archive', 'traces-archive']),
   maxBytes: DeviceSafeIntegerSchema.positive(),
 }).strict().superRefine((output, context) => {
@@ -49,7 +49,7 @@ export const JobVerificationOutputsSchema = z.array(JobVerificationOutputSchema)
       context.addIssue({ code: 'custom', message: 'Declare unique paths and one required suite summary.' })
     }
   })
-export const JobVerificationRequestSchema = z.object({
+const JobVerificationRequestSchema = z.object({
   suite: JobVerificationSuiteSchema,
   parameters: JobVerificationParametersSchema,
   resources: JobResourceRequestSchema,
@@ -63,7 +63,7 @@ export const JobVerificationRequestSchema = z.object({
 })
 
 export const JobOrdinaryVerificationSuiteSchema = z.enum(['install', 'typecheck', 'lint', 'unit', 'build', 'integration'])
-export const JobVerificationTemplateSchema = z.object({
+const JobVerificationTemplateSchema = z.object({
   profileId: IdSchema,
   hostRef: JobTargetSchema.shape.hostRef.optional(),
   profileRevision: DeviceSafeIntegerSchema.positive(),
@@ -94,7 +94,7 @@ export const JobVerificationTemplateSchema = z.object({
     context.addIssue({ code: 'custom', message: 'Template parameters must fit the qualified worker allowance.' })
   }
 })
-export type JobVerificationTemplate = z.infer<typeof JobVerificationTemplateSchema>
+type JobVerificationTemplate = z.infer<typeof JobVerificationTemplateSchema>
 
 export function jobVerificationTemplate(input: Omit<JobVerificationTemplate, 'argv' | 'outputs' | 'parameters' | 'setupIssue'>) {
   const reportBytes = Math.floor(input.policy.maxOutputBytes / 4)
@@ -151,7 +151,7 @@ function validateVerificationPolicy(
 }
 export const ResolvedVerificationJobSpecSchema = ResolvedVerificationSpec.superRefine(validateVerificationPolicy)
 export const AutoVerificationJobSpecSchema = AutoVerificationSpec.superRefine(validateVerificationPolicy)
-export const VerificationJobSpecSchema = z.union([
+const VerificationJobSpecSchema = z.union([
   ResolvedVerificationJobSpecSchema, AutoVerificationJobSpecSchema,
 ])
 export const VerificationJobDefinitionSchema = JobDefinitionSchema.extend({
@@ -164,7 +164,7 @@ export const JobDefinitionSaveRecordSchema = JobDefinitionSaveSchema.extend({ sp
 export const ResolvedJobDefinitionSpecRecordSchema = z.union([
   ResolvedJobDefinitionSpecSchema, ResolvedVerificationJobSpecSchema,
 ])
-export const PreparedVerificationJobSpecSchema = z.object({
+const PreparedVerificationJobSpecSchema = z.object({
   ...ResolvedVerificationSpec.shape,
   source: PreparedJobSpecSchema.shape.source,
   computerSelection: PreparedJobSpecSchema.shape.computerSelection,
@@ -249,7 +249,7 @@ export const JobVerificationReportSchema = z.object({
   }
 })
 
-export const JobVerificationReportIdentitySchema = z.object({
+const JobVerificationReportIdentitySchema = z.object({
     commit: JobVerificationReportSchema.shape.commit, manifestDigest: DeviceDigestSchema,
     definitionVersionId: IdSchema, suite: JobVerificationSuiteSchema, executionId: IdSchema, attemptId: IdSchema,
     target: JobTargetSchema, profile: JobVerificationProfileIdentitySchema,
@@ -282,7 +282,6 @@ export const JobVerificationPassSchema = z.object({
   validateReportIdentity(value, context)
 })
 export type JobVerificationReport = z.infer<typeof JobVerificationReportSchema>
-export type VerificationJobSpec = z.infer<typeof VerificationJobSpecSchema>
 export type AcceptedVerificationJobSpec = z.infer<typeof AcceptedVerificationJobSpecSchema>
 export type JobDefinitionRecord = z.infer<typeof JobDefinitionRecordSchema>
 export type JobDefinitionSpecRecord = z.infer<typeof JobDefinitionSpecRecordSchema>
@@ -310,7 +309,7 @@ export function jobPolicyRequirementsRecord(policy: JobAcceptedSpecRecord['polic
   return requirements
 }
 
-export const WorkflowJobCursorSchema = z.object({
+const WorkflowJobCursorSchema = z.object({
   createdAt: z.iso.datetime({ offset: true }),
   id: z.string().min(1),
 }).strict()
@@ -325,4 +324,3 @@ export const WorkflowJobPageSchema = z.object({
   nextCursor: WorkflowJobCursorSchema.nullable(),
 }).strict()
 export type WorkflowJobListInput = z.input<typeof WorkflowJobListInputSchema>
-export type WorkflowJobPage = z.infer<typeof WorkflowJobPageSchema>

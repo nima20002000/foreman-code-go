@@ -12,7 +12,7 @@ export const SelectedRunChatTargetSchema = z.object({
   workspaceId: IdSchema, workflowId: IdSchema, runId: IdSchema, workflowNodeId: GraphIdSchema,
 }).strict();
 export const SelectedRunChatSelectionSchema = SelectedRunChatTargetSchema.extend({ executionId: IdSchema.optional() });
-export const SelectedRunChatExecutionSchema = SelectedRunChatTargetSchema.extend({ executionId: IdSchema });
+const SelectedRunChatExecutionSchema = SelectedRunChatTargetSchema.extend({ executionId: IdSchema });
 export type SelectedRunChatTarget = z.infer<typeof SelectedRunChatTargetSchema>;
 export type SelectedRunChatSelection = z.infer<typeof SelectedRunChatSelectionSchema>;
 export type SelectedRunChatExecution = z.infer<typeof SelectedRunChatExecutionSchema>;
@@ -22,7 +22,6 @@ export const ReadSelectedRunChatRequestSchema = z.object({
   history: AgentChatReadbackQuerySchema.optional(),
   receipts: AgentChatReadbackQuerySchema.optional(),
 }).strict();
-export type ReadSelectedRunChatRequest = z.infer<typeof ReadSelectedRunChatRequestSchema>;
 
 const Selected = z.object({
   kind: z.literal("selected"), selection: SelectedRunChatExecutionSchema,

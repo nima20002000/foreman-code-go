@@ -8,11 +8,11 @@ export * from './workflowArtifactDeclarations.js'
 export const WorkflowArtifactResultEnvelopeV1Schema = z.object({
   data: z.json(), artifactOutputs: WorkflowArtifactResultV1Schema,
 }).strict()
-export type WorkflowArtifactResultEnvelopeV1 = z.infer<typeof WorkflowArtifactResultEnvelopeV1Schema>
+type WorkflowArtifactResultEnvelopeV1 = z.infer<typeof WorkflowArtifactResultEnvelopeV1Schema>
 export const WorkflowChoiceArtifactResultEnvelopeV1Schema = WorkflowArtifactResultEnvelopeV1Schema.extend({
   routing: z.object({ outcome: ChoiceOutcomeSchema }).strict(),
 }).strict()
-export type WorkflowChoiceArtifactResultEnvelopeV1 = z.infer<typeof WorkflowChoiceArtifactResultEnvelopeV1Schema>
+type WorkflowChoiceArtifactResultEnvelopeV1 = z.infer<typeof WorkflowChoiceArtifactResultEnvelopeV1Schema>
 
 export function parseWorkflowArtifactResult(result: unknown, declaration: WorkflowArtifactOutputsV1,
   choice: WorkflowChoice): WorkflowChoiceArtifactResultEnvelopeV1

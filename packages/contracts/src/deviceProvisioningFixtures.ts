@@ -2,7 +2,7 @@ import { DeviceReadinessReadResultSchema, DeviceReadinessSchema, DeviceFixAction
   DeviceProvisioningOperationSchema, DeviceRuntimeApprovalSchema, DevicePairingInstallCreateResultSchema,
   devicePairingInstallCommand, type DeviceReadiness } from './deviceProvisioning.js'
 import type { z } from 'zod'
-import { DEVICE_GIB, DeviceCapacitySchema, DeviceResourcePolicySchema, DeviceResourceReadResultSchema, DeviceResourceErrorSchema, type DeviceReasonCode } from './deviceResources.js'
+import { DEVICE_GIB, DeviceCapacitySchema, DeviceResourcePolicySchema, DeviceResourceReadResultSchema, type DeviceReasonCode } from './deviceResources.js'
 
 // Deterministic contract fixtures, not measurements, credentials, or proof of a real prepared computer.
 const id = '11111111-1111-4111-8111-111111111111'
@@ -39,7 +39,7 @@ const action = (id: z.infer<typeof DeviceFixActionIdSchema>,
   executor: 'worker' | 'human' | 'local-admin' = 'worker') => DeviceFixActionSchema.parse({ id, executor,
   requiredActions: executor === 'worker' && id !== 'apply-resource-policy' ? ['settings:update', 'devices:provision'] : ['settings:update'],
   approvalRequired: executor !== 'worker', disruptive: false, enabled: true, disabledReason: null })
-export const deviceCheckActionFixture = action('check')
+const deviceCheckActionFixture = action('check')
 export const deviceRepairPlanFixture = DeviceRepairPlanSchema.parse({ planId: operationId, target: deviceProvisioningTargetFixture,
   planDigest: digest, expectedGeneration: 1, actionIds: ['prepare-ci-image'], expiresAt, requiredActions: ['settings:update', 'devices:provision'],
   approvalRequirement: 'none', disruptive: false, downloadBytes: DEVICE_GIB, minimumFreeBytes: 8 * DEVICE_GIB,
@@ -112,19 +112,3 @@ const pairing = { schemaVersion: 1, pairingId: operationId, mainId: id, code: 'A
   issuedAt: observedAt, expiresAt: '2026-10-02T18:15:00.000Z', singleUse: true }
 export const devicePairingInstallFixture = DevicePairingInstallCreateResultSchema.parse({ pairing, release,
   installCommand: devicePairingInstallCommand(release, pairing.code) })
-export const deviceProvisioningAccessFixtures = { readOnly: { actions: ['settings:read'], canCheck: false, canUpdate: false, canApplyNow: false },
-  owner: { actions: ['settings:read', 'settings:update', 'devices:provision', 'jobs:cancel'], canCheck: true, canUpdate: true, canApplyNow: true } } as const
-
-export const deviceProvisioningResourceUpdateFixture = { target: deviceProvisioningTargetFixture, commandId: 'fixture-resource-update-1',
-  expectedRevision: 1, expectedCapacityGeneration: 1, limits: { ...deviceResourceLimitsFixture, cpuLimit: 6 }, applyMode: 'when-idle' as const }
-export const deviceResourceErrorFixtures = {
-  denied: { status: 403, body: DeviceResourceErrorSchema.parse({ error: { code: 'permission_denied', fieldIssues: [],
-    currentRevision: null, currentCapacityGeneration: null, remedy: 'request_permission' } }) },
-  revisionConflict: { status: 409, body: DeviceResourceErrorSchema.parse({ error: { code: 'revision_conflict', fieldIssues: [],
-    currentRevision: 2, currentCapacityGeneration: 1, remedy: 'refresh' } }) },
-  capacityConflict: { status: 409, body: DeviceResourceErrorSchema.parse({ error: { code: 'capacity_conflict', fieldIssues: [],
-    currentRevision: 1, currentCapacityGeneration: 2, remedy: 'refresh' } }) },
-  diskBelowUsage: { status: 422, body: DeviceResourceErrorSchema.parse({ error: { code: 'invalid_limits',
-    fieldIssues: [{ field: 'diskBytes', code: 'below_retained_usage', remedy: 'free_managed_data' }],
-    currentRevision: 1, currentCapacityGeneration: 1, remedy: 'review_limits' } }) },
-} as const

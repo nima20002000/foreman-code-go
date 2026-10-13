@@ -6,7 +6,7 @@ const Identity = z.string().regex(/^sha256:[a-f0-9]{64}$/)
 export const WorkspaceStorageFoldersListInputSchema = z.object({
   cursor: z.string().max(4096).optional(), limit: z.number().int().min(1).max(100).default(5),
 }).strict()
-export const WorkspaceStorageFolderSchema = z.object({
+const WorkspaceStorageFolderSchema = z.object({
   name: z.string(), path: Path, identity: Identity,
   deletion: z.discriminatedUnion('status', [
     z.object({ status: z.literal('available') }).strict(),

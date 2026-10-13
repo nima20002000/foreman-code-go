@@ -3,16 +3,16 @@ import { DeviceProvisioningTargetSchema } from './deviceResources.js'
 import { IdSchema } from './schemaPrimitives.js'
 
 export const COMPUTER_SYNC_NAMESPACE = 'computer-sync-v1'
-export const SyncthingDeviceIdSchema = z.string().regex(/^[A-Z2-7]{7}(?:-[A-Z2-7]{7}){7}$/)
+const SyncthingDeviceIdSchema = z.string().regex(/^[A-Z2-7]{7}(?:-[A-Z2-7]{7}){7}$/)
 export const TailscaleAddressSchema = z.ipv4().refine(value => {
   const octets = value.split('.').map(Number)
   return /^\d+\.\d+\.\d+\.\d+$/u.test(value) && octets.length === 4
     && octets.every(octet => octet >= 0 && octet <= 255) && octets[0] === 100
     && octets[1]! >= 64 && octets[1]! <= 127
 }, 'A Tailscale IPv4 address is required')
-export const SyncPeerSchema = z.object({ deviceId: SyncthingDeviceIdSchema, address: TailscaleAddressSchema }).strict()
+const SyncPeerSchema = z.object({ deviceId: SyncthingDeviceIdSchema, address: TailscaleAddressSchema }).strict()
 export const SyncIdentitySchema = SyncPeerSchema.extend({ rootPath: z.string().startsWith('/') }).strict()
-export const SyncFolderStateSchema = z.object({
+const SyncFolderStateSchema = z.object({
   workspaceId: IdSchema,
   path: z.string().startsWith('/'),
   state: z.enum(['idle', 'syncing', 'error']),
@@ -46,7 +46,6 @@ export const ComputerSyncStatusSchema = z.object({
     revision: z.number().int().nonnegative(), status: SyncFolderStateSchema.nullable(),
   }).strict()),
 }).strict()
-export type SyncPeer = z.infer<typeof SyncPeerSchema>
 export type SyncIdentity = z.infer<typeof SyncIdentitySchema>
 export type SyncComputerRequest = z.infer<typeof SyncComputerRequestSchema>
 export type SyncComputerState = z.infer<typeof SyncComputerStateSchema>

@@ -46,10 +46,9 @@ export const JobVerificationOfflineSeedReceiptSchema = z.object({
     context.addIssue({ code: 'custom', message: 'Offline seed must retain reviewed inputs, bounded inventories and mature releases.' })
   }
 })
-export type JobVerificationOfflineSeedReceipt = z.infer<typeof JobVerificationOfflineSeedReceiptSchema>
 
 /** Files whose bytes decide the offline dependency seed: the workspace manifests, lockfile and policy. */
-export function isJobDependencyInputPath(path: string): boolean {
+function isJobDependencyInputPath(path: string): boolean {
   return ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'].includes(path)
     || /^(?:apps|packages)\/[^/]+\/package\.json$/.test(path)
 }

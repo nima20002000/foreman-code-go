@@ -54,7 +54,7 @@ export const DeviceResourceLimitsSchema = z.object({
   pidsLimit: DeviceSafeIntegerSchema.positive(),
 }).strict()
 export type DeviceResourceLimits = z.infer<typeof DeviceResourceLimitsSchema>
-export const DeviceStorageCapacitySchema = z.object({
+const DeviceStorageCapacitySchema = z.object({
   volumeId: z.uuid(), filesystem: z.literal('ext4'), mountIdentityDigest: DeviceDigestSchema,
   volumeCapacityBytes: DeviceSafeIntegerSchema.positive(), usableBytes: DeviceSafeIntegerSchema,
   hostFreeBytes: DeviceSafeIntegerSchema, reservedHostBytes: DeviceSafeIntegerSchema,
@@ -97,7 +97,7 @@ export const DeviceCapacitySchema = z.object({
       ctx.addIssue({ code: 'custom', path: ['minimum', field], message: 'Minimum must fit capacity and retain the control reserve.' })
   }
 })
-export type DeviceCapacity = z.infer<typeof DeviceCapacitySchema>
+type DeviceCapacity = z.infer<typeof DeviceCapacitySchema>
 /** Defaults are rounded down to supported increments, never capped at the old 4 CPU/6 GiB defaults. */
 export function defaultDeviceResourceLimits(input: DeviceCapacity): DeviceResourceLimits | null {
   const capacity = DeviceCapacitySchema.parse(input)
@@ -113,13 +113,14 @@ export function defaultDeviceResourceLimits(input: DeviceCapacity): DeviceResour
   }
   return deviceResourceLimitIssues(limits, capacity).length ? null : DeviceResourceLimitsSchema.parse(limits)
 }
-export const DeviceResourceFieldSchema = z.enum(['cpuLimit', 'memoryBytes', 'diskBytes', 'pidsLimit'])
-export const DeviceResourceFieldIssueSchema = z.object({ field: DeviceResourceFieldSchema,
-  code: z.enum(['invalid_increment', 'below_minimum', 'over_capacity', 'below_retained_usage']),
-  remedy: z.enum(['choose_supported_increment', 'raise_limit', 'lower_limit', 'free_managed_data']),
-}).strict()
-export function deviceResourceLimitIssues(limits: DeviceResourceLimits, capacity: DeviceCapacity): z.infer<typeof DeviceResourceFieldIssueSchema>[] {
-  const issues: z.infer<typeof DeviceResourceFieldIssueSchema>[] = []
+const DeviceResourceFieldSchema = z.enum(['cpuLimit', 'memoryBytes', 'diskBytes', 'pidsLimit'])
+type DeviceResourceFieldIssue = {
+  field: z.infer<typeof DeviceResourceFieldSchema>
+  code: 'invalid_increment' | 'below_minimum' | 'over_capacity' | 'below_retained_usage'
+  remedy: 'choose_supported_increment' | 'raise_limit' | 'lower_limit' | 'free_managed_data'
+}
+export function deviceResourceLimitIssues(limits: DeviceResourceLimits, capacity: DeviceCapacity): DeviceResourceFieldIssue[] {
+  const issues: DeviceResourceFieldIssue[] = []
   for (const field of DeviceResourceFieldSchema.options) {
     if (!DeviceResourceLimitsSchema.shape[field].safeParse(limits[field]).success)
       issues.push({ field, code: 'invalid_increment', remedy: 'choose_supported_increment' })
@@ -130,7 +131,7 @@ export function deviceResourceLimitIssues(limits: DeviceResourceLimits, capacity
     issues.push({ field: 'diskBytes', code: 'below_retained_usage', remedy: 'free_managed_data' })
   return issues
 }
-export const DeviceResourceApplyModeSchema = z.enum(['when-idle', 'stop-jobs-and-apply'])
+const DeviceResourceApplyModeSchema = z.enum(['when-idle', 'stop-jobs-and-apply'])
 export const DeviceResourcePolicySchema = z.object({
   schemaVersion: z.literal(1), target: DeviceProvisioningTargetSchema, revision: DeviceRevisionSchema, policyDigest: DeviceDigestSchema,
   desired: DeviceResourceLimitsSchema, effective: DeviceResourceLimitsSchema.nullable(), effectiveRevision: DeviceRevisionSchema.nullable(),
@@ -150,8 +151,6 @@ export const DeviceResourcePolicySchema = z.object({
   if (['failed', 'recovery-required'].includes(value.applyState) && !value.errorCode)
     ctx.addIssue({ code: 'custom', path: ['errorCode'], message: 'Failed application needs a safe reason.' })
 })
-export type DeviceResourcePolicy = z.infer<typeof DeviceResourcePolicySchema>
-export const DeviceResourceReadRequestSchema = z.object({ target: DeviceProvisioningTargetSchema }).strict()
 export const DeviceResourceReadResultSchema = z.object({ policy: DeviceResourcePolicySchema.nullable(), capacity: DeviceCapacitySchema.nullable() }).strict()
   .superRefine((value, ctx) => {
     if (value.policy && value.capacity && !sameDeviceProvisioningTarget(value.policy.target, value.capacity.target))
@@ -170,19 +169,8 @@ export const DeviceResourceUpdateResultSchema = z.object({ policy: DeviceResourc
 export const DeviceResourceApplyNowSchema = z.object({ target: DeviceProvisioningTargetSchema, commandId: DeviceCommandIdSchema,
   expectedRevision: DeviceRevisionSchema, expectedCapacityGeneration: DeviceRevisionSchema, stopJobs: z.literal(true),
 }).strict()
-export const DeviceResourceApplyNowResultSchema = DeviceResourceUpdateResultSchema
-export const DeviceResourceErrorSchema = z.object({ error: z.object({
-  code: z.enum(['permission_denied', 'revision_conflict', 'capacity_conflict', 'invalid_limits', 'unsupported', 'device_unavailable', 'command_conflict']),
-  fieldIssues: z.array(DeviceResourceFieldIssueSchema).max(8), currentRevision: DeviceSafeIntegerSchema.nullable(),
-  currentCapacityGeneration: DeviceRevisionSchema.nullable(), remedy: z.enum(['request_permission', 'refresh', 'review_limits', 'finish_local_setup', 'retry_original_command']),
-}).strict() }).strict()
 /** Immutable acceptance facts. Optional historical pairs must never be interpreted as enforced policy. */
 export const DeviceResourceAdmissionSchema = z.object({ resourcePolicyRevision: DeviceRevisionSchema, resourcePolicyDigest: DeviceDigestSchema }).strict()
-export const DeviceResourceAdmissionFields = DeviceResourceAdmissionSchema.shape
-export type DeviceResourceAdmission = z.infer<typeof DeviceResourceAdmissionSchema>
-export type DeviceResourceUpdate = z.infer<typeof DeviceResourceUpdateSchema>
-export type DeviceResourceApplyNow = z.infer<typeof DeviceResourceApplyNowSchema>
-export type DeviceResourceReadResult = z.infer<typeof DeviceResourceReadResultSchema>
 
 export const DeviceExecutionAdmissionSchema = DeviceResourceAdmissionSchema.extend({
   runtimeApprovalId: z.uuid(), runtimeApprovalRevision: DeviceRevisionSchema,
@@ -192,7 +180,7 @@ export const HistoricalDeviceExecutionAdmissionFields = {
   resourcePolicyRevision: DeviceRevisionSchema.optional(), resourcePolicyDigest: DeviceDigestSchema.optional(),
   runtimeApprovalId: z.uuid().optional(), runtimeApprovalRevision: DeviceRevisionSchema.optional(),
 }
-export type DeviceExecutionAdmission = z.infer<typeof DeviceExecutionAdmissionSchema>
+type DeviceExecutionAdmission = z.infer<typeof DeviceExecutionAdmissionSchema>
 type HistoricalDeviceExecutionAdmission = {
   [Field in keyof DeviceExecutionAdmission]?: DeviceExecutionAdmission[Field] | undefined
 }
@@ -203,9 +191,3 @@ export function validateHistoricalDeviceExecutionAdmission(
   if (fields.some(field => value[field] !== undefined) && fields.some(field => value[field] === undefined))
     ctx.addIssue({ code: 'custom', message: 'Historical admission is absent or retains a complete policy and device approval reference.' })
 }
-export type DeviceStorageCapacity = z.infer<typeof DeviceStorageCapacitySchema>
-export type DeviceResourceReadRequest = z.infer<typeof DeviceResourceReadRequestSchema>
-export type DeviceResourceUpdateResult = z.infer<typeof DeviceResourceUpdateResultSchema>
-export type DeviceResourceApplyNowResult = z.infer<typeof DeviceResourceApplyNowResultSchema>
-export type DeviceResourceFieldIssue = z.infer<typeof DeviceResourceFieldIssueSchema>
-export type DeviceResourceError = z.infer<typeof DeviceResourceErrorSchema>

@@ -4,7 +4,7 @@ import { ClaudeFullAccessConfigurationSchema, ClaudeHarnessConfigurationSchema }
 import { RunStartV3InputSchema } from '../wave25/startRequest.js'
 import { InteractionActivityProjectionSchema } from '../interaction-activity.js'
 import { z } from "zod";
-import { WorkflowDefinitionV3Schema, WorkflowVersionV3Schema, WorkflowRunV3Schema } from "../wave25/workflowSchemas.js";
+import { WorkflowDefinitionV3Schema} from "../wave25/workflowSchemas.js";
 import { AgentActiveTimeoutMsSchema, CurrentWorkflowNodeSchema, CurrentWorkflowRelationshipSchema } from "../wave25/workflowShape.js";
 
 export * from "./extensions.js";
@@ -27,7 +27,6 @@ import {
   HarnessQualificationSchema,
   HarnessConfigurationSchema,
   SupportedHarnessConfigurationSchema,
-  GetRunResponseSchema,
   ExecutionLocationSchema,
   RunActivitySchema,
   ReviewStatusSchema,
@@ -55,7 +54,7 @@ export const LocalHumanAccessSchema = z.object({
   }).strict(),
 }).strict();
 
-export const ManagementHarnessConfigurationSchema = z.discriminatedUnion("harness", [
+const ManagementHarnessConfigurationSchema = z.discriminatedUnion("harness", [
   CodexHarnessConfigurationSchema,
   ClaudeHarnessConfigurationSchema,
 ]);
@@ -66,7 +65,7 @@ export const ManagementHarnessDefaultsSchema = z.object({
 
 import { CommandIdSchema, ExpectedRevisionSchema } from './commands.js';
 export { CommandIdSchema, ExpectedRevisionSchema } from './commands.js';
-export const ManagementPageInputSchema = z
+const ManagementPageInputSchema = z
   .object({
     cursor: z.string().trim().min(1).optional(),
     limit: z.number().int().min(1).max(100).default(50),
@@ -152,7 +151,7 @@ export type WorkspaceBatchArchiveInput = z.infer<typeof WorkspaceBatchArchiveInp
 export const WorkspaceBatchArchiveResultSchema = z.object({
   value: z.object({ workspaceIds: z.array(IdSchema) }).strict(), replayed: z.boolean(),
 }).strict();
-export const WorkspaceLocationAccessModeSchema = z.enum(["read-only", "read-write"]);
+const WorkspaceLocationAccessModeSchema = z.enum(["read-only", "read-write"]);
 export type WorkspaceLocationAccessMode = z.infer<typeof WorkspaceLocationAccessModeSchema>;
 export const WorkspaceLocationValidateInputSchema = z.object({
   ...WorkspaceScopeSchema.shape,
@@ -232,11 +231,9 @@ export const WorkflowOrderSchema = z.object({
 export const WorkflowReorderResultSchema = z.object({
   value: WorkflowOrderSchema, replayed: z.boolean(),
 }).strict();
-export type WorkflowReorderResult = z.infer<typeof WorkflowReorderResultSchema>;
 export const WorkflowBatchArchiveResultSchema = z.object({
   value: z.object({ workflowIds: z.array(IdSchema) }).strict(), replayed: z.boolean(),
 }).strict();
-export type WorkflowCreateInput = z.infer<typeof WorkflowCreateInputSchema>;
 export type WorkflowUpdateInput = z.infer<typeof WorkflowUpdateInputSchema>;
 export type WorkflowArchiveInput = z.infer<typeof WorkflowArchiveInputSchema>;
 
@@ -399,10 +396,9 @@ export const GraphDraftOperationSchema = z.discriminatedUnion("type", [
   EdgeDisconnectOperationSchema,
   ExecutionLimitsOperationSchema,
 ]);
-export type GraphDraftOperation = z.infer<typeof GraphDraftOperationSchema>;
 
 export const StagedAgentSchema = z.object({ agent: AgentSchema, baseRevision: ExpectedRevisionSchema.nullable() }).strict();
-export const GraphDraftRecordFields = {
+const GraphDraftRecordFields = {
   id: IdSchema,
   workspaceId: IdSchema,
   workflowId: IdSchema,
@@ -417,54 +413,11 @@ export const GraphDraftRecordFields = {
   updatedAt: TimestampSchema,
 };
 export const GraphDraftSchema = z.object({ ...GraphDraftRecordFields, graph: WorkflowDefinitionV3Schema }).strict();
-export type GraphDraft = z.infer<typeof GraphDraftSchema>;
-export const GraphDraftEffectSchema = z.discriminatedUnion("code", [
-  z.object({
-    code: z.literal("ENTRY_NODE_CHANGED"),
-    previousEntryNodeId: IdSchema,
-    nextEntryNodeId: IdSchema.nullable(),
-  }).strict(),
-  z.object({
-    code: z.literal("SHARED_AGENT_CHANGED"),
-    agentId: IdSchema,
-    workflowIds: z.array(IdSchema).min(2),
-  }).strict(),
-]);
-export type GraphDraftEffect = z.infer<typeof GraphDraftEffectSchema>;
-export const GraphDraftApplyResultSchema = z.object({
-  draft: GraphDraftSchema,
-  effects: z.array(GraphDraftEffectSchema),
-  previousDraft: GraphDraftSchema.optional(),
-}).strict();
-export const GraphDraftCommandResultSchema = z.object({ value: GraphDraftApplyResultSchema, replayed: z.boolean() }).strict();
 
-export const GraphDraftOpenInputSchema = WorkflowScopeSchema;
-export const GraphDraftGetInputSchema = DraftScopeSchema;
 export const GraphDraftApplyInputSchema = z.object({
   ...DraftScopeSchema.shape,
   ...RevisionMutationFields,
   operations: z.array(GraphDraftOperationSchema).min(1).max(100),
-}).strict();
-export const GraphValidateInputSchema = DraftScopeSchema;
-export const GraphSaveInputSchema = z.object({ ...DraftScopeSchema.shape, ...RevisionMutationFields }).strict();
-export const GraphDraftDiscardInputSchema = z.object({ ...DraftScopeSchema.shape, ...RevisionMutationFields }).strict();
-export const GraphDraftLayoutInputSchema = z.object({
-  ...DraftScopeSchema.shape, ...MutationFields,
-  expectedLayoutRevision: ExpectedRevisionSchema,
-  nodeId: IdSchema,
-  position: NodeMoveOperationSchema.shape.position,
-}).strict();
-export const GraphDraftLayoutResultSchema = z.object({
-  value: z.object({ draftId: IdSchema, layoutRevision: ExpectedRevisionSchema,
-    nodeId: IdSchema, position: NodeMoveOperationSchema.shape.position }).strict(),
-  replayed: z.boolean(),
-}).strict();
-export const GraphDraftRevertAppliedInputSchema = z.object({
-  ...DraftScopeSchema.shape, ...RevisionMutationFields, applyCommandId: IdSchema,
-}).strict();
-export const GraphDraftRevertAppliedResultSchema = z.object({
-  value: z.object({ draft: GraphDraftSchema, revertedApplyCommandId: IdSchema,
-    priorRevision: ExpectedRevisionSchema }).strict(), replayed: z.boolean(),
 }).strict();
 
 export const HarnessDefaultsUpdateInputSchema = z.object({
@@ -585,7 +538,6 @@ export const RepeatCapabilitiesResultSchema = z.object({
     reasons: z.tuple([z.literal("NATIVE_START_NOT_READY"), z.literal("REPEAT_EDIT_INTENT_NOT_READY")]),
   }).strict(),
 }).strict();
-export type RepeatCapabilitiesResult = z.infer<typeof RepeatCapabilitiesResultSchema>;
 
 export const REPEAT_OPERATOR_TOOL_NAMES = [
   "repeat_capabilities_get", "repeat_get", "repeat_update", "repeat_run_get",
@@ -715,13 +667,6 @@ export const GraphValidationResultSchema = z.object({
   valid: z.boolean(),
   issues: z.array(z.object({ code: z.string().trim().min(1), message: z.string().trim().min(1) }).strict()),
 }).strict();
-export const GraphSaveResultSchema = z.object({
-  draft: GraphDraftSchema, version: WorkflowVersionV3Schema,
-  // Returned by the publication transaction, not an optional follow-up read.
-  agents: z.array(ManagedAgentSchema).default([]),
-}).strict();
-export const GraphSaveCommandResultSchema = z.object({ value: GraphSaveResultSchema, replayed: z.boolean() }).strict();
-export const RunStartResultSchema = z.object({ run: WorkflowRunV3Schema, accepted: z.literal(true), replayed: z.boolean() }).strict();
 export const RunStopResultSchema = z.object({
   runId: IdSchema,
   status: z.enum(["accepted", "already_terminal", "not_owner"]),
@@ -729,13 +674,7 @@ export const RunStopResultSchema = z.object({
   processStopped: z.boolean(),
   replayed: z.boolean(),
 }).strict();
-export const RunPageSchema = z.object({ items: z.array(WorkflowRunV3Schema), pageInfo: ManagementPageInfoSchema }).strict();
-export const RunDetailsSchema = GetRunResponseSchema;
 export const RunEventsPageSchema = z.object({ items: z.array(RunActivitySchema), pageInfo: ManagementPageInfoSchema }).strict();
-export const GraphDraftDiscardResultSchema = z.object({
-  value: z.object({ discarded: z.literal(true), draftId: IdSchema, revision: ExpectedRevisionSchema }).strict(),
-  replayed: z.boolean(),
-}).strict();
 export const OperatorCapabilitiesSchema = z.object({
   endpoint: z.literal("/mcp"), audience: z.literal("operator"), protocol: z.literal("2026-07-28"),
   tools: z.array(OperatorToolNameSchema),

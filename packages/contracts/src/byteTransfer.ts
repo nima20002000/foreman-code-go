@@ -2,8 +2,6 @@ import { z } from 'zod'
 import { MAX_FILE_BYTES } from './files.js'
 import { GraphIdSchema } from './schemaPrimitives.js'
 
-export const BYTE_TRANSFER_VERSION = 1
-export const BYTE_TRANSFER_CAPABILITY = 'resumable-binary-transfer-v1'
 export const BYTE_TRANSFER_POLICY = Object.freeze({
   maxChunkBytes: 1024 * 1024, maxSourceBytes: 128 * 1024 * 1024,
   maxArtifactBytes: MAX_FILE_BYTES, maxActivePerDevice: 2, maxActiveGlobal: 4,
@@ -52,7 +50,6 @@ export const RSYNC_STAGE_EXTENSION = Object.freeze({
 export const RsyncTransferAuthorizeRequestSchema = z.object({
   kind: z.literal('rsync-stage-v1'), method: z.literal('transfer-authorize'), transferId: z.uuid(),
 }).strict()
-export type RsyncTransferAuthorizeRequest = z.infer<typeof RsyncTransferAuthorizeRequestSchema>
 
 export const RsyncControlRequestSchema = z.object({
   kind: z.literal('rsync-stage-v1'),
@@ -62,24 +59,9 @@ export const RsyncControlRequestSchema = z.object({
   transferId: z.uuid(),
 }).strict()
 export type RsyncControlRequest = z.infer<typeof RsyncControlRequestSchema>
-export const RsyncWriterPrepareRequestSchema = RsyncControlRequestSchema.extend({ method: z.literal('writer-prepare') }).strict()
-export const RsyncWriterActivateRequestSchema = RsyncControlRequestSchema.extend({ method: z.literal('writer-activate') }).strict()
-export const RsyncWriterStatusRequestSchema = RsyncControlRequestSchema.extend({ method: z.literal('writer-status') }).strict()
-export const RsyncWriterStopRequestSchema = RsyncControlRequestSchema.extend({ method: z.literal('writer-stop') }).strict()
+const RsyncWriterPrepareRequestSchema = RsyncControlRequestSchema.extend({ method: z.literal('writer-prepare') }).strict()
 /** Original server owner reference only; installation and process facts stay local. */
 export const RsyncWriterPrepareResponseSchema = z.object({ transferId: z.uuid(), ownerId: z.uuid(), ownerDigest: Hash }).strict()
-export const RsyncWriterActivateResponseSchema = RsyncWriterActivateRequestSchema
-/** Success means positive original process closure, not a caller-supplied stopped flag. */
-export const RsyncWriterStatusResponseSchema = RsyncWriterStatusRequestSchema
-export const RsyncWriterStopResponseSchema = RsyncWriterStopRequestSchema
-export type RsyncWriterPrepareRequest = z.infer<typeof RsyncWriterPrepareRequestSchema>
-export type RsyncWriterActivateRequest = z.infer<typeof RsyncWriterActivateRequestSchema>
-export type RsyncWriterStatusRequest = z.infer<typeof RsyncWriterStatusRequestSchema>
-export type RsyncWriterStopRequest = z.infer<typeof RsyncWriterStopRequestSchema>
-export type RsyncWriterPrepareResponse = z.infer<typeof RsyncWriterPrepareResponseSchema>
-export type RsyncWriterActivateResponse = z.infer<typeof RsyncWriterActivateResponseSchema>
-export type RsyncWriterStatusResponse = z.infer<typeof RsyncWriterStatusResponseSchema>
-export type RsyncWriterStopResponse = z.infer<typeof RsyncWriterStopResponseSchema>
 export const RsyncControlResponseSchema = z.discriminatedUnion('method', [
   RsyncControlRequestSchema.extend({ method: z.literal('receiver-verify'), receipt: VerifiedTransferReceiptSchema }),
   RsyncWriterPrepareRequestSchema.extend({ ownerId: z.uuid(), ownerDigest: Hash }).strict(),
@@ -88,7 +70,6 @@ export const RsyncControlResponseSchema = z.discriminatedUnion('method', [
 ]).refine(value => value.method !== 'receiver-verify'
   || (value.receipt.transferId === value.transferId && value.receipt.intent.transferId === value.transferId),
 { message: 'Verified receipt must identify the same admitted transfer' })
-export type RsyncControlResponse = z.infer<typeof RsyncControlResponseSchema>
 
 export interface ByteTransferPort {
   start(intent: TransferIntent, context: TransferContext, signal?: AbortSignal): Promise<TransferProgress>

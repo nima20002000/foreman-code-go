@@ -42,7 +42,7 @@ function authoredWorkflowContent<T extends PresentedWorkflow>(graph: T) {
   return { ...content, nodes: graph.nodes.map(executableNodeContent) }
 }
 
-export function executableWorkflowContent<T extends PresentedWorkflow>(graph: T) {
+function executableWorkflowContent<T extends PresentedWorkflow>(graph: T) {
   const authored = authoredWorkflowContent(graph)
   const nodes = authored.nodes.map((node) => {
     const execution = { ...node }

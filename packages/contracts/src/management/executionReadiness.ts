@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-export const ExecutionReadinessScopeSchema = z.enum(['saved-harness-defaults', 'operator-configuration'])
+const ExecutionReadinessScopeSchema = z.enum(['saved-harness-defaults', 'operator-configuration'])
 export const ExecutionReadinessInputSchema = z.object({
   harness: z.enum(['codex', 'claude']),
   scope: ExecutionReadinessScopeSchema.default('saved-harness-defaults'),

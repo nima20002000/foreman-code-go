@@ -126,7 +126,6 @@ export type ScheduleGetResult = z.infer<typeof ScheduleGetResultSchema>;
 export type ScheduleSaveInput = z.infer<typeof ScheduleSaveInputSchema>;
 export type ScheduleSaveResult = z.infer<typeof ScheduleSaveResultSchema>;
 export type ScheduleDisableInput = z.infer<typeof ScheduleDisableInputSchema>;
-export type ScheduleDisableResult = z.infer<typeof ScheduleDisableResultSchema>;
 
 /** Required for a NEW save, after idempotent replay lookup. Never use a caller-supplied clock.
  * Reads and replays must continue to validate after a once schedule's date has passed. */
@@ -181,7 +180,7 @@ const AdmissionInput = z.object({
   /** On recovery, all earlier backlog entries are missed, even if still inside the grace window. */
   isLatestDueOccurrence: z.boolean(),
 }).strict();
-export type ScheduleAdmissionInput = z.infer<typeof AdmissionInput>;
+type ScheduleAdmissionInput = z.infer<typeof AdmissionInput>;
 export type ScheduleAdmissionDecision =
   | { status: "not_due" }
   | { status: "eligible" }

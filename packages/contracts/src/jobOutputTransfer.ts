@@ -36,5 +36,3 @@ export const JobOutputDeviceRequestSchema = z.discriminatedUnion('method', [
  * registration. Replies reuse VerifiedTransferReceipt and canonical JobArtifact. */
 export const JobOutputStageRequestSchema = z.object({ method: z.literal('job-output-stage'), transferId: z.uuid() }).strict()
 export const JobOutputStatusRequestSchema = z.object({ method: z.literal('job-output-status'), transferId: z.uuid() }).strict()
-export type JobOutputStageRequest = z.infer<typeof JobOutputStageRequestSchema>
-export type JobOutputStatusRequest = z.infer<typeof JobOutputStatusRequestSchema>

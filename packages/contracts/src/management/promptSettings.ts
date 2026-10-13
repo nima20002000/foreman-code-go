@@ -18,6 +18,4 @@ export const PromptSettingUpdateResultSchema = z.object({
   replayed: z.boolean(),
 }).strict()
 
-export type ManagedPromptSetting = z.infer<typeof ManagedPromptSettingSchema>
 export type PromptSettingUpdateInput = z.infer<typeof PromptSettingUpdateInputSchema>
-export type PromptSettingUpdateResult = z.infer<typeof PromptSettingUpdateResultSchema>

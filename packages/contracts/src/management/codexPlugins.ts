@@ -27,7 +27,6 @@ export const CodexPluginListResultSchema = z.object({
   catalogStatus: z.enum(['complete', 'partial']).default('partial'),
   inventoryStatus: z.enum(['complete', 'unknown']).default('unknown'),
 }).strict()
-export type CodexPluginListResult = z.infer<typeof CodexPluginListResultSchema>
 
 export const CodexPluginGetInputSchema = z.object({ pluginId: PluginId,
   refresh: z.preprocess(value => value === 'true' ? true : value, z.boolean().optional()),
@@ -51,7 +50,7 @@ export const CodexPluginReconcileInputSchema = z.object({ commandId: CommandId, 
   expectedRevision: Revision.optional(), acceptObservedState: z.boolean().default(false),
 }).strict().refine((input) => !input.acceptObservedState || Boolean(input.expectedRevision), { message: 'Keeping observed state requires its reviewed revision.' })
 export type CodexPluginReconcileInput = z.infer<typeof CodexPluginReconcileInputSchema>
-export const CodexPluginOperationSchema = z.object({
+const CodexPluginOperationSchema = z.object({
   requestedBy: z.string().uuid(), commandId: CommandId,
   // Receipts created before recovery ownership was added cannot reconstruct the reviewed input.
   input: CodexPluginChangeInputSchema.nullable(), result: CodexPluginChangeResultSchema,

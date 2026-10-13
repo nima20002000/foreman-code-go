@@ -2,7 +2,7 @@ import { TextTruncationSchema } from './activityText.js'
 import { z } from 'zod'
 import { ActivityScopeSchema, ActivityItemSchema, ActivityNativeIdentitySchema, ActivitySourceSchema, InteractionSummarySchema, WorkRefSchema, WorkSummarySchema } from './activity.js'
 const id = z.string().min(1)
-export const ActivityOwnerSchema = z.discriminatedUnion('kind', [
+const ActivityOwnerSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('chat_request'), conversationId: id, requestId: id }).strict(),
   z.object({ kind: z.literal('execution'), workspaceId: id, workflowId: id, runId: id, workflowVersionId: id, executionId: id, attemptKey: id }).strict(),
 ])

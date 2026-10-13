@@ -4,8 +4,8 @@ import { DeviceProvisioningTargetSchema } from './deviceResources.js'
 import { DeviceConnectionIdentitySchema } from './deviceIdentity.js'
 
 export const AccountProviderSchema = z.enum(['codex', 'claude'])
-export const ProviderAccountAuthModeSchema = z.enum(['subscription', 'api-key'])
-export const ProviderAccountStatusSchema = z.enum(['signed-out', 'signed-in', 'login-pending', 'unavailable'])
+const ProviderAccountAuthModeSchema = z.enum(['subscription', 'api-key'])
+const ProviderAccountStatusSchema = z.enum(['signed-out', 'signed-in', 'login-pending', 'unavailable'])
 export const ProviderAccountIdSchema = z.string().uuid()
 const Revision = z.number().int().safe().nonnegative()
 const Reference = z.string().trim().min(1).max(200)
@@ -25,7 +25,7 @@ export const ProviderAccountBindingSchema = z.object({
   bindingRevision: Revision.min(1),
   subject: ProviderAccountSubjectSchema.nullable(),
 }).strict()
-export const ProviderAccountLegacyBindingSchema = z.object({
+const ProviderAccountLegacyBindingSchema = z.object({
   kind: z.literal('legacy-profile'),
   provider: AccountProviderSchema,
   target: DeviceProvisioningTargetSchema.nullable(),
@@ -124,7 +124,7 @@ export const ProviderAccountRegisterInputSchema = ProviderAccountCommandInputSch
 export const ProviderAccountDefaultInputSchema = ProviderAccountCommandInputSchema.extend({
   expectedDefaultRevision: Revision.optional(),
 }).strict()
-export const ProviderAccountAuthenticationStateSchema = z.enum([
+const ProviderAccountAuthenticationStateSchema = z.enum([
   'reserved', 'awaiting-human', 'observing', 'completed', 'canceled', 'expired', 'failed', 'outcome-unknown',
 ])
 export const ProviderAccountAuthenticationOperationSchema = z.object({
@@ -187,12 +187,12 @@ export const ProviderAccountModelsSchema = z.object({
 export const ProviderAccountDiscoveryInputSchema = z.object({
   target: DeviceProvisioningTargetSchema.optional(), provider: AccountProviderSchema.optional(),
 }).strict()
-export const ProviderAccountCapabilitySchema = z.object({
+const ProviderAccountCapabilitySchema = z.object({
   provider: AccountProviderSchema,
   actions: z.array(z.enum(['create', 'register', 'status', 'models', 'sign-in', 'sign-out', 'cancel', 'human-handoff'])),
   qualified: z.boolean(), reason: z.string().min(1).max(500).nullable(),
 }).strict()
-export const ProviderAccountTargetSchema = z.object({
+const ProviderAccountTargetSchema = z.object({
   target: DeviceProvisioningTargetSchema, label: z.string().min(1).max(200),
   generation: Revision.min(1), connected: z.boolean(), canRead: z.boolean(), canManage: z.boolean(),
   providers: z.array(ProviderAccountCapabilitySchema).max(2),

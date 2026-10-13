@@ -22,17 +22,9 @@ export const WorkspaceBoundLocationReadbackSchema = z.discriminatedUnion('eviden
 export const WorkspaceBoundLocationSetResultSchema = z.object({ value: WorkspaceBoundLocationReadbackSchema, replayed: z.boolean() }).strict()
 export type WorkspaceBoundLocationReadback = z.infer<typeof WorkspaceBoundLocationReadbackSchema>
 export type WorkspaceBoundLocationSetInput = z.infer<typeof WorkspaceBoundLocationSetInputSchema>
-export type WorkspaceBoundLocationGetInput = z.infer<typeof WorkspaceBoundLocationGetInputSchema>
-export type WorkspaceBoundLocationValidateInput = z.infer<typeof WorkspaceBoundLocationValidateInputSchema>
-export type WorkspaceBoundLocationBrowseInput = z.infer<typeof WorkspaceBoundLocationBrowseInputSchema>
-export type WorkspaceBoundLocationValidation = z.infer<typeof WorkspaceBoundLocationValidationSchema>
-export type WorkspaceBoundLocationBrowseResult = z.infer<typeof WorkspaceBoundLocationBrowseResultSchema>
-export type WorkspaceBoundLocationSetResult = z.infer<typeof WorkspaceBoundLocationSetResultSchema>
 
 /** Audited adoption of an existing protected host configuration; never caller-selected paths. */
 export const WorkspaceRootConfigurationAdoptSchema = z.object({
   workspaceId: IdSchema, commandId: WorkspaceBoundLocationSetInputSchema.shape.commandId, hostRef: WorkspaceRootHostSchema,
 }).strict()
 export const WorkspaceRootConfigurationAdoptResultSchema = z.object({ value: ApprovedRootAllowlistSchema, replayed: z.boolean() }).strict()
-export type WorkspaceRootConfigurationAdopt = z.infer<typeof WorkspaceRootConfigurationAdoptSchema>
-export type WorkspaceRootConfigurationAdoptResult = z.infer<typeof WorkspaceRootConfigurationAdoptResultSchema>

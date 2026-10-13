@@ -5,9 +5,9 @@ const id = z.string().min(1).max(512)
 const timestamp = z.iso.datetime()
 const revision = z.string().regex(/^[1-9][0-9]*$/)
 export const SUBAGENT_LIMITS = { page: 100, text: 24000, toolBytes: 32000 } as const
-export const SubagentNativeModeSchema = z.enum(['claude-agent', 'codex-collab', 'codex-multi-agent-v2', 'opencode-task'])
+const SubagentNativeModeSchema = z.enum(['claude-agent', 'codex-collab', 'codex-multi-agent-v2', 'opencode-task'])
 export type SubagentNativeMode = z.infer<typeof SubagentNativeModeSchema>
-export const SubagentCapabilitySchema = z.object({
+const SubagentCapabilitySchema = z.object({
   support: z.enum(['supported', 'unsupported', 'unverified']),
   qualification: z.enum(['passed', 'unverified', 'failed']), reasonCode: id.optional(),
 }).strict()
@@ -18,7 +18,7 @@ export const SubagentCapabilitiesSchema = z.object({
   interrupt: SubagentCapabilitySchema, historyReadback: SubagentCapabilitySchema, executionResume: SubagentCapabilitySchema,
 }).strict()
 export type SubagentCapabilities = z.infer<typeof SubagentCapabilitiesSchema>
-export const SubagentCoverageSchema = z.object({
+const SubagentCoverageSchema = z.object({
   transcript: z.enum(['complete', 'partial', 'unavailable']), tools: z.enum(['complete', 'partial', 'unavailable']), gaps: z.boolean(),
 }).strict()
 export const RunSubagentSchema = z.object({
@@ -42,12 +42,12 @@ export const RunSubagentSchema = z.object({
   }
 })
 export type RunSubagent = z.infer<typeof RunSubagentSchema>
-export const SubagentAvailableActionsSchema = z.object({ sendInput: z.boolean(), interrupt: z.boolean(),
+const SubagentAvailableActionsSchema = z.object({ sendInput: z.boolean(), interrupt: z.boolean(),
   respond: z.boolean().optional(), blockedReason: id.nullable() }).strict()
 export type SubagentAvailableActions = z.infer<typeof SubagentAvailableActionsSchema>
 export const RunSubagentDetailSchema = z.object({ subagent: RunSubagentSchema, availableActions: SubagentAvailableActionsSchema,
   pendingInteraction: z.lazy(() => PendingNativeInteractionSchema).optional() }).strict()
-export const SubagentSourceSchema = z.object({ executionId: id, sequence: z.number().int().nonnegative(), connectionId: id.optional(),
+const SubagentSourceSchema = z.object({ executionId: id, sequence: z.number().int().nonnegative(), connectionId: id.optional(),
   nativeEventId: id.optional(), nativeTurnId: id.optional(), generation: z.string().max(512).optional() }).strict()
 export type SubagentSource = z.infer<typeof SubagentSourceSchema>
 export const SubagentTruncationSchema = z.object({ truncated: z.boolean(), originalBytes: z.number().int().nonnegative() }).strict()
@@ -86,8 +86,6 @@ export const RunSubagentCommandReceiptSchema = z.object({ schemaVersion: z.liter
     option: z.lazy(() => ApprovalResponseOptionSchema) }).strict().optional(),
 }).strict()
 export type RunSubagentCommandReceipt = z.infer<typeof RunSubagentCommandReceiptSchema>
-export const SUBAGENT_MCP_TOOLS = ['run_subagents_list_v1', 'run_subagent_get_v1', 'run_subagent_messages_list_v1',
-  'run_subagent_tools_list_v1', 'run_subagent_input_v1', 'run_subagent_interrupt_v1', 'run_subagent_respond_v1'] as const
 
 /** Native research support follows the observed mode contract. No app qualification follows from transport types or observed text. */
 export function subagentCapabilities(mode: SubagentNativeMode): SubagentCapabilities {

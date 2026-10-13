@@ -55,7 +55,7 @@ export const AcceptedChatResponseControlSchema = z.object({
 })
 export type AcceptedChatResponseControl = z.infer<typeof AcceptedChatResponseControlSchema>
 
-export const ChatResponseIdentitySchema = z.discriminatedUnion('kind', [
+const ChatResponseIdentitySchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('turn'), nativeTurnId: z.string().min(1) }).strict(),
   z.object({ kind: z.literal('message'), nativeMessageId: z.string().min(1), generation: z.string().min(1) }).strict(),
 ])

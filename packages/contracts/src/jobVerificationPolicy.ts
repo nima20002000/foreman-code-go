@@ -4,7 +4,7 @@ import { JobPolicySchema, JobRuntimeLimitsSchema } from './jobs.js'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 
 const PositiveInteger = DeviceSafeIntegerSchema.positive()
-export const JOB_VERIFICATION_POLICY_VERSION = 2 as const
+const JOB_VERIFICATION_POLICY_VERSION = 2 as const
 export const JOB_VERIFICATION_APPROVAL_LIFETIME_MS = 24 * 60 * 60 * 1000
 export const JOB_VERIFICATION_OWNER_CONFIGURATION = Object.freeze({
   schemaVersion: 1, revision: 1, id: 'offline-verification', reviewedOn: '2026-10-05',
@@ -88,7 +88,7 @@ export const JobVerificationPolicyRequirementsSchema = JobVerificationPolicySche
   isolationPolicyId: true,
   isolationPolicyRevision: true,
 })
-export type JobVerificationPolicy = z.infer<typeof JobVerificationPolicySchema>
+type JobVerificationPolicy = z.infer<typeof JobVerificationPolicySchema>
 
 export const JobVerificationLifecycleSchema = z.object({
   dispatchAt: TimestampSchema,
@@ -147,7 +147,6 @@ export const JobVerificationProfileIdentitySchema = z.object({
     context.addIssue({ code: 'custom', message: 'Qualification cannot outlive its human approval.' })
   }
 })
-export type JobVerificationProfileIdentity = z.infer<typeof JobVerificationProfileIdentitySchema>
 
 /** Dispatch reserves enough remaining validity for preparation, execution and closure/publication. */
 export const JobVerificationDispatchValiditySchema = z.object({

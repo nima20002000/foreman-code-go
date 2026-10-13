@@ -9,12 +9,15 @@ export const DeviceRegistrationSchema = z.object({
 }).strict()
 export type DeviceRegistration = z.infer<typeof DeviceRegistrationSchema>
 export type DeviceScope = z.infer<typeof DeviceScopeSchema>
-export const DevicePrincipalSchema = z.object({
-  audience: z.literal('graphql-worker'), mainId: z.uuid(), deviceId: z.uuid(), workerInstallationId: z.uuid(),
-  keyRevision: z.number().int().positive(), authorizationRevision: z.number().int().positive(),
-  expiresAt: z.string().datetime(),
-}).strict()
-export type DevicePrincipal = z.infer<typeof DevicePrincipalSchema>
+export type DevicePrincipal = {
+  audience: 'graphql-worker'
+  mainId: string
+  deviceId: string
+  workerInstallationId: string
+  keyRevision: number
+  authorizationRevision: number
+  expiresAt: string
+}
 export const DeviceConnectionIdentitySchema = z.object({
   mainId: z.uuid(), deviceId: z.uuid(), workerInstallationId: z.uuid(), bootId: z.uuid(),
   keyRevision: z.number().int().positive(), authorizationRevision: z.number().int().positive(),
@@ -89,7 +92,6 @@ export const WorkerEnrollmentInputSchema = z.object({ mainId: z.uuid(),
   mainPublicKeyFingerprint: z.string().regex(/^[a-f0-9]{64}$/), endpoint: WorkerPairingConfigurationSchema.shape.endpoint,
   grant: z.string().regex(/^[A-Za-z0-9_-]{43}$/), requestId: z.uuid(),
 }).strict()
-export type WorkerEnrollmentInput = z.infer<typeof WorkerEnrollmentInputSchema>
 export const DevicePairingRequestSchema = z.object({ mainId: z.uuid(), workerInstallationId: z.uuid(),
   publicKey: z.string().max(1024), grant: z.string().regex(/^[A-Za-z0-9_-]{43}$/), requestId: z.uuid(),
   signature: z.string().regex(/^[A-Za-z0-9_-]{86}$/),

@@ -45,7 +45,7 @@ export function runDropdownStatus(run: { executionState: RunExecutionState; outc
   return run.outcome;
 }
 
-export const AgentRunBoardNodeSnapshotSchema = z.object({
+const AgentRunBoardNodeSnapshotSchema = z.object({
   kind:z.literal("agent").optional(),
   id: GraphIdSchema,
   name: z.string().min(1).refine((value) => value.trim().length > 0, "A snapshot node requires a name"),
@@ -54,14 +54,14 @@ export const AgentRunBoardNodeSnapshotSchema = z.object({
   position: z.object({ x: z.number().finite(), y: z.number().finite() }).strict().readonly(),
   size: z.object({ width: z.number().finite().positive(), height: z.number().finite().positive() }).strict().readonly(),
 }).strict().readonly();
-export const JobRunBoardNodeSnapshotSchema=z.object({kind:z.literal('job'),id:GraphIdSchema,name:z.string().min(1),
+const JobRunBoardNodeSnapshotSchema=z.object({kind:z.literal('job'),id:GraphIdSchema,name:z.string().min(1),
   jobDefinitionId:GraphIdSchema,jobDefinitionRevision:z.number().int().positive(),jobDefinitionVersionId:IdSchema,
   position:AgentRunBoardNodeSnapshotSchema.unwrap().shape.position,size:AgentRunBoardNodeSnapshotSchema.unwrap().shape.size,
 }).strict().readonly()
 export const RunBoardNodeSnapshotSchema=z.union([AgentRunBoardNodeSnapshotSchema,JobRunBoardNodeSnapshotSchema])
 export type RunBoardNodeSnapshot = z.infer<typeof RunBoardNodeSnapshotSchema>;
 /** Reuse the current edge shape, including handles, labels and execution/approval semantics. */
-export const RunBoardEdgeSnapshotSchema = CurrentWorkflowRelationshipSchema.readonly();
+const RunBoardEdgeSnapshotSchema = CurrentWorkflowRelationshipSchema.readonly();
 export type RunBoardEdgeSnapshot = z.infer<typeof RunBoardEdgeSnapshotSchema>;
 
 const AvailableSnapshot = z.object({
@@ -98,7 +98,7 @@ export type RunBoardSnapshot = z.infer<typeof RunBoardSnapshotSchema>;
 export const RunBoardSnapshotGetInputSchema = z.object({ ...Run }).strict();
 /** Live state of one Agent node's interval checks in this Run. nextCheckAt is null while a check or the
  * node's graph work is running, before its first finished execution, and once the Run is not running. */
-export const RunIntervalCheckSchema = z.object({
+const RunIntervalCheckSchema = z.object({
   nodeId: GraphIdSchema, everySeconds: z.number().int().positive(), checks: z.number().int().nonnegative(),
   running: z.boolean(), nextCheckAt: TimestampSchema.nullable(),
 }).strict();
@@ -125,4 +125,3 @@ export type RunBoardSnapshotGetResult = z.infer<typeof RunBoardSnapshotGetResult
 export const SelectedRunChatKeySchema = z.object({
   ...Run, workflowNodeId: GraphIdSchema, agentId: GraphIdSchema, executionId: IdSchema, conversationId: IdSchema,
 }).strict().readonly();
-export type SelectedRunChatKey = z.infer<typeof SelectedRunChatKeySchema>;

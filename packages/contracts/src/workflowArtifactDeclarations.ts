@@ -9,7 +9,6 @@ const OutputKeys = z.array(ArtifactEdgeBindingSchema.shape.outputKey).min(1).max
 export const WorkflowArtifactOutputsV1Schema = z.object({ version: z.literal(1), outputKeys: OutputKeys }).strict()
 export type WorkflowArtifactOutputsV1 = z.infer<typeof WorkflowArtifactOutputsV1Schema>
 export const WorkflowArtifactInputsV1Schema = z.object({ version: z.literal(1), outputKeys: OutputKeys }).strict()
-export type WorkflowArtifactInputsV1 = z.infer<typeof WorkflowArtifactInputsV1Schema>
 export const WorkflowArtifactResultV1Schema = z.object({
   version: z.literal(1), outputs: z.array(z.object({
     outputKey: ArtifactEdgeBindingSchema.shape.outputKey,

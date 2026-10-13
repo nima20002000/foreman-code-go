@@ -3,7 +3,7 @@ import { z } from 'zod'
 /** Decimal strings preserve PostgreSQL bigint identities without rounding. */
 export const RunLiveSequenceSchema = z.string().max(19).regex(/^(0|[1-9][0-9]*)$/)
   .refine((value) => value.length < 19 || value <= '9223372036854775807', 'Invalid activity sequence')
-export const RunNodeActionKindSchema = z.enum([
+const RunNodeActionKindSchema = z.enum([
   'reading_file', 'writing_file', 'listing_files', 'searching_files', 'creating_folder',
   'using_app_mcp', 'using_operator_mcp', 'using_mcp', 'running_command',
   'spawning_subagent', 'using_subagent', 'searching_web', 'reviewing_request',

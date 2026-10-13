@@ -41,7 +41,6 @@ export const WorkspaceRepositoryImportOperationSchema = z.object({
     newCommandRequired: z.boolean(),
   }).strict().optional(),
 }).strict()
-export type WorkspaceRepositoryImportOperation = z.infer<typeof WorkspaceRepositoryImportOperationSchema>
 
 export const WorkspaceRepositoryReadResultSchema = z.object({
   workspaceId: IdSchema,
@@ -75,4 +74,3 @@ export const WorkspaceRepositoryAddResultSchema = z.object({
   value: WorkspaceRepositoryReadResultSchema,
   replayed: z.boolean(),
 }).strict()
-export type WorkspaceRepositoryAddResult = z.infer<typeof WorkspaceRepositoryAddResultSchema>

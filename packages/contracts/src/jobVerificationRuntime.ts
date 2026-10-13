@@ -23,8 +23,7 @@ import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
 import { JobArtifactSchema } from './jobs.js'
 import { MAX_FILE_BYTES } from './files.js'
 import { SourceMaterializationRecordSchema } from './sourceAdmission.js'
-export { JobVerificationOfflineSeedReceiptSchema, type JobVerificationOfflineSeedReceipt, JobDependencyBasisSchema, type JobDependencyBasis,
-  isJobDependencyInputPath, jobDependencyInputs, sameJobDependencyInputs } from './jobVerificationSeed.js'
+export { JobVerificationOfflineSeedReceiptSchema, JobDependencyBasisSchema, type JobDependencyBasis, jobDependencyInputs, sameJobDependencyInputs } from './jobVerificationSeed.js'
 
 /** W09 authenticates these private repository facts before the worker constructs the read-only context. */
 export const JobVerificationPrivateGitSchema = z.object({
@@ -111,7 +110,7 @@ export const JobVerificationQuotaPoolSchema = z.object({
   }
 })
 export type JobVerificationQuotaPool = z.infer<typeof JobVerificationQuotaPoolSchema>
-export const RecordedJobVerificationRuntimeFingerprintSchema = z.object({
+const RecordedJobVerificationRuntimeFingerprintSchema = z.object({
   ...ProvisionedJobRuntimeFingerprintSchema.shape,
   schemaVersion: z.literal(3),
   workspaceLayout: z.literal(JOB_RUNTIME_WORKSPACE_LAYOUT),
@@ -169,7 +168,7 @@ const CheckId = z.enum([
   'network-none', 'registry-allowlist', 'public-egress-policy', 'postgres-isolation', 'browser-sandbox',
   'native-containment', 'credential-redaction',
 ])
-export const RecordedJobVerificationRuntimeMeasurementSchema = z.object({
+const RecordedJobVerificationRuntimeMeasurementSchema = z.object({
   schemaVersion: z.literal(2),
   identity: JobVerificationProfileIdentitySchema,
   fingerprint: RecordedJobVerificationRuntimeFingerprintSchema,
@@ -309,10 +308,6 @@ export function jobRuntimeProfilePolicy(profile: JobRuntimeProfileRecord) {
 export function jobRuntimeProfileLimits(profile: JobRuntimeProfileRecord) {
   return profile.schemaVersion === 1 ? profile.limits : profile.spec.resources.limits
 }
-export function jobRuntimeQualificationId(profile: JobRuntimeProfileRecord): string | null {
-  if (!profile.measurement) return null
-  return profile.schemaVersion === 1 ? profile.measurement.qualificationId : profile.measurement.identity.qualificationId
-}
 export const JobRuntimeProfileSaveRecordSchema = JobRuntimeProfileSaveSchema.extend({
   spec: z.union([JobRuntimeProfileSaveSchema.shape.spec, JobVerificationProfileInputSchema]),
 }).strict()
@@ -441,7 +436,7 @@ export const JobRuntimeQualificationResultRecordSchema = z.union([
   JobRuntimeQualificationResultSchema, JobVerificationRuntimeQualificationResultSchema,
 ])
 export type JobRuntimeQualificationResultRecord = z.infer<typeof JobRuntimeQualificationResultRecordSchema>
-export const JobVerificationRuntimeQualificationRpcRequestSchema = z.discriminatedUnion('operation', [
+const JobVerificationRuntimeQualificationRpcRequestSchema = z.discriminatedUnion('operation', [
   z.object({ version: z.literal(3), operation: z.literal('inspect'), profile: JobVerificationProfileSchema }).strict(),
   z.object({ version: z.literal(3), operation: z.enum(['run', 'authorize']),
     admission: JobVerificationRuntimeNativeAdmissionSchema, candidate: JobVerificationQualificationCandidateSchema }).strict(),
@@ -457,7 +452,7 @@ export const JobVerificationRuntimeQualificationRpcRequestSchema = z.discriminat
     context.addIssue({ code: 'custom', message: 'Verification transport retains the original admission and device authority.' })
   }
 })
-export const JobVerificationRuntimeQualificationRpcResponseSchema = z.discriminatedUnion('operation', [
+const JobVerificationRuntimeQualificationRpcResponseSchema = z.discriminatedUnion('operation', [
   z.object({ version: z.literal(3), operation: z.literal('inspect'),
     descriptor: JobVerificationInstalledRuntimeDescriptorSchema,
     fingerprint: JobVerificationRuntimeFingerprintSchema }).strict(),

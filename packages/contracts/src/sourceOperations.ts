@@ -41,7 +41,6 @@ export type SourceFilesystemOperation = z.infer<typeof SourceFilesystemOperation
 export const SourceOperationRequestSchema = z.union([SourceFilesystemOperationSchema,
   z.object({ version: z.literal(1), operation: z.literal('sources.authorize'), request: SourceFilesystemOperationSchema }).strict(),
   z.object({ version: z.literal(1), operation: z.literal('sources.transfer-authorize'), transferId: z.uuid() }).strict()])
-export type SourceOperationRequest = z.infer<typeof SourceOperationRequestSchema>
 /** Existing authenticated source channel; Main resolves the original admission.
  * A status request never supplies an intent, materialization or ACK assertion. */
 export const SourceTransferStatusRequestSchema = z.object({ version: z.literal(1),
@@ -59,8 +58,6 @@ export const SourceTransferStatusResponseSchema = z.object({ version: z.literal(
     && binding.rootId === intent.rootId && binding.bindingRevision === intent.rootBindingRevision
     && binding.manifestDigest === intent.manifestDigest && receipt.verifiedManifestDigest === intent.manifestDigest
 }, { message: 'Committed materialization must identify the original source transfer' })
-export type SourceTransferStatusRequest = z.infer<typeof SourceTransferStatusRequestSchema>
-export type SourceTransferStatusResponse = z.infer<typeof SourceTransferStatusResponseSchema>
 /** Trusted Main readback of an entered, currently owned native lifetime. A
  * filesystem request never supplies this evidence or selects mutable mode. */
 export const SourceActiveNativeSessionSchema = z.object({
@@ -108,7 +105,7 @@ export const SourceReservationReclamationResponseSchema = z.object({ version: z.
   operationId: IdSchema, reclaimed: z.boolean(), closures: z.array(SourcePreparationClosureSchema).max(1024),
   retained: RetainedSourceFootprintSchema.optional() }).strict()
   .refine(value => value.reclaimed === !value.retained, 'Retained working trees keep their storage reservation')
-export const PrivateSourceRepositoryResultSchema = z.object({ workTree: z.string().startsWith('/'), gitDirectory: z.string().startsWith('/'),
+const PrivateSourceRepositoryResultSchema = z.object({ workTree: z.string().startsWith('/'), gitDirectory: z.string().startsWith('/'),
   generatedCommit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/), sourceCommit: z.string().nullable() }).strict()
 export const SourceOperationResponseSchema = z.discriminatedUnion('operation', [
   z.object({ version: z.literal(1), operation: z.literal('sources.capacity'), capacity: SourceStorageCapacitySchema }).strict(),

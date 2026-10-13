@@ -17,7 +17,7 @@ export const HarnessReleaseProvenanceSchema = z.object({
   }
 })
 export type HarnessReleaseProvenance = z.infer<typeof HarnessReleaseProvenanceSchema>
-export const HarnessCompatibilityStatusSchema = z.enum([
+const HarnessCompatibilityStatusSchema = z.enum([
   'not-checked', 'checking', 'known-compatible', 'probe-passed', 'probe-failed', 'unavailable',
 ])
 export const HarnessCompatibilityReasonSchema = z.object({
@@ -46,5 +46,4 @@ export const HarnessCompatibilityListSchema = z.object({
   canRetry: z.boolean(),
   harnesses: z.array(HarnessCompatibilitySchema).length(1),
 }).strict()
-export type HarnessCompatibilityList = z.infer<typeof HarnessCompatibilityListSchema>
 export const HarnessCompatibilityRetryParamsSchema = z.object({ harness: CompatibilityHarnessSchema }).strict()
