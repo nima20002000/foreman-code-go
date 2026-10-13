@@ -6,7 +6,7 @@ import { executeApprovalBranches } from './helpers/engineProviderCases.js'
  * Only external provider transport and filesystem qualification are synthetic. */
 describe.skipIf(!postgresEnabled)('Current production engine provider wiring', () => {
   afterEach(() => vi.restoreAllMocks())
-  it.each([1, 2])('executes %i approval branches through native claims and terminal receipts', async branches => {
+  it.each([1, 2] as const)('executes %i approval branches through native claims and terminal receipts', async branches => {
     await executeApprovalBranches(branches)
   }, 60000)
 })
