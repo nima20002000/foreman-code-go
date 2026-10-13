@@ -53,9 +53,9 @@ export async function codexApprovalRuntime(handler: 'user' | 'orchestrator' = 'u
         sandbox: 'read-only', serviceTier: 'standard',
         advanced: {
           ...structuredClone(DEFAULT_CODEX_ADVANCED_CONFIGURATION),
+          approvalPolicy: options.approvalPolicy ?? 'on-request',
           approvalsReviewer: handler === 'orchestrator' && c.agentId === entry.agentId ? 'auto_review' : 'user',
           webSearch: 'disabled',
-          ...(options.approvalPolicy ? { approvalPolicy: options.approvalPolicy } : {}),
         },
       },
     }))
