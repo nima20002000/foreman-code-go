@@ -1,13 +1,41 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, beforeEach, expect, it } from 'vitest'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { routeTree } from '../app/router'
+import { clearEditIntentStorage } from '../features/graph/nextDraft/editIntentStorage'
+import { useGraphDraftStore } from '../features/graph/store'
 import { installFlowLayout } from '../features/run-board/testFlowLayout'
+import { bindMockInstallation } from '../shared/mocks/handlers'
 import { setMockScenario } from '../shared/mocks/scenarios'
 
-beforeEach(() => { installFlowLayout(1000, 720) })
-afterEach(() => setMockScenario('normal'))
+const clients: QueryClient[] = []
+
+beforeEach(() => {
+  useGraphDraftStore.getState().clearAllDrafts()
+  localStorage.clear()
+  sessionStorage.clear()
+  bindMockInstallation()
+  installFlowLayout(1000, 720)
+  // JSDOM has no Web Locks; the mounted editor still claims tab ownership.
+  vi.stubGlobal('navigator', { ...navigator, locks: {
+    request: async (name: string, optionsOrWork: LockOptions | ((lock: Lock) => Promise<unknown>),
+      work?: (lock: Lock) => Promise<unknown>) => {
+      const callback = typeof optionsOrWork === 'function' ? optionsOrWork : work!
+      return callback({ name, mode: 'exclusive' })
+    },
+  } })
+})
+
+afterEach(() => {
+  cleanup()
+  clearEditIntentStorage()
+  clients.splice(0).forEach(client => client.clear())
+  useGraphDraftStore.getState().clearAllDrafts()
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+  setMockScenario('normal')
+})
 
 it('opens the saved workflow for authoring before any departure', async () => {
   const history = createMemoryHistory({
@@ -15,6 +43,7 @@ it('opens the saved workflow for authoring before any departure', async () => {
   })
   const router = createRouter({ routeTree, history })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  clients.push(client)
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
 
   const authoring = await screen.findByRole('region', { name: 'Workflow authoring' }, { timeout: 8000 })
@@ -24,7 +53,6 @@ it('opens the saved workflow for authoring before any departure', async () => {
   }, { timeout: 8000 })).toBeVisible()
   expect(screen.queryByRole('heading', { name: 'Authoring unavailable' })).not.toBeInTheDocument()
   expect(router.state.location.search.workflowId).toBe('workflow-content-pipeline')
-  client.clear()
 })
 
 it.each([
@@ -36,6 +64,7 @@ it.each([
     const history = createMemoryHistory({ initialEntries: ['/workspaces/workspace-1?workflowId=workflow-content-pipeline'] })
     const router = createRouter({ routeTree, history })
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    clients.push(client)
     const flashes: string[] = []
     const observer = new MutationObserver(records => {
       for (const record of records) for (const node of record.addedNodes) {
@@ -59,13 +88,12 @@ it.each([
     observer.disconnect()
     expect(screen.queryByText('Invalid board selection')).not.toBeInTheDocument()
     expect(flashes).toEqual([])
-    client.clear()
   }, 30_000)
 
 it('still explains a board link that is invalid', async () => {
   const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: ['/workspaces/workspace-1?selectedRunId=run-1'] }) })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  clients.push(client)
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
   expect(await screen.findByText('Invalid board selection', {}, { timeout: 8000 })).toBeVisible()
-  client.clear()
 })
