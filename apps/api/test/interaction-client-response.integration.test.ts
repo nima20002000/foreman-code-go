@@ -10,7 +10,8 @@ import { PostgresWorkspaceRepository } from '../src/modules/workspaces/postgres.
 import { codexApprovalRuntime } from './helpers/codexApprovalRuntime.js'
 import { approvalResponse } from './helpers/approvalResponse.js'
 
-it.each(['operator', 'human'] as const)('routes the web %s response through Fastify with persisted readback and denial', async kind => {
+it.each(['operator', 'local operator', 'human'] as const)(
+  'routes the web %s response through Fastify with persisted readback and denial', async kind => {
   const f = await codexApprovalRuntime('user')
   const workflows = new PostgresWorkflowRepository(f.db.pool)
   const writer = await f.access.issue({ name: 'Interaction writer', audience: 'operator',
@@ -46,7 +47,8 @@ it.each(['operator', 'human'] as const)('routes the web %s response through Fast
       },
     })
     const input = approvalResponse(interaction)
-    const respond = kind === 'operator' ? web.respondToInteraction.bind(web) : web.respondToUserInteraction.bind(web)
+    const operator = kind !== 'human'
+    const respond = operator ? web.respondToInteraction.bind(web) : web.respondToUserInteraction.bind(web)
     await expect(respond(input, { headers: { authorization: `Bearer ${reader.token}` } })).rejects.toMatchObject({ status: 403 })
     const options = kind === 'operator' ? { headers: { authorization: `Bearer ${writer.token}` } } : {}
     await expect(respond({ ...input, expectedRevision: interaction.revision + 1 }, options)).rejects.toMatchObject({ status: 409 })
@@ -54,7 +56,7 @@ it.each(['operator', 'human'] as const)('routes the web %s response through Fast
     const result = await respond(input, options)
     expect(result.interaction).toMatchObject({ selectedOptionId: input.optionId, status: 'delivered' })
     expect(await f.repository.get(interaction.id)).toEqual(result.interaction)
-    const readback = kind === 'operator' ? await web.getInteraction(interaction.id, options) : await web.getUserInteraction(interaction.id)
+    const readback = operator ? await web.getInteraction(interaction.id, options) : await web.getUserInteraction(interaction.id)
     expect(readback.interaction).toEqual(result.interaction)
     expect((await respond(input, options)).replayed).toBe(true)
     expect(f.counts().responses).toBe(1)

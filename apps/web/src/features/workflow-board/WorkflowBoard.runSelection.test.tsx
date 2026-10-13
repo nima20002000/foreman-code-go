@@ -204,14 +204,17 @@ it('keeps Run-wide Activities hidden when the selected snapshot is denied', asyn
 })
 
 
-it('does not select or count a completed polled Run from stale running workspace details', async () => {
+it.each(['succeeded', 'failed', 'canceled'] as const)(
+  'does not select or count a %s polled Run from stale running workspace details', async status => {
   installSelectedHandlers()
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   clients.push(client)
   const selectRun = vi.fn()
+  const snapshotReads = vi.fn(() => HttpResponse.json(snapshot('run-a')))
   const listReads = vi.fn(() => HttpResponse.json({ items: [{ runId: 'run-a', shortId: 'a',
-    startedAt: '2026-10-04T09:00:00.000Z', status: 'succeeded', trigger: 'manual' }], pageInfo: { nextCursor: null } }))
-  server.use(http.get(`*/api/management/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/runs`, listReads))
+    startedAt: '2026-10-04T09:00:00.000Z', status, trigger: 'manual' }], pageInfo: { nextCursor: null } }))
+  server.use(http.get(`*/api/management/workspaces/${scope.workspaceId}/workflows/${scope.workflowId}/runs`, listReads),
+    http.get(snapshotRoute, snapshotReads))
   const active = WorkflowRunSummarySchema.parse({ id: 'run-a', workspaceId: scope.workspaceId,
     workflowId: scope.workflowId, executionCondition: { kind: 'manual' },
     executionState: 'running', outcome: 'pending', startedAt: '2026-10-04T09:00:00.000Z',
@@ -227,5 +230,7 @@ it('does not select or count a completed polled Run from stale running workspace
   render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>)
   await waitFor(() => expect(listReads).toHaveBeenCalled())
   await waitFor(() => expect(screen.getByLabelText('Active Runs')).toHaveTextContent('0'))
+  expect(screen.queryByRole('region', { name: 'Selected Run board' })).not.toBeInTheDocument()
+  expect(snapshotReads).not.toHaveBeenCalled()
   expect(selectRun).not.toHaveBeenCalled()
 })
