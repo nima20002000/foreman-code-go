@@ -1,4 +1,5 @@
-import { isDatabaseTimeout, retryDatabaseTimeout } from '../../infrastructure/databaseTimeout.js'
+import { isDatabasePoolTimeout } from '../../infrastructure/databaseReadRetry.js'
+import { isDatabaseTimeout, retryDatabaseTimeout, retryDatabaseOperation } from '../../infrastructure/databaseTimeout.js'
 import { beginRuntimeTiming, timeRuntimeOperation } from '../../infrastructure/runtimeTiming.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
@@ -216,7 +217,10 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
         return
       }
       const node = context.version.definition.nodes.find((item) => item.id === execution.workflowNodeId)
-      const configuration = await context.workflows.getAgentConfiguration(execution.agentConfigurationVersionId)
+      const configuration = await retryDatabaseOperation(
+        () => context.workflows.getAgentConfiguration(execution.agentConfigurationVersionId),
+        (error) => isDatabaseTimeout(error) || isDatabasePoolTimeout(error), { signal, check },
+      )
       check()
       if (!node || node.kind === 'job' || !configuration || configuration.id !== context.version.agentConfigurationVersionIds[node.agentId]
         || configuration.agentId !== node.agentId || configuration.workspaceId !== run.workspaceId) {
