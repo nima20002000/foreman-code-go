@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import type { QueryClient } from '@tanstack/react-query'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { agentChatFixtures, type AgentChatState } from '@foreman-code/contracts/agent-chat'
@@ -9,6 +9,8 @@ import { useConversationDraftStore } from '../conversationDraftStore'
 import { AgentChatTestSource, installChatSource, mountChat } from './testSupport'
 import { agentChatStateKey } from './useAgentChat'
 import { deferred } from '../../../test/deferred'
+import { http, HttpResponse } from 'msw'
+import { server } from '../../../mocks/server'
 
 const clients: QueryClient[] = []
 const releases: (() => void)[] = []
@@ -90,4 +92,34 @@ it('closes the stream and withdraws private state when the event readback is den
   expect(read).toHaveBeenCalledTimes(reads)
   expect(screen.queryByTestId('agent-conversation')).not.toBeInTheDocument()
   mounted.unmount()
+})
+
+it('refreshes a loaded oversized provisional answer when the accepted conversation revision advances', async () => {
+  const { initial, mounted, source } = await openChat()
+  const provisional = 'Provisional ' + 'a'.repeat(270_000)
+  const finalized = 'Finalized ' + 'b'.repeat(270_000)
+  const message = { id: 'oversized-answer', conversationId: initial.conversation!.id,
+    role: 'assistant' as const, content: provisional, revision: '1', nativeMessageComplete: false }
+  let current = message
+  const cursors: Array<string | null> = []
+  server.use(http.get('/api/workspaces/:workspaceId/agent-chat/conversations/:id/history', ({ request }) => {
+    cursors.push(new URL(request.url).searchParams.get('before'))
+    return HttpResponse.json({ conversationId: initial.conversation!.id, messages: [current], nextCursor: null })
+  }))
+  const state = { ...initial, revision: initial.revision + 1, messages: [], hasEarlierMessages: true }
+  mounted.mock.setState(state)
+  await act(async () => { await mounted.refresh() })
+  fireEvent.click(await screen.findByRole('button', { name: 'Load earlier messages' }))
+  expect(await screen.findByText(provisional)).toBeVisible()
+  current = { ...message, content: finalized, revision: '2', nativeMessageComplete: true }
+  const finished = { ...state, revision: state.revision + 1 }
+  mounted.mock.setState(finished)
+  act(() => source.snapshot(finished))
+  expect(await screen.findByText(finalized)).toBeVisible()
+  expect(screen.queryByText(provisional)).not.toBeInTheDocument()
+  const batches = mounted.client.getQueriesData<{ pages: Array<{ pages: Array<{ messages: typeof message[] }> }> }>({
+    predicate: query => query.queryKey.at(-1) === 'history',
+  })[0]?.[1]
+  expect(batches?.pages[0]?.pages[0]?.messages[0]).toMatchObject({ revision: '2', nativeMessageComplete: true })
+  expect(cursors.every(cursor => cursor === null)).toBe(true)
 })

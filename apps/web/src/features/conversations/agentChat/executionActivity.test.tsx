@@ -289,3 +289,58 @@ describe('mergeExecutionActivity', () => {
     expect(stale.executions[1]?.hasEarlierItems).toBe(true)
   })
 })
+
+it.each([20_480, 80_000])('expands a shortened Run answer through the scoped item endpoint (%s bytes)', async size => {
+  const state = runState()
+  const mounted = mountChat(state)
+  const content = 'x'.repeat(size - 8) + 'THE END!'
+  const preview = message('execution-check', 'answer', '1', content.slice(0, 16_384))
+  if (preview.entry.kind !== 'message') throw new Error('Expected a message fixture')
+  preview.entry.message.truncation = { truncated: true, originalBytes: size }
+  mounted.mock.setExecutionActivity(state.context, livePage([preview], '1'))
+  const requests: URLSearchParams[] = []
+  server.use(http.get('/api/workspaces/:workspaceId/agent-chat/execution-activity', ({ request }) => {
+    const params = new URL(request.url).searchParams
+    if (!params.has('itemId')) return undefined
+    requests.push(params)
+    const expanded = message('execution-check', 'answer', '1', content.slice(0, 65_536))
+    if (expanded.entry.kind === 'message' && size > 65_536) {
+      expanded.entry.message.truncation = { truncated: true, originalBytes: size }
+    }
+    return HttpResponse.json({ ...livePage([expanded], '1'), mode: 'item', cursor: undefined })
+  }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Show full message' }))
+  expect(await screen.findByText(content.slice(0, 65_536))).toBeVisible()
+  expect(requests).toHaveLength(1)
+  expect(requests[0]?.get('executionId')).toBe('execution-check')
+  expect(requests[0]?.get('itemId')).toBe('answer')
+  expect(requests[0]?.get('runId')).toBe('selected-run')
+  if (size > 65_536) expect(screen.getByText(/shortened/i)).toBeVisible()
+  else expect(screen.queryByText(/shortened/i)).not.toBeInTheDocument()
+})
+
+it('keeps a shortened answer visible during a failed expansion and allows retry with loading feedback', async () => {
+  const state = runState()
+  const mounted = mountChat(state)
+  const preview = message('execution-check', 'answer', '1', 'Visible preview')
+  if (preview.entry.kind !== 'message') throw new Error('Expected a message fixture')
+  preview.entry.message.truncation = { truncated: true, originalBytes: 20_480 }
+  mounted.mock.setExecutionActivity(state.context, livePage([preview], '1'))
+  let attempts = 0
+  const pending = deferred<void>()
+  server.use(http.get('/api/workspaces/:workspaceId/agent-chat/execution-activity', async ({ request }) => {
+    if (!new URL(request.url).searchParams.has('itemId')) return undefined
+    attempts++
+    if (attempts === 1) return HttpResponse.json({ error: { code: 'READ_FAILED', message: 'Full message unavailable.' } }, { status: 503 })
+    await pending.promise
+    return HttpResponse.json({ ...livePage([message('execution-check', 'answer', '1', 'Expanded answer')], '1'),
+      mode: 'item', cursor: undefined })
+  }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Show full message' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Full message unavailable.')
+  expect(screen.getByText('Visible preview')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Show full message' }))
+  expect(await screen.findByRole('button', { name: 'Loading full message…' })).toBeDisabled()
+  await act(async () => pending.resolve())
+  expect(await screen.findByText('Expanded answer')).toBeVisible()
+})
