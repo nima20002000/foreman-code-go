@@ -1054,7 +1054,7 @@ it.each(['github', 'circleci'] as const)('runs user-systemd slices on capable %s
   } finally { await f.close() }
 })
 
-it('queues only user-systemd files through MCP while ordinary files run on cloud, then clears the wait on start', async () => {
+it.each(['mcp', 'http'] as const)('reads queued user-systemd slices through %s while ordinary files run on cloud, then clears the wait on start', async transport => {
   const readiness = { laptop: true }
   const f = await fixture({ github: readiness, cloud: true })
   f.computers.splice(1, 1)
@@ -1080,7 +1080,15 @@ it('queues only user-systemd files through MCP while ordinary files run on cloud
     expect(slices.partitions).toHaveLength(2)
     await f.ci.dispatch()
     await f.ci.close()
+    const credential = await f.credential(CI_GET_ACTIONS)
     const read = async () => {
+      if (transport === 'http') {
+        const response = await f.app.inject({ method: 'GET',
+          url: `/api/management/workspaces/${f.workspaceId}/ci/${slices.ticketId}`,
+          headers: { authorization: `Bearer ${credential.token}` } })
+        expect(response.statusCode).toBe(200)
+        return CiGetOutputSchema.parse(response.json())
+      }
       const result = await reader.callTool({ name: 'ci_get', arguments: {
         workspaceId: f.workspaceId, ticketId: slices.ticketId,
       } })
