@@ -118,7 +118,8 @@ it('refreshes a loaded oversized provisional answer when the accepted conversati
   expect(await screen.findByText(finalized)).toBeVisible()
   expect(screen.queryByText(provisional)).not.toBeInTheDocument()
   const batches = mounted.client.getQueriesData<{ pages: Array<{ pages: Array<{ messages: typeof message[] }> }> }>({
-    predicate: query => query.queryKey.at(-1) === 'history',
+    predicate: query => query.queryKey.at(-1) === 'history'
+      && query.queryKey.at(-2) === initial.conversation!.id,
   })[0]?.[1]
   expect(batches?.pages[0]?.pages[0]?.messages[0]).toMatchObject({ revision: '2', nativeMessageComplete: true })
   expect(cursors.every(cursor => cursor === null)).toBe(true)

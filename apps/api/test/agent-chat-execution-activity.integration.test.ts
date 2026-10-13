@@ -147,9 +147,11 @@ describe('Persisted execution activity through HTTP and authenticated MCP', { ti
     }
     return { executionId: candidate.id, transfers, managers, append, state, http, mcpPage,
       seedNewerExecutions: async () => {
+        const stored = (await database.pool.query<{ created_at: Date }>(
+          'select created_at from harness_executions where id=$1', [candidate.id])).rows[0]!
         for (let attempt = 2; attempt <= 22; attempt++) {
           const execution = HarnessExecutionSchema.parse({ ...candidate, id: randomUUID(), attempt,
-            createdAt: new Date(Date.parse(candidate.createdAt) + attempt * 1000).toISOString() })
+            createdAt: new Date(stored.created_at.getTime() + attempt * 1000).toISOString() })
           await database.pool.query(`insert into harness_executions(id,run_id,workflow_node_id,agent_id,attempt,record,created_at)
             values($1,$2,$3,$4,$5,$6::jsonb,$7)`, [execution.id, execution.runId, execution.workflowNodeId,
             execution.agentId, execution.attempt, JSON.stringify(execution), execution.createdAt])
@@ -194,6 +196,9 @@ describe('Persisted execution activity through HTTP and authenticated MCP', { ti
       await fixture.seedNewerExecutions()
       const overview = await fixture.http()
       expect(overview.executions).toHaveLength(20)
+      expect(overview.executions.map(item => item.attempt)).toEqual(
+        Array.from({ length: 20 }, (_, index) => index + 3),
+      )
       expect(overview.executions.some(item => item.executionId === fixture.executionId)).toBe(false)
       expect(overview.hasEarlierExecutions).toBe(true)
       for (const request of [{ executionId: fixture.executionId }, { executionId: fixture.executionId, itemId: 'old-answer' }]) {

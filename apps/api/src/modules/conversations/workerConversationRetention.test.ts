@@ -10,6 +10,33 @@ import { workerConversationFixture } from './workerFixtures.test-support.js'
 const closing: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of closing.splice(0).reverse()) await close() })
 
+it('reads a retired conversation after reopening the journal and rejects a replayed creation', async () => {
+  const root = await mkdtemp(join(process.cwd(), '.conversation-retention-'))
+  closing.push(() => rm(root, { recursive: true, force: true }))
+  const path = join(root, 'operations.json')
+  let now = Date.parse('2026-01-01T00:00:00Z')
+  const options = { capacity: 1, now: () => now }
+  let journal = await RemoteOperationJournal.open(path, { ...options, initializeNewInstallation: true })
+  closing.push(() => journal.close())
+  const fixture = workerConversationFixture()
+  await journal.conversations.receive(fixture.binding, fixture.connection)
+  await journal.conversations.reserveCreation(fixture.binding, 'create', commandInputHash('create'))
+  await journal.conversations.closeConfirmed(fixture.binding)
+  now += RUNTIME_JOURNAL_RETENTION_MS + 1
+  await journal.pruneFinishedRuntime()
+  const next = workerConversationFixture()
+  expect((await journal.conversations.receive(next.binding, next.connection)).closed).toBe(false)
+  await journal.close()
+  journal = await RemoteOperationJournal.open(path, options)
+  expect(await journal.conversations.read(fixture.binding)).toMatchObject({
+    binding: fixture.binding,
+    closed: true,
+    creation: { operationId: 'create', inputHash: commandInputHash('create') },
+  })
+  await expect(journal.conversations.reserveCreation(fixture.binding, 'create', commandInputHash('create')))
+    .rejects.toThrow('closed')
+})
+
 it('archives acknowledged closed conversations while retaining replay identities and unresolved owners across restart', async () => {
   const root = await mkdtemp(join(process.cwd(), '.conversation-retention-'))
   closing.push(() => rm(root, { recursive: true, force: true }))
