@@ -153,6 +153,8 @@ describe.skipIf(!postgresEnabled)('CI migration integrity through fresh and hist
           if (fault === 'SQL') await database.pool.query('drop table ci_enrollment_computers')
           else await database.pool.query('drop trigger reject_fixture_migration on application_migrations')
           await applyApplicationMigrations(database.pool)
+          expect((await ledger(database)).map(row => row.version))
+            .toEqual(migrations.map(migration => migration.version).sort((left, right) => left - right))
           const onMain = seeded.record(seeded.main)
           await createPreparation(database, onMain)
           expect(await new PostgresCiPreparationRepository(database.pool).get(onMain.id)).toEqual(onMain)
