@@ -277,13 +277,16 @@ it('retries persisted cancellation on the assigned executor after transport fail
   }
 })
 
-it('retains cleanup when cancellation arrives while the accepted start reply is still in flight', async () => {
+it('persists MCP cancellation intent before the accepted start reply returns', async () => {
   const f = await fixture()
   const entered = deferred()
   const release = deferred()
   let dispatch: Promise<void> | undefined
+  let cancellation: Promise<void> | undefined
+  let reply: Awaited<ReturnType<typeof f.call>> | undefined
   try {
     const ticket = await f.enqueue()
+    const commandId = randomUUID()
     f.control.onStart = async () => {
       entered.resolve()
       await release.promise
@@ -291,8 +294,15 @@ it('retains cleanup when cancellation arrives while the accepted start reply is 
     f.control.available = true
     dispatch = f.ci.dispatch()
     await entered.promise
-    expect((await f.call(f.operator.client, 'ci_cancel', { ticketId: ticket.ticketId })).isError).toBe(true)
-    expect((await f.read(ticket.ticketId)).state).toBe('starting')
+    cancellation = f.call(f.operator.client, 'ci_cancel', { ticketId: ticket.ticketId, commandId })
+      .then(result => { reply = result })
+    await expect.poll(() => reply, { timeout: 5000 }).toBeDefined()
+    expect(reply!.isError).toBe(true)
+    expect(decodeMcpToolResult(reply!)).toMatchObject({ error: { code: 'CI_CANCEL_PENDING' } })
+    expect(await f.read(ticket.ticketId)).toMatchObject({
+      state: 'starting',
+      cancellation: { principalId: f.operator.principalId, source: 'mcp', commandId, reason: 'direct' },
+    })
     release.resolve()
     await dispatch
     f.control.onStart = async () => {}
@@ -303,6 +313,46 @@ it('retains cleanup when cancellation arrives while the accepted start reply is 
   } finally {
     release.resolve()
     await dispatch
+    await cancellation
+    await f.close()
+  }
+})
+
+it('cancels a running MCP ticket while another ticket awaits its start reply', async () => {
+  const f = await fixture()
+  const entered = deferred()
+  const release = deferred()
+  let dispatch: Promise<void> | undefined
+  let cancellation: Promise<void> | undefined
+  let reply: Awaited<ReturnType<typeof f.call>> | undefined
+  try {
+    const running = await f.enqueue({ noSupersede: true })
+    f.control.available = true
+    await f.ci.dispatch()
+    expect((await f.read(running.ticketId)).state).toBe('running')
+    f.control.onStart = async () => {
+      entered.resolve()
+      await release.promise
+    }
+    const starting = CiRunOutputSchema.parse(await f.value('ci_run', {
+      suite: 'install', commandId: randomUUID(), noSupersede: true,
+    }))
+    dispatch = f.ci.dispatch()
+    await entered.promise
+    cancellation = f.call(f.operator.client, 'ci_cancel', { ticketId: running.ticketId })
+      .then(result => { reply = result })
+    await expect.poll(() => reply, { timeout: 5000 }).toBeDefined()
+    expect(reply!.isError).not.toBe(true)
+    expect((await f.read(running.ticketId)).state).toBe('canceled')
+    expect((await f.read(starting.ticketId)).state).toBe('starting')
+    release.resolve()
+    await dispatch
+    expect((await f.read(starting.ticketId)).state).toBe('running')
+    expect(f.starts).toHaveLength(2)
+  } finally {
+    release.resolve()
+    await dispatch
+    await cancellation
     await f.close()
   }
 })
