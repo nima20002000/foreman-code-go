@@ -249,6 +249,7 @@ export class HarnessMcpSettingsService {
         if (snapshot) unlockFile = await lockNativeConfigurationFile(client, snapshot.file)
         const managed = approve ? this.managed(selected) : undefined
         const expected = snapshot ? expectedMcpUserFingerprint(snapshot, selected.change, managed) : null
+        const plan = selected
         await withClientTransaction(client, async () => {
           await this.liveWriter(client, principal)
           const updated = await client.query<Row>(`update harness_mcp_change_plans set status=$2,decided_by=$3,error=null,
@@ -259,7 +260,7 @@ export class HarnessMcpSettingsService {
           marked = approve
           await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
             values($1,$4,'harness.mcp.review',$2,'succeeded',$3::jsonb)`,
-            [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id, decision: approve ? 'approve' : 'reject' }), source])
+            [principal.id, `harness-mcp:${plan.harness}`, JSON.stringify({ planId: id, decision: approve ? 'approve' : 'reject' }), source])
         })
         if (!approve) return this.get(principal, id)
         signal.throwIfAborted()
@@ -268,13 +269,14 @@ export class HarnessMcpSettingsService {
         await withClientTransaction(client, async () => {
           await client.query("update harness_mcp_change_plans set status='applied',error=null where id=$1 and status='submitting'", [id])
           await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
-            values($1,$4,'harness.mcp.apply',$2,'succeeded',$3::jsonb)`, [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id }), source])
+            values($1,$4,'harness.mcp.apply',$2,'succeeded',$3::jsonb)`, [principal.id, `harness-mcp:${plan.harness}`, JSON.stringify({ planId: id }), source])
         })
         this.notifyChanged()
         return this.get(principal, id)
       } catch (error) {
         if (marked && selected) {
           const notSubmitted = !adapterEntered || error instanceof NativeMcpNotSubmittedError
+          const plan = selected
           const status = notSubmitted ? 'pending' : 'uncertain'
           const message = notSubmitted
             ? 'The native write was not attempted. Retry this same review, or reject it and prepare a new change.'
@@ -283,7 +285,7 @@ export class HarnessMcpSettingsService {
             const updated = await client.query("update harness_mcp_change_plans set status=$2,error=$3 where id=$1 and status='submitting'", [id, status, message])
             if (updated.rowCount) await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
               values($1,$4,'harness.mcp.delivery_recorded',$2,'succeeded',$3::jsonb)`,
-              [principal.id, `harness-mcp:${selected.harness}`, JSON.stringify({ planId: id, delivery: notSubmitted ? 'not_submitted' : 'uncertain' }), source])
+              [principal.id, `harness-mcp:${plan.harness}`, JSON.stringify({ planId: id, delivery: notSubmitted ? 'not_submitted' : 'uncertain' }), source])
           })
           this.notifyChanged()
           return this.get(principal, id)
