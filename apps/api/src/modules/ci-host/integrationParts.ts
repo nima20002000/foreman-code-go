@@ -12,7 +12,7 @@ const SETUP_MS = 90_000
 export function planIntegrationParts(input: CiRunInput, inventory: CiIntegrationInventory, slots: CiIntegrationSlots) {
   const affected = (input.scope ?? 'affected') === 'affected' && input.files !== undefined
   const files = [...new Set(affected ? input.files : inventory.files)].sort()
-  if (!files.length) return [{ part: null, partition: null, files: [], expectedDurationMs: 0 }]
+  if (!files.length) return [{ part: null, partition: null, files: [], expectedDurationMs: 0, requiresBuildComputer: false }]
   const measured = files.map(file => inventory.durations[file]).filter((ms): ms is number => ms !== undefined)
     .sort((left, right) => left - right)
   const median = measured[Math.floor(measured.length / 2)] ?? 30_000
@@ -32,6 +32,7 @@ export function planIntegrationParts(input: CiRunInput, inventory: CiIntegration
       targetDurationMs: TARGET_TEST_MS, ...(hostIndexes.length ? { hostIndexes } : {}) } : null
     const slice = partition ? integrationPartition(files, inventory.durations, partition) : files
     return { part: null, partition, files: affected ? files : [],
+      requiresBuildComputer: slice.some(requiresUserSystemd),
       expectedDurationMs: slice.length ? SETUP_MS + slice.reduce((sum, file) => sum + duration(file), 0) : 0 }
   })
 }

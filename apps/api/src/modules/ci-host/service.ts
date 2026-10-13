@@ -57,6 +57,7 @@ function isGitHubComputer(computer: HostCiComputer): boolean {
 }
 
 function needsBuildComputer(run: CiRunRecord): boolean {
+  if (run.requiresBuildComputer !== undefined) return run.requiresBuildComputer
   return run.suite === 'integration' && (run.partition
     ? run.partition.hostIndexes?.includes(run.partition.index) === true
     : run.scope === 'full' || Boolean(run.deriveFiles) || run.files.some(requiresUserSystemd))
@@ -114,7 +115,12 @@ export class HostCiService {
         const learned = ['unit', 'integration'].includes(input.suite) ? await this.learnedDurations(repository) : null
         const integration = capabilities.integrationPartitions && input.suite === 'integration'
           ? await this.commits.integrationInventory?.(repository, commit) : undefined
-        const durations = input.suite === 'integration' ? { ...integration?.durations, ...learned } : null
+        let durations = input.suite === 'integration' ? learned : null
+        if (integration) {
+          const merged = { ...integration.durations, ...learned }
+          durations = Object.fromEntries(integration.files.filter(file => merged[file] !== undefined)
+            .map(file => [file, merged[file]!]))
+        }
         const unitDurations = { ...inventory?.durations, ...learned }
         const supportsSelection = input.suite === 'integration' ? capabilities.integrationPartitions : capabilities.affected
         const selectionScope = supportsSelection ? input.scope ?? 'affected' : 'full'

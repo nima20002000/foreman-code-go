@@ -144,6 +144,8 @@ export const CiRunRecordSchema = z.object({
   plannedHostKey: z.string().nullable().optional(),
   /** Measured test time plus a fixed setup allowance; runner-derived selections use a full-suite upper estimate. */
   expectedDurationMs: z.number().nonnegative().finite().optional(),
+  /** The planned slice contains files requiring a build computer. */
+  requiresBuildComputer: z.boolean().optional(),
   /** Providers that accepted a dispatch but exhausted retries without creating work. */
   unstartedProviders: z.array(z.enum(['github', 'circleci'])).max(2).optional(),
 }).strict().refine(validCiPart, 'The part and partition must belong to the requested suite.')

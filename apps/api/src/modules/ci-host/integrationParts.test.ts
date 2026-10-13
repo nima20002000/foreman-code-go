@@ -40,9 +40,9 @@ it('bounds caller-requested partitions to free slots and selected files', () => 
   expect(planIntegrationParts({ ...input, partitions: 2 }, { files, durations }, { host: 0, ordinary: 44 })).toHaveLength(2)
   const affected = { ...input, scope: 'affected' as const, files: [files[0]!, files[0]!, files[1]!] }
   expect(planIntegrationParts(affected, { files, durations }, { host: 0, ordinary: 44 }))
-    .toEqual([{ part: null, partition: null, files: [files[0], files[1]].sort(), expectedDurationMs: 330_000 }])
+    .toEqual([{ part: null, partition: null, files: [files[0], files[1]].sort(), expectedDurationMs: 330_000, requiresBuildComputer: false }])
   expect(planIntegrationParts({ ...affected, files: [] }, { files, durations }, { host: 0, ordinary: 44 }))
-    .toEqual([{ part: null, partition: null, files: [], expectedDurationMs: 0 }])
+    .toEqual([{ part: null, partition: null, files: [], expectedDurationMs: 0, requiresBuildComputer: false }])
 })
 
 it('preserves separate host-only slices when hosts are busy and leaves ordinary work on cloud', () => {
@@ -61,4 +61,14 @@ it('uses the measured median for unknown files and sizes runner-derived selectio
     { files, durations: { [files[0]!]: 120_000 } }, { host: 0, ordinary: 44 })
   expect(parts).toHaveLength(10)
   expect(parts.every(part => part.expectedDurationMs === 330_000)).toBe(true)
+})
+
+
+it('allows a single ordinary full slice to run on cloud without changing host-only placement', () => {
+  const single = planIntegrationParts(input, { files: [files[0]!], durations }, { host: 0, ordinary: 44 })
+  expect(single[0]).toMatchObject({ partition: null, requiresBuildComputer: false, expectedDurationMs: 210_000 })
+  const hostFile = [...userSystemdIntegrationFiles][0]!
+  const host = planIntegrationParts(input, { files: [hostFile], durations: { [hostFile]: 120_000 } },
+    { host: 1, ordinary: 44 })
+  expect(host[0]).toMatchObject({ partition: null, requiresBuildComputer: true })
 })
