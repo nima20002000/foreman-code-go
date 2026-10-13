@@ -408,7 +408,11 @@ it.each([2, 3])('preserves direct cancellation during throughput planning with %
   }
 })
 
-it.each([2, 3, 4])('persists one partition plan without changing concurrent cancellations for %i siblings', async partitions => {
+it.each([
+  { partitions: 2, hostIndexes: [0] },
+  { partitions: 3, hostIndexes: [0, 1] },
+  { partitions: 4, hostIndexes: [0, 1] },
+])('persists one plan for $partitions canceled siblings', async ({ partitions, hostIndexes }) => {
   const f = await fixture()
   const entered = deferred()
   const release = deferred()
@@ -447,7 +451,7 @@ it.each([2, 3, 4])('persists one partition plan without changing concurrent canc
       expect(run).toMatchObject({ state: 'canceled', partition: { index, count: partitions } })
       expect(run.partition?.weights).toEqual(Array.from({ length: partitions }, () => 1))
       expect(run.partition?.weights).toHaveLength(partitions)
-      expect(run.partition).toMatchObject({ weights: planned[0]!.partition!.weights, hostIndexes: [0] })
+      expect(run.partition).toMatchObject({ weights: planned[0]!.partition!.weights, hostIndexes })
     }
     await f.ci.dispatch()
     expect(await Promise.all(canceled.map(run => f.read(run.id)))).toEqual(planned)
