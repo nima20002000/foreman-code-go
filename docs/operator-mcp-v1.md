@@ -78,6 +78,12 @@ endpoint. Read `claude_setup_options_get`, select the explicitly authorized
 Full access profile, and save through Harness Settings or the shared Operator
 MCP services. Credentials are issued for the accepted native process.
 
+MCP tool input schemas accept and strip unknown fields at every typed object
+level before invoking domain services. Known fields, grants, scope, revisions
+and command conflicts are still validated. Open record/map payloads keep their
+keys; HTTP, output and persisted schemas retain their existing validation.
+`tools/list` and `operator_tool_schema_get` advertise this input behavior.
+
 ## Tool catalog
 
 `computers_maintenance_start` with `sync-mcp` uses the same fleet service as
@@ -130,7 +136,7 @@ The selected project directory is the harness `workingDirectory`. Foreman Code s
 
 This establishes where native agents start; it is not a filesystem sandbox. Codex/Claude native permissions and future runner isolation remain separate controls. The Settings copy states this explicitly.
 
-`graph_draft_apply` accepts strict typed agent, node, edge, execution-limit, and required-agent-count operations. A workflow may declare `requiredAgentCount`; validation, Save, and Start then reject any graph whose number of distinct referenced agents differs. Batches and Save require the expected revision. Save creates an immutable workflow version but does not Start. Start requires that exact current saved version and the expected workspace location revision, and returns a durable Run ID before asynchronous execution.
+`graph_draft_apply` accepts typed agent, node, edge, execution-limit, and required-agent-count operations. A workflow may declare `requiredAgentCount`; validation, Save, and Start then reject any graph whose number of distinct referenced agents differs. Batches and Save require the expected revision. Save creates an immutable workflow version but does not Start. Start requires that exact current saved version and the expected workspace location revision, and returns a durable Run ID before asynchronous execution.
 
 Workspace and workflow navigation and directory lists show 5 items initially; each “Show more” request adds 10 items. MCP callers use `workspace_list` / `workflow_list` with `limit` and pass `pageInfo.nextCursor` as `cursor` until it is null. The active navigation selection can also be read directly by ID without fetching intervening pages.
 

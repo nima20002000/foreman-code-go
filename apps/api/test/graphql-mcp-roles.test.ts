@@ -89,7 +89,7 @@ describe('one Foreman Code MCP server scoped by role', () => {
     expect(await roleDeniedToolCall(context('coder'), call('no_such_tool'))).toBeUndefined()
     expect(await roleDeniedToolCall(context('coder'), { jsonrpc: '2.0', id: 1, method: 'tools/list' })).toBeUndefined()
     const coder = await connect('coder')
-    expect((await coder.listTools()).tools.find((tool) => tool.name === 'interaction_get')?.inputSchema.additionalProperties).toBe(false)
+    expect((await coder.listTools()).tools.find((tool) => tool.name === 'interaction_get')?.inputSchema.additionalProperties).not.toBe(false)
   })
 
   it('lists only the tools enabled for the Agent and refuses the rest with TOOL_NOT_ENABLED', async () => {

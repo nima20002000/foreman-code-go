@@ -15,6 +15,13 @@ caller's role returns `ROLE_NOT_ALLOWED` with the allowed roles and records a
 denial audit; it never reaches the owning service. The server's `instructions`
 tell the model its role. `context_get` returns `role` and `tools`.
 
+MCP tool inputs ignore unknown fields, including fields inside typed nested
+objects. They are stripped before service validation and command identity, so
+extra fields do not change saved data or idempotent retries. Declared fields
+still require valid values; open record/map payloads retain their keys. Output,
+HTTP and persisted schemas retain their existing validation. Unknown fields
+cannot change caller identity, grants, scope or read-only access.
+
 ### Per-Agent tools
 
 Within its role, each Agent can have fewer tools:

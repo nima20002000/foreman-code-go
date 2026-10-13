@@ -1,6 +1,7 @@
 import { MCP_DISPLAY_NAME, PRODUCT_SLUG } from '@foreman-code/contracts/product'
 import { McpServer } from '@modelcontextprotocol/server'
 import { cacheToolSchemaConversions } from '../shared/schemaCache.js'
+import { stripMcpInputSchemas } from '../shared/inputSchemas.js'
 import { z } from 'zod'
 import { AgentRunStatusSchema, GRAPHQL_AGENT_TOOLS } from '@foreman-code/contracts'
 
@@ -29,6 +30,7 @@ const readAnnotations = {
 export async function createAppMcpServer(context: AppRequestContext): Promise<McpServer> {
   const server = new McpServer({ name: PRODUCT_SLUG, title: MCP_DISPLAY_NAME, version: '1.0.0' })
   cacheToolSchemaConversions(server, 'app')
+  stripMcpInputSchemas(server)
   retryReadOnlyToolConnections(server)
   await registerAppTools(server, context)
   return server

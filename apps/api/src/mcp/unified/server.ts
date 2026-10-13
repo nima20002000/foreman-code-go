@@ -17,6 +17,7 @@ import { installOperatorPresentation, type OperatorCatalog } from '../operator/p
 import type { OperatorServices } from '../operator/types.js'
 import { toolFailure } from '../shared/results.js'
 import { cacheToolSchemaConversions } from '../shared/schemaCache.js'
+import { stripMcpInputSchemas } from '../shared/inputSchemas.js'
 import { retryReadOnlyToolConnections } from '../shared/databaseReadRetry.js'
 import { MCP_ROLE_LABELS, roleInstructions, roleList, toolRoles, type McpRole } from './roles.js'
 
@@ -146,6 +147,7 @@ export async function createGraphqlMcpServer(context: GraphqlMcpContext, request
     ? call.data.params.name : undefined
   const server = new McpServer({ name: PRODUCT_SLUG, title: MCP_DISPLAY_NAME, version: '1.0.0' }, { instructions: roleInstructions(context.role) })
   cacheToolSchemaConversions(server, 'unified')
+  stripMcpInputSchemas(server)
   retryReadOnlyToolConnections(server)
   paginateToolLists(server)
   if (context.role === 'operator') {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   decodeMcpToolResult,
+  mcpInputSchema,
   OperatorAgentListInputSchema,
   OperatorRunListInputSchema,
   OperatorToolSchemaInputSchema,
@@ -87,6 +88,7 @@ describe('Operator schema lookup input', () => {
     for (const name of ['', 'x'.repeat(257)]) {
       expect(OperatorToolSchemaInputSchema.safeParse({ name }).success).toBe(false)
     }
-    expect(OperatorToolSchemaInputSchema.safeParse({ name: 'workspace_update', unknown: true }).success).toBe(false)
+    expect(mcpInputSchema(OperatorToolSchemaInputSchema).parse({ name: 'workspace_update', unknown: true }))
+      .toEqual({ name: 'workspace_update', includeOutputSchema: false })
   })
 })
