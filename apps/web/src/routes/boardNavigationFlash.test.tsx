@@ -1,12 +1,25 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, beforeAll, expect, it } from 'vitest'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { routeTree } from '../app/router'
+import { useGraphDraftStore } from '../features/graph/store'
+import { installFlowLayout } from '../features/run-board/testFlowLayout'
 import { setMockScenario } from '../shared/mocks/scenarios'
+import { installBrowserLocks } from '../test/browserLocks'
 
-beforeAll(() => { globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver })
-afterEach(() => setMockScenario('normal'))
+beforeEach(() => {
+  sessionStorage.clear()
+  useGraphDraftStore.getState().clearAllDrafts()
+  installBrowserLocks()
+  installFlowLayout(1000, 720)
+})
+afterEach(() => {
+  cleanup()
+  useGraphDraftStore.getState().clearAllDrafts()
+  setMockScenario('normal')
+  vi.unstubAllGlobals()
+})
 
 it.each(['/workspaces/workspace-1/workflows', '/workspaces/workspace-1/agents', '/workspaces'])(
   'leaves the board for %s without flashing an invalid board selection', async (destination) => {
