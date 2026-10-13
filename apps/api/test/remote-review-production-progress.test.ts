@@ -122,19 +122,20 @@ it.each(['acknowledged', 'completed'] as const)(
     correlationId: 'review-correlation', createdAt: time, acknowledgedAt: time, updatedAt: time,
     ...(initialState === 'completed' ? { completedAt: time } : {}),
   })
-  const recovery = vi.fn(async () => {
-    // Delivery recovery cannot advance until the original review turn has settled.
-    if (job.state !== 'completed') throw new Error('Production Main reconciliation timed out.')
+  const retryDecision = vi.fn(async () => {
+    if (job.state !== 'completed') throw new Error('The original review turn has not completed.')
     interaction = DurableInteractionSchema.parse({ ...interaction,
       status: 'delivered', deliveryState: 'delivered', deliveredAt: time,
     })
   })
   const fixture = {
-    provider: { calls: async () => [] },
+    provider: { calls: async () => [], retryReview: retryDecision },
     async reconcileReviews() {
       job = ReviewJobSchema.parse({ ...job, state: 'completed', completedAt: time })
     },
-    reconcile: recovery,
+    async reconcile() {
+      throw new Error('Application maintenance is unavailable.')
+    },
     async value() { return { interaction } },
     db: { pool: { query: async () => ({ rows: [{ record: job }] }) } },
   } as unknown as Parameters<typeof deliveredReview>[0]
@@ -144,5 +145,5 @@ it.each(['acknowledged', 'completed'] as const)(
   expect(delivered.job).toMatchObject({
     id: 'review-original', state: 'completed', providerTurnOrMessageId: 'review-turn',
   })
-  expect(recovery).toHaveBeenCalledOnce()
+  expect(retryDecision).toHaveBeenCalledOnce()
 })

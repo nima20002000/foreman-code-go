@@ -95,7 +95,7 @@ function fixture() {
       return result([{ execution_id: execution.id }])
     }
     if (text.startsWith("select record->>'connectionGeneration'")) return result(state.lane ? [{ generation: '1' }] : [])
-    if (text.startsWith('update worker_credential_bindings')) {
+    if (text.includes('update worker_credential_bindings')) {
       expect(values).toEqual([principal.id, execution.id, execution.agentId, session.nativeSessionId, '1'])
       state.purpose = 'reviewer'
       return result([{}])
