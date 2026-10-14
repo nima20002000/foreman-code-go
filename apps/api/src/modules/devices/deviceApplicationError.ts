@@ -20,6 +20,7 @@ const retryability: Readonly<Record<string, boolean>> = {
   GITHUB_ACCOUNT_CHANGED: false,
   unavailable: true,
   backpressure: true,
+  DEVICE_BUSY: true,
   timeout: true,
   transport: true,
   DATABASE_READ_TIMEOUT: true,
@@ -119,5 +120,5 @@ export class DeviceApplicationError extends Error {
 
 /** The request was refused before its domain handler could run. */
 export class DeviceApplicationAdmissionError extends DeviceApplicationError {
-  constructor() { super('backpressure') }
+  constructor(readonly reason = 'backpressure') { super('backpressure') }
 }

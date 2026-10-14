@@ -12,12 +12,14 @@ import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-re
 import { assertBuildComputerTarget } from '../settings/buildComputers.js'
 import { DeviceAccessError } from '../devices/access.js'
 import { componentLogger } from '../diagnostics/logger.js'
+import type { DeviceRequestPriority } from '@foreman-code/contracts/device-application'
 
 const log = componentLogger('jobs')
 
 interface DeviceRequests {
   capabilities(deviceId: string): readonly { namespace: string; mainCanRequest?: boolean }[]
-  request(deviceId: string, namespace: string, payload: unknown, options?: { timeoutMs?: number }): Promise<{ payload: unknown }>
+  request(deviceId: string, namespace: string, payload: unknown,
+    options?: { timeoutMs?: number; priority?: DeviceRequestPriority }): Promise<{ payload: unknown }>
 }
 
 /** Build-enabled paired computers that serve host CI now, Main itself through its local runner, and cloud CI services
@@ -68,7 +70,8 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
       .sort((left, right) => right.priority - left.priority)
   }
 
-  async request(computer: HostCiComputer, request: CiHostRequest): Promise<CiHostReply> {
+  async request(computer: HostCiComputer, request: CiHostRequest,
+    options?: { priority: DeviceRequestPriority }): Promise<CiHostReply> {
     if (request.operation === 'start' && computer.hostRef.kind !== 'cloud') {
       const saved = (await this.computers()).find(value => value.key === computer.key
         && JSON.stringify(value.hostRef) === JSON.stringify(computer.hostRef))
@@ -78,14 +81,14 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
       request = { ...request, buildAllowancePercent: saved.buildAllowancePercent ?? 100 }
     }
     if (request.operation === 'start' && computer.hostRef.kind === 'device') {
-      const status = await this.request(computer, { operation: 'status' })
+      const status = await this.sendRequest(computer, { operation: 'status' }, { priority: 'foreground' })
       if (status.operation !== 'status') throw new DomainError('CI_HOST_REPLY_INVALID', 'Expected Worker CI status.', 502)
       if ((status.startProtocolVersion ?? 0) < CI_HOST_START_PROTOCOL_VERSION) {
         throw new DomainError('CI_HOST_PROTOCOL_UNSUPPORTED', status.reasons.join('; '), 409)
       }
       if (!status.ready) throw new DomainError('CI_HOST_BUSY', status.reasons.join('; '), 409)
     }
-    const reply = await this.sendRequest(computer, request)
+    const reply = await this.sendRequest(computer, request, options)
     if (reply.operation === 'status' && reply.cleanupSupported) {
       void this.cleanDirectories(computer).catch(error => {
         log.warn({ err: error, hostRef: computer.hostRef }, 'CI directory cleanup failed; next status will retry')
@@ -115,7 +118,8 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
     finally { this.cleanupPending.delete(key) }
   }
 
-  private async sendRequest(computer: HostCiComputer, request: CiHostRequest): Promise<CiHostReply> {
+  private async sendRequest(computer: HostCiComputer, request: CiHostRequest,
+    options?: { priority: DeviceRequestPriority }): Promise<CiHostReply> {
     if (computer.hostRef.kind === 'main') return this.local.handle(request)
     if (computer.hostRef.kind === 'cloud') {
       const cloud = this.clouds.find(value => value.provider.id === computer.hostRef.provider)
@@ -124,7 +128,9 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
     }
     const devices = this.devices()
     if (!devices || !computer.hostRef.deviceId) throw new Error('The build computer is offline.')
-    const reply = await devices.request(computer.hostRef.deviceId, CI_HOST_NAMESPACE, request, { timeoutMs: 120_000 })
+    const priority = options?.priority ?? (request.operation === 'status' ? 'background' : 'foreground')
+    const reply = await devices.request(computer.hostRef.deviceId, CI_HOST_NAMESPACE, request,
+      { timeoutMs: 120_000, priority })
     const parsed = CiHostReplySchema.parse(reply.payload)
     if (parsed.operation === 'status' && (parsed.startProtocolVersion ?? 0) < CI_HOST_START_PROTOCOL_VERSION) {
       return { ...parsed, ready: false, reasons: [...parsed.reasons,

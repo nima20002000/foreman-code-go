@@ -5,6 +5,7 @@ import {
   DEVICE_APPLICATION_IN_FLIGHT,
   DEVICE_APPLICATION_STOP_IN_FLIGHT, DEVICE_APPLICATION_STOP_BYTES,
   parseExtensionDescriptors, type DeviceApplicationResult, type DeviceExtensionDescriptor, type DeviceNegotiatedExtension,
+  type DeviceRequestPriority,
 } from '@foreman-code/contracts/device-application'
 import { DEVICE_BUFFER_BYTES, type DeviceFrame, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
@@ -14,6 +15,7 @@ import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadl
 import { DeviceApplicationAdmissionError, DeviceApplicationError, deviceApplicationFailure } from './deviceApplicationError.js'
 import { deviceRequestTimeoutMs, retryDeviceRequest, waitForDeviceRetry } from './deviceRequestRetry.js'
 import { MainClock } from './workerClock.js'
+import { DeviceRequestQueue, deviceForegroundWaitMs, deviceRequestPriority } from './deviceRequestQueue.js'
 export { DeviceApplicationError } from './deviceApplicationError.js'
 
 export interface DeviceExtensionContext { binding: Readonly<DeviceSessionBinding>; signal: AbortSignal; connectionSignal?: AbortSignal; bytes?: Uint8Array }
@@ -21,7 +23,14 @@ export interface DeviceExtensionRegistration extends DeviceExtensionDescriptor {
   /** Domain handler MUST validate its execution/job/transfer grant and immutable target. */
   handle?(payload: unknown, context: DeviceExtensionContext): Promise<DeviceApplicationResult>
 }
-export interface DeviceApplicationRequestOptions { signal?: AbortSignal; bytes?: Uint8Array; timeoutMs?: number }
+export interface DeviceApplicationRequestOptions {
+  signal?: AbortSignal; bytes?: Uint8Array; timeoutMs?: number; priority?: DeviceRequestPriority
+}
+export interface CapturedDeviceApplicationRequest {
+  binding: Readonly<DeviceSessionBinding>
+  readonly busy?: boolean
+  request(payload: unknown, options?: DeviceApplicationRequestOptions): Promise<DeviceApplicationResult>
+}
 interface Pending {
   resolve(value: DeviceApplicationResult): void
   reject(error: Error): void
@@ -52,6 +61,7 @@ export class DeviceApplicationChannel {
   private readonly registrations: DeviceExtensionRegistration[]
   private readonly binding: Readonly<DeviceSessionBinding>
   private readonly pending = new Map<string, Pending>()
+  private readonly requestQueue = new DeviceRequestQueue()
   private readonly assemblies = new Map<string, Assembly>()
   private readonly handlers = new Map<string, Assembly>()
   private readonly rawHandlers = new Map<string, Assembly>()
@@ -92,9 +102,11 @@ export class DeviceApplicationChannel {
   async join(): Promise<void> { while (this.tasks.size) await Promise.allSettled([...this.tasks]) }
   currentBinding(): Readonly<DeviceSessionBinding> { this.current(); return this.binding }
   currentBindingForIncoming(namespace: string): Readonly<DeviceSessionBinding> { this.current(); this.negotiated(namespace, false); return this.binding }
-  captureRequest(namespace: string) {
+  captureRequest(namespace: string): CapturedDeviceApplicationRequest {
     this.current(); this.negotiated(namespace, true)
-    return Object.freeze({ binding: this.binding, request: (payload: unknown, options?: DeviceApplicationRequestOptions) => this.request(namespace, payload, options) })
+    const channel = this
+    return Object.freeze({ binding: this.binding, get busy() { return channel.requestQueue.busy },
+      request: (payload: unknown, options?: DeviceApplicationRequestOptions) => this.request(namespace, payload, options) })
   }
   capabilities(): DeviceNegotiatedExtension[] { return this.extensions.map((item) => ({ ...item })) }
   private current() { if (this.abort.signal.aborted) throw this.failure ?? new DeviceConnectionError('transport') }
@@ -136,10 +148,6 @@ export class DeviceApplicationChannel {
       && placement.runId === intent.runId && placement.nodeId === intent.nodeId
       && placement.bindingHash === intent.bindingHash
   }
-  private outgoingFull(stop: boolean): boolean {
-    const count = [...this.pending.values()].filter(pending => pending.stop === stop).length
-    return count >= (stop ? DEVICE_APPLICATION_STOP_IN_FLIGHT : DEVICE_APPLICATION_IN_FLIGHT)
-  }
   private releaseIncoming(assembly: Assembly) {
     if (assembly.released) return
     assembly.released = true
@@ -153,21 +161,50 @@ export class DeviceApplicationChannel {
     this.current()
     const stopNamespace = this.options.side === 'main' ? 'execution-v1' : EXECUTION_AUTHORITY_EXTENSION.namespace
     const stop = namespace === stopNamespace && !options.bytes && this.stopRequest(namespace, payload)
-    if (this.outgoingFull(stop)) throw new DeviceApplicationAdmissionError()
-    if (options.signal?.aborted) throw new DeviceApplicationError('cancelled')
-    await this.authorized()
-    if (options.signal?.aborted) throw new DeviceApplicationError('cancelled')
-    if (this.outgoingFull(stop)) throw new DeviceApplicationAdmissionError()
+    const priority = options.priority ?? deviceRequestPriority(namespace, payload)
+    const release = await this.requestQueue.acquire({ priority, stop, signal: options.signal })
+    try {
+      const deadline = Date.now() + deviceForegroundWaitMs
+      const signal = AbortSignal.any([this.abort.signal, ...(options.signal ? [options.signal] : [])])
+      let backoff = 50
+      while (true) {
+        await this.authorized()
+        if (options.signal?.aborted) throw new DeviceApplicationError('cancelled')
+        try {
+          return await this.sendRequest(namespace, payload, extension.version, options, { stop, priority })
+        } catch (error) {
+          const remaining = deadline - Date.now()
+          if (priority !== 'foreground' || !(error instanceof DeviceApplicationAdmissionError)
+            || error.reason !== 'remote_capacity' || remaining <= 0) throw error
+          await waitForDeviceRetry(Math.min(backoff, remaining), signal)
+          backoff = Math.min(1_000, backoff * 2)
+        }
+      }
+    } finally { release() }
+  }
+  private async sendRequest(namespace: string, payload: unknown, version: number,
+    options: DeviceApplicationRequestOptions, admission: { stop: boolean; priority: DeviceRequestPriority }) {
     const id = randomUUID(), abort = new AbortController()
+    let uploading = true
     let reject!: (error: Error) => void
-    const result = new Promise<DeviceApplicationResult>((resolve, fail) => { reject = fail; this.pending.set(id, { namespace, resolve, reject: fail, abort, stop }) })
+    const result = new Promise<DeviceApplicationResult>((resolve, fail) => {
+      reject = fail
+      this.pending.set(id, { namespace, resolve, reject: fail, abort, stop: admission.stop })
+    })
     const cancel = () => { abort.abort(); reject(new DeviceApplicationError('cancelled')); this.trySendCancel(id) }
     options.signal?.addEventListener('abort', cancel, { once: true })
-    const timer = setTimeout(() => { abort.abort(); reject(new DeviceApplicationError('timeout')); this.trySendCancel(id) }, Math.min(900_000, Math.max(1, options.timeoutMs ?? 30_000)))
+    const timer = setTimeout(() => {
+      const failure = uploading && !this.uploads.has(id)
+        ? new DeviceApplicationAdmissionError('upload_capacity_timeout') : new DeviceApplicationError('timeout')
+      abort.abort()
+      reject(failure)
+      this.trySendCancel(id)
+    }, Math.min(900_000, Math.max(1, options.timeoutMs ?? 30_000)))
     // Observe rejection immediately while the request bytes are still uploading.
     void result.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
     try {
-      await this.sendPacket(id, namespace, extension.version, 'request', payload, options.bytes, abort.signal, { stop })
+      await this.sendPacket(id, namespace, version, 'request', payload, options.bytes, abort.signal, admission)
+      uploading = false
       return await result
     } catch (error) {
       this.trySendCancel(id)
@@ -185,8 +222,9 @@ export class DeviceApplicationChannel {
       this.close(error instanceof Error ? error : new DeviceConnectionError('transport'))
     })
   }
-  private async waitForCapacity(attempt: () => boolean, signal: AbortSignal): Promise<void> {
-    const deadline = Date.now() + deviceRequestTimeoutMs
+  private async waitForCapacity(attempt: () => boolean, signal: AbortSignal,
+    options: { timeoutMs?: number; timeoutError?: Error } = {}): Promise<void> {
+    const deadline = Date.now() + (options.timeoutMs ?? deviceRequestTimeoutMs)
     const waiting = AbortSignal.any([signal, this.abort.signal])
     let backoff = 50
     while (true) {
@@ -194,7 +232,7 @@ export class DeviceApplicationChannel {
       if (signal.aborted) throw new DeviceApplicationError('cancelled')
       if (attempt()) return
       const remaining = deadline - Date.now()
-      if (remaining <= 0) throw new DeviceApplicationError('timeout')
+      if (remaining <= 0) throw options.timeoutError ?? new DeviceApplicationError('timeout')
       try {
         await waitForDeviceRetry(Math.min(backoff, remaining), waiting)
       } catch (error) {
@@ -246,7 +284,7 @@ export class DeviceApplicationChannel {
     try { await transmission }
     finally { this.chunkTransmissions.delete(finished) }
   }
-  private async sendPacket(id: string, namespace: string, version: number, kind: Assembly['kind'], payload: unknown, bytes: Uint8Array | undefined, signal: AbortSignal, admission = { stop: false }) {
+  private async sendPacket(id: string, namespace: string, version: number, kind: Assembly['kind'], payload: unknown, bytes: Uint8Array | undefined, signal: AbortSignal, admission: { stop: boolean; priority?: DeviceRequestPriority } = { stop: false }) {
     this.current()
     const { stop } = admission
     const extension = this.extensions.find((item) => item.namespace === namespace)!
@@ -256,8 +294,17 @@ export class DeviceApplicationChannel {
     if (stop && kind === 'request' && size > DEVICE_APPLICATION_STOP_BYTES) throw new DeviceApplicationError('payload-too-large')
     const byteLimit = this.bufferBytes - (stop ? 0 : DEVICE_APPLICATION_STOP_BYTES)
     if (kind === 'request') {
-      if (this.outboundBytes + size > byteLimit) throw new DeviceApplicationAdmissionError()
-      this.outboundBytes += size
+      if (admission.priority === 'foreground') {
+        await this.waitForCapacity(() => {
+          if (this.outboundBytes + size > byteLimit) return false
+          this.outboundBytes += size
+          return true
+        }, signal, { timeoutMs: deviceForegroundWaitMs,
+          timeoutError: new DeviceApplicationAdmissionError('upload_capacity_timeout') })
+      } else {
+        if (this.outboundBytes + size > byteLimit) throw new DeviceApplicationAdmissionError()
+        this.outboundBytes += size
+      }
     } else {
       // Keep a completed handler's reply until uploads drain; replaying the handler may repeat a write.
       await this.waitForCapacity(() => {
@@ -327,7 +374,8 @@ export class DeviceApplicationChannel {
     if (frame.type === 'application-reject') {
       if (frame.code !== 'backpressure') throw new DeviceConnectionError('malformed-frame')
       const rejectedBeforeUpload = this.acknowledgements.get(id)?.has(0) === true
-      const error = rejectedBeforeUpload ? new DeviceApplicationAdmissionError() : new DeviceApplicationError('backpressure')
+      const error = rejectedBeforeUpload
+        ? new DeviceApplicationAdmissionError('remote_capacity') : new DeviceApplicationError('backpressure')
       for (const ack of this.acknowledgements.get(id)?.values() ?? []) ack.reject(error)
       this.pending.get(id)?.reject(error)
       this.uploads.get(id)?.abort()
@@ -470,6 +518,7 @@ export class DeviceApplicationChannel {
   }
   close(error: Error = new DeviceConnectionError('transport')) {
     if (this.abort.signal.aborted) return
+    this.requestQueue.close(error)
     this.failure = error; this.abort.abort(); this.detach()
     for (const pending of this.pending.values()) { pending.abort.abort(); pending.reject(error) }
     for (const assembly of this.assemblies.values()) assembly.abort.abort()
