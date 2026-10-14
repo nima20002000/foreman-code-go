@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, mkdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, type AgentConfigurationVersion, type NativeSessionReference } from '@foreman-code/contracts'
 import { DispatchIntentSchema } from '@foreman-code/contracts/node-placement'
@@ -36,9 +37,17 @@ import type { WorkflowNativeProofRecord } from '../workflowNativeProof.js'
 import type { WorkflowNativeCapture, WorkflowOriginalNativeSource } from '../../interactions/workflowNativeCapture.js'
 import type { WorkflowPhysicalArtifactsPort } from './workflowPhysicalArtifacts.js'
 import { workflowNativeReservation } from '../workflowNativeEntry.js'
+import { workflowNativeSourceRecord } from '../workflowNativeSource.js'
+import type { StoredRepeatExecution } from '../repeatPostgres.js'
 const roots:string[]=[],journals:RemoteOperationJournal[]=[]
 afterEach(async()=>{vi.restoreAllMocks();await Promise.all(journals.splice(0).map(journal=>journal.close()));await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})))})
-async function directory() {const root=await mkdtemp('/tmp/installed-workflow-');roots.push(root);return root}
+async function directory() {
+  const parent = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(parent, { recursive: true })
+  const root = await mkdtemp(join(parent, 'installed-workflow-'))
+  roots.push(root)
+  return root
+}
 function nativeFixture(harness: 'codex' = 'codex') {
   const connection=DeviceConnectionIdentitySchema.parse({mainId:randomUUID(),deviceId:randomUUID(),workerInstallationId:randomUUID(),
     bootId:bootIdentity(),keyRevision:1,authorizationRevision:1,connectionGeneration:4})
@@ -147,6 +156,12 @@ async function physicalFixture(options: {
   const request=vi.fn(async(payload:unknown):Promise<DeviceApplicationResult>=>{void payload;return {payload:readout}})
   const currentBinding=vi.fn<()=>DeviceSessionBinding|undefined>(()=>f.context.binding)
   const canonicalProofs:{record:{execution:ReturnType<typeof repeatExecutionIdentity>;session:NativeSessionReference;original:typeof source}}[]=[]
+  let proofReadLimit = Infinity
+  const proofId = (original: WorkflowOriginalNativeSource) => workflowNativeSourceRecord(
+    { ...lifetime, source: original } as unknown as WorkflowNativeCapture,
+    { execution, ref: { nodeId: execution.workflowNodeId, occurrence: null } } as StoredRepeatExecution,
+    reservation.scope, { ownerId: 'original-owner', fence: '1' },
+  ).proofId
   // Authenticated carrier/SQL/process observations are explicit unit doubles.
   // The real source materialization/runtime directory above exercises FD/CWD receipts; no native or signed connection is produced.
   const producer=createRemoteWorkflowPhysicalVerification({...artifacts?{artifacts}:{},endpoint:()=>({currentBinding,captureRequest:()=>({binding:f.context.binding,request})})})
@@ -166,7 +181,18 @@ async function physicalFixture(options: {
     if(text.includes('harness_executions'))return {rows:[{record:execution,accepted:retained.accepted}],rowCount:1}
     if(text.includes('workflow_native_entries'))return {rows:[entry],rowCount:1}
     if(text.includes('source_digest from workflow_native_proofs'))return {rows:retained.proof?[{record:retained.proof,source_digest:repeatDigest(retained.proof,4*1024*1024)}]:[],rowCount:retained.proof?1:0}
-    if(text.includes('workflow_native_proofs'))return {rows:canonicalProofs.map(row=>({...row,original:row.record.original})),rowCount:canonicalProofs.length}
+    if (text.includes('workflow_native_proofs')) {
+      if (Array.isArray(args[2]) && args[2].length === 0) return { rows: [], rowCount: 0 }
+      const ids = new Set(canonicalProofs.map(row => proofId(row.record.original)))
+      const keys = args.flatMap(value => Array.isArray(value) ? value : [value])
+      const indexed = keys.filter(value => typeof value === 'string' && ids.has(value))
+      const rows = indexed.length
+        ? canonicalProofs.filter(row => indexed.includes(proofId(row.record.original))) : canonicalProofs
+      if (rows.length > proofReadLimit) {
+        throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' })
+      }
+      return { rows: rows.map(row => ({ ...row, original: row.record.original })), rowCount: rows.length }
+    }
     if(text.includes('execution_native_sessions'))return {rows:[{reference:n.session}],rowCount:1}
     if(text.includes('execution_native_closures'))return {rows:[closure],rowCount:1}
     if(text.includes('remote_execution_receipts'))return {rows:[{receipt:retained.receipt}],rowCount:1}
@@ -197,8 +223,29 @@ async function physicalFixture(options: {
     return original
   }
   return {...f,registry:n.registry,snapshot:n.snapshot,session:n.session,launch:n.launch,connection,captured,journal,readout,source,execution,lifetime,
-    entry,lane,request,currentBinding,producer,query,sqlConnection,owner,originals,bind,canonicalProofs,closure,retained}
+    entry,lane,request,currentBinding,producer,query,sqlConnection,owner,originals,bind,canonicalProofs,closure,retained,
+    limitProofReads: (limit: number) => { proofReadLimit = limit } }
 }
+
+it('acknowledges an original history without scanning unrelated retained histories', async () => {
+  const f = await physicalFixture()
+  try {
+    const original = await f.bind()
+    for (let index = 0; index < 40; index += 1) {
+      f.canonicalProofs.push({ record: { execution: repeatExecutionIdentity(f.execution), session: f.session,
+        original: { type: 'history', history: { ...f.source.history, nativeTurnId: `earlier-turn-${index}` } } } })
+    }
+    f.canonicalProofs.push({ record: {
+      execution: repeatExecutionIdentity(f.execution), session: f.session, original: f.source,
+    } })
+    f.limitProofReads(1)
+    await f.sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original))
+    const ack = { version: 1, operationId: f.intent.operationId, receiptSequence: f.readout.receipt.sequence,
+      sourceDigest: original.sourceDigest, status: 'retired' }
+    f.request.mockResolvedValueOnce({ payload: ack })
+    await expect(f.producer.acknowledge(original)).resolves.toEqual(ack)
+  } finally { await f.sqlConnection.close() }
+})
 // Real private directories and original capability; SQL/carrier/process boundaries
 // are unit doubles. These fixtures never establish physical qualification.
 async function terminalFixture(harness: 'codex' = 'codex') {
