@@ -175,7 +175,7 @@ export async function ciPreparationFixture(options: {
     executablePolicy: 'preserve-approved' as const, git: { commit, tree: 'f'.repeat(40), objectFormat: 'sha1' as const },
     entries: [], deletions: [], totalEntries: 0, totalBytes: 0 }
   const clone = join(directory, 'clone')
-  await mkdir(clone)
+  await mkdir(clone, { mode: 0o700 })
   const acceptedCommit = manifest.git!.commit
   const acceptedPin = { approvedSourceId: manifest.approvedSourceId, snapshotId: manifest.snapshotId,
     manifestDigest: manifest.manifestDigest }

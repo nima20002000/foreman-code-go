@@ -331,10 +331,10 @@ it('keeps provider facts stable while successful observation time advances', asy
     await f.ci.dispatch()
     f.remote.set(key, { ...f.remote.get(key)!, message: 'Observation B' })
     await f.ci.dispatch()
-    const before = (await f.pool.query('select record,xmin::text as revision from ci_runs where id=$1', [ticket.ticketId])).rows[0]
+    const before = (await f.pool.query('select record from ci_runs where id=$1', [ticket.ticketId])).rows[0]
     await f.ci.dispatch()
     await f.ci.dispatch()
-    const after = (await f.pool.query('select record,xmin::text as revision from ci_runs where id=$1', [ticket.ticketId])).rows[0]
+    const after = (await f.pool.query('select record from ci_runs where id=$1', [ticket.ticketId])).rows[0]
     expect(after.record).toEqual({ ...before.record, observation: {
       ...before.record.observation, lastSuccessAt: expect.any(String) } })
     expect(Date.parse(after.record.observation.lastSuccessAt))
@@ -860,7 +860,7 @@ it('preserves a running ticket without optional message metadata during an uncha
     f.control.available = true
     await f.ci.dispatch()
     const stored = async () => (await f.pool.query(
-      'select record,xmin::text as revision from ci_runs where id=$1', [ticket.ticketId])).rows[0]
+      'select record from ci_runs where id=$1', [ticket.ticketId])).rows[0]
     const running = await f.read(ticket.ticketId)
     expect(running.state).toBe('running')
     const withoutMessages = { ...running }

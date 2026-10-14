@@ -6,7 +6,7 @@ import { BuildComputerStatusSchema, BuildComputerBatchResultSchema } from '@fore
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
 import type { ManagementAction } from '@foreman-code/contracts/management'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
@@ -146,6 +146,8 @@ it('honors persisted MCP build participation and priority while retaining assign
     expect((await db.pool.query('select count(*)::int as count from ci_runs')).rows[0]!.count).toBe(0)
 
     outdated.add(devices[1]!.registration.deviceId)
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.now() + 5001)
     const incompatible = (await list()).computers.find(computer => computer.hostRef.deviceId === devices[1]!.registration.deviceId)
     expect(incompatible).toMatchObject({ ready: false, reasons: [expect.stringMatching(/CI start protocol.*update/i)] })
     const protocolTicket = await start()
@@ -159,9 +161,12 @@ it('honors persisted MCP build participation and priority while retaining assign
     expect(deniedList.isError).toBe(true)
     expect(JSON.stringify(deniedList.content)).toContain('ACCESS_DENIED')
     expect(await read(devices[1]!.target)).toEqual(high)
-    expect((await get(protocolTicket.ticketId)).run).toEqual(protocolRead.run)
+    expect((await get(protocolTicket.ticketId)).run).toEqual({ ...protocolRead.run,
+      observation: { status: 'available', lastSuccessAt: expect.any(String), lastError: null,
+        consecutiveFailures: 0, nextAttemptAt: null } })
     await call(writer, 'ci_cancel', { workspaceId, ticketId: protocolTicket.ticketId })
     outdated.clear()
+    vi.setSystemTime(Date.now() + 5001)
     starts.length = 0
 
     const first = await start()
@@ -240,6 +245,7 @@ it('honors persisted MCP build participation and priority while retaining assign
     expect(storedSmoke).not.toHaveProperty('smokeComputer')
     expect({ ...storedSmoke, smokeComputer: smokeInput.smokeComputer }).toEqual(smokeRead.run)
   } finally {
+    vi.useRealTimers()
     await Promise.allSettled(clients.map(client => client.close()))
     await ci?.close()
     await app?.close()

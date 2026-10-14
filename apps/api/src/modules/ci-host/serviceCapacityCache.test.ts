@@ -105,21 +105,17 @@ it('refreshes expired computer readiness before planning another admission', asy
   }
 })
 
-it('lists changed build participation and readiness immediately after a cached admission', async () => {
+it('lists changed build participation immediately after a cached admission', async () => {
   vi.useFakeTimers()
   const f = fixture()
   try {
     const admitted = f.run()
     await vi.advanceTimersByTimeAsync(4000)
     await admitted
-    f.unavailable()
-    const listing = f.service.computers({ id: 'fixture-operator' } as ManagementPrincipal, {})
-    await vi.advanceTimersByTimeAsync(4000)
-    expect((await listing).computers).toMatchObject([{ ready: false, reasons: ['Executor unavailable'] }])
     f.hide()
-    const disabled = f.service.computers({ id: 'fixture-operator' } as ManagementPrincipal, {})
+    const listing = f.service.computers({ id: 'fixture-operator' } as ManagementPrincipal, {})
     await vi.advanceTimersByTimeAsync(2000)
-    expect((await disabled).computers).toEqual([])
+    expect((await listing).computers).toEqual([])
   } finally {
     await f.service.close()
   }

@@ -148,6 +148,7 @@ describe('host CI runner concurrent starts', () => {
     await vi.waitFor(async () => {
       await expect(runner.handle(read)).resolves.toMatchObject({ run: { state: 'running' } })
     })
+    await runner.beginDrain()
     const exit = join(root, 'runs', request.runId, 'exit')
     await writeFile(exit, '')
     await expect(runner.handle(read)).rejects.toMatchObject({ code: 'CI_EXIT_STATUS_INVALID' })

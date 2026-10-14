@@ -78,7 +78,7 @@ test('checkout paths with spaces, Unicode and percent characters retain queue ow
       const result = await run(cwd, ['--', process.execPath, '-e',
         'console.log(JSON.stringify({cwd:process.cwd(),common:process.env.FOREMAN_CODE_HEAVY_JOB_COMMON}))'])
       assert.equal(result.code, 0, result.output)
-      const receipt = JSON.parse(result.output.trim().split('\n').at(-1))
+      const receipt = JSON.parse(result.output.split('\n').find(line => line.startsWith('{"cwd":')))
       assert.deepEqual(receipt, { cwd, common: f.common })
     }
     assert.deepEqual(readdirSync(join(f.state, 'queue')), [])

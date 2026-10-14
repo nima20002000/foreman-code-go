@@ -171,7 +171,7 @@ it.each(['github', 'circleci'] as const)(
   })
 
 it.each(['missing-request', 'unavailable-provider'] as const)(
-  'frees an expired cloud slot after restart with %s', async failure => {
+  'reconciles an expired cloud start while retaining unconfirmed provider ownership: %s', async failure => {
     const f = dispatchFixture()
     const cloud: HostCiComputer = { key: 'cloud:github', label: 'Cloud executor', priority: 0,
       hostRef: { kind: 'cloud', mainId: 'fixture-main', provider: 'github', slot: 0 } }
