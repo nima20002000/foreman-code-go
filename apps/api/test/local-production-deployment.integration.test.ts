@@ -1,20 +1,25 @@
 import { execFile } from 'node:child_process'
 import { cp, mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 import { expect, it } from 'vitest'
+import { testFixtureCacheRoot } from '../../../scripts/test-fixture-cache.mjs'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { compileApiFixture } from './helpers/compiledApiFixture.js'
+
+const fixtureRoot = process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp')
 
 it('keeps source development commands usable after successful and failed production deployment', async () => {
   const script = new URL('../../../scripts/local-production-runtime.mjs', import.meta.url).href
   const { deployProductionApi } = await import(script)
   const execute = promisify(execFile)
-  const directory = await mkdtemp(join(tmpdir(), 'production-deployment-'))
+  await mkdir(fixtureRoot, { recursive: true })
+  const directory = await mkdtemp(join(fixtureRoot, 'production-deployment-'))
   const source = join(directory, 'workspace')
+  const dependencies = { root: join(testFixtureCacheRoot(), 'api-dependencies'), source }
   const api = join(source, 'apps/api')
   const contracts = join(source, 'packages/contracts')
   const destination = join(directory, 'deployed')
@@ -64,7 +69,7 @@ it('keeps source development commands usable after successful and failed product
     } }))
     await run('corepack', ['pnpm', 'install', '--frozen-lockfile'])
     await verifyDevelopment()
-    await deployProductionApi(run, destination)
+    await deployProductionApi(run, destination, { dependencies })
     const deployed = await import(pathToFileURL(join(destination, 'dist/index.js')).href)
     expect(deployed.deployed()).toBe('production API available')
     await writeFile(join(contracts, 'dist/index.js'), 'export const contractValue = () => "rebuilt contracts"\n')
@@ -76,7 +81,7 @@ it('keeps source development commands usable after successful and failed product
     await verifyDevelopment()
     const blockedDestination = join(directory, 'occupied')
     await writeFile(blockedDestination, 'occupied')
-    await expect(deployProductionApi(run, blockedDestination)).rejects.toThrow()
+    await expect(deployProductionApi(run, blockedDestination, { dependencies })).rejects.toThrow()
     await verifyDevelopment()
   } finally {
     await removeFixtureDirectory(directory)
@@ -89,16 +94,22 @@ it('loads the compiled API using only its deployed production dependencies', asy
   const { deployProductionApi, copyVerificationRuntime } = await import(script)
   const execute = promisify(execFile)
   const repository = fileURLToPath(new URL('../../../', import.meta.url))
-  const directory = await mkdtemp(join(tmpdir(), 'production-runtime-dependencies-'))
+  await mkdir(fixtureRoot, { recursive: true })
+  const directory = await mkdtemp(join(fixtureRoot, 'production-runtime-dependencies-'))
   const source = join(directory, 'workspace')
+  const dependencies = { root: join(testFixtureCacheRoot(), 'api-dependencies'), source }
   const release = join(directory, 'release')
   const destination = join(release, 'apps/api')
   const environment: NodeJS.ProcessEnv = { ...process.env, npm_config_offline: 'true' }
-  const run = (command: string, args: string[]) => execute(command, args, {
-    cwd: source, env: environment, timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
-  })
+  const run = async (command: string, args: string[]) => {
+    // This source is discarded after deployment, so it needs no development dependency restoration.
+    if (args.includes('install')) return
+    await execute(command, args, {
+      cwd: source, env: environment, timeout: 120_000, maxBuffer: 4 * 1024 * 1024,
+    })
+  }
   try {
-    const installSource = async () => {
+    const prepareSource = async () => {
       await mkdir(join(source, 'scripts'), { recursive: true })
       for (const name of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc']) {
         await cp(join(repository, name), join(source, name))
@@ -109,9 +120,8 @@ it('loads the compiled API using only its deployed production dependencies', asy
         await cp(join(repository, project, 'package.json'), join(source, project, 'package.json'))
       }
       await cp(join(repository, 'packages/contracts/dist'), join(source, 'packages/contracts/dist'), { recursive: true })
-      await run('corepack', ['pnpm', 'install', '--frozen-lockfile'])
     }
-    const setup = [compileApiFixture(directory), installSource()] as const
+    const setup = [compileApiFixture(directory), prepareSource()] as const
     let compiledApi: string
     try {
       const [output] = await Promise.all(setup)
@@ -122,7 +132,7 @@ it('loads the compiled API using only its deployed production dependencies', asy
       throw error
     }
     await cp(compiledApi, join(source, 'apps/api/dist'), { recursive: true })
-    await deployProductionApi(run, destination)
+    await deployProductionApi(run, destination, { dependencies })
     await copyVerificationRuntime(repository, release)
     await mkdir(join(release, 'apps/worker/src'), { recursive: true })
     for (const name of ['service.mjs', 'diagnostics.mjs', 'harnessPath.mjs']) {
