@@ -1,0 +1,75 @@
+import { describe, expect, it } from 'vitest'
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
+import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
+import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
+import { completedRun, startWhenReady } from './helpers/harnessInstallationUpdate.js'
+import { readUntil } from './helpers/observableCondition.js'
+import { remoteReviewProduction } from './helpers/remoteReviewProduction.js'
+import { postgresEnabled } from './helpers/wave25Agent3.js'
+
+describe.runIf(postgresEnabled)('interval check failure during API restart', () => {
+  it('records the interrupted check and starts the next check while graph work stays running', async () => {
+    const fixture = await remoteReviewProduction({ workflow: 'interval', executionHost: 'main',
+      installationRefreshIntervalMs: 60_000, parallelSetup: true, parallelProfileChecks: true,
+      reuseMatchingProfiles: true, includeNodeRuntimePayload: false })
+    try {
+      await fixture.provider.blockWorkflowTurns({ allowFirst: 1 })
+      const started = (await startWhenReady(fixture))!
+      const read = () => fixture.details(started.run.id)
+      const before = await readUntil(read, details => {
+        const active = details.executions.filter(execution => execution.state === 'running')
+        return active.length === 2 && active.every(execution => execution.nativeSessionId
+          && details.activity.some(activity => activity.harnessExecutionId === execution.id
+            && activity.payload.nativeEventType === 'turn.started'))
+      }, { timeoutMs: 180_000, description: 'graph work and the first loop check', minimumReadIntervalMs: 1_000 })
+      const check = before.executions.find(execution =>
+        (execution.input as { tick?: { index: number } }).tick?.index === 1)!
+      const worker = before.executions.find(execution =>
+        execution.state === 'running' && execution.id !== check.id)!
+      const calls = await fixture.provider.calls()
+      const turn = calls.map(call => call.workflowTurn as { pid: number; sessionId: string } | undefined)
+        .find(value => value?.sessionId === check.nativeSessionId)!
+      expect(turn).toBeDefined()
+      const reader = await fixture.access.issue({ name: 'Loop recovery reader', audience: 'operator',
+        expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['runs:read'],
+          scope: { workspaceIds: [started.run.workspaceId], workflowIds: [started.run.workflowId] } }] })
+      const denied = await fixture.access.issue({ name: 'Other workspace reader', audience: 'operator',
+        expiresAt: new Date(Date.now() + 600_000), grants: [{ actions: ['runs:read'],
+          scope: { workspaceIds: ['other-workspace'] } }] })
+      await fixture.restartMain({ mode: 'graceful', afterShutdown: async () => {
+        expect((await fixture.executions(started.run.id)).find(execution => execution.id === check.id))
+          .toMatchObject({ state: 'running', nativeSessionId: check.nativeSessionId })
+        process.kill(turn.pid, 'SIGKILL')
+      } })
+      const recovered = await readUntil(read, details => {
+        expect(details.run.executionState, JSON.stringify(details.run.result)).toBe('running')
+        return details.executions.some(execution => execution.state === 'running'
+          && (execution.input as { tick?: { index: number } }).tick?.index === 2)
+      }, { timeoutMs: 90_000, description: 'the next check after native interruption', minimumReadIntervalMs: 1_000 })
+      expect(recovered.cleanupPending).toBe(false)
+      expect(recovered.executions.find(execution => execution.id === check.id)).toMatchObject({
+        state: 'completed', result: { outcome: 'failed', error: { code: 'EXECUTION_INTERRUPTED' } },
+      })
+      expect(recovered.executions.find(execution => execution.id === worker.id)).toMatchObject({
+        state: 'running', nativeSessionId: worker.nativeSessionId, attempt: worker.attempt,
+      })
+      const args = { detail: 'full', workspaceId: started.run.workspaceId, runId: started.run.id }
+      const response = await fixture.call('run_get', args, reader.token)
+      expect(response.isError).not.toBe(true)
+      const persisted = SavedRunDetailsSchema.parse(decodeMcpToolResult(response))
+      expect(persisted.run).toMatchObject({ executionState: 'running', outcome: 'pending' })
+      expect(persisted.executions.find(execution => execution.id === check.id)?.result)
+        .toEqual(recovered.executions.find(execution => execution.id === check.id)?.result)
+      await expectMcpAccessDenied(fixture.call('run_get', args, denied.token))
+      const after = await fixture.provider.calls()
+      expect(after.filter(call => call.method === 'turn/start' && call.correlationId === `execution:${check.id}`))
+        .toHaveLength(1)
+      await fixture.provider.releaseWorkflowTurns()
+      const finished = await completedRun(fixture, started.run.id)
+      expect(finished.executions.find(execution => execution.id === check.id)?.result?.outcome).toBe('failed')
+    } finally {
+      await fixture.provider.releaseWorkflowTurns()
+      await fixture.close()
+    }
+  }, 300_000)
+})

@@ -70,24 +70,25 @@ function intervalRun(options: { maxParallelism: number; observeCheck(check: Harn
   return { h, run, lifecycle, checks, settledIds, observed, events, workerStarted, workerRelease }
 }
 
-it('ends an interval Run after startup failure and retries its cleanup intent before cancellation', async () => {
+it('keeps graph work running after a check startup failure and retries the same check through settlement', async () => {
   const failure = new DomainError('EXECUTION_START_INTERRUPTED', 'Execution startup failed.', 409)
-  const t = intervalRun({ maxParallelism: 2, observeCheck: async () => { throw failure } })
-  const timeout = new Error('Query read timeout')
-  t.lifecycle.requestCleanup.mockRejectedValueOnce(timeout).mockRejectedValueOnce(timeout)
-  t.lifecycle.cancelNativeAndRequestCleanup.mockImplementation(async () => {
-    expect(t.lifecycle.requestCleanup.mock.calls.length).toBeGreaterThanOrEqual(3)
-    return true
-  })
-  await expect(t.run()).rejects.toBe(failure)
-  expect(t.lifecycle.requestCleanup).toHaveBeenCalledWith({ outcome: 'failed', error: {
-    code: failure.code, message: failure.message, retryable: false,
+  let attempts = 0
+  const t = intervalRun({ maxParallelism: 2, observeCheck: async () => {
+    if (++attempts === 1) throw failure
   } })
-  expect(t.lifecycle.cancelNativeAndRequestCleanup).toHaveBeenCalledOnce()
-  expect(t.lifecycle.settleRun).toHaveBeenCalledWith(false, false)
-  expect(t.checks).toHaveLength(1)
-  expect(t.observed).toEqual(['check-1'])
-})
+  const running = t.run()
+  try {
+    await vi.waitFor(() => expect(t.settledIds).toContain('check-1'), { timeout: 10_000, interval: 50 })
+    expect(t.lifecycle.requestCleanup).not.toHaveBeenCalled()
+    expect(t.lifecycle.cancelNativeAndRequestCleanup).not.toHaveBeenCalled()
+    expect(t.lifecycle.settleRun).not.toHaveBeenCalled()
+  } finally {
+    t.workerRelease.resolve()
+    await running
+  }
+  expect(t.observed).toEqual(['check-1', 'check-1'])
+  expect(t.h.completeCalls).toBe(1)
+}, 20_000)
 
 it('settles a Stop through bounded cleanup while a running check ignores cancellation', async () => {
   const checkStarted = deferred()
