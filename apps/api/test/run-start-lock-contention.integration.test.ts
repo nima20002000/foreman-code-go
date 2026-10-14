@@ -49,7 +49,8 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
       const runtime = await currentOperatorIntegration({ database: { ...database, pool },
         fixture, approvalNodeIds: [], insertRun: false,
         outputFor: (nodeId) => nodeId === fixture.version.definition.repeat?.blocks[0]?.exitNodeId
-          ? { text: JSON.stringify({ routing: { outcome: 'pass' } }) } : { node: nodeId } })
+          ? { text: JSON.stringify({ routing: { outcome: 'pass' },
+            data: { latestDeliverable: { complete: true }, remainingFindings: [] } }) } : { node: nodeId } })
       runtimes.push(runtime)
       const location = await runtime.client.callTool({ name: 'workspace_location_set', arguments: {
         workspaceId: runtime.f.scope.workspaceId, commandId: randomUUID(), expectedLocationRevision: 1,
@@ -134,6 +135,18 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
         return read
       })
       await assertSettled(starter, started.run.id)
+      const settled = await starter.runtime.client.callTool({ name: 'run_get', arguments: {
+        workspaceId: starter.input.workspaceId, runId: started.run.id, detail: 'full',
+      } })
+      expect(settled.isError).not.toBe(true)
+      const details = SavedRunDetailsSchema.parse(decodeMcpToolResult(settled))
+      expect(details.executions).toHaveLength(2)
+      expect(details.executions).toEqual(expect.arrayContaining([expect.objectContaining({
+        result: expect.objectContaining({ outcome: 'succeeded', output: { text: JSON.stringify({
+          routing: { outcome: 'pass' }, data: { latestDeliverable: { complete: true }, remainingFindings: [] },
+        }) } }),
+      })]))
+      expect(starter.runtime.provider.closedSessions.size).toBe(2)
       expect(sawPending).toBe(true)
       expect(starter.runtime.provider.counts.starts).toBe(2)
       expect(starter.runtime.dispatchErrors).toEqual([])
