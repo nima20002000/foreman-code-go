@@ -51,14 +51,16 @@ async function installationFence(sql: GraphSqlClient, value: import('@foreman-co
     ? value.selection.hostRef.mainId : value.registration!.workerInstallationId)
 }
 
-export async function createProductionSources(input: { pool: pg.Pool; commands: PostgresCommandCoordinator;
+type ProductionSourcesInput = { pool: pg.Pool; commands: PostgresCommandCoordinator;
   locations: WorkspaceLocationService; mainId: string; runtimeRoot: string; endpoint(): DeviceEndpoint;
   installedJobConfiguration?: InstalledRuntimeConfigurationLocation;
   dispatch(): PostgresJobDispatch; remote?: RemoteSourceMaterializationHost;
   activeNativeSession?: SourceActiveNativeSessionReader; captureNativeSession?: SourceNativeSessionCaptureReader;
   transferAcknowledged?: (intent: TransferIntent) => Promise<void>;
   transferPreparationClosed?: (closure: SourcePreparationClosure) => Promise<void>;
-  transferMaterializationClosed?: (record: SourceMaterializationRecord) => Promise<void> }) {
+  transferMaterializationClosed?: (record: SourceMaterializationRecord) => Promise<void> }
+
+export async function createProductionSources(input: ProductionSourcesInput) {
   const unavailable = (): never => { throw new DomainError('SOURCE_REMOTE_UNAVAILABLE', 'The authenticated source materialization host is not installed.', 409) }
   const { policies, roots } = createProductionRootPolicies(input)
   const root = join(input.runtimeRoot, 'source-snapshots')

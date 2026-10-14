@@ -171,6 +171,8 @@ export function foremanLint(directory) {
         'foreman/no-legacy-execution-semantics': 'error',
       },
     },
+    // The shared transaction helper is the one module that sends BEGIN/COMMIT/ROLLBACK.
+    { files: ['src/infrastructure/transaction.ts'], rules: { 'foreman/no-raw-transactions': 'off' } },
     { ignores: tests, rules: { 'max-lines-per-function': ['error', { max: 200, ...size }] } },
     { files: tests, rules: { 'foreman/no-source-text-tests': 'error' } },
     { files: ['src/**/*.test.*'], rules: { 'foreman/test-timeout-limit': 'error' } },
