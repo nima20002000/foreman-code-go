@@ -1,6 +1,36 @@
 import { expect, it } from 'vitest'
-import { COMPUTER_MAINTENANCE_NAMESPACE, WORKER_UPDATE_NAMESPACE } from '@foreman-code/contracts/computer-maintenance'
+import { COMPUTER_MAINTENANCE_NAMESPACE, WORKER_UPDATE_NAMESPACE,
+  MaintenanceReplySchema } from '@foreman-code/contracts/computer-maintenance'
 import { fakeComputer, fakeFleet } from './helpers/fleetSync.js'
+
+it.each([true, false])('uses Worker content identity to schedule updates (same content: %s)', async sameContent => {
+  const computer = fakeComputer()
+  const fleet = fakeFleet(computer)
+  Object.assign(fleet.sources, {
+    workerManifestSha256s: async () => ['b'.repeat(64)],
+    workerContentSha256s: async () => ['c'.repeat(64)],
+  })
+  fleet.endpoint.capabilities = () => [
+    { namespace: COMPUTER_MAINTENANCE_NAMESPACE, mainCanRequest: true },
+    { namespace: WORKER_UPDATE_NAMESPACE, mainCanRequest: false },
+  ]
+  const original = fleet.endpoint.request
+  let observed: unknown
+  fleet.endpoint.request = async (device, namespace, payload) => {
+    const reply = await original(device, namespace, payload)
+    if (!reply.payload.status) return reply
+    const response = { payload: { ...reply.payload, status: { ...reply.payload.status, worker: {
+      currentVersion: '1.0.0', targetVersion: null, lastError: null, state: 'current' as const,
+      manifestSha256: 'a'.repeat(64), contentSha256: (sameContent ? 'c' : 'd').repeat(64),
+    } } } }
+    observed = response.payload
+    return response
+  }
+  await fleet.fleet.syncChangedSources()
+  // Status rejection must not masquerade as skipping an unavailable Worker.
+  expect(MaintenanceReplySchema.safeParse(observed).success).toBe(true)
+  expect(fleet.requested.filter(task => task.kind === 'update-worker')).toHaveLength(sameContent ? 0 : 1)
+})
 
 it.each([undefined, 'a'.repeat(64)])('prompts a same-version Worker with stale manifest %s and backs off retries', async manifest => {
   const computer = fakeComputer()

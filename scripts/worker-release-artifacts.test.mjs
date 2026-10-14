@@ -124,13 +124,29 @@ async function fixture(t) {
     await mkdir(join(output, 'src'), { recursive: true, mode: 0o700 })
     const bytes = Buffer.from('export const worker = true\n')
     await writeFile(join(output, 'src/cli.mjs'), bytes)
-    const manifest = { format: 1, version: '0.0.57', commit, lockfileSha256: 'b'.repeat(64),
+    const buildCommit = options.env.FOREMAN_CODE_WORKER_BUILD_COMMIT
+    const manifest = { format: 1, version: '0.0.57', commit: buildCommit, lockfileSha256: 'b'.repeat(64),
       packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1, target: selected,
+      sourceSnapshot: { commit: buildCommit, files: [] },
       files: [{ path: 'src/cli.mjs', sha256: sha256(bytes), size: bytes.length }] }
     await writeFile(join(output, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
   }
   return { repository, commit, directory, productManifestPath, run, calls }
 }
+
+test('two builds differing only by commit publish the same Worker content identity', async t => {
+  const f = await fixture(t)
+  const first = await buildWorkerReleaseArtifacts(f)
+  execFileSync('git', ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+    'commit', '--allow-empty', '-qm', 'metadata only'], { cwd: f.repository })
+  const second = await buildWorkerReleaseArtifacts({ ...f, directory: join(f.repository, 'second-artifacts'),
+    productManifestPath: join(f.repository, 'second-product.json') })
+  for (const [index, artifact] of first.artifacts.entries()) {
+    assert.match(artifact.contentSha256, /^[a-f0-9]{64}$/)
+    assert.equal(artifact.contentSha256, second.artifacts[index].contentSha256)
+    assert.notEqual(artifact.manifestSha256, second.artifacts[index].manifestSha256)
+  }
+})
 
 test('packages every reviewed target from one committed release in private storage', async t => {
   const f = await fixture(t)
