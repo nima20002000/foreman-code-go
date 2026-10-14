@@ -1,3 +1,4 @@
+import { optionalCommandId } from './management/commands.js'
 import { z } from 'zod'
 import { DeviceResourceLimitsSchema, DeviceExecutionAdmissionFields, HistoricalDeviceExecutionAdmissionFields,
   DeviceSafeIntegerSchema, DeviceRevisionSchema, DEVICE_RESOURCE_CONTROL_RESERVE, validateHistoricalDeviceExecutionAdmission } from './deviceResources.js'
@@ -151,8 +152,8 @@ export const JobRuntimeProfileListSchema = z.object({
   profiles: z.array(z.object({ profile: JobRuntimeProfileSchema, ready: z.boolean(), reasons: z.array(z.string()), sideEffects: z.literal(false) }).strict()),
   approvals: z.array(JobRuntimeApprovalSchema),
 }).strict()
-export const JobRuntimeProfileSaveSchema=z.object({commandId:IdSchema,id:IdSchema.optional(),expectedRevision:z.number().int().positive().nullable(),name:z.string().trim().min(1).max(200),spec:JobRuntimeProfileInputSchema}).strict()
-export const JobRuntimeQualificationRequestSchema=z.object({commandId:IdSchema,profileId:IdSchema,expectedRevision:z.number().int().positive()}).strict()
+export const JobRuntimeProfileSaveSchema=z.object({commandId:optionalCommandId(IdSchema),id:IdSchema.optional(),expectedRevision:z.number().int().positive().nullable(),name:z.string().trim().min(1).max(200),spec:JobRuntimeProfileInputSchema}).strict()
+export const JobRuntimeQualificationRequestSchema=z.object({commandId:optionalCommandId(IdSchema),profileId:IdSchema,expectedRevision:z.number().int().positive()}).strict()
 export type JobRuntimeProfile=z.infer<typeof JobRuntimeProfileSchema>
 export type JobRuntimeMeasurement=z.infer<typeof JobRuntimeMeasurementSchema>
 type QualifiedJobRuntime=z.infer<typeof QualifiedJobRuntimeSchema>
@@ -167,7 +168,7 @@ export function jobRuntimeWorkspaceLayoutIssue(runtime:Pick<QualifiedJobRuntime,
 }
 
 export const JobRuntimeQualificationReadSchema=z.object({approval:JobRuntimeApprovalSchema,nativeAdmission:JobRuntimeNativeAdmissionSchema.nullable(),measurement:JobRuntimeMeasurementSchema.nullable(),profile:JobRuntimeProfileSchema,readiness:z.object({ready:z.boolean(),reasons:z.array(z.string()),sideEffects:z.literal(false)}).strict()}).strict()
-export const JobRuntimeQualificationCommandSchema=z.object({commandId:IdSchema}).strict()
+export const JobRuntimeQualificationCommandSchema=z.object({commandId:optionalCommandId(IdSchema)}).strict()
 const QualificationPath=z.string().startsWith('/').refine(value=>!value.includes('\0')&&!value.includes('\n')&&!value.includes(','))
 const QualificationEnvironment=z.object({PATH:z.string().min(1),XDG_RUNTIME_DIR:QualificationPath,LANG:z.literal('C.UTF-8')}).strict()
 export const InstalledJobRuntimeDescriptorSchema=z.object({

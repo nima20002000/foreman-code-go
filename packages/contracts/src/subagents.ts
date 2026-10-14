@@ -1,3 +1,4 @@
+import { optionalCommandId } from './management/commands.js'
 import { z } from 'zod'
 import { ApprovalResponseOptionSchema, PendingNativeInteractionSchema } from './index.js'
 
@@ -72,8 +73,8 @@ export const RunSubagentsPageSchema = z.object({ items: z.array(RunSubagentDetai
   projection: z.enum(['caught-up', 'catching-up']) }).strict()
 export const RunSubagentMessagesPageSchema = z.object({ items: z.array(RunSubagentMessageSchema).max(SUBAGENT_LIMITS.page), ...pageInfo }).strict()
 export const RunSubagentToolsPageSchema = z.object({ items: z.array(RunSubagentToolSchema).max(SUBAGENT_LIMITS.page), ...pageInfo }).strict()
-export const RunSubagentInputSchema = RunSubagentGetInputSchema.extend({ commandId: id, expectedRevision: revision, text: z.string().min(1).max(SUBAGENT_LIMITS.text) }).strict()
-export const RunSubagentInterruptSchema = RunSubagentGetInputSchema.extend({ commandId: id, expectedRevision: revision }).strict()
+export const RunSubagentInputSchema = RunSubagentGetInputSchema.extend({ commandId: optionalCommandId(id), expectedRevision: revision, text: z.string().min(1).max(SUBAGENT_LIMITS.text) }).strict()
+export const RunSubagentInterruptSchema = RunSubagentGetInputSchema.extend({ commandId: optionalCommandId(id), expectedRevision: revision }).strict()
 export const RunSubagentRespondSchema = RunSubagentInterruptSchema.extend({ nativeRequestId: z.string().min(1),
   optionId: id, response: z.json().optional() }).strict()
 export const RunSubagentCommandReceiptSchema = z.object({ schemaVersion: z.literal(1), id, principalId: id,

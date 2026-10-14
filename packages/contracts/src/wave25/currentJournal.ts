@@ -1,3 +1,4 @@
+import { optionalCommandId } from '../management/commands.js'
 import { z } from 'zod'
 import { RunOutcomeSchema } from '../index.js'
 import { GraphDigestSchema, GraphIdSchema } from './graphPrimitives.js'
@@ -9,7 +10,7 @@ const scope = { workspaceId: GraphIdSchema, workflowId: GraphIdSchema, draftId: 
 export const CurrentJournalReadInputSchema = z.object({
   ...scope, action: z.literal('read_edits'), intentId: GraphIdSchema.optional(),
 }).strict()
-const command = z.object({ ...scope, intentId: GraphIdSchema, commandId: GraphIdSchema }).strict()
+const command = z.object({ ...scope, intentId: GraphIdSchema, commandId: optionalCommandId(GraphIdSchema) }).strict()
 export const CurrentJournalAdvanceInputSchema = command.extend({ action: z.literal('stop_and_save') }).strict()
 export const CurrentJournalDiscardInputSchema = command.extend({ action: z.literal('discard_edits') }).strict()
 export const CurrentJournalRunPinSchema = CurrentRunScopeSchema.extend({

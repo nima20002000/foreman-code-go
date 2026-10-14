@@ -132,7 +132,7 @@ export const runTools = [
     name: 'run_stop',
     requires: [['runs:stop', 'resource']],
     enabled: s => !!s.runs,
-    description: 'Stop an authorized Run, including recovery after an API or worker restart when the original native lifetime has positive closure evidence. Live or unconfirmed owners remain fenced. If cleanup cannot be confirmed, retry the same commandId and input using the returned domain error. Every non-terminal CI ticket its Agents created and its assigned provider run is canceled with audit under runs:stop; failed CI cleanup remains pending for retry. A receipt or terminal record is not process-exit proof; processStopped remains false.', inputSchema: RunStopInputSchema,
+    description: 'commandId is optional and generated when omitted; supply the same ID and input for replay. Stop an authorized Run, including recovery after an API or worker restart when the original native lifetime has positive closure evidence. Live or unconfirmed owners remain fenced. If cleanup cannot be confirmed, retry the same commandId and input using the returned domain error. Every non-terminal CI ticket its Agents created and its assigned provider run is canceled with audit under runs:stop; failed CI cleanup remains pending for retry. A receipt or terminal record is not process-exit proof; processStopped remains false.', inputSchema: RunStopInputSchema,
     outputSchema: RunStopResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     run: (context, input) => context.services.runs.stop(context.principal, 'mcp', input),

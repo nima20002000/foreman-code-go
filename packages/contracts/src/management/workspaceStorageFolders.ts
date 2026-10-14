@@ -1,3 +1,4 @@
+import { optionalCommandId } from './commands.js'
 import { z } from 'zod'
 
 const Path = z.string().min(1).max(4096).refine((value) => !value.includes('\0'), 'Invalid folder path')
@@ -19,7 +20,7 @@ export const WorkspaceStorageFoldersPageSchema = z.object({
   pageInfo: z.object({ nextCursor: z.string().nullable() }).strict(),
 }).strict()
 export const WorkspaceStorageFolderDeleteInputSchema = z.object({
-  commandId: z.string().uuid(), path: Path,
+  commandId: optionalCommandId(z.string().uuid()), path: Path,
   expectedIdentity: Identity.describe('Identity returned by workspace_storage_folders_list. A replaced folder is never deleted.'),
 }).strict()
 export type WorkspaceStorageFolderDeleteInput = z.infer<typeof WorkspaceStorageFolderDeleteInputSchema>

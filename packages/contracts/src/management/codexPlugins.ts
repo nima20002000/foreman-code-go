@@ -1,3 +1,4 @@
+import { optionalCommandId } from './commands.js'
 import { z } from 'zod'
 import { IdSchema } from '../schemaPrimitives.js'
 
@@ -42,12 +43,12 @@ export const CodexPluginDetailResultSchema = z.object({ plugin: CodexPluginSumma
 export type CodexPluginDetailResult = z.infer<typeof CodexPluginDetailResultSchema>
 
 export const CodexPluginChangeInputSchema = z.object({ pluginId: PluginId, action: z.enum(['install', 'remove']),
-  expectedRevision: Revision, artifactIdentity: Revision.optional(), commandId: CommandId }).strict()
+  expectedRevision: Revision, artifactIdentity: Revision.optional(), commandId: optionalCommandId(CommandId) }).strict()
 export type CodexPluginChangeInput = z.infer<typeof CodexPluginChangeInputSchema>
 export const CodexPluginChangeResultSchema = z.object({ pluginId: PluginId, action: z.enum(['install', 'remove']),
   status: z.enum(['applied', 'not_applied', 'reconciled', 'uncertain']), message: z.string(), nativeFailure: z.string().optional(), observedRevision: Revision.optional() }).strict()
 export type CodexPluginChangeResult = z.infer<typeof CodexPluginChangeResultSchema>
-export const CodexPluginReconcileInputSchema = z.object({ commandId: CommandId, requestedBy: IdSchema.optional(),
+export const CodexPluginReconcileInputSchema = z.object({ commandId: optionalCommandId(CommandId), requestedBy: IdSchema.optional(),
   expectedRevision: Revision.optional(), acceptObservedState: z.boolean().default(false),
 }).strict().refine((input) => !input.acceptObservedState || Boolean(input.expectedRevision), { message: 'Keeping observed state requires its reviewed revision.' })
 export type CodexPluginReconcileInput = z.infer<typeof CodexPluginReconcileInputSchema>

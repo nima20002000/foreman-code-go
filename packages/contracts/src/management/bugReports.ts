@@ -1,3 +1,4 @@
+import { optionalCommandId } from './commands.js'
 import { z } from 'zod'
 import { IdSchema, TimestampSchema } from '../schemaPrimitives.js'
 
@@ -11,7 +12,7 @@ const CommandId = z.string().trim().min(8).max(200)
 const Text = z.string().trim().min(1).max(12000)
 
 export const BugReportCreateInputSchema = z.object({
-  commandId: CommandId,
+  commandId: optionalCommandId(CommandId),
   workspaceId: IdSchema.optional(),
   title: z.string().trim().min(1).max(300),
   tried: z.object({ feature: z.string().trim().min(1).max(300), inputsSummary: Text }).strict(),
@@ -61,13 +62,13 @@ export const BugReportPageSchema = z.object({
 }).strict()
 export const BugReportGetInputSchema = z.object({ reportId: IdSchema }).strict()
 export const BugReportUpdateInputSchema = BugReportGetInputSchema.extend({
-  commandId: CommandId,
+  commandId: optionalCommandId(CommandId),
   expectedRevision: z.number().int().positive(),
   /** Closed statuses can only replay a command saved before batch closing was introduced. */
   status: BugReportActiveStatusSchema.or(BugReportClosedStatusSchema.exclude(['duplicate'])),
 }).strict()
 export const BugReportCloseInputSchema = z.object({
-  commandId: CommandId,
+  commandId: optionalCommandId(CommandId),
   reports: z.array(z.object({
     reportId: IdSchema,
     expectedRevision: z.number().int().positive(),

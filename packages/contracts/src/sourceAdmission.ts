@@ -1,3 +1,4 @@
+import { optionalCommandId } from './management/commands.js'
 import { SourceRootReferenceSchema } from './worktreeSettings.js'
 import { z } from 'zod'
 import { IdSchema } from './schemaPrimitives.js'
@@ -11,7 +12,7 @@ export type SourceAction =
   | 'source_roots:bind'
 export const SourcePinSchema = z.object({ approvedSourceId: z.uuid(), snapshotId: z.uuid(), manifestDigest: SourceHashSchema }).strict()
 export type ApprovedSourcePin = z.infer<typeof SourcePinSchema>
-export const SourceApproveInputSchema = z.object({ workspaceId: IdSchema, commandId: z.string().min(8).max(200),
+export const SourceApproveInputSchema = z.object({ workspaceId: IdSchema, commandId: optionalCommandId(z.string().min(8).max(200)),
   expectedLocationRevision: z.number().int().nonnegative(), commit: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
   executablePolicy: z.enum(['strip', 'preserve-approved']),
 }).strict()
@@ -34,7 +35,7 @@ const SourceRootSelectionSchema = z.object({ hostRef: SourceHostSchema, rootPoli
   rootPolicyRevision: z.string().regex(/^[1-9][0-9]*$/), locationRevision: z.string().regex(/^[1-9][0-9]*$/),
 }).strict()
 export type SourceRootSelection = z.infer<typeof SourceRootSelectionSchema>
-export const SourceRootBindInputSchema = z.object({ workspaceId: IdSchema, commandId: z.string().min(8).max(200),
+export const SourceRootBindInputSchema = z.object({ workspaceId: IdSchema, commandId: optionalCommandId(z.string().min(8).max(200)),
   source: SourcePinSchema, selection: SourceRootSelectionSchema,
   expectedBindingRevision: z.number().int().nonnegative(), accessMode: z.enum(['read-only', 'exclusive-write']),
 }).strict()
@@ -62,7 +63,7 @@ export type SourceMaterializationRecord = z.infer<typeof SourceMaterializationRe
 export const SourcePreparationGetInputSchema = z.object({ workspaceId: IdSchema, operationId: z.uuid().optional(),
   startCommandId: z.string().min(8).max(200).optional() }).strict().refine(input => (input.operationId !== undefined) !== (input.startCommandId !== undefined),
   { message: 'Supply exactly one original operationId or Job Start commandId.' })
-export const SourcePreparationReconcileInputSchema = z.object({ workspaceId: IdSchema, operationId: z.uuid(), commandId: z.string().min(8).max(200) }).strict()
+export const SourcePreparationReconcileInputSchema = z.object({ workspaceId: IdSchema, operationId: z.uuid(), commandId: optionalCommandId(z.string().min(8).max(200)) }).strict()
 /** Closure of an expired, never-admitted Job preparation, observed on its exact
  * worker. Retained source/transfer evidence is never deleted by reconciliation. */
 export const SourcePreparationClosureSchema = z.object({ version: z.literal(1), reconciliationId: z.uuid(),

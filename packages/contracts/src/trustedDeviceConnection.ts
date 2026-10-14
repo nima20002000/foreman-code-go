@@ -1,3 +1,4 @@
+import { optionalCommandId } from './management/commands.js'
 import { z } from 'zod'
 import { DeviceRegistrationSchema } from './deviceIdentity.js'
 
@@ -20,7 +21,7 @@ export const ConnectionProbeSchema = z.object({
   hostname: z.string().max(256).nullable(), sshVersion: z.string().max(256).nullable(), rsyncVersion: z.string().max(256).nullable(), tailscaleVersion: z.string().max(256).nullable(),
 }).strict()
 export type ConnectionProbe = z.infer<typeof ConnectionProbeSchema>
-export const TrustedConnectionConfigureSchema = z.object({ deviceId: z.uuid(), commandId: z.string().min(8).max(200),
+export const TrustedConnectionConfigureSchema = z.object({ deviceId: z.uuid(), commandId: optionalCommandId(z.string().min(8).max(200)),
   expectedRevision: z.number().int().nonnegative(), expectedAuthorizationRevision: z.number().int().positive(),
   endpoint: TrustedEndpointSchema, hostKeyFingerprint: Fingerprint, allowOwnerCommands: z.boolean(),
 }).strict()

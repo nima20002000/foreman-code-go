@@ -1,3 +1,4 @@
+import { optionalCommandId } from './management/commands.js'
 import { z } from 'zod'
 
 export const DeviceScopeSchema = z.enum(['connect', 'heartbeat', 'metrics:report'])
@@ -59,8 +60,8 @@ export const WorkerPairingConfigurationSchema = z.object({
 }).strict()
 export type WorkerPairingConfiguration = z.infer<typeof WorkerPairingConfigurationSchema>
 export const DevicePairingGrantInputSchema = z.object({ workerInstallationId: z.uuid(), publicKey: z.string().max(1024),
-  expectedAuthorizationRevision: z.number().int().positive().optional(), commandId: z.string().min(8).max(200), expectedFingerprint: z.string().regex(/^[a-f0-9]{64}$/), scopes: z.array(DeviceScopeSchema).min(1).max(3) }).strict()
-export const DeviceRevokeInputSchema = z.object({ deviceId: z.uuid(), expectedRevision: z.number().int().positive(), commandId: z.string().min(8).max(200) }).strict()
+  expectedAuthorizationRevision: z.number().int().positive().optional(), commandId: optionalCommandId(z.string().min(8).max(200)), expectedFingerprint: z.string().regex(/^[a-f0-9]{64}$/), scopes: z.array(DeviceScopeSchema).min(1).max(3) }).strict()
+export const DeviceRevokeInputSchema = z.object({ deviceId: z.uuid(), expectedRevision: z.number().int().positive(), commandId: optionalCommandId(z.string().min(8).max(200)) }).strict()
 
 export const MainIdentityProofRequestSchema = z.object({
   audience: z.literal('graphql-worker-main-v1'), mainId: z.uuid(),

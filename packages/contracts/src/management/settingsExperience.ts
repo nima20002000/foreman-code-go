@@ -1,3 +1,4 @@
+import { optionalCommandId } from './commands.js'
 import { z } from "zod";
 
 const SettingsAgentRoleSchema = z.enum(["operator", "orchestrator", "coder"]);
@@ -38,7 +39,7 @@ export const ManagedWorkspaceDefaultsSchema = z.object({
 }).strict();
 export const WorkspaceDefaultsUpdateInputSchema = z.object({
   value: WorkspaceDefaultsSchema,
-  commandId: z.string().trim().min(8).max(200),
+  commandId: optionalCommandId(z.string().trim().min(8).max(200)),
   expectedRevision: z.number().int().nonnegative().optional().describe('Omit for last write wins; supply to reject a stale revision.'),
 }).strict();
 export type WorkspaceDefaultsUpdateInput = z.infer<typeof WorkspaceDefaultsUpdateInputSchema>;

@@ -1,3 +1,4 @@
+import { optionalCommandId } from './management/commands.js'
 import { z } from 'zod'
 import { HistoricalDeviceExecutionAdmissionFields, DeviceExecutionAdmissionFields, validateHistoricalDeviceExecutionAdmission } from './deviceResources.js'
 import { AcceptedNodePlacementSchema, PlacementDigestSchema } from './nodePlacement.js'
@@ -87,7 +88,7 @@ export const JobDefinitionSchema = z.object({
   revision: Revision, versionId: IdSchema, spec: JobDefinitionSpecSchema, createdAt: TimestampSchema, updatedAt: TimestampSchema,
 }).strict()
 export const JobDefinitionSaveSchema = z.object({
-  commandId: IdSchema, id: IdSchema.optional(), expectedRevision: Revision.nullable(), name: z.string().trim().min(1).max(200), spec: JobDefinitionSpecSchema,
+  commandId: optionalCommandId(IdSchema), id: IdSchema.optional(), expectedRevision: Revision.nullable(), name: z.string().trim().min(1).max(200), spec: JobDefinitionSpecSchema,
 }).strict()
 export const JobStartSchema = z.object({ commandId: IdSchema, definitionId: IdSchema, expectedRevision: Revision }).strict()
 export const PreparedJobSpecSchema=ResolvedJobDefinitionSpecSchema.safeExtend({

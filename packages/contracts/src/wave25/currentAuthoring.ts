@@ -1,3 +1,4 @@
+import { optionalCommandId } from '../management/commands.js'
 import { WorkflowWorktreeSettingsSchema } from '../worktreeSettings.js'
 import { z } from 'zod'
 import { ApprovalHandlerSchema,
@@ -39,7 +40,7 @@ export const CurrentWorkflowValidateInputSchema = z.object({
   graph: WorkflowDefinitionV3Schema,
 }).strict()
 export const CurrentWorkflowSaveInputSchema = CurrentWorkflowValidateInputSchema.extend({
-  commandId: CommandIdSchema,
+  commandId: optionalCommandId(CommandIdSchema),
 }).strict()
 export type CurrentWorkflowSaveInput = z.infer<typeof CurrentWorkflowSaveInputSchema>
 export type CurrentWorkflowValidateInput = z.infer<typeof CurrentWorkflowValidateInputSchema>

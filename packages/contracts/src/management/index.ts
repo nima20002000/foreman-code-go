@@ -63,7 +63,7 @@ export const ManagementHarnessDefaultsSchema = z.object({
   claude: ClaudeHarnessConfigurationSchema.optional(),
 }).strict();
 
-import { CommandIdSchema, ExpectedRevisionSchema } from './commands.js';
+import { optionalCommandId, CommandIdSchema, ExpectedRevisionSchema } from './commands.js';
 export { CommandIdSchema, ExpectedRevisionSchema } from './commands.js';
 const ManagementPageInputSchema = z
   .object({
@@ -115,7 +115,7 @@ export const ManagedWorkflowCommandResultSchema = z.object({ value: ManagedWorkf
 const WorkspaceScopeSchema = z.object({ workspaceId: IdSchema }).strict();
 const WorkflowScopeSchema = z.object({ workspaceId: IdSchema, workflowId: IdSchema }).strict();
 const DraftScopeSchema = z.object({ workspaceId: IdSchema, workflowId: IdSchema, draftId: IdSchema }).strict();
-const MutationFields = { commandId: CommandIdSchema } as const;
+const MutationFields = { commandId: optionalCommandId(CommandIdSchema) } as const;
 const RevisionMutationFields = { ...MutationFields, expectedRevision: ExpectedRevisionSchema } as const;
 
 export const WorkspaceListInputSchema = ManagementPageInputSchema;

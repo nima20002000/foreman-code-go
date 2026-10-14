@@ -1,3 +1,4 @@
+import { optionalCommandId } from '../management/commands.js'
 import { z } from 'zod'
 import { GraphIdSchema, RunInputSchema } from '../schemaPrimitives.js'
 import { ExecutionSemanticsVersionSchema } from './workflowShape.js'
@@ -10,7 +11,7 @@ const ExpectedRevisionSchema = z.number().int().nonnegative()
  * map as well as the existing immutable version, location and optional draft. */
 export const RunStartV3InputSchema = z.object({
   workspaceId: GraphIdSchema, workflowId: GraphIdSchema, workflowVersionId: GraphIdSchema,
-  commandId: CommandIdSchema, executionSemanticsVersion: ExecutionSemanticsVersionSchema,
+  commandId: optionalCommandId(CommandIdSchema), executionSemanticsVersion: ExecutionSemanticsVersionSchema,
   expectedWorkflowRevision: ExpectedRevisionSchema,
   expectedAgentConfigurationVersionIds: z.record(GraphIdSchema, GraphIdSchema),
   expectedLocationRevision: ExpectedRevisionSchema,

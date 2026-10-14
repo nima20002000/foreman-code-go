@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { IdSchema } from './schemaPrimitives.js'
-import { CommandIdSchema, ExpectedRevisionSchema } from './management/commands.js'
+import { optionalCommandId, CommandIdSchema, ExpectedRevisionSchema } from './management/commands.js'
 import { WorkspaceRepositorySchema } from './workspaceRepository.js'
 import { WorkspaceRootSelectionSchema } from './workspaceRootPolicies.js'
 import { WorkspaceBoundLocationReadbackSchema } from './workspaceBoundLocation.js'
@@ -9,7 +9,7 @@ import { SourceRootReferenceSchema } from './worktreeSettings.js'
 
 export const WorkspaceRepositoryAddInputSchema = z.object({
   workspaceId: IdSchema,
-  commandId: CommandIdSchema,
+  commandId: optionalCommandId(CommandIdSchema),
   expectedRevision: ExpectedRevisionSchema,
   expectedLocationRevision: WorkspaceRootSelectionSchema.shape.expectedLocationRevision,
   expectedRootPolicyRevision: WorkspaceRootSelectionSchema.shape.expectedRootPolicyRevision,

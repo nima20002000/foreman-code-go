@@ -1,3 +1,4 @@
+import { optionalCommandId } from './management/commands.js'
 import { z } from 'zod'
 import { ExecutionLocationSchema } from './executionLocation.js'
 import { IdSchema, TimestampSchema } from './schemaPrimitives.js'
@@ -6,7 +7,7 @@ import { WorkspaceRootSelectionSchema, WorkspaceRootPolicySchema, WorkspaceRootA
 export const WorkspaceBoundLocationGetInputSchema = z.object({ workspaceId: IdSchema }).strict()
 export const WorkspaceBoundLocationValidateInputSchema = WorkspaceRootSelectionSchema
 export const WorkspaceBoundLocationBrowseInputSchema = WorkspaceRootSelectionSchema
-export const WorkspaceBoundLocationSetInputSchema = WorkspaceRootSelectionSchema.extend({ commandId: z.string().min(8).max(200) }).strict()
+export const WorkspaceBoundLocationSetInputSchema = WorkspaceRootSelectionSchema.extend({ commandId: optionalCommandId(z.string().min(8).max(200)) }).strict()
 export const WorkspaceBoundLocationValidationSchema = z.object({ workspaceId: IdSchema,
   selection: WorkspaceRootSelectionSchema, attestation: WorkspaceRootAttestationSchema, checkedAt: TimestampSchema }).strict()
 export const WorkspaceBoundLocationBrowseResultSchema = z.object({ workspaceId: IdSchema,

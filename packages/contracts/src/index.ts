@@ -1,3 +1,4 @@
+import { optionalCommandId } from './management/commands.js'
 import { TextTruncationSchema } from './activityText.js';
 import { NativeToolsSchema } from './nativeTools.js';
 export * from './nativeTools.js';
@@ -1461,7 +1462,7 @@ export const ListOperatorConversationSummariesResponseSchema = z.object({
 }).strict();
 
 export const CreateOperatorConversationRequestSchema = z.object({
-  commandId: IdSchema.optional(),
+  commandId: optionalCommandId(IdSchema),
   title: z.string().trim().min(1).optional(),
 }).strict();
 export const DeleteOperatorConversationResponseSchema = z.object({
@@ -1471,7 +1472,7 @@ export const DeleteOperatorConversationResponseSchema = z.object({
 }).strict();
 export const OperatorConversationDeletionInputSchema = z.object({
   conversationId: IdSchema,
-  commandId: IdSchema,
+  commandId: optionalCommandId(IdSchema),
 }).strict();
 export const CreateOperatorConversationResponseSchema = z.object({ conversation: ConversationSchema }).strict();
 export const ListOperatorConversationsResponseSchema = z.object({ conversations: z.array(ConversationSchema) }).strict();

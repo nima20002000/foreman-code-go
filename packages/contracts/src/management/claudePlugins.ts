@@ -1,3 +1,4 @@
+import { optionalCommandId } from './commands.js'
 import { z } from 'zod'
 
 const PluginId = z.string().min(3).max(240).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$/)
@@ -43,7 +44,7 @@ export const ClaudePluginListResultSchema = z.object({
 
 const ClaudePluginActionSchema = z.enum(['install', 'uninstall', 'enable', 'disable'])
 export const ClaudePluginChangeInputSchema = z.object({
-  pluginId: PluginId, action: ClaudePluginActionSchema, commandId: CommandId, expectedRevision: Revision.optional().describe('Omit for last write wins; supply to reject a stale revision.'),
+  pluginId: PluginId, action: ClaudePluginActionSchema, commandId: optionalCommandId(CommandId), expectedRevision: Revision.optional().describe('Omit for last write wins; supply to reject a stale revision.'),
   /** sha256 of a marketplace-declared install command that Claude Code showed in a previous result. */
   acceptCommand: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 }).strict()
@@ -59,7 +60,7 @@ export const ClaudePluginChangeResultSchema = z.object({
 export const ClaudePluginMarketplaceAddInputSchema = z.object({
   /** owner/repo, a Git or HTTPS URL. Local paths stay machine-specific and are not accepted here. */
   source: PluginMarketplaceSourceSchema,
-  commandId: CommandId, expectedRevision: Revision.optional().describe('Omit for last write wins; supply to reject a stale revision.'),
+  commandId: optionalCommandId(CommandId), expectedRevision: Revision.optional().describe('Omit for last write wins; supply to reject a stale revision.'),
 }).strict()
 export type ClaudePluginMarketplaceAddInput = z.infer<typeof ClaudePluginMarketplaceAddInputSchema>
 export const ClaudePluginMarketplaceAddResultSchema = z.object({

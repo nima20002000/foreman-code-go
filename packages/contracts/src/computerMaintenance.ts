@@ -1,3 +1,4 @@
+import { optionalCommandId } from './management/commands.js'
 import { z } from 'zod'
 import { DeviceProvisioningTargetSchema } from './deviceResources.js'
 import { HarnessMcpArgumentSchema, HarnessMcpEndpointSchema } from './management/harnessSettings.js'
@@ -167,7 +168,7 @@ export const ComputerMaintenanceReadInputSchema = z.object({
 
 /** Start one maintenance task on the selected computers (all paired computers and Main when omitted). */
 export const ComputerMaintenanceStartInputSchema = z.object({
-  commandId: z.uuid(),
+  commandId: optionalCommandId(z.uuid()),
   task: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('update-harnesses'), harnesses: HarnessSelectionSchema }).strict(),
     z.object({ kind: z.literal('update-worker') }).strict(),

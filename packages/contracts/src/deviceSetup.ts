@@ -1,3 +1,4 @@
+import { optionalCommandId } from './management/commands.js'
 import { z } from 'zod'
 import { WorkerEnrollmentInputSchema,DeviceRegistrationSchema,DeviceScopeSchema,DeviceTlsTrustSchema } from './deviceIdentity.js'
 const DEVICE_SETUP_CODE_MAX=8192
@@ -13,7 +14,7 @@ export function decodeWorkerIdentityRequest(code:string):WorkerIdentityRequest {
 export function encodeWorkerEnrollmentCode(value:WorkerEnrollmentCode):string {return encode('GQLWE1.',WorkerEnrollmentCodeSchema.parse(value))}
 export function decodeWorkerEnrollmentCode(code:string):WorkerEnrollmentCode {return WorkerEnrollmentCodeSchema.parse(decode('GQLWE1.',code))}
 
-export const DeviceSetupApproveInputSchema=z.object({commandId:z.string().min(8).max(200),identityRequestCode:z.string().min(1).max(DEVICE_SETUP_CODE_MAX),endpoint:WorkerEnrollmentInputSchema.shape.endpoint,scopes:z.array(DeviceScopeSchema).min(1).max(3),expectedAuthorizationRevision:z.number().int().positive().optional()}).strict().refine(value=>{const endpoint=new URL(value.endpoint);return endpoint.protocol==='wss:'&&endpoint.pathname==='/device/connect'},'Use the approved LAN WSS device endpoint.')
+export const DeviceSetupApproveInputSchema=z.object({commandId:optionalCommandId(z.string().min(8).max(200)),identityRequestCode:z.string().min(1).max(DEVICE_SETUP_CODE_MAX),endpoint:WorkerEnrollmentInputSchema.shape.endpoint,scopes:z.array(DeviceScopeSchema).min(1).max(3),expectedAuthorizationRevision:z.number().int().positive().optional()}).strict().refine(value=>{const endpoint=new URL(value.endpoint);return endpoint.protocol==='wss:'&&endpoint.pathname==='/device/connect'},'Use the approved LAN WSS device endpoint.')
 export const DeviceSetupApproveResultSchema=z.object({
   registration:DeviceRegistrationSchema,
   enrollmentCode:z.string().max(DEVICE_SETUP_CODE_MAX),
