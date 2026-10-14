@@ -1,3 +1,4 @@
+import { componentLogger } from '../diagnostics/logger.js'
 import { randomUUID } from 'node:crypto'
 import type pg from 'pg'
 import { CiRunRecordSchema, integrationPartition, requiresUserSystemd,
@@ -53,7 +54,8 @@ function cloudParts(run: CiRunRecord, capacity: FallbackCapacity) {
         files: slice, partition: null, plannedHostKey: computer.key,
         integrationShards: capacity.shards.get(computer.key), requiresBuildComputer: systemd,
         expectedDurationMs: BUILD_WAIT_MS + slice.reduce((sum, file) => sum + duration(file), 0),
-        speedFactor: undefined, dispatchAttempts: undefined, message: null }))
+        speedFactor: undefined, dispatchAttempts: undefined,
+        message: `Build computer ${run.plannedHostKey} unavailable after 90 seconds; reassigned to cloud (reassignment 1).` }))
     }
   }
   return result
@@ -94,6 +96,8 @@ export async function splitUnavailableGateParts(pool: pg.Pool, queued: CiRunReco
     }
     const durations = capacity.durations.get(run.id) ?? null
     if (await saveCloudParts(pool, run, parts, durations)) {
+      componentLogger('jobs').warn({ operation: 'reassign unavailable CI build part', runId: run.id,
+        originalHostKey: run.plannedHostKey, replacementParts: parts.length }, 'Unavailable build part reassigned to cloud')
       for (const part of parts) capacity.durations.set(part.id, durations)
       result.push(...parts)
     }

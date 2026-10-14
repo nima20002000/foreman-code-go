@@ -2,6 +2,7 @@ import { writeFile } from 'node:fs/promises'
 import { DomainError } from '../errors.js'
 import { CloudHttp } from './cloudHttp.js'
 import { circleJobLog, renderTerminal } from './cloudLog.js'
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 
 interface Workflow { id: string; status: string; stopped_at?: string }
 interface JobRef { id: string; job_number?: number }
@@ -163,7 +164,10 @@ export class CircleRest {
       return await this.http.operation(timeoutMs, () => this.stepOutput(id, step, timeoutMs))
     } catch (error) {
       // Live output is best-effort, matching the CLI path; rate limits still pause polling.
-      if (error instanceof DomainError && error.code === 'CI_CLOUD_FAILED') return { ok: false, text: '' }
+      if (error instanceof DomainError && error.code === 'CI_CLOUD_FAILED') {
+        logIgnoredError('jobs', 'read CircleCI live output', error, { jobId: id, step })
+        return { ok: false, text: '' }
+      }
       throw error
     }
   }

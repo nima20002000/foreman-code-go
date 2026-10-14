@@ -13,7 +13,7 @@ import { CiWatchdogFailureSchema, CiDurationsSchema, CiHostReplySchema, CiHostRe
 import { DomainError } from '../errors.js'
 import { ciRepositoryCapabilities } from './repository.js'
 import { allowedCiResources, gateIntegrationShards, hostCiCapacity } from './capacity.js'
-import { fallbackOnError } from '../diagnostics/ignoredError.js'
+import { fallbackOnError, fallbackOnMissing } from '../diagnostics/ignoredError.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { pnpmInstall } from './warmSetup.js'
 import { ciLogPage } from './logPage.js'
@@ -261,9 +261,7 @@ export class HostCiRunner {
     const runs = []
     const directory = join(this.root, 'runs')
     const names = existsSync(directory) ? (await readdir(directory)).sort() : []
-    for (const runId of names) runs.push(await this.refresh(runId).catch(fallbackOnError(
-      null, 'jobs', 'refresh CI run', { runId }, ['ENOENT'],
-    )))
+    for (const runId of names) runs.push(await this.refresh(runId))
     const active: RunMeta[] = []
     for (const run of runs) {
       if (run && ['starting', 'running'].includes(run.state)) active.push(await this.readMeta(run.runId))
@@ -317,7 +315,7 @@ export class HostCiRunner {
     if (!existsSync(directory)) return []
     const active = []
     for (const runId of await readdir(directory)) {
-      const run = await this.refresh(runId).catch(fallbackOnError(null, 'jobs', 'refresh CI run', { runId }, ['ENOENT']))
+      const run = await this.refresh(runId)
       if (run && ['starting', 'running'].includes(run.state)) active.push(await this.readMeta(runId))
     }
     return active
@@ -828,11 +826,11 @@ export class HostCiRunner {
 
   private async finishFromExit(meta: RunMeta): Promise<boolean> {
     const exit = await readFile(join(this.runDirectory(meta.runId), 'exit'), 'utf8')
-      .catch(fallbackOnError(null, 'jobs', 'read CI exit status', { runId: meta.runId }, ['ENOENT']))
+      .catch(fallbackOnMissing(null))
     if (exit === null || exit.trim() === '') return false
     const code = Number(exit.trim())
     const watchdog = await readFile(join(this.runDirectory(meta.runId), 'watchdog-message.json'), 'utf8')
-      .catch(fallbackOnError(null, 'jobs', 'read CI watchdog message', { runId: meta.runId }, ['ENOENT']))
+      .catch(fallbackOnMissing(null))
     let state: CiHostRun['state'] = code === 0 ? 'passed' : 'failed'
     if (meta.cancellationRequested) state = 'canceled'
     await this.finish(meta.runId, state,
@@ -867,8 +865,7 @@ export class HostCiRunner {
   /** Reads the current state of a run, settling it once its unit has exited, and frees its worktree. */
   async refresh(runId: string): Promise<CiHostRun> {
     const metaVersion = async () => {
-      const info = await stat(join(this.runDirectory(runId), 'meta.json')).catch(fallbackOnError(
-        null, 'jobs', 'stat CI run metadata', { runId }, ['ENOENT']))
+      const info = await stat(join(this.runDirectory(runId), 'meta.json'))
       return info && `${info.ino}:${info.size}:${info.mtimeMs}`
     }
     const cached = this.settledRuns.get(runId)
@@ -901,7 +898,7 @@ export class HostCiRunner {
         const clone = join(this.root, 'git', ...meta.repository.split('/'))
         if (existsSync(join(directory, 'src'))) {
           if (!(await stat(join(directory, 'src/.git')).catch(
-            fallbackOnError(null, 'jobs', 'stat CI checkout metadata', { runId }, ['ENOENT']),
+            fallbackOnMissing(null),
           ))?.isDirectory()) {
             await this.ports.run('git', ['worktree', 'remove', '--force', join(directory, 'src')],
               { cwd: clone, env: this.environment })
@@ -918,8 +915,8 @@ export class HostCiRunner {
         await this.writeMeta(meta)
       }
     }
-    const log = await stat(join(directory, 'log')).catch(fallbackOnError(null, 'jobs', 'stat CI log', { runId }, ['ENOENT']))
-    const step = (await readFile(join(directory, 'step'), 'utf8').catch(() => '')).trim()
+    const log = await stat(join(directory, 'log')).catch(fallbackOnMissing(null))
+    const step = (await readFile(join(directory, 'step'), 'utf8').catch(fallbackOnMissing(''))).trim()
       || (this.startingRun?.runId === runId ? 'dispatch' : null)
     const run = { runId, state: meta.state, step, exitCode: meta.exitCode, startedAt: meta.startedAt,
       finishedAt: meta.finishedAt, logBytes: log?.size ?? 0,

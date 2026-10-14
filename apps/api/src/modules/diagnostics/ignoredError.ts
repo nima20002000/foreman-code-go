@@ -3,6 +3,14 @@ import { componentLogger } from './logger.js'
 
 const codeOf = (error: unknown) => (error as { code?: unknown } | null)?.code
 
+/** Missing optional files are ordinary absence; unreadable files are failures. */
+export function fallbackOnMissing<T>(fallback: T): (error: unknown) => T {
+  return error => {
+    if (codeOf(error) === 'ENOENT') return fallback
+    throw error
+  }
+}
+
 /** Log best-effort failures while preserving the caller's outcome; narrow expected races by error code. */
 export function logIgnoredError(
   component: LogComponent,

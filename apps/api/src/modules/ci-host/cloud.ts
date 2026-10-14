@@ -17,7 +17,7 @@ import { CLOUD_START_TIMEOUT_MS, CircleCiProvider, GitHubActionsProvider, valida
   type CloudDispatchInput, type CloudProvider, type CloudRun, type CloudStatus } from './cloudProviders.js'
 import { runsOnCircleCi } from './parts.js'
 import { pruneMirrorBranches, type ActiveCiRuns } from './mirrorBranches.js'
-import { fallbackOnError } from '../diagnostics/ignoredError.js'
+import { fallbackOnError, logIgnoredError } from '../diagnostics/ignoredError.js'
 import { readCloudRun, saveCloudRun } from './cloudJournal.js'
 import { ciLogPage } from './logPage.js'
 import { sanitizeCiText } from './text.js'
@@ -204,10 +204,12 @@ export class CloudCi {
   }
 
   private async answer(request: Extract<CiHostRequest, { operation: 'read' }>, run: CloudRun) {
-    const page = await this.logPage(run.runId, request.afterOffset, request.maxBytes).catch(fallbackOnError(
-      { text: '', nextOffset: request.afterOffset, logBytes: 0 },
-      'jobs', 'read CI log', { runId: run.runId }, ['ENOENT'],
-    ))
+    const page = await this.logPage(run.runId, request.afterOffset, request.maxBytes).catch(error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT' && ['queued', 'starting'].includes(run.state)) {
+        return { text: '', nextOffset: request.afterOffset, logBytes: 0 }
+      }
+      throw error
+    })
     if (!['starting', 'running', 'queued'].includes(run.state)) this.schedulePrune(run, run.runId)
     const view = this.view(run, page.logBytes)
     if (request.testResults && view.collection === 'complete' && !run.testResults) view.collection = 'unsupported'
@@ -235,7 +237,13 @@ export class CloudCi {
   /** Main's login for the service works; checked at most once a minute. */
   async ready() {
     if (this.checked && Date.now() - this.checked.at < 60_000) return this.checked.ready
-    const ready = await this.provider.ready().catch(() => false)
+    let ready: boolean
+    try { ready = await this.provider.ready() }
+    catch (error) {
+      logIgnoredError('jobs', 'check CI provider readiness', error, { provider: this.provider.id })
+      this.checked = undefined
+      return false
+    }
     this.checked = { at: Date.now(), ready }
     return ready
   }

@@ -31,6 +31,6 @@ export async function readCiSlots(pool: pg.Pool, endpoint: HostCiEndpoint): Prom
     }))
   }
   // Build computers can also take ordinary work after reserving the host-only slices.
-  if (!slots.ordinary) slots.ordinary = Math.max(1, slots.host - 1)
+  if (!slots.ordinary) slots.ordinary = Math.max(0, slots.host - 1)
   return { ...slots, usedByComputer: used }
 }

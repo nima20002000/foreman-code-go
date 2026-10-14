@@ -3,6 +3,7 @@ import { basename, join } from 'node:path'
 import type { CiHostRequest, CiDurations, CiExecutionSuite, CiHostRun, CiPart, CiScope, CiSuite, CiTestResults, CiUserSystemd } from '@foreman-code/contracts'
 import { DomainError } from '../errors.js'
 import type { HostCiPorts } from './runner.js'
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 import { providerCommand } from './providerPoll.js'
 import { CloudHttp, type CloudRestOptions } from './cloudHttp.js'
 import { GitHubRest } from './cloudGithub.js'
@@ -410,7 +411,10 @@ export class CircleCiProvider implements CloudProvider {
       })))
     } catch (error) {
       // The parent outcome still settles a finished pipeline when its step details are unavailable.
-      if (ended && hasFinalOutcome) return this.completed(finalOutcomes, stopped, [])
+      if (ended && hasFinalOutcome) {
+        logIgnoredError('jobs', 'read CircleCI job details', error, { runId: run.runId })
+        return this.completed(finalOutcomes, stopped, [])
+      }
       throw error
     }
     const raw = jobs.flatMap(job => job.detail.executions?.flatMap(execution =>
@@ -436,6 +440,8 @@ export class CircleCiProvider implements CloudProvider {
       if (result.code !== 0) {
         const limited = rateLimited(this.label, result.stderr)
         if (limited) throw limited
+        logIgnoredError('jobs', 'read CircleCI live output', new DomainError('CI_CLOUD_OUTPUT_UNAVAILABLE',
+          `CircleCI live output exited ${result.code}.`, 502), { runId: run.runId })
         return { done: false, steps }
       }
       return { done: false, steps, output: { key: key(current), text: result.stdout } }
