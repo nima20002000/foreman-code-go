@@ -1,7 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { createHash } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
-import * as fileSystem from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -10,12 +9,8 @@ import { negotiateDeviceExtensions } from '@foreman-code/contracts/device-applic
 import { DeviceApplicationChannel, extensionDescriptors,
   type DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../devices/deviceWire.js'
-import { createWorkerArtifactExtension } from './workerArtifacts.js'
-
-vi.mock('node:fs/promises', async importOriginal => {
-  const original = await importOriginal<typeof import('node:fs/promises')>()
-  return { ...original, open: vi.fn(original.open) }
-})
+import { createWorkerArtifactExtension, readWorkerContentSha256s, readWorkerManifestSha256s,
+  readWorkerReleasePublication } from './workerArtifacts.js'
 
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 const target = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.3' }
@@ -24,7 +19,7 @@ afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close()
 })
 
-async function fixture() {
+async function fixture({ published = true } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'worker-artifacts-'))
   cleanup.push(() => rm(directory, { recursive: true, force: true }))
   await chmod(directory, 0o700)
@@ -41,7 +36,9 @@ async function fixture() {
   await writeFile(join(release, 'src/cli.mjs'), content)
   await writeFile(join(release, 'manifest.json'), manifestBytes)
   await writeFile(join(directory, 'index.json'), JSON.stringify({ format: 1, version: manifest.version,
-    artifacts: [{ target, manifestSha256 }] }))
+    artifacts: [{ target, manifestSha256 }],
+    ...(published ? { github: { repository: 'example/worker', tag: `worker-${manifest.commit}` } } : {}),
+    publication: { state: published ? 'published' : 'pending', lastError: null } }))
   const extension = createWorkerArtifactExtension({ directory, version: manifest.version })
   const context = { binding: { mainId: '11111111-1111-4111-8111-111111111111',
     deviceId: '22222222-2222-4222-8222-222222222222', workerInstallationId: '33333333-3333-4333-8333-333333333333',
@@ -92,18 +89,33 @@ function channelPair(f: Awaited<ReturnType<typeof fixture>>, revalidate: () => P
   return worker
 }
 
-describe('Worker artifact serving', () => {
-  it('serves matching release metadata and binary chunks over the authenticated device channel', async () => {
+describe('Worker release metadata', () => {
+  it('does not announce or target an unpublished Worker artifact', async () => {
+    const f = await fixture({ published: false })
+    const options = { directory: f.directory, version: f.manifest.version }
+    expect(await readWorkerManifestSha256s(options)).toEqual([])
+    expect(await readWorkerContentSha256s(options)).toEqual([])
+    await expect(f.request({ operation: 'release', target }))
+      .rejects.toMatchObject({ code: 'WORKER_RELEASE_ASSET_UNAVAILABLE' })
+  })
+
+  it('rejects bundle-byte requests even on an authenticated device channel', async () => {
+    const f = await fixture()
+    const worker = channelPair(f, async () => {})
+    const rejected = await worker.request(WORKER_UPDATE_NAMESPACE, { operation: 'chunk', manifestSha256: f.manifestSha256,
+      path: 'src/cli.mjs', offset: 0 }).then(() => false, () => true)
+    expect(rejected).toBe(true)
+  })
+
+  it('serves matching published GitHub release metadata over the authenticated device channel', async () => {
     const f = await fixture()
     const worker = channelPair(f, async () => {})
     const release = await worker.request(WORKER_UPDATE_NAMESPACE, { operation: 'release', target })
     expect(release.payload).toEqual({ operation: 'release', release: {
       version: '0.0.57', manifestSha256: f.manifestSha256, manifest: f.manifest,
+      github: { repository: 'example/worker', tag: `worker-${f.manifest.commit}` },
     } })
-    const chunk = await worker.request(WORKER_UPDATE_NAMESPACE, { operation: 'chunk', manifestSha256: f.manifestSha256,
-      path: 'src/cli.mjs', offset: 0 })
-    expect(chunk.bytes).toEqual(f.content.subarray(0, WORKER_UPDATE_MAX_BINARY_BYTES))
-    expect(chunk.payload).toMatchObject({ byteSize: WORKER_UPDATE_MAX_BINARY_BYTES })
+    expect(release.bytes).toBeUndefined()
   })
 
   it('denies a device whose authenticated grant no longer validates before serving bytes', async () => {
@@ -123,67 +135,37 @@ describe('Worker artifact serving', () => {
     await expect(wrong.handle!({ operation: 'release', target }, f.context)).rejects.toThrow()
   })
 
-  it('serves raw manifest bytes and the final short and empty file chunks', async () => {
+  it('rejects every removed chunk operation, including bounded and unsafe requests', async () => {
     const f = await fixture()
     const request = { operation: 'chunk', manifestSha256: f.manifestSha256, path: 'src/cli.mjs', offset: 0 }
-    expect((await f.request({ ...request, path: 'manifest.json' })).bytes).toEqual(f.manifestBytes)
-    expect((await f.request({ ...request, offset: WORKER_UPDATE_MAX_BINARY_BYTES })).bytes)
-      .toEqual(f.content.subarray(WORKER_UPDATE_MAX_BINARY_BYTES))
-    expect((await f.request({ ...request, offset: f.content.length })).bytes).toEqual(Buffer.alloc(0))
-    await expect(f.request({ ...request, offset: f.content.length + 1 })).rejects.toThrow()
-  })
-
-  it('shares one bounded streaming verification across concurrent range downloads', async () => {
-    const f = await fixture()
-    const original = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
-    const reads: Array<() => number[]> = []
-    vi.mocked(fileSystem.open).mockImplementation(async (path, flags, mode) => {
-      const handle = await original.open(path, flags, mode)
-      if (String(path) === join(f.release, 'src/cli.mjs')) {
-        const read = vi.spyOn(handle, 'read')
-        reads.push(() => read.mock.calls.map(args => Number([...args][2])))
-      }
-      return handle
-    })
-    try {
-      const offsets = [0, 31, WORKER_UPDATE_MAX_BINARY_BYTES]
-      const chunks = await Promise.all(offsets.map(offset => f.request({ operation: 'chunk',
-        manifestSha256: f.manifestSha256, path: 'src/cli.mjs', offset })))
-      for (const [index, chunk] of chunks.entries()) {
-        expect(chunk.bytes).toEqual(f.content.subarray(offsets[index]!, offsets[index]! + WORKER_UPDATE_MAX_BINARY_BYTES))
-      }
-      const lengths = reads.flatMap(read => read())
-      const servedBytes = chunks.reduce((total, chunk) => total + chunk.bytes!.byteLength, 0)
-      expect(lengths.every(length => length <= WORKER_UPDATE_MAX_BINARY_BYTES)).toBe(true)
-      expect(lengths.reduce((total, length) => total + length, 0)).toBe(f.content.byteLength + servedBytes)
-    } finally {
-      vi.mocked(fileSystem.open).mockImplementation(original.open)
-    }
-  })
-
-  it('rejects unlisted files, traversal, unknown digests, and symlink escapes', async () => {
-    const f = await fixture()
-    const request = { operation: 'chunk', manifestSha256: f.manifestSha256, path: 'src/cli.mjs', offset: 0 }
-    for (const change of [{ path: 'identity.json' }, { path: '../identity.json' }, { manifestSha256: 'c'.repeat(64) }]) {
+    for (const change of [{}, { path: 'manifest.json' }, { offset: f.content.length },
+      { offset: f.content.length + 1 }, { path: 'identity.json' }, { path: '../identity.json' },
+      { manifestSha256: 'c'.repeat(64) }]) {
       await expect(f.request({ ...request, ...change })).rejects.toThrow()
     }
-    await rm(join(f.release, 'src'), { recursive: true })
-    const outside = join(f.directory, 'outside')
-    await mkdir(outside)
-    await writeFile(join(outside, 'cli.mjs'), f.content)
-    await symlink(outside, join(f.release, 'src'))
-    await expect(f.request(request)).rejects.toThrow()
   })
 
-  it('rechecks file and manifest digests after release discovery', async () => {
+  it('rejects manifest symlink escapes and changed manifest bytes', async () => {
     const f = await fixture()
+    const options = { directory: f.directory, version: f.manifest.version }
     await f.request({ operation: 'release', target })
-    const request = { operation: 'chunk', manifestSha256: f.manifestSha256, path: 'src/cli.mjs', offset: 0 }
-    await f.request(request)
-    await writeFile(join(f.release, 'src/cli.mjs'), Buffer.alloc(f.content.length, 8))
-    await expect(f.request(request)).rejects.toThrow()
-    const manifestBytes = await readFile(join(f.release, 'manifest.json'))
-    await writeFile(join(f.release, 'manifest.json'), Buffer.concat([manifestBytes, Buffer.from(' ')]))
-    await expect(f.request({ ...request, path: 'manifest.json' })).rejects.toThrow()
+    await writeFile(join(f.release, 'manifest.json'), Buffer.concat([f.manifestBytes, Buffer.from(' ')]))
+    await expect(f.request({ operation: 'release', target })).rejects.toThrow()
+    await expect(readWorkerContentSha256s(options)).rejects.toThrow()
+    const outside = join(f.directory, 'outside.json')
+    await writeFile(outside, f.manifestBytes)
+    await rm(join(f.release, 'manifest.json'))
+    await symlink(outside, join(f.release, 'manifest.json'))
+    await expect(f.request({ operation: 'release', target })).rejects.toThrow()
+  })
+
+  it('exposes publication failures independently of available update targets', async () => {
+    const f = await fixture({ published: false })
+    const options = { directory: f.directory, version: f.manifest.version }
+    const publication = { state: 'failed', lastError: 'WORKER_RELEASE_ASSET_UNAVAILABLE: GitHub unavailable' }
+    await writeFile(join(f.directory, 'index.json'), JSON.stringify({ format: 1, version: f.manifest.version,
+      artifacts: [{ target, manifestSha256: f.manifestSha256 }], publication }))
+    expect(await readWorkerReleasePublication(options)).toEqual({ version: f.manifest.version, ...publication })
+    expect(await readWorkerManifestSha256s(options)).toEqual([])
   })
 })

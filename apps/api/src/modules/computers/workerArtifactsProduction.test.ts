@@ -5,8 +5,8 @@ import type pg from 'pg'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WorkerArtifactReplySchema } from '@foreman-code/contracts/computer-maintenance'
-import { createWorkerArtifactExtension } from '../src/modules/computers/workerArtifacts.js'
-import { createProductionWorkerArtifactExtension } from '../src/modules/computers/workerArtifactsProduction.js'
+import { createWorkerArtifactExtension } from './workerArtifacts.js'
+import { createProductionWorkerArtifactExtension } from './workerArtifactsProduction.js'
 
 const target = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.3' }
 const context = { binding: {
@@ -40,7 +40,9 @@ async function release() {
   await mkdir(join(artifacts, manifestSha256, 'src'), { mode: 0o700, recursive: true })
   await writeFile(join(artifacts, manifestSha256, 'src/cli.mjs'), content)
   await writeFile(join(artifacts, manifestSha256, 'manifest.json'), manifestBytes)
-  const index = { format: 1, version: manifest.version, artifacts: [{ target, manifestSha256 }] }
+  const index = { format: 1, version: manifest.version, artifacts: [{ target, manifestSha256 }],
+    github: { repository: 'example/worker', tag: `worker-${manifest.commit}` },
+    publication: { state: 'published', lastError: null } }
   await writeFile(join(artifacts, 'index.json'), JSON.stringify(index))
   return { directory, artifacts, manifest, manifestSha256, index }
 }
@@ -51,7 +53,7 @@ describe('production Worker artifact composition', () => {
     const extension = createProductionWorkerArtifactExtension({ environment: {}, releaseDirectory: f.directory })
     const reply = WorkerArtifactReplySchema.parse((await extension.handle!({ operation: 'release', target }, context)).payload)
     expect(reply).toEqual({ operation: 'release', release: {
-      version: '0.0.56', manifestSha256: f.manifestSha256, manifest: f.manifest,
+      version: '0.0.56', manifestSha256: f.manifestSha256, manifest: f.manifest, github: f.index.github,
     } })
   })
 
@@ -112,17 +114,19 @@ it('keeps release announcements readable by retained Workers before updating the
 })
 
 
-it('serves pinned CI smoke before the archive upload publishes a GitHub entry', async () => {
+it('withholds release and CI smoke while the GitHub asset remains unpublished', async () => {
   const f = await release()
+  await writeFile(join(f.artifacts, 'index.json'), JSON.stringify({ ...f.index, github: undefined,
+    publication: { state: 'pending', lastError: null } }))
   const smoke = { repository: 'example/product', commit: f.manifest.commit }
   await writeFile(join(f.directory, 'ci-smoke.json'), JSON.stringify(smoke))
   const pool = { query: async () => ({ rows: [{}] }) } as unknown as pg.Pool
   const extension = createProductionWorkerArtifactExtension({ environment: {}, releaseDirectory: f.directory, pool })
-  const reply = await extension.handle!({ operation: 'ci-smoke', manifestSha256: f.manifestSha256 }, context)
-  expect(WorkerArtifactReplySchema.parse(reply.payload)).toEqual({ operation: 'ci-smoke', ciSmoke: smoke })
-  const chunk = await extension.handle!({ operation: 'chunk', manifestSha256: f.manifestSha256,
-    path: 'src/cli.mjs', offset: 0 }, context)
-  expect(chunk.bytes).toEqual(Buffer.from('export {}\n'))
+  for (const request of [{ operation: 'release', target },
+    { operation: 'ci-smoke', manifestSha256: f.manifestSha256 }]) {
+    await expect(extension.handle!(request, context))
+      .rejects.toMatchObject({ code: 'WORKER_RELEASE_ASSET_UNAVAILABLE' })
+  }
 })
 
 it('reports missing smoke configuration concretely and never skips smoke for enabled build computers', async () => {

@@ -11,7 +11,7 @@ import { useDeviceMcp } from '../../shared/api/deviceMcp'
 import type { HarnessMcpList } from '@foreman-code/contracts/management'
 import { useComputerAccounts } from '../../shared/api/computerAccounts'
 import { useComputerMaintenance, useStartMaintenance } from '../../shared/api/computerMaintenance'
-import type { ComputerMaintenanceStartInput, MaintenanceStatus } from '@foreman-code/contracts/computer-maintenance'
+import type { ComputerMaintenanceStartInput, MaintenanceStatus, WorkerReleasePublication } from '@foreman-code/contracts/computer-maintenance'
 import { Badge, Button, IconButton } from '../../shared/ui/nocturne'
 import { UnsavedEditorGuard } from '../../shared/ui/unsavedChanges'
 import { askOperator } from '../operator-chat/operatorChatStore'
@@ -87,6 +87,7 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
             codexMcp={mcp[index * 2]?.isError ? undefined : mcp[index * 2]?.data}
             claudeMcp={mcp[index * 2 + 1]?.isError ? undefined : mcp[index * 2 + 1]?.data}
             accounts={accountRead.isError ? undefined : accountRead.data} maintenance={maintenanceRead.data?.status}
+            workerPublication={maintenanceRead.data?.workerPublication}
             tasksOmitted={maintenanceRead.data?.tasksOmitted ?? 0}
             maintenanceError={maintenanceRead.isError} onRetryMaintenance={() => { void maintenanceRead.refetch() }}
             onMaintain={task => start.mutate({ task, targets: [card.target] })} maintaining={start.isPending || start.unresolved}
@@ -111,12 +112,13 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
 }
 
 type Task = ComputerMaintenanceStartInput['task']
-function ComputerCard({ card, observed, fresh, activityComplete, codexMcp, claudeMcp, accounts, maintenance, maintenanceError, tasksOmitted,
+function ComputerCard({ card, observed, fresh, activityComplete, codexMcp, claudeMcp, accounts, maintenance, workerPublication, maintenanceError, tasksOmitted,
   onRetryMaintenance, onMaintain, maintaining, buildPosition, buildCount, onOpen }: {
   codexMcp: HarnessMcpList | undefined; claudeMcp: HarnessMcpList | undefined
   card: Card; observed: ComputerActivity | undefined; fresh: boolean; accounts: ComputerAccounts | null | undefined
   activityComplete: boolean; maintenanceError: boolean; onRetryMaintenance(): void
   maintenance: MaintenanceStatus | null | undefined; onMaintain(task: Task): void; maintaining: boolean
+  workerPublication: WorkerReleasePublication | undefined
   tasksOmitted: number
   buildPosition: number | undefined; buildCount: number; onOpen: (() => void) | undefined
 }) {
@@ -140,8 +142,16 @@ function ComputerCard({ card, observed, fresh, activityComplete, codexMcp, claud
           onInstall={() => onMaintain({ kind: 'update-harnesses', harnesses: [tool] })} />)}
       </dd></div>
       {card.target.hostRef.kind === 'device' ? <div><dt>Worker</dt><dd>
-        <WorkerState worker={maintenance?.worker} busy={maintaining || maintenanceError}
+        <WorkerState worker={maintenance?.worker} busy={maintaining || maintenanceError
+          || Boolean(workerPublication && workerPublication.state !== 'published')}
           onUpdate={() => onMaintain({ kind: 'update-worker' })} />
+      </dd></div> : null}
+      {workerPublication && workerPublication.state !== 'published' ? <div><dt>Worker release</dt><dd>
+        <p role={workerPublication.state === 'failed' ? 'alert' : 'status'}>
+          Worker {workerPublication.version} {workerPublication.state === 'failed'
+            ? 'publication failed' : 'is waiting for GitHub publication and verification'}.
+          {workerPublication.lastError ? <small>{workerPublication.lastError}</small> : null}
+        </p>
       </dd></div> : null}
       {card.target.hostRef.kind === 'device' ? <div><dt>Foreman Code MCP</dt><dd>
         <span>Codex · {mcpState(codexMcp?.presets?.graphql)}</span>{' · '}

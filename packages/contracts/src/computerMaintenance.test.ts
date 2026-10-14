@@ -147,13 +147,13 @@ describe('Worker updates', () => {
     const descriptor = { namespace: WORKER_UPDATE_NAMESPACE, version: WORKER_UPDATE_VERSION,
       maxJsonBytes: WORKER_UPDATE_MAX_JSON_BYTES, maxBinaryBytes: WORKER_UPDATE_MAX_BINARY_BYTES }
     expect(negotiateDeviceExtensions([{ ...descriptor, role: 'server' }], [{ ...descriptor, role: 'client' }]))
-      .toMatchObject([{ workerCanRequest: true, mainCanRequest: false, maxBinaryBytes: 262_144 }])
+      .toMatchObject([{ workerCanRequest: true, mainCanRequest: false, maxBinaryBytes: 0 }])
   })
 
-  it('rejects unbounded chunks and unsafe artifact paths', () => {
+  it('rejects all removed Worker bundle chunk requests and replies', () => {
     const request = { operation: 'chunk', manifestSha256: 'a'.repeat(64), path: 'src/cli.mjs', offset: 0 }
-    expect(WorkerArtifactRequestSchema.parse(request)).toEqual(request)
-    expect(WorkerArtifactRequestSchema.parse({ ...request, path: 'manifest.json' })).toMatchObject({ path: 'manifest.json' })
+    expect(WorkerArtifactRequestSchema.safeParse(request).success).toBe(false)
+    expect(WorkerArtifactRequestSchema.safeParse({ ...request, path: 'manifest.json' }).success).toBe(false)
     for (const path of ['/etc/passwd', '../identity.json', 'src//cli.mjs', 'src/./cli.mjs']) {
       expect(WorkerArtifactRequestSchema.safeParse({ ...request, path }).success).toBe(false)
     }

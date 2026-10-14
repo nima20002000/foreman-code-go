@@ -5,18 +5,19 @@ import { join } from 'node:path'
 import { WorkerArtifactManifestSchema } from '@foreman-code/contracts/computer-maintenance'
 import { cachedTestFixture, testFixtureCacheRoot } from '../../../../scripts/test-fixture-cache.mjs'
 
-/** Main serves the same immutable release that the fixture Worker runs. */
+/** Unpublished fixture releases stay local and cannot become a Worker update target. */
 export async function remoteReviewWorkerArtifacts(release: string, cacheRoot = testFixtureCacheRoot()) {
   const source = await realpath(release)
   const bytes = await readFile(join(source, 'manifest.json'))
   const manifest = WorkerArtifactManifestSchema.parse(JSON.parse(bytes.toString('utf8')))
   const manifestSha256 = createHash('sha256').update(bytes).digest('hex')
-  return cachedTestFixture(cacheRoot, 'worker-update-artifacts', [bytes], async directory => {
+  return cachedTestFixture(cacheRoot, 'worker-update-artifacts', [bytes, 'github-publication-required'], async directory => {
     await cp(source, join(directory, manifestSha256), {
       recursive: true, mode: constants.COPYFILE_FICLONE, errorOnExist: true, force: false,
     })
     await writeFile(join(directory, 'index.json'), `${JSON.stringify({
       format: 1, version: manifest.version, artifacts: [{ target: manifest.target, manifestSha256 }],
+      publication: { state: 'pending', lastError: null },
     }, null, 2)}\n`, { flag: 'wx', mode: 0o600 })
   })
 }

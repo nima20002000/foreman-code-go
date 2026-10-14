@@ -116,6 +116,7 @@ if (attempt > 1 && !${alwaysStall}) {
 writeFileSync(attempts, String(attempt));
 `, { mode: 0o700 });
   process.env.PATH = `${f.base}:${previousPath ?? ''}`;
+  let retries = 0;
   t.mock.timers.enable({ apis: ['setTimeout'] });
   return { ...f,
     attempts: async () => Number(await readFile(join(f.base, 'attempts'), 'utf8')),
@@ -127,9 +128,11 @@ writeFileSync(attempts, String(attempt));
         throw error;
       });
     },
+    retries: () => retries,
     start: (timeoutMs = 600_000) => {
       outcome = downloadWorkerArtifact({ release: f.release, directory: f.directory, facts,
         signal: controller.signal, timeoutMs,
+        log: (_message, fields) => { if (fields.retryMs) retries++; },
       }).then(manifest => ({ manifest }), error => ({ error }));
       return outcome;
     },
@@ -150,6 +153,8 @@ for (const partial of [false, true]) {
     await nextTurn();
     assert.equal(await f.attempts(), 1);
     t.mock.timers.tick(1);
+    await waitForDownload(() => f.retries() === 1);
+    t.mock.timers.tick(5000);
     await waitForDownload(async () => await f.attempts() === 2);
     assert.deepEqual(await outcome, { manifest: f.manifest });
     assert.equal(await readFile(join(f.base, 'aborted-1'), 'utf8'), 'aborted');
@@ -162,10 +167,12 @@ test('stall retries retain the original bundle download deadline', async t => {
   const outcome = f.start(90_000);
   await waitForDownload(async () => await f.attempts() === 1);
   t.mock.timers.tick(60_000);
+  await waitForDownload(() => f.retries() === 1);
+  t.mock.timers.tick(5000);
   await waitForDownload(async () => await f.attempts() === 2);
-  t.mock.timers.tick(30_000);
+  t.mock.timers.tick(25_000);
   const { error } = await outcome;
-  assert.equal(error.code, 'worker_update_download_timeout');
+  assert.equal(error.code, 'WORKER_RELEASE_ASSET_UNAVAILABLE');
   assert.match(error.message, /90000 ms/);
   assert.equal(await f.attempts(), 2);
   assert.equal(await readFile(join(f.base, 'aborted-2'), 'utf8'), 'aborted');

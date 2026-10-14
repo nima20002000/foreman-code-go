@@ -3,7 +3,7 @@ import { z } from 'zod'
 export const WORKER_UPDATE_NAMESPACE = 'worker-update-v1'
 export const WORKER_UPDATE_VERSION = 1
 export const WORKER_UPDATE_MAX_JSON_BYTES = 1_048_576
-export const WORKER_UPDATE_MAX_BINARY_BYTES = 262_144
+export const WORKER_UPDATE_MAX_BINARY_BYTES = 0
 
 export const WorkerUpdateStatusSchema = z.object({
   currentVersion: z.string().min(1).max(128),
@@ -29,7 +29,7 @@ export type WorkerArtifactTarget = z.infer<typeof WorkerArtifactTargetSchema>
 const digest = z.string().regex(/^[a-f0-9]{64}$/u)
 const artifactPath = z.string().min(1).max(1024).regex(/^[a-zA-Z0-9_@./-]+$/u)
   .refine(path => path.split('/').every(part => part !== '' && part !== '.' && part !== '..'))
-const offset = z.number().int().nonnegative().max(64 * 1024 * 1024)
+const fileSize = z.number().int().nonnegative().max(64 * 1024 * 1024)
 
 export const WorkerArtifactManifestSchema = z.object({
   format: z.literal(1),
@@ -43,13 +43,22 @@ export const WorkerArtifactManifestSchema = z.object({
   files: z.array(z.object({
     path: artifactPath,
     sha256: digest,
-    size: offset,
+    size: fileSize,
   }).strict()).min(1).max(512),
 }).passthrough().refine(manifest => {
   const paths = new Set(manifest.files.map(file => file.path))
   return paths.size === manifest.files.length && paths.has('src/cli.mjs') && !paths.has('manifest.json')
 }, 'Invalid artifact file list')
 export type WorkerArtifactManifest = z.infer<typeof WorkerArtifactManifestSchema>
+
+const WorkerPublicationFieldsSchema = z.object({
+  state: z.enum(['pending', 'published', 'failed']),
+  lastError: z.string().max(2000).nullable(),
+}).strict()
+export const WorkerReleasePublicationSchema = WorkerPublicationFieldsSchema.extend({
+  version: z.string().regex(/^\d+\.\d+\.\d+$/u),
+})
+export type WorkerReleasePublication = z.infer<typeof WorkerReleasePublicationSchema>
 
 /** Where Workers download a release: a GitHub release asset per artifact, named <manifestSha256>.tar.gz. */
 const WorkerArtifactGitHubSchema = z.object({
@@ -60,6 +69,8 @@ export const WorkerArtifactIndexSchema = z.object({
   format: z.literal(1),
   version: z.string().regex(/^\d+\.\d+\.\d+$/u),
   github: WorkerArtifactGitHubSchema.optional(),
+  /** Published only after every GitHub asset has been downloaded and checksum verified. */
+  publication: WorkerPublicationFieldsSchema.optional(),
   artifacts: z.array(z.object({
     target: WorkerArtifactTargetSchema,
     manifestSha256: digest,
@@ -69,7 +80,6 @@ export const WorkerArtifactIndexSchema = z.object({
 
 export const WorkerArtifactRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('release'), target: WorkerArtifactTargetSchema }).strict(),
-  z.object({ operation: z.literal('chunk'), manifestSha256: digest, path: artifactPath, offset }).strict(),
   z.object({ operation: z.literal('ci-smoke'), manifestSha256: digest }).strict(),
 ])
 
@@ -87,11 +97,4 @@ export const WorkerArtifactReplySchema = z.discriminatedUnion('operation', [
     }).strict().nullable(),
   }).strict(),
   z.object({ operation: z.literal('ci-smoke'), ciSmoke: WorkerCiSmokeSchema.nullable() }).strict(),
-  z.object({
-    operation: z.literal('chunk'),
-    manifestSha256: digest,
-    path: artifactPath,
-    offset,
-    byteSize: z.number().int().nonnegative().max(WORKER_UPDATE_MAX_BINARY_BYTES),
-  }).strict(),
 ])

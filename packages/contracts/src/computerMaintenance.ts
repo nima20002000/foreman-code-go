@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { DeviceProvisioningTargetSchema } from './deviceResources.js'
 import { HarnessMcpArgumentSchema, HarnessMcpEndpointSchema } from './management/harnessSettings.js'
 import { PluginMarketplaceSourceSchema } from './management/claudePlugins.js'
-import { WorkerUpdateStatusSchema } from './workerUpdate.js'
+import { WorkerUpdateStatusSchema, WorkerReleasePublicationSchema } from './workerUpdate.js'
 export * from './workerUpdate.js'
 
 /** Device channel namespace: Main asks a paired computer for maintenance status and starts maintenance tasks. */
@@ -131,6 +131,7 @@ export const MaintenanceReplySchema = z.discriminatedUnion('operation', [
 /** Main-side readback across computers. null status: the computer is offline or did not answer in time. */
 export const ComputerMaintenanceListSchema = z.object({
   computers: z.array(z.object({ target: DeviceProvisioningTargetSchema, status: MaintenanceStatusSchema.nullable(),
+    workerPublication: WorkerReleasePublicationSchema.optional(),
     tasksOmitted: z.number().int().nonnegative().default(0) }).strict()).max(101),
 }).strict()
 export type ComputerMaintenanceList = z.infer<typeof ComputerMaintenanceListSchema>
@@ -149,6 +150,7 @@ export const ComputerMaintenanceOperatorListSchema = z.object({
   computers: z.array(z.object({
     target: DeviceProvisioningTargetSchema,
     status: z.union([MaintenanceStatusSchema, CompactMaintenanceStatusSchema]).nullable(),
+    workerPublication: WorkerReleasePublicationSchema.optional(),
     tasksOmitted: z.number().int().nonnegative().default(0),
   }).strict()).max(101),
 }).strict()
