@@ -73,13 +73,16 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
   }
 
   async function assertSettled(starter: Starter, runId: string) {
-    const response = await starter.runtime.client.callTool({ name: 'run_get', arguments: {
-      workspaceId: starter.input.workspaceId, runId, detail: 'full',
-    } })
-    expect(response.isError).not.toBe(true)
-    const details = SavedRunDetailsSchema.parse(decodeMcpToolResult(response))
-    expect(details).toMatchObject({ run: { id: runId, executionState: 'completed', outcome: 'succeeded' },
-      cleanupPending: false })
+    // Start accepts asynchronously; teardown must wait for native cleanup as well as the terminal Run.
+    await vi.waitFor(async () => {
+      const response = await starter.runtime.client.callTool({ name: 'run_get', arguments: {
+        workspaceId: starter.input.workspaceId, runId, detail: 'full',
+      } })
+      expect(response.isError).not.toBe(true)
+      const details = SavedRunDetailsSchema.parse(decodeMcpToolResult(response))
+      expect(details).toMatchObject({ run: { id: runId, executionState: 'completed', outcome: 'succeeded' },
+        cleanupPending: false })
+    }, { timeout: 25_000, interval: 50 })
   }
 
   async function assertPersisted(starter: Starter, runId: string) {
