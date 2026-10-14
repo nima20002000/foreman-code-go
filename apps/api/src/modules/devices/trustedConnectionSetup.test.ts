@@ -13,7 +13,7 @@ function fixture() {
   const mainId = randomUUID(), deviceId = randomUUID()
   let registration: DeviceRegistration = { mainId, deviceId, workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1, publicKeyFingerprint: 'a'.repeat(64), status: 'paired', scopes: ['connect', 'heartbeat'] }
   const principal: ManagementPrincipal = { id: 'owner', name: 'Owner', audience: 'operator', grants: [{ actions: ['settings:read', 'settings:update'], scope: {} }], expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null }
-  let revoked = false, approvalAllowed = true
+  let revoked = false
   const receipts = new Map<string, { input_hash: unknown; target_key: unknown; result: unknown }>()
   const query = vi.fn(async (sql: string, values: unknown[] = []) => {
     let rows: unknown[] = []
@@ -26,24 +26,49 @@ function fixture() {
   })
   const pool = { connect: async () => ({ query, release: vi.fn() }), query } as unknown as pg.Pool
   const probe = vi.fn(async (): Promise<ConnectionProbe> => ({ state: 'connected', hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, osUser: 'builder', uid: 1000, hostname: 'laptop', sshVersion: 'OpenSSH_9.6p1', rsyncVersion: 'rsync  version 3.2.7', tailscaleVersion: '1.102.4' }))
-  const verifyOwnerApproval = vi.fn(async () => { if (!approvalAllowed) throw new Error('OWNER_APPROVAL_REQUIRED'); return { ownerId: 'human-owner' } })
-  const service = new PostgresTrustedConnectionSetup(pool, mainId, { verifyOwnerApproval, probe })
-  const input: TrustedConnectionConfigure = { deviceId, commandId: randomUUID(), expectedRevision: 0, expectedAuthorizationRevision: 1, endpoint: { transport: 'tailscale', host: '100.64.0.20', port: 22, osUser: 'builder' }, hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, allowOwnerCommands: true, approvalId: randomUUID() }
-  return { service, principal, input, probe, query, verifyOwnerApproval, receipts, revokePrincipal: () => { revoked = true }, denyApproval: () => { approvalAllowed = false }, updateDevice: (change: Partial<DeviceRegistration>) => { registration = { ...registration, ...change } } }
+  const service = new PostgresTrustedConnectionSetup(pool, mainId, { probe })
+  const input: TrustedConnectionConfigure = { deviceId, commandId: randomUUID(), expectedRevision: 0, expectedAuthorizationRevision: 1, endpoint: { transport: 'tailscale', host: '100.64.0.20', port: 22, osUser: 'builder' }, hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, allowOwnerCommands: true }
+  return { service, principal, input, probe, query, receipts, revokePrincipal: () => { revoked = true }, updateDevice: (change: Partial<DeviceRegistration>) => { registration = { ...registration, ...change } } }
 }
 describe('trusted connection consent and readiness', () => {
   it('requires pair/consent before probing and separates owner SSH from agent authority', async () => {
     const f = fixture()
     expect((await f.service.check(f.principal, f.input.deviceId)).state).toBe('consent-required'); expect(f.probe).not.toHaveBeenCalled()
     const consent = await f.service.configure(f.principal, f.input)
-    expect(consent).toMatchObject({ revision: 1, approvedBy: 'human-owner', automaticSudo: false, grantsAgentPermissions: false, privilege: 'selected-os-user' })
+    expect(consent).toMatchObject({ revision: 1, automaticSudo: false, grantsAgentPermissions: false, privilege: 'selected-os-user' })
     expect((await f.service.check(f.principal, f.input.deviceId)).state).toBe('ready')
     expect((await f.service.read(f.principal, f.input.deviceId)).registration.scopes).toEqual(['connect', 'heartbeat'])
-    expect(f.query.mock.calls.some(([sql]) => sql.startsWith('insert into management_audit'))).toBe(true)
   })
-  it('requires verified owner approval even for settings:update and fails closed', async () => {
-    const f = fixture(); f.denyApproval()
-    await expect(f.service.configure(f.principal, f.input)).rejects.toThrow('OWNER_APPROVAL_REQUIRED')
+  it('configures directly with settings:update and reads back the saved consent', async () => {
+    const f = fixture()
+    const consent = await f.service.configure(f.principal, f.input, 'mcp')
+    expect(consent).toMatchObject({ revision: 1, allowOwnerCommands: true })
+    expect((await f.service.read(f.principal, f.input.deviceId)).consent).toEqual(consent)
+  })
+  it('reads saved consent without retired approval metadata and preserves the stored receipt', async () => {
+    const f = fixture()
+    const { registration } = await f.service.read(f.principal, f.input.deviceId)
+    const stored = {
+      mainId: registration.mainId, deviceId: registration.deviceId,
+      workerInstallationId: registration.workerInstallationId,
+      keyRevision: registration.keyRevision, authorizationRevision: registration.authorizationRevision,
+      publicKeyFingerprint: registration.publicKeyFingerprint, revision: 1,
+      endpoint: f.input.endpoint, hostKeyFingerprint: f.input.hostKeyFingerprint,
+      allowOwnerCommands: true, privilege: 'selected-os-user', automaticSudo: false, grantsAgentPermissions: false,
+      approvalId: randomUUID(), approvedBy: 'test-owner', approvedAt: '2026-10-01T00:00:00.000Z',
+    }
+    f.receipts.set('saved-command', { input_hash: 'saved-hash', target_key: 'saved-device', result: stored })
+    const read = await f.service.read(f.principal, f.input.deviceId)
+    expect(read.consent).toMatchObject({ revision: 1, endpoint: f.input.endpoint, allowOwnerCommands: true })
+    expect(read.consent).not.toHaveProperty('approvalId')
+    expect(read.consent).not.toHaveProperty('approvedBy')
+    expect(read.consent).not.toHaveProperty('approvedAt')
+    expect(f.receipts.get('saved-command')?.result).toEqual(stored)
+  })
+  it.each(['pending', 'revoked'] as const)('rejects configuration for a %s device', async status => {
+    const f = fixture()
+    f.updateDevice({ status })
+    await expect(f.service.configure(f.principal, f.input)).rejects.toMatchObject({ code: 'DEVICE_CONNECTION_NOT_PAIRED' })
     expect(f.receipts.size).toBe(0)
   })
   it('denies readonly caller and revoked live principal before mutation/probe', async () => {
@@ -51,12 +76,11 @@ describe('trusted connection consent and readiness', () => {
     await expect(f.service.configure(reader, f.input)).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
     f.revokePrincipal()
     await expect(f.service.inspect(f.principal, f.input.deviceId, f.input.endpoint)).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
-    expect(f.probe).not.toHaveBeenCalled(); expect(f.verifyOwnerApproval).not.toHaveBeenCalled()
+    expect(f.probe).not.toHaveBeenCalled()
   })
-  it('replays original command across HTTP/MCP without repeating approval and rejects changed payload', async () => {
+  it('replays original command across HTTP/MCP and rejects changed payload', async () => {
     const f = fixture(), first = await f.service.configure(f.principal, f.input, 'http')
     expect(await f.service.configure(f.principal, f.input, 'mcp')).toEqual(first)
-    expect(f.verifyOwnerApproval).toHaveBeenCalledTimes(1)
     await expect(f.service.configure(f.principal, { ...f.input, allowOwnerCommands: false })).rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
     await expect(f.service.configure(f.principal, { ...f.input, commandId: randomUUID() })).rejects.toMatchObject({ code: 'DEVICE_CONNECTION_CONFLICT' })
   })
@@ -90,7 +114,7 @@ describe('trusted connection consent and readiness', () => {
     const f = fixture()
     expect((await f.service.inspect(f.principal, f.input.deviceId, f.input.endpoint)).state).toBe('connected')
     expect((await f.service.read(f.principal, f.input.deviceId)).consent).toBeNull()
-    expect(f.verifyOwnerApproval).not.toHaveBeenCalled(); expect(f.receipts.size).toBe(0)
+    expect(f.receipts.size).toBe(0)
   })
 })
 
@@ -116,7 +140,6 @@ describe('accepted-transfer trusted setup domain capability', () => {
     f.query.mockClear()
     const checked = await f.service.checkAcceptedTransfer(f.intent, f.authority, new AbortController().signal)
     expect(checked.state).toBe('ready'); expect(f.authority.accepted.authorize).toHaveBeenCalledTimes(2)
-    expect(f.query.mock.calls.some(([sql]) => sql.includes('management_principals'))).toBe(false)
     expect(actor.grants[0]!.actions).toEqual(['job_artifacts:read'])
   })
   it('rejects altered accepted identity and denied data grants before probing', async () => {

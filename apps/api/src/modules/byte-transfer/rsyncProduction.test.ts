@@ -37,11 +37,11 @@ async function fixture(direction: TransferIntent['direction'] = 'to-worker', opt
     localBinarySha256: hash(Buffer.from('fixture binary')), remoteBinarySha256: 'b'.repeat(64) }
   const check: TrustedConnectionCheck = { registration, consent: { ...registration, revision: 1, endpoint: { transport: 'tailscale',
     host: endpoint.host, port: 22, osUser: endpoint.user }, hostKeyFingerprint: `SHA256:${'c'.repeat(43)}`, allowOwnerCommands: true,
-    approvedBy: 'human-owner', approvalId: randomUUID(), approvedAt: new Date().toISOString(), privilege: 'selected-os-user',
+    privilege: 'selected-os-user',
     automaticSudo: false, grantsAgentPermissions: false }, state: 'ready', checkedAt: new Date().toISOString(),
     probe: { state: 'connected', hostKeyFingerprint: `SHA256:${'c'.repeat(43)}`, osUser: 'builder', uid: 1000,
       hostname: 'worker', sshVersion: 'OpenSSH_9.6p1', rsyncVersion: 'rsync 3.5.1', tailscaleVersion: '1.102.4' } }
-  // Consent schema is strict: registration scopes/status are not owner-approval fields.
+  // Consent schema is strict: registration scopes/status are not connection settings.
   delete (check.consent as unknown as Record<string, unknown>).scopes; delete (check.consent as unknown as Record<string, unknown>).status
   let denied = false, published = false, selection: RsyncBackendSelection = { backend: 'rsync', check, endpoint,
     nodeBinary: '/protected/node', entryPoint: '/protected/rsync-writer.mjs' }

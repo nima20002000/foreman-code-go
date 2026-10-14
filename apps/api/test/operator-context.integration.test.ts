@@ -132,7 +132,7 @@ describe.skipIf(!postgresEnabled)('Operator context over authenticated MCP', () 
       expect(compact.grants).toEqual(issued.principal.grants)
       expect(compact.runtimeLimits).toEqual(expect.arrayContaining([
         expect.objectContaining({ feature: 'native_mcp_provisioning', detail: expect.stringContaining('human') }),
-        expect.objectContaining({ feature: 'trusted_device_owner_approval', detail: expect.stringContaining('human-only') }),
+        expect.objectContaining({ feature: 'trusted_device_connections', detail: expect.stringContaining('settings:update') }),
       ]))
     } finally { await f.close() }
   }, 60000)

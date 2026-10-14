@@ -14,8 +14,8 @@ async function fixture() {
     return { ...localHumanPrincipal, id: 'reader', grants: [{ actions: ['settings:read' as const], scope: {} }] }
   })
   registerOperatorHttpSecurity(app, { authenticate } as unknown as PostgresAccessService)
-  app.get('/api/devices/connection-approvals', request => requirePrincipal(request))
-  app.post('/api/devices/connection-approvals', request => requirePrincipal(request))
+  app.get('/api/devices/connection-host', request => requirePrincipal(request))
+  app.post('/api/devices/connection-configure', request => requirePrincipal(request))
   app.post('/api/human-decision', request => { requireLocalHuman(request); return { approved: true } })
   app.setErrorHandler((error, _request, reply) => {
     const status = error instanceof DomainError ? error.status : 500
@@ -37,10 +37,10 @@ describe('implicit local human', () => {
       expect(await unknown.json()).toEqual({ code: 'LOCAL_CLIENT_UNAVAILABLE' })
       expect(authenticate).not.toHaveBeenCalled()
       const headers = { authorization: 'Bearer reader-token' }
-      const reader = await fetch(`${address}/api/devices/connection-approvals`, { headers })
+      const reader = await fetch(`${address}/api/devices/connection-host`, { headers })
       expect(reader.status).toBe(200)
       expect((await reader.json()).id).toBe('reader')
-      const write = await fetch(`${address}/api/devices/connection-approvals`, { method: 'POST', headers })
+      const write = await fetch(`${address}/api/devices/connection-configure`, { method: 'POST', headers })
       expect(write.status).toBe(403)
       await write.body?.cancel()
       expect(peer).toHaveBeenCalledTimes(1)
@@ -71,7 +71,7 @@ describe('implicit local human', () => {
         expect(read.statusCode).toBe(200)
         expect(read.json().principal.id).toBe(localHumanPrincipal.id)
         expect(read.headers['set-cookie']).toBeUndefined()
-        expect((await app.inject({ method: 'POST', url: '/api/devices/connection-approvals', headers })).statusCode).toBe(200)
+        expect((await app.inject({ method: 'POST', url: '/api/devices/connection-configure', headers })).statusCode).toBe(200)
         expect((await app.inject({ method: 'POST', url: '/api/human-decision', headers })).json()).toEqual({ approved: true })
       }
       expect(authenticate).not.toHaveBeenCalled()
@@ -95,8 +95,8 @@ describe('implicit local human', () => {
     const { app, authenticate } = await fixture()
     try {
       const headers = { authorization: 'Bearer reader-token' }
-      expect((await app.inject({ url: '/api/devices/connection-approvals', headers })).json().id).toBe('reader')
-      expect((await app.inject({ method: 'POST', url: '/api/devices/connection-approvals', headers })).statusCode).toBe(403)
+      expect((await app.inject({ url: '/api/devices/connection-host', headers })).json().id).toBe('reader')
+      expect((await app.inject({ method: 'POST', url: '/api/devices/connection-configure', headers })).statusCode).toBe(403)
       expect((await app.inject({ method: 'POST', url: '/api/human-decision', headers })).statusCode).toBe(403)
       for (const authorization of ['Bearer invalid', 'invalid']) {
         expect((await app.inject({ url: '/api/local-human', headers: { authorization } })).statusCode).toBe(401)

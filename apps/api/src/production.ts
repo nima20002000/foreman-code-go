@@ -40,10 +40,6 @@ import { readProductEnvironment } from '@foreman-code/contracts/product-environm
 import { appLauncherPath, appMcpServerName } from './modules/harnesses/appMcpLauncher.js'
 import { createMainRsyncEntrypoint } from './modules/byte-transfer/installedEntrypoints.js'
 import { PostgresTrustedConnectionSetup } from './modules/devices/trustedConnectionSetup.js'
-import {
-  PostgresTrustedConnectionHumanAuthority,
-  registerTrustedConnectionApprovalRoutes,
-} from './modules/devices/trustedConnectionHumanAuthority.js'
 import { registerTrustedConnectionRoutes } from './modules/devices/trustedConnectionManagement.js'
 import { requirePrincipal } from './modules/access/http.js'
 import { RsyncTransferAuthorizeRequestSchema } from '@foreman-code/contracts/byte-transfer'
@@ -2585,15 +2581,10 @@ async function initializeJobServices(composition: ProductionComposition, machine
     infrastructure,
   } = composition
 
-  const connectionAuthority = new PostgresTrustedConnectionHumanAuthority(
-    database.pool, machine.installationId,
-  )
-  composition.trustedConnections = new PostgresTrustedConnectionSetup(database.pool, machine.installationId,
-    { verifyOwnerApproval: connectionAuthority.verifyOwnerApproval })
+  composition.trustedConnections = new PostgresTrustedConnectionSetup(database.pool, machine.installationId)
   runtimeServices.trustedConnections = composition.trustedConnections
   registerTrustedConnectionRoutes(app, composition.trustedConnections,
     async request => request.reauthorizeOperator ? request.reauthorizeOperator() : requirePrincipal(request))
-  registerTrustedConnectionApprovalRoutes(app, connectionAuthority)
   const activeNativeSession: SourceActiveNativeSessionReader = (sql, record) =>
     readSourceCurrentNativeSession(sql, record, approvals.passiveOwnedNativeSessions())
   const captureNativeSession: SourceNativeSessionCaptureReader = async record => {
