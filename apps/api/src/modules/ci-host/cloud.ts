@@ -871,8 +871,7 @@ export class CloudCi {
 
   private async reconcileLookupFailure(run: CloudRun, error: unknown): Promise<CloudRun> {
     const now = this.ports.now()
-    const since = run.reconciliation?.since ?? run.reconciliation?.at
-      ?? (run.workflowStarted ? now.toISOString() : run.dispatch?.at ?? run.startedAt)
+    const since = run.reconciliation?.since ?? run.reconciliation?.at ?? now.toISOString()
     if (['starting', 'running'].includes(run.state) && now.getTime() - Date.parse(since) >= CLOUD_START_TIMEOUT_MS) {
       return this.requeueUnreadable(run, error)
     }
