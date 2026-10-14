@@ -8,7 +8,8 @@ it.each(['starting', 'running'] as const)(
       f.control.operation = 'run'
       f.control.error = 'run.not_found'
       const request = { operation: 'read', runId: f.run.runId, afterOffset: 0, maxBytes: 65_536 }
-      await expect(f.cloud.handle(request)).resolves.toMatchObject({ run: { state } })
+      await expect(f.cloud.handle(request)).resolves.toMatchObject({ run: { state,
+        message: expect.stringContaining('could not be reconciled') } })
       for (let attempt = 0; attempt < 3; attempt++) {
         f.advance(4_001)
         await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state } })
@@ -25,6 +26,24 @@ it.each(['starting', 'running'] as const)(
     } finally { await f.close() }
   },
 )
+
+it('measures an unstarted CircleCI visibility window from a delayed first lookup failure', async () => {
+  const f = await cloudCiLookupFixture('starting')
+  try {
+    f.advance(60_000)
+    f.control.operation = 'run'
+    f.control.error = 'run.not_found'
+    const request = { operation: 'read', runId: f.run.runId, afterOffset: 0, maxBytes: 1 }
+    await expect(f.cloud.handle(request)).resolves.toMatchObject({ run: { state: 'starting',
+      message: expect.stringContaining('could not be reconciled') } })
+    f.advance(70_000)
+    await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state: 'starting' } })
+    expect(f.control.canceled).toEqual([])
+    f.advance(5_000)
+    await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state: 'queued' } })
+    expect(f.control.canceled).toEqual(['pipeline-1'])
+  } finally { await f.close() }
+})
 
 it.each(['run.not_found', 'permission denied', 'rate limit reached'])(
   'requeues despite best-effort CircleCI cancellation failing with %s', async cancelError => {
@@ -84,6 +103,7 @@ it.each(['starting', 'running'] as const)(
     try {
       const request = { operation: 'read', runId: f.run.runId, afterOffset: 0, maxBytes: 1 }
       f.advance(120_000)
+      f.control.operation = 'run'
       f.control.error = 'run.not_found'
       await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state, finishedAt: null } })
       f.advance(74_999)

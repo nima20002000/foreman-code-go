@@ -280,29 +280,15 @@ it.each([403, 429, 500])('propagates CircleCI Suite output HTTP %s errors withou
   expect(cli.calls).not.toHaveBeenCalled()
 })
 
-it('keeps transient CircleCI missing-run handling and expired lookup errors', async () => {
-  const server = await http((_request, response) => json(response, { message: 'Not Found' }, 404))
-  const cli = ports()
-  cli.value.now = () => new Date(Date.parse(finishedAt) + CLOUD_START_TIMEOUT_MS - 1)
-  const provider = new CircleCiProvider(cli.value, { ...server, circleToken: async () => 'circle-test-token' })
-  expect(await provider.find({ ...run, startedAt: finishedAt })).toBeNull()
-  await expect(provider.find(run)).rejects.toMatchObject({ code: 'CI_CLOUD_RUN_NOT_FOUND',
-    message: 'CircleCI run is not visible.' })
-})
-
-it.each([CLOUD_START_TIMEOUT_MS - 1, CLOUD_START_TIMEOUT_MS, CLOUD_START_TIMEOUT_MS + 1])(
-  'applies the CircleCI missing-run deadline at %s ms after dispatch', async elapsed => {
+it.each([0, CLOUD_START_TIMEOUT_MS - 1, CLOUD_START_TIMEOUT_MS, CLOUD_START_TIMEOUT_MS + 1])(
+  'reports a CircleCI lookup failure independently of dispatch age at %s ms', async elapsed => {
     const server = await http((_request, response) => json(response, { message: 'Not Found' }, 404))
     const cli = ports()
     cli.value.now = () => new Date(Date.parse(run.startedAt) + elapsed)
     const provider = new CircleCiProvider(cli.value, { ...server, circleToken: async () => 'circle-test-token' })
-    if (elapsed < CLOUD_START_TIMEOUT_MS) {
-      expect(await provider.find(run)).toBeNull()
-    } else {
-      await expect(provider.find(run)).rejects.toMatchObject({
-        code: 'CI_CLOUD_RUN_NOT_FOUND', message: 'CircleCI run is not visible.',
-      })
-    }
+    await expect(provider.find(run)).rejects.toMatchObject({
+      code: 'CI_CLOUD_RUN_NOT_FOUND', message: 'CircleCI run is not visible.',
+    })
     expect(cli.calls).not.toHaveBeenCalled()
   },
 )

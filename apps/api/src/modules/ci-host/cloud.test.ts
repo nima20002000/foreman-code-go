@@ -734,7 +734,11 @@ describe('GitHub Actions CI on a public mirror', () => {
     const read = { operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 }
     await main.service.dispatch()
     expect(await main.read()).toMatchObject({ run: { state: 'starting', computer: { label: 'CircleCI' } } })
-    f.advance(75_000)
+    f.advance(70_000)
+    await main.service.dispatch()
+    expect(await main.read()).toMatchObject({ run: { state: 'starting', computer: { label: 'CircleCI' } } })
+    expect(f.circle.canceled).toEqual([])
+    f.advance(5_000)
     await main.service.dispatch()
     expect(await main.read()).toMatchObject({ run: { state: 'queued', computer: null,
       startedAt: null, finishedAt: null, exitCode: null, unstartedProviders: ['circleci'],
@@ -756,10 +760,10 @@ describe('GitHub Actions CI on a public mirror', () => {
     await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
       suite: 'integration', scope: 'full' })
     const read = { operation: 'read', runId, afterOffset: 0, maxBytes: 1024 }
-    f.advance(75_000)
+    f.advance(40_000)
     expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'starting', finishedAt: null,
       message: expect.stringContaining('could not be reconciled') } })
-    f.advance(70_000)
+    f.advance(30_000)
     expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'starting', finishedAt: null } })
     expect(f.circle.canceled).toEqual([])
     f.circle.lookupError = ''
