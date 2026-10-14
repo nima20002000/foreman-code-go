@@ -1,5 +1,5 @@
 import { REMOTE_NATIVE_SOURCE_LIMIT } from '@foreman-code/contracts/remote-workflow-physical'
-import type { WorkflowNativeCapture } from '../interactions/workflowNativeCapture.js'
+import type { WorkflowNativeCapture, WorkflowOriginalNativeSource } from '../interactions/workflowNativeCapture.js'
 import { assertGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import { canonicalGraphJson } from '@foreman-code/contracts/wave25'
 import { DomainError } from '../errors.js'
@@ -10,13 +10,17 @@ import type { WorkflowNativeProofRecord } from './workflowNativeProof.js'
 function fail(code = 'NATIVE_SOURCE_CONFLICT'): never {
   throw new DomainError(code, 'The original native source conflicts with its retained record.', 409)
 }
-function originalIdentity(capture: WorkflowNativeCapture): unknown {
-  switch (capture.source.type) {
-    case 'session_created': return ['session', capture.session]
-    case 'event': return ['event', capture.source.event.connectionId ?? null, capture.source.event.sequence]
-    case 'history': return ['history', repeatDigest(capture.source.history, REMOTE_NATIVE_SOURCE_LIMIT)]
+function originalIdentity(source: WorkflowOriginalNativeSource): unknown {
+  switch (source.type) {
+    case 'session_created': return ['session', source.session]
+    case 'event': return ['event', source.event.connectionId ?? null, source.event.sequence]
+    case 'history': return ['history', repeatDigest(source.history, REMOTE_NATIVE_SOURCE_LIMIT)]
     case 'boundary': return fail('NATIVE_SOURCE_NOT_CAPTURED')
   }
+}
+
+export function workflowNativeSourceId(executionId: string, source: WorkflowOriginalNativeSource): string {
+  return repeatId('workflow-native-source', executionId, repeatDigest(originalIdentity(source)))
 }
 function sourceIdentity(record: WorkflowNativeProofRecord): unknown {
   return { scope: record.scope, ref: record.ref, execution: record.execution, inputDigest: record.inputDigest,
@@ -26,7 +30,7 @@ function sourceIdentity(record: WorkflowNativeProofRecord): unknown {
 export function workflowNativeSourceRecord(capture: WorkflowNativeCapture, stored: StoredRepeatExecution,
   scope: RepeatScope, fence: { ownerId: string; fence: string }): WorkflowNativeProofRecord {
   return {
-    proofId: repeatId('workflow-native-source', stored.execution.id, repeatDigest(originalIdentity(capture))),
+    proofId: workflowNativeSourceId(stored.execution.id, capture.source),
     scope, ref: stored.ref, execution: repeatExecutionIdentity(stored.execution), inputDigest: stored.inputDigest,
     commandId: `execution:${stored.execution.id}`, session: capture.session, original: capture.source,
     observedAt: capture.observedAt, ownerId: fence.ownerId, ownerFence: fence.fence,

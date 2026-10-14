@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { withTransaction } from '../../infrastructure/transaction.js'
+import { withExclusiveGraphConnection, type GraphTransactionSql } from '../run-graph/connection.js'
 import type pg from 'pg'
 import { HarnessExecutionSchema, NativeSessionLaneSchema, NativeSessionReferenceSchema, type HarnessExecution, type NativeSessionReference } from '@foreman-code/contracts'
 import { AcceptedWorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
@@ -84,6 +84,93 @@ function ownerTarget(mainId: string, owner: TelemetryOwner): Extract<TelemetrySe
         : { kind: owner.kind, conversationId: owner.conversationId }
   return { schemaVersion: 1, scope: 'owned', mainId, target }
 }
+interface TelemetryScopeContext {
+  mainContext: PassiveTelemetryServicesInput['mainContext']
+  captureHost(capture: CapturedTelemetryNativeOwner): TelemetryOwnedTargetFacts['host'] | null
+  currentCapture(capture: CapturedTelemetryNativeOwner): boolean
+  computerAllowed(sql: GraphTransactionSql, target: Extract<TelemetrySelectorTarget, { scope: 'computer' }>): Promise<boolean>
+}
+
+async function readTelemetryScope(sql: GraphTransactionSql, capture: CapturedTelemetryNativeOwner,
+  observed: readonly NativeLaunchObservation[], signal: AbortSignal, context: TelemetryScopeContext): Promise<ScopeFacts | null> {
+  const { captureHost, currentCapture, computerAllowed } = context
+
+  const host = captureHost(capture)
+  if (!host || !currentCapture(capture)) return null
+  if (host.hostRef.kind === 'device' && !await computerAllowed(sql, { schemaVersion: 1, scope: 'computer', mainId: host.hostRef.mainId, hostRef: host.hostRef })) return null
+  const laneRows = await sql.query<{ id: string; revision: string; record: unknown }>(`select id,revision::text,record from native_session_lanes
+    where id=$1 and record->>'leaseToken'=$2 and (record->>'leaseExpiresAt')::timestamptz > clock_timestamp()`, [capture.writer.id, capture.writer.token])
+  const lane = NativeSessionLaneSchema.safeParse(laneRows.rows[0]?.record)
+  if (laneRows.rows.length !== 1 || !lane.success || lane.data.id !== capture.writer.id || lane.data.leaseToken !== capture.writer.token
+    || lane.data.id !== laneRows.rows[0]!.id || String(lane.data.revision) !== laneRows.rows[0]!.revision
+    || !lane.data.leaseExpiresAt || Date.parse(lane.data.leaseExpiresAt) <= Date.now() || !lane.data.leaseOwner
+    || lane.data.harness !== capture.session.harness || lane.data.nativeSessionId !== capture.session.nativeSessionId
+    || lane.data.ownerAgentId !== capture.execution.agentId || lane.data.correlationId !== `execution:${capture.execution.id}`
+    || capture.writer.connectionGeneration !== undefined && lane.data.connectionGeneration !== capture.writer.connectionGeneration) return null
+  const rows = await sql.query<{ id: string; run_id: string; workflow_node_id: string; agent_id: string; attempt: number;
+    accepted: boolean; record: unknown; workspace_id: string; workflow_id: string; workflow_version_id: string; run_record: unknown }>(`select e.id,e.run_id,e.workflow_node_id,e.agent_id,e.attempt,e.accepted,e.record,r.workspace_id,r.workflow_id,r.workflow_version_id,r.record as run_record
+    from harness_executions e join runs r on r.id=e.run_id where e.id=$1 and e.run_id=$2`, [capture.execution.id, capture.execution.runId])
+  const row = rows.rows[0], execution = HarnessExecutionSchema.safeParse(row?.record), run = AcceptedWorkflowRunV3Schema.safeParse(row?.run_record)
+  if (rows.rows.length !== 1 || !row || !execution.success || !row.accepted || row.id !== capture.execution.id
+    || row.run_id !== capture.execution.runId || row.workflow_node_id !== capture.execution.workflowNodeId
+    || row.agent_id !== capture.execution.agentId || row.attempt !== capture.execution.attempt
+    || execution.data.id !== row.id || execution.data.runId !== row.run_id || execution.data.workflowNodeId !== row.workflow_node_id
+    || execution.data.agentId !== row.agent_id || execution.data.agentConfigurationVersionId !== capture.execution.agentConfigurationVersionId || execution.data.attempt !== row.attempt
+    || execution.data.nativeSessionId !== capture.session.nativeSessionId
+    || telemetryCanonical(immutableExecution(execution.data)) !== telemetryCanonical(immutableExecution(capture.execution)) || !run.success || run.data.id !== row.run_id
+    || run.data.workspaceId !== row.workspace_id || run.data.workflowId !== row.workflow_id || run.data.workflowVersionId !== row.workflow_version_id
+    || run.data.agentConfigurationVersionIds[row.agent_id] !== execution.data.agentConfigurationVersionId) return null
+  const sessionRows = await sql.query<{ reference: unknown }>('select reference from execution_native_sessions where execution_id=$1', [row.id])
+  const session = NativeSessionReferenceSchema.safeParse(sessionRows.rows[0]?.reference)
+  if (sessionRows.rows.length !== 1 || !session.success || telemetryCanonical(session.data) !== telemetryCanonical(capture.session)) return null
+  // Dispatch and grant epoch come from the same repeatable-read snapshot.
+  const original = await readDispatchIntent(sql, row.id)
+  if (!original) return null
+  const intent = await readReconciledDispatchIntent(sql, original.operationId)
+  const placement = await readAcceptedPlacement(sql, row.run_id, row.workflow_node_id)
+  if (!intent || !placement || telemetryCanonical({ ...intent, owner: null }) !== telemetryCanonical({ ...original, owner: null }) || intent.executionId !== row.id || intent.runId !== row.run_id || intent.nodeId !== row.workflow_node_id
+    || intent.technicalAttempt !== row.attempt || intent.mainId !== host.hostRef.mainId || intent.bindingHash !== placement.bindingHash
+    || telemetryCanonical(placement.hostRef) !== telemetryCanonical(host.hostRef)
+    || placement.mainInstallationId !== context.mainContext()?.applicationInstallationId || placement.payload.kind !== 'agent'
+    || placement.payload.agentId !== row.agent_id || placement.payload.agentConfigurationVersionId !== execution.data.agentConfigurationVersionId) return null
+  const grantRows = await sql.query(`select 1 from execution_dispatch_owner_grants
+    where execution_id=$1 and operation_id=$2 and grant_id=$3 and epoch=$4 and not revoked`,
+    [intent.executionId, intent.operationId, intent.owner.grantId, intent.owner.epoch])
+  if (grantRows.rowCount !== 1) return null
+  let remoteClosed = false
+  if ('binding' in capture) {
+    const remote = capture as CapturedRemoteTelemetryNativeOwner
+    const receipts = await sql.query<{ receipt: unknown }>('select receipt from remote_execution_receipts where operation_id=$1', [intent.operationId])
+    const receipt = RemoteOperationReceiptSchema.safeParse(receipts.rows[0]?.receipt)
+    const { connectionEpoch: _epoch, ...connection } = remote.binding
+    void _epoch
+    const origins = await sql.query<{ connection: unknown }>('select connection from remote_dispatch_origins where operation_id=$1', [intent.operationId])
+    const origin = DeviceConnectionIdentitySchema.safeParse(origins.rows[0]?.connection)
+    if (origins.rows.length !== 1 || !origin.success || telemetryCanonical(origin.data) !== telemetryCanonical(connection)) return null
+    if (receipts.rows.length !== 1 || !receipt.success || !receipt.data.native
+      || telemetryCanonical(receipt.data.connection) !== telemetryCanonical(connection)
+      || telemetryCanonical({ ...receipt.data.intent, owner: null }) !== telemetryCanonical({ ...intent, owner: null })
+      || telemetryCanonical(receipt.data.native) !== telemetryCanonical(remote.native)
+      || remote.native.sessionId !== session.data.nativeSessionId
+      || receipt.data.native.turnId !== undefined && receipt.data.native.turnId !== lane.data.currentTurnOrMessageId
+      || !placement.registration
+      || placement.registration.keyRevision !== remote.binding.keyRevision || placement.registration.authorizationRevision !== remote.binding.authorizationRevision
+      || placement.registration.workerInstallationId !== remote.binding.workerInstallationId) return null
+    remoteClosed = receipt.data.phase === 'confirmed_terminal'
+  }
+  signal.throwIfAborted()
+  if (!currentCapture(capture) || telemetryCanonical(captureHost(capture)) !== telemetryCanonical(host)) return null
+  const launches = host.hostRef.kind === 'main' ? observed.filter(value => value.owner === capture.nativeOwner && value.bootId === host.bootId) : []
+  const state = remoteClosed ? 'closed' : run.data.executionState === 'completed' ? 'ended' : launches.length && launches.every(value => value.lifecycle === 'closed') ? 'closed'
+    : execution.data.state === 'completed' ? 'ended'
+      : launches.some(value => value.lifecycle === 'closure-unconfirmed') ? 'closure-unconfirmed' : 'active'
+  return { host, owner: { kind: 'workflow-execution', workspaceId: row.workspace_id, workflowId: row.workflow_id,
+    runId: row.run_id, nodeId: row.workflow_node_id, agentId: row.agent_id, executionId: intent.executionId,
+    attemptId: intent.attemptId, operationId: intent.operationId, bindingHash: intent.bindingHash, owner: intent.owner },
+    attributionRef: lane.data.id, attributionRevision: String(lane.data.revision), leaseId: lane.data.id, leaseExpiresAt: lane.data.leaseExpiresAt,
+    nativeOwner: capture.nativeOwner, state, sharedOwners: [] }
+}
+
 /** Read-only projection of actual accepted facts. No ownership ledger, PID discovery, runtime acquisition or grant upgrade. */
 export function createPassiveTelemetryAuthorities(input: PassiveTelemetryServicesInput): {
   sessions: TelemetrySessionReader; ownership: TelemetryOwnershipReader; reads: TelemetryReadAuthority;
@@ -117,15 +204,15 @@ export function createPassiveTelemetryAuthorities(input: PassiveTelemetryService
       applicationInstallationId: binding.workerInstallationId, bootId: binding.bootId, runtimeEpoch: binding.connectionEpoch,
       keyRevision: binding.keyRevision, authorizationRevision: binding.authorizationRevision, connectionGeneration: binding.connectionGeneration }
   }
-  const withSql = async <T>(signal: AbortSignal, work: (sql: pg.PoolClient) => Promise<T>): Promise<T> => {
+  const withSql = async <T>(signal: AbortSignal, work: (sql: GraphTransactionSql) => Promise<T>): Promise<T> => {
     signal.throwIfAborted()
-    return withTransaction(input.pool, async (client) => {
+    return withExclusiveGraphConnection(input.pool, connection => connection.transaction(async (client) => {
       const result = await work(client)
       signal.throwIfAborted()
       return result
-    })
+    }, true))
   }
-  const authorized = async (sql: pg.PoolClient, principal: ManagementPrincipal, target: TelemetrySelectorTarget) => {
+  const authorized = async (sql: GraphTransactionSql, principal: ManagementPrincipal, target: TelemetrySelectorTarget) => {
     const requirement = grant(target)
     if (!isAuthorized(principal, requirement.action, requirement.resource)) return false
     try {
@@ -133,85 +220,8 @@ export function createPassiveTelemetryAuthorities(input: PassiveTelemetryService
       return isAuthorized(live, requirement.action, requirement.resource)
     } catch (error) { if (error instanceof DomainError && error.status === 403) return false; throw error }
   }
-  const readScope = async (sql: pg.PoolClient, capture: CapturedTelemetryNativeOwner, observed: readonly NativeLaunchObservation[], signal: AbortSignal): Promise<ScopeFacts | null> => {
-    const host = captureHost(capture)
-    if (!host || !currentCapture(capture)) return null
-    if (host.hostRef.kind === 'device' && !await computerAllowed(sql, { schemaVersion: 1, scope: 'computer', mainId: host.hostRef.mainId, hostRef: host.hostRef })) return null
-    const laneRows = await sql.query<{ id: string; revision: string; record: unknown }>(`select id,revision::text,record from native_session_lanes
-      where id=$1 and record->>'leaseToken'=$2 and (record->>'leaseExpiresAt')::timestamptz > clock_timestamp() for share`, [capture.writer.id, capture.writer.token])
-    const lane = NativeSessionLaneSchema.safeParse(laneRows.rows[0]?.record)
-    if (laneRows.rows.length !== 1 || !lane.success || lane.data.id !== capture.writer.id || lane.data.leaseToken !== capture.writer.token
-      || lane.data.id !== laneRows.rows[0]!.id || String(lane.data.revision) !== laneRows.rows[0]!.revision
-      || !lane.data.leaseExpiresAt || Date.parse(lane.data.leaseExpiresAt) <= Date.now() || !lane.data.leaseOwner
-      || lane.data.harness !== capture.session.harness || lane.data.nativeSessionId !== capture.session.nativeSessionId
-      || lane.data.ownerAgentId !== capture.execution.agentId || lane.data.correlationId !== `execution:${capture.execution.id}`
-      || capture.writer.connectionGeneration !== undefined && lane.data.connectionGeneration !== capture.writer.connectionGeneration) return null
-    const rows = await sql.query<{ id: string; run_id: string; workflow_node_id: string; agent_id: string; attempt: number;
-      accepted: boolean; record: unknown; workspace_id: string; workflow_id: string; workflow_version_id: string; run_record: unknown }>(`select e.id,e.run_id,e.workflow_node_id,e.agent_id,e.attempt,e.accepted,e.record,r.workspace_id,r.workflow_id,r.workflow_version_id,r.record as run_record
-      from harness_executions e join runs r on r.id=e.run_id where e.id=$1 and e.run_id=$2 for share of e,r`, [capture.execution.id, capture.execution.runId])
-    const row = rows.rows[0], execution = HarnessExecutionSchema.safeParse(row?.record), run = AcceptedWorkflowRunV3Schema.safeParse(row?.run_record)
-    if (rows.rows.length !== 1 || !row || !execution.success || !row.accepted || row.id !== capture.execution.id
-      || row.run_id !== capture.execution.runId || row.workflow_node_id !== capture.execution.workflowNodeId
-      || row.agent_id !== capture.execution.agentId || row.attempt !== capture.execution.attempt
-      || execution.data.id !== row.id || execution.data.runId !== row.run_id || execution.data.workflowNodeId !== row.workflow_node_id
-      || execution.data.agentId !== row.agent_id || execution.data.agentConfigurationVersionId !== capture.execution.agentConfigurationVersionId || execution.data.attempt !== row.attempt
-      || execution.data.nativeSessionId !== capture.session.nativeSessionId
-      || telemetryCanonical(immutableExecution(execution.data)) !== telemetryCanonical(immutableExecution(capture.execution)) || !run.success || run.data.id !== row.run_id
-      || run.data.workspaceId !== row.workspace_id || run.data.workflowId !== row.workflow_id || run.data.workflowVersionId !== row.workflow_version_id
-      || run.data.agentConfigurationVersionIds[row.agent_id] !== execution.data.agentConfigurationVersionId) return null
-    const sessionRows = await sql.query<{ reference: unknown }>('select reference from execution_native_sessions where execution_id=$1 for share', [row.id])
-    const session = NativeSessionReferenceSchema.safeParse(sessionRows.rows[0]?.reference)
-    if (sessionRows.rows.length !== 1 || !session.success || telemetryCanonical(session.data) !== telemetryCanonical(capture.session)) return null
-    // Existing owner reconciliation also locks this row; retain its exact grant epoch through the read transaction.
-    const locked = await sql.query('select operation_id from execution_dispatch_intents where execution_id=$1 for share', [row.id])
-    if (locked.rows.length !== 1) return null
-    const original = await readDispatchIntent(sql, row.id)
-    if (!original) return null
-    const intent = await readReconciledDispatchIntent(sql, original.operationId)
-    const placement = await readAcceptedPlacement(sql, row.run_id, row.workflow_node_id)
-    if (!intent || !placement || telemetryCanonical({ ...intent, owner: null }) !== telemetryCanonical({ ...original, owner: null }) || intent.executionId !== row.id || intent.runId !== row.run_id || intent.nodeId !== row.workflow_node_id
-      || intent.technicalAttempt !== row.attempt || intent.mainId !== host.hostRef.mainId || intent.bindingHash !== placement.bindingHash
-      || telemetryCanonical(placement.hostRef) !== telemetryCanonical(host.hostRef)
-      || placement.mainInstallationId !== input.mainContext()?.applicationInstallationId || placement.payload.kind !== 'agent'
-      || placement.payload.agentId !== row.agent_id || placement.payload.agentConfigurationVersionId !== execution.data.agentConfigurationVersionId) return null
-    const grantRows = await sql.query(`select 1 from execution_dispatch_owner_grants
-      where execution_id=$1 and operation_id=$2 and grant_id=$3 and epoch=$4 and not revoked for share`,
-      [intent.executionId, intent.operationId, intent.owner.grantId, intent.owner.epoch])
-    if (grantRows.rowCount !== 1) return null
-    let remoteClosed = false
-    if ('binding' in capture) {
-      const remote = capture as CapturedRemoteTelemetryNativeOwner
-      const receipts = await sql.query<{ receipt: unknown }>('select receipt from remote_execution_receipts where operation_id=$1 for share', [intent.operationId])
-      const receipt = RemoteOperationReceiptSchema.safeParse(receipts.rows[0]?.receipt)
-      const { connectionEpoch: _epoch, ...connection } = remote.binding
-      void _epoch
-      const origins = await sql.query<{ connection: unknown }>('select connection from remote_dispatch_origins where operation_id=$1 for share', [intent.operationId])
-      const origin = DeviceConnectionIdentitySchema.safeParse(origins.rows[0]?.connection)
-      if (origins.rows.length !== 1 || !origin.success || telemetryCanonical(origin.data) !== telemetryCanonical(connection)) return null
-      if (receipts.rows.length !== 1 || !receipt.success || !receipt.data.native
-        || telemetryCanonical(receipt.data.connection) !== telemetryCanonical(connection)
-        || telemetryCanonical({ ...receipt.data.intent, owner: null }) !== telemetryCanonical({ ...intent, owner: null })
-        || telemetryCanonical(receipt.data.native) !== telemetryCanonical(remote.native)
-        || remote.native.sessionId !== session.data.nativeSessionId
-        || receipt.data.native.turnId !== undefined && receipt.data.native.turnId !== lane.data.currentTurnOrMessageId
-        || !placement.registration
-        || placement.registration.keyRevision !== remote.binding.keyRevision || placement.registration.authorizationRevision !== remote.binding.authorizationRevision
-        || placement.registration.workerInstallationId !== remote.binding.workerInstallationId) return null
-      remoteClosed = receipt.data.phase === 'confirmed_terminal'
-    }
-    signal.throwIfAborted()
-    if (!currentCapture(capture) || telemetryCanonical(captureHost(capture)) !== telemetryCanonical(host)) return null
-    const launches = host.hostRef.kind === 'main' ? observed.filter(value => value.owner === capture.nativeOwner && value.bootId === host.bootId) : []
-    const state = remoteClosed ? 'closed' : run.data.executionState === 'completed' ? 'ended' : launches.length && launches.every(value => value.lifecycle === 'closed') ? 'closed'
-      : execution.data.state === 'completed' ? 'ended'
-        : launches.some(value => value.lifecycle === 'closure-unconfirmed') ? 'closure-unconfirmed' : 'active'
-    return { host, owner: { kind: 'workflow-execution', workspaceId: row.workspace_id, workflowId: row.workflow_id,
-      runId: row.run_id, nodeId: row.workflow_node_id, agentId: row.agent_id, executionId: intent.executionId,
-      attemptId: intent.attemptId, operationId: intent.operationId, bindingHash: intent.bindingHash, owner: intent.owner },
-      attributionRef: lane.data.id, attributionRevision: String(lane.data.revision), leaseId: lane.data.id, leaseExpiresAt: lane.data.leaseExpiresAt,
-      nativeOwner: capture.nativeOwner, state, sharedOwners: [] }
-  }
-  const load = async (sql: pg.PoolClient, signal: AbortSignal, executionId?: string): Promise<ScopeFacts[]> => {
+
+  const load = async (sql: GraphTransactionSql, signal: AbortSignal, executionId?: string): Promise<ScopeFacts[]> => {
     const source = captures()
     if (!source.length || executionId && !source.some(capture => capture.execution.id === executionId)) return []
     const observed = input.registry.snapshot().launches
@@ -223,13 +233,9 @@ export function createPassiveTelemetryAuthorities(input: PassiveTelemetryService
     const selected = executionId ? source.filter(value => value.execution.id === executionId) : source
     const group = executionId ? source.filter(value => selected.some(own => related(own, value))) : source
     if (group.length === 0) return []
-    // Execution control locks Runs before executions and native sessions.
-    const runIds = [...new Set(group.map(capture => capture.execution.runId))].sort()
-    const executionIds = [...new Set(group.map(capture => capture.execution.id))].sort()
-    await sql.query('select id from runs where id=any($1::text[]) order by id for share', [runIds])
-    await sql.query('select id from harness_executions where id=any($1::text[]) order by id for share', [executionIds])
     const result: Array<{ capture: CapturedTelemetryNativeOwner; scope: ScopeFacts | null }> = []
-    for (const capture of group) result.push({ capture, scope: await readScope(sql, capture, observed, signal) })
+    for (const capture of group) result.push({ capture, scope: await readTelemetryScope(sql, capture, observed, signal,
+      { mainContext: () => input.mainContext(), captureHost, currentCapture, computerAllowed }) })
     for (const value of result) if (value.scope && (Date.parse(value.scope.leaseExpiresAt) <= Date.now()
       || !currentCapture(value.capture) || telemetryCanonical(value.scope.host) !== telemetryCanonical(captureHost(value.capture)))) value.scope = null
     return result.flatMap(({ capture, scope }) => {
@@ -238,11 +244,11 @@ export function createPassiveTelemetryAuthorities(input: PassiveTelemetryService
       return !executionId || capture.execution.id === executionId ? [scope] : []
     })
   }
-  const computerAllowed = async (sql: pg.PoolClient, target: Extract<TelemetrySelectorTarget, { scope: 'computer' }>) => {
+  const computerAllowed = async (sql: GraphTransactionSql, target: Extract<TelemetrySelectorTarget, { scope: 'computer' }>) => {
     const host = localHost()
     if (!host || target.mainId !== host.hostRef.mainId) return false
     if (target.hostRef.kind === 'main') return telemetryCanonical(target.hostRef) === telemetryCanonical(host.hostRef)
-    const rows = await sql.query<{ record: unknown; credential_expires_at: Date }>('select record,credential_expires_at from device_registrations where id=$1 and main_id=$2 for share', [target.hostRef.deviceId, target.mainId])
+    const rows = await sql.query<{ record: unknown; credential_expires_at: Date }>('select record,credential_expires_at from device_registrations where id=$1 and main_id=$2', [target.hostRef.deviceId, target.mainId])
     const registration = DeviceRegistrationSchema.safeParse(rows.rows[0]?.record), observed = input.presence(target.hostRef.deviceId)
     return rows.rows.length === 1 && registration.success && registration.data.status === 'paired'
       && registration.data.mainId === target.mainId && registration.data.deviceId === target.hostRef.deviceId

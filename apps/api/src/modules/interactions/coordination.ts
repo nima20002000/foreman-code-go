@@ -1,3 +1,4 @@
+import { renewNativeLane } from './laneRenewal.js'
 import { withTransaction, inTransaction } from '../../infrastructure/transaction.js'
 import { DeviceHistoryGapSchema, type DeviceHistoryGap } from '@foreman-code/contracts/device-application'
 import { DurableInteractionSchema, type DurableInteraction, IdSchema, TimestampSchema, NativeSessionLaneSchema, NativeSessionReferenceSchema, ReviewJobSchema, type NativeHarnessEvent, type NativeSessionReference, type NativeSessionLane, type ReviewJob } from '@foreman-code/contracts'
@@ -456,21 +457,7 @@ export class PostgresInteractionCoordinationRepository {
   }
 
   async renewLane(id: string, token: string, leaseMs: number, ownership?: LaneLeaseOwnership): Promise<string> {
-    // The token and captured owner/generation fence recovery against a concurrent claim or reattachment.
-    const result = await this.queryConnection.query<{ expires_at: string }>(
-      `update native_session_lanes set revision=revision+1, updated_at=clock_timestamp(),
-       record=jsonb_set(jsonb_set(record, '{revision}', to_jsonb((revision+1)::bigint)),
-         '{leaseExpiresAt}', to_jsonb(to_char(
-           (clock_timestamp()+($3 * interval '1 millisecond')) at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')))
-       where id=$1 and record->>'leaseToken'=$2
-       and ($4::text is not null or (record->>'leaseExpiresAt')::timestamptz > clock_timestamp())
-       and ($4::text is null or (record->>'leaseOwner'=$4
-         and (record->>'connectionGeneration')::bigint=$5))
-       returning record->>'leaseExpiresAt' as expires_at`,
-      [id, token, leaseMs, ownership?.owner ?? null, ownership?.connectionGeneration ?? null],
-    )
-    if (result.rowCount !== 1) throw new DomainError('SESSION_LANE_LEASE_LOST', 'The native writer lease is no longer owned.', 409)
-    return result.rows[0]!.expires_at
+    return renewNativeLane(this.queryConnection, id, token, leaseMs, ownership)
   }
 
   async releaseLane(id: string, leaseToken: string, observed: {
