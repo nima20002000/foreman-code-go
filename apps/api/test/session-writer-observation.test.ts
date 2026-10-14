@@ -11,6 +11,22 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+it('keeps the original session alive and retries when publication temporarily locks its heartbeat', async () => {
+  vi.useFakeTimers()
+  const expiry = () => new Date(Date.now() + 9_000).toISOString()
+  const renew = vi.fn().mockRejectedValueOnce(
+    new DomainError('SESSION_LANE_RENEWAL_BUSY', 'Publication is holding the lane.', 409),
+  ).mockImplementation(async () => expiry())
+  const guard = new LeaseGuard(9_000, async () => undefined, renew, undefined, expiry(), { recover: renew })
+  try {
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(guard.signal.aborted).toBe(false)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(renew).toHaveBeenCalledTimes(2)
+    await expect(guard.check()).resolves.toBeUndefined()
+  } finally { await guard.stop() }
+})
+
 const session: NativeSessionReference = {
   harness: 'codex', providerVersion: '0.154.0', nativeSessionId: 'stream-session',
 }

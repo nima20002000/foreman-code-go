@@ -5,7 +5,8 @@ import { nativeEventBatches } from './nativeEventBatches.js'
 import { reviewPreflightIdentity } from './reviewPolicy.js'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import { componentLogger } from '../diagnostics/logger.js'
-import { isDatabaseTimeout, retryDatabaseTimeout } from '../../infrastructure/databaseTimeout.js'
+import { isDatabaseTimeout, retryDatabaseTimeout, retryDatabaseOperation } from '../../infrastructure/databaseTimeout.js'
+import { isRetryableLaneRenewal } from './laneRenewal.js'
 
 import type { NativeHarnessEvent, NativeSessionLane, NativeSessionReference } from '@foreman-code/contracts'
 import type { DeviceHistoryGap } from '@foreman-code/contracts/device-application'
@@ -68,11 +69,13 @@ export class LeaseGuard {
         }).catch((error: unknown) => {
           if (this.stopped || this.signal.aborted) return
           if (error instanceof DomainError && error.code === this.lostCode
-            || this.recover && !isDatabaseTimeout(error)) {
+            || this.recover && !isRetryableLaneRenewal(error)) {
             this.controller.abort(error)
             return
           }
-          componentLogger('harness').warn({ err: error }, 'Lease renewal is awaiting database confirmation.')
+          if (!(error instanceof DomainError && error.code === 'SESSION_LANE_RENEWAL_BUSY')) {
+            componentLogger('harness').warn({ err: error }, 'Lease renewal is awaiting database confirmation.')
+          }
           scheduleRenewal(retryMs)
         })
       }, delayMs)
@@ -105,10 +108,11 @@ export class LeaseGuard {
   async check(): Promise<void> {
     this.checkExpiry()
     try {
-      await retryDatabaseTimeout(() => timeRuntimeOperation('harness', 'lease.check', () => this.confirmOwnership()), {
-        signal: this.signal,
-        check: () => this.checkExpiry(),
-      })
+      await retryDatabaseOperation(() => timeRuntimeOperation('harness', 'lease.check', () => this.confirmOwnership()),
+        isRetryableLaneRenewal, {
+          signal: this.signal,
+          check: () => this.checkExpiry(),
+        })
     } catch (cause) {
       this.checkExpiry()
       const error = new DomainError(this.lostCode, 'The lease could not be confirmed.', 409)
@@ -719,8 +723,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
             const history = await lease.guard.wait(this.manager.reconcile(session, lease.previous.correlationId, lease.guard.signal))
             this.observe(session, history, lease.previous.correlationId, lease)
           } catch {
-            // The native action was acknowledged. A failed observation cannot
-            // erase that receipt, but lost ownership still fails closed.
+            // ignore: a failed observation preserves the acknowledged action; the lease check below still fences ownership.
             lease.observedStatus = 'uncertain'
           }
           await lease.guard.check()

@@ -3,6 +3,7 @@ import Fastify from 'fastify'
 import { McpServer } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
 import type pg from 'pg'
+import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { AcceptedWorkflowRunV3Schema } from '@foreman-code/contracts/wave25'
 import type { HarnessExecution, NativeSessionLane, NativeSessionReference } from '@foreman-code/contracts'
@@ -31,6 +32,28 @@ const target: Extract<TelemetrySelectorTarget, { scope: 'owned' }> = { schemaVer
   target: { kind: 'workflow-execution', workspaceId: 'workspace-1', workflowId: 'workflow-1', runId: 'run-1', nodeId: 'node-1', executionId: 'execution-1' } }
 const computer: TelemetrySelectorTarget = { schemaVersion: 1, scope: 'computer', mainId, hostRef: { kind: 'main', mainId } }
 const signal = () => new AbortController().signal
+
+it.each(['runs', 'native_session_lanes', 'execution_dispatch_intents'] as const)(
+  'resolves passive telemetry while a publisher holds %s', async table => {
+    const s = setup(table)
+    await expect(s.authorities.targets.resolveOwned(principal, target, signal()))
+      .resolves.toMatchObject({ kind: 'owned', facts: { owner: { executionId: 'execution-1' } } })
+    expect(s.sources[0]!.lane.revision).toBe(4)
+  },
+)
+
+it('keeps one coherent owner epoch per passive read and observes a later renewal on the next read', async () => {
+  const s = setup()
+  s.afterLane(() => {
+    const original = s.sources[0]!
+    original.intent = { ...original.intent, owner: { ...original.intent.owner, epoch: '4' } }
+  })
+  await expect(s.authorities.targets.resolveOwned(principal, target, signal()))
+    .resolves.toMatchObject({ kind: 'owned', facts: { owner: { owner: { epoch: '3' } } } })
+  await expect(s.authorities.targets.resolveOwned(principal, target, signal()))
+    .resolves.toMatchObject({ kind: 'owned', facts: { owner: { owner: { epoch: '4' } } } })
+})
+
 function source(index = 1) {
   const execution: HarnessExecution = { id: `execution-${index}`, runId: `run-${index}`, workflowNodeId: `node-${index}`, agentId: `agent-${index}`,
     agentConfigurationVersionId: `configuration-${index}`, attempt: 7, nativeSessionId: `native-${index}`, input: {}, state: 'running',
@@ -57,7 +80,7 @@ function source(index = 1) {
     executionLocation: { runnerId: 'actual-runner', rootPath: '/project', locationRevision: 1, identityHash: `sha256:${'a'.repeat(64)}` } })
   return { capture, lane, run, session, placement, intent, workspaceId: `workspace-${index}`, workflowId: `workflow-${index}`, accepted: true, grantLive: true }
 }
-function setup() {
+function setup(contendedTable?: 'runs' | 'native_session_lanes' | 'execution_dispatch_intents') {
   const sources = [source()]
   let remoteOwner: CapturedRemoteTelemetryNativeOwner | null = null, receipt: RemoteOperationReceipt | null = null
   let live = structuredClone(principal), revoked = false, active = true, mainContext: typeof context | null = { ...context }
@@ -67,51 +90,61 @@ function setup() {
   const launches: NativeLaunchObservation[] = [{ owner: sources[0]!.capture.nativeOwner, launchId: 'actual-launch-1', bootId,
     provider: { pid: 321, startTicks: '12' }, lifecycle: 'active' }]
   const getNativeOwners = vi.fn(() => remoteOwner ? [] : sources.map(value => structuredClone(value.capture)))
+  let snapshot = sources
   const query = vi.fn(async (text: string, values: unknown[] = []) => {
+    if (text.startsWith('begin')) {
+      snapshot = /repeatable read/i.test(text) ? structuredClone(sources) : sources
+    }
+    // Model PostgreSQL's row-lock conflict while another session is publishing.
+    if (contendedTable && text.includes(contendedTable) && /for (share|update)/i.test(text)) {
+      throw Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' })
+    }
     let rows: unknown[] = []
     if (text.startsWith('select id from runs where id=any')) {
       const ids = values[0] as string[]
-      rows = sources.filter(value => ids.includes(value.capture.execution.runId))
+      rows = snapshot.filter(value => ids.includes(value.capture.execution.runId))
         .map(value => ({ id: value.capture.execution.runId }))
     } else if (text.startsWith('select id from harness_executions where id=any')) {
       const ids = values[0] as string[]
-      rows = sources.filter(value => ids.includes(value.capture.execution.id))
+      rows = snapshot.filter(value => ids.includes(value.capture.execution.id))
         .map(value => ({ id: value.capture.execution.id }))
     } else if (text.includes('from management_principals')) rows = [{ id: live.id, name: live.name, audience: live.audience, grants: live.grants,
       expires_at: new Date(live.expiresAt), revoked_at: revoked ? new Date() : null, delegated_from: null }]
     else if (text.includes('from native_session_lanes')) {
-      const found = sources.find(value => value.lane.id === values[0] && value.lane.leaseToken === values[1])
+      const found = snapshot.find(value => value.lane.id === values[0] && value.lane.leaseToken === values[1])
       if (found && Date.parse(found.lane.leaseExpiresAt!) > Date.now()) rows = [{ id: found.lane.id, revision: String(found.lane.revision), record: structuredClone(found.lane) }]
       afterLaneRead?.(); afterLaneRead = undefined
     } else if (text.includes('from harness_executions e join runs')) {
-      const found = sources.find(value => value.capture.execution.id === values[0] && value.capture.execution.runId === values[1])
+      const found = snapshot.find(value => value.capture.execution.id === values[0] && value.capture.execution.runId === values[1])
       if (found) rows = [{ id: found.capture.execution.id, run_id: found.capture.execution.runId, workflow_node_id: found.capture.execution.workflowNodeId,
         agent_id: found.capture.execution.agentId, attempt: found.capture.execution.attempt, accepted: found.accepted, record: structuredClone(found.capture.execution),
         workspace_id: found.workspaceId, workflow_id: found.workflowId, workflow_version_id: found.run.workflowVersionId, run_record: structuredClone(found.run) }]
       afterExecutionRead?.(); afterExecutionRead = undefined
     } else if (text.includes('from execution_dispatch_owner_grants')) {
-      const found = sources.find(value => value.capture.execution.id === values[0] && value.intent.operationId === values[1]
+      const found = snapshot.find(value => value.capture.execution.id === values[0] && value.intent.operationId === values[1]
         && value.intent.owner.grantId === values[2] && value.intent.owner.epoch === values[3]); if (found?.grantLive) rows = [{}]
     } else if (text.includes('from remote_dispatch_origins')) {
       if (receipt) rows = [{ connection: receipt.connection }]
     } else if (text.includes('from remote_execution_receipts')) {
       if (receipt && receipt.intent.operationId === values[0]) rows = [{ receipt: structuredClone(receipt) }]
     } else if (text.includes('from execution_native_sessions')) {
-      const found = sources.find(value => value.capture.execution.id === values[0]); if (found) rows = [{ reference: found.session }]
+      const found = snapshot.find(value => value.capture.execution.id === values[0]); if (found) rows = [{ reference: found.session }]
     } else if (text.includes('from execution_dispatch_intents where execution_id')) {
-      const found = sources.find(value => value.intent.executionId === values[0])
+      const found = snapshot.find(value => value.intent.executionId === values[0])
       if (found) rows = [{ operation_id: found.intent.operationId, execution_id: found.intent.executionId, run_id: found.intent.runId, node_id: found.intent.nodeId,
         binding_hash: found.intent.bindingHash, attempt_id: found.intent.attemptId, record: structuredClone(found.intent) }]
     } else if (text.includes('from execution_dispatch_intents where operation_id')) {
-      const found = sources.find(value => value.intent.operationId === values[0]); if (found) rows = [{ record: structuredClone(found.intent) }]
+      const found = snapshot.find(value => value.intent.operationId === values[0]); if (found) rows = [{ record: structuredClone(found.intent) }]
     } else if (text.includes('from run_node_placements')) {
-      const found = sources.find(value => value.placement.runId === values[0] && value.placement.nodeId === values[1]); if (found) rows = [{ record: structuredClone(found.placement) }]
+      const found = snapshot.find(value => value.placement.runId === values[0] && value.placement.nodeId === values[1]); if (found) rows = [{ record: structuredClone(found.placement) }]
     } else if (text.includes('from device_registrations') && registration && registration.deviceId === values[0] && registration.mainId === values[1]) {
       rows = [{ record: structuredClone(registration), credential_expires_at: credentialExpires }]
-    } else if (!['begin', 'commit', 'rollback'].includes(text) && !text.includes('remote_execution_owner_reconciliations')) throw new Error(`Unexpected read: ${text}`)
+    } else if (!text.startsWith('begin') && !['commit', 'rollback'].includes(text)
+      && !text.includes('remote_execution_owner_reconciliations')) throw new Error(`Unexpected read: ${text}`)
     return { rows, rowCount: rows.length }
   })
-  const release = vi.fn(), pool = { connect: async () => ({ query, release }) } as unknown as pg.Pool
+  const release = vi.fn()
+  const pool = { connect: async () => Object.assign(new EventEmitter(), { query, release }) } as unknown as pg.Pool
   const registry = { revision: () => 'registry-real-1',
     snapshot: vi.fn(() => ({ revision: 'registry-real-1', launches })), changes: async function* () {} }
   const authorities = createPassiveTelemetryAuthorities({ pool, getNativeOwners, getRemoteNativeOwners: () => remoteOwner ? [remoteOwner] : [], mainContext: () => mainContext, mainActive: () => active,
@@ -213,7 +246,8 @@ describe('genuine passive telemetry production authorities', () => {
     expect(views[0]?.nativeOwner).toBe(s.sources[0]!.capture.nativeOwner)
     expect(views[0]?.leaseId).toBe(s.sources[0]!.lane.id); expect(views[0]?.selector).toEqual(result.selector)
     expect((await service.read(principal, result.selector, signal())).kind).toBe('no-sample')
-    expect(s.query.mock.calls.every(([text]) => !/\b(insert|update|delete)\b/i.test(text))).toBe(true)
+    expect(s.sources[0]!.lane.revision).toBe(4)
+    expect(s.sources[0]!.grantLive).toBe(true)
     await service.close()
   })
   it('reads an ingested genuine scope through authenticated HTTP/MCP and denies callers with no private values', async () => {
@@ -315,7 +349,7 @@ describe('genuine passive telemetry production authorities', () => {
       s.sources[0]!.lane.leaseExpiresAt = new Date(now + 100).toISOString()
       s.afterExecution(() => vi.setSystemTime(now + 101))
       expect(await s.authorities.targets.resolveOwned(principal, target, signal())).toEqual({ kind: 'unavailable' })
-      expect(s.query.mock.calls.some(([text]) => text.includes('execution_dispatch_intents') && text.includes('for share'))).toBe(true)
+      expect(s.sources[0]!.lane.leaseExpiresAt).toBe(new Date(now + 100).toISOString())
     } finally { vi.useRealTimers() }
   })
   it('recomputes real lane revision and marks shared captured process values as privately co-owned', async () => {
