@@ -9,12 +9,19 @@ import type { RepeatNativeEvidence } from './repeatNativeRepository.js'
 import type { StoredRepeatExecution } from './repeatPostgres.js'
 import type { RepeatScope } from './repeatResolution.js'
 import { WorkflowNativeProofServices } from './workflowNativeProof.js'
+import { appendNormalizedNativeEvents } from './nativeEventBatch.js'
 import { appendWorkflowNativeGraphEventLocked } from './workflowNativeGraph.js'
 vi.mock('../run-graph/publication.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../run-graph/publication.js')>(), currentRunGraphPublication: () => ({
   retainNativeSource: async () => ({ sourceDigest: 'original-proof-digest', sourceId: 'original-proof' }),
 }) }))
-vi.mock('../run-graph/repeatReceipts.js', () => ({ requireRepeatCanonicalReceiptBeforeCommit: vi.fn() }))
+vi.mock('../run-graph/repeatReceipts.js', () => ({ requireRepeatCanonicalReceiptBeforeCommit: vi.fn(),
+  assertRepeatCanonicalReceiptsLocked: vi.fn() }))
+vi.mock('./nativeEventBatch.js', () => ({
+  appendNormalizedNativeEvents: vi.fn(async (_sql, frames) => frames.map(({ event }: { event: HarnessNativeEvent }) => ({
+    inserted: true, rejected: false, sequence: String(event.sequence),
+  }))),
+}))
 vi.mock('./workflowNativeGraph.js', () => ({ appendWorkflowNativeGraphEventLocked: vi.fn() }))
 beforeEach(() => vi.clearAllMocks())
 function fixture(reject = false, retained?: 'same' | 'missing' | 'changed' | 'lost') {
@@ -78,6 +85,7 @@ it('retains complete original history while avoiding identical committed transcr
   const append = vi.mocked(appendWorkflowNativeGraphEventLocked)
   expect(append).toHaveBeenCalledOnce()
   expect(append.mock.calls[0]![2].type).toBe('turn.completed')
+  expect(appendNormalizedNativeEvents).not.toHaveBeenCalled()
   expect(f.events).toEqual(['proof-stored', 'context', 'commit'])
 })
 
@@ -86,6 +94,7 @@ for (const retained of ['missing', 'changed'] as const) it(`does not skip ${reta
   const append = vi.mocked(appendWorkflowNativeGraphEventLocked)
   expect(append).toHaveBeenCalledTimes(2)
   expect(append.mock.calls[0]![2]).toEqual(f.transcript)
+  expect(vi.mocked(appendNormalizedNativeEvents).mock.calls[0]![1][0]!.event).toEqual(f.transcript)
 })
 
 it('rolls back if the original coordinator lifetime changes while reading retained transcript rows', async () => {

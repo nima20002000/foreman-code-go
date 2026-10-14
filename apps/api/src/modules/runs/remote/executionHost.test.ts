@@ -468,8 +468,8 @@ describe('actual worker native-port adapter', () => {
       // The refreshed cursor page already owns event 1 for this receipt.
       expect(historyReads).toBe(2)
       await stream.return(undefined)
-      await proxy.history(session)
-      expect(historyReads).toBe(4)
+      expect((await proxy.history(session)).events).toEqual(events)
+      expect(historyReads).toBe(3)
       expect(f.state.starts).toBe(1)
     } finally {
       await stream.return(undefined)

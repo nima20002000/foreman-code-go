@@ -10,12 +10,12 @@ import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
 
 afterEach(() => vi.restoreAllMocks())
 
-it.each([false, true])('retains a lost native connection as a failed Run after cleanup (retry: %s)', async retry => {
+it.each([false, true])('retains each lost native connection after retry exhaustion (settlement initially unavailable: %s)', async retry => {
   const fixture = makeCurrentWorkflowFixture(randomUUID(), 'sequential')
   const f = await currentOperatorIntegration({ fixture, approvalNodeIds: [] })
   const secret = `opm_${'x'.repeat(43)}`
   const failure = { code: 'CODEX_APP_SERVER_DISCONNECTED',
-    message: 'The original observer disconnected: [REDACTED]', retryable: false }
+    message: 'The original observer disconnected: [REDACTED]', retryable: true }
   let retried = false
   if (retry) {
     const repeat = f.runs.repeat.bind(f.runs)
@@ -45,13 +45,8 @@ it.each([false, true])('retains a lost native connection as a failed Run after c
     }
   })
   try {
-    if (retry) {
-      await expect(f.engine.start(f.f.run.id)).rejects.toMatchObject({ code: 'REPEAT_CLEANUP_PENDING' })
-      expect((await f.runs.getRepeatSnapshot(f.f.run.id)).cleanupPending).toBe(true)
-    } else {
-      await f.engine.start(f.f.run.id)
-      expect(await f.runs.get(f.f.run.id)).toMatchObject({ outcome: 'failed' })
-    }
+    await f.engine.start(f.f.run.id)
+    expect((await f.runs.getRepeatSnapshot(f.f.run.id)).cleanupPending).toBe(false)
     await f.compose().engine.start(f.f.run.id)
     const scope = { workspaceId: f.f.run.workspaceId, runId: f.f.run.id }
     const saved = await f.runs.get(f.f.run.id)
@@ -60,29 +55,30 @@ it.each([false, true])('retains a lost native connection as a failed Run after c
     const compact = OperatorRunCompactSchema.parse(decodeMcpToolResult(
       await f.client.callTool({ name: 'run_get', arguments: scope })))
     expect(compact.run).toMatchObject({ outcome: 'failed', failure })
-    expect(compact.executions).toHaveLength(1)
-    expect(compact.executions[0]!.failure).toEqual(failure)
+    expect(compact.executions).toHaveLength(3)
+    for (const execution of compact.executions) expect(execution.failure).toEqual(failure)
     const full = decodeMcpToolResult(await f.client.callTool({ name: 'run_get',
       arguments: { ...scope, detail: 'full' } }))
     expect(full).toMatchObject({ run: { outcome: 'failed', result: saved!.result },
-      executions: [{ state: 'completed', result: { outcome: 'failed', error: failure } }] })
+      executions: Array.from({ length: 3 }, () => ({ state: 'completed', result: { outcome: 'failed', error: failure } })) })
     expect(JSON.stringify(full)).not.toContain(secret)
     const page = RunExecutionsPageSchema.parse(decodeMcpToolResult(await f.client.callTool({
       name: 'run_executions_list', arguments: scope })))
     expect(page.run).toMatchObject({ outcome: 'failed', failure, cleanupPending: false })
-    expect(page.items).toHaveLength(1)
-    expect(page.items[0]).toMatchObject({ failure, acceptedResultAvailable: false })
+    expect(page.items).toHaveLength(3)
+    expect(page.items.map(item => item.attempt).sort()).toEqual([1, 2, 3])
+    for (const item of page.items) expect(item).toMatchObject({ failure, acceptedResultAvailable: false })
     const outside = await f.access.issue({ name: 'Reader outside Run scope', audience: 'operator',
       expiresAt: new Date(Date.now() + 60_000),
       grants: [{ actions: ['runs:read'], scope: { workspaceIds: ['another-workspace'] } }] })
     const denied = await f.connect(outside.token)
     await expectMcpAccessDenied(denied.callTool({ name: 'run_get', arguments: scope }))
-    expect(f.provider.startedNodes).toEqual([f.f.version.entryNodeId])
-    expect(f.provider.counts.starts).toBe(1)
+    expect(f.provider.startedNodes).toEqual(Array(3).fill(f.f.version.entryNodeId))
+    expect(f.provider.counts.starts).toBe(3)
     expect(retried).toBe(retry)
     await f.engine.reconcile()
     expect(await f.runs.get(f.f.run.id)).toEqual(saved)
-    expect(f.provider.counts.starts).toBe(1)
+    expect(f.provider.counts.starts).toBe(3)
   } finally {
     await f.close()
   }

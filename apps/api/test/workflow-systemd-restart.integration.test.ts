@@ -13,12 +13,14 @@ describe('queued workflow preparation across engine restart', () => {
     new SourceError('SOURCE_MATERIALIZATION_UNCERTAIN', 'Source preparation was interrupted before activation.'),
     new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'The saved native qualification is unavailable.', 409),
   ])('settles $code and exposes the persisted failure through authenticated MCP', async failure => {
-    let preparationError: Error = new DomainError('COMPUTER_OFFLINE', 'Source host disconnected', 409)
+    let preparationError: Error = new DomainError('DEVICE_HOST_UNAVAILABLE', 'Source host disconnected', 503)
     const fixture = await currentOperatorIntegration({ preparePlacementExecution: async () => {
       throw preparationError
     } })
     try {
-      await expect(fixture.engine.start(fixture.f.run.id)).rejects.toBe(preparationError)
+      await expect(fixture.engine.start(fixture.f.run.id)).rejects.toMatchObject({
+        code: 'EXECUTION_PREPARATION_UNAVAILABLE', cause: preparationError,
+      })
       const before = await fixture.runs.getDetails(fixture.f.scope.workspaceId, fixture.f.run.id)
       if (!before) throw new Error('Expected the saved Run before restart.')
       expect(before.executions).toHaveLength(1)

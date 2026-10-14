@@ -11,8 +11,12 @@ describe('interval accepted input inspection', () => {
       occurrence: null, entry: null, predecessors: [] }
     expect(RunAcceptedInputValueSchema.parse(graph)).toEqual(graph)
   })
+  it.each([1001, 1_000_000])('retains tick %i for a Run that continues until Stop', index => {
+    const value = { ...input, tick: { ...input.tick, index } }
+    expect(RunAcceptedInputValueSchema.parse(value)).toEqual(value)
+  })
   it.each([
-    { index: 0, everySeconds: 10 }, { index: 1001, everySeconds: 10 },
+    { index: 0, everySeconds: 10 },
     { index: 1.5, everySeconds: 10 }, { index: 1, everySeconds: 9 },
     { index: 1, everySeconds: 86401 }, { index: 1, everySeconds: 10, extra: true },
   ])('rejects malformed tick metadata %j', tick => {

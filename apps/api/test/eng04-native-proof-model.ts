@@ -37,6 +37,20 @@ export function nativeProofModel() {
     if (text.startsWith('begin')) { saved = { finalized: state.finalized, finalizedWrites: state.finalizedWrites }; return result([]) }
     if (text === 'commit') { saved = undefined; return result([]) }
     if (text === 'rollback') { if (saved) Object.assign(state, saved); saved = undefined; return result([]) }
+    if (text.includes('with sessions as materialized')) {
+      assert.deepEqual(values, [execution.runId, [execution.id]])
+      return result([{ id: execution.id, record: state.execution, reference: state.hasSession ? state.session : null,
+        finalized: state.finalized, complex: false, outstanding: state.outstanding,
+        configuration: { harness: state.configHarness, agent_id: execution.agentId, pinned: state.configPinned },
+        ...state.closure, closed: state.hasClosure && state.closure.closed,
+        detached: false, closed_without_session: false }])
+    }
+    if (text.includes('update execution_native_sessions s')) {
+      assert.deepEqual(JSON.parse(String(values[0])), [{ execution_id: execution.id, reference: state.session }])
+      state.finalized = true
+      state.finalizedWrites += 1
+      return result([{ execution_id: execution.id }])
+    }
     if (text.includes("record->>'executionSemanticsVersion' as semantics")) {
       assert.deepEqual(values, [execution.runId])
       return result([{ id: execution.runId, semantics: state.semantics, workspace_id: 'workspace-proof-1',
@@ -76,7 +90,8 @@ export function nativeProofModel() {
       return result([{ execution_id: execution.id }])
     }
     // Main-local executions have no device dispatch intent or native placement.
-    if (/from execution_dispatch_intents where execution_id=\$1/.test(text) || text.startsWith('select record from execution_native_placements where execution_id=$1')) return result([])
+    if (text.includes('from execution_dispatch_intents')
+      || text.includes('from execution_native_placements where execution_id=')) return result([])
     throw new Error(`Unexpected model SQL: ${text}`)
   } }
   const connection = new ExclusiveGraphConnection(raw as unknown as pg.ClientBase, () => {

@@ -41,7 +41,7 @@ async function rejectsRead(f: Fixture) {
   expect(f.calls.some(({ q }) => /^(insert|update|delete)\b/i.test(q))).toBe(false)
 }
 
-describe.each(br2001Providers)('BR2-001: %s durable current choice revalidation', (provider) => {
+describe.each(br2001Providers)('%s stored choice result validation', (provider) => {
   it('reads historical results while retaining digest and canonical receipt checks', async () => {
     const f = fixture(provider, `historical-result-${provider}`)
     try {
