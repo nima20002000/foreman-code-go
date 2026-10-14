@@ -161,7 +161,9 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
     { key: 'builder-paired', label: 'Paired builder', priority: 50, ...{ buildAllowancePercent: options.allowance ?? 100 },
       hostRef: { kind: 'device', mainId: 'main', deviceId: 'paired' } },
     ...Array.from({ length: options.cloudSlots ?? 24 }, (_, slot) => ({ key: `cloud-${slot}`, label: `Cloud ${slot}`, priority: 30,
-      hostRef: { kind: 'cloud' as const, mainId: 'main', provider: options.cloudProvider ?? 'github', slot },
+      // CircleCI cannot run unit-other, so CircleCI fixtures keep GitHub slots for it.
+      hostRef: { kind: 'cloud' as const, mainId: 'main',
+        provider: options.cloudProvider === 'circleci' && slot % 2 === 0 ? 'circleci' as const : 'github' as const, slot },
       userSystemd: { supported: true, reason: null } })),
   ]
   const files = options.files ?? [...userSystemdIntegrationFiles,
