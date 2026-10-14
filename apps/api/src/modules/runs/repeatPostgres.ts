@@ -800,8 +800,13 @@ export class RepeatRunRepository {
         'select failure_result from approval_execution_state where execution_id=$1', [executionId])).rows[0]
       const failure = budget?.failure_result ? ExecutionResultSchema.parse(budget.failure_result) : undefined
       if (failure && failure.outcome !== 'failed') return repeatConflict('RUN_FAILURE_CAUSE_INVALID')
-      const result = canceled ? { outcome: 'canceled' as const } : failure ?? { outcome: 'failed' as const,
+      const cleanup = (await context.sql.query<{ failure_result: unknown }>(
+        'select failure_result from run_cleanup_intents where run_id=$1', [context.scope.runId])).rows[0]
+      const runFailure = cleanup?.failure_result ? ExecutionResultSchema.parse(cleanup.failure_result) : undefined
+      if (runFailure && runFailure.outcome !== 'failed') return repeatConflict('RUN_FAILURE_CAUSE_INVALID')
+      const siblingResult = runFailure ? { outcome: 'canceled' as const } : { outcome: 'failed' as const,
         error: { code: 'EXECUTION_INTERRUPTED', message: 'The native attempt was closed without an accepted result. It was not resubmitted.', retryable: false } }
+      const result = canceled ? { outcome: 'canceled' as const } : failure ?? siblingResult
       const next = HarnessExecutionSchema.parse({ ...stored.execution, state: 'completed', result, finishedAt: context.now })
       const source = { scope: context.scope, ref: stored.ref, previous: stored.execution, next,
         ...(seal ? { noSubmission: seal } : { closure }) }

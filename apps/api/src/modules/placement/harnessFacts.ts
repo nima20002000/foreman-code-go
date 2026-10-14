@@ -40,8 +40,8 @@ function measuredInstallationMatches(evidence: unknown, installation: HostHarnes
 export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: Pick<AcceptedNodePlacement, 'payload' | 'hostRef'>,
   installations: HarnessInstallationRegistry, suites: Readonly<Record<CompatibilityHarness, string>>,
   options?: { purpose: 'resident' }) {
-  const unavailable = (reason: string): never => {
-    throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'Exact persisted host profile and native qualification are required.',
+  const unavailable = (reason: string, message = 'The selected harness profile or native qualification is unavailable.'): never => {
+    throw new DomainError('HARNESS_PROFILE_UNAVAILABLE', message,
       409, { reason, hostKind: placement.hostRef.kind })
   }
   if (placement.payload.kind !== 'agent') unavailable('unsupported_payload')
@@ -54,26 +54,42 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
   [payload.instanceId, payload.instanceRevision, payload.harnessInstallationId, payload.installationFingerprint])
   if (!values.rows.length) unavailable('profile_revision_missing')
   const candidates = values.rows.map(row => HostHarnessOverrideSchema.parse(row.record))
-  let selected: { override: HostHarnessOverride; profileProof: HostHarnessProfileEvidence } | undefined
-  for (const override of candidates) {
-    const evidence = await sql.query<{ record: unknown }>(`select record from harness_instance_profile_evidence
-      where instance_id=$1 and instance_revision=$2 order by created_at desc,check_id desc for share`,
-    [override.instanceId, override.revision])
-    const proofs = evidence.rows.map(row => HostHarnessProfileEvidenceSchema.parse(row.record))
-    const profileProof = payload.profileProofDigest
-      ? proofs.find(proof => placementDigest(proof) === payload.profileProofDigest) : proofs[0]
-    if (profileProof) {
-      selected = { override, profileProof }
-      break
-    }
-  }
-  const { override, profileProof } = selected ?? unavailable('profile_check_missing')
   const installed = options?.purpose === 'resident'
     ? installations.residentInstallation(placement.hostRef, payload.harnessInstallationId, payload.installationFingerprint)
     : installations.list().find(record => record.harnessInstallationId === payload.harnessInstallationId
       && sameWorkflowValue(record.hostRef, placement.hostRef))
   if (!installed) unavailable('host_inventory_missing')
   const installation = HostHarnessInstallationSchema.parse(installed)
+  let selected: { override: HostHarnessOverride; acceptedProof: HostHarnessProfileEvidence;
+    profileProof: HostHarnessProfileEvidence; requalified: boolean } | undefined
+  for (const override of candidates) {
+    const evidence = await sql.query<{ record: unknown }>(`select record from harness_instance_profile_evidence
+      where instance_id=$1 and instance_revision=$2 order by created_at desc,check_id desc for share`,
+    [override.instanceId, override.revision])
+    const proofs = evidence.rows.map(row => HostHarnessProfileEvidenceSchema.parse(row.record))
+    const acceptedProof = payload.profileProofDigest
+      ? proofs.find(proof => placementDigest(proof) === payload.profileProofDigest) : proofs[0]
+    if (acceptedProof) {
+      const requalified = !!pinnedProof && options?.purpose !== 'resident' && placement.hostRef.kind === 'device'
+        && acceptedProof.connectionGeneration !== installation.connectionGeneration
+      const profileProof = requalified
+        ? proofs.find(proof => proof.connectionGeneration === installation.connectionGeneration)
+          ?? unavailable('connection_profile_check_missing',
+            'The selected harness profile has no native check for the current Worker connection.')
+        : acceptedProof
+      if (requalified && (acceptedProof.authenticated !== true || acceptedProof.compatible !== true
+        || !acceptedProof.qualified || acceptedProof.environmentGeneration !== profileProof.environmentGeneration
+        || acceptedProof.configurationFingerprint !== profileProof.configurationFingerprint
+        || !sameWorkflowValue(acceptedProof.target, profileProof.target))) unavailable('profile_binding_changed')
+      selected = { override, acceptedProof, profileProof, requalified }
+      break
+    }
+  }
+  const { override, acceptedProof, profileProof, requalified } = selected ?? unavailable('profile_check_missing')
+  if (profileProof.authenticated !== true || profileProof.compatible !== true || !profileProof.qualified) {
+    unavailable('profile_check_failed', profileProof.failure?.message
+      ?? 'The native check for the selected harness profile did not pass.')
+  }
   // An authenticated surviving process keeps its original qualification across transport reconnection.
   const qualifiedInstallation = options?.purpose === 'resident'
     ? { ...installation, connectionGeneration: profileProof.connectionGeneration } : installation
@@ -83,7 +99,6 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
     || profileProof.instanceRevision !== payload.instanceRevision || profileProof.driverId !== payload.driverId
     || profileProof.driverRevision !== payload.driverRevision || profileProof.protocolRevision !== payload.protocolRevision
     || profileProof.environmentGeneration !== installation.environmentGeneration || profileProof.connectionGeneration !== qualifiedInstallation.connectionGeneration
-    || profileProof.authenticated !== true || profileProof.compatible !== true || !profileProof.qualified
     || installation.installationFingerprint !== payload.installationFingerprint || installation.driverId !== payload.driverId
     || installation.driverRevision !== payload.driverRevision || installation.protocolRevision !== payload.protocolRevision
     || !installation.installed) unavailable('profile_binding_changed')
@@ -129,7 +144,11 @@ export async function readPlacementHarnessFacts(sql: GraphSqlClient, placement: 
     || qualification.binarySha256 !== binarySha256 || qualification.version !== installation.observedVersion
     || qualification.suiteRevision !== suites[harness]) return unavailable('binary_qualification_missing')
   if (qualification.profile !== QUALIFICATION_TARGET_PROFILE[harness] || !qualification.checkedAt || !qualification.checks.length || qualification.checks.some(check => !check.passed)) unavailable('qualification_checks_failed')
-  if (payload.profileProofDigest && payload.profileProofDigest !== placementDigest(profileProof)
-    || payload.qualificationDigest && payload.qualificationDigest !== placementDigest(qualification)) unavailable('accepted_qualification_changed')
+  // A new connection check qualifies the same accepted profile; saved Run facts remain immutable.
+  const acceptedQualification = requalified ? acceptedProof.completedNativeQualification?.record ?? qualification : qualification
+  if (payload.profileProofDigest && payload.profileProofDigest !== placementDigest(acceptedProof)
+    || payload.qualificationDigest && payload.qualificationDigest !== placementDigest(acceptedQualification)) {
+    unavailable('accepted_qualification_changed')
+  }
   return { override, profileProof, installation, qualification }
 }

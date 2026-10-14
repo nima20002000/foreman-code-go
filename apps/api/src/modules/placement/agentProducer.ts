@@ -269,6 +269,16 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
   }
   async assertPinsCurrent(sql: GraphSqlClient, pin: AcceptedNodePlacement,
     principal: ManagementPrincipal, workspaceId: string, options?: { purpose: 'resident' }): Promise<void> {
+    await this.assertSourceCurrent(sql, pin, principal, workspaceId)
+    if (pin.payload.kind !== 'agent') this.conflict()
+    if (options?.purpose !== 'resident') {
+      const instance = await this.readInstance(sql, pin.payload.instanceId)
+      if (!instance.enabled || instance.instanceRevision !== pin.payload.instanceRevision) this.conflict()
+    }
+    await readPlacementHarnessFacts(sql, pin, this.registry.installations, this.qualificationSuites, options)
+  }
+  private async assertSourceCurrent(sql: GraphSqlClient, pin: AcceptedNodePlacement,
+    principal: ManagementPrincipal, workspaceId: string): Promise<void> {
     if (!('kind' in pin.source) || pin.source.kind !== 'pending') this.conflict()
     const source = pin.source as Extract<AcceptedNodePlacement['source'], { kind: 'pending' }>
     const root = await this.sources.resolveRootBinding(sql, principal, { workspaceId, rootId: source.rootId,
@@ -277,11 +287,6 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     await this.roots.resolve(sql, principal, { workspaceId, hostRef: pin.hostRef, rootPolicyId: pin.destination.rootPolicyId,
       rootPolicyRevision: pin.destination.rootPolicyRevision, locationRevision: pin.destination.locationRevision })
     if (pin.payload.kind !== 'agent') this.conflict()
-    if (options?.purpose !== 'resident') {
-      const instance = await this.readInstance(sql, pin.payload.instanceId)
-      if (!instance.enabled || instance.instanceRevision !== pin.payload.instanceRevision) this.conflict()
-    }
-    await readPlacementHarnessFacts(sql, pin, this.registry.installations, this.qualificationSuites, options)
     const registration = await assertDeviceHostInstallation(sql, pin.hostRef, pin.registration?.workerInstallationId ?? pin.mainInstallationId)
     if (!sameWorkflowValue(registration === null ? null : { workerInstallationId: registration.workerInstallationId,
       keyRevision: registration.keyRevision, authorizationRevision: registration.authorizationRevision }, pin.registration)) this.conflict()
@@ -310,7 +315,10 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
       attemptId: randomUUID(), operationId: randomUUID(), inputDigest, owner: { grantId: randomUUID(), epoch: '1' } })
     await sql.query(`insert into execution_dispatch_owner_grants(execution_id,operation_id,grant_id,epoch,scheduler_owner_id,scheduler_owner_fence)
       values($1,$2,$3,$4,$5,$6)`, [execution.id, intent.operationId, intent.owner.grantId, intent.owner.epoch, scheduler.ownerId, scheduler.fence])
-    const fence = { assertCurrent: (placement: AcceptedNodePlacement) => this.assertPinsCurrent(sql, placement, principal, run!.workspace_id) }
+    // Dispatch reserves work. Preparation checks the live profile before any native entry,
+    // so a refused profile has a persisted execution on which to report its failure.
+    const fence = { assertCurrent: (placement: AcceptedNodePlacement) =>
+      this.assertSourceCurrent(sql, placement, principal, run!.workspace_id) }
     const accepted = await insertDispatchIntent(sql, owner, intent, fence)
     beforeGraphCommit(sql, async () => { owner.assertOwned(); await owner.readOneShotFence(sql) })
     return accepted
