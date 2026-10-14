@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -179,8 +180,13 @@ describe('computer maintenance', () => {
   it('does not claim verified success when installable packages remain or readback fails', async () => {
     for (const afterUpgrade of ['1 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.', 'unreadable']) {
       const maintenance = new ComputerMaintenance(ports({ afterUpgrade }).value)
-      await maintenance.start({ kind: 'update-system' })
-      expect((await settle(maintenance)).tasks[0]?.state).toBe('failed')
+      const commandId = randomUUID()
+      await maintenance.start({ kind: 'update-system' }, commandId)
+      await maintenance.drain()
+      expect(await maintenance.start({ kind: 'update-system' }, commandId)).toMatchObject({
+        id: commandId, state: 'failed',
+        summary: expect.stringContaining(afterUpgrade === 'unreadable' ? 'invalid output' : 'still installable'),
+      })
     }
     await expect(new ComputerMaintenance(ports({ apt: 'unreadable' }).value).status(AbortSignal.timeout(1000)))
       .rejects.toMatchObject({ code: 'COMPUTER_PACKAGE_UPDATES_UNAVAILABLE' })

@@ -235,7 +235,7 @@ it('does not reuse an installed account when its executable disappears', async (
   expect((await f.read()).accounts[1]?.installed).toBe(false)
   f.installed(true)
   await rm(f.binary)
-  await expect(f.read()).rejects.toMatchObject({ code: 'ENOENT' })
+  await expect(f.read()).rejects.toMatchObject({ code: 'COMPUTER_ACCOUNT_UNAVAILABLE' })
   await writeFile(f.binary, 'restored', { mode: 0o700 })
   f.account('restored')
   expect((await f.read()).accounts[1]?.account).toBe('restored')
