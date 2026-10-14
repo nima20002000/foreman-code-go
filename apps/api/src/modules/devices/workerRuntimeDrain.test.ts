@@ -20,7 +20,7 @@ it.each(['dispatches', 'jobs', 'qualifications', 'maintenance', 'quiescence'] as
     const pending = deferred<void>()
     const active: Promise<unknown>[] = []
     if (stage === 'dispatches') {
-      active.push(pending.promise.then(() => { active.splice(0) }))
+      active.push(pending.promise.then(() => { void active.splice(0) }))
     }
     const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal,
       active: () => [...active],

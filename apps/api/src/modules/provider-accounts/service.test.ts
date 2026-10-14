@@ -12,6 +12,7 @@ import { ProviderAccountUpdateResultSchema, ProviderAccountsSnapshotSchema,
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { createFixtureSchema, dropFixtureSchema, ownedTestDatabaseUrl, ownedTestPath } from '../../../test/helpers/testResources.js'
 import { applyApplicationMigrations } from '../../infrastructure/migrations.js'
+import { withTransaction } from '../../infrastructure/transaction.js'
 import { buildApp } from '../../app.js'
 import type { OperatorServices } from '../../mcp/operator/types.js'
 import { PostgresAccessService } from '../access/postgres.js'
@@ -127,16 +128,10 @@ it('creates and accepts an account with database target reads on a one-slot pool
   const configuration = { ...DEFAULT_HARNESS_DEFAULTS.codex, accountId: account.id }
   const prepared = await service.acceptedBindings.prepare(configuration)
   const conversationId = randomUUID()
-  const client = await oneSlot.connect()
-  try {
-    await client.query('begin')
+  await withTransaction(oneSlot, async client => {
     expect(await service.acceptedBindings.accept(client, 'agent-conversation', conversationId,
       configuration, undefined, { prepared })).toEqual(account.binding)
-    await client.query('commit')
-  } catch (error) {
-    await client.query('rollback')
-    throw error
-  } finally { client.release() }
+  })
   expect(await service.runtimeBinding('agent-conversation', conversationId, configuration)).toEqual(account.binding)
 })
 
@@ -482,14 +477,11 @@ it('detects reliable same-scope duplicates without merging and protects a used p
   const emailOnly = await f.service.refresh(f.owner.principal, 'http', third.id, command(5))
   expect(emailOnly.value.accounts[2]!.binding!.subject).toBeNull()
   expect(emailOnly.value.accounts[2]!.possibleDuplicateAccountIds).toEqual([])
-  const sql = await pool.connect()
-  try {
-    await sql.query('begin')
+  await withTransaction(pool, async sql => {
     const { DEFAULT_HARNESS_DEFAULTS } = await import('@foreman-code/contracts')
     await f.service.acceptedBindings.accept(sql, 'run-node', `accepted:${randomUUID()}`,
       { ...DEFAULT_HARNESS_DEFAULTS.codex, accountId: first.id })
-    await sql.query('commit')
-  } catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
+  })
   subject = 'different-provider-subject'
   await expect(f.service.refresh(f.owner.principal, 'http', first.id, command(6)))
     .rejects.toMatchObject({ code: 'PROVIDER_ACCOUNT_PRINCIPAL_LOCKED' })
