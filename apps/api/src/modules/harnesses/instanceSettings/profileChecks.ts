@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import type pg from 'pg'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
+import type { DeviceRequestPriority } from '@foreman-code/contracts/device-application'
 import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
 import { assertDeviceHostInstallation } from '../../devices/hostAuthorization.js'
 import { harnessConnectionGeneration } from '../hostConnectionGeneration.js'
@@ -32,7 +33,9 @@ export interface AutomaticHostProfileCheck {
 
 export interface HostHarnessProfileQualifier {
   /** Actual admitted factory/worker implementation; includes current driver suite and model/profile qualification. */
-  qualify(value: HostHarnessOverride, input: { checkId: string; signal: AbortSignal }): Promise<HostHarnessProfileEvidence>
+  qualify(value: HostHarnessOverride, input: {
+    checkId: string; signal: AbortSignal; priority?: DeviceRequestPriority
+  }): Promise<HostHarnessProfileEvidence>
 }
 const sameTarget = (a: HostHarnessOverride['target'], b: HostHarnessOverride['target']) => harnessHostKey(a.hostRef) === harnessHostKey(b.hostRef)
   && a.applicationInstallationId === b.applicationInstallationId && a.harnessInstallationId === b.harnessInstallationId && a.installationFingerprint === b.installationFingerprint
@@ -438,7 +441,8 @@ export class HostHarnessInstanceProfileChecks {
         return { override: value, proof: previous }
       }
       signal.throwIfAborted()
-      const proof = HostHarnessProfileEvidenceSchema.parse(await this.qualifier.qualify(value, { checkId, signal }))
+      const priority = options.source === 'system' ? 'background' : 'foreground'
+      const proof = HostHarnessProfileEvidenceSchema.parse(await this.qualifier.qualify(value, { checkId, signal, priority }))
       signal.throwIfAborted()
       if (!matches(proof)) throw new DomainError('HARNESS_PROFILE_EVIDENCE_MISMATCH',
         'Native qualification did not match the exact selected host profile.', 409)

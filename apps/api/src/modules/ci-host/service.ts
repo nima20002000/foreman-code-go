@@ -99,10 +99,11 @@ export class HostCiService {
         return computers
       },
       ...(endpoint.publishMirror ? { publishMirror: endpoint.publishMirror.bind(endpoint) } : {}),
-      request: async (computer, request) => {
+      request: async (computer, request, options) => {
+        const send = () => options ? endpoint.request(computer, request, options) : endpoint.request(computer, request)
         if (request.operation !== 'status' || computer.hostRef.kind === 'cloud') {
           try {
-            const reply = await endpoint.request(computer, request)
+            const reply = await send()
             this.planningEndpoint.observeStatus(computer, reply)
             return reply
           } catch (error) {
@@ -115,7 +116,7 @@ export class HostCiService {
           .filter(row => row.host_key === computer.key)
         let status: CiHostStatus | null = null
         try {
-          const reply = await endpoint.request(computer, request)
+          const reply = await send()
           if (reply.operation === 'status') status = reply
           this.planningEndpoint.observeStatus(computer, reply)
           return reply
@@ -816,7 +817,8 @@ export class HostCiService {
     const request: CiHostRequest = { operation: 'read', runId: ciExecutionRunId(run), afterOffset: 0, maxBytes: 32_768,
       ...(['integration', 'unit'].includes(run.suite) ? { durations: true } : {}) }
     const reply = await (computer.hostRef.kind === 'cloud'
-      ? requestCloud(this.endpoint, computer, request) : this.endpoint.request(computer, request))
+      ? requestCloud(this.endpoint, computer, request)
+      : this.endpoint.request(computer, request, { priority: 'background' }))
     if (computer.hostRef.kind === 'cloud' && run.state === 'starting') {
       const recovered = await expireCloudDispatch(this.endpoint, computer, run,
         reply?.operation === 'read' ? reply.run : undefined)
@@ -832,7 +834,7 @@ export class HostCiService {
     let logTail: string | undefined = reply.text
     if (reply.run.logBytes > 32_768) {
       const tail = await this.endpoint.request(computer, { operation: 'read', runId: ciExecutionRunId(run),
-        afterOffset: reply.run.logBytes - 32_768, maxBytes: 32_768 }).catch(error => {
+        afterOffset: reply.run.logBytes - 32_768, maxBytes: 32_768 }, { priority: 'background' }).catch(error => {
           logError = error
           return null
         })

@@ -1,8 +1,10 @@
 import { DomainError } from '../errors.js'
 import { HarnessExecutionError } from './errors.js'
+import { deviceBusyFailure } from '../devices/deviceBusyError.js'
 
 /** Translate expected native readiness errors at the domain boundary, not all application errors. */
 export function qualificationError(error: unknown): DomainError {
+  error = deviceBusyFailure(error)
   if (error instanceof DomainError) return error
   if (error instanceof HarnessExecutionError) {
     const code = error.result.outcome === 'failed' ? error.result.error?.code ?? 'HARNESS_QUALIFICATION_FAILED' : 'HARNESS_QUALIFICATION_FAILED'

@@ -13,6 +13,7 @@ import { hasAction, isAuthorized, type AuthorizedResource } from '../../modules/
 import { DomainError } from '../../modules/errors.js'
 import { toolFailure, toolResult } from './results.js'
 import { logOperatorToolFailure } from '../operator/invoke.js'
+import { deviceBusyFailure } from '../../modules/devices/deviceBusyError.js'
 
 /** What each CI tool does. Agents act on this text, so keep it short and true to the code. */
 export const CI_TOOL_DESCRIPTIONS = {
@@ -91,8 +92,8 @@ export function registerCiTools(server: McpServer, context: CiContext) {
   const available = (name: CiTool) => !operator || ciCapabilities(context, {}).some(tool => tool.name === name)
   const invoke = async (name: CiTool, work: () => Promise<unknown>) => {
     try { return toolResult(await work()) }
-    catch (error) {
-      // Callers only see INTERNAL_ERROR; keep the cause in the server log.
+    catch (caughtError) {
+      const error = deviceBusyFailure(caughtError)
       logOperatorToolFailure(name, error)
       if (error instanceof DomainError && [401, 403, 404].includes(error.status)) {
         await context.services.commands.recordDenied(context.principal.id, 'mcp', name, `mcp:${name}`)

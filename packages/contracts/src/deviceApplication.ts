@@ -34,6 +34,11 @@ export type DeviceApplicationFrame =
   | { type: 'application-cancel'; id: string }
   | { type: 'application-reject'; id: string; code: 'backpressure' }
 export interface DeviceApplicationResult { payload: unknown; bytes?: Uint8Array }
+export type DeviceRequestPriority = 'foreground' | 'background'
+export interface DeviceBusyDetails {
+  retryable: true
+  reason: string
+}
 export interface DeviceApplicationFailure {
   code: string
   /** Availability hint; operation retries still require their owner and idempotency checks. */

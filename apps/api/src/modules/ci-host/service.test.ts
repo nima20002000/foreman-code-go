@@ -127,6 +127,17 @@ function dispatchFixture(settlementError?: Error) {
   return { ...f, active, queued, records, output }
 }
 
+it('refreshes CI observations with background priority through the public dispatcher', async () => {
+  const f = dispatchFixture()
+  f.records.splice(1, 1)
+  const service = f.create()
+  try {
+    await service.dispatch()
+    expect(f.endpoint.request).toHaveBeenCalledWith(computer,
+      expect.objectContaining({ operation: 'read', runId: f.active.id }), { priority: 'background' })
+  } finally { await service.close() }
+})
+
 it.each(['github', 'circleci'] as const)(
   'releases a stale %s dispatch with no provider run after Main restarts', async provider => {
     const f = dispatchFixture()
@@ -574,7 +585,7 @@ it('retries an unacknowledged gate on its assigned computer without releasing ow
     state: 'passed', exitCode: 0, computer: { hostRef: computer.hostRef },
   })
   expect(f.endpoint.request).toHaveBeenCalledWith(computer,
-    expect.objectContaining({ operation: 'read', runId: f.queued.id }))
+    expect.objectContaining({ operation: 'read', runId: f.queued.id }), { priority: 'background' })
   expect(starts).toEqual([
     { hostKey: computer.key, runId: f.queued.id }, { hostKey: computer.key, runId: f.queued.id },
   ])
