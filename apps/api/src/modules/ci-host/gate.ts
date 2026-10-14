@@ -55,13 +55,17 @@ export async function readCiComputerStatus(endpoint: HostCiEndpoint, computer: H
   return status?.operation === 'status' ? status : null
 }
 
-async function gateComputers(endpoint: HostCiEndpoint, reservedCloudSlots: number): Promise<GateComputer[]> {
+async function gateComputers(endpoint: HostCiEndpoint, reservedCloudSlots: number,
+  usedByComputer: ReadonlyMap<string, number>): Promise<GateComputer[]> {
   const computers = withoutReservedCloudSlots(await endpoint.computers(), reservedCloudSlots)
   const available = await Promise.all(computers.map(async computer => {
     const status = await readCiComputerStatus(endpoint, computer)
     if (!status?.ready) return null
     const shards = buildComputerIntegrationShards(status, computer.buildAllowancePercent)
-    const freeSlots = Math.max(0, (status.slotsTotal ?? 1) - (status.slotsUsed ?? 0))
+    const occupied = Math.max(status.slotsUsed ?? 0, usedByComputer.get(computer.key) ?? 0)
+    // Gate dispatch reserves the whole builder, so even a partially occupied builder cannot start a gate part.
+    const freeSlots = computer.hostRef.kind !== 'cloud' && occupied > 0
+      ? 0 : Math.max(0, (status.slotsTotal ?? 1) - occupied)
     const available: GateComputer = { computer, shards, freeSlots, checkMs: 0, files: [] }
     return available
   }))
@@ -70,14 +74,15 @@ async function gateComputers(endpoint: HostCiEndpoint, reservedCloudSlots: numbe
 
 /** One wave: every ready executor takes at most one part. Measured build throughput sizes integration parts;
  * CPU, memory and build allowance bound execution shards. Cloud slots take one check or integration part each.
- * Not-ready computers and reserved cloud slots stay out of the plan, so no part waits on them. */
+ * Busy builders, not-ready computers and reserved cloud slots stay out of placement. */
 export async function planCiGate(input: CiRunInput, integration: CiIntegrationInventory,
   unit: CiUnitInventory, durations: CiDurations, endpoint: HostCiEndpoint,
-  speeds: ExecutorSpeeds = new Map(), reservedCloudSlots = 0, unitSlots?: number): Promise<GatePart[]> {
-  const fleet = await gateComputers(endpoint, reservedCloudSlots)
-  const hosts = fleet.filter(item => item.computer.hostRef.kind !== 'cloud')
+  speeds: ExecutorSpeeds = new Map(), reservedCloudSlots = 0, unitSlots?: number,
+  usedByComputer: ReadonlyMap<string, number> = new Map()): Promise<GatePart[]> {
+  const fleet = await gateComputers(endpoint, reservedCloudSlots, usedByComputer)
+  const hosts = fleet.filter(item => item.computer.hostRef.kind !== 'cloud' && item.freeSlots > 0)
   const clouds = fleet.filter(item => item.computer.hostRef.kind === 'cloud')
-  if (!hosts.length || !clouds.length || !integration.files.length) {
+  if (!fleet.some(item => item.computer.hostRef.kind !== 'cloud') || !clouds.length || !integration.files.length) {
     throw new DomainError('CI_GATE_CAPACITY_REQUIRED', 'A gate needs a ready build computer, cloud CI, and integration files.', 409)
   }
   const availableSlots = clouds.reduce((sum, item) => sum + item.freeSlots, 0)
@@ -97,7 +102,7 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
   const result: GatePart[] = checks.map(part => placed.get(part)!)
   // A cloud slot runs one ticket per boot, so a second part on a slot waits for a new boot. Integration therefore goes
   // only to build computers and cloud slots without a check: every executor gets at most one part.
-  const integrationFleet = fleet.filter(item => item.computer.hostRef.kind !== 'cloud' || item.checkMs === 0)
+  const integrationFleet = [...hosts, ...clouds.filter(item => item.checkMs === 0)]
   const known = Object.values(integration.durations).sort((left, right) => left - right)
   const median = known[Math.floor(known.length / 2)] ?? 30_000
   const duration = (file: string) => integration.durations[file] ?? median
@@ -142,7 +147,10 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
       || !requiresUserSystemd(file) || item.computer.userSystemd?.supported)
     const target = eligible.map((item, order) => ({ item, order, finish: finishWith(item, file) }))
       .sort((left, right) => left.finish - right.finish
-        || (serial ? exclusiveCount(left.item) - exclusiveCount(right.item) : 0) || left.order - right.order)[0]!.item
+        || (serial ? exclusiveCount(left.item) - exclusiveCount(right.item) : 0) || left.order - right.order)[0]?.item
+    if (!target) {
+      throw new DomainError('CI_GATE_CAPACITY_REQUIRED', `No available gate executor can run ${file}.`, 409)
+    }
     addFile(target, file)
   }
   // A recent slowdown bounds host work even if the typical estimate is optimistic.
