@@ -8,6 +8,7 @@ import { executionSelection } from '../../../../../scripts/ci-selection.mjs'
 import { cloudService } from './cloudService.testSupport.js'
 
 import { fixture } from './cloud.testSupport.js'
+import { expectCliRunMessage } from './cloudAssertions.testSupport.js'
 
 it.each([false, true])('keeps a first-pass CircleCI file failure in Main when its retest passes: report=%s', async reported => {
   const f = await fixture({}, { provider: 'circleci' })
@@ -333,14 +334,20 @@ describe('GitHub Actions CI on a public mirror', () => {
       const runId = randomUUID()
       const started = await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
         baseCommit, suite: 'integration', scope: 'affected' })
-      expect(started.operation === 'start' && started.run.message)
-        .toBe('Running full suite: baseCommit is unavailable or is not an ancestor of the resolved commit.')
+      if (started.operation !== 'start') throw new Error('Expected a start reply')
+      const reason = 'Running full suite: baseCommit is unavailable or is not an ancestor of the resolved commit.'
+      if (provider === 'github' && baseCommit === 'f'.repeat(40)) {
+        expect(started.run.message).toBe(reason)
+        expect(started.run.transport).toBeUndefined()
+      } else {
+        expectCliRunMessage(started.run, reason)
+      }
       const command = (provider === 'github' ? f.dispatched : f.circle.triggered).at(-1)!
       expect(command).toContain('scope=full')
       expect(command.some(value => value.startsWith('base_commit='))).toBe(false)
       const read = await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1024 })
-      expect(read.operation === 'read' && read.run.message)
-        .toBe('Running full suite: baseCommit is unavailable or is not an ancestor of the resolved commit.')
+      if (read.operation !== 'read') throw new Error('Expected a read reply')
+      expectCliRunMessage(read.run, reason)
     }
   })
 
@@ -794,8 +801,10 @@ describe('GitHub Actions CI on a public mirror', () => {
       f.advance(75_000)
       const read = { operation: 'read', runId, afterOffset: 0, maxBytes: 1024 }
       expect(await f.reopen().handle(read)).toMatchObject({ run: { state, finishedAt: null } })
-      expect(await f.reopen().handle({ operation: 'cancel', runId }))
-        .toMatchObject({ operation: 'cancel', run: { state: 'canceled', message: 'Canceled.' } })
+      const canceled = await f.reopen().handle({ operation: 'cancel', runId })
+      expect(canceled).toMatchObject({ operation: 'cancel', run: { state: 'canceled' } })
+      if (canceled.operation !== 'cancel') throw new Error('Expected a cancel reply')
+      expectCliRunMessage(canceled.run, 'Canceled.')
       expect(f.circle.canceled).toEqual(['run-1'])
       expect(await f.reopen().handle({ operation: 'cancel', runId }))
         .toMatchObject({ run: { state: 'canceled' } })
@@ -1019,8 +1028,12 @@ it.each((['github', 'circleci'] as const).flatMap(provider => [
   f.circle.log = f.circle.output
   f.circle.watchdogFailure = { message: reason }
   const result = await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 })
-  expect(result).toMatchObject({ run: { state: 'failed', message: expected }, text: expect.stringContaining(expected) })
-  expect(result.operation === 'read' && result.text).not.toContain('\0')
-  expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 }))
-    .toMatchObject({ run: { state: 'failed', message: expected }, text: expect.stringContaining(expected) })
+  expect(result).toMatchObject({ run: { state: 'failed' }, text: expect.stringContaining(expected) })
+  if (result.operation !== 'read') throw new Error('Expected a read reply')
+  expectCliRunMessage(result.run, expected)
+  expect(result.text).not.toContain('\0')
+  const readback = await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 })
+  expect(readback).toMatchObject({ run: { state: 'failed' }, text: expect.stringContaining(expected) })
+  if (readback.operation !== 'read') throw new Error('Expected a read reply')
+  expectCliRunMessage(readback.run, expected)
 })

@@ -109,7 +109,13 @@ it('reports a commit absent from both the shallow clone and origin without attem
   expect(f.run(f.origin, 'for-each-ref', '--format=%(refname)', 'refs/heads/')).toBe('refs/heads/main')
 })
 
-function fixture() {
+async function fixture() {
+  const cache = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(cache, { recursive: true })
+  const root = await mkdtemp(join(cache, 'commit-resolution-'))
+  roots.push(root)
+  const clone = join(root, 'clone')
+  await mkdir(clone)
   let head = 'a'.repeat(40)
   const git = vi.fn<GitWorktreePorts['git']>(async args => {
     if (args[0] === 'rev-parse' && args.includes('--verify')) {
@@ -117,12 +123,12 @@ function fixture() {
     }
     return { code: 0, stdout: '', stderr: '' }
   })
-  const commits = new GitCiCommits({ git, cloneDirectory: () => '/repository' })
+  const commits = new GitCiCommits({ git, cloneDirectory: () => clone })
   return { commits, git, advance: () => { head = 'b'.repeat(40) } }
 }
 
 it('shares publication of a known commit across concurrent resolution and later requests', async () => {
-  const f = fixture()
+  const f = await fixture()
   const commit = 'a'.repeat(40)
   let release!: () => void
   const blocked = new Promise<void>(resolve => { release = resolve })
@@ -141,7 +147,7 @@ it('shares publication of a known commit across concurrent resolution and later 
 })
 
 it('retries publication after a failed resolution instead of caching the failure', async () => {
-  const f = fixture()
+  const f = await fixture()
   const run = f.git.getMockImplementation()!
   let fail = true
   f.git.mockImplementation(async (args, options) => {
@@ -158,7 +164,7 @@ it('retries publication after a failed resolution instead of caching the failure
 })
 
 it('refreshes a moving default branch while reusing publication of its resolved commit', async () => {
-  const f = fixture()
+  const f = await fixture()
   expect(await f.commits.resolve('octo/site', 'main', undefined, null)).toBe('a'.repeat(40))
   f.advance()
   expect(await f.commits.resolve('octo/site', 'main', undefined, null)).toBe('b'.repeat(40))
