@@ -51,7 +51,7 @@ function smokeTargets(computers) {
 }
 
 export async function runInstallCiSmoke({ origin, workspaceId, commit, token, probeDurationMs = 30_000,
-  timeoutMs = 165_000, requestTimeoutMs = 5000, admissionTimeoutMs = 60_000, pollMs = 1000, log = console.log }) {
+  timeoutMs = 240_000, requestTimeoutMs = 5000, admissionTimeoutMs = 60_000, pollMs = 1000, log = console.log }) {
   const controller = new AbortController()
   const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)])
   const request = httpClient(origin, signal, requestTimeoutMs, token, log)

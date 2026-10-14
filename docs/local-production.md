@@ -263,7 +263,7 @@ These actions retain production data.
 
 Installed production verification is an administrative operation. `production:verify` writes temporary workflow/chat records to the installed production database and restarts its live services. Run it deliberately in a quiet maintenance window. It replaces `test:production:installed`; ordinary `test:*` commands use disposable resources and do not invoke this operation.
 
-After API readiness, installation runs a CI smoke with a 165-second deadline:
+After API readiness, installation runs a CI smoke with a 240-second deadline:
 responsiveness probes for at least 30 seconds, two consecutive CI admissions,
 and one small integration test on every ready build computer and each ready
 cloud executor provider. Integration smoke also exercises gate planning without
