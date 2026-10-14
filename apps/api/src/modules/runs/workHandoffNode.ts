@@ -6,6 +6,7 @@ import type { RepeatExecutionDriver } from './repeatNode.js'
 import { ExecutionLimiter } from './limiter.js'
 import { selectedWorkHandoffRoutes } from './workHandoffRouting.js'
 import { WorkExecutionFailure } from './workExecutionFailure.js'
+import { waitBeforeRetry } from './executionRetryPolicy.js'
 
 /** One LangGraph activation task. Every durable decision is idempotent, so a
  * checkpoint replay reconciles the exact native execution and work receipts. */
@@ -46,7 +47,11 @@ export function workHandoffNodeAction(input: {
       }
       const terminal = await input.store.acceptWorkTerminal(execution.id,
         (attempt) => input.driver.candidate({ nodeId: execution.workflowNodeId, occurrence: null }, attempt))
-      if (terminal.kind === 'retry') { execution = terminal.execution; continue }
+      if (terminal.kind === 'retry') {
+        await waitBeforeRetry(execution, terminal.execution, input.signal)
+        execution = terminal.execution
+        continue
+      }
       const result = parseWorkHandoffResult(terminal.execution.result)
       if (result.routing.kind === 'return') {
         const returned = await input.store.returnWork(terminal.execution.id)

@@ -15,6 +15,8 @@ describe.skipIf(!postgresEnabled)('Run recovery readback through HTTP and authen
       const f = await recoveryFixture(form, () => 'park')
       try {
         f.launch(); const before = await parked(f)
+        // A dead API runs no shutdown step: neither its restart intent nor its close callback.
+        vi.spyOn(f.runtime.native, 'preserveActiveForRestart').mockResolvedValue(true)
         await f.restart({ mode: 'crash' })
         const input = { ...scope(f), commandId: randomUUID() }
         const send = async () => {

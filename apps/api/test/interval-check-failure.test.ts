@@ -42,7 +42,7 @@ it.each([
     input: { executionSemanticsVersion: 3 as const, runInput: {}, occurrence: null, entry: null, predecessors: [] },
     inputDigest: `sha256:${'1'.repeat(64)}`, accepted: false })
   const settleNativeExecution = vi.fn(async () => {})
-  const requestStartCleanup = vi.fn(async () => {})
+  const abandonAttempt = vi.fn(async () => {})
   const failIntervalCheck = vi.fn(async (id: string, result: ExecutionResult) => {
     expect(id).toBe(execution.id)
     expect(result).toMatchObject({ outcome: 'failed', error: { retryable: false } })
@@ -51,11 +51,11 @@ it.each([
   })
   const input = { scope: fixture.scope, version: fixture.version, owner: { assertOwned() {} },
     store: { readExecution: async () => stored(), settleNativeExecution },
-    observeExact: async () => { throw error }, requestStartCleanup, failIntervalCheck }
+    observeExact: async () => { throw error }, abandonAttempt, failIntervalCheck }
   const driver = repeatExecutionDriver(input)
   await driver.observe(execution, new AbortController().signal)
   expect(failIntervalCheck).toHaveBeenCalledOnce()
-  expect(requestStartCleanup).not.toHaveBeenCalled()
+  expect(abandonAttempt).not.toHaveBeenCalled()
   expect(settleNativeExecution).toHaveBeenCalledWith(execution.id)
   expect(execution.result?.error?.code).toBe(error instanceof DomainError ? error.code : 'EXECUTION_START_INTERRUPTED')
 })

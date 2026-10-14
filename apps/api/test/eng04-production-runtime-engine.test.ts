@@ -62,7 +62,6 @@ async function fixture(options: {
     release: async () => { state.released++; state.events.push('release') } } as unknown as RunOwnership
   const factory = {} as RepeatEngineStartContext['factory']
   const runs = {
-    abandonedExecutionStart: async (): Promise<string | undefined> => undefined,
     acquireOwnership: (async () => owner) as (runId: string, onLost: () => void) => Promise<RunOwnership | undefined>,
     getRepeatSnapshot: async () => {
       AcceptedWorkflowRunV3Schema.parse(state.run)
@@ -105,69 +104,13 @@ async function fixture(options: {
   return { f, run, state, owner, native, runs, engine, factory, terminal, stopSharingOwner }
 }
 
-test('reconciliation settles an abandoned start after the original database timeout', async () => {
-  const h = await fixture()
-  const timeout = new Error('Query read timeout')
-  const abandoned = vi.spyOn(h.runs, 'abandonedExecutionStart')
-    .mockResolvedValueOnce(undefined).mockResolvedValue('execution-abandoned')
-  calls.work = async () => { throw timeout }
-  await assert.rejects(h.engine.start(h.run.id), timeout)
-  assert.equal(h.state.released, 1)
-  const cleanup = vi.spyOn(h.runs, 'requestCleanup')
-    .mockRejectedValueOnce(timeout).mockRejectedValueOnce(timeout)
-  await h.engine.reconcile(error => { throw error })
-  await vi.waitFor(() => assert.equal(h.state.run.executionState, 'completed'))
-  await vi.waitFor(() => assert.equal(h.state.released, 2))
-  assert.equal(h.state.run.outcome, 'failed')
-  assert.equal(abandoned.mock.calls.length, 2)
-  assert.equal(calls.entries.length, 1)
-  assert.equal(h.state.nativeCancel, 1)
-  assert.equal(cleanup.mock.calls.length, 4)
-  assert.equal(h.state.cleanupPending, false)
-  assert(h.state.events.indexOf('request-cleanup') < h.state.events.indexOf('settle'))
-})
-
-for (const state of ['queued', 'running'] as const) {
-  test(`reconciliation resolves abandoned execution starts in a ${state} Run`, async () => {
-    const h = await fixture()
-    h.state.run = { ...h.state.run, executionState: state }
-    vi.spyOn(h.runs, 'abandonedExecutionStart').mockResolvedValue('execution-abandoned')
-    const cleanup = vi.spyOn(h.runs, 'requestCleanup')
-    await h.engine.reconcile(error => { throw error })
-    await vi.waitFor(() => assert.equal(h.state.released, 1))
-    assert.equal(h.state.run.executionState, 'completed')
-    assert.equal(calls.entries.length, 0)
-    assert.deepEqual(cleanup.mock.calls[0]?.slice(2), [{
-      outcome: 'failed', error: { code: 'EXECUTION_START_INTERRUPTED',
-        message: 'Execution startup lost its owner before a native session was saved.', retryable: false },
-    }])
-  })
-}
-
-test('reconciliation leaves a start owned by another engine alone', async () => {
+test('reconciliation leaves a Run owned by another engine alone', async () => {
   const h = await fixture()
   vi.spyOn(h.runs, 'acquireOwnership').mockResolvedValue(undefined)
-  const abandoned = vi.spyOn(h.runs, 'abandonedExecutionStart')
   await h.engine.reconcile(error => { throw error })
   await new Promise(resolve => setImmediate(resolve))
-  assert.equal(abandoned.mock.calls.length, 0)
   assert.equal(h.state.nativeCancel, 0)
   assert.equal(h.state.released, 0)
-})
-
-test('an abandoned start remains cleanup-pending until original native closure succeeds', async () => {
-  const h = await fixture()
-  h.state.clean = false
-  vi.spyOn(h.runs, 'abandonedExecutionStart').mockResolvedValue('execution-abandoned')
-  await assert.rejects(h.engine.start(h.run.id), /native closure uncertain/)
-  assert.equal(h.state.cleanupPending, true)
-  assert.notEqual(h.state.run.executionState, 'completed')
-  h.state.clean = true
-  await h.engine.reconcile(error => { throw error })
-  await vi.waitFor(() => assert.equal(h.state.released, 2))
-  assert.equal(h.state.run.executionState, 'completed')
-  assert.equal(h.state.cleanupPending, false)
-  assert.equal(calls.entries.length, 0)
 })
 
 test('backs off failed reconciliation, caps the delay, and clears it after recovery', async () => {

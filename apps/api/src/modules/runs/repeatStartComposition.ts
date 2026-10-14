@@ -25,7 +25,7 @@ export interface RepeatEngineStartContext {
   configuredParallelism: number
   runtimeRoot: string
   factory: RepeatRepositoryFactory
-  native: Pick<ApprovalExecutionCoordinator, 'observeExact' | 'assertResume' | 'failIntervalCheck'>
+  native: Pick<ApprovalExecutionCoordinator, 'observeExact' | 'assertResume' | 'failIntervalCheck' | 'abandonAttempt'>
   workflows: Pick<PostgresWorkflowRepository, 'getAgentConfiguration'>
   locations: Pick<WorkspaceLocationService, 'revalidateRunAuthorization' | 'revalidateSnapshot'>
   jobs?: (owner: RunOwnership, version: import('@foreman-code/contracts/wave25').WorkflowVersionV3) => {
@@ -164,7 +164,10 @@ export async function executeRepeatEngineStart(input: RepeatEngineStartContext):
   const scope = { runId: snapshot.run.id, workspaceId: snapshot.run.workspaceId, workflowId: snapshot.run.workflowId,
     workflowVersionId: snapshot.version.id, executionSemanticsVersion: 3 as const }
   const driver = repeatExecutionDriver({ scope, version: snapshot.version, owner: input.owner, store, observeExact,
-    requestStartCleanup: (failure) => input.lifecycle.requestCleanup(failure),
+    abandonAttempt: async (executionId, failure) => {
+      const { execution } = await store.readExecution(executionId)
+      await input.native.abandonAttempt(input.owner, execution, failure)
+    },
     failIntervalCheck: async (executionId, failure) => {
       const { execution } = await store.readExecution(executionId)
       await input.native.failIntervalCheck(input.owner, execution, failure)

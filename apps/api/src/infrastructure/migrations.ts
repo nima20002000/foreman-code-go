@@ -95,6 +95,7 @@ import { workspaceRootPoliciesMigration } from '../modules/sources/rootPoliciesM
 import { sourcePreparationReconciliationMigration } from './sourcePreparationReconciliationMigration.js'
 import { workflowTerminalRecoveryMigration } from './workflowTerminalRecoveryMigration.js'
 import { workflowRestartRecoveryMigration } from './workflowRestartRecoveryMigration.js'
+import { workflowFailedAttemptRecoveryMigration } from './workflowFailedAttemptRecoveryMigration.js'
 import { runInspectionMigration } from './runInspectionMigration.js'
 import { currentApprovalAckMigration } from './currentApprovalAckMigration.js'
 import { reviewCleanupEntryReceiptMigration, workflowNativeLifecycleMigration } from './workflowNativeLifecycleMigration.js'
@@ -940,6 +941,7 @@ export const migrations = [
   workflowAuthoringMigration,
   ciGrantMigration,
   deviceManagedMcpMigration,
+  workflowFailedAttemptRecoveryMigration,
 ] as const
 
 export function assertMigrationVersions(entries: readonly { version: number }[]): void {

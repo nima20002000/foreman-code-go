@@ -11,32 +11,34 @@ afterEach(() => vi.restoreAllMocks())
 // simulates that external boundary, never SQL receipts, native ACKs or results.
 describe.skipIf(!postgresEnabled)('ENG06-D recovery readback over real HTTP and authenticated Operator MCP', () => {
   it.each(forms)('%s: graceful restart closes an ephemeral turn before releasing its Run owner', async (form) => {
-    const f = await recoveryFixture(form, () => 'park')
+    let first = true
+    const f = await recoveryFixture(form, () => { if (first) { first = false; return 'park' } return 'success' })
     try {
       f.launch()
       const before = await parked(f)
       await f.restart()
+      // Only the lost attempt is closed and abandoned; the Run is not fenced.
       const pending = await readback(f)
-      expect(pending.record).toEqual({ ...before.record, cleanupPending: true })
-      expect(pending.details[0]!.execution).toEqual(before.details[0]!.execution)
+      expect(pending.record).toEqual(before.record)
+      expect(pending.details[0]!.execution).toMatchObject({ executionId: before.details[0]!.execution.executionId,
+        attempt: 1, state: 'completed' })
       expect(pending.details[0]!.acceptedInput).toEqual(before.details[0]!.acceptedInput)
       expect(pending.details[0]!.acceptedResult).toEqual({ status: 'not_accepted' })
-      expect(pending.details[0]).not.toHaveProperty('reportedResult')
-      expect(f.provider.counts).toMatchObject({ starts: 1, sessions: 1, cancels: 1, closes: 1, attaches: 0 })
+      expect(pending.details[0]!.reportedResult).toMatchObject({ outcome: 'failed',
+        error: { code: 'EXECUTION_INTERRUPTED', retryable: true } })
+      expect(f.provider.counts).toMatchObject({ starts: 1, sessions: 1, closes: 1, attaches: 0 })
       expect(f.provider.recoveryCalls).toEqual([])
       await f.settled()
       const after = await readback(f)
-      expect(after.record).toMatchObject({ run: { executionState: 'completed', outcome: 'failed',
-        result: { error: { code: 'EXECUTION_INTERRUPTED', retryable: false } } }, cleanupPending: false })
-      expect(after.details[0]!.execution.executionId).toBe(before.details[0]!.execution.executionId)
-      expect(after.details[0]!.acceptedResult).toEqual({ status: 'not_accepted' })
+      expect(after.record).toMatchObject({ run: { executionState: 'completed', outcome: 'succeeded' }, cleanupPending: false })
+      expect(after.details.find((detail) => detail.execution.executionId === before.details[0]!.execution.executionId)!
+        .acceptedResult).toEqual({ status: 'not_accepted' })
       expect(f.provider.recoveryCalls).toEqual([])
-      expect(f.provider.counts.starts).toBe(1)
       expect(f.shutdownErrors).toEqual([])
     } finally { await f.close() }
   }, 90000)
 
-  it.each(forms)('%s: a non-detachable native lifetime closes at restart without a terminal or replay', async (form) => {
+  it.each(forms)('%s: a non-detachable native lifetime closes at restart and its node retries in a fresh attempt', async (form) => {
     let first = true
     const f = await recoveryFixture(form, () => { if (first) { first = false; return 'park' } return 'success' })
     try {
@@ -44,18 +46,16 @@ describe.skipIf(!postgresEnabled)('ENG06-D recovery readback over real HTTP and 
       await f.restart(); await f.settled()
       const after = await readback(f), rows = await executionRows(f), abandoned = rows.find((row) => row.execution.id === original)!
       expect(after.record.cleanupPending).toBe(false)
-      expect(after.record.run.executionState).toBe('completed')
+      expect(after.record.run).toMatchObject({ executionState: 'completed', outcome: 'succeeded' })
       expect(abandoned.execution.state).toBe('completed')
       expect(abandoned.execution.result).toMatchObject({ outcome: 'failed',
-        error: { code: 'EXECUTION_INTERRUPTED', retryable: false } })
-      expect(after.record.run).toMatchObject({ outcome: 'failed', result: { outcome: 'failed',
-        error: { code: 'EXECUTION_INTERRUPTED', retryable: false } } })
+        error: { code: 'EXECUTION_INTERRUPTED', retryable: true } })
       expect(abandoned.result_json).toBeNull()
-      // Conservative interruption is not an original retryable native failure.
-      // Neither a technical attempt nor a business occurrence is manufactured.
-      expect(rows).toHaveLength(1)
-      expect(rows[0]!.execution.attempt).toBe(1)
-      expect(f.provider.counts.starts).toBe(1); expect(f.provider.counts.attaches).toBe(0)
+      // The same slot and input continue in attempt 2; no business occurrence is manufactured.
+      const retry = rows.find((row) => row.slot_id === abandoned.slot_id && row.execution.attempt === 2)!
+      expect(retry.input_digest).toBe(abandoned.input_digest)
+      expect(retry.execution.result).toMatchObject({ outcome: 'succeeded' })
+      expect(f.provider.counts.attaches).toBe(0)
       const closure = await readWorkflowClosure(f.base.db.pool, abandoned.execution)
       expect(closure).toMatchObject({ execution: { id: original, runId: f.base.f.run.id },
         session: { nativeSessionId: abandoned.execution.nativeSessionId },

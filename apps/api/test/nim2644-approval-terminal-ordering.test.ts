@@ -141,7 +141,7 @@ describe('NIM-2644 pending receipt is not native failure cleanup', () => {
       throw pending()
     })
     const driver = repeatExecutionDriver({ scope: f.fixture.scope, version: f.fixture.version, owner: f.owner,
-      store: f.store, observeExact, requestStartCleanup: async () => { throw new Error('Unexpected start failure') } })
+      store: f.store, observeExact, abandonAttempt: async () => { throw new Error('Unexpected start failure') } })
     await expect(driver.observe(f.get(), controller.signal)).rejects.toMatchObject({ code: stop ? 'GRAPH_STOP_CONFLICT' : 'APPROVAL_SETTLEMENT_PENDING' })
     expect(observeExact).toHaveBeenCalledTimes(1)
     expect(f.get()).toEqual(before)

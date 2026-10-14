@@ -779,7 +779,7 @@ export class RepeatRunRepository {
         r.stop_requested_at is not null or r.execution_state in ('completed','interrupted')
         or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending)
         or exists(select 1 from harness_executions e join approval_execution_state b on b.execution_id=e.id
-          where e.id=$2 and e.run_id=r.id and e.tick_index is not null and b.failure_result is not null))`,
+          where e.id=$2 and e.run_id=r.id and b.failure_result is not null))`,
       [context.scope.runId, executionId])
       if (closing.rowCount !== 1 || canceled !== context.stopped) return repeatConflict('GRAPH_STOP_CONFLICT')
       const reservation = workflowNativeReservation(context.scope, stored.ref, stored.execution, stored.inputDigest)
@@ -810,16 +810,22 @@ export class RepeatRunRepository {
       const runFailure = cleanup?.failure_result ? ExecutionResultSchema.parse(cleanup.failure_result) : undefined
       if (runFailure && runFailure.outcome !== 'failed') return repeatConflict('RUN_FAILURE_CAUSE_INVALID')
       const siblingResult = runFailure ? { outcome: 'canceled' as const } : { outcome: 'failed' as const,
-        error: { code: 'EXECUTION_INTERRUPTED', message: 'The native attempt was closed without an accepted result. It was not resubmitted.', retryable: false } }
+        error: { code: 'EXECUTION_INTERRUPTED', message: 'The native attempt was closed without an accepted result.', retryable: false } }
       const result = canceled ? { outcome: 'canceled' as const } : failure ?? siblingResult
       const next = HarnessExecutionSchema.parse({ ...stored.execution, state: 'completed', result, finishedAt: context.now })
       const source = { scope: context.scope, ref: stored.ref, previous: stored.execution, next,
         ...(seal ? { noSubmission: seal } : { closure }) }
       const change = this.nativeChange(context, stored, next, 'negative_settlement', source)
-      await this.publishNative(context, change, seal ? () => sealWorkflowNativeEntryLocked(context.sql, this.owner, seal!, {
-        scope: context.scope, evidence: { sourceKind: 'execution', sourceId: change.sourceId, sourceRevision: '1' },
-        sourceDigest: change.sourceDigest, effect: null,
-      }) : undefined)
+      await this.publishNative(context, change, async () => {
+        if (seal) await sealWorkflowNativeEntryLocked(context.sql, this.owner, seal, {
+          scope: context.scope, evidence: { sourceKind: 'execution', sourceId: change.sourceId, sourceRevision: '1' },
+          sourceDigest: change.sourceDigest, effect: null,
+        })
+        // An attempt closed for its own recorded cause shows that cause in Run activity.
+        if (!canceled && failure) await context.sql.query(`insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
+          values($1,'backend','result_recorded',$2,$3,$4::jsonb)`, [context.scope.runId, executionId, context.now,
+          canonicalGraphJson({ workflowNodeId: stored.ref.nodeId, result })])
+      })
     })
   }
 
@@ -1368,7 +1374,8 @@ export class RepeatRunRepository {
     const failures: Array<{ activationId: string; result: ExecutionResult }> = []
     for (const row of rows) {
       const execution = HarnessExecutionSchema.parse(row.record)
-      if (!row.failure_result && await context.hooks.allowTechnicalRetryLocked(context.sql, execution)) continue
+      // A retryable attempt is not a work failure while its node may still retry it.
+      if (await context.hooks.allowTechnicalRetryLocked(context.sql, execution)) continue
       const result = ExecutionResultSchema.parse(row.failure_result ?? execution.result)
       if (result.outcome !== 'failed') return repeatConflict('RUN_FAILURE_CAUSE_INVALID')
       failures.push({ activationId: row.activation_id, result })

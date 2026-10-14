@@ -4,7 +4,9 @@ import { assertGraphTransaction, type GraphTransactionSql } from '../run-graph/c
 import { repeatConflict } from './repeatResolution.js'
 
 /** Call while holding the Run lock. Starting an unissued activation consumes
- * its reservation; retries and new activations require additional capacity.
+ * its reservation; retries and new activations require additional capacity,
+ * except that an attempt abandoned for an infrastructure cause (a recorded
+ * retryable failure) gives its capacity to its replacement.
  * Interval checks are bounded by their interval and the Run's lifetime, not this budget. */
 export async function hasWorkflowExecutionCapacityLocked(sql: GraphTransactionSql, runId: string,
   version: WorkflowVersionV3, activationId: string | null = null): Promise<boolean> {
@@ -13,7 +15,9 @@ export async function hasWorkflowExecutionCapacityLocked(sql: GraphTransactionSq
   const row = (await sql.query<{ total: string }>(`select (
     (select count(*) from harness_executions e where e.run_id=$1 and e.record #> '{input,tick}' is null
       and not exists (select 1 from workflow_native_entries n
-        where n.execution_id=e.id and n.run_id=e.run_id and n.phase='not_submitted'))
+        where n.execution_id=e.id and n.run_id=e.run_id and n.phase='not_submitted')
+      and not exists (select 1 from approval_execution_state b
+        where b.execution_id=e.id and b.failure_result->'error'->>'retryable'='true'))
     + (select count(*) from run_repeat_executions where run_id=$1 and identity->>'kind'='job')
     + (select count(*) from workflow_job_preparations p where p.run_id=$1
       and not exists (select 1 from run_repeat_executions e

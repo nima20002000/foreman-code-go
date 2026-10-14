@@ -32,7 +32,6 @@ for (const handoffs of preserving ? [false, true] : [false]) test(
     release: async () => { released = true; events.push('release') },
   }
   const runs = {
-    abandonedExecutionStart: async () => undefined,
     repeatRepositoryFactory: () => ({}), acquireOwnership: async () => owner,
     get: async (runId: string) => { assert.equal(runId, f.run.id); return f.run },
     requestCleanup: async (runId: string, actual: typeof owner) => {
@@ -131,7 +130,6 @@ test('restart retains the original owner when cleanup persistence fails and retr
   let fail = true
   const owner = { runId: f.run.id, assertOwned() {}, release: async () => { events.push('release') } }
   const runs = {
-    abandonedExecutionStart: async () => undefined,
     repeatRepositoryFactory: () => ({}), acquireOwnership: async () => owner,
     get: async (runId: string) => { assert.equal(runId, f.run.id); return f.run },
     getRepeatSnapshot: async () => ({ run: f.run, version: f.version, configurations: f.configurations,
@@ -179,7 +177,6 @@ for (const failFirst of [false, true]) test(`naturally completing drive holds it
   let released = false, attempt = 0
   const owner = { runId: f.run.id, assertOwned() { assert.equal(released, false) }, release: async () => { released = true; events.push('release') } }
   const runs = {
-    abandonedExecutionStart: async () => undefined,
     repeatRepositoryFactory: () => ({}), acquireOwnership: async () => owner,
     get: async (runId: string) => { assert.equal(runId, f.run.id); return f.run },
     getRepeatSnapshot: async () => ({ run: f.run, version: f.version, configurations: f.configurations, stopRequested: false, cleanupPending: false }),

@@ -56,7 +56,8 @@ function recordedResultActivity(raw: unknown): Pick<RunActivityPublic, 'status' 
     const error = result.data.error
     const detail = error ? nativePersistenceRedactor([]).text(`${error.code}: ${error.message}`).slice(0, 500)
       : undefined
-    return { status: 'failed', summary: 'Work failed', ...(detail ? { detail } : {}) }
+    return { status: 'failed', summary: error?.retryable ? 'Attempt failed with a retryable error' : 'Work failed',
+      ...(detail ? { detail } : {}) }
   }
   const workResult = activityWorkResult(raw)
   return { status: 'completed', summary: 'Work result recorded', ...(workResult ? { workResult } : {}) }

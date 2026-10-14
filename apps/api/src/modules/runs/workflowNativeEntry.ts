@@ -174,7 +174,7 @@ export async function sealWorkflowNativeEntryLocked(sql: GraphTransactionSql, ow
     r.stop_requested_at is not null or r.execution_state in ('completed','interrupted')
     or exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending)
     or exists(select 1 from harness_executions e join approval_execution_state b on b.execution_id=e.id
-      where e.id=$2 and e.run_id=r.id and e.tick_index is not null and b.failure_result is not null))`,
+      where e.id=$2 and e.run_id=r.id and b.failure_result is not null))`,
   [owner.runId, record.reservation.execution.executionId])
   if (allowed.rowCount !== 1) return conflict()
   await sealNativeEntryLocked(sql, owner, record, receipt)

@@ -17,32 +17,42 @@ function setup(completed = true) {
   }
   const observeExact = vi.fn(async (value: HarnessExecution, signal: AbortSignal): Promise<void> => { void value; void signal })
   const reconcileArtifacts = vi.fn<(execution: HarnessExecution, signal: AbortSignal) => Promise<void>>(async () => {})
-  const requestStartCleanup = vi.fn(async () => {})
+  const abandonAttempt = vi.fn(async (id: string, failure: unknown): Promise<void> => { void id; void failure })
   const createDriver = () => repeatExecutionDriver({ scope: f.scope, version: f.version, owner, store,
-    observeExact, reconcileArtifacts, requestStartCleanup })
+    observeExact, reconcileArtifacts, abandonAttempt })
   const driver = createDriver()
-  return { f, owner, store, observeExact, reconcileArtifacts, requestStartCleanup, createDriver, driver,
+  return { f, owner, store, observeExact, reconcileArtifacts, abandonAttempt, createDriver, driver,
     get: () => execution, set: (value: HarnessExecution) => { execution = value } }
 }
 
 describe('ENG04 exact native occurrence driver', () => {
-  it.each(['queued', 'starting'] as const)('persists a %s start failure through transient database errors', async (state) => {
+  it.each(['queued', 'starting'] as const)('abandons a %s start failure for a fresh attempt through transient database errors', async (state) => {
     const f = setup(false)
     const execution = { ...f.get(), state }
     delete execution.nativeSessionId
     f.set(execution)
     const timeout = new Error('Query read timeout')
     f.observeExact.mockRejectedValueOnce(timeout)
-    f.requestStartCleanup.mockRejectedValueOnce(timeout).mockRejectedValueOnce(timeout)
-    const observation = f.driver.observe(f.get(), new AbortController().signal)
-    await expect(observation).rejects.toMatchObject({ code: 'EXECUTION_START_INTERRUPTED', cause: timeout })
-    expect(f.requestStartCleanup).toHaveBeenCalledTimes(3)
-    expect(f.requestStartCleanup).toHaveBeenLastCalledWith({ outcome: 'failed', error: {
-      code: 'EXECUTION_START_INTERRUPTED', message: 'Execution startup failed before a native session was saved.',
-      retryable: false,
+    f.abandonAttempt.mockRejectedValueOnce(timeout).mockRejectedValueOnce(timeout)
+      .mockImplementationOnce(async () => { f.set(nativeCompleted(f.get())) })
+    await f.driver.observe(f.get(), new AbortController().signal)
+    expect(f.abandonAttempt).toHaveBeenCalledTimes(3)
+    expect(f.abandonAttempt).toHaveBeenLastCalledWith(execution.id, { outcome: 'failed', error: {
+      code: 'EXECUTION_START_INTERRUPTED', message: 'Query read timeout', retryable: true,
     } })
     expect(f.observeExact).toHaveBeenCalledOnce()
-    expect(f.store.settleNativeExecution).not.toHaveBeenCalled()
+    expect(f.store.settleNativeExecution).toHaveBeenCalledExactlyOnceWith(execution.id)
+  })
+
+  it('does not abandon a start that failed for a real task reason', async () => {
+    const f = setup(false)
+    const execution = { ...f.get(), state: 'starting' as const }
+    delete execution.nativeSessionId
+    f.set(execution)
+    const conflict = new DomainError('REPEAT_EXECUTION_INPUT_CONFLICT', 'conflict', 409)
+    f.observeExact.mockRejectedValueOnce(conflict)
+    await expect(f.driver.observe(f.get(), new AbortController().signal)).rejects.toBe(conflict)
+    expect(f.abandonAttempt).not.toHaveBeenCalled()
   })
 
   it('repairs a completed close/commit gap with SQL receipts and no native call', async () => {

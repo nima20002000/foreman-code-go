@@ -84,12 +84,14 @@ async function createFixture(placement?: AcceptedNodePlacement) {
     close: async () => undefined,
     dispose: async () => { disposals += 1 },
   }
-  const negativeSettlements: string[] = []
+  const negativeSettlements: string[] = [], failures = new Map<string, ExecutionResult>()
   const runs = {
     getRepeatSnapshot: async () => ({ run, stopRequested: false, cleanupPending }),
     requestCleanup: async () => { cleanupPending = true },
     async *executionPages() { yield [...rows.values()] },
-    repeat: async () => ({ settleNegativeExecution: async (id: string) => { negativeSettlements.push(id) } }),
+    repeat: async () => ({ settleNegativeExecution: async (id: string) => { negativeSettlements.push(id) },
+      readExecution: (id: string) => store.readExecution(id) }),
+    recordExecutionFailure: async (_owner: unknown, id: string, failure: ExecutionResult) => { failures.set(id, failure) },
     get: async () => run, getExecution: async (id: string) => rows.get(id),
     ensureExecution: async (value: HarnessExecution) => {
       const previous = [...rows.values()].find((row) => row.workflowNodeId === value.workflowNodeId && row.attempt === value.attempt)
@@ -154,7 +156,7 @@ async function createFixture(placement?: AcceptedNodePlacement) {
     undefined, undefined, undefined, async context => placement ? { ...context, acceptedPlacement: placement } : context)
   const owner = { runId: run.id, assertOwned: () => undefined, client: {} } as unknown as RunOwnership
   return {
-    coordinator, credentials, rows, accepted, events, activities, revoked, negativeSettlements,
+    coordinator, credentials, rows, accepted, events, activities, revoked, negativeSettlements, failures,
     setDirectoryChanged: () => { changedDirectory = true }, setAuthorityRevoked: () => { revokedAuthority = true },
     failCleanup: () => { cleanupFails = true }, onPrepare: (callback: () => Promise<void>) => { prepared = callback },
     setNative: (callback: (signal: AbortSignal) => Promise<ExecutionResult>) => { native = callback },
@@ -174,7 +176,7 @@ async function withFixture(perform: (fixture: Fixture) => Promise<void>) {
 }
 
 describe('native launch, outcome and credential lifecycle', () => {
-  it('disposes an observed session whose database publication failed before starting its turn', async () => {
+  it('abandons and disposes an observed session whose database publication failed before starting its turn', async () => {
     const f = await createFixture()
     f.onPublished(async () => { throw new Error('session publication failed') })
     try {
@@ -182,6 +184,10 @@ describe('native launch, outcome and credential lifecycle', () => {
       assert.equal(f.counters().creates, 1)
       assert.equal(f.counters().starts, 0)
       assert.equal(f.counters().disposals, 1)
+      // The attempt is closed for its own retryable cause; its node starts a fresh attempt.
+      assert.deepEqual(f.failures.get(f.rows.keys().next().value!), { outcome: 'failed', error: {
+        code: 'NATIVE_EXECUTION_FAILED', message: 'session publication failed', retryable: true } })
+      assert.deepEqual(f.negativeSettlements, [f.rows.keys().next().value])
     } finally {
       await f.close()
     }

@@ -19,7 +19,7 @@ import { readAcceptedRepeatRunSnapshot, type AcceptedRepeatRunSnapshot } from '.
 import { captureRepeatNativeEvidence, type RepeatLaunchPaths, type RepeatNativeBoundaryEvidence, type RepeatNativeEvidence } from './repeatNativeRepository.js'
 import { sameRepeatValue, type RepeatNodeRef } from './repeatResolution.js'
 import { markRepeatRunRunning, requestRepeatRunStop, openWorkflowLifecycleLocked, type AuthorizeWorkflowStop } from './repeatLifecycle.js'
-import { requestWorkflowCleanup, finishWorkflowCleanup, settleWorkflowRun } from './workflowLifecycle.js'
+import { requestWorkflowCleanup, finishWorkflowCleanup, settleWorkflowRun, recordWorkflowExecutionFailure } from './workflowLifecycle.js'
 import type { WorkflowResumePermit } from './approvalCheckpointResume.js'
 import type { WorkflowNativeLease, WorkflowApprovalCorrelation, WorkflowContinuationProof } from './workflowNativeGraph.js'
 import { WorkflowNativeProofServices } from './workflowNativeProof.js'
@@ -199,6 +199,10 @@ export class PostgresRunRepository {
   }
   async hasRequestedStop(runId: string, owner?: RunOwnership): Promise<boolean> { return (await this.getRepeatSnapshot(runId, owner)).stopRequested }
   async hasPendingCleanup(runId: string, owner?: RunOwnership): Promise<boolean> { return (await this.getRepeatSnapshot(runId, owner)).cleanupPending }
+  /** Record one attempt's own failure cause without fencing its Run. */
+  async recordExecutionFailure(owner: RunOwnership, executionId: string, failure: ExecutionResult): Promise<void> {
+    await recordWorkflowExecutionFailure(this.requireOwner(owner.runId, owner), executionId, failure)
+  }
   async requestCleanup(runId: string, owner?: RunOwnership, failure?: ExecutionResult,
     options?: { executionId: string }): Promise<void> {
     await requestWorkflowCleanup(this.pool, runId, owner, failure, options)
@@ -233,19 +237,6 @@ export class PostgresRunRepository {
       after = page[page.length - 1]!.id
     }
   }
-  async abandonedExecutionStart(owner: RunOwnership): Promise<string | undefined> {
-    this.requireOwner(owner.runId, owner)
-    // Acquiring the Run lock excludes a live start owner. Unclaimed queued work remains runnable.
-    const row = (await owner.client.query<{ id: string }>(`select e.id from harness_executions e
-      where e.run_id=$1 and e.tick_index is null and e.record->>'nativeSessionId' is null and (
-        e.record->>'state'='starting' or e.record->>'state'='queued' and exists (
-          select 1 from run_graph_effects f where f.run_id=e.run_id
-            and f.effect_kind='execution.launch' and f.entity_id=e.id))
-      order by e.id limit 1`, [owner.runId])).rows[0]
-    owner.assertOwned()
-    return row?.id
-  }
-
   async reconciliationCandidates(afterId = '', limit = 100): Promise<RepositoryWorkflowRun[]> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new DomainError('RUN_READ_LIMIT', 'Use a bounded Run cursor.', 409)
     // Failed Main-local Runs can outlive their detached runtime. Selection still requires physical closure in cleanup.

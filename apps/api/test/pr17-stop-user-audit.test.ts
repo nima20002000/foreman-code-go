@@ -29,7 +29,6 @@ it('F11: failed cleanup remains retryable after terminal settlement and a fresh 
   let releases = 0
   const owner = { runId: record.id, assertOwned() {}, async release() { releases++ } } as unknown as RunOwnership
   const runs = {
-    abandonedExecutionStart: async () => undefined,
     repeatRepositoryFactory: () => ({}),
     async requestCleanup() { pending = true },
     async finishCleanup(_id: string, failed: boolean, actual: RunOwnership) {

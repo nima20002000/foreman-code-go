@@ -2,7 +2,7 @@ import { expect, it } from 'vitest'
 import { attempts, describeRetryBudget, occurrences, sameSlot } from './helpers/retryBudget.js'
 import { readWorkflowClosure } from '../src/modules/interactions/workflowClosure.js'
 import {
-  executionRows, readback, recoveryFixture, assertOriginalFailure, assertRecoveryReceipts,
+  executionRows, readback, recoveryFixture, assertOriginalFailure,
   type Form,
 } from './helpers/eng06DRecovery.js'
 
@@ -11,8 +11,9 @@ const cases = forms.flatMap(form =>
   (['graceful', 'crash'] as const).map(mode => ({ form, mode })))
 
 describeRetryBudget('finite technical retry budget: restart', () => {
-  it.each(cases)('$form: $mode restart cannot reset the final attempt budget', async ({ form, mode }) => {
-    const f = await recoveryFixture(form, submission => submission.attempt === 1 ? 'retryable_failure' : 'durable_failure_gap')
+  it.each(cases)('$form: $mode restart retries the lost attempt but cannot reset the attempt limit', async ({ form, mode }) => {
+    // Attempt 2 is lost to the restart; attempt 3 is the last one the policy allows.
+    const f = await recoveryFixture(form, submission => submission.attempt === 2 ? 'durable_failure_gap' : 'retryable_failure')
     try {
       f.launch()
       await expect.poll(async () => (await executionRows(f)).map((row) => ({
@@ -20,58 +21,36 @@ describeRetryBudget('finite technical retry budget: restart', () => {
       })).sort((a, b) => a.attempt - b.attempt), { timeout: 20000, interval: 50 })
         .toEqual([{ attempt: 1, state: 'completed' }, { attempt: 2, state: 'running' }])
       const before = await executionRows(f)
-      const finalId = before.find((row) => row.execution.attempt === 2)!.execution.id
-      await expect.poll(() => f.provider.atBarrier(finalId), { timeout: 20000, interval: 50 }).toBe(true)
-      const beforeView = await readback(f)
-      expect(f.provider.originalResult(finalId)).toMatchObject({ outcome: 'failed', error: { retryable: true } })
+      const interruptedId = before.find((row) => row.execution.attempt === 2)!.execution.id
+      await expect.poll(() => f.provider.atBarrier(interruptedId), { timeout: 20000, interval: 50 }).toBe(true)
       sameSlot(before)
-      expect(before.find((row) => row.execution.attempt === 1)!.execution.result?.outcome).toBe('failed')
-      expect(before.find((row) => row.execution.attempt === 2)!.execution.result).toBeUndefined()
       await f.restart({ mode })
-      const pending = await readback(f)
-      expect(pending.record.cleanupPending).toBe(true)
-      const pendingFinal = pending.details.find((detail) => detail.execution.executionId === finalId)!
-      expect(pendingFinal.execution).toEqual(beforeView.details.find((detail) =>
-        detail.execution.executionId === finalId)!.execution)
-      expect(pendingFinal).not.toHaveProperty('reportedResult')
-      expect(pendingFinal.acceptedResult).toEqual({ status: 'not_accepted' })
-      expect(f.provider.recoveryCalls).toEqual([])
       await f.settled()
       const after = await executionRows(f), view = await readback(f)
       expect(view.record.run).toMatchObject({ executionState: 'completed', outcome: 'failed' })
       expect(view.record.cleanupPending).toBe(false)
-      expect(view.page.items.map((item) => item.executionId).sort())
-        .toEqual(beforeView.page.items.map((item) => item.executionId).sort())
-      const finalDetail = view.details.find((detail) => detail.execution.executionId === finalId)!
-      const beforeDetail = beforeView.details.find((detail) => detail.execution.executionId === finalId)!
-      expect(finalDetail.execution).toMatchObject({ attempt: 2, state: 'completed' })
-      expect(finalDetail.acceptedInput).toEqual(beforeDetail.acceptedInput)
-      expect(finalDetail.acceptedResult).toEqual({ status: 'not_accepted' })
-      expect(finalDetail.reportedResult).toMatchObject({ outcome: 'failed',
-        error: { code: 'EXECUTION_INTERRUPTED', retryable: false } })
-      expect(f.provider.originalResult(finalId)).toMatchObject({ outcome: 'failed', error: { retryable: true } })
-      await f.runtime.engine.reconcile((error) => f.errors.push(error))
-      expect(await readback(f)).toEqual(view)
-      expect(attempts(after)).toEqual([1, 2]); sameSlot(after)
-      expect(after.map((row) => row.execution.id).sort()).toEqual(before.map((row) => row.execution.id).sort())
+      expect(attempts(after)).toEqual([1, 2, 3]); sameSlot(after)
       const first = after.find((row) => row.execution.attempt === 1)!
       expect(first.execution).toEqual(before.find((row) => row.execution.attempt === 1)!.execution)
       await assertOriginalFailure(f, first.execution.id, true)
-      const final = after.find((row) => row.execution.attempt === 2)!
-      expect(final.execution.result).toEqual(finalDetail.reportedResult)
+      const interrupted = view.details.find((detail) => detail.execution.executionId === interruptedId)!
+      expect(interrupted.execution).toMatchObject({ attempt: 2, state: 'completed' })
+      expect(interrupted.acceptedResult).toEqual({ status: 'not_accepted' })
+      expect(interrupted.reportedResult).toMatchObject({ outcome: 'failed',
+        error: { code: 'EXECUTION_INTERRUPTED', retryable: true } })
+      const interruptedRow = after.find((row) => row.execution.attempt === 2)!
+      expect(await readWorkflowClosure(f.base.db.pool, interruptedRow.execution)).toMatchObject({
+        execution: { id: interruptedId, runId: f.base.f.run.id, attempt: 2 },
+        durableGeneration: expect.stringMatching(/^[1-9][0-9]*$/),
+      })
+      const final = after.find((row) => row.execution.attempt === 3)!
+      await assertOriginalFailure(f, final.execution.id, true)
       expect(final.result_json).toBeNull()
+      // Further recovery ticks cannot reset the attempt counter or start a fourth attempt.
+      for (let tick = 0; tick < 3; tick++) await f.runtime.engine.reconcile((error) => f.errors.push(error))
+      expect(await readback(f)).toEqual(view)
+      expect(f.provider.counts.starts).toBe(3); expect(f.provider.counts.sessions).toBe(3)
       expect(f.provider.counts.attaches).toBe(0)
-      if (mode === 'crash') {
-        await assertRecoveryReceipts(f, [finalId], { detached: false })
-      } else {
-        expect(f.provider.recoveryCalls).toEqual([])
-        expect(await readWorkflowClosure(f.base.db.pool, final.execution)).toMatchObject({
-          execution: { id: finalId, runId: f.base.f.run.id, attempt: 2 },
-          session: { nativeSessionId: final.execution.nativeSessionId },
-          durableGeneration: expect.stringMatching(/^[1-9][0-9]*$/),
-        })
-      }
-      expect(f.provider.counts.starts).toBe(2); expect(f.provider.counts.sessions).toBe(2)
       expect(await occurrences(f)).toHaveLength(form === 'repeat' ? 1 : 0)
       expect(f.shutdownErrors).toEqual([])
     } finally { await f.close() }

@@ -1,5 +1,4 @@
 import { beginRuntimeTiming, runtimeTimingPoint, withRuntimeTimingContext } from '../../infrastructure/runtimeTiming.js'
-import { retryDatabaseTimeout } from '../../infrastructure/databaseTimeout.js'
 import { resolve } from 'node:path'
 import type { BaseCheckpointSaver } from '@langchain/langgraph-checkpoint'
 import type { DurableInteraction } from '@foreman-code/contracts'
@@ -182,17 +181,6 @@ export class LangGraphWorkflowEngine {
       }
       if (!['queued', 'running', 'waiting'].includes(snapshot.run.executionState)) throw new DomainError(
         'RUN_NOT_RESUMABLE', 'This Run requires Stop settlement or a separately authorized new Run.', 409)
-      const abandonedStart = await retryDatabaseTimeout(() => this.runs.abandonedExecutionStart(owner), {
-        signal: controller.signal, check: () => owner.assertOwned(),
-      })
-      if (abandonedStart) {
-        await retryDatabaseTimeout(() => this.runs.requestCleanup(runId, owner, {
-          outcome: 'failed', error: { code: 'EXECUTION_START_INTERRUPTED',
-            message: 'Execution startup lost its owner before a native session was saved.', retryable: false },
-        }), { check: () => owner.assertOwned() })
-        await this.cleanupOwned(owner)
-        return
-      }
       if (snapshot.run.executionState === 'waiting' && snapshot.version.definition.handoffs
         && await hasWorkDirectionWait(owner)) {
         await persistWorkDirectionWait(owner, this.locations)

@@ -150,7 +150,14 @@ export async function recoverEnteredLaunch(
   database: CrashCutDatabase, form: WorkflowForm, finish: 'stop' | 'reconcile',
 ) {
   const fixture = makeCurrentWorkflowFixture(randomUUID(), form)
-  const t = await checkpointRuntimeFixture(1, 1, { database, fixture, approvalNodeIds: [] })
+  // The retried node continues the workflow, so the repeat exit needs a valid result.
+  const exitOutput = { routing: { outcome: 'pass' }, data: {
+    latestDeliverable: { node: fixture.version.definition.nodes[1]!.id }, remainingFindings: [],
+  } }
+  const t = await checkpointRuntimeFixture(1, 1, { database, fixture, approvalNodeIds: [],
+    outputFor: (nodeId) => nodeId === fixture.version.definition.nodes[1]!.id && form === 'repeat'
+      ? exitOutput : { node: nodeId },
+  })
   const interrupted = new DomainError('ENGINE_RESTART', 'Injected abrupt API restart at entered COMMIT.', 409)
   const barrier = holdCrashCut<string>(interrupted)
   let launchSignal: AbortSignal | undefined
@@ -212,15 +219,11 @@ export async function recoverEnteredLaunch(
     expect(outcome).toMatchObject({ status: 'rejected', reason: { code: 'ENGINE_RESTART' } })
     if (outcome.status === 'rejected') expect(outcome.reason).toBe(launchSignal?.reason)
     expect(barrier.visits).toBe(1)
+    // Graceful shutdown leaves the in-flight startup to recovery and fences nothing:
+    // the Run keeps running so its node retries after restart.
     expect(await t.runs.getExecution(cut)).toEqual(original)
-    expect((await t.db.pool.query('select closed_at from execution_native_closures where execution_id=$1', [cut])).rows)
-      .toEqual([{ closed_at: null }])
-    expect((await t.db.pool.query('select 1 from execution_native_recoveries where execution_id=$1', [cut])).rowCount).toBe(0)
-    // Graceful shutdown commits a negative reentry fence even when the
-    // entered native reservation never dispatched. Only original registry
-    // recovery plus terminal settlement below may clear that obligation.
-    expect(await t.runs.hasPendingCleanup(t.f.run.id)).toBe(true)
-    expect((await t.db.pool.query('select pending from run_cleanup_intents where run_id=$1', [t.f.run.id])).rows).toEqual([{ pending: true }])
+    expect(await t.runs.hasPendingCleanup(t.f.run.id)).toBe(false)
+    expect(t.provider.counts).toEqual({ sessions: 0, starts: 0, responses: 0, attaches: 0 })
     restore()
     const next = t.compose()
     const recover = vi.fn((id: string, signal: AbortSignal) => registry.closeOwner(`execution:${id}`, signal))
@@ -230,21 +233,28 @@ export async function recoverEnteredLaunch(
       expect(await next.engine.cancel(t.f.run.id)).toBe(true)
     } else await next.engine.start(t.f.run.id)
     const run = await next.runs.get(t.f.run.id)
-    expect(run).toMatchObject({ executionState: 'completed', outcome: finish === 'stop' ? 'canceled' : 'failed' })
+    expect(run).toMatchObject({ executionState: 'completed', outcome: finish === 'stop' ? 'canceled' : 'succeeded' })
     expect(await next.runs.hasPendingCleanup(t.f.run.id)).toBe(false)
-    const recovered = await next.runs.getExecution(original.id)
-    expect(recovered).toMatchObject({ id: original.id, attempt: 1, input: original.input,
-      agentConfigurationVersionId: original.agentConfigurationVersionId,
-      workflowNodeId: original.workflowNodeId, runtimeDirectory: original.runtimeDirectory,
-      state: 'completed', result: { outcome: finish === 'stop' ? 'canceled' : 'failed' } })
-    expect((await t.db.pool.query('select generation from execution_native_recoveries where execution_id=$1', [cut])).rows).toHaveLength(1)
-    expect(await effects(t, 'execution.launch')).toEqual(launchReceipts)
-    expect(await occurrenceCount(t)).toBe(occurrences)
-    expect(t.provider.counts).toEqual({ sessions: 0, starts: 0, responses: 0, attaches: 0 })
+    // Stop cancels the undispatched attempt; otherwise recovery abandons it with its cause
+    // after closing its original registry reservation. Nothing was replayed.
+    expect(await next.runs.getExecution(original.id)).toMatchObject({ id: original.id, attempt: 1,
+      input: original.input, state: 'completed', result: finish === 'stop' ? { outcome: 'canceled' }
+        : { outcome: 'failed', error: { code: 'EXECUTION_INTERRUPTED', retryable: true } } })
     expect(recover).toHaveBeenCalledTimes(1)
+    const retries = (await executions(t)).filter((item) => item.workflowNodeId === original.workflowNodeId && item.id !== cut)
+    if (finish === 'stop') {
+      expect(retries.every((item) => item.result?.outcome !== 'succeeded')).toBe(true)
+      expect(t.provider.counts.starts).toBe(0)
+    } else {
+      expect(retries).toEqual([expect.objectContaining({ attempt: 2, input: original.input,
+        state: 'completed', result: expect.objectContaining({ outcome: 'succeeded' }) })])
+      expect((await effects(t, 'execution.launch')).length).toBeGreaterThan(launchReceipts.length)
+    }
+    expect(await occurrenceCount(t)).toBeGreaterThanOrEqual(occurrences)
     await next.engine.start(t.f.run.id)
     expect(recover).toHaveBeenCalledTimes(1)
     expect(await next.runs.hasPendingCleanup(t.f.run.id)).toBe(false)
+    expect(await next.runs.get(t.f.run.id)).toEqual(run)
   } finally {
     try { await stopOld() } finally { restore(); await t.close() }
   }
@@ -377,7 +387,8 @@ export async function recoverTerminalBeforeClosure(
     expect((await t.db.pool.query('select interaction_id,state,approval_native_ack_id from interaction_graph_resumes where run_id=$1 order by interaction_id', [t.f.run.id])).rows).toEqual(ackRows)
     expect(await next.runs.hasPendingCleanup(t.f.run.id)).toBe(false)
     expect(physical).toHaveBeenCalledTimes(kind === 'stop' ? 1 : 2)
-    const expectedStarts = kind === 'stop' ? 1 : kind === 'retry' ? 3 : 2
+    // retry: two entry attempts plus the next node; retry-exhausted: every allowed entry attempt.
+    const expectedStarts = kind === 'stop' ? 1 : kind === 'retry' || kind === 'retry-exhausted' ? 3 : 2
     const expectedSessions = kind === 'stop' || kind === 'retry-exhausted' ? 1 : 2
     expect(t.provider.counts).toEqual({ sessions: expectedSessions, starts: expectedStarts,
       responses: kind === 'approval' ? 1 : 0, attaches: 0 })
@@ -389,7 +400,8 @@ export async function recoverTerminalBeforeClosure(
       expect(cancel).not.toHaveBeenCalled()
     }
     const all = await executions(t), attempts = all.filter((item) => item.workflowNodeId === original.workflowNodeId)
-    expect(attempts.map((item) => item.attempt).sort()).toEqual(kind.startsWith('retry') ? [1, 2] : [1])
+    expect(attempts.map((item) => item.attempt).sort())
+      .toEqual(kind === 'retry-exhausted' ? [1, 2, 3] : kind === 'retry' ? [1, 2] : [1])
     if (kind.startsWith('retry')) {
       const retry = attempts.find((item) => item.attempt === 2)!
       expect(retry.nativeSessionId).toBe(original.nativeSessionId)
@@ -401,14 +413,14 @@ export async function recoverTerminalBeforeClosure(
     expect(decisions.map((row) => row.record.reason)).toEqual(
       form === 'repeat' && kind !== 'stop' && kind !== 'retry-exhausted' ? ['early_exit'] : [])
     if (kind === 'retry-exhausted') {
-      expect(all).toHaveLength(2)
+      expect(all).toHaveLength(3)
       expect(all.every((item) => item.result?.outcome === 'failed'
         && item.result.error?.code === 'TRANSIENT_PROVIDER_FAILURE')).toBe(true)
-      // Attempt one requested a retry; only exhausted attempt two resolves
+      // Attempts one and two requested a retry; only exhausted attempt three resolves
       // the node. A negative terminal receipt must exist, but no successful
       // accepted-result row or flag may be created for either failure.
       expect((await terminalReceipts(t)).map((item) => item.executionId))
-        .toEqual([attempts.find((item) => item.attempt === 2)!.id])
+        .toEqual([attempts.find((item) => item.attempt === 3)!.id])
     }
     await assertSuccessfulResults(t, kind === 'stop' ? [] : all.filter((item) => item.result?.outcome === 'succeeded'))
     if (kind.startsWith('retry')) {

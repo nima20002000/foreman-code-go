@@ -17,7 +17,7 @@ import { rejectableDeferred } from './helpers/deferred.js'
 describe.runIf(postgresEnabled)('restart during native startup', () => {
   for (const boundary of ['reservation', 'authorization'] as const) {
     it.each([false, true])(
-      `drains rejected ${boundary} preflight and preserves the Run (disposal fails first=%s)`, async failFirst => {
+      `drains ${boundary} preflight paused across restart and preserves the Run (disposal fails first=%s)`, async failFirst => {
         const runtime = await currentOperatorIntegration({
           fixture: makeCurrentWorkflowFixture(randomUUID(), 'single'),
           approvalNodeIds: [], insertRun: false,
@@ -136,12 +136,13 @@ describe.runIf(postgresEnabled)('restart during native startup', () => {
           await restarting.promise
           const cleanup = await runtime.db.pool.query(
             'select run_id from run_cleanup_intents where run_id=$1 and pending', [started.run.id])
-          expect(cleanup.rows).toEqual([{ run_id: started.run.id }])
+          // Restart defers the in-flight attempt to a fresh attempt; it does not fence the Run.
+          expect(cleanup.rows).toEqual([])
           expect(disposalAttempts).toBe(0)
           release.resolve()
           const shutdownError = await shutdown
-          expect(startupFailure).toMatchObject({ code: boundary === 'reservation'
-            ? 'NATIVE_WORKFLOW_CLOSURE_CONFLICT' : 'RUN_AUTHORIZATION_REVOKED' })
+          // Without a Run fence the preflight passes; the closing owner still starts no native session.
+          expect(startupFailure).toBeUndefined()
           if (failFirst) {
             expect(shutdownError).toBeInstanceOf(AggregateError)
             expect(disposed).toBe(0)

@@ -21,6 +21,7 @@ import type { RunOwnership } from './ownership.js'
 import { visitRepeatNativeAttemptsLocked } from './repeatNativeAttempts.js'
 import { hasWorkflowExecutionCapacityLocked } from './workflowExecutionBudget.js'
 import { assertRestartAttemptsLocked } from './workflowRestartSettlement.js'
+import { EXECUTION_MAX_ATTEMPTS, isTransientExecutionResult } from './executionRetryPolicy.js'
 import type { ApprovalPostgresSaver } from '../../infrastructure/approvalCheckpointSaver.js'
 import { lockInteraction } from '../interactions/wave25/context.js'
 import { assertSavedPendingApprovalOriginalLocked } from '../interactions/nativeApprovalProof.js'
@@ -81,9 +82,9 @@ export function createWorkflowRepositoryServices(captures: WorkflowNativeVerific
   return { services, native }
 }
 
-/** Only a failed ORIGINAL native terminal can use the pinned technical policy.
- * The repository has already established exact negative physical settlement.
- * A canceled/invalid result or coordinator disposal is not a retryable result.
+/** A failed attempt retries when its provider marked the failure retryable or
+ * the shared policy classifies its cause as infrastructure. The repository has
+ * already settled the attempt. A canceled/invalid result is not retryable.
  * A retry keeps the same slot, business occurrence and byte-identical input. */
 export async function allowTechnicalRetryLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
   version: WorkflowVersionV3, supplied: HarnessExecution): Promise<boolean> {
@@ -99,8 +100,10 @@ export async function allowTechnicalRetryLocked(sql: GraphTransactionSql, run: A
     // A technical retry consumes the shared Run execution budget and may
     // replace one failed attempt at most; it never creates an occurrence.
     const budget = version.definition.executionPolicy?.maxNodeExecutions
-    if (!budget || execution.attempt >= 2) return false
+    if (!budget || execution.attempt >= EXECUTION_MAX_ATTEMPTS) return false
     if (!await hasWorkflowExecutionCapacityLocked(sql, run.id, version)) return false
+    // An abandoned attempt carries its recorded infrastructure cause, not a provider terminal.
+    if (isTransientExecutionResult(execution.result)) return true
     // A result-bearing source receipt, not a terminal enum, distinguishes a real
     // provider failure from Stop/disposal/first-result validation failure.
     const row = (await sql.query<{ record: WorkflowNativeProofRecord; source_digest: string }>(`select p.record,p.source_digest from workflow_native_proofs p

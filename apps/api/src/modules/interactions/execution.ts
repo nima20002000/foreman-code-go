@@ -44,6 +44,7 @@ import { deviceRequestTimeoutMs } from '../devices/deviceRequestRetry.js'
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
 import { isTransientRefreshFailure, maintainCredential } from '../harnesses/credentialHeartbeat.js'
 import { componentLogger } from '../diagnostics/logger.js'
+import { isTransientExecutionError, transientExecutionFailure } from '../runs/executionRetryPolicy.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import { capturedWorkflowNativeTime, type WorkflowNativeCapturePort, type WorkflowOriginalNativeSource } from './workflowNativeCapture.js'
@@ -68,7 +69,6 @@ import { assertSavedPendingApprovalOriginalLocked } from './nativeApprovalProof.
 import { openWorkflowLifecycleLocked } from '../runs/repeatLifecycle.js'
 import { workflowExecutionRequest } from '../runs/workflowExecutionRequest.js'
 import { repeatTickIndex } from '../runs/repeatResolution.js'
-import { recordWorkflowExecutionFailure } from '../runs/workflowLifecycle.js'
 import { readRecoverableRemoteReviewer, readRetainedRemoteReviewer,
   retainRemoteReviewerCredential } from './retainedRemoteReviewer.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
@@ -105,6 +105,8 @@ interface OwnedNativeSession {
   failed?: boolean
   session?: NativeSessionReference
   starting?: Promise<void>
+  /** Restart stopped waiting for this startup; it is still in flight. */
+  startupPending?: boolean
   opening?: Promise<NativeSessionReference>
   openingFailed?: boolean
   preparing?: Promise<IssuedWorkerCredential['environment'] | undefined>
@@ -1417,6 +1419,7 @@ export class ApprovalExecutionCoordinator {
     const failures: Error[] = []
     await attemptCleanup(failures, 'Await original workflow startup', async () => { await starting })
     owner.assertOwned()
+    owned.startupPending = failures.length > 0
     if (failures.length) {
       componentLogger('engine').warn({ executionId: owned.execution.id },
         'Workflow startup wait timed out; checking the published session for restart preservation')
@@ -1432,12 +1435,26 @@ export class ApprovalExecutionCoordinator {
     if (snapshot.stopRequested || snapshot.cleanupPending || snapshot.run.executionState === 'completed') return false
     const active: OwnedNativeSession[] = []
     const executionsToPreserve: HarnessExecution[] = []
+    // An attempt that cannot survive the restart is abandoned alone; its node retries after
+    // restart. An attempt waiting for an approval keeps the Run-level restart cleanup.
+    let unpreservedWait = false, retried = 0
+    const abandon = async (execution: HarnessExecution, resident?: OwnedNativeSession) => {
+      if (execution.state === 'waiting') { unpreservedWait = true; return }
+      retried++
+      // A startup still in flight cannot be closed here without waiting on it: restart
+      // closure disposes its manager and recovery after restart abandons the attempt.
+      if (resident && (resident.opening || resident.preparing || resident.startupPending || !resident.session)) return
+      await this.restartInterrupted(owner, execution,
+        'The application restarted before this attempt produced an accepted result.')
+    }
     for await (const executions of this.runs.executionPages(owner.runId, owner)) {
       for (const execution of executions) {
         const owned = this.ownedSessions.get(execution.id)
         if (owned && !await this.awaitWorkflowStartup(owned, owner)) {
-          if (repeatTickIndex(execution.input) === undefined) return false
-          await this.failIntervalCheck(owner, execution)
+          // Startup is still settling: restart closure disposes its manager and recovery
+          // after restart abandons the attempt, so its node retries it.
+          if (execution.state === 'waiting') unpreservedWait = true
+          else retried++
           continue
         }
         owner.assertOwned()
@@ -1453,31 +1470,30 @@ export class ApprovalExecutionCoordinator {
         if (current.state === 'completed' || current.state === 'queued') continue
         if (repeatTickIndex(current.input) !== undefined
           && !await this.preserveIntervalCheckForRestart(owner, current, owned)) continue
-        if (!current.nativeSessionId) return false
+        if (!current.nativeSessionId) { await abandon(current, owned); continue }
         if (!owned) {
-          if (!['running', 'waiting'].includes(current.state)) return false
-          const session = await this.detachedWorkflowSession(owner, current)
-            ?? (await readRemoteWorkflowContinuation(owner, current))?.session
-          if (!session) return false
-          executionsToPreserve.push(current)
+          const session = ['running', 'waiting'].includes(current.state) && (await this.detachedWorkflowSession(owner, current)
+            ?? (await readRemoteWorkflowContinuation(owner, current))?.session)
+          if (session) executionsToPreserve.push(current)
+          else await abandon(current)
           continue
         }
         if (!owned.session || owned.openingFailed || owned.failed || owned.cleanup
-          || owned.session.nativeSessionId !== current.nativeSessionId) return false
+          || owned.session.nativeSessionId !== current.nativeSessionId) { await abandon(current, owned); continue }
         assertSameRepeatExecution(owned.execution, current)
         const recovery = owned.restartRecovery
         const credential = this.managerCredentials.get(owned.manager)
-        if (recovery?.principalId && credential && credential.principalId !== recovery.principalId) return false
+        if (recovery?.principalId && credential && credential.principalId !== recovery.principalId) { await abandon(current, owned); continue }
         const restoring = recovery?.owner === owner && !!(owned.preparing || owned.opening)
           && recovery.attachmentGeneration === owned.closureGeneration
           && isDeepStrictEqual(recovery.session, owned.session)
         if (!restoring && (!owned.closureGeneration || owned.opening
-          || !owned.manager.canDetachForRestart?.(owned.session))) return false
+          || !owned.manager.canDetachForRestart?.(owned.session))) { await abandon(current, owned); continue }
         active.push(owned)
         executionsToPreserve.push(current)
       }
     }
-    if (!executionsToPreserve.length) return false
+    if (unpreservedWait || !executionsToPreserve.length && !retried) return false
     const ready = await this.runs.getRepeatSnapshot(owner.runId, owner)
     if (ready.stopRequested || ready.cleanupPending || ready.run.executionState === 'completed') return false
     owner.assertOwned()
@@ -2136,8 +2152,8 @@ export class ApprovalExecutionCoordinator {
         const resident = this.ownedSessions.get(execution.id)
         if (resident) {
           if (resident.controller.signal.aborted && execution.state !== 'completed') {
-            if (repeatTickIndex(execution.input) !== undefined) {
-              await this.failIntervalCheck(owner, execution)
+            if (execution.state !== 'waiting') {
+              await this.restartInterrupted(owner, execution)
               continue
             }
             await this.runs.requestCleanup(owner.runId, owner)
@@ -2166,8 +2182,10 @@ export class ApprovalExecutionCoordinator {
           && (await this.detachedWorkflowSession(owner, execution)
             ?? (await readRemoteWorkflowContinuation(owner, execution))?.session)) continue
         if (execution.state === 'completed') continue
-        if (repeatTickIndex(execution.input) !== undefined) {
-          await this.failIntervalCheck(owner, execution)
+        // Restart lost this attempt's native lifetime: close it alone and let its node retry.
+        // An attempt waiting for an approval keeps the Run-level recovery path.
+        if (execution.state !== 'waiting') {
+          await this.restartInterrupted(owner, execution)
           continue
         }
         await this.runs.requestCleanup(owner.runId, owner)
@@ -2216,33 +2234,52 @@ export class ApprovalExecutionCoordinator {
   async failIntervalCheck(owner: RunOwnership, execution: HarnessExecution,
     failure: ExecutionResult = { outcome: 'failed', error: {
       code: 'EXECUTION_INTERRUPTED',
-      message: 'The native attempt was closed without an accepted result. It was not resubmitted.',
+      message: 'The native attempt was closed without an accepted result.',
       retryable: false,
     } }): Promise<void> {
+    if (repeatTickIndex(execution.input) === undefined) throw new DomainError(
+      'TICK_NODE_CONFLICT', 'Only an interval check may settle independently of graph work.', 409)
+    await this.abandonAttempt(owner, execution, failure)
+  }
+
+  /** An interval check fails until its next tick; any other attempt is retried by its node. */
+  private restartInterrupted(owner: RunOwnership, execution: HarnessExecution,
+    message = 'The attempt lost its native session before it produced an accepted result.'): Promise<void> {
+    if (repeatTickIndex(execution.input) !== undefined) return this.failIntervalCheck(owner, execution)
+    return this.abandonAttempt(owner, execution, { outcome: 'failed',
+      error: { code: 'EXECUTION_INTERRUPTED', message, retryable: true } })
+  }
+
+  /** Close one attempt for its own recorded cause, without fencing the Run or
+   * touching sibling credentials, budgets or sessions. Closure is best effort:
+   * an unconfirmed close leaves only this attempt's settlement pending. A
+   * retryable cause lets the node start a fresh attempt with the same input. */
+  async abandonAttempt(owner: RunOwnership, execution: HarnessExecution, failure: ExecutionResult): Promise<void> {
     owner.assertOwned()
     const store = await this.runs.repeat(owner)
     const stored = (await store.readExecution(execution.id)).execution
     assertSameRepeatExecution(execution, stored)
-    if (repeatTickIndex(stored.input) === undefined) throw new DomainError(
-      'TICK_NODE_CONFLICT', 'Only an interval check may settle independently of graph work.', 409)
     if (stored.state === 'completed') return
+    componentLogger('harness').warn({ executionId: stored.id, runId: owner.runId, attempt: stored.attempt,
+      code: failure.outcome === 'failed' ? failure.error?.code : undefined }, 'Abandoning one native attempt')
     await this.budgets.ensure(stored.id, owner.runId, this.activeTimeoutMs)
-    await recordWorkflowExecutionFailure(owner, stored.id, failure)
+    await this.runs.recordExecutionFailure(owner, stored.id, failure)
     const resident = this.ownedSessions.get(stored.id)
     if (resident) {
       resident.failed = true
+      resident.controller.abort(new DomainError('EXECUTION_ABANDONED', 'This attempt was abandoned for a fresh attempt.', 409))
       const errors = await this.cleanupSession(resident)
       if (errors.length) {
         await withCleanupDeadline(signal => recoverWorkflowNativeClosure(
           owner, stored, this.recoverNativeProcesses, signal, {
-            purpose: 'interval_check', ...(resident.closureGeneration ? { generation: resident.closureGeneration } : {}),
+            purpose: 'failed_attempt', ...(resident.closureGeneration ? { generation: resident.closureGeneration } : {}),
           }))
         const remaining = await this.cleanupSession(resident)
-        if (remaining.length) throw new AggregateError(remaining, 'Interval check native closure remains unconfirmed.')
+        if (remaining.length) throw new AggregateError(remaining, 'Abandoned attempt native closure remains unconfirmed.')
       }
     } else {
       await withCleanupDeadline(signal => recoverWorkflowNativeClosure(
-        owner, stored, this.recoverNativeProcesses, signal, { purpose: 'interval_check' }))
+        owner, stored, this.recoverNativeProcesses, signal, { purpose: 'failed_attempt' }))
       await this.credentials?.revokeForExecution(stored.id)
     }
     owner.assertOwned()
@@ -2923,9 +2960,9 @@ export class ApprovalExecutionCoordinator {
       observation.ownedSession!.execution = stored
     }
     if (observation.execution.state === 'completed' && (!observation.ownedSession! || this.closedExecutions.has(observation.execution.id))) throw error
-    // A transport error is not an original terminal result and never makes
-    // a technical retry eligible. Fence future work, close the captured
-    // manager, then let the repository prove a negative disposition.
+    // A transient transport error abandons only this attempt so its node can
+    // retry. Any other failure fences the Run, closes the captured manager,
+    // then lets the repository prove a negative disposition.
     if (held) {
       let code = 'NATIVE_EXECUTION_FAILED'
       if (error instanceof HarnessExecutionError) code = error.result.error?.code ?? code
@@ -2943,8 +2980,29 @@ export class ApprovalExecutionCoordinator {
       }
       const persist = <T>(work: () => Promise<T>) =>
         retryDatabaseTimeout(work, { check: () => input.owner.assertOwned() })
+      // A late failure of an attempt that another path abandoned or already settled never affects the Run.
+      const abandoned = observation.signal.reason instanceof DomainError && observation.signal.reason.code === 'EXECUTION_ABANDONED'
+      if (abandoned || !observation.signal.aborted
+        && (await persist(() => repeat.readExecution(observation.execution.id))).execution.state === 'completed') {
+        if (observation.ownedSession && !observation.ownedSession.failed) {
+          observation.ownedSession.failed = true
+          const failures = await this.cleanupSession(observation.ownedSession)
+          if (failures.length) componentLogger('harness').warn({ executionId: observation.execution.id,
+            failures: failures.length }, 'Closing a settled attempt remains unconfirmed')
+        }
+        throw error
+      }
       if (repeatTickIndex(observation.execution.input) !== undefined && !input.signal.aborted) {
         await persist(() => this.failIntervalCheck(input.owner, observation.execution, failure))
+        throw error
+      }
+      if (!observation.signal.aborted && !activeTimeout && observation.execution.state !== 'waiting'
+        && isTransientExecutionError(error)) {
+        // Infrastructure failure: close this attempt alone; its node starts a fresh one.
+        observation.resolved?.markFailed?.()
+        // The stored attempt, not the in-memory copy, which may hold an unpublished session.
+        await persist(async () => this.abandonAttempt(input.owner, (await repeat.readExecution(observation.execution.id)).execution,
+          transientExecutionFailure(error, 'NATIVE_EXECUTION_FAILED')))
         throw error
       }
       await persist(() => this.runs.requestCleanup(observation.execution.runId, input.owner, failure,

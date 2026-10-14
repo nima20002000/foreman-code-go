@@ -300,7 +300,9 @@ export async function hasWorkDirectionWait(owner: RunOwnership): Promise<boolean
 export async function recordWorkflowExecutionFailure(owner: RunOwnership, executionId: string,
   failure: ExecutionResult): Promise<void> {
   const result = ExecutionResultSchema.parse(failure)
-  if (result.outcome !== 'failed' || !result.error || result.error.retryable) return fail('RUN_FAILURE_CAUSE_INVALID')
+  if (result.outcome !== 'failed' || !result.error) return fail('RUN_FAILURE_CAUSE_INVALID')
+  // A retryable cause abandons one attempt so its node can start a fresh one.
+  const abandoned = result.error.retryable === true
   await owner.oneShotConnection().transaction(async sql => {
     const { publication, snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
     await retainOwner(sql, owner)
@@ -310,7 +312,7 @@ export async function recordWorkflowExecutionFailure(owner: RunOwnership, execut
     }
     const stored = await readRepeatExecutionLocked(sql, snapshot, executionId)
     const intervalCheck = repeatTickIndex(stored.execution.input) !== undefined
-    if (!intervalCheck && (!snapshot.version.definition.handoffs || !stored.workActivationId
+    if (!intervalCheck && !abandoned && (!snapshot.version.definition.handoffs || !stored.workActivationId
       || stored.execution.nativeSessionId || !['queued', 'starting'].includes(stored.execution.state))) {
       return fail('RUN_FAILURE_CAUSE_INVALID')
     }
@@ -319,7 +321,8 @@ export async function recordWorkflowExecutionFailure(owner: RunOwnership, execut
       'select failure_result from approval_execution_state where execution_id=$1 for update', [executionId])).rows[0]
     if (!budget) return fail('RUN_FAILURE_CAUSE_INVALID')
     if (budget.failure_result) {
-      if (!intervalCheck && !sameRepeatValue(budget.failure_result, result)) return fail('RUN_FAILURE_CAUSE_INVALID')
+      // The first recorded cause wins.
+      if (!intervalCheck && !abandoned && !sameRepeatValue(budget.failure_result, result)) return fail('RUN_FAILURE_CAUSE_INVALID')
       return
     }
     await lifecycleSource(publication, { kind: 'execution_failure_recorded', executionId, result }, async () => {

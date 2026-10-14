@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { describe, it } from 'vitest'
+import { describe, it, vi } from 'vitest'
 import { AgentConfigurationVersionSchema, DEFAULT_HARNESS_DEFAULTS } from '@foreman-code/contracts'
 import { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import { readWorkflowClosure } from '../src/modules/interactions/workflowClosure.js'
@@ -47,11 +47,15 @@ function fixture(options: Parameters<typeof recoveryDatabase>[0] = {}) {
       if (!recovery.available) return false
       assert.equal(id, db.state.execution.id); assert.equal(db.state.active, false); calls.push('close-processes'); return true
     })
+  // The SQL double cannot run real attempt settlement; record the per-attempt decision instead.
+  vi.spyOn(coordinator, 'abandonAttempt').mockImplementation(async (_owner, execution, failure) => {
+    calls.push(`abandon:${execution.id}:${failure.outcome === 'failed' ? failure.error?.code : failure.outcome}`)
+  })
   return { ...db, calls, runs, snapshot, coordinator, recovery }
 }
 
 describe('ENG06-A cold Run and Stop orchestration', () => {
-  it('fences an interrupted requester before recovering an earlier completed reviewer', async () => {
+  it('abandons an interrupted requester attempt alone before recovering an earlier completed reviewer', async () => {
     const f = fixture()
     f.state.execution = recoveryExecution('completed')
     f.state.fenced = false
@@ -61,11 +65,11 @@ describe('ENG06-A cold Run and Stop orchestration', () => {
     f.state.others.set(requester.id, requester)
     const original = structuredClone(f.state.execution)
     try {
-      assert.equal(await f.coordinator.requestColdRunCleanup(f.owner), true)
-      assert.deepEqual(f.calls, ['request-cleanup'])
+      await f.coordinator.requestColdRunCleanup(f.owner)
+      assert.equal(f.calls[0], 'abandon:interrupted-requester:EXECUTION_INTERRUPTED')
+      assert.ok(!f.calls.includes('request-cleanup'))
       assert.deepEqual(f.state.execution, original)
-      assert.equal(f.snapshot.cleanupPending, true)
-      assert.equal(f.state.proof, undefined)
+      assert.equal(f.snapshot.cleanupPending, false)
     } finally {
       await f.owner.release()
     }
@@ -85,13 +89,13 @@ describe('ENG06-A cold Run and Stop orchestration', () => {
   })
 
   for (const unavailable of ['closed', 'finalized', 'fenced'] as const) {
-    it(`does not recover a running detached turn whose lifetime is ${unavailable}`, async () => {
+    it(`abandons rather than recovers a running detached turn whose lifetime is ${unavailable}`, async () => {
       const f = fixture({ detached: true, closed: unavailable === 'closed' })
       f.state.fenced = unavailable === 'fenced'
       f.state.finalized = unavailable === 'finalized'
       try {
-        assert.equal(await f.coordinator.requestColdRunCleanup(f.owner), true)
-        assert.deepEqual(f.calls, ['request-cleanup'])
+        assert.equal(await f.coordinator.requestColdRunCleanup(f.owner), false)
+        assert.deepEqual(f.calls, [`abandon:${f.state.execution.id}:EXECUTION_INTERRUPTED`])
         assert.equal(f.state.proof, undefined)
       } finally { await f.owner.release() }
     })
@@ -108,8 +112,16 @@ describe('ENG06-A cold Run and Stop orchestration', () => {
     } finally { await f.owner.release() }
   })
 
-  for (const state of ['starting', 'running', 'waiting'] as const) it(`fences a cold ${state} execution before reentry`, async () => {
+  for (const state of ['starting', 'running'] as const) it(`abandons a cold ${state} attempt alone so its node retries`, async () => {
     const f = fixture(); f.state.execution.state = state; f.state.fenced = false
+    assert.equal(await f.coordinator.requestColdRunCleanup(f.owner), false)
+    assert.deepEqual(f.calls, [`abandon:${f.state.execution.id}:EXECUTION_INTERRUPTED`])
+    assert.equal(f.snapshot.cleanupPending, false)
+    await f.owner.release()
+  })
+
+  it('fences a cold waiting execution before reentry', async () => {
+    const f = fixture(); f.state.execution.state = 'waiting'; f.state.fenced = false
     assert.equal(await f.coordinator.requestColdRunCleanup(f.owner), true)
     assert.deepEqual(f.calls, ['request-cleanup']); assert.equal(f.snapshot.cleanupPending, true)
     await f.owner.release()
@@ -225,7 +237,7 @@ describe('ENG06-A cold Run and Stop orchestration', () => {
     delete next.nativeSessionId
     f.state.others.set(next.id, next)
     const pins = structuredClone([f.state.execution.input, next.input])
-    assert.equal(await f.coordinator.requestColdRunCleanup(f.owner), true)
+    await f.runs.requestCleanup()
     await f.coordinator.cancelRun(f.owner.runId, f.owner)
     assert.equal(f.calls.filter((call) => call === 'close-processes').length, 1)
     assert.equal(f.calls.filter((call) => call === 'settle-interrupted').length, 2)

@@ -28,6 +28,7 @@ import type { RepeatRunRepository } from './repeatPostgres.js'
 import { buildWorkHandoffGraph } from './workHandoffGraph.js'
 import { workHandoffNodeAction } from './workHandoffNode.js'
 import { WorkExecutionFailure } from './workExecutionFailure.js'
+import { isTransientExecutionError, transientExecutionFailure } from './executionRetryPolicy.js'
 import { ExecutionLimiter } from './limiter.js'
 import { ZodError } from 'zod'
 import { componentLogger } from '../diagnostics/logger.js'
@@ -48,7 +49,8 @@ export function repeatExecutionDriver(input: {
    * Completed input is per-execution cleanup/reconciliation ONLY. It must never
    * allocate a candidate, directory, credential, session or turn, or call finishRun. */
   observeExact(execution: HarnessExecution, signal: AbortSignal): Promise<void>
-  requestStartCleanup(failure: ExecutionResult): Promise<void>
+  /** Close one attempt for its recorded cause without fencing the Run. */
+  abandonAttempt(executionId: string, failure: ExecutionResult): Promise<void>
   failIntervalCheck?(executionId: string, failure: ExecutionResult): Promise<void>
   reconcileArtifacts?(execution: HarnessExecution, signal: AbortSignal): Promise<void>
 }): RepeatExecutionDriver {
@@ -122,18 +124,15 @@ export function repeatExecutionDriver(input: {
               await finalize((await input.store.readExecution(execution.id)).execution)
               return
             }
-            const startFailed = !(error instanceof DomainError) || isDatabaseTimeout(error)
-              || error instanceof DomainError && error.code === 'NATIVE_SESSION_START_UNCERTAIN'
-            if (startFailed && !terminal.execution.nativeSessionId
+            // A start that failed for an infrastructure cause (including an
+            // uncertain dispatch) abandons this attempt; the node starts a fresh one.
+            if (isTransientExecutionError(error) && !terminal.execution.nativeSessionId
               && ['queued', 'starting'].includes(terminal.execution.state)) {
-              const failure = new DomainError('EXECUTION_START_INTERRUPTED',
-                'Execution startup failed before a native session was saved.', 409)
-              failure.cause = error
-              await retryDatabaseTimeout(() => input.requestStartCleanup({ outcome: 'failed',
-                error: { code: failure.code, message: failure.message, retryable: false } }), {
+              await retryDatabaseTimeout(() => input.abandonAttempt(execution.id, transientExecutionFailure(error)), {
                 signal, check: () => input.owner.assertOwned(),
               })
-              throw failure
+              await finalize((await input.store.readExecution(execution.id)).execution)
+              return
             }
             throw error
           }
@@ -280,7 +279,7 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
         throw new DomainError('REPEAT_EXECUTION_INPUT_CONFLICT', 'Recovery cannot replace the accepted occurrence directories.', 409)
       }
       if (!claimed && !execution.nativeSessionId) throw new DomainError('NATIVE_SESSION_START_UNCERTAIN',
-        'Dispatch may have occurred. No second native session or turn was started.', 409)
+        'Dispatch may have occurred; this attempt is abandoned and its node starts a fresh attempt.', 409)
       await validate()
       await store.assertExecutionAdmission(execution.id)
       check()

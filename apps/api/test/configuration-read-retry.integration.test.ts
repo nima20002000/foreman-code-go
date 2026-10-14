@@ -105,30 +105,35 @@ describe.skipIf(!postgresEnabled)('configuration reads before native launch', ()
     }
   }, 60_000)
 
-  it('retains cleanup rather than resubmitting after an uncertain native creation', async () => {
+  it('retries an uncertain native creation in a fresh attempt and completes the Run', async () => {
     const f = await currentOperatorIntegration({ approvalNodeIds: [] })
     const create = f.provider.createSession.bind(f.provider)
+    let uncertain = true
     vi.spyOn(f.provider, 'createSession').mockImplementation(async input => {
-      await create(input)
+      const session = await create(input)
+      if (!uncertain) return session
+      uncertain = false
       throw new Error('Connection terminated due to connection timeout')
     })
-    let observedFailure: unknown
-    const drive = async () => {
-      try { await f.engine.start(f.f.run.id) }
-      catch (error) { observedFailure = error }
-    }
     try {
-      await drive()
-      const cleanup = (await f.db.pool.query<{ failure_result: unknown }>(
-        'select failure_result from run_cleanup_intents where run_id=$1', [f.f.run.id])).rows[0]
-      expect(cleanup?.failure_result).toMatchObject({ outcome: 'failed',
-        error: { code: 'EXECUTION_START_INTERRUPTED', retryable: false } })
-      expect(f.provider.counts.sessions).toBe(1)
-      expect(f.provider.counts.starts).toBe(0)
-      await drive()
-      expect(f.provider.counts.sessions).toBe(1)
-      expect(observedFailure || (await f.runs.get(f.f.run.id))?.outcome === 'failed').toBeTruthy()
-    } finally { await f.close() }
+      await f.engine.start(f.f.run.id)
+      const scope = { workspaceId: f.f.run.workspaceId, runId: f.f.run.id }
+      const details = decodeMcpToolResult(await f.client.callTool({
+        name: 'run_get', arguments: { ...scope, detail: 'full' },
+      })) as { run: { outcome: string }; executions: Array<{ workflowNodeId: string; attempt: number; result?: unknown }> }
+      expect(details.run.outcome).toBe('succeeded')
+      const entry = details.executions.filter(item => item.workflowNodeId === f.f.version.entryNodeId)
+        .sort((a, b) => a.attempt - b.attempt)
+      expect(entry.map(item => item.attempt)).toEqual([1, 2])
+      expect(entry[0]!.result).toMatchObject({ outcome: 'failed',
+        error: { code: 'EXECUTION_START_INTERRUPTED', retryable: true } })
+      expect(entry[1]!.result).toMatchObject({ outcome: 'succeeded' })
+      const cleanup = await f.db.pool.query('select 1 from run_cleanup_intents where run_id=$1 and failure_result is not null',
+        [f.f.run.id])
+      expect(cleanup.rowCount).toBe(0)
+    } finally {
+      await f.close()
+    }
   }, 60_000)
 
 })
