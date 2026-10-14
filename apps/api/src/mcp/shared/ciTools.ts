@@ -36,7 +36,8 @@ export const CI_TOOL_DESCRIPTIONS = {
     + 'skipped) adds structured test results, each failure with its message and path:line:column. A background dispatcher '
     + 'refreshes state about every second; ci_get never waits. A part fails after 180 seconds without output or after '
     + 'max(3 \u00d7 expectedDurationMs, 120 seconds); a cloud part that fails before its first test is retried once on another '
-    + 'slot (setupRetry). Agents with ci_get read every ticket of their workspace.',
+    + 'slot (setupRetry). A failed ticket adds failureHistory: how many of the latest gate runs that ran each failed '
+    + 'test also failed it, so a known flake is recognized. Agents with ci_get read every ticket of their workspace.',
   ci_computers_list: 'List the computers CI can use: readiness and its reasons (GitHub login, git, corepack, user '
     + 'systemd), used and total CI slots, available memory, running tickets, and up to 500 queued tickets with priority, '
     + 'queue position and reason (queueTruncated reports more). Read participation and priority with build_computer_get.',

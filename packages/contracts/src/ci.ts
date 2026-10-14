@@ -72,6 +72,10 @@ export const CiGetInputSchema = CiTicketInputSchema.extend({
   testStatus: CiTestStatusFilterSchema.optional().describe('Include the ticket’s structured test results, limited to '
     + 'tests with these statuses (passed, failed, skipped). tests is null until a finished unit or integration run reports them.'),
 }).strict()
+export const CI_FAILURE_HISTORY_LIMITS = { entries: 50, runs: 20, days: 14 } as const
+export const CiFailureHistorySchema = z.object({ file: z.string().min(1), test: z.string().min(1).nullable(),
+  failedRuns: z.number().int().nonnegative(), runs: z.number().int().nonnegative() }).strict()
+export type CiFailureHistory = z.infer<typeof CiFailureHistorySchema>
 export const OperatorCiGetInputSchema = CiGetInputSchema.extend({ workspaceId: IdSchema }).strict()
 export const CiGetOutputSchema = z.object({
   run: CiRunRecordSchema,
@@ -80,6 +84,10 @@ export const CiGetOutputSchema = z.object({
   queue: z.object({ position: z.number().int().positive(), reason: z.string() }).strict().nullable().optional(),
   group: z.object({ groupId: CiRunRecordSchema.shape.groupId, state: CiRunRecordSchema.shape.state }).strict().optional(),
   tests: CiTestResultsSchema.nullable().optional(),
+  /** For a failed ticket: how often each failed test (or a failed file without failed tests, test null) failed in
+   * recent gate runs that ran its file, so a known flake is recognized instead of root-caused again. It never changes
+   * the ticket's result. */
+  failureHistory: z.array(CiFailureHistorySchema).max(CI_FAILURE_HISTORY_LIMITS.entries).optional(),
   gate: z.object({
     computers: z.array(z.object({ key: z.string(), ticketIds: z.array(IdSchema),
       expectedDurationMs: z.number().nonnegative(), actualDurationMs: z.number().nonnegative().nullable() }).strict()),

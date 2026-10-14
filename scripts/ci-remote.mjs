@@ -138,11 +138,16 @@ export async function awaitTickets(call, workspaceId, tickets,
     if (runs.every(run => !['queued', 'starting', 'running'].includes(run.state))) {
       for (const run of runs.filter(value => value.state !== 'passed')) {
         const log = await call('ci_logs_read', { workspaceId, ticketId: run.id, maxBytes: 65_536 }).catch(() => ({ text: '' }))
-        const tests = await call('ci_get', { workspaceId, ticketId: run.id, testStatus: ['failed'] })
-          .then(value => value.tests?.files ?? [], () => [])
+        const read = await call('ci_get', { workspaceId, ticketId: run.id, testStatus: ['failed'] }).catch(() => ({}))
+        const tests = read.tests?.files ?? []
+        const history = new Map((read.failureHistory ?? []).map(entry => [`${entry.file}\0${entry.test}`, entry]))
+        const flaky = (file, test) => {
+          const entry = history.get(`${file}\0${test}`)
+          return entry?.runs ? ` (failed ${entry.failedRuns} of the last ${entry.runs} gate runs)` : ''
+        }
         const lines = log.text.split('\n').filter(line => /FAIL|failed files|hung files|error TS|  error  |Error:|×|AssertionError/.test(line))
         console.log(`\n[ci] ${run.suite} ${partName(run)} ${run.state} (ticket ${run.id})${run.message ? `: ${run.message}` : ''}`)
-        for (const file of tests) for (const test of file.tests) console.log(`[ci] failed test ${file.file} > ${test.name}`)
+        for (const file of tests) for (const test of file.tests) console.log(`[ci] failed test ${file.file} > ${test.name}${flaky(file.file, test.name)}`)
         console.log(lines.slice(-60).join('\n') || log.text.slice(-4000))
       }
       return runs

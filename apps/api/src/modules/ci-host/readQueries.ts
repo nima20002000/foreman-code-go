@@ -1,6 +1,6 @@
 import type pg from 'pg'
-import { CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiListOutputSchema, CiRunRecordSchema,
-  type CiListOutput, type CiRunRecord, type CiTestResults, type CiTestStatus,
+import { CI_FAILURE_HISTORY_LIMITS, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiListOutputSchema, CiRunRecordSchema,
+  type CiFailureHistory, type CiListOutput, type CiRunRecord, type CiTestResults, type CiTestStatus,
   type OperatorCiListInput } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
@@ -69,8 +69,32 @@ export class HostCiReads {
         queue: position ? { position, reason: ciQueueReason(run) } : null,
         group: { groupId: run.groupId, state: ciGroupState(group) },
         ...(run.gate ? { gate: ciGateReport(group) } : {}),
-        ...(input.testStatus ? { tests: await this.testResults(run.id, scope.workspaceId, input.testStatus) } : {}) }
+        ...(input.testStatus ? { tests: await this.testResults(run.id, scope.workspaceId, input.testStatus) } : {}),
+        ...(run.state === 'failed' ? { failureHistory: await this.failureHistory(run.id, scope.workspaceId) } : {}) }
     })
+  }
+
+  /** How often each failed test of the ticket failed in the latest gate runs that ran its file. */
+  private async failureHistory(id: string, workspaceId: string): Promise<CiFailureHistory[]> {
+    const failed = (await this.testResults(id, workspaceId, ['failed']))?.files ?? []
+    const entries: CiFailureHistory[] = []
+    for (const file of failed.slice(0, 10)) {
+      const rows = (await this.pool.query<{ status: string; tests: { name: string; status: string }[] }>(
+        `select f->>'status' as status,f->'tests' as tests from ci_runs r
+          cross join lateral jsonb_array_elements(r.test_results->'files') f
+          where r.workspace_id=$1 and r.id<>$2 and r.record->>'gate'='true' and r.state in ('passed','failed')
+            and r.created_at > now() - make_interval(days => $4) and f->>'file'=$3
+          order by r.created_at desc limit $5`,
+        [workspaceId, id, file.file, CI_FAILURE_HISTORY_LIMITS.days, CI_FAILURE_HISTORY_LIMITS.runs])).rows
+      const names = file.tests.length ? file.tests.map(test => test.name) : [null]
+      for (const name of names) {
+        const seen = name === null ? rows : rows.filter(row => row.tests.some(test => test.name === name))
+        const failedRuns = name === null ? seen.filter(row => row.status === 'failed').length
+          : seen.filter(row => row.tests.some(test => test.name === name && test.status === 'failed')).length
+        entries.push({ file: file.file, test: name, failedRuns, runs: seen.length })
+      }
+    }
+    return entries.slice(0, CI_FAILURE_HISTORY_LIMITS.entries)
   }
 
   /** The ticket's structured test results, limited to the given statuses; null until a finished test run reports them. */
