@@ -21,7 +21,6 @@ import {
   type MaintenanceTaskStart, type SyncedMarketplace, type SyncedMcpServer,
   type WorkerUpdateStatus,
 } from '@foreman-code/contracts/computer-maintenance'
-import { fallbackOnError } from '../diagnostics/ignoredError.js'
 
 export type { MaintenancePorts }
 
@@ -657,8 +656,9 @@ export class ComputerMaintenance {
     const binary = await this.ports.find(harness)
     if (!binary) return undefined
     const result = await this.ports.run(binary, ['--version'], { signal, timeoutMs: 15_000 })
-      .catch(fallbackOnError(null, 'lifecycle', 'read harness version', { harness }))
-    return result?.code === 0 ? versionOf(result.stdout) : null
+    const version = result.code === 0 ? versionOf(result.stdout) : null
+    if (!version) throw new Error(`${harness} version inspection failed (exit ${result.code}).`)
+    return version
   }
 
   private latestVersions(signal: AbortSignal) {
@@ -668,8 +668,9 @@ export class ComputerMaintenance {
       if (!npm) return {}
       const entries = await Promise.all((['codex', 'claude'] as const).map(async harness => {
         const result = await this.ports.run(npm, ['view', PACKAGES[harness], 'version'], { signal, timeoutMs: 20_000 })
-          .catch(fallbackOnError(null, 'lifecycle', 'read latest harness version', { harness }))
-        return [harness, result?.code === 0 ? result.stdout.trim() || null : null] as const
+        const version = result.code === 0 ? versionOf(result.stdout.trim()) : null
+        if (!version) throw new Error(`Latest ${harness} version inspection failed (exit ${result.code}).`)
+        return [harness, version] as const
       }))
       return Object.fromEntries(entries)
     })()
@@ -683,17 +684,17 @@ export class ComputerMaintenance {
     if (!apt) return null
     const result = await this.ports.run(apt, ['-s', '-o', 'Debug::NoLocking=1', '--with-new-pkgs', 'upgrade'],
       { signal, timeoutMs: 60_000 })
-      .catch(fallbackOnError(null, 'lifecycle', 'read pending package updates'))
-    if (result?.code !== 0) return null
+    if (result.code !== 0) throw new Error(`Package updates inspection failed (exit ${result.code}).`)
     const counts = result.stdout.match(/(\d+) upgraded, (\d+) newly installed, \d+ to remove and (\d+) not upgraded\./u)
-    if (!counts) return null
+    if (!counts) throw new Error('Package updates inspection returned invalid output.')
     return { pending: Number(counts[1]) + Number(counts[3]), installable: Number(counts[1]) + Number(counts[2]) }
   }
 
   private async sudo(signal: AbortSignal): Promise<boolean> {
     const result = await this.ports.run('sudo', ['-n', 'true'], { signal, timeoutMs: 10_000 })
-      .catch(fallbackOnError(null, 'lifecycle', 'check sudo availability'))
-    return result?.code === 0
+    if (result.code === 0) return true
+    if (result.code === 1 && /a password is required|not allowed to execute|not in the sudoers/iu.test(result.stderr)) return false
+    throw new Error(`Sudo inspection failed (exit ${result.code}).`)
   }
 
   private async requireSudo(signal: AbortSignal) {
@@ -776,7 +777,13 @@ export function systemMaintenancePorts(environment: NodeJS.ProcessEnv = process.
       return null
     },
     run,
-    exists: async target => { try { await access(target); return true } catch { return false } },
+    exists: async target => {
+      try { await access(target); return true }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+        throw error
+      }
+    },
     readText: async target => {
       try {
         return await readFile(target, 'utf8')
@@ -799,8 +806,8 @@ export function systemMaintenancePorts(environment: NodeJS.ProcessEnv = process.
       }
     },
     disk: async target => {
-      try { const value = await statfs(target); return { freeBytes: value.bavail * value.bsize, totalBytes: value.blocks * value.bsize } }
-      catch { return null }
+      const value = await statfs(target)
+      return { freeBytes: value.bavail * value.bsize, totalBytes: value.blocks * value.bsize }
     },
     later: (fn, ms) => { setTimeout(fn, ms).unref() },
     now: () => new Date(),

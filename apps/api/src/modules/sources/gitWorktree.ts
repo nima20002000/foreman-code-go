@@ -1,4 +1,4 @@
-import { mkdir, open, rename, rm } from 'node:fs/promises'
+import { lstat, mkdir, open, rename, rm } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -166,7 +166,14 @@ export async function fetchRepositoryBranch(ports: GitWorktreePorts, clone: stri
 export async function ensureClone(ports: GitWorktreePorts, repository: string, signal: AbortSignal): Promise<string> {
   assertWorktreeRequest({ repository, branch: 'foreman/source' })
   const clone = ports.cloneDirectory(repository)
-  const exists = await ports.git(['rev-parse', '--git-dir'], { cwd: clone, signal }).then(result => result.code === 0, () => false)
+  const present = await lstat(clone).then(() => true, error => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  })
+  const exists = present && await ports.git(['rev-parse', '--git-dir'], { cwd: clone, signal }).then(result => {
+    if (result.code !== 0) throw gitFailure('SOURCE_WORKTREE_FAILED', 'rev-parse')
+    return true
+  })
   if (exists) return clone
   await mkdir(join(clone, '..'), { recursive: true, mode: 0o700 })
   const staging = `${clone}-${randomUUID()}`

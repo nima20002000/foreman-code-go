@@ -59,11 +59,17 @@ export async function hostFacts(home, storagePaths = []) {
   const os = await readFile('/etc/os-release', 'utf8');
   const values = Object.fromEntries(os.split('\n').filter((line) => /^[A-Z_]+=/.test(line)).map((line) => { const i = line.indexOf('='); return [line.slice(0, i), line.slice(i + 1).replace(/^"|"$/g, '')]; }));
   const mounts = await readFile('/proc/self/mountinfo', 'utf8');
-  const [homePersistent, ...storagePersistent] = await Promise.all([home, ...storagePaths].map(async (path) => {
+  const inspectionErrors = [];
+  const [homePersistent, ...storagePersistent] = await Promise.all([home, ...storagePaths].map(async (path, index) => {
     try { return persistentFilesystems(mounts, await physicalStoragePath(path)).homePersistent; }
-    catch { return false; }
+    catch (error) {
+      const lastError = typeof error.code === 'string' ? error.code : 'STORAGE_INSPECTION_FAILED';
+      inspectionErrors.push({ operation: index === 0 ? 'home storage' : 'state storage', lastError, failureCount: 1 });
+      console.warn(JSON.stringify({ operation: 'inspect storage persistence', lastError, failureCount: 1 }));
+      return false;
+    }
   }));
-  return { os: values.ID, osRelease: values.VERSION_ID, arch: process.arch, libc: processLibc(), node: process.version, ...persistentFilesystems(mounts, '/'), homePersistent, storagePersistent: storagePersistent.every(Boolean) };
+  return { os: values.ID, osRelease: values.VERSION_ID, arch: process.arch, libc: processLibc(), node: process.version, ...persistentFilesystems(mounts, '/'), homePersistent, storagePersistent: storagePersistent.every(Boolean), inspectionErrors };
 }
 
 export async function requirePrivateDirectory(path) {
@@ -72,12 +78,16 @@ export async function requirePrivateDirectory(path) {
 }
 
 export function executableAvailability(path) {
-  return Object.fromEntries(['node', 'git', 'codex', 'claude', 'systemctl'].map((name) => [name, path.split(':').filter((p) => p.startsWith('/')).some((p) => { try { accessSync(join(p, name), constants.X_OK); return true; } catch { return false; } })]));
+  return Object.fromEntries(['node', 'git', 'codex', 'claude', 'systemctl'].map((name) => [name, path.split(':').filter((p) => p.startsWith('/')).some((p) => {
+    try { accessSync(join(p, name), constants.X_OK); return true; }
+    catch (error) { if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false; throw error; }
+  })]));
 }
 
 // Explicit projection: errors, credentials, process arguments and arbitrary metadata never cross this boundary.
 export function doctorReport({ facts, identity, connection, service, executables, errors = [] }) {
   return {
+    inspectionErrors: facts.inspectionErrors ?? [],
     versions: { os: facts.os, osRelease: facts.osRelease, arch: facts.arch, libc: facts.libc, node: facts.node,
       app: /^\d+\.\d+\.\d+$/.test(facts.appVersion) ? facts.appVersion : null,
       protocol: Number.isSafeInteger(facts.protocolVersion) ? facts.protocolVersion : null,

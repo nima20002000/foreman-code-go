@@ -87,7 +87,13 @@ async function prepareRuntime({ repository, commit, installer, review, keepImage
     return result.stdout
   }
   if ((await runCiRuntimeCommand('git', ['-C', repository, 'cat-file', '-e', `${commit}^{commit}`],
-    { env, signal }).then(() => true, () => false)) === false) {
+    { env, signal }).then(() => true, (error: unknown) => {
+      signal?.throwIfAborted()
+      const failure = error as { code?: unknown; stderr?: unknown }
+      if (failure.code === 128 && typeof failure.stderr === 'string'
+        && /^fatal: Not a valid object name [a-f0-9]+\^\{commit\}\s*$/u.test(failure.stderr)) return false
+      throw error
+    })) === false) {
     await sh('git', ['-C', repository, 'fetch', '--no-tags', 'origin', commit])
   }
   stage('reclaim-interrupted-preparation')

@@ -85,7 +85,11 @@ export async function withProductionSourceSnapshot(repository, directory, action
   const { stdout } = await git(['rev-parse', 'HEAD'])
   const commit = stdout.trim()
   const { stdout: origin } = await git(['remote', 'get-url', 'origin'])
-  const reusable = await git(['rev-parse', '--git-dir'], source).then(() => true, () => false)
+  const present = await lstat(source).then(() => true, error => {
+    if (error.code === 'ENOENT') return false
+    throw error
+  })
+  const reusable = present && await git(['rev-parse', '--git-dir'], source).then(() => true)
   if (!reusable) {
     await rm(source, { recursive: true, force: true })
     await git(['clone', '--quiet', '--shared', '--no-checkout', repository, source])

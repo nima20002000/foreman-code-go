@@ -85,7 +85,10 @@ export async function publishWorkerArtifactsToGitHub({ repository, name: knownNa
     for (let attempt = 0; ; attempt++) {
       try {
         const exists = await run('gh', ['release', 'view', tag, '--repo', name], { cwd: repository ?? directory })
-          .then(() => true, () => false)
+          .then(() => true, error => {
+            if (/HTTP 404|release not found/iu.test(`${error.message ?? ''} ${error.stderr ?? ''}`)) return false
+            throw error
+          })
         if (!exists) {
           await run('gh', ['release', 'create', tag, '--repo', name, '--prerelease',
             '--title', `Worker ${commit.slice(0, 12)}`,
@@ -96,7 +99,10 @@ export async function publishWorkerArtifactsToGitHub({ repository, name: knownNa
         return { repository: name, tag }
       } catch (error) {
         // GitHub can briefly hide a release after creation, including from asset uploads.
-        if (attempt === backoff.length) throw error
+        const reason = `${error.message ?? ''} ${error.stderr ?? ''}`
+        if (attempt === backoff.length || !/HTTP (?:404|429|5\d\d)|release not found|ECONNRESET|ETIMEDOUT|timed out/iu.test(reason)) throw error
+        console.warn(JSON.stringify({ operation: 'publish Worker release', attempt: attempt + 1,
+          nextRetryMs: backoff[attempt], lastError: 'GITHUB_RELEASE_TEMPORARILY_UNAVAILABLE' }))
         await wait(backoff[attempt])
       }
     }

@@ -63,8 +63,8 @@ delegate_cgroup() {
 }
 
 ready() {
-  [ -d "$state" ] || return 0
-  [ -f "$state/$1.log" ] || return 0
+  [ "${CI_PREREQUISITES_UNTRACKED:-0}" != 1 ] || return 0
+  [ -d "$state" ] && [ -f "$state/$1.log" ] || { echo "Prerequisite $1 startup status is missing" >&2; exit 1; }
   until [ -f "$state/$1.exit" ]; do sleep 0.5; done
   [ "$(cat "$state/$1.exit")" = 0 ] || { cat "$state/$1.log"; echo "$1 failed to start"; exit 1; }
 }

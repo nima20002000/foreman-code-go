@@ -226,7 +226,6 @@ export class HostCiRunner {
   private async github(): Promise<{ ready: boolean; reason: string | null }> {
     if (this.githubChecked?.ready && Date.now() - this.githubChecked.at < 300_000) return this.githubChecked
     const result = await this.ports.run('gh', ['auth', 'status', '--hostname', 'github.com'], { env: this.environment, timeoutMs: 15_000 })
-      .catch(() => ({ code: 127, stdout: '', stderr: '' }))
     const ready = result.code === 0
     this.githubChecked = { at: Date.now(), ready,
       reason: ready ? null : 'Log in to GitHub on this computer (gh auth login, or computer_github_login_start).' }

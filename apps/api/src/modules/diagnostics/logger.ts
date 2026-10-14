@@ -5,6 +5,8 @@ import { runtimeTimingChannel, type RuntimeTimingRecord } from './runtimeTiming.
 import type { LogComponent } from './logComponent.js'
 export type { LogComponent } from './logComponent.js'
 import pino, { type Level, type Logger, type LevelWithSilent } from 'pino'
+import { recordOperationalFailure } from './operationalFailures.js'
+export { readOperationalFailures } from './operationalFailures.js'
 
 // Secrets and model content never reach a log line, wherever they sit in a logged object.
 const REDACTED_KEYS = ['authorization', 'cookie', 'set-cookie', 'token', 'accessToken', 'refreshToken', 'apiKey', 'api_key',
@@ -47,7 +49,17 @@ export const logger: Logger = pino({
   serializers: { err: serializeError, error: serializeError },
 }, streams)
 
-export const componentLogger = (component: LogComponent): Logger => logger.child({ component })
+export const componentLogger = (component: LogComponent): Logger => {
+  const child = logger.child({ component })
+  const warn = child.warn.bind(child)
+  child.warn = ((...args: unknown[]) => {
+    const fields = args[0] && typeof args[0] === 'object' ? args[0] as Record<string, unknown> : {}
+    const operation = typeof fields.operation === 'string' ? fields.operation : `${component} background operation`
+    recordOperationalFailure(component, operation, fields.err ?? fields.error)
+    Reflect.apply(warn, child, args)
+  }) as Logger['warn']
+  return child
+}
 
 if (logger.isLevelEnabled('debug')) {
   runtimeTimingChannel.subscribe((message) => {

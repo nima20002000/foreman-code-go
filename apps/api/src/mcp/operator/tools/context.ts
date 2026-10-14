@@ -15,6 +15,7 @@ import { hasAction, isAuthorized } from '../../../modules/access/policy.js'
 import { defineOperatorTool, toolAvailable, toolRequirements, type OperatorToolDefinition } from '../definition.js'
 import type { OperatorRequestContext } from '../types.js'
 import { placementCapabilityLimit } from '../../../modules/placement/transports.js'
+import { readOperationalFailures } from '../../../modules/diagnostics/logger.js'
 
 export const OPERATOR_RUNTIME_LIMITS = [
   { feature: 'native_tool_loading', state: 'protected',
@@ -159,6 +160,7 @@ export function operatorCapabilities(context: OperatorRequestContext, input: {
         : limit)
     const tools = [...ordinary.map((tool) => tool.name), ...current.map((operation) => CURRENT_WORKFLOW_TOOLS[operation]), ...graph, ...inspection, ...schedules.map((entry) => entry.name), ...jobs.map((entry) => entry.name), ...ci.map((entry) => entry.name), ...jobRuntime.map((entry) => entry.name)]
     return {endpoint:'/mcp',audience:'operator',protocol:'2026-07-28',tools,
+      operationalFailures: readOperationalFailures(),
       principal:{id:context.principal.id,name:context.principal.name,expiresAt:context.principal.expiresAt},
       grants:context.principal.grants,requestedResource:resource,
       requirements:[...ordinary.map((tool)=>({name:tool.name,actions:toolRequirements(tool).map((item)=>item.action),
