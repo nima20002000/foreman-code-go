@@ -85,6 +85,28 @@ it('shares a CircleCI pipeline read across discovery, status and final collectio
     .toHaveLength(1)
 })
 
+it('refreshes the CircleCI pipeline on the next poll and shares that read with final collection', async () => {
+  const f = await fixture({}, { provider: 'circleci' })
+  const runId = randomUUID()
+  await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site',
+    commit: f.commit, suite: 'lint', scope: 'full' })
+  const calls = vi.spyOn(f.ports, 'run')
+  const read = { operation: 'read', runId, afterOffset: 0, maxBytes: 100 }
+  expect(await f.cloud.handle(read)).toMatchObject({ run: { state: 'running' } })
+  expect(calls.mock.calls.filter(([file, args]) => file === 'circleci' && args[0] === 'run' && args[1] === 'get'))
+    .toHaveLength(1)
+
+  f.advance(4_000)
+  f.circle.runView = { phase: 'ended', outcome: 'succeeded', workflows: [{ jobs: [{ id: 'job-1' }] }] }
+  f.circle.outcome = 'succeeded'
+  expect(await f.cloud.handle(read)).toMatchObject({
+    run: { state: 'passed', collection: 'complete' },
+    text: 'Suite\nall green\n',
+  })
+  expect(calls.mock.calls.filter(([file, args]) => file === 'circleci' && args[0] === 'run' && args[1] === 'get'))
+    .toHaveLength(2)
+})
+
 it.each(['succeeded', 'failed'])('completes and persists CircleCI collection without artifacts: %s', async outcome => {
   const f = await fixture({}, { provider: 'circleci' })
   const runId = randomUUID()
