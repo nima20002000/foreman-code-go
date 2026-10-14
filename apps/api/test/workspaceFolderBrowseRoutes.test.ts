@@ -7,8 +7,8 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { DomainError } from '../src/modules/errors.js'
 import { registerHarnessSettingsRoutes } from '../src/routes/harnessSettings.js'
 
-describe('local human route permissions', () => {
-  it('allows local human browsing and decisions while rejecting bearer approval and foreign origins', async () => {
+describe('harness settings route permissions', () => {
+  it('allows authenticated browsing and MCP decisions while rejecting invalid credentials and foreign origins', async () => {
     const app = Fastify()
     const principal = ManagementPrincipalSchema.parse({
       id: 'owner', name: 'Owner', audience: 'operator',
@@ -41,22 +41,25 @@ describe('local human route permissions', () => {
         { authorization: 'Bearer owner-token' },
         { authorization: 'Bearer owner-token', cookie },
       ]) {
-        expect((await app.inject({ url, headers })).statusCode).toBe(403)
+        expect((await app.inject({ url, headers })).statusCode).toBe(200)
       }
       for (const headers of [{ cookie, authorization: 'Bearer invalid' }, { cookie, authorization: 'invalid' }]) {
         expect((await app.inject({ url, headers })).statusCode).toBe(401)
       }
-      expect(browse).toHaveBeenCalledOnce()
+      expect(browse).toHaveBeenCalledTimes(3)
       const decision = { method: 'POST' as const, url: '/api/management/harnesses/mcp/decision', payload: { planId, approve: false } }
       expect((await app.inject({ ...decision, headers: { cookie, origin } })).statusCode).toBe(200)
       for (const headers of [
         { cookie, origin: 'https://attacker.invalid' },
-        { cookie, origin, authorization: 'Bearer owner-token' },
       ]) {
         expect((await app.inject({ ...decision, headers })).statusCode).toBe(403)
       }
       expect((await app.inject({ ...decision, headers: { cookie, origin: 'http://localhost:9999' } })).statusCode).toBe(403)
-      expect(decide).toHaveBeenCalledOnce()
+      expect((await app.inject({ ...decision, headers: { authorization: 'Bearer owner-token' } })).statusCode).toBe(200)
+      expect(decide).toHaveBeenCalledTimes(2)
+      const deletion = await app.inject({ method: 'POST', url: '/api/management/harnesses/directories/delete',
+        headers: { authorization: 'Bearer owner-token' }, payload: { paths: ['/selected/folder'], commandId: planId } })
+      expect(deletion.statusCode).toBe(403)
     } finally { await app.close() }
   })
 })

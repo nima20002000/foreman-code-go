@@ -2,7 +2,7 @@ import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { HarnessDirectoryBrowseResultSchema } from '@foreman-code/contracts/management'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
 import { HarnessDirectoryBrowser } from '../src/modules/harnesses/directoryBrowser.js'
@@ -20,7 +20,7 @@ vi.mock('node:fs/promises', async importOriginal => ({
   })(),
 }))
 
-it('returns a partial large-directory listing over authenticated MCP without widening access', async () => {
+it('returns partial large-directory listings over authenticated MCP with grant checks', async () => {
   const database = await agent3Database()
   const directory = await mkdtemp(`${process.env.FOREMAN_CODE_TEST_ROOT}/partial-directory-`)
   await mkdir(join(directory, 'child'))
@@ -57,8 +57,8 @@ it('returns a partial large-directory listing over authenticated MCP without wid
     expect(deniedResult.isError).toBe(true)
     expect(JSON.stringify(deniedResult.content)).toContain('ACCESS_DENIED')
     const outside = await allowed.callTool({ name: 'workspace_folders_list', arguments: { path: join(directory, '..') } })
-    expect(outside.isError).toBe(true)
-    expect(JSON.stringify(outside.content)).toContain('DIRECTORY_OUTSIDE_ROOT')
+    expect(outside.isError).not.toBe(true)
+    expect(HarnessDirectoryBrowseResultSchema.parse(decodeMcpToolResult(outside)).path).toBe(resolve(directory, '..'))
   } finally {
     await Promise.all(clients.map(client => client.close()))
     await app.close()
