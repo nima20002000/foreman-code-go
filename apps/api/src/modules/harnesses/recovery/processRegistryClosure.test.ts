@@ -93,7 +93,11 @@ it('prunes aged closed owner directories while preserving original closure readb
       utimesSync(closed, old, old)
       utimesSync(retired, old, old)
     }
-    const registry = new NativeProcessRegistry(root)
+    // Maintenance is budgeted per construction, so a backlog is archived over several constructions.
+    let registry = new NativeProcessRegistry(root)
+    for (let attempt = 0; attempt < 20 && readdirSync(root).some(name => /^[0-9a-f]{64}$/.test(name)); attempt++) {
+      registry = new NativeProcessRegistry(root)
+    }
     expect(readdirSync(root).filter(name => /^[0-9a-f]{64}$/.test(name))).toHaveLength(0)
     for (const observation of observations) {
       expect(registry.closedRegistration(observation.owner, observation.launchId)).toEqual(observation)
@@ -103,5 +107,46 @@ it('prunes aged closed owner directories while preserving original closure readb
     expect(registry.snapshot().launches).toEqual(expect.arrayContaining(observations))
     expect(await registry.closeOwner('unknown-owner')).toBe(false)
     expect(existsSync(root)).toBe(true)
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
+it('starts with an aged retirement receipt that has no observation and keeps that owner', async () => {
+  const directory = await privateFixtureDirectory('native-retirement-legacy-')
+  const root = privateDirectory(join(directory, 'registry'))
+  const owner = `qualification:${randomUUID()}`
+  const ownerDirectory = privateDirectory(join(root, createHash('sha256').update(owner).digest('hex')))
+  const retired = join(ownerDirectory, 'retired.json')
+  const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)
+  try {
+    writeRecord(retired, { format: 2, owner, id: randomUUID() })
+    utimesSync(retired, old, old)
+    expect(() => new NativeProcessRegistry(root)).not.toThrow()
+    expect(existsSync(retired)).toBe(true)
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
+
+it('archives a large retirement backlog a little per registry construction', async () => {
+  const directory = await privateFixtureDirectory('native-retirement-budget-')
+  const root = privateDirectory(join(directory, 'registry'))
+  const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)
+  const owners = () => readdirSync(root).filter(name => /^[0-9a-f]{64}$/.test(name)).length
+  try {
+    for (let index = 0; index < 6; index++) {
+      const observation = { owner: `execution:${randomUUID()}`, launchId: randomUUID(), bootId: bootIdentity(),
+        lifecycle: 'closed' as const, closureEvidence: 'native_not_started' as const }
+      const ownerDirectory = privateDirectory(join(root, createHash('sha256').update(observation.owner).digest('hex')))
+      const retired = join(ownerDirectory, 'retired.json')
+      writeRecord(retired, { format: 2, owner: observation.owner, id: observation.launchId, observation })
+      utimesSync(retired, old, old)
+    }
+    // Each owner appears to take 60 ms, so one construction archives only part of the backlog.
+    let now = 0
+    vi.spyOn(performance, 'now').mockImplementation(() => (now += 30))
+    new NativeProcessRegistry(root)
+    const remaining = owners()
+    expect(remaining).toBeGreaterThan(0)
+    expect(remaining).toBeLessThan(6)
+    for (let attempt = 0; attempt < 6 && owners(); attempt++) new NativeProcessRegistry(root)
+    expect(owners()).toBe(0)
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })
