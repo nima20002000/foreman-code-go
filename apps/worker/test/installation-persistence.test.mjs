@@ -18,10 +18,13 @@ const facts = {
 };
 const expected = { protocolVersion: 1, identityFormat: 1 };
 
+const bundleFiles = ['src/cli.mjs', 'src/nested/driver.mjs', 'artifacts/runtime/deep/config.json',
+  'dependencies/@scope/runtime/index.mjs'];
+const [entryFile] = bundleFiles;
+
 async function artifact(directory, version) {
   const files = [];
-  for (const path of ['src/cli.mjs', 'src/nested/driver.mjs', 'artifacts/runtime/deep/config.json',
-    'dependencies/@scope/runtime/index.mjs']) {
+  for (const path of bundleFiles) {
     const bytes = `${version}: ${path}\n`;
     await mkdir(dirname(join(directory, path)), { recursive: true, mode: 0o700 });
     await writeFile(join(directory, path), bytes);
@@ -243,7 +246,7 @@ test('an unsuccessful publication preserves obsolete versions for retry', async 
   await assert.rejects(installVersion({ ...f,
     ...await artifact(join(f.directory, 'incoming'), '1.2.0'), updatePolicy: async () => true,
     publishInstallation: async () => { throw fault; } }), fault);
-  assert.equal(await readFile(join(first.directory, 'src/cli.mjs'), 'utf8'), '1.0.0: src/cli.mjs\n');
+  assert.equal(await readFile(join(first.directory, entryFile), 'utf8'), `1.0.0: ${entryFile}\n`);
 });
 
 
@@ -255,7 +258,7 @@ test('supervised updates prune after readiness and leave staged releases intact 
     const staged = await stageRunningVersion({ ...f,
       ...await artifact(join(f.directory, `artifact-${version}`), version),
       assertStateOwnership: () => {}, updatePolicy: async () => true });
-    assert.equal(await readFile(join(staged.directory, 'src/cli.mjs'), 'utf8'), `${version}: src/cli.mjs\n`);
+    assert.equal(await readFile(join(staged.directory, entryFile), 'utf8'), `${version}: ${entryFile}\n`);
     assert.equal((await readInstalledRelease(f)).manifest.version, previous.version);
     const record = { format: 1, manifestSha256: staged.manifestSha256,
       status: { state: 'restarting', targetVersion: version, currentVersion: previous.version,
