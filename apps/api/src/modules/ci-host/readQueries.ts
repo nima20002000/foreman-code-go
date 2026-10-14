@@ -9,7 +9,6 @@ import { CI_GET_ACTIONS, type CiAuthority } from '../jobs/ciAuthority.js'
 import { ciGroupState } from './parts.js'
 import { CI_QUEUE_ORDER, ciQueueReason } from './priority.js'
 import { ciGateReport } from './gateReport.js'
-import { assertCiReadAccess } from './runAccess.js'
 import { RUN_CI_JOBS_SQL, runCiJob, storedCiTestResults, type RunCiJobRow } from './runJobs.js'
 import type { HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
 import { readHostCiLog } from './logRead.js'
@@ -58,7 +57,6 @@ export class HostCiReads {
         [input.ticketId, scope.workspaceId])).rows[0]
       if (!row) throw new DomainError('CI_RUN_NOT_FOUND', 'No such CI run in this workspace.', 404)
       const run = CiRunRecordSchema.parse(row.record)
-      assertCiReadAccess(caller, scope.executionId, run)
       const group = (await this.pool.query<{ record: unknown }>(
         `select record from ci_runs where group_id=$1 and workspace_id=$2
           and record->'initiator'=$3::jsonb
@@ -81,7 +79,6 @@ export class HostCiReads {
     return retryRead(async () => {
       const scope = await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
       const run = await this.host.readRun(input.ticketId, scope.workspaceId)
-      assertCiReadAccess(caller, scope.executionId, run)
       return { ticketId: run.id, tests: await this.testResults(run.id, scope.workspaceId, input.status) }
     })
   }
@@ -93,12 +90,12 @@ export class HostCiReads {
   }
 
   /** Every CI ticket the Run's Agents requested, newest first, with the requesting Agent's node and test counts.
-   * Agents read only their own tickets with ci_get; the Run-wide list is for the app and the Operator. */
+   * Agents read workspace tickets with ci_get; the Run-wide list is for the app and the Operator. */
   async list(caller: ManagementPrincipal,
     input: Omit<OperatorCiListInput, 'workspaceId'> & { workspaceId?: string | undefined }): Promise<CiListOutput> {
     return retryRead(async () => {
       if (caller.audience === 'worker') {
-        throw new DomainError('ACCESS_DENIED', 'Agents read their own CI tickets with ci_get.', 403)
+        throw new DomainError('ACCESS_DENIED', 'Agents read workspace CI tickets with ci_get; ci_list is Operator-only.', 403)
       }
       const scope = await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
       const run = (await this.pool.query<{ workflow_id: string }>('select workflow_id from runs where id=$1 and workspace_id=$2',
@@ -120,7 +117,6 @@ export class HostCiReads {
     return retryRead(async () => {
       const scope = await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
       const run = await this.host.readRun(input.ticketId, scope.workspaceId)
-      assertCiReadAccess(caller, scope.executionId, run)
       const maxBytes = Math.min(input.maxBytes ?? CI_LOG_MAX_BYTES, CI_LOG_MAX_BYTES)
       if (input.group) {
         const group = (await this.pool.query<{ record: unknown }>(

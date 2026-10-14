@@ -16,7 +16,6 @@ import { componentLogger } from '../diagnostics/logger.js'
 import { planCiParts, runsOnCircleCi, unitPartOf } from './parts.js'
 import { planIntegrationParts } from './integrationParts.js'
 import { readCiSlots } from './planningCapacity.js'
-import { assertCiReadAccess } from './runAccess.js'
 import { HostCiReads, retryRead } from './readQueries.js'
 import { fallbackOnError } from '../diagnostics/ignoredError.js'
 import { CI_QUEUE_ORDER, ciQueueReason, compareCiQueue } from './priority.js'
@@ -483,7 +482,6 @@ export class HostCiService {
     source: 'http' | 'mcp' = 'mcp'): Promise<{ run: CiRunRecord }> {
     const scope = await this.authority.resolve(caller, input.workspaceId, CI_RUN_ACTIONS)
     const run = await this.read(input.ticketId, scope.workspaceId)
-    assertCiReadAccess(caller, scope.executionId, run)
     this.stoppingRuns += 1
     try {
       // Persist intent before trying the executor lock, even while its start reply is pending.

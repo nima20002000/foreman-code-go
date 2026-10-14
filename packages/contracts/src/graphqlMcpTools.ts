@@ -52,10 +52,10 @@ export const GRAPHQL_AGENT_TOOLS = {
       + "suite and requester on the same branch or Agent execution. Main and noSupersede=true tickets are kept.",
     roles: ["operator", "orchestrator", "coder"],
   },
-  ci_get: { label: "Read CI result", description: "Read CI run state, priority, queue position and waiting reason, current step, computer, exit code and bounded log tail by ticketId. Superseded tickets report supersededBy and a replacement ticket message.", roles: ["operator", "orchestrator", "coder"] },
+  ci_get: { label: "Read CI result", description: "Read any CI ticket in the workspace, including other Agent executions and Runs: state, priority, queue position and waiting reason, current step, computer, exit code and bounded log tail by ticketId. Superseded tickets report supersededBy and a replacement ticket message.", roles: ["operator", "orchestrator", "coder"] },
   ci_computers_list: { label: "List CI computers", description: "Read authorized build computers with readiness, Worker protocol/update readiness reasons, GitHub login, size, used/total CI slots, running CI runs and authorized queued tickets with priority, position and reason.", roles: ["operator", "orchestrator", "coder"] },
-  ci_cancel: { label: "Cancel CI", description: "Cancel a queued or running CI run by ticketId. Requires jobs:cancel. Poll ci_get to confirm the outcome.", roles: ["operator", "orchestrator", "coder"] },
-  ci_logs_read: { label: "Read CI logs", description: "Read CI log text by ticketId. Omit afterOffset for the last maxBytes, or continue with nextOffset.", roles: ["operator", "orchestrator", "coder"] },
+  ci_cancel: { label: "Cancel CI", description: "Cancel any queued or running CI ticket in the workspace by ticketId, including other Agent executions and Runs. Requires ci. Poll ci_get to confirm the outcome.", roles: ["operator", "orchestrator", "coder"] },
+  ci_logs_read: { label: "Read CI logs", description: "Read CI log text for any ticket in the workspace by ticketId, including other Agent executions and Runs. Omit afterOffset for the last maxBytes, or continue with nextOffset.", roles: ["operator", "orchestrator", "coder"] },
   run_status_get: {
     label: "Read own Run status",
     description: "Read-only, bounded status of this Agent's own Run: Run state, each node's latest execution state, "
