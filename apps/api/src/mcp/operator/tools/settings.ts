@@ -120,7 +120,7 @@ export const settingsTools = [
     name: 'operator_chat_get',
     requires: [['operator_chat:read', 'global']],
     enabled: s => !!s.operatorChat,
-    description: 'Read an owned Operator conversation snapshot, including its harness handoff parent and recent persisted messages and activities. nativeSubmission identifies the observed Claude input message for the active request. Use operator_chat_history_get and operator_chat_activity_get to page older records. Message acceptedModel identifies the model from that message\'s immutable accepted turn configuration, when recorded. Requires operator_chat:read.',
+    description: 'Read an owned Operator conversation snapshot, including its harness handoff parent and recent persisted messages and activities. activitySnapshot.observation reports pending native history reads with unavailable status, lastError, failedAt, lastSuccess and consecutiveFailures; retained activity is unconfirmed until history recovers. nativeSubmission identifies the observed Claude input message for the active request. Use operator_chat_history_get and operator_chat_activity_get to page older records. Message acceptedModel identifies the model from that message\'s immutable accepted turn configuration, when recorded. Requires operator_chat:read.',
     inputSchema: z.object({ conversationId: z.string().min(1) }).strict(), outputSchema: GetOperatorConversationResponseSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: (context, { conversationId }) => context.services.operatorChat!.get(conversationId, context.principal),

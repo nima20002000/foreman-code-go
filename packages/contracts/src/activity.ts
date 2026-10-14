@@ -1,3 +1,4 @@
+import { ReadObservationSchema } from './readObservation.js'
 import { z } from 'zod'
 import { CiActivitySchema } from './ciHost.js'
 
@@ -70,6 +71,7 @@ export const ActivityItemSchema = z.discriminatedUnion('kind', [
 export type ActivityItem = z.infer<typeof ActivityItemSchema>
 
 export const ActivitySnapshotV1Schema = z.object({
+  observation: ReadObservationSchema.optional(),
   schemaVersion: z.literal(1), scope: ActivityScopeSchema, revision: ActivityRevisionSchema,
   sourceRevisions: z.array(ActivitySourceRevisionSchema).optional(),
   active: z.array(WorkSummarySchema), queued: z.array(WorkRefSchema), latest: WorkRefSchema.nullable(),
