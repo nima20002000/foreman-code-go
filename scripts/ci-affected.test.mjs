@@ -3,14 +3,21 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { test } from 'node:test'
+import { after, before, test } from 'node:test'
 import { affectedSnapshot, selectAffectedFiles } from './ci-affected.mjs'
 import { affectedCommands } from './ci-affected-run.mjs'
 import { selectByIndexes } from './ci-files.mjs'
 import { snapshot } from './ci-remote.mjs'
 
+const inheritedProgressFile = process.env.CI_PROGRESS_FILE
+before(() => { process.env.CI_PROGRESS_FILE = '' })
+after(() => {
+  if (inheritedProgressFile === undefined) delete process.env.CI_PROGRESS_FILE
+  else process.env.CI_PROGRESS_FILE = inheritedProgressFile
+})
+
 function affectedEnvironment(source = process.env) {
-  return { ...source }
+  return { ...source, CI_PROGRESS_FILE: '' }
 }
 
 const source = 'apps/api/src/feature.ts'

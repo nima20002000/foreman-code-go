@@ -1,11 +1,13 @@
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { copyFile, cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { parse } from 'yaml'
 import { apiServiceTemplate, deployProductionApi, publish }
   from '../../../../scripts/local-production-runtime.mjs'
 import { renderUserService } from '../../../worker/src/service.mjs'
@@ -15,6 +17,7 @@ import { readUntil } from './observableCondition.js'
 import { removeRestartUnit } from '../../../../scripts/test-restart-units.mjs'
 import { testFixtureCacheRoot } from '../../../../scripts/test-fixture-cache.mjs'
 import { ownedTestPath } from './testResources.js'
+import { measureIntegrationPhase } from './integrationPhase.js'
 
 const execute = promisify(execFile)
 const repository = fileURLToPath(new URL('../../../..', import.meta.url))
@@ -83,18 +86,31 @@ export async function installedRestartService(directory: string, configuration: 
   // The installer's shared dependency tree is deployed once per lockfile, not copied again for every fixture.
   // The installed API's own modules are transformed below.
   await mkdir(join(deployment, 'apps/api/dist'), { recursive: true })
-  await deployProductionApi(async (command: string, args: string[]) => {
+  const { storeDir } = parse(await readFile(join(repository, 'node_modules/.modules.yaml'), 'utf8')) as {
+    storeDir: string
+  }
+  const ciMetadataCache = join(repository, '.logs/pnpm-metadata')
+  // Test homes are private; release-age verification needs the metadata from the workspace install.
+  const metadataCache = existsSync(ciMetadataCache) ? ciMetadataCache : join(serviceUser.homedir, '.cache/pnpm')
+  const deploy = async (command: string, args: string[]) => {
     // The disposable deployment workspace is discarded, so it needs no dependency restoration.
     if (args.includes('install')) return
     try {
-      await execute(command, args, { cwd: deployment, maxBuffer: 4 * 1024 * 1024,
-        env: { ...process.env, CI: 'true', npm_config_offline: 'true' } })
+      // pnpm 11 ignores npm_config_offline; use CLI options and the store used by the workspace install.
+      await execute(command, [...args, '--offline', '--store-dir', storeDir, '--cache-dir', metadataCache], {
+        cwd: deployment, maxBuffer: 4 * 1024 * 1024, timeout: 30_000,
+        env: { ...process.env, CI: 'true' },
+      })
     } catch (error) {
       const output = error as Error & { stdout?: string; stderr?: string; code?: unknown; signal?: unknown }
-      throw new Error(`${output.message} (code ${output.code}, signal ${output.signal})\n`
+      throw new Error(`Installed API fixture deployment failed (offline; 30 s command limit): ${output.message}`
+        + ` (code ${output.code}, signal ${output.signal})\n`
         + `${output.stderr ?? ''}\n${output.stdout ?? ''}`, { cause: error })
     }
-  }, api, { dependencies: { root: join(testFixtureCacheRoot(), 'api-dependencies'), source: deployment } })
+  }
+  await measureIntegrationPhase('Installed API dependencies', () => deployProductionApi(deploy, api, {
+    dependencies: { root: join(testFixtureCacheRoot(), 'api-dependencies'), source: deployment },
+  }))
   await mkdir(join(api, 'test/helpers'), { recursive: true })
   await copyFile(join(repository, 'apps/api/test/helpers/testPool.mjs'), join(api, 'test/helpers/testPool.mjs'))
   const source = join(repository, 'apps/api/src')

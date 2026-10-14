@@ -97,6 +97,7 @@ process.exit(Number(process.env.SUITE_EXIT_CODE))
     const result = spawnSync('bash', ['scripts/ci-suite.sh'], {
       cwd: root, encoding: 'utf8',
       env: { ...process.env, SUITE: 'unit-web', SCOPE: 'full', SLICE: '1/3',
+        CI_PROGRESS_FILE: '', CI_WATCHDOG_ACTIVE: '', CI_EXPECTED_DURATION_MS: '',
         CI_HOST_RUNNER: '0',
         DURATIONS_INPUT: '', DURATIONS_OUTPUT: output, CI_STATE: join(directory, 'state'),
         PATH: `${directory}${delimiter}${process.env.PATH}`, CALLS_FILE: calls,

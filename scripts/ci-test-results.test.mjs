@@ -101,7 +101,8 @@ process.exit(3)
 `, { mode: 0o755 })
   const result = spawnSync('bash', ['scripts/ci-suite.sh'], {
     cwd: root, encoding: 'utf8',
-    env: { ...process.env, SUITE: 'unit-web', SCOPE: 'full', SLICE: '1/3', DURATIONS_INPUT: '',
+    env: { ...process.env, SUITE: 'unit-web', SCOPE: 'full', SLICE: '1/3',
+      CI_PROGRESS_FILE: '', CI_WATCHDOG_ACTIVE: '', CI_EXPECTED_DURATION_MS: '', DURATIONS_INPUT: '',
       DURATIONS_OUTPUT: join(directory, 'reports', 'durations.json'), TEST_RESULTS_OUTPUT: output,
       CI_STATE: join(directory, 'state'), PATH: `${directory}${delimiter}${process.env.PATH}`,
       SEEN_FILE: join(directory, 'seen.json'), CI_HOST_RUNNER: '0' },
@@ -138,7 +139,7 @@ process.exit(failed ? 7 : 0)
   const result = spawnSync('bash', ['scripts/ci-suite.sh'], { cwd: root, encoding: 'utf8',
     env: { ...process.env, SUITE: 'unit-other', SCOPE: 'full', TEST_RESULTS_OUTPUT: output,
       CI_STATE: join(directory, 'state'), PATH: `${directory}${delimiter}${process.env.PATH}`,
-      CI_HOST_RUNNER: '0', CI_EXPECTED_DURATION_MS: '', BASH_ENV: '' } })
+      CI_HOST_RUNNER: '0', CI_EXPECTED_DURATION_MS: '', CI_PROGRESS_FILE: '', CI_WATCHDOG_ACTIVE: '', BASH_ENV: '' } })
   assert.equal(result.status, 7, result.stderr)
   const results = JSON.parse(readFileSync(output, 'utf8'))
   assert.deepEqual(results.summary, { passed: 2, failed: 1, skipped: 0 })
