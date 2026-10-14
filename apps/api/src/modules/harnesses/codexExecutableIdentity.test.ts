@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto'
 import * as fs from 'node:fs'
-import { mkdtemp, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
+import { homedir } from 'node:os'
 import { assertCodexUnchanged, codexBinaryIdentity, codexExecutableIdentity } from './codexProtocol.js'
 
 vi.mock('node:fs', async original => {
@@ -15,7 +16,9 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true })))
 })
 async function fixture() {
-  const directory = await mkdtemp(join(persistentFixtureRoot, 'codex-identity-'))
+  const temporaryRoot = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(temporaryRoot, { recursive: true })
+  const directory = await mkdtemp(join(temporaryRoot, 'codex-identity-'))
   directories.push(directory)
   const binary = join(directory, 'codex')
   await writeFile(binary, 'original', { mode: 0o700 })
@@ -23,13 +26,13 @@ async function fixture() {
   return { directory, binary }
 }
 
-it('caches stable executable content while launch checks still hash directly', async () => {
+it('reuses stable executable digests during launch checks', async () => {
   const f = await fixture()
   const identity = await codexBinaryIdentity(f.binary)
   expect(await codexBinaryIdentity(f.binary)).toBe(identity)
   expect(fs.createReadStream).toHaveBeenCalledTimes(1)
   await assertCodexUnchanged({ binary: f.binary, identity })
-  expect(fs.createReadStream).toHaveBeenCalledTimes(2)
+  expect(fs.createReadStream).toHaveBeenCalledTimes(1)
 })
 
 it.each(['overwrite', 'replace', 'symlink'] as const)('invalidates executable fingerprints after %s', async method => {
@@ -51,6 +54,7 @@ it.each(['overwrite', 'replace', 'symlink'] as const)('invalidates executable fi
   }
   const changed = await codexExecutableIdentity(f.binary)
   expect(changed).not.toBe(identity)
+  expect(JSON.parse(changed).at(-1)).toBe(createHash('sha256').update('modified').digest('hex'))
   expect(await codexExecutableIdentity(f.binary)).toBe(changed)
   expect(fs.createReadStream).toHaveBeenCalledTimes(2)
 })

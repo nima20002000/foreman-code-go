@@ -1,6 +1,6 @@
 import * as fs from 'node:fs'
-import { chmod, mkdtemp, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { chmod, mkdir, mkdtemp, rename, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { binaryCacheIdentity } from './binaryIdentity.js'
@@ -21,14 +21,16 @@ afterEach(async () => {
 const image = (content: string) => Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46]), Buffer.from(content)])
 
 async function fixture() {
-  const directory = await mkdtemp(join(tmpdir(), 'binary-identity-'))
+  const temporaryRoot = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(temporaryRoot, { recursive: true })
+  const directory = await mkdtemp(join(temporaryRoot, 'binary-identity-'))
   directories.push(directory)
   const launcher = join(directory, 'launcher')
   await writeFile(launcher, image('original'), { mode: 0o700 })
   return { directory, launcher }
 }
 
-it('reuses discovery hashes while direct dispatch verification still rereads bytes', async () => {
+it('reuses discovery hashes during repeated dispatch verification', async () => {
   const { directory, launcher } = await fixture()
   const first = await binaryCacheIdentity('codex', launcher, directory)
   expect(await binaryCacheIdentity('codex', launcher, directory)).toBe(first)
@@ -38,7 +40,7 @@ it('reuses discovery hashes while direct dispatch verification still rereads byt
   const checked = await discoverLauncher(launcher, environment)
   expect(checked.status).toBe('installed')
   expect((await discoverLauncher(launcher, environment)).fingerprint).toBe(checked.fingerprint)
-  expect(fs.createReadStream).toHaveBeenCalledTimes(3)
+  expect(fs.createReadStream).toHaveBeenCalledTimes(1)
 })
 
 it.each(['rewrite', 'replace'] as const)('changes identity after a same-size %s with preserved mtime', async kind => {
