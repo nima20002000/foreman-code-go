@@ -99,6 +99,9 @@ async function executeCommand(ports: HostCiPorts, label: string, file: string, a
     const noCircleArtifacts = file === 'circleci' && args[0] === 'job' && args[1] === 'artifact'
       && /\bartifacts\.not_found\b/.test(result.stderr)
     if (noCircleArtifacts) return '[]'
+    const completedGitHubRun = file === 'gh' && args[0] === 'run' && args[1] === 'cancel'
+      && /\bCannot cancel a workflow run that is completed\b/i.test(result.stderr)
+    if (completedGitHubRun) return ''
     const noActiveWorkflows = file === 'circleci' && args[0] === 'run'
       && (args[1] === 'get' || args[1] === 'cancel') && /\bno active workflows\b/i.test(result.stderr)
     if (noActiveWorkflows) {
