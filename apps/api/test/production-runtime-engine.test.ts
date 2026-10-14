@@ -300,7 +300,8 @@ test('restart waits for captured native closure and drains tasks without synthet
     entered()
     await new Promise<void>((_resolve, reject) => context.signal.addEventListener('abort', () => reject(context.signal.reason), { once: true }))
   }
-  const active = h.engine.start(h.run.id); void active.catch(() => undefined)
+  const active = h.engine.start(h.run.id)
+  void active.catch(() => { /* ignore: the restart below aborts this start on purpose; engine events carry the assertion */ })
   await started; const shutdown = h.engine.shutdown()
   await vi.waitFor(() => assert(h.state.events.includes('restart-close-start')))
   assert.equal(h.state.released, 0)

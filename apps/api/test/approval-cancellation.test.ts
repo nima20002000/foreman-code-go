@@ -526,7 +526,7 @@ it('shutdown captures original restart closure before abort and drains it before
     // A failed ordering assertion must not strand the engine drain until its
     // cleanup deadline and obscure the actual assertion with a test timeout.
     closure.resolve(); task.resolve()
-    await shutdown.catch(() => undefined)
+    await shutdown.catch(() => { /* ignore: a failed assertion above is the real report; shutdown errors are cleanup noise */ })
   }
 })
 
