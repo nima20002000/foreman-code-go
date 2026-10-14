@@ -37,6 +37,7 @@ export async function mixedComputerPlacement(f: Fixture, directory: string, opti
   git?: SourceManifest['git']
   sourceAccessMode?: SourceRootRecord['binding']['accessMode']
   unconfiguredDeviceRoot?: boolean
+  deviceCount?: 1 | 2
 } = {}) {
   const mainId = (await f.db.pool.query<{ id: string }>(
     'select id from application_installation where singleton=true')).rows[0]!.id
@@ -49,12 +50,6 @@ export async function mixedComputerPlacement(f: Fixture, directory: string, opti
     runnerId: f.locations.runnerId, rootPath: project,
   })
   const locationRevision = located.value.locationRevision
-  const deviceId = randomUUID()
-  const registration = { workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1 }
-  await f.db.pool.query(`insert into device_registrations(id,main_id,worker_installation_id,public_key,record)
-    values($1,$2,$3,$4,$5::jsonb)`, [deviceId, mainId, registration.workerInstallationId,
-    'pairing-fixture', JSON.stringify({ mainId, deviceId, ...registration,
-      publicKeyFingerprint: 'a'.repeat(64), status: 'paired', scopes: ['connect', 'heartbeat'] })])
   const hosts = { authorize: async (sql, _principal, host, installationId) => {
     const registered = await assertDeviceHostInstallation(sql, host, installationId)
     return registered ? { workerInstallationId: registered.workerInstallationId,
@@ -90,7 +85,16 @@ export async function mixedComputerPlacement(f: Fixture, directory: string, opti
   const instanceValues: Parameters<HarnessInstanceRegistry['reload']>[0][number][] = []
   const inventory: HarnessInstallationRecord[] = []
   const placements: ReturnType<typeof SavedNodePlacementSchema.parse>[] = []
-  for (const kind of ['main', 'device'] as const) {
+  const hostKinds = ['main', ...Array<'device'>(options.deviceCount ?? 1).fill('device')] as const
+  for (const kind of hostKinds) {
+    const deviceId = randomUUID()
+    const registration = { workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1 }
+    if (kind === 'device') {
+      await f.db.pool.query(`insert into device_registrations(id,main_id,worker_installation_id,public_key,record)
+        values($1,$2,$3,$4,$5::jsonb)`, [deviceId, mainId, registration.workerInstallationId,
+        'pairing-fixture', JSON.stringify({ mainId, deviceId, ...registration,
+          publicKeyFingerprint: 'a'.repeat(64), status: 'paired', scopes: ['connect', 'heartbeat'] })])
+    }
     const hostRef = kind === 'main' ? { kind, mainId } : { kind, mainId, deviceId }
     const applicationInstallationId = kind === 'main' ? mainId : registration.workerInstallationId
     const canonicalProjectRoot = kind === 'main' ? project : '/worker/project'
@@ -193,6 +197,6 @@ export async function mixedComputerPlacement(f: Fixture, directory: string, opti
   },
     { codex: 'codex-live-4' }, new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }))
   return { producer, locationRevision, source, sources, policies, hosts, installations,
-    local: placements[0]!, remote: placements[1]!,
+    local: placements[0]!, remote: placements[1]!, remotes: placements.slice(1),
     reads: new RunPlacementReadService(f.db.pool, readRemoteObservations) }
 }
