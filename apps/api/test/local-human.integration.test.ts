@@ -127,7 +127,7 @@ describe.skipIf(!postgresEnabled)('local human migration', { timeout: 60_000 }, 
         operator: { access, services: { commands: new PostgresCommandCoordinator(db.pool) } as never }, localHuman: human,
       })
       app.get('/api/workspaces/:workspaceId/reference-files/permission-probe', requirePrincipal)
-      app.post('/api/devices/connection-approvals', requirePrincipal)
+      app.post('/api/devices/connection-configure', requirePrincipal)
       try {
         for (const headers of [{}, { authorization: `Bearer ${reader.token}` }]) {
           const self = await app.inject({ url: '/api/local-human', headers })
@@ -141,7 +141,7 @@ describe.skipIf(!postgresEnabled)('local human migration', { timeout: 60_000 }, 
             url: '/api/workspaces/another-workspace/reference-files/permission-probe', headers,
           })
           expect(denied.statusCode).toBe(403)
-          expect((await app.inject({ method: 'POST', url: '/api/devices/connection-approvals', headers })).statusCode).toBe(403)
+          expect((await app.inject({ method: 'POST', url: '/api/devices/connection-configure', headers })).statusCode).toBe(403)
         }
       } finally { await app.close() }
     } finally { await db.close() }

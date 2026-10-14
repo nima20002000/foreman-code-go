@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { TransferIntentSchema, type TransferIntent } from '@foreman-code/contracts/byte-transfer'
 import { DeviceSessionBindingSchema, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { transferContextForBinding, type AcceptedTransferAuthority } from '../byte-transfer/carrier.js'
-import { DeviceRegistrationSchema, type DeviceRegistration } from '@foreman-code/contracts/device-identity'
+import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { requireAuthorization } from '../access/policy.js'
@@ -17,11 +17,9 @@ import { TrustedConnectionConfigureSchema, TrustedConnectionConsentSchema, Trust
 export { TrustedConnectionConfigureSchema, TrustedConnectionConsentSchema, TrustedConnectionReadSchema, TrustedConnectionCheckSchema } from '@foreman-code/contracts/trusted-device-connection'
 export type { TrustedConnectionConfigure, TrustedConnectionConsent, TrustedConnectionRead, TrustedConnectionCheck } from '@foreman-code/contracts/trusted-device-connection'
 const OPERATION = 'device.trusted-connection.configure'
+// Read historical receipts without exposing retired metadata or rewriting saved facts.
+const StoredConsentSchema = TrustedConnectionConsentSchema.strip()
 export interface TrustedConnectionSetupPorts {
-  /** Verify/consume an existing explicit human owner approval in this SQL transaction.
-   * Must bind device identity/revisions, endpoint/user, host fingerprint and allow/revoke.
-   * A caller boolean, an Operator grant or SSH login is never owner approval. */
-  verifyOwnerApproval(client: pg.PoolClient, principal: ManagementPrincipal, input: TrustedConnectionConfigure, registration: DeviceRegistration): Promise<{ ownerId: string }>
   probe?: typeof probeTrustedConnection
 }
 export interface AcceptedTrustedConnectionTransfer {
@@ -43,7 +41,7 @@ function blocked(read: TrustedConnectionRead): TrustedConnectionCheck['state'] |
 /** Consent and diagnostic readiness only. Does not dispatch commands, install software,
  * enable SSH/Tailscale, modify known_hosts, or confer agent execution authority. */
 export class PostgresTrustedConnectionSetup {
-  constructor(private readonly pool: pg.Pool, private readonly mainId: string, private readonly ports: TrustedConnectionSetupPorts) {}
+  constructor(private readonly pool: pg.Pool, private readonly mainId: string, private readonly ports: TrustedConnectionSetupPorts = {}) {}
   private async transaction<T>(operation: (client: pg.PoolClient) => Promise<T>): Promise<T> {
     return withTransaction(this.pool, operation)
   }
@@ -58,7 +56,7 @@ export class PostgresTrustedConnectionSetup {
     if (!row) throw new DomainError('DEVICE_NOT_FOUND', 'The device is not registered on this Main.', 404)
     const registration = DeviceRegistrationSchema.parse(row.record)
     const latest = (await client.query<{ result: unknown }>(`select result from management_command_receipts where operation=$1 and target_key=$2 order by (result->>'revision')::bigint desc limit 1`, [OPERATION, `${this.mainId}:${deviceId}`])).rows[0]
-    return TrustedConnectionReadSchema.parse({ registration, consent: latest ? latest.result : null })
+    return TrustedConnectionReadSchema.parse({ registration, consent: latest ? StoredConsentSchema.parse(latest.result) : null })
   }
   async discover(principal: ManagementPrincipal): Promise<HostDiscovery> {
     const authorize = () => this.transaction(async client => {
@@ -83,19 +81,16 @@ export class PostgresTrustedConnectionSetup {
       perform: async client => {
         const current = await this.readLocked(client, principal, input.deviceId, true)
         if ((current.consent?.revision ?? 0) !== input.expectedRevision || current.registration.authorizationRevision !== input.expectedAuthorizationRevision) {
-          throw new DomainError('DEVICE_CONNECTION_CONFLICT', 'The device or consent revision changed. Read it before approving again.', 409)
+          throw new DomainError('DEVICE_CONNECTION_CONFLICT', 'The device or consent revision changed. Read it before changing the connection again.', 409)
         }
-        if (current.registration.status !== 'paired') throw new DomainError('DEVICE_CONNECTION_NOT_PAIRED', 'Pair this device before approving remote commands.', 409)
-        if (!this.ports.verifyOwnerApproval) throw new DomainError('DEVICE_OWNER_APPROVAL_UNAVAILABLE', 'Owner approval verification is not configured.', 503)
-        const approval = await this.ports.verifyOwnerApproval(client, principal, input, current.registration)
-        const approvedBy = z.string().min(1).max(200).parse(approval.ownerId)
+        if (current.registration.status !== 'paired') throw new DomainError('DEVICE_CONNECTION_NOT_PAIRED', 'Pair this device before configuring remote commands.', 409)
         const { mainId, deviceId, workerInstallationId, keyRevision, authorizationRevision, publicKeyFingerprint } = current.registration
         return TrustedConnectionConsentSchema.parse({ mainId, deviceId, workerInstallationId, keyRevision, authorizationRevision, publicKeyFingerprint,
           revision: input.expectedRevision + 1, endpoint: input.endpoint, hostKeyFingerprint: input.hostKeyFingerprint,
-          allowOwnerCommands: input.allowOwnerCommands, approvedBy, approvalId: input.approvalId, approvedAt: new Date().toISOString(),
+          allowOwnerCommands: input.allowOwnerCommands,
           privilege: 'selected-os-user', automaticSudo: false, grantsAgentPermissions: false })
       } })
-    return TrustedConnectionConsentSchema.parse(result.value)
+    return StoredConsentSchema.parse(result.value)
   }
   async inspect(principal: ManagementPrincipal, deviceId: string, rawEndpoint: z.infer<typeof TrustedEndpointSchema>): Promise<ConnectionProbe> {
     const endpoint = TrustedEndpointSchema.parse(rawEndpoint)
@@ -103,7 +98,7 @@ export class PostgresTrustedConnectionSetup {
     if (before.registration.status !== 'paired') throw new DomainError('DEVICE_CONNECTION_NOT_PAIRED', 'Pair this device before testing its connection.', 409)
     const probe = ConnectionProbeSchema.parse(await (this.ports.probe ?? probeTrustedConnection)(endpoint))
     const after = await this.read(principal, deviceId)
-    if (after.registration.status !== 'paired' || JSON.stringify(after.registration) !== JSON.stringify(before.registration)) {
+    if (after.registration.status !== 'paired' || !isDeepStrictEqual(after.registration, before.registration)) {
       throw new DomainError('DEVICE_CONNECTION_CONFLICT', 'The paired identity changed during the connection test.', 409)
     }
     return probe

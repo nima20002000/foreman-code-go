@@ -22,12 +22,12 @@ export const ConnectionProbeSchema = z.object({
 export type ConnectionProbe = z.infer<typeof ConnectionProbeSchema>
 export const TrustedConnectionConfigureSchema = z.object({ deviceId: z.uuid(), commandId: z.string().min(8).max(200),
   expectedRevision: z.number().int().nonnegative(), expectedAuthorizationRevision: z.number().int().positive(),
-  endpoint: TrustedEndpointSchema, hostKeyFingerprint: Fingerprint, allowOwnerCommands: z.boolean(), approvalId: z.uuid(),
+  endpoint: TrustedEndpointSchema, hostKeyFingerprint: Fingerprint, allowOwnerCommands: z.boolean(),
 }).strict()
 export type TrustedConnectionConfigure = z.infer<typeof TrustedConnectionConfigureSchema>
 export const TrustedConnectionConsentSchema = z.object({ revision: z.number().int().positive(), mainId: z.uuid(), deviceId: z.uuid(), workerInstallationId: z.uuid(),
   keyRevision: z.number().int().positive(), authorizationRevision: z.number().int().positive(), publicKeyFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
-  endpoint: TrustedEndpointSchema, hostKeyFingerprint: Fingerprint, allowOwnerCommands: z.boolean(), approvedBy: z.string(), approvalId: z.uuid(), approvedAt: z.string().datetime(),
+  endpoint: TrustedEndpointSchema, hostKeyFingerprint: Fingerprint, allowOwnerCommands: z.boolean(),
   privilege: z.literal('selected-os-user'), automaticSudo: z.literal(false), grantsAgentPermissions: z.literal(false),
 }).strict()
 export type TrustedConnectionConsent = z.infer<typeof TrustedConnectionConsentSchema>
@@ -38,23 +38,3 @@ export const TrustedConnectionCheckSchema = TrustedConnectionReadSchema.extend({
   probe: ConnectionProbeSchema.nullable(), checkedAt: z.string().datetime(),
 }).strict()
 export type TrustedConnectionCheck = z.infer<typeof TrustedConnectionCheckSchema>
-
-export const TrustedConnectionApprovalRequestSchema = z.object({
-  requestCommandId: z.string().min(8).max(200), action: TrustedConnectionConfigureSchema.omit({ approvalId: true }),
-  applyPrincipalId: z.string().min(1).max(200).optional(),
-}).strict()
-export const TrustedConnectionApprovalCommandSchema = z.object({ commandId: z.string().min(8).max(200) }).strict()
-export const TrustedConnectionApprovalReceiptSchema = z.object({
-  id: z.uuid(), mainId: z.uuid(), ownerId: z.string().min(1),
-  action: TrustedConnectionConfigureSchema, registration: DeviceRegistrationSchema,
-  applyAuthority: z.object({ principalId: z.string().min(1).max(200), audience: z.literal('operator'),
-    delegatedFromOwnerId: z.string().min(1).max(200), conversationId: z.string().min(1).max(200),
-    authorityHash: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(),
-  requestedAt: z.string().datetime(), expiresAt: z.string().datetime(),
-}).strict()
-export type TrustedConnectionApprovalReceipt = z.infer<typeof TrustedConnectionApprovalReceiptSchema>
-export const TrustedConnectionApprovalReadSchema = TrustedConnectionApprovalReceiptSchema.extend({
-  state: z.enum(['pending', 'approved', 'consumed', 'expired', 'stale', 'revoked']),
-  approvedAt: z.string().datetime().nullable(), consumedAt: z.string().datetime().nullable(), revokedAt: z.string().datetime().nullable(),
-}).strict()
-export type TrustedConnectionApprovalRead = z.infer<typeof TrustedConnectionApprovalReadSchema>

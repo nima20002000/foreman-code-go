@@ -54,7 +54,6 @@ function actionFor(request: FastifyRequest) {
   if (url === '/api/devices' || url === '/api/devices/main' || url === '/api/devices/setup-options') return 'settings:read' as const
   if (['/api/devices/connection-host', '/api/devices/connection-read', '/api/devices/connection-inspect', '/api/devices/connection-check'].includes(url)) return 'settings:read' as const
   if (url === '/api/devices/connection-configure') return 'settings:update' as const
-  if (url === '/api/devices/connection-approvals' || url.startsWith('/api/devices/connection-approvals/')) return request.method === 'GET' ? 'settings:read' as const : 'settings:update' as const
   if (url === '/api/devices/pairing-grants' || url === '/api/devices/revoke' || url === '/api/devices/setup-codes') return 'settings:update' as const
   if (/^\/api\/workspaces\/[^/]+\/reference-files(?:\/|$)/.test(url)) {
     return request.method === 'GET' ? 'workspaces:read' as const : 'workspaces:update' as const
