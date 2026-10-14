@@ -552,7 +552,8 @@ it.each([50, 10])('persists and dispatches a gate within a %i percent build allo
 
 it('rechecks the build allowance when dispatching an already planned gate through MCP', async () => {
   const occupiedKeys = new Set(['builder-main', 'builder-paired'])
-  const files = ['apps/api/test/first.integration.test.ts', 'apps/api/test/second.integration.test.ts']
+  // Exclusive files cannot share parallel lanes, so the plan uses both builders.
+  const files = ['apps/api/test/dev-startup.integration.test.ts', 'apps/api/test/ci-postgres-setup.integration.test.ts']
   const f = await fixture({ occupiedKeys, cloudSlots: 2, files })
   try {
     const admitted = CiRunOutputSchema.parse(await f.value('ci_run', {
