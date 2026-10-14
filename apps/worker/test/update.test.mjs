@@ -225,6 +225,55 @@ test('a stalled GitHub asset falls back to Main chunks and schedules the verifie
   assert.match(record.githubDownloadError, /stall|no bytes/i);
 });
 
+test('a GitHub asset published during a slow Main download is retried and wins, with each phase logged', async t => {
+  const f = await fixture(t);
+  f.incoming.release.github = { repository: 'example/product', tag: `worker-${'a'.repeat(40)}` };
+  const archive = join(f.base, 'asset.tar.gz');
+  spawnSync('tar', ['-czf', archive, '-C', f.incoming.directory, '.']);
+  const binaries = join(f.base, 'bin');
+  const attempts = join(f.base, 'gh-attempts');
+  await mkdir(binaries);
+  // Main cuts over before its release asset is published: the first lookup fails at once.
+  await writeFile(join(binaries, 'gh'), `#!/bin/sh\necho attempt >> '${attempts}'\n`
+    + `if [ "$(wc -l < '${attempts}')" -eq 1 ]; then echo 'release not found' >&2; exit 1; fi\n`
+    + `exec cat '${archive}'\n`, { mode: 0o700 });
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${binaries}:${originalPath}`;
+  t.after(() => { process.env.PATH = originalPath; });
+  const scheduleTimeout = globalThis.setTimeout;
+  // Keep production retry spacing while letting the fixture observe several retries quickly.
+  t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) =>
+    scheduleTimeout(callback, delay >= 5_000 && delay <= 60_000 ? 20 : delay, ...args));
+  const request = f.options.connection().captureRequest().request;
+  let mainSignal;
+  const logged = [];
+  // A relayed link delivers Main chunks far slower than the bundle deadline allows.
+  const connection = () => ({ captureRequest: () => ({ request: (payload, options) => {
+    if (payload.operation !== 'chunk') return request(payload);
+    mainSignal = options.signal;
+    return new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
+    });
+  } }) });
+  const updater = await new WorkerUpdater({ ...f.options, connection, downloadTimeoutMs: 3000,
+    log: (msg, fields = {}) => logged.push({ msg, ...fields }) }).initialize();
+  t.after(() => updater.close());
+
+  assert.equal(await updater.start(), 'Worker 1.1.0 restart is scheduled.');
+  const record = await readUpdateRecord(f.stateDirectory);
+  assert.equal(record.status.state, 'restarting');
+  assert.equal(record.downloadSource, 'github');
+  assert.equal(mainSignal.aborted, true);
+  for (const file of f.incoming.release.manifest.files) {
+    assert.deepEqual(await readFile(join(record.restart.directory, file.path)),
+      await readFile(join(f.incoming.directory, file.path)));
+  }
+  const phases = logged.filter(entry => entry.phase).map(entry => entry.phase);
+  assert.deepEqual(phases.filter((phase, index) => phases.indexOf(phase) === index),
+    ['release', 'downloading', 'smoke configuration', 'draining', 'installing', 'restarting']);
+  assert.ok(logged.some(entry => /GitHub/.test(entry.msg) && /release not found/.test(entry.error ?? '')));
+});
+
 test('Main fallback still rejects a file that does not match its announced checksum', async t => {
   const f = await fixture(t);
   const request = f.options.connection().captureRequest().request;
