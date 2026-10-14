@@ -35,21 +35,13 @@ for directory in "$home/.local/share/foreman-code" "$base" "$volume"; do
   [ -d "$directory" ] || install -d -m 0700 -o "$user" -g "$(id -gn "$user")" "$directory"
 done
 unit=$(systemd-escape -p --suffix=mount "$volume")
-cat > "/etc/systemd/system/$unit" <<UNIT
-[Unit]
-Description=Foreman Code CI verification volume
-
-[Mount]
-What=$backing
-Where=$volume
-Type=ext4
-Options=loop,nosuid,nodev,prjquota
-
-[Install]
-WantedBy=multi-user.target
-UNIT
+sh "$(dirname "$0")/verification-volume-unit.sh" "$backing" "$volume" > "/etc/systemd/system/$unit"
 systemctl daemon-reload
 systemctl enable --now "$unit"
+# Updating an active mount unit does not apply its options until remounted.
+mount -o remount,discard "$volume"
+# Reclaim blocks deleted before discard was enabled as well.
+fstrim "$volume"
 # An adopted volume keeps its own root ownership and modes.
 if [ -z "${BACKING:-}" ]; then chown "$user:$(id -gn "$user")" "$volume"; chmod 0700 "$volume"; fi
 
