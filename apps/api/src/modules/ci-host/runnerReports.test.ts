@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { CiTestResults } from '@foreman-code/contracts'
+import { deferred } from '../../../test/helpers/deferred.js'
 import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { HostCiRunner, type HostCiPorts } from './runner.js'
 
@@ -18,8 +19,10 @@ vi.mock('node:fs/promises', async original => {
 })
 
 const roots: string[] = []
+const runners: HostCiRunner[] = []
 afterEach(async () => {
   fault.report = null
+  await Promise.all(runners.splice(0).map(runner => runner.beginDrain()))
   await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true })))
 })
 
@@ -27,7 +30,10 @@ const tests: CiTestResults = { summary: { passed: 1, failed: 0, skipped: 0 }, tr
   files: [{ file: 'apps/api/src/example.test.ts', status: 'passed', durationMs: 12,
     tests: [{ name: 'returns a result', status: 'passed', durationMs: 12 }] }] }
 
-async function fixture(suite: 'unit' | 'integration') {
+async function fixture(suite: 'unit' | 'integration', options: {
+  beforeLaunch?: () => Promise<void>
+  afterRunning?: () => Promise<void>
+} = {}) {
   const root = await privateFixtureDirectory('ci-reports-')
   roots.push(root)
   const runId = randomUUID()
@@ -42,16 +48,23 @@ async function fixture(suite: 'unit' | 'integration') {
         await fs.writeFile(join(source, 'scripts/ci-suite.sh'), '')
         await fs.writeFile(join(source, 'scripts/ci-files.mjs'), '')
       }
-      if (file === 'systemd-run') launches++
+      if (file === 'systemd-run') {
+        launches++
+        await options.beforeLaunch?.()
+      }
       return { code: 0, stdout: file === 'systemctl' ? 'active\n' : '', stderr: '' }
     } }
   const runner = new HostCiRunner(root, ports, {})
+  runners.push(runner)
   await runner.handle({ operation: 'start', runId, repository: 'fixture/site', commit: 'a'.repeat(40), suite, scope: 'full' })
   const read = { operation: 'read', runId, afterOffset: 0, maxBytes: 1, testResults: true, durations: true }
   await vi.waitFor(async () => {
     await expect(runner.handle({ ...read, testResults: false, durations: false }))
       .resolves.toMatchObject({ run: { state: 'running' } })
   })
+  await options.afterRunning?.()
+  await runner.beginDrain()
+  expect(runner.isUpdateIdle()).toBe(true)
   const directory = join(root, 'runs', runId)
   await fs.writeFile(join(directory, 'test-results.json'), JSON.stringify(tests))
   await fs.writeFile(join(directory, 'measured-durations.json'), JSON.stringify({ 'apps/api/src/example.test.ts': 12 }))
@@ -97,4 +110,28 @@ it('keeps duration read failures pending even when test results are readable', a
   fault.report = null
   await expect(f.reopen().handle(f.read)).resolves.toMatchObject({ run: { collection: 'complete' },
     durations: { 'apps/api/src/example.test.ts': 12 } })
+})
+
+it('waits for launch acknowledgement before reading completed reports', async () => {
+  const launching = deferred()
+  const acknowledged = deferred()
+  try {
+    const f = await fixture('unit', {
+      beforeLaunch: async () => {
+        launching.resolve()
+        await acknowledged.promise
+      },
+      afterRunning: async () => {
+        await launching.promise
+        acknowledged.resolve()
+      },
+    })
+    await expect(f.runner.handle(f.read)).resolves.toMatchObject({
+      run: { state: 'passed', collection: 'complete' }, testResults: tests,
+      durations: { 'apps/api/src/example.test.ts': 12 },
+    })
+    expect(f.launches()).toBe(1)
+  } finally {
+    acknowledged.resolve()
+  }
 })
