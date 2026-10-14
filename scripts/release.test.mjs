@@ -337,6 +337,26 @@ test('repeatable --rerun replaces each failed gate part independently', async t 
   assert.deepEqual(await releaseRoundProblems(f.read, workspaceId, 'HEAD', f.work), [])
 })
 
+function splitReplacement(f) {
+  const [first, second] = f.failed.files
+  f.replacement.files = [first]
+  const sibling = { ...f.replacement, id: randomUUID(), files: [second] }
+  f.main.runs.set(sibling.id, sibling)
+  f.main.groups.set(f.replacement.groupId, [f.replacement.id, sibling.id])
+  return sibling
+}
+
+test('a rerun split across partitions replaces the failed part when together they ran its files', async t => {
+  const f = await rerunFixture(t)
+  splitReplacement(f)
+  const substitution = `${f.failed.id}=${f.replacement.id}`
+  const result = await run(releaseScript, ['1.1.0', '--gate-ticket', f.group[0].id,
+    '--rerun', substitution], f.work, f.main, f.env)
+  assert.equal(result.status, 0, result.output)
+  assert.equal(f.git('log', '-1', '--format=%(trailers:key=Clean-Round-Rerun,valueonly)'), substitution)
+  assert.deepEqual(await releaseRoundProblems(f.read, workspaceId, 'HEAD', f.work), [])
+})
+
 const invalidReruns = [
   ['missing rerun', f => []],
   ['failed replacement', f => { f.replacement.state = 'failed' }],
@@ -348,6 +368,11 @@ const invalidReruns = [
   ['missing original file selection', f => { delete f.failed.files }],
   ['unresolved replacement selection', f => { f.replacement.deriveFiles = true }],
   ['different suite', f => { f.replacement.suite = 'unit' }],
+  ['failed rerun partition', f => { splitReplacement(f).state = 'failed' }],
+  ['rerun partitions missing a file', f => { splitReplacement(f).files = [f.failed.files[0]] }],
+  ['rerun partition on an unrelated commit', f => {
+    splitReplacement(f).commit = f.git('commit-tree', 'HEAD^{tree}', '-m', 'unrelated')
+  }],
   ['unrelated commit', f => { f.replacement.commit = f.git('commit-tree', 'HEAD^{tree}', '-m', 'unrelated') }],
   ['unknown commit', f => { f.replacement.commit = 'a'.repeat(40) }],
   ['another failed gate part', f => { f.group[4].state = 'failed' }],
