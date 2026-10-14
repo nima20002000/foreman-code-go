@@ -16,6 +16,13 @@ export function contractsCacheKey(root) {
   return hash.digest('hex')
 }
 
+export function contractsReady(root) {
+  const output = join(root, 'packages/contracts/dist')
+  const stamp = join(output, '.ci-cache-key')
+  return existsSync(stamp) && existsSync(join(output, 'index.js'))
+    && readFileSync(stamp, 'utf8') === contractsCacheKey(root)
+}
+
 function copy(source, destination) {
   mkdirSync(destination, { recursive: true })
   const result = spawnSync('cp', ['-a', '--reflink=auto', `${source}/.`, destination], { stdio: 'inherit' })
@@ -26,7 +33,7 @@ function build(root, cache, command) {
   const key = contractsCacheKey(root)
   const output = join(root, 'packages/contracts/dist')
   const stamp = join(output, '.ci-cache-key')
-  if (existsSync(stamp) && readFileSync(stamp, 'utf8') === key && existsSync(join(output, 'index.js'))) {
+  if (contractsReady(root)) {
     console.log('[ci-cache] contracts build reused')
     return 0
   }
@@ -57,6 +64,7 @@ function build(root, cache, command) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const [action, root, cache, divider, ...command] = process.argv.slice(2)
   if (action === 'key' && root) console.log(contractsCacheKey(root))
+  else if (action === 'ready' && root) process.exitCode = contractsReady(root) ? 0 : 1
   else if ((action === 'build' || action === 'locked-build') && root && cache && divider === '--' && command.length) {
     mkdirSync(cache, { recursive: true })
     if (action === 'locked-build') process.exitCode = build(root, cache, command)
@@ -66,5 +74,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       if (result.error) throw result.error
       process.exitCode = result.status ?? 1
     }
-  } else throw new Error('Usage: ci-contracts.mjs key root | build root cache -- compiler [args...]')
+  } else throw new Error('Usage: ci-contracts.mjs key|ready root | build root cache -- compiler [args...]')
 }

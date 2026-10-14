@@ -81,7 +81,10 @@ jobs:
       - run: corepack enable && corepack install
       - id: cache-inputs
         run: |
-          echo "contracts=$(node scripts/ci-contracts.mjs key "$PWD")" >> "$GITHUB_OUTPUT"
+          echo "packages=$(node scripts/ci-packages.mjs key "$PWD")" >> "$GITHUB_OUTPUT"
+          if [ "$SUITE" != install ]; then
+            echo "contracts=$(node scripts/ci-contracts.mjs key "$PWD")" >> "$GITHUB_OUTPUT"
+          fi
           # A stable per-shard key, so each shard's warm cache is reused by the same shard of later runs.
           echo "shard=$(printf '%s|%s' "$SLICE" "$CI_PARTITION" | sha1sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - run: scripts/ci-suite.sh start
@@ -97,26 +100,25 @@ jobs:
             !node_modules/.vitest-cache
             !**/node_modules/.cache
             !apps/web/node_modules/.tmp
-          key: packages-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}
-      # The offline policy check reads the package metadata even on a packages hit, so it has its own small cache.
+          key: packages-v2-${{ runner.os }}-${{ steps.cache-inputs.outputs.packages }}
+      # Metadata and store are needed only when installed packages must be populated.
       - id: metadata
+        if: steps.packages.outputs.cache-hit != 'true'
         uses: actions/cache@v4
         with:
           path: .logs/pnpm-metadata
-          key: pnpm-metadata-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}
+          key: pnpm-metadata-v2-${{ runner.os }}-${{ steps.cache-inputs.outputs.packages }}
       # A complete packages hit needs no store; a miss restores it so the offline install can fill packages.
       - id: store
         if: steps.packages.outputs.cache-hit != 'true'
         uses: actions/cache@v4
         with:
           path: node_modules/.pnpm-store
-          key: pnpm-store-${{ runner.os }}-node22.23.2-${{ hashFiles('pnpm-lock.yaml') }}
+          key: pnpm-store-v2-${{ runner.os }}-${{ steps.cache-inputs.outputs.packages }}
       - name: Install from cached store
-        run: |
-          pnpm install --offline --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink || {
-            [ "${{ steps.store.outputs.cache-hit }}" != true ] || exit 1
-            pnpm install --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink
-          }
+        run: node scripts/ci-packages.mjs install "$PWD"
+        env:
+          CI_PNPM_STORE_CACHE_HIT: ${{ steps.store.outputs.cache-hit }}
       # Emitting compilers restore output and build info together, only for identical inputs so deleted source
       # cannot leave stale compiled modules. Keeping build info in dist also invalidates it on a local cleanup.
       - name: Contracts build cache
@@ -142,6 +144,7 @@ jobs:
       # Publish each run's updated incremental state even when a mutable mirror ref is reused. Compiler and
       # ESLint entries validate file content. Runs start from main so every run shares main's cache scope.
       - id: suite-cache
+        if: inputs.suite != 'install'
         uses: actions/cache/restore@v4
         with:
           path: |

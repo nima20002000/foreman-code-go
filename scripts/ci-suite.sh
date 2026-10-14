@@ -95,6 +95,14 @@ unit_slice() {
   return "$code"
 }
 
+# An exact restored build can bypass pnpm startup; misses keep the ordinary build path.
+build_contracts() {
+  if [ -n "${FOREMAN_CODE_CI_CONTRACTS_CACHE:-}" ] && node scripts/ci-contracts.mjs ready "$PWD"; then
+    return 0
+  fi
+  pnpm --filter @foreman-code/contracts build
+}
+
 node_tests() {
   local report="$1"; shift
   pnpm exec node --test --test-reporter=spec --test-reporter-destination=stdout \
@@ -108,7 +116,7 @@ unit_other() {
   node_reporter="$(realpath scripts/ci-node-test-reporter.mjs)"
   mkdir -p "$reports"
   rm -f "$reports/contracts.json" "$reports/worker.json" "$reports/scripts.json"
-  pnpm --filter @foreman-code/contracts build || return $?
+  build_contracts || return $?
   pnpm --filter @foreman-code/contracts test --reporter=default --reporter=json \
     "--outputFile.json=$reports/contracts.json" || code=$?
   (cd apps/worker && node_tests "$reports/worker.json" test/*.test.mjs) || status=$?
@@ -184,25 +192,25 @@ fi
 case "$SUITE" in
   install) ;;
   unit) ready db; ready clis; delegate_cgroup; pnpm test ;;
-  unit-api) ready db; ready clis; delegate_cgroup; pnpm --filter @foreman-code/contracts build
+  unit-api) ready db; ready clis; delegate_cgroup; build_contracts
     unit_slice unit-api apps/api ;;
-  unit-web) pnpm --filter @foreman-code/contracts build
+  unit-web) build_contracts
     unit_slice unit-web apps/web ;;
   # SLICE i/n splits the heavy phase across machines; the run-graph smoke runs once, in the first shard.
-  unit-web-heavy) pnpm --filter @foreman-code/contracts build
+  unit-web-heavy) build_contracts
     case "${SLICE:-1/1}" in 1/*) pnpm --filter @foreman-code/web test:run-graph-smoke ;; esac
     mkdir -p "$state"; heavy_report="$(realpath -m "$state/unit-web-heavy.vitest.json")"; progress_reporter="$PWD/scripts/ci-progress-reporter.mjs"; code=0
     (cd apps/web && FOREMAN_WEB_TEST_PHASE=heavy pnpm exec vitest run ${SLICE:+--shard=$SLICE} \
       --reporter=default --reporter=json "--reporter=$progress_reporter" "--outputFile.json=$heavy_report") || code=$?
     record_tests "$heavy_report"; exit "$code" ;;
   unit-other) ready db; unit_other ;;
-  lint-api) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api lint ;;
-  lint-other) pnpm --filter @foreman-code/contracts build \
+  lint-api) build_contracts && pnpm --filter @foreman-code/api lint ;;
+  lint-other) build_contracts \
     && pnpm -r --no-bail --filter '!@foreman-code/api' --if-present lint ;;
-  typecheck-api) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api typecheck ;;
-  typecheck-other) pnpm --filter @foreman-code/contracts build \
+  typecheck-api) build_contracts && pnpm --filter @foreman-code/api typecheck ;;
+  typecheck-other) build_contracts \
     && pnpm -r --filter '!@foreman-code/api' --if-present typecheck ;;
-  build-api) pnpm --filter @foreman-code/contracts build && pnpm --filter @foreman-code/api build ;;
+  build-api) build_contracts && pnpm --filter @foreman-code/api build ;;
   build-other) pnpm -r --filter '!@foreman-code/api' --if-present build ;;
   typecheck|lint|build) pnpm "$SUITE" ;;
   integration)
