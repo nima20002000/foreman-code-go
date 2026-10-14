@@ -9,7 +9,7 @@ import { DomainError } from '../errors.js'
 
 /** Discovery reads authorized destination metadata; Start validates the selected pins again. */
 export interface PlacementChoiceDiscovery {
-  list(principal: ManagementPrincipal, input: NodePlacementChoicesInput): Promise<readonly NodePlacementChoice[]>
+  list(principal: ManagementPrincipal, input: NodePlacementChoicesInput, source?: 'http' | 'mcp'): Promise<readonly NodePlacementChoice[]>
 }
 export const placementChoiceRequirements = [
   { action: 'workflows:read', scope: 'workflow' },
@@ -47,13 +47,13 @@ export class NodePlacementChoicesService {
         'PLACEMENT_CONFIGURATION_CONFLICT', 'Placement choices require the saved node configuration.', 409)
       authorize(principal)
       authorize(live)
-      return { live, mainId: main.id }
+      return { mainId: main.id }
     })
   }
-  async get(principal: ManagementPrincipal, raw: unknown): Promise<NodePlacementChoicesResult> {
+  async get(principal: ManagementPrincipal, raw: unknown, source: 'http' | 'mcp' = 'mcp'): Promise<NodePlacementChoicesResult> {
     const input = NodePlacementChoicesInputSchema.parse(raw)
-    const { live, mainId } = await this.pinned(principal, input)
-    const choices = await this.discovery.list(live, input)
+    const { mainId } = await this.pinned(principal, input)
+    const choices = await this.discovery.list(principal, input, source)
     const current = await this.pinned(principal, input) // external discovery held no SQL locks
     const result = NodePlacementChoicesResultSchema.parse({ ...input, choices })
     if (current.mainId !== mainId || result.choices.some(choice => choice.placement.hostRef.mainId !== mainId)

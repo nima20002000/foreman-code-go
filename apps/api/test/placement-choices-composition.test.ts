@@ -93,7 +93,7 @@ it('serves saved-node choices through production HTTP and authenticated Operator
   const result = await rpc('tools/call', { name: 'workflow_node_placement_choices', arguments: input })
   expect(result.isError).not.toBe(true)
   expect(decodeMcpToolResult(result)).toEqual(read.json())
-  expect(discover).toHaveBeenCalledWith(principal, input)
+  expect(discover).toHaveBeenCalledWith(principal, input, 'mcp')
   const tools = await rpc('tools/list', {})
   expect(tools.tools).toContainEqual(expect.objectContaining({ name: 'workflow_node_placement_choices',
     inputSchema: expect.objectContaining({ required: expect.arrayContaining(Object.keys(input)) }) }))

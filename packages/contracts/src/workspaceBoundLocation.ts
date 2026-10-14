@@ -19,6 +19,7 @@ export const WorkspaceBoundLocationReadbackSchema = z.discriminatedUnion('eviden
   z.object({ evidence: z.literal('unconfigured'), workspaceId: IdSchema, locationRevision: z.number().int().nonnegative(),
     executionLocation: z.null() }).strict(),
 ])
+/** Set returns the selected root. Device roots preserve the primary location revision; get reads the primary location. */
 export const WorkspaceBoundLocationSetResultSchema = z.object({ value: WorkspaceBoundLocationReadbackSchema, replayed: z.boolean() }).strict()
 export type WorkspaceBoundLocationReadback = z.infer<typeof WorkspaceBoundLocationReadbackSchema>
 export type WorkspaceBoundLocationSetInput = z.infer<typeof WorkspaceBoundLocationSetInputSchema>

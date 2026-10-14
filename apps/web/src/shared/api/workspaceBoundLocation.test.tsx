@@ -26,6 +26,25 @@ describe('exact bound-location HTTP acknowledgement fence', () => {
     const { Wrapper } = wrapper(); const mutation = renderHook(() => useSetBoundWorkspaceLocation('workspace-1'), { wrapper: Wrapper })
     await act(async () => { await expect(mutation.result.current.mutateAsync({ input: { ...input, commandId: 'original-command' }, expectedHost: workerRoot })).rejects.toMatchObject({ code: 'INVALID_RESPONSE' }) })
   })
+  it('accepts a device root without moving the cached primary Main location', async () => {
+    const selection = { ...input, expectedLocationRevision: 1 }
+    const value = boundRootReadback(selection, workerRoot)
+    if (value.evidence !== 'bound') throw new Error('Expected a device root binding')
+    value.locationRevision = 1
+    value.binding.locationRevision = '1'
+    server.use(http.put('/api/management/workspaces/workspace-1/root-location', () =>
+      HttpResponse.json({ value, replayed: false })))
+    const { client, Wrapper } = wrapper()
+    const primary = boundRootReadback({ ...input, hostRef: mainRoot.hostRef }, mainRoot)
+    client.setQueryData(boundLocationKeys.read('workspace-1'), primary)
+    const mutation = renderHook(() => useSetBoundWorkspaceLocation('workspace-1'), { wrapper: Wrapper })
+    await act(async () => {
+      await expect(mutation.result.current.mutateAsync({
+        input: { ...selection, commandId: 'device-root-command' }, expectedHost: workerRoot,
+      })).resolves.toEqual({ value, replayed: false })
+    })
+    expect(client.getQueryData(boundLocationKeys.read('workspace-1'))).toEqual(primary)
+  })
   it('does not allow an older read to replace a newer saved bound-location cache', async () => {
     let resolve!: () => void, entered!: () => void
     const gate = new Promise<void>(done => { resolve = done }), started = new Promise<void>(done => { entered = done })

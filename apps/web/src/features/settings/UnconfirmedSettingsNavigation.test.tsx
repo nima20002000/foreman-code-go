@@ -9,7 +9,7 @@ import { queryKeys } from '../../shared/api/query'
 import { UnsavedChangesProvider } from '../../shared/ui/UnsavedChangesProvider'
 import type { LeaveTarget } from '../../shared/ui/unsavedChanges'
 import { WorkspaceExecutionLocationSettings } from './WorkspaceExecutionLocationSettings'
-import { mainRoot, workerRoot, boundRootReadback } from './workspaceBoundLocation.fixtures'
+import { mainRoot, workerRoot, rootSetReadback } from './workspaceBoundLocation.fixtures'
 import { useBoundLocationDraftStore } from './workspaceBoundLocationDraftStore'
 
 const blocker = vi.hoisted(() => ({ current: undefined as unknown as {
@@ -30,7 +30,7 @@ it('reconciles an unknown folder command through navigation without unlocking di
     http.get('/api/management/workspaces/:workspaceId/root-policies', () => HttpResponse.json({ workspaceId, readiness: 'metadata-only', policies: [], allowlists: [mainRoot, workerRoot] })),
     http.put('/api/management/workspaces/:workspaceId/root-location', async ({ request }) => {
       const input = await request.json() as WorkspaceRootSelection; requests.push(input)
-      return requests.length === 1 ? HttpResponse.json({ error: { code: 'INTERNAL', message: 'Folder unconfirmed.' } }, { status: 503 }) : HttpResponse.json({ value: boundRootReadback(input, workerRoot), replayed: true })
+      return requests.length === 1 ? HttpResponse.json({ error: { code: 'INTERNAL', message: 'Folder unconfirmed.' } }, { status: 503 }) : HttpResponse.json({ value: rootSetReadback(input, workerRoot), replayed: true })
     }))
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
   client.setQueryData(queryKeys.managedWorkspace(workspaceId), { workspace: { id: workspaceId, name: 'Workspace' }, revision: 1, archivedAt: null, executionLocation: { runnerId: 'runner-local', rootPath: '/previous' }, locationRevision: 1, locationValidation: { status: 'ready', checkedAt: '2026-10-01T00:00:00Z' } })

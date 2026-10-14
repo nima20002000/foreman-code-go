@@ -8,7 +8,7 @@ import type { WorkspaceBoundLocationReadback } from '@foreman-code/contracts/wor
 import { server } from '../../mocks/server'
 import { WorkspaceExecutionLocationSettings } from './WorkspaceExecutionLocationSettings'
 import { useBoundLocationDraftStore } from './workspaceBoundLocationDraftStore'
-import { mainRoot, workerRoot, rootDeviceId, rootAttestation, boundRootReadback } from './workspaceBoundLocation.fixtures'
+import { mainRoot, workerRoot, rootMainId, rootAttestation, boundRootReadback, rootSetReadback } from './workspaceBoundLocation.fixtures'
 const clients: QueryClient[] = []
 let saved: WorkspaceBoundLocationReadback
 function mount() { const client = new QueryClient({ defaultOptions: { queries: { retry: false } } }); clients.push(client)
@@ -21,7 +21,9 @@ async function choose(user: ReturnType<typeof userEvent.setup>, remote = true) {
 }
 beforeEach(() => {
   useBoundLocationDraftStore.getState().reset()
-  saved = { evidence: 'legacy_missing', workspaceId: 'workspace-1', locationRevision: 0, executionLocation: { runnerId: 'original-runner', rootPath: '/previous' } }
+  saved = boundRootReadback({ workspaceId: 'workspace-1', hostRef: mainRoot.hostRef,
+    allowedBaseId: mainRoot.bases[0]!.baseId, configurationRevision: '1', relativePath: 'previous',
+    accessMode: 'read-write', expectedLocationRevision: 0, expectedRootPolicyRevision: 0 }, mainRoot)
   server.use(http.get('/api/management/workspaces/workspace-1/root-location', () => HttpResponse.json(saved)),
     http.get('/api/management/workspaces/workspace-1/root-policies', () => HttpResponse.json({ workspaceId: 'workspace-1', readiness: 'metadata-only', policies: [], allowlists: [mainRoot, workerRoot] })),
     http.post('/api/management/workspaces/workspace-1/root-location/browse', async ({ request }) => { const input = await request.json() as WorkspaceRootSelection
@@ -85,7 +87,7 @@ describe('authenticated target-local execution folder', () => {
       const input = await request.json() as WorkspaceRootSelection; writes.push(input)
       expect(input.hostRef).toEqual(workerRoot.hostRef); expect(input.allowedBaseId).toBe(workerRoot.bases[0]!.baseId)
       expect(input).not.toHaveProperty('runnerId')
-      saved = boundRootReadback(input, workerRoot); return HttpResponse.json({ value: saved, replayed: false })
+      return HttpResponse.json({ value: rootSetReadback(input, workerRoot), replayed: false })
     }))
     mount(); const user = userEvent.setup(); await choose(user)
     await user.click(screen.getByRole('button', { name: 'Browse this computer' })); await user.click(await screen.findByRole('button', { name: 'src' }))
@@ -93,16 +95,16 @@ describe('authenticated target-local execution folder', () => {
     expect(await screen.findByText(/Candidate verified on Worker/)).toHaveTextContent('/projects/shared/src. Not saved yet.')
     await user.click(screen.getByRole('button', { name: 'Select location' }))
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Execution folder' })).not.toBeInTheDocument())
-    expect(screen.getByText('Saved execution computer').nextElementSibling).toHaveTextContent(rootDeviceId)
-    expect(writes[0]).toMatchObject({ relativePath: 'src', expectedLocationRevision: 0, expectedRootPolicyRevision: 0 })
+    expect(screen.getByText('Saved execution computer').nextElementSibling).toHaveTextContent(rootMainId)
+    expect(writes[0]).toMatchObject({ relativePath: 'src', expectedLocationRevision: 1, expectedRootPolicyRevision: 0 })
   })
   it('reconciles the original command and locks computer/path changes after a lost acknowledgement', async () => {
     const writes: unknown[] = []
     server.use(http.put('/api/management/workspaces/workspace-1/root-location', async ({ request }) => {
       const input = await request.json() as WorkspaceRootSelection; writes.push(input)
       if (writes.length === 1) return HttpResponse.json({ error: { code: 'INTERNAL', message: 'Acknowledgement lost.' } }, { status: 503 })
-      expect(writes[1]).toEqual(writes[0]); saved = boundRootReadback(input, workerRoot)
-      return HttpResponse.json({ value: saved, replayed: true })
+      expect(writes[1]).toEqual(writes[0])
+      return HttpResponse.json({ value: rootSetReadback(input, workerRoot), replayed: true })
     }))
     mount(); const user = userEvent.setup(); await choose(user); await user.click(screen.getByRole('button', { name: 'Select location' }))
     expect(await screen.findByText(/The save outcome is unknown/)).toBeVisible()
