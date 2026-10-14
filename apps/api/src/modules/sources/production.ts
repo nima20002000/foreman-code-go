@@ -46,6 +46,11 @@ import { SourceOperationOwnerSchema, SourceReservationReclamationResponseSchema 
 
 /** Existing approved root records and original Job attempts own these services.
  * Construction does not fabricate an allowlist or authorize native execution. */
+async function installationFence(sql: GraphSqlClient, value: import('@foreman-code/contracts/source-admission').SourceRootRecord) {
+  await assertDeviceHostInstallation(sql, value.selection.hostRef, value.selection.hostRef.kind === 'main'
+    ? value.selection.hostRef.mainId : value.registration!.workerInstallationId)
+}
+
 export async function createProductionSources(input: { pool: pg.Pool; commands: PostgresCommandCoordinator;
   locations: WorkspaceLocationService; mainId: string; runtimeRoot: string; endpoint(): DeviceEndpoint;
   installedJobConfiguration?: InstalledRuntimeConfigurationLocation;
@@ -59,10 +64,6 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
   const root = join(input.runtimeRoot, 'source-snapshots')
   await mkdir(root, { recursive: true, mode: 0o700 })
   const snapshots = new PrivateSourceSnapshotStore(root)
-  const installationFence = async (sql: GraphSqlClient, value: import('@foreman-code/contracts/source-admission').SourceRootRecord) => {
-    await assertDeviceHostInstallation(sql, value.selection.hostRef, value.selection.hostRef.kind === 'main'
-      ? value.selection.hostRef.mainId : value.registration!.workerInstallationId)
-  }
   const jobs = new JobSourceAttemptAuthority(input.pool, installationFence)
   const agents = new AgentSourceAttemptAuthority(input.pool, installationFence)
   const originalAttempts = installedSourceAttemptAuthority(input.pool, agents, jobs)

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+// eslint-disable-next-line no-restricted-imports -- Short observation and backoff windows prove no hot retry loop.
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ManagementActionSchema, RunEventsPageSchema } from '@foreman-code/contracts/management'
@@ -177,6 +178,7 @@ describe.runIf(postgresEnabled)('Workspace root sharing and execution preparatio
       await expect.poll(() => report.mock.calls.length, { timeout: 30000 }).toBe(1)
       expect(prepare).toHaveBeenCalledTimes(2)
       for (let pass = 0; pass < 5; pass++) await f.base.engine.reconcile(report)
+      // eslint-disable-next-line no-restricted-syntax -- No further preparation may happen in this observation window.
       await delay(100)
       expect(prepare).toHaveBeenCalledTimes(2)
       const details = await read(f, runId)
@@ -185,6 +187,7 @@ describe.runIf(postgresEnabled)('Workspace root sharing and execution preparatio
       expect(details.executions[0]).toMatchObject({ state: 'queued' })
       expect(details.executions[0]!.result).toBeUndefined()
       prepare.mockRestore()
+      // eslint-disable-next-line no-restricted-syntax -- Let the transient-failure backoff elapse before the next pass.
       await delay(1100)
       await f.base.engine.reconcile(report)
       await expect.poll(async () => (await read(f, runId)).run.executionState, { timeout: 90000 }).toBe('waiting')
