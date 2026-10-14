@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest'
 import { MemorySaver } from '@langchain/langgraph'
-import { HarnessExecutionSchema, HarnessExecutionRequestSchema, type HarnessExecution } from '@foreman-code/contracts'
+import { HarnessExecutionSchema, HarnessExecutionRequestSchema, ScopedMcpDetectionSchema,
+  type HarnessExecution } from '@foreman-code/contracts'
 import { makeCurrentWorkflowFixture, WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import type { ApprovalExecutionCoordinator } from '../src/modules/interactions/execution.js'
 import type { RepeatNativeLaunchStore } from '../src/modules/interactions/repeatObservation.js'
@@ -145,7 +146,14 @@ it('announces a new native session after persisted readback and before waiting f
     },
   }
   f.internals.resolveManager = () => ({ manager: physical as never, processState: 'needs_start' })
-  f.internals.prepareEnvironment = async () => undefined
+  f.credentials.prepare = async input => ({
+    credential: { principalId: 'startup-principal', expiresAt: new Date(Date.now() + 300_000).toISOString(),
+      environment: { agentId: f.get().agentId, variables: {} } },
+    detection: ScopedMcpDetectionSchema.parse({ detection: { harness: 'codex', serverName: 'graphql',
+      state: 'connected', endpointMatches: true, credentialEnvironmentVariable: 'GRAPHQL_MCP_TOKEN', checkedAt: f.at },
+      runnerId: 'synthetic-runner', workingDirectory: input.workingDirectory,
+      providerVersion: f.session.providerVersion, nativeFilters: {} }),
+  })
   const request = HarnessExecutionRequestSchema.parse({ executionId: f.get().id, runId: f.run.id, workspaceId: f.run.workspaceId,
     workflowNodeId: f.get().workflowNodeId, workingDirectory: f.get().workingDirectory,
     runtimeDirectory: f.get().runtimeDirectory, input: f.get().input, configuration: f.configuration })
@@ -154,4 +162,41 @@ it('announces a new native session after persisted readback and before waiting f
     signal: new AbortController().signal, onStarted: () => { started = true } })
   expect(result.state).toBe('completed')
   expect(started).toBe(true)
+})
+
+it('uses the persisted computer for an Agent whose saved node inherits its placement', async () => {
+  const f = native2Fixture(false)
+  const admission = new RunnerAdmission(1)
+  let release!: () => void
+  const held = admission.run('other-run', new AbortController().signal,
+    () => new Promise<void>(resolve => { release = resolve }))
+  let started = false
+  const store: RepeatNativeLaunchStore = { ...f.store,
+    claimLaunch: async () => undefined,
+    beginNativeEntry: async () => { throw new Error('Recovery has no fresh entry permit') },
+    recoverSession: async () => f.get(),
+    readWorkExecutionContext: async () => { throw new Error('Ordinary graph has no handoff context') },
+  }
+  const native: Pick<ApprovalExecutionCoordinator, 'observeExact' | 'assertResume'> = {
+    assertResume: async () => undefined,
+    observeExact: async input => {
+      started = true
+      input.onStarted?.()
+      const execution = nativeCompleted(input.execution)
+      return { state: 'completed', execution, result: execution.result! }
+    },
+  }
+  const observe = repeatNativeObserver({ run: f.run, version: f.fixture.version, owner: f.owner as never,
+    store, native, admission, executionHostKey: async () => 'device:host-other',
+    workflows: { getAgentConfiguration: async () => f.configuration },
+    locations: { revalidateRunAuthorization: async () => undefined, revalidateSnapshot: async () => undefined },
+    directory: () => f.get().runtimeDirectory! })
+  const task = observe(f.get(), new AbortController().signal)
+  try {
+    for (let turn = 0; turn < 100; turn++) await Promise.resolve()
+    expect(started).toBe(true)
+  } finally {
+    release()
+    await Promise.all([held, task])
+  }
 })

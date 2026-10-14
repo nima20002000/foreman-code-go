@@ -9,6 +9,7 @@ import { RUN_ACTIVITIES_BOUNDS_SQL, RUN_ACTIVITIES_PAGE_SQL } from '../src/modul
 import { RUN_NATIVE_ACTIVITY_FACTS_SQL } from '../src/modules/runs/nativeActivitySnapshot.js'
 import { RunnerAdmission } from '../src/modules/runs/runnerAdmission.js'
 import { ExecutionLimiter } from '../src/modules/runs/limiter.js'
+import { compactRunDetails } from '../src/mcp/operator/runSummary.js'
 
 // The immutable publication readers are ports here; live grants, transaction
 // ownership, bounded queries and public redaction run their real implementations.
@@ -100,6 +101,9 @@ describe('saved current Run read', () => {
     try {
       expect((await f.read()).executions[0]).toMatchObject({ queueReason: {
         kind: 'host_capacity', hostKey: 'main', limit: 1, since: expect.any(String),
+      } })
+      expect(compactRunDetails(await f.read()).executions[0]).toMatchObject({ queueReason: {
+        kind: 'host_capacity', hostKey: 'main', limit: 1,
       } })
       f.grants([])
       await expect(f.read()).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
