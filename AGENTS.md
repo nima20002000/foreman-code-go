@@ -21,6 +21,17 @@ current consumers instead of restoring a legacy fallback. Preserve exact saved
 WorkflowVersion and Run facts, and keep unrelated native, MCP, and graph protocol
 version labels and historical ENG-03 evidence.
 
+## Prototype permission model (owner decision)
+
+Agents and the Operator may do whatever their work needs. The only ways to give an
+Agent less power are limiting its MCP tools in the workflow or running it
+read-only. About twenty approval steps, grants, caps, expiries and required
+baselines were removed on purpose; their absence is not a bug. Never reintroduce
+one, and never add new permission, approval or baseline paperwork, not even to
+satisfy a review finding or a test. See
+[`docs/adr/prototype-permission-model.md`](docs/adr/prototype-permission-model.md)
+for the removed list and the real boundaries that stay.
+
 ## Operator MCP parity
 
 Every critical product capability added or changed in the app must ship with equivalent Operator MCP support in the same change. This includes workspace and workflow creation, edits, execution locations, global defaults, workspace settings, and workflow settings.
