@@ -104,8 +104,8 @@ export class DeviceApplicationChannel {
   currentBindingForIncoming(namespace: string): Readonly<DeviceSessionBinding> { this.current(); this.negotiated(namespace, false); return this.binding }
   captureRequest(namespace: string): CapturedDeviceApplicationRequest {
     this.current(); this.negotiated(namespace, true)
-    const channel = this
-    return Object.freeze({ binding: this.binding, get busy() { return channel.requestQueue.busy },
+    const { requestQueue } = this
+    return Object.freeze({ binding: this.binding, get busy() { return requestQueue.busy },
       request: (payload: unknown, options?: DeviceApplicationRequestOptions) => this.request(namespace, payload, options) })
   }
   capabilities(): DeviceNegotiatedExtension[] { return this.extensions.map((item) => ({ ...item })) }
