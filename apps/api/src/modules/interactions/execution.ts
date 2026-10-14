@@ -40,6 +40,7 @@ import { coordinateSessionManager, isLeaseLost, type SingleWriterSessionManager 
 import { HarnessExecutionError, NativeDeliveryError } from '../harnesses/errors.js'
 import { assertNativeWorkflowConfiguration } from '../harnesses/nativeWorkflowConfiguration.js'
 import { attemptCleanup, withCleanupDeadline } from './cleanup.js'
+import { deviceRequestTimeoutMs } from '../devices/deviceRequestRetry.js'
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
 import { isTransientRefreshFailure, maintainCredential } from '../harnesses/credentialHeartbeat.js'
 import { componentLogger } from '../diagnostics/logger.js'
@@ -313,7 +314,8 @@ export class ApprovalExecutionCoordinator {
     const task = (async () => {
       const failures: Error[] = []
       const attempt = <T>(label: string, operation: (signal: AbortSignal) => Promise<T>) =>
-        attemptCleanup(failures, `${owned.execution.id}: ${label}`, operation)
+        attemptCleanup(failures, `${owned.execution.id}: ${label}`, operation,
+          owned.context.acceptedPlacement?.hostRef.kind === 'device' ? { timeoutMs: deviceRequestTimeoutMs } : {})
       // Create/attach can be in flight when Stop arrives. Never invent an identity
       // or replay a turn to obtain a session that can be canceled.
       if (owned.opening) await attempt('await native session', async () => { await owned.opening })
@@ -2315,7 +2317,7 @@ export class ApprovalExecutionCoordinator {
             }
             await recoverWorkflowNativeClosure(owner, execution, this.recoverNativeProcesses, signal,
               resident ? { generation: resident.closureGeneration! } : {})
-          })
+          }, { timeoutMs: deviceRequestTimeoutMs })
         }
       }
       if (failures.length) throw new AggregateError(failures, 'Cold native closure remains unconfirmed.')

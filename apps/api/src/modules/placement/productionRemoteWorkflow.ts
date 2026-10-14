@@ -37,6 +37,8 @@ import type { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { transferContextForBinding } from '../byte-transfer/carrier.js'
 import { assertRemoteReviewerReceipt } from './remoteReviewerAuthority.js'
 import type { CapturedReviewNativeSource } from '../interactions/reviewNativeCapture.js'
+import { deviceRequestTimeoutMs, retryDeviceRequest } from '../devices/deviceRequestRetry.js'
+import { preparationStop } from '../runs/remote/preparationCleanup.js'
 
 /** One Main owner and its actual authenticated worker sources. Allocation is
  * IO-free; preparation/prefetch runs before the existing canonical transaction. */
@@ -129,33 +131,46 @@ export function createProductionRemoteWorkflow(input: {
         'REMOTE_RUN_OWNER_CONFLICT', 'The Run owner does not match native cleanup.', 409)
       const captured = input.endpoint().captureRequest(binding.placement.hostRef.deviceId, 'execution-v1')
       if (!captured) return false
-      const reply = await captured.request({ method: 'status', intent: binding.intent,
-        placement: binding.placement }, { signal })
-      if (reply.bytes !== undefined) throw new DomainError('REMOTE_CLOSURE_INVALID', 'Closure readback cannot contain binary data.', 409)
-      const raw = await readRemoteReceiptResponse(reply.payload, binding.intent, async continuation => {
-        const next = await captured.request({ method: 'receipt-continuation', intent: binding.intent,
-          placement: binding.placement, ...continuation }, { signal })
-        return next.payload
-      }, signal)
-      const status = RemoteOperationStatusSchema.parse(raw)
+      const request = (payload: unknown) => retryDeviceRequest(() => captured.request(payload,
+        { signal, timeoutMs: deviceRequestTimeoutMs }), { retry: 'idempotent', signal })
+      const readStatus = async (payload: unknown) => {
+        const reply = await request(payload)
+        if (reply.bytes !== undefined) throw new DomainError('REMOTE_CLOSURE_INVALID',
+          'Closure readback cannot contain binary data.', 409)
+        const raw = await readRemoteReceiptResponse(reply.payload, binding.intent, async continuation => {
+          const next = await request({ method: 'receipt-continuation', intent: binding.intent,
+            placement: binding.placement, ...continuation })
+          return next.payload
+        }, signal)
+        return RemoteOperationStatusSchema.parse(raw)
+      }
+      let status = await readStatus({ method: 'status', intent: binding.intent, placement: binding.placement })
+      if (status.status === 'known' && sameWorkflowValue(status.receipt.intent, binding.intent)
+        && !status.receipt.native && !status.receipt.entryAttempted && !status.receipt.terminal) {
+        owner.assertOwned()
+        const intent = binding.intent
+        status = await readStatus({ method: 'control', intent, placement: binding.placement,
+          command: preparationStop(intent) })
+      }
       if (status.status !== 'known' || !sameWorkflowValue(status.receipt.intent, binding.intent)
         || !status.receipt.terminal) return false
+      const receipt = status.receipt
       const row = (await input.pool.query<{ reference: unknown }>(
         'select reference from execution_native_sessions where execution_id=$1', [executionId])).rows[0]
       const session = row ? NativeSessionReferenceSchema.parse(row.reference) : null
-      const original = status.receipt.native
-        ? await physical.prefetch(status.receipt, binding.placement, { type: 'boundary' }, signal)
+      const original = receipt.native
+        ? await physical.prefetch(receipt, binding.placement, { type: 'boundary' }, signal)
         : undefined
       const confirmedClosed = () => original ? physical.confirmedClosed(original, session)
-        : session === null && (hasPositiveRemoteEntryClosure(status.receipt)
-          || hasPositiveRemoteNonEntryClosure(status.receipt))
+        : session === null && (hasPositiveRemoteEntryClosure(receipt)
+          || hasPositiveRemoteNonEntryClosure(receipt))
       if (!confirmedClosed()) return false
       const { mainId, deviceId, workerInstallationId, bootId, keyRevision, authorizationRevision,
         connectionGeneration } = captured.binding
       const authenticated = DeviceConnectionIdentitySchema.parse({ mainId, deviceId, workerInstallationId,
         bootId, keyRevision, authorizationRevision, connectionGeneration })
-      const committed = await VerifiedRemoteEvidence.commit(status.receipt, authenticated,
-        new OwnedRemoteReceiptCommit(owner, status.receipt, authenticated, {
+      const committed = await VerifiedRemoteEvidence.commit(receipt, authenticated,
+        new OwnedRemoteReceiptCommit(owner, receipt, authenticated, {
           async assertCurrent(sql, intent, placement, connection) {
             await authority(sql, { intent, placement }, connection, 'read')
             const current = (await sql.query<{ reference: unknown }>(

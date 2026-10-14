@@ -10,6 +10,7 @@ import { RemoteWorkflowPhysicalAckSchema, type RemoteWorkflowPhysicalReadout,typ
 import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
 import type { DeviceEndpoint } from '../../devices/deviceEndpoint.js'
+import { deviceRequestTimeoutMs, retryDeviceRequest } from '../../devices/deviceRequestRetry.js'
 import type { WorkflowOriginalNativeSource, WorkflowNativeCapture } from '../../interactions/workflowNativeCapture.js'
 import type { RemoteNativePhysicalVerification, VerifiedRemoteOriginalSource } from '../../placement/remoteNativeSource.js'
 import { readAcceptedPlacement, readNativePlacement } from '../../placement/persistence.js'
@@ -153,7 +154,8 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         prepared.set(result, { ...retained, source: structuredClone(source) })
         return result
       }
-      let expiresAt=Date.now()+60_000
+      // Network waits have their own deadline; freshness comes from the returned Worker observation.
+      let expiresAt = Infinity
       let rebootClosed = false
       const assertRegisteredConnection = () => {
         signal?.throwIfAborted()
@@ -167,19 +169,26 @@ export function createRemoteWorkflowPhysicalVerification(input: {
         assertRegisteredConnection()
         if (captured.binding.bootId !== receipt.connection.bootId && !rebootClosed) return unavailable('boot_changed')
       }
+      const request = (payload: unknown) => retryDeviceRequest(async () => {
+        assertRegisteredConnection()
+        const response = await captured.request(payload,
+          { ...(signal ? { signal } : {}), timeoutMs: deviceRequestTimeoutMs })
+        assertRegisteredConnection()
+        return response
+      }, { retry: 'idempotent', signal })
       assertRegisteredConnection()
-      const reply = await captured.request({ method: 'physical-readout', intent: receipt.intent, placement,
-        receiptSequence: receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(source) }, signal ? { signal } : {})
+      const reply = await request({ method: 'physical-readout', intent: receipt.intent, placement,
+        receiptSequence: receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(source) })
       if (reply.bytes !== undefined) return unavailable('readout_binary')
       const readout = await readPhysicalReadout(reply.payload, async metadata => {
         assertRegisteredConnection()
-        const next = await captured.request({ method: 'physical-readout', intent: receipt.intent, placement,
-          receiptSequence: receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(source), metadata }, signal ? { signal } : {})
+        const next = await request({ method: 'physical-readout', intent: receipt.intent, placement,
+          receiptSequence: receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(source), metadata })
         assertRegisteredConnection()
         if (next.bytes !== undefined) return unavailable('readout_binary')
         return next.payload
       }, signal)
-      expiresAt=Math.min(expiresAt,Date.parse(readout.expiresAt))
+      expiresAt = Math.min(Date.now() + 60_000, Date.parse(readout.expiresAt))
       if (!same(readout.receipt, receipt)) return unavailable('readout_receipt')
       assertSource(readout, source, placement)
       rebootClosed = Boolean(receipt.terminal && readout.closure?.ownerClosed
@@ -198,7 +207,8 @@ export function createRemoteWorkflowPhysicalVerification(input: {
       const observation: Prepared = { expiresAt, binding: Object.freeze(structuredClone(captured.binding)), readout, placement: structuredClone(placement), source: structuredClone(source), assertCurrent, assertAcknowledgmentCurrent,
         acknowledge:async(sourceDigest, options)=>{
           assertAcknowledgmentCurrent()
-          const reply=await captured.request({method:'physical-ack',intent:receipt.intent,placement,receiptSequence:receipt.sequence,sourceDigest,...options},signal?{signal}:{})
+          const reply = await request({ method: 'physical-ack', intent: receipt.intent, placement,
+            receiptSequence: receipt.sequence, sourceDigest, ...options })
           if(reply.bytes!==undefined)return unavailable('ack_binary')
           const ack=RemoteWorkflowPhysicalAckSchema.parse(reply.payload)
           assertAcknowledgmentCurrent()

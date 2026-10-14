@@ -86,6 +86,106 @@ function terminal(events: NativeHarnessEvent[]): NativeHistory {
 }
 
 describe('remote native history streaming', () => {
+  it('disposes a failed startup by stopping its accepted operation without inventing a native session', async () => {
+    const f = setup(() => ({ events: [], pendingInteractions: [] }))
+    delete f.receipt.native
+    delete f.receipt.turnInput
+    f.receipt.entryAttempted = false
+    f.receipt.turnEntryAttempted = false
+    f.receipt.phase = 'received'
+    f.request.mockImplementation(async (method, payload) => {
+      if (method === 'prepare') throw new Error('Preparation failed before native entry')
+      if (method === 'control') {
+        const frame = RemoteExecutionRpcRequestSchema.parse(payload)
+        if (frame.method !== 'control') throw new Error('Expected Stop')
+        expect(frame.command.native).toBeUndefined()
+        expect(frame.command.action).toEqual({ kind: 'stop' })
+        f.receipt.controls.push(frame.command)
+        f.receipt.sequence++
+        f.receipt.stopFence = true
+        f.receipt.phase = 'confirmed_terminal'
+        f.receipt.terminal = { kind: 'not_started',
+          closureEvidenceDigest: remoteNonEntryClosureDigest(f.receipt.intent) }
+      }
+      return { status: 'known', receipt: structuredClone(f.receipt) }
+    })
+    await expect(f.proxy.createSession(f.start)).rejects.toThrow('Preparation failed before native entry')
+    await expect(f.proxy.dispose()).resolves.toBeUndefined()
+    expect(f.request.mock.calls.map(([method]) => method)).toEqual(['prepare', 'status', 'control'])
+    expect(f.controlFor).not.toHaveBeenCalled()
+    await f.proxy.dispose()
+    expect(f.request).toHaveBeenCalledTimes(3)
+  })
+
+  it.each(['backpressure', 'timeout'])('retries %s during preparation with the same start identity', async code => {
+    vi.useFakeTimers()
+    const f = setup(() => ({ events: [], pendingInteractions: [] }))
+    f.request.mockRejectedValueOnce(new DeviceApplicationError(code))
+    try {
+      const result = f.proxy.createSession(f.start)
+      const checked = expect(result).resolves.toMatchObject({ nativeSessionId: 'native-session' })
+      await Promise.allSettled([checked, vi.advanceTimersByTimeAsync(5_000)])
+      await checked
+      expect(f.request).toHaveBeenCalledTimes(2)
+      expect(f.request.mock.calls[1]).toEqual(f.request.mock.calls[0])
+      expect(f.observedReceipts).toHaveLength(1)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('retries a lost turn acknowledgment without submitting a second logical turn', async () => {
+    vi.useFakeTimers()
+    const f = setup(() => terminal([event(0)]))
+    const original = f.request.getMockImplementation()!
+    const turns = new Set<string>()
+    let lost = true
+    f.request.mockImplementation(async (method, payload, signal) => {
+      if (method === 'start-turn') {
+        turns.add(JSON.stringify(payload))
+        if (lost) {
+          lost = false
+          throw new DeviceApplicationError('timeout')
+        }
+      }
+      return original(method, payload, signal)
+    })
+    try {
+      const session = await f.proxy.createSession(f.start)
+      const collect = async () => {
+        const events: NativeHarnessEvent[] = []
+        for await (const value of f.proxy.startTurn(session, {
+          prompt: 'prompt', clientCorrelationId: 'execution:execution',
+        })) events.push(value)
+        return events
+      }
+      const checked = expect(collect()).resolves.toEqual([event(0)])
+      await Promise.allSettled([checked, vi.advanceTimersByTimeAsync(5_000)])
+      await checked
+      expect(turns.size).toBe(1)
+      expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(2)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('bounds preparation retries and cancels queued retries before another start', async () => {
+    vi.useFakeTimers()
+    const f = setup(() => ({ events: [], pendingInteractions: [] }))
+    f.request.mockRejectedValue(new DeviceApplicationError('backpressure'))
+    try {
+      const checked = expect(f.proxy.createSession(f.start)).rejects.toMatchObject({ code: 'backpressure' })
+      await Promise.allSettled([checked, vi.advanceTimersByTimeAsync(10_000)])
+      await checked
+      expect(f.request.mock.calls.length).toBeGreaterThan(1)
+      expect(f.request.mock.calls.length).toBeLessThanOrEqual(6)
+      f.request.mockClear()
+      const controller = new AbortController()
+      const cancelled = expect(f.proxy.createSession(f.start, controller.signal)).rejects.toThrow('Stopped')
+      await vi.advanceTimersByTimeAsync(1)
+      controller.abort(new Error('Stopped'))
+      await vi.advanceTimersByTimeAsync(10_000)
+      await cancelled
+      expect(f.request).toHaveBeenCalledTimes(1)
+    } finally { vi.useRealTimers() }
+  })
+
   it('publishes retry identities in event order when a reader sees several native attempts at once', async () => {
     const correlation = 'execution:execution'
     const events = [
@@ -379,7 +479,8 @@ describe('remote native history streaming', () => {
   it.each(['succeeded', 'failed', 'canceled'] as const)(
     'preserves the original %s result after events were trimmed before the first read', async outcome => {
     const history = terminal([event(50)])
-    const result = { outcome, output: { text: 'saved result' } }
+    const result = { outcome, output: { text: 'saved result' },
+      ...(outcome === 'failed' ? { error: { code: 'PROVIDER_FAILED', message: 'Provider failed', retryable: false } } : {}) }
     history.terminalResult = result
     history.terminalTurn!.result = result
     const f = setup(() => history, reply => { delete reply.history.gap })

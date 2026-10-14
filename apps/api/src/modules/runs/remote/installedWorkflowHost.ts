@@ -74,6 +74,7 @@ import { InstalledWorkflowRecovery } from './installedWorkflowRecovery.js'
 import { recoverInstalledWorkflowReply } from './installedWorkflowRecoveryHandler.js'
 import { InstalledWorkflowResponsePages } from './installedWorkflowResponsePages.js'
 import { hasPositiveRemoteEntryClosure, remoteNonEntryClosureDigest } from '@foreman-code/contracts/remote-execution-entry-closure-node'
+import { deviceRequestTimeoutMs, retryDeviceRequest } from '../../devices/deviceRequestRetry.js'
 
 function unavailable(reason:string):never {throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE','The original installed workflow authority is unavailable.',409,{reason})}
 const digest=(value:unknown)=>commandInputHash(value).slice('sha256:'.length)
@@ -310,7 +311,7 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
   }
   const forBinding=(binding:Readonly<DeviceSessionBinding>)=>{
     const captures=new Map<string,CapturedWorkflowMainRequest>()
-    return async(namespace:string,payload:unknown,options?:{signal?:AbortSignal})=>{
+    return async(namespace:string,payload:unknown,options?:{signal?:AbortSignal;timeoutMs?:number})=>{
       current(binding)
       let captured=captures.get(namespace)
       if(!captured) {
@@ -318,7 +319,13 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
         if(!captured||!isDeepStrictEqual(captured.binding,binding))unavailable('main_channel_unavailable')
         captures.set(namespace,captured)
       }
-      const response=await captured.request(payload,{signal:options?.signal?AbortSignal.any([signal,options.signal]):signal})
+      const requestSignal = options?.signal ? AbortSignal.any([signal, options.signal]) : signal
+      const request = () => captured.request(payload, {
+        signal: requestSignal, timeoutMs: options?.timeoutMs ?? deviceRequestTimeoutMs,
+      })
+      const response = namespace === EXECUTION_AUTHORITY_EXTENSION.namespace
+        ? await retryDeviceRequest(request, { retry: 'idempotent', signal: requestSignal })
+        : await request()
       current(binding)
       return response
     }

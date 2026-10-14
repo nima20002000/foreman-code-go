@@ -11,6 +11,7 @@ import type { NativeManagerResolutionContext } from '../interactions/runtimePort
 import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { DomainError } from '../errors.js'
 import type { AcceptedExecutionBinding } from './nativeComposition.js'
+import { deviceRequestTimeoutMs } from '../devices/deviceRequestRetry.js'
 
 /** W07 returns the identity AND request closure of the SAME authenticated
  * channel instance. A presence label or separately looked-up mutable channel
@@ -92,7 +93,7 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
       if (['prepare', 'capabilities', 'inspect-mcp'].includes(method)) await options.beforePrepare(request.intent, request.placement, connection.identity)
       const preparesNative = ['prepare', 'reattach', 'capabilities', 'inspect-mcp'].includes(method)
       const requestOptions = { ...(signal ? { signal } : {}),
-        ...(preparesNative && options.preparationTimeoutMs ? { timeoutMs: options.preparationTimeoutMs } : {}) }
+        timeoutMs: preparesNative && options.preparationTimeoutMs ? options.preparationTimeoutMs : deviceRequestTimeoutMs }
       const result = await connection.request(namespace, request, requestOptions)
       if (result.bytes !== undefined) throw new DomainError('REMOTE_NATIVE_RESPONSE_INVALID', 'Native metadata responses cannot contain arbitrary bytes.', 409)
       const response = await readRemoteReceiptResponse(result.payload, request.intent, async continuation => {

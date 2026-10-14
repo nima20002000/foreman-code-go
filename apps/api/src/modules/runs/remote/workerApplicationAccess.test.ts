@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import { freezePlacement, deriveDispatch } from '../../placement/binding.js'
 import { prepareWorkerApplicationAccess } from './workerApplicationAccess.js'
+import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
 
 function fixture() {
   const mainId = randomUUID(), digest = 'a'.repeat(64)
@@ -16,6 +17,33 @@ function fixture() {
   return { intent, placement, applicationAccess, lease }
 }
 describe('worker selected-main application lease with authenticated carrier doubles', () => {
+  it.each(['backpressure', 'timeout'])('retries %s while authorizing the same application lease', async code => {
+    vi.useFakeTimers()
+    const value = fixture()
+    const request = vi.fn<Parameters<typeof prepareWorkerApplicationAccess>[0]['request']>(async () => ({ payload: value.lease }))
+    request.mockRejectedValueOnce(new DeviceApplicationError(code))
+    try {
+      const prepared = prepareWorkerApplicationAccess({ request }, value.intent, value.placement, value.applicationAccess)
+      const checked = expect(prepared).resolves.toMatchObject({ environment: { agentId: 'agent' } })
+      await Promise.allSettled([checked, vi.advanceTimersByTimeAsync(5_000)])
+      await checked
+      expect(request).toHaveBeenCalledTimes(2)
+      expect(request.mock.calls[1]).toEqual(request.mock.calls[0])
+    } finally { vi.useRealTimers() }
+  })
+
+  it('allows slow relay responses and never replays a tool call after its response times out', async () => {
+    const value = fixture()
+    const request = vi.fn<Parameters<typeof prepareWorkerApplicationAccess>[0]['request']>(async () => ({ payload: value.lease }))
+    const prepared = await prepareWorkerApplicationAccess({ request }, value.intent, value.placement, value.applicationAccess)
+    request.mockClear()
+    request.mockRejectedValueOnce(new DeviceApplicationError('timeout'))
+    await expect(prepared.request({ method: 'tools/call', params: { name: 'write' } }))
+      .rejects.toMatchObject({ code: 'timeout' })
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(request.mock.calls[0]![2]?.timeoutMs).toBeGreaterThanOrEqual(120_000)
+  })
+
   it('authorizes the original lease before returning only its token and forwards every call to main', async () => {
     const value = fixture(), requests: unknown[] = []
     const prepared = await prepareWorkerApplicationAccess({ request: async (namespace, raw) => {
