@@ -435,6 +435,8 @@ export class LangGraphWorkflowEngine {
           }).catch(error => {
             // A retained reviewer can own the Run between engine passes; retry on the next sweep.
             if (error instanceof DomainError && error.code === 'RUN_ALREADY_OWNED') return
+            // A joined drive ends this way on Stop; the Stop and cleanup path settles the Run.
+            if (error instanceof DomainError && error.code === 'GRAPH_STOP_CONFLICT') return
             if (this.closing && error instanceof DomainError && error.code === 'ENGINE_RESTART') return
             const delayMs = Math.min((retry?.delayMs ?? 500) * 2, 60_000)
             this.reconciliationRetries.set(candidate.id, { delayMs, retryAt: Date.now() + delayMs })

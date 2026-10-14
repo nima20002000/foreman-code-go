@@ -2962,12 +2962,27 @@ export class ApprovalExecutionCoordinator {
     } else if (observation.ownedSession!) {
       // An old owner may dispose its own captured transport only. It cannot
       // revoke a successor's credential, budget or execution authority.
-      await attemptCleanup([], 'close lost-owner transport', async () => {
-        if (observation.ownedSession!.session) await this.closeWorkflowSession(observation.ownedSession!, true)
-        else await observation.ownedSession!.manager.dispose()
+      const owned = observation.ownedSession!
+      const failures: Error[] = []
+      await attemptCleanup(failures, 'close lost-owner transport', async () => {
+        if (owned.session) await this.closeWorkflowSession(owned, true)
+        else await owned.manager.dispose()
       })
+      if (!failures.length) await this.forgetLostOwnerSession(owned)
     }
     throw error
+  }
+
+  /** The successor owner re-enters through the durable detachment like a restart:
+   * a fresh manager attaches the same native session under a new lifetime
+   * generation. A resident kept here would replay the detached generation. */
+  private async forgetLostOwnerSession(owned: OwnedNativeSession): Promise<void> {
+    if (this.ownedSessions.get(owned.execution.id) !== owned) return
+    await owned.stopWaitingRenewal?.()
+    if (this.ownedSessions.get(owned.execution.id) !== owned) return
+    this.ownedSessions.delete(owned.execution.id)
+    this.managerCredentials.delete(owned.manager)
+    this.managers.release?.(owned.context, this.rawManagers.get(owned.manager) ?? owned.manager, 'released')
   }
 
 }

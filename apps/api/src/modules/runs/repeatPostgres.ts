@@ -1235,11 +1235,16 @@ export class RepeatRunRepository {
         row.state !== 'completed' && !failedActivations.has(row.activation_id))) {
         return repeatConflict('WORK_ACTIVATIONS_UNRESOLVED')
       }
-      const unreturned = await context.sql.query(`select 1 from run_work_requests q
+      const unreturned = await context.sql.query<{ result_json: string | null }>(`select x.result_json
+        from run_work_requests q left join run_work_results x on x.run_id=q.run_id and x.activation_id=q.destination_activation_id
         where q.run_id=$1 and not (q.destination_activation_id=any($2::text[]))
-          and not exists(select 1 from run_work_returns t where t.run_id=q.run_id and t.request_id=q.request_id)
-        limit 1`, [context.scope.runId, [...failedActivations]])
-      if (unreturned.rowCount) return repeatConflict('WORK_REQUEST_UNRESOLVED')
+          and not exists(select 1 from run_work_returns t where t.run_id=q.run_id and t.request_id=q.request_id)`,
+      [context.scope.runId, [...failedActivations]])
+      // A destination that finished its chain answered the request; only a pending return is unresolved.
+      if (unreturned.rows.some(row => row.result_json === null || parseWorkHandoffResult(
+        AcceptedCurrentNodeResultSchema.parse(JSON.parse(row.result_json))).routing.kind !== 'finish')) {
+        return repeatConflict('WORK_REQUEST_UNRESOLVED')
+      }
       if (failures[0]) throw new WorkExecutionFailure(failures[0].result)
       const activationIds = new Set(activations.rows.map((row) => row.activation_id))
       const denied = await context.sql.query<{ denial_id: string; notice_id: string | null;
