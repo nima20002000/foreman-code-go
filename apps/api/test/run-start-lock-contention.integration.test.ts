@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import {
   CURRENT_WORKFLOW_TOOLS, CurrentWorkflowSaveResultSchema, RunStartV3InputSchema, RunStartV3ResultSchema,
-  makeCurrentWorkflowFixture, type RunStartV3Input,
+  SavedRunDetailsSchema, makeCurrentWorkflowFixture, type RunStartV3Input,
 } from '@foreman-code/contracts/wave25'
 import { beginTransaction, commitTransaction, rollbackTransaction } from '../src/infrastructure/transaction.js'
 import { createPool } from '../src/infrastructure/pool.js'
@@ -72,6 +72,19 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
     return starters
   }
 
+  async function assertSettled(starter: Starter, runId: string) {
+    // Start accepts asynchronously; teardown must wait for native cleanup as well as the terminal Run.
+    await vi.waitFor(async () => {
+      const response = await starter.runtime.client.callTool({ name: 'run_get', arguments: {
+        workspaceId: starter.input.workspaceId, runId, detail: 'full',
+      } })
+      expect(response.isError).not.toBe(true)
+      const details = SavedRunDetailsSchema.parse(decodeMcpToolResult(response))
+      expect(details).toMatchObject({ run: { id: runId, executionState: 'completed', outcome: 'succeeded' },
+        cleanupPending: false })
+    }, { timeout: 25_000, interval: 50 })
+  }
+
   async function assertPersisted(starter: Starter, runId: string) {
     const response = await starter.runtime.client.callTool({ name: 'run_get', arguments: {
       workspaceId: starter.input.workspaceId, runId, detail: 'full',
@@ -88,7 +101,48 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
     [runId, starter.runtime.writer.principal.id, starter.input.commandId])
     expect(persisted.rows).toEqual([{ id: runId, workflow_id: starter.input.workflowId,
       workspace_id: starter.input.workspaceId, runner_id: LOCAL_RUNNER_ID, receipt_run_id: runId }])
+    await assertSettled(starter, runId)
   }
+
+  it('waits for repeat native closure after Start acceptance before teardown', async () => {
+    const runtimes: Runtime[] = []
+    let releaseClose!: () => void
+    const closeGate = new Promise<void>((resolve) => { releaseClose = resolve })
+    try {
+      const starter = (await createStarters(runtimes))[2]!
+      let closing = false
+      starter.runtime.provider.beforeClose = async () => {
+        closing = true
+        await closeGate
+      }
+      const response = await starter.runtime.client.callTool({ name: 'run_start', arguments: starter.input })
+      expect(response.isError).not.toBe(true)
+      const started = RunStartV3ResultSchema.parse(decodeMcpToolResult(response))
+      expect(started).toMatchObject({ accepted: true, replayed: false })
+      await vi.waitFor(() => { expect(closing).toBe(true) }, { timeout: 5_000, interval: 20 })
+
+      const callTool = starter.runtime.client.callTool.bind(starter.runtime.client)
+      let sawPending = false
+      vi.spyOn(starter.runtime.client, 'callTool').mockImplementation(async (...args) => {
+        const read = await callTool(...args)
+        if (args[0].name === 'run_get') {
+          const details = SavedRunDetailsSchema.parse(decodeMcpToolResult(read))
+          sawPending ||= details.run.executionState !== 'completed'
+          // Release only after the public read captures the unsettled Run.
+          releaseClose()
+        }
+        return read
+      })
+      await assertSettled(starter, started.run.id)
+      expect(sawPending).toBe(true)
+      expect(starter.runtime.provider.counts.starts).toBe(2)
+      expect(starter.runtime.dispatchErrors).toEqual([])
+    } finally {
+      releaseClose()
+      for (const runtime of runtimes.reverse()) await runtime.close()
+      vi.restoreAllMocks()
+    }
+  }, 60_000)
 
   it.each(['runner', 'workspace'] as const)(
     'queues four workflows across two workspaces beyond SQL deadlines at the %s lock', async (lockKind) => {
