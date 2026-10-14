@@ -49,7 +49,8 @@ describe.runIf(postgresEnabled)('authenticated Start lock contention', () => {
       const runtime = await currentOperatorIntegration({ database: { ...database, pool },
         fixture, approvalNodeIds: [], insertRun: false,
         outputFor: (nodeId) => nodeId === fixture.version.definition.repeat?.blocks[0]?.exitNodeId
-          ? { text: JSON.stringify({ routing: { outcome: 'pass' } }) } : { node: nodeId } })
+          ? { text: JSON.stringify({ routing: { outcome: 'pass' },
+            data: { latestDeliverable: { complete: true }, remainingFindings: [] } }) } : { node: nodeId } })
       runtimes.push(runtime)
       const location = await runtime.client.callTool({ name: 'workspace_location_set', arguments: {
         workspaceId: runtime.f.scope.workspaceId, commandId: randomUUID(), expectedLocationRevision: 1,
