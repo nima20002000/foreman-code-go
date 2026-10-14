@@ -18,13 +18,14 @@ function deferred() {
   return { promise, resolve }
 }
 
-function fixture(branch: string | undefined, status?: HostCiEndpoint['request']) {
+function fixture(branch: string | undefined, status?: HostCiEndpoint['request'],
+  rows: (sql: string) => unknown[] = () => []) {
   const workspaceId = randomUUID()
   const workspace = { id: workspaceId, name: 'CI fixture', repository: {
     provider: 'github', owner: 'fixture', name: 'site', defaultBranch: 'main',
   } }
   const pool = { query: vi.fn(async (sql: string) => ({
-    rows: sql.includes('from workspaces') ? [{ record: workspace }] : [], rowCount: 1,
+    rows: sql.includes('from workspaces') ? [{ record: workspace }] : rows(sql), rowCount: 1,
   })) } as unknown as pg.Pool
   const authority: CiAuthority = { resolve: async () => ({ workspaceId, principal: caller }) }
   const commands = { execute: async (input: Parameters<PostgresCommandCoordinator['execute']>[0]) => {
@@ -105,4 +106,22 @@ it('reports an unreachable smoke computer as a retryable unavailable computer', 
   await expect(f.service.run(caller, { workspaceId: 'unused-by-fixture', suite: 'integration', commit: 'a'.repeat(40),
     scope: 'affected', files: ['apps/api/test/site.integration.test.ts'], smokeComputer: smokeHost.hostRef }))
     .rejects.toMatchObject({ code: 'CI_SMOKE_COMPUTER_UNAVAILABLE', status: 503, details: { retryable: true } })
+})
+
+it('reports an enabled smoke computer whose Worker is still connecting as retryable', async () => {
+  const smokeComputer = { kind: 'device' as const, mainId: 'fixture-main', deviceId: 'fixture-laptop' }
+  const f = fixture(undefined, undefined, sql => sql.includes('build_computer_preferences') ? [{ build_enabled: true }] : [])
+  f.release.resolve()
+  await expect(f.service.run(caller, { workspaceId: 'unused-by-fixture', suite: 'integration', commit: 'a'.repeat(40),
+    scope: 'affected', files: ['apps/api/test/site.integration.test.ts'], smokeComputer }))
+    .rejects.toMatchObject({ code: 'CI_SMOKE_COMPUTER_UNAVAILABLE', status: 503, details: { retryable: true } })
+})
+
+it('rejects a smoke computer that is not an enabled build computer', async () => {
+  const f = fixture(undefined)
+  f.release.resolve()
+  await expect(f.service.run(caller, { workspaceId: 'unused-by-fixture', suite: 'integration', commit: 'a'.repeat(40),
+    scope: 'affected', files: ['apps/api/test/site.integration.test.ts'],
+    smokeComputer: { kind: 'device', mainId: 'fixture-main', deviceId: 'fixture-laptop' } }))
+    .rejects.toMatchObject({ code: 'CI_SMOKE_COMPUTER_UNAVAILABLE', status: 409 })
 })

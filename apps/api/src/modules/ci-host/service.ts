@@ -287,6 +287,12 @@ export class HostCiService {
       ? (await this.planningEndpoint.computers()).find(computer => isDeepStrictEqual(computer.hostRef, input.smokeComputer))
       : undefined
     if (input.smokeComputer && !smokeTarget) {
+      // An enabled computer drops out of the list while its Worker reconnects, for example after an API restart.
+      const enabled = (await this.pool.query<{ build_enabled: boolean }>(
+        "select build_enabled from build_computer_preferences where target->'hostRef'=$1::jsonb",
+        [JSON.stringify(input.smokeComputer)])).rows[0]?.build_enabled
+      if (enabled) throw new DomainError('CI_SMOKE_COMPUTER_UNAVAILABLE',
+        'The smoke computer is not connected yet. Retry shortly.', 503, { retryable: true })
       throw new DomainError('CI_SMOKE_COMPUTER_UNAVAILABLE', 'The smoke computer is disabled or unavailable.', 409)
     }
     const repository = `${workspace.repository.owner}/${workspace.repository.name}`
