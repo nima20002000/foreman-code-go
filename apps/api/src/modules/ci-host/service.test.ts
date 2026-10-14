@@ -339,7 +339,7 @@ it('reads every computer status concurrently when listing computers', async () =
   const listing = f.create().computers(caller, { workspaceId: 'workspace' })
   await expect.poll(() => pending, { timeout: 1000 }).toBe(fleet.length)
   const listed = await listing
-  expect(listed.computers.map(value => value.label)).toEqual(['Host 0', 'Host 1', 'Host 2'])
+  expect(listed.computers.map(value => value?.label)).toEqual(['Host 0', 'Host 1', 'Host 2'])
 })
 
 it('refreshes submitted CI in the background without status reads and stops on close', async () => {
