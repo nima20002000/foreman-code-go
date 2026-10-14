@@ -212,6 +212,14 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
       }
     }
     await waitForApprovals()
+    execution = await reload()
+    if (execution.state === 'completed') {
+      await native.observeExact({ ...common, execution, store, signal })
+      return
+    }
+    // Preparation validates the selected profile before waiting for native worker capacity.
+    const placement = await context.preparePlacement?.(execution)
+    check()
     await context.admission.run(run.id, signal, async () => {
       execution = await reload() // Stop or another exact observation may win while queued.
       if (execution.state === 'completed') {
@@ -230,7 +238,6 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
       }
       assertNativeWorkflowConfiguration(configuration.harness, run.approval,
         run.approval.handler === 'orchestrator' && configuration.agentId === run.approval.designatedOrchestratorAgentId)
-      const placement = await context.preparePlacement?.(execution)
       const validate = async () => {
         check()
         await locations.revalidateRunAuthorization(run.authorizationPrincipalId, run.workspaceId, run.workflowId, owner.client)
@@ -439,6 +446,26 @@ export function startIntervalChecks(input: {
   return () => stopped.abort()
 }
 
+async function drainRuntimeTasks(tasks: Set<Promise<unknown>>, signal: AbortSignal,
+  options: { cleanup: boolean }): Promise<void> {
+  const { withCleanupDeadline } = await import('../interactions/cleanup.js')
+  const finished = beginRuntimeTiming('engine', 'wrapper.drain', { count: tasks.size })
+  try {
+    const wait = async () => { while (tasks.size) await Promise.allSettled([...tasks]) }
+    if (options.cleanup) return await withCleanupDeadline(wait)
+    // Healthy siblings retain their active budgets; the cleanup deadline applies
+    // only after cancellation/restart, not while observing their original work.
+    let abort: (() => void) | undefined
+    try {
+      await Promise.race([wait(), new Promise<never>((_resolve, reject) => {
+        abort = () => reject(signal.reason)
+        signal.addEventListener('abort', abort, { once: true })
+        if (signal.aborted) abort()
+      })])
+    } finally { if (abort) signal.removeEventListener('abort', abort) }
+  } finally { finished() }
+}
+
 /** Executes the one graph on the existing Run thread. Settlement retries drain
  * wrappers and re-enter the same checkpoint; business progression stays inside
  * guarded graph edges. The shared engine owns Run ownership/admission,
@@ -457,7 +484,6 @@ export async function executeRepeatRuntime(input: {
   configuredParallelism?: number
 }): Promise<void> {
   const { buildRepeatGraph } = await import('./repeatGraph.js')
-  const { withCleanupDeadline } = await import('../interactions/cleanup.js')
   const failed = new AbortController(), signal = AbortSignal.any([input.signal, failed.signal])
   const bookkeeping = <T>(work: () => Promise<T>) => retryDatabaseTimeout(work, {
     signal, check: () => input.owner.assertOwned(),
@@ -470,23 +496,7 @@ export async function executeRepeatRuntime(input: {
   const tasks = new Set<Promise<unknown>>()
   let firstFailure: unknown, preflightComplete = false, cancellation: Promise<boolean> | undefined
   const cancel = () => cancellation ??= input.lifecycle.cancelNativeAndRequestCleanup()
-  const drain = async (cleanup = false) => {
-    const finished = beginRuntimeTiming('engine', 'wrapper.drain', { count: tasks.size })
-    try {
-      const wait = async () => { while (tasks.size) await Promise.allSettled([...tasks]) }
-      if (cleanup) return await withCleanupDeadline(wait)
-      // Healthy siblings retain their active budgets; the cleanup deadline applies
-      // only after cancellation/restart, not while observing their original work.
-      let abort: (() => void) | undefined
-      try {
-        await Promise.race([wait(), new Promise<never>((_resolve, reject) => {
-          abort = () => reject(signal.reason)
-          signal.addEventListener('abort', abort, { once: true })
-          if (signal.aborted) abort()
-        })])
-      } finally { if (abort) signal.removeEventListener('abort', abort) }
-    } finally { finished() }
-  }
+  const drain = (cleanup = false) => drainRuntimeTasks(tasks, signal, { cleanup })
   const track = (task: Promise<unknown>) => {
       tasks.add(task)
       void task.then(() => { tasks.delete(task) }, (error: unknown) => {

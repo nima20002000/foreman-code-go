@@ -68,6 +68,7 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
     let authenticated: boolean | null = null
     let compatible: boolean | null = null
     let qualified = false
+    let modelCatalogSource: HostHarnessProfileEvidence['modelCatalogSource']
     let failure: { code: string; message: string } | undefined
     try {
       this.factories.admitAuxiliary(allocation.manager)
@@ -75,6 +76,7 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
       if (allocation.harness === 'codex' && configuration.harness === 'codex') {
         const checked = await allocation.manager.qualifyConfiguration(configuration, this.workingDirectory, input.signal)
         authenticated = checked.authenticated; compatible = checked.structuredEvents
+        modelCatalogSource = checked.modelCatalogSource
         qualified = checked.ready && harnessProfile('codex', checked.version) !== null
       }
       await this.factories.assertInstallationUnchanged(binding, input.signal)
@@ -98,6 +100,6 @@ export class ProductionHostHarnessProfileQualifier implements HostHarnessProfile
       driverRevision: binding.installation.driverRevision, protocolRevision: binding.installation.protocolRevision,
       suiteRevision, environmentGeneration: binding.installation.environmentGeneration,
       connectionGeneration: binding.installation.connectionGeneration, authenticated, compatible, qualified, ...(failure ? { failure } : {}),
-      checkedAt: new Date().toISOString() })
+      ...(modelCatalogSource ? { modelCatalogSource } : {}), checkedAt: new Date().toISOString() })
   }
 }

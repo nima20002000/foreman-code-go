@@ -404,6 +404,7 @@ export const HarnessQualificationSchema = z
     authenticated: z.boolean(),
     ready: z.boolean(),
     structuredEvents: z.boolean(),
+    modelCatalogSource: z.enum(['native', 'cached']).optional(),
     supportsResume: z.boolean(),
     supportsCancellation: z.boolean(),
     supportsWorkingDirectory: z.boolean(),
