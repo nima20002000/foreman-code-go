@@ -71,8 +71,9 @@ it('keeps checking a settled graph, recovers its idle checkpoint, and ends only 
     await vi.waitFor(() => expect(checks.length).toBeGreaterThanOrEqual(2), { timeout: 10_000 })
     expect(h.completeCalls).toBe(0)
     expect(lifecycle.requestCleanup).not.toHaveBeenCalled()
-    first.abort(new DomainError('ENGINE_RESTART', 'Restart requested.', 409))
-    expect((await firstResult)[0]).toMatchObject({ status: 'rejected', reason: { code: 'ENGINE_RESTART' } })
+    const restartReason = new DomainError('ENGINE_RESTART', 'Restart requested.', 409)
+    first.abort(restartReason)
+    expect((await firstResult)[0]).toEqual({ status: 'rejected', reason: restartReason })
     const beforeRestart = checks.length
     restarted = new AbortController()
     const secondRun = execute(restarted.signal)

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import { MemorySaver } from '@langchain/langgraph'
 import { HarnessExecutionSchema, type HarnessExecution } from '@foreman-code/contracts'
@@ -26,7 +26,7 @@ import { workflowNativeReservation, type WorkflowNativeReservation } from '../sr
 const at = '2026-09-25T00:00:00.000Z'
 const edge = (source: string, target: string) => ({ id: `${source}-${target}`, kind: 'execution' as const, source, target })
 function fixture(cap = 3) {
-  const base = makeCurrentWorkflowFixture('eng04-core')
+  const base = makeCurrentWorkflowFixture('repeat-core')
   const names = ['work', 'review', 'done', 'limit']
   const version = RepeatWorkflowVersionV1Schema.parse({ ...base.version, executionSemanticsVersion: 3, entryNodeId: 'work',
     agentConfigurationVersionIds: Object.fromEntries(names.map((id) => [`agent-${id}`, `config-${id}`])),
@@ -64,7 +64,7 @@ function resolved(f: ReturnType<typeof fixture>, occurrence: RepeatOccurrenceV1,
   return repeatTerminalResolution(f.version, f.scope, { nodeId, occurrence: occurrence.identity }, e)
 }
 
-describe('ENG04-A deterministic occurrence core', () => {
+describe('deterministic occurrence core', () => {
   it('admits a second disjoint repeat block from the first final export with its occurrence provenance', () => {
     const f = fixture(2)
     const second = { ...f.block, id: 'second', maxOccurrences: 1, nodeIds: ['done'], entryNodeId: 'done', exitNodeId: 'done',
@@ -413,7 +413,7 @@ function postgresShape(cap = 3, artifacts: false | 'enabled' | 'missing' = false
     fail: (value: string) => { fault = value }, loseCommit: () => { lostCommit = true } }
 }
 
-describe('ENG04-A real repository with PostgreSQL-shaped scripted transactions (not real PostgreSQL)', () => {
+describe('real repository with PostgreSQL-shaped scripted transactions (not real PostgreSQL)', () => {
   it('gates declared successful acceptance and replay before exposing a result, preserving rollback', async () => {
     const db = postgresShape(3, 'enabled'), occ = await db.enter(), work = await db.admit(occ, 'work')
     db.finish(work.id)
@@ -528,7 +528,7 @@ describe('ENG04-A real repository with PostgreSQL-shaped scripted transactions (
     await expect(db.store.completeRun()).rejects.toThrow('GRAPH_RECEIPT_MISMATCH')
   })
   it.each(['SOURCE_MATERIALIZATION_UNCERTAIN', 'HARNESS_PROFILE_UNAVAILABLE'])(
-    'passes an interrupted interval preparation to Run cleanup: %s', async code => {
+    're-observes interrupted interval preparation without ending the Run: %s', async code => {
       const f = fixture(1)
       const node = f.version.definition.nodes[0]!
       if (node.kind === 'job') throw new Error('Expected an Agent node.')
@@ -536,12 +536,24 @@ describe('ENG04-A real repository with PostgreSQL-shaped scripted transactions (
       const queued = execution(f, node.id, 'queued-interval')
       const failure = new DomainError(code, 'The queued interval cannot finish preparation.', 409)
       let tracked!: Promise<unknown>
+      let observations = 0
+      let finished = false
       const stop = startIntervalChecks({ version: f.version, signal: new AbortController().signal,
         store: { admitTick: async () => ({ kind: 'busy', execution: queued }) },
-        driver: { candidate: () => queued, observe: async () => { throw failure } },
-        track: task => { tracked = task } })
-      try { await expect(tracked).rejects.toBe(failure) }
-      finally { stop() }
+        driver: { candidate: () => queued, observe: async observed => {
+          expect(observed).toBe(queued)
+          if (++observations === 1) throw failure
+        } },
+        track: task => { tracked = task.then(() => { finished = true }) } })
+      try {
+        await vi.waitFor(() => expect(observations).toBe(2), { timeout: 8_000 })
+        expect(finished).toBe(false)
+        expect(queued.state).toBe('queued')
+      } finally {
+        stop()
+        await tracked
+      }
+      expect(finished).toBe(true)
     },
   )
   it.each([

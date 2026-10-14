@@ -9,7 +9,7 @@ import { PostgresAppInteractionService } from '../src/modules/interactions/app.j
 import { RunHistoryService } from '../src/modules/runs/history.js'
 import { intervalRuntime } from './helpers/intervalRuntime.js'
 
-it('re-activates a looping node with its loop prompt in its own session without routing and stops when the Run completes', async () => {
+it('re-activates a looping node with its loop prompt in its own session without routing and keeps the settled Run idle until Stop', async () => {
   const { runtime, f, watcher, worker, checkStarted, checkGate, workerGate } = await intervalRuntime('Check the deploy log for errors.')
   const commands = new PostgresCommandCoordinator(runtime.db.pool)
   const app = buildApp({
@@ -77,6 +77,11 @@ it('re-activates a looping node with its loop prompt in its own session without 
     workerGate.resolve()
     await vi.waitFor(async () => expect((await executions()).every(row => row.state === 'completed')).toBe(true),
       { timeout: 10_000 })
+    await vi.waitFor(async () => {
+      const resolved = await runtime.db.pool.query(
+        'select workflow_node_id from run_repeat_resolutions where run_id=$1', [f.run.id])
+      expect(resolved.rows).toHaveLength(2)
+    }, { timeout: 10_000 })
     expect((await runtime.runs.get(f.run.id))?.executionState).toBe('running')
     await runtime.stop()
     await runtime.engine.cancel(f.run.id)
