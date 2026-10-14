@@ -26,6 +26,12 @@ describe('native Run activity status', () => {
       fixture.version, fixture.run.id, fixture.run.outcome)
     expect(activity).toMatchObject({ summary: 'Waiting for model capacity', status: 'pending' })
   })
+  it('shows MCP startup retries on the execution activity', () => {
+    const activity = publicRunActivity({ ...row, native: { type: 'turn.mcp_startup_retry' } },
+      fixture.version, fixture.run.id, fixture.run.outcome)
+    expect(activity).toMatchObject({ kind: 'recovery', status: 'pending',
+      summary: 'Retrying Foreman Code MCP startup', refs: { executionId: 'execution' } })
+  })
   it.each(['result_recorded', 'work_result_accepted', 'work_needs_direction'])(
     'exposes only redacted work result details for %s', (kind) => {
       const token = `opm_${'a'.repeat(43)}`
