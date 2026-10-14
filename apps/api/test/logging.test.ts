@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { Writable } from 'node:stream'
@@ -147,6 +147,18 @@ describe('log retention and noise', () => {
     expect(names).toHaveLength(1)
     expect(await readFile(join(dir, names[0]!), 'utf8')).toContain('"msg":"retained active record"')
     expect(await readFile(join(dir, 'other.1.log'), 'utf8')).toBe('unrelated')
+  })
+
+  it('preserves the active destination even when its age exceeds retention', async () => {
+    const dir = await temporaryDirectory('api-log-active-')
+    const now = Date.now()
+    await writeFile(join(dir, 'api.2000-01-01.1.log'), 'active')
+    await writeFile(join(dir, 'api.1.log'), 'inactive')
+    await utimes(join(dir, 'api.2000-01-01.1.log'), 0, 0)
+    await symlink('api.2000-01-01.1.log', join(dir, 'current.log'))
+    await pruneLogFiles(join(dir, 'api.log'), 1, 14, now)
+    expect(await readFile(join(dir, 'current.log'), 'utf8')).toBe('active')
+    expect((await readdir(dir)).filter(name => /^api\..*\.log$/.test(name))).toHaveLength(1)
   })
 
   it('prunes only its own rotated files, by age and then by count', async () => {
