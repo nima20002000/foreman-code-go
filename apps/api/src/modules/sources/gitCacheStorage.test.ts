@@ -152,6 +152,31 @@ it('bounds a later fetch, cleans its partial transfer, and preserves active work
   expect((await f.storage()).retainedBytes).toBeGreaterThan(0)
 })
 
+it('admits a fetch promptly when every cache filesystem call waits on a busy thread pool', async () => {
+  const f = await fixture()
+  const signal = AbortSignal.timeout(30_000)
+  const clone = await ensureCommit(f.ports, 'fixture/project', f.commit, signal)
+  // Retained results and object directories make the cache wide, like Main's cache of several repositories.
+  for (let directory = 0; directory < 10; directory++) {
+    const path = join(f.cache, 'retained', `result-${directory}`)
+    await mkdir(path, { recursive: true, mode: 0o700 })
+    for (let file = 0; file < 30; file++) await writeFile(join(path, `object-${file}`), 'x', { mode: 0o600 })
+  }
+  await writeFile(join(f.origin, 'source.txt'), 'released source')
+  git(f.origin, 'add', '.')
+  git(f.origin, 'commit', '-qm', 'Release')
+  const release = git(f.origin, 'rev-parse', 'HEAD')
+  // Each lstat waits as it does behind startup source preparation saturating the libuv pool.
+  filesystemRace.beforeLstat = () => new Promise(resolve => setTimeout(resolve, 20))
+
+  const started = performance.now()
+  await expect(ensureCommit(f.ports, 'fixture/project', release, signal)).resolves.toBe(clone)
+  expect(performance.now() - started).toBeLessThan(5000)
+  expect(git(clone, 'cat-file', '-t', release)).toBe('commit')
+  expect(await f.storage()).toMatchObject({ reservedBytes: 0 })
+  expect((await f.storage()).retainedBytes).toBeGreaterThan(300 * 4096)
+}, 30_000)
+
 it('charges previously retained cache bytes before admitting another fetch', async () => {
   const f = await fixture()
   const signal = AbortSignal.timeout(30_000)
