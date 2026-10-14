@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
-import { deferred } from '../../../test/helpers/deferred.js'
+import { deferred, type Deferred } from '../../../test/helpers/deferred.js'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { HostCiRunner, systemHostCiPorts, type HostCiPorts } from './runner.js'
 
@@ -75,6 +75,7 @@ if (args[1] === 'db:up') {
 `, { mode: 0o755 })
   const system = systemHostCiPorts()
   const launched = new Map<string, { cwd: string; done: Promise<unknown> }>()
+  const starts = new Map<string, Deferred<void>>()
   const ports: HostCiPorts = { ...system, cpus: 16, memoryBytes: 16 * 2 ** 30,
     availableMemoryBytes: () => 16 * 2 ** 30,
     run: async (file, args, options) => {
@@ -87,7 +88,9 @@ if (args[1] === 'db:up') {
         const cwd = args.find(arg => arg.startsWith('--working-directory='))!.slice('--working-directory='.length)
         const env = Object.fromEntries(args.filter(arg => arg.startsWith('--setenv='))
           .map(arg => arg.slice('--setenv='.length).split(/=(.*)/s).slice(0, 2)))
-        launched.set(args.at(-1)!, { cwd, done: system.run('/bin/bash', [args.at(-1)!], { cwd, env }) })
+        const script = args.at(-1)!
+        launched.set(script, { cwd, done: system.run('/bin/bash', [script], { cwd, env }) })
+        starts.get(script)!.resolve()
         return { code: 0, stdout: '', stderr: '' }
       }
       if (file === 'systemctl') return { code: 0, stdout: 'active', stderr: '' }
@@ -100,6 +103,9 @@ if (args[1] === 'db:up') {
   })
   async function run() {
     const runId = randomUUID()
+    const script = join(root, 'runner/runs', runId, 'run.sh')
+    const started = deferred()
+    starts.set(script, started)
     await runner.handle({ operation: 'start', runId, repository: 'example/project', commit: git('rev-parse', 'HEAD'),
       suite: 'lint', scope: 'affected', files: [] })
     await vi.waitFor(async () => {
@@ -107,9 +113,9 @@ if (args[1] === 'db:up') {
       if (reply.operation !== 'read' || reply.run.state === 'starting') throw new Error('Run is starting')
     })
     await afterRunning?.()
-    const script = join(root, 'runner/runs', runId, 'run.sh')
-    await launched.get(script)?.done
-    expect(runner.isUpdateIdle()).toBe(true)
+    await started.promise
+    await launched.get(script)!.done
+    await vi.waitFor(() => expect(runner.isUpdateIdle()).toBe(true), { timeout: 10_000 })
     return runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 })
   }
   const commands = async () => (await readFile(calls, 'utf8')).trim().split('\n')

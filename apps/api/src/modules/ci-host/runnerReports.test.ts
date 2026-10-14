@@ -63,6 +63,7 @@ async function fixture(suite: 'unit' | 'integration', options: {
       .resolves.toMatchObject({ run: { state: 'running' } })
   })
   await options.afterRunning?.()
+  await runner.beginDrain()
   expect(runner.isUpdateIdle()).toBe(true)
   const directory = join(root, 'runs', runId)
   await fs.writeFile(join(directory, 'test-results.json'), JSON.stringify(tests))
