@@ -23,7 +23,7 @@ async function fixture() {
   const bytes = Buffer.from('accepted source\n')
   const manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
     capturePolicy: 'exclusive-explicit-bytes-v1', executablePolicy: 'strip',
-    entries: [{ path: 'app.ts', kind: 'file', byteSize: bytes.length, sha256: sourceSha256(bytes), executable: false }],
+    entries: [{ path: 'app.txt', kind: 'file', byteSize: bytes.length, sha256: sourceSha256(bytes), executable: false }],
     deletions: [] })
   const mainId = randomUUID()
   const deviceId = randomUUID()
@@ -56,12 +56,12 @@ async function fixture() {
 it('releases an acknowledged receipt after unacknowledged preparation reconciliation and preserves a successor', async () => {
   const f = await fixture()
   const successorInput = { manifest: f.manifest, binding: f.binding,
-    attempt: { ...f.attempt, executionId: randomUUID(), attemptId: randomUUID() }, sharedWritableTree: true }
+    attempt: { ...f.attempt, executionId: randomUUID(), attemptId: randomUUID() }, sharedWritableTree: true as const }
   const successor = await f.materializer.prepare(successorInput)
   await expect(releaseMaterializationClaim(f.receipt, async () => 'released')).resolves.toBeUndefined()
   await expect(releaseMaterializationClaim(f.receipt, async () => 'released')).resolves.toBeUndefined()
   expect(await f.materializer.prepare(successorInput)).toEqual(successor)
-  expect(await readFile(join(f.root, f.receipt.materializationId, 'tree/app.ts'))).toEqual(f.bytes)
+  expect(await readFile(join(f.root, f.receipt.materializationId, 'tree/app.txt'))).toEqual(f.bytes)
   await releaseMaterializationClaim(successor, async () => 'released')
 })
 

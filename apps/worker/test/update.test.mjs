@@ -178,7 +178,7 @@ test('downloads a release from its GitHub release asset and still verifies every
   const manifest = await downloadWorkerArtifact({ release, request, directory: installed, facts, fetchAsset });
   assert.deepEqual(requested, [{ github, asset: `${built.release.manifestSha256}.tar.gz` }]);
   assert.equal(manifest.version, '1.2.0');
-  assert.equal(await readFile(join(installed, 'src/cli.mjs'), 'utf8'), "console.log('1.2.0');\n");
+  assert.equal(spawnSync(process.execPath, [join(installed, 'src/cli.mjs')], { encoding: 'utf8' }).stdout, '1.2.0\n');
 
   await writeFile(join(built.directory, 'src/cli.mjs'), "console.log('2.1.0');\n");
   spawnSync('tar', ['-czf', archive, '-C', built.directory, '.']);
