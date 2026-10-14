@@ -202,6 +202,8 @@ export function gatePartStealer(computers: readonly HostCiComputer[], queued: re
     if (computer.hostRef.kind !== 'cloud') {
       return !waitingHostGates.has(computer.key) && (plannedForCloud || run.suite === 'integration')
     }
-    return plannedForCloud && computer.hostRef.provider === cloudProviders.get(run.plannedHostKey)
+    const plannedProvider = cloudProviders.get(run.plannedHostKey)
+    return plannedForCloud && (computer.hostRef.provider === plannedProvider
+      || plannedProvider !== undefined && run.unstartedProviders?.includes(plannedProvider) === true)
   }
 }

@@ -822,8 +822,7 @@ export class CloudCi {
     const pendingCollection = run.collection && (!run.collection.log || !run.collection.artifacts)
     if (!['starting', 'running'].includes(run.state) && !run.cancellation && !pendingCollection) return run
     const now = this.ports.now().getTime()
-    if (run.reconciliation && (run.reconciliation.attempts >= MAX_DISPATCH_ATTEMPTS && !this.stalled(run)
-      || now - Date.parse(run.reconciliation.at) < POLL_MS)) return run
+    if (run.reconciliation && now - Date.parse(run.reconciliation.at) < POLL_MS) return run
     if (now < this.backoff.until) return run
     const interval = this.expectedEnd(run) - now <= FINISH_WINDOW_MS ? FINISH_POLL_MS : POLL_MS
     if ((run.cancellation || pendingCollection || run.state === 'running' && run.workflowStarted)
@@ -871,14 +870,43 @@ export class CloudCi {
   }
 
   private async reconcileLookupFailure(run: CloudRun, error: unknown): Promise<CloudRun> {
-    const attempts = (run.reconciliation?.attempts ?? 0) + 1
+    const now = this.ports.now()
+    const since = run.reconciliation?.since ?? run.reconciliation?.at
+      ?? (run.workflowStarted ? now.toISOString() : run.dispatch?.at ?? run.startedAt)
+    if (['starting', 'running'].includes(run.state) && now.getTime() - Date.parse(since) >= CLOUD_START_TIMEOUT_MS) {
+      return this.requeueUnreadable(run, error)
+    }
+    const attempts = Math.min(MAX_DISPATCH_ATTEMPTS, (run.reconciliation?.attempts ?? 0) + 1)
     const message = `${this.provider.label} execution could not be reconciled: `
       + (error instanceof Error ? error.message : String(error)).slice(0, 500)
-      + (attempts >= MAX_DISPATCH_ATTEMPTS ? ' Automatic recovery stopped; Operator cancellation is required.'
-        : ` Ownership retained; recovery attempt ${attempts}/${MAX_DISPATCH_ATTEMPTS}.`)
+      + ' Retrying lookup for up to 75 seconds before moving to another computer.'
     log.warn({ err: error, runId: run.runId, attempts }, 'Cloud CI execution needs reconciliation')
-    return this.save({ ...run, message, reconciliation: { attempts, at: this.ports.now().toISOString(),
+    return this.save({ ...run, message, reconciliation: { attempts, at: now.toISOString(), since,
       previousMessage: run.reconciliation ? run.reconciliation.previousMessage : run.message } })
+  }
+
+  private async requeueUnreadable(run: CloudRun, error: unknown): Promise<CloudRun> {
+    let cancellationFailed = false
+    const attempts = run.dispatchHistory?.map(attempt => attempt.providerRunId) ?? []
+    const ids = new Set([run.providerRunId, ...attempts])
+    for (const providerRunId of ids) {
+      if (!providerRunId) continue
+      try {
+        await this.provider.cancel({ ...run, providerRunId })
+      } catch (cancelError) {
+        cancellationFailed = true
+        log.warn({ err: cancelError, runId: run.runId, providerRunId }, 'Unreadable cloud CI cancellation failed')
+      }
+    }
+    const detail = (error instanceof Error ? error.message : String(error)).slice(0, 500)
+    const cancellation = cancellationFailed ? 'Cancellation could not be confirmed.' : 'Cancellation requested.'
+    const message = sanitizeCiText(`${this.provider.label} execution stayed unreadable past the 75-second window: `
+      + `${detail} ${cancellation} Automatic recovery queued for another computer.`)
+    await writeFile(this.path(run.runId, 'log'), `${message}\n`, { flag: 'a', mode: 0o600 })
+    const recovered: CloudRun = { ...run, state: 'queued', providerRunId: null, finishedAt: null,
+      exitCode: null, message }
+    delete recovered.reconciliation
+    return this.save(recovered)
   }
 
   /** Writes the steps the run has started, and new output of the running step, to its log. */
@@ -937,7 +965,9 @@ export class CloudCi {
       const runId = ids[(this.reconcileCursor + offset) % ids.length]!
       try {
         const run = await this.read(runId)
-        if (run.publicationRequest && run.state === 'starting' || this.stalled(run) || run.cancellation || run.collection && (!run.collection.log || !run.collection.artifacts)) {
+        if (run.publicationRequest && run.state === 'starting' || this.stalled(run)
+          || run.reconciliation && ['starting', 'running'].includes(run.state)
+          || run.cancellation || run.collection && (!run.collection.log || !run.collection.artifacts)) {
           await this.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 })
         }
       } catch (error) {

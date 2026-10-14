@@ -7,23 +7,29 @@ import type { HostCiPorts } from '../../src/modules/ci-host/runner.js'
 import type { GitWorktreePorts } from '../../src/modules/sources/gitWorktree.js'
 import { privateFixtureDirectory } from './privateFixtureDirectory.js'
 
-export async function cloudCiLookupFixture(state: 'starting' | 'running') {
+export async function cloudCiLookupFixture(state: 'starting' | 'running',
+  reconciliation?: CloudRun['reconciliation']) {
   const root = await privateFixtureDirectory('ci-cloud-lookup-')
   const runId = randomUUID()
   const directory = join(root, 'runs', runId)
   await mkdir(directory, { recursive: true })
   await mkdir(join(root, 'clone/.git'), { recursive: true })
   let now = Date.now()
-  const control = { error: '', operation: state === 'starting' ? 'run' : 'job', reads: 0, canceled: [] as string[] }
+  const control = { error: '', cancelError: '', operation: state === 'starting' ? 'run' : 'job',
+    reads: 0, canceled: [] as string[] }
   const run: CloudRun = { runId, repository: 'fixture/site', mirror: 'fixture/site-ci', commit: 'a'.repeat(40),
     suite: 'integration', providerRunId: 'pipeline-1', state, startedAt: new Date(now).toISOString(),
-    finishedAt: null, exitCode: null, message: null, workflowStarted: state === 'running' }
+    finishedAt: null, exitCode: null, message: null, workflowStarted: state === 'running',
+    ...(reconciliation ? { reconciliation } : {}) }
   await writeFile(join(directory, 'meta.json'), JSON.stringify(run))
   const ports: HostCiPorts = { cpus: 4, memoryBytes: 8 * 2 ** 30, now: () => new Date(now),
     run: async (file, args) => {
       const ok = (stdout = '') => ({ code: 0, stdout, stderr: '' })
       if (file !== 'circleci') throw new Error('Unexpected provider command')
-      if (args[1] === 'cancel') { control.canceled.push(args[2]!); return ok() }
+      if (args[1] === 'cancel') {
+        control.canceled.push(args[2]!)
+        return control.cancelError ? { code: 1, stdout: '', stderr: control.cancelError } : ok()
+      }
       if (args[1] === 'get' && args[0] === control.operation) {
         control.reads++
         if (control.error) return { code: 1, stdout: '', stderr: control.error }
