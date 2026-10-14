@@ -118,12 +118,21 @@ it('lists, reads, installs and removes Codex plugins through authenticated MCP w
     expect((await plugins.change(owner.principal, uncertainInput)).status).toBe('uncertain')
     const operations = await app.inject({ url: '/api/management/harnesses/codex/plugins/operations',
       headers: { authorization: `Bearer ${owner.token}` } })
-    expect(operations.statusCode).toBe(200)
+    expect(operations.statusCode, operations.body).toBe(200)
     expect(operations.json().items).toEqual(expect.arrayContaining([
-      expect.objectContaining({ commandId: uncertainInput.commandId }),
+      expect.objectContaining({ requestedBy: owner.principal.id, commandId: uncertainInput.commandId,
+        input: uncertainInput, result: expect.objectContaining({ status: 'uncertain' }) }),
     ]))
+    const reconciliation = { commandId: uncertainInput.commandId, requestedBy: owner.principal.id,
+      acceptObservedState: true, expectedRevision: (await list('available')).revision }
+    const deniedReconcile = await allowed.callTool({ name: 'codex_plugin_reconcile', arguments: reconciliation })
+    expect(deniedReconcile.isError).toBe(true)
+    expect(JSON.stringify(deniedReconcile.content)).toContain('ACCESS_DENIED')
+    const mcpReconciled = await operator.callTool({ name: 'codex_plugin_reconcile', arguments: reconciliation })
+    expect(mcpReconciled.isError, JSON.stringify(mcpReconciled)).not.toBe(true)
+    expect(CodexPluginChangeResultSchema.parse(decodeMcpToolResult(mcpReconciled)).status).toBe('reconciled')
     const reconciled = await app.inject({ method: 'POST', url: '/api/management/harnesses/codex/plugins/reconcile',
-      headers: { authorization: `Bearer ${owner.token}` }, payload: { commandId: uncertainInput.commandId, acceptObservedState: true, expectedRevision: (await list('available')).revision } })
+      headers: { authorization: `Bearer ${owner.token}` }, payload: reconciliation })
     expect(reconciled.statusCode).toBe(200)
     expect(CodexPluginChangeResultSchema.parse(reconciled.json()).status).toBe('reconciled')
     expect((await list('available')).items).toHaveLength(1)
