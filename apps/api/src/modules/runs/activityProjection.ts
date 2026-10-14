@@ -244,6 +244,17 @@ function skippedEventsActivity(payload: Record<string, unknown>): ActivityView {
   return { kind: 'recovery', status: 'recorded', summary, detail }
 }
 
+function ciActivity(ci: RunActivityPublic['ci']): ActivityView {
+  if (!ci) {
+    return { kind: 'job_work', status: 'unknown', summary: 'CI activity details unavailable' }
+  }
+  const statuses: Record<typeof ci.state, RunActivityPublic['status']> = {
+    queued: 'queued', starting: 'starting', running: 'running', passed: 'completed',
+    failed: 'failed', canceled: 'canceled', lost: 'unknown',
+  }
+  return { kind: 'job_work', status: statuses[ci.state], summary: `CI ${ci.suite} ${ci.state}` }
+}
+
 /** Project typed activity details and recorded work results; exclude native provider bodies. */
 export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersionV3,
   runId: string, runOutcome: string): RunActivityPublic {
@@ -326,21 +337,9 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
     case 'native_events_skipped':
       ({ kind, status, summary, detail } = skippedEventsActivity(payload))
       break
-    case 'ci_state_changed': {
-      kind = 'job_work'
-      if (!ci) {
-        status = 'unknown'
-        summary = 'CI activity details unavailable'
-        break
-      }
-      const statuses: Record<typeof ci.state, RunActivityPublic['status']> = {
-        queued: 'queued', starting: 'starting', running: 'running', passed: 'completed',
-        failed: 'failed', canceled: 'canceled', lost: 'unknown',
-      }
-      status = statuses[ci.state]
-      summary = `CI ${ci.suite} ${ci.state}`
+    case 'ci_state_changed':
+      ({ kind, status, summary } = ciActivity(ci))
       break
-    }
     case 'run_state_changed': {
       kind = 'run'
       const state = string(payload.executionState)

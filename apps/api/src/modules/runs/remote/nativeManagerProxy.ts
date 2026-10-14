@@ -261,14 +261,16 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     streaming: while (true) {
       signal?.throwIfAborted()
       const requestedSequence = sequence
-      const cached = this.streamHistory
-      const canReuse = cached && cached.afterSequence === sequence
+      const cached: RemoteNativeSessionManager['streamHistory'] = this.streamHistory
+      const canReuse: boolean = cached !== undefined && cached.afterSequence === sequence
         && Date.now() - cached.observedAt < 30_000 && isDeepStrictEqual(cached.receipt, this.receipt)
-      const observedAt = canReuse ? cached.observedAt : Date.now()
-      const value = canReuse ? { history: cached.value, status: { status: 'known' as const, receipt: cached.receipt },
-        page: cached.page, context: this.context } : await this.historyResponse(await this.request('history', { afterSequence: sequence,
-        correlationId: input.clientCorrelationId }, signal), signal)
-      const receipt = canReuse ? cached.receipt : await this.status(value.status)
+      const observedAt: number = canReuse && cached ? cached.observedAt : Date.now()
+      const value: z.infer<typeof HistoryResponseSchema> = canReuse && cached
+        ? { history: cached.value, status: { status: 'known' as const, receipt: cached.receipt },
+          page: cached.page, context: this.context }
+        : await this.historyResponse(await this.request('history', { afterSequence: sequence,
+          correlationId: input.clientCorrelationId }, signal), signal)
+      const receipt: RemoteOperationReceipt = canReuse && cached ? cached.receipt : await this.status(value.status)
       this.assertHistoryIdentity(value.history, session, input.clientCorrelationId, receipt)
       const retainedFloor = value.history.firstRetainedSequence ?? 0
       if (sequence + 1 < retainedFloor) {
@@ -352,7 +354,7 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
       await delay(100, undefined, { signal })
     }
   }
-  private assertHistoryIdentity(history: NativeHistory, session: NativeSessionReference,
+  private assertHistoryIdentity(history: z.infer<typeof RemoteNativeHistorySchema>, session: NativeSessionReference,
     correlationId: string, receipt: RemoteOperationReceipt) {
     const terminal = history.terminalTurn
     const submission = history.nativeSubmission
