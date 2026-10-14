@@ -359,7 +359,7 @@ export class HostCiService {
       const slots = await readCiSlots(this.pool, this.endpoint)
       timing.mark('slotsMs')
       parts = await planCiGate(input, { ...integration!, durations: durations! }, inventory!, unitDurations, this.endpoint,
-        speeds, this.reservedCloudSlots, slots.ordinary)
+        speeds, this.reservedCloudSlots, slots.ordinary, slots.usedByComputer)
     } else if (integration) {
       parts = planIntegrationParts(selection, { ...integration, durations: durations! }, await readCiSlots(this.pool, this.endpoint))
     }

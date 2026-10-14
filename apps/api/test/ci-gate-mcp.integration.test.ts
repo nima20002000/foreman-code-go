@@ -22,6 +22,49 @@ beforeEach(async () => {
   await database.pool.query('truncate ci_runs, ci_file_durations, management_command_receipts, management_audit')
 })
 
+it.each(['runner', 'persisted'] as const)('plans a gate away from a builder occupied by a %s non-gate run', async source => {
+  const occupiedKeys = new Set(source === 'runner' ? ['builder-main'] : [])
+  const f = await fixture({ occupiedKeys })
+  try {
+    if (source === 'persisted') {
+      const affected = CiRunOutputSchema.parse(await f.value('ci_run', {
+        suite: 'unit', scope: 'affected', files: ['apps/api/src/site.test.ts'],
+        smokeComputer: f.computers[0]!.hostRef, commit: 'b'.repeat(40),
+      }))
+      await f.ci.dispatch()
+      expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: affected.ticketId })).run)
+        .toMatchObject({ state: 'running', computer: { hostRef: f.computers[0]!.hostRef } })
+    }
+    const input = { suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40) }
+    const reader = await f.connect(true)
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    const admitted = CiRunOutputSchema.parse(await f.value('ci_run', input))
+    await f.ci.close()
+    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
+    expect(read.partitions!.some(run => run.plannedHostKey === 'builder-main')).toBe(false)
+    expect(read.partitions!.some(run => run.plannedHostKey === 'builder-paired')).toBe(true)
+    expect(read.partitions!.filter(run => run.suite === 'integration').flatMap(run => run.files).sort())
+      .toEqual([...f.files].sort())
+    for (const run of read.partitions!) {
+      const stored = (await database.pool.query('select record from ci_runs where id=$1', [run.id])).rows[0].record
+      expect(stored).toMatchObject({ plannedHostKey: run.plannedHostKey, files: run.files })
+    }
+  } finally { await f.close() }
+})
+
+it('plans all gate integration on cloud when every builder is occupied', async () => {
+  const f = await fixture({ occupiedKeys: new Set(['builder-main', 'builder-paired']) })
+  try {
+    const admitted = CiRunOutputSchema.parse(await f.value('ci_run', {
+      suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40),
+    }))
+    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
+    expect(read.partitions!.every(run => run.plannedHostKey?.startsWith('cloud-'))).toBe(true)
+    expect(read.partitions!.filter(run => run.suite === 'integration').flatMap(run => run.files).sort())
+      .toEqual([...f.files].sort())
+  } finally { await f.close() }
+})
+
 it('persists a throughput-sized gate through MCP and rejects a read-only caller', async () => {
   const files = Array.from({ length: 700 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)
   const f = await fixture({ files })
@@ -452,9 +495,10 @@ it('admits a gate on the ready fleet when another build computer is disconnected
 })
 
 it('runs cloud checks before systemd integration overflow even when checks move between slots', async () => {
-  const occupiedKeys = new Set(['builder-main', 'builder-paired', 'cloud-0', 'cloud-1', 'cloud-2', 'cloud-3'])
+  const occupiedKeys = new Set(['cloud-0', 'cloud-1', 'cloud-2', 'cloud-3'])
   const unavailableKeys = new Set<string>()
   const f = await fixture({ cloudSlots: 4, files: [...exclusiveIntegrationFiles], occupiedKeys, unavailableKeys })
+  const dispatch = vi.spyOn(f.ci, 'dispatch').mockResolvedValue()
   const clock = vi.spyOn(Date, 'now')
   try {
     const input = {
@@ -469,6 +513,7 @@ it('runs cloud checks before systemd integration overflow even when checks move 
     unavailableKeys.add('builder-main')
     unavailableKeys.add('builder-paired')
     occupiedKeys.clear()
+    dispatch.mockRestore()
     clock.mockReturnValue(Date.now() + 90_001)
     await f.ci.dispatch()
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
@@ -496,6 +541,7 @@ it('runs cloud checks before systemd integration overflow even when checks move 
       && item.request.suite === 'integration' ? item.request.files ?? [] : [])
     expect(launched.sort()).toEqual([...f.files].sort())
   } finally {
+    dispatch.mockRestore()
     clock.mockRestore()
     await f.close()
   }
@@ -551,14 +597,18 @@ it.each([50, 10])('persists and dispatches a gate within a %i percent build allo
 })
 
 it('rechecks the build allowance when dispatching an already planned gate through MCP', async () => {
-  const occupiedKeys = new Set(['builder-main', 'builder-paired'])
+  const occupiedKeys = new Set<string>()
   // Exclusive files cannot share parallel lanes, so the plan uses both builders.
   const files = ['apps/api/test/dev-startup.integration.test.ts', 'apps/api/test/ci-postgres-setup.integration.test.ts']
   const f = await fixture({ occupiedKeys, cloudSlots: 2, files })
+  const dispatch = vi.spyOn(f.ci, 'dispatch').mockResolvedValue()
   try {
     const admitted = CiRunOutputSchema.parse(await f.value('ci_run', {
       suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40), commandId: randomUUID(),
     }))
+    occupiedKeys.add('builder-main')
+    occupiedKeys.add('builder-paired')
+    dispatch.mockRestore()
     await f.ci.dispatch()
     const queued = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     const resources = { cpuCount: 16, memoryBytes: 16 * 2 ** 30 }
@@ -584,7 +634,10 @@ it('rechecks the build allowance when dispatching an already planned gate throug
       expect(f.started.find(item => item.request.operation === 'start' && item.request.runId === host.id)?.request)
         .toMatchObject({ integrationShards: buildComputerIntegrationShards(resources, 50) })
     }
-  } finally { await f.close() }
+  } finally {
+    dispatch.mockRestore()
+    await f.close()
+  }
 })
 
 it('persists the heavy-file CPU budget before exclusive Worker recovery through authenticated MCP', async () => {

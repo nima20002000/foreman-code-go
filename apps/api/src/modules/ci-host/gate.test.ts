@@ -39,6 +39,25 @@ it.each(['not-ready', 'offline', 'extension-rejected'])('excludes a %s build com
       .toEqual([...files].sort())
   })
 
+it.each([1, 2])('excludes a builder with %i occupied slots from gate planning', async slotsUsed => {
+  const base = fleet(24)
+  const endpoint: HostCiEndpoint = {
+    computers: base.computers,
+    request: async (computer, request) => {
+      const response = await base.request(computer, request)
+      return response.operation === 'status' && computer.key === 'builder-main'
+        ? { ...response, slotsUsed } : response
+    },
+  }
+  const files = Array.from({ length: 48 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)
+  const parts = await planCiGate({ suite: 'integration', scope: 'full', gate: true },
+    { files, durations: Object.fromEntries(files.map(file => [file, 120_000])) },
+    { files: ['apps/api/src/site.test.ts'], durations: {}, heavy: [] }, {}, endpoint)
+  expect(parts.some(part => part.plannedHostKey === 'builder-main')).toBe(false)
+  expect(parts.some(part => part.plannedHostKey === 'builder-paired')).toBe(true)
+  expect(parts.filter(part => part.suite === 'integration').flatMap(part => part.files).sort()).toEqual([...files].sort())
+})
+
 it('plans a production-sized gate within a second', async () => {
   const files = Array.from({ length: 800 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)
   const input: CiRunInput = { suite: 'integration', scope: 'full', gate: true, commandId: 'gate' }
