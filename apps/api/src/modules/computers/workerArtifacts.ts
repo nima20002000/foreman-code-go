@@ -131,9 +131,9 @@ export function createWorkerArtifactExtension(options: {
       if (request.operation === 'ci-smoke') {
         const enabled = await options.buildEnabled?.(context.binding) ?? false
         if (!enabled) return { payload: { operation: 'ci-smoke', ciSmoke: null } }
-        let configuration: unknown = null
-        if (options.ciSmoke) configuration = await options.ciSmoke()
-        else configuration = { repository: index.github.repository, commit: manifest.commit }
+        const configuration: unknown = options.ciSmoke
+          ? await options.ciSmoke()
+          : { repository: index.github.repository, commit: manifest.commit }
         const smoke = WorkerCiSmokeSchema.safeParse(configuration)
         if (!smoke.success || smoke.data.commit !== manifest.commit) {
           throw new DeviceApplicationError('WORKER_UPDATE_SMOKE_UNAVAILABLE')
