@@ -5,6 +5,11 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { WorkerPairingConfigurationSchema } from '@foreman-code/contracts/device-identity'
 import { createInstalledWorkerDomains, createWorkerRuntimeDrain } from './installedWorkerDomains.js'
+
+// Native MCP files are exercised separately; domain fixtures must not touch the host user profile.
+vi.mock('../harnesses/installedWorkerManagedMcp.js', () => ({
+  createInstalledWorkerManagedMcp: () => ({ worker: {}, ensureReady: async () => {} }),
+}))
 import { ApprovedRootAllowlistSchema } from '@foreman-code/contracts/workspace-root-policies'
 import { extensionDescriptors } from './deviceApplicationChannel.js'
 import { bootIdentity } from '../harnesses/recovery/linuxIdentity.js'
@@ -285,7 +290,7 @@ describe('actual installed worker mount availability, no physical acceptance', (
       expect(mounted.rsyncMissing).toContain('canonical acknowledgement')
       expect(mounted.extensions.map(extension => extension.namespace).sort()).toEqual([
         'agent-snapshot-v1', 'ci-host-v1', 'ci-runtime-v1', 'computer-accounts-v1', 'computer-github-v1',
-        'computer-maintenance-v2', 'computer-sync-v1', 'harness-discovery-v1', 'resource-telemetry',
+        'computer-maintenance-v2', 'computer-sync-v1', 'harness-discovery-v1', 'managed-mcp-v1', 'resource-telemetry',
       ])
       for (const namespace of ['ci-runtime-v1', 'ci-host-v1']) {
         const ci = mounted.extensions.find(extension => extension.namespace === namespace)!

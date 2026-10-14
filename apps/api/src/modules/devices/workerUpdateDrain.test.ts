@@ -8,6 +8,11 @@ import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { workerConversationFixture } from '../conversations/workerFixtures.test-support.js'
 import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { createInstalledWorkerDomains } from './installedWorkerDomains.js'
+
+// Native MCP files are exercised separately; domain fixtures must not touch the host user profile.
+vi.mock('../harnesses/installedWorkerManagedMcp.js', () => ({
+  createInstalledWorkerManagedMcp: () => ({ worker: {}, ensureReady: async () => {} }),
+}))
 import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import { qualifyApprovedRootAllowlist } from '../sources/rootAttestation.js'
 import { ResumableByteTransferService } from '../byte-transfer/service.js'

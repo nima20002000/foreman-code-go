@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DeviceProvisioningHostReferenceSchema } from "../deviceResources.js";
 import { WorkflowVersionV3Schema } from "../wave25/workflowSchemas.js";
 import {
   AgentSchema, AgentConfigurationVersionSchema,
@@ -62,7 +63,7 @@ export const HarnessOptionsRefreshInputSchema = z.object({
 export { HarnessModelOptionSchema, HarnessOptionsResultSchema } from "../harnessOptions.js";
 import { HarnessOptionsResultSchema } from "../harnessOptions.js";
 export type HarnessOptions = z.infer<typeof HarnessOptionsResultSchema>;
-export const HarnessMcpDetectionInputSchema = z.object({ ...Workspace, harness: z.enum(["codex", "claude"]) }).strict();
+export const HarnessMcpDetectionInputSchema = z.object({ ...Workspace, harness: z.enum(["codex", "claude"]), hostRef: DeviceProvisioningHostReferenceSchema.optional() }).strict();
 export const HarnessMcpDetectionResultSchema = ScopedMcpDetectionSchema;
 export const NativeConfigurationCheckInputSchema = z.object({ configuration: Configuration }).strict();
 export const NativeConfigurationCheckResultSchema = z.object({

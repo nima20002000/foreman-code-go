@@ -54,6 +54,12 @@ export function computersFixture(children: React.ReactNode, handlers: HttpHandle
       const { target } = await request.json() as { target: typeof mainTarget }
       return HttpResponse.json(statuses.get(computerKey(target)))
     }),
+    http.get('*/api/management/harnesses/:harness/mcp', ({ params, request }) => {
+      const hostRef = JSON.parse(new URL(request.url).searchParams.get('hostRef') ?? 'null')
+      return HttpResponse.json({ harness: params.harness, hostRef, revision: `sha256:${'a'.repeat(64)}`,
+        servers: [], presets: { graphql: 'installed', linear: 'missing' },
+        checkedAt: new Date().toISOString(), scope: 'native-user' })
+    }),
     http.get('*/api/management/computers/activity', () => HttpResponse.json(activity)),
     computerReadHandler('accounts', accounts),
     computerReadHandler('maintenance', { computers: [] }),

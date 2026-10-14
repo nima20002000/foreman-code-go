@@ -1,3 +1,4 @@
+import { deviceManagedMcpMigration } from './deviceManagedMcpMigration.js'
 import { workflowAuthoringMigration } from './workflowAuthoringMigration.js'
 import { ciGrantMigration } from './ciGrantMigration.js'
 import { runWorktreesMigration } from './runWorktreesMigration.js'
@@ -936,6 +937,7 @@ export const migrations = [
   ciResultCacheMigration,
   workflowAuthoringMigration,
   ciGrantMigration,
+  deviceManagedMcpMigration,
 ] as const
 
 export function assertMigrationVersions(entries: readonly { version: number }[]): void {

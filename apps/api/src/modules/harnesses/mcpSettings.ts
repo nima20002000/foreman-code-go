@@ -1,3 +1,5 @@
+import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
+import type { DeviceManagedMcp } from './deviceManagedMcp.js'
 import { randomUUID } from 'node:crypto'
 import { withClientTransaction } from '../../infrastructure/transaction.js'
 import { stat } from 'node:fs/promises'
@@ -18,7 +20,7 @@ import { MCP_INSPECTION_TIMEOUT_MS } from './mcpDetection.js'
 import { ignoreError } from '../diagnostics/ignoredError.js'
 
 type Harness = 'codex'
-type RecordedMcpHarness = Harness | 'opencode'
+type RecordedMcpHarness = Harness | 'claude' | 'opencode'
 type McpList = ReturnType<typeof publicMcpList> & { presets?: { graphql: ReturnType<typeof managedStatus>; linear: Exclude<ReturnType<typeof managedStatus>, 'legacy'> } | undefined }
 async function fileStamp(file: string): Promise<string | null> {
   try { const info = await stat(file); return info.isFile() ? `${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}` : null }
@@ -26,13 +28,14 @@ async function fileStamp(file: string): Promise<string | null> {
 }
 type Row = { id: string; harness: RecordedMcpHarness; revision: string; change: unknown; managed_preset: HarnessMcpManagedPreset | null;
   requested_by: string; status: string; created_at: Date; expires_at: Date; error: string | null;
-  native_user_after_hash: string | null; native_file: string | null }
+  native_user_after_hash: string | null; native_file: string | null; host_ref?: CanonicalMachineReference | null }
 const projection = (row: Row): HarnessMcpPlan => HarnessMcpPlanSchema.parse({ id: row.id, harness: row.harness, revision: row.revision,
-  change: row.change, managedPreset: row.managed_preset ?? null, requestedBy: row.requested_by, status: row.status,
+  change: row.change, ...(row.host_ref ? { hostRef: row.host_ref } : {}), managedPreset: row.managed_preset ?? null, requestedBy: row.requested_by, status: row.status,
   createdAt: row.created_at.toISOString(), expiresAt: row.expires_at.toISOString(), error: row.error,
   ...(row.harness === 'opencode' ? { retirementMessage: RETIRED_OPENCODE_MESSAGE } : {}) })
 
 function assertSupportedHarness(harness: RecordedMcpHarness): asserts harness is Harness {
+  if (harness === 'claude') throw new DomainError('MCP_HOST_REQUIRED', 'Claude MCP management requires a paired device hostRef.', 409)
   if (harness === 'opencode') throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
 }
 
@@ -69,7 +72,7 @@ export class HarnessMcpSettingsService {
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly adapters: Record<Harness, NativeMcpAdapter>, private readonly changed: () => void,
     private readonly closeProcesses: () => Promise<unknown> = async () => undefined,
-    private readonly operatorEndpoint?: string) {}
+    private readonly operatorEndpoint?: string, private devices?: DeviceManagedMcp) {}
   private async work<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
     if (this.stopping.signal.aborted) throw new DomainError('HARNESS_SETTINGS_CLOSING', 'Harness settings are shutting down.', 503)
     if (this.pending.size >= 8) throw new DomainError('MCP_SETTINGS_BUSY', 'Native settings are busy. Try again after the current operation finishes.', 503)
@@ -87,11 +90,22 @@ export class HarnessMcpSettingsService {
   async recover(): Promise<void> {
     await this.closeProcesses()
     // Startup alone proves neither delivery nor non-delivery. Settlement is an explicit owner action.
-    await this.pool.query("update harness_mcp_change_plans set status='uncertain', error='Server restarted during this change. Use Reconcile in MCP settings; this write will not be repeated.' where status='submitting' and harness='codex'")
+    await this.pool.query("update harness_mcp_change_plans set status='uncertain', error='Server restarted during this change. Use Reconcile in MCP settings; this write will not be repeated.' where status='submitting' and harness='codex' and host_ref is null")
   }
-  async list(principal: ManagementPrincipal, harness: Harness) {
+  async list(principal: ManagementPrincipal, harness: Harness | 'claude', hostRef?: CanonicalMachineReference) {
+    if (hostRef?.kind === 'device') return this.device().list(principal, harness, hostRef)
+    assertSupportedHarness(harness)
     requireAuthorization(principal, 'harnesses:read')
     return this.cachedList(harness)
+  }
+  configureDevices(devices: DeviceManagedMcp): void { this.devices = devices }
+  private device(): DeviceManagedMcp {
+    if (!this.devices) throw new DomainError('MCP_PRESET_UNAVAILABLE', 'Paired-device MCP management is unavailable.', 503)
+    return this.devices
+  }
+  async detectDevice(principal: ManagementPrincipal, harness: 'codex' | 'claude', hostRef: CanonicalMachineReference,
+    resource?: { workspaceId: string }) {
+    return this.device().inspect(principal, harness, hostRef, resource)
   }
   /** Fill Connections before Settings opens. */
   async warmup(harnesses: readonly Harness[]): Promise<void> {
@@ -136,7 +150,7 @@ export class HarnessMcpSettingsService {
       catch (error) { throw qualificationError(error) }
     })
   }
-  async plans(principal: ManagementPrincipal, harness: Harness) {
+  async plans(principal: ManagementPrincipal, harness: Harness | 'claude') {
     requireAuthorization(principal, 'harnesses:read')
     const result = await this.pool.query<Row>(`select * from harness_mcp_change_plans where harness=$1
       and ($2::boolean or requested_by=$3) order by case when status in ('submitting','uncertain') then 0 when status='pending' then 1 else 2 end,created_at desc limit 50`, [harness, await this.isRoot(principal), principal.id])
@@ -157,6 +171,7 @@ export class HarnessMcpSettingsService {
   }
   async planManaged(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: HarnessMcpManagedInput) {
     const input = HarnessMcpManagedInputSchema.parse(raw)
+    assertSupportedHarness(input.harness)
     if (!this.operatorEndpoint) throw new DomainError('MCP_PRESET_UNAVAILABLE', 'Managed MCP presets are unavailable.', 503)
     return this.createPlan(principal, source, { harness: input.harness, commandId: input.commandId,
       expectedRevision: input.expectedRevision, change: 'enabled' in input ? managedEnableChange(input.preset, input.enabled)
@@ -174,7 +189,7 @@ export class HarnessMcpSettingsService {
         if (input.expectedRevision !== undefined && snapshot.revision !== input.expectedRevision) throw new DomainError('REVISION_CONFLICT', 'Native configuration changed. Refresh the list before reviewing this change.', 409)
         if (managedPreset) assertManagedChange(snapshot, input.change, managedPreset, this.operatorEndpoint!)
         else assertChange(snapshot, input.change)
-        const pending = await client.query("select 1 from harness_mcp_change_plans where harness=$1 and status in ('pending','submitting','uncertain') and (status <> 'pending' or expires_at>now()) limit 100", [input.harness])
+        const pending = await client.query("select 1 from harness_mcp_change_plans where harness=$1 and host_ref is null and status in ('pending','submitting','uncertain') and (status <> 'pending' or expires_at>now()) limit 100", [input.harness])
         if (pending.rowCount && pending.rowCount >= 100) throw new DomainError('MCP_PLAN_LIMIT', 'Resolve existing MCP changes before adding more.', 409)
         const inserted = await client.query<Row>(`insert into harness_mcp_change_plans(id,harness,revision,change,requested_by,status,expires_at,managed_preset)
           values($1,$2,$3,$4::jsonb,$5,'pending',now()+interval '10 minutes',$6) returning *`,
@@ -185,6 +200,8 @@ export class HarnessMcpSettingsService {
   }
   /** Plan and apply one managed preset change in a single command. */
   async applyManaged(principal: ManagementPrincipal, input: HarnessMcpManagedInput, source: 'http' | 'mcp' = 'http'): Promise<HarnessMcpPlan> {
+    input = HarnessMcpManagedInputSchema.parse(input)
+    if (input.hostRef?.kind === 'device') return this.device().apply(principal, input, source)
     return this.applyPlanned(principal, source, await this.planManaged(principal, source, input))
   }
   /** Plan and apply one native connection change in a single command. */
@@ -237,12 +254,13 @@ export class HarnessMcpSettingsService {
         const row = await client.query<Row>('select * from harness_mcp_change_plans where id=$1', [id])
         if (!row.rows[0]) throw new DomainError('MCP_PLAN_NOT_FOUND', 'This MCP change is unavailable.', 404)
         selected = projection(row.rows[0])
+        if (selected.hostRef?.kind === 'device') throw new DomainError('MCP_DEVICE_REQUEST', 'Device changes apply directly; use Reconcile for uncertain writes.', 409)
         assertSupportedHarness(selected.harness)
         if (selected.status !== 'pending') return selected // Never replay an uncertain or settled write.
         if (approve && Date.parse(selected.expiresAt) <= Date.now()) throw new DomainError('MCP_PLAN_EXPIRED', 'This review expired. Reject it and prepare a new change.', 409)
         if (approve) {
           await assertNoUnresolvedPluginWrites(client)
-          const unsettled = await client.query("select 1 from harness_mcp_change_plans where id<>$1 and status in ('submitting','uncertain') limit 1", [id])
+          const unsettled = await client.query("select 1 from harness_mcp_change_plans where id<>$1 and host_ref is null and status in ('submitting','uncertain') limit 1", [id])
           if (unsettled.rowCount) throw new DomainError('MCP_RECONCILIATION_REQUIRED', 'An earlier native write is unresolved. Use Reconcile on that request before applying another change.', 409)
         }
         const snapshot = approve ? await this.adapters[selected.harness].read(signal) : undefined
@@ -315,6 +333,7 @@ export class HarnessMcpSettingsService {
     requireAuthorization(principal, 'harnesses:read')
     const input = HarnessMcpReconcileInputSchema.parse(raw)
     const plan = await this.get(principal, input.planId)
+    if (plan.hostRef?.kind === 'device') return this.device().reconcile(principal, input, plan, source)
     assertSupportedHarness(plan.harness)
     const result = await this.commands.execute({ principal, source, operation: 'harness.mcp.reconcile',
       commandId: input.commandId, targetKey: `harness-mcp:${plan.harness}`, payload: input,
