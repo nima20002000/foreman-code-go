@@ -533,7 +533,8 @@ export async function pruneApiDependencies(root, releases, { removeInBackground 
 async function deployApiPackage(run, destination) {
   const failures = []
   try {
-    await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'deploy', '--prod', '--legacy', destination])
+    // Shared-lockfile deployment keeps resolved versions and their supply-chain checks.
+    await run('corepack', ['pnpm', '--filter', '@foreman-code/api', 'deploy', '--prod', destination])
     // Freeze mutable workspace files; pnpm already isolates installed dependencies.
     const contracts = await realpath(join(destination, 'node_modules/@foreman-code/contracts'))
     for (const packageDirectory of [destination, contracts]) {
@@ -554,8 +555,7 @@ async function deployApiPackage(run, destination) {
   } catch (error) {
     failures.push(error)
   }
-  // Legacy deployment records production-only settings in the source workspace.
-  // Restore them through pnpm before another workspace command checks its dependencies.
+  // Subsequent build commands use the complete workspace, including development dependencies.
   try {
     await run('corepack', ['pnpm', 'install', '--frozen-lockfile'])
   } catch (error) {

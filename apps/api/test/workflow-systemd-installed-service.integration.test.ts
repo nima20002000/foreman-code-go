@@ -1,10 +1,14 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { RuntimeBuildIdentitySchema } from '@foreman-code/contracts'
 import { createRuntimeBuildIdentity } from '@foreman-code/contracts/runtime-build-identity-node'
+import { execFile } from 'node:child_process'
+import { createRequire } from 'node:module'
+import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { delimiter, join } from 'node:path'
+import { copyFile, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { delimiter, dirname, join } from 'node:path'
 import { parse } from 'yaml'
+import { deployProductionApi } from '../../../scripts/local-production-runtime.mjs'
 import { installedRestartService } from './helpers/installedRestartService.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { installationUpdateFixture } from './helpers/harnessInstallationUpdate.js'
@@ -45,6 +49,84 @@ describe('installed Main-local workflows across systemd restart', () => {
 })
 
 describe('installed API fixture packaging', () => {
+  it.each([
+    { age: 'old', modified: '2000-01-01T00:00:00.000Z', succeeds: true },
+    { age: 'unknown', modified: undefined, succeeds: false },
+  ])('deploys locked packages with $age abbreviated metadata without bypassing release age', async ({
+    modified, succeeds,
+  }) => {
+    const directory = await privateFixtureDirectory('locked-packaging-')
+    const repository = fileURLToPath(new URL('../../../', import.meta.url))
+    const { storeDir } = parse(await readFile(join(repository, 'node_modules/.modules.yaml'), 'utf8')) as {
+      storeDir: string
+    }
+    const lockfile = parse(await readFile(join(repository, 'pnpm-lock.yaml'), 'utf8'))
+    const dependency = lockfile.importers['apps/api'].dependencies.yaml
+    const cache = join(directory, 'metadata')
+    const metadata = join(cache, 'v11/metadata/https%3A+registry.npmjs.org')
+    const destination = join(directory, 'deployed')
+    await mkdir(join(directory, 'scripts'), { recursive: true })
+    await mkdir(metadata, { recursive: true })
+    for (const name of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', 'scripts/require-pnpm.mjs']) {
+      await copyFile(join(repository, name), join(directory, name))
+    }
+    for (const name of ['api', 'web', 'worker']) {
+      await mkdir(join(directory, 'apps', name), { recursive: true })
+      await copyFile(join(repository, 'apps', name, 'package.json'), join(directory, 'apps', name, 'package.json'))
+    }
+    await cp(join(repository, 'packages/contracts'), join(directory, 'packages/contracts'), {
+      recursive: true, filter: path => path !== join(repository, 'packages/contracts/node_modules'),
+    })
+    // Each registry response has locked artifacts and an optional modified date, but no publication-time map.
+    const packageVersions = new Map<string, Record<string, {
+      name: string; version: string; dist: { integrity: string; tarball: string }
+    }>>()
+    for (const [key, snapshot] of Object.entries(lockfile.packages) as Array<[
+      string, { resolution: { integrity: string } },
+    ]>) {
+      const separator = key.lastIndexOf('@')
+      const name = key.slice(0, separator)
+      const version = key.slice(separator + 1)
+      const versions = packageVersions.get(name) ?? {}
+      versions[version] = {
+        name, version,
+        dist: { integrity: snapshot.resolution.integrity,
+          tarball: `https://registry.npmjs.org/${name}/-/${name.split('/').at(-1)}-${version}.tgz` },
+      }
+      packageVersions.set(name, versions)
+    }
+    for (const [name, versions] of packageVersions) {
+      const metadataPath = join(metadata, `${name}.jsonl`)
+      await mkdir(dirname(metadataPath), { recursive: true })
+      await writeFile(metadataPath, `${JSON.stringify({ modified })}\n${JSON.stringify({
+        name, modified, versions,
+      })}`)
+    }
+    const execute = promisify(execFile)
+    const deploy = deployProductionApi(async (command, args) => {
+      // This disposable workspace needs no post-deploy installation restoration.
+      if (args.includes('install')) return
+      await execute(command, [...args, '--offline', '--store-dir', storeDir, '--cache-dir', cache], {
+        cwd: directory, env: { ...process.env, CI: 'true' }, timeout: 30_000,
+      })
+    }, destination)
+    try {
+      if (!succeeds) {
+        await expect(deploy).rejects.toMatchObject({
+          stdout: expect.stringMatching(/minimumReleaseAge|NO_OFFLINE_META|MISSING_TIME/),
+        })
+        return
+      }
+      await deploy
+      const deployedRequire = createRequire(join(destination, 'package.json'))
+      expect(deployedRequire('yaml').parse('installed: true')).toEqual({ installed: true })
+      expect(deployedRequire('yaml/package.json').version).toBe(dependency.version)
+      expect(deployedRequire('@foreman-code/contracts').RuntimeBuildIdentitySchema.safeParse({}).success).toBe(false)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  }, 60_000)
+
   it('deploys offline using the package store that populated the workspace', async () => {
     const directory = await privateFixtureDirectory('installed-packaging-')
     const bin = join(directory, 'bin')
@@ -61,6 +143,7 @@ console.error('Fixture package store is intentionally empty')
 process.exit(1)
 `, { mode: 0o700 })
     vi.stubEnv('PATH', `${bin}${delimiter}${process.env.PATH}`)
+    vi.stubEnv('npm_config_cache_dir', join(directory, 'metadata'))
     // A separate cache forces deployment even when another installed fixture is already warm.
     vi.stubEnv('FOREMAN_CODE_TEST_CACHE_ROOT', join(directory, 'cache'))
     try {
@@ -69,6 +152,7 @@ process.exit(1)
       const args = JSON.parse(await readFile(calls, 'utf8')) as string[]
       expect(args).toContain('--offline')
       expect(args[args.indexOf('--store-dir') + 1]).toBe(storeDir)
+      expect(args[args.indexOf('--cache-dir') + 1]).toBe(join(directory, 'metadata'))
     } finally {
       vi.unstubAllEnvs()
       await rm(directory, { recursive: true, force: true })
