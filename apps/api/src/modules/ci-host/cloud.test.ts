@@ -718,38 +718,35 @@ describe('GitHub Actions CI on a public mirror', () => {
       .toMatchObject({ run: { state: 'starting' } })
     expect(f.circle.triggered).toHaveLength(1)
     f.circle.lookupError = ''
+    f.advance(4_000)
     expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
       .toMatchObject({ run: { state: 'running' } })
   })
 
-  it('ends an unrecoverable unstarted CircleCI ticket as lost and releases its Main slot', async () => {
+  it('requeues an unreadable unstarted CircleCI ticket and releases its Main slot', async () => {
     const f = await fixture({}, { provider: 'circleci' })
     f.circle.lookupError = 'run.not_found'
     const runId = randomUUID()
-    const started = await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
-      suite: 'integration', scope: 'full' })
+    const started = await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId,
+      repository: 'octo/site', commit: f.commit, suite: 'integration', scope: 'full' })
     if (started.operation !== 'start') throw new Error('Expected a start reply')
     const main = cloudService(f.cloud, started.run, f.commit)
     const read = { operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 }
-    let now = Date.parse(started.run.startedAt!)
-    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
-    try {
-      for (let attempt = 0; attempt < 3; attempt++) {
-        now += 75_000
-        f.advance(75_000)
-        await f.reopen().handle(read)
-        await main.service.dispatch()
-      }
-    } finally {
-      clock.mockRestore()
-    }
-    expect(await main.read()).toMatchObject({ run: { state: 'lost', computer: { label: 'CircleCI' },
-      finishedAt: expect.any(String), message: expect.stringContaining('slot was released') } })
+    await main.service.dispatch()
+    expect(await main.read()).toMatchObject({ run: { state: 'starting', computer: { label: 'CircleCI' } } })
+    f.advance(75_000)
+    await main.service.dispatch()
+    expect(await main.read()).toMatchObject({ run: { state: 'queued', computer: null,
+      startedAt: null, finishedAt: null, exitCode: null, unstartedProviders: ['circleci'],
+      messageHistory: expect.arrayContaining([expect.stringContaining('queued for another computer')]) } })
     expect(f.circle.triggered).toHaveLength(1)
     expect(f.circle.canceled).toEqual(['run-1'])
-    expect(await f.reopen().handle({ operation: 'cancel', runId })).toMatchObject({ run: { state: 'canceled' } })
+    expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'queued',
+      message: expect.stringContaining('queued for another computer') } })
     await main.service.dispatch()
-    expect(await main.read()).toMatchObject({ run: { state: 'lost' } })
+    expect(await main.read()).toMatchObject({ run: { state: 'queued', computer: null } })
+    expect(f.circle.triggered).toHaveLength(1)
+    expect(f.circle.canceled).toEqual(['run-1'])
   })
 
   it('recovers a transiently missing CircleCI lookup before its reconciliation budget is spent', async () => {
@@ -762,6 +759,9 @@ describe('GitHub Actions CI on a public mirror', () => {
     f.advance(75_000)
     expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'starting', finishedAt: null,
       message: expect.stringContaining('could not be reconciled') } })
+    f.advance(70_000)
+    expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'starting', finishedAt: null } })
+    expect(f.circle.canceled).toEqual([])
     f.circle.lookupError = ''
     f.circle.outcome = 'failed'
     f.advance(4_000)
@@ -795,7 +795,7 @@ describe('GitHub Actions CI on a public mirror', () => {
     },
   )
 
-  it('retains ownership and exposes bounded reconciliation when a started CircleCI pipeline disappears', async () => {
+  it('retains ownership within the visibility window and requeues a disappeared CircleCI pipeline', async () => {
     const f = await fixture({}, { provider: 'circleci' })
     const runId = randomUUID()
     await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site', commit: f.commit,
@@ -808,10 +808,13 @@ describe('GitHub Actions CI on a public mirror', () => {
         message: expect.stringContaining('could not be reconciled') } })
     }
     expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'running',
-      message: expect.stringContaining('Operator cancellation is required') } })
+      message: expect.stringContaining('Retrying lookup') } })
     expect(f.circle.triggered).toHaveLength(1)
     expect(f.circle.canceled).toEqual([])
-    expect(await f.reopen().handle({ operation: 'cancel', runId })).toMatchObject({ run: { state: 'canceled' } })
+    f.advance(75_000)
+    expect(await f.reopen().handle(read)).toMatchObject({ run: { state: 'queued', finishedAt: null } })
+    expect(f.circle.canceled).toEqual(['run-1'])
+    expect(f.circle.triggered).toHaveLength(1)
   })
 
   it('does not suppress CircleCI permission failures', async () => {
