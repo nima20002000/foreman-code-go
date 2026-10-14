@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { expect } from 'vitest'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
-import { installationUpdateFixture, startWhenReady, completedRun } from './harnessInstallationUpdate.js'
+import { installationUpdateFixture, startWhenReady } from './harnessInstallationUpdate.js'
 import { readUntil } from './observableCondition.js'
 import { expectMcpAccessDenied } from './deniedMcpTool.js'
 import { repeatTickIndex } from '../../src/modules/runs/repeatResolution.js'
@@ -87,6 +87,12 @@ export async function assertInstalledWorkflowRestart(phase: RestartPhase,
         { timeoutMs: 30_000, description: 'native events from both adopted sessions' })
       }
       await fixture.provider.releaseWorkflowTurns()
+      await readUntil(() => fixture.details(started.run.id),
+        details => details.executions.every(execution => execution.state === 'completed'),
+        { timeoutMs: 90_000, description: 'settled graph work and interval check' })
+      const stop = await fixture.call('run_stop', { workspaceId: started.run.workspaceId,
+        runId: started.run.id, commandId: randomUUID() })
+      expect(stop.isError).not.toBe(true)
     }
     const finished = phase === 'failed admission'
       ? await readUntil(async () => {
@@ -95,8 +101,10 @@ export async function assertInstalledWorkflowRestart(phase: RestartPhase,
       },
         details => details.run.executionState === 'completed',
         { timeoutMs: 90_000, description: 'interrupted run settlement' })
-      : await completedRun(fixture, started.run.id)
-    expect(finished.run.outcome).toBe(phase === 'failed admission' ? 'failed' : 'succeeded')
+      : await readUntil(() => fixture.details(started.run.id),
+        details => details.run.executionState === 'completed',
+        { timeoutMs: 90_000, description: 'stopped interval Run' })
+    expect(finished.run.outcome).toBe(phase === 'failed admission' ? 'failed' : 'canceled')
     const persisted = SavedRunDetailsSchema.parse(decodeMcpToolResult(await fixture.call('run_get', {
       detail: 'full', workspaceId: started.run.workspaceId, runId: started.run.id,
     }, reader.token)))

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, afterEach, beforeAll, expect, it } from 'vitest'
 import {
-  AGENT_INTERVAL_MAX_CHECKS_PER_RUN, AGENT_INTERVAL_MAX_SECONDS, AGENT_INTERVAL_MIN_SECONDS, AGENT_INTERVAL_PROMPT_MAX_LENGTH, CURRENT_WORKFLOW_TOOLS, CurrentWorkflowCapabilitiesSchema,
+  AGENT_INTERVAL_MAX_SECONDS, AGENT_INTERVAL_MIN_SECONDS, AGENT_INTERVAL_PROMPT_MAX_LENGTH, CURRENT_WORKFLOW_TOOLS, CurrentWorkflowCapabilitiesSchema,
   CurrentWorkflowReadResultSchema, CurrentWorkflowSaveResultSchema,
 } from '@foreman-code/contracts/wave25'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
@@ -35,7 +35,7 @@ it('discovers, saves, clears and reads back Agent loops and their prompt through
   expect(capabilities.agentInterval).toMatchObject({ field: 'node.interval.everySeconds', defaultEnabled: false,
     promptField: 'node.interval.prompt', promptMaxLength: AGENT_INTERVAL_PROMPT_MAX_LENGTH,
     minimumSeconds: AGENT_INTERVAL_MIN_SECONDS, maximumSeconds: AGENT_INTERVAL_MAX_SECONDS,
-    maximumChecksPerRun: AGENT_INTERVAL_MAX_CHECKS_PER_RUN, runStatusTool: 'run_status_get' })
+    maximumChecksPerRun: null, runStatusTool: 'run_status_get' })
   const tools = JSON.stringify((await graphRpc(f.app, f.writer.token, 'tools/list')).result)
   expect(tools).toContain('node.interval')
   expect(tools).toContain('Loops do not consume maxParallelism slots and serialize with work on the same node.')

@@ -129,10 +129,15 @@ it('keeps graph work and an interval Agent alive through database timeouts and r
     await readUntil(async () => persisted.size, count => count === 2,
       { timeoutMs: 10_000, description: 'original native publications retried successfully' })
     finish.resolve()
-    await running
+    await readUntil(() => f.runs.getDetails(f.f.run.workspaceId, f.f.run.id),
+      details => details?.executions.every(execution => execution.state === 'completed') === true,
+      { timeoutMs: 10_000, description: 'settled original native executions' })
+    const stopped = await f.client.callTool({ name: 'run_stop', arguments: { ...scopes, commandId: randomUUID() } })
+    expect(stopped.isError).not.toBe(true)
+    await Promise.allSettled([running])
     const readback = await f.client.callTool({ name: 'run_get', arguments: { ...scopes, detail: 'full' } })
     expect(readback.isError).not.toBe(true)
-    expect(decodeMcpToolResult(readback)).toMatchObject({ run: { executionState: 'completed', outcome: 'succeeded' } })
+    expect(decodeMcpToolResult(readback)).toMatchObject({ run: { executionState: 'completed', outcome: 'canceled' } })
     const after = await f.runs.getDetails(f.f.run.workspaceId, f.f.run.id)
     expect(after!.executions.map(execution => execution.id).sort())
       .toEqual(before!.executions.map(execution => execution.id).sort())
@@ -147,8 +152,8 @@ it('keeps graph work and an interval Agent alive through database timeouts and r
     databaseReady = true
     flush.resolve()
     finish.resolve()
-    await running?.catch(() => {})
     await f.close()
+    if (running) await Promise.allSettled([running])
     vi.restoreAllMocks()
   }
 }, 60_000)
@@ -239,7 +244,12 @@ it('closes the original session when authenticated MCP Stop interrupts active da
   } finally {
     flush.resolve()
     finish.resolve()
-    await running
+    await readUntil(() => f.runs.getDetails(f.f.run.workspaceId, f.f.run.id),
+      details => details?.executions.every(execution => execution.state === 'completed') === true,
+      { timeoutMs: 10_000, description: 'settled original native executions' })
+    const stopped = await f.client.callTool({ name: 'run_stop', arguments: { ...scopes, commandId: randomUUID() } })
+    expect(stopped.isError).not.toBe(true)
+    await Promise.allSettled([running])
     await f.close()
     vi.restoreAllMocks()
   }

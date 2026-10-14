@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { expect } from 'vitest'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
-import { startWhenReady, completedRun } from './harnessInstallationUpdate.js'
+import { startWhenReady } from './harnessInstallationUpdate.js'
 import { expectMcpAccessDenied } from './deniedMcpTool.js'
 import { remoteReviewProduction } from './remoteReviewProduction.js'
 import { readUntil } from './observableCondition.js'
@@ -80,7 +80,16 @@ export async function assertIntervalRestart(executionHost: 'main' | 'worker'): P
     }
     await fixture.provider.releaseWorkflowTurns()
     blocked = false
-    const finished = await completedRun(fixture, started.run.id)
+    await readUntil(() => fixture.details(started.run.id),
+      details => details.executions.every(execution => execution.state === 'completed'),
+      { timeoutMs: 60_000, description: 'settled graph work and interval check' })
+    const stop = await fixture.call('run_stop', { workspaceId: started.run.workspaceId,
+      runId: started.run.id, commandId: randomUUID() })
+    expect(stop.isError).not.toBe(true)
+    const finished = await readUntil(() => fixture.details(started.run.id),
+      details => details.run.executionState === 'completed',
+      { timeoutMs: 60_000, description: 'stopped interval Run' })
+    expect(finished.run.outcome).toBe('canceled')
     expect(finished.executions.map(execution => execution.id).sort())
       .toEqual(before.executions.map(execution => execution.id).sort())
     for (const execution of active) {

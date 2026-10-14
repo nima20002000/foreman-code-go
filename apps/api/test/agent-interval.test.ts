@@ -1,7 +1,7 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { AgentRunStatusSchema } from '@foreman-code/contracts'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 
 import { buildApp } from '../src/app.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -75,7 +75,12 @@ it('re-activates a looping node with its loop prompt in its own session without 
     for (const issued of [checker, denied]) await runtime.credentials.revoke(issued)
     checkGate.resolve()
     workerGate.resolve()
-    await finished
+    await vi.waitFor(async () => expect((await executions()).every(row => row.state === 'completed')).toBe(true),
+      { timeout: 10_000 })
+    expect((await runtime.runs.get(f.run.id))?.executionState).toBe('running')
+    await runtime.stop()
+    await runtime.engine.cancel(f.run.id)
+    await Promise.allSettled([finished])
     const after = await executions()
     expect(after.filter(row => row.node === worker.id)).toHaveLength(1)
     expect(after.filter(row => row.tick !== null).every(row => row.state === 'completed')).toBe(true)
@@ -83,7 +88,7 @@ it('re-activates a looping node with its loop prompt in its own session without 
     await expect(runtime.db.pool.query('update harness_executions set tick_index=2 where id=$1', [checkId]))
       .rejects.toThrow(/tick_execution_outside/)
     expect((await runtime.db.pool.query(`select execution_state as state,record->>'outcome' as outcome from runs where id=$1`,
-      [f.run.id])).rows[0]).toEqual({ state: 'completed', outcome: 'succeeded' })
+      [f.run.id])).rows[0]).toEqual({ state: 'completed', outcome: 'canceled' })
     expect((await board()).intervalChecks).toEqual([{ nodeId: watcher.id, everySeconds: 10, checks: 1, running: false, nextCheckAt: null }])
     const resolutions = (await runtime.db.pool.query('select workflow_node_id as node,execution_id as execution from run_repeat_resolutions where run_id=$1 order by workflow_node_id',
       [f.run.id])).rows
