@@ -5,6 +5,7 @@ import { cgroupBoundary, type NativeCgroupBoundary } from './cgroupBoundary.js'
 import { bootIdentity, identityAlive } from './linuxIdentity.js'
 import { existingPrivateDirectory, readRecord, recordObject } from './storage.js'
 import { RegistryChanges } from './registryChanges.js'
+import { archivedRetirement } from './registryArchive.js'
 
 export interface NativeLaunchObservation {
   readonly owner: string; readonly launchId: string; readonly bootId: string
@@ -104,7 +105,7 @@ function readLaunch(root: string, ownerKey: string, id: string): NativeLaunchObs
 }
 
 function retiredObservation(root: string, ownerKey: string): NativeLaunchObservation | undefined {
-  const value = readRecord(join(root, ownerKey, 'retired.json'))
+  const value = readRecord(join(root, ownerKey, 'retired.json')) ?? archivedRetirement(root, ownerKey)
   if (value === undefined) return undefined
   const retired = recordObject(value)
   if (retired.observation === undefined) return undefined
@@ -170,7 +171,7 @@ class Projection {
     let remaining = 10_000
     const present = existingPrivateDirectory(this.root)
     if (present) this.storageChanges.start()
-    const owners = refreshRoot && present ? [...entries(this.root)] : changed.owners
+    const owners = refreshRoot && present ? this.ownerKeys() : changed.owners
     for (const ownerKey of owners) {
       remaining -= this.refreshOwner(ownerKey, next, seen, remaining)
     }
@@ -196,6 +197,14 @@ class Projection {
       throw error
     }
   }
+  private ownerKeys(): string[] {
+    const owners = new Set([...entries(this.root)].filter(name => name !== 'closed'))
+    for (const name of entries(join(this.root, 'closed'))) {
+      const match = /^([0-9a-f]{64})\.json$/.exec(name)
+      if (match) owners.add(match[1]!)
+    }
+    return [...owners]
+  }
   private refreshOwner(ownerKey: string, next: Map<string, NativeLaunchObservation>,
     seen: Set<string>, remaining: number): number {
     if (!/^[0-9a-f]{64}$/.test(ownerKey)) throw new Error('Unexpected native owner inventory entry.')
@@ -203,13 +212,13 @@ class Projection {
     const ids: string[] = []
     const ownerSeen = new Set<string>()
     let scanned = 0
+    const retired = retiredObservation(this.root, ownerKey)
+    if (retired) {
+      seen.add(retired.launchId)
+      ownerSeen.add(retired.launchId)
+      next.set(retired.launchId, retired)
+    }
     if (existingPrivateDirectory(ownerDirectory)) {
-      const retired = retiredObservation(this.root, ownerKey)
-      if (retired) {
-        seen.add(retired.launchId)
-        ownerSeen.add(retired.launchId)
-        next.set(retired.launchId, retired)
-      }
       for (const id of entries(ownerDirectory)) {
         if (!/^[0-9a-f-]{36}$/.test(id)) continue
         if (++scanned > remaining) throw new Error('limit-exceeded')

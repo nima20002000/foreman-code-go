@@ -19,7 +19,8 @@ export type { NativeLaunchObservation, NativeRegistrySnapshot, NativeRegistryCha
 import { nativeAgentEnvironment } from '../secrets.js'
 import { NativeProcessObservationSchema } from '@foreman-code/contracts/remote-execution-entry-closure'
 import { existingPrivateDirectory, privateDirectory, readRecord, recordObject, syncDirectory, writeRecord } from './storage.js'
-import { archivedClosure, prepareRegistryRetirement, pruneClosedObservation } from './registryRetirement.js'
+import { archivedClosure, archivedRetirement } from './registryArchive.js'
+import { prepareRegistryRetirement, pruneClosedObservation } from './registryRetirement.js'
 
 export interface NativeProcessRecovery {
   root: string
@@ -170,7 +171,7 @@ function closedRecord(directory: string, launch: LaunchRecord): boolean {
 
 function retiredOwner(directory: string, owner: string, id?: string): boolean {
   if (id && closedObservation(directory, owner, id)) return true
-  const value = readRecord(join(directory, 'retired.json'))
+  const value = readRecord(join(directory, 'retired.json')) ?? archivedRetirement(dirname(directory), basename(directory))
   if (value === undefined) return false
   const row = recordObject(value)
   if (row.format !== 2 || row.owner !== owner || typeof row.id !== 'string' || !/^[0-9a-f-]{36}$/.test(row.id)) {
@@ -401,7 +402,7 @@ export class NativeProcessRegistry {
     const root = privateDirectory(this.root)
     const directory = join(root, key(owner))
     try { lstatSync(directory) } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return retiredOwner(directory, owner)
       throw error
     }
     privateDirectory(directory)

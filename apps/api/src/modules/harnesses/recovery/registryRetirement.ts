@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto'
-import { lstatSync, readdirSync, unlinkSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { lstatSync, readdirSync, rmdirSync, unlinkSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { NativeProcessObservationSchema } from '@foreman-code/contracts/remote-execution-entry-closure'
 import { bootIdentity, identityAlive } from './linuxIdentity.js'
 import { nativeRegistryProjection } from './registryObservation.js'
-import { existingPrivateDirectory, privateDirectory, readRecord, syncDirectory, writeRecord } from './storage.js'
+import { existingPrivateDirectory, privateDirectory, readRecord, recordObject, syncDirectory, writeRecord } from './storage.js'
 
 // Keep fresh closure certificates in place for in-flight recovery and retries.
 const closureRetentionMs = 24 * 60 * 60 * 1000
@@ -28,12 +28,6 @@ function directoryEntries(path: string): string[] {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
     throw error
   }
-}
-
-export function archivedClosure(directory: string, id: string): unknown | undefined {
-  const archive = join(directory, 'closed')
-  if (!existingPrivateDirectory(archive)) return undefined
-  return readRecord(join(archive, `${id}.json`))
 }
 
 /** Retain exact closure readback outside the hot process inventory. */
@@ -73,6 +67,54 @@ export function pruneClosedObservation(directory: string, id: string): void {
   syncDirectory(directory)
 }
 
+function archiveRecord(destination: string, raw: unknown): void {
+  const previous = readRecord(destination)
+  if (previous !== undefined && !isDeepStrictEqual(previous, raw)) {
+    throw new Error('Conflicting archived native closure.')
+  }
+  if (previous === undefined) writeRecord(destination, raw, true)
+}
+
+function pruneRetiredOwner(directory: string): void {
+  const path = join(directory, 'retired.json')
+  const stat = existingStat(path)
+  if (!stat || Date.now() - stat.mtimeMs < closureRetentionMs) return
+  const names = directoryEntries(directory)
+  if (names.some(name => name !== 'retired.json' && name !== 'closed')) return
+  const retired = recordObject(readRecord(path))
+  const observation = NativeProcessObservationSchema.parse(retired.observation)
+  const ownerKey = basename(directory)
+  if (retired.format !== 2 || retired.owner !== observation.owner || retired.id !== observation.launchId
+    || observation.lifecycle !== 'closed' || !observation.closureEvidence
+    || createHash('sha256').update(observation.owner).digest('hex') !== ownerKey) {
+    throw new Error('Invalid native retirement receipt.')
+  }
+  if (observation.bootId === bootIdentity()
+    && [observation.guardian, observation.provider].some(process => process && identityAlive(process))) return
+  const local = join(directory, 'closed')
+  const certificates = directoryEntries(local).map(name => {
+    if (!/^[0-9a-f-]{36}\.json$/.test(name)) throw new Error('Unexpected native closure archive entry.')
+    const raw = readRecord(join(local, name))
+    const row = NativeProcessObservationSchema.parse(raw)
+    if (row.owner !== observation.owner || `${row.launchId}.json` !== name
+      || row.lifecycle !== 'closed' || !row.closureEvidence) throw new Error('Invalid native closure archive record.')
+    return { name, row }
+  })
+  if (certificates.some(({ row }) => row.bootId === bootIdentity()
+    && [row.guardian, row.provider].some(process => process && identityAlive(process)))) return
+  const archive = privateDirectory(join(dirname(directory), 'closed'))
+  for (const { name, row } of certificates) archiveRecord(join(archive, `${ownerKey}-${name}`), row)
+  // Preserve the last observation separately so owner-wide retries and telemetry survive GC.
+  writeRecord(join(archive, `${ownerKey}.json`), retired)
+  syncDirectory(archive)
+  for (const { name } of certificates) unlinkSync(join(local, name))
+  if (existingPrivateDirectory(local)) rmdirSync(local)
+  unlinkSync(path)
+  syncDirectory(directory)
+  rmdirSync(directory)
+  syncDirectory(dirname(directory))
+}
+
 /** Startup maintenance runs once per root; passive telemetry never performs GC. */
 export function prepareRegistryRetirement(root: string, retire: (directory: string) => void): void {
   if (preparedRoots.has(root) || !existingPrivateDirectory(root)) return
@@ -90,6 +132,7 @@ export function prepareRegistryRetirement(root: string, retire: (directory: stri
           if (closed && Date.now() - closed.mtimeMs >= closureRetentionMs) retire(registration)
         }
       }
+      pruneRetiredOwner(directory)
     }
     preparedRoots.add(root)
   })

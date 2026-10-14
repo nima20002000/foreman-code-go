@@ -1132,12 +1132,18 @@ export async function createInstalledWorkflowHost(input:InstalledWorkflowHostOpt
       await releaseSettled(receipt.intent)
       return true
     }
-    if (owned) owned.launchDisabled = true
+    if (owned) {
+      owned.launchDisabled = true
+      await owned.host?.abortPreparation(owned.intent.operationId)
+    }
     await log.revokeFence(owner.identity.operationId)
     if (owned?.manager) {
       if (!owned.manager.dispose) return false
       await owned.manager.dispose()
     }
+    // A Run stopped before entry keeps this live process as the reservation's parent,
+    // so only its explicit abandonment can prove that no native process started.
+    if (owned?.scope.launchId) await registry.abandonReservedLaunch(owned.scope)
     if ((receipt.native || launches().length) && !await registry.closeOwner(processOwner)) return false
     componentLogger('engine').warn({ executionId: owner.attempt.executionId, terminal: Boolean(receipt.terminal) },
       'Source preparation closed a workflow owner')
