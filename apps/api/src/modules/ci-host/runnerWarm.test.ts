@@ -4,15 +4,22 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
+import { deferred } from '../../../test/helpers/deferred.js'
 import { gitFixtureEnvironment } from '../../../test/helpers/gitFixture.js'
 import { HostCiRunner, systemHostCiPorts, type HostCiPorts } from './runner.js'
 
 const roots: string[] = []
+const completions: (() => Promise<void>)[] = []
 afterEach(async () => {
+  await Promise.all(completions.splice(0).map(close => close()))
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
 
-async function computer({ prepareDatabase = false } = {}) {
+async function computer({ prepareDatabase = false, beforeLaunch, afterRunning }: {
+  prepareDatabase?: boolean
+  beforeLaunch?: () => Promise<void>
+  afterRunning?: () => Promise<void>
+} = {}) {
   const base = process.env.FOREMAN_CODE_TEST_ROOT ?? process.env.TMPDIR
     ?? join(homedir(), '.cache/foreman-code/tests')
   await mkdir(base, { recursive: true })
@@ -76,6 +83,7 @@ if (args[1] === 'db:up') {
         return system.run(file, args.map(arg => arg.startsWith('https://') ? origin : arg), options)
       }
       if (file === 'systemd-run') {
+        await beforeLaunch?.()
         const cwd = args.find(arg => arg.startsWith('--working-directory='))!.slice('--working-directory='.length)
         const env = Object.fromEntries(args.filter(arg => arg.startsWith('--setenv='))
           .map(arg => arg.slice('--setenv='.length).split(/=(.*)/s).slice(0, 2)))
@@ -86,6 +94,10 @@ if (args[1] === 'db:up') {
       return system.run(file, args, options)
     } }
   const runner = new HostCiRunner(join(root, 'runner'), ports, { ...environment, PATH: `${bin}:${process.env.PATH}` })
+  completions.push(async () => {
+    await runner.beginDrain()
+    await Promise.all([...launched.values()].map(process => process.done))
+  })
   async function run() {
     const runId = randomUUID()
     await runner.handle({ operation: 'start', runId, repository: 'example/project', commit: git('rev-parse', 'HEAD'),
@@ -94,8 +106,10 @@ if (args[1] === 'db:up') {
       const reply = await runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 })
       if (reply.operation !== 'read' || reply.run.state === 'starting') throw new Error('Run is starting')
     })
+    await afterRunning?.()
     const script = join(root, 'runner/runs', runId, 'run.sh')
     await launched.get(script)?.done
+    expect(runner.isUpdateIdle()).toBe(true)
     return runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 65_536 })
   }
   const commands = async () => (await readFile(calls, 'utf8')).trim().split('\n')
@@ -193,4 +207,28 @@ it('fetches only the tested commit on a cold runner and on later jobs with expli
   await expect(fixture.run()).resolves.toMatchObject({ run: { state: 'passed' } })
   expect(fixture.checkout('for-each-ref', '--format=%(refname)', 'refs/remotes/')).toBe('')
   expect(fixture.checkout('rev-list', '--count', fixture.git('rev-parse', 'HEAD'))).toBe('1')
+})
+
+it('waits for a registered process when the unit appears active before launch acknowledgement', async () => {
+  const launching = deferred()
+  const acknowledged = deferred()
+  const fixture = await computer({
+    beforeLaunch: async () => {
+      launching.resolve()
+      await acknowledged.promise
+    },
+    afterRunning: async () => {
+      await launching.promise
+      acknowledged.resolve()
+    },
+  })
+  try {
+    await expect(fixture.run()).resolves.toMatchObject({
+      run: { state: 'passed' }, text: expect.stringContaining('dependency=pristine'),
+    })
+    const installs = (await fixture.commands()).filter(args => args[1] === 'install')
+    expect(installs.filter(args => !args.includes('--offline'))).toHaveLength(1)
+  } finally {
+    acknowledged.resolve()
+  }
 })
