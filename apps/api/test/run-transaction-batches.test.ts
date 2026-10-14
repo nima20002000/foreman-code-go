@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { afterAll, beforeAll, expect, it, vi } from 'vitest'
-import { HarnessExecutionSchema, type HarnessExecution, type HarnessNativeEvent } from '@foreman-code/contracts'
+import { HarnessExecutionSchema, type HarnessNativeEvent } from '@foreman-code/contracts'
 import { canonicalGraphJson, makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { currentRepositoryFixture } from './helpers/wave25CurrentRepository.js'
@@ -16,6 +16,9 @@ import { openWorkflowLifecycleLocked } from '../src/modules/runs/repeatLifecycle
 import { canonicalRepeatEffectReceipt } from '../src/modules/run-graph/repeatEffects.js'
 import { graphSourceDigest } from '../src/modules/run-graph/publication.js'
 import { nativeGraphSource } from '../src/modules/run-graph/nativeIngestion.js'
+import { appendNormalizedNativeEvents } from '../src/modules/runs/nativeEventBatch.js'
+import { normalizeNativeProducerEvent } from '../src/modules/run-graph/nativeProducerNormalization.js'
+import { beforeGraphCommit, type GraphTransactionSql } from '../src/modules/run-graph/connection.js'
 import { appendNativeEvent } from '../src/modules/runs/nativeEvents.js'
 import { repeatDigest, repeatExecutionIdentity, repeatId, tickSlotId } from '../src/modules/runs/repeatResolution.js'
 import { repeatLaunchClaim } from '../src/modules/runs/repeatNativeRepository.js'
@@ -43,19 +46,20 @@ async function measure<T>(work: () => Promise<T>) {
   } finally { wrapper.mockRestore() }
 }
 
-async function fixture(size: number, live = false, closed = false) {
+async function fixture(size: number, live = false, closed = false,
+  checkPhysical?: (sql: GraphTransactionSql) => Promise<void>) {
   const base = makeCurrentWorkflowFixture(randomUUID(), 'single')
   base.version.approval = { handler: 'native' }
   base.version.definition.approval = base.version.approval
   base.version.definition.nodes[0]!.interval = { everySeconds: 10 }
   base.version.definition.executionPolicy = { maxParallelism: 1, maxNodeExecutions: 2000 }
-  const f = await currentRepositoryFixture(db, base)
+  const f = await currentRepositoryFixture({ ...db, databaseUrl: process.env.TEST_DATABASE_URL! }, base)
   const owner = await RunOwnership.acquire(db.pool, f.f.run.id, () => {})
   if (!owner) throw new Error('Fixture Run already has an owner')
   owners.push(owner)
   const channel = createWorkflowNativeCaptureChannel()
   const repository = new PostgresRunRepository(db.pool, new PostgresWorkflowRepository(db.pool), f.locations,
-    { runtimeRoot: db.directory, ...createWorkflowRepositoryServices(channel.verify) })
+    { runtimeRoot: db.directory, ...createWorkflowRepositoryServices(channel.verify, checkPhysical) })
   const scope = f.f.scope
   const { executionId: _id, ...identity } = f.f.identities[0]!
   void _id
@@ -257,4 +261,66 @@ it('settles many closed native attempts across restart without per-attempt queri
   console.info('settleClosedWorkForRestart', batch)
   expect(batch.statements).toBeLessThanOrEqual(first.statements + 2)
   expect(batch.statements).toBeLessThanOrEqual(100)
+})
+
+it('matches single-event allocation, replay, activity filtering and absorbing rejection across a mixed batch', async () => {
+  const f = await fixture(2)
+  const source = f.executions[0]!
+  const target = f.executions[1]!
+  const first = { ...f.event(5), executionId: source.id, payload: { text: 'visible' } }
+  const disconnected = { executionId: source.id, sequence: 10, type: 'native.notification',
+    occurredAt: source.createdAt, payload: { text: 'unconnected' } }
+  const other = { ...first, connectionId: 'other-connection', sequence: 7 }
+  const rejected = { ...first, sequence: 8, payload: null } as unknown as HarnessNativeEvent
+  const absorbed = { ...first, sequence: 8, payload: { text: 'bounded later replay' } }
+  const frames = [first, disconnected, other, first, f.event(9), rejected, absorbed]
+    .map(event => ({ ...event, executionId: source.id }))
+  for (const event of frames) await appendNativeEvent(db.pool, event)
+  const batch = frames.map(event => normalizeNativeProducerEvent({ ...event, executionId: target.id }))
+  const measured = await measure(() => f.owner.oneShotConnection().transaction(sql => appendNormalizedNativeEvents(sql, batch)))
+  expect(measured.value.map(item => [item.inserted, item.rejected, item.sequence])).toEqual([
+    [true, false, '0'], [true, false, '10'], [true, false, '11'], [false, false, '0'],
+    [true, false, '12'], [true, true, '13'], [false, true, '13'],
+  ])
+  const saved = async (id: string) => ({
+    events: (await db.pool.query('select record,connection_id,source_sequence from harness_native_events where execution_id=$1 order by sequence', [id]))
+      .rows.map(row => ({ ...row, record: { ...row.record, executionId: 'execution' } })),
+    activities: (await db.pool.query('select kind,payload from run_activity where harness_execution_id=$1 order by sequence', [id])).rows,
+    allocator: (await db.pool.query('select native_event_next_sequence::text from harness_executions where id=$1', [id])).rows,
+  })
+  const original = await saved(source.id)
+  expect(await saved(target.id)).toEqual(original)
+  await f.owner.oneShotConnection().transaction(sql => appendNormalizedNativeEvents(sql, batch))
+  expect(await saved(target.id)).toEqual(original)
+  await expect(f.owner.oneShotConnection().transaction(sql => appendNormalizedNativeEvents(sql, [
+    normalizeNativeProducerEvent({ ...f.event(100), executionId: target.id }),
+    normalizeNativeProducerEvent({ ...first, executionId: target.id, payload: { conflicting: true } }),
+  ]))).rejects.toMatchObject({ code: 'NATIVE_EVENT_IDENTITY_CONFLICT' })
+  expect(await saved(target.id)).toEqual(original)
+  // An unconnected identity cannot adopt a connected rejection at the same stored position.
+  await expect(f.owner.oneShotConnection().transaction(sql => appendNormalizedNativeEvents(sql, [
+    normalizeNativeProducerEvent({ ...disconnected, executionId: target.id, sequence: 13 }),
+  ]))).rejects.toMatchObject({ code: 'NATIVE_EVENT_IDENTITY_CONFLICT' })
+  expect(await saved(target.id)).toEqual(original)
+  expect(measured.statements).toBeLessThanOrEqual(5)
+})
+
+it('rolls a native batch back when its writer lane changes before commit', async () => {
+  let changed = false
+  const f = await fixture(1, true, false, async sql => {
+    if (changed) return
+    changed = true
+    beforeGraphCommit(sql, async () => {
+      await sql.query("update native_session_lanes set record=jsonb_set(record,'{leaseToken}',$2::jsonb) where id=$1",
+        [f.lease.fence.id, JSON.stringify('replaced')])
+    })
+  })
+  const before = await f.read()
+  const event = f.event(1)
+  await expect(f.repository.appendNativeEvents([{ event, evidence: f.capture({ type: 'event', event }) }],
+    f.owner, { ...f.lease.fence, live: true, providerId: 'turn' })).rejects.toMatchObject({ code: 'SESSION_LANE_LEASE_LOST' })
+  expect(await f.read()).toEqual(before)
+  expect((await db.pool.query('select proof_id from workflow_native_proofs where execution_id=$1', [f.execution.id])).rowCount).toBe(0)
+  expect((await db.pool.query("select record->>'leaseToken' as token from native_session_lanes where id=$1",
+    [f.lease.fence.id])).rows).toEqual([{ token: 'token' }])
 })

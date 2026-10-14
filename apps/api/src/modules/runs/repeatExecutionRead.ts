@@ -8,7 +8,8 @@ import {
 } from '@foreman-code/contracts/wave25'
 import { assertGraphTransaction, isReadOnlyGraphTransaction, type GraphTransactionSql } from '../run-graph/connection.js'
 import { canonicalRepeatEffectReceipt } from '../run-graph/repeatEffects.js'
-import { assertRepeatCanonicalReceiptLocked, requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatReceipts.js'
+import { assertRepeatCanonicalReceiptLocked, assertRepeatCanonicalReceiptsLocked,
+  requireRepeatCanonicalReceiptBeforeCommit, type RepeatCanonicalReceipt } from '../run-graph/repeatReceipts.js'
 import type { RepeatEffect } from './repeatPostgres.js'
 import type { AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
 import {
@@ -62,10 +63,12 @@ export async function readStoredRepeatExecution(sql: GraphTransactionSql, scope:
 }
 
 async function validateStoredExecutionRow(sql: GraphTransactionSql, scope: RepeatScope,
-  version: WorkflowVersionV3, executionId: string, row: StoredExecutionRow | undefined): Promise<StoredRepeatExecution> {
+  version: WorkflowVersionV3, executionId: string, row: StoredExecutionRow | undefined,
+  storedOccurrence?: RepeatOccurrenceV1): Promise<StoredRepeatExecution> {
   if (!row) return repeatConflict('EXECUTION_NOT_FOUND')
   const execution = HarnessExecutionSchema.parse(row.record)
-  const occurrence = row.occurrence_id ? (await readStoredRepeatOccurrence(sql, scope, row.occurrence_id)).occurrence.identity : null
+  const occurrence = row.occurrence_id
+    ? (storedOccurrence ?? (await readStoredRepeatOccurrence(sql, scope, row.occurrence_id)).occurrence).identity : null
   const ref = { nodeId: row.workflow_node_id, occurrence }
   assertRepeatExecution(version, scope, ref, execution)
   const identity = occurrence ? RepeatExecutionIdentityV1Schema.parse({ ...repeatExecutionIdentity(execution), occurrence }) : repeatExecutionIdentity(execution)
@@ -87,6 +90,51 @@ async function validateStoredExecutionRow(sql: GraphTransactionSql, scope: Repea
     || !sameRepeatValue(execution.input, input)) return repeatConflict('REPEAT_EXECUTION_INPUT_CONFLICT')
   return { execution, ref, slotId: row.slot_id, input, inputDigest: row.input_digest, accepted: row.accepted,
     ...(workActivationId ? { workActivationId } : {}) }
+}
+
+/** The same execution/input checks for a set of attempts, including their occurrence pins. */
+export async function readRepeatExecutionsLocked(sql: GraphTransactionSql, snapshot: AcceptedRepeatRunSnapshot,
+  ids: readonly string[]): Promise<StoredRepeatExecution[]> {
+  assertGraphTransaction(sql)
+  if (!ids.length) return []
+  const { run, version } = snapshot
+  const scope: RepeatScope = { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
+    workflowVersionId: run.workflowVersionId, executionSemanticsVersion: 3 }
+  const headLock = isReadOnlyGraphTransaction(sql) ? '' : 'for share'
+  const executionLock = isReadOnlyGraphTransaction(sql) ? '' : 'for share of e'
+  const rows = await sql.query<StoredExecutionRow & { execution_id: string; protocol_version: number;
+    payload_digest: string | null; occurrence_record: unknown; occurrence_input: string | null;
+    occurrence_digest: string | null }>(`
+    with head as materialized (select protocol_version from run_graph_heads where run_id=$1 ${headLock})
+    select ${storedExecutionColumns},x.execution_id,h.protocol_version,f.payload_digest,
+      o.record as occurrence_record,o.input_json as occurrence_input,o.input_digest as occurrence_digest
+    from head h cross join harness_executions e join run_repeat_executions x on x.execution_id=e.id
+    join run_repeat_slots s on s.slot_id=x.slot_id
+    left join run_repeat_occurrences o on o.occurrence_id=s.occurrence_id and o.run_id=$1
+    left join run_repeat_effects f on f.run_id=$1 and f.effect_kind='input.bind' and f.entity_id=e.id
+    where e.run_id=$1 and x.run_id=$1 and e.id=any($2::text[]) order by e.id ${executionLock}`, [run.id, [...ids]])
+  if (rows.rows.length !== new Set(ids).size) return repeatConflict('EXECUTION_NOT_FOUND')
+  const stored = new Map<string, StoredRepeatExecution>()
+  const receipts: RepeatCanonicalReceipt[] = []
+  for (const row of rows.rows) {
+    if (row.protocol_version !== 1) return repeatConflict('GRAPH_NOT_INITIALIZED')
+    let occurrence: RepeatOccurrenceV1 | undefined
+    if (row.occurrence_id) {
+      if (!row.occurrence_record) return repeatConflict('REPEAT_OCCURRENCE_NOT_FOUND')
+      occurrence = RepeatOccurrenceV1Schema.parse(row.occurrence_record)
+      const input = EntrySchema.parse(JSON.parse(row.occurrence_input!))
+      if (!sameRepeatValue(occurrence.identity.scope, scope) || occurrence.identity.occurrenceId !== row.occurrence_id
+        || row.occurrence_digest !== repeatDigest(input, 4 * 1024 * 1024)
+        || occurrence.input.inputDigest !== row.occurrence_digest) return repeatConflict('REPEAT_INPUT_DIGEST_CONFLICT')
+    }
+    stored.set(row.execution_id, await validateStoredExecutionRow(sql, scope, version, row.execution_id, row, occurrence))
+    if (!GraphDigestSchema.safeParse(row.payload_digest).success) return repeatConflict('REPEAT_EFFECT_MISSING')
+    receipts.push(canonicalRepeatEffectReceipt(scope, { kind: 'input.bind', entityId: row.execution_id,
+      digest: row.payload_digest! }))
+  }
+  await assertRepeatCanonicalReceiptsLocked(sql, receipts)
+  for (const receipt of receipts) requireRepeatCanonicalReceiptBeforeCommit(sql, receipt)
+  return ids.map(id => stored.get(id)!)
 }
 
 export async function retainRepeatEffectReceipt(sql: GraphTransactionSql, scope: RepeatScope,

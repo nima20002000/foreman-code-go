@@ -96,6 +96,11 @@ export class RepeatRepositoryFactory {
     return store
   }
 
+  existingForOwner(owner: RunOwnership): RepeatRunRepository | undefined {
+    owner.assertOwned()
+    return this.stores.get(owner)?.store
+  }
+
   async executionHostKey(owner: RunOwnership, execution: HarnessExecution): Promise<string> {
     owner.assertOwned()
     if (execution.runId !== owner.runId) return repeatConflict('GRAPH_SCOPE_MISMATCH')
