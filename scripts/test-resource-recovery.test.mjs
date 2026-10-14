@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
   symlinkSync, utimesSync, writeFileSync } from 'node:fs'
@@ -9,7 +11,16 @@ import * as resources from './test-resources.mjs'
 
 const resourcesModule = new URL('./test-resources.mjs', import.meta.url).href
 
+const visibleProcesses = new Set()
+
 function fixture(t) {
+  visibleProcesses.clear()
+  visibleProcesses.add(String(process.pid))
+  const readDirectory = fs.readdirSync
+  t.mock.method(fs, 'readdirSync', (path, ...args) => path === '/proc'
+    ? [...visibleProcesses] : readDirectory(path, ...args))
+  syncBuiltinESMExports()
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports() })
   const cache = join(homedir(), '.cache', 'foreman-tmp')
   mkdirSync(cache, { recursive: true, mode: 0o700 })
   const parent = mkdtempSync(join(cache, 'test-root-recovery-'))
@@ -91,7 +102,8 @@ test('recovery removes fresh abandoned nested roots and writable copies without 
     readdirCleanup(resource.directory)[0]), 'utf8')).directory
   chmodSync(join(childDirectory, 'readonly'), 0o500)
   symlinkSync(outside, join(childDirectory, 'outside-link'))
-  await resources.recoverAbandonedTestRoots(adminWithoutDatabases(), { parent, containers: noContainers })
+  const recovered = await resources.recoverAbandonedTestRoots(adminWithoutDatabases(), { parent, containers: noContainers })
+  assert.deepEqual(recovered.retained, [])
   assert.equal(existsSync(resource.directory), false)
   assert.equal(readFileSync(join(outside, 'preserved'), 'utf8'), 'outside data')
 })
@@ -122,7 +134,8 @@ test('recovery distinguishes a reused PID from the original owning process', asy
   marker.process = { pid: process.pid, startTicks: '0',
     boot: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim() }
   writeFileSync(markerPath, JSON.stringify(marker))
-  await resources.recoverAbandonedTestRoots(adminWithoutDatabases(), { parent, containers: noContainers })
+  const recovered = await resources.recoverAbandonedTestRoots(adminWithoutDatabases(), { parent, containers: noContainers })
+  assert.deepEqual(recovered.retained, [])
   assert.equal(existsSync(resource.directory), false)
 })
 
@@ -187,6 +200,7 @@ test('recovery keeps an abandoned root while a surviving process holds its worki
   const { once } = await import('node:events')
   const child = spawn(process.execPath, ['-e', "console.log('ready'); setInterval(() => {}, 1000)"],
     { cwd: resource.directory, stdio: ['ignore', 'pipe', 'inherit'] })
+  visibleProcesses.add(String(child.pid))
   const exited = once(child, 'exit')
   try {
     await once(child.stdout, 'data')
@@ -196,6 +210,24 @@ test('recovery keeps an abandoned root while a surviving process holds its worki
     child.kill()
     await exited
   }
-  await resources.recoverAbandonedTestRoots(adminWithoutDatabases(), { parent, containers: noContainers })
+  const recovered = await resources.recoverAbandonedTestRoots(adminWithoutDatabases(), { parent, containers: noContainers })
+  assert.deepEqual(recovered.retained, [])
   assert.equal(existsSync(resource.directory), false)
+})
+
+test('recovery retains a root when a visible process cannot be inspected', async t => {
+  const parent = fixture(t)
+  const resource = abandonedRoot(parent)
+  const read = fs.readFileSync
+  t.mock.method(fs, 'readFileSync', (path, ...args) => {
+    if (path === `/proc/${process.pid}/environ`) {
+      throw Object.assign(new Error('Process environment unavailable'), { code: 'EACCES' })
+    }
+    return read(path, ...args)
+  })
+  syncBuiltinESMExports()
+  const recovered = await resources.recoverAbandonedTestRoots(adminWithoutDatabases(), { parent, containers: noContainers })
+  assert.deepEqual(recovered.removed, [])
+  assert.deepEqual(recovered.retained, [{ directory: resource.directory, reason: 'Process environment unavailable' }])
+  assert.equal(existsSync(resource.directory), true)
 })

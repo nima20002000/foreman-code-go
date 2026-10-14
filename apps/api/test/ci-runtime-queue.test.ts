@@ -108,6 +108,8 @@ describe('CI preparation follows persisted queue state', () => {
         attemptId: original.attemptId, operationId: original.operationId, definition: original.definition })
       expect(ticket.definition.spec.policy.imageDigest).toBe(oldImage)
       expect(admitted).toHaveBeenCalledWith(expect.objectContaining({ policy: expect.objectContaining({ imageDigest: newImage }) }))
+      expect(preparation.calls.publish).toEqual([{ repository: 'octo/site', commit }])
+      expect(preparation.calls.prepare).toEqual([expect.objectContaining({ repository: preparation.clone, commit })])
       expect(preparation.calls.refresh).toHaveLength(1)
     } finally {
       await preparation.ciRuntime.close()

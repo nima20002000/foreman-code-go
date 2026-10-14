@@ -60,11 +60,16 @@ it('reuses unchanged settled run metadata across status polls and rereads it aft
   try {
     await mkdir(directory, { recursive: true })
     await writeFile(join(directory, 'meta.json'), meta(null))
+    await writeFile(join(directory, 'log'), 'Lint output')
     const runner = new HostCiRunner(root, { now: () => new Date(), cpus: 8, memoryBytes: 16 * 2 ** 30,
       availableMemoryBytes: () => 16 * 2 ** 30, run: async () => ({ code: 0, stdout: '', stderr: '' }) })
     await runner.handle({ operation: 'status' })
     metaReads.length = 0
     await runner.handle({ operation: 'status' })
+    expect(metaReads).toEqual([])
+    await writeFile(join(directory, 'log'), 'é中🙂tail')
+    await expect(runner.handle({ operation: 'read', runId, afterOffset: 9, maxBytes: 4 }))
+      .resolves.toMatchObject({ text: 'tail', run: { logBytes: 13 }, nextOffset: 13 })
     expect(metaReads).toEqual([])
     await writeFile(join(directory, 'meta.json'), meta('Lint failed in a later report.'))
     const status = await runner.handle({ operation: 'status' })

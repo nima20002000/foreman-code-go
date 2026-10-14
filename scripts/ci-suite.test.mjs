@@ -90,7 +90,7 @@ if (args.at(-1) === process.env.FAIL_COMMAND) process.exit(9)
       writeFileSync(join(directory, cli), '#!/bin/bash\nexit 0\n', { mode: 0o755 })
     }
   } else {
-    for (const command of ['bash', 'date']) symlinkSync(`/bin/${command}`, join(directory, command))
+    for (const command of ['bash', 'date', 'mkdir', 'cat']) symlinkSync(`/bin/${command}`, join(directory, command))
     writeFileSync(join(directory, 'npm'), `#!${process.execPath}
 const { appendFileSync } = require('node:fs')
 const args = process.argv.slice(2)
@@ -106,9 +106,17 @@ require('node:fs').appendFileSync(process.env.CALLS_FILE, JSON.stringify(['git',
 if (process.argv[2] === 'rev-parse') console.log('false')
 `, { mode: 0o755 })
   }
-  if (selection?.databaseFailure) {
+  if (!action) {
     const state = join(directory, 'state')
     mkdirSync(state)
+    for (const name of ['db', 'clis']) {
+      writeFileSync(join(state, `${name}.log`), '')
+      writeFileSync(join(state, `${name}.exit`), '0')
+    }
+  }
+  if (selection?.databaseFailure) {
+    const state = join(directory, 'state')
+    mkdirSync(state, { recursive: true })
     writeFileSync(join(state, 'db.log'), 'Database unavailable.\n')
     writeFileSync(join(state, 'db.exit'), '9')
   }

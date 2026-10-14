@@ -48,6 +48,7 @@ async function fixture() {
   const records=new Map<string,JobOutputAdmission>();let now=new Date(job.createdAt),ready=true,revoked=false,liveOwner=true,liveGrant=true,rootRevision=1,rootRevoked=false,canonicalState='pending',allocationState='allocated'
   const fileId=randomUUID(),revisionId=randomUUID(),expires=new Date(now.getTime()+7200_000)
   const query=vi.fn(async(text:string,args:unknown[]=[])=>{
+    if(text.includes('pg_try_advisory_lock'))return {rows:[{locked:true}]}
     if(text.startsWith('select record,accepted_spec'))return {rows:[{record:job,accepted_spec:job.acceptedSpec}]}
     if(text.startsWith('select accepted_by'))return {rows:[{accepted_by:'owner'}]}
     if(text.includes('management_principals'))return {rows:[{id:'owner',name:'Owner',audience:'operator',grants:liveGrant?[{actions:['jobs:start'],scope:{workspaceIds:[job.workspaceId]}}]:[],expires_at:new Date('2099-01-01'),revoked_at:null,delegated_from:null}]}

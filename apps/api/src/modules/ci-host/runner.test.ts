@@ -104,6 +104,8 @@ async function computer(options: { github?: boolean; suiteExit?: number; watchdo
     + `printf '%s' '${JSON.stringify(options.measured)}' > "$FOREMAN_CODE_INTEGRATION_DURATIONS_OUTPUT"; fi\n` : ''
   const unitReport = `${process.execPath} -e 'const fs = require("node:fs"); const path = require("node:path");
     const args = process.argv.slice(1); const output = args.find(arg => arg.startsWith("--outputFile.json="));
+    const nodeOutput = args.find(arg => arg.startsWith("--test-reporter-destination=") && !arg.endsWith("=stdout"));
+    if (nodeOutput) fs.writeFileSync(nodeOutput.slice("--test-reporter-destination=".length), JSON.stringify({ testResults: [] }));
     if (output) fs.writeFileSync(output.slice("--outputFile.json=".length), JSON.stringify({ testResults:
       args.filter(arg => /\\.test\\.tsx?$/.test(arg)).map(file => ({ name: path.resolve(args[1] === "--dir" ? args[2] : ".", file), status: "passed", startTime: 1, endTime: 6,
       assertionResults: [{ fullName: path.basename(file) + " works", status: "passed", duration: 4 }] })) }));' "$@"\n`

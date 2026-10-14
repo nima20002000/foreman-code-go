@@ -41,7 +41,7 @@ if (process.argv.includes('test')) {
 `, { mode: 0o755 })
   const child = spawn('bash', [join(repository, 'scripts/ci-suite.sh')], {
     cwd: repository, detached: true, stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, PATH: `${directory}/bin:${process.env.PATH}`, SUITE: 'unit-other', SCOPE: 'full',
+    env: { ...process.env, PATH: `${directory}/bin:${process.env.PATH}`, SUITE: 'unit-other', SCOPE: 'full', CI_PREREQUISITES_UNTRACKED: '1',
       CI_HOST_RUNNER: '0', CI_USER_SYSTEMD: '0', CI_STATE: join(directory, 'state'),
       CI_EXPECTED_DURATION_MS: '1000', CI_WATCHDOG_IDLE_MS: '20000', CI_WATCHDOG_DIRECTORY: join(directory, 'watchdog'),
       CI_WATCHDOG_MESSAGE_FILE: join(directory, 'watchdog-message.json'), CI_WATCHDOG_ACTIVE: '', CI_PROGRESS_FILE: '',

@@ -179,7 +179,7 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       expect(done).toMatchObject({ state: 'qualified', commit, deviceId: builder, message: null })
       expect(done.profiles.map(value => [value.profileId, value.status]).sort()).toEqual([['p-install', 'qualified'], ['p-unit', 'qualified']])
       // The computer keeps the images its profiles in every workspace and the qualification source its current runtime use.
-      expect(f.calls.prepare).toEqual([{ repository: '/clones/octo/site', commit, installer: '/ci/managed/installer',
+      expect(f.calls.prepare).toEqual([{ repository: f.clone, commit, installer: '/ci/managed/installer',
         keepImages: [oldImage, otherWorkspaceImage],
         keepPaths: ['/ci/managed/installer/qualification-source-aaaaaaaaaaaa'] }])
       expect(f.calls.bind).toEqual([expect.objectContaining({ source: newPin, expectedBindingRevision: 1, accessMode: 'exclusive-write' })])
