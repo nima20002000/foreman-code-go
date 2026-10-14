@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { access, mkdtemp, readFile, readdir, realpath, rm, stat } from 'node:fs/promises'
-import { constants, createReadStream } from 'node:fs'
+import { constants } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, isAbsolute, join, resolve } from 'node:path'
 
@@ -60,33 +60,29 @@ async function executable(binary: string, cwd: string, environment: NodeJS.Proce
 }
 
 const executableFingerprints = new PayloadFingerprintCache()
-export async function codexExecutableIdentity(binary: string, options: { fresh?: boolean } = {}): Promise<string> {
+export async function codexExecutableIdentity(binary: string): Promise<string> {
   const path = await realpath(binary)
-  const value = await stat(path)
+  const value = await stat(path, { bigint: true })
   if (!value.isFile()) throw new HarnessExecutionError('CODEX_UNAVAILABLE', 'Codex must be a regular executable file.')
-  // pnpm creates hardlinks across worktrees, changing ctime without replacing executable content.
-  let fingerprint: string
-  if (options.fresh) {
-    const hash = createHash('sha256')
-    for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer)
-    fingerprint = hash.digest('hex')
-  } else {
-    fingerprint = await executableFingerprints.fingerprint(path)
-  }
-  const after = await stat(path)
-  if (canonicalJsonNumericKeysFirstLegacy([value.dev, value.ino, value.size, value.mode, value.mtimeMs, value.ctimeMs])
-    !== canonicalJsonNumericKeysFirstLegacy([after.dev, after.ino, after.size, after.mode, after.mtimeMs, after.ctimeMs])
+  const fingerprint = await executableFingerprints.fingerprint(path, { observation: value })
+  const after = await stat(path, { bigint: true })
+  if (value.dev !== after.dev || value.ino !== after.ino || value.size !== after.size
+    || value.mode !== after.mode || value.mtimeNs !== after.mtimeNs || value.ctimeNs !== after.ctimeNs
     || await realpath(binary) !== path) {
     throw new HarnessExecutionError('CODEX_EXECUTABLE_CHANGED', 'Codex changed while reading its executable identity.')
   }
-  return canonicalJsonNumericKeysFirstLegacy([path, value.dev, value.ino, value.size, value.mode, value.mtimeMs, fingerprint])
+  // Preserve the identity's numeric fields while using nanoseconds for cache invalidation.
+  const mtimeMs = Number(value.mtimeNs / 1_000_000n) + Number(value.mtimeNs % 1_000_000n) / 1_000_000
+  return canonicalJsonNumericKeysFirstLegacy([
+    path, Number(value.dev), Number(value.ino), Number(value.size), Number(value.mode), mtimeMs, fingerprint,
+  ])
 }
 
 export async function codexBinaryIdentity(binary: string, options: { fresh?: boolean } = {}): Promise<string> {
   const payload = await passiveDriverPayloads('codex', binary, process.platform, process.arch,
     options.fresh ? undefined : executableFingerprints)
   const paths = [...new Set([await realpath(binary), ...payload.paths])].sort()
-  return canonicalJsonNumericKeysFirstLegacy(await Promise.all(paths.map(path => codexExecutableIdentity(path, options))))
+  return canonicalJsonNumericKeysFirstLegacy(await Promise.all(paths.map(path => codexExecutableIdentity(path))))
 }
 
 export async function assertCodexUnchanged(qualified: Pick<QualifiedCodex, 'binary' | 'identity'>,

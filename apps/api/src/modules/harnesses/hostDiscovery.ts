@@ -1,4 +1,4 @@
-import { constants, createReadStream } from 'node:fs'
+import { constants } from 'node:fs'
 import { access, lstat, open, realpath, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { isAbsolute, join, resolve } from 'node:path'
@@ -25,7 +25,7 @@ export interface LauncherEvidence {
 }
 
 /** Empty/relative PATH components are deliberately ignored: no project cwd lookup. */
-export async function discoverLauncher(requested: string, environment: TargetEnvironment, payloadPaths: readonly string[] = [], signal?: AbortSignal, fingerprintCache?: PayloadFingerprintCache): Promise<LauncherEvidence> {
+export async function discoverLauncher(requested: string, environment: TargetEnvironment, payloadPaths: readonly string[] = [], signal?: AbortSignal, fingerprintCache: PayloadFingerprintCache = inventoryPayloadFingerprints): Promise<LauncherEvidence> {
   signal?.throwIfAborted()
   const diagnostics: string[] = []
   const directories = environment.path.split(':').filter((entry) => {
@@ -77,15 +77,9 @@ export async function discoverLauncher(requested: string, environment: TargetEnv
         const path = await realpath(payloadPath)
         // The launcher must execute; payloads may be readable SDK/modules loaded by it.
         await access(path, constants.R_OK)
-        if (!(await stat(path)).isFile()) throw new Error('Payload is not a file')
-        let fingerprint: string
-        if (fingerprintCache) {
-          fingerprint = await fingerprintCache.fingerprint(path, signal)
-        } else {
-          const hash = createHash('sha256')
-          for await (const chunk of createReadStream(path, { ...(signal ? { signal } : {}) })) hash.update(chunk)
-          fingerprint = hash.digest('hex')
-        }
+        const observation = await stat(path, { bigint: true })
+        if (!observation.isFile()) throw new Error('Payload is not a file')
+        const fingerprint = await fingerprintCache.fingerprint(path, { signal, observation })
         fingerprints.push({ path, fingerprint })
       }
       evidence.payloadFingerprints = fingerprints

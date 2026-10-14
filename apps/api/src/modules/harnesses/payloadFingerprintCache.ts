@@ -6,14 +6,18 @@ function statIdentity(value: BigIntStats): string {
   return [value.dev, value.ino, value.size, value.mtimeNs, value.ctimeNs].join(':')
 }
 
-/** Reuse only unchanged file identities; native launch checks still hash bytes directly. */
+/** Reuse digests only while the full nanosecond file identity is unchanged. */
 export class PayloadFingerprintCache {
   private readonly entries = new Map<string, { identity: string; fingerprint: string }>()
 
-  async fingerprint(file: string, signal?: AbortSignal): Promise<string> {
+  async fingerprint(file: string, options: {
+    signal?: AbortSignal | undefined
+    observation?: BigIntStats
+  } = {}): Promise<string> {
+    const { signal, observation } = options
     signal?.throwIfAborted()
     const path = await realpath(file)
-    const before = await stat(path, { bigint: true })
+    const before = observation ?? await stat(path, { bigint: true })
     if (!before.isFile()) throw new Error('Payload is not a file')
     const identity = statIdentity(before)
     const cached = this.entries.get(path)

@@ -120,7 +120,7 @@ it('rejects cancellation while checking a cached file identity', async () => {
   const { path, cache } = await fixture()
   await cache.fingerprint(path)
   const controller = new AbortController()
-  const checking = cache.fingerprint(path, controller.signal)
+  const checking = cache.fingerprint(path, { signal: controller.signal })
   controller.abort(new Error('Inspection cancelled'))
   await expect(checking).rejects.toThrow('Inspection cancelled')
   expect(fs.createReadStream).toHaveBeenCalledTimes(1)
