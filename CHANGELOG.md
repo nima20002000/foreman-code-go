@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.99] - 2026-10-14
+
+CI speed round:
+- Gate plans skip occupied build computers and fall back to an occupied one only when no free one is eligible.
+- Unit gate parts are budgeted from measured file durations.
+- Cloud completion polls are prioritized; mirror publication overlaps planning.
+- Cloud setup skips redundant work on validated package-cache hits.
+- CircleCI Suite output is read through REST instead of CLI subprocesses; just-finished passed jobs stay pending until their artifacts are visible.
+Flake fixes: Start contention teardown waits for settlement; edit-intent recovery no longer depends on real waits.
+
 ## [0.0.98] - 2026-10-14
 
 ### Prototype simplification
