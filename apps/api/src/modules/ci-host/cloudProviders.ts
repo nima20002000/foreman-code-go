@@ -136,6 +136,7 @@ async function findFile(directory: string, name: string): Promise<string | null>
 export interface CloudArtifacts {
   durations: unknown; testResults: unknown; watchdogFailure?: unknown; suiteLog?: string
 }
+const ARTIFACT_VISIBILITY_MS = 5 * 60_000
 const noArtifacts: CloudArtifacts = { durations: null, testResults: null }
 
 async function readArtifacts(directory: string): Promise<CloudArtifacts> {
@@ -465,6 +466,12 @@ export class CircleCiProvider implements CloudProvider {
     // Read result metadata, not the per-slot logs and archives, which can outlast the download timeout.
     const listed = await this.rest.artifacts(run.mirror, job.id)
       ?? await this.circleci(['job', 'artifact', job.id, '--json'], 60_000)
+    const finishedAt = Date.parse(run.finishedAt ?? '')
+    if ((JSON.parse(listed) as unknown[]).length === 0 && run.state === 'passed'
+      && !(this.ports.now().getTime() - finishedAt >= ARTIFACT_VISIBILITY_MS)) {
+      // CircleCI lists a finished job's uploads with a delay; a passed job must not complete without its results.
+      throw new DomainError('CI_CLOUD_FAILED', 'CircleCI job artifacts are not visible yet.', 502)
+    }
     await rm(directory, { recursive: true, force: true })
     await mkdir(directory, { recursive: true })
     const resultPaths = new Set(['durations/durations.json', 'durations/test-results.json',
