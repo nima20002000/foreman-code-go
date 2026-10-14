@@ -50,6 +50,25 @@ it('plans a production-sized gate within a second', async () => {
   expect(parts.filter(part => part.suite === 'integration').flatMap(part => part.files).sort()).toEqual([...files].sort())
 })
 
+it('splits heavy measured unit inventories and retains their estimates in the gate', async () => {
+  const files = ['apps/api/src', 'apps/web/src'].flatMap(directory =>
+    Array.from({ length: 9 }, (_, index) => `${directory}/feature-${index}.test.ts`))
+  const durations = Object.fromEntries(files.map(file => [file, 90_000]))
+  const integrationFiles = Array.from({ length: 48 }, (_, index) =>
+    `apps/api/test/feature-${index}.integration.test.ts`)
+  const parts = await planCiGate({ suite: 'integration', scope: 'full', gate: true },
+    { files: integrationFiles, durations: Object.fromEntries(integrationFiles.map(file => [file, 120_000])) },
+    { files, durations, heavy: [] }, durations, fleet(44))
+  const integrationTarget = Math.max(...parts.filter(part => part.suite === 'integration')
+    .map(part => part.expectedDurationMs))
+  for (const name of ['unit-api', 'unit-web']) {
+    const unit = parts.filter(part => part.part === name)
+    expect(unit).toHaveLength(9)
+    expect(unit.every(part => part.expectedDurationMs === 180_000)).toBe(true)
+    expect(unit.every(part => part.expectedDurationMs <= integrationTarget)).toBe(true)
+  }
+})
+
 it.each([80_000, 120_000])('balances %i ms integration files against cloud checks', async durationMs => {
   const computers: HostCiComputer[] = [
     { key: 'builder-main', label: 'Main builder', priority: 60, hostRef: { kind: 'main', mainId: 'main' } },
