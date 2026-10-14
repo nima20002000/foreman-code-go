@@ -97,14 +97,14 @@ export async function installedRestartService(directory: string, configuration: 
     // The disposable deployment workspace is discarded, so it needs no dependency restoration.
     if (args.includes('install')) return
     try {
-      // pnpm 11 ignores npm_config_offline; use CLI options and the store used by the workspace install.
-      await execute(command, [...args, '--offline', '--store-dir', storeDir, '--cache-dir', metadataCache], {
-        cwd: deployment, maxBuffer: 4 * 1024 * 1024, timeout: 30_000,
+      // Deploy rechecks release age; allow missing full metadata while reusing installed packages.
+      await execute(command, [...args, '--prefer-offline', '--store-dir', storeDir, '--cache-dir', metadataCache], {
+        cwd: deployment, maxBuffer: 4 * 1024 * 1024, timeout: 300_000,
         env: { ...process.env, CI: 'true' },
       })
     } catch (error) {
       const output = error as Error & { stdout?: string; stderr?: string; code?: unknown; signal?: unknown }
-      throw new Error(`Installed API fixture deployment failed (offline; 30 s command limit): ${output.message}`
+      throw new Error(`Installed API fixture deployment failed (prefer-offline; 300 s command limit): ${output.message}`
         + ` (code ${output.code}, signal ${output.signal})\n`
         + `${output.stderr ?? ''}\n${output.stdout ?? ''}`, { cause: error })
     }

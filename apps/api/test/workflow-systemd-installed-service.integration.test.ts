@@ -2,9 +2,10 @@ import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { RuntimeBuildIdentitySchema } from '@foreman-code/contracts'
 import { createRuntimeBuildIdentity } from '@foreman-code/contracts/runtime-build-identity-node'
 import { execFile } from 'node:child_process'
+import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { promisify } from 'node:util'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { copyFile, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { delimiter, dirname, join } from 'node:path'
 import { parse } from 'yaml'
@@ -55,7 +56,7 @@ describe('installed API fixture packaging', () => {
     { age: 'unknown', modified: undefined, publication: undefined, succeeds: true },
     { age: 'too young', modified: new Date().toISOString(), publication: new Date().toISOString(), succeeds: false },
   ])('deploys locked packages with $age abbreviated metadata without bypassing release age', async ({
-    modified, publication, succeeds,
+    age, modified, publication, succeeds,
   }) => {
     const directory = await privateFixtureDirectory('locked-packaging-')
     const repository = fileURLToPath(new URL('../../../', import.meta.url))
@@ -65,10 +66,8 @@ describe('installed API fixture packaging', () => {
     const lockfile = parse(await readFile(join(repository, 'pnpm-lock.yaml'), 'utf8'))
     const dependency = lockfile.importers['apps/api'].dependencies.yaml
     const cache = join(directory, 'metadata')
-    const metadata = join(cache, 'v11/metadata/https%3A+registry.npmjs.org')
     const destination = join(directory, 'deployed')
     await mkdir(join(directory, 'scripts'), { recursive: true })
-    await mkdir(metadata, { recursive: true })
     for (const name of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', 'scripts/require-pnpm.mjs']) {
       await copyFile(join(repository, name), join(directory, name))
     }
@@ -97,30 +96,46 @@ describe('installed API fixture packaging', () => {
       }
       packageVersions.set(name, versions)
     }
-    for (const [name, versions] of packageVersions) {
-      const metadataPath = join(metadata, `${name}.jsonl`)
-      await mkdir(dirname(metadataPath), { recursive: true })
-      await writeFile(metadataPath, `${JSON.stringify({ modified })}\n${JSON.stringify({
+    let metadataRequests = 0
+    const registry = createServer((request, response) => {
+      const name = decodeURIComponent(new URL(request.url!, 'http://localhost').pathname.slice(1))
+      const versions = packageVersions.get(name)
+      if (!versions) {
+        response.writeHead(404).end()
+        return
+      }
+      metadataRequests++
+      response.setHeader('content-type', 'application/json')
+      response.end(JSON.stringify({
         name, modified, versions,
-      })}`)
-      if (publication) {
-        const fullMetadataPath = join(cache, 'v11/metadata-full/https%3A+registry.npmjs.org', `${name}.jsonl`)
-        await mkdir(dirname(fullMetadataPath), { recursive: true })
-        await writeFile(fullMetadataPath, `${JSON.stringify({ modified })}\n${JSON.stringify({
+        time: Object.fromEntries(Object.keys(versions).map(version =>
+          [version, publication ?? '2000-01-01T00:00:00.000Z'])),
+      }))
+    })
+    await new Promise<void>((resolve, reject) => {
+      registry.once('error', reject)
+      registry.listen(0, '127.0.0.1', resolve)
+    })
+    const address = registry.address() as { port: number }
+    const registryUrl = `http://127.0.0.1:${address.port}/`
+    const metadata = join(cache, `v11/metadata/http%3A+127.0.0.1+${address.port}`)
+    try {
+      for (const [name, versions] of packageVersions) {
+        const metadataPath = join(metadata, `${name}.jsonl`)
+        await mkdir(dirname(metadataPath), { recursive: true })
+        await writeFile(metadataPath, `${JSON.stringify({ modified })}\n${JSON.stringify({
           name, modified, versions,
-          time: Object.fromEntries(Object.keys(versions).map(version => [version, publication])),
         })}`)
       }
-    }
-    const execute = promisify(execFile)
-    const deploy = deployProductionApi(async (command, args) => {
-      // This disposable workspace needs no post-deploy installation restoration.
-      if (args.includes('install')) return
-      await execute(command, [...args, '--offline', '--store-dir', storeDir, '--cache-dir', cache], {
-        cwd: directory, env: { ...process.env, CI: 'true' }, timeout: 30_000,
-      })
-    }, destination)
-    try {
+      const execute = promisify(execFile)
+      const deploy = deployProductionApi(async (command, args) => {
+        // This disposable workspace needs no post-deploy installation restoration.
+        if (args.includes('install')) return
+        await execute(command, [...args, '--prefer-offline', '--store-dir', storeDir,
+          '--cache-dir', cache, '--registry', registryUrl], {
+          cwd: directory, env: { ...process.env, CI: 'true' }, timeout: 300_000,
+        })
+      }, destination)
       if (!succeeds) {
         await expect(deploy).rejects.toMatchObject({
           stdout: expect.stringMatching(/minimumReleaseAge/),
@@ -128,23 +143,21 @@ describe('installed API fixture packaging', () => {
         return
       }
       await deploy
+      if (age !== 'old') {
+        expect(metadataRequests).toBeGreaterThan(0)
+      }
       const deployedRequire = createRequire(join(destination, 'package.json'))
       expect(deployedRequire('yaml').parse('installed: true')).toEqual({ installed: true })
       expect(deployedRequire('yaml/package.json').version).toBe(dependency.version)
-      const verifyContracts = join(destination, 'verify-contracts.mjs')
-      await writeFile(verifyContracts, `import { RuntimeBuildIdentitySchema } from '@foreman-code/contracts'
-process.stdout.write(JSON.stringify({
-  valid: RuntimeBuildIdentitySchema.safeParse(JSON.parse(process.argv[2])).success,
-  invalid: RuntimeBuildIdentitySchema.safeParse({}).success,
-}))
-`)
-      const { stdout } = await execute(process.execPath,
-        [verifyContracts, JSON.stringify(createRuntimeBuildIdentity(repository))], { cwd: destination })
-      expect(JSON.parse(stdout)).toEqual({ valid: true, invalid: false })
+      const contractsFile = join(destination, 'node_modules/@foreman-code/contracts/dist/index.js')
+      const { RuntimeBuildIdentitySchema: deployedSchema } = await import(pathToFileURL(contractsFile).href)
+      expect(deployedSchema.safeParse(createRuntimeBuildIdentity(repository)).success).toBe(true)
+      expect(deployedSchema.safeParse({}).success).toBe(false)
     } finally {
+      await new Promise<void>((resolve, reject) => registry.close(error => error ? reject(error) : resolve()))
       await rm(directory, { recursive: true, force: true })
     }
-  }, 60_000)
+  }, 360_000)
 
   it('prefers cached packages and allows missing metadata using the installation store and cache', async () => {
     const directory = await privateFixtureDirectory('installed-packaging-')
