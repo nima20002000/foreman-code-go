@@ -1143,3 +1143,33 @@ test('dependency pruning retains cache entries used by older symlinked releases'
   assert.deepEqual(removed, [])
   assert.equal(await readFile(join(release, 'apps/api/node_modules/value'), 'utf8'), 'installed dependency')
 })
+
+
+test('pruning retries abandoned removals even when every release is retained', async t => {
+  const parent = await installFixture(t)
+  const releases = join(parent, 'releases')
+  const abandoned = join(parent, '.pruned-releases-abandoned')
+  const retained = join(releases, 'release-now')
+  await mkdir(retained, { recursive: true })
+  await mkdir(abandoned)
+  await writeFile(join(abandoned, 'old-dependency'), 'old')
+  const removals = []
+  await pruneReleases(releases, [retained], { removeInBackground: path => removals.push(path) })
+  assert.deepEqual(removals, [abandoned])
+  assert.equal(await readFile(join(abandoned, 'old-dependency'), 'utf8'), 'old')
+  assert.deepEqual(await readdir(releases), ['release-now'])
+})
+
+test('pruning preserves a selected release inside an abandoned removal directory', async t => {
+  const parent = await installFixture(t)
+  const releases = join(parent, 'releases')
+  const abandoned = join(parent, '.pruned-releases-selected')
+  const selected = join(abandoned, 'release-selected')
+  await mkdir(releases)
+  await mkdir(selected, { recursive: true })
+  await symlink(selected, join(parent, 'current'))
+  const removals = []
+  await pruneReleases(releases, [], { removeInBackground: path => removals.push(path) })
+  assert.deepEqual(removals, [])
+  assert.equal(await realpath(join(parent, 'current')), selected)
+})
