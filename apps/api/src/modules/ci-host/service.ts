@@ -637,8 +637,8 @@ export class HostCiService {
       const active = (await this.pool.query<{ id: string; host_key: string; record: unknown }>(
         `select id,host_key,record from ci_runs where state in ('starting','running') and host_key is not null
           order by created_at,id`)).rows
-      const result = []
-      for (const computer of await this.endpoint.computers()) {
+      // Ask every computer at once: one slow or offline host must not serialize the whole listing.
+      const result = await Promise.all((await this.endpoint.computers()).map(async computer => {
         const assigned = active.filter(run => run.host_key === computer.key)
         const status = await this.endpoint.request(computer, { operation: 'status' }).catch(error => error as Error)
         const running = []
@@ -648,7 +648,7 @@ export class HostCiService {
             ? await this.read(row.id, previous.workspaceId) : previous
           if (['starting', 'running'].includes(current.state)) running.push(row.id)
         }
-        result.push(status instanceof Error
+        return status instanceof Error
           ? { label: computer.label, hostRef: computer.hostRef, priority: computer.priority,
             ready: false, reasons: [status.message], running, slotsUsed: running.length,
             slotsTotal: Math.max(1, running.length) }
@@ -657,8 +657,8 @@ export class HostCiService {
             availableMemoryBytes: status.availableMemoryBytes,
             ...(status.userSystemd ? { userSystemd: status.userSystemd } : {}),
             slotsUsed: Math.max(running.length, status.slotsUsed ?? 0), slotsTotal: status.slotsTotal ?? 1,
-            running } : null)
-      }
+            running } : null
+      }))
       return { computers: result.filter(Boolean), queue, queueTruncated: queued.length > 500 }
     })
   }
