@@ -20,6 +20,8 @@ import { readJsonContinuation } from './jsonContinuation.js'
 import { readRemoteReceiptResponse } from './installedWorkflowResponsePages.js'
 import { decodeResultCopies } from './executionResultCodec.js'
 import { DeviceApplicationError } from '../../devices/deviceApplicationError.js'
+import { retryDeviceRequest } from '../../devices/deviceRequestRetry.js'
+import { preparationStop } from './preparationCleanup.js'
 
 export interface RemoteNativeTransport {
   request(method: 'prepare' | 'reattach' | 'prepare-review' | 'get-application-access' | 'start-turn'
@@ -81,7 +83,10 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   private async requestWithIntent(method: Parameters<RemoteNativeTransport['request']>[0],
     payload: unknown, intent: DispatchIntent, signal?: AbortSignal) {
     try {
-      const response = await this.options.transport.request(method, payload, signal)
+      const response = await retryDeviceRequest(() => this.options.transport.request(method, payload, signal), {
+        retry: method === 'session-compact' || method === 'session-preferences-apply' ? 'admission' : 'idempotent',
+        signal,
+      })
       return await readRemoteReceiptResponse(response, intent, continuation => this.options.transport.request(
         'receipt-continuation', { method: 'receipt-continuation', intent,
           placement: this.options.placement, ...continuation }, signal), signal)
@@ -485,6 +490,10 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
     if (!this.prepareAttempted) return
     if (!this.detached && this.receipt?.phase !== 'confirmed_terminal') {
       await this.status(await this.request('status', {}))
+    }
+    if (!this.detached && this.receipt && !this.receipt.native && !this.receipt.entryAttempted
+      && !this.receipt.terminal) {
+      await this.status(await this.request('control', { command: preparationStop(this.intent) }))
     }
     if (!this.detached && this.receipt?.phase !== 'confirmed_terminal') throw new Error('Original remote native disposal is unconfirmed')
   }

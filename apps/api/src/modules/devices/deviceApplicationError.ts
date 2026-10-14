@@ -114,3 +114,8 @@ export class DeviceApplicationError extends Error {
     this.retryable = deviceApplicationFailure({ code }).retryable
   }
 }
+
+/** The request was refused before its domain handler could run. */
+export class DeviceApplicationAdmissionError extends DeviceApplicationError {
+  constructor() { super('backpressure') }
+}

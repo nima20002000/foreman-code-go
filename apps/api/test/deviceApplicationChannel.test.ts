@@ -386,7 +386,7 @@ describe('authenticated namespace carrier mechanics', () => {
     const send = pair.rawWorker.send.bind(pair.rawWorker)
     pair.rawWorker.send = (text) => { if (JSON.parse(text).type !== 'application-ack') send(text) }
     try {
-      const pending = pair.main.request('execution-v1', { dispatch: true })
+      const pending = pair.main.request('execution-v1', { dispatch: true }, { timeoutMs: 10_000 })
       void pending.catch(() => {
         // ignore: attach before advancing timers; the original timeout rejection is asserted below.
       })
