@@ -332,7 +332,10 @@ export class CircleCiProvider implements CloudProvider {
     })
   }
 
-  async ready() { return (await this.ports.run('circleci', ['auth', 'me'], { timeoutMs: 15_000 })).code === 0 }
+  async ready() {
+    await this.rest.available()
+    return (await this.ports.run('circleci', ['auth', 'me'], { timeoutMs: 15_000 })).code === 0
+  }
 
   async dispatch(input: CloudDispatchInput) {
     validateProviderParameters(this, input)

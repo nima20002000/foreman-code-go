@@ -1,12 +1,9 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { readFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
-import { parse } from 'yaml'
 import type { CiHostRun } from '@foreman-code/contracts'
 import { componentLogger } from '../diagnostics/logger.js'
 import { DomainError } from '../errors.js'
 import type { HostCiPorts } from './runner.js'
+import { configuredCircleToken } from './circleCredentials.js'
 
 export interface CloudRestOptions {
   fetch?: typeof fetch
@@ -23,28 +20,6 @@ const TOKEN_RETRY_MS = 30_000
 const log = componentLogger('jobs')
 const deadlines = new AsyncLocalStorage<AbortSignal>()
 const credentials = new WeakMap<HostCiPorts, TokenCache>()
-
-/** Reads the CLI's existing configuration; secure-store-only logins retain the CLI fallback. */
-async function configuredCircleToken(): Promise<string | null> {
-  const environmentToken = process.env.CIRCLE_TOKEN || process.env.CIRCLE_CLI_TOKEN
-  if (environmentToken) return environmentToken
-  const paths = [join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'circleci', 'config.yml'),
-    join(homedir(), '.circleci', 'cli.yml')]
-  for (const path of paths) {
-    try {
-      const config = parse(await readFile(path, 'utf8')) as { token?: unknown } | null
-      if (config !== null && (typeof config !== 'object' || Array.isArray(config)
-        || config.token !== undefined && typeof config.token !== 'string')) {
-        throw new Error('Invalid credential configuration')
-      }
-      if (typeof config?.token === 'string' && config.token.trim()) return config.token.trim()
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-      throw new DomainError('CI_CLOUD_CREDENTIALS_UNAVAILABLE', 'CircleCI credential configuration could not be read.', 503)
-    }
-  }
-  return null
-}
 
 export class CloudHttp {
   private readonly cache: TokenCache
@@ -89,7 +64,10 @@ export class CloudHttp {
   private async loadToken(entry: TokenEntry): Promise<string | null> {
     if (this.provider === 'circleci') {
       try {
-        return await (this.options.circleToken ?? configuredCircleToken)()
+        const token = await (this.options.circleToken
+          ? this.options.circleToken() : configuredCircleToken(this.ports))
+        if (!token) entry.lastError = `${this.label} REST credential resolution failed.`
+        return token
       } catch {
         throw new DomainError('CI_CLOUD_CREDENTIALS_UNAVAILABLE', 'CircleCI credential configuration could not be read.', 503)
       }
@@ -106,15 +84,21 @@ export class CloudHttp {
   }
 
   private observeTransport(token: string | null) {
+    const previous = this.observedTransport?.source
     const lastError = token ? null : this.cache.get(this.provider)?.lastError ?? null
     if (token) {
       this.observedTransport = { source: 'rest', reason: null, lastError: null, fallbackCount: this.fallbackCount }
+      if (previous === 'cli') {
+        log.info({ provider: this.provider, transport: this.observedTransport }, 'Cloud CI is using REST transport')
+      }
       return
     }
     this.fallbackCount++
     const reason = lastError ?? 'REST token unavailable; using CLI credential resolution.'
     this.observedTransport = { source: 'cli', reason, lastError, fallbackCount: this.fallbackCount }
-    log.warn({ provider: this.provider, transport: this.observedTransport }, 'Cloud CI is using CLI transport')
+    if (previous !== 'cli') {
+      log.warn({ provider: this.provider, transport: this.observedTransport }, 'Cloud CI is using CLI transport')
+    }
   }
 
   async request(path: string, options: { timeoutMs?: number; headers?: Record<string, string> } = {}) {

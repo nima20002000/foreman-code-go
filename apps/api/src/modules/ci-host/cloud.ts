@@ -147,7 +147,12 @@ export class CloudCi {
         log.warn({ err: error, provider: this.provider.id }, 'Cloud CI recovery sweep failed')
       })
       const ready = await this.ready()
-      return CiHostReplySchema.parse({ operation: 'status', ready, reasons: ready ? [] : [this.provider.loginHint],
+      const transport = this.provider.transport
+      const reasons = ready ? [] : [this.provider.loginHint]
+      if (transport?.source === 'cli') {
+        reasons.push(`CLI transport: ${transport.reason} (fallback count ${transport.fallbackCount}).`)
+      }
+      return CiHostReplySchema.parse({ operation: 'status', ready, reasons,
         cpuCount: this.provider.cpus, memoryBytes: this.provider.memoryBytes, cleanupSupported: true,
         userSystemd: this.provider.userSystemd, runs: [],
         ...(removedRunIds ? { removedRunIds } : {}) })

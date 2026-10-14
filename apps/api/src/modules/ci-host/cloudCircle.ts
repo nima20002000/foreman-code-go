@@ -32,6 +32,8 @@ export class CircleRest {
 
   get transport() { return this.http.transport }
 
+  available() { return this.http.available() }
+
   private async read(path: string, args: string[], timeoutMs: number) {
     const response = await this.http.request(path, { timeoutMs })
     if (!response) return null
