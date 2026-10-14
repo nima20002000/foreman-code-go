@@ -1,11 +1,27 @@
 import { createHash } from 'node:crypto'
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 
-/** Derived fencing evidence from W07's actual authenticated binding, not another host identity. Harness facts
- * belong to the paired Worker boot: a transport reconnect keeps them; a restart, re-pair or revocation does not. */
-export function harnessConnectionGeneration(binding: Readonly<DeviceConnectionIdentity & { connectionEpoch: string }>): string {
-  return `sha256:${createHash('sha256').update(JSON.stringify([
+type HarnessBinding = Readonly<DeviceConnectionIdentity & { connectionEpoch: string }>
+
+function generation(binding: HarnessBinding, scope: 'boot' | 'session'): string {
+  const components: (string | number)[] = [
     binding.mainId, binding.deviceId, binding.workerInstallationId, binding.keyRevision, binding.authorizationRevision,
     binding.bootId,
-  ])).digest('hex')}`
+  ]
+  if (scope === 'session') components.push(binding.connectionEpoch, binding.connectionGeneration)
+  return `sha256:${createHash('sha256').update(JSON.stringify(components)).digest('hex')}`
+}
+
+/** Harness facts survive transport reconnects within the same authenticated Worker boot. */
+export function harnessConnectionGeneration(binding: HarnessBinding): string {
+  return generation(binding, 'boot')
+}
+
+/** Previous protocol-1 Workers scope their reported facts to the transport session. */
+export function harnessSessionConnectionGeneration(binding: HarnessBinding): string {
+  return generation(binding, 'session')
+}
+
+export function matchesHarnessConnectionGeneration(binding: HarnessBinding, reported: string): boolean {
+  return reported === harnessConnectionGeneration(binding) || reported === harnessSessionConnectionGeneration(binding)
 }

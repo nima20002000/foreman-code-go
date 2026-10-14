@@ -3,7 +3,7 @@ import { OperatorChatSetupSchema } from '@foreman-code/contracts'
 import { HARNESS_PROFILE_CHECK_NAMESPACE, HostHarnessConfigurationInspectionRequestSchema } from '@foreman-code/contracts/harness-registry'
 import { DomainError } from '../errors.js'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
-import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
+import { matchesHarnessConnectionGeneration } from './hostConnectionGeneration.js'
 import type { AcceptedClaudeProfile } from './instanceSettings/acceptedProfile.js'
 
 export async function inspectWorkerClaudeOperatorConfiguration(input: {
@@ -26,7 +26,7 @@ export async function inspectWorkerClaudeOperatorConfiguration(input: {
     if (!isDeepStrictEqual(current, captured.binding) || captured.binding.mainId !== host.mainId
       || captured.binding.deviceId !== host.deviceId
       || captured.binding.workerInstallationId !== input.accepted.override.target.applicationInstallationId
-      || harnessConnectionGeneration(captured.binding) !== input.accepted.currentBinding.connectionGeneration) {
+      || !matchesHarnessConnectionGeneration(captured.binding, input.accepted.currentBinding.connectionGeneration)) {
       throw new DomainError('HARNESS_INVENTORY_STALE', 'The selected Worker inspection connection changed.', 409)
     }
     const clockReason = input.endpoint.clockReason(host.deviceId)

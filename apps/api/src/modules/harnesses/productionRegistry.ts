@@ -1,6 +1,6 @@
 import type { discoverInstalledClaudeSdk } from './claudeSdk/currentPin.js'
 import { withTransaction } from '../../infrastructure/transaction.js'
-import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
+import { harnessConnectionGeneration, harnessSessionConnectionGeneration, matchesHarnessConnectionGeneration } from './hostConnectionGeneration.js'
 import type pg from 'pg'
 import { HarnessConfigurationSchema, RETIRED_OPENCODE_MESSAGE, withAdvancedDefaults, type HarnessDefaults } from '@foreman-code/contracts'
 import { HarnessHostReferenceSchema, HarnessRegistryReadbackSchema, type HarnessRegistryReadback,
@@ -33,6 +33,7 @@ export class ProductionHarnessRegistry {
   private readonly snapshots = new Map<string, {
     value: HarnessRegistryReadback
     connectionGeneration: string
+    connectionScope: 'boot' | 'session'
     environmentGeneration: string | null
   }>()
   private readonly accepted = new Map<string, ConfiguredHarnessInstance>()
@@ -148,7 +149,7 @@ export class ProductionHarnessRegistry {
     view.hostMetadata = { hostRef, applicationInstallationId: hostRef.mainId,
       platform: { platform: process.platform, architecture: process.arch }, workspaceRoots: null, connection: null }
     this.snapshots.set(harnessHostKey(hostRef), { value: HarnessRegistryReadbackSchema.parse(view),
-      connectionGeneration: this.mainGeneration, environmentGeneration: environment.generation })
+      connectionGeneration: this.mainGeneration, connectionScope: 'boot', environmentGeneration: environment.generation })
     this.reloadInstallations()
     this.inventoryListener?.(hostRef, hostRef.mainId)
   }
@@ -227,14 +228,18 @@ export class ProductionHarnessRegistry {
       'HARNESS_INVENTORY_STALE', 'Worker inventory belongs to an unavailable connection generation.', 409)
     const view = HarnessRegistryReadbackSchema.parse(input)
     const hostRef = { kind: 'device' as const, mainId: binding.mainId, deviceId: binding.deviceId }
+    // The reported hash identifies the peer's scope; empty inventory advertises no boot-scoped facts.
+    const generation = view.installations[0]?.connectionGeneration ?? harnessSessionConnectionGeneration(binding)
     if (view.hostMetadata?.applicationInstallationId !== binding.workerInstallationId
       || harnessHostKey(view.hostMetadata.hostRef) !== harnessHostKey(hostRef)
+      || !matchesHarnessConnectionGeneration(binding, generation)
       || view.installations.some((record) => harnessHostKey(record.hostRef) !== harnessHostKey(hostRef)
-        || record.connectionGeneration !== harnessConnectionGeneration(binding))) {
+        || record.connectionGeneration !== generation)) {
       throw new DomainError('HARNESS_INVENTORY_STALE', 'Worker inventory does not match its canonical authenticated host.', 409)
     }
     this.snapshots.set(harnessHostKey(hostRef), { value: structuredClone(view),
-      connectionGeneration: harnessConnectionGeneration(binding), environmentGeneration: null })
+      connectionGeneration: generation,
+      connectionScope: generation === harnessConnectionGeneration(binding) ? 'boot' : 'session', environmentGeneration: null })
     this.reloadInstallations()
     this.inventoryListener?.(hostRef, binding.workerInstallationId)
   }
@@ -270,7 +275,10 @@ export class ProductionHarnessRegistry {
   }
   private remoteGeneration(deviceId: string): string {
     const binding = this.currentRemoteBinding(deviceId)
-    return binding ? harnessConnectionGeneration(binding) : ''
+    if (!binding) return ''
+    const snapshot = this.snapshots.get(harnessHostKey({ kind: 'device', mainId: binding.mainId, deviceId }))
+    return snapshot?.connectionScope === 'session'
+      ? harnessSessionConnectionGeneration(binding) : harnessConnectionGeneration(binding)
   }
   async profileEvidence(value: HostHarnessOverride, client?: pg.PoolClient,
     options?: { includeFailed: true }): Promise<HostHarnessProfileEvidence | null> {

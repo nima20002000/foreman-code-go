@@ -253,7 +253,10 @@ export class WorkerUpdater {
     const request = async (payload, options = {}) => {
       try {
         const signal = options.signal ? AbortSignal.any([this.lifetime.signal, options.signal]) : this.lifetime.signal;
-        return await captured.request(payload, { timeoutMs: 60_000, signal });
+        // Downloading can outlive a transport session; update requests use the live channel.
+        const current = connection()?.captureRequest(WORKER_UPDATE_NAMESPACE);
+        if (!current) throw new WorkerError('worker_update_channel_unavailable');
+        return await current.request(payload, { timeoutMs: 60_000, signal });
       } catch (error) {
         if (error instanceof DeviceApplicationError && error.code === 'WORKER_RELEASE_ASSET_UNAVAILABLE') {
           throw new WorkerError('WORKER_RELEASE_ASSET_UNAVAILABLE',

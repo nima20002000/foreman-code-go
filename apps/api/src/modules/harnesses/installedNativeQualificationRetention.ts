@@ -6,7 +6,7 @@ import { QUALIFICATION_TARGET_PROFILE } from './qualification/profiles.js'
 import { HarnessQualificationSchema } from '@foreman-code/contracts/harness-qualification'
 import type { HarnessQualificationRepository } from './qualification/repository.js'
 import { completedNativeQualificationChecks } from './installedNativeQualification.js'
-import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
+import { matchesHarnessConnectionGeneration } from './hostConnectionGeneration.js'
 import { DomainError } from '../errors.js'
 import { CompatibilityHarnessSchema } from '@foreman-code/contracts'
 
@@ -57,7 +57,8 @@ export function createInstalledNativeQualificationRetention(input: {
         || proof.configurationFingerprint !== value.configurationFingerprint || proof.driverId !== value.driverId
         || proof.driverRevision !== installation.driverRevision || proof.protocolRevision !== installation.protocolRevision
         || proof.suiteRevision !== `${harness}-profile-check-v1` || proof.environmentGeneration !== installation.environmentGeneration
-        || proof.connectionGeneration !== installation.connectionGeneration || proof.connectionGeneration !== harnessConnectionGeneration(binding)
+        || proof.connectionGeneration !== installation.connectionGeneration
+        || !matchesHarnessConnectionGeneration(binding, proof.connectionGeneration)
         || proof.qualified !== (record.status === 'qualified')) denied()
       if (record.status === 'qualified' && (proof.authenticated !== true || proof.compatible !== true || !record.checks.length
         || record.checks.some(check => !check.passed) || completedNativeQualificationChecks().some(id => !record.checks.some(check => check.id === id && check.passed)))) denied()
