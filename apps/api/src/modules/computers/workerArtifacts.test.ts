@@ -10,7 +10,7 @@ import { negotiateDeviceExtensions } from '@foreman-code/contracts/device-applic
 import { DeviceApplicationChannel, extensionDescriptors,
   type DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
 import { adaptDeviceSocket } from '../devices/deviceWire.js'
-import { createWorkerArtifactExtension } from './workerArtifacts.js'
+import { createWorkerArtifactExtension, readWorkerContentSha256s, readWorkerManifestSha256s } from './workerArtifacts.js'
 
 vi.mock('node:fs/promises', async importOriginal => {
   const original = await importOriginal<typeof import('node:fs/promises')>()
@@ -93,6 +93,23 @@ function channelPair(f: Awaited<ReturnType<typeof fixture>>, revalidate: () => P
 }
 
 describe('Worker artifact serving', () => {
+  it('does not announce or target an unpublished Worker artifact', async () => {
+    const f = await fixture()
+    const options = { directory: f.directory, version: f.manifest.version }
+    expect(await readWorkerManifestSha256s(options)).toEqual([])
+    expect(await readWorkerContentSha256s(options)).toEqual([])
+    await expect(f.request({ operation: 'release', target }))
+      .rejects.toMatchObject({ code: 'WORKER_RELEASE_ASSET_UNAVAILABLE' })
+  })
+
+  it('rejects bundle-byte requests even on an authenticated device channel', async () => {
+    const f = await fixture()
+    const worker = channelPair(f, async () => {})
+    const rejected = await worker.request(WORKER_UPDATE_NAMESPACE, { operation: 'chunk', manifestSha256: f.manifestSha256,
+      path: 'src/cli.mjs', offset: 0 }).then(() => false, () => true)
+    expect(rejected).toBe(true)
+  })
+
   it('serves matching release metadata and binary chunks over the authenticated device channel', async () => {
     const f = await fixture()
     const worker = channelPair(f, async () => {})

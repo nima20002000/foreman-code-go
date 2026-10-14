@@ -22,6 +22,22 @@ function status(workerStatus?: WorkerStatus): MaintenanceStatus {
 
 afterEach(() => vi.useRealTimers())
 
+it('shows the GitHub publication failure and disables Worker updates until a published target is available', async () => {
+  computersFixture(<ComputerCards mainId={mainId} devices={[registration]} />, [
+    http.post('*/api/management/computers/maintenance/read', async ({ request }) => {
+      const { target } = await request.json() as { target: DeviceProvisioningTarget }
+      return HttpResponse.json({ computers: [{ target, status: status(worker),
+        workerPublication: { version: '0.0.57', state: 'failed',
+          lastError: 'WORKER_RELEASE_ASSET_UNAVAILABLE: GitHub asset not found' },
+      }] })
+    }),
+  ])
+  const device = await screen.findByRole('article', { name: deviceName })
+  expect(await within(device).findByRole('alert')).toHaveTextContent('GitHub asset not found')
+  expect(within(device).getByRole('alert')).toHaveTextContent('Worker 0.0.57 publication failed')
+  expect(within(device).getByRole('button', { name: 'Update Worker' })).toBeDisabled()
+})
+
 it('shows current and target Worker versions only on paired computers', async () => {
   computersFixture(<ComputerCards mainId={mainId} devices={[registration]} />, [
     computerReadHandler('maintenance', { computers: [

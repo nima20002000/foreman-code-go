@@ -12,6 +12,43 @@ import { buildWorkerReleaseArtifacts, publishInstalledWorkerArtifacts, publishWo
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 const target = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.3' }
 
+test('does not publish the target until GitHub assets can be downloaded and verified', async t => {
+  const f = await fixture(t)
+  const original = await buildWorkerReleaseArtifacts(f)
+  let downloads = 0
+  const run = async (command, args) => {
+    if (command === 'tar') execFileSync(command, args)
+    if (command === 'gh' && args[1] === 'download') {
+      downloads++
+      assert.equal(JSON.parse(await readFile(join(f.directory, 'index.json'))).github, undefined)
+      throw new Error('GitHub asset not found')
+    }
+  }
+  const publish = options => publishWorkerArtifactsToGitHub({ ...options, run, sleep: async () => {} })
+  await assert.rejects(publishInstalledWorkerArtifacts({ directory: f.directory, repositoryName: 'example/worker',
+    commit: f.commit, run, publish }), /GitHub asset not found/)
+  assert.ok(downloads > 0)
+  const retained = JSON.parse(await readFile(join(f.directory, 'index.json')))
+  assert.equal(retained.github, undefined)
+  assert.deepEqual(retained.artifacts, original.artifacts)
+  assert.equal(retained.publication.state, 'failed')
+  assert.match(retained.publication.lastError, /GitHub asset not found/)
+})
+
+test('rejects a GitHub asset with different bytes after a successful upload', async t => {
+  const f = await fixture(t)
+  await buildWorkerReleaseArtifacts(f)
+  const run = async (command, args) => {
+    if (command === 'tar') execFileSync(command, args)
+    if (command === 'gh' && args[1] === 'download') {
+      await writeFile(args[args.indexOf('--output') + 1], 'corrupted archive')
+    }
+  }
+  await assert.rejects(publishWorkerArtifactsToGitHub({ name: 'example/worker', directory: f.directory,
+    commit: f.commit, artifacts: JSON.parse(await readFile(join(f.directory, 'index.json'))).artifacts,
+    run, sleep: async () => {} }), /checksum mismatch/)
+})
+
 test('retries asset upload when an existing empty release is not yet visible', async t => {
   const f = await fixture(t)
   execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/example/worker.git'], { cwd: f.repository })
