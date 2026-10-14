@@ -40,14 +40,36 @@ export function workerArchiveLimits(manifest) {
   return { directories, members, contentBytes, expandedBytes, compressedBytes };
 }
 
-export async function fetchGitHubAsset({ github, asset, destination, signal, maxBytes }) {
+export async function fetchGitHubAsset({ signal, ...options }) {
+  const { maxBytes } = options;
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new WorkerError('artifact_archive_size_mismatch');
+  const deadline = AbortSignal.timeout(600_000);
+  for (;;) {
+    signal?.throwIfAborted();
+    if (await downloadGitHubAssetAttempt({ ...options, signal, deadline })) return;
+  }
+}
+
+async function downloadGitHubAssetAttempt({ github, asset, destination, signal, deadline, maxBytes }) {
   const controller = new AbortController();
-  const combined = AbortSignal.any([controller.signal, AbortSignal.timeout(600_000), ...(signal ? [signal] : [])]);
+  const combined = AbortSignal.any([controller.signal, deadline, ...(signal ? [signal] : [])]);
   const child = spawn('gh', ['release', 'download', github.tag, '--repo', github.repository,
     '--pattern', asset, '--output', '-'], { signal: combined, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stalled = false;
+  let stallTimer;
+  const receivedBytes = chunk => {
+    if (chunk && chunk.length === 0) return;
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => {
+      stalled = true;
+      controller.abort();
+    }, 60_000);
+  };
+  receivedBytes();
+  child.stdout.on('data', receivedBytes);
   let stderr = '';
   child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-1200); });
+  const closed = new Promise(resolve => child.once('close', resolve));
   const exited = new Promise((resolve, reject) => {
     child.once('error', error => reject(new WorkerError('worker_update_github_unavailable', error.message)));
     child.once('close', code => code === 0 ? resolve() : reject(new WorkerError('worker_update_github_unavailable')));
@@ -56,14 +78,19 @@ export async function fetchGitHubAsset({ github, asset, destination, signal, max
     createWriteStream(destination, { flags: 'wx', mode: 0o600 }), { signal: combined });
   try {
     await Promise.all([copied, exited]);
+    return true;
   } catch (error) {
     controller.abort();
-    await Promise.allSettled([copied, exited]);
+    await Promise.allSettled([copied, exited, closed]);
     await rm(destination, { force: true });
     signal?.throwIfAborted();
+    if (stalled && !deadline.aborted) return false;
     if (error instanceof WorkerError && error.code !== 'worker_update_github_unavailable') throw error;
     throw new WorkerError('worker_update_github_unavailable',
       `worker_update_github_unavailable: ${stderr.trim() || error.message}`, { cause: error });
+  } finally {
+    clearTimeout(stallTimer);
+    child.stdout.removeListener('data', receivedBytes);
   }
 }
 
