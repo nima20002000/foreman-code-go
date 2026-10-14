@@ -462,7 +462,7 @@ describe('remote native history streaming', () => {
     const session = await f.proxy.createSession(f.start)
     f.receipt.phase = 'confirmed_terminal'
     f.receipt.terminal = { kind: 'completed', closureEvidenceDigest: 'b'.repeat(64),
-      result: { outcome: 'failed', error: { code: 'PROVIDER_FAILURE', message: 'Original failure' } } }
+      result: { outcome: 'failed', error: { code: 'PROVIDER_FAILURE', message: 'Original failure', retryable: false } } }
     const stream = f.proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: f.start.correlationId })
     await expect(stream.next()).rejects.toThrow()
   })

@@ -55,9 +55,15 @@ async function fixture() {
   }
   const target: CurrentInstalledHarnessTarget = {
     binding, target: value.target, binarySha256, expectedVersion: '0.161.0',
-    installation: { driverRevision: '1', protocolRevision: 'codex-native-adapter-v1',
+    installation: { hostRef: value.target.hostRef, harnessInstallationId: value.target.harnessInstallationId,
+      installationFingerprint: value.target.installationFingerprint, driverId: 'codex',
+      driverRevision: '1', protocolRevision: 'codex-native-adapter-v1',
       environmentGeneration: 'environment', connectionGeneration: 'connection',
-      launcher: { resolvedLauncher: binary, payloadFingerprints: [] } } as CurrentInstalledHarnessTarget['installation'],
+      launcher: { requested: binary, resolvedLauncher: binary, fingerprint: binarySha256,
+        payloadFingerprints: [], status: 'installed', interpreter: null, diagnostics: [],
+        environment: { generation: 'environment', provenance: 'worker', cwd: directory, path: directory },
+        checkedAt: new Date().toISOString() },
+      observedVersion: '0.161.0', installed: true, authenticated: null, compatible: null, qualified: false },
   }
   const checkConfiguration = vi.fn(async (profile: HostHarnessOverride, cwd: string, signal: AbortSignal) => {
     if (profile.configuration.harness !== 'codex') throw new Error('Expected Codex profile')
@@ -70,7 +76,7 @@ async function fixture() {
     inspect: async () => ({ inventory: {} as never, currentTarget: target }),
     registry: {
       reserveLaunch: owner => ({ owner } as NativeProcessRecovery),
-      abandonReservedLaunch: async () => {}, closeOwner: async () => true,
+      abandonReservedLaunch: async () => true, closeOwner: async () => true,
     },
     workingRoot: directory, environment: {}, checkConfiguration,
     probe: () => ({
