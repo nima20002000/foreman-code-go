@@ -23,8 +23,18 @@ const workerRequire = createRequire(new URL('../../../worker/package.json', impo
 const { build } = workerRequire('esbuild') as {
   build(options: {
     entryPoints: string[]
-    outdir: string
-    outbase: string
+    outdir?: string
+    outfile?: string
+    outbase?: string
+    bundle?: boolean
+    packages?: 'external'
+    plugins?: Array<{
+      name: string
+      setup(builder: {
+        onResolve(options: { filter: RegExp },
+          callback: (args: { path: string }) => { path: string; external: boolean }): void
+      }): void
+    }>
     platform: 'node'
     format: 'esm'
     target: string
@@ -106,9 +116,25 @@ export async function installedRestartService(directory: string, configuration: 
   await copyFile(join(repository, 'package.json'), join(release, 'package.json'))
   await copyFile(process.execPath, join(release, 'node'))
   await cp(environment.FOREMAN_CODE_WORKER_ARTIFACT_DIRECTORY!, join(release, 'worker-artifacts'), { recursive: true })
-  const fixture = await readFile(new URL('../fixtures/remote-review-main.mjs', import.meta.url), 'utf8')
-  await writeFile(join(api, 'dist/restart-fixture.js'),
-    fixture.replaceAll('../../src/', './').replaceAll('.ts\'', '.js\''))
+  await build({
+    entryPoints: [fileURLToPath(new URL('../fixtures/remote-review-main.mjs', import.meta.url))],
+    outfile: join(api, 'dist/restart-fixture.js'),
+    bundle: true,
+    packages: 'external',
+    platform: 'node',
+    format: 'esm',
+    target: 'es2022',
+    logLevel: 'silent',
+    plugins: [{
+      name: 'installed-api-imports',
+      setup(builder) {
+        builder.onResolve({ filter: /^\.\.\/\.\.\/src\/.*\.ts$/ }, ({ path }) => ({
+          path: path.replace('../../src/', './').replace(/\.ts$/, '.js'),
+          external: true,
+        }))
+      },
+    }],
+  })
   const readyFile = join(directory, 'service-ready.json')
   const preservingFile = `${readyFile}.preserving`
   const unit = `graphql-restart-${randomUUID()}.service`
