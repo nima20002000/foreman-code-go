@@ -65,6 +65,7 @@ export class RemoteExecutionHost {
   private readonly inspections = new Map<string, Set<AbortController>>()
   private readonly launchControllers = new Map<string, AbortController>()
   private readonly pendingEntries = new Map<string, Set<Promise<unknown>>>()
+  private readonly inFlightPreparations = new Map<string, { raw: WorkflowPreparation; task: Promise<unknown> }>()
   private readonly bindings = new Map<string, { intent: DispatchIntent; placement: AcceptedNodePlacement }>()
   private readonly residents = new Map<string, Resident>()
   constructor(private readonly ports: RemoteExecutionHostPorts) {}
@@ -263,13 +264,18 @@ export class RemoteExecutionHost {
   }
   prepare(raw: WorkflowPreparation) {
     const intent = DispatchIntentSchema.parse(raw.intent)
+    // Main replays the same prepare when a dropped device link lost its reply; the replay joins the original.
+    const inFlight = this.inFlightPreparations.get(intent.operationId)
+    if (inFlight && isDeepStrictEqual(inFlight.raw, raw)) return inFlight.task
     const task = this.track(() => this.prepareOwned(raw))
+    this.inFlightPreparations.set(intent.operationId, { raw, task })
     const entries = this.pendingEntries.get(intent.operationId) ?? new Set<Promise<unknown>>()
     entries.add(task)
     this.pendingEntries.set(intent.operationId, entries)
     const completed = () => {
       entries.delete(task)
       if (!entries.size) this.pendingEntries.delete(intent.operationId)
+      if (this.inFlightPreparations.get(intent.operationId)?.task === task) this.inFlightPreparations.delete(intent.operationId)
     }
     void task.then(completed, completed)
     return task

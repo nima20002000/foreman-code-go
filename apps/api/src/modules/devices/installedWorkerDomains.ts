@@ -100,7 +100,8 @@ interface InstalledWorkerInput {
   jobConfiguration?: InstalledRuntimeConfigurationLocation | null
   jobReports?: Pick<RemoteJobExecutionHostPorts, 'prepareOutputs' | 'preparePublication'>
   approvedRoots(): Promise<ApprovedRootAllowlist | null>
-  connection(): Pick<DeviceConnectionSupervisor, 'currentBinding' | 'captureRequest' | 'mainNow'> | undefined
+  connection(): (Pick<DeviceConnectionSupervisor, 'currentBinding' | 'captureRequest' | 'mainNow'>
+    & Partial<Pick<DeviceConnectionSupervisor, 'linkLostAt'>>) | undefined
   codexSuiteRevision: string
   providerAccounts?: Omit<WorkerAccountOperationPorts, 'current'>
   /** Installed original source/output, canonical acknowledgement and stopped-writer ports. */
@@ -429,6 +430,7 @@ async function configureWorkerSources(composition: InstalledWorkerComposition) {
     const createWorkflow = (location: InstalledWorkflowConfigurationLocation | null) =>
       createInstalledWorkflowHost({ stateDirectory: input.stateDirectory, pairing: input.pairing, bootId: input.bootId,
       configuration: location, currentBinding: () => input.connection()?.currentBinding(),
+      linkLostAt: () => input.connection()?.linkLostAt?.(),
       captureRequest: namespace => input.connection()?.captureRequest(namespace), sources, approvedRoots: roots,
       ...(input.nativeOutputs ? { nativeOutputs: input.nativeOutputs } : {}),
       codexSuiteRevision: input.codexSuiteRevision,

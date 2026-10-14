@@ -29,6 +29,8 @@ export interface RemoteNativeTransport {
     | 'status' | 'reconcile-response' | 'renew-owner' | 'receipt-continuation'
     | 'session-controls-read' | 'session-compact' | 'session-compact-reconcile' | 'session-preferences-apply',
   payload: unknown, signal?: AbortSignal): Promise<unknown>
+  /** Waits for the same Worker boot to reconnect after `error` dropped its link; false when `error` is no link drop. */
+  reconnect?(error: unknown, signal?: AbortSignal): Promise<boolean>
 }
 const HistoryResponseSchema = z.object({
   history: RemoteNativeHistorySchema, context: ContextSnapshotSchema.nullable().optional(), status: StatusSchema,
@@ -82,14 +84,21 @@ export class RemoteNativeSessionManager implements NativeHarnessSessionManager {
   }
   private async requestWithIntent(method: Parameters<RemoteNativeTransport['request']>[0],
     payload: unknown, intent: DispatchIntent, signal?: AbortSignal) {
-    try {
-      const response = await retryDeviceRequest(() => this.options.transport.request(method, payload, signal), {
-        retry: method === 'session-compact' || method === 'session-preferences-apply' ? 'admission' : 'idempotent',
-        signal,
-      })
-      return await readRemoteReceiptResponse(response, intent, continuation => this.options.transport.request(
+    const retry = method === 'session-compact' || method === 'session-preferences-apply' ? 'admission' : 'idempotent'
+    const attempt = async () => {
+      const response = await retryDeviceRequest(() => this.options.transport.request(method, payload, signal), { retry, signal })
+      return readRemoteReceiptResponse(response, intent, continuation => this.options.transport.request(
         'receipt-continuation', { method: 'receipt-continuation', intent,
           placement: this.options.placement, ...continuation }, signal), signal)
+    }
+    try {
+      for (let reconnects = 0; ; reconnects++) {
+        try { return await attempt() } catch (error) {
+          // A replayable request whose link dropped is sent again on the reconnected session of the same Worker boot.
+          if (retry !== 'idempotent' || reconnects >= 3 || signal?.aborted
+            || !await this.options.transport.reconnect?.(error, signal)) throw error
+        }
+      }
     } catch (error) {
       // The carrier reports request cancellation without the caller's local restart reason.
       if (error instanceof DeviceApplicationError && error.code === 'cancelled' && signal?.aborted) {

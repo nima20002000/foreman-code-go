@@ -5,6 +5,7 @@ import type { MainIdentityProofRequest } from '@foreman-code/contracts/device-id
 import { randomBytes, randomUUID } from 'node:crypto'
 import { DEVICE_PROTOCOL_VERSION, type DeviceConnectionView, type DeviceHello, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadline, type DeviceSocket } from './deviceWire.js'
+import { componentLogger } from '../diagnostics/logger.js'
 
 export class DeviceConnectionSupervisor {
   private state: DeviceConnectionView = { desired: false, phase: 'disconnected', generation: 0, failure: null }
@@ -12,6 +13,7 @@ export class DeviceConnectionSupervisor {
   private abort: AbortController | undefined
   private socket: DeviceSocket | undefined
   private channel: DeviceApplicationChannel | undefined
+  private lostAt: number | undefined
   constructor(private readonly options: {
     identity: Omit<DeviceSessionBinding, 'connectionEpoch' | 'connectionGeneration'>; appVersion: string; mainPublicKeyFingerprint: string
     connect(signal: AbortSignal): Promise<DeviceSocket>
@@ -25,7 +27,15 @@ export class DeviceConnectionSupervisor {
   }) { extensionDescriptors(options.extensions ?? []) }
   status(): DeviceConnectionView { return { ...this.state } }
   private update(phase: DeviceConnectionView['phase'], failure: DeviceConnectionView['failure'] = null) {
+    if (phase === 'ready' || phase === 'blocked' || phase === 'disconnected') this.lostAt = undefined
+    else this.lostAt ??= Date.now()
     this.state = { ...this.state, phase, failure }; this.options.onState?.(this.status())
+  }
+  /** When the last ready session was lost while reconnection continues; undefined while ready, blocked or stopped. */
+  linkLostAt(): number | undefined {
+    if (this.state.phase === 'blocked' || this.state.phase === 'disconnected') return undefined
+    if (this.state.phase === 'ready' && !this.currentBinding()) this.lostAt ??= Date.now()
+    return this.lostAt
   }
   request(namespace: string, payload: unknown, options?: DeviceApplicationRequestOptions) {
     if (!this.channel || this.state.phase !== 'ready') return Promise.reject(new DeviceApplicationError('unavailable'))
@@ -112,6 +122,9 @@ export class DeviceConnectionSupervisor {
       } catch (error) {
         if (signal.aborted) break
         const code = error instanceof DeviceConnectionError ? error.code : 'transport'
+        componentLogger('devices').warn({ code, detail: error instanceof DeviceConnectionError ? error.detail : undefined,
+          err: error instanceof DeviceConnectionError ? undefined : error, phase: this.state.phase, generation: this.state.generation },
+        'Device link to Main lost')
         if (code === 'revoked') { this.update('blocked', code); return }
         attempt.abort(); socket?.close(); this.socket = undefined
         this.channel?.close(); this.channel = undefined

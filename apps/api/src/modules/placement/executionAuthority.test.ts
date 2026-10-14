@@ -188,10 +188,10 @@ describe('authenticated original execution reconnection', () => {
     await expect(f.authorize('read', restarted)).rejects.toMatchObject({ code: 'REMOTE_AUTHORITY_DENIED' })
   })
 
-  it('can consult the original worker journal when Main lost the preparation acknowledgment', async () => {
+  it('can consult the original worker journal from a restarted Worker when Main lost the preparation acknowledgment', async () => {
     const f = fixture()
     f.state.receipt = false
-    const replacement = { ...f.connection, connectionGeneration: 2 }
+    const replacement = { ...f.connection, bootId: randomUUID(), connectionGeneration: 2 }
     f.pins.mockRejectedValue(new Error('This channel cannot qualify a new launch'))
     await expect(f.authorize('read', replacement)).resolves.toBeUndefined()
     expect(f.locations.revalidateRunAuthorization).toHaveBeenCalled()

@@ -2,16 +2,21 @@ import { DEVICE_BUFFER_BYTES, DEVICE_FRAME_BYTES, DEVICE_QUEUE_DEPTH, type Devic
 
 export class DeviceConnectionError extends Error {
   readonly code: import('@foreman-code/contracts/device-connection').DeviceFailureCode
+  /** Diagnostic cause for logs, such as the socket close code; never a contract. */
+  readonly detail: string | undefined
 
-  constructor(code: import('@foreman-code/contracts/device-connection').DeviceFailureCode) {
+  constructor(code: import('@foreman-code/contracts/device-connection').DeviceFailureCode, detail?: string) {
     super(code)
     this.code = code
+    this.detail = detail
   }
 }
 /** Adapter must install message/error/close handlers synchronously, before returning. */
 export interface DeviceSocket {
   readonly messages: AsyncIterable<string>
   readonly bufferedAmount: number
+  /** Why the underlying socket ended, when it did (diagnostics only). */
+  readonly closeDetail?: string | undefined
   send(frame: string): void
   close(): void
 }
@@ -43,15 +48,25 @@ export function adaptDeviceSocket(raw: RawDeviceSocket): DeviceSocket {
   let failure: Error | undefined
   let terminalFailure: DeviceConnectionError | undefined
   let wake: (() => void) | undefined
+  let closeDetail: string | undefined
   const cleanup = () => { raw.off('message', message); raw.off('error', error); raw.off('close', close) }
   const finish = (cause?: Error) => { if (ended) return; ended = true; failure = cause; queue.length = 0; queuedBytes = 0; wake?.() }
-  const close = () => { finish(terminalFailure); cleanup() }
-  const error = () => { finish(new DeviceConnectionError('transport')); raw.close() }
+  const close = (code?: unknown, reason?: unknown) => {
+    closeDetail ??= `socket closed (${String(code ?? 'no code')}${reason && String(reason) ? `: ${String(reason)}` : ''})`
+    finish(terminalFailure); cleanup()
+  }
+  const error = (cause?: unknown) => {
+    closeDetail ??= `socket error: ${cause instanceof Error ? cause.message : String(cause)}`
+    finish(new DeviceConnectionError('transport', closeDetail)); raw.close()
+  }
   const message = (data: unknown, binary: unknown) => {
     if (ended) return
     if (binary === true || (!Buffer.isBuffer(data) && typeof data !== 'string')) { finish(new DeviceConnectionError('malformed-frame')); raw.close(); return }
     const text = String(data)
-    if (Buffer.byteLength(text) > DEVICE_FRAME_BYTES || queue.length >= DEVICE_QUEUE_DEPTH || queuedBytes + Buffer.byteLength(text) > DEVICE_BUFFER_BYTES) { finish(new DeviceConnectionError('backpressure')); raw.close(); return }
+    if (Buffer.byteLength(text) > DEVICE_FRAME_BYTES || queue.length >= DEVICE_QUEUE_DEPTH || queuedBytes + Buffer.byteLength(text) > DEVICE_BUFFER_BYTES) {
+      closeDetail ??= `inbound frames not read in time (${queue.length} queued, ${queuedBytes + Buffer.byteLength(text)} bytes)`
+      finish(new DeviceConnectionError('backpressure', closeDetail)); raw.close(); return
+    }
     if (text.includes('blocked')) {
       try { const frame = JSON.parse(text) as { type?: string; code?: string }; if (frame.type === 'blocked') terminalFailure = new DeviceConnectionError(['authentication', 'revoked', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame', 'backpressure', 'timeout', 'transport'].includes(frame.code ?? '') ? frame.code as import('@foreman-code/contracts/device-connection').DeviceFailureCode : 'malformed-frame') } catch { /* ignore: parser reports malformed JSON at consumption */ }
     }
@@ -60,8 +75,9 @@ export function adaptDeviceSocket(raw: RawDeviceSocket): DeviceSocket {
   raw.on('message', message); raw.on('error', error); raw.on('close', close)
   return {
     get bufferedAmount() { return raw.bufferedAmount },
+    get closeDetail() { return closeDetail },
     send(text) { if (ended) throw new DeviceConnectionError('transport'); raw.send(text) },
-    close() { finish(); raw.close() },
+    close() { closeDetail ??= 'closed by this side'; finish(); raw.close() },
     messages: { async *[Symbol.asyncIterator]() {
       try {
         while (!ended) {

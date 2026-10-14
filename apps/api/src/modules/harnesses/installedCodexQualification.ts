@@ -7,7 +7,7 @@ import type { HarnessQualificationRepository } from './qualification/repository.
 import { HarnessQualificationSchema } from '@foreman-code/contracts/harness-qualification'
 import { QUALIFICATION_TARGET_PROFILE } from './qualification/profiles.js'
 import { DomainError } from '../errors.js'
-import { harnessConnectionGeneration } from './hostConnectionGeneration.js'
+import { sameDeviceInstallation } from '../devices/deviceReconnect.js'
 import type { InstalledHarnessInspection } from './installedCodexInspection.js'
 
 const unavailable = (): never => { throw new DomainError('HARNESS_UNQUALIFIED', 'Current authenticated Main proof and installed harness identity are required.', 409) }
@@ -29,16 +29,9 @@ export function createInstalledCodexQualificationReader(input: {
   const harness = 'codex'
   const initial = input.trustedCurrentBinding()
   const originalBinding = initial ? DeviceSessionBindingSchema.parse(initial) : null
-  const verifyBinding = async (binding: Readonly<DeviceSessionBinding>) => {
-    if (!originalBinding) return unavailable()
-    if (same(binding, originalBinding)) return false
-    if (!input.assertResident || binding.mainId !== originalBinding.mainId
-      || binding.deviceId !== originalBinding.deviceId || binding.bootId !== originalBinding.bootId
-      || binding.workerInstallationId !== originalBinding.workerInstallationId
-      || binding.keyRevision !== originalBinding.keyRevision
-      || binding.authorizationRevision !== originalBinding.authorizationRevision) return unavailable()
-    await input.assertResident(originalBinding, binding)
-    return true
+  // A reconnected session of the same Worker boot keeps the harness facts this operation was admitted under.
+  const verifyBinding = (binding: Readonly<DeviceSessionBinding>) => {
+    if (!originalBinding || !sameDeviceInstallation(binding, originalBinding)) return unavailable()
   }
   const originalIntent = structuredClone(input.intent), originalPlacement = structuredClone(input.placement)
   let retainedInspection: InstalledHarnessInspection | undefined
@@ -68,7 +61,7 @@ export function createInstalledCodexQualificationReader(input: {
     const live = input.trustedCurrentBinding()
     if (!live || !originalBinding) return unavailable()
     const binding = DeviceSessionBindingSchema.parse(live)
-    const resident = await verifyBinding(binding)
+    verifyBinding(binding)
     const inspection = await inspect(binding)
     const current = inspection.currentTarget
     if (!current || !same(current.binding, binding)) return unavailable()
@@ -112,8 +105,8 @@ export function createInstalledCodexQualificationReader(input: {
       || facts.configuration.harness.harness !== harness || !same(withAdvancedDefaults(facts.configuration.harness), withAdvancedDefaults(override.configuration))
       || profileProof.driverId !== harness || profileProof.driverRevision !== installation.driverRevision
       || profileProof.protocolRevision !== installation.protocolRevision || profileProof.suiteRevision !== `${harness}-profile-check-v1`
-      || profileProof.environmentGeneration !== installation.environmentGeneration || profileProof.connectionGeneration !== (resident
-        ? harnessConnectionGeneration(originalBinding) : installation.connectionGeneration)
+      || profileProof.environmentGeneration !== installation.environmentGeneration
+      || profileProof.connectionGeneration !== installation.connectionGeneration
       || profileProof.authenticated !== true || profileProof.compatible !== true || !profileProof.qualified
       || qualification.harness !== harness || installation.observedVersion !== qualification.version
       || qualification.binarySha256 !== current.binarySha256 || qualification.suiteRevision !== input.suiteRevision
@@ -126,7 +119,7 @@ export function createInstalledCodexQualificationReader(input: {
       || facts.executionPlacement.executionId !== facts.intent.executionId || facts.executionPlacement.attemptId !== facts.intent.attemptId
       || facts.executionPlacement.operationId !== facts.intent.operationId
       || facts.configuration.id !== placement.payload.agentConfigurationVersionId || facts.configuration.agentId !== placement.payload.agentId) return unavailable()
-    await verifyBinding(binding)
+    verifyBinding(binding)
     if (!same(input.trustedCurrentBinding(), binding)
       || !same(input.trustedCurrentIntent?.() ?? originalIntent, expectedIntent)) return unavailable()
     retainedInspection ??= structuredClone(inspection)
