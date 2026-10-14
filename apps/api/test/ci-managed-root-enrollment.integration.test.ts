@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { BuildComputerPrepareStatusSchema, CI_HOST_NAMESPACE, CI_RUNTIME_NAMESPACE, CiEnrollmentStateSchema, CiRuntimeWorkerStateSchema,
@@ -9,6 +10,7 @@ import { ManagementActionSchema, type ManagementPrincipal } from '@foreman-code/
 import { ApprovedSourceSchema, SourceRootBindResultSchema } from '@foreman-code/contracts/source-admission'
 import { describe, expect, it, vi } from 'vitest'
 import { buildApp } from '../src/app.js'
+import { withTransaction } from '../src/infrastructure/transaction.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
@@ -29,12 +31,13 @@ import { WorkspaceBoundLocationService } from '../src/modules/workspace-roots/se
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { buildComputerFixture } from './helpers/buildComputerFixture.js'
 import { currentDatabase, postgresEnabled } from './helpers/eng04CurrentDatabase.js'
+import { deferred } from './helpers/deferred.js'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 import { verificationCapacityFixture } from './helpers/verificationCapacityFixture.js'
 import { workspaceRootDirectory } from './helpers/workspaceRootDirectory.js'
 
 // PostgreSQL, source/root services, filesystem checks and authenticated MCP are real; CI preparation is bounded.
-async function fixture(options: { managedStorage: boolean; hostCi?: boolean }) {
+async function fixture(options: { managedStorage: boolean; hostCi?: boolean; beforePrepare?: () => Promise<void> }) {
   const db = await currentDatabase()
   const directory = await workspaceRootDirectory()
   const clients: Client[] = []
@@ -107,19 +110,11 @@ async function fixture(options: { managedStorage: boolean; hostCi?: boolean }) {
     const locations = new WorkspaceLocationService(db.pool, commands)
     const sources = await createProductionSources({ pool: db.pool, commands, mainId, runtimeRoot: mainRuntime,
       locations, endpoint: () => endpoint, dispatch: () => { throw new Error('Root enrollment cannot dispatch Jobs') } })
-    const sql = await db.pool.connect()
-    try {
-      await sql.query('begin')
+    await withTransaction(db.pool, async sql => {
       await sources.policies.publishApprovedHostConfiguration(sql, mainAllowlist,
         { mainId, hostRef: mainAllowlist.hostRef, applicationInstallationId: mainId, configurationRevision: '1',
           configurationDigest: sourceSha256(Buffer.from(JSON.stringify(mainAllowlist))) })
-      await sql.query('commit')
-    } catch (error) {
-      await sql.query('rollback')
-      throw error
-    } finally {
-      sql.release()
-    }
+    })
     const roots = new WorkspaceBoundLocationService(db.pool, commands, sources.policies)
     const primary = (await roots.set(owner.principal, 'http', { workspaceId, commandId: randomUUID(),
       hostRef: mainAllowlist.hostRef, allowedBaseId: mainAllowlist.bases[0]!.baseId, configurationRevision: '1',
@@ -156,6 +151,7 @@ async function fixture(options: { managedStorage: boolean; hostCi?: boolean }) {
         ?? BuildComputerPrepareStatusSchema.parse({ profileId: input.profileId, deviceId: null, state: 'idle',
           commit: null, stage: null, message: null, profiles: [], startedAt: null, updatedAt: null }),
       start: async (_principal: ManagementPrincipal, _source: 'http' | 'mcp', input: BuildComputerPrepareInput) => {
+        await options.beforePrepare?.()
         const state = BuildComputerPrepareStatusSchema.parse({ profileId: input.profileId, deviceId: worker.registration.deviceId,
           state: 'preparing', commit: input.commit, stage: 'fetch-source', message: null, profiles: [],
           startedAt: new Date().toISOString(), updatedAt: new Date().toISOString() })
@@ -166,7 +162,8 @@ async function fixture(options: { managedStorage: boolean; hostCi?: boolean }) {
     const createInventory = () => new ProductionCiEnrollmentInventory(db.pool, sources.sources,
       () => endpoint, () => undefined, new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }),
       new ManagedWorkspaceRootService(new PostgresCommandCoordinator(db.pool), roots, sources.policies))
-    enrollment = new CiEnrollment(db.pool, commands, profiles, preparation, createInventory())
+    const reconciled = deferred()
+    enrollment = new CiEnrollment(db.pool, commands, profiles, preparation, createInventory(), () => reconciled.resolve())
     const settings = new BuildComputerSettings(db.pool, commands,
       async () => ({ state: 'ready', reasons: [], remoteExecutionEnabled: true }))
     await settings.update(owner.principal, 'mcp', { commandId: randomUUID(), target: worker.target,
@@ -194,9 +191,21 @@ async function fixture(options: { managedStorage: boolean; hostCi?: boolean }) {
       enrollment = new CiEnrollment(db.pool, new PostgresCommandCoordinator(db.pool), profiles, preparation, createInventory())
       services.ciEnrollment = enrollment
     }
+    const setReadOnlyPrimary = async () => {
+      await roots.adopt(owner.principal, 'mcp', { workspaceId, commandId: randomUUID(), hostRef: worker.target.hostRef })
+      return (await roots.set(owner.principal, 'mcp', { workspaceId, commandId: randomUUID(),
+        hostRef: worker.target.hostRef, allowedBaseId: workerAllowlist.bases[0]!.baseId,
+        configurationRevision: '1', relativePath: 'project', accessMode: 'read-only',
+        expectedLocationRevision: 1, expectedRootPolicyRevision: 0 })).value
+    }
+    const waitForPreparation = async () => {
+      // Reconciliation signals only after preparation and its enrollment state have been persisted.
+      await reconciled.promise
+      expect((await read()).computers[0]!.state).toBe('preparing')
+    }
     return { db, app, access, owner, workspaceId, worker, workerAllowlist, rootRequests, roots, primary,
       managedBase, arbitraryBase, managedSetup, runtimeState, saved, sources: sources.sources,
-      client, connect, read, restart, createInventory, close }
+      client, connect, read, restart, createInventory, setReadOnlyPrimary, waitForPreparation, close }
   } catch (error) {
     await close()
     throw error
@@ -315,15 +324,11 @@ describe.skipIf(!postgresEnabled)('pairing-managed CI root enrollment', () => {
   it('preserves a read-only primary root on the same computer while adding its managed CI root', async () => {
     const f = await fixture({ managedStorage: true })
     try {
-      await f.roots.adopt(f.owner.principal, 'mcp', { workspaceId: f.workspaceId, commandId: randomUUID(),
-        hostRef: f.worker.target.hostRef })
-      const primary = (await f.roots.set(f.owner.principal, 'mcp', { workspaceId: f.workspaceId, commandId: randomUUID(),
-        hostRef: f.worker.target.hostRef, allowedBaseId: f.workerAllowlist.bases[0]!.baseId,
-        configurationRevision: '1', relativePath: 'project', accessMode: 'read-only',
-        expectedLocationRevision: 1, expectedRootPolicyRevision: 0 })).value
-      await f.client.callTool({ name: 'ci_enrollment_update', arguments: { workspaceId: f.workspaceId,
+      const primary = await f.setReadOnlyPrimary()
+      const updated = await f.client.callTool({ name: 'ci_enrollment_update', arguments: { workspaceId: f.workspaceId,
         target: f.worker.target, commandId: randomUUID(), expectedRevision: 0, enabled: true } })
-      await vi.waitFor(async () => expect((await f.read()).computers[0]!.state).toBe('preparing'), { timeout: 5000 })
+      expect(updated.isError, JSON.stringify(updated.content)).not.toBe(true)
+      await f.waitForPreparation()
       expect(await f.roots.get(f.owner.principal, { workspaceId: f.workspaceId })).toEqual(primary)
       const choices = await f.roots.choices(f.owner.principal, { workspaceId: f.workspaceId })
       const policies = choices.policies.filter(policy => policy.hostRef.kind === 'device')
@@ -331,6 +336,39 @@ describe.skipIf(!postgresEnabled)('pairing-managed CI root enrollment', () => {
       expect(policies.find(policy => policy.bindingPurpose === 'ci-enrollment')!.canonicalProjectRoot)
         .toBe(join(f.managedBase, sourceSha256(Buffer.from(f.workspaceId))))
     } finally { await f.close() }
+  }, 120_000)
+
+  it('waits for slow background preparation to persist before checking the read-only primary root', async () => {
+    const entered = deferred()
+    const release = deferred()
+    const f = await fixture({ managedStorage: true, beforePrepare: async () => {
+      entered.resolve()
+      await release.promise
+    } })
+    try {
+      const primary = await f.setReadOnlyPrimary()
+      const updated = await f.client.callTool({ name: 'ci_enrollment_update', arguments: { workspaceId: f.workspaceId,
+        target: f.worker.target, commandId: randomUUID(), expectedRevision: 0, enabled: true } })
+      expect(updated.isError, JSON.stringify(updated.content)).not.toBe(true)
+      await entered.promise
+      expect((await f.read()).computers[0]!.state).toBe('pending')
+      const waiting = f.waitForPreparation().then(() => 'prepared', () => 'failed')
+      // Keep preparation blocked beyond the polling deadline to reproduce a busy CI computer.
+      expect(await Promise.race([waiting, delay(5100, 'blocked')])).toBe('blocked')
+      release.resolve()
+      expect(await waiting).toBe('prepared')
+      expect((await f.read()).computers[0]).toMatchObject({ state: 'preparing',
+        templates: [{ templateId: f.saved.id, state: 'preparing' }] })
+      expect(await f.roots.get(f.owner.principal, { workspaceId: f.workspaceId })).toEqual(primary)
+      const choices = await f.roots.choices(f.owner.principal, { workspaceId: f.workspaceId })
+      expect(choices.policies.filter(policy => policy.hostRef.kind === 'device')).toHaveLength(2)
+      await f.restart()
+      expect((await f.read()).computers[0]!.state).toBe('preparing')
+      expect(await f.roots.get(f.owner.principal, { workspaceId: f.workspaceId })).toEqual(primary)
+    } finally {
+      release.resolve()
+      await f.close()
+    }
   }, 120_000)
 
   it('reports explicit root approval when the host provides only unmarked user bases', async () => {
