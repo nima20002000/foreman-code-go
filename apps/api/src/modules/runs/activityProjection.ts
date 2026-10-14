@@ -164,6 +164,10 @@ function nativeOutputActivity(native: Record<string, unknown>, runId: string): A
   } else if (native.type === 'turn.capacity_wait') {
     status = 'pending'
     summary = 'Waiting for model capacity'
+  } else if (native.type === 'turn.mcp_startup_retry') {
+    kind = 'recovery'
+    status = 'pending'
+    summary = 'Retrying Foreman Code MCP startup'
   } else if (native.type === 'thread.started') {
     summary = 'Native session created'
   } else if (native.type === 'thread.reconciled') {

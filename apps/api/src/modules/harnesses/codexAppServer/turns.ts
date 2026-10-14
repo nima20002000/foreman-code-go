@@ -5,7 +5,7 @@ import { isWorkflowStart } from '../sessionStart.js'
 import { SessionPreferencesSchema, type ApprovalResponseOption, type NativeHarnessEvent, type NativeSessionReference,
   type PendingNativeInteraction, isSessionNativeInteraction } from '@foreman-code/contracts'
 import { codexCollaborationMode } from '../codexSessionControls.js'
-import { requireCodexAppMcp } from '../codexMcpReadiness.js'
+import { retryCodexAppMcp } from '../codexMcpReadiness.js'
 import { DomainError } from '../../errors.js'
 import { HarnessExecutionError, NativeDeliveryError, NativeTurnNotActiveError } from '../errors.js'
 import { CodexRuntimeFileTurn, type CodexChatFiles } from '../codexFiles/runtime.js'
@@ -134,8 +134,22 @@ export abstract class CodexManagerTurns extends CodexManagerControls {
         const preparationSignal = AbortSignal.any([starting.preparationController.signal, this.shutdownController.signal, subscriberSignal, ...(signal ? [signal] : [])])
         preparationSignal.throwIfAborted()
         if (isWorkflowStart(runtime.input) && this.appMcpAccess === 'scoped') {
-          await requireCodexAppMcp(runtime.transport, session.nativeSessionId,
-            runtime.approvedAppMcpServerName ?? this.appMcpServerName, preparationSignal)
+          const serverName = runtime.approvedAppMcpServerName ?? this.appMcpServerName
+          const retries = retryCodexAppMcp(runtime.transport, session.nativeSessionId, serverName,
+            preparationSignal, this.dependencies, async retrySignal => {
+              await deadline(this.dependencies.assertUnchanged(runtime.qualified),
+                retrySignal, 120_000, this.dependencies)
+              retrySignal.throwIfAborted()
+              await runtime.transport.request('config/mcpServer/reload', undefined, retrySignal)
+            })
+          for await (const retry of retries) {
+            this.record(runtime, 'turn.mcp_startup_retry', { threadId: session.nativeSessionId, serverName, ...retry })
+            for (const event of runtime.events.filter(event => event.sequence >= cursor)) {
+              cursor = event.sequence + 1
+              runtime.streamCursor = cursor
+              yield structuredClone(event)
+            }
+          }
         }
         if (this.chatFiles) {
           starting.filePreparation = this.prepareTurnFiles(this.chatFiles, runtime, session, input, starting, preparationSignal)
