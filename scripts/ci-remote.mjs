@@ -5,9 +5,9 @@
 // GitHub, starts Main's ci_run for it, streams progress and failures, and exits with the run's result.
 import { execFileSync, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative, resolve } from 'node:path'
 import { affectedSnapshot } from './ci-affected.mjs'
 
 const environment = process.env
@@ -94,9 +94,18 @@ export async function workspaceFor(call) {
   throw new Error(`No Foreman Code workspace uses ${repository}.`)
 }
 
+/** Test files named on the command line (`pnpm test -- some.test.ts`), relative to the repository root. */
+export function requestedTestFiles(args, cwd = process.cwd()) {
+  const root = git(['rev-parse', '--show-toplevel'], { cwd })
+  return [...new Set(args.filter(arg => /\.(test|spec)\.[cm]?[jt]sx?$/.test(arg) && !arg.includes('*'))
+    .map(arg => relative(root, resolve(cwd, arg))).filter(file => existsSync(join(root, file))))]
+}
+
 /** Polls the tickets until every one finished, prints each failed part with its ticket, failed tests and log
- * lines, and returns the finished runs. */
-export async function awaitTickets(call, workspaceId, tickets) {
+ * lines, and returns the finished runs. A ticket superseded by a newer commit is replaced by its replacement's
+ * tickets. After waitMs it stops waiting and returns the runs as they are; open tickets keep running on CI. */
+export async function awaitTickets(call, workspaceId, tickets,
+  { waitMs = Number(environment.FOREMAN_CODE_CI_WAIT_MS || 2 * 3_600_000) } = {}) {
   const startedAt = Date.now(), states = new Map()
   for (;;) {
     // A few reads at a time keep Main's database pool free for the runs themselves.
@@ -108,6 +117,23 @@ export async function awaitTickets(call, workspaceId, tickets) {
     for (const run of runs) {
       const line = `${run.state}${run.computer ? ` on ${run.computer.label}` : ''}`
       if (states.get(run.id) !== line) { states.set(run.id, line); console.error(`[ci] ${Math.round((Date.now() - startedAt) / 1000)}s ${partName(run)}: ${line}`) }
+    }
+    const superseded = runs.filter(run => run.state === 'canceled' && run.supersededBy)
+    if (superseded.length) {
+      const replacements = new Set()
+      for (const replacement of new Set(superseded.map(run => run.supersededBy))) {
+        const next = await call('ci_get', { workspaceId, ticketId: replacement })
+        for (const value of next.partitions ?? [next.run]) replacements.add(value.id)
+        console.error(`[ci] superseded by a newer commit's ticket ${replacement}; following it`)
+      }
+      tickets = [...new Set([...tickets.filter(id => !superseded.some(run => run.id === id)), ...replacements])]
+      continue
+    }
+    const open = runs.filter(run => ['queued', 'starting', 'running'].includes(run.state))
+    if (open.length && Date.now() - startedAt > waitMs) {
+      console.log(`\n[ci] Stopped waiting after ${Math.round(waitMs / 60_000)} min (FOREMAN_CODE_CI_WAIT_MS); still open, `
+        + `and still running on CI: ${open.map(run => `${partName(run)} ${run.state} (ticket ${run.id})`).join(', ')}`)
+      return runs
     }
     if (runs.every(run => !['queued', 'starting', 'running'].includes(run.state))) {
       for (const run of runs.filter(value => value.state !== 'passed')) {
@@ -126,12 +152,13 @@ export async function awaitTickets(call, workspaceId, tickets) {
 }
 
 async function remote(suite, args) {
-  if (args.length) console.error('[ci] Selecting affected files from the snapshot; command arguments apply to local runs only.')
+  const requested = requestedTestFiles(args)
   const call = await mcpClient()
   const workspaceId = await workspaceFor(call)
   const commit = snapshot()
-  const selection = environment.FOREMAN_CODE_CI_SCOPE === 'full' || git(['branch', '--show-current']) === 'main'
-    ? { scope: 'full', files: [], reason: 'Full scope requested.' } : affectedSnapshot(commit, suite)
+  const selection = requested.length ? { scope: 'affected', files: requested, reason: 'Test files named on the command line.' }
+    : environment.FOREMAN_CODE_CI_SCOPE === 'full' || git(['branch', '--show-current']) === 'main'
+      ? { scope: 'full', files: [], reason: 'Full scope requested.' } : affectedSnapshot(commit, suite)
   if (selection.files.length > 2000) {
     selection.scope = 'full'
     selection.files = []
