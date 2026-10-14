@@ -67,3 +67,24 @@ it('charges a retained file even when another hard link is outside the measured 
   expect(await measureRetainedSourceDirectory(f.root, f.directoryId))
     .toBe(await directoryBytes(f.directory) + await entryBytes(retained))
 })
+
+it('counts every directory and file of a wide nested tree exactly', async () => {
+  const f = await fixture()
+  let expected = await directoryBytes(f.directory)
+  for (let outer = 0; outer < 8; outer++) {
+    const directory = join(f.directory, `outer-${outer}`)
+    await mkdir(directory)
+    expected += await directoryBytes(directory)
+    for (let inner = 0; inner < 8; inner++) {
+      const nested = join(directory, `inner-${inner}`)
+      await mkdir(nested)
+      expected += await directoryBytes(nested)
+      for (let file = 0; file < 4; file++) {
+        const path = join(nested, `file-${file}`)
+        await writeFile(path, Buffer.alloc(1024 * (file + 1) * 5, file))
+        expected += await entryBytes(path)
+      }
+    }
+  }
+  expect(await measureRetainedSourceDirectory(f.root, f.directoryId)).toBe(expected)
+})
