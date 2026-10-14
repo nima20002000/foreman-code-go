@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -314,20 +315,27 @@ it('reports concrete updater failures through authenticated MCP and persists the
     packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1, target,
     files: [{ path: 'src/cli.mjs', size: bytes.length, sha256: hash(bytes) }] }
   const manifestBytes = Buffer.from(JSON.stringify(manifest))
-  const release = { version: manifest.version, manifest, manifestSha256: hash(manifestBytes) }
+  const release = { version: manifest.version, manifest, manifestSha256: hash(manifestBytes),
+    github: { repository: 'example/worker', tag: `worker-${manifest.commit}` } }
+  const bundle = join(f.directory, 'bundle')
+  await mkdir(join(bundle, 'src'), { recursive: true })
+  await writeFile(join(bundle, 'manifest.json'), manifestBytes)
+  await writeFile(join(bundle, 'src/cli.mjs'), bytes)
   const updater = await new WorkerUpdater({ stateDirectory: f.directory, version: '1.0.0',
     manifestSha256: 'c'.repeat(64), workerInstallationId: f.registration.workerInstallationId,
     facts: { ...target, rootPersistent: true, homePersistent: true, storagePersistent: true },
     assertStateOwnership: () => {}, locateLaunch: async () => ({}), drain: async () => {}, resume: () => {},
+    fetchAsset: async ({ github, destination }: { github: unknown; destination: string }) => {
+      expect(github).toEqual(release.github)
+      execFileSync('tar', ['-czf', destination, '-C', bundle, '.'])
+    },
     stage: async () => { throw Object.assign(new Error('staging command exited 1'), { stderr: 'dependency-helper missing' }) },
     connection: () => ({ captureRequest: () => ({ request: async (payload: {
       operation: string; path: string; offset: number;
     }) => {
       if (payload.operation === 'release') return { payload: { operation: 'release', release } }
       if (payload.operation === 'ci-smoke') return { payload: { operation: 'ci-smoke', ciSmoke: null } }
-      const content = payload.path === 'manifest.json' ? manifestBytes : bytes
-      const chunk = content.subarray(payload.offset)
-      return { payload: { ...payload, byteSize: chunk.length }, bytes: chunk }
+      throw new Error(`Unexpected Main request: ${payload.operation}`)
     } }) }),
   }).initialize()
   try {

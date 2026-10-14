@@ -47,7 +47,8 @@ async function fixture(t) {
   const directory = join(base, 'candidate');
   const download = entries => downloadWorkerArtifact({ release, directory, facts,
     request: async () => { throw new Error('GitHub carrier must not request chunks'); },
-    fetchAsset: async ({ destination, maxBytes }) => {
+    fetchAsset: async ({ github, destination, maxBytes }) => {
+      assert.deepEqual(github, release.github);
       assert.ok(Number.isSafeInteger(maxBytes) && maxBytes > 0 && maxBytes < 2 * 1024 * 1024,
         'The carrier must receive a manifest-derived compressed byte limit');
       await writeFile(destination, gzipSync(Buffer.concat([

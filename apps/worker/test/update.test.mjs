@@ -110,7 +110,8 @@ async function fixture(t, targetVersion = '1.1.0') {
   const options = { stateDirectory, version: '1.0.0', manifestSha256: previous.release.manifestSha256,
     releaseDirectory: launch.previousDirectory, workerInstallationId, facts,
     assertStateOwnership: () => assertStateOwnership(), connection: () => ({ captureRequest: () => ({ request }) }),
-    fetchAsset: async ({ destination, signal }) => {
+    fetchAsset: async ({ github, destination, signal }) => {
+      assert.deepEqual(github, incoming.release.github);
       signal?.throwIfAborted();
       const result = spawnSync('tar', ['-czf', destination, '-C', incoming.directory, '.']);
       assert.equal(result.status, 0, result.stderr.toString());

@@ -28,9 +28,7 @@ async function fixture(t) {
     requests.push(payload.operation);
     if (payload.operation === 'release') return { payload: { operation: 'release', release } };
     if (payload.operation === 'ci-smoke') return { payload: { operation: 'ci-smoke', ciSmoke: null } };
-    const content = payload.path === 'manifest.json' ? manifestBytes : bytes;
-    const chunk = content.subarray(payload.offset);
-    return { payload: { ...payload, byteSize: chunk.length }, bytes: chunk };
+    throw new Error(`Unexpected Main request: ${payload.operation}`);
   };
   return { directory, release, request, requests };
 }

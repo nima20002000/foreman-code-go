@@ -28,7 +28,8 @@ it.each([true, false])('uses Worker content identity to schedule updates (same c
   }
   await fleet.fleet.syncChangedSources()
   // Status rejection must not masquerade as skipping an unavailable Worker.
-  expect(MaintenanceReplySchema.safeParse(observed).success).toBe(true)
+  expect(MaintenanceReplySchema.parse(observed).operation).toBe('status')
+  expect(computer.calls).toContainEqual({ binary: 'sudo', args: ['-n', 'true'] })
   expect(fleet.requested.filter(task => task.kind === 'update-worker')).toHaveLength(sameContent ? 0 : 1)
 })
 
