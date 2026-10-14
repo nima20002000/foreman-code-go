@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -5,6 +6,7 @@ import { expect, it, vi } from 'vitest'
 import { captureGitSource, qualifiedGit } from '../src/modules/sources/capture.js'
 import { SOURCE_LIMITS } from '../src/modules/sources/manifest.js'
 import { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
+import { gitFixtureEnvironment } from './helpers/gitFixture.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { removeFixtureDirectory } from './helpers/testResources.js'
 
@@ -15,16 +17,20 @@ it('captures a complete committed repository at the entry limit into real privat
   try {
     await mkdir(root, { mode: 0o700 })
     await mkdir(storage, { mode: 0o700 })
-    await mkdir(join(root, 'sources'))
-    await qualifiedGit(root, ['init', '-q'])
+    await qualifiedGit(root, ['init', '-q', '--initial-branch=main'])
     const approvedPaths = ['AGENTS.md', ...Array.from({ length: SOURCE_LIMITS.entries - 1 },
       (_, index) => `sources/entry-${index}.ts`)]
     const bytes = Buffer.from('Committed fixture source.\n'.repeat(64))
-    for (let index = 0; index < approvedPaths.length; index += 64) {
-      await Promise.all(approvedPaths.slice(index, index + 64).map(path => writeFile(join(root, path), bytes)))
-    }
-    await qualifiedGit(root, ['add', '.'])
-    await qualifiedGit(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@local', 'commit', '-qm', 'Fixture'])
+    const imported = [
+      'blob', 'mark :1', `data ${bytes.length}`, bytes.toString(),
+      'commit refs/heads/main', 'committer Fixture <fixture@example.invalid> 0 +0000',
+      'data 7', 'Fixture', ...approvedPaths.map(path => `M 100644 :1 ${path}`), '',
+      'commit refs/heads/overflow', 'committer Fixture <fixture@example.invalid> 1 +0000',
+      'data 8', 'Overflow', 'from refs/heads/main', 'M 100644 :1 overflow.ts', '', 'done', '',
+    ].join('\n')
+    execFileSync('/usr/bin/git', ['-c', 'core.hooksPath=/dev/null', '-C', root, 'fast-import', '--quiet', '--done'], {
+      input: imported, env: gitFixtureEnvironment(), timeout: 10_000,
+    })
     const commit = (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim()
     await writeFile(join(root, 'AGENTS.md'), 'Uncommitted working tree changes.\n')
     const store = new PrivateSourceSnapshotStore(storage)
@@ -39,10 +45,7 @@ it('captures a complete committed repository at the entry limit into real privat
       .toEqual(await qualifiedGit(root, ['show', `${commit}:AGENTS.md`]))
     expect(Buffer.from(await store.read(manifest, entry, AbortSignal.timeout(1000)))).toEqual(bytes)
 
-    await writeFile(join(root, 'overflow.ts'), bytes)
-    await qualifiedGit(root, ['add', 'overflow.ts'])
-    await qualifiedGit(root, ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@local', 'commit', '-qm', 'Overflow'])
-    const overflowCommit = (await qualifiedGit(root, ['rev-parse', 'HEAD'])).toString().trim()
+    const overflowCommit = (await qualifiedGit(root, ['rev-parse', 'refs/heads/overflow'])).toString().trim()
     const abort = vi.spyOn(store, 'abort')
     const publish = vi.spyOn(store, 'commit')
     try {

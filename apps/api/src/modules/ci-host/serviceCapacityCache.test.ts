@@ -34,12 +34,12 @@ function fixture() {
   } } as PostgresCommandCoordinator
   const wait = () => new Promise<void>(resolve => { setTimeout(resolve, 2000) })
   const endpoint: HostCiEndpoint = {
-    computers: vi.fn(async () => {
+    computers: vi.fn<HostCiEndpoint['computers']>(async () => {
       await wait()
       return [{ key: 'fixture-host', label: 'Build executor', priority: 60,
         hostRef: { kind: 'main', mainId: 'fixture-main' } }]
     }),
-    request: vi.fn(async (_computer, request) => {
+    request: vi.fn<HostCiEndpoint['request']>(async (_computer, request) => {
       if (request.operation !== 'status') throw new Error('Unexpected executor request')
       await wait()
       return { operation: 'status', ready, reasons: ready ? [] : ['Executor unavailable'], cpuCount: 8,

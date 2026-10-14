@@ -396,6 +396,9 @@ export class CloudCi {
         if (error instanceof DomainError
           && ['CI_CLOUD_PIPELINE_FAILED', 'CI_CLOUD_RUN_ENDED'].includes(error.code)) {
           run = await this.failPipeline(run, { message: error.message, configError: error.details?.configError === true })
+        } else if (error instanceof DomainError
+          && ['CI_CLOUD_RUN_NOT_FOUND', 'CI_CLOUD_RUN_UNREADABLE'].includes(error.code)) {
+          run = await this.reconcileLookupFailure(run, error)
         } else {
           // The trigger was accepted, so a lookup failure must not dispatch the ticket to another computer.
           log.warn({ err: error, runId: run.runId }, 'Cloud CI workflow lookup failed; dispatch remains pending')

@@ -334,17 +334,9 @@ export class CircleCiProvider implements CloudProvider {
 
   async find(run: CloudRun) {
     if (!run.providerRunId) return null
-    try {
-      const view = await this.pipeline(run, 15_000)
-      return view.workflows?.length || view.phase === 'ended' || view.current_outcome === 'not_run'
-        ? run.providerRunId : null
-    } catch (error) {
-      const elapsed = this.ports.now().getTime() - Date.parse(run.dispatch?.at ?? run.startedAt)
-      // Accepted pipelines can take a few polls to appear in CircleCI's run lookup.
-      if (error instanceof DomainError && error.code === 'CI_CLOUD_RUN_NOT_FOUND'
-        && !run.workflowStarted && elapsed >= 0 && elapsed < CLOUD_START_TIMEOUT_MS) return null
-      throw error
-    }
+    const view = await this.pipeline(run, 15_000)
+    return view.workflows?.length || view.phase === 'ended' || view.current_outcome === 'not_run'
+      ? run.providerRunId : null
   }
 
   private async pipeline(run: CloudRun, timeoutMs?: number) {
