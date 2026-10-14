@@ -48,7 +48,8 @@ export const CI_TOOL_DESCRIPTIONS = {
     + 'slot (setupRetry). A failed ticket adds failureHistory: how many of the latest gate runs that ran each failed '
     + 'test also failed it, so a known flake is recognized. Agents with ci_get read every ticket of their workspace.',
   ci_computers_list: 'List the computers CI can use: readiness and its reasons (GitHub login, git, corepack, user '
-    + 'systemd), used and total CI slots, available memory, running tickets, and up to 500 queued tickets with priority, '
+    + 'systemd), saved buildAllowancePercent, allowedCpuCount, CPU and memory within that allowance, '
+    + 'used and total CI slots, available memory, running tickets, and up to 500 queued tickets with priority, '
     + 'queue position and reason (queueTruncated reports more). Read participation and priority with build_computer_get.',
   ci_cancel: 'Cancel a queued or running CI ticket by ticketId. Optional commandId is recorded once in the audit, so a '
     + 'retry is safe. CI_CANCEL_PENDING means remote cleanup is unconfirmed and still retrying. run_stop cancels every '

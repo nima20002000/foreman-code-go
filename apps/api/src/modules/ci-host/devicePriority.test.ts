@@ -35,7 +35,8 @@ it('keeps the status prerequisite of a requested CI start in the foreground', as
   const start = { operation: 'start' as const, runId: run.runId, repository: 'example/project', commit: 'a'.repeat(40),
     suite: 'unit' as const, scope: 'affected' as const, files: ['apps/api/src/example.test.ts'] }
   await endpoint.request(computer, start)
-  expect(request).toHaveBeenNthCalledWith(1, 'worker', 'ci-host-v1', { operation: 'status' },
+  expect(request).toHaveBeenNthCalledWith(1, 'worker', 'ci-host-v1',
+    { operation: 'status', buildAllowancePercent: 100 },
     { timeoutMs: 120_000, priority: 'foreground' })
   expect(request).toHaveBeenNthCalledWith(2, 'worker', 'ci-host-v1', expect.objectContaining(start),
     { timeoutMs: 120_000, priority: 'foreground' })

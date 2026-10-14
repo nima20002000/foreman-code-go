@@ -670,9 +670,12 @@ export class HostCiService {
         }
         return status instanceof Error
           ? { label: computer.label, hostRef: computer.hostRef, priority: computer.priority,
+            buildAllowancePercent: computer.buildAllowancePercent ?? 100,
             ready: false, reasons: [status.message], running, slotsUsed: running.length,
             slotsTotal: Math.max(1, running.length) }
           : status.operation === 'status' ? { label: computer.label, hostRef: computer.hostRef, priority: computer.priority,
+            buildAllowancePercent: status.buildAllowancePercent ?? computer.buildAllowancePercent ?? 100,
+            allowedCpuCount: status.cpuCount,
             ready: status.ready, reasons: status.reasons, cpuCount: status.cpuCount, memoryBytes: status.memoryBytes,
             availableMemoryBytes: status.availableMemoryBytes,
             ...(status.userSystemd ? { userSystemd: status.userSystemd } : {}),

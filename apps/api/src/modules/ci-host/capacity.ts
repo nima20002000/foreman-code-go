@@ -20,9 +20,10 @@ export function allowedCiResources(resources: {
   return { cpuCount, memoryBytes, availableMemoryBytes: Math.min(resources.availableMemoryBytes, memoryBytes) }
 }
 
-export function buildComputerIntegrationShards(status: Pick<CiHostStatus, 'cpuCount' | 'memoryBytes'>,
+export function buildComputerIntegrationShards(status: Pick<CiHostStatus, 'cpuCount' | 'memoryBytes' | 'buildAllowancePercent'>,
   buildAllowancePercent = 100): number {
-  const resources = allowedCiResources({ ...status, availableMemoryBytes: status.memoryBytes }, buildAllowancePercent)
+  const allowance = status.buildAllowancePercent === undefined ? buildAllowancePercent : 100
+  const resources = allowedCiResources({ ...status, availableMemoryBytes: status.memoryBytes }, allowance)
   return gateIntegrationShards(resources.cpuCount, hostCiCapacity(resources).memoryBudget)
 }
 

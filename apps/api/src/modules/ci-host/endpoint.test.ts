@@ -64,7 +64,7 @@ it('answers a status request without waiting for a slow directory retention swee
     expect(result).toMatchObject({ operation: 'status', ready: true })
     const second = await endpoint.request(computer, { operation: 'status' })
     expect(second).toMatchObject({ operation: 'status', ready: true })
-    expect(cleanupRequests).toEqual([{ operation: 'status', cleanupRunIds: ['old-run'] }])
+    expect(cleanupRequests).toEqual([{ operation: 'status', cleanupRunIds: ['old-run'], buildAllowancePercent: 100 }])
   } finally {
     clearTimeout(timeout)
     release.resolve()

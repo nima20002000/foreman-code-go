@@ -81,7 +81,8 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
       request = { ...request, buildAllowancePercent: saved.buildAllowancePercent ?? 100 }
     }
     if (request.operation === 'start' && computer.hostRef.kind === 'device') {
-      const status = await this.sendRequest(computer, { operation: 'status' }, { priority: 'foreground' })
+      const status = await this.sendRequest(computer,
+        { operation: 'status', buildAllowancePercent: request.buildAllowancePercent }, { priority: 'foreground' })
       if (status.operation !== 'status') throw new DomainError('CI_HOST_REPLY_INVALID', 'Expected Worker CI status.', 502)
       if ((status.startProtocolVersion ?? 0) < CI_HOST_START_PROTOCOL_VERSION) {
         throw new DomainError('CI_HOST_PROTOCOL_UNSUPPORTED', status.reasons.join('; '), 409)
@@ -120,6 +121,9 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
 
   private async sendRequest(computer: HostCiComputer, request: CiHostRequest,
     options?: { priority: DeviceRequestPriority }): Promise<CiHostReply> {
+    if (request.operation === 'status' && computer.hostRef.kind !== 'cloud') {
+      request = { ...request, buildAllowancePercent: request.buildAllowancePercent ?? computer.buildAllowancePercent ?? 100 }
+    }
     if (computer.hostRef.kind === 'main') return this.local.handle(request)
     if (computer.hostRef.kind === 'cloud') {
       const cloud = this.clouds.find(value => value.provider.id === computer.hostRef.provider)

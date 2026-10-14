@@ -116,7 +116,7 @@ export class HostCiRunner {
   async handle(raw: unknown): Promise<CiHostReply> {
     const request = CiHostRequestSchema.parse(raw)
     if (request.operation === 'status') {
-      if (!request.cleanupRunIds) return this.status()
+      if (!request.cleanupRunIds) return this.status(request.buildAllowancePercent)
       const removedRunIds = await sweepCiRunDirectories({ root: this.root, runIds: request.cleanupRunIds,
         isInUse: runId => this.reading.has(runId) || this.preparing.has(runId) || this.startingRun?.runId === runId,
         withRun: async (runId, work) => {
@@ -124,7 +124,7 @@ export class HostCiRunner {
           return withHostCiRunLock(this.runDirectory(runId), work, { nonBlocking: true })
         } })
       for (const runId of removedRunIds) this.settledRuns.delete(runId)
-      return CiHostReplySchema.parse({ ...await this.status(), removedRunIds })
+      return CiHostReplySchema.parse({ ...await this.status(request.buildAllowancePercent), removedRunIds })
     }
     if (request.operation === 'start') return CiHostReplySchema.parse({ operation: 'start', run: await this.start(request) })
     if (request.operation === 'cancel') return CiHostReplySchema.parse({ operation: 'cancel', run: await this.cancel(request.runId) })
@@ -249,7 +249,7 @@ export class HostCiRunner {
     this.toolsChecked.clear()
   }
 
-  async status(): Promise<CiHostReply> {
+  async status(buildAllowancePercent = 100): Promise<CiHostReply> {
     const startingRun = this.startingRun
     const github = await this.github()
     const reasons = github.reason ? [github.reason] : []
@@ -273,12 +273,14 @@ export class HostCiRunner {
     if (pendingStart) runs.push(startingRun)
     this.cleanCaches()
     const availableMemoryBytes = this.ports.availableMemoryBytes?.() ?? this.ports.memoryBytes
-    const capacity = this.capacity(active, { availableMemoryBytes })
+    const resources = allowedCiResources({ cpuCount: this.ports.cpus,
+      memoryBytes: this.ports.memoryBytes, availableMemoryBytes }, buildAllowancePercent)
+    const capacity = this.capacity(active, { availableMemoryBytes, buildAllowancePercent })
     const activeRuns = runs.filter(run => run && ['starting', 'running'].includes(run.state))
     const finishedRuns = runs.filter(run => run && !['starting', 'running'].includes(run.state))
     return CiHostReplySchema.parse({ operation: 'status', ready: !reasons.length, reasons,
       startProtocolVersion: CI_HOST_START_PROTOCOL_VERSION, cleanupSupported: true,
-      cpuCount: this.ports.cpus, memoryBytes: this.ports.memoryBytes, availableMemoryBytes,
+      ...resources, buildAllowancePercent,
       slotsUsed: capacity.slotsUsed + Number(Boolean(pendingStart)), slotsTotal: capacity.slotsTotal,
       runs: [...activeRuns, ...finishedRuns.slice(-Math.max(0, 50 - activeRuns.length))].slice(0, 50) })
   }

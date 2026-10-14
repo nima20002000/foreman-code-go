@@ -139,6 +139,7 @@ const CiHostStartSchema = z.object({
   .refine(validCiPart, 'The part and partition must belong to the requested suite.')
 export const CiHostRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('status'),
+    buildAllowancePercent: BuildComputerAllowanceSchema.optional(),
     /** Main selects expired terminal directories from persisted tickets. */
     cleanupRunIds: z.array(CiHostRunIdSchema).max(1000).optional() }).strict(),
   CiHostStartSchema,
@@ -180,6 +181,8 @@ export const CiUserSystemdSchema = z.object({ supported: z.boolean(), reason: z.
 export type CiUserSystemd = z.infer<typeof CiUserSystemdSchema>
 export const CiHostStatusSchema = z.object({
   operation: z.literal('status'), ready: z.boolean(), reasons: z.array(z.string().max(300)).max(10),
+  /** CPU and memory counts already include this allowance when present. */
+  buildAllowancePercent: BuildComputerAllowanceSchema.optional(),
   /** Start protocol 3 enforces the saved CPU and memory build allowance on host starts. */
   startProtocolVersion: z.number().int().positive().optional(),
   /** Supports bounded directory cleanup selected from Main's persisted terminal tickets. */

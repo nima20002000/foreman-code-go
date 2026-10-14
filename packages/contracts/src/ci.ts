@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { BuildComputerAllowanceSchema } from './buildComputers.js'
 import { CI_LOG_MAX_BYTES, CI_MAX_RUN_TICKETS, CiCachedFileSchema, CiComputerRefSchema, CiActivitySchema, CiRunRecordSchema, CiSuiteSchema, CiScopeSchema, CiSelectedFilesSchema,
   CiTestResultsSchema, CiPrioritySchema, CiPriorityReasonSchema,
   CiTestStatusSchema, CiTestSummarySchema, CiUserSystemdSchema, validCiSelection } from './ciHost.js'
@@ -161,6 +162,8 @@ export const CiComputersOutputSchema = z.object({
   computers: z.array(z.object({
   label: z.string(), hostRef: CiRunRecordSchema.shape.computer.unwrap().shape.hostRef,
   priority: z.number().int(), ready: z.boolean(), reasons: z.array(z.string()),
+  buildAllowancePercent: BuildComputerAllowanceSchema.optional(),
+  allowedCpuCount: z.number().int().positive().optional(),
   cpuCount: z.number().int().positive().optional(), memoryBytes: z.number().int().positive().optional(),
   availableMemoryBytes: z.number().int().nonnegative().optional(),
   userSystemd: CiUserSystemdSchema.optional(),
