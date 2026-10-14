@@ -17,6 +17,11 @@ import { RemoteOperationJournal } from '../runs/remote/operationJournal.js'
 import { sourceFixture } from '../runs/remote/__tests__/installedWorkflowHost.js'
 import { createInstalledWorkerDomains } from './installedWorkerDomains.js'
 
+// Native MCP files are exercised separately; domain fixtures must not touch the host user profile.
+vi.mock('../harnesses/installedWorkerManagedMcp.js', () => ({
+  createInstalledWorkerManagedMcp: () => ({ worker: {}, ensureReady: async () => {} }),
+}))
+
 it('activates first-installed workflow and profile domains on authenticated discovery with persisted MCP readback', async () => {
   const f = await sourceFixture()
   for (const name of ['workflow-operations.json', 'job-runtime-operations.json']) {
