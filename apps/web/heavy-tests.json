@@ -6,6 +6,7 @@
     "src/routes/WorkspaceSectionRoutes.test.tsx",
     "src/features/combined/**/*.test.tsx",
     "src/features/workflow-board/eng0*.test.tsx",
+    "src/features/workflow-board/boardHistoryBudget.test.tsx",
     "src/features/graph/nextDraft/nim2644*.test.tsx",
     "src/features/conversations/agentChat/F7*.test.tsx"
   ],

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { HttpResponse } from 'msw'
 import { RunActivitySchema } from '@foreman-code/contracts'
 import { CurrentRunDetailsSchema, RunExecutionDetailSchema } from '@foreman-code/contracts/wave25'
@@ -46,7 +46,36 @@ function totals(samples: readonly { responseBytes: number }[]) {
   return { requests: samples.length, bytes: samples.reduce((sum, sample) => sum + sample.responseBytes, 0) }
 }
 
+async function expectLoadedHistoryItems(container: HTMLElement, count: number) {
+  // Role queries check styles and ancestors for every row. Keep that work out of
+  // retries while MSW and React are still delivering the requested page.
+  await waitFor(() => expect(container.querySelectorAll('li')).toHaveLength(count), {
+    container,
+    mutationObserverOptions: { childList: true, subtree: true },
+  })
+  expect(within(container).getAllByRole('listitem')).toHaveLength(count)
+}
+
 describe('mounted Board bounded-history wire budgets', () => {
+  it('waits for the loaded page before checking every history row for accessibility', async () => {
+    const rows = (count: number) => <ol>{Array.from({ length: count }, (_, index) =>
+      <li key={index}>Recorded activity {index}</li>)}</ol>
+    const view = render(rows(250))
+    const list = screen.getByRole('list')
+    const styleReads = vi.spyOn(window, 'getComputedStyle')
+    let styleReadsBeforePage = 0
+    queueMicrotask(() => {
+      styleReadsBeforePage = styleReads.mock.calls.length
+      view.rerender(rows(251))
+    })
+
+    await expectLoadedHistoryItems(list, 251)
+
+    // A role scan of the old page must not compete with rendering the next page.
+    expect(styleReadsBeforePage).toBe(0)
+    expect(styleReads.mock.calls.length).toBeGreaterThan(0)
+  })
+
   it('preserves loaded history while recovering a failed current read', async () => {
     await seedLongHistory()
     const scope = fixture.runs.before.scope
@@ -60,14 +89,14 @@ describe('mounted Board bounded-history wire budgets', () => {
     const user = userEvent.setup()
     const { cache } = await mountMeasuredBoard(boardHref(scope))
     const inspector = await openRunDetails()
-    await waitFor(() => expect(within(inspector).getAllByRole('listitem')).toHaveLength(25))
+    await expectLoadedHistoryItems(inspector, 25)
     await user.click(within(inspector).getByRole('button', { name: 'Load more executions' }))
-    await waitFor(() => expect(within(inspector).getAllByRole('listitem')).toHaveLength(50))
+    await expectLoadedHistoryItems(inspector, 50)
     const history = screen.getByText('Run activity history').closest('details')!
     fireEvent.click(within(history).getByText('Run activity history'))
-    await waitFor(() => expect(within(history).getAllByRole('listitem')).toHaveLength(50))
+    await expectLoadedHistoryItems(history, 50)
     await user.click(within(history).getByRole('button', { name: 'Load more activity' }))
-    await waitFor(() => expect(within(history).getAllByRole('listitem')).toHaveLength(100))
+    await expectLoadedHistoryItems(history, 100)
     await user.click(screen.getByRole('button', { name: 'Load more Runs' }))
     await waitFor(() => expect(screen.getByRole('button', { name: 'Load more Runs' })).toBeEnabled())
     await waitFor(() => expect(cache.isFetching()).toBe(0))
@@ -109,24 +138,28 @@ describe('mounted Board bounded-history wire budgets', () => {
     const user = userEvent.setup()
     const { cache } = await mountMeasuredBoard(boardHref(scope))
     const inspector = await openRunDetails()
-    await waitFor(() => expect(within(inspector).getAllByRole('listitem')).toHaveLength(25))
+    await expectLoadedHistoryItems(inspector, 25)
     expect(within(inspector).queryByRole('combobox', { name: 'Business repetition' })).not.toBeInTheDocument()
     expect(wire.activity()).toHaveLength(0)
+    const loadMoreExecutions = within(inspector).getByRole('button', { name: 'Load more executions' })
+    const refreshExecutions = within(inspector).getByRole('button', { name: 'Refresh executions' })
+    const loadMoreRuns = screen.getByRole('button', { name: 'Load more Runs' })
+    const refreshRuns = screen.getByRole('button', { name: 'Refresh Runs' })
     for (let page = 2; page <= 5; page++) {
-      await user.click(within(inspector).getByRole('button', { name: 'Load more executions' }))
-      await waitFor(() => expect(within(inspector).getAllByRole('listitem')).toHaveLength(page * 25))
+      await user.click(loadMoreExecutions)
+      await expectLoadedHistoryItems(inspector, page * 25)
     }
     const history = screen.getByText('Run activity history').closest('details')!
     fireEvent.click(within(history).getByText('Run activity history'))
-    await waitFor(() => expect(within(history).getAllByRole('listitem')).toHaveLength(50))
+    await expectLoadedHistoryItems(history, 50)
     for (let page = 2; page <= 5; page++) {
       await user.click(within(history).getByRole('button', { name: 'Load more activity' }))
-      await waitFor(() => expect(within(history).getAllByRole('listitem')).toHaveLength(page * 50))
+      await expectLoadedHistoryItems(history, page * 50)
     }
     await waitFor(() => expect(wire.runLists()).toHaveLength(1))
-    await user.click(screen.getByRole('button', { name: 'Load more Runs' }))
+    await user.click(loadMoreRuns)
     await waitFor(() => expect(wire.runLists()).toHaveLength(2))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Load more Runs' })).toBeEnabled())
+    await waitFor(() => expect(loadMoreRuns).toBeEnabled())
 
     expect(wire.executions()).toHaveLength(5)
     expect(wire.activity()).toHaveLength(5)
@@ -164,15 +197,15 @@ describe('mounted Board bounded-history wire budgets', () => {
 
     // Reconnect is automatic current evidence, not permission to replay five pages.
     // Explicit refresh below must discard the old cursor chain, not refetch it.
-    await user.click(within(inspector).getByRole('button', { name: 'Refresh executions' }))
-    await waitFor(() => expect(within(inspector).getAllByRole('listitem')).toHaveLength(25))
+    await user.click(refreshExecutions)
+    await expectLoadedHistoryItems(inspector, 25)
     expect(wire.executions()).toHaveLength(6)
     expect(wire.executions().at(-1)!.query.has('cursor')).toBe(false)
     await user.click(within(history).getByRole('button', { name: 'Refresh activity' }))
-    await waitFor(() => expect(within(history).getAllByRole('listitem')).toHaveLength(50))
+    await expectLoadedHistoryItems(history, 50)
     expect(wire.activity()).toHaveLength(6)
     expect(wire.activity().at(-1)!.query.has('cursor')).toBe(false)
-    await user.click(screen.getByRole('button', { name: 'Refresh Runs' }))
+    await user.click(refreshRuns)
     await waitFor(() => expect(wire.runLists()).toHaveLength(3))
     expect(wire.runLists().at(-1)!.query.has('cursor')).toBe(false)
     wire.report('mounted-151-attempts-252-events-64-runs-eight-ticks')
