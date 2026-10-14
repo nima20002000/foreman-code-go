@@ -47,3 +47,42 @@ it('retains disabled policies and never replays an uncertain device write', asyn
     expect((await open().list('claude', signal)).presets?.graphql).toBe('missing')
   } finally { await rm(f.directory, { recursive: true, force: true }) }
 })
+
+it('rejects a changed paired-device binding before the Worker writes native configuration', async () => {
+  const f = await deviceManagedMcpFixture()
+  const { randomUUID } = await import('node:crypto')
+  const { createWorkerManagedMcpExtension } = await import('./workerManagedMcp.js')
+  const mainId = randomUUID()
+  const deviceId = randomUUID()
+  const binding = { mainId, deviceId, workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1,
+    bootId: randomUUID(), connectionGeneration: 1, connectionEpoch: randomUUID() }
+  const worker = new WorkerManagedMcp({ directory: f.directory, adapters: f.adapters, installLauncher: async () => {} })
+  const extension = createWorkerManagedMcpExtension(worker, () => ({ ...binding, authorizationRevision: 2 }))
+  try {
+    await expect(extension.handle!({
+      target: { hostRef: { kind: 'device', mainId, deviceId }, applicationInstallationId: binding.workerInstallationId,
+        keyRevision: 1, authorizationRevision: 1 },
+      request: { operation: 'apply', requestedBy: 'operator', input: { harness: 'codex', preset: 'graphql',
+        installed: true, commandId: 'stale-device-install' } },
+    }, { binding, signal: AbortSignal.timeout(5000) })).rejects.toMatchObject({ code: 'MCP_INSPECTION_CONTEXT_MISMATCH' })
+    expect(f.writes()).toBe(0)
+  } finally { await rm(f.directory, { recursive: true, force: true }) }
+})
+
+it('unblocks the public Agent preflight when readiness installs a missing native MCP entry', async () => {
+  const f = await deviceManagedMcpFixture()
+  const { remoteMcpPreflight } = await import('../placement/remoteMcpPreflight.js')
+  const worker = new WorkerManagedMcp({ directory: f.directory, adapters: f.adapters, installLauncher: async () => {} })
+  const manager = { harness: 'codex', inspectMcp: () => worker.detect('codex', AbortSignal.timeout(5000)),
+    capabilities: async () => ({ provider: 'codex', providerVersion: 'fixture' }) }
+  const input = { harness: 'codex' as const, runnerId: 'worker', workingDirectory: f.directory }
+  const preflight = remoteMcpPreflight(manager as unknown as Parameters<typeof remoteMcpPreflight>[0],
+    input as unknown as Parameters<typeof remoteMcpPreflight>[1])
+  try {
+    await expect(preflight.preflight(input)).rejects.toMatchObject({ code: 'APP_MCP_PREFLIGHT_FAILED' })
+    await worker.ensureReady(['codex'])
+    expect(await preflight.preflight(input)).toMatchObject({ detection: {
+      state: 'status_unavailable', endpointMatches: true, credentialEnvironmentVariable: 'FOREMAN_CODE_MCP_TOKEN',
+    } })
+  } finally { await rm(f.directory, { recursive: true, force: true }) }
+})

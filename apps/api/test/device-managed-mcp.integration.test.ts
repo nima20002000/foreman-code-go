@@ -25,30 +25,32 @@ it('applies paired-device MCP through authenticated Operator MCP with denial, re
   const mainId = randomUUID()
   const hostRef = { kind: 'device' as const, mainId, deviceId: randomUUID() }
   const binding = { mainId, deviceId: hostRef.deviceId, workerInstallationId: randomUUID(), keyRevision: 1,
-    authorizationRevision: 1, connectionEpoch: randomUUID(), bootId: randomUUID(), protocolVersion: 1 as const }
+    authorizationRevision: 1, connectionEpoch: randomUUID(), bootId: randomUUID(), connectionGeneration: 1 }
   const worker = new WorkerManagedMcp({ directory: f.directory, adapters: f.adapters, installLauncher: async () => {},
     inspect: async harness => ({ harness, serverName: 'foreman-code', state: 'connected', endpointMatches: true,
-      transport: 'stdio', credentialEnvironmentVariable: 'FOREMAN_CODE_MCP_TOKEN', checkedAt: new Date().toISOString(),
-      detail: 'Connected', endpoint: null }) })
+      credentialEnvironmentVariable: 'FOREMAN_CODE_MCP_TOKEN', checkedAt: new Date().toISOString(),
+      detail: 'Connected' }) })
   const extension = createWorkerManagedMcpExtension(worker, () => binding)
   const endpoint = { captureRequest: () => ({ binding, request: async (payload: unknown) =>
     extension.handle!(payload, { binding, signal: AbortSignal.timeout(5000) }) }) }
   const access = new PostgresAccessService(pool)
   const commands = new PostgresCommandCoordinator(pool)
   const device = new DeviceManagedMcp(pool, mainId, () => endpoint, commands)
-  const mcp = new HarnessMcpSettingsService(pool, commands, { codex: f.adapters.codex }, () => {},
+  const mcp = new HarnessMcpSettingsService(pool, commands, { codex: { read: async () => { throw new Error('Main must not be inspected') },
+      apply: async () => { throw new Error('Main must not be changed') } } }, () => {},
     async () => {}, 'https://app.test/mcp', device)
   const app = buildApp({ logger: false,
     readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
-    operator: { access, services: { commands, harnessSettings: { mcp, directories: {} } } as unknown as OperatorServices } })
+    operator: { access, services: { commands, harnessSettings: { mcp, directories: {} }, extensions: { workspace: {} } } as unknown as OperatorServices } })
   const clients: Client[] = []
   try {
     await applyApplicationMigrations(pool)
-    await pool.query(`insert into device_registrations(id,main_id,record) values($1,$2,$3::jsonb)`,
-      [hostRef.deviceId, mainId, JSON.stringify({ ...hostRef, ...binding, status: 'paired', scopes: ['connect', 'heartbeat'],
+    await pool.query(`insert into device_registrations(id,main_id,worker_installation_id,public_key,record) values($1,$2,$3,$4,$5::jsonb)`,
+      [hostRef.deviceId, mainId, binding.workerInstallationId, 'fixture-public-key', JSON.stringify({ mainId, deviceId: hostRef.deviceId, workerInstallationId: binding.workerInstallationId,
+        keyRevision: 1, authorizationRevision: 1, status: 'paired', scopes: ['connect', 'heartbeat'],
         publicKeyFingerprint: 'a'.repeat(64) })])
     const writer = await access.issue({ name: 'Operator', audience: 'operator',
-      grants: [{ actions: ['harnesses:read', 'harnesses:update'], scope: {} }], expiresAt: new Date(Date.now() + 3600_000) })
+      grants: [{ actions: ['harnesses:read', 'harnesses:update', 'workspace_locations:read'], scope: {} }], expiresAt: new Date(Date.now() + 3600_000) })
     const reader = await access.issue({ name: 'Reader', audience: 'operator',
       grants: [{ actions: ['harnesses:read'], scope: {} }], expiresAt: new Date(Date.now() + 3600_000) })
     const address = await app.listen({ host: '127.0.0.1', port: 0 })
@@ -74,7 +76,12 @@ it('applies paired-device MCP through authenticated Operator MCP with denial, re
     })))
     expect(readback).toMatchObject({ hostRef, presets: { graphql: 'installed' } })
     expect(readback.servers.map(server => server.name)).toContain('example')
-    expect(await device.detect(writer.principal, 'codex', hostRef)).toMatchObject({ state: 'connected' })
+    const detectionArgs = { workspaceId: 'fixture-workspace', harness: 'codex', hostRef }
+    expect((await denied.callTool({ name: 'harness_mcp_detection_get', arguments: detectionArgs })).isError).toBe(true)
+    const detection = decodeMcpToolResult(await client.callTool({
+      name: 'harness_mcp_detection_get', arguments: detectionArgs,
+    }))
+    expect(detection).toMatchObject({ detection: { state: 'connected' }, runnerId: hostRef.deviceId })
     const stored = await pool.query('select host_ref,status from harness_mcp_change_plans where id=$1', [applied.id])
     expect(stored.rows).toEqual([{ host_ref: hostRef, status: 'applied' }])
     const audit = await pool.query('select target_key from management_audit where action=$1 and outcome=$2',
