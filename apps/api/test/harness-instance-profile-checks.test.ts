@@ -350,12 +350,12 @@ describe('Worker reconnect profile checks', () => {
     await f.service.close()
   })
 
-  it('discards a successful native result when the Worker restarts before persistence', async () => {
+  it('discards a successful native result when the connection changes before persistence', async () => {
     const f = workerFixture()
     f.seed(f.proof(f.override))
     let current = f.binding
     f.qualify.mockImplementationOnce(async selected => {
-      current = { ...current, bootId: 'restarted-boot', connectionGeneration: 3 }
+      current = { ...current, connectionGeneration: 3 }
       return { ...f.proof(selected), connectionGeneration: harnessConnectionGeneration(f.binding) }
     })
     await expect(f.service.recheckWorker(f.binding, new AbortController().signal, () => current))

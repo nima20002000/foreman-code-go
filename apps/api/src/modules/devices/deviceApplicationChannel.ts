@@ -448,7 +448,7 @@ export class DeviceApplicationChannel {
     try {
       while (!this.abort.signal.aborted) {
         const next = await nextFrame(iterator, this.abort.signal, Math.max(1, lastHeartbeat + heartbeatMs * (worker ? 2 : 1) - Date.now()))
-        if (next.done) throw new DeviceConnectionError('transport', this.options.socket.closeDetail ?? 'peer closed the link')
+        if (next.done) throw new DeviceConnectionError('transport')
         const observedAt = new Date().toISOString()
         const frame = readFrame(next.value)
         if (frame.type === (worker ? 'pong' : 'ping')) {
@@ -471,15 +471,6 @@ export class DeviceApplicationChannel {
   close(error: Error = new DeviceConnectionError('transport')) {
     if (this.abort.signal.aborted) return
     this.failure = error; this.abort.abort(); this.detach()
-    const code = error instanceof DeviceConnectionError ? error.code : undefined
-    componentLogger('devices').warn({ side: this.options.side, deviceId: this.binding.deviceId,
-      connectionGeneration: this.binding.connectionGeneration, code: code ?? (error as { code?: unknown }).code,
-      detail: error instanceof DeviceConnectionError ? error.detail : undefined, ...(code ? {} : { err: error }) },
-    'Device link closed')
-    // Name the cause to the peer, whose own log would otherwise only see the socket end.
-    if (code && code !== 'transport' && code !== 'revoked') {
-      try { sendFrame(this.options.socket, { type: 'blocked', code }) } catch { /* ignore: the socket is already unusable */ }
-    }
     for (const pending of this.pending.values()) { pending.abort.abort(); pending.reject(error) }
     for (const assembly of this.assemblies.values()) assembly.abort.abort()
     for (const assembly of this.handlers.values()) assembly.abort.abort()

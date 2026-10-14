@@ -1,3 +1,4 @@
+import { REMOTE_PREPARATION_EXTENSION } from '@foreman-code/contracts/remote-execution-rpc'
 import { NativeSessionReferenceSchema } from '@foreman-code/contracts'
 import { RemoteOperationStatusSchema } from '@foreman-code/contracts/remote-execution'
 import { hasPositiveRemoteEntryClosure, hasPositiveRemoteNonEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
@@ -20,7 +21,6 @@ import { interactionConnection } from '../interactions/connection.js'
 import { assertRemoteExecutionAuthority } from './executionAuthority.js'
 import { VerifiedRemoteEvidence } from '../runs/remote/resultBridge.js'
 import { remoteNativeManager, type MainWorkerCarrier } from './workerCarrier.js'
-import { deviceEndpointCarrier } from './deviceEndpointCarrier.js'
 import { OwnedRemoteReceiptCommit, reserveRemoteDispatchOrigin } from './remoteReceiptCommit.js'
 import { createRemoteNativeSourceChannel, assertRemoteNativeSourceLocked, type RemoteNativeSourceEvidence, type VerifiedRemoteOriginalSource } from './remoteNativeSource.js'
 import { createRemoteWorkflowPhysicalVerification, type PreparedRemoteWorkflowPhysical } from '../runs/remote/workflowPhysicalVerification.js'
@@ -84,7 +84,7 @@ export function createProductionRemoteWorkflow(input: ProductionRemoteWorkflowIn
   }
   const authority = (sql: GraphTransactionSql, binding: AcceptedExecutionBinding, connection: DeviceConnectionIdentity, action: 'start' | 'read' | 'control') =>
     assertRemoteExecutionAuthority(sql, input.locations, { version: 1, intent: binding.intent, placement: binding.placement, action }, connection, requireProducer())
-  const carrier = deviceEndpointCarrier(() => input.endpoint())
+  const carrier = createRemoteWorkflowCarrier(input)
   const prepare = (executionId: string) => prepareRemoteWorkflowBinding(input, bindings, executionId)
   return {
     prepare,
@@ -254,6 +254,27 @@ export function createProductionRemoteWorkflow(input: ProductionRemoteWorkflowIn
       await assertRemoteNativeSourceLocked(sql, owner, capture.execution, original.source, evidence, channel.verify, physical)
     },
   }
+}
+
+function createRemoteWorkflowCarrier(input: ProductionRemoteWorkflowInput): MainWorkerCarrier {
+  return { capture(deviceId) {
+    const endpoint = input.endpoint(), captured = endpoint.captureRequest(deviceId, 'execution-v1')
+    if (!captured) throw new DomainError('REMOTE_DISPATCH_UNAVAILABLE', 'The actual authenticated execution carrier is unavailable.', 503)
+    const preparation = endpoint.captureRequest(deviceId, REMOTE_PREPARATION_EXTENSION.namespace)
+    const compatiblePreparation = preparation && sameWorkflowValue(preparation.binding, captured.binding)
+      ? preparation : undefined
+    const { mainId, workerInstallationId, bootId, keyRevision, authorizationRevision, connectionGeneration } = captured.binding
+    return { identity: { mainId, deviceId, workerInstallationId, bootId, keyRevision, authorizationRevision, connectionGeneration },
+      supports: namespace => namespace === 'execution-v1'
+        || namespace === REMOTE_PREPARATION_EXTENSION.namespace && compatiblePreparation !== undefined,
+      request(namespace, payload, options) {
+        if (namespace === REMOTE_PREPARATION_EXTENSION.namespace && compatiblePreparation) {
+          return compatiblePreparation.request(payload, options)
+        }
+        if (namespace !== 'execution-v1') throw new DomainError('REMOTE_BINDING_CONFLICT', 'The captured native carrier cannot change namespace.', 409)
+        return captured.request(payload, options)
+      } }
+  } }
 }
 
 async function prepareRemoteWorkflowBinding(input: ProductionRemoteWorkflowInput,

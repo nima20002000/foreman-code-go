@@ -58,8 +58,9 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
     || connection.workerInstallationId !== authenticated.workerInstallationId || connection.keyRevision !== authenticated.keyRevision
     || connection.authorizationRevision !== authenticated.authorizationRevision) denied()
   if (input.action !== 'read' && input.action !== 'stop' && connection.bootId !== authenticated.bootId) denied()
-  // A reconnect of the same Worker boot keeps the original authority; only a changed boot is narrowed.
   const changedBoot = connection.bootId !== authenticated.bootId
+  const reconnected = !changedBoot
+    && connection.connectionGeneration !== authenticated.connectionGeneration
   let resident: boolean
   {
     const stored = (await sql.query<{ receipt: unknown }>(
@@ -70,13 +71,15 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
     resident = receipt.success && receipt.data.native !== undefined
     if (input.action === 'stop' && !row!.cleanup
       && (!receipt.success || !await canCloseRetainedRemoteReviewer(sql, receipt.data))) denied()
+    if ((reconnected || changedBoot)
+      && (input.action === 'start' || !['read', 'stop'].includes(input.action) && !resident)) denied()
   }
   // Cleanup observes and cancels the admitted owner even when it can no longer launch.
   if (!cleanup) {
     await locations.revalidateRunAuthorization(row!.authorization_principal_id, row!.workspace_id, row!.workflow_id,
       sql, true)
     // A restarted OS can read the admitted owner's closure; it cannot qualify that process to continue.
-    if (!changedBoot) {
+    if (!changedBoot && (!reconnected || resident)) {
       await producer.assertPinsCurrent(sql, pin, await readLiveManagementPrincipal(sql, row!.authorization_principal_id),
         row!.workspace_id, resident ? { purpose: 'resident' } : undefined)
     }

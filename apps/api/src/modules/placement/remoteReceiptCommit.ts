@@ -9,7 +9,6 @@ import { readReconciledDispatchIntent, persistVerifiedRemoteReceipt, auditReject
 import type { RemoteResultCommitPort, RemoteResultTransaction, VerifiedRemoteEvidence } from '../runs/remote/resultBridge.js'
 import { readAcceptedPlacement } from './persistence.js'
 import { DomainError } from '../errors.js'
-import { sameDeviceInstallation } from '../devices/deviceReconnect.js'
 
 /** Live original owner/device/root/config/credential fences and the existing
  * native canonical writer, all on THIS branded main transaction. The writer
@@ -46,8 +45,7 @@ export async function reserveRemoteDispatchOrigin(sql: GraphTransactionSql, owne
     owner.assertOwned(); await owner.readOneShotFence(sql)
     await accepted(sql, intent); await domain.assertCurrent(sql, intent, placement, connection)
     const rows = await sql.query<{ connection: unknown }>('select connection from remote_dispatch_origins where operation_id=$1', [intent.operationId])
-    // A reconnect of the same Worker boot keeps the original delivery; a restarted boot must reconcile its journal.
-    if (rows.rows.length !== 1 || !sameDeviceInstallation(DeviceConnectionIdentitySchema.parse(rows.rows[0]?.connection), connection)) {
+    if (rows.rows.length !== 1 || !sameWorkflowValue(DeviceConnectionIdentitySchema.parse(rows.rows[0]?.connection), connection)) {
       throw new DomainError('REMOTE_ORIGINAL_OPERATION_REQUIRED', 'The original operation cannot be delivered to a replacement connection; reconcile its original journal.', 409)
     }
   }

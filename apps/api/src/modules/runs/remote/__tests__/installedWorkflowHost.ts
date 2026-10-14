@@ -515,10 +515,9 @@ export async function constructionFixture(fixtureOptions: {
       qualified: true, checkedAt: timestamp,
     } } })
   // Main, installed-binary and native-process observations are unit doubles; the host, journal and source guards are real.
-  // Inspection reports the authenticated session it was asked about, as the installed inspection does.
-  const inspect = vi.spyOn(installedInspection, 'inspectInstalledCodex').mockImplementation(async ({ binding: live }) => ({
+  const inspect = vi.spyOn(installedInspection, 'inspectInstalledCodex').mockImplementation(async () => ({
     inventory: { instances: [], installations: [facts.harness.installation] },
-    currentTarget: { binding: live, target, installation: facts.harness.installation,
+    currentTarget: { binding, target, installation: facts.harness.installation,
       binarySha256: 'a'.repeat(64), expectedVersion: version },
   }))
   let authorized = true
