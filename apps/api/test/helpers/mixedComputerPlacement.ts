@@ -17,6 +17,7 @@ import { PrivateSourceSnapshotStore } from '../../src/modules/sources/store.js'
 import { RegisteredWorkspaceSourceRoots } from '../../src/modules/sources/registeredSourceRoots.js'
 import { createSourceManifest, sourceSha256 } from '../../src/modules/sources/manifest.js'
 import { identity, openPrivateRoot } from '../../src/modules/sources/privateFilesystem.js'
+import { attestWorkspaceRoot } from '../../src/modules/sources/rootAttestation.js'
 import { withTransaction } from '../../src/infrastructure/transaction.js'
 import { assertDeviceHostInstallation } from '../../src/modules/devices/hostAuthorization.js'
 import { HarnessInstallationRegistry, type HarnessInstallationRecord } from '../../src/modules/harnesses/installationRegistry.js'
@@ -58,10 +59,11 @@ export async function mixedComputerPlacement(f: Fixture, directory: string, opti
     const registered = await assertDeviceHostInstallation(sql, host, installationId)
     return registered ? { workerInstallationId: registered.workerInstallationId,
       keyRevision: registered.keyRevision, authorizationRevision: registered.authorizationRevision } : null
-  }, sourceNamespace: async (policy, rootPolicyId) => {
+  }, attest: root => attestWorkspaceRoot(root.allowlist, root.selection),
+  sourceNamespace: async (policy, rootPolicyId) => {
     const canonicalPath = join(policy.managedRuntimeRoot, 'source-materializations', rootPolicyId)
     return { canonicalPath, filesystem, attestationId: randomUUID(), attestationDigest: 'a'.repeat(64) }
-  } } satisfies Pick<WorkspaceRootHostPort, 'authorize' | 'sourceNamespace'>
+  } } satisfies Pick<WorkspaceRootHostPort, 'authorize' | 'attest' | 'sourceNamespace'>
   const policies = new PostgresWorkspaceRootPolicies(mainId, hosts as WorkspaceRootHostPort)
   const bytes = Buffer.from('export const approved = true\n')
   const manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
@@ -83,6 +85,8 @@ export async function mixedComputerPlacement(f: Fixture, directory: string, opti
       manifest, approvedAt: f.f.createdAt, availability: 'retained' })])
   const handle = await openPrivateRoot(project)
   const filesystem = await identity(handle).finally(() => handle.close())
+  const runtimeHandle = await openPrivateRoot(runtime)
+  const runtimeFilesystem = await identity(runtimeHandle).finally(() => runtimeHandle.close())
   const instanceValues: Parameters<HarnessInstanceRegistry['reload']>[0][number][] = []
   const inventory: HarnessInstallationRecord[] = []
   const placements: ReturnType<typeof SavedNodePlacementSchema.parse>[] = []
@@ -94,7 +98,8 @@ export async function mixedComputerPlacement(f: Fixture, directory: string, opti
     const allowlist = ApprovedRootAllowlistSchema.parse({ schemaVersion: 1, hostRef, applicationInstallationId,
       configurationRevision: '1', bases: [{ baseId: randomUUID(), canonicalPath: canonicalProjectRoot,
         filesystem, accessModes: ['read-only', 'read-write'],
-        ...(kind === 'device' && options.unconfiguredDeviceRoot ? { managedBy: 'worker-pairing' } : {}) }], managedRuntimeRoot, runtimeFilesystem: filesystem })
+        ...(kind === 'device' && options.unconfiguredDeviceRoot ? { managedBy: 'worker-pairing' } : {}) }],
+      managedRuntimeRoot, runtimeFilesystem: kind === 'main' ? runtimeFilesystem : filesystem })
     const policy = WorkspaceRootPolicySchema.parse({ schemaVersion: 1, rootPolicyId: randomUUID(), rootPolicyRevision: '1',
       workspaceId: f.f.scope.workspaceId, hostRef, applicationInstallationId,
       registration: kind === 'main' ? null : registration, locationRevision: String(locationRevision),

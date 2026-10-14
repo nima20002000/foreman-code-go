@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { access, mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
+import { persistentFixtureRoot } from '../../../test/helpers/fixtureStorage.js'
 import type pg from 'pg'
 import { afterEach, expect, it, vi } from 'vitest'
 import { HarnessExecutionSchema } from '@foreman-code/contracts'
@@ -36,7 +37,7 @@ async function filesystem(path: string) {
 /** SQL/catalog/authorization doubles; producer, profile validation, source bytes,
  * execution binding and installed worker filesystem admission are real. No native provider launches. */
 async function fixture() {
-  const root = await mkdtemp('/tmp/review-placement-root-'); directories.push(root)
+  const root = await mkdtemp(join(persistentFixtureRoot, 'review-placement-root-')); directories.push(root)
   const runtime = join(root, 'runtime'), project = join(root, 'project'), rootPolicyId = randomUUID()
   const namespace = join(runtime, 'source-materializations', rootPolicyId)
   await mkdir(runtime, { mode: 0o700 }); await mkdir(project, { mode: 0o700 })
@@ -86,6 +87,7 @@ async function fixture() {
     if (text.includes('from workflow_versions')) rows = [{ id: version.id, workspace_id: version.workspaceId, workflow_id: version.workflowId,
       version: version.version, entry_node_id: version.entryNodeId, execution_semantics_version: 3, record: version }]
     else if (text.includes('from agent_configuration_versions')) rows = [{ record: configuration }]
+    else if (text.includes('from source_root_bindings')) rows = [{ record: sourceRoot }]
     else if (text.includes('from harness_instance_settings')) rows = [{ record: override }]
     else if (text.includes('from harness_instance_profile_evidence')) rows = [{ record: profileProof }]
     else if (text.includes('from harness_qualifications')) rows = [{ harness: 'codex', version: '0.156.1', binary_sha256: digest,
@@ -93,7 +95,8 @@ async function fixture() {
       failure_reason: null, started_at: f.createdAt, checked_at: f.createdAt }]
     return { rows, rowCount: rows.length }
   }, on: () => undefined, removeListener: () => undefined, release: () => undefined }
-  const roots = { resolve: async () => ({ canonicalProjectRoot: project, managedRuntimeRoot: runtime, registration }) } as unknown as WorkspaceRootPolicyPort
+  const policy = { ...sourceRoot.selection, canonicalProjectRoot: project, managedRuntimeRoot: runtime, registration }
+  const roots = { resolve: async () => policy, read: async () => [policy] } as unknown as WorkspaceRootPolicyPort
   const sources = { resolveRootBinding: async () => sourceRoot,
     resolveApprovedSource: async () => ({ manifest }) } as unknown as SourceAdmissionPort
   const producer = new AgentPlacementProducer({ connect: async () => client } as unknown as pg.Pool, binding.mainId, sources, roots,

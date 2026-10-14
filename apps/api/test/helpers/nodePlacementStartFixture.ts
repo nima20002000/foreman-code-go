@@ -18,6 +18,7 @@ import { RunManagementService } from '../../src/modules/runs/management.js'
 import { WorkflowManagementService } from '../../src/modules/workflows/management.js'
 import { createCurrentNativeProductionFactory } from '../../src/modules/runs/workflowProduction.js'
 import { WorkerExecutionPolicy } from '../../src/modules/settings/workerExecution.js'
+import { WorkspaceBoundLocationService } from '../../src/modules/workspace-roots/service.js'
 import { agentWorkflowNode } from './agentWorkflowFixture.js'
 import { currentOperatorIntegration } from './currentOperatorIntegration.js'
 import { mixedComputerPlacement } from './mixedComputerPlacement.js'
@@ -86,7 +87,8 @@ export async function fixture(options: { gitSource?: boolean } = {}) {
       ...binding, startPublication: { ...binding.startPublication, placementAdmission: placement.producer,
         workerExecution: new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }) },
     })
-    const services = { ...base.services, runs, runPlacements: placement.reads, sources: placement.sources }
+    const services = { ...base.services, runs, runPlacements: placement.reads, sources: placement.sources,
+      workspaceRoots: new WorkspaceBoundLocationService(base.db.pool, base.commands, placement.policies) }
     app = buildApp({ logger: false,
       readiness: { database: { ping: async () => undefined }, checkpoints: { ping: async () => undefined } },
       operator: { access: base.access, services } })
