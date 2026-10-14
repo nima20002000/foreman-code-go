@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-async function fixture(t, failure, token, { firstAdmissionDelayMs = 0 } = {}) {
+async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicketPolls = 0 } = {}) {
   const computers = [
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'first' }, ready: true },
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'second' }, ready: true },
@@ -56,9 +56,21 @@ async function fixture(t, failure, token, { firstAdmissionDelayMs = 0 } = {}) {
       if (admissions.length === 1) await delay(firstAdmissionDelayMs)
       response.end(JSON.stringify({ ticketId: `ticket-${admissions.length}` }))
     } else if (request.method === 'DELETE') {
+      let body = ''
+      for await (const chunk of request) body += chunk
+      // Like the API, a JSON content type needs a JSON body.
+      if (request.headers['content-type']?.includes('application/json') && !body) {
+        response.statusCode = 400
+        response.end(JSON.stringify({ error: { code: 'INVALID_REQUEST', message: 'The request body must contain valid JSON.' } }))
+        return
+      }
       canceled.push(request.url)
       response.end('{}')
     } else {
+      if (slowTicketPolls > 0) {
+        slowTicketPolls--
+        await delay(200)
+      }
       const input = admissions[Number(request.url.split('-').at(-1)) - 1]
       const failed = ['setup', 'credential-echo'].includes(failure) && input?.smokeComputer?.deviceId === 'second'
       let state = failed ? 'failed' : 'passed'
@@ -133,6 +145,13 @@ for (const failure of ['setup', 'lock', 'stall']) {
     assert.ok(f.canceled.length > 0)
   })
 }
+
+test('a slow ticket poll is retried until the smoke deadline instead of failing the smoke', async t => {
+  const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
+  const f = await fixture(t, undefined, undefined, { slowTicketPolls: 1 })
+  await runInstallCiSmoke({ ...options, origin: f.origin })
+  assert.equal(f.admissions.filter(input => input.smokeComputer).length, 4)
+})
 
 test('CI smoke fails for an enabled build computer that became unready', async t => {
   const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
