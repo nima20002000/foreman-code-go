@@ -433,15 +433,45 @@ it.each([10, 40_000, 70_000])('persists a bounded %i-byte log with terminal stat
   })
 })
 
-it('checks worker ownership before returning cached logs or group data', async () => {
-  const f = fixture()
-  f.resolve.mockResolvedValue({ principal: caller, workspaceId: 'workspace', executionId: 'another-execution' })
-  const worker: ManagementPrincipal = { ...caller, audience: 'worker', agentId: 'agent' }
-  await expect(f.create().get(worker, { ticketId: f.read().record.id })).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
-  expect(f.pool.query).toHaveBeenCalledTimes(1)
-  expect(f.endpoint.computers).not.toHaveBeenCalled()
-  expect(f.endpoint.request).not.toHaveBeenCalled()
-})
+it.each(['get', 'logs', 'group logs'] as const)(
+  'lets workers read workspace CI %s from another execution and denies callers without a grant', async operation => {
+    const f = fixture()
+    const worker: ManagementPrincipal = { ...caller, audience: 'worker', agentId: 'agent' }
+    f.resolve.mockResolvedValueOnce({
+      principal: worker, workspaceId: 'workspace', executionId: 'another-execution',
+    })
+    const record = f.read().record
+    const text = 'workspace log\n'
+    vi.mocked(f.endpoint.request).mockImplementation(async (_computer, request) => {
+      if (request.operation !== 'read') throw new Error('Unexpected request')
+      return { operation: 'read', run: {
+        runId: record.id, state: 'running', step: record.step, exitCode: null,
+        startedAt: record.startedAt!, finishedAt: null, logBytes: Buffer.byteLength(text), message: null,
+      }, text, nextOffset: Buffer.byteLength(text) }
+    })
+    const ci = f.create()
+    const read = (principal: ManagementPrincipal) => operation === 'get'
+      ? ci.get(principal, { ticketId: record.id })
+      : ci.logs(principal, { ticketId: record.id, afterOffset: 0, group: operation === 'group logs' })
+    const result = await read(worker)
+    if (operation === 'get') {
+      expect(result).toMatchObject({ run: record, logTail: 'persisted log\n',
+        group: { groupId: record.groupId, state: 'running' } })
+      expect(f.endpoint.computers).not.toHaveBeenCalled()
+      expect(f.endpoint.request).not.toHaveBeenCalled()
+    } else {
+      expect(result).toMatchObject({ text, nextOffset: Buffer.byteLength(text) })
+      if (operation === 'group logs') expect(result).toMatchObject({ parts: [{ run: record, text }] })
+    }
+    expect(f.resolve).toHaveBeenCalledWith(worker, undefined, CI_GET_ACTIONS)
+    vi.mocked(f.pool.query).mockClear()
+    vi.mocked(f.endpoint.computers).mockClear()
+    vi.mocked(f.endpoint.request).mockClear()
+    await expect(read({ ...worker, grants: [] })).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
+    expect(f.pool.query).not.toHaveBeenCalled()
+    expect(f.endpoint.computers).not.toHaveBeenCalled()
+    expect(f.endpoint.request).not.toHaveBeenCalled()
+  })
 
 it('retries a CI read once after a statement timeout, then reports a retryable error', async () => {
   const f = fixture()
