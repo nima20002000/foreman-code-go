@@ -39,51 +39,96 @@ async function measureSourceDirectory(
   }
 }
 
-/** Count allocated bytes without following symlinks or crossing the pinned filesystem. */
+/** Count allocated bytes without following symlinks or crossing the pinned filesystem. Entries are measured by a
+ * bounded pool: when other file work saturates the libuv pool, one queued round trip per entry in sequence turns a
+ * cache scan held under the Git transfer lock into tens of seconds. Depth-first order keeps few directories open. */
 export async function measureRetainedDirectory(root: FileHandle, rootFilesystem: RootBinding['filesystem'],
   countedInodes = new Set<string>(), limits = { depth: 64, entries: 300_000 }): Promise<number> {
+  type Directory = { handle: FileHandle; depth: number; references: number }
+  const queue: { parent: Directory; name: string }[] = []
+  const waiting: (() => void)[] = []
   let entries = 0
-  const measure = async (directory: FileHandle, depth: number): Promise<number> => {
-    if (depth > limits.depth) throw new SourceError('SOURCE_CAPACITY', 'Retained source directory depth exceeds its bound.')
-    let bytes = Math.max(4096, Number((await directory.stat()).blocks) * 512)
-    for (const name of await readdir(anchored(directory))) {
-      entries += 1
+  let bytes = 0
+  let active = 0
+  let failure: { error: unknown } | undefined
+  const release = async (directory: Directory) => {
+    if (--directory.references === 0 && directory.handle !== root) await directory.handle.close()
+  }
+  const list = async (directory: Directory) => {
+    try {
+      if (directory.depth > limits.depth) {
+        throw new SourceError('SOURCE_CAPACITY', 'Retained source directory depth exceeds its bound.')
+      }
+      // Read before adding: `bytes += await ...` would add to a total that concurrent visits have since changed.
+      const own = Math.max(4096, Number((await directory.handle.stat()).blocks) * 512)
+      bytes += own
+      const names = await readdir(anchored(directory.handle))
+      entries += names.length
       if (entries > limits.entries) {
         throw new SourceError('SOURCE_CAPACITY', 'Retained source entry count exceeds its bound.')
       }
-      const path = anchored(directory, name)
-      const stat = await lstat(path, { bigint: true })
-      if (stat.uid !== BigInt(process.getuid?.() ?? -1)) {
-        throw new SourceError('SOURCE_BYTES_INVALID', 'Retained source ownership changed.')
+      directory.references += names.length
+      for (const name of names) queue.push({ parent: directory, name })
+    } finally {
+      await release(directory)
+    }
+  }
+  const visit = async (parent: Directory, name: string) => {
+    const path = anchored(parent.handle, name)
+    const stat = await lstat(path, { bigint: true })
+    if (stat.uid !== BigInt(process.getuid?.() ?? -1)) {
+      throw new SourceError('SOURCE_BYTES_INVALID', 'Retained source ownership changed.')
+    }
+    if (stat.isDirectory()) {
+      const handle = await open(path, directoryFlags)
+      try {
+        if ((await handle.stat()).uid !== process.getuid?.()) {
+          throw new SourceError('SOURCE_BYTES_INVALID', 'Retained source ownership changed.')
+        }
+        const filesystem = await identity(handle)
+        if (filesystem.device !== rootFilesystem.device || filesystem.mountId !== rootFilesystem.mountId) {
+          throw new SourceError('SOURCE_MOUNT_CHANGED', 'Retained source cannot cross a filesystem or mount boundary.')
+        }
+      } catch (error) {
+        await handle.close()
+        throw error
       }
-      if (stat.isDirectory()) {
-        const handle = await open(path, directoryFlags)
-        try {
-          if ((await handle.stat()).uid !== process.getuid?.()) {
-            throw new SourceError('SOURCE_BYTES_INVALID', 'Retained source ownership changed.')
-          }
-          const filesystem = await identity(handle)
-          if (filesystem.device !== rootFilesystem.device || filesystem.mountId !== rootFilesystem.mountId) {
-            throw new SourceError('SOURCE_MOUNT_CHANGED', 'Retained source cannot cross a filesystem or mount boundary.')
-          }
-          // The private materialization parent also contains ordinary Git directory modes.
-          bytes += await measure(handle, depth + 1)
-        } finally {
-          await handle.close()
-        }
-      } else {
-        if (!stat.isFile() && !stat.isSymbolicLink()) {
-          throw new SourceError('SOURCE_BYTES_INVALID', 'Retained source contains an unsupported file.')
-        }
-        const inode = `${stat.dev}:${stat.ino}`
-        if (countedInodes.has(inode)) continue
-        countedInodes.add(inode)
-        bytes += Math.max(4096, Number(stat.size), Number(stat.blocks) * 512)
+      // The private materialization parent also contains ordinary Git directory modes.
+      await list({ handle, depth: parent.depth + 1, references: 1 })
+      return
+    }
+    if (!stat.isFile() && !stat.isSymbolicLink()) {
+      throw new SourceError('SOURCE_BYTES_INVALID', 'Retained source contains an unsupported file.')
+    }
+    const inode = `${stat.dev}:${stat.ino}`
+    if (countedInodes.has(inode)) return
+    countedInodes.add(inode)
+    bytes += Math.max(4096, Number(stat.size), Number(stat.blocks) * 512)
+  }
+  const work = async () => {
+    for (;;) {
+      const next = failure ? undefined : queue.pop()
+      if (!next) {
+        if (!active || failure) return
+        await new Promise<void>(resolve => waiting.push(resolve))
+        continue
+      }
+      active++
+      try { await visit(next.parent, next.name) }
+      catch (error) { failure ??= { error } }
+      finally {
+        active--
+        await release(next.parent)
+        for (const wake of waiting.splice(0)) wake()
       }
     }
-    return bytes
   }
-  return measure(root, 0)
+  await list({ handle: root, depth: 0, references: 1 })
+  await Promise.all(Array.from({ length: 32 }, work))
+  // After a failure, close the directories whose entries were never visited.
+  for (const { parent } of queue.splice(0)) await release(parent)
+  if (failure) throw failure.error
+  return bytes
 }
 
 export async function measureRetainedMaterializationFootprint(
