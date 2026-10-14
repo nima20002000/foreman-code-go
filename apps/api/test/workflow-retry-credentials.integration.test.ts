@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EventEmitter, once } from 'node:events'
 import { CodexHarnessConfigurationSchema } from '@foreman-code/contracts'
+import { DomainError } from '../src/modules/errors.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
 import { assertWave25WorkerBinding } from '../src/modules/interactions/wave25/credentialAuthority.js'
@@ -111,7 +112,7 @@ describe.skipIf(!postgresEnabled)('fresh authority for a same-slot technical ret
 
   it.each(['sequential', 'repeat'] as const)('%s: session proof and launch-credential binding roll back together', async (form) => {
     const original = WorkflowNativeProofServices.prototype.assertNativeUpdateLocked
-    const injected = new Error('Injected session-publication commit failure')
+    const injected = new DomainError('SESSION_PUBLICATION_REJECTED', 'Injected session-publication commit failure', 409)
     let bindingObserved = false
     let publicationRejected = false
     const transaction = ExclusiveGraphConnection.prototype.transaction

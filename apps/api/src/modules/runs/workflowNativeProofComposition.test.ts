@@ -18,7 +18,8 @@ vi.mock('../run-graph/publication.js', async (importOriginal) => ({
 vi.mock('../run-graph/repeatReceipts.js', () => ({ requireRepeatCanonicalReceiptBeforeCommit: vi.fn(),
   assertRepeatCanonicalReceiptsLocked: vi.fn() }))
 vi.mock('./nativeEventBatch.js', () => ({
-  appendNormalizedNativeEvents: vi.fn(async (_sql, frames) => frames.map(({ event }: { event: HarnessNativeEvent }) => ({
+  appendNormalizedNativeEvents: vi.fn(async (_sql: GraphTransactionSql,
+    frames: Parameters<typeof appendNormalizedNativeEvents>[1]) => frames.map(({ event }: { event: HarnessNativeEvent }) => ({
     inserted: true, rejected: false, sequence: String(event.sequence),
   }))),
 }))
@@ -44,8 +45,8 @@ function fixture(reject = false, retained?: 'same' | 'missing' | 'changed' | 'lo
     if (text.includes('from harness_native_events n join jsonb_to_recordset')) {
       if (retained === 'lost') current = false
       return { rows: retained === 'missing' ? [] : [{ connection_id: transcript.connectionId,
-        source_sequence: transcript.sequence, sequence: 31, record: { ...transcript, sequence: 31,
-          payload: retained === 'changed' ? { original: 'different bytes' } : transcript.payload } }], rowCount: 1 }
+        source_sequence: transcript.sequence, sequence: 31, record_matches: retained !== 'changed',
+        source_digest: null, semantic_digest: null }], rowCount: 1 }
     }
     if (text.startsWith('insert into workflow_native_proofs')) events.push('proof-stored')
     if (text === 'commit' || text === 'rollback') events.push(text)

@@ -4,7 +4,7 @@ import { createRuntimeBuildIdentity } from '@foreman-code/contracts/runtime-buil
 import { execFile } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { promisify } from 'node:util'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 import { copyFile, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { delimiter, dirname, join } from 'node:path'
 import { parse } from 'yaml'
@@ -121,11 +121,16 @@ describe('installed API fixture packaging', () => {
       const deployedRequire = createRequire(join(destination, 'package.json'))
       expect(deployedRequire('yaml').parse('installed: true')).toEqual({ installed: true })
       expect(deployedRequire('yaml/package.json').version).toBe(dependency.version)
-      const contractsEntry = pathToFileURL(join(destination, 'node_modules/@foreman-code/contracts/dist/index.js'))
-      const contracts = await import(contractsEntry.href)
-      expect(contracts.RuntimeBuildIdentitySchema.safeParse({}).success).toBe(false)
-      expect(contracts.RuntimeBuildIdentitySchema.parse(createRuntimeBuildIdentity(repository)))
-        .toEqual(createRuntimeBuildIdentity(repository))
+      const verifyContracts = join(destination, 'verify-contracts.mjs')
+      await writeFile(verifyContracts, `import { RuntimeBuildIdentitySchema } from '@foreman-code/contracts'
+process.stdout.write(JSON.stringify({
+  valid: RuntimeBuildIdentitySchema.safeParse(JSON.parse(process.argv[2])).success,
+  invalid: RuntimeBuildIdentitySchema.safeParse({}).success,
+}))
+`)
+      const { stdout } = await execute(process.execPath,
+        [verifyContracts, JSON.stringify(createRuntimeBuildIdentity(repository))], { cwd: destination })
+      expect(JSON.parse(stdout)).toEqual({ valid: true, invalid: false })
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

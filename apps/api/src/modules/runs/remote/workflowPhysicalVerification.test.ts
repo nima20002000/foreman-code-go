@@ -204,9 +204,9 @@ async function physicalFixture(options: {
         let valid = retained.canonical && !!retained.proof
         if (kind === 'execution') valid = retained.entryCanonical
         if (kind === 'input_binding') valid = retained.inputCanonical
-        let digest = repeatDigest(retained.proof, 4 * 1024 * 1024)
+        let digest = retained.inputEffectDigest
         if (kind === 'execution') digest = entry.source_digest
-        if (kind === 'input_binding') digest = retained.inputEffectDigest
+        else if (kind !== 'input_binding') digest = repeatDigest(retained.proof, 4 * 1024 * 1024)
         return valid ? [{ workspace_id: 'workspace', workflow_id: 'workflow', workflow_version_id: 'version',
           execution_semantics_version: 3, protocol_version: 1, head_sequence: '2', source_digest: digest,
           source_semantic_digest: repeatDigest('semantic'), source_sequence: '2',

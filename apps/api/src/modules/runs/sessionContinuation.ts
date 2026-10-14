@@ -8,10 +8,12 @@ import { readWorkflowClosure } from '../interactions/workflowClosure.js'
 import { readDispatchIntent, readExecutionPlacement } from '../placement/persistence.js'
 import type { AcceptedNodePlacement } from '@foreman-code/contracts/node-placement'
 import { repeatTickIndex } from './repeatResolution.js'
+import { isTransientExecutionResult } from './executionRetryPolicy.js'
 
 export function canContinueWorkflowSession(previous: HarnessExecution, execution: HarnessExecution,
   placements: { previous?: Pick<AcceptedNodePlacement, 'bindingHash'> | undefined;
     current?: Pick<AcceptedNodePlacement, 'bindingHash'> | undefined } = {}): boolean {
+  if (isTransientExecutionResult(previous.result)) return false
   if (repeatTickIndex(previous.input) !== undefined && previous.result?.outcome !== 'succeeded') return false
   return previous.id !== execution.id && previous.runId === execution.runId
     && previous.workflowNodeId === execution.workflowNodeId && previous.agentId === execution.agentId
