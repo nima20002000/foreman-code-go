@@ -527,7 +527,7 @@ it.each([false, true])('admits consecutive gates on different connections after 
     if (lostReply) {
       const failed = await f.call(f.operator, 'ci_run', firstInput)
       expect(failed.isError).toBe(true)
-      expect(decodeMcpToolResult(failed)).toMatchObject({ error: { code: 'INTERNAL_ERROR' } })
+      expect(decodeMcpToolResult(failed)).toMatchObject({ error: { code: 'COMMAND_DATABASE_TIMEOUT' } })
       expect((await database.pool.query('select count(*)::int as count from ci_runs')).rows[0].count).toBe(0)
     }
     const first = CiRunOutputSchema.parse(await f.value('ci_run', firstInput))

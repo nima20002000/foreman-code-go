@@ -192,10 +192,13 @@ async function fixture(options: { managedStorage: boolean; hostCi?: boolean; bef
     }
     const setReadOnlyPrimary = async () => {
       await roots.adopt(owner.principal, 'mcp', { workspaceId, commandId: randomUUID(), hostRef: worker.target.hostRef })
-      return (await roots.set(owner.principal, 'mcp', { workspaceId, commandId: randomUUID(),
+      const primary = await roots.get(owner.principal, { workspaceId })
+      const bound = (await roots.set(owner.principal, 'mcp', { workspaceId, commandId: randomUUID(),
         hostRef: worker.target.hostRef, allowedBaseId: workerAllowlist.bases[0]!.baseId,
         configurationRevision: '1', relativePath: 'project', accessMode: 'read-only',
         expectedLocationRevision: 1, expectedRootPolicyRevision: 0 })).value
+      if (bound.evidence !== 'bound') throw new Error('Expected a bound device root')
+      return { primary, binding: bound.binding }
     }
     const waitForPreparation = async () => {
       // Reconciliation signals only after preparation and its enrollment state have been persisted.
@@ -328,10 +331,11 @@ describe.skipIf(!postgresEnabled)('pairing-managed CI root enrollment', () => {
         target: f.worker.target, commandId: randomUUID(), expectedRevision: 0, enabled: true } })
       expect(updated.isError, JSON.stringify(updated.content)).not.toBe(true)
       await f.waitForPreparation()
-      expect(await f.roots.get(f.owner.principal, { workspaceId: f.workspaceId })).toEqual(primary)
+      expect(await f.roots.get(f.owner.principal, { workspaceId: f.workspaceId })).toEqual(primary.primary)
       const choices = await f.roots.choices(f.owner.principal, { workspaceId: f.workspaceId })
       const policies = choices.policies.filter(policy => policy.hostRef.kind === 'device')
       expect(policies).toHaveLength(2)
+      expect(policies).toContainEqual(primary.binding)
       expect(policies.find(policy => policy.bindingPurpose === 'ci-enrollment')!.canonicalProjectRoot)
         .toBe(join(f.managedBase, sourceSha256(Buffer.from(f.workspaceId))))
     } finally { await f.close() }
@@ -356,12 +360,12 @@ describe.skipIf(!postgresEnabled)('pairing-managed CI root enrollment', () => {
       await waiting
       expect((await f.read()).computers[0]).toMatchObject({ state: 'preparing',
         templates: [{ templateId: f.saved.id, state: 'preparing' }] })
-      expect(await f.roots.get(f.owner.principal, { workspaceId: f.workspaceId })).toEqual(primary)
+      expect(await f.roots.get(f.owner.principal, { workspaceId: f.workspaceId })).toEqual(primary.primary)
       const choices = await f.roots.choices(f.owner.principal, { workspaceId: f.workspaceId })
       expect(choices.policies.filter(policy => policy.hostRef.kind === 'device')).toHaveLength(2)
       await f.restart()
       expect((await f.read()).computers[0]!.state).toBe('preparing')
-      expect(await f.roots.get(f.owner.principal, { workspaceId: f.workspaceId })).toEqual(primary)
+      expect(await f.roots.get(f.owner.principal, { workspaceId: f.workspaceId })).toEqual(primary.primary)
     } finally {
       release.resolve()
       await f.close()

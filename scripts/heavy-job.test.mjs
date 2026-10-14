@@ -78,7 +78,7 @@ test('checkout paths with spaces, Unicode and percent characters retain queue ow
       const result = await run(cwd, ['--', process.execPath, '-e',
         'console.log(JSON.stringify({cwd:process.cwd(),common:process.env.FOREMAN_CODE_HEAVY_JOB_COMMON}))'])
       assert.equal(result.code, 0, result.output)
-      const receipt = JSON.parse(result.output.trim().split('\n').at(-1))
+      const receipt = JSON.parse(result.output.split('\n').find(line => line.startsWith('{"cwd":')))
       assert.deepEqual(receipt, { cwd, common: f.common })
     }
     assert.deepEqual(readdirSync(join(f.state, 'queue')), [])
@@ -663,7 +663,7 @@ test('host CI worktrees remove abandoned temporary directories after a crashed j
   }
 })
 
-for (const setting of ['1', '0', '9', 'garbage']) test(`slot setting ${setting} keeps single-slot admission`, { timeout: 8000 }, async () => {
+for (const setting of ['1']) test(`slot setting ${setting} keeps single-slot admission`, { timeout: 8000 }, async () => {
   const f = fixture(), jobs = []
   try {
     configureSlots(f, setting)
@@ -679,6 +679,16 @@ for (const setting of ['1', '0', '9', 'garbage']) test(`slot setting ${setting} 
     second.release()
     assert.equal((await second.exited).code, 0)
   } finally { await stopJobs(jobs); rmSync(f.home, { recursive: true, force: true }) }
+})
+
+for (const setting of ['0', '9', 'garbage']) test(`rejects invalid slot setting ${setting} before entry`, async t => {
+  const f = fixture()
+  t.after(() => rmSync(f.home, { recursive: true, force: true }))
+  configureSlots(f, setting)
+  const result = await run(f.first, ['--', process.execPath, '-e', "console.log('entered')"])
+  assert.notEqual(result.code, 0)
+  assert.match(result.output, /Invalid heavy-job slot count/)
+  assert.equal(result.output.includes('entered'), false)
 })
 
 test('three slots admit three jobs and preserve FIFO for waiting jobs', { timeout: 12000 }, async () => {

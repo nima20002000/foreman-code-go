@@ -68,6 +68,7 @@ async function fixture(suite: 'unit' | 'integration', options: {
   const directory = join(root, 'runs', runId)
   await fs.writeFile(join(directory, 'test-results.json'), JSON.stringify(tests))
   await fs.writeFile(join(directory, 'measured-durations.json'), JSON.stringify({ 'apps/api/src/example.test.ts': 12 }))
+  await fs.writeFile(join(directory, 'log'), 'Suite completed.\n')
   await fs.writeFile(join(directory, 'step'), suite)
   await fs.writeFile(join(directory, 'exit'), '0\n')
   return { runner, read, directory, reopen: () => new HostCiRunner(root, ports, {}), launches: () => launches }

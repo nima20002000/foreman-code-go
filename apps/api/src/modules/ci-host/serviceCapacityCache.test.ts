@@ -19,6 +19,7 @@ function fixture() {
   const records: CiRunRecord[] = []
   let occupied = 0
   let ready = true
+  let available = true
   const pool = { query: vi.fn(async (sql: string, parameters?: unknown[]) => {
     if (sql.includes('from workspaces')) return { rows: [{ record: workspace }] }
     if (sql.includes('count(*)')) return { rows: [{ host_key: 'fixture-host', count: occupied }] }
@@ -36,8 +37,8 @@ function fixture() {
   const endpoint: HostCiEndpoint = {
     computers: vi.fn<HostCiEndpoint['computers']>(async () => {
       await wait()
-      return [{ key: 'fixture-host', label: 'Build executor', priority: 60,
-        hostRef: { kind: 'main', mainId: 'fixture-main' } }]
+      return available ? [{ key: 'fixture-host', label: 'Build executor', priority: 60,
+        hostRef: { kind: 'main', mainId: 'fixture-main' } }] : []
     }),
     request: vi.fn<HostCiEndpoint['request']>(async (_computer, request) => {
       if (request.operation !== 'status') throw new Error('Unexpected executor request')
@@ -57,7 +58,7 @@ function fixture() {
   vi.spyOn(service, 'dispatch').mockResolvedValue(undefined)
   const run = () => service.run(caller, { workspaceId, suite: 'unit', scope: 'affected', files })
   return { service, run, records, endpoint,
-    occupy: (count: number) => { occupied = count }, unavailable: () => { ready = false } }
+    occupy: (count: number) => { occupied = count }, unavailable: () => { ready = false }, hide: () => { available = false } }
 }
 
 it('reuses slow computer capacity reads on a second admission and counts fresh database reservations', async () => {
@@ -99,6 +100,22 @@ it('refreshes expired computer readiness before planning another admission', asy
     expect((await second).partitions).toBeUndefined()
     expect(f.endpoint.computers).toHaveBeenCalledTimes(2)
     expect(f.endpoint.request).toHaveBeenCalledTimes(2)
+  } finally {
+    await f.service.close()
+  }
+})
+
+it('lists changed build participation immediately after a cached admission', async () => {
+  vi.useFakeTimers()
+  const f = fixture()
+  try {
+    const admitted = f.run()
+    await vi.advanceTimersByTimeAsync(4000)
+    await admitted
+    f.hide()
+    const listing = f.service.computers({ id: 'fixture-operator' } as ManagementPrincipal, {})
+    await vi.advanceTimersByTimeAsync(2000)
+    expect((await listing).computers).toEqual([])
   } finally {
     await f.service.close()
   }

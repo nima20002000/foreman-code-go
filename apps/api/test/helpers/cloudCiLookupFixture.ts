@@ -22,6 +22,7 @@ export async function cloudCiLookupFixture(state: 'starting' | 'running',
     finishedAt: null, exitCode: null, message: null, workflowStarted: state === 'running',
     ...(reconciliation ? { reconciliation } : {}) }
   await writeFile(join(directory, 'meta.json'), JSON.stringify(run))
+  await writeFile(join(directory, 'log'), '')
   const ports: HostCiPorts = { cpus: 4, memoryBytes: 8 * 2 ** 30, now: () => new Date(now),
     run: async (file, args) => {
       const ok = (stdout = '') => ({ code: 0, stdout, stderr: '' })

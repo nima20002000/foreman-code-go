@@ -340,3 +340,24 @@ test('the installed background publisher loads without build-only source modules
     repositoryName: github.repository, commit: f.commit, run: f.run, publish: async () => github })
   assert.deepEqual(published, { ...index, github, publication: { state: 'published', lastError: null } })
 })
+
+test('retries a conflicting create after a stale missing release view without uploading twice', async t => {
+  const f = await fixture(t)
+  await mkdir(f.directory)
+  const calls = []
+  const waits = []
+  let views = 0
+  const run = async (command, args) => {
+    await simulateAssetDownload(command, args)
+    if (command !== 'gh') return
+    calls.push(args[1])
+    if (args[1] === 'view' && views++ === 0) throw new Error('HTTP 404: release not found')
+    if (args[1] === 'create') throw new Error('release already exists')
+  }
+  const result = await publishWorkerArtifactsToGitHub({ ...f, name: 'example/worker',
+    artifacts: [{ manifestSha256: 'a'.repeat(64) }], run,
+    sleep: async delay => { waits.push(delay) } })
+  assert.equal(result.tag, `worker-${f.commit}`)
+  assert.deepEqual(waits, [5000])
+  assert.deepEqual(calls, ['view', 'create', 'view', 'upload', 'download'])
+})

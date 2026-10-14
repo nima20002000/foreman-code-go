@@ -31,7 +31,9 @@ it('supersedes every queued and running part through MCP and preserves the repla
     const denied = await f.connect([...CI_RUN_ACTIONS, ...CI_GET_ACTIONS], { workspaceIds: ['another-workspace'] })
     expect((await f.call(denied, 'ci_run', input)).isError).toBe(true)
     expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: old.ticketId })).partitions!)
-      .toEqual(before.partitions)
+      .toEqual(before.partitions!.map(run => run.state === 'running' ? { ...run,
+        observation: { status: 'available', lastSuccessAt: expect.any(String), lastError: null,
+          consecutiveFailures: 0, nextAttemptAt: null } } : run))
     const next = CiRunOutputSchema.parse(await f.value(f.operator, 'ci_run', input))
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: old.ticketId }))
     expect(read.partitions).toHaveLength(2)

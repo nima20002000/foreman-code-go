@@ -174,6 +174,8 @@ export async function ciPreparationFixture(options: {
   const manifest = options.source?.manifest ?? { version: 1 as const, ...newPin, capturePolicy: 'git-tree-v1' as const,
     executablePolicy: 'preserve-approved' as const, git: { commit, tree: 'f'.repeat(40), objectFormat: 'sha1' as const },
     entries: [], deletions: [], totalEntries: 0, totalBytes: 0 }
+  const clone = join(directory, 'clone')
+  await mkdir(clone, { mode: 0o700 })
   const acceptedCommit = manifest.git!.commit
   const acceptedPin = { approvedSourceId: manifest.approvedSourceId, snapshotId: manifest.snapshotId,
     manifestDigest: manifest.manifestDigest }
@@ -183,7 +185,7 @@ export async function ciPreparationFixture(options: {
       sourceExecutable: '/ci/codex', version: 'codex-cli 1.0.0', binarySha256: '8'.repeat(64) } }
   let refreshRecord: { operationId: string; commit: string; ok: boolean; log: string } | null = null
   const workerPorts = {
-    git: options.source?.git ?? { cloneDirectory: (repository: string) => `/clones/${repository}`,
+    git: options.source?.git ?? { cloneDirectory: () => clone,
       git: async () => ({ code: 0, stdout: '', stderr: '' }) },
     managedRuntimeRoot: async () => '/ci/managed',
     prepare: async (input: { repository: string; commit: string; installer: string; keepImages?: readonly string[];
@@ -354,6 +356,6 @@ export async function ciPreparationFixture(options: {
     { timeoutMs: 5000, description: 'CI preparation to settle' })
   }
   return { ...data, app, call, settle, calls, profiles, sources, profileService, pool, ciRuntime,
-    createProvisioner, memory, principals, commands, endpoint, main, stateDirectories, disable: () => { disabled = true },
+    createProvisioner, memory, principals, commands, endpoint, main, stateDirectories, clone, disable: () => { disabled = true },
     workerState: () => worker.handle({ operation: 'status' }) }
 }

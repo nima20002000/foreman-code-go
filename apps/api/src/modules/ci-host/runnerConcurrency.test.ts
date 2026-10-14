@@ -141,16 +141,18 @@ describe('host CI runner concurrent starts', () => {
     await expect(runner.status()).resolves.toMatchObject({ slotsUsed: 2, slotsTotal: 2 })
   })
 
-  it('waits for a complete exit status before settling a failing suite', async () => {
+  it('reports an empty exit status and settles when the complete status arrives', async () => {
     const { root, runner, request } = await computer()
     await runner.handle(request)
     const read = { operation: 'read', runId: request.runId, afterOffset: 0, maxBytes: 1 }
     await vi.waitFor(async () => {
       await expect(runner.handle(read)).resolves.toMatchObject({ run: { state: 'running' } })
     })
+    await runner.beginDrain()
     const exit = join(root, 'runs', request.runId, 'exit')
     await writeFile(exit, '')
-    await expect(runner.handle(read)).resolves.toMatchObject({ run: { state: 'running', exitCode: null } })
+    await expect(runner.handle(read)).rejects.toMatchObject({ code: 'CI_EXIT_STATUS_INVALID' })
+    await writeFile(join(root, 'runs', request.runId, 'log'), 'Lint failed')
     await writeFile(exit, '3\n')
     await expect(runner.handle(read)).resolves.toMatchObject({ run: { state: 'failed', exitCode: 3 } })
   })

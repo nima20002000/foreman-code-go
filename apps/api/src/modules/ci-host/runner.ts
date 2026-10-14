@@ -148,6 +148,7 @@ export class HostCiRunner {
     if (existsSync(path)) {
       const handle = await open(path, 'r')
       try {
+        run = { ...run, logBytes: (await handle.stat()).size }
         const buffer = Buffer.alloc(request.maxBytes)
         const { bytesRead } = await handle.read(buffer, 0, request.maxBytes, request.afterOffset)
         const page = ciLogPage(buffer.subarray(0, bytesRead), 0, request.maxBytes)

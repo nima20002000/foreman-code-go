@@ -654,8 +654,8 @@ export class HostCiService {
         `select id,host_key,record from ci_runs where state in ('starting','running') and host_key is not null
           order by created_at,id`)).rows
       // Ask every computer at once: one slow or offline host must not serialize the whole listing.
-      // Share the short-lived status snapshot that admission and dispatch keep fresh.
-      const result = await Promise.all((await this.planningEndpoint.computers()).map(async computer => {
+      // Build participation is live; planning can still reuse bounded readiness snapshots.
+      const result = await Promise.all((await this.endpoint.computers()).map(async computer => {
         const assigned = active.filter(run => run.host_key === computer.key)
         // A starting ticket needs a live status: it can acknowledge a start whose reply was lost.
         const starting = assigned.some(run => CiRunRecordSchema.parse(run.record).state === 'starting')

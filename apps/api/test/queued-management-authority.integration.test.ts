@@ -59,8 +59,13 @@ it.each(['workspace-defaults', 'agent-defaults', 'workflow-defaults', 'create', 
       await blocker.query('select pg_advisory_lock(hashtext($1))', [lock])
       const request = client.callTool({ name: c.name, arguments: c.input })
       await vi.waitFor(async () => {
-        const waiting = await f.db.pool.query(`select 1 from pg_locks where locktype='advisory'
-          and objid=(hashtext($1)::bigint & 4294967295)::oid and not granted`, [lock])
+        // Session resource locks retry outside SQL; the command lock proves the caller reached the queue.
+        const commandLock = `command:${caller.principal.id}:${c.operation}:${c.input.commandId}`
+        const waiting = kind.endsWith('defaults')
+          ? await f.db.pool.query(`select 1 from pg_locks where locktype='advisory'
+            and objid=(hashtext($1)::bigint & 4294967295)::oid and not granted`, [lock])
+          : await f.db.pool.query(`select 1 from pg_locks where locktype='advisory'
+            and objid=(hashtext($1)::bigint & 4294967295)::oid and granted`, [commandLock])
         expect(waiting.rowCount).toBeGreaterThan(0)
       }, { timeout: 3_000, interval: 10 })
       await f.access.revoke(parent.principal.id)

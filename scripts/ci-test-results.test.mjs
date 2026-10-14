@@ -139,7 +139,7 @@ writeFileSync(report, JSON.stringify({ testResults: [{ name: file, status: faile
 process.exit(failed ? 7 : 0)
 `, { mode: 0o755 })
   const result = spawnSync('bash', ['scripts/ci-suite.sh'], { cwd: root, encoding: 'utf8',
-    env: { ...process.env, SUITE: 'unit-other', SCOPE: 'full', TEST_RESULTS_OUTPUT: output,
+    env: { ...process.env, SUITE: 'unit-other', SCOPE: 'full', CI_PREREQUISITES_UNTRACKED: '1', TEST_RESULTS_OUTPUT: output,
       CI_STATE: join(directory, 'state'), PATH: `${directory}${delimiter}${process.env.PATH}`,
       CI_HOST_RUNNER: '0', CI_EXPECTED_DURATION_MS: '', CI_PROGRESS_FILE: '', CI_WATCHDOG_ACTIVE: '', BASH_ENV: '' } })
   assert.equal(result.status, 7, result.stderr)

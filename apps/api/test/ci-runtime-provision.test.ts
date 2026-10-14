@@ -1,6 +1,6 @@
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { execFileSync } from 'node:child_process'
-import { mkdir, writeFile, rm } from 'node:fs/promises'
+import { chmod, mkdir, writeFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { gitFixtureEnvironment } from './helpers/gitFixture.js'
@@ -179,7 +179,7 @@ describe('build computer CI runtime preparation over the authenticated MCP endpo
       expect(done).toMatchObject({ state: 'qualified', commit, deviceId: builder, message: null })
       expect(done.profiles.map(value => [value.profileId, value.status]).sort()).toEqual([['p-install', 'qualified'], ['p-unit', 'qualified']])
       // The computer keeps the images its profiles in every workspace and the qualification source its current runtime use.
-      expect(f.calls.prepare).toEqual([{ repository: '/clones/octo/site', commit, installer: '/ci/managed/installer',
+      expect(f.calls.prepare).toEqual([{ repository: f.clone, commit, installer: '/ci/managed/installer',
         keepImages: [oldImage, otherWorkspaceImage],
         keepPaths: ['/ci/managed/installer/qualification-source-aaaaaaaaaaaa'] }])
       expect(f.calls.bind).toEqual([expect.objectContaining({ source: newPin, expectedBindingRevision: 1, accessMode: 'exclusive-write' })])
@@ -435,15 +435,19 @@ it.each(['unpublished Agent commit', 'published commit', 'computer without GitHu
     try {
       // `origin` stands in for GitHub; `main` is Main's clone of it.
       const origin = join(directory, 'origin')
-      await mkdir(origin)
+      await mkdir(origin, { mode: 0o700 })
       git(origin, 'init', '-q', '-b', 'main')
       await writeFile(join(origin, 'pnpm-lock.yaml'), 'published lockfile\n')
       git(origin, 'add', '.')
       git(origin, 'commit', '-qm', 'published')
       const main = join(directory, 'main')
+      await mkdir(main, { mode: 0o700 })
       git(directory, 'clone', '-q', origin, main)
+      await chmod(join(main, '.git'), 0o700)
       const agent = join(directory, 'agent')
+      await mkdir(agent, { mode: 0o700 })
       git(directory, 'clone', '-q', origin, agent)
+      await chmod(join(agent, '.git'), 0o700)
       await writeFile(join(agent, 'pnpm-lock.yaml'), 'agent lockfile\n')
       const system = systemGitWorktreePorts(gitFixtureEnvironment())
       const signal = AbortSignal.timeout(30_000)

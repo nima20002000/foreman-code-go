@@ -160,9 +160,17 @@ test('error output uses safe codes, never exception messages or stack traces', (
 })
 test('--help is dependency-free and does not create a task cluster', () => {
   const result = spawnSync(process.execPath, [fileURLToPath(new URL('./local.mjs', import.meta.url)), '--help'], { encoding: 'utf8' })
-  assert.equal(result.status, 0); assert.match(result.stdout, /No database URL/); assert.equal(result.stderr, '')
+  assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /No database URL/); assert.equal(result.stderr, '')
 })
 test('invalid CLI input exits nonzero without exposing its value', () => {
   const result = spawnSync(process.execPath, [fileURLToPath(new URL('./local.mjs', import.meta.url)), '--database-url', 'test-only-sensitive-value'], { encoding: 'utf8' })
   assert.equal(result.status, 1); assert.doesNotMatch(result.stdout + result.stderr, /test-only-sensitive-value/)
+})
+
+test('the entry point prints help outside the repository without dependencies', () => {
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('./local.mjs', import.meta.url)), '--help'],
+    { encoding: 'utf8', cwd: process.env.TMPDIR, timeout: 5000 })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /No database URL/)
+  assert.equal(result.stderr, '')
 })

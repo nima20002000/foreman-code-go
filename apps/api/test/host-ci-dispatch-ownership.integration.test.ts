@@ -320,7 +320,7 @@ it('audits queued and running MCP cancellation once with the caller and request 
   } finally { await f.close() }
 })
 
-it('keeps unchanged provider messages and the persisted row stable after a message transition', async () => {
+it('keeps provider facts stable while successful observation time advances', async () => {
   const f = await fixture()
   try {
     const ticket = await f.enqueue()
@@ -331,11 +331,14 @@ it('keeps unchanged provider messages and the persisted row stable after a messa
     await f.ci.dispatch()
     f.remote.set(key, { ...f.remote.get(key)!, message: 'Observation B' })
     await f.ci.dispatch()
-    const before = (await f.pool.query('select record,xmin::text as revision from ci_runs where id=$1', [ticket.ticketId])).rows[0]
+    const before = (await f.pool.query('select record from ci_runs where id=$1', [ticket.ticketId])).rows[0]
     await f.ci.dispatch()
     await f.ci.dispatch()
-    const after = (await f.pool.query('select record,xmin::text as revision from ci_runs where id=$1', [ticket.ticketId])).rows[0]
-    expect(after).toEqual(before)
+    const after = (await f.pool.query('select record from ci_runs where id=$1', [ticket.ticketId])).rows[0]
+    expect(after.record).toEqual({ ...before.record, observation: {
+      ...before.record.observation, lastSuccessAt: expect.any(String) } })
+    expect(Date.parse(after.record.observation.lastSuccessAt))
+      .toBeGreaterThanOrEqual(Date.parse(before.record.observation.lastSuccessAt))
     expect((await f.read(ticket.ticketId)).message).toContain('Observation B')
   } finally { await f.close() }
 })
@@ -361,7 +364,8 @@ it('retains one executor after an accepted start loses its reply and reconciles 
       hostRef: accepted.computer.hostRef },
       startedAt: f.remote.get(`${accepted.computer.key}:${ticket.ticketId}`)!.startedAt })
     await restarted.dispatch()
-    expect(await f.read(ticket.ticketId)).toEqual(recovered)
+    expect(await f.read(ticket.ticketId)).toEqual({ ...recovered, observation: {
+      ...recovered.observation, lastSuccessAt: expect.any(String) } })
     expect(f.starts).toHaveLength(1)
   } finally {
     await restarted?.close()
@@ -407,7 +411,8 @@ it('preserves the assignment when the database rejects settlement after an accep
       hostRef: accepted.computer.hostRef },
       startedAt: f.remote.get(`${accepted.computer.key}:${ticket.ticketId}`)!.startedAt })
     await f.ci.dispatch()
-    expect(await f.read(ticket.ticketId)).toEqual(recovered)
+    expect(await f.read(ticket.ticketId)).toEqual({ ...recovered, observation: {
+      ...recovered.observation, lastSuccessAt: expect.any(String) } })
     expect(f.starts).toHaveLength(1)
   } finally {
     await f.pool.query('drop trigger if exists reject_ci_running on ci_runs')
@@ -855,7 +860,7 @@ it('preserves a running ticket without optional message metadata during an uncha
     f.control.available = true
     await f.ci.dispatch()
     const stored = async () => (await f.pool.query(
-      'select record,xmin::text as revision from ci_runs where id=$1', [ticket.ticketId])).rows[0]
+      'select record from ci_runs where id=$1', [ticket.ticketId])).rows[0]
     const running = await f.read(ticket.ticketId)
     expect(running.state).toBe('running')
     const withoutMessages = { ...running }

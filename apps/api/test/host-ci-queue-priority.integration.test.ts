@@ -107,7 +107,9 @@ it('dispatches queued typecheck parts beyond the first fifty integration partiti
     expect(stored).toHaveLength(2)
     expect(stored.every(run => run.state === 'running' && run.computer?.hostRef.provider === 'github')).toBe(true)
     const read = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: checks.ticketId }))
-    expect(read.partitions).toEqual(expect.arrayContaining(stored))
+    expect(read.partitions).toEqual(expect.arrayContaining(stored.map(run => ({ ...run,
+      observation: { status: 'available', lastSuccessAt: expect.any(String), lastError: null,
+        consecutiveFailures: 0, nextAttemptAt: null } }))))
   } finally { await f.close() }
 })
 

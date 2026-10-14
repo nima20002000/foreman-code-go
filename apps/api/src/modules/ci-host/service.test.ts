@@ -171,7 +171,7 @@ it.each(['github', 'circleci'] as const)(
   })
 
 it.each(['missing-request', 'unavailable-provider'] as const)(
-  'frees an expired cloud slot after restart with %s', async failure => {
+  'reconciles an expired cloud start while retaining unconfirmed provider ownership: %s', async failure => {
     const f = dispatchFixture()
     const cloud: HostCiComputer = { key: 'cloud:github', label: 'Cloud executor', priority: 0,
       hostRef: { kind: 'cloud', mainId: 'fixture-main', provider: 'github', slot: 0 } }
@@ -188,8 +188,11 @@ it.each(['missing-request', 'unavailable-provider'] as const)(
     })
     await f.create().dispatch()
     expect((await f.create().get(caller, { ticketId: f.queued.id })).run)
-      .toMatchObject({ state: failure === 'missing-request' ? 'queued' : 'lost', startedAt: null })
-    expect(f.records[0]?.state).not.toBe('starting')
+      .toMatchObject(failure === 'missing-request'
+        ? { state: 'queued', startedAt: null }
+        : { state: 'starting', startedAt: null, observation: { status: 'unavailable',
+          lastError: expect.stringContaining('ownership retained'), consecutiveFailures: expect.any(Number) } })
+    if (failure === 'missing-request') expect(f.records[0]?.state).not.toBe('starting')
   })
 
 it.each(['unready', 'offline'])('keeps ordinary CI queued when the computer is %s', async state => {
