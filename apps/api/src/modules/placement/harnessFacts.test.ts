@@ -311,5 +311,7 @@ it('admits Main Claude by its exact qualified profile check, which is its native
   expect(facts.profileProof).toMatchObject({ authenticated: true, compatible: true, qualified: true })
   expect(facts.qualification).toBeUndefined()
   f.proof.qualified = false
-  await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE', details: { reason: 'profile_binding_changed' } })
+  await expect(f.read()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE',
+    message: 'The native check for the selected harness profile did not pass.',
+    details: { reason: 'profile_check_failed' } })
 })

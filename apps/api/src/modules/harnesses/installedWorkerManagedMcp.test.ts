@@ -29,7 +29,8 @@ it('converges without another managed native session until configuration changes
     expect(f.native.owners.size).toBe(0)
 
     const signal = AbortSignal.timeout(5000)
-    await f.adapters.codex.apply(await f.adapters.codex.read(signal), { kind: 'remove', name: 'foreman-code' }, signal)
+    await f.adapters.codex.apply(await f.adapters.codex.read(signal), { kind: 'remove', name: 'foreman-code' },
+      signal, { preset: 'graphql', endpoint: 'https://app.invalid/mcp' })
     await writeFile(join(process.env.CODEX_HOME!, 'config.toml'), '# Native configuration changed\n')
     await installed.ensureReady()
     expect((await installed.worker.detect('codex', signal)).state).toBe('status_unavailable')

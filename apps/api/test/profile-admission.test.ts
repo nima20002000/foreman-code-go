@@ -5,13 +5,13 @@ import { RunnerAdmission } from '../src/modules/runs/runnerAdmission.js'
 import type { RepeatNativeLaunchStore } from '../src/modules/interactions/repeatObservation.js'
 import { native2Fixture } from './eng04-native2-fixtures.js'
 
-it('rejects a failed selected profile before waiting for occupied worker capacity', async () => {
+it.each(['main', 'device:worker'])('rejects a failed selected profile before waiting for occupied capacity on %s', async hostKey => {
   const f = native2Fixture(false)
   f.set({ ...f.get(), state: 'queued', nativeSessionId: undefined })
   const admission = new RunnerAdmission(1)
   let release!: () => void
   const blocker = admission.run('other-run', new AbortController().signal,
-    () => new Promise<void>(resolve => { release = resolve }))
+    () => new Promise<void>(resolve => { release = resolve }), { hostKey })
   const failure = new DomainError('HARNESS_PROFILE_UNAVAILABLE', 'The selected model is absent from the native catalog.',
     409, { reason: 'profile_check_failed' })
   const preparePlacement = vi.fn(async () => { throw failure })
@@ -25,7 +25,7 @@ it('rejects a failed selected profile before waiting for occupied worker capacit
     native: { observeExact, assertResume: async () => {} }, admission,
     workflows: { getAgentConfiguration: async () => f.configuration },
     locations: { revalidateRunAuthorization: async () => {}, revalidateSnapshot: async () => {} },
-    preparePlacement, directory: () => '/workspace/runtime',
+    preparePlacement, executionHostKey: async () => hostKey, directory: () => '/workspace/runtime',
   }
   let rejected: unknown
   const task = repeatNativeObserver(context)(f.get(), new AbortController().signal)
