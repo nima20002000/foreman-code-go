@@ -170,11 +170,12 @@ export interface RepeatNativeObserverContext {
   owner: RunOwnership
   store: RepeatNativeLaunchStore
   native: Pick<ApprovalExecutionCoordinator, 'observeExact' | 'assertResume'>
-  /** The existing engine-wide worker gate; never construct another gate here. */
+  /** Shared startup capacity, scoped to the execution's accepted computer. */
   admission: RunnerAdmission
   workflows: Pick<PostgresWorkflowRepository, 'getAgentConfiguration'>
   locations: Pick<WorkspaceLocationService, 'revalidateRunAuthorization' | 'revalidateSnapshot'>
   /** Existing accepted runtime root + repeatExecutionDirectoryKey(executionId). */
+  executionHostKey?(execution: HarnessExecution): Promise<string>
   preparePlacement?(execution: HarnessExecution): Promise<{ workingDirectory: string; runtimeDirectory: string; revalidate(): Promise<void> } | undefined>
   directory(executionId: string): string
 }
@@ -232,16 +233,18 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
       await native.observeExact({ ...common, execution, store, signal })
       return
     }
-    // Preparation validates the selected profile before waiting for native worker capacity.
-    const placement = await context.preparePlacement?.(execution)
+    const node = context.version.definition.nodes.find((item) => item.id === execution.workflowNodeId)
+    const hostKey = await context.executionHostKey?.(execution) ?? (node && node.kind !== 'job'
+      && node.placement?.hostRef.kind === 'device' ? `device:${node.placement.hostRef.deviceId}` : 'main')
     check()
-    await context.admission.run(run.id, signal, async () => {
+    await context.admission.run(run.id, signal, async release => {
       execution = await reload() // Stop or another exact observation may win while queued.
       if (execution.state === 'completed') {
         await native.observeExact({ ...common, execution, store, signal })
         return
       }
-      const node = context.version.definition.nodes.find((item) => item.id === execution.workflowNodeId)
+      const placement = await context.preparePlacement?.(execution)
+      check()
       const configuration = await retryDatabaseOperation(
         () => context.workflows.getAgentConfiguration(execution.agentConfigurationVersionId),
         (error) => isDatabaseTimeout(error) || isDatabasePoolTimeout(error), { signal, check },
@@ -315,7 +318,7 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
       const workHandoffContract = context.version.definition.handoffs && repeatTickIndex(execution.input) === undefined
         ? currentInitialPrompt({ ...node, initialPrompt: undefined }, false, true) : undefined
       for (;;) {
-        const observation = await native.observeExact({ ...common, execution, request, store: boundary, signal,
+        const observation = await native.observeExact({ ...common, execution, request, store: boundary, signal, onStarted: release,
           workHandoffContract })
         execution = observation.execution
         if (observation.state === 'completed') {
@@ -325,7 +328,7 @@ export function repeatNativeObserver(context: RepeatNativeObserverContext):
         // task-local resume values must not reopen its budget/native observer.
         await waitForApprovals()
       }
-    })
+    }, { hostKey, execution })
   }
 }
 
@@ -549,7 +552,7 @@ export async function executeRepeatRuntime(input: {
     }
   // Graph Agent work and Jobs share the Run's parallelism limit.
   const limiter = new ExecutionLimiter(
-    Math.min(input.configuredParallelism ?? 4, input.version.definition.executionPolicy!.maxParallelism), 1000)
+    input.version.definition.executionPolicy!.maxParallelism, 1000)
   const work = input.version.definition.handoffs ? buildWorkHandoffGraph({
     runId: input.runId, version: input.version, checkpointer: input.checkpointer, signal, track,
     port: { ensureEntryActivation: () => input.store.ensureWorkEntry(),

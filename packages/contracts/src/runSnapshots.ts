@@ -2,6 +2,7 @@ import { z } from "zod";
 import { GraphIdSchema, IdSchema, TimestampSchema } from "./schemaPrimitives.js";
 import { CurrentWorkflowRelationshipSchema } from "./wave25/workflowShape.js";
 import type { RunExecutionState, RunOutcome, WorkflowRunSummary } from "./index.js";
+import { ExecutionQueueEntrySchema } from './executionQueue.js';
 import { AcceptedProviderAccountBindingSchema } from './providerAccounts.js';
 import { ActivitySnapshotV1Schema } from './activity.js';
 
@@ -136,6 +137,8 @@ const RunIntervalCheckSchema = z.object({
 export type RunIntervalCheck = z.infer<typeof RunIntervalCheckSchema>;
 export const RunBoardSnapshotGetResultSchema = z.object({ snapshot: RunBoardSnapshotSchema,
   activitySnapshot: ActivitySnapshotV1Schema.optional(),
+  /** Live waits in the owning engine, separate from the saved Board facts. */
+  executionQueue: z.array(ExecutionQueueEntrySchema).optional(),
   /** Present when the pinned version has Agent nodes with interval checks. */
   intervalChecks: z.array(RunIntervalCheckSchema).max(1_000).optional() }).strict().superRefine((result, context) => {
   const activity = result.activitySnapshot;

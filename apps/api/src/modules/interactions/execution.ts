@@ -140,6 +140,7 @@ interface ApprovalObservationInput {
   owner: RunOwnership
   signal: AbortSignal
   workHandoffContract?: string | undefined
+  onStarted?: (() => void) | undefined
 }
 
 interface WorkflowObservationState {
@@ -2620,15 +2621,20 @@ export class ApprovalExecutionCoordinator {
       }
       const publishObservedSession = async (observed: NativeSessionReference) => {
         const active = manager.capturedLease(observed)
-        if (!context.acceptedPlacement || active) return persistObservedSession(observed, active)
+        if (!context.acceptedPlacement || active) {
+          await persistObservedSession(observed, active)
+          input.onStarted?.()
+          return
+        }
         // Actual source continuation needs the original native owner and a
         // live lane during publication/revalidation before its first turn.
         const correlationId = observation.workflowCorrelation
-        return manager.withLane(observed, correlationId, observation.signal, async (native, lane) => {
+        await manager.withLane(observed, correlationId, observation.signal, async (native, lane) => {
           await manager.requireIdle(native, observed, correlationId, lane, observation.signal)
           await this.interactions.coordination.bindLaneTurn(lane.fence, correlationId)
           return persistObservedSession(observed, lane)
         })
+        input.onStarted?.()
       }
       let nativeEvents: AsyncIterable<NativeHarnessEvent[]>
       let rejectObserved: ((error: unknown) => void) | undefined
@@ -2712,6 +2718,7 @@ export class ApprovalExecutionCoordinator {
       // Resident sessions retain their original scoped process credentials.
       // history() below verifies the already-owned exact session, without a
       // redundant attachSession() requiring a newly supplied environment.
+      input.onStarted?.()
     }
   }
 

@@ -96,6 +96,15 @@ export class RepeatRepositoryFactory {
     return store
   }
 
+  async executionHostKey(owner: RunOwnership, execution: HarnessExecution): Promise<string> {
+    owner.assertOwned()
+    if (execution.runId !== owner.runId) return repeatConflict('GRAPH_SCOPE_MISMATCH')
+    const placement = await owner.oneShotConnection().transaction(sql =>
+      readAcceptedPlacement(sql, execution.runId, execution.workflowNodeId), true)
+    owner.assertOwned()
+    return placement?.hostRef.kind === 'device' ? `device:${placement.hostRef.deviceId}` : 'main'
+  }
+
   async preparePlacementExecution(owner: RunOwnership, run: AcceptedWorkflowRunV3, execution: HarnessExecution) {
     owner.assertOwned()
     try {

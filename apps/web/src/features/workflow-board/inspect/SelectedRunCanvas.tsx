@@ -144,6 +144,8 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
   })
   const checks = useMemo(() => new Map((snapshotQuery.isError ? undefined : snapshotQuery.data)?.intervalChecks
     ?.map((check) => [check.nodeId, check]) ?? []), [snapshotQuery.data, snapshotQuery.isError])
+  const executionQueue = useMemo(() => new Map((snapshotQuery.isError ? undefined : snapshotQuery.data)?.executionQueue
+    ?.map((entry) => [entry.workflowNodeId, entry.reason]) ?? []), [snapshotQuery.data, snapshotQuery.isError])
   const topology = useMemo(() => version ? pinnedTopology(version) : undefined, [version])
   const live = Boolean(record && record.state.run.executionState !== 'completed')
   // Every CI ticket this Run's Agents requested; polled while the Run or any ticket is still going.
@@ -242,7 +244,8 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
       const nodeFacts:Facts = node.kind==='job'?{...unknownFacts,harness:undefined,harnessLabel:'Job',roleLabel:'Job',model:undefined,meta:[{label:'Revision',value:String(node.jobDefinitionRevision)}]}:facts.get(node.configurationId)??unknownFacts
       const baseView = !record ? { state: 'unavailable' as const, label: recordLoading ? 'Loading…' : 'Unavailable' }
         : choreography.nodes.get(node.id) ?? { state: 'idle' as const, label: 'Not started' }
-      const current = liveNodeView(baseView, waits.get(node.id), cis.get(node.id), checks.get(node.id), checking.get(node.id))
+      const current = liveNodeView(baseView, waits.get(node.id), cis.get(node.id), checks.get(node.id), checking.get(node.id),
+        live ? executionQueue.get(node.id) : undefined)
       const view = current === baseView ? baseView : { ...baseView, ...current }
       const shown = `${view.state}:${view.label}:${'transition' in view ? `${view.transition}@${view.transitionKey}` : ''}`
       const cached = previous.current.get(node.id)
@@ -256,7 +259,8 @@ export function SelectedRunCanvas({ scope, panels, layout, geometry }: {
     }) ?? []
     previous.current = next
     return result
-  }, [topology, states, record, recordLoading, facts, jobExecutions, board.inspection.runNodeId, choreography.nodes, cis, waits, checks, checking])
+  }, [topology, states, record, recordLoading, facts, jobExecutions, board.inspection.runNodeId, choreography.nodes,
+    cis, waits, checks, checking, executionQueue, live])
   const { canvasNodes, presentedNodes, onNodesChange, beginResize, resize, finishResize } =
     useRunCanvasGeometry({ nodes, layout, version, geometry })
   const ciServerNode = useMemo(() => ciServerFlowNode(canvasNodes, ciSummary,

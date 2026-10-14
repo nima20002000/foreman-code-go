@@ -33,7 +33,7 @@ export function workHandoffNodeAction(input: {
       input.signal.throwIfAborted()
       try {
         if (execution.state === 'completed') await input.driver.observe(execution, input.signal)
-        else await input.limiter.run(input.signal, () => input.driver.observe(execution, input.signal))
+        else await input.limiter.run(input.signal, () => input.driver.observe(execution, input.signal), execution)
       } catch (error) {
         input.signal.throwIfAborted()
         if (!(error instanceof DomainError)

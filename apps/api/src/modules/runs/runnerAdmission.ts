@@ -1,82 +1,121 @@
 import { beginRuntimeTiming } from '../../infrastructure/runtimeTiming.js'
 import { DomainError } from '../errors.js'
+import { withExecutionQueueReason, type ExecutionQueueIdentity } from './executionQueue.js'
 
 interface Waiter {
-  runId: string
-  signal: AbortSignal
   enter(): void
   abort(): void
 }
 
-/** Process-local worker capacity, NOT a runtime owner or a persistent job queue.
- * One round-robin turn per Run prevents a wide graph starving a later Run.
- * Review/approval work never uses this worker-only gate. Database rows are queued
- * before waiting here; cancellation removes a waiter without claiming a launch.
- */
+interface HostQueue {
+  active: number
+  queued: number
+  waiting: Map<string, Waiter[]>
+  order: string[]
+}
+
+interface StartupOptions {
+  hostKey?: string
+  execution?: ExecutionQueueIdentity
+}
+
+/** Bounded startup work per computer. Native model turns release their startup
+ * slot when their session is ready; workflow policy bounds ongoing graph work.
+ * Waiting Runs take round-robin turns on the same computer. */
 export class RunnerAdmission {
-  private active = 0
-  private queued = 0
-  private readonly waiting = new Map<string, Waiter[]>()
-  private readonly order: string[] = []
+  private readonly hosts = new Map<string, HostQueue>()
+
   constructor(readonly maximum = 4, readonly maximumWaiting = 1000, readonly maximumRuns = 32) {
     for (const value of [maximum, maximumWaiting, maximumRuns]) {
       if (!Number.isSafeInteger(value) || value < 1) throw new Error('INVALID_RUNNER_ADMISSION_LIMIT')
     }
   }
 
-  async run<T>(runId: string, signal: AbortSignal, work: () => Promise<T>): Promise<T> {
+  async run<T>(runId: string, signal: AbortSignal, work: (release: () => void) => Promise<T>,
+    options: StartupOptions = {}): Promise<T> {
     signal.throwIfAborted()
-    const acquired = beginRuntimeTiming('engine', 'worker.admission', { runId, count: this.queued })
+    const hostKey = options.hostKey ?? 'main'
+    const host: HostQueue = this.hosts.get(hostKey) ?? { active: 0, queued: 0, waiting: new Map(), order: [] }
+    this.hosts.set(hostKey, host)
+    const acquired = beginRuntimeTiming('engine', 'worker.admission', {
+      runId, ...(options.execution ? { executionId: options.execution.id } : {}), count: host.queued,
+    })
     try {
-      if (this.active < this.maximum && !this.queued) this.active++
-      else {
-        if (this.queued >= this.maximumWaiting || (!this.waiting.has(runId) && this.waiting.size >= this.maximumRuns)) {
-          throw new DomainError('RUNNER_ADMISSION_FULL', 'Worker capacity is full. This queued execution was not launched.', 503)
-        }
-        await new Promise<void>((resolve, reject) => {
-          const waiter: Waiter = {
-            runId, signal,
-            enter: () => { signal.removeEventListener('abort', waiter.abort); resolve() },
-            abort: () => {
-              const queue = this.waiting.get(runId)
-              const index = queue?.indexOf(waiter) ?? -1
-              if (index < 0) return
-              queue!.splice(index, 1)
-              this.queued--
-              if (!queue!.length) this.removeRun(runId)
-              reject(signal.reason)
-            },
-          }
-          const queue = this.waiting.get(runId)
-          if (queue) queue.push(waiter)
-          else { this.waiting.set(runId, [waiter]); this.order.push(runId) }
-          this.queued++
-          signal.addEventListener('abort', waiter.abort, { once: true })
-          if (signal.aborted) waiter.abort()
-        })
-      }
-    } finally { acquired() }
-    try { signal.throwIfAborted(); return await work() }
-    finally {
-      const run = this.order.shift()
-      if (run === undefined) this.active--
-      else {
-        const queue = this.waiting.get(run)!
-        const next = queue.shift()!
-        this.queued--
-        if (queue.length) this.order.push(run)
-        else this.waiting.delete(run)
-        // Transfer the already counted slot, including abort after wakeup.
-        next.enter()
-      }
+      if (host.active < this.maximum && !host.queued) host.active++
+      else await withExecutionQueueReason(options.execution,
+        { kind: 'host_capacity', hostKey, limit: this.maximum }, () => this.wait(host, runId, signal))
+    } finally {
+      acquired()
+    }
+    let released = false
+    const release = () => {
+      if (released) return
+      released = true
+      this.release(hostKey, host)
+    }
+    try {
+      signal.throwIfAborted()
+      return await work(release)
+    } finally {
+      release()
     }
   }
 
-  private removeRun(runId: string): void {
-    this.waiting.delete(runId)
-    const index = this.order.indexOf(runId)
-    if (index >= 0) this.order.splice(index, 1)
+  private wait(host: HostQueue, runId: string, signal: AbortSignal): Promise<void> {
+    const waitingRuns = new Set([...this.hosts.values()].flatMap(queue => [...queue.waiting.keys()]))
+    if (this.pending >= this.maximumWaiting || !waitingRuns.has(runId) && waitingRuns.size >= this.maximumRuns) {
+      throw new DomainError('RUNNER_ADMISSION_FULL', 'Startup capacity is full. This execution was not launched.', 503)
+    }
+    return new Promise<void>((resolve, reject) => {
+      const waiter: Waiter = {
+        enter: () => {
+          signal.removeEventListener('abort', waiter.abort)
+          resolve()
+        },
+        abort: () => {
+          const queue = host.waiting.get(runId)
+          const index = queue?.indexOf(waiter) ?? -1
+          if (index < 0) return
+          queue!.splice(index, 1)
+          host.queued--
+          if (!queue!.length) this.removeRun(host, runId)
+          reject(signal.reason)
+        },
+      }
+      const queue = host.waiting.get(runId)
+      if (queue) queue.push(waiter)
+      else {
+        host.waiting.set(runId, [waiter])
+        host.order.push(runId)
+      }
+      host.queued++
+      signal.addEventListener('abort', waiter.abort, { once: true })
+      if (signal.aborted) waiter.abort()
+    })
   }
-  get pending(): number { return this.queued }
-  get inFlight(): number { return this.active }
+
+  private release(hostKey: string, host: HostQueue): void {
+    const runId = host.order.shift()
+    if (runId === undefined) {
+      host.active--
+      if (!host.active) this.hosts.delete(hostKey)
+      return
+    }
+    const queue = host.waiting.get(runId)!
+    const next = queue.shift()!
+    host.queued--
+    if (queue.length) host.order.push(runId)
+    else host.waiting.delete(runId)
+    // Transfer the counted slot, including cancellation just after wakeup.
+    next.enter()
+  }
+
+  private removeRun(host: HostQueue, runId: string): void {
+    host.waiting.delete(runId)
+    const index = host.order.indexOf(runId)
+    if (index >= 0) host.order.splice(index, 1)
+  }
+
+  get pending(): number { return [...this.hosts.values()].reduce((sum, host) => sum + host.queued, 0) }
+  get inFlight(): number { return [...this.hosts.values()].reduce((sum, host) => sum + host.active, 0) }
 }

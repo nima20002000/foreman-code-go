@@ -32,6 +32,7 @@ export const runTools = [
       + 'Current execution semantics 3 only; compact metadata is available from run_graph_snapshot_v1 (graph protocol 1). '
       + 'Native activity summaries identify messages, reasoning, commands, file edits and tool calls without exposing bodies or arguments. '
       + 'Execution summaries include continuedFromExecutionId when a node resumes a closed native session in this Run. '
+      + 'Executions waiting for startup capacity or workflow parallelism include a live queueReason with kind, since and limit; host capacity also names hostKey. It clears on admission or cancellation. '
       + 'Includes persisted failure codes (including EXECUTION_ACTIVE_TIMEOUT and WORK_RUN_EXECUTION_BUDGET_EXHAUSTED), '
       + 'failure messages, Stop causes and cleanup status. '
       + 'A Run waiting for approval may still have progressing sibling executions. '

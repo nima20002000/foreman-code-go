@@ -1,4 +1,5 @@
 import { optionalCommandId } from './management/commands.js'
+import { ExecutionQueueReasonSchema } from './executionQueue.js';
 import { TextTruncationSchema } from './activityText.js';
 import { NativeToolsSchema } from './nativeTools.js';
 export * from './nativeTools.js';
@@ -882,6 +883,9 @@ export const ExecutionResultSchema = z
   });
 export type ExecutionResult = z.infer<typeof ExecutionResultSchema>;
 
+export { ExecutionQueueReasonSchema, ExecutionQueueEntrySchema, executionQueueReasonLabel } from './executionQueue.js';
+export type { ExecutionQueueReason, ExecutionQueueEntry } from './executionQueue.js';
+
 export const HarnessExecutionStateSchema = z.enum([
   "queued",
   "starting",
@@ -910,6 +914,8 @@ export const HarnessExecutionSchema = z
     runtimeDirectory: z.string().min(1).optional(),
     input: z.json(),
     state: HarnessExecutionStateSchema,
+    /** Live process-local capacity wait, added by authorized reads only. */
+    queueReason: ExecutionQueueReasonSchema.optional(),
     result: ExecutionResultSchema.optional(),
     createdAt: TimestampSchema,
     startedAt: TimestampSchema.optional(),

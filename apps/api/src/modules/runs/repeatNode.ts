@@ -152,7 +152,7 @@ export function repeatNodeAction(input: {
       } else await input.limiter.run(input.signal, async () => {
         input.signal.throwIfAborted()
         await input.driver.observe(execution, input.signal)
-      })
+      }, execution)
       input.signal.throwIfAborted()
       const accepted = await input.store.acceptTerminal(execution.id, (attempt) => input.driver.candidate(ref, attempt))
       if (accepted.kind !== 'retry') return checkpointResolution(accepted.resolution)

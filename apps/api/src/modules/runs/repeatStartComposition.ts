@@ -159,6 +159,7 @@ export async function executeRepeatEngineStart(input: RepeatEngineStartContext):
   const observeExact = repeatNativeObserver({ run: snapshot.run, version: snapshot.version, owner: input.owner,
     store: boundary.store, native: input.native, admission: input.admission, workflows: input.workflows,
     locations: input.locations, directory: boundary.directory,
+    executionHostKey: execution => input.factory.executionHostKey(input.owner, execution),
     preparePlacement: execution => input.factory.preparePlacementExecution(input.owner, snapshot.run, execution) })
   const scope = { runId: snapshot.run.id, workspaceId: snapshot.run.workspaceId, workflowId: snapshot.run.workflowId,
     workflowVersionId: snapshot.version.id, executionSemanticsVersion: 3 as const }

@@ -14,6 +14,7 @@ import { decodeRunHistoryCursor, encodeRunHistoryCursor } from './historyCursor.
 import { WorkflowVersionV3Schema } from '@foreman-code/contracts/wave25'
 import { readRunActivitySnapshot } from './activitySnapshot.js'
 import { readRunIntervalChecks } from './intervalChecks.js'
+import { readRunExecutionQueue } from './executionQueue.js'
 
 type WorkflowScope = { workspaceId: string; workflowId: string }
 
@@ -151,10 +152,13 @@ export class RunHistoryService {
       const version = WorkflowVersionV3Schema.parse(versionRow?.record)
       const intervalChecks = version.definition.nodes.some(node => node.kind !== 'job' && node.interval)
         ? await readRunIntervalChecks(client, input.runId, row.execution_state, version) : undefined
-      if (!ci.rows.length) return RunBoardSnapshotGetResultSchema.parse({ snapshot, ...(intervalChecks ? { intervalChecks } : {}) })
+      const executionQueue = row.execution_state === 'completed' ? [] : readRunExecutionQueue(input.runId)
+      if (!ci.rows.length) return RunBoardSnapshotGetResultSchema.parse({ snapshot, executionQueue,
+        ...(intervalChecks ? { intervalChecks } : {}) })
       const activitySnapshot = await readRunActivitySnapshot(client,
         { ...input, workflowVersionId: snapshot.workflowVersionId }, version)
-      return RunBoardSnapshotGetResultSchema.parse({ snapshot, activitySnapshot, ...(intervalChecks ? { intervalChecks } : {}) })
+      return RunBoardSnapshotGetResultSchema.parse({ snapshot, activitySnapshot, executionQueue,
+        ...(intervalChecks ? { intervalChecks } : {}) })
     })
   }
 }
