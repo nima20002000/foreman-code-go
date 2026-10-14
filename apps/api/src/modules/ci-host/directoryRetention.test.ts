@@ -52,3 +52,17 @@ it('rejects identifiers outside the run directory namespace', async () => {
   await expect(sweepCiRunDirectories({ ...f.options, runIds: ['../retained'] })).rejects.toThrow()
   await expect(readFile(join(f.directory, 'log'), 'utf8')).resolves.toBe('retained bytes')
 })
+
+it('preserves a directory when a read starts while deletion checks its metadata', async () => {
+  const f = await fixture()
+  let inUse = false
+  await expect(sweepCiRunDirectories({ ...f.options, isInUse: () => inUse,
+    withRun: (_id, work) => {
+      const deletion = work()
+      inUse = true
+      return deletion
+    } })).resolves.toEqual([])
+  await expect(readFile(join(f.directory, 'log'), 'utf8')).resolves.toBe('retained bytes')
+  inUse = false
+  await expect(sweepCiRunDirectories(f.options)).resolves.toEqual(f.options.runIds)
+})

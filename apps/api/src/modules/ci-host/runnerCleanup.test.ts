@@ -186,3 +186,27 @@ it('preserves a terminal directory while its report is being read, then removes 
     .resolves.toMatchObject({ removedRunIds: [ticket.runId] })
   await expect(access(ticket.directory)).rejects.toMatchObject({ code: 'ENOENT' })
 })
+
+it('preserves a repository that becomes active while a background cache scan is paused', async () => {
+  const f = await fixture()
+  const cache = join(f.root, 'cache/fixture/busy/pnpm-store/held')
+  await sparseFile(cache, 4 * 2 ** 30, '2026-10-01T00:00:00Z')
+  const entered = deferred()
+  const released = deferred()
+  maintenance.scan = async () => {
+    entered.resolve()
+    await released.promise
+  }
+  const pending = f.runner.handle({ operation: 'status' })
+  try {
+    await entered.promise
+    const active = await run(f.root, { state: 'running', repository: 'fixture/busy' })
+    await expect(f.runner.handle({ operation: 'read', runId: active.runId, afterOffset: 0, maxBytes: 100 }))
+      .resolves.toMatchObject({ run: { state: 'running' } })
+  } finally {
+    released.resolve()
+    await pending
+    await f.runner.beginDrain()
+  }
+  await expect(access(cache)).resolves.toBeUndefined()
+})
