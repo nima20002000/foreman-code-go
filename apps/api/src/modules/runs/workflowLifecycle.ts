@@ -294,6 +294,35 @@ export async function hasWorkDirectionWait(owner: RunOwnership): Promise<boolean
   return row.rowCount === 1
 }
 
+/** Retain the launch failure without fencing sibling handoffs or claiming closure. */
+export async function recordWorkflowExecutionFailure(owner: RunOwnership, executionId: string,
+  failure: ExecutionResult): Promise<void> {
+  const result = ExecutionResultSchema.parse(failure)
+  if (result.outcome !== 'failed' || !result.error || result.error.retryable) return fail('RUN_FAILURE_CAUSE_INVALID')
+  await owner.oneShotConnection().transaction(async sql => {
+    const { publication, snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
+    await retainOwner(sql, owner)
+    if (!snapshot.version.definition.handoffs || snapshot.stopRequested || snapshot.cleanupPending
+      || !['running', 'waiting'].includes(snapshot.run.executionState)) {
+      return fail('GRAPH_STOP_CONFLICT')
+    }
+    const stored = await readRepeatExecutionLocked(sql, snapshot, executionId)
+    if (!stored.workActivationId || stored.execution.nativeSessionId
+      || !['queued', 'starting'].includes(stored.execution.state)) return fail('RUN_FAILURE_CAUSE_INVALID')
+    const budget = (await sql.query<{ failure_result: unknown }>(
+      'select failure_result from approval_execution_state where execution_id=$1 for update', [executionId])).rows[0]
+    if (!budget) return fail('RUN_FAILURE_CAUSE_INVALID')
+    if (budget.failure_result) {
+      if (!sameRepeatValue(budget.failure_result, result)) return fail('RUN_FAILURE_CAUSE_INVALID')
+      return
+    }
+    await lifecycleSource(publication, { kind: 'execution_failure_recorded', executionId, result }, async () => {
+      await sql.query('update approval_execution_state set failure_result=$2::jsonb where execution_id=$1',
+        [executionId, canonicalGraphJson(result)])
+    })
+  })
+}
+
 /** A negative cleanup intent is not success/closure. It only fences new work.
  * Ownerless calls are restricted to an already authorized Stop or terminal Run;
  * active-run cancellation must use its actual existing owner. */

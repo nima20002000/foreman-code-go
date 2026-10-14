@@ -18,7 +18,7 @@ import { requiredLocationAccess, type WorkspaceLocationService } from '../worksp
 import { executeRepeatEngineStart } from './repeatStartComposition.js'
 import { repeatSettlementPending } from './repeatRuntime.js'
 import { readWorkflowCheckpoint } from './repeatGraph.js'
-import { hasWorkDirectionWait, persistWorkDirectionWait,
+import { hasWorkDirectionWait, persistWorkDirectionWait, recordWorkflowExecutionFailure,
   persistWorkflowApprovalWait, settleWorkForRestart, settleWorkflowRun } from './workflowLifecycle.js'
 import { consumeDeliveredApprovals, type WorkflowResumePermit } from './approvalCheckpointResume.js'
 import type { AuthorizeWorkflowStop } from './repeatLifecycle.js'
@@ -285,6 +285,7 @@ export class LangGraphWorkflowEngine {
             return waiting
           },
           persistDirectionWait: () => persistWorkDirectionWait(owner, this.locations),
+          recordExecutionFailure: (executionId, failure) => recordWorkflowExecutionFailure(owner, executionId, failure),
           cancelNativeAndRequestCleanup: async () => {
             await this.runs.requestCleanup(runId, owner)
             try { await this.nativeExecutions.cancelRun(runId, owner); return true } catch { return false }

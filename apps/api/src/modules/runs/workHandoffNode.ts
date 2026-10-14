@@ -5,6 +5,7 @@ import type { RepeatRunRepository } from './repeatPostgres.js'
 import type { RepeatExecutionDriver } from './repeatNode.js'
 import { ExecutionLimiter } from './limiter.js'
 import { selectedWorkHandoffRoutes } from './workHandoffRouting.js'
+import { WorkExecutionFailure } from './workExecutionFailure.js'
 
 /** One LangGraph activation task. Every durable decision is idempotent, so a
  * checkpoint replay reconciles the exact native execution and work receipts. */
@@ -30,8 +31,19 @@ export function workHandoffNodeAction(input: {
     let execution = admitted.execution
     for (;;) {
       input.signal.throwIfAborted()
-      if (execution.state === 'completed') await input.driver.observe(execution, input.signal)
-      else await input.limiter.run(input.signal, () => input.driver.observe(execution, input.signal))
+      try {
+        if (execution.state === 'completed') await input.driver.observe(execution, input.signal)
+        else await input.limiter.run(input.signal, () => input.driver.observe(execution, input.signal))
+      } catch (error) {
+        input.signal.throwIfAborted()
+        if (!(error instanceof DomainError)
+          || !['APP_MCP_PREFLIGHT_FAILED', 'APP_MCP_PREFLIGHT_TIMEOUT'].includes(error.code)) throw error
+        const failure = new WorkExecutionFailure({ outcome: 'failed', error: {
+          code: error.code, message: error.message, retryable: false,
+        } }, execution.id)
+        failure.cause = error
+        throw failure
+      }
       const terminal = await input.store.acceptWorkTerminal(execution.id,
         (attempt) => input.driver.candidate({ nodeId: execution.workflowNodeId, occurrence: null }, attempt))
       if (terminal.kind === 'retry') { execution = terminal.execution; continue }

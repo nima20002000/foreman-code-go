@@ -9,7 +9,7 @@ import { readWorkResultRepairAttempt } from './workResultRepair.js'
 import { readWorkflowJobSourceLocked } from '../jobs/workflowSource.js'
 import { z } from 'zod'
 import { AgentConfigurationVersionSchema, ExecutionResultSchema, HarnessExecutionSchema, NativeSessionReferenceSchema,
-  type HarnessExecution, type HarnessExecutionContext } from '@foreman-code/contracts'
+  type ExecutionResult, type HarnessExecution, type HarnessExecutionContext } from '@foreman-code/contracts'
 import {
   AcceptedCurrentNodeResultSchema, GraphDigestSchema, GraphExecutionIdentitySchema, GraphIdSchema, NodeResolutionSchema,
   RepeatDecisionMetadataV1Schema, RepeatDecisionV1Schema,
@@ -48,6 +48,7 @@ import { admitWorkHandoffLocked, ensureWorkEntryLocked, readWorkActivationInputL
 import { markWorkNoticeDeliveredLocked, markWorkNoticePendingLocked,
   markWorkNoticeUnknownLocked } from './workHandoffNotice.js'
 import { assertWorkHandoffDeliveryLocked } from './workHandoffDelivery.js'
+import { WorkExecutionFailure } from './workExecutionFailure.js'
 import {
   assertRepeatBodyComplete, assertRepeatExecution, assertRepeatRef, assertRepeatSource,
   bindRepeatNodeInput, blockForNode, decideRepeatAdmission, decideRepeatBlockEntry, decideRepeatExit, finalRepeatExport,
@@ -340,6 +341,7 @@ export class RepeatRunRepository {
             [], executionId, stored.workActivationId))
         return { kind: 'retry', execution: queued }
       }
+      if (stored.execution.result.outcome === 'failed') throw new WorkExecutionFailure(stored.execution.result)
       if (stored.execution.result.outcome !== 'succeeded') return repeatConflict('WORK_SELECTED_EXECUTION_FAILED')
       await this.assertArtifactOutputs(context, stored.execution)
       const result = AcceptedCurrentNodeResultSchema.parse(stored.execution.result)
@@ -1222,9 +1224,18 @@ export class RepeatRunRepository {
       if (!context.version.definition.handoffs || context.version.definition.repeat) return repeatConflict('WORK_POLICY_PIN_CONFLICT')
       const activations = await context.sql.query<{ activation_id: string; state: string }>(
         'select activation_id,state from run_work_activations where run_id=$1 order by activation_id', [context.scope.runId])
-      if (!activations.rows.length || activations.rows.some((row) => row.state !== 'completed')) {
+      const failures = await this.workFailures(context)
+      const failedActivations = new Set(failures.map(row => row.activationId))
+      if (!activations.rows.length || activations.rows.some(row =>
+        row.state !== 'completed' && !failedActivations.has(row.activation_id))) {
         return repeatConflict('WORK_ACTIVATIONS_UNRESOLVED')
       }
+      const unreturned = await context.sql.query(`select 1 from run_work_requests q
+        where q.run_id=$1 and not (q.destination_activation_id=any($2::text[]))
+          and not exists(select 1 from run_work_returns t where t.run_id=q.run_id and t.request_id=q.request_id)
+        limit 1`, [context.scope.runId, [...failedActivations]])
+      if (unreturned.rowCount) return repeatConflict('WORK_REQUEST_UNRESOLVED')
+      if (failures[0]) throw new WorkExecutionFailure(failures[0].result)
       const activationIds = new Set(activations.rows.map((row) => row.activation_id))
       const denied = await context.sql.query<{ denial_id: string; notice_id: string | null;
         delivery_state: string | null; continuation_activation_id: string | null;
@@ -1333,6 +1344,25 @@ export class RepeatRunRepository {
         () => context.hooks.completeRunLocked(context.sql, terminals))
       return 'completed'
     })
+  }
+
+  private async workFailures(context: Context): Promise<Array<{ activationId: string; result: ExecutionResult }>> {
+    const rows = (await context.sql.query<{ activation_id: string; record: unknown; failure_result: unknown }>(`
+      select e.work_activation_id as activation_id,e.record,b.failure_result
+      from harness_executions e left join approval_execution_state b on b.execution_id=e.id
+      where e.run_id=$1 and e.work_activation_id is not null and not e.accepted
+        and (b.failure_result is not null or e.record#>>'{result,outcome}'='failed')
+        and not exists(select 1 from run_repeat_executions n where n.previous_execution_id=e.id)
+      order by e.created_at,e.id`, [context.scope.runId])).rows
+    const failures: Array<{ activationId: string; result: ExecutionResult }> = []
+    for (const row of rows) {
+      const execution = HarnessExecutionSchema.parse(row.record)
+      if (!row.failure_result && await context.hooks.allowTechnicalRetryLocked(context.sql, execution)) continue
+      const result = ExecutionResultSchema.parse(row.failure_result ?? execution.result)
+      if (result.outcome !== 'failed') return repeatConflict('RUN_FAILURE_CAUSE_INVALID')
+      failures.push({ activationId: row.activation_id, result })
+    }
+    return failures
   }
 }
 
