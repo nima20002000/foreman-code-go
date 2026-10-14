@@ -18,7 +18,7 @@ function deferred() {
   return { promise, resolve }
 }
 
-function fixture(branch: string | undefined) {
+function fixture(branch: string | undefined, status?: HostCiEndpoint['request']) {
   const workspaceId = randomUUID()
   const workspace = { id: workspaceId, name: 'CI fixture', repository: {
     provider: 'github', owner: 'fixture', name: 'site', defaultBranch: 'main',
@@ -49,11 +49,11 @@ function fixture(branch: string | undefined) {
       }
       return computers
     },
-    request: async (_computer, request) => {
+    request: status ?? (async (_computer, request) => {
       if (request.operation !== 'status') throw new Error('Unexpected executor request')
       return { operation: 'status', ready: true, reasons: [], cpuCount: 8,
         memoryBytes: 16 * 2 ** 30, slotsTotal: 1, slotsUsed: 0, runs: [] }
-    },
+    }),
   }
   const commits: CiCommits = {
     resolve: async () => 'a'.repeat(40),
@@ -97,3 +97,12 @@ it.each(['gate', 'main', 'unknown', 'smoke', 'feature'] as const)(
     }
   },
 )
+
+it('reports an unreachable smoke computer as a retryable unavailable computer', async () => {
+  const f = fixture(undefined, async () => { throw Object.assign(new Error('transport'), { code: 'transport' }) })
+  f.release.resolve()
+  const smokeHost = f.computers[0]!
+  await expect(f.service.run(caller, { workspaceId: 'unused-by-fixture', suite: 'integration', commit: 'a'.repeat(40),
+    scope: 'affected', files: ['apps/api/test/site.integration.test.ts'], smokeComputer: smokeHost.hostRef }))
+    .rejects.toMatchObject({ code: 'CI_SMOKE_COMPUTER_UNAVAILABLE', status: 503, details: { retryable: true } })
+})
