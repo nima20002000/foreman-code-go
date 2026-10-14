@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+// eslint-disable-next-line no-restricted-imports -- Holding the capture past both SQL deadlines proves waiters do not use them.
 import { setTimeout as delay } from 'node:timers/promises'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { ManagementActionSchema } from '@foreman-code/contracts/management'
@@ -85,6 +86,7 @@ it('captures one workspace commit concurrently beyond the SQL deadline and reads
       sources.approveProject(owner.principal, { ...input, commandId: randomUUID() }))))
     await expect.poll(() => approve.mock.calls.length, { timeout: 10_000 }).toBe(4)
     // Every waiter has entered approval before the first capture exceeds both SQL timeouts.
+    // eslint-disable-next-line no-restricted-syntax -- Hold the first capture past both SQL deadlines.
     await delay(2500)
     resume.resolve()
     const outcomes = (await Promise.all(captures)).flat()
