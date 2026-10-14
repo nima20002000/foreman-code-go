@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { ComputerMaintenance, systemMaintenancePorts } from '../src/modules/computers/maintenance.js'
+import { systemMaintenancePorts } from '../src/modules/computers/maintenance.js'
 
 const homes: string[] = []
 afterEach(async () => {
@@ -37,23 +37,22 @@ async function installation() {
 }
 
 describe('maintenance harness discovery', () => {
-  it('continues past an incomplete npm launcher and reports the runnable installation', async () => {
+  it('reports an incomplete first launcher instead of substituting another installation', async () => {
     const fixture = await installation()
     const ports = systemMaintenancePorts(fixture.environment)
-    expect(await ports.find('codex')).toBe(fixture.working)
-    const maintenance = new ComputerMaintenance({ ...ports,
-      run: async (binary, args, options) => args[0] === '--version'
-        ? ports.run(binary, args, options) : { code: 0, stdout: '', stderr: '' },
+    await expect(ports.find('codex')).rejects.toMatchObject({
+      code: 'COMPUTER_EXECUTABLE_UNAVAILABLE',
+      message: expect.stringContaining('~/.local/bin/codex'),
     })
-    const status = await maintenance.status(AbortSignal.timeout(5000))
-    expect(status.harnesses.find(entry => entry.harness === 'codex'))
-      .toMatchObject({ installed: true, version: '0.157.0' })
   })
 
   it('preserves an explicit selection even when its launcher fails and another installation works', async () => {
     const fixture = await installation()
     const ports = systemMaintenancePorts(fixture.environment, { codex: fixture.broken })
-    expect(await ports.find('codex')).toBe(fixture.broken)
+    await expect(ports.find('codex')).rejects.toMatchObject({
+      code: 'COMPUTER_EXECUTABLE_UNAVAILABLE',
+      message: expect.stringContaining('~/.local/bin/codex'),
+    })
     const result = await ports.run(fixture.broken, ['--version'],
       { signal: AbortSignal.timeout(5000), timeoutMs: 5000 })
     expect(result.code).not.toBe(0)

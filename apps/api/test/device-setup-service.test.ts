@@ -13,7 +13,8 @@ function fixture(){
   let grants=0,available=true,revoked=false
   const query=vi.fn(async(text:string,values?:unknown[])=>{
     let rows:unknown[]=[]
-    if(text.includes('select id,name,audience,grants'))rows=[{id:principal.id,name:principal.name,audience:'operator',grants:principal.grants,expires_at:new Date(principal.expiresAt),revoked_at:revoked?new Date():null,delegated_from:null}]
+    if(text.includes('pg_try_advisory_lock'))rows=[{locked:true}]
+    else if(text.includes('select id,name,audience,grants'))rows=[{id:principal.id,name:principal.name,audience:'operator',grants:principal.grants,expires_at:new Date(principal.expiresAt),revoked_at:revoked?new Date():null,delegated_from:null}]
     else if(text.includes('from device_main_identity'))rows=[{mainPublicKey,mainPublicKeyFingerprint:publicKeyFingerprint(mainPublicKey)}]
     else if(text.includes('device_authorization_secret'))rows=[{secret:'a'.repeat(64)}]
     else if(text.includes('select input_hash, target_key, result'))rows=receipts.has(`${values![1]}:${values![2]}`)?[receipts.get(`${values![1]}:${values![2]}`)]:[]

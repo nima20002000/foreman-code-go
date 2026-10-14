@@ -28,7 +28,7 @@ function ports(overrides: { versions?: Record<string, string | null>; sudo?: boo
       if (name === 'npm' && args[0] === 'install') { if (!overrides.pinnedCodex) versions.codex = 'codex-cli 0.161.0'; return { code: 0, stdout: 'added 1 package', stderr: '' } }
       if (name === 'claude' && args[0] === 'update') { versions.claude = '2.1.294 (Claude Code)'; return { code: 0, stdout: 'updated', stderr: '' } }
       if (name === 'apt-get') return { code: 0, stdout: aptOutput, stderr: '' }
-      if (binary === 'sudo' && args[1] === 'true') return { code: overrides.sudo === false ? 1 : 0, stdout: '', stderr: '' }
+      if (binary === 'sudo' && args[1] === 'true') return { code: overrides.sudo === false ? 1 : 0, stdout: '', stderr: overrides.sudo === false ? 'sudo: a password is required' : '' }
       if (binary === 'sudo' && args.includes('upgrade')) {
         aptOutput = overrides.afterUpgrade ?? '0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.'
         return { code: 0, stdout: '2 upgraded, 0 newly installed', stderr: '' }
@@ -182,8 +182,8 @@ describe('computer maintenance', () => {
       await maintenance.start({ kind: 'update-system' })
       expect((await settle(maintenance)).tasks[0]?.state).toBe('failed')
     }
-    const status = await new ComputerMaintenance(ports({ apt: 'unreadable' }).value).status(AbortSignal.timeout(1000))
-    expect(status.system.packageUpdates).toBeNull()
+    await expect(new ComputerMaintenance(ports({ apt: 'unreadable' }).value).status(AbortSignal.timeout(1000)))
+      .rejects.toMatchObject({ code: 'COMPUTER_PACKAGE_UPDATES_UNAVAILABLE' })
   })
 
   it('does not report a harness current when its updater left the old binary in place', async () => {

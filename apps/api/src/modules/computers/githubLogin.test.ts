@@ -14,6 +14,7 @@ function fixture(installed = true, options: {
   logoutWait?: Promise<void>
   textStatus?: boolean
   otherHost?: boolean
+  statusError?: Error
 } = {}) {
   let user: string | null = null
   const children: { stdout: PassThrough; stderr: PassThrough; stdin: PassThrough; emitter: EventEmitter; kill: ReturnType<typeof vi.fn>; args: string[] }[] = []
@@ -38,6 +39,7 @@ function fixture(installed = true, options: {
       readText: async () => null,
       run: async (_binary, args) => {
         runs.push(args.join(' '))
+        if (args[1] === 'status' && options.statusError) throw options.statusError
         if (args[1] === 'status' && options.unreadable) return { code: null, stdout: '', stderr: '' }
         if (args[1] === 'status' && args.includes('--json') && options.textStatus) {
           return { code: 1, stdout: '', stderr: 'unknown flag: --json' }
@@ -228,5 +230,13 @@ it.each(['logout', 'close'] as const)('cancels a login whose executable lookup f
   release()
   await cancelled
   expect(f.children).toHaveLength(0)
+  f.runner.close()
+})
+
+it('keeps process failures typed and does not attempt logout after an uncertain probe', async () => {
+  const f = fixture(true, { statusError: new Error('status transport failed') })
+  await expect(f.runner.handle({ operation: 'logout', expectedAccount: 'owner' }))
+    .rejects.toMatchObject({ code: 'GITHUB_STATUS_UNKNOWN' })
+  expect(f.runs.some(run => run.startsWith('auth logout'))).toBe(false)
   f.runner.close()
 })

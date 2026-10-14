@@ -34,6 +34,9 @@ export function fakeComputer() {
     find: async name => ['codex', 'claude', 'npm'].includes(name) ? `/fake/${name}` : null,
     run: async (binary, args) => {
       calls.push({ binary, args })
+      if (binary === 'sudo' && args.join(' ') === '-n true') {
+        return { code: 1, stdout: '', stderr: 'sudo: a password is required' }
+      }
       if (failure(binary, args)) return result({}, 1)
       if (args[0] === '--version') {
         return { code: 0, stdout: binary.endsWith('claude') ? claudeVersion : '1.2.3', stderr: '' }
