@@ -40,9 +40,7 @@ import type { CapturedReviewNativeSource } from '../interactions/reviewNativeCap
 import { deviceRequestTimeoutMs, retryDeviceRequest } from '../devices/deviceRequestRetry.js'
 import { preparationStop } from '../runs/remote/preparationCleanup.js'
 
-/** One Main owner and its actual authenticated worker sources. Allocation is
- * IO-free; preparation/prefetch runs before the existing canonical transaction. */
-export function createProductionRemoteWorkflow(input: {
+interface ProductionRemoteWorkflowInput {
   pool: pg.Pool
   locations: WorkspaceLocationService
   endpoint(): DeviceEndpoint
@@ -51,7 +49,23 @@ export function createProductionRemoteWorkflow(input: {
   artifacts?: WorkflowPhysicalArtifactsPort
   workerExecution?: WorkerExecutionPolicy
   preparationTimeoutMs?: number
-}) {
+}
+interface RetainedRemoteWorkflowSource {
+  source: WorkflowOriginalNativeSource
+  prepared: PreparedRemoteWorkflowPhysical
+  evidence?: RemoteNativeSourceEvidence
+  acknowledgment?: 'sent' | 'obsolete'
+  capture?: WorkflowNativeCapture
+}
+type RemoteWorkflowPhysicalVerification = ReturnType<typeof createRemoteWorkflowPhysicalVerification>
+type RemoteWorkflowAuthority = (sql: GraphTransactionSql, binding: AcceptedExecutionBinding,
+  connection: DeviceConnectionIdentity, action: 'start' | 'read' | 'control') => ReturnType<typeof assertRemoteExecutionAuthority>
+
+function sourceKey(source: WorkflowOriginalNativeSource) { return remoteWorkflowSourceDigest(source) }
+
+/** One Main owner and its actual authenticated worker sources. Allocation is
+ * IO-free; preparation/prefetch runs before the existing canonical transaction. */
+export function createProductionRemoteWorkflow(input: ProductionRemoteWorkflowInput) {
   const bindings = new Map<string, AcceptedExecutionBinding | null>()
   const channel = createRemoteNativeSourceChannel()
   const physical = createRemoteWorkflowPhysicalVerification({ endpoint: input.endpoint,
@@ -62,7 +76,7 @@ export function createProductionRemoteWorkflow(input: {
   const reviewAcknowledgments = new Map<string, Map<VerifiedRemoteOriginalSource, GraphTransactionSql>>()
   const artifactTerminals = new WeakMap<WorkflowNativeCapture, VerifiedRemoteOriginalSource>()
   const latest = new Map<string, string>()
-  const retained = new Map<string, Map<string, { source: WorkflowOriginalNativeSource; prepared: PreparedRemoteWorkflowPhysical; evidence?: RemoteNativeSourceEvidence; acknowledgment?: 'sent' | 'obsolete'; capture?: WorkflowNativeCapture }>>()
+  const retained = new Map<string, Map<string, RetainedRemoteWorkflowSource>>()
   const requireProducer = () => {
     const producer = input.producer()
     if (!producer) throw new DomainError('AGENT_PLACEMENT_UNAVAILABLE', 'The actual placement producer is unavailable.', 503)
@@ -70,122 +84,12 @@ export function createProductionRemoteWorkflow(input: {
   }
   const authority = (sql: GraphTransactionSql, binding: AcceptedExecutionBinding, connection: DeviceConnectionIdentity, action: 'start' | 'read' | 'control') =>
     assertRemoteExecutionAuthority(sql, input.locations, { version: 1, intent: binding.intent, placement: binding.placement, action }, connection, requireProducer())
-  const carrier: MainWorkerCarrier = { capture(deviceId) {
-    const endpoint = input.endpoint(), captured = endpoint.captureRequest(deviceId, 'execution-v1')
-    if (!captured) throw new DomainError('REMOTE_DISPATCH_UNAVAILABLE', 'The actual authenticated execution carrier is unavailable.', 503)
-    const preparation = endpoint.captureRequest(deviceId, REMOTE_PREPARATION_EXTENSION.namespace)
-    const compatiblePreparation = preparation && sameWorkflowValue(preparation.binding, captured.binding)
-      ? preparation : undefined
-    const { mainId, workerInstallationId, bootId, keyRevision, authorizationRevision, connectionGeneration } = captured.binding
-    return { identity: { mainId, deviceId, workerInstallationId, bootId, keyRevision, authorizationRevision, connectionGeneration },
-      supports: namespace => namespace === 'execution-v1'
-        || namespace === REMOTE_PREPARATION_EXTENSION.namespace && compatiblePreparation !== undefined,
-      request(namespace, payload, options) {
-        if (namespace === REMOTE_PREPARATION_EXTENSION.namespace && compatiblePreparation) {
-          return compatiblePreparation.request(payload, options)
-        }
-        if (namespace !== 'execution-v1') throw new DomainError('REMOTE_BINDING_CONFLICT', 'The captured native carrier cannot change namespace.', 409)
-        return captured.request(payload, options)
-      } }
-  } }
-  const prepare = async (executionId: string): Promise<AcceptedExecutionBinding | null> => {
-    const execution = await input.execution(executionId)
-    if (!execution) throw new DomainError('WORKER_EXECUTION_NOT_FOUND', 'The actual execution is unavailable.', 409)
-    const sql = interactionConnection.getStore() ?? input.pool
-    const original = await readDispatchIntent(sql, executionId)
-    const placement = await readAcceptedPlacement(sql, execution.runId, execution.workflowNodeId)
-    if (!!original !== !!placement) throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'The actual placed execution has no exact dispatch.', 409)
-    let binding: AcceptedExecutionBinding | null = null
-    if (original && placement) {
-      const intent = await readReconciledDispatchIntent(sql, original.operationId)
-      const rawNative = await readNativePlacement(sql, executionId)
-      if (!intent || !rawNative) throw new DomainError('PLACEMENT_PREPARATION_REQUIRED', 'The original materialized execution binding is required.', 409)
-      const executionPlacement = readNativeExecutionBinding(placement, intent, rawNative)
-      if (execution.workingDirectory !== executionPlacement.workingTree.canonicalCwd || intent.runId !== execution.runId
-        || intent.nodeId !== execution.workflowNodeId || intent.technicalAttempt !== execution.attempt) throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'The original native execution directory or attempt changed.', 409)
-      binding = { intent, placement, executionPlacement }
-    }
-    const previous = bindings.get(executionId)
-    // Source lifecycle and audited owner renewals can change without changing placement.
-    let comparable = previous
-    if (previous && binding) {
-      comparable = { ...previous, intent: { ...previous.intent, owner: binding.intent.owner } }
-      if (previous.executionPlacement && binding.executionPlacement) {
-        comparable.executionPlacement = { ...previous.executionPlacement,
-          materialization: { ...previous.executionPlacement.materialization,
-            state: binding.executionPlacement.materialization.state } }
-      }
-    }
-    if (bindings.has(executionId) && !sameWorkflowValue(comparable, binding)) throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'The original native placement cannot change after preparation.', 409)
-    bindings.set(executionId, binding)
-    return binding
-  }
-  const sourceKey = (source: WorkflowOriginalNativeSource) => remoteWorkflowSourceDigest(source)
+  const carrier = createRemoteWorkflowCarrier(input)
+  const prepare = (executionId: string) => prepareRemoteWorkflowBinding(input, bindings, executionId)
   return {
     prepare,
-    async confirmClosedExecution(executionId: string, signal: AbortSignal, owner: RunOwnership): Promise<boolean> {
-      owner.assertOwned()
-      const binding = await prepare(executionId)
-      if (!binding || binding.placement.hostRef.kind !== 'device') return false
-      if (owner.runId !== binding.intent.runId) throw new DomainError(
-        'REMOTE_RUN_OWNER_CONFLICT', 'The Run owner does not match native cleanup.', 409)
-      const captured = input.endpoint().captureRequest(binding.placement.hostRef.deviceId, 'execution-v1')
-      if (!captured) return false
-      const request = (payload: unknown) => retryDeviceRequest(() => captured.request(payload,
-        { signal, timeoutMs: deviceRequestTimeoutMs }), { retry: 'idempotent', signal })
-      const readStatus = async (payload: unknown) => {
-        const reply = await request(payload)
-        if (reply.bytes !== undefined) throw new DomainError('REMOTE_CLOSURE_INVALID',
-          'Closure readback cannot contain binary data.', 409)
-        const raw = await readRemoteReceiptResponse(reply.payload, binding.intent, async continuation => {
-          const next = await request({ method: 'receipt-continuation', intent: binding.intent,
-            placement: binding.placement, ...continuation })
-          return next.payload
-        }, signal)
-        return RemoteOperationStatusSchema.parse(raw)
-      }
-      let status = await readStatus({ method: 'status', intent: binding.intent, placement: binding.placement })
-      if (status.status === 'known' && sameWorkflowValue(status.receipt.intent, binding.intent)
-        && !status.receipt.native && !status.receipt.entryAttempted && !status.receipt.terminal) {
-        owner.assertOwned()
-        const intent = binding.intent
-        status = await readStatus({ method: 'control', intent, placement: binding.placement,
-          command: preparationStop(intent) })
-      }
-      if (status.status !== 'known' || !sameWorkflowValue(status.receipt.intent, binding.intent)
-        || !status.receipt.terminal) return false
-      const receipt = status.receipt
-      const row = (await input.pool.query<{ reference: unknown }>(
-        'select reference from execution_native_sessions where execution_id=$1', [executionId])).rows[0]
-      const session = row ? NativeSessionReferenceSchema.parse(row.reference) : null
-      const original = receipt.native
-        ? await physical.prefetch(receipt, binding.placement, { type: 'boundary' }, signal)
-        : undefined
-      const confirmedClosed = () => original ? physical.confirmedClosed(original, session)
-        : session === null && (hasPositiveRemoteEntryClosure(receipt)
-          || hasPositiveRemoteNonEntryClosure(receipt))
-      if (!confirmedClosed()) return false
-      const { mainId, deviceId, workerInstallationId, bootId, keyRevision, authorizationRevision,
-        connectionGeneration } = captured.binding
-      const authenticated = DeviceConnectionIdentitySchema.parse({ mainId, deviceId, workerInstallationId,
-        bootId, keyRevision, authorizationRevision, connectionGeneration })
-      const committed = await VerifiedRemoteEvidence.commit(receipt, authenticated,
-        new OwnedRemoteReceiptCommit(owner, receipt, authenticated, {
-          async assertCurrent(sql, intent, placement, connection) {
-            await authority(sql, { intent, placement }, connection, 'read')
-            const current = (await sql.query<{ reference: unknown }>(
-              'select reference from execution_native_sessions where execution_id=$1 for share', [executionId])).rows[0]
-            if (!sameWorkflowValue(current?.reference ?? null, session) || !confirmedClosed()) throw new DomainError(
-              'REMOTE_CLOSURE_INVALID', 'The original physical closure changed during recovery.', 409)
-          },
-          async publishNative() {
-            if (!confirmedClosed()) throw new DomainError(
-              'REMOTE_CLOSURE_INVALID', 'The original physical closure changed during publication.', 409)
-          },
-        }))
-      if (committed === 'rejected') throw new DomainError('REMOTE_CLOSURE_RECEIPT_REJECTED',
-        'The original closure receipt was rejected by its canonical owner.', 409)
-      return true
+    confirmClosedExecution(executionId: string, signal: AbortSignal, owner: RunOwnership): Promise<boolean> {
+      return confirmRemoteWorkflowClosedExecution(input, prepare, physical, authority, executionId, signal, owner)
     },
     binding(executionId: string) { return bindings.get(executionId) },
     async prepareContext(context: NativeManagerResolutionContext): Promise<NativeManagerResolutionContext> {
@@ -194,80 +98,7 @@ export function createProductionRemoteWorkflow(input: {
     },
     isRemote(executionId: string) { return bindings.get(executionId)?.placement.hostRef.kind === 'device' },
     manager(context: NativeManagerResolutionContext, getOwner: () => RunOwnership | undefined) {
-      const binding = bindings.get(context.executionId)
-      if (!binding || binding.placement.hostRef.kind !== 'device') return undefined
-      const requireOwner = () => {
-        const owner = getOwner()
-        if (!owner || owner.runId !== binding.intent.runId) throw new DomainError('REMOTE_RUN_OWNER_CONFLICT', 'The original native Run owner is required.', 409)
-        owner.assertOwned(); return owner
-      }
-      const verifiedReceipts = new Map<string, { verified: VerifiedRemoteEvidence; assertCurrent(): void }>()
-      return remoteNativeManager(context, binding, { carrier,
-        ...(input.preparationTimeoutMs ? { preparationTimeoutMs: input.preparationTimeoutMs } : {}),
-        ...(input.workerExecution ? { workerExecution: input.workerExecution } : {}),
-        beforePrepare: (intent, _placement, connection) => {
-          const owner = requireOwner()
-          return owner.oneShotConnection().transaction(sql => reserveRemoteDispatchOrigin(sql, owner, intent, connection,
-            { assertCurrent: async (sql, current, pin, authenticated) => {
-              await authority(sql, { intent: current, placement: pin }, authenticated, 'start')
-            } }))
-        },
-        commit: (receipt, authenticated) => {
-          const owner = requireOwner()
-          const assertCurrent = () => { requireOwner(); const current = input.endpoint().currentBinding(authenticated.deviceId)
-            if (!current || current.mainId !== authenticated.mainId || current.workerInstallationId !== authenticated.workerInstallationId
-              || current.bootId !== authenticated.bootId || current.connectionGeneration !== authenticated.connectionGeneration
-              || current.keyRevision !== authenticated.keyRevision || current.authorizationRevision !== authenticated.authorizationRevision)
-              throw new DomainError('REMOTE_CONNECTION_CONFLICT', 'The original authenticated native response connection changed.', 409) }
-          return new OwnedRemoteReceiptCommit(owner, receipt, authenticated, {
-            async assertCurrent(sql, intent, placement, connection) {
-              await authority(sql, { intent, placement }, connection, 'read')
-              await assertRemoteReviewerReceipt(sql, receipt)
-            },
-            async publishNative(_sql, _owner, verified) {
-              // Receipt handling cannot mint the coordinator's not-yet-created
-              // Main session/lane. Only retain the authenticated original source.
-              const key = canonicalGraphJson(receipt)
-              if (!verifiedReceipts.has(key) && verifiedReceipts.size >= 32) verifiedReceipts.delete(verifiedReceipts.keys().next().value!)
-              verifiedReceipts.set(key, { verified, assertCurrent })
-            },
-          })
-        },
-        observeOriginalSource: async (receipt, source) => {
-          const verified = verifiedReceipts.get(canonicalGraphJson(receipt))
-          if (!verified) throw new DomainError('REMOTE_OBSERVATION_NOT_AUTHENTICATED', 'Original native source requires its authenticated committed receipt.', 403)
-          verified.assertCurrent()
-          const prepared = await physical.prefetch(receipt, binding.placement, source)
-          verified.assertCurrent()
-          channel.observe(verified.verified, source, verified.assertCurrent)
-          const entries = retained.get(receipt.intent.executionId) ?? new Map()
-          const key = sourceKey(source)
-          if (!entries.has(key) && entries.size >= 1024) throw new DomainError('REMOTE_NATIVE_SOURCE_BACKPRESSURE', 'The original remote source window is full.', 503)
-          for (const [oldKey, old] of entries) if (oldKey !== key && (old.acknowledgment || source.type === 'history' && old.source.type === 'history' && !old.evidence)) entries.delete(oldKey)
-          entries.set(key, { source, prepared })
-          retained.set(receipt.intent.executionId, entries)
-          latest.set(receipt.intent.executionId, key)
-        },
-        controlFor: async command => {
-          if (interactionConnection.getStore()) throw new DomainError('REMOTE_CONTROL_TRANSACTION_UNAVAILABLE', 'Remote native response delivery requires an admitted effect outside the Main delivery transaction.', 409)
-          const owner = requireOwner()
-          return owner.oneShotConnection().transaction(sql => admitRemoteOwnerControl(sql, owner, binding, command, readOriginalInteractionDeliveryClaim()))
-        },
-        readResponseControl: async () => {
-          const claim = readOriginalInteractionDeliveryClaim()
-          if (!claim) return undefined
-          const owner = requireOwner()
-          return owner.oneShotConnection().transaction(sql => readAdmittedRemoteOwnerControl(sql, owner, binding, claim))
-        },
-        authorizeResponseRetry: async command => {
-          const claim = readOriginalInteractionDeliveryClaim()
-          if (!claim || interactionConnection.getStore()) {
-            throw new DomainError('REMOTE_CONTROL_ORIGINAL_CLAIM_REQUIRED', 'Response recovery requires its active delivery claim.', 409)
-          }
-          const owner = requireOwner()
-          await owner.oneShotConnection().transaction(sql => authorizeReservedRemoteResponse(sql, owner, binding, claim, command))
-        },
-      })
+      return createRemoteWorkflowManager(input, { bindings, carrier, authority, physical, channel, retained, latest }, context, getOwner)
     },
     captureReview(capture: CapturedReviewNativeSource) {
       if (bindings.get(capture.execution.id)?.placement.hostRef.kind !== 'device') return
@@ -423,4 +254,213 @@ export function createProductionRemoteWorkflow(input: {
       await assertRemoteNativeSourceLocked(sql, owner, capture.execution, original.source, evidence, channel.verify, physical)
     },
   }
+}
+
+function createRemoteWorkflowCarrier(input: ProductionRemoteWorkflowInput): MainWorkerCarrier {
+  return { capture(deviceId) {
+    const endpoint = input.endpoint(), captured = endpoint.captureRequest(deviceId, 'execution-v1')
+    if (!captured) throw new DomainError('REMOTE_DISPATCH_UNAVAILABLE', 'The actual authenticated execution carrier is unavailable.', 503)
+    const preparation = endpoint.captureRequest(deviceId, REMOTE_PREPARATION_EXTENSION.namespace)
+    const compatiblePreparation = preparation && sameWorkflowValue(preparation.binding, captured.binding)
+      ? preparation : undefined
+    const { mainId, workerInstallationId, bootId, keyRevision, authorizationRevision, connectionGeneration } = captured.binding
+    return { identity: { mainId, deviceId, workerInstallationId, bootId, keyRevision, authorizationRevision, connectionGeneration },
+      supports: namespace => namespace === 'execution-v1'
+        || namespace === REMOTE_PREPARATION_EXTENSION.namespace && compatiblePreparation !== undefined,
+      request(namespace, payload, options) {
+        if (namespace === REMOTE_PREPARATION_EXTENSION.namespace && compatiblePreparation) {
+          return compatiblePreparation.request(payload, options)
+        }
+        if (namespace !== 'execution-v1') throw new DomainError('REMOTE_BINDING_CONFLICT', 'The captured native carrier cannot change namespace.', 409)
+        return captured.request(payload, options)
+      } }
+  } }
+}
+
+async function prepareRemoteWorkflowBinding(input: ProductionRemoteWorkflowInput,
+  bindings: Map<string, AcceptedExecutionBinding | null>, executionId: string): Promise<AcceptedExecutionBinding | null> {
+  const execution = await input.execution(executionId)
+  if (!execution) throw new DomainError('WORKER_EXECUTION_NOT_FOUND', 'The actual execution is unavailable.', 409)
+  const sql = interactionConnection.getStore() ?? input.pool
+  const original = await readDispatchIntent(sql, executionId)
+  const placement = await readAcceptedPlacement(sql, execution.runId, execution.workflowNodeId)
+  if (!!original !== !!placement) throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'The actual placed execution has no exact dispatch.', 409)
+  let binding: AcceptedExecutionBinding | null = null
+  if (original && placement) {
+    const intent = await readReconciledDispatchIntent(sql, original.operationId)
+    const rawNative = await readNativePlacement(sql, executionId)
+    if (!intent || !rawNative) throw new DomainError('PLACEMENT_PREPARATION_REQUIRED', 'The original materialized execution binding is required.', 409)
+    const executionPlacement = readNativeExecutionBinding(placement, intent, rawNative)
+    if (execution.workingDirectory !== executionPlacement.workingTree.canonicalCwd || intent.runId !== execution.runId
+      || intent.nodeId !== execution.workflowNodeId || intent.technicalAttempt !== execution.attempt) throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'The original native execution directory or attempt changed.', 409)
+    binding = { intent, placement, executionPlacement }
+  }
+  const previous = bindings.get(executionId)
+  // Source lifecycle and audited owner renewals can change without changing placement.
+  let comparable = previous
+  if (previous && binding) {
+    comparable = { ...previous, intent: { ...previous.intent, owner: binding.intent.owner } }
+    if (previous.executionPlacement && binding.executionPlacement) {
+      comparable.executionPlacement = { ...previous.executionPlacement,
+        materialization: { ...previous.executionPlacement.materialization,
+          state: binding.executionPlacement.materialization.state } }
+    }
+  }
+  if (bindings.has(executionId) && !sameWorkflowValue(comparable, binding)) throw new DomainError('PLACEMENT_BINDING_CONFLICT', 'The original native placement cannot change after preparation.', 409)
+  bindings.set(executionId, binding)
+  return binding
+}
+
+async function confirmRemoteWorkflowClosedExecution(input: ProductionRemoteWorkflowInput,
+  prepare: (executionId: string) => Promise<AcceptedExecutionBinding | null>,
+  physical: RemoteWorkflowPhysicalVerification, authority: RemoteWorkflowAuthority,
+  executionId: string, signal: AbortSignal, owner: RunOwnership): Promise<boolean> {
+  owner.assertOwned()
+  const binding = await prepare(executionId)
+  if (!binding || binding.placement.hostRef.kind !== 'device') return false
+  if (owner.runId !== binding.intent.runId) throw new DomainError(
+    'REMOTE_RUN_OWNER_CONFLICT', 'The Run owner does not match native cleanup.', 409)
+  const captured = input.endpoint().captureRequest(binding.placement.hostRef.deviceId, 'execution-v1')
+  if (!captured) return false
+  const request = (payload: unknown) => retryDeviceRequest(() => captured.request(payload,
+    { signal, timeoutMs: deviceRequestTimeoutMs }), { retry: 'idempotent', signal })
+  const readStatus = async (payload: unknown) => {
+    const reply = await request(payload)
+    if (reply.bytes !== undefined) throw new DomainError('REMOTE_CLOSURE_INVALID',
+      'Closure readback cannot contain binary data.', 409)
+    const raw = await readRemoteReceiptResponse(reply.payload, binding.intent, async continuation => {
+      const next = await request({ method: 'receipt-continuation', intent: binding.intent,
+        placement: binding.placement, ...continuation })
+      return next.payload
+    }, signal)
+    return RemoteOperationStatusSchema.parse(raw)
+  }
+  let status = await readStatus({ method: 'status', intent: binding.intent, placement: binding.placement })
+  if (status.status === 'known' && sameWorkflowValue(status.receipt.intent, binding.intent)
+    && !status.receipt.native && !status.receipt.entryAttempted && !status.receipt.terminal) {
+    owner.assertOwned()
+    const intent = binding.intent
+    status = await readStatus({ method: 'control', intent, placement: binding.placement,
+      command: preparationStop(intent) })
+  }
+  if (status.status !== 'known' || !sameWorkflowValue(status.receipt.intent, binding.intent)
+    || !status.receipt.terminal) return false
+  const receipt = status.receipt
+  const row = (await input.pool.query<{ reference: unknown }>(
+    'select reference from execution_native_sessions where execution_id=$1', [executionId])).rows[0]
+  const session = row ? NativeSessionReferenceSchema.parse(row.reference) : null
+  const original = receipt.native
+    ? await physical.prefetch(receipt, binding.placement, { type: 'boundary' }, signal)
+    : undefined
+  const confirmedClosed = () => original ? physical.confirmedClosed(original, session)
+    : session === null && (hasPositiveRemoteEntryClosure(receipt)
+      || hasPositiveRemoteNonEntryClosure(receipt))
+  if (!confirmedClosed()) return false
+  const { mainId, deviceId, workerInstallationId, bootId, keyRevision, authorizationRevision,
+    connectionGeneration } = captured.binding
+  const authenticated = DeviceConnectionIdentitySchema.parse({ mainId, deviceId, workerInstallationId,
+    bootId, keyRevision, authorizationRevision, connectionGeneration })
+  const committed = await VerifiedRemoteEvidence.commit(receipt, authenticated,
+    new OwnedRemoteReceiptCommit(owner, receipt, authenticated, {
+      async assertCurrent(sql, intent, placement, connection) {
+        await authority(sql, { intent, placement }, connection, 'read')
+        const current = (await sql.query<{ reference: unknown }>(
+          'select reference from execution_native_sessions where execution_id=$1 for share', [executionId])).rows[0]
+        if (!sameWorkflowValue(current?.reference ?? null, session) || !confirmedClosed()) throw new DomainError(
+          'REMOTE_CLOSURE_INVALID', 'The original physical closure changed during recovery.', 409)
+      },
+      async publishNative() {
+        if (!confirmedClosed()) throw new DomainError(
+          'REMOTE_CLOSURE_INVALID', 'The original physical closure changed during publication.', 409)
+      },
+    }))
+  if (committed === 'rejected') throw new DomainError('REMOTE_CLOSURE_RECEIPT_REJECTED',
+    'The original closure receipt was rejected by its canonical owner.', 409)
+  return true
+}
+
+function createRemoteWorkflowManager(input: ProductionRemoteWorkflowInput, dependencies: {
+  bindings: Map<string, AcceptedExecutionBinding | null>
+  carrier: MainWorkerCarrier
+  authority: RemoteWorkflowAuthority
+  physical: RemoteWorkflowPhysicalVerification
+  channel: ReturnType<typeof createRemoteNativeSourceChannel>
+  retained: Map<string, Map<string, RetainedRemoteWorkflowSource>>
+  latest: Map<string, string>
+}, context: NativeManagerResolutionContext, getOwner: () => RunOwnership | undefined) {
+  const { bindings, carrier, authority, physical, channel, retained, latest } = dependencies
+  const binding = bindings.get(context.executionId)
+  if (!binding || binding.placement.hostRef.kind !== 'device') return undefined
+  const requireOwner = () => {
+    const owner = getOwner()
+    if (!owner || owner.runId !== binding.intent.runId) throw new DomainError('REMOTE_RUN_OWNER_CONFLICT', 'The original native Run owner is required.', 409)
+    owner.assertOwned(); return owner
+  }
+  const verifiedReceipts = new Map<string, { verified: VerifiedRemoteEvidence; assertCurrent(): void }>()
+  return remoteNativeManager(context, binding, { carrier,
+    ...(input.preparationTimeoutMs ? { preparationTimeoutMs: input.preparationTimeoutMs } : {}),
+    ...(input.workerExecution ? { workerExecution: input.workerExecution } : {}),
+    beforePrepare: (intent, _placement, connection) => {
+      const owner = requireOwner()
+      return owner.oneShotConnection().transaction(sql => reserveRemoteDispatchOrigin(sql, owner, intent, connection,
+        { assertCurrent: async (sql, current, pin, authenticated) => {
+          await authority(sql, { intent: current, placement: pin }, authenticated, 'start')
+        } }))
+    },
+    commit: (receipt, authenticated) => {
+      const owner = requireOwner()
+      const assertCurrent = () => { requireOwner(); const current = input.endpoint().currentBinding(authenticated.deviceId)
+        if (!current || current.mainId !== authenticated.mainId || current.workerInstallationId !== authenticated.workerInstallationId
+          || current.bootId !== authenticated.bootId || current.connectionGeneration !== authenticated.connectionGeneration
+          || current.keyRevision !== authenticated.keyRevision || current.authorizationRevision !== authenticated.authorizationRevision)
+          throw new DomainError('REMOTE_CONNECTION_CONFLICT', 'The original authenticated native response connection changed.', 409) }
+      return new OwnedRemoteReceiptCommit(owner, receipt, authenticated, {
+        async assertCurrent(sql, intent, placement, connection) {
+          await authority(sql, { intent, placement }, connection, 'read')
+          await assertRemoteReviewerReceipt(sql, receipt)
+        },
+        async publishNative(_sql, _owner, verified) {
+          // Receipt handling cannot mint the coordinator's not-yet-created
+          // Main session/lane. Only retain the authenticated original source.
+          const key = canonicalGraphJson(receipt)
+          if (!verifiedReceipts.has(key) && verifiedReceipts.size >= 32) verifiedReceipts.delete(verifiedReceipts.keys().next().value!)
+          verifiedReceipts.set(key, { verified, assertCurrent })
+        },
+      })
+    },
+    observeOriginalSource: async (receipt, source) => {
+      const verified = verifiedReceipts.get(canonicalGraphJson(receipt))
+      if (!verified) throw new DomainError('REMOTE_OBSERVATION_NOT_AUTHENTICATED', 'Original native source requires its authenticated committed receipt.', 403)
+      verified.assertCurrent()
+      const prepared = await physical.prefetch(receipt, binding.placement, source)
+      verified.assertCurrent()
+      channel.observe(verified.verified, source, verified.assertCurrent)
+      const entries = retained.get(receipt.intent.executionId) ?? new Map()
+      const key = sourceKey(source)
+      if (!entries.has(key) && entries.size >= 1024) throw new DomainError('REMOTE_NATIVE_SOURCE_BACKPRESSURE', 'The original remote source window is full.', 503)
+      for (const [oldKey, old] of entries) if (oldKey !== key && (old.acknowledgment || source.type === 'history' && old.source.type === 'history' && !old.evidence)) entries.delete(oldKey)
+      entries.set(key, { source, prepared })
+      retained.set(receipt.intent.executionId, entries)
+      latest.set(receipt.intent.executionId, key)
+    },
+    controlFor: async command => {
+      if (interactionConnection.getStore()) throw new DomainError('REMOTE_CONTROL_TRANSACTION_UNAVAILABLE', 'Remote native response delivery requires an admitted effect outside the Main delivery transaction.', 409)
+      const owner = requireOwner()
+      return owner.oneShotConnection().transaction(sql => admitRemoteOwnerControl(sql, owner, binding, command, readOriginalInteractionDeliveryClaim()))
+    },
+    readResponseControl: async () => {
+      const claim = readOriginalInteractionDeliveryClaim()
+      if (!claim) return undefined
+      const owner = requireOwner()
+      return owner.oneShotConnection().transaction(sql => readAdmittedRemoteOwnerControl(sql, owner, binding, claim))
+    },
+    authorizeResponseRetry: async command => {
+      const claim = readOriginalInteractionDeliveryClaim()
+      if (!claim || interactionConnection.getStore()) {
+        throw new DomainError('REMOTE_CONTROL_ORIGINAL_CLAIM_REQUIRED', 'Response recovery requires its active delivery claim.', 409)
+      }
+      const owner = requireOwner()
+      await owner.oneShotConnection().transaction(sql => authorizeReservedRemoteResponse(sql, owner, binding, claim, command))
+    },
+  })
 }

@@ -149,95 +149,8 @@ export function createRemoteWorkflowPhysicalVerification(input: RemoteWorkflowPh
       return (session === null || same(readout.session, session)) && readout.closure?.ownerClosed === true
         && hasNativeClosure(readout.observation) && same(readout.closure.launch, readout.observation)
     },
-    async prefetch(receipt, placement, source, signal) {
-      signal?.throwIfAborted()
-      if (placement.hostRef.kind !== 'device' || !placement.registration || !receipt.native) return unavailable('remote_placement')
-      const endpoint = input.endpoint(), captured = endpoint.captureRequest(placement.hostRef.deviceId, 'execution-v1')
-      if (!captured) return unavailable('device_connection')
-      const retained = histories.get(receipt.intent.operationId)
-      const retainedSource = retained && (source.type === 'history'
-        ? same(source.history, retained.readout.history)
-        : source.type === 'event' && retained.readout.history?.events.some(event =>
-          same({ ...event, executionId: receipt.intent.executionId }, source.event)))
-      if (retained && retainedSource && same(retained.readout.receipt, receipt)
-        && same(retained.placement, placement) && same(retained.binding, captured.binding)
-        && retained.expiresAt > Date.now()) {
-        retained.assertCurrent()
-        assertSource(retained.readout, source, placement)
-        const result = Object.freeze({ kind: 'original-remote-physical' as const })
-        prepared.set(result, { ...retained, source: structuredClone(source) })
-        return result
-      }
-      // Network waits have their own deadline; freshness comes from the returned Worker observation.
-      let expiresAt = Infinity
-      let rebootClosed = false
-      const assertRegisteredConnection = () => {
-        signal?.throwIfAborted()
-        const current = endpoint.currentBinding(placement.hostRef.kind === 'device' ? placement.hostRef.deviceId : '')
-        if (expiresAt<=Date.now()||!current || !same(current, captured.binding)
-          || !same(DeviceConnectionIdentitySchema.parse({mainId:current.mainId,deviceId:current.deviceId,
-            workerInstallationId:current.workerInstallationId,keyRevision:current.keyRevision,authorizationRevision:current.authorizationRevision,
-            bootId:receipt.connection.bootId,connectionGeneration:receipt.connection.connectionGeneration}), receipt.connection)) return unavailable('connection_expired')
-      }
-      const assertCurrent = () => {
-        assertRegisteredConnection()
-        if (captured.binding.bootId !== receipt.connection.bootId && !rebootClosed) return unavailable('boot_changed')
-      }
-      const request = (payload: unknown) => retryDeviceRequest(async () => {
-        assertRegisteredConnection()
-        const response = await captured.request(payload,
-          { ...(signal ? { signal } : {}), timeoutMs: deviceRequestTimeoutMs })
-        assertRegisteredConnection()
-        return response
-      }, { retry: 'idempotent', signal })
-      assertRegisteredConnection()
-      const reply = await request({ method: 'physical-readout', intent: receipt.intent, placement,
-        receiptSequence: receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(source) })
-      if (reply.bytes !== undefined) return unavailable('readout_binary')
-      const readout = await readPhysicalReadout(reply.payload, async metadata => {
-        assertRegisteredConnection()
-        const next = await request({ method: 'physical-readout', intent: receipt.intent, placement,
-          receiptSequence: receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(source), metadata })
-        assertRegisteredConnection()
-        if (next.bytes !== undefined) return unavailable('readout_binary')
-        return next.payload
-      }, signal)
-      expiresAt = Math.min(Date.now() + 60_000, Date.parse(readout.expiresAt))
-      if (!same(readout.receipt, receipt)) return unavailable('readout_receipt')
-      assertSource(readout, source, placement)
-      rebootClosed = Boolean(receipt.terminal && readout.closure?.ownerClosed
-        && readout.observation.closureEvidence === 'linux_boot_changed'
-        && same(readout.closure.launch, readout.observation))
-      assertCurrent()
-      const assertAcknowledgmentCurrent = () => {
-        const current = endpoint.currentBinding(captured.binding.deviceId)
-        if (expiresAt <= Date.now() || signal?.aborted || current && !same(current, captured.binding)) {
-          throw new DomainError('REMOTE_NATIVE_ACK_OBSOLETE',
-            'The captured physical observation can no longer authorize an acknowledgment.', 409)
-        }
-        assertCurrent()
-      }
-      const result = Object.freeze({ kind: 'original-remote-physical' as const })
-      const observation: Prepared = { expiresAt, binding: Object.freeze(structuredClone(captured.binding)), readout, placement: structuredClone(placement), source: structuredClone(source), assertCurrent, assertAcknowledgmentCurrent,
-        acknowledge:async(sourceDigest, options)=>{
-          assertAcknowledgmentCurrent()
-          const reply = await request({ method: 'physical-ack', intent: receipt.intent, placement,
-            receiptSequence: receipt.sequence, sourceDigest, ...options })
-          if(reply.bytes!==undefined)return unavailable('ack_binary')
-          const ack=RemoteWorkflowPhysicalAckSchema.parse(reply.payload)
-          assertAcknowledgmentCurrent()
-          if(ack.operationId!==receipt.intent.operationId||ack.receiptSequence!==receipt.sequence||ack.sourceDigest!==sourceDigest)return unavailable('ack_identity')
-          return ack
-        } }
-      prepared.set(result, observation)
-      if (readout.history) {
-        // Events already present in one authenticated history share its bounded
-        // physical observation; every publication still checks its original lease.
-        histories.delete(receipt.intent.operationId)
-        histories.set(receipt.intent.operationId, observation)
-        if (histories.size > 16) histories.delete(histories.keys().next().value!)
-      }
-      return result
+    prefetch(receipt, placement, source, signal) {
+      return prefetchRemoteWorkflowPhysical(input, prepared, histories, receipt, placement, source, signal)
     },
     bind(original, proof, owner, lifetime) {
       const capture = prepared.get(proof)
@@ -342,6 +255,100 @@ export function createRemoteWorkflowPhysicalVerification(input: RemoteWorkflowPh
     assertOriginal: (sql: GraphTransactionSql, owner: RunOwnership, original: VerifiedRemoteOriginalSource) => assertBound(sql, owner, original, false),
   }
 
+}
+
+async function prefetchRemoteWorkflowPhysical(input: RemoteWorkflowPhysicalVerificationInput,
+  prepared: WeakMap<object, Prepared>, histories: Map<string, Prepared>, receipt: RemoteOperationReceipt,
+  placement: AcceptedNodePlacement, source: WorkflowOriginalNativeSource,
+  signal?: AbortSignal): Promise<PreparedRemoteWorkflowPhysical> {
+  signal?.throwIfAborted()
+  if (placement.hostRef.kind !== 'device' || !placement.registration || !receipt.native) return unavailable('remote_placement')
+  const endpoint = input.endpoint(), captured = endpoint.captureRequest(placement.hostRef.deviceId, 'execution-v1')
+  if (!captured) return unavailable('device_connection')
+  const retained = histories.get(receipt.intent.operationId)
+  const retainedSource = retained && (source.type === 'history'
+    ? same(source.history, retained.readout.history)
+    : source.type === 'event' && retained.readout.history?.events.some(event =>
+      same({ ...event, executionId: receipt.intent.executionId }, source.event)))
+  if (retained && retainedSource && same(retained.readout.receipt, receipt)
+    && same(retained.placement, placement) && same(retained.binding, captured.binding)
+    && retained.expiresAt > Date.now()) {
+    retained.assertCurrent()
+    assertSource(retained.readout, source, placement)
+    const result = Object.freeze({ kind: 'original-remote-physical' as const })
+    prepared.set(result, { ...retained, source: structuredClone(source) })
+    return result
+  }
+  // Network waits have their own deadline; freshness comes from the returned Worker observation.
+  let expiresAt = Infinity
+  let rebootClosed = false
+  const assertRegisteredConnection = () => {
+    signal?.throwIfAborted()
+    const current = endpoint.currentBinding(placement.hostRef.kind === 'device' ? placement.hostRef.deviceId : '')
+    if (expiresAt<=Date.now()||!current || !same(current, captured.binding)
+      || !same(DeviceConnectionIdentitySchema.parse({mainId:current.mainId,deviceId:current.deviceId,
+        workerInstallationId:current.workerInstallationId,keyRevision:current.keyRevision,authorizationRevision:current.authorizationRevision,
+        bootId:receipt.connection.bootId,connectionGeneration:receipt.connection.connectionGeneration}), receipt.connection)) return unavailable('connection_expired')
+  }
+  const assertCurrent = () => {
+    assertRegisteredConnection()
+    if (captured.binding.bootId !== receipt.connection.bootId && !rebootClosed) return unavailable('boot_changed')
+  }
+  const request = (payload: unknown) => retryDeviceRequest(async () => {
+    assertRegisteredConnection()
+    const response = await captured.request(payload,
+      { ...(signal ? { signal } : {}), timeoutMs: deviceRequestTimeoutMs })
+    assertRegisteredConnection()
+    return response
+  }, { retry: 'idempotent', signal })
+  assertRegisteredConnection()
+  const reply = await request({ method: 'physical-readout', intent: receipt.intent, placement,
+    receiptSequence: receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(source) })
+  if (reply.bytes !== undefined) return unavailable('readout_binary')
+  const readout = await readPhysicalReadout(reply.payload, async metadata => {
+    assertRegisteredConnection()
+    const next = await request({ method: 'physical-readout', intent: receipt.intent, placement,
+      receiptSequence: receipt.sequence, sourceDigest: remoteWorkflowSourceDigest(source), metadata })
+    assertRegisteredConnection()
+    if (next.bytes !== undefined) return unavailable('readout_binary')
+    return next.payload
+  }, signal)
+  expiresAt = Math.min(Date.now() + 60_000, Date.parse(readout.expiresAt))
+  if (!same(readout.receipt, receipt)) return unavailable('readout_receipt')
+  assertSource(readout, source, placement)
+  rebootClosed = Boolean(receipt.terminal && readout.closure?.ownerClosed
+    && readout.observation.closureEvidence === 'linux_boot_changed'
+    && same(readout.closure.launch, readout.observation))
+  assertCurrent()
+  const assertAcknowledgmentCurrent = () => {
+    const current = endpoint.currentBinding(captured.binding.deviceId)
+    if (expiresAt <= Date.now() || signal?.aborted || current && !same(current, captured.binding)) {
+      throw new DomainError('REMOTE_NATIVE_ACK_OBSOLETE',
+        'The captured physical observation can no longer authorize an acknowledgment.', 409)
+    }
+    assertCurrent()
+  }
+  const result = Object.freeze({ kind: 'original-remote-physical' as const })
+  const observation: Prepared = { expiresAt, binding: Object.freeze(structuredClone(captured.binding)), readout, placement: structuredClone(placement), source: structuredClone(source), assertCurrent, assertAcknowledgmentCurrent,
+    acknowledge:async(sourceDigest, options)=>{
+      assertAcknowledgmentCurrent()
+      const reply = await request({ method: 'physical-ack', intent: receipt.intent, placement,
+        receiptSequence: receipt.sequence, sourceDigest, ...options })
+      if(reply.bytes!==undefined)return unavailable('ack_binary')
+      const ack=RemoteWorkflowPhysicalAckSchema.parse(reply.payload)
+      assertAcknowledgmentCurrent()
+      if(ack.operationId!==receipt.intent.operationId||ack.receiptSequence!==receipt.sequence||ack.sourceDigest!==sourceDigest)return unavailable('ack_identity')
+      return ack
+    } }
+  prepared.set(result, observation)
+  if (readout.history) {
+    // Events already present in one authenticated history share its bounded
+    // physical observation; every publication still checks its original lease.
+    histories.delete(receipt.intent.operationId)
+    histories.set(receipt.intent.operationId, observation)
+    if (histories.size > 16) histories.delete(histories.keys().next().value!)
+  }
+  return result
 }
 
 async function assertRemoteWorkflowBinding(sql: GraphTransactionSql, owner: RunOwnership,
