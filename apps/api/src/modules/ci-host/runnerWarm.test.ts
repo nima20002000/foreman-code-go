@@ -70,6 +70,9 @@ if (args[1] === 'db:up') {
   if (!fs.existsSync('node_modules/dependency')) fs.copyFileSync(seed, 'node_modules/dependency')
 } else {
   console.log('dependency=' + fs.readFileSync('node_modules/dependency', 'utf8'))
+  const metadata = process.env.npm_config_cache_dir
+  console.log('metadata=' + (metadata
+    ? fs.readFileSync(path.join(metadata, 'release-age'), 'utf8') : 'unavailable'))
   fs.writeFileSync('node_modules/dependency', 'modified by suite')
 }
 `, { mode: 0o755 })
@@ -162,6 +165,13 @@ it('retains release-age metadata for offline installs after slot dependencies ar
   await expect(fixture.run()).resolves.toMatchObject({ run: { state: 'passed' } })
   const installs = (await fixture.commands()).filter(args => args[1] === 'install')
   expect(installs.filter(args => !args.includes('--offline'))).toHaveLength(1)
+})
+
+it('makes the installation metadata cache available to commands launched by the suite', async () => {
+  const fixture = await computer()
+  await expect(fixture.run()).resolves.toMatchObject({
+    run: { state: 'passed' }, text: expect.stringContaining('metadata=verified package publication time'),
+  })
 })
 
 it('installs concurrent jobs offline from one warmed repository and store', async () => {

@@ -143,6 +143,7 @@ console.error('Fixture package store is intentionally empty')
 process.exit(1)
 `, { mode: 0o700 })
     vi.stubEnv('PATH', `${bin}${delimiter}${process.env.PATH}`)
+    vi.stubEnv('npm_config_cache_dir', join(directory, 'metadata'))
     // A separate cache forces deployment even when another installed fixture is already warm.
     vi.stubEnv('FOREMAN_CODE_TEST_CACHE_ROOT', join(directory, 'cache'))
     try {
@@ -151,6 +152,7 @@ process.exit(1)
       const args = JSON.parse(await readFile(calls, 'utf8')) as string[]
       expect(args).toContain('--offline')
       expect(args[args.indexOf('--store-dir') + 1]).toBe(storeDir)
+      expect(args[args.indexOf('--cache-dir') + 1]).toBe(join(directory, 'metadata'))
     } finally {
       vi.unstubAllEnvs()
       await rm(directory, { recursive: true, force: true })
