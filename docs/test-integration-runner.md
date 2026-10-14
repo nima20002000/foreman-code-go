@@ -1,5 +1,18 @@
 # API integration runner
 
+Every integration invocation first recovers abandoned roots in `~/.cache/graphql-disposable-tests`.
+Roots and cleanup records capture the owning PID, Linux process start ticks, and boot identity;
+recovery uses these facts rather than elapsed time. Live owners, surviving processes with a root
+in their environment, working directory or open files, running bind-mounted containers, and
+databases with active callers keep their recovery state. Roots from older runners without a
+confirmed process identity are retained for inspection.
+
+Recovery settles nested invocations before their parents, closes recorded native reservations,
+removes stopped disposable containers bound to the root, and drops databases bearing that
+root's ownership token. It makes owned directories writable without following symlinks before
+removing a settled root. Failed or unsupported cleanups remain recorded and are retried by the
+next invocation; one retained root does not prevent recovery of other abandoned roots.
+
 From the repository root, `corepack pnpm test:integration` builds contracts under the project heavy-job queue, then snapshots the sorted API `*.integration.test.ts` files. A clean run creates up to twelve UUID-named disposable loopback PostgreSQL databases and separate temporary directories by default, bounded by available CPUs; partial runs create no more slots than selected files. `FOREMAN_CODE_INTEGRATION_SHARDS=1..12` can lower or raise the limit for a specific machine. Each slot runs one file at a time with one Vitest worker. The startup test runs once, alone before the parallel phase, because it starts the local development command and uses shared checkout build output.
 
 Parallel files start in descending order of their last recorded first-pass duration; unmeasured files start first. Durations are saved atomically in `~/.cache/graphql-disposable-tests/integration-durations.json`, shared by checkouts on the same machine. Missing or corrupt records preserve discovery order. Exclusive resource checks retain their fixed order. Each file launches the API workspace's Vitest binary directly, with package binaries on `PATH` and the same isolated environment, worker limits, diagnostic filters and JSON reports.

@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path'
 import { resolveProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { createTestPool } from '../apps/api/test/helpers/testPool.mjs'
 import { ciTemplateCacheDirectory } from './ci-postgres-cache.mjs'
+import { currentTestProcess } from './test-resource-process.mjs'
 
 const defaultTestAdminUrl = 'postgresql://graphql_test_admin:graphql_test_disposable_only@127.0.0.1:55439/postgres'
 function hostTestAdminUrl() {
@@ -51,7 +52,8 @@ export function createTestRoot(parent, prefix = 'graphql-test-') {
   const owner = findParentTestRoot(directory)
   const parentCleanup = owner && { ...owner, id: registerTestResourceCleanup(owner,
     { kind: 'child-invocation', directory, childOwner: token }) }
-  writeFileSync(join(directory, rootMarker), JSON.stringify({ directory, token, parentCleanup }),
+  writeFileSync(join(directory, rootMarker), JSON.stringify({ directory, token, parentCleanup,
+    process: currentTestProcess(), databaseServer: testAdminUrl }),
     { mode: 0o600, flag: 'wx' })
   return { directory, token }
 }
@@ -91,17 +93,48 @@ export function removeTestRoot(resource) {
   assertTestResourcesSettled(resource)
   const { parentCleanup } = JSON.parse(readFileSync(join(resource.directory, rootMarker), 'utf8'))
   if (parentCleanup) assertTestRoot(parentCleanup.directory, parentCleanup.token)
+  makeTestDirectoriesWritable(resource.directory)
   rmSync(resource.directory, { recursive: true, force: true })
   if (parentCleanup) completeTestResourceCleanup(parentCleanup, parentCleanup.id)
+}
+
+function makeTestDirectoriesWritable(directory) {
+  const stat = lstatSync(directory)
+  if (!stat.isDirectory() || stat.isSymbolicLink()) return
+  if (stat.uid !== process.getuid()) throw new Error('Test directory cleanup ownership mismatch')
+  chmodSync(directory, stat.mode | 0o700)
+  for (const name of readdirSync(directory)) makeTestDirectoriesWritable(join(directory, name))
 }
 
 export function registerTestResourceCleanup(resource, details) {
   const directory = assertTestPath(resource, join(resource.directory, cleanupDirectory))
   mkdirSync(directory, { recursive: true, mode: 0o700 })
   const id = randomUUID()
-  writeFileSync(join(directory, `${id}.json`), JSON.stringify({ ...details, id, token: resource.token }),
+  writeFileSync(join(directory, `${id}.json`), JSON.stringify({ ...details, id, token: resource.token,
+    process: currentTestProcess() }),
     { mode: 0o600, flag: 'wx' })
   return id
+}
+
+export function readTestResourceCleanups(resource) {
+  const directory = assertTestPath(resource, join(resource.directory, cleanupDirectory))
+  return (existsSync(directory) ? readdirSync(directory) : []).map(name => {
+    const file = assertTestPath(resource, join(directory, name))
+    const stat = lstatSync(file)
+    if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0) {
+      throw new Error('Test cleanup record is unsafe')
+    }
+    const record = JSON.parse(readFileSync(file, 'utf8'))
+    if (!/^[0-9a-f-]{36}$/.test(record.id) || name !== `${record.id}.json` || record.token !== resource.token) {
+      throw new Error('Test cleanup ownership mismatch')
+    }
+    return record
+  })
+}
+
+export async function recoverAbandonedTestRoots(admin, options = {}) {
+  const { recoverAbandonedTestRoots: recover } = await import('./test-resource-recovery.mjs')
+  return recover(admin, options)
 }
 
 export function completeTestResourceCleanup(resource, id) {
@@ -243,6 +276,7 @@ export function referenceTestAuthenticationFile(resource, filename, destination)
 
 export async function testAdminPool() {
   const pool = createTestPool({ connectionString: testAdminUrl, max: 1,
+    idleTimeoutMillis: 0,
     connectionTimeoutMillis: 10_000, query_timeout: 35_000,
     options: '-c statement_timeout=30000 -c lock_timeout=10000' })
   const query = pool.query.bind(pool)
@@ -312,22 +346,19 @@ export async function assertTestDatabase(pool, resource) {
   if (result.rows[0]?.marker !== `graphql-test:${resource.token}`) throw new Error('Disposable database ownership mismatch')
 }
 
-export async function dropTestDatabase(admin, resource) {
+export async function dropTestDatabase(admin, resource, { force = true } = {}) {
   assertTestResourcesSettled(resource)
   await assertTestDatabase(admin, resource)
   const name = decodeURIComponent(requireTestServerUrl(resource.databaseUrl).pathname.slice(1))
-  await admin.query(`drop database ${identifier(name)} with (force)`)
+  await admin.query(`drop database ${identifier(name)}${force ? ' with (force)' : ''}`)
 }
 
 export async function settleTestResources(admin, resource) {
   assertTestRoot(resource.directory, resource.token)
   const { sweepRestartUnits } = await import('./test-restart-units.mjs')
   await sweepRestartUnits(resource)
-  const directory = assertTestPath(resource, join(resource.directory, cleanupDirectory))
-  const pending = existsSync(directory) ? readdirSync(directory).map(name =>
-    JSON.parse(readFileSync(assertTestPath(resource, join(directory, name)), 'utf8'))) : []
-  if (pending.some(record => record.token !== resource.token
-    || !['fixture-database', 'native-acceptance-database'].includes(record.kind))) {
+  const pending = readTestResourceCleanups(resource)
+  if (pending.some(record => !['fixture-database', 'native-acceptance-database'].includes(record.kind))) {
     assertTestResourcesSettled(resource)
   }
   // The suite controller closes its process group before this fallback. Never force-close a database caller.
@@ -498,6 +529,7 @@ export async function removeFixtureDirectory(directory, options = { force: true 
   if (!parent.startsWith(`${root}/`) && parent !== root) {
     throw new Error('Fixture cleanup parent escapes its owned test root')
   }
+  makeTestDirectoriesWritable(target)
   rmSync(target, { recursive: true, force: options.force })
 }
 

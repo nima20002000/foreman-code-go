@@ -10,7 +10,8 @@ import { createRequire } from 'node:module'
 import { availableParallelism, freemem } from 'node:os'
 import { delimiter, dirname, join, posix, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { cleanupTestResources, createTestDatabase, createTestRoot, dropTestDatabase, removeTestRoot, requireTestServerUrl,
+import { cleanupTestResources, createTestDatabase, createTestRoot, dropTestDatabase, recoverAbandonedTestRoots,
+  removeTestRoot, requireTestServerUrl,
   resetTestDatabase, settleTestResources, testAdminPool, testEnvironment } from './test-resources.mjs'
 import { createTestDatabaseTemplate, dropTestDatabaseTemplate } from './test-database-template.mjs'
 import { ciTemplateCacheDirectory } from './ci-postgres-cache.mjs'
@@ -560,6 +561,15 @@ export async function runIntegration(argv = [], {
   extraItems = [], executeExtra, reportDirectory, profilePath, env = process.env, contractsBuilt = false,
 } = {}) {
   const { startAt, failedFrom, files } = options(argv, env)
+  const recoveryAdmin = await testAdminPool()
+  try {
+    const recovered = await recoverAbandonedTestRoots(recoveryAdmin)
+    console.log(`[integration] disposable recovery: ${recovered.removed.length} removed;`
+      + ` ${recovered.retained.length} retained.`)
+    for (const retained of recovered.retained) {
+      console.log(`[integration] retained ${retained.directory}: ${retained.reason}`)
+    }
+  } finally { await recoveryAdmin.end() }
   const gate = integrationGate(env) || extraItems.length > 0
   if (!contractsBuilt) {
     const contractsBuild = spawnSync('corepack', ['pnpm', '--dir', 'packages/contracts', 'build'],
