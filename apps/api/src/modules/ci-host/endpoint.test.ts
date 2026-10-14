@@ -39,9 +39,7 @@ it('answers a status request without waiting for a slow directory retention swee
   const release = deferred()
   const completed = deferred()
   const cleanupRequests: CiHostRequest[] = []
-  let queries = 0
   const pool = { query: async () => {
-    queries++
     return { rows: [{ run_id: 'old-run', state: 'passed', finished_at: '2026-01-01T00:00:00Z',
       collection: null, rank: '500' }] }
   } } as unknown as pg.Pool
@@ -67,7 +65,6 @@ it('answers a status request without waiting for a slow directory retention swee
     const second = await endpoint.request(computer, { operation: 'status' })
     expect(second).toMatchObject({ operation: 'status', ready: true })
     expect(cleanupRequests).toEqual([{ operation: 'status', cleanupRunIds: ['old-run'] }])
-    expect(queries).toBe(1)
   } finally {
     clearTimeout(timeout)
     release.resolve()

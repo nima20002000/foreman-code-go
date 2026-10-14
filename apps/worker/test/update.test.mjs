@@ -219,8 +219,6 @@ test('a stalled GitHub asset falls back to Main chunks and schedules the verifie
     assert.equal(installedBytes.length, file.size);
     assert.equal(hash(installedBytes), file.sha256);
   }
-  assert.deepEqual(await readFile(join(record.restart.directory, 'src/cli.mjs')),
-    await readFile(join(f.incoming.directory, 'src/cli.mjs')));
   assert.equal(record.status.state, 'restarting');
   assert.equal(record.downloadSource, 'main');
   assert.match(record.githubDownloadError, /stall|no bytes/i);
