@@ -355,7 +355,7 @@ describe('Worker reconnect profile checks', () => {
     f.seed(f.proof(f.override))
     let current = f.binding
     f.qualify.mockImplementationOnce(async selected => {
-      current = { ...current, bootId: 'restarted-boot', connectionGeneration: 3 }
+      current = { ...current, bootId: randomUUID(), connectionGeneration: 3 }
       return { ...f.proof(selected), connectionGeneration: harnessConnectionGeneration(f.binding) }
     })
     await expect(f.service.recheckWorker(f.binding, new AbortController().signal, () => current))

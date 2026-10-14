@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -15,7 +15,9 @@ import { FleetMaintenanceService, type FleetSources } from './fleet.js'
 import type { OperatorServices } from '../../mcp/operator/types.js'
 
 it('reads persisted Worker publication errors through authenticated MCP and denies a caller without settings read', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'worker-publication-'))
+  const parent = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(parent, { recursive: true })
+  const directory = await mkdtemp(join(parent, 'worker-publication-'))
   const mainId = randomUUID()
   const principal: ManagementPrincipal = { id: randomUUID(), name: 'Reader', audience: 'operator', revokedAt: null,
     expiresAt: '2099-01-01T00:00:00Z', grants: [{ actions: ['settings:read', 'capabilities:read'], scope: {} }] }
@@ -28,7 +30,7 @@ it('reads persisted Worker publication errors through authenticated MCP and deni
     id: principal.id, name: principal.name, audience: principal.audience, grants: principal.grants,
     expires_at: new Date(principal.expiresAt), revoked_at: null, delegated_from: null,
   }] : [] }))
-  vi.spyOn(pool, 'connect').mockResolvedValue({ query, release: vi.fn() } as unknown as pg.PoolClient)
+  vi.spyOn(pool, 'connect').mockImplementation(async () => ({ query, release: vi.fn() }) as unknown as pg.PoolClient)
   const access = new PostgresAccessService(pool)
   vi.spyOn(access, 'authenticate').mockImplementation(async token => token === 'reader' ? principal : denied)
   const recordDenied = vi.fn()

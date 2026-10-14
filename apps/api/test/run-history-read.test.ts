@@ -66,7 +66,8 @@ function fixture(queued = false) {
     }
     if (sql.startsWith('select e.id,e.attempt,e.activity_record_revision')) {
       expect(values).toEqual([run.id, run.workspaceId])
-      return { rows: [{ id: execution.id, attempt: 1, revision: '1', state: execution.state, outcome: execution.result?.outcome,
+      const outcome = 'result' in execution ? execution.result?.outcome : undefined
+      return { rows: [{ id: execution.id, attempt: 1, revision: '1', state: execution.state, outcome,
         created_at: f.createdAt, started_at: null, native_session_id: null, harness: null, native_revision: '0' }] }
     }
     if (sql.includes('from workflow_job_executions')) { expect(values).toEqual([run.id, run.workspaceId, run.workflowId, run.workflowVersionId]); return { rows: [] } }

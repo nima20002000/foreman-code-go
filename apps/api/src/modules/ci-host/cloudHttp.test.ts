@@ -22,7 +22,7 @@ it('reports a CLI credential fallback and retries token acquisition after a boun
   expect(JSON.stringify(http.transport)).not.toContain('private credential detail')
   expect(await http.request('/fixture')).toBeNull()
   expect(run).toHaveBeenCalledTimes(1)
-  expect(http.transport.fallbackCount).toBe(2)
+  expect(http.transport).toMatchObject({ fallbackCount: 2 })
   await vi.advanceTimersByTimeAsync(30_000)
   await expect(http.request('/fixture')).resolves.toBeInstanceOf(Response)
   expect(run).toHaveBeenCalledTimes(2)

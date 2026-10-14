@@ -55,7 +55,7 @@ function fixture() {
   registerGraphqlMcp(app, { access, operator: services })
   const rpc = (payload: Record<string, unknown>, token = 'reader') => app.inject({ method: 'POST', url: '/mcp',
     headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream' }, payload })
-  const call = async (input: Record<string, unknown>, id = 1, token = 'reader') => {
+  const call = async (input: Record<string, unknown>, id: string | number = 1, token = 'reader') => {
     const response = await rpc({ jsonrpc: '2.0', id, method: 'tools/call',
       params: { name: 'ci_get', arguments: { workspaceId: 'workspace', ticketId: record.id, ...input } } }, token)
     const line = response.body.split('\n').find(value => value.startsWith('data: '))

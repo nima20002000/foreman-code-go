@@ -71,6 +71,7 @@ describe('independent known child settlement', () => {
     } } as unknown as NativeHarnessSessionManager
     const publish = vi.fn()
     await reconcileKnownActivities({ kind: 'operator', activity, signal: new AbortController().signal,
+      observations: new Map(), onObservation: vi.fn(),
       runtimeFor: () => ({ manager, session, redact: nativePersistenceRedactor(secrets) }), publish })
     expect(publish).toHaveBeenCalledTimes(1)
     expect(JSON.stringify(f.persisted)).not.toContain(token); expect(JSON.stringify(f.persisted)).not.toContain('owned-fixture-secret')

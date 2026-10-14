@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto'
+import type pg from 'pg'
 import { expect, it, vi } from 'vitest'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { createSourceManifest, sourceSha256 } from './manifest.js'
 import { PostgresSourceService } from './service.js'
+import type { GraphSqlClient } from '../run-graph/connection.js'
 
 // Principal authority has its own tests; this file covers repeated reads of one immutable snapshot.
 vi.mock('./authority.js', () => ({ authorizeSource: vi.fn(async () => ({})) }))
@@ -17,8 +19,10 @@ it('reuses a verified source snapshot but reports it unavailable once its bytes 
     locationRevision: 1, mainId, originIdentityHash: `sha256:${'a'.repeat(64)}`, manifest,
     approvedAt: new Date().toISOString(), availability: 'retained' }
   let availability = 'retained'
-  const sql = { query: vi.fn(async (text: string) => text.includes('application_installation')
-    ? { rows: [{ id: mainId }] } : { rows: [{ record, availability }] }) }
+  const sql: GraphSqlClient = { async query<R extends pg.QueryResultRow>(text: string) {
+    const rows = text.includes('application_installation') ? [{ id: mainId }] : [{ record, availability }]
+    return { rows: rows as unknown as R[], rowCount: rows.length, command: 'SELECT', oid: 0, fields: [] }
+  } }
   const sources = new PostgresSourceService(...[{}, {}, {}, {}, mainId, {}, {}, {}] as unknown as
     ConstructorParameters<typeof PostgresSourceService>)
   const principal = { id: 'owner' } as ManagementPrincipal

@@ -19,7 +19,7 @@ import { nativeGraphSource } from '../src/modules/run-graph/nativeIngestion.js'
 import { appendNormalizedNativeEvents } from '../src/modules/runs/nativeEventBatch.js'
 import { normalizeNativeProducerEvent } from '../src/modules/run-graph/nativeProducerNormalization.js'
 import { beforeGraphCommit, type GraphTransactionSql } from '../src/modules/run-graph/connection.js'
-import { appendNativeEvent } from '../src/modules/runs/nativeEvents.js'
+import { appendNativeEvent, appendNormalizedNativeEvent } from '../src/modules/runs/nativeEvents.js'
 import { repeatDigest, repeatExecutionIdentity, repeatId, tickSlotId } from '../src/modules/runs/repeatResolution.js'
 import { repeatLaunchClaim } from '../src/modules/runs/repeatNativeRepository.js'
 import { reserveWorkflowNativeEntryLocked, workflowNativeReservation } from '../src/modules/runs/workflowNativeEntry.js'
@@ -35,7 +35,7 @@ afterAll(async () => {
 async function measure<T>(work: () => Promise<T>) {
   let statements = 0
   const query = pg.Client.prototype.query
-  const wrapper = vi.spyOn(pg.Client.prototype, 'query').mockImplementation(function (this: pg.Client, ...args) {
+  const wrapper = vi.spyOn(pg.Client.prototype, 'query').mockImplementation(function (this: pg.Client, ...args: unknown[]) {
     statements++
     return Reflect.apply(query, this, args)
   } as typeof query)
@@ -198,7 +198,7 @@ it('replays retained semantic history with constant statement count and unchange
     payload: { threadId: f.session.nativeSessionId, turn: { id: 'turn', status: 'inProgress' } } }))
   await f.owner.oneShotConnection().transaction(async sql => {
     for (const event of events) {
-      await appendNativeEvent(sql, event)
+      await appendNormalizedNativeEvent(sql, normalizeNativeProducerEvent(event))
       const source = nativeGraphSource(event)
       await sql.query(`insert into run_graph_sources(run_id,source_kind,source_id,source_revision,source_digest,semantic_digest,first_sequence)
         values($1,'native_event',$2,0,$3,$4,1)`,

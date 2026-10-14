@@ -58,7 +58,7 @@ it.each([0, 1250])(
     expect(read.run).toMatchObject({ part: null, partition: null, state: 'passed',
       computer: { hostRef: { kind: 'main' } } })
     expect(read.logTail).toContain('npm run integration')
-    expect(read.logTail.split('\n').filter(line => line === 'npm run integration')).toHaveLength(1)
+    expect(read.logTail?.split('\n').filter(line => line === 'npm run integration')).toHaveLength(1)
     expect(read.logTail).toContain('fixture integration passed')
     expect((await f.pool.query<{ record: unknown }>('select record from ci_runs where group_id=$1',
       [read.run.groupId])).rows.map(row => row.record)).toEqual([read.run])

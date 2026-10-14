@@ -56,7 +56,7 @@ function fixture() {
   /** The link drops while the request is in flight: the session is gone until `reconnect` installs another. */
   const dropDuringFirstDelivery = (reconnect: () => void) => {
     deliver.mockImplementationOnce(async () => {
-      state.live = undefined
+      delete state.live
       setTimeout(reconnect, 300)
       throw new DeviceConnectionError('transport')
     })

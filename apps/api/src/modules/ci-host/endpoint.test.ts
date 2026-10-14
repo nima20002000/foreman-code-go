@@ -1,5 +1,5 @@
 import type pg from 'pg'
-import type { CiHostRequest } from '@foreman-code/contracts'
+import { CiHostRequestSchema, type CiHostRequest } from '@foreman-code/contracts'
 import { expect, it } from 'vitest'
 import { deferred } from '../../../test/helpers/deferred.js'
 import { ProductionHostCiEndpoint } from './endpoint.js'
@@ -44,7 +44,8 @@ it('answers a status request without waiting for a slow directory retention swee
       collection: null, rank: '500' }] }
   } } as unknown as pg.Pool
   const endpoint = new ProductionHostCiEndpoint(pool, 'fixture-main', () => undefined, {
-    handle: async request => {
+    handle: async payload => {
+      const request = CiHostRequestSchema.parse(payload)
       if (request.operation === 'status' && request.cleanupRunIds) {
         cleanupRequests.push(request)
         sweeping.resolve()

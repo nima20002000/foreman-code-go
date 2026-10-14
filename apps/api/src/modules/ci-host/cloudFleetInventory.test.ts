@@ -20,6 +20,8 @@ it.each(['rejected', 'nonzero', 'malformed', 'incomplete'] as const)(
     const response = await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 })
     expect(response).toMatchObject({ run: { state: 'failed', mirrorPublication: { state: 'failed' },
       message: expect.stringContaining('fleet identity inventory') } })
+    expect(response.operation).toBe('read')
+    if (response.operation !== 'read') throw new Error('Expected a CI read reply')
     expect(response.run.message).not.toContain('private diagnostic')
     expect(f.mirrorGit('rev-parse', 'main')).toBe(head)
     expect(f.dispatched).toHaveLength(0)

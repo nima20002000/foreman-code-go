@@ -231,7 +231,7 @@ export function expectBoundedNodeFault(details: ReturnType<typeof SavedRunDetail
   fixture: Awaited<ReturnType<typeof faultWorkflowFixture>>, activity: RegExp) {
   expect(details.run.executionState).toBe('completed')
   expect(['succeeded', 'failed']).toContain(details.run.outcome)
-  expect(details.stopRequested).toBe(false)
+  expect(details.run.stopCause).toBeUndefined()
   expect(details.cleanupPending).toBe(false)
   const sibling = details.executions.filter(execution => execution.workflowNodeId === fixture.sibling.id)
   expect(sibling).toHaveLength(1)

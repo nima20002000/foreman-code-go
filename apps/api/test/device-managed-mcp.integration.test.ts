@@ -92,7 +92,7 @@ it('applies paired-device MCP through authenticated Operator MCP with denial, re
       name: 'harness_mcp_servers_list', arguments: { harness: 'codex', hostRef },
     })))
     expect(migrated.servers.map(server => server.name)).toEqual(['example', 'foreman-code'])
-    expect(migrated.presets.graphql).toBe('installed')
+    expect(migrated.presets).toMatchObject({ graphql: 'installed' })
     const native = await f.adapters.codex.read(AbortSignal.timeout(5000))
     expect(native.user['foreman-code']).toMatchObject({ env_vars: ['FOREMAN_CODE_MCP_TOKEN'],
       disabled_tools: ['interaction_respond'] })

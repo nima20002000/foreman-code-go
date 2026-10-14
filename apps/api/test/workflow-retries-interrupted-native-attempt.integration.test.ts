@@ -26,7 +26,7 @@ describe.runIf(postgresEnabled)('native interruption without an answer', () => {
     })
     fixture.release()
     const details = await fixture.finished()
-    expect(details.stopRequested).toBe(false)
+    expect(details.run.stopCause).toBeUndefined()
     expectBoundedNodeFault(details, fixture, /interrupt|cancel|retry/i)
     expect(details.executions.find(item => item.id === execution.id)?.result?.output).toBeUndefined()
   }, 18_000)
