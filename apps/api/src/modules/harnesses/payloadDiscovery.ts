@@ -1,3 +1,4 @@
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 import { access, open, realpath } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -43,12 +44,14 @@ export async function passiveDriverPayloads(driver: string, launcher: string,
   try { vendor = join(dirname(requireLauncher.resolve(`${target.package}/package.json`)), 'vendor') }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'MODULE_NOT_FOUND') throw error
+    logIgnoredError('harness', 'select native payload layout', error)
     vendor = join(dirname(selected), '..', 'vendor')
   }
   const payload = join(vendor, target.triple, 'bin', platform === 'win32' ? 'codex.exe' : 'codex')
   try { await access(payload, constants.X_OK); return { complete: true, paths: [await realpath(payload)] } }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    logIgnoredError('harness', 'inspect native package payload', error)
     return { complete: false, paths: [] }
   }
 }

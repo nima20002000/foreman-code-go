@@ -128,7 +128,7 @@ export abstract class CodexManagerConnection extends CodexManagerEvents {
     } catch (error) {
       runtime.closed = true
       await candidate.transport.close().catch(cleanupError => {
-      logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
+        logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
         // ignore: preserve the resume failure; shutdown retries the owned transport.
       })
       throw error
@@ -157,7 +157,7 @@ export abstract class CodexManagerConnection extends CodexManagerEvents {
     starting.staged.length = 0
     void this.finishTurnResources(runtime).catch(cleanupError => {
       logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
-      // ignore: resources stay owned for the next admission or explicit close to retry.
+      // Resources stay owned for the next admission or explicit close to retry.
     })
     this.record(runtime, 'turn.start_rejected', { correlationId: starting.correlationId })
   }
@@ -257,7 +257,7 @@ export abstract class CodexManagerConnection extends CodexManagerEvents {
     // Cancellation withdraws file authority even when native interrupt delivery is uncertain.
     void this.finishTurnResources(runtime).catch(cleanupError => {
       logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
-      // ignore: resources stay owned for the next admission or explicit close to retry.
+      // Resources stay owned for the next admission or explicit close to retry.
     })
     if (runtime.cancellation?.turnId === turnId) return runtime.cancellation.promise
     const promise = (async () => {

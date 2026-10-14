@@ -2,6 +2,8 @@ import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, ran
 import { link, lstat, mkdir, open, readFile, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
+let cleanupFailures = 0
+
 async function requirePrivateFile(file: string): Promise<void> {
   const info = await lstat(file)
   if (!info.isFile() || (info.mode & 0o077) !== 0 || (process.getuid && info.uid !== process.getuid())) {
@@ -100,7 +102,15 @@ export async function updateWorkerEndpoint(directory: string, endpoint: string):
   await syncPath(temporary)
   const { rename } = await import('node:fs/promises')
   try { await rename(temporary, join(directory, 'pairing.json')); await syncPath(directory) }
-  catch (error) { await unlink(temporary).catch(() => undefined); throw error }
+  catch (error) {
+    await unlink(temporary).catch((cleanupError: unknown) => {
+      const code = (cleanupError as NodeJS.ErrnoException).code
+      if (code === 'ENOENT') return
+      console.warn(JSON.stringify({ operation: 'remove failed identity update', status: 'degraded',
+        lastError: code ?? 'CLEANUP_FAILED', failureCount: ++cleanupFailures }))
+    })
+    throw error
+  }
 }
 
 export function mainIdentityProofMessage(request: import('./deviceIdentity.js').MainIdentityProofRequest, mainApplicationVersion: string): string {

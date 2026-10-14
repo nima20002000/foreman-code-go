@@ -1,3 +1,4 @@
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 import type { ProviderAccountBinding } from '@foreman-code/contracts/provider-accounts'
 import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import {
@@ -73,7 +74,10 @@ export class NativeConfigurationService {
       }
       return value
     }
-    catch (error) { throw qualificationError(error) }
+    catch (error) {
+      logIgnoredError('harness', `discover ${harness} native options`, error)
+      throw qualificationError(error)
+    }
   }
 
   async refreshOptions(harness: AgentHarness, refresh: 'catalog' | 'upstream' = 'catalog',

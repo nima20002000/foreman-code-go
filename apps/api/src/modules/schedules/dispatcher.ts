@@ -1,3 +1,4 @@
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 import type { WorkflowSchedule } from '@foreman-code/contracts/schedules'
 import { DomainError } from '../errors.js'
 import type { ScheduleDispatchContext, ScheduleDispatchErrorReporter } from './dispatchErrors.js'
@@ -85,7 +86,10 @@ export class WorkflowScheduleDispatcher {
         context = { workspaceId: candidate.workspaceId, workflowId: candidate.workflowId,
           dueAt: candidate.nextOccurrenceAt }
       }))
-        .catch((error: unknown) => { this.options.reportError(error, context) })
+        .catch((error: unknown) => {
+          logIgnoredError('engine', 'dispatch scheduled workflow', error)
+          this.options.reportError(error, context)
+        })
         .finally(() => {
           clearTimeout(timer)
           this.dispatching.delete(schedule.workflowId)

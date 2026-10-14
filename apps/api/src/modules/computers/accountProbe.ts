@@ -6,8 +6,7 @@ import { constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { ComputerAccountsSchema, type ComputerAccount, type ComputerAccounts } from '@foreman-code/contracts/computer-accounts'
-import { fallbackOnError } from '../diagnostics/ignoredError.js'
-import { DomainError } from '../errors.js'
+import { fallbackOnMissing } from '../diagnostics/ignoredError.js'
 import { executableUnavailable } from './executableError.js'
 
 export interface AccountProbePorts {
@@ -27,15 +26,10 @@ export async function probeComputerAccounts(ports: AccountProbePorts = systemPor
   options: { refresh?: boolean } = {}): Promise<ComputerAccounts> {
   const accounts = await Promise.all([codex(ports).then(account => ({ account, observedAt: Date.now() })),
     cachedAccount(ports, 'claude', signal, options),
-    cachedAccount(ports, 'github', signal, options)]
-    .map(probe => probe.catch(error => {
-      if (error instanceof DomainError && error.code === 'COMPUTER_EXECUTABLE_UNAVAILABLE') throw error
-      return fallbackOnError(null, 'lifecycle', 'probe computer account')(error)
-    })))
-  const tools = ['codex', 'claude', 'github'] as const
-  const observedAt = Math.min(Date.now(), ...accounts.flatMap(value => value ? [value.observedAt] : []))
+    cachedAccount(ports, 'github', signal, options)])
+  const observedAt = Math.min(Date.now(), ...accounts.map(value => value.observedAt))
   return ComputerAccountsSchema.parse({ observedAt: new Date(observedAt).toISOString(),
-    accounts: accounts.map((value, index) => value?.account ?? unknown(tools[index]!)) })
+    accounts: accounts.map(value => value.account) })
 }
 
 const unknown = (tool: ComputerAccount['tool']): ComputerAccount => ({ tool, installed: true, signedIn: null, account: null, details: [] })
@@ -106,7 +100,7 @@ async function claude(ports: AccountProbePorts, signal: AbortSignal): Promise<Co
   const result = await ports.run(binary, ['auth', 'status'], signal)
   // An install whose executable cannot start (for example a missing loader) says nothing at all.
   if (result.code === null && !result.stdout && !result.stderr) {
-    return { tool: 'claude', installed: true, signedIn: null, account: null, details: ['cannot start'] }
+    throw new Error('Claude account inspection could not start.')
   }
   let status: { loggedIn?: unknown; email?: unknown; authMethod?: unknown }
   try { status = JSON.parse(result.stdout) as typeof status } catch {
@@ -116,7 +110,10 @@ async function claude(ports: AccountProbePorts, signal: AbortSignal): Promise<Co
     }
     throw new Error('Unreadable Claude sign-in status.')
   }
-  return { tool: 'claude', installed: true, signedIn: status.loggedIn === true,
+  if (!status || typeof status.loggedIn !== 'boolean' || result.code !== 0 && status.loggedIn !== false) {
+    throw new Error(`Claude account inspection failed (exit ${result.code}).`)
+  }
+  return { tool: 'claude', installed: true, signedIn: status.loggedIn,
     account: typeof status.email === 'string' ? status.email.slice(0, 320) : null,
     details: typeof status.authMethod === 'string' ? [status.authMethod.slice(0, 200)] : [] }
 }
@@ -135,18 +132,17 @@ export async function probeGitHubAccount(ports: AccountProbePorts, signal = Abor
   let result = await ports.run(binary, [...args, '--json', 'hosts'], signal)
   const unsupported = (flag: string) => new RegExp(`unknown flag: --${flag}\\b`, 'u').test(result.stderr)
   if (!unsupported('json') && !unsupported('active')) {
+    if (result.code === 1 && githubSignedOut.test(result.stderr)) return { ...unknown('github'), signedIn: false }
+    if (result.code !== 0) throw new Error(`GitHub account inspection failed (exit ${result.code}).`)
     const parsed = githubStatusSchema.safeParse(parseJson(result.stdout))
-    if (result.code === 0 && parsed.success) {
+    if (parsed.success) {
       const entries = parsed.data.hosts['github.com'] ?? []
       if (!entries.length) return { ...unknown('github'), signedIn: false }
       const active = entries.filter(entry => entry.active)
       if (active.length !== 1) return unknown('github')
       return { ...unknown('github'), signedIn: active[0]!.state === 'success' ? true : null, account: active[0]!.login }
     }
-    if (result.code === 1 && githubSignedOut.test(result.stderr)) {
-      return { ...unknown('github'), signedIn: false }
-    }
-    return unknown('github')
+    throw new Error('GitHub account inspection returned invalid output.')
   }
   result = await ports.run(binary, args, signal)
   if (unsupported('active')) result = await ports.run(binary, ['auth', 'status', '--hostname', 'github.com'], signal)
@@ -158,12 +154,12 @@ export async function probeGitHubAccount(ports: AccountProbePorts, signal = Abor
   const active = accounts.filter(match => /Active account:\s*true/u.test(match[2]!))
   let user = active.length === 1 ? active[0]?.[1] : undefined
   if (active.length === 0 && accounts.length === 1 && !/Active account:\s*false/u.test(output)) user = accounts[0]?.[1]
-  if (result.code !== 0 || !user) return unknown('github')
+  if (result.code !== 0 || !user) throw new Error(`GitHub account inspection failed (exit ${result.code}).`)
   return { ...unknown('github'), signedIn: true, account: user }
 }
 
 function parseJson(value: string): unknown {
-  try { return JSON.parse(value) } catch { return null }
+  return JSON.parse(value)
 }
 
 /** Explicit installer selections must be usable; PATH discovery applies only to unconfigured commands. */
@@ -209,17 +205,21 @@ export function systemPorts(environment: NodeJS.ProcessEnv = process.env,
       }
       for (const directory of directories) {
         const candidate = join(directory, name)
-        try { await access(candidate, constants.X_OK); return candidate } catch { continue }
+        try { await access(candidate, constants.X_OK); return candidate }
+        catch (error) {
+          if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error
+        }
       }
       return null
     },
-    run: (binary, args, signal) => new Promise(resolve => {
+    run: (binary, args, signal) => new Promise((resolve, reject) => {
       execFile(binary, args, { signal, timeout: 15_000, maxBuffer: 256 * 1024, encoding: 'utf8',
         env: { ...environment, NO_COLOR: '1', GH_PROMPT_DISABLED: '1' } }, (error, stdout, stderr) => {
+        if (error && typeof (error as { code?: unknown }).code !== 'number') { reject(error); return }
         const code = error && typeof (error as { code?: unknown }).code === 'number' ? (error as { code: number }).code : error ? null : 0
         resolve({ code, stdout, stderr })
       })
     }),
-    readText: path => readFile(path, 'utf8').catch(fallbackOnError(null, 'lifecycle', 'read account file', {}, ['ENOENT'])),
+    readText: path => readFile(path, 'utf8').catch(fallbackOnMissing(null)),
   }
 }

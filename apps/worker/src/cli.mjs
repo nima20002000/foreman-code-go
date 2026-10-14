@@ -65,8 +65,19 @@ async function main() {
     let identity; const errors = [];
     try {
       const manifest = JSON.parse(await readFile(new URL('../manifest.json', import.meta.url), 'utf8'));
+      if (!manifest || !/^\d+\.\d+\.\d+$/.test(manifest.version)
+        || !Number.isSafeInteger(manifest.protocolVersion) || !Number.isSafeInteger(manifest.identityFormat)
+        || !/^[a-f0-9]{40}$/.test(manifest.commit) || !/^[a-f0-9]{64}$/.test(manifest.lockfileSha256)) {
+        throw new SyntaxError('Invalid Worker manifest');
+      }
       Object.assign(facts, { appVersion: manifest.version, protocolVersion: manifest.protocolVersion, identityFormat: manifest.identityFormat, commit: manifest.commit, lockfileSha256: manifest.lockfileSha256 });
-    } catch { /* ignore: an absent artifact manifest is represented by null version fields. */ }
+    } catch (error) {
+      let reason = 'manifest_unreadable';
+      if (error.code === 'ENOENT') reason = 'manifest_missing';
+      else if (error instanceof SyntaxError) reason = 'manifest_invalid';
+      errors.push(reason);
+      console.warn(JSON.stringify({ operation: 'read Worker manifest', status: 'degraded', lastError: reason, failureCount: 1 }));
+    }
     try {
       await requirePrivateDirectory(stateDirectory);
       // Doctor is read-only, including when the worker has never initialized identity.
@@ -80,9 +91,20 @@ async function main() {
       const { stdout } = await execute('/usr/bin/systemctl', ['--user', 'show', 'graphql-worker.service', '--property=ActiveState', '--property=LoadState'], { timeout: 2000, maxBuffer: 4096, env: { PATH: '/usr/bin:/bin', HOME: process.env.HOME, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS } });
       service = { active: stdout.includes('ActiveState=active\n'), userManagerAvailable: true };
     } catch { errors.push('systemd_user_manager_missing'); }
-    const status = await readWorkerStatus(stateDirectory);
-    service.active = service.active && status?.active === true;
-    if (!status?.active) errors.push('service_not_running');
+    let status;
+    let statusUnavailable = false;
+    try { status = await readWorkerStatus(stateDirectory); }
+    catch (error) {
+      statusUnavailable = true;
+      errors.push('worker_status_unavailable');
+      const lastError = typeof error.code === 'string' ? error.code : 'WORKER_STATUS_UNAVAILABLE';
+      facts.inspectionErrors.push({ operation: 'read Worker runtime status', lastError, failureCount: 1 });
+      console.warn(JSON.stringify({ operation: 'read Worker runtime status', status: 'degraded', lastError, failureCount: 1 }));
+    }
+    if (!statusUnavailable) {
+      service.active = service.active && status?.active === true;
+      if (!status?.active) errors.push('service_not_running');
+    }
     const phase = status?.phase;
     const connection = { state: phase === 'ready' ? 'connected' : ['authenticating', 'negotiating', 'synchronizing'].includes(phase) ? 'connecting' : phase === 'disconnected' ? 'stopped' : phase, failure: status?.failure };
     if (!facts.rootPersistent) errors.push('nonpersistent_root');

@@ -16,7 +16,7 @@ import { pluginConfigurationHas, unrelatedPluginConfiguration } from './codexPlu
 import { PluginReadQueue } from './pluginReadQueue.js'
 import { QualificationCache } from './qualificationCache.js'
 import { assertNoUnresolvedMcpWrites, assertNoUnresolvedPluginWrites, lockNativeConfigurationFile, NATIVE_SETTINGS_LOCK } from './nativeSettingsWrites.js'
-import { ignoreError } from '../diagnostics/ignoredError.js'
+import { ignoreError, logIgnoredError } from '../diagnostics/ignoredError.js'
 
 const operation = 'codex.plugin.change'
 const RecoverySchema = z.object({
@@ -62,7 +62,10 @@ export class CodexPluginSettingsService {
       .catch((error: unknown) => { this.catalogs.forget('catalog'); throw error })
   }
   /** Fill the catalog before Settings opens. */
-  async warmup(): Promise<void> { await this.catalog({ signal: this.signal() }) }
+  async warmup(): Promise<void> {
+    try { await this.catalog({ signal: this.signal() }) }
+    catch (error) { logIgnoredError('harness', 'warm Codex plugin catalog', error); throw error }
+  }
   async list(principal: ManagementPrincipal, raw: CodexPluginListInput, request?: AbortSignal) {
     requireAuthorization(principal, 'harnesses:read')
     const input = CodexPluginListInputSchema.parse(raw)

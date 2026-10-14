@@ -125,8 +125,12 @@ export async function parity({ apiUrl, workspaceId, workflowIds, runId, access, 
     }
     return { comparisons, deniedTransports: 2, deniedOperations: 4, mutationReplayed: true }
   } finally {
-    await Promise.allSettled(clients.map((client) => client.close()))
+    const closed = await Promise.allSettled(clients.map((client) => client.close()))
+    for (const result of closed) {
+      if (result.status === 'rejected') diagnosticWarning('close parity client', result.reason, 'PARITY_CLIENT_CLOSE_FAILED')
+    }
     // Revocation failure must not be reported as a successful probe.
     await Promise.all(principals.map(async (id) => check(await access.revoke(id), 'PARITY_REVOCATION_FAILED')))
   }
 }
+import { diagnosticWarning } from '../diagnostic-warning.mjs'

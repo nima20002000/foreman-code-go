@@ -53,7 +53,6 @@ export class AutomaticReviewService {
         if (!interaction.graphInterruptId || this.tasks.has(interaction.id)) continue
         const task = this.schedule(interaction).catch(async (error: unknown) => {
           const message = error instanceof DomainError ? error.code : 'REVIEW_SETUP_UNCERTAIN'
-          if (this.lastErrors.get(interaction.id) === message) return
           this.lastErrors.set(interaction.id, message)
           logIgnoredError('engine', 'schedule automatic review', error, {
             interactionId: interaction.id, runId: interaction.runId,
@@ -87,7 +86,10 @@ export class AutomaticReviewService {
         if (this.closing) return
         // One unavailable native boundary must not starve other Runs' cleanup.
         try { await this.stopFailedJob(row.id) }
-        catch (error) { this.lastErrors.set(`failure:${row.id}`, errorMessage(error, 'Review cleanup failed.')) }
+        catch (error) {
+          logIgnoredError('engine', 'retry failed review cleanup', error, { reviewJobId: row.id })
+          this.lastErrors.set(`failure:${row.id}`, errorMessage(error, 'Review cleanup failed.'))
+        }
       }
     }
   }

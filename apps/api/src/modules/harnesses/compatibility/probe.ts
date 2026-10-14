@@ -71,7 +71,9 @@ async function executable(binary: string, cwd: string, environment: NodeJS.Proce
         ? (environment.PATHEXT ?? '.EXE;.COM').split(';').map((extension) => base + extension.toLowerCase()) : [base]
     })
   for (const candidate of paths) {
-    try { await access(candidate, constants.X_OK); return await realpath(candidate) } catch { /* ignore: next PATH entry, never another harness. */ }
+    try { await access(candidate, constants.X_OK); return await realpath(candidate) } catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error
+    }
   }
   throw unavailable()
 }

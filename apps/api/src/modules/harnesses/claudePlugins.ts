@@ -1,3 +1,4 @@
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 import { createHash } from 'node:crypto'
 import {
   ClaudePluginChangeInputSchema, ClaudePluginChangeResultSchema, ClaudePluginListInputSchema,
@@ -36,7 +37,8 @@ export class ClaudePluginSettingsService {
   }
 
   async warmup(): Promise<void> {
-    await this.catalog(AbortSignal.timeout(120_000))
+    try { await this.catalog(AbortSignal.timeout(120_000)) }
+    catch (error) { logIgnoredError('harness', 'warm Claude plugin catalog', error); throw error }
   }
 
   async list(principal: ManagementPrincipal, raw: ClaudePluginListInput, signal = AbortSignal.timeout(120_000)) {

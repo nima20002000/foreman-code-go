@@ -637,11 +637,11 @@ const harnessLog = componentLogger('harness')
 function publishObservation(directory: string): void {
   // Telemetry never changes dispatch or closure qualification on read failure.
   try { nativeRegistryProjection(dirname(dirname(directory))).observeLaunch(directory) }
-  catch { harnessLog.warn('Native observation publication unavailable') }
+  catch (error) { harnessLog.warn({ operation: 'publish native process observation', owner: basename(directory), err: error }, 'Native observation publication unavailable') }
 }
 function publishRetirement(directory: string): void {
   try { nativeRegistryProjection(dirname(dirname(directory))).observeRetirement(directory) }
-  catch { harnessLog.warn('Native observation publication unavailable') }
+  catch (error) { harnessLog.warn({ operation: 'publish native process observation', owner: basename(directory), err: error }, 'Native observation publication unavailable') }
 }
 /** Arguments and environment can carry prompts and credentials; log only lifecycle facts. */
 function observeNativeProcess(child: ChildProcessWithoutNullStreams, binary: string,

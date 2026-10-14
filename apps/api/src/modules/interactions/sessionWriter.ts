@@ -1,3 +1,4 @@
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 import { beginRuntimeTiming, timeRuntimeOperation, runtimeTimingPoint } from '../../infrastructure/runtimeTiming.js'
 import type { ResponseAvailabilityInspector } from '../harnesses/responseAvailability.js'
 import { randomUUID } from 'node:crypto'
@@ -722,8 +723,9 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
           try {
             const history = await lease.guard.wait(this.manager.reconcile(session, lease.previous.correlationId, lease.guard.signal))
             this.observe(session, history, lease.previous.correlationId, lease)
-          } catch {
-            // ignore: a failed observation preserves the acknowledged action; the lease check below still fences ownership.
+          } catch (error) {
+            logIgnoredError('harness', 'observe acknowledged native control', error)
+            // A failed observation preserves the acknowledged action; the lease check below still fences ownership.
             lease.observedStatus = 'uncertain'
           }
           await lease.guard.check()

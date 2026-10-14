@@ -18,7 +18,7 @@ const resolveBinary = async (binary) => {
   const candidates = isAbsolute(binary) || binary.includes('/') ? [resolve(binary)]
     : (process.env.PATH ?? '').split(delimiter).map((part) => join(part, binary))
   for (const candidate of candidates) {
-    try { await access(candidate, constants.X_OK); return realpath(candidate) } catch { /* Next PATH entry. */ }
+    try { await access(candidate, constants.X_OK); return realpath(candidate) } catch (error) { if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error }
   }
   throw new Error('Installed harness binary was not found.')
 }

@@ -143,9 +143,10 @@ export abstract class CodexManagerSessions extends CodexManagerTurns {
             creation.rejection = error
             await candidate!.transport.close()
           } else await publish(value)
-        })().catch(() => {
+        })().catch(error => {
+          logIgnoredError('harness', 'handle late native session response', error)
           void candidate!.transport.close().catch(cleanupError => {
-      logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
+            logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
             // ignore: late-response cleanup stays owned for shutdown to retry.
           })
         })
@@ -161,7 +162,7 @@ export abstract class CodexManagerSessions extends CodexManagerTurns {
           // Keep a bounded late-response window. Expiry never authorizes a retry.
           expiration = this.dependencies.schedule(() => {
             void candidate!.transport.close().catch(cleanupError => {
-      logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
+              logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
               // ignore: late-response cleanup stays owned for shutdown to retry.
             })
           }, 300_000)
@@ -462,7 +463,7 @@ export abstract class CodexManagerSessions extends CodexManagerTurns {
         },
         () => {
           void this.closeLoginControl().catch(cleanupError => {
-              logIgnoredError('harness', 'clean up Codex login', cleanupError)
+            logIgnoredError('harness', 'clean up Codex login', cleanupError)
             // ignore: failed cleanup retains the login control for explicit close or shutdown.
           })
         },
@@ -477,7 +478,7 @@ export abstract class CodexManagerSessions extends CodexManagerTurns {
         this.loginControl.loginId = loginId
         this.loginControl.timer = this.dependencies.schedule(() => {
           void this.closeLoginControl().catch(cleanupError => {
-              logIgnoredError('harness', 'clean up Codex login', cleanupError)
+            logIgnoredError('harness', 'clean up Codex login', cleanupError)
             // ignore: failed cleanup retains the login control for explicit close or shutdown.
           })
         }, 15 * 60_000)
@@ -485,7 +486,7 @@ export abstract class CodexManagerSessions extends CodexManagerTurns {
         return response
       } catch (error) {
         await this.closeLoginControl().catch(cleanupError => {
-              logIgnoredError('harness', 'clean up Codex login', cleanupError)
+          logIgnoredError('harness', 'clean up Codex login', cleanupError)
           // ignore: preserve the login failure; explicit close or shutdown retries cleanup.
         })
         throw error
@@ -519,8 +520,7 @@ export abstract class CodexManagerSessions extends CodexManagerTurns {
     for (const creation of this.creations.values()) {
       this.dependencies.cancelTimer(creation.timer)
       if (creation.transport) cleanups.push(creation.transport.close())
-      if (creation.promise) cleanups.push(creation.promise.catch(cleanupError => {
-      logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
+      if (creation.promise) cleanups.push(creation.promise.catch(() => {
         // ignore: creation failure belongs to its caller; shutdown still closes its transport.
       }).then(async () => {
         await creation.transport?.close()

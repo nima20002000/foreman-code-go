@@ -10,7 +10,7 @@ import { logIgnoredError } from '../diagnostics/ignoredError.js'
 function reportRefreshFailure(): void {
   logIgnoredError('harness', 'refresh native model catalog',
     Object.assign(new Error('Native model refresh failed; using its validated cached catalog.'),
-      { code: 'NATIVE_MODEL_REFRESH_FAILED' }))
+      { code: 'NATIVE_MODEL_REFRESH_FAILED' }), { dataAgeMs: null })
 }
 
 const MAX_MODELS = 10_000

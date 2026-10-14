@@ -1,3 +1,4 @@
+import { settleObserved } from '../../modules/diagnostics/ignoredError.js'
 import { unavailableResourceTelemetryToolCall } from '../operator/resourceTelemetryUnavailable.js'
 import { unavailableDeviceOperatorToolCall, unavailableOperatorControlToolCall, unavailableProviderAccountToolCall, unavailableRunToolCall } from '../operator/unavailableTools.js'
 import { unavailableJobToolCall } from '../operator/tools/jobs.js'
@@ -141,7 +142,7 @@ export function registerGraphqlMcp(app: FastifyInstance, services: GraphqlMcpSer
     // needed for catalogs, not unrelated status or interaction reads.
     if (!call.success) await artifacts?.register(server, request, principal)
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
-    reply.raw.once('close', () => { void Promise.allSettled([transport.close(), server.close()]) })
+    reply.raw.once('close', () => { void settleObserved('http', 'close disconnected MCP resources', [transport.close(), server.close()]) })
     await server.connect(transport)
     reply.hijack()
     reply.raw.once('finish', () => {

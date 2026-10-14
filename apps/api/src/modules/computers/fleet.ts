@@ -24,7 +24,7 @@ import type { ClaudePluginCatalog } from './claudePlugins.js'
 import type { ComputerMaintenance } from './maintenance.js'
 import { syncFingerprint } from './syncFingerprint.js'
 import { assertComputerTarget } from './target.js'
-import { ignoreError } from '../diagnostics/ignoredError.js'
+import { ignoreError, logIgnoredError } from '../diagnostics/ignoredError.js'
 
 export interface MaintenanceEndpoint {
   capabilities(deviceId: string): readonly { namespace: string; mainCanRequest: boolean }[]
@@ -224,7 +224,7 @@ export class FleetMaintenanceService {
       if (!status) return
       const behind = status.harnesses.filter(entry => entry.latest && entry.version !== entry.latest).map(entry => entry.harness)
       if (behind.length) await this.startOn(target, { kind: 'update-harnesses', harnesses: behind })
-        .catch(ignoreError('lifecycle', 'start harness update on computer', { host: target.hostRef }))
+        .catch(ignoreError('lifecycle', 'start harness update on computer', { host: target.hostRef, nextRetryMs: 60_000 }))
       if (target.hostRef.kind === 'main') return
       await this.syncWorkerUpdate(target, status, artifacts)
       for (const task of sync) {
@@ -304,7 +304,7 @@ export class FleetMaintenanceService {
       await this.startOn(target, { kind: 'update-worker' }, commandId)
       delivery.pending = false
     } catch (error) {
-      ignoreError('lifecycle', 'prompt Worker manifest update', { host: target.hostRef })(error)
+      ignoreError('lifecycle', 'prompt Worker manifest update', { host: target.hostRef, nextRetryMs: Math.max(0, delivery.retryAt - this.now()) })(error)
     }
   }
 
@@ -360,6 +360,11 @@ export class FleetMaintenanceService {
       let retryAt = this.now() + Math.max(0, delay - elapsed)
       if (delivery?.taskId === latest.id && delivery.state === 'failed') {
         retryAt = Math.min(retryAt, delivery.retryAt)
+      }
+      if (delivery?.taskId !== latest.id || delivery.state !== 'failed') {
+        logIgnoredError('lifecycle', 'retry fleet configuration sync',
+          Object.assign(new Error('Fleet configuration task failed; its original delivery will retry.'),
+            { code: 'FLEET_SYNC_FAILED' }), { attempt: failures, nextRetryMs: Math.max(0, retryAt - this.now()) })
       }
       this.deliveries.set(key, { fingerprint, taskId: latest.id, state: 'failed', retryAt })
       if (this.now() < retryAt) return

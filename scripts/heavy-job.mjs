@@ -25,10 +25,39 @@ const running = join(state, 'running')
 const gate = { common, multiSlotGate: true }
 const baseTmp = readProductEnvironment(process.env, 'HEAVY_BASE_TMPDIR') || tmpdir()
 const tempRoot = join(baseTmp, `graphql-heavy-${createHash('sha256').update(common).digest('hex').slice(0, 16)}`)
-const readJson = (path) => { try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null } }
-const ageMs = (path) => { try { return Date.now() - statSync(path).mtimeMs } catch { return 0 } }
-const isDirectory = (path) => { try { return lstatSync(path).isDirectory() } catch { return false } }
-const procStart = (pid) => { try { return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' ')[19] } catch { return null } }
+const diagnosticCounts = new Map()
+const diagnosticWarnings = new Map()
+function warnMetadata(operation, error) {
+  if (error.code === 'ENOENT' || error.code === 'ESRCH') return
+  const failureCount = (diagnosticCounts.get(operation) ?? 0) + 1
+  diagnosticCounts.set(operation, failureCount)
+  const now = Date.now()
+  if (diagnosticWarnings.has(operation) && now - diagnosticWarnings.get(operation) < 30_000) return
+  diagnosticWarnings.set(operation, now)
+  console.warn(JSON.stringify({ operation, status: 'degraded',
+    lastError: error.code ?? 'INVALID_SCHEDULER_METADATA', failureCount }))
+}
+process.on('exit', () => {
+  for (const [operation, failureCount] of diagnosticCounts) {
+    if (failureCount > 1) console.warn(JSON.stringify({ operation, status: 'degraded', failureCount }))
+  }
+})
+const readJson = path => {
+  try { return JSON.parse(readFileSync(path, 'utf8')) }
+  catch (error) { warnMetadata('read scheduler owner metadata', error); return null }
+}
+const ageMs = path => {
+  try { return Date.now() - statSync(path).mtimeMs }
+  catch (error) { warnMetadata('read scheduler metadata age', error); return 0 }
+}
+const isDirectory = path => {
+  try { return lstatSync(path).isDirectory() }
+  catch (error) { warnMetadata('inspect scheduler directory', error); return false }
+}
+const procStart = pid => {
+  try { return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' ')[19] }
+  catch (error) { warnMetadata('read scheduler process identity', error); return null }
+}
 const namespace = { boot: readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(), pid: readlinkSync('/proc/self/ns/pid') }
 const gone = (error) => error.code === 'ENOENT' || error.code === 'ESRCH'
 const alive = (record) => {
@@ -40,7 +69,7 @@ const alive = (record) => {
     const fields = text.slice(text.lastIndexOf(') ') + 2).split(' ')
     if (!/^\d+$/.test(fields[19])) return true
     return fields[19] === record.start && fields[0] !== 'Z'
-  } catch (error) { return !gone(error) }
+  } catch (error) { warnMetadata('read scheduler owner process', error); return !gone(error) }
 }
 const tokenUsed = (token, exceptPid = 0, conservative = false) => {
   if (!token) return false
@@ -48,9 +77,9 @@ const tokenUsed = (token, exceptPid = 0, conservative = false) => {
     for (const entry of readdirSync('/proc')) {
       if (!/^\d+$/.test(entry)) continue
       if (Number(entry) === exceptPid) continue
-      try { if (['FOREMAN_CODE_', 'GRAPHQL_'].some(prefix => readFileSync(`/proc/${entry}/environ`).includes(Buffer.from(`${prefix}HEAVY_JOB_TOKEN=${token}\0`)))) return true } catch (error) { if (conservative && !gone(error)) return true }
+      try { if (['FOREMAN_CODE_', 'GRAPHQL_'].some(prefix => readFileSync(`/proc/${entry}/environ`).includes(Buffer.from(`${prefix}HEAVY_JOB_TOKEN=${token}\0`)))) return true } catch (error) { warnMetadata('inspect scheduler process usage', error); if (conservative && !gone(error)) return true }
     }
-  } catch { return true }
+  } catch (error) { warnMetadata('inspect scheduler process usage', error); return true }
   return false
 }
 const groupUsed = (pgid, conservative = false) => {
@@ -64,9 +93,9 @@ const groupUsed = (pgid, conservative = false) => {
         const fields = text.slice(text.lastIndexOf(') ') + 2).split(' ')
         if (conservative && !/^\d+$/.test(fields[2])) return true
         if (Number(fields[2]) === pgid && fields[0] !== 'Z') return true
-      } catch (error) { if (conservative && !gone(error)) return true }
+      } catch (error) { warnMetadata('inspect scheduler process usage', error); if (conservative && !gone(error)) return true }
     }
-  } catch { return true }
+  } catch (error) { warnMetadata('inspect scheduler process usage', error); return true }
   return false
 }
 const workUsed = (record) => {
@@ -80,15 +109,15 @@ const usedPath = (path) => {
     for (const entry of readdirSync('/proc')) {
       if (!/^\d+$/.test(entry)) continue
       for (const kind of ['cwd', 'root']) {
-        try { const target = realpathSync(`/proc/${entry}/${kind}`); if (target === path || target.startsWith(`${path}${sep}`)) return true } catch (error) { if (!gone(error)) return true }
+        try { const target = realpathSync(`/proc/${entry}/${kind}`); if (target === path || target.startsWith(`${path}${sep}`)) return true } catch (error) { warnMetadata('inspect scheduler process paths', error); if (!gone(error)) return true }
       }
       try {
         for (const fd of readdirSync(`/proc/${entry}/fd`)) {
-          try { const target = readlinkSync(`/proc/${entry}/fd/${fd}`); if (target === path || target.startsWith(`${path}${sep}`) || target.startsWith(`${path} (deleted)`)) return true } catch (error) { if (!gone(error)) return true }
+          try { const target = readlinkSync(`/proc/${entry}/fd/${fd}`); if (target === path || target.startsWith(`${path}${sep}`) || target.startsWith(`${path} (deleted)`)) return true } catch (error) { warnMetadata('inspect scheduler process paths', error); if (!gone(error)) return true }
         }
-      } catch (error) { if (!gone(error)) return true }
+      } catch (error) { warnMetadata('inspect scheduler process paths', error); if (!gone(error)) return true }
     }
-  } catch { return true }
+  } catch (error) { warnMetadata('inspect scheduler process usage', error); return true }
   return false
 }
 function cleanTemps() {
@@ -128,8 +157,12 @@ const isGate = (record) => record?.common === common && record.multiSlotGate ===
 function slotCount() {
   try {
     const value = readFileSync(join(state, 'slots'), 'utf8').trim()
-    return /^[1-8]$/.test(value) ? Number(value) : 1
-  } catch { return 1 }
+    if (!/^[1-8]$/.test(value)) throw new Error('Invalid heavy-job slot count; expected an integer from 1 to 8.')
+    return Number(value)
+  } catch (error) {
+    if (error.code === 'ENOENT') return 1
+    throw error
+  }
 }
 function schedule(action, ticket, token) {
   const result = spawnSync('flock', ['-x', join(state, 'register.lock'), process.execPath, import.meta.filename, '__schedule', action, ticket, token], { encoding: 'utf8' })
@@ -169,7 +202,7 @@ if (process.argv[2] === '__schedule') {
       writeFileSync(join(queue, ticket), JSON.stringify(acquiring))
       if (!existsSync(active)) {
         // mkdir still arbitrates with old callers, which do not take this lock.
-        try { mkdirSync(active) } catch { process.exit(0) }
+        try { mkdirSync(active) } catch (error) { if (error.code === 'EEXIST') process.exit(0); throw error }
         writeFileSync(join(active, 'owner.json'), JSON.stringify(records.length ? gate : acquiring))
       }
       writeFileSync(path, JSON.stringify(acquiring))

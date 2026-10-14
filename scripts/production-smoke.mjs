@@ -1,3 +1,4 @@
+import { diagnosticWarning } from './diagnostic-warning.mjs'
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { execFile, spawn } from 'node:child_process'
@@ -77,8 +78,8 @@ async function waitForReady() {
         assert.deepEqual(response.body.checks, { database: 'ok', checkpoints: 'ok' })
         return
       }
-    } catch {
-      // A new process or restarting dependency may not accept connections yet.
+    } catch (error) {
+      if (error.cause?.code !== 'ECONNREFUSED') diagnosticWarning('read startup smoke readiness', error)
     }
     await delay(50)
   }

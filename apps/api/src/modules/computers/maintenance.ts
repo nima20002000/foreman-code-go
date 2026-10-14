@@ -1,4 +1,5 @@
 import { errorMessage } from '../../shared/errorMessage.js'
+import { readOperationalFailures } from '../diagnostics/logger.js'
 import { readClaudePlugins, claudeCliResult } from './claudePlugins.js'
 import { isCodexStagingRenameError, removeCodexStagingDirectories } from './npmStaging.js'
 import { syncFingerprint } from './syncFingerprint.js'
@@ -125,6 +126,7 @@ export class ComputerMaintenance {
       this.ports.disk(home).then(value => value && { path: home, ...value }),
     ])
     return MaintenanceStatusSchema.parse({
+      operationalFailures: readOperationalFailures(),
       harnesses: (['codex', 'claude'] as const).map((harness, index) => ({ harness, installed: versions[index] !== undefined,
         version: versions[index] ?? null, latest: latest[harness] ?? null })),
       system: { packageUpdates: packageUpdates?.pending ?? null, rebootRequired, sudo, disk },
@@ -657,7 +659,8 @@ export class ComputerMaintenance {
     if (!binary) return undefined
     const result = await this.ports.run(binary, ['--version'], { signal, timeoutMs: 15_000 })
     const version = result.code === 0 ? versionOf(result.stdout) : null
-    if (!version) throw new Error(`${harness} version inspection failed (exit ${result.code}).`)
+    if (!version) throw new DomainError('COMPUTER_HARNESS_VERSION_UNAVAILABLE',
+      `${harness} version inspection failed (exit ${result.code}).`, 503)
     return version
   }
 
@@ -665,11 +668,13 @@ export class ComputerMaintenance {
     if (this.latest && Date.now() - this.latest.at < LATEST_MS) return this.latest.value
     const value = (async () => {
       const npm = await this.ports.find('npm')
-      if (!npm) return {}
+      if (!npm) throw new DomainError('COMPUTER_LATEST_VERSION_UNAVAILABLE',
+        'Latest version inspection is unavailable: npm is not installed.', 503)
       const entries = await Promise.all((['codex', 'claude'] as const).map(async harness => {
         const result = await this.ports.run(npm, ['view', PACKAGES[harness], 'version'], { signal, timeoutMs: 20_000 })
         const version = result.code === 0 ? versionOf(result.stdout.trim()) : null
-        if (!version) throw new Error(`Latest ${harness} version inspection failed (exit ${result.code}).`)
+        if (!version) throw new DomainError('COMPUTER_LATEST_VERSION_UNAVAILABLE',
+          `Latest ${harness} version inspection failed (exit ${result.code}).`, 503)
         return [harness, version] as const
       }))
       return Object.fromEntries(entries)
@@ -684,9 +689,11 @@ export class ComputerMaintenance {
     if (!apt) return null
     const result = await this.ports.run(apt, ['-s', '-o', 'Debug::NoLocking=1', '--with-new-pkgs', 'upgrade'],
       { signal, timeoutMs: 60_000 })
-    if (result.code !== 0) throw new Error(`Package updates inspection failed (exit ${result.code}).`)
+    if (result.code !== 0) throw new DomainError('COMPUTER_PACKAGE_UPDATES_UNAVAILABLE',
+      `Package updates inspection failed (exit ${result.code}).`, 503)
     const counts = result.stdout.match(/(\d+) upgraded, (\d+) newly installed, \d+ to remove and (\d+) not upgraded\./u)
-    if (!counts) throw new Error('Package updates inspection returned invalid output.')
+    if (!counts) throw new DomainError('COMPUTER_PACKAGE_UPDATES_UNAVAILABLE',
+      'Package updates inspection returned invalid output.', 503)
     return { pending: Number(counts[1]) + Number(counts[3]), installable: Number(counts[1]) + Number(counts[2]) }
   }
 
@@ -694,7 +701,7 @@ export class ComputerMaintenance {
     const result = await this.ports.run('sudo', ['-n', 'true'], { signal, timeoutMs: 10_000 })
     if (result.code === 0) return true
     if (result.code === 1 && /a password is required|not allowed to execute|not in the sudoers/iu.test(result.stderr)) return false
-    throw new Error(`Sudo inspection failed (exit ${result.code}).`)
+    throw new DomainError('COMPUTER_PRIVILEGE_CHECK_UNAVAILABLE', `Sudo inspection failed (exit ${result.code}).`, 503)
   }
 
   private async requireSudo(signal: AbortSignal) {

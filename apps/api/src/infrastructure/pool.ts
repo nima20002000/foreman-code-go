@@ -89,7 +89,8 @@ export async function queryForReadiness(
       release(true)
       return
     }
-    cancellation = cancelBackendQuery(pool.options, processId).catch(() => {
+    cancellation = cancelBackendQuery(pool.options, processId).catch((error: unknown) => {
+      componentLogger('db').warn({ operation: 'cancel original database query', err: error, processId }, 'Database cancel transport failed; destroying the original socket')
       // If the cancel connection cannot be established, force-close the
       // leased socket as a final local cleanup fallback.
       connection?.stream?.destroy()

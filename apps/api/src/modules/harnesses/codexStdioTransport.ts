@@ -124,7 +124,7 @@ export class CodexStdioTransport {
     }
     if (this.environment.FOREMAN_CODE_CODEX_RUNTIME_TIMING === '1') {
       try { this.timing = await openCodexRuntimeTiming() }
-      catch { runtimeTimingPoint('harness', 'native.api_timing_unavailable', { eventType: 'receiver_unavailable' }) }
+      catch (error) { logIgnoredError('harness', 'publish native API timing', error); runtimeTimingPoint('harness', 'native.api_timing_unavailable', { eventType: 'receiver_unavailable' }) }
     }
     try {
       this.owned = spawnOwnedStdioProcess({
@@ -411,7 +411,7 @@ export class CodexStdioTransport {
     try {
       const outcome = nativeProcessExit(child, { exitCode: child.exitCode, exitSignal: child.signalCode })
       if (outcome.exitCode !== null || outcome.exitSignal !== null) return false
-    } catch { return false }
+    } catch (error) { logIgnoredError('harness', 'read Codex process exit evidence', error); return false }
     return child.stdin.writable && !child.stdin.destroyed && !child.stdin.writableEnded
   }
 
@@ -559,7 +559,7 @@ export class CodexStdioTransport {
 
   private fail(error: Error): void {
     if (!this.stop(error)) return
-    try { this.onDisconnect(error) } catch { /* ignore: observer failure cannot escape this process boundary. */ }
+    try { this.onDisconnect(error) } catch (observerError) { logIgnoredError('harness', 'publish Codex disconnect', observerError) }
     void this.close().catch(ignoreError('harness', 'close Codex transport', { connectionId: this.requestPrefix }))
   }
 }

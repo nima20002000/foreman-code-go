@@ -7,7 +7,7 @@ import { nativeProcessExit, spawnNativeProcess, stopRecoveredChild, type NativeP
 import type { ChildProcessEnvironment, NativeEventInput } from './port.js'
 import { appMcpTokenEnvironment, inheritedAgentEnvironment, redactKnownSecrets, redactSecretText } from './secrets.js'
 import { APP_MCP_TOKEN_NAMES } from '@foreman-code/contracts/product'
-import { ignoreError } from '../diagnostics/ignoredError.js'
+import { ignoreError, logIgnoredError } from '../diagnostics/ignoredError.js'
 
 const MAX_STDERR_LENGTH = 1_000_000
 export const PROCESS_SHUTDOWN_GRACE_MS = 1_000
@@ -414,7 +414,7 @@ export function spawnOwnedStdioProcess(options: {
   }
   ownedProcesses.set(child, close)
   const failed = (error: Error) => {
-    try { options.onError(error) } catch { /* ignore: a lifecycle observer cannot crash the API. */ }
+    try { options.onError(error) } catch (observerError) { logIgnoredError('harness', 'publish native process lifecycle', observerError) }
     finally { void close().catch(ignoreError('harness', 'close native process', { pid: child.pid })) }
   }
   child.on('error', failed)

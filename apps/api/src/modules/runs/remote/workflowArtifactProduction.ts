@@ -1,3 +1,4 @@
+import { settleObserved } from '../../diagnostics/ignoredError.js'
 import { isDeepStrictEqual } from 'node:util'
 import { McpServer } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
@@ -79,7 +80,7 @@ export function mountProductionWorkflowArtifacts(input: Parameters<typeof create
     const server = new McpServer({ name: 'graphql-artifact-transfers', version: '1.0.0' })
     registerTransferTool(server, request)
     const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined })
-    reply.raw.once('close', () => { void Promise.allSettled([transport.close(), server.close()]) })
+    reply.raw.once('close', () => { void settleObserved('http', 'close disconnected MCP resources', [transport.close(), server.close()]) })
     reply.header('cache-control', 'no-store'); await server.connect(transport); reply.hijack()
     await transport.handleRequest(request.raw, reply.raw, request.body)
   })

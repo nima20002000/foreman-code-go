@@ -3,7 +3,7 @@ export function apiIdentityMatches(expected) {
     try {
       const actual = JSON.parse(body)
       return response.ok && ['installationId', 'checkoutId', 'databaseId'].every((key) => actual[key] === expected[key])
-    } catch { return false }
+    } catch (error) { diagnosticWarning('read API readiness identity', error, 'INVALID_READINESS_RESPONSE'); return false }
   }
 }
 export function webIdentityMatches(checkoutId, apiUrl) {
@@ -11,6 +11,7 @@ export function webIdentityMatches(checkoutId, apiUrl) {
     try {
       const actual = JSON.parse(body)
       return response.ok && actual.checkoutId === checkoutId && actual.apiUrl === apiUrl
-    } catch { return false }
+    } catch (error) { diagnosticWarning('read web readiness identity', error, 'INVALID_READINESS_RESPONSE'); return false }
   }
 }
+import { diagnosticWarning } from './diagnostic-warning.mjs'

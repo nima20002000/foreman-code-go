@@ -263,7 +263,7 @@ async function configureWorkerTransfers(composition: InstalledWorkerComposition)
     configuration: composition.configurationLocation, availableConfiguration: () => composition.configuration,
     registry, launcherSource: input.launcherSource })
   if (approved) await composition.managedMcp.ensureReady({ signal: lifetime.signal }).catch(error => {
-    componentLogger('devices').warn({ err: error }, 'Managed Foreman Code MCP setup needs repair')
+    componentLogger('devices').warn({ operation: 'repair managed MCP mount', err: error }, 'Managed Foreman Code MCP setup needs repair')
   })
   composition.profileChecks = approved ? await createInstalledWorkerProfileChecks({ stateDirectory: input.stateDirectory,
     configuration: composition.configuration, pairing: input.pairing, current, registry }) : null

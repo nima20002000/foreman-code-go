@@ -1,4 +1,5 @@
 import { ReadObservationSchema } from './readObservation.js'
+import { OperationalFailureSchema } from './operationalFailures.js'
 import { optionalCommandId } from './management/commands.js'
 import { z } from 'zod'
 import { DeviceProvisioningTargetSchema } from './deviceResources.js'
@@ -106,6 +107,7 @@ const HarnessVersionSchema = z.object({
 }).strict()
 
 export const MaintenanceStatusSchema = z.object({
+  operationalFailures: z.array(OperationalFailureSchema).optional(),
   worker: WorkerUpdateStatusSchema.optional(),
   harnesses: z.array(HarnessVersionSchema).max(2),
   system: z.object({

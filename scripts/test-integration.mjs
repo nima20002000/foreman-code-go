@@ -1,3 +1,4 @@
+import { diagnosticWarning } from './diagnostic-warning.mjs'
 import { exclusiveIntegrationFiles, integrationCpuCost,
   requirements } from '../packages/contracts/src/integrationScheduling.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
@@ -52,7 +53,10 @@ export function isRegularIntegrationFile(base, file) {
       if (lstatSync(path).isSymbolicLink()) return false
     }
     return lstatSync(path).isFile()
-  } catch { return false }
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false
+    throw error
+  }
 }
 
 export function discoverFiles() {
@@ -498,7 +502,11 @@ export function integrationProgressLine({ phase, total, passed, failed, active, 
 }
 
 function procStart(pid) {
-  try { return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' ')[19] } catch { return null }
+  try { return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1].split(' ')[19] }
+  catch (error) {
+    if (error.code !== 'ENOENT' && error.code !== 'ESRCH') diagnosticWarning('read integration process identity', error)
+    return null
+  }
 }
 
 export function hasActiveHeavyJobToken(environment, common, owner) {
@@ -510,7 +518,7 @@ export function hasActiveHeavyJobToken(environment, common, owner) {
 export function hasHeavyJobAdmission(environment, common) {
   const state = join(common, 'graphql-heavy-jobs')
   const paths = [join(state, 'active', 'owner.json')]
-  try { paths.push(...readdirSync(join(state, 'running')).map((name) => join(state, 'running', name))) } catch { /* no secondary slots */ }
+  try { paths.push(...readdirSync(join(state, 'running')).map((name) => join(state, 'running', name))) } catch (error) { if (error.code !== 'ENOENT') throw error }
   return paths.some((path) => {
     try {
       const owner = JSON.parse(readFileSync(path, 'utf8'))
@@ -923,7 +931,7 @@ export async function runIntegration(argv = [], {
             mkdirSync(dirname(saved), { recursive: true })
             copyFileSync(log, saved)
             retained = saved
-          } catch { /* report the file failure even if log retention also fails */ }
+          } catch (error) { diagnosticWarning('retain failed unit log', error) }
         }
         console.error(`[integration] ${isRetest ? 'RETEST ' : ''}FAIL ${file} (slot ${slot.index}, exit 1); log: ${retained}`)
         recordFileAttempt(isRetest ? retestReports : firstPass, file,

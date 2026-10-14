@@ -1,3 +1,4 @@
+import { logIgnoredError, settleObserved } from '../diagnostics/ignoredError.js'
 import { errorMessage } from '../../shared/errorMessage.js'
 import { assertClaudeFullAccess } from './nativeWorkflowConfiguration.js'
 import { isDeepStrictEqual } from 'node:util'
@@ -31,10 +32,15 @@ export class HarnessCatalogService {
 
   /** Run once after native runtime ownership is acquired. No model turn is created. */
   async warmup(): Promise<void> {
-    const managed = await this.settings.getManagedHarnessDefaults()
+    const managed = await this.settings.getManagedHarnessDefaults().catch(error => {
+      logIgnoredError('harness', 'load harness prewarm defaults', error)
+      throw error
+    })
     const unavailable = new Set(managed.unavailable ?? [])
-    await Promise.allSettled((['codex', 'claude'] as const).flatMap((harness) =>
-      managed.defaults[harness] && !unavailable.has(harness) ? [this.currentStatus(managed.defaults[harness]!)] : []))
+    await Promise.all((['codex', 'claude'] as const).flatMap(harness =>
+      managed.defaults[harness] && !unavailable.has(harness)
+        ? [settleObserved('harness', `warm ${harness} harness discovery`, [this.currentStatus(managed.defaults[harness]!)])]
+        : []))
   }
 
   private currentStatus(value: HarnessConfiguration,

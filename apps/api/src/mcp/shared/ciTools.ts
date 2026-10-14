@@ -29,7 +29,9 @@ export const CI_TOOL_DESCRIPTIONS = {
     + 'from the same requester on the same branch or Agent execution cancels its older active tickets of the same suite '
     + 'unless noSupersede=true; ci_get then reports supersededBy. commandId is optional; repeating it with the same input '
     + 'returns the original tickets. Returns ticketId and, for multi-part runs, partitions: poll each with ci_get.',
-  ci_get: 'Read one CI ticket. observation reports whether live state is available, its last successful read, '
+  ci_get: 'Read one CI ticket. reassignment retains its cause, previous host, time and cumulative count. '
+    + 'mirrorPublication.repair retains clone repair cause, source, duration and count. '
+    + 'observation reports whether live state is available, its last successful read, '
     + 'sanitized lastError, consecutiveFailures and nextAttemptAt. Retained state is not a confirmed live observation. '
     + 'transport reports REST/CLI source, fallback reason and count when available. '
     + 'State (queued, starting, running, passed, failed, canceled, lost), step, computer, part '

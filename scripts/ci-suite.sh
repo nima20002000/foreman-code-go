@@ -36,10 +36,22 @@ if [ "${1:-}" = start ] || [ "${1:-}" = prepare ]; then
   case "$SUITE" in unit|unit-*|integration) ;; *) exit 0 ;; esac
   clis="npm install --global --silent --before=$(date -u -d '-2 days' +%Y-%m-%dT%H:%M:%SZ) @openai/codex @anthropic-ai/claude-code"
   if [ "$1" = prepare ]; then
-    corepack pnpm db:up
+    mkdir -p "$state"
+    prepare_one() {
+      local name="$1" code=0
+      shift
+      "$@" > "$state/$name.log" 2>&1 || code=$?
+      cat "$state/$name.log"
+      echo "$code" > "$state/$name.exit"
+      return "$code"
+    }
+    prepare_one db corepack pnpm db:up
     case "$SUITE" in unit|unit-api|integration)
       if ! command -v codex >/dev/null || ! command -v claude >/dev/null; then
-        bash -c "$clis"
+        prepare_one clis bash -c "$clis"
+      else
+        : > "$state/clis.log"
+        echo 0 > "$state/clis.exit"
       fi ;;
     esac
     exit 0

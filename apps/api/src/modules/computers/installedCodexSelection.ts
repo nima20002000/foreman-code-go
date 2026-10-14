@@ -32,7 +32,9 @@ async function installedNativeCodex(home: string): Promise<string> {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
       throw error
     })))).filter((value): value is string => value !== null)
-  if (executable.length !== 1) throw new Error('The updated Codex binary could not be located on this computer.')
+  if (executable.length !== 1) {
+    throw new Error(`The updated Codex binary could not be located: ${executable.length} executable candidates from ${candidates.length} paths.`)
+  }
   return executable[0]!
 }
 

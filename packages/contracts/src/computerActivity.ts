@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { DeviceProvisioningTargetSchema } from './deviceResources.js'
 import { HarnessExecutionStateSchema, IdSchema, TimestampSchema } from './index.js'
 import { JobProcessStateSchema } from './jobs.js'
+import { ReadObservationSchema } from './readObservation.js'
 
 export const COMPUTER_ACTIVITY_LIMIT = 200
 /** One short label for a computer everywhere it is listed. */
@@ -35,6 +36,7 @@ const ComputerActivitySchema = z.object({
 }).strict()
 /** A cloud CI service Main can hand CI runs to: its machines exist only while a run uses them. */
 const CloudCiActivitySchema = z.object({
+  observation: ReadObservationSchema.optional(),
   provider: z.enum(['github', 'circleci']),
   name: z.string(),
   /** Main's login for the service works, so runs can start there. */

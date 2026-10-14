@@ -18,6 +18,8 @@ import { placementCapabilityLimit } from '../../../modules/placement/transports.
 import { readOperationalFailures } from '../../../modules/diagnostics/logger.js'
 
 export const OPERATOR_RUNTIME_LIMITS = [
+  { feature: 'operational_failure_status', state: 'limited',
+    detail: 'operator_get_capabilities includes operationalFailures with sanitized causes, counts and failure times since Main startup. computers_maintenance_status includes the same history from each computer. Known retry schedules and repair durations are included. Counts reset on process restart; history does not assert that a previous failure is still active.' },
   { feature: 'native_tool_loading', state: 'protected',
     detail: 'agent_defaults_get/update reads and replaces role nativeTools policies with global settings grants. '
       + 'agent_create copies them; agent_update overrides them with scoped agents:update and revision checks. '
@@ -100,7 +102,7 @@ export const OPERATOR_RUNTIME_LIMITS = [
 export const capabilityTools = [defineOperatorTool({
   name: 'operator_get_capabilities',
   requires: [['capabilities:read', 'caller']],
-  description: 'Inspect your grants, compatible tool permissions, optional resource scope, and explicit runtime limits. Supply a complete workspace/workflow/run hierarchy for resource checks. Defaults to compact; detail:full returns all requirements and runtime instructions. This is not a grant or a promise that a specific object exists.',
+  description: 'Read operational failures since startup and inspect your grants, compatible tool permissions, optional resource scope, and explicit runtime limits. Supply a complete workspace/workflow/run hierarchy for resource checks. Defaults to compact; detail:full returns all requirements and runtime instructions. This is not a grant or a promise that a specific object exists.',
   inputSchema: OperatorCapabilityInputSchema,
   outputSchema: ScheduleOperatorCapabilitiesSchema.or(OperatorCompactCapabilitiesSchema),
   annotations: {readOnlyHint:true,destructiveHint:false,idempotentHint:true,openWorldHint:false},

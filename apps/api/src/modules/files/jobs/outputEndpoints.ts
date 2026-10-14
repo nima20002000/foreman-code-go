@@ -1,3 +1,4 @@
+import { settleObserved } from '../../diagnostics/ignoredError.js'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import { McpServer } from '@modelcontextprotocol/server'
 import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node'
@@ -45,7 +46,7 @@ export function registerJobOutputMetadataEndpoints(app:FastifyInstance,input:{ac
       description:'Publish only verified bytes of the original main-admitted transfer through canonical storage and ledger. Never infer job completion from transfer progress.',
       annotations:{readOnlyHint:false,idempotentHint:true,destructiveHint:false,openWorldHint:false}},output=>invoke(async()=>{await input.admission.requireAdmission(output);return (await input.artifacts.publishAccepted(output,'mcp')).artifact}))
     const transport=new NodeStreamableHTTPServerTransport({sessionIdGenerator:undefined})
-    reply.raw.once('close',()=>{void Promise.allSettled([transport.close(),server.close()])})
+    reply.raw.once('close',()=>{void settleObserved('http', 'close disconnected MCP resources', [transport.close(), server.close()])})
     reply.header('cache-control','no-store');await server.connect(transport);reply.hijack();await transport.handleRequest(request.raw,reply.raw,request.body)
   })
 }

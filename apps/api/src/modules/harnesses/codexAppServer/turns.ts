@@ -110,12 +110,12 @@ export abstract class CodexManagerTurns extends CodexManagerControls {
       if (!restarting) starting.cancelRequested = true
       starting.preparationController.abort(signal?.reason)
       void this.finishTurnResources(runtime).catch(cleanupError => {
-      logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
-        // ignore: resources stay owned for the next admission or explicit close to retry.
+        logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
+        // Resources stay owned for the next admission or explicit close to retry.
       })
       if (!restarting && runtime.activeTurnId && !runtime.terminalResult) {
         void this.interrupt(runtime).catch(cleanupError => {
-      logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
+          logIgnoredError('harness', 'interrupt aborted Codex turn', cleanupError)
           // ignore: abort cannot await delivery; interrupt records uncertainty for reconciliation.
         })
       }
@@ -183,7 +183,8 @@ export abstract class CodexManagerTurns extends CodexManagerControls {
           if (runtime.starting !== starting || runtime.disposed) return
           if (error instanceof CodexRpcError && !error.uncertain) this.rejectStartedTurn(runtime, starting)
           else if (error) runtime.phase = 'uncertain'
-          else void this.acceptStartedTurn(runtime, starting, value).catch(() => {
+          else void this.acceptStartedTurn(runtime, starting, value).catch(error => {
+            logIgnoredError('harness', 'accept late native turn response', error)
             runtime.phase = 'uncertain'
             this.record(runtime, 'turn.start_uncertain', { correlationId: starting.correlationId })
           })
@@ -418,7 +419,10 @@ export abstract class CodexManagerTurns extends CodexManagerControls {
     if (this.shutdownController.signal.aborted) return unavailable('session_closed')
     if (session.harness !== 'codex') return unavailable('unqualified')
     const child = this.childRuntimes.get(session.nativeSessionId)
-    try { child?.assertCurrent() } catch { return unavailable('session_closed') }
+    try { child?.assertCurrent() } catch (error) {
+      logIgnoredError('harness', 'verify native child response evidence', error, {}, ['SUBAGENT_OWNER_STALE'])
+      return unavailable('session_closed')
+    }
     const runtime = this.runtimes.get(session.nativeSessionId) ?? child?.runtime
     if (!runtime) return unavailable('callback_lost')
     if (runtime.session.providerVersion !== session.providerVersion) return unavailable('identity_mismatch')
@@ -499,8 +503,8 @@ export abstract class CodexManagerTurns extends CodexManagerControls {
       runtime.starting.cancelRequested = true
       runtime.starting.preparationController.abort()
       void this.finishTurnResources(runtime).catch(cleanupError => {
-      logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
-        // ignore: resources stay owned for the next admission or explicit close to retry.
+        logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
+        // Resources stay owned for the next admission or explicit close to retry.
       })
       const id = await deadline(runtime.starting.nativeIdentity, signal, undefined, this.dependencies)
       if (!id) return false

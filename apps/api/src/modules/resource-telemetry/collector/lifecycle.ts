@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { CollectionChallengeSchema, TelemetryIdentitySchema, TelemetryCollectedBatchSchema, telemetryCanonical, type CollectionChallenge, type ResourceCollector, type TelemetryCollectedBatch, type TelemetryIdentity } from '@foreman-code/contracts/resource-telemetry'
 import { LinuxSampler, type SamplerPorts } from './sampler.js'
+import { logIgnoredError } from '../../diagnostics/ignoredError.js'
 
 export interface CollectorClock { now(): bigint; wall(): number; setTimer(work: () => void, ms: number): ReturnType<typeof setTimeout>; clearTimer(timer: ReturnType<typeof setTimeout>): void }
 const defaultClock: CollectorClock = { now: () => process.hrtime.bigint(), wall: Date.now, setTimer: setTimeout, clearTimer: clearTimeout }
@@ -36,11 +37,14 @@ export function createResourceCollector(input: { identity: TelemetryIdentity; po
             captureStartMonoNs: start.toString(), captureEndMonoNs: clock.now().toString(), ...capture }
           // Drop oldest scope rows only with explicit truncation. Never retain an overflow queue.
           while (Buffer.byteLength(JSON.stringify(batch)) > 65536 && batch.owned.length) { batch.owned.pop(); batch.truncated = true }
-          if (Buffer.byteLength(JSON.stringify(batch)) > 65536) return
+          if (Buffer.byteLength(JSON.stringify(batch)) > 65536) {
+            throw Object.assign(new Error('Telemetry sample exceeds the frame limit.'), { code: 'TELEMETRY_FRAME_TOO_LARGE' })
+          }
           TelemetryCollectedBatchSchema.parse(batch)
           if (frames.length === 2) frames.shift()
           frames.push(batch); notify?.(); notify = undefined
-        } catch {
+        } catch (error) {
+          if (!controller.signal.aborted) logIgnoredError('lifecycle', 'capture resource telemetry sample', error)
           // Metrics degrade only. No provider/ownership mutation or cleanup is called here.
           sampler.reset()
         }

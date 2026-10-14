@@ -51,13 +51,15 @@ export const logger: Logger = pino({
 
 export const componentLogger = (component: LogComponent): Logger => {
   const child = logger.child({ component })
-  const warn = child.warn.bind(child)
-  child.warn = ((...args: unknown[]) => {
-    const fields = args[0] && typeof args[0] === 'object' ? args[0] as Record<string, unknown> : {}
-    const operation = typeof fields.operation === 'string' ? fields.operation : `${component} background operation`
-    recordOperationalFailure(component, operation, fields.err ?? fields.error)
-    Reflect.apply(warn, child, args)
-  }) as Logger['warn']
+  for (const level of ['warn', 'error'] as const) {
+    const write = child[level].bind(child)
+    child[level] = ((...args: unknown[]) => {
+      const fields = args[0] && typeof args[0] === 'object' ? args[0] as Record<string, unknown> : {}
+      const operation = typeof fields.operation === 'string' ? fields.operation : `${component} background operation`
+      const shouldWarn = recordOperationalFailure(component, operation, fields.err ?? fields.error, fields)
+      if (level === 'error' || shouldWarn || typeof fields.operation !== 'string') Reflect.apply(write, child, args)
+    }) as Logger['warn']
+  }
   return child
 }
 
@@ -76,7 +78,11 @@ export function logFilePath(env: NodeJS.ProcessEnv): string | undefined {
 
 const positive = (value: string | undefined, fallback: number) => {
   const number = Number(value ?? fallback)
-  return Number.isSafeInteger(number) && number > 0 ? number : fallback
+  if (Number.isSafeInteger(number) && number > 0) return number
+  componentLogger('lifecycle').warn({ operation: 'read log retention configuration',
+    err: Object.assign(new Error('Invalid provided log retention setting; using its documented default.'),
+      { code: 'INVALID_LOG_CONFIG' }) }, 'Invalid log retention configuration')
+  return fallback
 }
 
 /**

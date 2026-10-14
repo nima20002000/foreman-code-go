@@ -13,7 +13,7 @@ import { CiWatchdogFailureSchema, CiDurationsSchema, CiHostReplySchema, CiHostRe
 import { DomainError } from '../errors.js'
 import { ciRepositoryCapabilities } from './repository.js'
 import { allowedCiResources, gateIntegrationShards, hostCiCapacity } from './capacity.js'
-import { fallbackOnError, fallbackOnMissing } from '../diagnostics/ignoredError.js'
+import { fallbackOnError, fallbackOnMissing, logIgnoredError } from '../diagnostics/ignoredError.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { pnpmInstall } from './warmSetup.js'
 import { ciLogPage } from './logPage.js'
@@ -154,6 +154,8 @@ export class HostCiRunner {
         text = sanitizeCiText(page.text)
         nextOffset = request.afterOffset + page.nextOffset
       } finally { await handle.close() }
+    } else if (run.exitCode !== null || run.logBytes > 0 || run.step && run.step !== 'dispatch') {
+      throw new DomainError('CI_LOG_UNAVAILABLE', 'The retained CI log is missing.', 503)
     }
     // A finished test run reports the file durations and test results it measured, so Main can learn and show them.
     const finished = !['starting', 'running'].includes(run.state)
@@ -827,7 +829,8 @@ export class HostCiRunner {
   private async finishFromExit(meta: RunMeta): Promise<boolean> {
     const exit = await readFile(join(this.runDirectory(meta.runId), 'exit'), 'utf8')
       .catch(fallbackOnMissing(null))
-    if (exit === null || exit.trim() === '') return false
+    if (exit === null) return false
+    if (exit.trim() === '') throw new DomainError('CI_EXIT_STATUS_INVALID', 'The CI exit status is empty.', 503)
     const code = Number(exit.trim())
     const watchdog = await readFile(join(this.runDirectory(meta.runId), 'watchdog-message.json'), 'utf8')
       .catch(fallbackOnMissing(null))
@@ -918,6 +921,13 @@ export class HostCiRunner {
     const log = await stat(join(directory, 'log')).catch(fallbackOnMissing(null))
     const step = (await readFile(join(directory, 'step'), 'utf8').catch(fallbackOnMissing(''))).trim()
       || (this.startingRun?.runId === runId ? 'dispatch' : null)
+    if (log === null && (meta.exitCode !== null || step && step !== 'dispatch')) {
+      throw new DomainError('CI_LOG_UNAVAILABLE', 'The retained CI log is missing.', 503)
+    }
+    if (meta.exitCode === 0 && !step) {
+      logIgnoredError('jobs', 'read completed CI progress',
+        Object.assign(new Error('The completed CI step record is missing.'), { code: 'ENOENT' }), { runId })
+    }
     const run = { runId, state: meta.state, step, exitCode: meta.exitCode, startedAt: meta.startedAt,
       finishedAt: meta.finishedAt, logBytes: log?.size ?? 0,
       message: this.runMessage(meta) }

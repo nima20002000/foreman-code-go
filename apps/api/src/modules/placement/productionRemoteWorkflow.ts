@@ -1,3 +1,5 @@
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
+import { REMOTE_PREPARATION_EXTENSION } from '@foreman-code/contracts/remote-execution-rpc'
 import { NativeSessionReferenceSchema } from '@foreman-code/contracts'
 import { RemoteOperationStatusSchema } from '@foreman-code/contracts/remote-execution'
 import { hasPositiveRemoteEntryClosure, hasPositiveRemoteNonEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
@@ -196,14 +198,16 @@ export function createProductionRemoteWorkflow(input: ProductionRemoteWorkflowIn
         const capture = entry?.capture
         if (!entry?.evidence || !capture?.lane) continue
         let physicalOwner: ReturnType<typeof physical.passiveNativeOwner>
-        try { physicalOwner = physical.passiveNativeOwner(channel.verify.read(entry.evidence)) } catch { continue }
+        try { physicalOwner = physical.passiveNativeOwner(channel.verify.read(entry.evidence)) }
+        catch (error) { logIgnoredError('harness', 'verify remote telemetry owner', error); continue }
         if (!physicalOwner) continue
         const assertCurrent = () => {
           if (retained.get(executionId)?.get(latest.get(executionId) ?? '') !== entry || entry.capture !== capture)
             throw new DomainError('REMOTE_NATIVE_SOURCE_NOT_CAPTURED', 'The original remote telemetry lifetime changed.', 409)
           capture.assertCurrent(); physicalOwner.assertCurrent()
         }
-        try { assertCurrent() } catch { continue }
+        try { assertCurrent() }
+        catch (error) { logIgnoredError('harness', 'check remote telemetry owner', error); continue }
         owners.push({ execution: structuredClone(capture.execution), session: structuredClone(capture.session),
           writer: { id: capture.lane.id, token: capture.lane.token, connectionGeneration: capture.lane.connectionGeneration },
           ...physicalOwner, assertCurrent })

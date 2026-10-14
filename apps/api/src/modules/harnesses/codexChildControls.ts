@@ -1,3 +1,4 @@
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 import { isDeepStrictEqual } from 'node:util'
 import type { RunSubagent, RunSubagentCommandReceipt } from '@foreman-code/contracts/subagents'
 import { SubagentDispatchRejectedError } from '../subagents/controlErrors.js'
@@ -106,7 +107,10 @@ export class CodexChildControls {
           }
           return
         }
-        if (starting) void starting.acknowledge(value).catch(() => { this.attempts.set(receipt.id, 'uncertain') })
+        if (starting) void starting.acknowledge(value).catch(error => {
+          logIgnoredError('harness', 'acknowledge native child control', error)
+          this.attempts.set(receipt.id, 'uncertain')
+        })
         const valid = text === undefined || idle || isObject(value) && value.turnId === turnId
         if (valid) this.attempts.set(receipt.id, 'acknowledged')
       }
@@ -150,7 +154,7 @@ export class CodexChildControls {
           return other.id === child.id && other.parentExecutionId === child.parentExecutionId
             && other.parentAttemptKey === child.parentAttemptKey && isDeepStrictEqual(other.native, child.native)
             && isDeepStrictEqual(other.profile, child.profile)
-        } catch { return false }
+        } catch (error) { logIgnoredError('harness', 'check native child control', error, {}, ['SUBAGENT_OWNER_STALE']); return false }
       },
       ...(sendInput ? { sendInput: (receipt: RunSubagentCommandReceipt, text: string) => dispatch(receipt, text) } : {}),
       ...(interrupt ? { interrupt: (receipt: RunSubagentCommandReceipt) => dispatch(receipt) } : {}),

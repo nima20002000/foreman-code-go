@@ -1684,3 +1684,4 @@ export * from './sessionCommands.js'
 export * from './worktreeSettings.js';
 export * from './workspaceGit.js';
 export * from './readObservation.js'
+export * from './operationalFailures.js'

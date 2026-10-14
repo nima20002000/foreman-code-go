@@ -1,4 +1,5 @@
 import { GRAPHQL_OPERATOR_TOOLS } from '../graphqlMcpTools.js'
+import { OperationalFailureSchema } from '../operationalFailures.js'
 import { NativeInteractionSupportSchema } from '../nativeInteractionSupport.js'
 import { ClaudeFullAccessConfigurationSchema, ClaudeHarnessConfigurationSchema } from '../claude.js';
 import { RunStartV3InputSchema } from '../wave25/startRequest.js'
@@ -658,10 +659,7 @@ export const RunStopResultSchema = z.object({
 }).strict();
 export const RunEventsPageSchema = z.object({ items: z.array(RunActivitySchema), pageInfo: ManagementPageInfoSchema }).strict();
 export const OperatorCapabilitiesSchema = z.object({
-  operationalFailures: z.array(z.object({
-    component: z.string(), operation: z.string(), status: z.literal('degraded'), lastError: z.string(),
-    failureCount: z.number().int().positive(), firstFailedAt: TimestampSchema, lastFailedAt: TimestampSchema,
-  }).strict()).optional().describe('Process-local degraded operations since startup, with sanitized causes and cumulative counts.'),
+  operationalFailures: z.array(OperationalFailureSchema).optional(),
   endpoint: z.literal("/mcp"), audience: z.literal("operator"), protocol: z.literal("2026-07-28"),
   tools: z.array(OperatorToolNameSchema),
   principal: z.object({id: IdSchema, name: z.string(), expiresAt: TimestampSchema.describe(

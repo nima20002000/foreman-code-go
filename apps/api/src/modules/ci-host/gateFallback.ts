@@ -55,7 +55,9 @@ function cloudParts(run: CiRunRecord, capacity: FallbackCapacity) {
         integrationShards: capacity.shards.get(computer.key), requiresBuildComputer: systemd,
         expectedDurationMs: BUILD_WAIT_MS + slice.reduce((sum, file) => sum + duration(file), 0),
         speedFactor: undefined, dispatchAttempts: undefined,
-        message: `Build computer ${run.plannedHostKey} unavailable after 90 seconds; reassigned to cloud (reassignment 1).` }))
+        reassignment: { count: (run.reassignment?.count ?? 0) + 1, previousHostKey: run.plannedHostKey!,
+          lastError: 'CI_BUILD_COMPUTER_UNAVAILABLE', at: new Date().toISOString() },
+        message: `Build computer ${run.plannedHostKey} unavailable after 90 seconds; reassigned to cloud.` }))
     }
   }
   return result

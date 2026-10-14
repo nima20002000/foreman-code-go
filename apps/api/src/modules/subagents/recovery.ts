@@ -1,3 +1,4 @@
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 import { HarnessNativeEventSchema, NativeSessionReferenceSchema } from '@foreman-code/contracts'
 import { appendNativeEvent } from '../runs/nativeEvents.js'
 import type pg from 'pg'
@@ -39,7 +40,7 @@ export async function reconcileSubagentCommand(service: SubagentServicePort, pri
     state = await lease.reconcile!(receipt)
     lease.assertCurrent()
     if (lease.generation !== generation) state = 'uncertain'
-  } catch { state = 'uncertain' }
+  } catch (error) { logIgnoredError('harness', 'reconcile native child control', error); state = 'uncertain' }
   let action: 'runs:subagents:input' | 'runs:stop' | 'interactions:respond' = 'runs:stop'
   if (receipt.operation === 'run_subagent_input_v1') action = 'runs:subagents:input'
   else if (receipt.operation === 'run_subagent_respond_v1') action = 'interactions:respond'
@@ -79,7 +80,8 @@ export async function backfillRunSubagents(service: SubagentServicePort, princip
     const session = NativeSessionReferenceSchema.parse(source.reference)
     let page
     try { page = await service.nativeRecovery(source.id, session, source.child_cursor ?? undefined, AbortSignal.timeout(10000)) }
-    catch {
+    catch (error) {
+      logIgnoredError('harness', 'read native child recovery', error)
       service.reportRecoveryFailure({ ...input, executionId: source.id, code: 'NATIVE_CHILD_READBACK_UNAVAILABLE' })
       await service.scoped(principal, input, 'runs:read', async scope => {
         await scope.sql.query(`insert into run_subagent_backfill_state(execution_id,last_failure) values($1,'NATIVE_CHILD_READBACK_UNAVAILABLE')

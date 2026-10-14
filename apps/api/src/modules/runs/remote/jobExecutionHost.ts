@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import type { JobLogChunk } from '@foreman-code/contracts/jobs'
 import { componentLogger } from '../../diagnostics/logger.js'
 import { isDeepStrictEqual } from 'node:util'
 import { JobExecutionRecordSchema, type JobExecutionRecord } from '@foreman-code/contracts/job-verification'
@@ -173,7 +174,12 @@ export class RemoteJobExecutionHost {
           await this.ports.journal.jobAcknowledgeLaunch(intent.operationId, { containerId, supervisorIdentity: name,
             processIdentityDigest: digest({ executionId: execution.id, attemptId: execution.attemptId, operationId: execution.operationId, containerId, supervisorIdentity: name }), startedAt: new Date().toISOString() })
         },
-      }, source: this.ports.source, inputs: this.ports.inputs, supervisor, appendLog: async chunk => { await this.ports.journal.jobAppendLog(intent.operationId, chunk); try { await this.flushLogs(intent.operationId) } catch { /* ignore: durable spool remains pending across transport loss. */ } },
+      }, source: this.ports.source, inputs: this.ports.inputs, supervisor,
+      appendLog: async chunk => {
+        await this.ports.journal.jobAppendLog(intent.operationId, chunk)
+        try { await this.flushLogs(intent.operationId) }
+        catch { /* ignore: flushLogs reports the retained spool failure. */ }
+      },
       collectOutputs: async () => {},
       ...(this.ports.prepareOutputs ? { prepareOutputs: this.ports.prepareOutputs } : {}),
     }
@@ -263,9 +269,21 @@ export class RemoteJobExecutionHost {
     await this.observeReceipt(await this.ports.journal.jobPublication(receipt.intent.operationId, 'complete'))
   }
   private async flushLogs(operationId: string) {
-    for (const chunk of await this.ports.journal.jobPendingLogs(operationId)) {
-      await this.ports.appendLog(chunk)
-      await this.ports.journal.jobAcknowledgeLog(operationId, chunk.sequence)
+    let pending: JobLogChunk[] | undefined
+    let acknowledged = 0
+    try {
+      pending = await this.ports.journal.jobPendingLogs(operationId)
+      for (const chunk of pending) {
+        await this.ports.appendLog(chunk)
+        await this.ports.journal.jobAcknowledgeLog(operationId, chunk.sequence)
+        acknowledged++
+      }
+    } catch (error) {
+      const retained = pending?.slice(acknowledged)
+      logIgnoredError('jobs', 'flush remote job log spool', error, { operationId,
+        pendingBytes: retained ? retained.reduce((sum, chunk) => sum + chunk.byteSize, 0) : null,
+        pendingSince: retained?.[0]?.createdAt ?? null })
+      throw error
     }
   }
   private terminalEvidence(result: JobExecutorResult, logGapPossible: boolean): RemoteJobTerminalEvidence {
@@ -275,7 +293,8 @@ export class RemoteJobExecutionHost {
       processStopped: true, resultDigest: digest(result), logGapPossible, logsTruncated: result.logsTruncated, outputCollectionError: result.outputCollectionError, artifactDigests: [] }
   }
   private async reconcile(receipt: RemoteJobOperationReceiptRecord) {
-    try { await this.flushLogs(receipt.intent.operationId) } catch { /* ignore: explicit durable pending log cursor remains. */ }
+    try { await this.flushLogs(receipt.intent.operationId) }
+    catch { /* ignore: flushLogs reports the retained spool failure. */ }
     if (this.tasks.has(receipt.intent.operationId)) return this.ports.journal.jobStatus(receipt.intent.operationId)
     if (receipt.terminal) { await this.publish(receipt); return this.ports.journal.jobStatus(receipt.intent.operationId) }
     if (!receipt.entryAttempted) {

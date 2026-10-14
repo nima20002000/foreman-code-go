@@ -57,7 +57,10 @@ async function responds(url, accepts) {
   try {
     const response = await fetch(url, { signal: AbortSignal.timeout(2000) })
     return accepts(response, await response.text())
-  } catch { return false }
+  } catch (error) {
+    if (error.cause?.code !== 'ECONNREFUSED') diagnosticWarning('read development readiness', error)
+    return false
+  }
 }
 
 export async function runningApiAcceptsBrowserOrigin(apiUrl, browserOrigin, request = fetch) {
@@ -66,7 +69,10 @@ export async function runningApiAcceptsBrowserOrigin(apiUrl, browserOrigin, requ
       headers: { origin: browserOrigin }, signal: AbortSignal.timeout(2000),
     })
     return response.ok && Boolean(JSON.parse(await response.text()).principal)
-  } catch { return false }
+  } catch (error) {
+    if (error.cause?.code !== 'ECONNREFUSED') diagnosticWarning('read browser origin readiness', error, 'INVALID_READINESS_RESPONSE')
+    return false
+  }
 }
 
 async function waitFor(name, url, accepts, child) {
@@ -190,3 +196,4 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     process.exitCode = 1
   })
 }
+import { diagnosticWarning } from './diagnostic-warning.mjs'

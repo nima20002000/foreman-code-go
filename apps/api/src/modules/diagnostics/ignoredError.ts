@@ -1,7 +1,10 @@
 import type { LogComponent } from './logComponent.js'
 import { componentLogger } from './logger.js'
 
-const codeOf = (error: unknown) => (error as { code?: unknown } | null)?.code
+const codeOf = (error: unknown) => {
+  const failure = error as { code?: unknown; result?: { error?: { code?: unknown } } } | null
+  return failure?.code ?? failure?.result?.error?.code
+}
 
 /** Missing optional files are ordinary absence; unreadable files are failures. */
 export function fallbackOnMissing<T>(fallback: T): (error: unknown) => T {
@@ -9,6 +12,16 @@ export function fallbackOnMissing<T>(fallback: T): (error: unknown) => T {
     if (codeOf(error) === 'ENOENT') return fallback
     throw error
   }
+}
+
+/** Independent cleanup must retain its failures without replacing a caller's outcome. */
+export async function settleObserved(component: LogComponent, operation: string,
+  tasks: readonly Promise<unknown>[]): Promise<PromiseSettledResult<unknown>[]> {
+  const results = await Promise.allSettled(tasks)
+  for (const result of results) {
+    if (result.status === 'rejected') logIgnoredError(component, operation, result.reason)
+  }
+  return results
 }
 
 /** Log best-effort failures while preserving the caller's outcome; narrow expected races by error code. */

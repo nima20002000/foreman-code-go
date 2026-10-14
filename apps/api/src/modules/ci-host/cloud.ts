@@ -1,3 +1,6 @@
+import { updateOperationalFailure } from '../diagnostics/operationalFailures.js'
+import { failedReadObservation, successfulReadObservation } from '../diagnostics/readObservation.js'
+import type { ReadObservation } from '@foreman-code/contracts'
 import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { homedir, hostname, userInfo } from 'node:os'
@@ -5,7 +8,7 @@ import { delimiter, join, resolve } from 'node:path'
 import type pg from 'pg'
 import { CiWatchdogFailureSchema, CiDurationsSchema, CiHostReplySchema, CiHostRequestSchema, CiTestResultsSchema, WorkspaceSchema,
   integrationPartition, requiresUserSystemd,
-  type CiDurations, type CiHostReply, type CiHostRequest, type CiHostRun, type CiPartition } from '@foreman-code/contracts'
+  type CiDurations, type CiHostReply, type CiHostRequest, type CiHostRun, type CiPartition, type CiMirrorRepair } from '@foreman-code/contracts'
 import { canonicalJson } from '@foreman-code/contracts/canonical-json'
 import { DomainError } from '../errors.js'
 import { componentLogger } from '../diagnostics/logger.js'
@@ -90,6 +93,10 @@ export async function activeCiRuns(pool: pg.Pool): Promise<ActiveCiRuns> {
 export class CloudCi {
   private activeRuns: (() => Promise<ActiveCiRuns>) | undefined
   private checked: { at: number; ready: boolean } | undefined
+  private readinessObserved: ReadObservation | undefined
+  get readinessObservation(): ReadObservation | undefined {
+    return this.readinessObserved && { ...this.readinessObserved }
+  }
   private reconciling: Promise<void> | undefined
   private readonly polled = new Map<string, number>()
   private reconcileCursor = 0
@@ -144,11 +151,12 @@ export class CloudCi {
       for (const runId of removedRunIds ?? []) this.polled.delete(runId)
       // Recovery of an old ticket must not delay readiness for every slot of this provider.
       void this.reconcile().catch(error => {
-        log.warn({ err: error, provider: this.provider.id }, 'Cloud CI recovery sweep failed')
+        log.warn({ operation: 'recover cloud CI tickets', err: error, provider: this.provider.id }, 'Cloud CI recovery sweep failed')
       })
       const ready = await this.ready()
       const transport = this.provider.transport
-      const reasons = ready ? [] : [this.provider.loginHint]
+      const reason = this.readinessObserved?.status === 'unavailable' ? this.readinessObserved.lastError : this.provider.loginHint
+      const reasons = ready ? [] : [reason]
       if (transport?.source === 'cli') {
         reasons.push(`CLI transport: ${transport.reason} (fallback count ${transport.fallbackCount}).`)
       }
@@ -241,10 +249,13 @@ export class CloudCi {
     try { ready = await this.provider.ready() }
     catch (error) {
       logIgnoredError('jobs', 'check CI provider readiness', error, { provider: this.provider.id })
+      this.readinessObserved = failedReadObservation(this.readinessObserved, error,
+        `${this.provider.label} readiness check failed`)
       this.checked = undefined
       return false
     }
     this.checked = { at: Date.now(), ready }
+    this.readinessObserved = successfulReadObservation()
     return ready
   }
 
@@ -576,7 +587,7 @@ export class CloudCi {
           return result.stdout.trim()
         } })
     } catch (error) {
-      log.warn({ err: error, mirror: run.mirror }, 'CI mirror branch cleanup failed; next ticket read will retry')
+      log.warn({ operation: 'clean retained CI mirror branches', err: error, mirror: run.mirror }, 'CI mirror branch cleanup failed; next ticket read will retry')
     }
   }
 
@@ -648,13 +659,22 @@ export class CloudCi {
     const base = 'refs/remotes/origin/main'
     // Fetch without source alternates: their shallow refs are not negotiation haves the mirror clone can walk.
     const fetch = () => run(['fetch', '--quiet', '--no-tags', 'origin', `+main:${base}`], {})
+    let repair: CiMirrorRepair | undefined
     await fetch().catch(async (error: unknown) => {
       if (!(error instanceof DomainError) || !/could not read|failed to traverse|did not send all necessary objects|bad object|corrupt/i
         .test(error.message)) throw error
-      log.warn({ err: error, mirror }, 'CI mirror clone is unreadable; rebuilding it once')
-      await rm(mirrorClone, { recursive: true, force: true })
-      await ensureClone(this.git, mirror, signal)
-      await fetch()
+      const repairing = performance.now()
+      log.warn({ operation: 'repair CI mirror clone', err: error, mirror, commit, attempt: 1 },
+        'CI mirror clone is unreadable; rebuilding it once')
+      try {
+        await rm(mirrorClone, { recursive: true, force: true })
+        await ensureClone(this.git, mirror, signal)
+        await fetch()
+      } finally {
+        const elapsedMs = performance.now() - repairing
+        updateOperationalFailure('jobs', 'repair CI mirror clone', { elapsedMs })
+        repair = { count: 1, reason: 'CI_MIRROR_CORRUPT', repository: mirror, sourceCommit: commit, elapsedMs }
+      }
     })
     const reusedSnapshot = await git(['rev-parse', base])
     let fetchMs = performance.now() - fetching
@@ -761,6 +781,7 @@ export class CloudCi {
     const mirrorPublication: NonNullable<CiHostRun['mirrorPublication']> = {
       state: 'ready', startedAt, finishedAt: this.ports.now().toISOString(), snapshotCommit: snapshot,
       reusedSnapshot, timings,
+      ...(repair ? { repair } : {}),
     }
     log.info({ commit, mirror, timings }, 'CI mirror snapshot published')
     return { git: read, branch, snapshot, workflowRef, mirrorPublication, workflows: entries.map(entry => entry.split('\t')[1]!),

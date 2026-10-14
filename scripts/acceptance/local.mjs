@@ -1,3 +1,4 @@
+import { diagnosticWarning } from '../diagnostic-warning.mjs'
 #!/usr/bin/env node
 import { spawn, execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -144,7 +145,7 @@ async function shutdown() {
       orderly = false
       console.error(`ENG07 ${record.name} shutdown failed (${publicError(error)}).`)
       record.expected = true; record.child.kill('SIGKILL')
-      await bounded(record.exited, 5000, 'owned forced exit').catch(() => undefined)
+      await bounded(record.exited, 5000, 'owned forced exit').catch(error => diagnosticWarning('join owned acceptance process', error))
     }
   }
   if (!state) return
@@ -169,7 +170,7 @@ async function readyHttp(url, accepts, headers = {}) {
   const body = await response.text()
   if (!response.ok) {
     let code = 'ACCEPTANCE_READINESS_FAILED'
-    try { code = publicError(JSON.parse(body).error) } catch { /* A non-JSON response has no public error code. */ }
+    try { code = publicError(JSON.parse(body).error) } catch (error) { diagnosticWarning('read acceptance readiness error', error, 'INVALID_READINESS_RESPONSE') }
     throw Object.assign(new Error('Service readiness failed.'), { code })
   }
   if (!accepts(body)) throw Object.assign(new Error('Service readiness response is invalid.'), {
@@ -329,7 +330,8 @@ main().catch(async (error) => {
           if (failure.code !== 'ENOENT') throw failure
         }
       }
-    } catch {
+    } catch (error) {
+      diagnosticWarning('retain acceptance startup diagnostics', error)
       console.error('ENG07 private startup diagnostic archive failed.')
     }
   }

@@ -78,16 +78,25 @@ export async function requirePrivateDirectory(path) {
 }
 
 export function executableAvailability(path) {
-  return Object.fromEntries(['node', 'git', 'codex', 'claude', 'systemctl'].map((name) => [name, path.split(':').filter((p) => p.startsWith('/')).some((p) => {
-    try { accessSync(join(p, name), constants.X_OK); return true; }
-    catch (error) { if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false; throw error; }
-  })]));
+  const inspectionErrors = [];
+  const available = Object.fromEntries(['node', 'git', 'codex', 'claude', 'systemctl'].map(name => [name,
+    path.split(':').filter(directory => directory.startsWith('/')).some(directory => {
+      try { accessSync(join(directory, name), constants.X_OK); return true; }
+      catch (error) {
+        if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+        const lastError = typeof error.code === 'string' ? error.code : 'EXECUTABLE_INSPECTION_FAILED';
+        inspectionErrors.push({ operation: `inspect ${name} executable`, lastError, failureCount: 1 });
+        console.warn(JSON.stringify({ operation: `inspect ${name} executable`, status: 'degraded', lastError, failureCount: 1 }));
+        return false;
+      }
+    })]));
+  return { ...available, inspectionErrors };
 }
 
 // Explicit projection: errors, credentials, process arguments and arbitrary metadata never cross this boundary.
 export function doctorReport({ facts, identity, connection, service, executables, errors = [] }) {
   return {
-    inspectionErrors: facts.inspectionErrors ?? [],
+    inspectionErrors: [...(facts.inspectionErrors ?? []), ...(executables.inspectionErrors ?? [])],
     versions: { os: facts.os, osRelease: facts.osRelease, arch: facts.arch, libc: facts.libc, node: facts.node,
       app: /^\d+\.\d+\.\d+$/.test(facts.appVersion) ? facts.appVersion : null,
       protocol: Number.isSafeInteger(facts.protocolVersion) ? facts.protocolVersion : null,
@@ -104,4 +113,4 @@ export function doctorReport({ facts, identity, connection, service, executables
   };
 }
 
-const SAFE_ERRORS = new Set(['nonpersistent_root', 'nonpersistent_home', 'private_directory_required', 'identity_invalid', 'identity_read_only', 'systemd_user_manager_missing', 'connection_unavailable', 'service_not_running', 'authentication', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame', 'backpressure', 'timeout', 'transport']);
+const SAFE_ERRORS = new Set(['worker_status_unavailable', 'manifest_missing', 'manifest_unreadable', 'manifest_invalid', 'nonpersistent_root', 'nonpersistent_home', 'private_directory_required', 'identity_invalid', 'identity_read_only', 'systemd_user_manager_missing', 'connection_unavailable', 'service_not_running', 'authentication', 'permission', 'wrong-main', 'incompatible-protocol', 'malformed-frame', 'backpressure', 'timeout', 'transport']);

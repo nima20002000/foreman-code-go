@@ -20,7 +20,10 @@ export abstract class CodexManagerEvents extends CodexManagerPreparation {
     if (runtime.nativeOutput && !runtime.nativeOutputCleanup) {
       const attempt = runtime.nativeOutput.close()
       runtime.nativeOutputCleanup = attempt
-      void attempt.catch(cleanupError => { logIgnoredError('harness', 'clean up Codex native output', cleanupError); if (runtime.nativeOutputCleanup === attempt) runtime.nativeOutputCleanup = undefined })
+      void attempt.catch(cleanupError => {
+        logIgnoredError('harness', 'clean up Codex native output', cleanupError)
+        if (runtime.nativeOutputCleanup === attempt) runtime.nativeOutputCleanup = undefined
+      })
     }
     return Promise.all([this.finishFiles(runtime), runtime.nativeOutputCleanup]).then(() => undefined)
   }
@@ -96,7 +99,7 @@ export abstract class CodexManagerEvents extends CodexManagerPreparation {
     runtime.phase = 'idle'
     void this.finishTurnResources(runtime).catch(cleanupError => {
       logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
-      // ignore: resources stay owned for the next admission or explicit close to retry.
+      // Resources stay owned for the next admission or explicit close to retry.
     })
     for (const [key, waiting] of runtime.interactions) {
       if (waiting.pending.turn.nativeTurnId === turn.id) this.resolveInteraction(runtime, key, waiting, 'cleared')
@@ -154,7 +157,8 @@ export abstract class CodexManagerEvents extends CodexManagerPreparation {
       // Do not block the stdio frame reader on file I/O: turn/completed and
       // interrupt acknowledgements must be able to withdraw authority mid-call.
       void this.handleFileCall(runtime, request, typeof params.tool === 'string'
-        && Object.hasOwn(CODEX_NATIVE_OUTPUT_TOOL_ALIASES, params.tool)).catch(() => {
+        && Object.hasOwn(CODEX_NATIVE_OUTPUT_TOOL_ALIASES, params.tool)).catch(error => {
+          logIgnoredError('harness', 'deliver native file response', error)
         this.record(runtime, 'files.response_unconfirmed', {})
       })
       return
@@ -203,7 +207,10 @@ export abstract class CodexManagerEvents extends CodexManagerPreparation {
       // An untrackable live ID cannot be forgotten while this connection keeps
       // accepting callbacks. Fence it synchronously and retain failed cleanup.
       this.handleDisconnect(runtime)
-      void runtime.transport.close().catch(cleanupError => { logIgnoredError('harness', 'close Codex transport', cleanupError); this.record(runtime, 'transport.close_unconfirmed', {}) })
+      void runtime.transport.close().catch(cleanupError => {
+        logIgnoredError('harness', 'close Codex transport', cleanupError)
+        this.record(runtime, 'transport.close_unconfirmed', {})
+      })
       return
     }
     const reservation: ResolvedRequest = { signature, nativeRequestId: undefined,
@@ -264,7 +271,10 @@ export abstract class CodexManagerEvents extends CodexManagerPreparation {
     if (!runtime.parent && params.threadId !== runtime.session.nativeSessionId) {
       const child = this.childRuntimes.get(String(params.threadId))
       if (child?.runtime.parent === runtime) {
-        try { child.assertCurrent() } catch { return }
+        try { child.assertCurrent() } catch (error) {
+          logIgnoredError('harness', 'verify native child notification', error, {}, ['SUBAGENT_OWNER_STALE'])
+          return
+        }
         this.handleNotification(child.runtime, method, params, staged)
       }
     }
@@ -383,7 +393,7 @@ export abstract class CodexManagerEvents extends CodexManagerPreparation {
     runtime.starting?.preparationController.abort()
     void this.finishTurnResources(runtime).catch(cleanupError => {
       logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
-      // ignore: resources stay owned for the next admission or explicit close to retry.
+      // Resources stay owned for the next admission or explicit close to retry.
     })
     if (runtime.phase === 'starting' || runtime.phase === 'active') runtime.phase = 'uncertain'
     for (const waiting of runtime.interactions.values()) waiting.delivery = 'uncertain'
