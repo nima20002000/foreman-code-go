@@ -123,7 +123,7 @@ it.each(['pipeline', 'workflow'] as const)('uses an ended CircleCI %s despite st
     .toMatchObject({ run: { state: ended === 'pipeline' ? 'failed' : 'canceled', exitCode: 1 } })
 })
 
-it.each(['unknown outcome', 'no active workflows'] as const)('fails an ended CircleCI run with %s clearly', async reason => {
+it.each(['unknown outcome', 'no active workflows'] as const)('keeps a CircleCI run with %s pending until success', async reason => {
   const f = await fixture({}, { provider: 'circleci' })
   const runId = randomUUID()
   await f.cloud.handle({ operation: 'start', workspaceId: 'ci-workspace', runId, repository: 'octo/site',
@@ -131,9 +131,16 @@ it.each(['unknown outcome', 'no active workflows'] as const)('fails an ended Cir
   if (reason === 'unknown outcome') f.circle.runView = { phase: 'ended', workflows: [] }
   else f.circle.lookupError = 'error: Run run-1 has no active workflows'
   expect(await f.cloud.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1024 }))
-    .toMatchObject({ run: { state: 'failed', exitCode: 1, message: expect.stringContaining('final outcome is unknown') } })
+    .toMatchObject({ run: { state: 'running', exitCode: null, finishedAt: null } })
   expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
-    .toMatchObject({ run: { state: 'failed' } })
+    .toMatchObject({ run: { state: 'running', exitCode: null, finishedAt: null } })
+  f.circle.lookupError = ''
+  f.circle.runView = null
+  f.circle.outcome = 'succeeded'
+  f.circle.durations = { 'apps/api/test/a.integration.test.ts': 90 }
+  f.advance(4_001)
+  expect(await f.reopen().handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 1 }))
+    .toMatchObject({ run: { state: 'passed', exitCode: 0 } })
   expect(f.circle.triggered).toHaveLength(1)
 })
 
@@ -147,7 +154,7 @@ it.each([false, true])('settles CircleCI cancellation when nothing is active, lo
   expect(await f.cloud.handle({ operation: 'cancel', runId }))
     .toMatchObject({ operation: 'cancel', run: { state: 'canceled', finishedAt: expect.any(String) } })
   expect(await f.reopen().handle({ operation: 'cancel', runId })).toMatchObject({ run: { state: 'canceled' } })
-  expect(f.circle.canceled).toHaveLength(lookupEnded ? 0 : 1)
+  expect(f.circle.canceled).toHaveLength(1)
   expect(f.circle.triggered).toHaveLength(1)
 })
 
