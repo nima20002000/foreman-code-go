@@ -68,11 +68,12 @@ describe('negotiated passive discovery worker handler', () => {
     for (const field of ['mainId', 'deviceId', 'workerInstallationId'] as const) await expect(extension.handle(payload, { binding: { ...binding, [field]: 'other' }, signal })).rejects.toThrow('binding mismatch')
     expect(childProcess.spawn).not.toHaveBeenCalled()
   })
-  it('fences every canonical binding component despite a repeated numeric connection counter', () => {
+  it('fences every installation and boot component but keeps the generation across a transport reconnect', () => {
     const current = harnessConnectionGeneration(binding)
     for (const key of Object.keys(binding) as (keyof typeof binding)[]) {
       const changed = { ...binding, [key]: typeof binding[key] === 'number' ? 9 : 'different' }
-      expect(harnessConnectionGeneration(changed)).not.toBe(current)
+      if (key === 'connectionEpoch' || key === 'connectionGeneration') expect(harnessConnectionGeneration(changed)).toBe(current)
+      else expect(harnessConnectionGeneration(changed)).not.toBe(current)
     }
   })
   it('reuses payload hashes while returning fresh inspection and connection facts', async () => {
@@ -83,7 +84,7 @@ describe('negotiated passive discovery worker handler', () => {
     const first = (await extension.handle(payload, { binding, signal })).payload.installations[0]!
     first.launcher.environment.generation = 'caller mutation'
     vi.setSystemTime(new Date('2026-01-01T00:00:01.000Z'))
-    const reconnected = { ...binding, connectionEpoch: 'replacement-epoch' }
+    const reconnected = { ...binding, connectionEpoch: 'replacement-epoch', bootId: 'restarted-boot' }
     const second = (await extension.handle(payload, { binding: reconnected, signal })).payload.installations[0]!
     expect(second.installationFingerprint).toBe(first.installationFingerprint)
     expect(second.launcher.checkedAt).toBe('2026-01-01T00:00:01.000Z')

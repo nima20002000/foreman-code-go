@@ -75,8 +75,10 @@ import { recoverInstalledWorkflowReply } from './installedWorkflowRecoveryHandle
 import { InstalledWorkflowResponsePages } from './installedWorkflowResponsePages.js'
 import { hasPositiveRemoteEntryClosure, remoteNonEntryClosureDigest } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 import { deviceRequestTimeoutMs, retryDeviceRequest } from '../../devices/deviceRequestRetry.js'
+import { deviceReconnectTimeoutMs, isDeviceLinkDrop, sameDeviceInstallation, waitForDeviceReconnect } from '../../devices/deviceReconnect.js'
 
-function unavailable(reason:string):never {throw new DomainError('WORKER_WORKFLOW_UNAVAILABLE','The original installed workflow authority is unavailable.',409,{reason})}
+function unavailableError(reason:string) {return new DomainError('WORKER_WORKFLOW_UNAVAILABLE','The original installed workflow authority is unavailable.',409,{reason})}
+function unavailable(reason:string):never {throw unavailableError(reason)}
 const digest=(value:unknown)=>commandInputHash(value).slice('sha256:'.length)
 function connectionIdentity(binding: Readonly<DeviceSessionBinding>): DeviceConnectionIdentity {
   const { mainId, deviceId, workerInstallationId, bootId, keyRevision, authorizationRevision, connectionGeneration } = binding
@@ -231,6 +233,8 @@ export interface InstalledWorkflowHostOptions {
   configuration:InstalledWorkflowConfigurationLocation|null
   /** Current authenticated channel only; a capture belongs permanently to its original generation. */
   currentBinding():Readonly<DeviceSessionBinding>|undefined
+  /** When the last ready Main session was lost while the Worker keeps reconnecting; undefined while connected or stopped. */
+  linkLostAt?():number|undefined
   captureRequest(namespace:string):CapturedWorkflowMainRequest|undefined
   sources:SourceOperationWorkerService
   approvedRoots():Promise<ApprovedRootAllowlist>
@@ -341,33 +345,59 @@ class InstalledWorkflowHostRuntime {
     }
   }
 
+  /** The original binding stays current over a reconnected session of the same Worker boot and through a bounded
+   * link outage; a changed installation, key, authorization or boot is unavailable. */
   private readonly current = (binding:Readonly<DeviceSessionBinding>)=>{
     this.signal.throwIfAborted()
     const live=this.input.currentBinding()
-    if(this.closing||!live||!isDeepStrictEqual(live,binding)||binding.mainId!==this.pairing.mainId||binding.deviceId!==this.pairing.deviceId
+    if(this.closing||!(live?sameDeviceInstallation(live,binding):this.reconnecting())||binding.mainId!==this.pairing.mainId||binding.deviceId!==this.pairing.deviceId
       ||binding.workerInstallationId!==this.pairing.workerInstallationId||binding.keyRevision!==this.pairing.keyRevision
       ||binding.authorizationRevision!==this.pairing.authorizationRevision||binding.bootId!==this.input.bootId)unavailable('authenticated_generation_unavailable')
   }
 
+  /** Main's requests arrive on the live session only; work admitted on an earlier session keeps `current`. */
+  private readonly currentIncoming = (binding:Readonly<DeviceSessionBinding>)=>{
+    this.current(binding)
+    if(!isDeepStrictEqual(this.input.currentBinding(),binding))unavailable('authenticated_generation_unavailable')
+  }
+
+  private readonly reconnecting = () => {
+    const lostAt = this.input.linkLostAt?.()
+    return lostAt !== undefined && Date.now() - lostAt < deviceReconnectTimeoutMs
+  }
+
+  /** Requests follow the live Main session of the original Worker boot; a dropped link is awaited (bounded),
+   * and only read-only authority checks are sent again after a link drop. */
   private readonly forBinding = (binding:Readonly<DeviceSessionBinding>)=>{
     const captures=new Map<string,CapturedWorkflowMainRequest>()
-    return async(namespace:string,payload:unknown,options?:{signal?:AbortSignal;timeoutMs?:number})=>{
-      this.current(binding)
+    const capture = async (namespace: string, signal: AbortSignal) => {
+      const live = await waitForDeviceReconnect({ original: binding, signal,
+        failure: unavailableError('authenticated_generation_unavailable'),
+        live: () => { this.current(binding); return this.input.currentBinding() } })
       let captured=captures.get(namespace)
-      if(!captured) {
+      if(!captured||!isDeepStrictEqual(captured.binding,live)) {
         captured=this.input.captureRequest(namespace)
-        if(!captured||!isDeepStrictEqual(captured.binding,binding))unavailable('main_channel_unavailable')
-        captures.set(namespace,captured)
+        if(!captured||!sameDeviceInstallation(captured.binding,binding))unavailable('main_channel_unavailable')
+        captures.set(namespace,captured!)
       }
+      return captured!
+    }
+    return async(namespace:string,payload:unknown,options?:{signal?:AbortSignal;timeoutMs?:number})=>{
       const requestSignal = options?.signal ? AbortSignal.any([this.signal, options.signal]) : this.signal
-      const request = () => captured.request(payload, {
-        signal: requestSignal, timeoutMs: options?.timeoutMs ?? deviceRequestTimeoutMs,
-      })
-      const response = namespace === EXECUTION_AUTHORITY_EXTENSION.namespace
-        ? await retryDeviceRequest(request, { retry: 'idempotent', signal: requestSignal })
-        : await request()
-      this.current(binding)
-      return response
+      const authority = namespace === EXECUTION_AUTHORITY_EXTENSION.namespace
+      for (let attempt = 0; ; attempt++) {
+        const captured = await capture(namespace, requestSignal)
+        const request = () => captured.request(payload, {
+          signal: requestSignal, timeoutMs: options?.timeoutMs ?? deviceRequestTimeoutMs,
+        })
+        try {
+          const response = authority ? await retryDeviceRequest(request, { retry: 'idempotent', signal: requestSignal }) : await request()
+          this.current(binding)
+          return response
+        } catch (error) {
+          if (!authority || attempt >= 3 || requestSignal.aborted || !isDeviceLinkDrop(error)) throw error
+        }
+      }
     }
   }
 
@@ -430,6 +460,10 @@ class InstalledWorkflowHostRuntime {
         && isDeepStrictEqual({ ...owned.intent, owner: renewal.nextOwner }, intent)
       if ((!isDeepStrictEqual(owned.intent, intent) && !renewing) || !isDeepStrictEqual(owned.placement, placement)) {
         unavailable('original_operation_binding_changed')
+      }
+      if (!owned.native && !owned.preparationRecovery && !isDeepStrictEqual(owned.context.binding, context.binding)
+        && sameDeviceInstallation(owned.context.binding, context.binding)) {
+        await this.rebindPreparation(owned, context, () => authorize(intent, placement, action))
       }
       if (!isDeepStrictEqual(owned.context.binding, context.binding)) {
         const original = owned.context.binding
@@ -834,6 +868,16 @@ class InstalledWorkflowHostRuntime {
     return task
   }
 
+  /** A preparation keeps its original host and journal entry when only the transport session changed. */
+  private readonly rebindPreparation = async (owned: InstalledOperation, context: DeviceExtensionContext,
+    authorize: () => Promise<unknown>) => {
+    const original = owned.context.binding
+    await authorize()
+    this.current(context.binding)
+    if (!isDeepStrictEqual(owned.context.binding, original)) unavailable('original_operation_generation_changed')
+    owned.context = context
+  }
+
   private readonly closeResidentPreparation = async (resident: InstalledOperation, reason: string) => {
     componentLogger('engine').warn({ executionId: resident.intent.executionId, reason,
       native: Boolean(resident.native), session: Boolean(resident.session) }, 'Closing original workflow preparation')
@@ -1065,7 +1109,7 @@ class InstalledWorkflowHostRuntime {
       if(RemoteJobExecutionRpcRequestRecordSchema.safeParse(payload).success)throw new DomainError('JOB_RUNTIME_UNAVAILABLE','The installed workflow host has no Job runtime.',409)
       const frame=RemoteExecutionRpcRequestSchema.parse(payload)
       const task=(async()=>{
-        this.current(context.binding)
+        this.currentIncoming(context.binding)
         if (frame.method === 'receipt-continuation') {
           const status = await(await this.journal()).status(frame.intent.operationId)
           if (status.status !== 'known' || !isDeepStrictEqual(status.receipt.intent, frame.intent)) {
@@ -1077,7 +1121,11 @@ class InstalledWorkflowHostRuntime {
           return { payload: this.responsePages.read(frame, context.binding) }
         }
         const resident = this.operations.get(frame.intent.executionId)
-        if (resident && (resident.preparationRecovery || !isDeepStrictEqual(resident.context.binding, context.binding))) {
+        // Only the transport session changed: the original work continues on it, unless Main stops it.
+        const reconnected = resident !== undefined && !resident.preparationRecovery
+          && !(frame.method === 'control' && frame.command.action.kind === 'stop')
+          && sameDeviceInstallation(resident.context.binding, context.binding)
+        if (resident && !reconnected && (resident.preparationRecovery || !isDeepStrictEqual(resident.context.binding, context.binding))) {
           const status = await(await this.journal()).status(frame.intent.operationId)
           const acknowledged = status.status === 'known' && status.receipt.native && resident.native && resident.session
           if (!acknowledged || resident.preparationRecovery) {

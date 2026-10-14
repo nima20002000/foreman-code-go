@@ -215,6 +215,10 @@ export class DeviceEndpoint {
     return presence?.clockReason ?? (presence?.clockSkewMs !== undefined && presence.clockSkewMs !== null
       ? null : workerClockReason(null, Date.now()))
   }
+  /** True once a committed revoke fences this authorization revision of the device. */
+  isRevoked(deviceId: string, authorizationRevision: number): boolean {
+    return authorizationRevision <= (this.revoked.get(deviceId) ?? 0)
+  }
   /** A committed revoke receipt fences its revision, including lost-response replay. */
   revoke(deviceId: string, authorizationRevision: number) {
     const revision = Math.max(this.revoked.get(deviceId) ?? 0, authorizationRevision)

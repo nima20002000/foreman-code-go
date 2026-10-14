@@ -12,6 +12,7 @@ import { WorkerExecutionPolicy } from '../settings/workerExecution.js'
 import { DomainError } from '../errors.js'
 import type { AcceptedExecutionBinding } from './nativeComposition.js'
 import { deviceRequestTimeoutMs } from '../devices/deviceRequestRetry.js'
+import { isDeviceLinkDrop } from '../devices/deviceReconnect.js'
 
 /** W07 returns the identity AND request closure of the SAME authenticated
  * channel instance. A presence label or separately looked-up mutable channel
@@ -21,7 +22,11 @@ export interface AuthenticatedWorkerChannel {
   supports?(namespace: string): boolean
   request(namespace: string, payload: unknown, options?: { signal?: AbortSignal; timeoutMs?: number }): Promise<{ payload: unknown; bytes?: Uint8Array }>
 }
-export interface MainWorkerCarrier { capture(deviceId: string): AuthenticatedWorkerChannel }
+export interface MainWorkerCarrier {
+  capture(deviceId: string): AuthenticatedWorkerChannel
+  /** Resolves once the same Worker boot as `original` is connected again; otherwise throws `failure`, a revocation or DEVICE_LINK_DROPPED. */
+  reconnect?(deviceId: string, original: DeviceConnectionIdentity, failure: unknown, signal?: AbortSignal): Promise<void>
+}
 function selected(carrier: MainWorkerCarrier, host: { kind: 'main' | 'device'; mainId: string; deviceId?: string },
   registration: { workerInstallationId: string; keyRevision: number; authorizationRevision: number } | null) {
   if (host.kind !== 'device' || !host.deviceId || !registration) throw new DomainError('REMOTE_BINDING_REQUIRED', 'A registered accepted device is required.', 409)
@@ -66,6 +71,8 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
   }
   const sources = new Map<string, { connection: DeviceConnectionIdentity; response: unknown }>()
   const workerExecution = options.workerExecution ?? new WorkerExecutionPolicy()
+  // The Worker boot this manager last reached; only a reconnect of that boot may receive a replay.
+  let reached: DeviceConnectionIdentity | undefined
   const receiptKey = (receipt: RemoteOperationReceipt) => canonicalGraphJson(receipt)
   return new RemoteNativeSessionManager({ intent: binding.intent, placement: binding.placement, harness: context.harness,
     configuration: context.configuration, controlFor: options.controlFor,
@@ -84,6 +91,7 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
         throw new DomainError('REMOTE_BINDING_CONFLICT', 'Native request cannot change its accepted operation or placement.', 409)
       }
       const connection = selected(options.carrier, binding.placement.hostRef, binding.placement.registration)
+      reached = connection.identity
       const continuesSession = request.method === 'prepare' && request.sessionContinuation !== undefined
       const namespace = continuesSession ? REMOTE_PREPARATION_EXTENSION.namespace : REMOTE_EXECUTION_EXTENSION
       if (continuesSession && !connection.supports?.(namespace)) {
@@ -111,6 +119,12 @@ export function remoteNativeManager(context: NativeManagerResolutionContext, bin
         sources.set(receiptKey(receipt), { connection: connection.identity, response })
       }
       return response
+    },
+    async reconnect(error, signal) {
+      const hostRef = binding.placement.hostRef
+      if (!options.carrier.reconnect || hostRef.kind !== 'device' || !reached || !isDeviceLinkDrop(error)) return false
+      await options.carrier.reconnect(hostRef.deviceId, reached, error, signal)
+      return true
     } },
     observeReceipt: async receipt => {
       const key = receiptKey(receipt), original = sources.get(key)
