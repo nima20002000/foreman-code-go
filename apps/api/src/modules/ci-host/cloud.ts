@@ -242,7 +242,8 @@ export class CloudCi {
   }
 
   private save(run: CloudRun) {
-    return saveCloudRun(this.path(run.runId, 'meta.json'), run)
+    const transport = this.provider.transport ?? run.transport
+    return saveCloudRun(this.path(run.runId, 'meta.json'), { ...run, ...(transport ? { transport } : {}) })
   }
 
   private view(run: CloudRun, logBytes: number): CiHostRun {
@@ -250,8 +251,13 @@ export class CloudCi {
     if (run.state === 'running' && run.live?.step) step = run.live.step
     if (run.state === 'starting') step = run.mirrorPublication?.state === 'pending' ? 'publish mirror' : 'dispatch'
     if (run.state === 'queued') step = null
+    const transport = this.provider.transport ?? run.transport
+    const message = transport?.source === 'cli'
+      ? [`CLI transport: ${transport.reason} (fallback count ${transport.fallbackCount}).`, run.message]
+        .filter(Boolean).join(' ').slice(0, 2000) : run.message
     return { runId: run.runId, state: run.state, step,
-      exitCode: run.exitCode, startedAt: run.startedAt, finishedAt: run.finishedAt, logBytes, message: run.message === null ? null : sanitizeCiText(run.message),
+      ...(transport ? { transport } : {}),
+      exitCode: run.exitCode, startedAt: run.startedAt, finishedAt: run.finishedAt, logBytes, message: message === null ? null : sanitizeCiText(message),
       ...(run.provenance ? { provenance: run.provenance } : {}),
       ...(run.mirrorPublication ? { mirrorPublication: run.mirrorPublication } : {}),
       ...(run.testsStarted !== undefined ? { testsStarted: run.testsStarted } : {}),

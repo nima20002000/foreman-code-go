@@ -77,3 +77,18 @@ test('stops waiting at the overall deadline and returns the open tickets', async
   const finished = await awaitTickets(reader(runs), 'workspace', ['slow'], { waitMs: 0 })
   assert.deepEqual(finished.map(run => run.state), ['running'])
 })
+
+
+test('reports diagnostic retrieval failures while preserving a failed test outcome', async t => {
+  const lines = []
+  t.mock.method(console, 'error', value => lines.push(String(value)))
+  const failed = { id: 'failed-ticket', suite: 'unit', state: 'failed' }
+  const call = async (name, input) => {
+    if (name === 'ci_get' && !input.testStatus) return { run: failed }
+    throw new Error('private diagnostic connection details')
+  }
+  assert.deepEqual(await awaitTickets(call, 'workspace', [failed.id]), [failed])
+  assert.ok(lines.some(line => /ci_logs_read.*failed-ticket.*unavailable/.test(line)))
+  assert.ok(lines.some(line => /test results.*failed-ticket.*unavailable/.test(line)))
+  assert.ok(lines.every(line => !line.includes('private diagnostic')))
+})

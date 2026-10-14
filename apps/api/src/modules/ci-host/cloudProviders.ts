@@ -13,6 +13,7 @@ export interface CloudRun {
   runId: string; repository: string; mirror: string; commit: string; suite: CiSuite; startedAt: string
   providerRunId: string | null; state: CiHostRun['state']; finishedAt: string | null; exitCode: number | null
   message: string | null; durations?: CiDurations; testResults?: CiTestResults
+  transport?: CiHostRun['transport']
   testsStarted?: boolean
   scope?: CiScope; files?: string[]; part?: CiPart; baseCommit?: string
   dispatch?: { input: CloudDispatchInput; attempts: number; at: string }
@@ -50,6 +51,7 @@ export interface CloudDispatchInput {
 export interface CloudProvider {
   readonly id: 'github' | 'circleci'
   readonly label: string
+  readonly transport?: CiHostRun['transport']
   /** Longest accepted pipeline parameter value, when the provider caps it. */
   readonly parameterLimit?: number
   /** Jobs the service runs at once for a public repository on its free plan, less a few kept for retries. */
@@ -169,6 +171,8 @@ export class GitHubActionsProvider implements CloudProvider {
   private readonly jobsCache = new Map<string, { etag: string; jobs: GitHubJob[] }>()
 
   private readonly rest: GitHubRest
+
+  get transport() { return this.rest.transport }
 
   constructor(private readonly ports: HostCiPorts, options: CloudRestOptions = {}) {
     this.rest = new GitHubRest(new CloudHttp(ports, 'github', options))
@@ -314,6 +318,8 @@ export class CircleCiProvider implements CloudProvider {
   readonly loginHint = 'Log in to CircleCI on Main (circleci auth login) and follow the CI mirror project to run CI there.'
 
   private readonly rest: CircleRest
+
+  get transport() { return this.rest.transport }
 
   constructor(private readonly ports: HostCiPorts, options: CloudRestOptions = {}) {
     this.rest = new CircleRest(new CloudHttp(ports, 'circleci', options))

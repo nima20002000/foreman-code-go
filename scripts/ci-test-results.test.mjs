@@ -72,13 +72,15 @@ test('keeps failed tests first within the bounds and still counts every test', (
   assert.ok(Buffer.byteLength(JSON.stringify(results)) < 512 * 1024)
 })
 
-test('writes nothing when no report can be read', t => {
+test('fails expected collection without publishing partial reports', t => {
   const directory = temporary(t)
   const output = join(directory, 'out', 'test-results.json')
-  assert.equal(writeCiTestResults(output, [join(directory, 'missing.json')]), false)
+  assert.throws(() => writeCiTestResults(output, [join(directory, 'missing.json')]), /missing.json/)
   assert.equal(existsSync(output), false)
   writeFileSync(join(directory, 'report.json'), JSON.stringify({ testResults: [] }))
-  assert.equal(writeCiTestResults(output, [join(directory, 'missing.json'), join(directory, 'report.json')]), true)
+  assert.throws(() => writeCiTestResults(output, [join(directory, 'missing.json'), join(directory, 'report.json')]), /missing.json/)
+  assert.equal(existsSync(output), false)
+  assert.equal(writeCiTestResults(output, [join(directory, 'report.json')]), true)
   assert.deepEqual(JSON.parse(readFileSync(output, 'utf8')), { summary: { passed: 0, failed: 0, skipped: 0 }, truncated: false, files: [] })
 })
 
@@ -171,4 +173,47 @@ test.skip('skips', () => assert.fail('skipped case ran'))
   assert.deepEqual(results.files[0].tests.map(test => [test.name, test.status]).sort(),
     [['fails', 'failed'], ['passes', 'passed'], ['skips', 'skipped']])
   assert.match(results.files[0].tests.find(test => test.status === 'failed').message, /1.*2|Expected values/)
+})
+
+for (const report of ['{broken', '{}', 'null']) {
+  test(`rejects malformed or invalid expected reports: ${report}`, t => {
+    const directory = temporary(t)
+    const input = join(directory, 'invalid.json')
+    const output = join(directory, 'results.json')
+    writeFileSync(input, report)
+    assert.throws(() => writeCiTestResults(output, [input]), /invalid.json/)
+    assert.equal(existsSync(output), false)
+    const result = spawnSync(process.execPath, ['scripts/ci-test-results.mjs', output, input], { encoding: 'utf8' })
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /invalid.json/)
+  })
+}
+
+test('CLI rejects an expected missing report and an empty collection', t => {
+  const directory = temporary(t)
+  const output = join(directory, 'results.json')
+  for (const inputs of [[join(directory, 'missing.json')], []]) {
+    const result = spawnSync(process.execPath, ['scripts/ci-test-results.mjs', output, ...inputs], { encoding: 'utf8' })
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /report/i)
+  }
+})
+
+
+test('missing reports fail a successful test command and preserve an existing test failure', t => {
+  const directory = temporary(t)
+  writeFileSync(join(directory, 'pnpm'), `#!${process.execPath}
+const args = process.argv.slice(2)
+process.exit(args.includes('build') ? 0 : Number(process.env.FIXTURE_EXIT))
+`, { mode: 0o755 })
+  for (const code of [0, 7]) {
+    const result = spawnSync('bash', ['scripts/ci-suite.sh'], { encoding: 'utf8',
+      env: { ...process.env, SUITE: 'unit-web', SCOPE: 'full', SLICE: '1/3', FIXTURE_EXIT: String(code),
+        CI_PROGRESS_FILE: '', CI_WATCHDOG_ACTIVE: '', CI_EXPECTED_DURATION_MS: '', DURATIONS_INPUT: '',
+        DURATIONS_OUTPUT: join(directory, `durations-${code}.json`),
+        TEST_RESULTS_OUTPUT: join(directory, `results-${code}.json`), CI_STATE: join(directory, `state-${code}`),
+        PATH: `${directory}${delimiter}${process.env.PATH}`, CI_HOST_RUNNER: '0', BASH_ENV: '' } })
+    assert.equal(result.status, code || 1, result.stderr)
+    assert.match(result.stderr + result.stdout, /report/i)
+  }
 })

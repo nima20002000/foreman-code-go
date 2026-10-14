@@ -39,9 +39,17 @@ export async function expireCloudDispatch(endpoint: HostCiEndpoint, computer: Ho
   if ((observed?.state ?? run.state) !== 'starting'
     || Date.now() - at < CLOUD_START_TIMEOUT_MS * CI_START_MAX_ATTEMPTS) return observed ?? null
   try {
-    await requestCloud(endpoint, computer, { operation: 'cancel', runId: ciExecutionRunId(run) })
+    const reply = CiHostReplySchema.parse(await requestCloud(endpoint, computer,
+      { operation: 'cancel', runId: ciExecutionRunId(run) }))
+    if (reply.operation !== 'cancel' || reply.run.runId !== ciExecutionRunId(run)
+      || ['queued', 'starting', 'running'].includes(reply.run.state)) {
+      throw new DomainError('CI_CLOUD_CLEANUP_PENDING', 'Cloud cancellation was not confirmed; ownership retained.', 503)
+    }
+    if (reply.run.state !== 'canceled') return reply.run
   } catch (error) {
-    log.warn({ err: error, runId: run.id }, 'Expired cloud dispatch cleanup remains pending')
+    log.warn({ runId: run.id }, 'Expired cloud dispatch cleanup remains pending; ownership retained')
+    if (error instanceof DomainError && error.code === 'CI_CLOUD_CLEANUP_PENDING') throw error
+    throw new DomainError('CI_CLOUD_CLEANUP_PENDING', 'Cloud cancellation failed; ownership retained.', 503)
   }
   return unstarted(run, 'lost', 'Cloud dispatch created no workflow after recovery attempts; the CI slot was released.')
 }
@@ -59,6 +67,7 @@ export async function dispatchCloudTicket(sql: SqlQuery, endpoint: HostCiEndpoin
       const observed = await expireCloudDispatch(endpoint, computer, run, reply.run) ?? reply.run
       return { outcome: 'settled', run, observed }
     } catch (error) {
+      if (error instanceof DomainError && error.code === 'CI_CLOUD_CLEANUP_PENDING') throw error
       if (!(error instanceof DomainError && error.code === 'CI_RUN_UNKNOWN')) {
         log.warn({ err: error, runId: run.id }, 'Cloud CI dispatch ownership could not be read')
         if (elapsed >= CLOUD_START_TIMEOUT_MS * CI_START_MAX_ATTEMPTS) {

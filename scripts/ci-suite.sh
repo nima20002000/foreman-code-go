@@ -71,7 +71,7 @@ ready() {
 
 record_tests() {
   [ -n "$test_results" ] || return 0
-  node scripts/ci-test-results.mjs "$test_results" "$@" || echo 'Test results were not recorded.'
+  node scripts/ci-test-results.mjs "$test_results" "$@"
 }
 
 unit_slice() {
@@ -91,7 +91,7 @@ unit_slice() {
   if [ -f "$output.vitest.json" ]; then
     node scripts/ci-unit-files.mjs record "$suite" "$output.vitest.json" "$output"
   fi
-  record_tests "$output.vitest.json"
+  record_tests "$output.vitest.json" || { if [ "$code" = 0 ]; then code=1; fi; }
   return "$code"
 }
 
@@ -124,7 +124,7 @@ unit_other() {
   status=0
   node_tests "$reports/scripts.json" 'scripts/**/*.test.mjs' || status=$?
   if [ "$code" = 0 ]; then code="$status"; fi
-  record_tests "$reports/contracts.json" "$reports/worker.json" "$reports/scripts.json"
+  record_tests "$reports/contracts.json" "$reports/worker.json" "$reports/scripts.json" || { if [ "$code" = 0 ]; then code=1; fi; }
   return "$code"
 }
 
@@ -202,7 +202,7 @@ case "$SUITE" in
     mkdir -p "$state"; heavy_report="$(realpath -m "$state/unit-web-heavy.vitest.json")"; progress_reporter="$PWD/scripts/ci-progress-reporter.mjs"; code=0
     (cd apps/web && FOREMAN_WEB_TEST_PHASE=heavy pnpm exec vitest run ${SLICE:+--shard=$SLICE} \
       --reporter=default --reporter=json "--reporter=$progress_reporter" "--outputFile.json=$heavy_report") || code=$?
-    record_tests "$heavy_report"; exit "$code" ;;
+    record_tests "$heavy_report" || { if [ "$code" = 0 ]; then code=1; fi; }; exit "$code" ;;
   unit-other) ready db; unit_other ;;
   lint-api) build_contracts && pnpm --filter @foreman-code/api lint ;;
   lint-other) build_contracts \

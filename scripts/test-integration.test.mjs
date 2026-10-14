@@ -523,15 +523,14 @@ test('PostgreSQL capacity is read through the supplied test database connection'
   assert.deepEqual(host, { cpuCount: 16, availableMemoryBytes: 32 * 1024 ** 3 })
 })
 
-test('unavailable database settings retain the fallback without exposing connection errors', async () => {
+test('unavailable database settings fail discovery without exposing connection errors', async () => {
   const host = { cpuCount: 16, availableMemoryBytes: 32 * 1024 ** 3 }
   const admin = { query: async () => { throw new Error('private database connection details') } }
-  const resources = await readIntegrationResources(admin, host)
-  assert.deepEqual(resources, host)
-  const plan = integrationShardPlan({}, resources)
-  assert.equal(plan.shards, 12)
-  assert.match(plan.reason, /PostgreSQL limits unknown \(fallback 12\)/)
-  assert.doesNotMatch(plan.reason, /private database/)
+  await assert.rejects(readIntegrationResources(admin, host), error => {
+    assert.match(error.message, /PostgreSQL capacity discovery failed/)
+    assert.doesNotMatch(error.message, /private database/)
+    return true
+  })
 })
 
 test('an integration file fails after three minutes and overrides cannot disable the deadlines', () => {

@@ -150,11 +150,21 @@ export const CiCollectionSchema = z.enum(['pending', 'complete', 'unsupported'])
 export const CiProvenanceSchema = z.object({
   sourceCommit: CommitSchema, workflowCommit: CommitSchema, workflowRef: z.string().min(1).max(200),
 }).strict()
+export const CiObservationSchema = z.object({
+  status: z.enum(['available', 'unavailable']), lastSuccessAt: TimestampSchema.nullable(),
+  lastError: z.string().max(300).nullable(), consecutiveFailures: z.number().int().nonnegative(),
+  nextAttemptAt: TimestampSchema.nullable(),
+}).strict()
+export const CiTransportSchema = z.object({
+  source: z.enum(['rest', 'cli']), reason: z.string().max(300).nullable(),
+  lastError: z.string().max(300).nullable(), fallbackCount: z.number().int().nonnegative(),
+}).strict()
 const CiHostRunSchema = z.object({
   runId: CiHostRunIdSchema, state: CiHostRunStateSchema, step: z.string().max(80).nullable(),
   exitCode: z.number().int().nullable(), startedAt: TimestampSchema, finishedAt: TimestampSchema.nullable(),
   logBytes: z.number().int().nonnegative(), message: z.string().max(2000).nullable(),
   collection: CiCollectionSchema.optional(), provenance: CiProvenanceSchema.optional(),
+  transport: CiTransportSchema.optional(),
   mirrorPublication: CiMirrorPublicationSchema.optional(),
   /** Absent when the executor cannot establish whether a test case ran. */
   testsStarted: z.boolean().optional(),
@@ -207,6 +217,7 @@ export const CiRunRecordSchema = z.object({
   dispatchRequest: CiHostStartSchema.optional(),
   /** Kept until the assigned executor confirms cancellation or another terminal result. */
   cancellation: CiCancellationSchema.optional(),
+  observation: CiObservationSchema.optional(),
   providerMessage: z.string().max(2000).nullable().optional(),
   messageHistory: z.array(z.string().max(2000)).max(8).optional(),
   scope: CiScopeSchema.default('full'), files: CiSelectedFilesSchema.default([]),
@@ -227,6 +238,7 @@ export const CiRunRecordSchema = z.object({
     label: z.string() }).strict().nullable(),
   step: z.string().nullable(), exitCode: z.number().int().nullable(), message: z.string().nullable(),
   collection: CiCollectionSchema.optional(), provenance: CiProvenanceSchema.optional(),
+  transport: CiTransportSchema.optional(),
   mirrorPublication: CiMirrorPublicationSchema.optional(),
   queuedAt: TimestampSchema, startedAt: TimestampSchema.nullable(), finishedAt: TimestampSchema.nullable(),
   initiator: z.object({ principalId: IdSchema, executionId: IdSchema.nullable() }).strict(),

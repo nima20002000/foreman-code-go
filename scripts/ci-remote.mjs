@@ -137,8 +137,14 @@ export async function awaitTickets(call, workspaceId, tickets,
     }
     if (runs.every(run => !['queued', 'starting', 'running'].includes(run.state))) {
       for (const run of runs.filter(value => value.state !== 'passed')) {
-        const log = await call('ci_logs_read', { workspaceId, ticketId: run.id, maxBytes: 65_536 }).catch(() => ({ text: '' }))
-        const read = await call('ci_get', { workspaceId, ticketId: run.id, testStatus: ['failed'] }).catch(() => ({}))
+        const log = await call('ci_logs_read', { workspaceId, ticketId: run.id, maxBytes: 65_536 }).catch(() => {
+          console.error(`[ci] ci_logs_read for ticket ${run.id} unavailable; diagnostic retrieval failed.`)
+          return { text: '' }
+        })
+        const read = await call('ci_get', { workspaceId, ticketId: run.id, testStatus: ['failed'] }).catch(() => {
+          console.error(`[ci] test results for ticket ${run.id} unavailable; diagnostic retrieval failed.`)
+          return {}
+        })
         const tests = read.tests?.files ?? []
         const history = new Map((read.failureHistory ?? []).map(entry => [`${entry.file}\0${entry.test}`, entry]))
         const flaky = (file, test) => {

@@ -327,10 +327,16 @@ export async function readIntegrationResources(admin, host = {
       (current_setting('superuser_reserved_connections')::integer
         + coalesce(current_setting('reserved_connections', true), '0')::integer) as "reservedConnections",
       (select count(*)::integer from pg_stat_activity where backend_type = 'client backend') as "activeConnections"`)
-    return { ...host, ...rows[0] }
-  } catch {
-    // Missing database settings retain the fallback; connection details stay out of logs.
-    return { ...host }
+    const capacity = rows[0]
+    if (!capacity || !Number.isSafeInteger(capacity.maxConnections) || capacity.maxConnections < 1
+      || !Number.isSafeInteger(capacity.reservedConnections) || capacity.reservedConnections < 0
+      || !Number.isSafeInteger(capacity.activeConnections) || capacity.activeConnections < 0) {
+      throw new Error('PostgreSQL capacity discovery returned invalid limits.')
+    }
+    return { ...host, ...capacity }
+  } catch (error) {
+    const code = typeof error?.code === 'string' && /^[A-Z0-9]{5}$/.test(error.code) ? ` (${error.code})` : ''
+    throw new Error(`PostgreSQL capacity discovery failed${code}; integration shards cannot be planned.`)
   }
 }
 
