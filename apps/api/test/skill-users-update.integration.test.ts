@@ -36,7 +36,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('moves Agents and their saved workflow
   const clients: Client[] = []
   const access = new PostgresAccessService(pool)
   const commands = new PostgresCommandCoordinator(pool)
-  const locations = new WorkspaceLocationService(pool, commands, undefined, 'runner-local', parentPath)
+  const locations = new WorkspaceLocationService(pool, commands, undefined, 'runner-local')
   const agents = new OperatorAgentMutationService(pool, commands, { qualifyConfiguration: async (configuration) => ({
     harness: configuration.harness, version: 'synthetic-test-port', authenticated: true, ready: true,
     structuredEvents: true, supportsResume: true, supportsCancellation: true, supportsWorkingDirectory: true,

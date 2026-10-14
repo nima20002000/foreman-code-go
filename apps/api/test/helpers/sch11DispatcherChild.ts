@@ -61,7 +61,7 @@ async function run(input: Sch11ChildInput) {
     application_name: `sch11_child_${process.pid}`,
     options: `-c search_path=${input.schema} -c statement_timeout=15000 -c lock_timeout=10000` })
   const locations = new WorkspaceLocationService(pool, new PostgresCommandCoordinator(pool),
-    input.runtimeRoot, LOCAL_RUNNER_ID, input.projectRoot)
+    input.runtimeRoot, LOCAL_RUNNER_ID)
   try {
     await assertTestDatabase(pool, {
       directory: process.env.FOREMAN_CODE_TEST_ROOT!,

@@ -27,7 +27,7 @@ describe.skipIf(!postgresEnabled)('workspace folder cleanup across computers', (
       await mkdir(runtime, { mode: 0o700 })
       const commands = new PostgresCommandCoordinator(db.pool)
       const access = new PostgresAccessService(db.pool)
-      const locations = new WorkspaceLocationService(db.pool, commands, runtime, 'runner-local', parent)
+      const locations = new WorkspaceLocationService(db.pool, commands, runtime, 'runner-local')
       const defaults = new PostgresFoundationSettingsRepository(db.pool, parent)
       const workspaces = new WorkspaceManagementService(db.pool, commands, locations, defaults, parent)
       const services = { commands, locations, workspaces } as unknown as OperatorServices

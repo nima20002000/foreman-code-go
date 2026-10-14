@@ -1,3 +1,4 @@
+import { homedir } from 'node:os'
 import { errorMessage } from '../../shared/errorMessage.js'
 import type pg from 'pg'
 import { mkdir, opendir, readdir, realpath, rename, rmdir, lstat } from 'node:fs/promises'
@@ -14,7 +15,7 @@ export function isInside(root: string, path: string): boolean {
   return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`))
 }
 
-/** Folder operations stay inside configured roots and never change harness permissions. */
+/** Selection follows filesystem access; deletion stays inside configured storage roots. */
 export class HarnessDirectoryBrowser {
   constructor(private readonly configuredRoots: readonly string[], private readonly pool: pg.Pool) {}
   async create(principal: ManagementPrincipal, source: 'http' | 'mcp', input: WorkspaceFolderCreateInput) {
@@ -29,9 +30,8 @@ export class HarnessDirectoryBrowser {
         try { parent = await realpath(accepted.parentPath) } catch {
           throw new DomainError('DIRECTORY_UNAVAILABLE', 'The parent folder is unavailable.', 404)
         }
-        const roots = await Promise.all(this.configuredRoots.map((root) => realpath(root)))
-        if (!isAbsolute(accepted.parentPath) || !roots.some((root) => isInside(root, parent))) {
-          throw new DomainError('DIRECTORY_OUTSIDE_ROOT', 'Choose a parent inside an allowed location.', 403)
+        if (!isAbsolute(accepted.parentPath)) {
+          throw new DomainError('DIRECTORY_PATH_INVALID', 'Choose an absolute folder path.', 400)
         }
         for (let index = 1; index <= 10_000; index++) {
           const name = accepted.name ?? (index === 1 ? 'New folder' : `New folder (${index})`)
@@ -76,9 +76,8 @@ export class HarnessDirectoryBrowser {
         if (previous.rows[0]?.operation === 'workspace.folder.undo') throw new DomainError('DIRECTORY_ALREADY_UNDONE', 'Folder creation has been undone.', 409)
         sourcePath = previous.rows[0]?.result.path ?? created.path
         }
-        const roots = await Promise.all(this.configuredRoots.map((root) => realpath(root)))
         const current = sourcePath && await realpath(sourcePath).catch(ignoreError('harness', 'resolve directory browser source', {}, ['ENOENT', 'ENOTDIR']))
-        if (!current || current !== sourcePath || !roots.some((root) => current !== root && isInside(root, current))) {
+        if (!current || current !== sourcePath) {
           throw new DomainError('DIRECTORY_UNAVAILABLE', 'The created folder is no longer available at its original location.', 409)
         }
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [`workspace-folder:${current}`])
@@ -193,19 +192,21 @@ export class HarnessDirectoryBrowser {
   }) {
     requireAuthorization(principal, 'harnesses:read')
     requireAuthorization(principal, 'workspace_locations:read')
-    const roots = await Promise.all(this.configuredRoots.map(async (path, index) => {
+    const browseRoots = [...new Set([...this.configuredRoots, homedir()])]
+    const roots = await Promise.all(browseRoots.map(async (path, index) => {
       let canonical: string
-      try { canonical = await realpath(path) } catch { throw new DomainError('DIRECTORY_ROOT_UNAVAILABLE', 'An allowed folder is unavailable. Ask the server administrator to check its configured roots.', 503) }
-      return { id: String(index), label: this.configuredRoots.length === 1 ? 'Workspaces' : basename(canonical) || canonical, path: canonical }
+      try { canonical = await realpath(path) } catch { throw new DomainError('DIRECTORY_ROOT_UNAVAILABLE', 'A browse location is unavailable.', 503) }
+      let label = basename(canonical) || canonical
+      if (path === homedir()) label = 'Home'
+      else if (this.configuredRoots.length === 1) label = 'Workspaces'
+      return { id: String(index), label, path: canonical }
     }))
-    if (!roots.length) return { roots, rootId: null, path: null, parent: null, directories: [], nextCursor: null, truncated: false }
     const root = input.rootId ? roots.find((item) => item.id === input.rootId) : roots[0]
-    if (!root) throw new DomainError('DIRECTORY_ROOT_INVALID', 'Select one of the allowed server locations.', 400)
+    if (!root) throw new DomainError('DIRECTORY_ROOT_INVALID', 'Select a browse location.', 400)
     const requested = input.path ?? root.path
-    if (!isAbsolute(requested) || !isInside(root.path, resolve(requested))) throw new DomainError('DIRECTORY_OUTSIDE_ROOT', 'That folder is outside the allowed location.', 403)
+    if (!isAbsolute(requested)) throw new DomainError('DIRECTORY_PATH_INVALID', 'Choose an absolute folder path.', 400)
     let path: string
     try { path = await realpath(requested) } catch { throw new DomainError('DIRECTORY_UNAVAILABLE', 'That folder is unavailable.', 404) }
-    if (!isInside(root.path, path)) throw new DomainError('DIRECTORY_OUTSIDE_ROOT', 'That link leaves the allowed location.', 403)
     if (!(await lstat(path)).isDirectory()) throw new DomainError('DIRECTORY_REQUIRED', 'Select a folder.', 400)
     let directory
     try { directory = await opendir(path) } catch { throw new DomainError('DIRECTORY_UNAVAILABLE', 'That folder cannot be opened by this runner.', 403) }
@@ -217,9 +218,18 @@ export class HarnessDirectoryBrowser {
         truncated = true
         break
       }
-      // Symlink targets are not selectable. Native admission must still revalidate accepted roots.
-      if (!entry.isDirectory() || entry.name.startsWith('.')) continue
-      candidates.push({ name: entry.name, path: resolve(path, entry.name) })
+      if (entry.name.startsWith('.')) continue
+      const entryPath = resolve(path, entry.name)
+      if (!entry.isDirectory()) {
+        if (!entry.isSymbolicLink()) continue
+        try {
+          if (!(await lstat(await realpath(entryPath))).isDirectory()) continue
+        } catch (error) {
+          if (['ENOENT', 'ENOTDIR', 'EACCES', 'EPERM', 'ELOOP'].includes((error as NodeJS.ErrnoException).code ?? '')) continue
+          throw error
+        }
+      }
+      candidates.push({ name: entry.name, path: entryPath })
     }
     candidates.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
     const after = candidates.filter((item) => !input.cursor || item.name > input.cursor)

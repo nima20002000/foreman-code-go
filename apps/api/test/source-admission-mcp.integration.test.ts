@@ -40,7 +40,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('admits exact approved sources and roo
   const commands = new PostgresCommandCoordinator(pool), access = new PostgresAccessService(pool)
   const project = join(directory, 'project'), canonical = join(directory, 'canonical-source'), runtime = join(directory, 'runtime')
   for (const path of [project, canonical, runtime]) await mkdir(path, { mode: 0o700 })
-  const locations = new WorkspaceLocationService(pool, commands, runtime, 'runner-local', directory)
+  const locations = new WorkspaceLocationService(pool, commands, runtime, 'runner-local')
   const workspaces = new WorkspaceManagementService(pool, commands, locations)
   let app: ReturnType<typeof buildApp> | undefined
   try {

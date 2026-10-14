@@ -26,7 +26,7 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('current handoff inspectio
       assert.ok(owner)
       let executionId: string, activationId: string
       try {
-        const locations = new WorkspaceLocationService(pool, t.commands, directory, 'runner-local', directory)
+        const locations = new WorkspaceLocationService(pool, t.commands, directory, 'runner-local')
         const factory = new RepeatRepositoryFactory(locations, directory,
           createWorkflowRepositoryServices(createWorkflowNativeCaptureChannel().verify).services)
         const store = factory.forOwner(owner, t.version)

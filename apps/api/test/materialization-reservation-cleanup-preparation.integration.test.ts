@@ -31,7 +31,7 @@ it.each(['timeout', 'invalid reply', 'adoption rollback'] as const)(
       authorize.mockResolvedValueOnce().mockResolvedValueOnce().mockRejectedValueOnce(new Error('Adoption rolled back'))
     }
     const sources = new PostgresSourceService(f.pool, f.commands,
-      new WorkspaceLocationService(f.pool, f.commands, f.runtime, 'fixture', f.runtime),
+      new WorkspaceLocationService(f.pool, f.commands, f.runtime, 'fixture'),
       new PrivateSourceSnapshotStore(join(f.runtime, 'snapshots')), f.root.binding.mainId,
       { authorize: f.unused, attest: f.unused, fence: f.unused },
       { authorize, authorizeFinal: f.unused, verify: f.unused, verifyWorkingDirectory: f.unused,

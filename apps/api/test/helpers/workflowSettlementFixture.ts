@@ -48,7 +48,7 @@ export async function workflowSettlementFixture(db: Awaited<ReturnType<typeof cu
     const { run, version, scope } = seeded
     owner = await RunOwnership.acquire(db.pool, run.id, () => undefined)
     assert.ok(owner)
-    const locations = new WorkspaceLocationService(db.pool, writer.commands, db.directory, 'runner-local', db.directory)
+    const locations = new WorkspaceLocationService(db.pool, writer.commands, db.directory, 'runner-local')
     await markRepeatRunRunning(owner, locations, { executionState: 'running', outcome: 'pending' })
     let retryPolicy: 'single_retry' | 'production' = 'single_retry'
     const host: RepeatRepositoryHost = { openLocked: async (sql, lockedScope, record) => {

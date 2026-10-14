@@ -19,7 +19,7 @@ it('allows selected folders and symlinked projects outside storage while protect
     await symlink(outside, join(projects, 'escape'))
     const pool = { query: vi.fn(async () => ({ rows: [{ archived_at: null }] })) } as unknown as pg.Pool
     const commands = { recordAudit: vi.fn(async () => undefined) } as unknown as PostgresCommandCoordinator
-    const locations = new WorkspaceLocationService(pool, commands, runtime, 'runner-local', projects)
+    const locations = new WorkspaceLocationService(pool, commands, runtime, 'runner-local')
     const principal: ManagementPrincipal = {
       id: 'storage-owner', name: 'Storage owner', audience: 'operator', revokedAt: null,
       expiresAt: '2099-01-01T00:00:00Z',

@@ -58,7 +58,7 @@ describe.skipIf(!postgresEnabled)('W08 independent workspace root HTTP/MCP', () 
         applicationInstallationId: mainId, configurationRevision: '1', configurationDigest: sourceSha256(Buffer.from(JSON.stringify(allowlist))) }); await sql.query('commit') }
       catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
       const service = new WorkspaceBoundLocationService(db.pool, commands, policies)
-      const locations = new WorkspaceLocationService(db.pool, commands, runtimePath, 'runner-local', db.directory)
+      const locations = new WorkspaceLocationService(db.pool, commands, runtimePath, 'runner-local')
       locations.setRootPolicies(policies)
       const workspaces = new WorkspaceManagementService(db.pool, commands, locations)
       const services = { commands, locations, workspaces, workspaceRoots: service } as unknown as OperatorServices

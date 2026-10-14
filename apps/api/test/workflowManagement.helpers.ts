@@ -56,7 +56,7 @@ export function useWorkflowManagementFixture() {
       actions: ManagementActionSchema.options.filter((action) => action !== 'capabilities:read'), scope: { workspaceIds: [f.scope.workspaceId] },
     }])
     const workflows = new WorkflowManagementService(db.pool, commands)
-    const locations = new WorkspaceLocationService(db.pool, commands, db.directory, 'runner-local', db.directory)
+    const locations = new WorkspaceLocationService(db.pool, commands, db.directory, 'runner-local')
     const workflowRepository = new PostgresWorkflowRepository(db.pool)
     const repository = new PostgresRunRepository(db.pool, workflowRepository, locations, { runtimeRoot: db.directory,
       ...createWorkflowRepositoryServices(createWorkflowNativeCaptureChannel().verify) })

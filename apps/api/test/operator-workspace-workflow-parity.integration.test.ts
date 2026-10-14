@@ -39,7 +39,7 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('provides authenticated Operator MCP p
   const clients: Client[] = []
   const access = new PostgresAccessService(pool)
   const commands = new PostgresCommandCoordinator(pool)
-  const locations = new WorkspaceLocationService(pool, commands, undefined, 'runner-local', parentPath)
+  const locations = new WorkspaceLocationService(pool, commands, undefined, 'runner-local')
   const settings = new FoundationSettingsManagementService(new PostgresFoundationSettingsRepository(pool, parentPath), commands)
   const services = {
     harnessSettings: { directories: new HarnessDirectoryBrowser([parentPath], pool), mcp: {} },

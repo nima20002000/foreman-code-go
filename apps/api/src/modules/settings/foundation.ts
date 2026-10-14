@@ -1,5 +1,5 @@
 import { realpath } from 'node:fs/promises'
-import { requireWorkspaceStoragePath, workspaceStorageRoot } from '../workspaces/storage.js'
+import { workspaceStorageRoot } from '../workspaces/storage.js'
 import { randomUUID } from 'node:crypto'
 
 import {
@@ -103,7 +103,6 @@ export class PostgresFoundationSettingsRepository {
         if (this.projectRoot) {
           try {
             parentPath = await realpath(parentPath)
-            requireWorkspaceStoragePath(await realpath(this.projectRoot), parentPath)
           }
           catch { parentPath = this.projectRoot }
         }
@@ -119,7 +118,6 @@ export class PostgresFoundationSettingsRepository {
       accepted.parentPath = await realpath(accepted.parentPath)
       await client.query('select pg_advisory_xact_lock(hashtext($1))', [`workspace-folder:${accepted.parentPath}`])
       accepted.parentPath = await realpath(accepted.parentPath)
-      requireWorkspaceStoragePath(await realpath(this.projectRoot), accepted.parentPath)
     }
     return this.write(KEYS.workspaces, accepted, expectedRevision, client)
   }

@@ -98,7 +98,7 @@ export function HarnessDefaultsSettings({ selectedHarness, section, onOpen, acco
     <Dialog open={Boolean(dialog)} onOpenChange={(open) => { if (!open) onOpen?.(undefined) }} size="lg"
       title={dialog === 'plugins' ? `${dialogName} plugins` : 'Codex connections'}
       description={dialog === 'plugins' ? `Plugins add skills, hooks and tools to ${dialogName}. Ask the Operator to manage them.`
-        : 'Native MCP connections. Changes the Operator prepares wait here for your approval.'}>
+        : 'Native MCP connections. Ask the Operator to manage connections.'}>
       {dialog === 'plugins' && selectedHarness === 'claude' ? <ClaudePluginSummary accessUnavailable={Boolean(accessError)}
         onClose={() => onOpen?.(undefined)} /> : null}
       {dialog === 'plugins' && selectedHarness === 'codex' ? <CodexPluginManager accessUnavailable={Boolean(accessError)} /> : null}

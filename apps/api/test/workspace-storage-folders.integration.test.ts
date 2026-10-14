@@ -29,7 +29,7 @@ it('discovers real unregistered folders without writes and safely deletes conten
   const database = await migratedDatabase()
   const { pool } = database
   const access = new PostgresAccessService(pool), commands = new PostgresCommandCoordinator(pool)
-  const locations = new WorkspaceLocationService(pool, commands, undefined, 'runner-local', root)
+  const locations = new WorkspaceLocationService(pool, commands, undefined, 'runner-local')
   const defaults = new PostgresFoundationSettingsRepository(pool, root)
   const workspaces = new WorkspaceManagementService(pool, commands, locations, defaults, root)
   const services = { commands, workspaces } as unknown as OperatorServices
