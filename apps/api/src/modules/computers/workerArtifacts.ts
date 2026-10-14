@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { constants, type BigIntStats } from 'node:fs'
 import { lstat, open, realpath, type FileHandle } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { workerArtifactContentSha256 } from '@foreman-code/contracts/worker-artifact-content-node'
 import {
   WORKER_UPDATE_MAX_BINARY_BYTES, WORKER_UPDATE_MAX_JSON_BYTES, WORKER_UPDATE_NAMESPACE, WORKER_UPDATE_VERSION,
   WorkerArtifactIndexSchema, WorkerArtifactManifestSchema, WorkerArtifactRequestSchema, WorkerCiSmokeSchema,
@@ -133,6 +134,19 @@ async function artifactManifest(root: string, manifestSha256: string, version: s
 export async function readWorkerManifestSha256s(options: { directory: string; version: string }): Promise<string[]> {
   const { index } = await artifactIndex(options.directory, options.version)
   return index.artifacts.map(artifact => artifact.manifestSha256)
+}
+
+export async function readWorkerContentSha256s(options: { directory: string; version: string }): Promise<string[]> {
+  const { root, index } = await artifactIndex(options.directory, options.version)
+  return Promise.all(index.artifacts.map(async artifact => {
+    const { manifest } = await artifactManifest(root, artifact.manifestSha256, options.version)
+    if (!sameTarget(manifest.target, artifact.target)) throw new DeviceApplicationError('extension-rejected')
+    const contentSha256 = workerArtifactContentSha256(manifest)
+    if (artifact.contentSha256 && artifact.contentSha256 !== contentSha256) {
+      throw new DeviceApplicationError('extension-rejected')
+    }
+    return contentSha256
+  }))
 }
 
 export function createWorkerArtifactExtension(options: {

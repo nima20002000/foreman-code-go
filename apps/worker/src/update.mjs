@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { WorkerArtifactManifestSchema, WorkerArtifactReplySchema, WorkerUpdateStatusSchema,
   WORKER_UPDATE_NAMESPACE, WORKER_UPDATE_VERSION, WORKER_UPDATE_MAX_BINARY_BYTES,
   WORKER_UPDATE_MAX_JSON_BYTES } from '../../../packages/contracts/src/workerUpdate.ts';
 import { readWorkerSmokeConfiguration } from './ciInstallSmoke.mjs';
+import { workerArtifactContentSha256 } from '../../../packages/contracts/src/workerArtifactContentNode.mjs';
 import { WorkerError, workerUpdateErrorMessage } from './diagnostics.mjs';
 import { validateManifest, stageRunningVersion } from './installation.mjs';
 import { readUpdateRecord, writeUpdateRecord, locateWorkerLaunch, launchUpdateSupervisor,
@@ -146,11 +147,19 @@ export class WorkerUpdater {
   }
 
   async initialize() {
+    if (this.options.releaseDirectory) {
+      const bytes = await readFile(join(this.options.releaseDirectory, 'manifest.json'));
+      if (hash(bytes) !== this.options.manifestSha256) throw new WorkerError('manifest_checksum_mismatch');
+      const manifest = WorkerArtifactManifestSchema.parse(JSON.parse(bytes.toString('utf8')));
+      validateManifest(manifest, this.options.facts, expected);
+      this.contentSha256 = workerArtifactContentSha256(manifest);
+      this.statusValue.contentSha256 = this.contentSha256;
+    }
     const retained = await readUpdateRecord(this.options.stateDirectory);
     if (retained) {
       this.record = retained;
       this.statusValue = WorkerUpdateStatusSchema.parse({ ...retained.status, currentVersion: this.options.version,
-        manifestSha256: this.options.manifestSha256 });
+        manifestSha256: this.options.manifestSha256, contentSha256: this.contentSha256 });
       if (['pending', 'draining', 'downloading', 'installing'].includes(this.statusValue.state)) {
         await this.save({ state: 'failed', lastError: 'worker_update_interrupted' });
       }
@@ -173,7 +182,7 @@ export class WorkerUpdater {
       if (retained) {
         this.record = retained;
         this.statusValue = WorkerUpdateStatusSchema.parse({ ...retained.status, currentVersion: this.options.version,
-          manifestSha256: this.options.manifestSha256 });
+          manifestSha256: this.options.manifestSha256, contentSha256: this.contentSha256 });
         await this.recoverAdmission(retained);
       }
       return { ...this.statusValue };
@@ -204,7 +213,7 @@ export class WorkerUpdater {
     return this.withUpdateRecord(async () => {
       this.options.assertStateOwnership();
       this.statusValue = WorkerUpdateStatusSchema.parse({ ...this.statusValue, ...change,
-        manifestSha256: this.options.manifestSha256 });
+        manifestSha256: this.options.manifestSha256, contentSha256: this.contentSha256 });
       const retained = await readUpdateRecord(this.options.stateDirectory);
       this.record = { ...retained, ...details, format: 1, status: this.statusValue };
       if (this.statusValue.lastError === null) delete this.record.failureCode;
@@ -293,7 +302,15 @@ export class WorkerUpdater {
       if (reply.operation !== 'release' || response.bytes !== undefined) throw new WorkerError('artifact_release_invalid');
       if (!reply.release) throw new WorkerError('worker_update_target_unavailable');
       const release = reply.release;
-      if (release.version === version && release.manifestSha256 === this.options.manifestSha256) {
+      const manifest = WorkerArtifactManifestSchema.parse(release.manifest);
+      validateManifest(manifest, facts, expected);
+      if (manifest.version !== release.version) throw new WorkerError('manifest_version_mismatch');
+      const sameContent = this.contentSha256 === workerArtifactContentSha256(manifest);
+      if (sameContent) {
+        const bytes = Buffer.from(`${JSON.stringify(release.manifest, null, 2)}\n`);
+        if (hash(bytes) !== release.manifestSha256) throw new WorkerError('manifest_checksum_mismatch');
+      }
+      if (sameContent || release.version === version && release.manifestSha256 === this.options.manifestSha256) {
         if (retry || this.retryableFailure()
           || !['rolled-back', 'failed'].includes(this.statusValue.state)) {
           await this.save({ targetVersion: version, state: 'current', lastError: null });
@@ -308,7 +325,8 @@ export class WorkerUpdater {
       }
       const launch = await (this.options.locateLaunch ?? locateWorkerLaunch)(this.options);
       await this.save({ targetVersion: release.version, state: 'pending', lastError: null },
-        { manifestSha256: release.manifestSha256, downloadSource: null, githubDownloadError: null });
+        { manifestSha256: release.manifestSha256, contentSha256: workerArtifactContentSha256(manifest),
+          downloadSource: null, githubDownloadError: null });
       // Download and verify while the Worker still admits work: through Main this can take minutes.
       // Only installation and restart need the drained runtime.
       phase = 'downloading';

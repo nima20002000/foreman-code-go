@@ -25,7 +25,8 @@ import { systemGitWorktreePorts } from './modules/sources/gitWorktree.js'
 import { registerComputerAccountsRoutes } from './routes/computerAccounts.js'
 import { registerComputerMaintenanceRoutes } from './routes/computerMaintenance.js'
 import { FleetMaintenanceService } from './modules/computers/fleet.js'
-import { createProductionWorkerArtifactExtension, readProductionWorkerManifestSha256s } from './modules/computers/workerArtifactsProduction.js'
+import { createProductionWorkerArtifactExtension, readProductionWorkerManifestSha256s,
+  readProductionWorkerContentSha256s } from './modules/computers/workerArtifactsProduction.js'
 import { ComputerMaintenance, claudeUserMcpServers, installedPlugins, pluginMarketplaces, systemMaintenancePorts } from './modules/computers/maintenance.js'
 import { ComputerGitHubService } from './modules/computers/github.js'
 import { COMPUTER_MAINTENANCE_NAMESPACE, COMPUTER_MAINTENANCE_VERSION } from '@foreman-code/contracts/computer-maintenance'
@@ -2785,6 +2786,8 @@ async function initializeComputerServices(composition: ProductionComposition, ma
   runtimeServices.computerMaintenance = new FleetMaintenanceService(database.pool, machine.installationId,
     () => deviceRuntime.endpointForDomains(), commands, new ComputerMaintenance(maintenancePorts), {
       workerManifestSha256s: () => readProductionWorkerManifestSha256s({ environment: process.env,
+        releaseDirectory: fileURLToPath(new URL('../../../', import.meta.url)) }),
+      workerContentSha256s: () => readProductionWorkerContentSha256s({ environment: process.env,
         releaseDirectory: fileURLToPath(new URL('../../../', import.meta.url)) }),
       codexUserMcpServers: () => harnessSettings.mcp.userServers('codex'),
       claudeUserMcpServers: () => claudeUserMcpServers(maintenancePorts),

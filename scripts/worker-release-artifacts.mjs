@@ -31,6 +31,7 @@ export function readCommittedWorkerTargets(repository, commit) {
 
 async function verifyArtifact(directory, target, version, commit) {
   const { validateManifest } = await import('../apps/worker/src/installation.mjs')
+  const { workerArtifactContentSha256 } = await import('../packages/contracts/src/workerArtifactContentNode.mjs')
   const bytes = await readFile(join(directory, 'manifest.json'))
   if (bytes.length > 1_048_576 - 4096) throw new Error('Worker manifest is too large for the device channel')
   const manifest = JSON.parse(bytes)
@@ -48,7 +49,7 @@ async function verifyArtifact(directory, target, version, commit) {
       throw new Error(`Worker artifact checksum mismatch: ${file.path}`)
     }
   }
-  return sha256(bytes)
+  return { manifestSha256: sha256(bytes), contentSha256: workerArtifactContentSha256(manifest) }
 }
 
 /** Uploads each artifact as <manifestSha256>.tar.gz to the GitHub release worker-<commit>, so paired Workers download
@@ -113,10 +114,10 @@ export async function buildWorkerReleaseArtifacts({
         cwd: repository,
         env: { ...process.env, FOREMAN_CODE_WORKER_BUILD_COMMIT: commit },
       })
-      const manifestSha256 = await verifyArtifact(staging, target, version, commit)
+      const identity = await verifyArtifact(staging, target, version, commit)
       await chmod(staging, 0o700)
-      await rename(staging, join(directory, manifestSha256))
-      return { target, manifestSha256 }
+      await rename(staging, join(directory, identity.manifestSha256))
+      return { target, ...identity }
     }))
     const failed = builds.find(build => build.status === 'rejected')
     if (failed) throw failed.reason

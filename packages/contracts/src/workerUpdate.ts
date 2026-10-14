@@ -9,6 +9,8 @@ export const WorkerUpdateStatusSchema = z.object({
   currentVersion: z.string().min(1).max(128),
   /** Hash of the running release, independently of a pending or failed update target. */
   manifestSha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+  /** Identity of running bundle files, target facts and protocol versions, excluding build metadata. */
+  contentSha256: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
   targetVersion: z.string().min(1).max(128).nullable(),
   state: z.enum(['current', 'pending', 'draining', 'downloading', 'installing', 'restarting', 'rolled-back', 'failed']),
   lastError: z.string().max(2000).nullable(),
@@ -61,6 +63,7 @@ export const WorkerArtifactIndexSchema = z.object({
   artifacts: z.array(z.object({
     target: WorkerArtifactTargetSchema,
     manifestSha256: digest,
+    contentSha256: digest.optional(),
   }).strict()).max(100),
 }).strict()
 

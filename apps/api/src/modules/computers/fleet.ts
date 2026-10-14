@@ -34,6 +34,12 @@ export interface FleetSources {
   codexMarketplaces(): Promise<SyncedMarketplace[]>
   claudePlugins(): Promise<ClaudePluginCatalog>
   workerManifestSha256s?(): Promise<readonly string[]>
+  workerContentSha256s?(): Promise<readonly string[]>
+}
+
+interface WorkerArtifactIdentities {
+  manifests: readonly string[]
+  contents: readonly string[]
 }
 
 const CACHE_MS = 20_000
@@ -197,7 +203,7 @@ export class FleetMaintenanceService {
 
   private async keepCurrentNow(): Promise<void> {
     const targets = await this.allTargets()
-    const manifests = await this.workerManifests()
+    const artifacts = await this.workerArtifacts()
     const sync = await Promise.allSettled([this.taskFor({ kind: 'sync-mcp' }), this.taskFor({ kind: 'sync-plugins' })])
     await Promise.all(targets.map(async target => {
       const status = await this.status(target, true)
@@ -206,7 +212,7 @@ export class FleetMaintenanceService {
       if (behind.length) await this.startOn(target, { kind: 'update-harnesses', harnesses: behind })
         .catch(ignoreError('lifecycle', 'start harness update on computer', { host: target.hostRef }))
       if (target.hostRef.kind === 'main') return
-      await this.syncWorkerUpdate(target, status, manifests)
+      await this.syncWorkerUpdate(target, status, artifacts)
       for (const task of sync) {
         if (task.status === 'fulfilled') await this.syncSource(target, task.value, status)
       }
@@ -234,10 +240,10 @@ export class FleetMaintenanceService {
   private async syncChangedSourcesNow(): Promise<void> {
     const sources = await Promise.allSettled([this.taskFor({ kind: 'sync-mcp' }), this.taskFor({ kind: 'sync-plugins' })])
     const targets = (await this.allTargets()).filter(target => target.hostRef.kind !== 'main')
-    const manifests = await this.workerManifests()
+    const artifacts = await this.workerArtifacts()
     await Promise.all(targets.map(async target => {
       const status = await this.status(target, true)
-      await this.syncWorkerUpdate(target, status, manifests)
+      await this.syncWorkerUpdate(target, status, artifacts)
       await Promise.all(sources.map(async source => {
         if (source.status === 'fulfilled') await this.syncSource(target, source.value, status)
       }))
@@ -247,25 +253,32 @@ export class FleetMaintenanceService {
   }
 
   private syncWorkerUpdate(target: DeviceProvisioningTarget, status: MaintenanceStatus | null,
-    manifests: readonly string[]): Promise<void> {
+    artifacts: WorkerArtifactIdentities): Promise<void> {
     const key = `${this.key(target)}:update-worker`
     const active = this.syncing.get(key)
     if (active) return active
-    const task = this.deliverWorkerUpdate(target, status, manifests).finally(() => this.syncing.delete(key))
+    const task = this.deliverWorkerUpdate(target, status, artifacts).finally(() => this.syncing.delete(key))
     this.syncing.set(key, task)
     return task
   }
 
-  private async workerManifests(): Promise<readonly string[]> {
-    return await this.sources.workerManifestSha256s?.()
-      .catch(fallbackOnError([], 'lifecycle', 'read available Worker manifests')) ?? []
+  private async workerArtifacts(): Promise<WorkerArtifactIdentities> {
+    const [manifests, contents] = await Promise.all([
+      this.sources.workerManifestSha256s?.()
+        .catch(fallbackOnError([], 'lifecycle', 'read available Worker manifests')) ?? [],
+      this.sources.workerContentSha256s?.()
+        .catch(fallbackOnError([], 'lifecycle', 'read available Worker content identities')) ?? [],
+    ])
+    return { manifests, contents }
   }
 
   private async deliverWorkerUpdate(target: DeviceProvisioningTarget, status: MaintenanceStatus | null,
-    manifests: readonly string[]): Promise<void> {
+    artifacts: WorkerArtifactIdentities): Promise<void> {
+    const { manifests, contents } = artifacts
     if (!status?.worker || !manifests.length || target.hostRef.kind !== 'device') return
     if (!this.endpoint()?.capabilities(target.hostRef.deviceId).some(value => value.namespace === WORKER_UPDATE_NAMESPACE)) return
     if (status.worker.manifestSha256 && manifests.includes(status.worker.manifestSha256)) return
+    if (status.worker.contentSha256 && contents.includes(status.worker.contentSha256)) return
     if (!['current', 'rolled-back', 'failed'].includes(status.worker.state)
       || status.tasks.some(task => task.kind === 'update-worker' && task.state === 'running')) return
     const key = this.key(target)

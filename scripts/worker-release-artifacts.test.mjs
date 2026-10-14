@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { buildWorkerReleaseArtifacts, publishInstalledWorkerArtifacts, publishWorkerArtifactsToGitHub,
   readCommittedWorkerTargets } from './worker-release-artifacts.mjs'
@@ -275,4 +276,19 @@ test('a failed background upload leaves the installed index for Main downloads',
   await assert.rejects(publishInstalledWorkerArtifacts({ directory: f.directory, repositoryName: 'example/fixture',
     commit: f.commit, run: f.run, publish }), /GitHub unavailable/)
   assert.deepEqual(JSON.parse(await readFile(join(f.directory, 'index.json'))), index)
+})
+
+test('the installed background publisher loads without build-only source modules', async t => {
+  const f = await fixture(t)
+  const index = await buildWorkerReleaseArtifacts(f)
+  const scripts = join(f.repository, 'installed/scripts')
+  await mkdir(scripts, { recursive: true })
+  for (const name of ['worker-release-artifacts.mjs', 'worker-artifact-files.mjs']) {
+    await copyFile(new URL(name, import.meta.url), join(scripts, name))
+  }
+  const installed = await import(pathToFileURL(join(scripts, 'worker-release-artifacts.mjs')).href)
+  const github = { repository: 'example/worker', tag: `worker-${f.commit}` }
+  const published = await installed.publishInstalledWorkerArtifacts({ directory: f.directory,
+    repositoryName: github.repository, commit: f.commit, run: f.run, publish: async () => github })
+  assert.deepEqual(published, { ...index, github })
 })

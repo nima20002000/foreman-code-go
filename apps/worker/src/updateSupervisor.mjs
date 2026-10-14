@@ -216,9 +216,11 @@ export async function superviseWorkerUpdate(record, ports = {}) {
   const plan = record.restart;
   if (!plan || !services.includes(plan.service)) throw new WorkerError('worker_update_state_invalid');
   const previousManifestSha256 = record.status.manifestSha256;
+  const previousContentSha256 = record.status.contentSha256;
   const save = async (state, currentVersion, lastError) => {
     const manifestSha256 = state === 'current' ? record.manifestSha256 : previousManifestSha256;
-    record.status = { ...record.status, state, currentVersion, manifestSha256, lastError };
+    const contentSha256 = state === 'current' ? record.contentSha256 : previousContentSha256;
+    record.status = { ...record.status, state, currentVersion, manifestSha256, contentSha256, lastError };
     const outcome = { requestId: plan.requestId, status: record.status, finishedAt: new Date().toISOString() };
     record.outcomes = [...(record.outcomes ?? []).filter(value => value.requestId !== plan.requestId), outcome].slice(-20);
     await persist(plan.stateDirectory, record);
