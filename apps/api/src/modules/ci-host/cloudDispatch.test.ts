@@ -2,7 +2,7 @@ import { CiRunRecordSchema, type CiHostReply, type CiHostRequest, type CiHostRun
 import { afterEach, expect, it, vi } from 'vitest'
 import type { SqlQuery } from '../../infrastructure/transaction.js'
 import { DomainError } from '../errors.js'
-import { dispatchCloudTicket } from './cloudDispatch.js'
+import { dispatchCloudTicket, expireCloudDispatch } from './cloudDispatch.js'
 import { CLOUD_START_TIMEOUT_MS } from './cloudProviders.js'
 import { CI_START_MAX_ATTEMPTS } from './dispatch.js'
 import type { HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
@@ -95,3 +95,51 @@ it.each(['CI_RUN_UNKNOWN', 'CI_CLOUD_RUN_UNREADABLE'])(
     expect(f.sql.query).not.toHaveBeenCalled()
   },
 )
+
+const computer: HostCiComputer = {
+  key: 'cloud:github:0', label: 'GitHub Actions', priority: 0,
+  hostRef: { kind: 'cloud', mainId: 'main', provider: 'github', slot: 0 },
+}
+const run = CiRunRecordSchema.parse({
+  id: '11111111-1111-4111-8111-111111111111', workspaceId: 'workspace',
+  groupId: '22222222-2222-4222-8222-222222222222', suite: 'lint', part: null,
+  scope: 'full', files: [], partition: null, repository: 'fixture/project', commit: 'a'.repeat(40),
+  state: 'starting', computer: { hostRef: computer.hostRef, label: computer.label }, step: null,
+  exitCode: null, message: null, queuedAt: '2020-01-01T00:00:00.000Z', startedAt: null, finishedAt: null,
+  initiator: { principalId: 'operator', executionId: null },
+})
+
+it('retains expired cloud ownership when cancellation fails', async () => {
+  const failure = new Error('Provider cancellation unavailable')
+  const endpoint: HostCiEndpoint = { computers: async () => [computer], request: vi.fn(async () => { throw failure }) }
+  await expect(expireCloudDispatch(endpoint, computer, run)).rejects.toMatchObject({
+    code: 'CI_CLOUD_CLEANUP_PENDING', message: expect.stringContaining('ownership retained'),
+  })
+  expect(endpoint.request).toHaveBeenCalledWith(computer, { operation: 'cancel', runId: run.id })
+  expect(run.state).toBe('starting')
+})
+
+it('does not claim release when cancellation returns a running attempt', async () => {
+  const endpoint: HostCiEndpoint = { computers: async () => [computer], request: async () => ({
+    operation: 'cancel', run: { runId: run.id, state: 'running', step: null, startedAt: run.queuedAt,
+      finishedAt: null, exitCode: null, message: null, logBytes: 0 },
+  }) }
+  await expect(expireCloudDispatch(endpoint, computer, run)).rejects.toMatchObject({ code: 'CI_CLOUD_CLEANUP_PENDING' })
+})
+
+it('releases an expired dispatch only after confirmed terminal cancellation', async () => {
+  const endpoint: HostCiEndpoint = { computers: async () => [computer], request: async () => ({
+    operation: 'cancel', run: { runId: run.id, state: 'canceled', step: null, startedAt: run.queuedAt,
+      finishedAt: new Date().toISOString(), exitCode: null, message: null, logBytes: 0 },
+  }) }
+  await expect(expireCloudDispatch(endpoint, computer, run)).resolves.toMatchObject({ state: 'lost' })
+})
+
+
+it('preserves a terminal result discovered during expiry cancellation', async () => {
+  const endpoint: HostCiEndpoint = { computers: async () => [computer], request: async () => ({
+    operation: 'cancel', run: { runId: run.id, state: 'passed', step: 'lint', startedAt: run.queuedAt,
+      finishedAt: new Date().toISOString(), exitCode: 0, message: 'Completed before cancellation', logBytes: 10 },
+  }) }
+  await expect(expireCloudDispatch(endpoint, computer, run)).resolves.toMatchObject({ state: 'passed', exitCode: 0 })
+})
