@@ -89,7 +89,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       reported = command.flatMap(argument => argument === '--test' ? [argument,
         '--test-reporter=spec', '--test-reporter-destination=stdout',
         `--test-reporter=${resolve('scripts/ci-node-test-reporter.mjs')}`,
-        '--test-reporter-destination=/dev/null'] : [argument])
+        // Node flushes file destinations with fsync, which fails on character devices.
+        `--test-reporter-destination=${resolve(`${process.env.CI_PROGRESS_FILE}.node-report.json`)}`] : [argument])
     }
     const code = await run(reported)
     if (code) { process.exitCode = code; break }
