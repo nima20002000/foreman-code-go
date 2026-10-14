@@ -74,13 +74,13 @@ async function gateComputers(endpoint: HostCiEndpoint, reservedCloudSlots: numbe
 
 /** One wave: every ready executor takes at most one part. Measured build throughput sizes integration parts;
  * CPU, memory and build allowance bound execution shards. Cloud slots take one check or integration part each.
- * Busy builders, not-ready computers and reserved cloud slots stay out of placement. */
+ * Busy builders are a fallback when no free executor can take a file; not-ready computers and reserved cloud slots stay out. */
 export async function planCiGate(input: CiRunInput, integration: CiIntegrationInventory,
   unit: CiUnitInventory, durations: CiDurations, endpoint: HostCiEndpoint,
   speeds: ExecutorSpeeds = new Map(), reservedCloudSlots = 0, unitSlots?: number,
   usedByComputer: ReadonlyMap<string, number> = new Map()): Promise<GatePart[]> {
   const fleet = await gateComputers(endpoint, reservedCloudSlots, usedByComputer)
-  const hosts = fleet.filter(item => item.computer.hostRef.kind !== 'cloud' && item.freeSlots > 0)
+  const hosts = fleet.filter(item => item.computer.hostRef.kind !== 'cloud')
   const clouds = fleet.filter(item => item.computer.hostRef.kind === 'cloud')
   if (!fleet.some(item => item.computer.hostRef.kind !== 'cloud') || !clouds.length || !integration.files.length) {
     throw new DomainError('CI_GATE_CAPACITY_REQUIRED', 'A gate needs a ready build computer, cloud CI, and integration files.', 409)
@@ -145,7 +145,9 @@ export async function planCiGate(input: CiRunInput, integration: CiIntegrationIn
     const serial = exclusive.has(file) || requiresUserSystemd(file)
     const eligible = integrationFleet.filter(item => item.computer.hostRef.kind !== 'cloud'
       || !requiresUserSystemd(file) || item.computer.userSystemd?.supported)
-    const target = eligible.map((item, order) => ({ item, order, finish: finishWith(item, file) }))
+    const free = eligible.filter(item => item.freeSlots > 0)
+    const candidates = free.length ? free : eligible
+    const target = candidates.map((item, order) => ({ item, order, finish: finishWith(item, file) }))
       .sort((left, right) => left.finish - right.finish
         || (serial ? exclusiveCount(left.item) - exclusiveCount(right.item) : 0) || left.order - right.order)[0]?.item
     if (!target) {
