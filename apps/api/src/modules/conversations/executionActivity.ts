@@ -79,7 +79,7 @@ const STREAMED_METHODS = ['item/commandExecution/outputDelta', 'item/reasoning/s
 
 function label(row: ExecutionRow) {
   const attempt = row.attempt > 1 ? ` · attempt ${row.attempt}` : ''
-  if (row.tick_index !== null) return `Interval check ${row.tick_index}${attempt}`
+  if (row.tick_index !== null) return `Loop ${row.tick_index}${attempt}`
   if (row.occurrence_index !== null) return `Occurrence ${row.occurrence_index}${attempt}`
   return row.attempt > 1 ? `Attempt ${row.attempt}` : 'Execution'
 }

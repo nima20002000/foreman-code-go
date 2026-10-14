@@ -3,15 +3,15 @@ import { makeCurrentWorkflowFixture } from '@foreman-code/contracts/wave25'
 import { codexApprovalRuntime } from './codexApprovalRuntime.js'
 import { deferred } from './deferred.js'
 
-/** One Agent on two sequential nodes; the entry node is re-activated every 10 seconds. */
-export async function intervalRuntime() {
+/** One Agent on two sequential nodes; the entry node loops every 10 seconds, with prompt when given. */
+export async function intervalRuntime(prompt?: string) {
   const f = makeCurrentWorkflowFixture(randomUUID())
   const [watcher, worker] = f.version.definition.nodes
   if (!watcher || !worker) throw new Error('Expected two Agent nodes')
   worker.agentId = watcher.agentId
   f.configurations = [f.configurations[0]!]
   f.version.agentConfigurationVersionIds = { [watcher.agentId]: f.configurations[0]!.id }
-  watcher.interval = { everySeconds: 10 }
+  watcher.interval = { everySeconds: 10, ...(prompt ? { prompt } : {}) }
   f.version.definition.executionPolicy!.maxParallelism = 1
   const checkStarted = deferred<string>(), checkGate = deferred(), workerGate = deferred()
   const db: { pool?: { query: (text: string, values: unknown[]) => Promise<{ rows: Array<{ node: string; tick: number | null }> }> } } = {}

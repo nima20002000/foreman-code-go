@@ -7,7 +7,7 @@ it.each([
   ['Queued', 'Starting'],
   ['Running', 'Working'],
   ['Waiting', 'Working'],
-  ['Checking · check 3', 'Checking · check 3'],
+  ['Looping · loop 3', 'Looping · loop 3'],
   ['Completed', 'Completed'],
   ['Failed', 'Failed'],
 ])('shows %s from the selected Run before an execution transcript arrives', (runLabel, expected) => {

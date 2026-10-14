@@ -71,7 +71,7 @@ export async function registerAppTools(server: McpServer, context: AppRequestCon
   const runStatus = context.interactions.runStatus?.bind(context.interactions)
   if (runStatus) server.registerTool('run_status_get', {
     description: GRAPHQL_AGENT_TOOLS.run_status_get.description
-      + ' Use it during interval checks to look for failed or stuck nodes, failing CI and repeated errors.',
+      + ' Use it during loops to look for failed or stuck nodes, failing CI and repeated errors.',
     inputSchema: z.object({}).strict(),
     outputSchema: AgentRunStatusSchema,
     annotations: readAnnotations,

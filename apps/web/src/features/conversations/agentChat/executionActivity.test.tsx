@@ -21,7 +21,7 @@ const tool = (executionId: string, id: string, sequence: string, title: string, 
   ({ executionId, id, sequence, revision: sequence, entry: { kind: 'activity', activity: { id, kind: 'tool', title, status, output, ...(truncated ? { truncated } : {}) } } })
 const executions = (checkState: 'running' | 'completed'): AgentChatExecutionActivityPage['executions'] => [
   { executionId: 'execution-main', label: 'Execution', attempt: 1, state: 'completed', createdAt: at, revision: '3' },
-  { executionId: 'execution-check', label: 'Interval check 1', attempt: 1, tickIndex: 1, state: checkState, createdAt: at, revision: '9', hasEarlierItems: true },
+  { executionId: 'execution-check', label: 'Loop 1', attempt: 1, tickIndex: 1, state: checkState, createdAt: at, revision: '9', hasEarlierItems: true },
 ]
 const snapshot = (checkState: 'running' | 'completed', items: AgentChatExecutionItem[]): AgentChatExecutionActivityPage =>
   ({ mode: 'snapshot', executions: executions(checkState), hasEarlierExecutions: false, cursor: '{}', hasMoreChanges: false, items })
@@ -76,7 +76,7 @@ describe('Board Agent chat live execution activity', () => {
       tool('execution-check', 'cmd-1', '7', 'git status', 'running', 'On branch main', true),
     ]))
     await mounted.ready()
-    const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
+    const check = await screen.findByRole('region', { name: 'Loop 1 · Working' })
     expect(within(check).getByText('Ran git status')).toBeVisible()
     expect(within(check).getByText('Running')).toBeVisible()
     expect(screen.getByText('Initial work finished')).toBeVisible()
@@ -103,14 +103,14 @@ describe('Board Agent chat live execution activity', () => {
       message('execution-check', 'prompt', '5', 'Check CI', 'user'),
       tool('execution-check', 'cmd-1', '9', 'git status', 'completed', 'clean'),
     ]))
-    expect(await screen.findByRole('region', { name: 'Interval check 1 · Completed' }, { timeout: 3000 })).toBeVisible()
+    expect(await screen.findByRole('region', { name: 'Loop 1 · Completed' }, { timeout: 3000 })).toBeVisible()
   })
 
   it('loads unread history from the contiguous window after a much older entry changes', async () => {
     const state = runState()
     const mounted = mountChat(state)
     mounted.mock.setExecutionActivity(state.context, livePage(numberedMessages(101, 103), '300', { hasEarlierItems: true }))
-    const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
+    const check = await screen.findByRole('region', { name: 'Loop 1 · Working' })
     const oldPlan = { ...message('execution-check', 'plan', '1', 'Updated original plan'), revision: '301' }
     await pollActivity(mounted, livePage([oldPlan], '301', { hasEarlierItems: true }))
     expect(await within(check).findByText('Updated original plan')).toBeVisible()
@@ -173,7 +173,7 @@ describe('Board Agent chat live execution activity', () => {
     if (mode === 'earlier') expect(await within(transcript).findByText('Older execution note')).toBeVisible()
     expect(within(transcript).getByText('New check transcript')).toBeVisible()
     expect(within(transcript).getByRole('region', { name: 'Execution · Completed' })).toBeVisible()
-    expect(within(transcript).getByRole('region', { name: 'Interval check 1 · Completed' })).toBeVisible()
+    expect(within(transcript).getByRole('region', { name: 'Loop 1 · Completed' })).toBeVisible()
     expect(within(transcript).queryByText('Running')).not.toBeInTheDocument()
     expect(within(transcript).getAllByText('Unconfirmed')[0]).toBeVisible()
     expect(within(transcript).getByText('Newest 20 executions')).toBeVisible()
@@ -185,7 +185,7 @@ describe('Board Agent chat live execution activity', () => {
     const state = runState()
     const mounted = mountChat(state)
     mounted.mock.setExecutionActivity(state.context, livePage(numberedMessages(1, 200), '200'))
-    const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
+    const check = await screen.findByRole('region', { name: 'Loop 1 · Working' })
     for (const end of [400, 600, 800]) {
       await pollActivity(mounted, livePage(numberedMessages(end - 199, end), String(end)))
       expect(await within(check).findByText(`Activity ${end}`)).toBeVisible()
@@ -201,7 +201,7 @@ describe('Board Agent chat live execution activity', () => {
     const mounted = mountChat(state)
     mounted.mock.setExecutionActivity(state.context,
       livePage(numberedMessages(601, 800), '800', { hasEarlierItems: true }))
-    const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
+    const check = await screen.findByRole('region', { name: 'Loop 1 · Working' })
     expect(within(check).getByText('Activity 800')).toBeVisible()
 
     const pending = deferred<AgentChatExecutionActivityPage>()
@@ -252,7 +252,7 @@ describe('Board Agent chat live execution activity', () => {
     const items = Array.from({ length: 30 }, (_, index) => message('execution-check', `large-${index + 1}`,
       String(index + 1), `Large activity ${index + 1}: ${content}`, 'user'))
     mounted.mock.setExecutionActivity(state.context, livePage(items.slice(0, 10), '10'))
-    const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
+    const check = await screen.findByRole('region', { name: 'Loop 1 · Working' })
     await pollActivity(mounted, livePage(items.slice(10, 20), '20'))
     await pollActivity(mounted, livePage(items.slice(20), '30'))
     expect(await within(check).findByText(`Large activity 30: ${content}`)).toBeVisible()
@@ -375,7 +375,7 @@ describe('execution detail readback', () => {
     mounted.mock.setExecutionActivity(state.context, livePage([
       tool('execution-check', 'command', '7', 'inspect', 'completed', 'Verified preview', true),
     ], '7', { hasEarlierItems: true }))
-    const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
+    const check = await screen.findByRole('region', { name: 'Loop 1 · Working' })
     fireEvent.click(within(check).getByText('Ran inspect'))
     const original = agentChatApi.executionActivity
     let attempts = 0
@@ -418,7 +418,7 @@ it('deduplicates pending detail reads and isolates their late results when the s
   const mounted = mountChat(state)
   const preview = livePage([tool('execution-check', 'command', '7', 'inspect', 'completed', 'Verified preview', true)], '7')
   mounted.mock.setExecutionActivity(state.context, preview)
-  const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
+  const check = await screen.findByRole('region', { name: 'Loop 1 · Working' })
   fireEvent.click(within(check).getByText('Ran inspect'))
   const pending = deferred<AgentChatExecutionActivityPage>()
   const original = agentChatApi.executionActivity
@@ -447,7 +447,7 @@ it('keeps full details visible when a delayed live preview completes after expan
   const mounted = mountChat(state)
   const preview = livePage([tool('execution-check', 'command', '7', 'inspect', 'completed', 'Preview', true)], '7')
   mounted.mock.setExecutionActivity(state.context, preview)
-  const check = await screen.findByRole('region', { name: 'Interval check 1 · Working' })
+  const check = await screen.findByRole('region', { name: 'Loop 1 · Working' })
   const delayed = deferred<AgentChatExecutionActivityPage>()
   let polling = false
   server.use(http.get('/api/workspaces/:workspaceId/agent-chat/execution-activity', async ({ request }) => {

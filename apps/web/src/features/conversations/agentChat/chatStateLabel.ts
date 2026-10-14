@@ -7,7 +7,7 @@ export function agentChatStateLabel(state?: AgentChatState, runLabel?: string): 
   if (state.sessionState === 'uncertain') return 'Working'
   if (chatBusy(state)) return 'Working'
   if (state.sessionState === 'error' || state.lastResult?.outcome === 'failed') return 'Failed'
-  if (!state.conversation && runLabel?.startsWith('Checking')) return runLabel
+  if (!state.conversation && runLabel?.startsWith('Looping')) return runLabel
   if (!state.conversation && state.sourceTranscript) {
     if (state.sourceTranscript.state === 'starting' || state.sourceTranscript.state === 'queued') return 'Starting'
     if (state.sourceTranscript.state !== 'completed') return 'Working'

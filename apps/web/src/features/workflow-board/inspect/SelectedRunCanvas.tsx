@@ -51,7 +51,7 @@ const PinnedRunNode = memo(function PinnedRunNode({ id, data, selected, width, h
   const ui = useContext(RunAgentPanels), anchor = useRef<HTMLButtonElement>(null)
   const panel = ui?.open?.nodeId === id ? ui.open.panel : undefined
   const meta = [...(data.blockId ? [{ label: 'Repeat', value: data.blockId }] : []),
-    ...(data.kind === 'agent' && data.intervalSeconds ? [{ label: 'Checks', value: intervalLabel(data.intervalSeconds) }] : []),
+    ...(data.kind === 'agent' && data.intervalSeconds ? [{ label: 'Loop', value: intervalLabel(data.intervalSeconds) }] : []),
     ...data.facts.meta].slice(0, 2)
   return <><AgentNodeView ref={anchor} className="pinned-run-node" name={data.label} harness={data.facts.harness} harnessLabel={data.facts.harnessLabel}
     model={data.facts.model} icon={data.facts.icon} statusLabel={data.status} state={data.state} transition={data.transition} transitionKey={data.transitionKey} meta={meta}

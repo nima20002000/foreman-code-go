@@ -45,7 +45,7 @@ export function runningIntervalChecks(record?: PinnedNodeDisplayCut) {
 }
 /** How a node looks while an interval check is unfinished. */
 export const checkingView = (check: number, queued = false) => queued
-  ? { state: 'queued' as const, label: `Check ${check} queued` } : { state: 'running' as const, label: `Checking · check ${check}` }
+  ? { state: 'queued' as const, label: `Loop ${check} queued` } : { state: 'running' as const, label: `Looping · loop ${check}` }
 export function pinnedTopology(version: WorkflowVersionV3) {
   const blocks = new Map(version.definition.repeat?.blocks.flatMap((block) =>
     block.nodeIds.map((nodeId) => [nodeId, block.id] as const)) ?? [])

@@ -51,7 +51,7 @@ const DraftAgent = memo(function DraftAgent({ id, data, selected, width, height 
   const runSelected = Boolean(useWorkflowBoard()?.run)
   const run = { label: 'Draft', state: 'idle' as const }
   const facts = agentNodeFacts(data.agent)
-  const meta = data.intervalSeconds ? [{ label: 'Checks', value: intervalLabel(data.intervalSeconds) }, ...facts.meta].slice(0, 2) : facts.meta
+  const meta = data.intervalSeconds ? [{ label: 'Loop', value: intervalLabel(data.intervalSeconds) }, ...facts.meta].slice(0, 2) : facts.meta
   const core = useRef<HTMLButtonElement>(null)
   const panel = open?.nodeId === id ? open.panel : undefined
   const select = () => inspect(() => { presentation.getState().setFocusedNodeId(id); presentation.getState().setFocusedEdgeId(undefined) })

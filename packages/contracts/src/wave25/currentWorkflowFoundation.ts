@@ -135,7 +135,7 @@ export function validateCurrentWorkflowConfigurations(value: { version: Version 
       ? graphqlToolsOutsideRole(configuration.productRole, [...node.graphqlTools.add, ...node.graphqlTools.remove]) : []
     if (outside.length) fail(`node ${node.id} Foreman Code MCP tools are outside its Agent role: ${outside.join(', ')}`)
     if (node.interval && configuration && !agentIntervalAllowed(configuration.harness, version.approval.handler)) {
-      fail(`node ${node.id} interval checks need an Agent that never asks for workflow approval: `
+      fail(`node ${node.id} loops need an Agent that never asks for workflow approval: `
         + 'use workflow approval handler "native", or a Codex Agent with approvalPolicy "never"')
     }
   }

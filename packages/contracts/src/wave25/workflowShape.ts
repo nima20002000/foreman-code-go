@@ -79,14 +79,18 @@ export const WorkflowExecutionPolicySchema = z
   .strict();
 export type WorkflowExecutionPolicy = z.infer<typeof WorkflowExecutionPolicySchema>;
 
-/** Re-activates an Agent node with a short check prompt every everySeconds while its Run is
- * active, after its first finished execution. Absent means off. Checks never route the graph. */
+/** A loop: re-activates an Agent node every everySeconds while its Run is active, after its first
+ * finished execution, with prompt or the default Run check. Absent means off. Loops never route the
+ * graph and stop with the Run; workflow schedules, which start Runs, are separate. */
 export const AGENT_INTERVAL_MIN_SECONDS = 10
 export const AGENT_INTERVAL_MAX_SECONDS = 24 * 60 * 60
 /** Checks across all Agents of one Run; the bound keeps the Run's history readable. */
 export const AGENT_INTERVAL_MAX_CHECKS_PER_RUN = 1000
+export const AGENT_INTERVAL_PROMPT_MAX_LENGTH = 4000
 const AgentIntervalSchema = z.object({
   everySeconds: z.number().int().min(AGENT_INTERVAL_MIN_SECONDS).max(AGENT_INTERVAL_MAX_SECONDS),
+  /** What the Agent does on each loop. Omit for the default check of its Run. */
+  prompt: z.string().trim().min(1).max(AGENT_INTERVAL_PROMPT_MAX_LENGTH).optional(),
 }).strict()
 
 const Handle = z.enum(['top', 'right', 'bottom', 'left']).nullable().optional()

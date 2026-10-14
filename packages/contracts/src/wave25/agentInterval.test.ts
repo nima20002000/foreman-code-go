@@ -13,6 +13,17 @@ describe('Agent interval checks in the saved workflow definition', () => {
     }
   })
 
+  it('saves an optional loop prompt, trimmed and bounded', () => {
+    const f = makeCurrentWorkflowFixture('interval-prompt')
+    const definition = structuredClone(f.version.definition)
+    definition.nodes[0] = { ...f.version.definition.nodes[0]!, interval: { everySeconds: 60, prompt: '  Check the deploy log.  ' } }
+    expect(WorkflowDefinitionV3Schema.parse(definition).nodes[0]).toMatchObject({ interval: { everySeconds: 60, prompt: 'Check the deploy log.' } })
+    for (const prompt of ['   ', 'x'.repeat(4001)]) {
+      definition.nodes[0] = { ...f.version.definition.nodes[0]!, interval: { everySeconds: 60, prompt } }
+      expect(WorkflowDefinitionV3Schema.safeParse(definition).success).toBe(false)
+    }
+  })
+
   it('rejects interval checks inside a repeat block', () => {
     const f = makeCurrentWorkflowFixture('interval-repeat', 'repeat')
     const definition = structuredClone(f.version.definition)

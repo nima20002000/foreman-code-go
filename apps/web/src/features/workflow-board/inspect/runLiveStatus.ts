@@ -46,7 +46,7 @@ export function liveNodeView(base: View, wait: InteractionWait | undefined, ci: 
   if (checking) return checkingView(checking.check, checking.queued)
   if (check?.running) return checkingView(check.checks)
   const view = ci ? { ...base, label: `${base.label} · ${ciNodePresentation(ci).label}` } : base
-  return check?.nextCheckAt ? { ...view, label: `${view.label} · Next check ${new Date(check.nextCheckAt)
+  return check?.nextCheckAt ? { ...view, label: `${view.label} · Next loop ${new Date(check.nextCheckAt)
     .toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` } : view
 }
 

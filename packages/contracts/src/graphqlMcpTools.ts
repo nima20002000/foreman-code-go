@@ -61,7 +61,7 @@ export const GRAPHQL_AGENT_TOOLS = {
     description: "Read-only, bounded status of this Agent's own Run: Run state, each node's latest execution state, "
       + "the Run's latest CI tickets and recent errors, including AGENT_EXECUTION_STUCK warnings for idle running "
       + "executions whose CI tickets are all terminal. Warnings do not stop executions. "
-      + "Available only on workflow nodes with interval checks enabled.",
+      + "Available only on workflow nodes with a loop enabled.",
     roles: ["orchestrator", "coder"],
   },
 } as const satisfies Record<string, { label: string; description: string; roles: readonly GraphqlMcpRole[] }>;

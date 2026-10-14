@@ -19,13 +19,14 @@ function mount() {
   return { saved: () => WorkflowDefinitionV3Schema.parse(graphs.at(-1)).nodes[0]! }
 }
 
-describe('Agent interval checks in node settings', () => {
+describe('Agent loops in node settings', () => {
   it('is off by default, then saves the period the author chooses and clears it when turned off', () => {
     const { saved } = mount()
-    const toggle = screen.getByRole('switch', { name: /Re-activate on an interval/ })
-    expect(screen.getByText(/Checks never hand off work or use maximum parallelism slots/)).toBeVisible()
+    const toggle = screen.getByRole('switch', { name: /Loop while the workflow runs/ })
+    expect(screen.getByText(/Loops never hand off work or use maximum parallelism slots/)).toBeVisible()
     expect(toggle).not.toBeChecked()
     expect(screen.queryByLabelText('Every')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Each loop')).not.toBeInTheDocument()
     expect(saved()).not.toHaveProperty('interval')
 
     fireEvent.click(toggle)
@@ -44,6 +45,15 @@ describe('Agent interval checks in node settings', () => {
     expect(saved()).toMatchObject({ interval: { everySeconds: 18_000 } })
     fireEvent.change(screen.getByLabelText('Every'), { target: { value: '30' } })
     expect(saved()).toMatchObject({ interval: { everySeconds: 30 } })
+
+    // The loop prompt is saved trimmed with the period; an empty prompt uses the default Run check.
+    fireEvent.change(screen.getByLabelText('Each loop'), { target: { value: ' Check the deploy log. ' } })
+    expect(saved()).toMatchObject({ interval: { everySeconds: 30, prompt: 'Check the deploy log.' } })
+    fireEvent.change(screen.getByLabelText('Every'), { target: { value: '2' } })
+    fireEvent.change(screen.getByLabelText('Unit'), { target: { value: 'minutes' } })
+    expect(saved()).toMatchObject({ interval: { everySeconds: 120, prompt: 'Check the deploy log.' } })
+    fireEvent.change(screen.getByLabelText('Each loop'), { target: { value: '  ' } })
+    expect(saved()).toEqual(expect.objectContaining({ interval: { everySeconds: 120 } }))
 
     fireEvent.click(toggle)
     expect(saved()).not.toHaveProperty('interval')

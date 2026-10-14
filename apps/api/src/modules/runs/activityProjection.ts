@@ -125,6 +125,103 @@ function toolStatus(native: Record<string, unknown>): RunActivityPublic['status'
   return 'recorded'
 }
 
+type ActivityView = { kind: RunActivityPublic['kind']; status: RunActivityPublic['status']; summary: string; detail?: string | undefined }
+
+/** A recorded native provider event: tool, item, turn or session activity. */
+function nativeOutputActivity(native: Record<string, unknown>, runId: string): ActivityView {
+  const unsupported = string(native.type) === 'interaction.unsupported'
+    ? codexUnsupportedInteractionMessage(native.unsupportedInteractionCode) : undefined
+  if (unsupported) return { kind: 'error', status: 'failed', summary: unsupported }
+  const claude = claudeConversationActivity({ type: string(native.type) ?? '', payload: {
+    itemId: native.claudeItemId, taskId: native.claudeTaskId, name: native.claudeName, status: native.claudeStatus,
+  } }, runId)
+  const tool = claude?.title ?? toolLabel(native)
+  const label = tool ?? itemLabels.get(string(native.itemType) ?? '') ?? itemTypeLabel(string(native.itemType))
+  let kind: RunActivityPublic['kind'] = 'tool_log'
+  if (label) kind = 'agent_work'
+  if (tool) kind = 'tool_action'
+  let status: RunActivityPublic['status'] = claude?.status ?? toolStatus(native)
+  const action = status === 'running' ? 'started' : status
+  let summary = label ? `${label} ${action}` : 'Native activity recorded; details unavailable'
+  if (native.type === 'native.notification') {
+    summary = notificationSummaries.get(string(native.nativeMethod) ?? '') ?? summary
+  } else if (native.type === 'turn.started' || native.type === 'turn.completed') {
+    status = nativeActivityStatus(string(native.turnStatus))
+      ?? (native.type === 'turn.started' ? 'running' : 'completed')
+    summary = `Agent turn ${status === 'running' ? 'started' : status}`
+  } else if (native.type === 'turn.capacity_wait') {
+    status = 'pending'
+    summary = 'Waiting for model capacity'
+  } else if (native.type === 'thread.started') {
+    summary = 'Native session created'
+  } else if (native.type === 'thread.reconciled') {
+    summary = 'Native session history reconciled'
+  }
+  if (native.subagent === true) summary = `Subagent: ${summary.replace(/^Agent /, '')}`
+  return { kind, status, summary, detail: nativeDetail(native) }
+}
+
+/** Approval request, decision, delivery and Worker acknowledgement activity. */
+function approvalActivity(kind: string, payload: Record<string, unknown>,
+  refs: { interactionId?: string | undefined; acknowledgementId?: string | undefined }): ActivityView {
+  let status: RunActivityPublic['status'] = 'unknown'
+  let summary = 'Approval details unavailable'
+  switch (kind) {
+    case 'interaction_pending':
+      status = refs.interactionId ? 'pending' : 'unknown'
+      summary = refs.interactionId ? 'Approval requested' : 'Approval details unavailable'; break
+    case 'interaction_decided':
+      status = 'recorded'
+      summary = !refs.interactionId ? 'Approval decision details unavailable'
+        : payload.selectedSemantic === 'reject' ? 'Approval rejected; decision recorded'
+        : payload.selectedSemantic === 'cancel' ? 'Approval canceled; decision recorded'
+          : ['approve_once','allow_turn','allow_session','provider_scoped_allow','persistent_policy_change']
+            .includes(string(payload.selectedSemantic) ?? '')
+            ? 'Approval granted; decision recorded' : 'Approval decision recorded'
+      break
+    case 'interaction_delivery_state': case 'interaction_resolved': {
+      const delivery = string(payload.deliveryState)
+      const resolution = string(payload.status)
+      if (!refs.interactionId) {
+        status = 'unknown'
+        summary = 'Approval details unavailable'
+      } else if (resolution === 'canceled') {
+        status = 'canceled'
+        summary = 'Approval canceled'
+      } else if (delivery === 'delivered' && resolution === 'delivered') {
+        status = 'delivered'
+        summary = 'Approval delivered to provider'
+      } else if (resolution === 'delivery_failed' || delivery === 'failed') {
+        status = 'delivery_failed'
+        summary = 'Approval delivery failed'
+      } else if (delivery === 'uncertain') {
+        status = 'unknown'
+        summary = 'Approval delivery uncertain'
+      } else {
+        status = 'pending'
+        summary = 'Approval delivery pending'
+      }
+      break
+    }
+    case 'interaction_worker_ack':
+      status = refs.interactionId && refs.acknowledgementId ? 'acknowledged' : 'unknown'
+      summary = status === 'acknowledged' ? 'Worker acknowledged approval'
+        : 'Worker acknowledgement details unavailable'; break
+  }
+  return { kind: 'approval', status, summary }
+}
+
+/** Review job state; without a review job reference the details are unavailable. */
+function reviewActivity(state: string | undefined, reviewJobId: string | undefined): ActivityView {
+  const status: RunActivityPublic['status'] = !reviewJobId ? 'unknown'
+    : state === 'completed' ? 'completed' : state === 'failed' ? 'failed'
+    : state === 'uncertain' ? 'unknown' : 'pending'
+  const summary = !reviewJobId ? 'Review details unavailable'
+    : status === 'completed' ? 'Review completed'
+    : status === 'failed' ? 'Review failed' : 'Review status updated'
+  return { kind: 'review', status, summary }
+}
+
 /** Project typed activity details and recorded work results; exclude native provider bodies. */
 export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersionV3,
   runId: string, runOutcome: string): RunActivityPublic {
@@ -245,9 +342,9 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
           : state === 'waiting' ? 'pending' : 'queued'
       const label = jobActor ? 'Job' : 'Agent'
       const check = count(row.execution_tick_index)
-      summary = check ? state === 'completed' ? `Interval check ${check} finished`
-        : state === 'running' ? `Checking · check ${check}` : state === 'waiting' ? `Interval check ${check} waiting`
-          : state === 'starting' ? `Interval check ${check} starting` : `Interval check ${check} queued`
+      summary = check ? state === 'completed' ? `Loop ${check} finished`
+        : state === 'running' ? `Looping · loop ${check}` : state === 'waiting' ? `Loop ${check} waiting`
+          : state === 'starting' ? `Loop ${check} starting` : `Loop ${check} queued`
         : state === 'completed' ? `${label} work completed`
         : state === 'running' ? `${label} working` : state === 'waiting' ? `${label} waiting`
           : `${label} work queued`
@@ -256,44 +353,9 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
     }
     case 'harness_session_started': status = 'running'; summary = 'Native session started'; break
     case 'harness_session_finished': status = 'completed'; summary = 'Native session finished'; break
-    case 'harness_output': {
-      const unsupported = string(native.type) === 'interaction.unsupported'
-        ? codexUnsupportedInteractionMessage(native.unsupportedInteractionCode) : undefined
-      if (unsupported) {
-        kind = 'error'
-        status = 'failed'
-        summary = unsupported
-        break
-      }
-      const claude = claudeConversationActivity({ type: string(native.type) ?? '', payload: {
-        itemId: native.claudeItemId, taskId: native.claudeTaskId, name: native.claudeName, status: native.claudeStatus,
-      } }, runId)
-      const tool = claude?.title ?? toolLabel(native)
-      const label = tool ?? itemLabels.get(string(native.itemType) ?? '') ?? itemTypeLabel(string(native.itemType))
-      kind = 'tool_log'
-      if (label) kind = 'agent_work'
-      if (tool) kind = 'tool_action'
-      status = claude?.status ?? toolStatus(native)
-      const action = status === 'running' ? 'started' : status
-      summary = label ? `${label} ${action}` : 'Native activity recorded; details unavailable'
-      if (native.type === 'native.notification') {
-        summary = notificationSummaries.get(string(native.nativeMethod) ?? '') ?? summary
-      } else if (native.type === 'turn.started' || native.type === 'turn.completed') {
-        status = nativeActivityStatus(string(native.turnStatus))
-          ?? (native.type === 'turn.started' ? 'running' : 'completed')
-        summary = `Agent turn ${status === 'running' ? 'started' : status}`
-      } else if (native.type === 'turn.capacity_wait') {
-        status = 'pending'
-        summary = 'Waiting for model capacity'
-      } else if (native.type === 'thread.started') {
-        summary = 'Native session created'
-      } else if (native.type === 'thread.reconciled') {
-        summary = 'Native session history reconciled'
-      }
-      if (native.subagent === true) summary = `Subagent: ${summary.replace(/^Agent /, '')}`
-      detail = nativeDetail(native)
+    case 'harness_output':
+      ({ kind, status, summary, detail } = nativeOutputActivity(native, runId))
       break
-    }
     case 'result_recorded': case 'work_result_accepted':
       status = 'completed'
       summary = 'Work result recorded'
@@ -343,58 +405,11 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
         : row.kind === 'work_direction_wait' ? 'Run waiting for direction' : 'Work needs direction'
       workResult = row.kind === 'work_needs_direction' ? activityWorkResult(row.work_result) : undefined
       break
-    case 'interaction_pending':
-      kind = 'approval'; status = refs.interactionId ? 'pending' : 'unknown'
-      summary = refs.interactionId ? 'Approval requested' : 'Approval details unavailable'; break
-    case 'interaction_decided':
-      kind = 'approval'; status = 'recorded'
-      summary = !refs.interactionId ? 'Approval decision details unavailable'
-        : payload.selectedSemantic === 'reject' ? 'Approval rejected; decision recorded'
-        : payload.selectedSemantic === 'cancel' ? 'Approval canceled; decision recorded'
-          : ['approve_once','allow_turn','allow_session','provider_scoped_allow','persistent_policy_change']
-            .includes(string(payload.selectedSemantic) ?? '')
-            ? 'Approval granted; decision recorded' : 'Approval decision recorded'
+    case 'interaction_pending': case 'interaction_decided': case 'interaction_delivery_state':
+    case 'interaction_resolved': case 'interaction_worker_ack':
+      ({ kind, status, summary } = approvalActivity(row.kind, payload, refs))
       break
-    case 'interaction_delivery_state': case 'interaction_resolved': {
-      kind = 'approval'
-      const delivery = string(payload.deliveryState)
-      const resolution = string(payload.status)
-      if (!refs.interactionId) {
-        status = 'unknown'
-        summary = 'Approval details unavailable'
-      } else if (resolution === 'canceled') {
-        status = 'canceled'
-        summary = 'Approval canceled'
-      } else if (delivery === 'delivered' && resolution === 'delivered') {
-        status = 'delivered'
-        summary = 'Approval delivered to provider'
-      } else if (resolution === 'delivery_failed' || delivery === 'failed') {
-        status = 'delivery_failed'
-        summary = 'Approval delivery failed'
-      } else if (delivery === 'uncertain') {
-        status = 'unknown'
-        summary = 'Approval delivery uncertain'
-      } else {
-        status = 'pending'
-        summary = 'Approval delivery pending'
-      }
-      break
-    }
-    case 'interaction_worker_ack':
-      kind = 'approval'; status = refs.interactionId && refs.acknowledgementId ? 'acknowledged' : 'unknown'
-      summary = status === 'acknowledged' ? 'Worker acknowledged approval'
-        : 'Worker acknowledgement details unavailable'; break
-    case 'review_job_state': {
-      kind = 'review'
-      const state = string(payload.state)
-      status = !refs.reviewJobId ? 'unknown'
-        : state === 'completed' ? 'completed' : state === 'failed' ? 'failed'
-        : state === 'uncertain' ? 'unknown' : 'pending'
-      summary = !refs.reviewJobId ? 'Review details unavailable'
-        : status === 'completed' ? 'Review completed'
-        : status === 'failed' ? 'Review failed' : 'Review status updated'
-      break
-    }
+    case 'review_job_state': ({ kind, status, summary } = reviewActivity(string(payload.state), refs.reviewJobId)); break
     default: kind = 'error'; status = 'unknown'; summary = 'Activity details unavailable'
   }
   const severity = status === 'failed' || status === 'delivery_failed' ? 'error'

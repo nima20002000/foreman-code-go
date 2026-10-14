@@ -9,8 +9,8 @@ import { PostgresAppInteractionService } from '../src/modules/interactions/app.j
 import { RunHistoryService } from '../src/modules/runs/history.js'
 import { intervalRuntime } from './helpers/intervalRuntime.js'
 
-it('re-activates an interval node in its own session without routing and stops when the Run completes', async () => {
-  const { runtime, f, watcher, worker, checkStarted, checkGate, workerGate } = await intervalRuntime()
+it('re-activates a looping node with its loop prompt in its own session without routing and stops when the Run completes', async () => {
+  const { runtime, f, watcher, worker, checkStarted, checkGate, workerGate } = await intervalRuntime('Check the deploy log for errors.')
   const commands = new PostgresCommandCoordinator(runtime.db.pool)
   const app = buildApp({
     logger: false,
@@ -92,7 +92,8 @@ it('re-activates an interval node in its own session without routing and stops w
     expect(resolutions).toHaveLength(2)
     const prompts = [...runtime.providers.values()].flatMap(provider => [...provider.threads.values()])
       .flatMap(thread => thread.turns).map(turn => JSON.stringify(turn.items[0]))
-    expect(prompts.some(prompt => prompt.includes('interval check 1') && prompt.includes('run_status_get'))).toBe(true)
+    expect(prompts.some(prompt => prompt.includes('loop 1') && prompt.includes('Each loop: Check the deploy log for errors.')
+      && prompt.includes('run_status_get'))).toBe(true)
   } finally {
     checkGate.resolve(); workerGate.resolve()
     await Promise.allSettled(clients.map(client => client.close()))

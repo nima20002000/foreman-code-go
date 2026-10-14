@@ -173,7 +173,7 @@ describe('Agent chat live execution activity over HTTP', () => {
     try {
       const first = await page({})
       expect(first.mode).toBe('snapshot')
-      expect(first.executions.map((execution) => [execution.label, execution.state])).toEqual([['Execution', 'completed'], ['Interval check 1', 'running']])
+      expect(first.executions.map((execution) => [execution.label, execution.state])).toEqual([['Execution', 'completed'], ['Loop 1', 'running']])
       expect(first.items.map((item) => [item.executionId, item.id])).toEqual([['execution-main', 'final'],
         ['execution-check-1', 'user-1'], ['execution-check-1', 'msg-1'], ['execution-check-1', 'cmd-1'],
         ['execution-check-1', 'mcp-1'], ['execution-check-1', 'plan:turn']])

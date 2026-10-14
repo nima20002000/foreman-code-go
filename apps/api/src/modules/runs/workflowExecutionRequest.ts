@@ -16,14 +16,17 @@ function every(seconds: number | undefined): string {
   return `every ${seconds} seconds`
 }
 
-/** Request-only text for an interval check. Earlier work is in the continued session when one exists. */
-function intervalCheckPrompt(index: number, everySeconds: number | undefined, continued: boolean, initialPrompt?: string): string {
+/** Request-only text for one loop of an Agent. Earlier work is in the continued session when one exists. */
+function intervalCheckPrompt(index: number, interval: { everySeconds: number; prompt?: string | undefined } | undefined,
+  continued: boolean, initialPrompt?: string): string {
   return [
     ...(initialPrompt ? [`Your task in this workflow: ${initialPrompt}`, ''] : []),
-    `Foreman Code interval check ${index}. While this Run is active you are re-activated ${every(everySeconds)}.`,
-    'Call run_status_get to read your own Run: each node\'s state, the Run\'s CI tickets and recent errors.',
-    `${continued ? 'Review your own earlier work too, and look' : 'Look'} for common problems: failed or stuck nodes, failing CI, repeated errors.`,
-    'Report briefly what you found and anything that needs attention. This check does not route the workflow;',
+    `Foreman Code loop ${index}. While this Run is active you are re-activated ${every(interval?.everySeconds)}.`,
+    ...(interval?.prompt ? [`Each loop: ${interval.prompt}`,
+      'run_status_get reads your own Run: each node\'s state, the Run\'s CI tickets and recent errors.'] : [
+      'Call run_status_get to read your own Run: each node\'s state, the Run\'s CI tickets and recent errors.',
+      `${continued ? 'Review your own earlier work too, and look' : 'Look'} for common problems: failed or stuck nodes, failing CI, repeated errors.`]),
+    'Report briefly what you found and anything that needs attention. This loop does not route the workflow;',
     'your reply is recorded for this Run but is not passed to other nodes.',
   ].join('\n')
 }
@@ -40,7 +43,7 @@ export function workflowExecutionRequest(input: {
   if (!node || node.kind === 'job') throw new Error('Native execution requires an Agent workflow node.')
   const tickIndex = repeatTickIndex(execution.input)
   const initialPrompt = tickIndex !== undefined
-    ? intervalCheckPrompt(tickIndex, node.interval?.everySeconds, Boolean(execution.sessionContinuation),
+    ? intervalCheckPrompt(tickIndex, node.interval, Boolean(execution.sessionContinuation),
       execution.sessionContinuation ? undefined : node.initialPrompt)
     : currentInitialPrompt(node,
       version.definition.repeat?.blocks.some(block => block.exitNodeId === node.id) ?? false,

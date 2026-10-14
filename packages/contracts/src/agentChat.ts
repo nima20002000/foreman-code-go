@@ -199,7 +199,7 @@ export type AgentChatExecutionItem = z.infer<typeof AgentChatExecutionItemSchema
 
 const AgentChatExecutionSummarySchema = z.object({
   executionId: IdSchema,
-  /** Human label: Execution, Attempt n, Interval check n or Occurrence n. */
+  /** Human label: Execution, Attempt n, Loop n or Occurrence n. */
   label: z.string().min(1).max(120),
   attempt: z.number().int().positive(),
   tickIndex: z.number().int().positive().optional(),
