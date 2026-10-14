@@ -6,7 +6,7 @@ import {
 
 import { DomainError, databaseReadFailure } from '../errors.js'
 import {
-  assertGraphTransaction, beforeGraphCommit, isReadOnlyGraphTransaction, poisonGraphTransaction,
+  assertGraphTransaction, beforeGraphCommitChecks, isReadOnlyGraphTransaction, poisonGraphTransaction,
   type GraphSqlClient, type GraphTransactionSql,
 } from './connection.js'
 import type { RepeatScope } from '../runs/repeatResolution.js'
@@ -70,6 +70,46 @@ export async function assertRepeatCanonicalReceiptLocked(sql: GraphTransactionSq
   }
 }
 
+/** Preserve every receipt assertion while sharing the Run/head read for the group. */
+export async function assertRepeatCanonicalReceiptsLocked(sql: GraphTransactionSql,
+  inputs: readonly RepeatCanonicalReceipt[]): Promise<void> {
+  assertGraphTransaction(sql)
+  if (!inputs.length) return
+  if (inputs.length === 1) return assertRepeatCanonicalReceiptLocked(sql, inputs[0]!)
+  try {
+    const receipts = inputs.map(validatedReceipt)
+    const rows = await sql.query<{ ordinal: number; receipts: RepeatCanonicalReceiptRow[] }>(`
+      select p.ordinal,coalesce(json_agg(q) filter (where q.source_digest is not null),'[]'::json) as receipts
+      from jsonb_to_recordset($1::jsonb) as p(ordinal integer,run_id text,source_kind text,source_id text,
+        source_revision bigint,effect_kind text,entity_id text)
+      left join lateral (
+        select r.workspace_id,r.workflow_id,r.workflow_version_id,v.execution_semantics_version,
+          h.protocol_version,h.head_sequence::text,s.source_digest,s.semantic_digest as source_semantic_digest,
+          s.first_sequence::text as source_sequence,e.effect_digest,e.semantic_digest as effect_semantic_digest,
+          e.first_sequence::text as effect_sequence
+        from runs r join workflow_versions v on v.id=r.workflow_version_id
+        join run_graph_heads h on h.run_id=r.id
+        join run_graph_sources s on s.run_id=r.id and s.source_kind=p.source_kind
+          and s.source_id=p.source_id and s.source_revision=p.source_revision
+        left join run_graph_effects e on e.run_id=r.id and e.effect_kind=p.effect_kind and e.entity_id=p.entity_id
+        where r.id=p.run_id
+      ) q on true group by p.ordinal order by p.ordinal`, [JSON.stringify(receipts.map((receipt, ordinal) => ({
+      ordinal, run_id: receipt.scope.runId, source_kind: receipt.evidence.sourceKind,
+      source_id: receipt.evidence.sourceId, source_revision: receipt.evidence.sourceRevision,
+      effect_kind: receipt.effect?.kind ?? null, entity_id: receipt.effect?.entityId ?? null,
+    })))])
+    if (rows.rows.length !== receipts.length) return conflict()
+    for (const [ordinal, receipt] of receipts.entries()) {
+      const row = rows.rows[ordinal]
+      if (row?.ordinal !== ordinal) return conflict()
+      assertRepeatCanonicalReceiptRows(row.receipts, receipt)
+    }
+  } catch (error) {
+    poisonGraphTransaction(sql)
+    throw error
+  }
+}
+
 /** Read-only validation of an already persisted receipt. This grants no
  * publication, settlement, owner or native-entry capability. Mutation callers
  * must retain the branded/poisoning wrapper above and their commit finalizers. */
@@ -121,6 +161,9 @@ export function assertRepeatCanonicalReceiptRows(rows: readonly RepeatCanonicalR
   }
 }
 
+const receiptCheckKey = {}
+const receiptChecks = new WeakMap<GraphTransactionSql, (receipts: readonly RepeatCanonicalReceipt[]) => Promise<void>>()
+
 /** Register AFTER openRunGraphPublication registered its finalizer, and AFTER
  * staging this change. The query runs after G1 has written source/effect rows,
  * before COMMIT. A failed proof rolls the domain and the publication back.
@@ -134,5 +177,10 @@ export function requireRepeatCanonicalReceiptBeforeCommit(sql: GraphTransactionS
     effect: input.effect ? { ...input.effect } : null,
     ...(input.semanticDigest === undefined ? {} : { semanticDigest: input.semanticDigest }),
   }
-  beforeGraphCommit(sql, () => assertRepeatCanonicalReceiptLocked(sql, receipt))
+  let verify = receiptChecks.get(sql)
+  if (!verify) {
+    verify = receipts => assertRepeatCanonicalReceiptsLocked(sql, receipts)
+    receiptChecks.set(sql, verify)
+  }
+  beforeGraphCommitChecks(sql, receiptCheckKey, receipt, verify)
 }

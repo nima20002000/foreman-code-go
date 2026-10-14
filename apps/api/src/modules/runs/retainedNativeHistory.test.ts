@@ -7,30 +7,33 @@ import { graphSourceDigest } from '../run-graph/publication.js'
 import { retainedNativeHistoryEvents } from './retainedNativeHistory.js'
 import type { RepeatScope } from './repeatResolution.js'
 
-function fixture() {
+function fixture(harness: 'codex' | 'claude' = 'codex', type = 'message.submitted') {
   const scope: RepeatScope = { workspaceId: 'workspace', workflowId: 'workflow', workflowVersionId: 'version',
     runId: 'run', executionSemanticsVersion: 3 }
   const event: HarnessNativeEvent = { executionId: 'execution', connectionId: 'connection', sequence: 7,
-    type: 'turn.started', occurredAt: '2026-10-05T00:00:00.000Z',
-    payload: { threadId: 'session', turn: { id: 'turn', status: 'inProgress' } } }
+    type: harness === 'claude' ? type : 'turn.started', occurredAt: '2026-10-05T00:00:00.000Z',
+    payload: harness === 'claude' ? { nativeSessionId: 'session', nativeMessageId: 'turn',
+      clientCorrelationId: 'execution:execution', result: { outcome: 'succeeded', output: 'done' } }
+      : { threadId: 'session', turn: { id: 'turn', status: 'inProgress' } } }
   const sourceDigest = graphSourceDigest(event)
   const semanticDigest = graphSourceDigest({ facts: [] })
   const state = { missing: false, changed: false, published: true, wrongDigest: false,
     sessionId: 'session', current: true, projectionRevision: '0' }
   const capture = { execution: { id: 'execution', workflowNodeId: 'node', agentId: 'agent',
     agentConfigurationVersionId: 'configuration', attempt: 1 },
-  session: { harness: 'codex', nativeSessionId: 'session' },
+  session: { harness, nativeSessionId: 'session' },
   lane: { connectionGeneration: 1, providerId: 'turn' },
   assertCurrent() { if (!state.current) throw new Error('native lifetime changed') } } as WorkflowNativeCapture
   const client = { async query(_text: string, values?: unknown[]) {
     if (!values) return { rows: [], rowCount: 0 }
     if (values[0] === 'execution' && values.length === 3) return { rows: state.missing ? [] : [{
       connection_id: event.connectionId, source_sequence: event.sequence, sequence: 31,
+      record_matches: !state.changed,
       record: { ...event, sequence: 31, payload: state.changed ? { different: true } : event.payload },
       source_digest: state.published ? sourceDigest : null, semantic_digest: state.published ? semanticDigest : null,
     }], rowCount: state.missing ? 0 : 1 }
     if (values[0] === 'execution') return { rows: [{}], rowCount: 1 }
-    if (values[1] === 'execution') return { rows: [{ provider: 'codex', native_session_id: state.sessionId,
+    if (values[1] === 'execution') return { rows: [{ provider: harness, native_session_id: state.sessionId,
       connection_id: 'connection', connection_generation: 1, native_turn_id: 'turn',
       native_request_id: null, interaction_id: null, review_job_id: null, first_native_sequence: '1',
       last_native_sequence: '10', terminal_native_sequence: null, metadata_revision: state.projectionRevision }], rowCount: 1 }
@@ -96,4 +99,18 @@ it('rejects a lost native lifetime before commit', async () => {
   try {
     await expect(f.read(async () => { f.state.current = false })).rejects.toThrow('native lifetime changed')
   } finally { await f.close() }
+})
+
+for (const type of ['message.submitted', 'turn.completed', 'claude.result']) {
+  it(`replays a retained Claude ${type} frame through its public history reader`, async () => {
+    const f = fixture('claude', type)
+    if (type === 'claude.result') f.state.published = false
+    try { expect(await f.read()).toEqual(new Set([f.event])) } finally { await f.close() }
+  })
+}
+
+it('requires ingestion when a retained Claude message belongs to another native binding', async () => {
+  const f = fixture('claude')
+  f.state.sessionId = 'replacement'
+  try { expect(await f.read()).toEqual(new Set()) } finally { await f.close() }
 })

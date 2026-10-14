@@ -828,6 +828,8 @@ function configureProviderAccounts(composition: ProductionComposition) {
     if (!composition.remoteWorkflow) throw new DomainError('REMOTE_WORKFLOW_UNAVAILABLE', 'The actual original native physical composition is unavailable.', 503)
     return composition.remoteWorkflow.assertPhysical(sql, owner, capture)
   }, async (sql, evidence, proof) => {
+    // Event file contexts are admitted at turn start; artifact results arrive in captured history.
+    if (proof.original.type === 'event' && proof.original.event.type !== 'turn.started') return
     if (!composition.admitWorkflowFileContext) throw new DomainError('NATIVE_ARTIFACT_CONTEXT_UNAVAILABLE', 'The original Main file-context composition is unavailable.', 503)
     await composition.admitWorkflowFileContext(sql, evidence, proof)
     if (await workflowArtifactsAreLocal(sql, proof.scope.runId, proof.ref.nodeId)) {

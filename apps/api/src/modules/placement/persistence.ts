@@ -109,6 +109,26 @@ export async function readExecutionPlacement(sql: Pick<GraphTransactionSql, 'que
   return intent ? readAcceptedPlacement(sql, intent.runId, intent.nodeId) : undefined
 }
 
+export async function readExecutionPlacements(sql: Pick<GraphTransactionSql, 'query'>,
+  executionIds: readonly string[]): Promise<Map<string, AcceptedNodePlacement>> {
+  const rows = await sql.query<{ operation_id: string; execution_id: string; run_id: string; node_id: string;
+    binding_hash: string; attempt_id: string; record: unknown; placement: unknown }>(`
+    select i.operation_id,i.execution_id,i.run_id,i.node_id,i.binding_hash,i.attempt_id,i.record,p.record as placement
+    from execution_dispatch_intents i left join run_node_placements p on p.run_id=i.run_id and p.node_id=i.node_id
+    where i.execution_id=any($1::text[]) order by i.execution_id`, [[...executionIds]])
+  const result = new Map<string, AcceptedNodePlacement>()
+  for (const row of rows.rows) {
+    const intent = DispatchIntentSchema.parse(row.record)
+    const placement = readPlacement(row.placement)
+    if (result.has(row.execution_id) || intent.operationId !== row.operation_id || intent.executionId !== row.execution_id
+      || intent.runId !== row.run_id || intent.nodeId !== row.node_id || intent.bindingHash !== row.binding_hash
+      || intent.attemptId !== row.attempt_id || placement.runId !== intent.runId || placement.nodeId !== intent.nodeId
+      || placement.bindingHash !== intent.bindingHash || placement.mainId !== intent.mainId) conflict()
+    result.set(row.execution_id, placement)
+  }
+  return result
+}
+
 export async function readNativePlacement(sql: Pick<GraphTransactionSql, 'query'>, executionId: string) {
   const row = (await sql.query<{ record: unknown }>('select record from execution_native_placements where execution_id=$1', [executionId])).rows[0]
   if (!row) return undefined

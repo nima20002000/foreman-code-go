@@ -14,7 +14,7 @@ import { assertRepeatCanonicalReceiptRows, requireRepeatCanonicalReceiptBeforeCo
 import type { WorkflowNativeCapture, WorkflowNativeVerificationPort } from '../interactions/workflowNativeCapture.js'
 import { assertRepeatNativeUpdate } from '../interactions/repeatNativeEvidence.js'
 import { readRepeatExecutionLocked, type StoredRepeatExecution } from './repeatPostgres.js'
-import { readAcceptedRepeatRunLocked } from './repeatStartRead.js'
+import { readAcceptedRepeatRunLocked, type AcceptedRepeatRunSnapshot } from './repeatStartRead.js'
 import { prepareRepeatNativeUpdate } from './repeatNode.js'
 import type { RepeatNativeBoundaryEvidence, RepeatNativeEvidence } from './repeatNativeRepository.js'
 import { assertWorkflowNativeEntryPermitLocked, assertWorkflowNativeEntryRow,
@@ -30,8 +30,8 @@ import { appendWorkflowNativeGraphEventLocked, type WorkflowApprovalCorrelation,
 import { normalizeNativeProducerEvent } from '../run-graph/nativeProducerNormalization.js'
 import { selectNativeGraphEvidence } from '../run-graph/nativeEvidence.js'
 import { workflowNativeSourceRecord, persistWorkflowNativeSources } from './workflowNativeSource.js'
-import { appendNormalizedNativeEvent } from './nativeEvents.js'
 import { retainedNativeHistoryEvents } from './retainedNativeHistory.js'
+import { appendNormalizedNativeEvents } from './nativeEventBatch.js'
 import { assertWorkflowCorrelation } from './workResultRepair.js'
 
 /** Durable private ORIGINAL-source record. No payload/session/token reaches the
@@ -72,13 +72,13 @@ export class WorkflowNativeProofServices {
     private readonly afterPersistOriginalLocked?: (sql: GraphTransactionSql, evidence: RepeatNativeEvidence, proof: WorkflowNativeProofRecord) => Promise<void>) {}
 
   private async current(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3, executionId: string,
-    owner: RunOwnership): Promise<{ stored: StoredRepeatExecution; scope: RepeatScope }> {
+    owner: RunOwnership): Promise<{ stored: StoredRepeatExecution; scope: RepeatScope; snapshot: AcceptedRepeatRunSnapshot }> {
     assertGraphTransaction(sql); owner.assertOwned()
     if (owner.runId !== run.id) return fail('RUN_OWNERSHIP_LOST')
     const snapshot = await readAcceptedRepeatRunLocked(sql, run.id)
     if (!sameRepeatValue(snapshot.run, run)) return fail('RUN_PIN_CONFLICT')
     const stored = await readRepeatExecutionLocked(sql, snapshot, executionId)
-    return { stored, scope: { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
+    return { stored, snapshot, scope: { workspaceId: run.workspaceId, workflowId: run.workflowId, runId: run.id,
       workflowVersionId: run.workflowVersionId, executionSemanticsVersion: 3 } }
   }
 
@@ -230,7 +230,17 @@ export class WorkflowNativeProofServices {
     assertGraphTransaction(sql)
     try {
       const capture = this.captures.read(evidence)
-      const { stored, scope } = await this.current(sql, run, capture.execution.id, owner)
+      const current = await this.current(sql, run, capture.execution.id, owner)
+      return await this.persistCapturedOriginalLocked(sql, run, evidence, owner, capture, current, approval)
+    } catch (error) { poisonGraphTransaction(sql); throw error }
+  }
+
+  private async persistCapturedOriginalLocked(sql: GraphTransactionSql, run: AcceptedWorkflowRunV3,
+    evidence: RepeatNativeEvidence, owner: RunOwnership, capture: WorkflowNativeCapture,
+    current: { stored: StoredRepeatExecution; scope: RepeatScope },
+    approval?: WorkflowApprovalCorrelation): Promise<WorkflowNativeProofRecord> {
+    const { stored, scope } = current
+    try {
       await this.physical(sql, scope, stored, capture, owner)
       const fence = await owner.readOneShotFence(sql)
       if (capture.source.type === 'session_created') {
@@ -275,14 +285,33 @@ export class WorkflowNativeProofServices {
         : history?.events.map((event) => ({ ...event, executionId: stored.execution.id })) ?? []
       const retainedEvents = history && !approval
         ? await retainedNativeHistoryEvents(sql, scope, events, capture) : new Set<HarnessNativeEvent>()
+      let transcripts: HarnessNativeEvent[] = []
+      const flushTranscripts = async () => {
+        if (!transcripts.length) return
+        capture.assertCurrent()
+        const appended = await appendNormalizedNativeEvents(sql, transcripts.map(normalizeNativeProducerEvent))
+        await appendWorkflowNativeGraphEventLocked(sql, owner, transcripts[0]!, lease, approval, continuation,
+          { sql, scope, execution: stored.execution, appended: appended[0]! })
+        transcripts = []
+      }
       for (const event of events) {
         // The original source is locked above and revalidated before commit.
         // Keep the live capture check while publishing its individual events.
         capture.assertCurrent()
         if (retainedEvents.has(event)) continue
+        const normalized = normalizeNativeProducerEvent(event)
+        const transcript = !approval && !normalized.rejected && event.type !== 'transport.disconnected'
+          && event.payload.nativeMessageId === undefined
+          && selectNativeGraphEvidence(normalized.event.type, normalized.event.payload).kind === 'ignored'
+        if (transcript) {
+          transcripts.push(event)
+          continue
+        }
+        await flushTranscripts()
         await appendWorkflowNativeGraphEventLocked(sql, owner, event, lease, approval, continuation,
-          capture.source.type === 'event' ? { sql, scope, execution: stored.execution } : undefined)
+          { sql, scope, execution: stored.execution })
       }
+      await flushTranscripts()
       if (history?.terminalTurn && capture.lane) {
         await this.publishContinuations(sql, run, stored, scope, capture, record, owner)
       }
@@ -345,13 +374,11 @@ export class WorkflowNativeProofServices {
     for (const receipt of receipts) requireRepeatCanonicalReceiptBeforeCommit(sql, { scope, ...receipt, effect: null })
     const lease = capture.lane ? { id: capture.lane.id, token: capture.lane.token, live: capture.kind === 'live',
       ...(capture.lane.providerId ? { providerId: capture.lane.providerId } : {}) } : undefined
+    const appended = await appendNormalizedNativeEvents(sql,
+      frames.map(frame => normalizeNativeProducerEvent(frame.event)))
     // The first frame still initializes or verifies the current graph correlation.
     await appendWorkflowNativeGraphEventLocked(sql, owner, frames[0]!.event, lease, undefined, undefined,
-      { sql, scope, execution: stored.execution })
-    for (const frame of frames.slice(1)) {
-      frame.capture.assertCurrent()
-      await appendNormalizedNativeEvent(sql, normalizeNativeProducerEvent(frame.event))
-    }
+      { sql, scope, execution: stored.execution, appended: appended[0]! })
     beforeGraphCommit(sql, async () => {
       try {
         for (const frame of frames) frame.capture.assertCurrent()
@@ -434,16 +461,16 @@ export class WorkflowNativeProofServices {
     assertGraphTransaction(sql)
     try {
       const capture = this.captures.read(evidence)
-      const { stored, scope } = await this.current(sql, run, previous.id, owner)
+      const current = await this.current(sql, run, previous.id, owner)
+      const { stored, scope, snapshot } = current
       if (!sameRepeatValue(stored.execution, previous) || !sameRepeatValue(stored.ref, ref)) return fail()
       const command = capture.source.type === 'history'
         ? capture.source.history.correlationId ?? `execution:${incoming.id}` : `execution:${incoming.id}`
       await assertWorkflowCorrelation(sql, incoming.id, command)
       this.validateObservation(capture, previous, incoming, command)
-      const snapshot = await readAcceptedRepeatRunLocked(sql, run.id)
       const expected = prepareRepeatNativeUpdate(snapshot.version, scope, ref, previous, incoming,
         { workResultRepair: command !== `execution:${incoming.id}` })
-      const source = await this.persistOriginalLocked(sql, run, evidence, owner)
+      const source = await this.persistCapturedOriginalLocked(sql, run, evidence, owner, capture, current)
       if (incoming.state === 'waiting' && capture.source.type === 'history') {
         const history = capture.source.history
         if (run.approval.handler === 'native' && history.pendingInteractions.length) {

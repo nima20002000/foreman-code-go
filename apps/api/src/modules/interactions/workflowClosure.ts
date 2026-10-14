@@ -56,7 +56,7 @@ export interface UnboundWorkflowClosure {
   durableGeneration: string
 }
 
-interface ClosureRow {
+export interface ClosureRow {
   generation: string
   execution_identity: unknown
   expected_reference: unknown | null
@@ -107,6 +107,13 @@ export async function readWorkflowClosure(sql: Sql, execution: HarnessExecution)
     return recovered?.session ? { execution: { ...executionIdentity(execution), nativeSessionId: recovered.session.nativeSessionId },
       session: recovered.session, durableGeneration: recovered.generation } : undefined
   }
+  return closedWorkflowSession(row, execution)
+}
+
+/** Validate a closed lifetime read alongside other executions on the same SQL cut. */
+export function closedWorkflowSession(row: ClosureRow & { record: unknown; reference: unknown },
+  execution: HarnessExecution): ClosedWorkflowSession {
+  if (!row.closed || row.detached || row.closed_without_session || row.prior_unclosed !== false) return conflict()
   const current = HarnessExecutionSchema.parse(row.record)
   const session = NativeSessionReferenceSchema.parse(row.reference)
   if (!isDeepStrictEqual(executionIdentity(current), executionIdentity(execution))

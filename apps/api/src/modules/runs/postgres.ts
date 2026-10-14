@@ -94,7 +94,9 @@ export class PostgresRunRepository {
   repeatRepositoryFactory(): RepeatRepositoryFactory { return this.factory }
   async repeat(owner: RunOwnership) {
     owner.assertOwned()
-    return this.factory.forOwner(owner, (await this.getRepeatSnapshot(owner.runId, owner)).version)
+    // Every store transaction checks its immutable version against the locked Run.
+    return this.factory.existingForOwner(owner)
+      ?? this.factory.forOwner(owner, (await this.getRepeatSnapshot(owner.runId, owner)).version)
   }
   acquireOwnership(runId: string, onLost: () => void) { return RunOwnership.acquire(this.pool, runId, onLost) }
   async get(runId: string, owner?: RunOwnership): Promise<RepositoryWorkflowRun | undefined> {

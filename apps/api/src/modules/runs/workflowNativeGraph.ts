@@ -14,6 +14,7 @@ import { assertGraphTransaction, beforeGraphCommit, type GraphTransactionSql } f
 import { type NativeResponseDeliveryEvidence } from '../interactions/delivery.js'
 import type { NativeHistory } from '../harnesses/port.js'
 import { selectNativeGraphEvidence } from '../run-graph/nativeEvidence.js'
+import type { NativeEventAppendResult } from './nativeEventBatch.js'
 
 export interface WorkflowNativeLease {
   id: string
@@ -35,6 +36,7 @@ interface WorkflowNativeEventContext {
   sql: GraphTransactionSql
   scope: RunGraphScope
   execution: HarnessExecution
+  appended?: NativeEventAppendResult
 }
 
 /** SQL composition used only AFTER the private native-capture verifier. The
@@ -72,9 +74,9 @@ export async function appendWorkflowNativeGraphEventLocked(sql: GraphTransaction
     workKind: 'workflow', workId: execution.id }
     const approvalRecord = approval ? DurableInteractionSchema.parse((await sql.query<{ record: unknown }>(
       'select record from durable_interactions where id=$1 for update', [approval.interaction.id])).rows[0]?.record) : undefined
-    const raw = await appendNormalizedNativeEvent(sql, normalized)
+    const raw = context?.appended ?? await appendNormalizedNativeEvent(sql, normalized)
     if (raw.rejected || !lease || execution.state === 'completed' || !execution.nativeSessionId) return
-    const nativeSequence = await readPersistedNativeSequence(sql, normalized.event)
+    const nativeSequence = context?.appended?.sequence ?? await readPersistedNativeSequence(sql, normalized.event)
     const lane = (await sql.query<{ record: { leaseToken?: string; leaseExpiresAt?: string; connectionGeneration: number;
       correlationId?: string;
       currentTurnOrMessageId?: string }; live: boolean; harness: string; native_session_id: string; owner_agent_id: string }>(
