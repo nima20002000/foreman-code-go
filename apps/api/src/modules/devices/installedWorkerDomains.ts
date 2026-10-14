@@ -841,6 +841,7 @@ export function createWorkerRuntimeDrain(ports: {
   waitingOn?(): string[]
 }) {
   let draining = false
+  let cleanupPaused = false
   return {
     async run() {
       draining = true
@@ -861,19 +862,36 @@ export function createWorkerRuntimeDrain(ports: {
         stage = 'maintenance'
         await ports.drainMaintenance()
         stage = 'quiescence'
-        while (!await ports.quiescent()) await wait(100, undefined, { signal: ports.signal })
+        while (true) {
+          const idle = await ports.quiescent()
+          // Keep cleanup available until it has closed native processes and transfers.
+          if (idle) cleanupPaused = true
+          if (idle && ports.active().length === 0) break
+          await wait(100, undefined, { signal: ports.signal })
+        }
         ports.signal.throwIfAborted()
       } finally { clearInterval(diagnostics) }
     },
-    resume() { draining = false },
+    resume() {
+      draining = false
+      cleanupPaused = false
+    },
     isDraining() { return draining },
     assertAdmission(namespace: string, payload: unknown) {
-      if (draining && isWorkerAdmission(namespace, payload)) {
+      if (draining && (isWorkerAdmission(namespace, payload)
+        || cleanupPaused && isWorkerSourceCleanup(namespace, payload))) {
         throw new DomainError('WORKER_RUNTIME_DRAINING',
           'This computer is waiting for active work to finish before updating its runtime.', 409)
       }
     },
   }
+}
+
+function isWorkerSourceCleanup(namespace: string, payload: unknown): boolean {
+  return namespace === SOURCE_OPERATION_EXTENSION.namespace && payload !== null && typeof payload === 'object'
+    && 'operation' in payload && [
+      'sources.reclaim-reservation', 'sources.reconcile-preparation', 'sources.release',
+    ].includes(String(payload.operation))
 }
 
 function isWorkerAdmission(namespace: string, payload: unknown): boolean {

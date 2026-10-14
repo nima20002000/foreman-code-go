@@ -12,14 +12,30 @@ import type { SourceReclamationResult } from './reclaimSourceReservation.js'
 import { PostgresSourceReservations, type SourceReservation } from './reservations.js'
 import { localWorkflowSourceClosed } from './workflowCleanup.js'
 
-async function admissionInactive(sql: GraphSqlClient, operationId: string): Promise<boolean> {
+async function hasActiveAdmission(sql: GraphSqlClient, operationId: string): Promise<boolean> {
   const active = await sql.query(`select 1 from job_executions e where e.operation_id=$1
       and (e.record#>>'{process,phase}' is distinct from 'terminal'
         or e.record#>>'{process,processStopped}' is distinct from 'true'
         or e.record->>'publication' not in ('complete','failed'))
     union all select 1 from job_admission_queue q where q.operation_id=$1
       and q.record->>'state' in ('waiting','blocked','claimed')`, [operationId])
-  if (active.rowCount) return false
+  return Boolean(active.rowCount)
+}
+
+async function admissionRemainsClosed(sql: GraphSqlClient, operationId: string): Promise<boolean> {
+  if (await hasActiveAdmission(sql, operationId)) return false
+  // The fence already checked ownership. Cleanup callbacks may run while the Run owner waits for them.
+  const activeRuns = await sql.query(`with preparations as (
+      select i.run_id from execution_dispatch_intents i where i.operation_id=$1
+      union select w.run_id from workflow_job_preparations w where w.preparation->>'operationId'=$1
+    ) select r.id from preparations p join runs r on r.id=p.run_id
+      where r.execution_state not in ('completed','interrupted') and r.stop_requested_at is null
+        and not exists(select 1 from run_cleanup_intents c where c.run_id=r.id and c.pending)`, [operationId])
+  return activeRuns.rowCount === 0
+}
+
+async function admissionInactive(sql: GraphSqlClient, operationId: string): Promise<boolean> {
+  if (await hasActiveAdmission(sql, operationId)) return false
   const reconciliation = (await sql.query<{ owner: unknown; principal_id: string; command_id: string;
     queue_ticket_id: string | null }>(`select owner,principal_id,command_id,queue_ticket_id
       from source_preparation_reconciliations where operation_id=$1 and status<>'closed'`, [operationId])).rows[0]
@@ -85,7 +101,7 @@ export class MaterializationReservationCleanup {
     const grant = SourceReservationReclamationSchema.parse(row.record.reclamation)
     if (grant.reclamationId !== reclamationId || grant.reservationId !== reservationId
       || row.record.ownerId !== grant.operationId || row.record.scopeId !== grant.scopeId
-      || Date.parse(grant.expiresAt) <= Date.now() || !await admissionInactive(sql, grant.operationId)) {
+      || Date.parse(grant.expiresAt) <= Date.now() || !await admissionRemainsClosed(sql, grant.operationId)) {
       throw new DomainError('SOURCE_RECLAMATION_UNCONFIRMED', 'The original source cleanup no longer has authority.', 409)
     }
     for (const root of grant.roots) {

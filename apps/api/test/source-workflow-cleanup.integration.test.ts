@@ -150,7 +150,7 @@ it('defers automatic Main source reclamation until the original native owner con
     const copy = await addOccurrence(f, 'completed', false)
     const executionId = copy.record.receipt.executionId
     await f.pool.query(`
-      alter table runs add column workspace_id text;
+      alter table runs add column workspace_id text, add column stop_requested_at timestamptz;
       alter table source_execution_materializations add column operation_id text;
       alter table source_preparation_reconciliations
         add column owner jsonb, add column principal_id text, add column command_id text,
@@ -160,6 +160,7 @@ it('defers automatic Main source reclamation until the original native owner con
       create table job_preparations (operation_id text, workspace_id text);
       create table workflow_job_preparations (run_id text, preparation jsonb);
       create table execution_dispatch_intents (operation_id text, run_id text);
+      create table run_cleanup_intents (run_id text, pending boolean);
       create table execution_native_recoveries
         (execution_id text, generation bigint, execution_identity jsonb, reference jsonb);
       create table application_installation (singleton boolean, id uuid);
