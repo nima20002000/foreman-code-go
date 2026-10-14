@@ -42,7 +42,7 @@ import { providerLaunchCredentials, providerAppEndpoint } from './wave25Br1003Ru
 import { RecoveryProvider, type Fault, type Submission } from './eng06DProvider.js'
 import { waitForEng06Settlement } from './eng06DSettlement.js'
 
-export type Form = 'sequential' | 'repeat'
+export type Form = 'sequential' | 'repeat' | 'parallel'
 type Base = Awaited<ReturnType<typeof currentOperatorIntegration>>
 type Runtime = ReturnType<Base['compose']>
 export type Transport = Pick<Base, 'app' | 'client' | 'connect'> & { close(): Promise<void> }
@@ -140,7 +140,7 @@ async function openTransport(base: Base, runtime: Runtime, errors: unknown[]): P
 }
 
 export async function recoveryFixture(form: Form, plan: (input: Submission) => Fault = () => 'success', budget = 12,
-  options: { sessionPersistence?: 'persistent' | 'ephemeral' } = {}) {
+  options: { sessionPersistence?: 'persistent' | 'ephemeral'; parallelism?: number } = {}) {
   const fixture = makeCurrentWorkflowFixture(randomUUID(), form)
   // This provider models a separate native session for every execution attempt.
   // Only persistent sessions can detach across a restart and be reattached.
@@ -154,7 +154,7 @@ export async function recoveryFixture(form: Form, plan: (input: Submission) => F
   fixture.version.approval = { handler: 'native' }
   fixture.version.definition.approval = { handler: 'native' }
   fixture.run.approval = { handler: 'native' }
-  fixture.version.definition.executionPolicy = { maxParallelism: 1, maxNodeExecutions: budget }
+  fixture.version.definition.executionPolicy = { maxParallelism: options.parallelism ?? 1, maxNodeExecutions: budget }
   fixture.run.input = { instruction: 'Preserve the accepted input across attempts and recovery' }
   const base = await currentOperatorIntegration({ fixture, approvalNodeIds: [] })
   const provider = new RecoveryProvider(base.f.version, plan)

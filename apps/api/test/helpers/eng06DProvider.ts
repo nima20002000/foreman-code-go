@@ -6,9 +6,12 @@ import {
 } from '@foreman-code/contracts'
 import { RunAcceptedInputValueSchema, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import type { NativeHarnessSessionManager, NativeHistory } from '../../src/modules/harnesses/port.js'
+import { HarnessExecutionError } from '../../src/modules/harnesses/errors.js'
 
+/** transport_failure: the stream drops after the turn started, without a terminal.
+ * gated_success: the turn succeeds only after releaseGate(). */
 export type Fault = 'success' | 'retryable_failure' | 'permanent_failure' | 'park'
-  | 'durable_reply_gap' | 'durable_failure_gap'
+  | 'durable_reply_gap' | 'durable_failure_gap' | 'transport_failure' | 'gated_success'
 export interface Submission {
   request: HarnessExecutionRequest
   /** Provider-observed submissions within one Run/node/occurrence, NOT a database counter. */
@@ -64,6 +67,17 @@ export class RecoveryProvider {
     return sessions.every((session) => this.closed.has(session.reference.nativeSessionId))
   }
   constructor(private readonly version: WorkflowVersionV3, private readonly plan: (input: Submission) => Fault) {}
+
+  private openGate!: () => void
+  private readonly gate = new Promise<void>((resolve) => { this.openGate = resolve })
+  releaseGate() { this.openGate() }
+  /** The provider later reports a failed terminal for every dropped stream. */
+  deliverLateFailures() {
+    for (const session of this.sessions.values()) {
+      if (session.fault === 'transport_failure' && !session.terminal) this.finish(session, {
+        outcome: 'failed', error: { code: 'ENG06_LATE_FAILURE', message: 'A late provider failure', retryable: false } })
+    }
+  }
 
   private lookup(reference: NativeSessionReference): Session {
     const session = this.sessions.get(reference.nativeSessionId)
@@ -154,6 +168,10 @@ export class RecoveryProvider {
           payload: { threadId: reference.nativeSessionId, turnId: `turn-${id}`, clientCorrelationId: input.clientCorrelationId,
             turn: { id: `turn-${id}`, status: 'inProgress' } } }))
         yield session.events[0]!
+        if (session.fault === 'transport_failure') {
+          throw new HarnessExecutionError('CODEX_APP_SERVER_DISCONNECTED', 'The provider connection closed during the turn.')
+        }
+        if (session.fault === 'gated_success') await provider.gate
         if (session.fault !== 'park') provider.finish(session, provider.result(session))
         if (['park', 'durable_reply_gap', 'durable_failure_gap'].includes(session.fault)) {
           // The DB becomes running BEFORE the stream reaches this point. Tests
