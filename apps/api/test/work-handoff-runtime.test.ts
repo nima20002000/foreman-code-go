@@ -84,4 +84,16 @@ describe('handoff runtime failure disposition', () => {
     await f.execute()
     expect(f.state).toMatchObject({ executionState: 'waiting', failed: 0, directionWaits: 2, candidates: 0 })
   })
+
+  it.each(['WORK_ACTIVATIONS_UNRESOLVED', 'WORK_REQUEST_UNRESOLVED', 'WORK_DENIAL_CONTINUATION_UNRESOLVED'])(
+    'keeps the run open when completion is waiting on %s', async code => {
+      const f = fixture(code)
+      f.store.acceptWorkTerminal = async () => ({ kind: 'accepted', replayed: true,
+        execution: HarnessExecutionSchema.parse({ ...f.execution, result: { outcome: 'succeeded', output: {
+          routing: { kind: 'finish' }, data: { latestDeliverable: { revision: 1 }, remainingFindings: [] },
+        } } }) })
+      f.store.completeWorkRun = async () => { throw f.error }
+      await expect(f.execute()).rejects.toBe(f.error)
+      expect(f.state).toMatchObject({ executionState: 'running', failed: 0, canceled: 0, candidates: 0 })
+    })
 })
