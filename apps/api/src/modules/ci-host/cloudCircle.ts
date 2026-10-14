@@ -109,6 +109,14 @@ export class CircleRest {
       return job ? JSON.stringify({ ...job, stopped_at: job.ended_at,
         executions: job.parallel_executions ?? [] }) : null
     }
+    if (args[1] === 'output' && args[2] === 'get') {
+      const executionIndex = args.indexOf('--execution')
+      const output = await this.stepOutput(args[3]!, Number(args[args.indexOf('--step-num') + 1]), timeoutMs, {
+        execution: executionIndex === -1 ? 0 : Number(args[executionIndex + 1]),
+        raw: args.includes('--strip-ansi=false'),
+      })
+      return output?.text ?? null
+    }
     if (args[1] === 'output' && args[2] === 'list') {
       const id = args[3]!
       const job = await this.job(id, args, timeoutMs)
@@ -127,9 +135,11 @@ export class CircleRest {
     return null
   }
 
-  private async stepOutput(id: string, step: number, timeoutMs: number, options: { allowMissing?: boolean } = {}) {
+  private async stepOutput(id: string, step: number, timeoutMs: number,
+    options: { allowMissing?: boolean; execution?: number; raw?: boolean } = {}) {
+    const execution = options.execution ?? 0
     const responses = await Promise.all(['stdout', 'stderr'].map(stream =>
-      this.http.request(`/api/v3/jobs/${id}/${stream}?execution=0&step_num=${step}`, { timeoutMs })))
+      this.http.request(`/api/v3/jobs/${id}/${stream}?execution=${execution}&step_num=${step}`, { timeoutMs })))
     if (responses.some(response => response === null)) return null
     let text = ''
     for (const response of responses) {
@@ -138,7 +148,8 @@ export class CircleRest {
         continue
       }
       await this.http.check(response!, detail => `CircleCI did not accept circleci job output: ${detail}`)
-      text += renderTerminal(await response!.text())
+      const stream = await response!.text()
+      text += options.raw ? stream : renderTerminal(stream)
     }
     return { ok: true, text }
   }
