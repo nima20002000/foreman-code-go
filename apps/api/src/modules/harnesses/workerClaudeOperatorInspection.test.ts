@@ -162,7 +162,7 @@ it('rejects a changed Worker connection before sending its inspection request', 
     f.replaceConnection()
     await expect(f.inspect()).rejects.toMatchObject({ code: 'HARNESS_INVENTORY_STALE' })
     expect(f.request).not.toHaveBeenCalled()
-    expect(f.queries).toEqual([])
+    expect(f.queries.length).toBe(0)
   } finally { await f.inspection.close() }
 })
 
@@ -171,7 +171,7 @@ it('rejects an installed Worker SDK that differs from the saved native proof', a
   try {
     f.replaceSdk()
     await expect(f.inspect()).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
-    expect(f.queries).toEqual([])
+    expect(f.queries.length).toBe(0)
   } finally { await f.inspection.close() }
 })
 
@@ -228,6 +228,6 @@ it('keeps qualification requests separate from read-only configuration inspectio
       { binding: f.binding, signal: new AbortController().signal })
     expect(result.payload.qualified).toBe(true)
     expect(f.qualify).toHaveBeenCalledOnce()
-    expect(f.queries).toEqual([])
+    expect(f.queries.length).toBe(0)
   } finally { await f.inspection.close() }
 })

@@ -13,7 +13,7 @@ import { CiWatchdogFailureSchema, CiDurationsSchema, CiHostReplySchema, CiHostRe
 import { DomainError } from '../errors.js'
 import { ciRepositoryCapabilities } from './repository.js'
 import { allowedCiResources, gateIntegrationShards, hostCiCapacity } from './capacity.js'
-import { fallbackOnError, fallbackOnMissing, logIgnoredError } from '../diagnostics/ignoredError.js'
+import { fallbackOnMissing, logIgnoredError } from '../diagnostics/ignoredError.js'
 import { componentLogger } from '../diagnostics/logger.js'
 import { pnpmInstall } from './warmSetup.js'
 import { ciLogPage } from './logPage.js'
