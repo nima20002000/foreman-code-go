@@ -13,7 +13,7 @@ import { harnessHostKey, type HarnessInstanceSettingsRepository } from './reposi
 import { nativeProfileCheckId } from './profileChecks.js'
 import type { HostHarnessOverrideAuthority } from './authority.js'
 import type { GraphSqlClient } from '../../run-graph/connection.js'
-import { fallbackOnError } from '../../diagnostics/ignoredError.js'
+import { fallbackOnError, ignoreError } from '../../diagnostics/ignoredError.js'
 
 export type { HostHarnessOverrideAuthority }
 /** Account resolution port, implemented by ProviderAccountConfigurationService. */
@@ -38,9 +38,29 @@ export class HostHarnessOverrideService {
     private readonly profileChecks?: HostHarnessInstanceProfileChecks,
     private readonly configurationTarget?: (configuration: HarnessConfiguration) => HostHarnessOverride['target'],
     private readonly accountConfigurations?: HarnessAccountConfigurationResolver,
+    private readonly startProfileCheck?: (value: HostHarnessOverride) => Promise<void>,
   ) {}
   get qualificationSupported(): boolean { return Boolean(this.profileChecks) }
   async closeChecks(): Promise<void> { await this.profileChecks?.close() }
+  async ensureReady(value: HostHarnessOverride): Promise<void> {
+    if (!value.enabled || value.driverId === 'opencode') return
+    this.profileChecks?.assertReady(value)
+    const evidence = await this.evidence(value)
+    if (evidence?.qualified) return
+    if (evidence) {
+      throw new DomainError(evidence.failure?.code ?? 'HARNESS_INSTANCE_UNQUALIFIED',
+        evidence.failure?.message ?? 'The harness profile failed its check.', 409,
+        { reason: evidence.failure?.code ?? 'profile_check_failed', hostKind: value.target.hostRef.kind })
+    }
+    this.startAutomaticCheck(value)
+    this.profileChecks?.assertReady(value)
+  }
+  private startAutomaticCheck(value: HostHarnessOverride): void {
+    if (!this.startProfileCheck || this.profileChecks?.pending(value)) return
+    void this.startProfileCheck(value).catch(ignoreError('harness', 'automatic harness profile check', {
+      instanceId: value.instanceId, revision: value.revision,
+    }))
+  }
   async check(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: HostHarnessInstanceCheckInput) {
     try {
       if (!this.profileChecks) throw new DomainError('HARNESS_PROFILE_CHECK_UNAVAILABLE', 'Exact-host profile qualification is not composed.', 503)
@@ -164,6 +184,15 @@ export class HostHarnessOverrideService {
         return this.repository.append(client, principal.id, input.expectedRevision, value)
       },
     })
+    const described = await this.describe(result.value)
+    if (described.enabled && !described.qualificationFailure
+      && (described.qualification === 'unqualified' || described.qualification === 'installation-changed')) {
+      try {
+        this.startAutomaticCheck(result.value)
+      } catch (error) {
+        ignoreError('harness', 'start saved harness profile check', { instanceId: result.value.instanceId })(error)
+      }
+    }
     // Receipts remain immutable; readback rechecks current exact-target qualification.
     return { value: await this.describe(result.value), replayed: result.replayed }
   }

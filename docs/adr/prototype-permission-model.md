@@ -38,6 +38,7 @@ Everything else that made an authorized caller prove, approve, re-state or re-re
 | Source capture | Approving every tracked path (`approvedPaths`) before a Run or CI capture | Tracked source captured automatically |
 | Device trust | Browser-made owner approval bound to an action hash for device connection changes | Pairing is the approval; `settings:update` acts directly |
 | Harness settings | Local-human-only plugin and MCP change/reconcile routes | Bearer callers with the normal grant |
+| Harness profile checks | Manually calling `harness_instance_check` after enabling or changing a profile | Enabled saves start the shared native check automatically; Start and placement choices check missing or stale results, deduplicated per instance revision. Start returns retryable `HARNESS_PROFILE_CHECK_PENDING` while checking; failed checks still block with their reason |
 | Idempotency | Required `commandId` on simple operations | Optional; generated when omitted |
 | Settings revisions | Required `expectedRevision` on settings writes | Optional; last write wins when omitted |
 | Saved workflow placement | Root policy, location, source binding/snapshot and harness instance revision pins required again at Start | Saved placements name the host, root policy, instance and cwd; Start resolves their current revisions, rebinds the current approved source when needed, and records exact resolved facts on the Run |

@@ -56,7 +56,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     private readonly registry: Pick<ProductionHarnessRegistry, 'installations' | 'pinOverride'>,
     private readonly qualificationSuites: Readonly<Record<CompatibilityHarness, string>>,
     private readonly workerExecution = new WorkerExecutionPolicy(),
-    private readonly assertProfileReady?: (profile: HostHarnessOverride) => void,
+    private readonly assertProfileReady?: (profile: HostHarnessOverride) => void | Promise<void>,
     private readonly refreshProfileInventory?: (
       hosts: readonly CanonicalMachineReference[], signal?: AbortSignal,
     ) => Promise<void>, private readonly accounts?: ProviderAccountResolver) {}
@@ -132,7 +132,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         const config = AgentConfigurationVersionSchema.parse(configRow?.record)
         const saved = node.placement ? refreshSourcePlacement(node.placement, roots) : await resolveInherited(sql, principal, config)
         const instance = await this.readInstance(sql, saved.instanceId)
-        this.assertProfileReady?.(instance)
+        await this.assertProfileReady?.(instance)
         if (saved) this.workerExecution.requireEnabled(saved.hostRef)
         if (saved && (saved.relativeCwd.length > 1024 || saved.relativeCwd.includes('\0') || posix.isAbsolute(saved.relativeCwd)
           || saved.relativeCwd.split('/').some(component => component === '..' || component === '.' || component === '' && saved.relativeCwd !== '')
@@ -157,7 +157,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         if (!sameWorkflowValue(root.selection, { hostRef: saved!.hostRef, rootPolicyId: saved!.rootPolicyId,
           rootPolicyRevision: saved!.rootPolicyRevision, locationRevision: saved!.locationRevision }) || !sameWorkflowValue(policy.registration, root.registration)) this.conflict()
         if (!instance.enabled || !sameWorkflowValue(instance.target.hostRef, saved!.hostRef)) this.conflict()
-        this.assertProfileReady?.(instance)
+        await this.assertProfileReady?.(instance)
         const selection = this.registry.pinOverride(instance)
         const account = this.accounts && config.harness.harness !== 'opencode' && config.harness.accountId
           ? await this.accounts.resolve(config.harness.harness, config.harness.accountId, { allowDefault: false }) : null

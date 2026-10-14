@@ -42,7 +42,7 @@ interface AutomaticProfileCheckBatch {
   driverId?: string
   pendingProfiles?: Set<string>
 }
-const profileKey = (value: ProfileCheckSelection) => `${value.instanceId}:${value.revision}`
+const profileKey = (value: Pick<ProfileCheckSelection, 'instanceId' | 'revision'>) => `${value.instanceId}:${value.revision}`
 const automaticChecksPerHost = 2
 
 export function nativeProfileCheckId(mainId: string, principalId: string, commandId: string): string {
@@ -55,6 +55,7 @@ export class HostHarnessInstanceProfileChecks {
   private readonly stopping = new AbortController()
   private readonly flights = new Set<Promise<unknown>>()
   private readonly hostChecks = new Map<string, Set<Promise<void>>>()
+  private readonly profileFlights = new Map<string, Promise<void>>()
   private readonly reconnects = new Map<string, {
     generation: string; task: Promise<void>; batch: AutomaticProfileCheckBatch
   }>()
@@ -102,11 +103,12 @@ export class HostHarnessInstanceProfileChecks {
   assertReady(profile: ProfileCheckSelection): void {
     if (this.pending(profile)) {
       throw new DomainError('HARNESS_PROFILE_CHECK_PENDING',
-        'The selected harness profile is being checked after an installation or connection change. Retry Run start shortly.',
+        'The selected harness profile is being checked. Retry Run start shortly.',
         503, { reason: 'automatic_profile_check_pending', retryable: true })
     }
   }
   pending(profile: ProfileCheckSelection): boolean {
+    if (this.profileFlights.has(profileKey(profile))) return true
     const hostKey = harnessHostKey(profile.target.hostRef)
     const batches = [...this.reconnects.values(), ...this.updates.values()]
     return batches.some(({ batch }) => batch.hostKey === hostKey
@@ -115,6 +117,63 @@ export class HostHarnessInstanceProfileChecks {
   }
   async failure(value: HostHarnessOverride, client?: pg.PoolClient) {
     return (await this.proofs.latest(value.instanceId, value.revision, client))?.failure
+  }
+  checkAutomatically(value: HostHarnessOverride, installation: HarnessInstallationRecord): Promise<void> {
+    const signal = AbortSignal.any([this.stopping.signal, AbortSignal.timeout(240_000)])
+    return this.shareProfileCheck(value, () => this.withHostCheckSlot(value.target.hostRef, signal,
+      () => this.checkRequestedProfile(value, installation, signal)))
+  }
+  private shareProfileCheck(value: ProfileCheckSelection, check: () => Promise<void>): Promise<void> {
+    const key = profileKey(value)
+    const previous = this.profileFlights.get(key)
+    if (previous) return previous
+    const task = Promise.resolve().then(check)
+    this.profileFlights.set(key, task)
+    this.flights.add(task)
+    const cleanup = () => {
+      this.flights.delete(task)
+      if (this.profileFlights.get(key) === task) this.profileFlights.delete(key)
+    }
+    void task.then(cleanup, cleanup)
+    return task
+  }
+  private async checkRequestedProfile(value: HostHarnessOverride, installation: HarnessInstallationRecord,
+    signal: AbortSignal): Promise<void> {
+    const checkId = randomUUID()
+    const input = { commandId: checkId, instanceId: value.instanceId,
+      expectedRevision: value.revision, target: value.target }
+    const authorize = async (client: pg.PoolClient) => {
+      signal.throwIfAborted()
+      await assertDeviceHostInstallation(client, value.target.hostRef, value.target.applicationInstallationId)
+    }
+    try {
+      const result = await this.settings.withProfileConnection(client =>
+        this.qualifyProfile(client, input, checkId, authorize, signal, { source: 'system' }))
+      if (result.proof.completedNativeQualification) await this.nativeRetention!.refresh(result.override, signal)
+    } catch (error) {
+      if (this.stopping.signal.aborted) throw error
+      const failure = qualificationError(error)
+      await this.settings.readAuthorized(async client => {
+        await assertDeviceHostInstallation(client, value.target.hostRef, value.target.applicationInstallationId)
+        await this.settings.lockRevision(client, value.instanceId)
+        const current = await this.settings.latest(client, value.instanceId)
+        if (current?.revision !== value.revision || !sameTarget(current.target, value.target)) return
+        const proof = HostHarnessProfileEvidenceSchema.parse({ target: value.target,
+          instanceRevision: value.instanceRevision, configurationFingerprint: value.configurationFingerprint,
+          driverId: value.driverId, driverRevision: installation.driverRevision,
+          protocolRevision: installation.protocolRevision,
+          suiteRevision: value.driverId === 'claude' ? CLAUDE_PROFILE_CHECK_REVISION : `${value.driverId}-profile-check-v1`,
+          environmentGeneration: installation.environmentGeneration, connectionGeneration: installation.connectionGeneration,
+          authenticated: null, compatible: null, qualified: false,
+          failure: { code: failure.code, message: failure.message.slice(0, 500) }, checkedAt: new Date().toISOString() })
+        const completed = await this.proofs.findCheck(checkId, value.instanceId, value.revision, client)
+        await this.proofs.append(client, completed ? randomUUID() : checkId, value, proof)
+        await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
+          values(null,'system','harness.instance.check',$1,'failed',$2::jsonb)`,
+        [`harness-instance:${value.instanceId}`, JSON.stringify({ checkId, code: failure.code })])
+      })
+      throw failure
+    }
   }
   recheckInstallation(input: AutomaticHostProfileCheck): Promise<void> {
     const hostKey = harnessHostKey(input.host)
@@ -182,7 +241,7 @@ export class HostHarnessInstanceProfileChecks {
         const request = { commandId: checkId, instanceId: value.instanceId,
           expectedRevision: value.revision, target: value.target }
         const result = await this.settings.withProfileConnection(client =>
-          this.qualifyProfile(client, request, checkId, input.authorize, bounded, 'system'))
+          this.qualifyProfile(client, request, checkId, input.authorize, bounded, { source: 'system' }))
         if (result.proof.completedNativeQualification) await this.nativeRetention!.refresh(result.override, bounded)
         batch.pendingProfiles!.delete(profileKey(value))
       } catch (error) {
@@ -218,7 +277,7 @@ export class HostHarnessInstanceProfileChecks {
         })
         failures.push(error)
       }
-    })
+    }, batch)
     if (failures.length) throw new AggregateError(failures, 'Automatic harness profile checks failed.')
   }
   private async recheckProfiles(host: CanonicalMachineReference, binding: Readonly<DeviceSessionBinding>,
@@ -258,7 +317,7 @@ export class HostHarnessInstanceProfileChecks {
       try {
         const bounded = AbortSignal.any([signal, AbortSignal.timeout(240_000)])
         const result = await this.settings.withProfileConnection(client =>
-          this.qualifyProfile(client, input, checkId, authorize, bounded, 'system'))
+          this.qualifyProfile(client, input, checkId, authorize, bounded, { source: 'system' }))
         if (result.proof.completedNativeQualification) await this.nativeRetention!.refresh(result.override, bounded)
         batch.pendingProfiles!.delete(profileKey(value))
       } catch (error) {
@@ -269,17 +328,19 @@ export class HostHarnessInstanceProfileChecks {
           code: error instanceof DomainError ? error.code : 'HARNESS_PROFILE_CHECK_FAILED' })]))
         failures.push(error)
       }
-    })
+    }, batch)
     if (failures.length) throw new AggregateError(failures, 'Automatic Worker profile checks failed.')
   }
   private async recheckInParallel(profiles: HostHarnessOverride[], signal: AbortSignal,
-    check: (value: HostHarnessOverride) => Promise<void>): Promise<void> {
+    check: (value: HostHarnessOverride) => Promise<void>, batch: AutomaticProfileCheckBatch): Promise<void> {
     let next = 0
     const worker = async () => {
       while (next < profiles.length) {
         signal.throwIfAborted()
         const value = profiles[next++]!
-        await this.withHostCheckSlot(value.target.hostRef, signal, () => check(value))
+        await this.shareProfileCheck(value, () =>
+          this.withHostCheckSlot(value.target.hostRef, signal, () => check(value)))
+        batch.pendingProfiles?.delete(profileKey(value))
       }
     }
     const workers = Array.from({ length: Math.min(automaticChecksPerHost, profiles.length) }, worker)
@@ -315,6 +376,9 @@ export class HostHarnessInstanceProfileChecks {
   private async perform(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: HostHarnessInstanceCheckInput) {
     requireAuthorization(principal, 'harnesses:read'); requireAuthorization(principal, 'harnesses:update')
     const input = HostHarnessInstanceCheckInputSchema.parse(raw)
+    const automatic = this.profileFlights.get(profileKey({
+      instanceId: input.instanceId, revision: input.expectedRevision,
+    }))
     const authorize = async (client: import('pg').PoolClient) => {
       await this.authority.authorize(principal, 'harnesses:read', input.target.hostRef, input.target.applicationInstallationId, client)
       await this.authority.authorize(principal, 'harnesses:update', input.target.hostRef, input.target.applicationInstallationId, client)
@@ -327,6 +391,7 @@ export class HostHarnessInstanceProfileChecks {
         throw new DomainError('HARNESS_RETIRED', RETIRED_OPENCODE_MESSAGE, 409)
       }
     })
+    const reuseLatest = automatic ? await automatic.then(() => true, () => false) : false
     const checkId = nativeProfileCheckId(input.target.hostRef.mainId, principal.id, input.commandId)
     const deadline = new AbortController()
     const timer = setTimeout(() => deadline.abort(new DomainError('HARNESS_PROFILE_CHECK_TIMEOUT', 'Exact-host profile qualification exceeded its deadline.', 504)), 240_000)
@@ -334,7 +399,8 @@ export class HostHarnessInstanceProfileChecks {
     const signal = AbortSignal.any([this.stopping.signal, deadline.signal])
     try { return await this.commands.execute({ principal, source, operation: 'harness.instance.check', commandId: input.commandId,
       targetKey: `harness-instance:${input.instanceId}`, payload: input, dedicatedConnection: true, authorize,
-      perform: client => this.qualifyProfile(client, input, checkId, authorize, signal),
+      perform: client => this.qualifyProfile(client, input, checkId, authorize, signal,
+        reuseLatest ? { reuseLatest: true } : {}),
     }) } finally { clearTimeout(timer) }
   }
   private async selectProfile(input: HostHarnessInstanceCheckInput,
@@ -353,7 +419,8 @@ export class HostHarnessInstanceProfileChecks {
     return value
   }
   private async qualifyProfile(client: pg.PoolClient, input: HostHarnessInstanceCheckInput, checkId: string,
-    authorize: (client: pg.PoolClient) => Promise<void>, signal: AbortSignal, source?: 'system') {
+    authorize: (client: pg.PoolClient) => Promise<void>, signal: AbortSignal,
+    options: { source?: 'system'; reuseLatest?: true } = {}) {
     const profileLock = `harness-instance-profile:${input.instanceId}`
     await client.query('select pg_advisory_lock(hashtext($1))', [profileLock])
     try {
@@ -364,6 +431,7 @@ export class HostHarnessInstanceProfileChecks {
         && proof.instanceRevision === value.instanceRevision
         && proof.configurationFingerprint === value.configurationFingerprint && proof.driverId === value.driverId
       const previous = await this.proofs.findCheck(checkId, value.instanceId, value.revision)
+        ?? (options.reuseLatest ? await this.proofs.latest(value.instanceId, value.revision) : null)
       if (previous) {
         if (!matches(previous)) throw new DomainError('COMMAND_ID_CONFLICT',
           'The completed check belongs to different profile input.', 409)
@@ -382,7 +450,7 @@ export class HostHarnessInstanceProfileChecks {
         const finalFence = proof.completedNativeQualification
           ? await this.nativeRetention!.retain(client, value, proof, checkId, signal) : undefined
         await this.proofs.append(client, checkId, value, proof)
-        if (source === 'system') {
+        if (options.source === 'system') {
           await client.query(`insert into management_audit(principal_id,source,action,target_key,outcome,details)
             values(null,'system','harness.instance.check',$1,'succeeded',$2::jsonb)`,
           [`harness-instance:${value.instanceId}`, JSON.stringify({ checkId, qualified: proof.qualified })])

@@ -105,10 +105,19 @@ export class ProductionPlacementChoiceDiscovery implements PlacementChoiceDiscov
         && installation.installationFingerprint === profile.target.installationFingerprint)
       const supportedDriver = profile.driverId === 'codex'
         || profile.driverId === 'claude' && policy.hostRef.kind === 'main'
-      const qualified = supportedDriver && installed && await services.registry.profileEvidence(profile, sql)
+      if (supportedDriver && installed) {
+        try {
+          await services.ensureProfileReady?.(profile)
+        } catch (error) {
+          if (!(error instanceof DomainError) || ![409, 422, 503].includes(error.status)) throw error
+          reason = error.message
+        }
+      }
+      const qualified = reason === null && supportedDriver && installed
+        && await services.registry.profileEvidence(profile, sql)
       if (!supportedDriver) {
         reason = 'This harness does not support workflow execution on this computer.'
-      } else if (!qualified) {
+      } else if (reason === null && !qualified) {
         reason = 'The matching harness profile needs qualification on this computer.'
       }
     }

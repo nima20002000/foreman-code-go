@@ -1178,7 +1178,9 @@ function configureHarnessProfiles(composition: ProductionComposition) {
     if (hostRef.kind !== 'main' || !binding.installation.installationFingerprint) throw new DomainError('CLAUDE_INSTALLATION_UNAVAILABLE', 'The actual local Claude installation is unavailable.', 409)
     return { hostRef, applicationInstallationId: hostRef.mainId, harnessInstallationId: binding.selection.harnessInstallationId,
       installationFingerprint: binding.installation.installationFingerprint }
-  }, accountConfigurations)
+  }, accountConfigurations, value => hostProfileChecks.checkAutomatically(
+    value, harnessRegistry.pinOverride(value).installation,
+  ))
   accountConfigurations.bindProfiles(harnessInstances)
   composition.installationMonitor = new HarnessInstallationMonitor(harnessRegistry, hostProfileChecks,
     () => deviceRuntime.endpointForDomains(), async (binding, inventory) => {
@@ -2119,6 +2121,7 @@ function configureOperatorServices(composition: ProductionComposition) {
         if (!composition.jobRuntime) throw new DomainError('PLACEMENT_CHOICES_UNAVAILABLE', 'Computer choices are not initialized.', 503)
         const runtime = composition.jobRuntime
         return { roots: runtime.policies, sources: runtime.sources, profiles: hostSettings, registry: harnessRegistry,
+          ensureProfileReady: profile => composition.harnessInstances.ensureReady(profile),
           provisionRoot: (...args: Parameters<ProductionCiEnrollmentInventory['root']>) => {
             const workspaceRoots = composition.runtimeServices.workspaceRoots
             if (!workspaceRoots) throw new DomainError('PLACEMENT_CHOICES_UNAVAILABLE', 'Workspace roots are not initialized.', 503)
@@ -2674,7 +2677,7 @@ async function initializeWorkflowArtifacts(composition: ProductionComposition, m
     remoteWorkflow,
     harnessRegistry,
     selectedSuites,
-    hostProfileChecks,
+    harnessInstances,
     installationMonitor,
     app,
     mountArtifacts,
@@ -2686,7 +2689,7 @@ async function initializeWorkflowArtifacts(composition: ProductionComposition, m
   if (selectedSuites) {
     composition.agentPlacement = new AgentPlacementProducer(database.pool, machine.installationId, jobRuntime.sources, jobRuntime.policies,
       harnessRegistry, { codex: selectedSuites.codex.revision },
-      workerExecution, profile => hostProfileChecks.assertReady(profile),
+      workerExecution, profile => harnessInstances.ensureReady(profile),
       (hosts, signal) => installationMonitor.refreshHosts(hosts, signal), providerAccounts)
     composition.agentPreparation = new AgentExecutionPreparation(jobRuntime.sources, composition.agentPlacement)
     composition.executionAuthority = createExecutionAuthorityExtension(database.pool, locations, composition.agentPlacement)

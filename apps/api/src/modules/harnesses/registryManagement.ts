@@ -22,7 +22,8 @@ export function registerHarnessRegistryRoutes(app: FastifyInstance, service: Har
 
 const description = 'Read the authorized selected computer inventory and every saved global preset, including Claude. '
   + 'Match its driver to an installed harness, use harness_instance_save to configure a host override, '
-  + 'then harness_instance_check to qualify the saved profile. Saving and checking require update grants. '
+  + 'enabled saves qualify the profile automatically. Start and placement choices check missing or stale results. '
+  + 'Saving and explicit checking require update grants; automatic checks add no grants. '
   + 'Installation, authentication, qualification and connection facts remain separate; '
   + 'the sidebar installation indicator uses installed, without implying authentication or execution readiness. '
   + 'previously qualified Main and Worker profiles are checked automatically after installed payload changes. '

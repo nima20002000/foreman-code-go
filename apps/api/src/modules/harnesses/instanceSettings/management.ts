@@ -51,7 +51,7 @@ export function registerHostHarnessOverrideTools(server: McpServer, service: Hos
     }
   }
   if (hostHarnessToolAvailable(service, principal, 'harness_instances_list')) server.registerTool('harness_instances_list', {
-    description: 'Read persisted host-instance overrides separately from global defaults. Main and Workers automatically check previously qualified profiles after installation updates or reconnects. Installation-only revisions preserve the configuration revision and history. Each profile reports qualifying until its own check finishes. New Run starts report HARNESS_PROFILE_CHECK_PENDING only for profiles selected by that Run and can be retried; other profiles on the computer do not block Start. Failed checks remain unqualified with qualificationFailure. Listing never starts discovery or qualification.',
+    description: 'Read persisted host-instance overrides separately from global defaults. Enabled saves, Start and placement choices automatically check missing or stale profile results. Main and Workers also check previously qualified profiles after installation updates or reconnects. Installation-only revisions preserve the configuration revision and history. Each profile reports qualifying until its own check finishes. New Run starts report HARNESS_PROFILE_CHECK_PENDING only for profiles selected by that Run and can be retried; other profiles on the computer do not block Start. Failed checks remain unqualified with qualificationFailure. Listing never starts discovery or qualification.',
     inputSchema: HostHarnessOverrideListInputSchema, outputSchema: HostHarnessOverrideListSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, input => invoke('harness_instances_list', () => service.list(principal, input, 'mcp')))
@@ -61,7 +61,7 @@ export function registerHostHarnessOverrideTools(server: McpServer, service: Hos
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, input => invoke('harness_instance_check', () => service.check(principal, 'mcp', input)))
   if (hostHarnessToolAvailable(service, principal, 'harness_instance_save')) server.registerTool('harness_instance_save', {
-    description: 'Create or replace a host-specific harness override. Omit expectedRevision for last write wins; supply it to reject a stale revision. Claude requires Full access; unsupported modes return validation errors and are never upgraded. Writes preserve immutable history; installed/authenticated/qualified are separate and saved configuration is unavailable until exact-target qualification.',
+    description: 'Create or replace a host-specific harness override. Omit expectedRevision for last write wins; supply it to reject a stale revision. Claude requires Full access; unsupported modes return validation errors and are never upgraded. Writes preserve immutable history; enabled profiles start native qualification automatically. installed/authenticated/qualified remain separate. Start returns retryable HARNESS_PROFILE_CHECK_PENDING while checking; failed checks block with their real reason. No manual harness_instance_check call is required.',
     inputSchema: HostHarnessOverrideSaveSchema, outputSchema: HostHarnessOverrideSaveResultSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   }, input => invoke('harness_instance_save', () => service.save(principal, 'mcp', input)))

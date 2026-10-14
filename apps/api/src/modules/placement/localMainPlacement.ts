@@ -29,7 +29,7 @@ export async function resolveLocalMainPlacement(input: {
   roots: WorkspaceRootPolicyPort
   installations: HarnessInstallationRegistry
   qualificationSuites: Readonly<Record<CompatibilityHarness, string>>
-  assertProfileReady?: (profile: HostHarnessOverride) => void
+  assertProfileReady?: (profile: HostHarnessOverride) => void | Promise<void>
 }): Promise<SavedNodePlacement> {
   const root = await readLocalMainRoot(input)
   return resolveBoundRootPlacement({ ...input, root })
@@ -116,7 +116,7 @@ export async function resolveBoundRootPlacement(input: {
   roots: WorkspaceRootPolicyPort
   installations: HarnessInstallationRegistry
   qualificationSuites: Readonly<Record<CompatibilityHarness, string>>
-  assertProfileReady?: (profile: HostHarnessOverride) => void
+  assertProfileReady?: (profile: HostHarnessOverride) => void | Promise<void>
 }): Promise<SavedNodePlacement> {
   const { sql, principal, mainId, workspaceId, configuration, root } = input
   const hostRef = root.selection.hostRef
@@ -137,7 +137,7 @@ export async function resolveBoundRootPlacement(input: {
     profile.enabled
     && (requested ? profile.instanceId === requested.instanceId
       : sameWorkflowValue(withAdvancedDefaults(profile.configuration), withAdvancedDefaults(configuration.harness))))
-  for (const candidate of candidates) input.assertProfileReady?.(candidate)
+  for (const candidate of candidates) await input.assertProfileReady?.(candidate)
   const compatible = candidates.filter(profile => installed.some(item => item.installed
     && sameWorkflowValue(item.hostRef, hostRef) && item.harnessInstallationId === profile.target.harnessInstallationId
     && item.installationFingerprint === profile.target.installationFingerprint))

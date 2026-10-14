@@ -14,6 +14,7 @@ import type { ProductionHarnessRegistry } from '../harnesses/productionRegistry.
 
 export interface PairedRootServices {
   profiles: HarnessInstanceSettingsRepository
+  ensureProfileReady?: (profile: HostHarnessOverride) => Promise<void>
   registry: Pick<ProductionHarnessRegistry, 'installations' | 'profileEvidence'>
   provisionRoot?: (principal: ManagementPrincipal, workspaceId: string, template: SourceRootRecord,
     target: DeviceProvisioningTarget, source: 'http' | 'mcp') => Promise<SourceRootRecord>
@@ -60,7 +61,14 @@ export async function provisionPairedAgentRoots(pool: pg.Pool, services: PairedR
       const profile = profiles.find(value => matches(value, configuration)
         && value.target.harnessInstallationId === installation.harnessInstallationId
         && value.target.installationFingerprint === installation.installationFingerprint)
-      if (!profile || !await services.registry.profileEvidence(profile, sql)) return null
+      if (!profile) return null
+      try {
+        await services.ensureProfileReady?.(profile)
+      } catch (error) {
+        if (!(error instanceof DomainError) || ![409, 422, 503].includes(error.status)) throw error
+        return null
+      }
+      if (!await services.registry.profileEvidence(profile, sql)) return null
       return { hostRef: host, applicationInstallationId: registration.workerInstallationId,
         keyRevision: registration.keyRevision, authorizationRevision: registration.authorizationRevision }
     })
