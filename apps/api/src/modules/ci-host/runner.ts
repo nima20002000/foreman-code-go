@@ -741,23 +741,25 @@ export class HostCiRunner {
     return 'unknown'
   }
 
+  private async finishFromExit(meta: RunMeta): Promise<boolean> {
+    const exit = await readFile(join(this.runDirectory(meta.runId), 'exit'), 'utf8')
+      .catch(fallbackOnError(null, 'jobs', 'read CI exit status', { runId: meta.runId }, ['ENOENT']))
+    if (exit === null || exit.trim() === '') return false
+    const code = Number(exit.trim())
+    const watchdog = await readFile(join(this.runDirectory(meta.runId), 'watchdog-message.json'), 'utf8')
+      .catch(fallbackOnError(null, 'jobs', 'read CI watchdog message', { runId: meta.runId }, ['ENOENT']))
+    let state: CiHostRun['state'] = code === 0 ? 'passed' : 'failed'
+    if (meta.cancellationRequested) state = 'canceled'
+    await this.finish(meta.runId, state,
+      Number.isInteger(code) ? code : 1,
+      watchdog ? CiWatchdogFailureSchema.parse(JSON.parse(watchdog)).message : meta.message)
+    if (meta.cancellationRequested) await this.cleanDatabase(meta)
+    return true
+  }
+
   private async reconcile(meta: RunMeta, preparing: boolean): Promise<void> {
     if (!['starting', 'running'].includes(meta.state) || preparing) return
-    const directory = this.runDirectory(meta.runId)
-    const exit = await readFile(join(directory, 'exit'), 'utf8')
-      .catch(fallbackOnError(null, 'jobs', 'read CI exit status', { runId: meta.runId }, ['ENOENT']))
-    if (exit !== null && exit.trim() !== '') {
-      const code = Number(exit.trim())
-      const watchdog = await readFile(join(directory, 'watchdog-message.json'), 'utf8')
-        .catch(fallbackOnError(null, 'jobs', 'read CI watchdog message', { runId: meta.runId }, ['ENOENT']))
-      let state: CiHostRun['state'] = code === 0 ? 'passed' : 'failed'
-      if (meta.cancellationRequested) state = 'canceled'
-      await this.finish(meta.runId, state,
-        Number.isInteger(code) ? code : 1,
-        watchdog ? CiWatchdogFailureSchema.parse(JSON.parse(watchdog)).message : meta.message)
-      if (meta.cancellationRequested) await this.cleanDatabase(meta)
-      return
-    }
+    if (await this.finishFromExit(meta)) return
     if (meta.cancellationRequested) {
       const stop = await this.ports.run('systemctl', ['--user', 'stop',
         meta.serviceUnit ?? `${unitName(meta.runId)}.service`], { env: this.environment })
@@ -766,6 +768,8 @@ export class HostCiRunner {
     }
     const state = await this.unitState(meta)
     if (state === 'stopped') {
+      // The unit can publish its exit status while the systemd query is in flight.
+      if (await this.finishFromExit(meta)) return
       await this.cleanDatabase(meta)
       await this.finish(meta.runId, meta.cancellationRequested ? 'canceled' : 'lost', null,
         meta.cancellationRequested ? 'Canceled.' : 'The CI unit ended without an exit status.')
