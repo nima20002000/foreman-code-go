@@ -23,6 +23,7 @@ import type { RemoteApplicationAccess } from '@foreman-code/contracts/remote-exe
 import type { AgentFilePublishInput, AgentFilePublishResult } from '@foreman-code/contracts/files'
 import type { CodexNativeOutputTurnPin } from '../../harnesses/codexNativeOutput.js'
 import type { DeviceApplicationRequestOptions } from '../../devices/deviceApplicationChannel.js'
+import { retryDeviceRequest } from '../../devices/deviceRequestRetry.js'
 
 export interface CapturedWorkflowMainRequest {
   readonly binding:Readonly<DeviceSessionBinding>
@@ -105,7 +106,8 @@ export function createInstalledWorkflowNativeOutputProviders(input: {
     await context.assertCurrent(undefined, signal)
     if (!isDeepStrictEqual(intent, context.intent)) throw unavailable()
     const capture = captureRequest(WORKER_MCP_EXTENSION.namespace)
-    const result = await capture.request(payload, signal ? { signal } : undefined)
+    const result = await retryDeviceRequest(() => capture.request(payload, signal ? { signal } : undefined),
+      { retry: 'admission', signal })
     await context.assertCurrent(undefined, signal)
     if (!isDeepStrictEqual(capture.binding, context.binding) || !isDeepStrictEqual(intent, context.intent)) {
       throw unavailable()

@@ -29,9 +29,12 @@ export async function retryDeviceRequest<T>(request: () => Promise<T>, options: 
     try {
       return await request()
     } catch (error) {
-      const transient = (error instanceof DeviceApplicationError || error instanceof DeviceConnectionError)
+      // A Main read that hit a statement or lock timeout rolled back before any effect, so it is
+      // replayable like an admission refusal.
+      const readTimeout = error instanceof DeviceApplicationError && error.code === 'DATABASE_READ_TIMEOUT'
+      const transient = readTimeout || (error instanceof DeviceApplicationError || error instanceof DeviceConnectionError)
         && (error.code === 'backpressure' || error.code === 'timeout')
-      const safe = options.retry === 'idempotent' || error instanceof DeviceApplicationAdmissionError
+      const safe = options.retry === 'idempotent' || error instanceof DeviceApplicationAdmissionError || readTimeout
       if (!transient || !safe || attempt >= 4) throw error
       options.signal?.throwIfAborted()
       await waitForDeviceRetry(Math.min(2_000, 250 * 2 ** attempt), options.signal)

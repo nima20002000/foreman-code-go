@@ -18,7 +18,7 @@ import { workerScopesForAction } from '../access/appPolicy.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { readReconciledDispatchIntent } from '../runs/remote/persistence.js'
 import { readAcceptedPlacement } from './persistence.js'
-import { DomainError } from '../errors.js'
+import { DomainError, databaseReadFailure } from '../errors.js'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 
 export interface SelectedMainMcpForward {
@@ -75,7 +75,7 @@ export class MainWorkerMcpRelay {
   async handle(raw: unknown, connection: DeviceConnectionIdentity, signal?: AbortSignal) {
     signal?.throwIfAborted()
     const input = WorkerMcpRelayRequestSchema.parse(raw), app = input.applicationAccess
-    const principal = await this.access.authenticate(app.token, 'worker')
+    const principal = await this.access.authenticate(app.token, 'worker').catch((error: unknown) => { throw databaseReadFailure(error) })
     if (principal.audience !== 'worker' || principal.agentId !== app.agentId || input.placement.payload.kind !== 'agent'
       || input.placement.payload.agentId !== app.agentId || input.intent.executionId !== app.executionId
       || input.intent.operationId !== app.operationId || input.intent.attemptId !== app.attemptId
@@ -83,11 +83,13 @@ export class MainWorkerMcpRelay {
       || input.intent.mainId !== this.mainId || connection.mainId !== this.mainId) {
       throw new DomainError('WORKER_MCP_SCOPE_CONFLICT', 'Application access must match the original execution lease.', 403)
     }
+    // Admission reads the latest committed lease without row locks: nothing it reads is changed here and
+    // the Worker acts only after COMMIT, so waiting behind a busy Run would only fail the device request.
     const { authorization, nativeScope, declarations, ready } = await withTransaction(this.pool, async (client) => {
       let nativeScope: TemporaryFileScope | undefined
       let declarations: WorkerNativeOutputDeclarationsPolicy | undefined
       let ready = false
-      const intent = await readReconciledDispatchIntent(client, app.operationId, true)
+      const intent = await readReconciledDispatchIntent(client, app.operationId)
       const placement = await readAcceptedPlacement(client, input.intent.runId, input.intent.nodeId)
       if (!intent || !placement || !sameWorkflowValue(intent, input.intent) || !sameWorkflowValue(placement, input.placement)
         || placement.hostRef.kind !== 'device' || placement.hostRef.deviceId !== connection.deviceId) {
@@ -105,7 +107,7 @@ export class MainWorkerMcpRelay {
         r.stop_requested_at is not null as stopped,
         exists(select 1 from run_cleanup_intents i where i.run_id=r.id and i.pending) as cleanup
         from worker_credential_bindings b join harness_executions he on he.id=b.execution_id join runs r on r.id=b.run_id
-        where b.principal_id=$1 and b.execution_id=$2 for share of b,he,r`, [principal.id, app.executionId])
+        where b.principal_id=$1 and b.execution_id=$2`, [principal.id, app.executionId])
       const binding = rows.rows[0]
       if (rows.rows.length !== 1 || !binding || binding.revoked_at || binding.execution_id !== app.executionId || binding.run_id !== intent.runId
         || binding.agent_id !== app.agentId || binding.stopped || binding.cleanup || !['running', 'waiting'].includes(binding.run_state)
@@ -147,7 +149,7 @@ export class MainWorkerMcpRelay {
           }
           if (input.operation === 'worker-mcp.native-output-readiness') {
             const row = (await client.query<{ receipt: unknown }>(
-              'select receipt from remote_execution_receipts where operation_id=$1 for share', [intent.operationId])).rows[0]
+              'select receipt from remote_execution_receipts where operation_id=$1', [intent.operationId])).rows[0]
             const receipt = row && RemoteOperationReceiptSchema.parse(row.receipt)
             if (receipt?.native && (receipt.native.sessionId !== input.nativeSessionId
               || receipt.native.turnId && receipt.native.turnId !== input.turnId)) {
@@ -156,14 +158,14 @@ export class MainWorkerMcpRelay {
             ready = receipt?.native?.sessionId === input.nativeSessionId && receipt.native.turnId === input.turnId
               && (await client.query(`select 1 from operator_conversations where kind='agent' and deleted_at is null
                 and origin_run_id=$1 and origin_execution_id=$2 and native_session_id=$3
-                and record#>>'{workflowFileContext,context,turnId}'=$4 for share`,
+                and record#>>'{workflowFileContext,context,turnId}'=$4`,
               [intent.runId, intent.executionId, input.nativeSessionId, input.turnId])).rowCount === 1
           }
         }
       }
       signal?.throwIfAborted()
       return { authorization, nativeScope, declarations, ready }
-    })
+    }).catch((error: unknown) => { throw databaseReadFailure(error) })
     if (input.operation === 'worker-mcp.authorize') return authorization
     if (input.operation === 'worker-mcp.authorize-native-output') return WorkerNativeOutputAuthorizationSchema.parse({
       ...authorization, outputOperation: input.outputOperation, nativeSessionId: input.nativeSessionId, turnId: input.turnId, scope: nativeScope,

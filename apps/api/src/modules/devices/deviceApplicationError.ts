@@ -22,6 +22,7 @@ const retryability: Readonly<Record<string, boolean>> = {
   backpressure: true,
   timeout: true,
   transport: true,
+  DATABASE_READ_TIMEOUT: true,
   cancelled: false,
   'payload-too-large': false,
   authentication: false,

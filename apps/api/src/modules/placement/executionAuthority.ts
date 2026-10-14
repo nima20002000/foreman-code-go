@@ -14,7 +14,7 @@ export interface ExecutionRunAuthorityPort {
 import type { DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import type { AgentPlacementProducer } from './agentProducer.js'
-import { DomainError } from '../errors.js'
+import { DomainError, databaseReadFailure } from '../errors.js'
 import { assertRemoteReviewAssignment, canCloseRetainedRemoteReviewer, remoteReviewerPolicy } from './remoteReviewerAuthority.js'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 
@@ -23,9 +23,13 @@ const denied = (): never => { throw new DomainError('REMOTE_AUTHORITY_DENIED', '
  * new grant, allocation or lease; main and worker entry guards remain mandatory. */
 export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
   locations: ExecutionRunAuthorityPort,
-  raw: unknown, authenticated: Readonly<DeviceConnectionIdentity>, producer: AgentPlacementProducer): Promise<{ cleanupOnly: true } | undefined> {
+  raw: unknown, authenticated: Readonly<DeviceConnectionIdentity>, producer: AgentPlacementProducer,
+  lock = true): Promise<{ cleanupOnly: true } | undefined> {
   const input = ExecutionAuthorityRequestSchema.parse(raw), pin = readPlacement(input.placement)
-  const current = await readReconciledDispatchIntent(sql, input.intent.operationId, true)
+  // Owner transactions that write keep these rows locked until COMMIT. A Worker's read-only admission
+  // check reads the latest committed rows instead and must not queue behind a busy Run.
+  const share = (clause: string) => lock ? ` ${clause}` : ''
+  const current = await readReconciledDispatchIntent(sql, input.intent.operationId, lock)
   const persisted = await readExecutionPlacement(sql, input.intent.executionId)
   if (!current || !persisted || !sameWorkflowValue(current, input.intent) || !sameWorkflowValue(pin, persisted)
     || pin.hostRef.kind !== 'device' || !pin.registration || authenticated.mainId !== pin.mainId
@@ -38,15 +42,16 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
     execution_state: string; stopped: boolean; cleanup: boolean }>(`select r.record->>'authorizationPrincipalId' as authorization_principal_id,
       r.workspace_id,r.workflow_id,r.execution_state,r.stop_requested_at is not null as stopped,
       exists(select 1 from run_cleanup_intents i where i.run_id=r.id and i.pending) as cleanup
-      from runs r join harness_executions e on e.run_id=r.id where r.id=$1 and e.id=$2 for share of r,e`,
+      from runs r join harness_executions e on e.run_id=r.id where r.id=$1 and e.id=$2${share('for share of r,e')}`,
     [current!.runId, current!.executionId])).rows[0]
   if (!row) denied()
   const cleanup = row!.cleanup && (input.action === 'stop' || input.action === 'read')
   const grant = await sql.query(`select 1 from execution_dispatch_owner_grants
-    where execution_id=$1 and operation_id=$2 and grant_id=$3 and epoch=$4 and not revoked for share`,
+    where execution_id=$1 and operation_id=$2 and grant_id=$3 and epoch=$4 and not revoked${share('for share')}`,
     [current!.executionId, current!.operationId, current!.owner.grantId, current!.owner.epoch])
   if (grant.rowCount !== 1) denied()
-  const origin = (await sql.query<{ connection: unknown }>('select connection from remote_dispatch_origins where operation_id=$1 for share', [current!.operationId])).rows[0]
+  const origin = (await sql.query<{ connection: unknown }>(`select connection from remote_dispatch_origins where operation_id=$1${share('for share')}`,
+    [current!.operationId])).rows[0]
   if (!origin) denied()
   const connection = DeviceConnectionIdentitySchema.parse(origin!.connection)
   if (connection.mainId !== authenticated.mainId || connection.deviceId !== authenticated.deviceId
@@ -59,7 +64,7 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
   let resident: boolean
   {
     const stored = (await sql.query<{ receipt: unknown }>(
-      'select receipt from remote_execution_receipts where operation_id=$1 for share', [current!.operationId])).rows[0]
+      `select receipt from remote_execution_receipts where operation_id=$1${share('for share')}`, [current!.operationId])).rows[0]
     const receipt = RemoteOperationReceiptSchema.safeParse(stored?.receipt)
     if (stored && (!receipt.success || !sameWorkflowValue(receipt.data.intent, current)
       || !sameWorkflowValue(receipt.data.connection, connection))) denied()
@@ -82,7 +87,8 @@ export async function assertRemoteExecutionAuthority(sql: GraphSqlClient,
   if (input.action === 'start') {
     if (!await readNativePlacement(sql, current!.executionId)) denied()
     if (row!.stopped || !['running', 'waiting'].includes(row!.execution_state)) denied()
-    const entry = await sql.query("select 1 from workflow_native_entries where execution_id=$1 and run_id=$2 and phase='entered' for share", [current!.executionId, current!.runId])
+    const entry = await sql.query(`select 1 from workflow_native_entries where execution_id=$1 and run_id=$2 and phase='entered'${share('for share')}`,
+      [current!.executionId, current!.runId])
     if (entry.rowCount !== 1) denied()
   }
   if (input.action === 'retain-reviewer' || input.action === 'review') {
@@ -100,11 +106,13 @@ export function createExecutionAuthorityExtension(pool: pg.Pool,
     if (context.bytes?.byteLength) denied()
     const facts = ExecutionFactsRequestSchema.safeParse(raw)
     const input = facts.success ? facts.data.authorization : ExecutionAuthorityRequestSchema.parse(raw)
+    // Read-only admission: check, then verify again at COMMIT against the latest committed rows. No
+    // row lock is needed because nothing is written and the Worker acts only after this reply.
     return withExclusiveGraphConnection(pool, connection => connection.transaction(async sql => {
-      const authority = await assertRemoteExecutionAuthority(sql, locations, input, context.binding, producer)
-      beforeGraphCommit(sql, async () => { await assertRemoteExecutionAuthority(sql, locations, input, context.binding, producer) })
+      const authority = await assertRemoteExecutionAuthority(sql, locations, input, context.binding, producer, false)
+      beforeGraphCommit(sql, async () => { await assertRemoteExecutionAuthority(sql, locations, input, context.binding, producer, false) })
       if (facts.success) {
-        if ((await sql.query('select 1 from source_preparation_reconciliations where operation_id=$1 for share',
+        if ((await sql.query('select 1 from source_preparation_reconciliations where operation_id=$1',
           [input.intent.operationId])).rowCount) denied()
         const placement = await readExecutionPlacement(sql, input.intent.executionId)
         const native = await readNativePlacement(sql, input.intent.executionId)
@@ -112,11 +120,11 @@ export function createExecutionAuthorityExtension(pool: pg.Pool,
         const configuration = (await sql.query<{ record: unknown }>('select record from agent_configuration_versions where id=$1 and agent_id=$2',
           [placement!.payload.kind === 'agent' ? placement!.payload.agentConfigurationVersionId : '', placement!.payload.kind === 'agent' ? placement!.payload.agentId : ''])).rows[0]?.record
         const origin = (await sql.query<{ connection: unknown }>(
-          'select connection from remote_dispatch_origins where operation_id=$1 for share',
+          'select connection from remote_dispatch_origins where operation_id=$1',
           [input.intent.operationId])).rows[0]
         const originalConnection = DeviceConnectionIdentitySchema.parse(origin?.connection)
         const stored = (await sql.query<{ receipt: unknown }>(
-          'select receipt from remote_execution_receipts where operation_id=$1 for share',
+          'select receipt from remote_execution_receipts where operation_id=$1',
           [input.intent.operationId])).rows[0]
         const receipt = stored && RemoteOperationReceiptSchema.parse(stored.receipt)
         const resident = originalConnection.bootId === context.binding.bootId && receipt?.native !== undefined
@@ -130,6 +138,6 @@ export function createExecutionAuthorityExtension(pool: pg.Pool,
         owner: input.intent.owner, ...authority,
         ...(policy ? { reviewer: { agentId: policy.execution.agentId,
           expiresAt: new Date(Date.now() + 60_000).toISOString() } } : {}) }) }
-    }))
+    })).catch((error: unknown) => { throw databaseReadFailure(error) })
   } }
 }
