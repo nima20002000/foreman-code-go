@@ -1,12 +1,16 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, HarnessDefaultsSchema, type HarnessConfiguration } from '@foreman-code/contracts'
-import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { HarnessCatalogEntrySchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
+import { ExecutionReadinessService } from '../src/modules/harnesses/executionReadiness.js'
+import { logger } from '../src/modules/diagnostics/logger.js'
 import { HarnessCatalogService } from '../src/modules/harnesses/catalog.js'
 import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import type { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
 
 const principal: ManagementPrincipal = { id: 'reader', name: 'Reader', audience: 'operator', expiresAt: '2099-01-01T00:00:00Z', revokedAt: null,
   grants: [{ actions: ['harnesses:read'], scope: {} }] }
+
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
 function fixture(ready = () => true) {
   const qualify = vi.fn(async (configuration: HarnessConfiguration) => ({ harness: configuration.harness,
@@ -23,6 +27,35 @@ function fixture(ready = () => true) {
 }
 
 describe('harness catalog status reads', () => {
+  it('exposes expired checks, pending refresh and a failed background refresh to readers', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const start = new Date('2026-10-01T00:00:00Z')
+    vi.setSystemTime(start)
+    const warn = vi.spyOn(logger, 'warn')
+    const { catalog, qualify } = fixture()
+    const first = HarnessCatalogEntrySchema.parse(await catalog.get(principal, 'codex'))
+    expect(first).toMatchObject({ observation: { checkedAt: start.toISOString(), stale: false, refreshing: false,
+      refreshCount: 0, failureCount: 0, staleReadCount: 0, lastError: null } })
+    let reject!: (error: Error) => void
+    qualify.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail }))
+    vi.setSystemTime(new Date(start.getTime() + 300_001))
+    const pending = HarnessCatalogEntrySchema.parse(await catalog.get(principal, 'codex'))
+    expect(pending).toMatchObject({ capability: { ready: true }, observation: {
+      checkedAt: start.toISOString(), stale: true, refreshing: true, refreshCount: 1, staleReadCount: 1,
+    } })
+    const readiness = new ExecutionReadinessService({ enabled: () => true }, catalog)
+    expect(await readiness.get(principal, 'codex')).toMatchObject({ status: 'unverified',
+      checkedAt: start.toISOString(), reason: { code: 'HARNESS_STATUS_REFRESHING' } })
+    reject(new Error('Native probe failed'))
+    await Promise.resolve()
+    const failed = HarnessCatalogEntrySchema.parse(await catalog.get(principal, 'codex'))
+    expect(failed).toMatchObject({ capability: null, observation: { checkedAt: start.toISOString(),
+      stale: false, refreshing: false, refreshCount: 1, failureCount: 1, lastError: expect.any(String) } })
+    expect(warn).toHaveBeenCalledWith(expect.objectContaining({ failureCount: 1 }),
+      'Native readiness refresh failed')
+    await catalog.shutdownChecks()
+  })
+
   it('reuses a settled check across polled reads without native work', async () => {
     const { catalog, qualify } = fixture()
     const first = await catalog.list(principal)
