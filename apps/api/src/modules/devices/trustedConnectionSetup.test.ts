@@ -26,10 +26,9 @@ function fixture() {
   })
   const pool = { connect: async () => ({ query, release: vi.fn() }), query } as unknown as pg.Pool
   const probe = vi.fn(async (): Promise<ConnectionProbe> => ({ state: 'connected', hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, osUser: 'builder', uid: 1000, hostname: 'laptop', sshVersion: 'OpenSSH_9.6p1', rsyncVersion: 'rsync  version 3.2.7', tailscaleVersion: '1.102.4' }))
-  const verifyOwnerApproval = vi.fn(async () => { throw new Error('Connection changes do not require an approval.') })
-  const service = new PostgresTrustedConnectionSetup(pool, mainId, { verifyOwnerApproval, probe })
+  const service = new PostgresTrustedConnectionSetup(pool, mainId, { probe })
   const input: TrustedConnectionConfigure = { deviceId, commandId: randomUUID(), expectedRevision: 0, expectedAuthorizationRevision: 1, endpoint: { transport: 'tailscale', host: '100.64.0.20', port: 22, osUser: 'builder' }, hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, allowOwnerCommands: true }
-  return { service, principal, input, probe, query, verifyOwnerApproval, receipts, revokePrincipal: () => { revoked = true }, updateDevice: (change: Partial<DeviceRegistration>) => { registration = { ...registration, ...change } } }
+  return { service, principal, input, probe, query, receipts, revokePrincipal: () => { revoked = true }, updateDevice: (change: Partial<DeviceRegistration>) => { registration = { ...registration, ...change } } }
 }
 describe('trusted connection consent and readiness', () => {
   it('requires pair/consent before probing and separates owner SSH from agent authority', async () => {
@@ -45,7 +44,6 @@ describe('trusted connection consent and readiness', () => {
     const consent = await f.service.configure(f.principal, f.input, 'mcp')
     expect(consent).toMatchObject({ revision: 1, allowOwnerCommands: true })
     expect((await f.service.read(f.principal, f.input.deviceId)).consent).toEqual(consent)
-    expect(f.verifyOwnerApproval).not.toHaveBeenCalled()
   })
   it('reads saved consent without retired approval metadata and preserves the stored receipt', async () => {
     const f = fixture()
@@ -78,12 +76,11 @@ describe('trusted connection consent and readiness', () => {
     await expect(f.service.configure(reader, f.input)).rejects.toMatchObject({ code: 'ACCESS_DENIED' })
     f.revokePrincipal()
     await expect(f.service.inspect(f.principal, f.input.deviceId, f.input.endpoint)).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
-    expect(f.probe).not.toHaveBeenCalled(); expect(f.verifyOwnerApproval).not.toHaveBeenCalled()
+    expect(f.probe).not.toHaveBeenCalled()
   })
   it('replays original command across HTTP/MCP and rejects changed payload', async () => {
     const f = fixture(), first = await f.service.configure(f.principal, f.input, 'http')
     expect(await f.service.configure(f.principal, f.input, 'mcp')).toEqual(first)
-    expect(f.verifyOwnerApproval).not.toHaveBeenCalled()
     await expect(f.service.configure(f.principal, { ...f.input, allowOwnerCommands: false })).rejects.toMatchObject({ code: 'COMMAND_ID_CONFLICT' })
     await expect(f.service.configure(f.principal, { ...f.input, commandId: randomUUID() })).rejects.toMatchObject({ code: 'DEVICE_CONNECTION_CONFLICT' })
   })
@@ -117,7 +114,7 @@ describe('trusted connection consent and readiness', () => {
     const f = fixture()
     expect((await f.service.inspect(f.principal, f.input.deviceId, f.input.endpoint)).state).toBe('connected')
     expect((await f.service.read(f.principal, f.input.deviceId)).consent).toBeNull()
-    expect(f.verifyOwnerApproval).not.toHaveBeenCalled(); expect(f.receipts.size).toBe(0)
+    expect(f.receipts.size).toBe(0)
   })
 })
 

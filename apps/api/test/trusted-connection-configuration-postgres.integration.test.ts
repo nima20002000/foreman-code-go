@@ -9,7 +9,6 @@ import { applyApplicationMigrations } from '../src/infrastructure/migrations.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { requirePrincipal } from '../src/modules/access/http.js'
 import { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
-import { PostgresTrustedConnectionHumanAuthority, registerTrustedConnectionApprovalRoutes } from '../src/modules/devices/trustedConnectionHumanAuthority.js'
 import { PostgresTrustedConnectionSetup } from '../src/modules/devices/trustedConnectionSetup.js'
 import { registerTrustedConnectionRoutes } from '../src/modules/devices/trustedConnectionManagement.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
@@ -33,12 +32,10 @@ describe.skipIf(!url)('trusted connection configuration through authenticated MC
     access = new PostgresAccessService(pool)
     owner = await access.issue({ name: 'Owned test human', audience: 'operator', grants, expiresAt: new Date(Date.now() + 3_600_000) })
     await pool.query('update local_human_principal set principal_id=$1', [owner.principal.id])
-    const authority = new PostgresTrustedConnectionHumanAuthority(pool, mainId)
-    const setup = new PostgresTrustedConnectionSetup(pool, mainId, { verifyOwnerApproval: authority.verifyOwnerApproval })
+    const setup = new PostgresTrustedConnectionSetup(pool, mainId)
     app = buildApp({ readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
       localHuman: { current: () => access.currentOperator(owner.principal.id) }, browserOrigin: origin,
       operator: { access, services: { commands: new PostgresCommandCoordinator(pool), trustedConnections: setup } as unknown as OperatorServices } })
-    registerTrustedConnectionApprovalRoutes(app, authority)
     registerTrustedConnectionRoutes(app, setup, async request => request.reauthorizeOperator ? request.reauthorizeOperator() : requirePrincipal(request))
     address = await app.listen({ host: '127.0.0.1', port: 0 })
   }, 60_000)
