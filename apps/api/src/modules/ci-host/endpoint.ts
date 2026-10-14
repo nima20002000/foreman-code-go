@@ -87,7 +87,7 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
     }
     const reply = await this.sendRequest(computer, request)
     if (reply.operation === 'status' && reply.cleanupSupported) {
-      await this.cleanDirectories(computer).catch(error => {
+      void this.cleanDirectories(computer).catch(error => {
         log.warn({ err: error, hostRef: computer.hostRef }, 'CI directory cleanup failed; next status will retry')
       })
     }

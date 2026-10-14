@@ -53,7 +53,7 @@ export async function sweepCiRunDirectories(options: {
         if (options.isInUse(runId)) return false
         const directory = join(options.root, 'runs', runId)
         const meta = JSON.parse(await readFile(join(directory, 'meta.json'), 'utf8')) as { state: string }
-        if (!terminalStates.has(meta.state)) return false
+        if (!terminalStates.has(meta.state) || options.isInUse(runId)) return false
         await rm(directory, { recursive: true, force: true })
         return true
       })

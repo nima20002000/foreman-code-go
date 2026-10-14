@@ -14,12 +14,15 @@ import { DomainError } from '../errors.js'
 import { ciRepositoryCapabilities } from './repository.js'
 import { allowedCiResources, gateIntegrationShards, hostCiCapacity } from './capacity.js'
 import { fallbackOnError } from '../diagnostics/ignoredError.js'
+import { componentLogger } from '../diagnostics/logger.js'
 import { pnpmInstall } from './warmSetup.js'
 import { ciLogPage } from './logPage.js'
 import { readCiReport } from './reports.js'
 import { withHostCiRunLock } from './runnerLock.js'
 import { sweepCiRunDirectories } from './directoryRetention.js'
 import { sweepHostCiCache } from './cacheCleanup.js'
+
+const log = componentLogger('jobs')
 
 type Command = { code: number; stdout: string; stderr: string }
 export interface HostCiPorts {
@@ -99,6 +102,8 @@ export class HostCiRunner {
   /** Status polls list every retained run; settled, cleaned runs are reused until their metadata file changes. */
   private readonly settledRuns = new Map<string, { version: string; run: CiHostRun }>()
   private draining = false
+  // Background eviction checks live runs because a start can arrive during the filesystem scan.
+  private readonly activeRunRepositories = new Map<string, string>()
   private cacheSweepAt = -Infinity
   private cacheSweepPending: Promise<void> | undefined
   private startingRepository: string | undefined
@@ -118,6 +123,7 @@ export class HostCiRunner {
           await this.refresh(runId)
           return withHostCiRunLock(this.runDirectory(runId), work, { nonBlocking: true })
         } })
+      for (const runId of removedRunIds) this.settledRuns.delete(runId)
       return CiHostReplySchema.parse({ ...await this.status(), removedRunIds })
     }
     if (request.operation === 'start') return CiHostReplySchema.parse({ operation: 'start', run: await this.start(request) })
@@ -133,8 +139,7 @@ export class HostCiRunner {
 
   private async readRun(request: Extract<CiHostRequest, { operation: 'read' }>) {
     const run = await this.refresh(request.runId)
-    return CiHostReplySchema.parse(await withHostCiRunLock(this.runDirectory(request.runId),
-      () => this.readContents(request, run)))
+    return this.readContents(request, run)
   }
 
   private async readContents(request: Extract<CiHostRequest, { operation: 'read' }>, run: CiHostRun) {
@@ -178,6 +183,7 @@ export class HostCiRunner {
     this.draining = true
     await this.startQueue
     await Promise.all(this.preparing.values())
+    await this.cacheSweepPending
   }
 
   resumeAdmissions() { this.draining = false }
@@ -266,7 +272,7 @@ export class HostCiRunner {
     // Repository preparation precedes metadata; status must still acknowledge the accepted start.
     const pendingStart = startingRun && !runs.some(run => run?.runId === startingRun.runId)
     if (pendingStart) runs.push(startingRun)
-    await this.cleanCaches(active)
+    this.cleanCaches()
     const availableMemoryBytes = this.ports.availableMemoryBytes?.() ?? this.ports.memoryBytes
     const capacity = this.capacity(active, { availableMemoryBytes })
     const activeRuns = runs.filter(run => run && ['starting', 'running'].includes(run.state))
@@ -278,21 +284,25 @@ export class HostCiRunner {
       runs: [...activeRuns, ...finishedRuns.slice(-Math.max(0, 50 - activeRuns.length))].slice(0, 50) })
   }
 
-  private async cleanCaches(active: RunMeta[]) {
+  private cleanCaches() {
+    if (this.cacheSweepPending) return
     const activeRepositories = () => {
-      const repositories = new Set(active.map(run => run.repository))
+      const repositories = new Set(this.activeRunRepositories.values())
       if (this.startingRepository) repositories.add(this.startingRepository)
       return repositories
     }
-    if (!active.length && !this.startingRun && !this.preparing.size) {
-      await rm(join(this.root, 'vitest-cache'), { recursive: true, force: true })
-    }
-    const now = this.ports.now().getTime()
-    if (now - this.cacheSweepAt < 5 * 60_000) return
-    this.cacheSweepPending ??= sweepHostCiCache(this.root, { activeRepositories }).then(() => {
-      this.cacheSweepAt = now
+    this.cacheSweepPending = (async () => {
+      const now = this.ports.now().getTime()
+      if (now - this.cacheSweepAt >= 5 * 60_000) {
+        await sweepHostCiCache(this.root, { activeRepositories })
+        this.cacheSweepAt = now
+      }
+      if (!this.activeRunRepositories.size && !this.startingRun && !this.preparing.size) {
+        await rm(join(this.root, 'vitest-cache'), { recursive: true, force: true })
+      }
+    })().catch(error => {
+      log.warn({ err: error }, 'CI cache cleanup failed; next status will retry')
     }).finally(() => { this.cacheSweepPending = undefined })
-    await this.cacheSweepPending
   }
 
   private capacity(active: RunMeta[], options: { availableMemoryBytes?: number; buildAllowancePercent?: number } = {}) {
@@ -875,6 +885,8 @@ export class HostCiRunner {
     const directory = this.runDirectory(runId)
     // Settled runs have nothing to reconcile. Each lock spawns a flock process, and status polls read every run.
     const settled = !['starting', 'running'].includes(meta.state)
+    if (settled) this.activeRunRepositories.delete(runId)
+    else this.activeRunRepositories.set(runId, meta.repository)
     const reconciled = settled || await withHostCiRunLock(directory, async () => {
       await this.reconcile(await this.readMeta(runId), preparing)
       return true
@@ -884,6 +896,7 @@ export class HostCiRunner {
       // A live launcher can still be writing metadata after systemd accepted the service.
       meta = { ...meta, state: 'running' }
     }
+    if (!['starting', 'running'].includes(meta.state)) this.activeRunRepositories.delete(runId)
     if (!['starting', 'running'].includes(meta.state) && !preparing && !this.preparing.has(runId)) {
       if (!meta.cleaned) {
         const clone = join(this.root, 'git', ...meta.repository.split('/'))
