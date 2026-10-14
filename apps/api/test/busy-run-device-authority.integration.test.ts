@@ -10,6 +10,7 @@ import type { AgentPlacementProducer } from '../src/modules/placement/agentProdu
 import type { DeviceExtensionRegistration } from '../src/modules/devices/deviceApplicationChannel.js'
 import { deviceApplicationFailure } from '../src/modules/devices/deviceApplicationError.js'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
+import { withTransaction } from '../src/infrastructure/transaction.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 
 // Placement, device registration and Operator authority are other domains; this file holds real
@@ -101,15 +102,11 @@ describe.skipIf(!postgresEnabled)('Worker device requests while the Run is busy'
 
   /** A Run owner transaction that has locked the Run's rows and is busy elsewhere. */
   async function whileRunBusy<T>(statements: string[], work: () => Promise<T>): Promise<T> {
-    const holder = await pool.connect()
-    try {
-      await holder.query('begin')
+    // The holder only takes row locks, so committing on release changes no data.
+    return withTransaction(pool, async holder => {
       for (const statement of statements) await holder.query(statement, statement.includes('$1') ? [intent.operationId] : [])
-      return await work()
-    } finally {
-      await holder.query('rollback')
-      holder.release()
-    }
+      return work()
+    })
   }
   const runRowsLocked = [
     "select id from runs where id='run' for update",
