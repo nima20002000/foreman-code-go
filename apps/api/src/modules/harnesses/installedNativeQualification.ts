@@ -1,5 +1,6 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { withAdvancedDefaults, type HarnessQualification as ConfigurationQualification } from '@foreman-code/contracts'
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
 import { DeviceSessionBindingSchema, type DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
@@ -27,6 +28,25 @@ export function completedNativeQualificationChecks() {
 }
 const denied = (): never => { throw new DomainError('HARNESS_QUALIFICATION_TARGET_CHANGED', 'Explicit qualification requires the exact current installed host and selected profile.', 409) }
 const same = (a: unknown, b: unknown) => commandInputHash(a) === commandInputHash(b)
+
+async function checkSelectedProfile(
+  check: () => Promise<ConfigurationQualification>,
+  signal: AbortSignal,
+): Promise<ConfigurationQualification> {
+  for (let attempt = 1; attempt < 3; attempt += 1) {
+    signal.throwIfAborted()
+    try {
+      return await check()
+    } catch (error) {
+      signal.throwIfAborted()
+      if (!(error instanceof HarnessExecutionError)
+        || error.result.error?.code !== 'CODEX_MODEL_CATALOG_UNAVAILABLE') throw error
+      await delay(250 * attempt, undefined, { signal })
+    }
+  }
+  signal.throwIfAborted()
+  return check()
+}
 
 /** This is only the existing authenticated profile-check handler's native
  * qualifier. It never allocates a workflow manager or accepts incoming proof. */
@@ -127,7 +147,10 @@ export function createInstalledNativeQualifier(input: {
                 profileResult = await runWithQualificationProfile({ harness, version: version!,
                   binarySha256: target.binarySha256, target: target.target,
                   profile: QUALIFICATION_TARGET_PROFILE[harness], checks: result.checks },
-                () => input.checkConfiguration(value, directory, signal, scope.processRecovery!, scope.assertInstallation!))
+                () => checkSelectedProfile(async () => {
+                  await scope.assertInstallation!(signal)
+                  return input.checkConfiguration(value, directory, signal, scope.processRecovery!, scope.assertInstallation!)
+                }, signal))
               }
               catch (error) {
                 signal.throwIfAborted()
