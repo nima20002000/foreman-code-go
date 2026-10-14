@@ -100,7 +100,7 @@ export async function publishWorkerArtifactsToGitHub({ repository, name: knownNa
       } catch (error) {
         // GitHub can briefly hide a release after creation, including from asset uploads.
         const reason = `${error.message ?? ''} ${error.stderr ?? ''}`
-        if (attempt === backoff.length || !/HTTP (?:404|429|5\d\d)|release not found|ECONNRESET|ETIMEDOUT|timed out/iu.test(reason)) throw error
+        if (attempt === backoff.length || !/HTTP (?:404|429|5\d\d)|release not found|release already exists|ECONNRESET|ETIMEDOUT|timed out/iu.test(reason)) throw error
         console.warn(JSON.stringify({ operation: 'publish Worker release', attempt: attempt + 1,
           nextRetryMs: backoff[attempt], lastError: 'GITHUB_RELEASE_TEMPORARILY_UNAVAILABLE' }))
         await wait(backoff[attempt])
