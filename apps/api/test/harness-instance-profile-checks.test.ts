@@ -77,6 +77,14 @@ describe('explicit exact-host native profile checks', () => {
     expect(f.append).not.toHaveBeenCalled()
     await f.service.close()
   })
+  it('returns Worker contention to explicit callers without retrying or recording a failure', async () => {
+    const f = fixture()
+    f.qualify.mockRejectedValue(new DomainError('DEVICE_BUSY', 'The device is busy.', 503))
+    await expect(f.service.check(principal, 'mcp', f.input)).rejects.toMatchObject({ code: 'DEVICE_BUSY' })
+    expect(f.qualify).toHaveBeenCalledTimes(1)
+    expect(f.append).not.toHaveBeenCalled()
+    await f.service.close()
+  })
   it('aborts and joins owned checks on shutdown without persisting a late success', async () => {
     const f = fixture()
     let started!: () => void
@@ -144,6 +152,65 @@ describe('automatic installation profile checks', () => {
       installation: () => installation }
     return { ...f, saved, installation, request }
   }
+  it.each(['requested', 'installation'] as const)(
+    'keeps a %s check pending through repeated Worker contention, then persists qualification', async mode => {
+      const f = updatedFixture()
+      let busy = true
+      f.qualify.mockImplementation(async value => {
+        if (busy) throw new DomainError('DEVICE_BUSY', 'The device is busy.', 503)
+        return f.proof(value)
+      })
+      const task = (mode === 'requested'
+        ? f.service.checkAutomatically(f.saved, f.installation)
+        : f.service.recheckInstallation(f.request)).then(() => null, error => error)
+      try {
+        await vi.waitFor(() => expect(f.qualify.mock.calls.length).toBeGreaterThanOrEqual(2))
+        const selected = f.qualify.mock.calls[0]![0]
+        expect(f.service.pending(selected)).toBe(true)
+        expect(await f.service.failure(selected)).toBeUndefined()
+        expect(f.append).not.toHaveBeenCalled()
+        busy = false
+        expect(await task).toBeNull()
+        expect(f.append).toHaveBeenCalledTimes(1)
+        expect(f.append.mock.calls[0]![3]).toMatchObject({ qualified: true })
+        expect(f.service.pending(selected)).toBe(false)
+      } finally {
+        busy = false
+        await f.service.close()
+        await task
+      }
+    })
+  it('cancels an automatic busy retry on shutdown without persisting a qualification failure', async () => {
+    const f = updatedFixture()
+    f.qualify.mockRejectedValue(new DomainError('DEVICE_BUSY', 'The device is busy.', 503))
+    const task = f.service.checkAutomatically(f.saved, f.installation).then(() => null, error => error)
+    try {
+      await vi.waitFor(() => expect(f.qualify.mock.calls.length).toBeGreaterThanOrEqual(2))
+      expect(f.service.pending(f.saved)).toBe(true)
+      await f.service.close()
+      expect(await task).toBeInstanceOf(Error)
+      expect(f.append).not.toHaveBeenCalled()
+      expect(f.service.pending(f.saved)).toBe(false)
+    } finally {
+      await f.service.close()
+      await task
+    }
+  })
+  it('revalidates the profile revision before retrying a busy automatic check', async () => {
+    const f = updatedFixture()
+    f.qualify.mockImplementationOnce(async () => {
+      f.change()
+      throw new DomainError('DEVICE_BUSY', 'The device is busy.', 503)
+    })
+    try {
+      await expect(f.service.checkAutomatically(f.saved, f.installation))
+        .rejects.toMatchObject({ code: 'REVISION_CONFLICT' })
+      expect(f.qualify).toHaveBeenCalledTimes(1)
+      expect(f.append).not.toHaveBeenCalled()
+    } finally {
+      await f.service.close()
+    }
+  })
   it('deduplicates requested automatic checks per instance revision and persists their result', async () => {
     const f = updatedFixture()
     let release!: () => void
@@ -271,6 +338,22 @@ describe('automatic installation profile checks', () => {
 })
 
 describe('Worker reconnect profile checks', () => {
+  it('retries a busy reconnect check until the Worker can qualify the profile', async () => {
+    const f = workerFixture()
+    f.seed(f.proof(f.override))
+    f.qualify.mockRejectedValueOnce(new DomainError('DEVICE_BUSY', 'The device is busy.', 503))
+    try {
+      await f.service.recheckWorker(f.binding, new AbortController().signal, () => f.binding)
+      expect(f.qualify).toHaveBeenCalledTimes(2)
+      expect(f.append).toHaveBeenCalledTimes(1)
+      expect(f.append.mock.calls[0]![3]).toMatchObject({
+        qualified: true, connectionGeneration: harnessConnectionGeneration(f.binding),
+      })
+      expect(f.service.pending(f.override)).toBe(false)
+    } finally {
+      await f.service.close()
+    }
+  })
   it('checks at most two profiles at once and admits each completed revision independently', async () => {
     const f = workerFixture()
     const profiles = [f.override, ...Array.from({ length: 3 }, () => ({ ...f.override, instanceId: randomUUID() }))]
