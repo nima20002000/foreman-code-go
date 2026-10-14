@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.100] - 2026-10-14
+
+Agent loops: an Agent node in a workflow can loop (re-activate) on an interval while its Run is active and stops when the Run ends; "Interval checks" are now called Loops everywhere, and each loop can carry its own prompt (node.interval.prompt) in the UI and through Operator MCP. Workflow schedules, which start Runs, stay separate.
+Paperwork removed: device connection changes need no owner approval (pairing is the approval); harness plugin/MCP routes accept bearer callers; Tailscale hosts are accepted with normal auth; workspace locations and folder browsing accept any folder.
+Fixes: plugin operation principal IDs; artifact edge and result cache test races.
+
 ## [0.0.99] - 2026-10-14
 
 CI speed round:
