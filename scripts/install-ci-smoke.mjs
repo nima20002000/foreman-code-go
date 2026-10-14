@@ -76,17 +76,20 @@ export async function runInstallCiSmoke({ origin, workspaceId, commit, token, pr
     if (result.partitions) throw new Error(`CI smoke unexpectedly split into ${result.partitions.length} jobs.`)
     return result.ticketId
   }
-  const wait = async (ticketId, computer) => {
+  // A slow read right after a restart is retried; the smoke deadline still bounds every retry.
+  const read = async (path, step) => {
     while (true) {
-      let result
       try {
-        result = await request(`${root}/${ticketId}`, { step: `ticket ${ticketId}` })
+        return await request(path, { step })
       } catch (error) {
-        // A slow status read right after a restart is retried; the smoke deadline still bounds the wait.
         if (signal.aborted || !/timed out/.test(error.message)) throw error
         log(error.message)
-        continue
       }
+    }
+  }
+  const wait = async (ticketId, computer) => {
+    while (true) {
+      const result = await read(`${root}/${ticketId}`, `ticket ${ticketId}`)
       if (result.run.state === 'passed' && result.run.exitCode === 0) {
         if (computer) {
           if (!isDeepStrictEqual(result.run.computer?.hostRef, computer.hostRef)) {
@@ -114,7 +117,7 @@ export async function runInstallCiSmoke({ origin, workspaceId, commit, token, pr
     const second = await admit({ files: [] })
     await wait(first)
     await wait(second)
-    const targets = smokeTargets((await request(`${root}/computers`, { step: 'computer discovery' })).computers)
+    const targets = smokeTargets((await read(`${root}/computers`, 'computer discovery')).computers)
     if (!targets.length) throw new Error('CI smoke has no ready executor. Configure CI or explicitly opt out.')
     const jobs = []
     for (const computer of targets) {
