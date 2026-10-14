@@ -212,6 +212,13 @@ test('a stalled GitHub asset falls back to Main chunks and schedules the verifie
   const record = await readUpdateRecord(f.stateDirectory);
   const manifestBytes = await readFile(join(record.restart.directory, 'manifest.json'));
   assert.equal(hash(manifestBytes), f.incoming.release.manifestSha256);
+  for (const file of f.incoming.release.manifest.files) {
+    const installedBytes = await readFile(join(record.restart.directory, file.path));
+    const fixtureBytes = await readFile(join(f.incoming.directory, file.path));
+    assert.deepEqual(installedBytes, fixtureBytes);
+    assert.equal(installedBytes.length, file.size);
+    assert.equal(hash(installedBytes), file.sha256);
+  }
   assert.deepEqual(await readFile(join(record.restart.directory, 'src/cli.mjs')),
     await readFile(join(f.incoming.directory, 'src/cli.mjs')));
   assert.equal(record.status.state, 'restarting');

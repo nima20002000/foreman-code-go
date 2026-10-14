@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import type { CiHostRequest } from '@foreman-code/contracts'
 import { expect, it } from 'vitest'
 import { deferred } from '../../../test/helpers/deferred.js'
 import { ProductionHostCiEndpoint } from './endpoint.js'
@@ -37,6 +38,7 @@ it('answers a status request without waiting for a slow directory retention swee
   const sweeping = deferred()
   const release = deferred()
   const completed = deferred()
+  const cleanupRequests: CiHostRequest[] = []
   let queries = 0
   const pool = { query: async () => {
     queries++
@@ -46,6 +48,7 @@ it('answers a status request without waiting for a slow directory retention swee
   const endpoint = new ProductionHostCiEndpoint(pool, 'fixture-main', () => undefined, {
     handle: async request => {
       if (request.operation === 'status' && request.cleanupRunIds) {
+        cleanupRequests.push(request)
         sweeping.resolve()
         await release.promise
         completed.resolve()
@@ -63,6 +66,7 @@ it('answers a status request without waiting for a slow directory retention swee
     expect(result).toMatchObject({ operation: 'status', ready: true })
     const second = await endpoint.request(computer, { operation: 'status' })
     expect(second).toMatchObject({ operation: 'status', ready: true })
+    expect(cleanupRequests).toEqual([{ operation: 'status', cleanupRunIds: ['old-run'] }])
     expect(queries).toBe(1)
   } finally {
     clearTimeout(timeout)
