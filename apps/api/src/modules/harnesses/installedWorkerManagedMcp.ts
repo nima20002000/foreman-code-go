@@ -1,4 +1,5 @@
 import { mkdir, open } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { appLauncherPath, installManagedLauncher } from './appMcpLauncher.js'
@@ -24,18 +25,24 @@ export function createInstalledWorkerManagedMcp(input: {
     input.launcherSource ?? new URL('../../../../../scripts/graphql-mcp.mjs', import.meta.url), appLauncherPath(), signal)
   const codex: NativeMcpAdapter = {
     async read(signal) {
-      return (await codexAdapter()).read(signal)
+      return controlCodex(adapter => adapter.read(signal))
     },
     async apply(snapshot, change, signal, managed) {
-      return (await codexAdapter()).apply(snapshot, change, signal, managed)
+      return controlCodex(adapter => adapter.apply(snapshot, change, signal, managed))
     },
   }
-  async function codexAdapter() {
+  async function controlCodex<T>(work: (adapter: NativeMcpAdapter) => Promise<T>): Promise<T> {
     const configuration = await readInstalledWorkflowConfiguration(input.configuration)
     const selection = configuration && installedHarnessSelection(configuration)
     if (!selection) throw new DomainError('HARNESS_DRIVER_UNAVAILABLE', 'Codex is not installed on this computer.', 409)
-    return new CodexMcpConnections(selection.binary, input.stateDirectory,
-      input.registry.scope('settings:mcp:codex'), installLauncher)
+    const owner = `managed-mcp:codex:${randomUUID()}`
+    const adapter = new CodexMcpConnections(selection.binary, input.stateDirectory,
+      input.registry.scope(owner), installLauncher)
+    try {
+      return await work(adapter)
+    } finally {
+      await input.registry.closeOwner(owner)
+    }
   }
   const claude = new ClaudeMcpConnections(join(process.env.CLAUDE_CONFIG_DIR ?? home, '.claude.json'))
   async function prepare(harness: 'codex' | 'claude') {
