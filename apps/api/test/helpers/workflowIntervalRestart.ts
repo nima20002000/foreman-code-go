@@ -80,8 +80,10 @@ export async function assertIntervalRestart(executionHost: 'main' | 'worker'): P
     }
     await fixture.provider.releaseWorkflowTurns()
     blocked = false
-    await readUntil(() => fixture.details(started.run.id),
-      details => details.executions.every(execution => execution.state === 'completed'),
+    await readUntil(async () => {
+      await fixture.reconcile()
+      return fixture.details(started.run.id)
+    }, details => details.executions.every(execution => execution.state === 'completed'),
       { timeoutMs: 60_000, description: 'settled graph work and interval check' })
     const stop = await fixture.call('run_stop', { workspaceId: started.run.workspaceId,
       runId: started.run.id, commandId: randomUUID() })

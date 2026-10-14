@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
-import { completedRun, startWhenReady } from './helpers/harnessInstallationUpdate.js'
+import { startWhenReady } from './helpers/harnessInstallationUpdate.js'
 import { readUntil } from './helpers/observableCondition.js'
 import { remoteReviewProduction } from './helpers/remoteReviewProduction.js'
 import { postgresEnabled } from './helpers/wave25Agent3.js'
@@ -15,7 +15,10 @@ describe.runIf(postgresEnabled)('interval check failure during API restart', () 
     try {
       await fixture.provider.blockWorkflowTurns({ allowFirst: 1 })
       const started = (await startWhenReady(fixture))!
-      const read = () => fixture.details(started.run.id)
+      const read = async () => {
+        await fixture.reconcile()
+        return fixture.details(started.run.id)
+      }
       const before = await readUntil(read, details => {
         const active = details.executions.filter(execution => execution.state === 'running')
         return active.length === 2 && active.every(execution => execution.nativeSessionId
@@ -65,8 +68,26 @@ describe.runIf(postgresEnabled)('interval check failure during API restart', () 
       expect(after.filter(call => call.method === 'turn/start' && call.correlationId === `execution:${check.id}`))
         .toHaveLength(1)
       await fixture.provider.releaseWorkflowTurns()
-      const finished = await completedRun(fixture, started.run.id)
-      expect(finished.executions.find(execution => execution.id === check.id)?.result?.outcome).toBe('failed')
+      await readUntil(read, details => details.executions.every(execution => execution.state === 'completed'),
+        { timeoutMs: 60_000, description: 'settled interval executions' })
+      expect((await read()).run.executionState).toBe('running')
+      const stop = await fixture.call('run_stop', { workspaceId: started.run.workspaceId, runId: started.run.id })
+      expect(stop.isError).not.toBe(true)
+      const finished = await readUntil(read, details => details.run.executionState === 'completed',
+        { timeoutMs: 60_000, description: 'stopped interval Run' })
+      expect(finished.run.outcome).toBe('canceled')
+      expect(finished.executions.find(execution => execution.id === check.id)).toMatchObject({
+        state: 'completed', result: { outcome: 'failed', error: { code: 'EXECUTION_INTERRUPTED' } },
+      })
+      expect(finished.executions.find(execution => execution.id === worker.id)).toMatchObject({
+        state: 'completed', attempt: worker.attempt, nativeSessionId: worker.nativeSessionId,
+        result: { outcome: 'succeeded' },
+      })
+      const stoppedReadback = SavedRunDetailsSchema.parse(decodeMcpToolResult(
+        await fixture.call('run_get', args, reader.token)))
+      expect(stoppedReadback.run).toMatchObject({ executionState: 'completed', outcome: 'canceled' })
+      expect(stoppedReadback.executions.find(execution => execution.id === check.id)?.result)
+        .toEqual(finished.executions.find(execution => execution.id === check.id)?.result)
     } finally {
       await fixture.provider.releaseWorkflowTurns()
       await fixture.close()

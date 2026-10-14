@@ -112,7 +112,11 @@ describe.runIf(postgresEnabled)('interval execution inspection', () => {
       checkGate.resolve()
       workerGate.resolve()
       admission.mockRestore()
-      if (finished) await Promise.allSettled([finished])
+      if (finished) {
+        await runtime.stop()
+        await runtime.engine.cancel(f.run.id)
+        await Promise.allSettled([finished])
+      }
       await Promise.allSettled(clients.map(client => client.close()))
       await app.close()
       await runtime.close()
