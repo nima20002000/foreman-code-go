@@ -13,6 +13,11 @@ export function assertTestPath(resource: TestRoot, path: string): string
 export function removeTestRoot(resource: TestRoot): void
 export function registerTestResourceCleanup(resource: TestRoot, details: Record<string, unknown>): string
 export function completeTestResourceCleanup(resource: TestRoot, id: string): void
+export function readTestResourceCleanups(resource: TestRoot): Record<string, unknown>[]
+export function recoverAbandonedTestRoots(admin: Sql, options?: {
+  parent?: string;
+  containers?: (args: string[]) => string;
+}): Promise<{ removed: string[]; retained: { directory: string; reason: string }[] }>
 export function assertTestResourcesSettled(resource: TestRoot): void
 export function assertFixtureResourcesSettled(directory: string): void
 export function settleTestResources(admin: Sql, resource: TestRoot): Promise<void>
@@ -28,7 +33,7 @@ export function createTestDatabase(admin: Sql, resource: TestRoot,
   options?: { template?: TestDatabaseTemplate | undefined; name?: string }): Promise<TestDatabase>
 export function resetTestDatabase(admin: Sql, resource: TestDatabase): Promise<TestDatabase>
 export function assertTestDatabase(admin: Sql, resource: TestDatabase): Promise<void>
-export function dropTestDatabase(admin: Sql, resource: TestDatabase): Promise<void>
+export function dropTestDatabase(admin: Sql, resource: TestDatabase, options?: { force?: boolean }): Promise<void>
 export function ownedTestDatabaseUrl(variable?: string, environment?: NodeJS.ProcessEnv): string
 export function createFixtureDatabase(sql: Sql, name: string, options?: string): Promise<void>
 export function createMigratedFixtureDatabase(sql: Sql, name: string): Promise<void>
