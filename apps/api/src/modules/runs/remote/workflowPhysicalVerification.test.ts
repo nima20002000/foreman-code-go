@@ -339,6 +339,15 @@ describe('accepted physical session harness', () => {
     } finally { await f.sqlConnection.close() }
   })
 
+  it('verifies an observed native boundary that has no retained source proof', async () => {
+    const f = await physicalFixture({ harness: 'codex' })
+    try {
+      const original = await f.bind({ type: 'boundary' })
+      await expect(f.sqlConnection.transaction(sql => f.producer.assertOriginal(sql, f.owner, original))).resolves.toBeUndefined()
+      expect(original.source).toEqual({ type: 'boundary' })
+    } finally { await f.sqlConnection.close() }
+  })
+
   it('keeps the accepted Codex process available to its running Main owner', async () => {
     const f = await physicalFixture({ harness: 'codex' })
     try {
