@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { snapshot } from './ci-remote.mjs'
+import { awaitTickets, requestedTestFiles, snapshot } from './ci-remote.mjs'
 
 const script = new URL('./ci-remote.mjs', import.meta.url).pathname
 
@@ -44,4 +44,36 @@ test('refuses to run tests on a developer machine when Main is unreachable, and 
       FOREMAN_CODE_OPERATOR_TOKEN: 'test-token' }, encoding: 'utf8' })
   assert.equal(run.status, 1)
   assert.match(run.stderr, /FOREMAN_CODE_CI_LOCAL=1/)
+})
+
+test('sends test files named on the command line, relative to the repository root', t => {
+  const { root } = repository()
+  t.after(() => rmSync(root, { recursive: true, force: true }))
+  mkdirSync(join(root, 'apps/api/test'), { recursive: true })
+  writeFileSync(join(root, 'apps/api/test/one.test.ts'), '')
+  const args = ['vitest', 'run', '--exclude', '**/*.integration.test.ts', 'test/one.test.ts', 'test/missing.test.ts', 'one']
+  assert.deepEqual(requestedTestFiles(args, join(root, 'apps/api')), ['apps/api/test/one.test.ts'])
+})
+
+/** A fake ci_get over fixed ticket states. */
+const reader = runs => async (name, input) => {
+  const run = runs[input.ticketId]
+  if (name === 'ci_get' && !input.testStatus) return { run, ...(run.group ? { partitions: run.group.map(id => runs[id]) } : {}) }
+  return name === 'ci_logs_read' ? { text: '' } : { tests: { files: [] } }
+}
+
+test('follows a ticket superseded by a newer commit to its replacement tickets instead of failing', async () => {
+  const runs = {
+    old: { id: 'old', suite: 'unit', state: 'canceled', supersededBy: 'new-1' },
+    'new-1': { id: 'new-1', suite: 'unit', state: 'passed', group: ['new-1', 'new-2'] },
+    'new-2': { id: 'new-2', suite: 'unit', state: 'passed' },
+  }
+  const finished = await awaitTickets(reader(runs), 'workspace', ['old'])
+  assert.deepEqual(finished.map(run => [run.id, run.state]), [['new-1', 'passed'], ['new-2', 'passed']])
+})
+
+test('stops waiting at the overall deadline and returns the open tickets', async () => {
+  const runs = { slow: { id: 'slow', suite: 'integration', state: 'running' } }
+  const finished = await awaitTickets(reader(runs), 'workspace', ['slow'], { waitMs: 0 })
+  assert.deepEqual(finished.map(run => run.state), ['running'])
 })
