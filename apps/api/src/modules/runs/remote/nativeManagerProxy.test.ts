@@ -444,6 +444,29 @@ describe('remote native history streaming', () => {
     expect(f.cursors).toEqual([-1])
   })
 
+  it('reads the terminal result when the Worker retained no events', async () => {
+    const history = { ...terminal([]), firstRetainedSequence: 50, nextSequence: 50 }
+    const f = setup(() => history)
+    const session = await f.proxy.createSession(f.start)
+    const skipped: DeviceHistoryGap[] = []
+    const input = { prompt: 'prompt', clientCorrelationId: f.start.correlationId,
+      onEventsSkipped: async (gap: DeviceHistoryGap) => { skipped.push(gap) } }
+    const stream = f.proxy.startTurn(session, input)
+    expect((await stream.next()).done).toBe(true)
+    expect(skipped).toEqual([{ fromSequence: 0, toSequence: 49, reason: 'retention' }])
+    expect((await f.proxy.reconcile(session, f.start.correlationId)).terminalTurn?.result).toEqual(history.terminalResult)
+  })
+
+  it('rejects a terminal result that differs from the saved Worker result', async () => {
+    const f = setup(() => terminal([event(50)]))
+    const session = await f.proxy.createSession(f.start)
+    f.receipt.phase = 'confirmed_terminal'
+    f.receipt.terminal = { kind: 'completed', closureEvidenceDigest: 'b'.repeat(64),
+      result: { outcome: 'failed', error: { code: 'PROVIDER_FAILURE', message: 'Original failure' } } }
+    const stream = f.proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: f.start.correlationId })
+    await expect(stream.next()).rejects.toThrow()
+  })
+
   it('still ignores duplicate sequences in overlapping pages', async () => {
     let history: NativeHistory = { events: [event(0)], pendingInteractions: [], firstRetainedSequence: 0,
       nextSequence: 1 }

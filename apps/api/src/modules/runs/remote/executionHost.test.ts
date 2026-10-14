@@ -465,8 +465,8 @@ describe('actual worker native-port adapter', () => {
         { sequence: 0, turnId: undefined, submitted: [] },
         { sequence: 1, turnId: 'native-turn', submitted: ['native-turn'] },
       ])
-      // The stream's own page aged past the 30s observation window, so it read once more before event 1.
-      expect(historyReads).toBe(3)
+      // The refreshed cursor page already owns event 1 for this receipt.
+      expect(historyReads).toBe(2)
       await stream.return(undefined)
       await proxy.history(session)
       expect(historyReads).toBe(4)
