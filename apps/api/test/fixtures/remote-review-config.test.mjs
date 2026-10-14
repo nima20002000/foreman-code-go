@@ -1,15 +1,16 @@
+/* global process, URL */
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import test from 'node:test';
+import { it, onTestFinished } from 'vitest';
 
-test('remote Codex fixture exposes its managed connection in the native user configuration layer', async t => {
+it('remote Codex fixture exposes its managed connection in the native user configuration layer', async () => {
   const storage = join(homedir(), '.cache', 'foreman-tmp');
   await mkdir(storage, { recursive: true });
   const directory = await mkdtemp(join(storage, 'remote-codex-config-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
+  onTestFinished(() => rm(directory, { recursive: true, force: true }));
   await writeFile(join(directory, 'codex'), 'fixture executable');
   const launcher = join(directory, 'graphql-mcp.mjs');
   await writeFile(join(directory, 'settings.json'), JSON.stringify({ launcher }));

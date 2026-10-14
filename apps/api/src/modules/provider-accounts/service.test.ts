@@ -280,10 +280,7 @@ it.each(['save', 'logout'] as const)('serializes %s compensation before a concur
   const failed = mutation.catch(error => error)
   await restoreEntered
   const committedKey = `sk-committed-${randomUUID()}`
-  const saveApiKey = f.credentials.saveApiKey.bind(f.credentials)
-  vi.spyOn(f.credentials, 'saveApiKey').mockImplementation(async (id, apiKey) => {
-    await saveApiKey(id, apiKey)
-  })
+  vi.spyOn(f.credentials, 'saveApiKey')
   const contender = f.service.provisionApiKey(f.owner.principal, accountId,
     { ...command(2), apiKey: committedKey })
   let contenderSettled = false
