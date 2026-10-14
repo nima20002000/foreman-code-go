@@ -495,7 +495,12 @@ async function waitForIntervalRun(input: Parameters<typeof startIntervalChecks>[
         throw new DomainError('GRAPH_STOP_CONFLICT', 'The Run has a Stop or cleanup request.', 409)
       }
       if (current.executionState !== 'running') return
-      await delay(1_000, undefined, { signal: input.signal })
+      try {
+        await delay(1_000, undefined, { signal: input.signal })
+      } catch (error) {
+        input.signal.throwIfAborted()
+        throw error
+      }
     }
   } finally { stopChecks() }
 }
