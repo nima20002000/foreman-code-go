@@ -1,4 +1,5 @@
 import { expect, it, vi } from 'vitest'
+import type { ReadObservation } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import type { PostgresOperatorActivityRepository } from '../src/modules/conversations/operatorActivityRepository.js'
 import { reconcileKnownActivities } from '../src/modules/conversations/reconcileKnownActivities.js'
@@ -12,8 +13,10 @@ it('settles only preexisting original-owner items through the resident history p
     payload: { threadId: session.nativeSessionId, turnId: 'original-turn', item: { id: 'older-tool', type: 'commandExecution', status: 'completed' } } }], pendingInteractions: [] }))
   const manager = { harness: 'codex', history, attachSession: vi.fn(), startTurn: vi.fn(), respond: vi.fn(), cancel: vi.fn() } as unknown as NativeHarnessSessionManager
   const input = { kind: 'agent' as const, conversationId: 'conversation', activity, signal: new AbortController().signal,
+    observations: new Map<string, ReadObservation>(), onObservation: vi.fn(),
     runtimeFor: () => ({ manager, session }), publish: vi.fn() }
   await reconcileKnownActivities(input)
+  expect(input.observations.get('conversation')).toMatchObject({ status: 'available', consecutiveFailures: 0 })
   expect(activity.settleKnownByNative).toHaveBeenCalledWith('conversation', expect.objectContaining({ id: 'older-tool', status: 'completed' }), owner.native, undefined)
   expect(manager.attachSession).not.toHaveBeenCalled(); expect(manager.startTurn).not.toHaveBeenCalled()
   expect(manager.respond).not.toHaveBeenCalled(); expect(manager.cancel).not.toHaveBeenCalled()

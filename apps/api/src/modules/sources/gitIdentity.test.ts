@@ -114,6 +114,7 @@ it('sets identity on a Main Run worktree and repairs it when the persisted workt
   let persisted: { repository_root: string; record: unknown } | undefined
   const sql = {
     query: vi.fn(async (statement: string, values?: unknown[]) => {
+      if (statement.startsWith('select pg_try_advisory_lock')) return { rows: [{ locked: true }] }
       if (statement.startsWith('select repository_root,record')) return { rows: persisted ? [persisted] : [] }
       if (statement.startsWith('select execution_state')) return { rows: [{ execution_state: 'running' }] }
       if (statement.startsWith('insert into run_worktrees')) {

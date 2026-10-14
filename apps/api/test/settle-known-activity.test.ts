@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import type { ReadObservation } from '@foreman-code/contracts'
 import { describe, expect, it, vi } from 'vitest'
 import { nativePersistenceRedactor } from '../src/modules/interactions/nativePersistence.js'
 import { reconcileKnownActivities } from '../src/modules/conversations/reconcileKnownActivities.js'
@@ -70,8 +71,11 @@ describe('independent known child settlement', () => {
         } } }] }
     } } as unknown as NativeHarnessSessionManager
     const publish = vi.fn()
+    const observations = new Map<string, ReadObservation>()
     await reconcileKnownActivities({ kind: 'operator', activity, signal: new AbortController().signal,
+      observations, onObservation: vi.fn(),
       runtimeFor: () => ({ manager, session, redact: nativePersistenceRedactor(secrets) }), publish })
+    expect(observations.get('conversation')).toMatchObject({ status: 'available', consecutiveFailures: 0 })
     expect(publish).toHaveBeenCalledTimes(1)
     expect(JSON.stringify(f.persisted)).not.toContain(token); expect(JSON.stringify(f.persisted)).not.toContain('owned-fixture-secret')
     expect(JSON.stringify(publish.mock.calls)).not.toContain(token); expect(JSON.stringify(publish.mock.calls)).not.toContain('owned-fixture-secret')

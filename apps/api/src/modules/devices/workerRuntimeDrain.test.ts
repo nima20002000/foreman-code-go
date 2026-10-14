@@ -18,8 +18,12 @@ it.each(['dispatches', 'jobs', 'qualifications', 'maintenance', 'quiescence'] as
   'reports a waiting %s stage at warning level every thirty seconds and stops after completion', async stage => {
     vi.useFakeTimers()
     const pending = deferred<void>()
+    const active: Promise<unknown>[] = []
+    if (stage === 'dispatches') {
+      active.push(pending.promise.then(() => { active.splice(0) }))
+    }
     const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal,
-      active: () => stage === 'dispatches' ? [pending.promise] : [],
+      active: () => [...active],
       drainJobs: async () => { if (stage === 'jobs') await pending.promise },
       drainQualifications: async () => { if (stage === 'qualifications') await pending.promise },
       drainMaintenance: async () => { if (stage === 'maintenance') await pending.promise },

@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import type pg from 'pg'
-import { logger } from './logger.js'
+import { logger, readOperationalFailures } from './logger.js'
 import { fallbackOnError, ignoreError, logIgnoredError } from './ignoredError.js'
 import { withConversationPageRead } from '../conversations/activityCursor.js'
 
@@ -47,11 +47,22 @@ it('does not suppress other cleanup failures or change the fallback object', asy
   expect(lines[0]!.fields).toMatchObject({ component: 'harness', pid: 123, err: failure })
 })
 
-it('reports non-Error rejections without throwing from the cleanup handler', () => {
+it('retains non-Error rejections while throttling repeated cleanup warnings', () => {
   const lines = captureLogs()
+  const now = Date.now()
+  vi.spyOn(Date, 'now').mockReturnValue(now)
   logIgnoredError('jobs', 'close helper', null)
   logIgnoredError('jobs', 'close helper', 'close failed')
+  expect(lines.map(line => line.fields.err)).toEqual([null])
+  expect(readOperationalFailures()).toContainEqual(expect.objectContaining({
+    component: 'jobs', operation: 'close helper', lastError: 'OPERATION_FAILED', failureCount: 2,
+  }))
+  vi.mocked(Date.now).mockReturnValue(now + 30_000)
+  logIgnoredError('jobs', 'close helper', 'close failed')
   expect(lines.map(line => line.fields.err)).toEqual([null, 'close failed'])
+  expect(readOperationalFailures()).toContainEqual(expect.objectContaining({
+    component: 'jobs', operation: 'close helper', lastError: 'OPERATION_FAILED', failureCount: 3,
+  }))
 })
 
 it('reports failed rollback, releases the client and preserves the original read error', async () => {
