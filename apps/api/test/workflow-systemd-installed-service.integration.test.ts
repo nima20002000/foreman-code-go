@@ -121,7 +121,16 @@ describe('installed API fixture packaging', () => {
       const deployedRequire = createRequire(join(destination, 'package.json'))
       expect(deployedRequire('yaml').parse('installed: true')).toEqual({ installed: true })
       expect(deployedRequire('yaml/package.json').version).toBe(dependency.version)
-      expect(deployedRequire('@foreman-code/contracts').RuntimeBuildIdentitySchema.safeParse({}).success).toBe(false)
+      const verifyContracts = join(destination, 'verify-contracts.mjs')
+      await writeFile(verifyContracts, `import { RuntimeBuildIdentitySchema } from '@foreman-code/contracts'
+process.stdout.write(JSON.stringify({
+  valid: RuntimeBuildIdentitySchema.safeParse(JSON.parse(process.argv[2])).success,
+  invalid: RuntimeBuildIdentitySchema.safeParse({}).success,
+}))
+`)
+      const { stdout } = await execute(process.execPath,
+        [verifyContracts, JSON.stringify(createRuntimeBuildIdentity(repository))], { cwd: destination })
+      expect(JSON.parse(stdout)).toEqual({ valid: true, invalid: false })
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

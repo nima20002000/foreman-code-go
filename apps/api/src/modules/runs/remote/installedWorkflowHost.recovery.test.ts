@@ -467,6 +467,7 @@ describe('installed workflow construction concurrency', () => {
         await release.promise
         return { payload: null }
       }
+      if (payload === 'ordinary') return { payload: { admitted: true } }
       return f.readMain(payload)
     })
     const mainRegistrations: DeviceExtensionRegistration[] = [
@@ -483,7 +484,9 @@ describe('installed workflow construction concurrency', () => {
     f.setApplicationChannel(worker)
     const readers = [main.run(mainSocket.messages[Symbol.asyncIterator](), 2000),
       worker.run(workerSocket.messages[Symbol.asyncIterator](), 1000)]
-    for (const reader of readers) void reader.catch(() => {})
+    for (const reader of readers) void reader.catch(() => {
+      // ignore: channel shutdown is asserted by awaiting all readers below.
+    })
     const create = vi.spyOn(CodexAppServerSessionManager.prototype, 'createSession').mockResolvedValue(f.session)
     vi.spyOn(f.registry, 'reserveLaunch').mockImplementation(owner => f.registry.scope(owner))
     vi.spyOn(CodexAppServerSessionManager.prototype, 'originalSessionLifetime').mockReturnValue({
@@ -511,9 +514,14 @@ describe('installed workflow construction concurrency', () => {
           token: 'unit-main-owned-token', executionId: f.intent.executionId, agentId: f.request.configuration.agentId,
           operationId: f.intent.operationId, attemptId: f.intent.attemptId, bindingHash: f.intent.bindingHash } })
       pending.push(...Array.from({ length: 8 }, () => worker.request(EXECUTION_AUTHORITY_EXTENSION.namespace, 'occupied')))
-      for (const request of pending) void request.catch(() => {})
+      for (const request of pending) void request.catch(() => {
+        // ignore: all requests are drained during cleanup.
+      })
       await occupied.promise
-      await expect(worker.request(EXECUTION_AUTHORITY_EXTENSION.namespace, 'ordinary')).rejects.toThrow('backpressure')
+      const queued = worker.request(EXECUTION_AUTHORITY_EXTENSION.namespace, 'ordinary')
+      pending.push(queued)
+      expect(entered).toBe(8)
+      expect(authority.mock.calls.some(([payload]) => payload === 'ordinary')).toBe(false)
       const status = await f.journal.status(f.intent.operationId)
       if (status.status !== 'known') throw new Error('Expected original operation')
       const command = { schemaVersion: 1, protocolVersion: 1, commandId: 'stop',
@@ -533,6 +541,11 @@ describe('installed workflow construction concurrency', () => {
         receipt: { phase: 'confirmed_terminal', terminal: { kind: 'cancelled' } } } })
       expect(cancel).toHaveBeenCalledOnce()
       expect(create).toHaveBeenCalledOnce()
+      expect(entered).toBe(8)
+      expect(authority.mock.calls.some(([payload]) => payload === 'ordinary')).toBe(false)
+      release.resolve()
+      await expect(queued).resolves.toMatchObject({ payload: expect.anything() })
+      expect(authority.mock.calls.some(([payload]) => payload === 'ordinary')).toBe(true)
       expect(authority.mock.calls.filter(([raw]) => {
         const parsed = ExecutionAuthorityRequestSchema.safeParse(raw)
         return parsed.success && parsed.data.action === 'stop'

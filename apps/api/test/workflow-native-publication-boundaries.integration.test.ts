@@ -83,7 +83,7 @@ describe.skipIf(!postgresEnabled)('workflow native publication boundaries', () =
       await f.engine.start(f.f.run.id)
       expect(delayed).toBe(true)
       await renewal
-      expect(renewalError).toBeUndefined()
+      expect(renewalError).toMatchObject({ code: 'SESSION_LANE_RENEWAL_BUSY' })
       expect((await f.runs.get(f.f.run.id))?.outcome).toBe('succeeded')
       expect(f.provider.counts.starts).toBe(2)
       expect((await f.db.pool.query(`select 1 from workflow_native_proofs where run_id=$1

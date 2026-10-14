@@ -61,7 +61,8 @@ export async function workflowSettlementFixture(db: Awaited<ReturnType<typeof cu
         assertSettlementLocked: async () => { owner!.assertOwned() },
         allowTechnicalRetryLocked: async (transaction, execution) => {
           if (retryPolicy === 'production') return allowTechnicalRetryLocked(transaction, storedRun, version, execution)
-          return execution.attempt === 1 && await hasWorkflowExecutionCapacityLocked(transaction, run.id, version)
+          return execution.result?.outcome === 'failed' && execution.result.error?.retryable === true
+            && execution.attempt === 1 && await hasWorkflowExecutionCapacityLocked(transaction, run.id, version)
         },
         publishLocked: (_transaction, effect, facts, mutate) => publication.publishEffectLocked(effect, facts, mutate),
         assertPublicationReceiptLocked: (_transaction, effect) => publication.assertEffectReceiptLocked(effect),

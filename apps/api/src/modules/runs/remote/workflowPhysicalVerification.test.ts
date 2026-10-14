@@ -44,7 +44,7 @@ const roots:string[]=[],journals:RemoteOperationJournal[]=[]
 afterEach(async()=>{vi.restoreAllMocks();await Promise.all(journals.splice(0).map(journal=>journal.close()));await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})))})
 async function directory() {
   const parent = join(homedir(), '.cache', 'foreman-tmp')
-  await mkdir(parent, { recursive: true })
+  await mkdir(parent, { recursive: true, mode: 0o700 })
   const root = await mkdtemp(join(parent, 'installed-workflow-'))
   roots.push(root)
   return root
@@ -198,12 +198,33 @@ async function physicalFixture(options: {
     if(text.includes('execution_native_closures'))return {rows:[closure],rowCount:1}
     if(text.includes('remote_execution_receipts'))return {rows:[{receipt:retained.receipt}],rowCount:1}
     if(text.includes('from run_repeat_effects'))return {rows:retained.inputBound?[{payload_digest:retained.inputEffectDigest}]:[],rowCount:retained.inputBound?1:0}
-    if(text.includes('join run_graph_sources')){
-      const valid=args[1]==='execution'?retained.entryCanonical:args[1]==='input_binding'?retained.inputCanonical:retained.canonical&&!!retained.proof
-      const digest=args[1]==='execution'?entry.source_digest:args[1]==='input_binding'?retained.inputEffectDigest:repeatDigest(retained.proof,4*1024*1024)
-      return {rows:valid?[{workspace_id:'workspace',workflow_id:'workflow',workflow_version_id:'version',execution_semantics_version:3,protocol_version:1,
-        head_sequence:'2',source_digest:digest,source_semantic_digest:repeatDigest('semantic'),source_sequence:'2',
-        effect_digest:args[4]?digest:null,effect_semantic_digest:args[4]?repeatDigest('semantic'):null,effect_sequence:args[4]?'2':null}]:[],rowCount:valid?1:0}
+    if (text.includes('join run_graph_sources')) {
+      const readReceipt = (parameters: unknown[]) => {
+        const kind = parameters[1]
+        let valid = retained.canonical && !!retained.proof
+        if (kind === 'execution') valid = retained.entryCanonical
+        if (kind === 'input_binding') valid = retained.inputCanonical
+        let digest = retained.inputEffectDigest
+        if (kind === 'execution') digest = entry.source_digest
+        else if (kind !== 'input_binding') digest = repeatDigest(retained.proof, 4 * 1024 * 1024)
+        return valid ? [{ workspace_id: 'workspace', workflow_id: 'workflow', workflow_version_id: 'version',
+          execution_semantics_version: 3, protocol_version: 1, head_sequence: '2', source_digest: digest,
+          source_semantic_digest: repeatDigest('semantic'), source_sequence: '2',
+          effect_digest: parameters[4] ? digest : null,
+          effect_semantic_digest: parameters[4] ? repeatDigest('semantic') : null,
+          effect_sequence: parameters[4] ? '2' : null }] : []
+      }
+      if (text.trimStart().startsWith('select p.ordinal,')) {
+        const requests = JSON.parse(String(args[0])) as Array<{ ordinal: number; run_id: string;
+          source_kind: string; source_id: string; source_revision: string; effect_kind: string; entity_id: string }>
+        const rows = requests.map(request => ({ ordinal: request.ordinal, receipts: readReceipt([
+          request.run_id, request.source_kind, request.source_id, request.source_revision,
+          request.effect_kind, request.entity_id,
+        ]) }))
+        return { rows, rowCount: rows.length }
+      }
+      const rows = readReceipt(args)
+      return { rows, rowCount: rows.length }
     }
     if(text.includes('native_session_lanes'))return {rows:[lane],rowCount:1}
     throw new Error(`Unexpected physical SQL: ${text}`)

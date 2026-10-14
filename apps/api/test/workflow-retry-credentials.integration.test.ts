@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EventEmitter, once } from 'node:events'
 import { CodexHarnessConfigurationSchema } from '@foreman-code/contracts'
+import { DomainError } from '../src/modules/errors.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import { Wave25WorkerCredentialService } from '../src/modules/interactions/wave25/credentials.js'
 import { assertWave25WorkerBinding } from '../src/modules/interactions/wave25/credentialAuthority.js'
@@ -13,7 +14,7 @@ afterEach(() => vi.restoreAllMocks())
 
 // Real V3 retry admission, original-result capture, credential issuance,
 // revocation, renewal and authentication. No authority predicate is mocked.
-describe.skipIf(!postgresEnabled)('ENG06 fresh authority for a same-slot technical retry', () => {
+describe.skipIf(!postgresEnabled)('fresh authority for a same-slot technical retry', () => {
   it.each(['sequential', 'repeat'] as const)('%s: attempt two gets a fresh credential without reviving attempt one', async (form) => {
     // Call-through spy observes the actual issued launch credentials. Tokens stay
     // in memory only; do not include them in provider diagnostics or SQL fixtures.
@@ -49,7 +50,7 @@ describe.skipIf(!postgresEnabled)('ENG06 fresh authority for a same-slot technic
       }>(`select b.principal_id,b.execution_id,p.revoked_at is not null as principal_revoked,
           b.revoked_at is not null as binding_revoked,e.worker_credentials_closed_at is not null as execution_closed,
           b.approval_native_session_id as native_session_id,b.approval_connection_generation::text as generation,
-          p.expires_at>clock_timestamp() as unexpired
+          (p.expires_at is null or p.expires_at>clock_timestamp()) as unexpired
         from worker_credential_bindings b join management_principals p on p.id=b.principal_id
         join harness_executions e on e.id=b.execution_id
         where b.run_id=$1 and b.purpose='workflow' order by e.attempt,b.principal_id`, [f.base.f.run.id])).rows
@@ -110,8 +111,8 @@ describe.skipIf(!postgresEnabled)('ENG06 fresh authority for a same-slot technic
   }, 90000)
 
   it.each(['sequential', 'repeat'] as const)('%s: session proof and launch-credential binding roll back together', async (form) => {
-    const original = WorkflowNativeProofServices.prototype.persistOriginalLocked
-    const injected = new Error('ENG06 injected session-publication commit failure')
+    const original = WorkflowNativeProofServices.prototype.assertNativeUpdateLocked
+    const injected = new DomainError('SESSION_PUBLICATION_REJECTED', 'Injected session-publication commit failure', 409)
     let bindingObserved = false
     let publicationRejected = false
     const transaction = ExclusiveGraphConnection.prototype.transaction
@@ -125,7 +126,7 @@ describe.skipIf(!postgresEnabled)('ENG06 fresh authority for a same-slot technic
         throw error
       }
     })
-    vi.spyOn(WorkflowNativeProofServices.prototype, 'persistOriginalLocked').mockImplementation(async function (
+    vi.spyOn(WorkflowNativeProofServices.prototype, 'assertNativeUpdateLocked').mockImplementation(async function (
       this: WorkflowNativeProofServices, ...args: Parameters<typeof original>
     ) {
       const proof = await original.apply(this, args)
@@ -136,6 +137,7 @@ describe.skipIf(!postgresEnabled)('ENG06 fresh authority for a same-slot technic
           `select approval_native_session_id as native_session_id,approval_connection_generation::text as generation
            from worker_credential_bindings where execution_id=$1 and purpose='workflow' and revoked_at is null`,
           [proof.execution.executionId])).rows
+        expect(rows).toHaveLength(1)
         bindingObserved = rows.length === 1 && rows[0]!.native_session_id === proof.session.nativeSessionId
           && rows[0]!.generation !== null
         throw injected

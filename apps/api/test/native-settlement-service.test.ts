@@ -4,7 +4,7 @@ import { AcceptedWorkflowRunV3Schema, makeCurrentWorkflowFixture } from '@forema
 import type { RunOwnership } from '../src/modules/runs/ownership.js'
 import type { StoredRepeatExecution } from '../src/modules/runs/repeatPostgres.js'
 import type { AcceptedRepeatRunSnapshot } from '../src/modules/runs/repeatStartRead.js'
-import * as executions from '../src/modules/runs/repeatPostgres.js'
+import * as executions from '../src/modules/runs/repeatExecutionRead.js'
 import * as snapshots from '../src/modules/runs/repeatStartRead.js'
 import { assertSettlementLocked } from '../src/modules/runs/repeatSettlementServices.js'
 import { nativeProofModel } from './eng04-native-proof-model.js'
@@ -37,9 +37,9 @@ function fixture() {
     return { run: structuredClone(run), configurations: [], version: { id: run.workflowVersionId },
       stopRequested: false, cleanupPending: false } as unknown as AcceptedRepeatRunSnapshot
   })
-  const reader = vi.spyOn(executions, 'readRepeatExecutionLocked').mockImplementation(async (_sql, _snapshot, id) => {
-    assert.equal(id, f.execution.id)
-    return structuredClone(stored)
+  const reader = vi.spyOn(executions, 'readRepeatExecutionsLocked').mockImplementation(async (_sql, _snapshot, ids) => {
+    assert.deepEqual(ids, [f.execution.id])
+    return [structuredClone(stored)]
   })
   const settle = () => f.connection.transaction((sql) => assertSettlementLocked(sql, run, [f.execution.id], owner))
   const close = async () => { snapshot.mockRestore(); reader.mockRestore(); await f.connection.close() }

@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from 'node:util'
 
 import {
   HarnessExecutionSchema,
+  ExecutionResultSchema,
   NativeSessionReferenceSchema,
   type DurableInteraction,
   type ExecutionResult,
@@ -44,7 +45,7 @@ import { deviceRequestTimeoutMs } from '../devices/deviceRequestRetry.js'
 import { buildHarnessPrompt } from '../harnesses/prompt.js'
 import { isTransientRefreshFailure, maintainCredential } from '../harnesses/credentialHeartbeat.js'
 import { componentLogger } from '../diagnostics/logger.js'
-import { isTransientExecutionError, transientExecutionFailure } from '../runs/executionRetryPolicy.js'
+import { isTransientExecutionError, isTransientExecutionResult, transientExecutionFailure } from '../runs/executionRetryPolicy.js'
 import type { PostgresRunRepository } from '../runs/postgres.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import { capturedWorkflowNativeTime, type WorkflowNativeCapturePort, type WorkflowOriginalNativeSource } from './workflowNativeCapture.js'
@@ -2488,6 +2489,29 @@ export class ApprovalExecutionCoordinator {
     })
   }
 
+  private async resumeWorkflowBudget(observation: WorkflowObservationState):
+    Promise<ApprovalExecutionObservation | undefined> {
+    try {
+      await observation.bookkeeping(() => this.budgets.resume(observation.execution.id))
+      return undefined
+    } catch (error) {
+      if (!(error instanceof DomainError) || error.code !== 'EXECUTION_STOPPED') throw error
+      const { input, repeat } = observation
+      const saved = await observation.bookkeeping(async () => (await input.owner.oneShotConnection()
+        .query<{ failure_result: unknown }>(`select failure_result from approval_execution_state
+          where execution_id=$1 and graph_thread_id=$2`, [observation.execution.id, input.owner.runId])).rows[0])
+      if (!saved?.failure_result) throw error
+      const failure = ExecutionResultSchema.parse(saved.failure_result)
+      if (!isTransientExecutionResult(failure)) throw error
+      // The budget was stopped before negative settlement committed. Finish that
+      // attempt's cleanup before its node can start a replacement.
+      await observation.bookkeeping(() => this.abandonAttempt(input.owner, observation.execution, failure))
+      observation.execution = (await observation.bookkeeping(() => repeat.readExecution(observation.execution.id))).execution
+      await this.finishRepeatExecution(observation.execution, repeat, input.owner, observation.signal)
+      return { state: 'completed', execution: observation.execution, result: observation.execution.result! }
+    }
+  }
+
   private async prepareWorkflowObservation(observation: WorkflowObservationState):
     Promise<ApprovalExecutionObservation | undefined> {
     const { input, repeat } = observation
@@ -2500,7 +2524,8 @@ export class ApprovalExecutionCoordinator {
     }
     await observation.bookkeeping(() => this.budgets.ensure(
       observation.execution.id, input.graphThreadId, input.agentActiveTimeoutMs ?? this.activeTimeoutMs))
-    await observation.bookkeeping(() => this.budgets.resume(observation.execution.id))
+    const settled = await this.resumeWorkflowBudget(observation)
+    if (settled) return settled
     if (input.workHandoffContract) {
       observation.workResultRepairs = await observation.bookkeeping(() => this.runs.readWorkResultRepairAttempt(observation.execution.id, input.owner))
       observation.workflowCorrelation = workResultRepairCorrelation(observation.execution.id, observation.workResultRepairs)

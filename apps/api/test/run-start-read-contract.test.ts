@@ -21,16 +21,22 @@ function rejectsCode(work: () => unknown, code: string) {
   expect(failure).toMatchObject({ code })
 }
 
-describe('ENG-S3-ONLY read discovery and manual admission contracts', () => {
+describe('read discovery and manual Start contracts', () => {
   it('has exactly one current Start arm without adding repeat to the command', () => {
     expect(ManualRunStartInputSchema.parse(start)).toEqual(RunStartV3InputSchema.parse(start))
     expect(Object.hasOwn(ManualRunStartInputSchema.parse(start), 'repeat')).toBe(false)
   })
-  it.each(['workflowVersionId', 'expectedWorkflowRevision', 'expectedAgentConfigurationVersionIds', 'expectedLocationRevision', 'commandId'])(
+  it.each(['workflowVersionId', 'expectedWorkflowRevision', 'expectedAgentConfigurationVersionIds', 'expectedLocationRevision'])(
     'requires the current %s pin', (key) => {
       const input: Record<string, unknown> = { ...start }; delete input[key]
       expect(ManualRunStartInputSchema.safeParse(input).success).toBe(false)
     })
+  it('generates an omitted command ID and preserves an explicit retry ID', () => {
+    const { commandId, ...input } = start
+    expect(ManualRunStartInputSchema.parse(input).commandId).toMatch(/^[0-9a-f-]{36}$/)
+    expect(ManualRunStartInputSchema.parse(start).commandId).toBe(commandId)
+    expect(ManualRunStartInputSchema.safeParse({ ...start, commandId: '' }).success).toBe(false)
+  })
   it.each([undefined, 1, 2, 0, 4, '3', null, '03'])('does not reinterpret retired/unknown tag %s', (executionSemanticsVersion) => {
     expect(ManualRunStartInputSchema.safeParse({ ...start, executionSemanticsVersion }).success).toBe(false)
     expect(CanonicalRunGraphScopeSchema.safeParse({ ...scope, executionSemanticsVersion }).success).toBe(false)
