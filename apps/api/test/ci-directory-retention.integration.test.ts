@@ -21,9 +21,10 @@ it.each(['main', 'device', 'github', 'circleci'] as const)(
     const root = await privateFixtureDirectory('ci-retention-')
     const mainId = randomUUID()
     const deviceId = randomUUID()
-    const hostRef: HostCiComputer['hostRef'] = kind === 'main' ? { kind, mainId }
-      : kind === 'device' ? { kind, mainId, deviceId }
-        : { kind: 'cloud', mainId, provider: kind, slot: 0 }
+    let hostRef: HostCiComputer['hostRef']
+    if (kind === 'main') hostRef = { kind, mainId }
+    else if (kind === 'device') hostRef = { kind, mainId, deviceId }
+    else hostRef = { kind: 'cloud', mainId, provider: kind, slot: 0 }
     const computer: HostCiComputer = { key: `fixture:${kind}`, hostRef, label: 'Fixture computer', priority: 1 }
     const workspaceId = randomUUID()
     await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
@@ -34,7 +35,7 @@ it.each(['main', 'device', 'github', 'circleci'] as const)(
     const runner = new HostCiRunner(root, ports, {})
     const git: GitWorktreePorts = { cloneDirectory: () => root,
       git: async () => ({ code: 0, stdout: '', stderr: '' }) }
-    const cloud = new CloudCi(mainId, { id: kind, cpus: ports.cpus, memoryBytes: ports.memoryBytes,
+    const cloud = new CloudCi(mainId, { id: kind === 'circleci' ? 'circleci' : 'github', cpus: ports.cpus, memoryBytes: ports.memoryBytes,
       userSystemd: { supported: false, reason: 'Fixture provider' }, ready: async () => true } as CloudProvider,
       async () => null, root, ports, git)
     const endpoint = new ProductionHostCiEndpoint(database.pool, mainId, () => ({
@@ -48,11 +49,14 @@ it.each(['main', 'device', 'github', 'circleci'] as const)(
       const active = index === 206
       const collecting = index === 207
       const ref = hostRef.kind === 'cloud' ? { ...hostRef, slot: index % 2 } : hostRef
+      let finishedAt: string | null = time
+      if (active) finishedAt = null
+      else if (recent) finishedAt = new Date(Date.now() - 2 * 86_400_000).toISOString()
       const record = CiRunRecordSchema.parse({ id, workspaceId, groupId: randomUUID(), repository: 'fixture/site',
         commit: 'a'.repeat(40), suite: 'lint', partition: null, state: active ? 'running' : 'passed',
         computer: { hostRef: ref, label: computer.label }, step: null, exitCode: active ? null : 0, message: null,
         queuedAt: time, startedAt: time,
-        finishedAt: active ? null : recent ? new Date(Date.now() - 2 * 86_400_000).toISOString() : time,
+        finishedAt,
         ...(collecting ? { collection: 'pending' } : {}),
         initiator: { principalId: 'fixture-reader', executionId: null } })
       await database.pool.query('insert into ci_runs(id,workspace_id,group_id,state,record) values($1,$2,$3,$4,$5::jsonb)',
