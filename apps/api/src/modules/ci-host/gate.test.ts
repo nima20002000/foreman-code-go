@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import type { CiRunInput, CiRunRecord } from '@foreman-code/contracts'
+import { userSystemdIntegrationFiles, type CiRunInput, type CiRunRecord } from '@foreman-code/contracts'
 import { gatePartStealer, planCiGate } from './gate.js'
 import type { HostCiComputer, HostCiEndpoint } from './service.js'
 
@@ -57,6 +57,40 @@ it.each([1, 2])('excludes a builder with %i occupied slots from gate planning', 
   expect(parts.some(part => part.plannedHostKey === 'builder-paired')).toBe(true)
   expect(parts.filter(part => part.suite === 'integration').flatMap(part => part.files).sort()).toEqual([...files].sort())
 })
+
+it.each([
+  { source: 'runner', clouds: 2 },
+  { source: 'persisted', clouds: 2 },
+  { source: 'runner', clouds: 24 },
+  { source: 'persisted', clouds: 24 },
+])('falls back to an occupied builder for files without a free executor ($source, $clouds clouds)',
+  async ({ source, clouds }) => {
+    const base = fleet(clouds, 'not-ready')
+    const computers = await base.computers()
+    for (const computer of computers.filter(item => item.hostRef.kind === 'cloud')) {
+      computer.userSystemd = { supported: false, reason: 'User systemd unavailable' }
+    }
+    const endpoint: HostCiEndpoint = {
+      computers: async () => computers,
+      request: async (computer, request) => {
+        const response = await base.request(computer, request)
+        return response.operation === 'status' && computer.key === 'builder-main' && source === 'runner'
+          ? { ...response, slotsUsed: 1 } : response
+      },
+    }
+    const hostFile = userSystemdIntegrationFiles[0]!
+    const ordinaryFile = 'apps/api/test/feature.integration.test.ts'
+    const parts = await planCiGate({ suite: 'integration', scope: 'full', gate: true },
+      { files: [hostFile, ordinaryFile], durations: {} },
+      { files: ['apps/api/src/site.test.ts'], durations: {}, heavy: [] }, {}, endpoint,
+      new Map(), 0, undefined, new Map(source === 'persisted' ? [['builder-main', 1]] : []))
+    const integration = parts.filter(part => part.suite === 'integration')
+    expect(integration.find(part => part.files.includes(hostFile)))
+      .toMatchObject({ plannedHostKey: 'builder-main', requiresBuildComputer: true })
+    expect(integration.find(part => part.files.includes(ordinaryFile))?.plannedHostKey)
+      .toMatch(clouds === 2 ? /^builder-main$/ : /^cloud-/)
+    expect(integration.flatMap(part => part.files).sort()).toEqual([hostFile, ordinaryFile].sort())
+  })
 
 it('plans a production-sized gate within a second', async () => {
   const files = Array.from({ length: 800 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)
