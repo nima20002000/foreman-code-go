@@ -1,6 +1,6 @@
 import type pg from 'pg'
 import { CI_FAILURE_HISTORY_LIMITS, CI_LOG_MAX_BYTES, CI_RUN_JOBS_LIMIT, CiListOutputSchema, CiRunRecordSchema,
-  type CiFailureHistory, type CiListOutput, type CiRunRecord, type CiTestResults, type CiTestStatus,
+  type CiFailureHistory, type CiGetInput, type CiListOutput, type CiRunRecord, type CiTestResults, type CiTestStatus,
   type OperatorCiListInput } from '@foreman-code/contracts'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { requireAuthorization } from '../access/policy.js'
@@ -13,6 +13,7 @@ import { RUN_CI_JOBS_SQL, runCiJob, storedCiTestResults, type RunCiJobRow } from
 import type { HostCiComputer, HostCiEndpoint } from './serviceTypes.js'
 import { readHostCiLog } from './logRead.js'
 import { ciExecutionRunId } from './executionAttempt.js'
+import { CiTicketChanges } from './ticketChanges.js'
 
 /** CI reads are idempotent: one retry after a lock or statement timeout, then a typed retryable error. */
 export async function retryRead<T>(work: () => Promise<T>): Promise<T> {
@@ -29,6 +30,7 @@ export async function retryRead<T>(work: () => Promise<T>): Promise<T> {
 }
 
 type HostRef = HostCiComputer['hostRef']
+type TicketReadInput = CiGetInput & { workspaceId?: string | undefined }
 interface CiReadHost {
   endpoint: HostCiEndpoint
   readRun(id: string, workspaceId: string): Promise<CiRunRecord>
@@ -38,8 +40,14 @@ interface CiReadHost {
 
 /** Authorized ticket, test and log reads shared by HTTP and Operator MCP. */
 export class HostCiReads {
+  private readonly changes: CiTicketChanges
+
   constructor(private readonly pool: pg.Pool, private readonly authority: CiAuthority,
-    private readonly host: CiReadHost) {}
+    private readonly host: CiReadHost) {
+    this.changes = new CiTicketChanges(pool)
+  }
+
+  close() { this.changes.close() }
 
   private async queuePosition(id: string): Promise<number | undefined> {
     const rows = (await this.pool.query<{ id: string; position: number }>(`select id,position from
@@ -48,12 +56,30 @@ export class HostCiReads {
     return rows[0]?.position
   }
 
-  async get(caller: ManagementPrincipal, input: { workspaceId?: string | undefined; ticketId: string
-    testStatus?: CiTestStatus[] | undefined }) {
+  async get(caller: ManagementPrincipal, input: TicketReadInput, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    const initial = await this.snapshot(caller, input)
+    if (!input.waitSeconds || !['queued', 'starting', 'running'].includes(initial.run.state)) return initial
+    const subscription = this.changes.subscribe(initial.run.workspaceId, input.ticketId, input.waitSeconds, signal)
+    try {
+      await subscription.ready
+      // Read again after LISTEN is active so changes during subscription setup cannot be missed.
+      const subscribed = await this.snapshot(caller, input)
+      signal?.throwIfAborted()
+      if (subscribed.run.state !== initial.run.state || subscribed.run.step !== initial.run.step) return subscribed
+      await subscription.changed
+      signal?.throwIfAborted()
+      return await this.snapshot(caller, input)
+    } finally {
+      subscription.close()
+    }
+  }
+
+  private async snapshot(caller: ManagementPrincipal, input: TicketReadInput) {
     return retryRead(async () => {
       const scope = await this.authority.resolve(caller, input.workspaceId, CI_GET_ACTIONS)
       const row = (await this.pool.query<{ record: unknown; log_tail: string }>(
-        'select record,log_tail from ci_runs where id=$1 and workspace_id=$2',
+        `select record${input.logTail === false ? '' : ',log_tail'} from ci_runs where id=$1 and workspace_id=$2`,
         [input.ticketId, scope.workspaceId])).rows[0]
       if (!row) throw new DomainError('CI_RUN_NOT_FOUND', 'No such CI run in this workspace.', 404)
       const run = CiRunRecordSchema.parse(row.record)
@@ -65,7 +91,8 @@ export class HostCiReads {
       const position = run.state === 'queued' ? await this.queuePosition(run.id) : undefined
       const smokeComputer = (await this.host.smokeTargets([run])).get(run.groupId)
       return { run: { ...run, ...(smokeComputer ? { smokeComputer } : {}) },
-        partitions: group.length > 1 ? group : undefined, logTail: row.log_tail,
+        partitions: group.length > 1 ? group : undefined,
+        ...(input.logTail === false ? {} : { logTail: row.log_tail }),
         queue: position ? { position, reason: ciQueueReason(run) } : null,
         group: { groupId: run.groupId, state: ciGroupState(group) },
         ...(run.gate ? { gate: ciGateReport(group) } : {}),

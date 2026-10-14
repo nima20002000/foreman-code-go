@@ -34,7 +34,10 @@ export const CI_TOOL_DESCRIPTIONS = {
     + 'reason while queued, expectedDurationMs, cachedFiles, and supersededBy (follow the replacement ticket and its '
     + 'partitions). Gate tickets add per-computer and per-suite expected and actual durations. testStatus (passed, failed, '
     + 'skipped) adds structured test results, each failure with its message and path:line:column. A background dispatcher '
-    + 'refreshes state about every second; ci_get never waits. A part fails after 180 seconds without output or after '
+    + 'refreshes state about every second. waitSeconds (0–300, default 0) waits server-side until this ticket’s state '
+    + 'or step changes, it is terminal, or the deadline; request cancellation ends the wait. Use waitSeconds=300 and '
+    + 'logTail=false while polling to omit the 32 KiB tail; read logs once at the end with ci_logs_read. '
+    + 'Without logTail=false the tail is included as before. A part fails after 180 seconds without output or after '
     + 'max(3 \u00d7 expectedDurationMs, 120 seconds); a cloud part that fails before its first test is retried once on another '
     + 'slot (setupRetry). A failed ticket adds failureHistory: how many of the latest gate runs that ran each failed '
     + 'test also failed it, so a known flake is recognized. Agents with ci_get read every ticket of their workspace.',
@@ -58,6 +61,7 @@ export const CI_TOOLS = ['ci_run', 'ci_get', 'ci_computers_list', 'ci_cancel', '
 type CiTool = typeof CI_TOOLS[number]
 interface CiContext {
   principal: ManagementPrincipal
+  signal?: AbortSignal
   services: { ci?: HostCiService; commands: PostgresCommandCoordinator }
 }
 const actions: Record<CiTool, ManagementAction[]> = {
@@ -107,7 +111,8 @@ export function registerCiTools(server: McpServer, context: CiContext) {
     inputSchema: operator ? OperatorCiGetInputSchema : CiGetInputSchema,
     outputSchema: CiGetOutputSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, input => invoke('ci_get', () => ci.get(context.principal, input)))
+  }, (input, extra) => invoke('ci_get', () => ci.get(context.principal, input,
+    context.signal ? AbortSignal.any([context.signal, extra.mcpReq.signal]) : extra.mcpReq.signal)))
   if (available('ci_computers_list')) server.registerTool('ci_computers_list', {
     description: CI_TOOL_DESCRIPTIONS.ci_computers_list,
     inputSchema: operator ? OperatorCiGetInputSchema.pick({ workspaceId: true }) : z.object({}).strict(),
