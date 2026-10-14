@@ -213,8 +213,27 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
       const blocked = await f.call(deniedToken, 'ci_get', input)
       expect(blocked.result?.isError).toBe(true)
       expect(graphRpcValue(blocked.result)).toMatchObject({ error: { code: 'TOOL_NOT_ENABLED' } })
-      const outsideWorkspace = await f.call(readerToken, 'ci_get', { ...input, workspaceId: 'other-workspace' })
-      expect(outsideWorkspace.result?.isError).toBe(true)
+      const ignoredWorkspace = CiGetOutputSchema.parse(await f.value(readerToken, 'ci_get', {
+        ...input, workspaceId: 'other-workspace',
+      }))
+      expect(ignoredWorkspace.run).toEqual(original)
+      const foreignWorkspaceId = randomUUID()
+      const foreignTicketId = randomUUID()
+      const foreign = CiRunRecordSchema.parse({ ...original, id: foreignTicketId,
+        groupId: randomUUID(), workspaceId: foreignWorkspaceId })
+      await f.database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)',
+        [foreignWorkspaceId, JSON.stringify({ id: foreignWorkspaceId, name: 'Other CI workspace' })])
+      await f.database.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record)
+        values($1,$2,$3,$4,$5::jsonb)`,
+      [foreign.id, foreign.workspaceId, foreign.groupId, foreign.state, JSON.stringify(foreign)])
+      for (const tool of ['ci_get', 'ci_logs_read', 'ci_cancel']) {
+        const outsideWorkspace = await f.call(readerToken, tool, { ticketId: foreignTicketId })
+        expect(outsideWorkspace.result?.isError).toBe(true)
+        expect(graphRpcValue(outsideWorkspace.result)).toMatchObject({ error: { code: 'CI_RUN_NOT_FOUND' } })
+      }
+      const persistedForeign = (await f.database.pool.query<{ record: unknown }>(
+        'select record from ci_runs where id=$1', [foreignTicketId])).rows[0]!
+      expect(CiRunRecordSchema.parse(persistedForeign.record)).toEqual(foreign)
       const waiting = await f.submit({ suite: 'install' })
       expect(CiCancelOutputSchema.parse(await f.value(readerToken, 'ci_cancel', { ticketId: waiting.ticketId })))
         .toMatchObject({ run: { id: waiting.ticketId, state: 'canceled' } })

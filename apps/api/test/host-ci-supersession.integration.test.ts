@@ -129,7 +129,7 @@ it('retries superseded running cleanup before releasing its computer slot', asyn
   } finally { await f.close() }
 })
 
-it('supersedes detached Agent commits only within that execution through authenticated MCP', async () => {
+it('supersedes detached Agent commits only within that execution while reading workspace tickets through MCP', async () => {
   const f = await fixture({ agent: true, supersession: { branch: () => null, isAncestor: () => true } })
   f.computers.splice(0)
   try {
@@ -150,10 +150,11 @@ it('supersedes detached Agent commits only within that execution through authent
     const replacement = await renewed.callTool({ name: 'ci_get', arguments: { ticketId: next.ticketId } })
     expect(CiGetOutputSchema.parse(decodeMcpToolResult(replacement)).run.initiator.principalId)
       .not.toBe(CiGetOutputSchema.parse(decodeMcpToolResult(read)).run.initiator.principalId)
-    expect(CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: operator.ticketId })).run.state)
-      .toBe('queued')
-    const denied = await f.agent!.callTool({ name: 'ci_get', arguments: { ticketId: operator.ticketId } })
-    expect(denied.isError).toBe(true)
+    const operatorRead = CiGetOutputSchema.parse(await f.value(f.operator, 'ci_get', { ticketId: operator.ticketId }))
+    expect(operatorRead.run.state).toBe('queued')
+    const workspaceRead = await f.agent!.callTool({ name: 'ci_get', arguments: { ticketId: operator.ticketId } })
+    expect(workspaceRead.isError).not.toBe(true)
+    expect(CiGetOutputSchema.parse(decodeMcpToolResult(workspaceRead))).toEqual(operatorRead)
   } finally { await f.close() }
 })
 
