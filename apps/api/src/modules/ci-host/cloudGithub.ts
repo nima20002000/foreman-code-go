@@ -14,6 +14,8 @@ const failedRead = (action: string) => (detail: string) => `GitHub Actions did n
 export class GitHubRest {
   constructor(private readonly http: CloudHttp) {}
 
+  get transport() { return this.http.transport }
+
   list(mirror: string, branch: string) {
     return this.http.operation(15_000, () => this.listRuns(mirror, branch))
   }

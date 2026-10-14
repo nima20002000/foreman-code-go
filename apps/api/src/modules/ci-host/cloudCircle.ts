@@ -30,6 +30,8 @@ export class CircleRest {
   private readonly jobs = new Map<string, number>()
   constructor(private readonly http: CloudHttp) {}
 
+  get transport() { return this.http.transport }
+
   private async read(path: string, args: string[], timeoutMs: number) {
     const response = await this.http.request(path, { timeoutMs })
     if (!response) return null
