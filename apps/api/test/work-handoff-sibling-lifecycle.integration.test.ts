@@ -89,13 +89,18 @@ describe.skipIf(!postgresEnabled)('handed-off execution lifetimes', () => {
         expect(activations.rows).toHaveLength(4)
         expect(activations.rows.every(activation => activation.state === 'completed')).toBe(true)
         expect(final.cleanupPending).toBe(false)
-        expect(final.executions).toHaveLength(4)
+        expect(final.executions).toHaveLength(failPreflight ? 6 : 4)
         for (const node of [coordinator, first, queued]) {
           expect(final.executions.find(execution => execution.workflowNodeId === node.id))
             .toMatchObject({ state: 'completed', result: { outcome: 'succeeded' } })
           expect(f.provider.startedNodes.filter(id => id === node.id)).toHaveLength(1)
         }
         if (failPreflight) {
+          const failedAttempts = final.executions.filter(execution => execution.workflowNodeId === starting.id)
+          expect(failedAttempts).toHaveLength(3)
+          expect(failedAttempts.every(execution => execution.state === 'completed'
+            && execution.result?.outcome === 'failed'
+            && execution.result.error?.code === 'APP_MCP_PREFLIGHT_FAILED')).toBe(true)
           expect(final.run.result).toMatchObject({ outcome: 'failed', error: { code: 'APP_MCP_PREFLIGHT_FAILED' } })
           expect(final.executions.find(execution => execution.workflowNodeId === starting.id))
             .toMatchObject({ state: 'completed', result: { outcome: 'failed', error: { code: 'APP_MCP_PREFLIGHT_FAILED' } } })
@@ -166,8 +171,12 @@ describe.skipIf(!postgresEnabled)('handed-off execution lifetimes', () => {
       expect(result.run).toMatchObject({ executionState: 'completed', outcome: 'failed' })
       expect([...codes.values()]).toContain(result.run.result.error.code)
       expect(result.cleanupPending).toBe(false)
-      expect(result.executions).toHaveLength(4)
+      expect(result.executions).toHaveLength(8)
       for (const [nodeId, code] of codes) {
+        const attempts = result.executions.filter(execution => execution.workflowNodeId === nodeId)
+        expect(attempts).toHaveLength(3)
+        expect(attempts.every(execution => execution.state === 'completed'
+          && execution.result.outcome === 'failed' && execution.result.error?.code === code)).toBe(true)
         expect(result.executions.find(execution => execution.workflowNodeId === nodeId))
           .toMatchObject({ state: 'completed', result: { outcome: 'failed', error: { code } } })
         expect(f.provider.startedNodes).not.toContain(nodeId)

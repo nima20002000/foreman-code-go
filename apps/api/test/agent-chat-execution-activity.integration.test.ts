@@ -26,7 +26,7 @@ import { repeatDigest, repeatId } from '../src/modules/runs/repeatResolution.js'
 import { createWorkflowRepositoryServices } from '../src/modules/runs/workflowRepositoryServices.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { PostgresWorkflowRepository } from '../src/modules/workflows/postgres.js'
-import { graphFixture, graphHeaders, graphRpc, graphRpcValue, ownedGraph } from './eng04-graph-composition-fixture.js'
+import { graphFixture, graphHeaders, graphRpc, graphRpcValue, ownedGraph, changeRunState } from './eng04-graph-composition-fixture.js'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { currentDatabase } from './helpers/eng04CurrentDatabase.js'
 import { expectMcpAccessDenied } from './helpers/deniedMcpTool.js'
@@ -203,6 +203,7 @@ describe('Persisted execution activity through HTTP and authenticated MCP', { ti
     }
     return { graph, executionId: candidate.id, transfers, managers, append, state, http, mcpPage,
       seedNewerExecutions: async () => {
+        await changeRunState(database, graph, 'running')
         const stored = (await database.pool.query<{ created_at: Date }>(
           'select created_at from harness_executions where id=$1', [candidate.id])).rows[0]!
         // Terminal observations are synthetic; each state and resolution still receives a graph publication.

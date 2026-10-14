@@ -39,10 +39,11 @@ describe.skipIf(!postgresEnabled)('conversation snapshot consistency', () => {
         get(target, property) {
           if (property === 'connect') return async () => {
             const client = await target.connect()
+            const query = client.query.bind(client)
             return new Proxy(client, {
               get(connection, member) {
                 if (member === 'query') return async (...args: unknown[]) => {
-                  const result = await Reflect.apply(connection.query, connection, args) as pg.QueryResult
+                  const result = await Reflect.apply(query, connection, args) as pg.QueryResult
                   if (!interleaved && result.rows.some(row => row.id === conversation.id && row.agent_key)) {
                     interleaved = true
                     expect(await activity.append(conversation.id, 'request',

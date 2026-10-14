@@ -109,10 +109,13 @@ describe('ENG07 R01/R02 public execution-schema retirement', () => {
   })
 
   it('retains strict pin requirements and rejects missing edge kinds, legacy routes and joins', () => {
-    for (const field of ['commandId', 'workflowVersionId', 'expectedWorkflowRevision',
+    for (const field of ['workflowVersionId', 'expectedWorkflowRevision',
       'expectedAgentConfigurationVersionIds', 'expectedLocationRevision']) {
       expect(ManualRunStartInputSchema.safeParse({ ...start, [field]: undefined }).success).toBe(false)
     }
+    const { commandId, ...withoutCommand } = start
+    expect(ManualRunStartInputSchema.parse(withoutCommand).commandId).toEqual(expect.any(String))
+    expect(ManualRunStartInputSchema.parse(start).commandId).toBe(commandId)
     expect(ManualRunStartInputSchema.safeParse({ ...start, draftId: 'draft-without-revision' }).success).toBe(false)
     expect(ManualRunStartInputSchema.safeParse({ ...start, expectedDraftRevision: 1 }).success).toBe(false)
     for (const change of [{ kind: undefined }, { route: { outcomes: ['succeeded'], maxTraversals: 2 } }, { maxTraversals: 2 }]) {

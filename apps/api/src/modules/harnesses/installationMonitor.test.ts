@@ -250,3 +250,26 @@ it('defers automatic qualification while busy and retries its unchanged generati
     vi.useRealTimers()
   }
 })
+
+
+it('retries discovery for a connected Worker whose first inventory was unavailable', async () => {
+  const binding = { mainId: 'main', deviceId: 'worker', workerInstallationId: 'installation' }
+  const workerLifetime = new AbortController()
+  const request = vi.fn(async () => ({ payload: { installations: [] } }))
+  const collect = vi.fn(async () => {})
+  const registry = { observeInstallations: () => {}, installations: { list: () => [] }, refreshMain: async () => {} }
+  const endpoint = { captureRequest: () => ({ binding, request }) }
+  const monitor = new HarnessInstallationMonitor(registry as never,
+    { recheckInstallation: async () => {} } as never, () => endpoint as never,
+    collect, async () => {}, vi.fn())
+  try {
+    monitor.start('main')
+    monitor.workerReady(binding as never, workerLifetime.signal)
+    await monitor.refresh()
+    expect(request).toHaveBeenCalledOnce()
+    expect(collect).toHaveBeenCalledWith(binding, { installations: [] })
+    workerLifetime.abort()
+    await monitor.refresh()
+    expect(request).toHaveBeenCalledOnce()
+  } finally { await monitor.close() }
+})

@@ -23,7 +23,7 @@ async function workerFixture() {
   const replay = new ActivityProductionReplay()
   const infrastructure = replay.infrastructure()
   if (infrastructure.mode !== 'replay') throw new Error('Expected recorded transport')
-  const manager = new CodexAppServerSessionManager('/recorded-codex', undefined, undefined,
+  const manager = new CodexAppServerSessionManager('/recorded-no-native-codex', undefined, undefined,
     undefined, 'none', undefined, infrastructure.codex)
   const start = input('/project')
   delete start.environment
@@ -137,7 +137,7 @@ describe('native event retention recovery', () => {
     const replay = new ActivityProductionReplay()
     const infrastructure = replay.infrastructure()
     if (infrastructure.mode !== 'replay') throw new Error('Expected recorded transport')
-    const manager = new CodexAppServerSessionManager('/recorded-codex', undefined, undefined,
+    const manager = new CodexAppServerSessionManager('/recorded-no-native-codex', undefined, undefined,
       undefined, 'none', undefined, infrastructure.codex)
     try {
       const start = input('/project')

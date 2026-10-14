@@ -59,11 +59,17 @@ describe('ENG-S3-ONLY current definition and shared authoring policy', () => {
   it.each([1, 2, 4, '3', null])('creation rejects an explicit retired/unknown tag %s', (executionSemanticsVersion) => {
     expect(CurrentWorkflowCreateInputSchema.safeParse({ workspaceId: f.scope.workspaceId, commandId: randomUUID(), name: 'Current', executionSemanticsVersion }).success).toBe(false)
   })
-  it.each(['expectedRevision', 'expectedWorkflowVersionId', 'expectedAgentConfigurationVersionIds', 'commandId'])(
+  it.each(['expectedRevision', 'expectedWorkflowVersionId', 'expectedAgentConfigurationVersionIds'])(
     'requires the explicit %s Save pin', (key) => {
       const value: Record<string, unknown> = input(); delete value[key]
       expect(CurrentWorkflowSaveInputSchema.safeParse(value).success).toBe(false)
     })
+  it('generates a Save command ID when omitted and preserves an explicit ID', () => {
+    const { commandId, ...value } = input()
+    expect(CurrentWorkflowSaveInputSchema.parse(value).commandId).toEqual(expect.any(String))
+    expect(CurrentWorkflowSaveInputSchema.parse(input()).commandId).toBeTruthy()
+    expect(CurrentWorkflowSaveInputSchema.parse({ ...value, commandId }).commandId).toBe(commandId)
+  })
   it('retains current DAG, named-result, configuration, role and scope guards without repeat', () => {
     expect(ExecutableWorkflowV3Schema.safeParse({ version: f.version, configurations: [] }).success).toBe(false)
     expect(WorkflowVersionV3Schema.safeParse({ ...f.version, definition: { ...f.version.definition, workspaceId: 'other' } }).success).toBe(false)

@@ -205,16 +205,17 @@ describe.skipIf(!postgresEnabled)('workspace location preserves host bindings', 
           relativePath: policy.relativePath, accessMode: policy.accessMode,
           expectedLocationRevision: revision, expectedRootPolicyRevision: Number(policy.rootPolicyRevision) }
         const saved = WorkspaceBoundLocationSetResultSchema.parse(await call('workspace_root_location_set', input))
-        revision++
+        if (host === 'main') revision++
         expect(saved.value).toMatchObject({ evidence: 'bound', locationRevision: revision,
           binding: { hostRef: policy.hostRef, rootPolicyRevision: '2' } })
         expect(await call('workspace_root_location_set', input)).toEqual({ ...saved, replayed: true })
         const stale = await f.client.callTool({ name: 'workspace_root_location_set', arguments: {
-          ...input, commandId: randomUUID(), expectedRootPolicyRevision: 2,
+          ...input, commandId: randomUUID(),
         } })
         expect(stale.isError).toBe(true)
         expect(stale.content).toEqual([{
-          type: 'text', text: expect.stringContaining('"code":"LOCATION_REVISION_CONFLICT"'),
+          type: 'text', text: expect.stringContaining(host === 'main'
+            ? '"code":"LOCATION_REVISION_CONFLICT"' : '"code":"ROOT_POLICY_REVISION_CONFLICT"'),
         }])
         expect(await choices()).toEqual(before)
         expect(await jobChoices()).toEqual(jobsBefore)
@@ -231,7 +232,9 @@ describe.skipIf(!postgresEnabled)('workspace location preserves host bindings', 
         const read = WorkspaceBoundLocationReadbackSchema.parse(await call('workspace_root_location_get', {
           workspaceId: f.workspaceId,
         }))
-        expect(read).toEqual(saved.value)
+        if (host === 'main') expect(read).toEqual(saved.value)
+        else expect(read).toMatchObject({ evidence: 'bound', locationRevision: revision,
+          binding: { hostRef: f.placement.local.hostRef, rootPolicyRevision: '1' } })
         expect(await call('workspace_get', { workspaceId: f.workspaceId })).toMatchObject({
           executionLocation: read.executionLocation, locationRevision: read.locationRevision,
           locationValidation: { status: 'ready' },
@@ -247,7 +250,7 @@ describe.skipIf(!postgresEnabled)('workspace location preserves host bindings', 
           f.disconnect(true)
           expect(await call('workspace_get', { workspaceId: f.workspaceId })).toMatchObject({
             executionLocation: read.executionLocation,
-            locationValidation: { status: 'unavailable', error: { code: 'ROOT_HOST_UNAVAILABLE' } },
+            locationValidation: { status: 'ready' },
           })
           f.disconnect(false)
           expect(await call('workspace_get', { workspaceId: f.workspaceId }))

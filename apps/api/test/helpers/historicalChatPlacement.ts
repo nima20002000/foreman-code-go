@@ -12,8 +12,6 @@ export async function historicalChatPlacement(
 ) {
   const fixture = await remoteReviewProduction({
     workflow: 'single', parallelSetup: true,
-    // Reconnect discovery remains immediate; these cases do not change installed payloads.
-    installationRefreshIntervalMs: 60_000,
     ...options,
   })
   try {

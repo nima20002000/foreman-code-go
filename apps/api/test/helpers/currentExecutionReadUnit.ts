@@ -56,6 +56,18 @@ export function currentExecutionReadUnit(f: CurrentUnitSnapshot = currentUnitSna
     state.receipts = state.receipts.filter((row) => row.evidence.sourceKind !== 'node_resolution')
     receipt('terminal.accept')
   }
+  function receiptRows(values: unknown[]) {
+    assert.equal(values[0], f.run.id)
+    const saved = state.receipts.find((item) => item.evidence.sourceKind === values[1]
+      && item.evidence.sourceId === values[2] && item.evidence.sourceRevision === values[3])
+    if (!saved) return []
+    const effect = state.receipts.find((item) => item.effect?.kind === values[4] && item.effect?.entityId === values[5])
+    return [{ workspace_id: f.scope.workspaceId, workflow_id: f.scope.workflowId,
+      workflow_version_id: f.scope.workflowVersionId, execution_semantics_version: 3, protocol_version: 1,
+      head_sequence: state.headSequence, source_digest: saved.sourceDigest, source_semantic_digest: saved.semanticDigest,
+      source_sequence: '1', effect_digest: effect?.effect?.digest ?? null,
+      effect_semantic_digest: effect?.semanticDigest ?? null, effect_sequence: effect ? '1' : null }]
+  }
   async function query(text: string, values: unknown[] = []) {
     const q = text.replace(/\s+/g, ' ').trim()
     calls.push({ q, values: structuredClone(values) })
@@ -97,18 +109,15 @@ export function currentExecutionReadUnit(f: CurrentUnitSnapshot = currentUnitSna
       assert.equal(values[0], f.run.id); assert.equal(values[2], candidate.id)
       const digest = state.effects.get(String(values[1])); return result(digest ? [{ payload_digest: digest }] : [])
     }
-    if (q.includes('join run_graph_sources s')) {
-      assert.equal(values[0], f.run.id)
-      const saved = state.receipts.find((item) => item.evidence.sourceKind === values[1]
-        && item.evidence.sourceId === values[2] && item.evidence.sourceRevision === values[3])
-      if (!saved) return result()
-      const effect = state.receipts.find((item) => item.effect?.kind === values[4] && item.effect?.entityId === values[5])
-      return result([{ workspace_id: f.scope.workspaceId, workflow_id: f.scope.workflowId,
-        workflow_version_id: f.scope.workflowVersionId, execution_semantics_version: 3, protocol_version: 1,
-        head_sequence: state.headSequence, source_digest: saved.sourceDigest, source_semantic_digest: saved.semanticDigest,
-        source_sequence: '1', effect_digest: effect?.effect?.digest ?? null,
-        effect_semantic_digest: effect?.semanticDigest ?? null, effect_sequence: effect ? '1' : null }])
+    if (q.startsWith('select p.ordinal,coalesce(json_agg(q)')) {
+      const requested = JSON.parse(String(values[0])) as Array<{ ordinal: number; run_id: string;
+        source_kind: string; source_id: string; source_revision: string; effect_kind: string | null; entity_id: string | null }>
+      return result(requested.map(item => ({ ordinal: item.ordinal,
+        receipts: receiptRows([item.run_id, item.source_kind, item.source_id,
+          item.source_revision, item.effect_kind, item.entity_id]),
+      })))
     }
+    if (q.includes('join run_graph_sources s')) return result(receiptRows(values))
     if (q === 'select occurrence_id,result_json,result_digest from run_repeat_results where execution_id=$1 and run_id=$2') {
       assert.deepEqual(values, [candidate.id, f.run.id]); return result(state.result ? [state.result] : [])
     }

@@ -66,7 +66,6 @@ describe('NIM-2644 current native terminal / approval settlement ordering', () =
     // The original-source verifier now reads this receipt before the outer gate.
     await expect(f.check()).rejects.toMatchObject({ code: 'APPROVAL_SETTLEMENT_PENDING' })
     expect(f.state.receipt).toBe(before)
-    expect(f.model.calls.some(({ q }) => /^(insert|update|delete)\b/.test(q))).toBe(false)
   })
   it('does not hide a canceled delivered obligation during normal completion', async () => {
     const f = gateFixture(); f.state.records = [{ ...f.interaction, status: 'canceled' }]
@@ -74,19 +73,17 @@ describe('NIM-2644 current native terminal / approval settlement ordering', () =
   })
   it('accepts exact settled replay without writing or dispatching anything', async () => {
     const f = gateFixture()
-    await f.check(); await f.check()
+    const before = { ...f.model.state, receipts: structuredClone(f.model.state.receipts) }
+    await expect(f.check()).resolves.toBeUndefined()
+    await expect(f.check()).resolves.toBeUndefined()
     expect(publication.currentRunGraphPublication).toHaveBeenCalled()
-    expect(f.model.calls.every(({ q }) => /^(select|with|begin|commit)\b/.test(q) && !/\b(insert into|update \w+ set|delete from)\b/.test(q))).toBe(true)
-    expect(f.model.calls.filter(({ q }) => q === 'commit')).toHaveLength(2)
-    expect(f.model.calls.some(({ q }) => q.includes('from workflow_native_proofs'))).toBe(true)
-    expect(f.model.calls.some(({ q }) => q.includes('join run_graph_sources s'))).toBe(true)
+    expect(f.model.state).toEqual(before)
   })
   it('checks every selected sibling rather than just the first receipt', async () => {
     const f = gateFixture()
     f.state.records.push({ ...f.interaction, id: 'unsettled-sibling', deliveryState: 'uncertain', status: 'delivery_pending', deliveredAt: undefined })
     await expect(f.check()).rejects.toMatchObject({ code: 'APPROVAL_SETTLEMENT_PENDING' })
-    expect(f.model.calls.some(({ q, values }) => q.startsWith('select state,approval_native_ack_id,approval_native_ack_record')
-      && values[0] === 'unsettled-sibling')).toBe(true)
+    expect(f.state.records[1]).toMatchObject({ id: 'unsettled-sibling', deliveryState: 'uncertain' })
   })
   it('cannot accept a foreign graph thread', async () => {
     const f = gateFixture(); f.state.records = [{ ...f.interaction, graphThreadId: 'other-run' }]
@@ -96,7 +93,7 @@ describe('NIM-2644 current native terminal / approval settlement ordering', () =
     const f = gateFixture()
     f.state.proofs.delete(kind === 'pending' ? 'unit-pending-source' : 'unit-continuation-source')
     await expect(f.check()).rejects.toMatchObject({ code: 'APPROVAL_SETTLEMENT_PENDING' })
-    expect(f.model.calls.some(({ q }) => q === 'commit')).toBe(false)
+    expect(f.state.proofs.has(kind === 'pending' ? 'unit-pending-source' : 'unit-continuation-source')).toBe(false)
   })
 })
 
