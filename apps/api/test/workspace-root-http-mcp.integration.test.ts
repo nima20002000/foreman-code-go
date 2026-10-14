@@ -23,6 +23,7 @@ import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { WorkspaceManagementService } from '../src/modules/workspaces/management.js'
 import { cleanupWorkspaceProjectFolders } from '../src/modules/workspaces/projectFolderCleanup.js'
+import { withTransaction } from '../src/infrastructure/transaction.js'
 
 /** Actual Postgres/main installation/grants/native component-safe temporary FS.
  * Synthetic human-approved main configuration; no laptop/provider acceptance. */
@@ -53,10 +54,12 @@ describe.skipIf(!postgresEnabled)('W08 independent workspace root HTTP/MCP', () 
           keyRevision: registration.keyRevision, authorizationRevision: registration.authorizationRevision }
       }, { request: async () => { throw new Error('This synthetic main fixture has no remote worker') } })
       const policies = new PostgresWorkspaceRootPolicies(mainId, hosts)
-      const sql = await db.pool.connect()
-      try { await sql.query('begin'); await policies.publishApprovedHostConfiguration(sql, allowlist, { mainId, hostRef: allowlist.hostRef,
-        applicationInstallationId: mainId, configurationRevision: '1', configurationDigest: sourceSha256(Buffer.from(JSON.stringify(allowlist))) }); await sql.query('commit') }
-      catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
+      await withTransaction(db.pool, async sql => {
+        await policies.publishApprovedHostConfiguration(sql, allowlist, {
+          mainId, hostRef: allowlist.hostRef, applicationInstallationId: mainId, configurationRevision: '1',
+          configurationDigest: sourceSha256(Buffer.from(JSON.stringify(allowlist))),
+        })
+      })
       const service = new WorkspaceBoundLocationService(db.pool, commands, policies)
       const locations = new WorkspaceLocationService(db.pool, commands, runtimePath, 'runner-local')
       locations.setRootPolicies(policies)

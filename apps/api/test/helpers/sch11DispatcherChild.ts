@@ -104,7 +104,9 @@ if (process.send) {
   process.once('message', (input: Sch11ChildInput) => {
     void run(input).catch(async (error: unknown) => {
       process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`)
-      await send({ kind: 'error', message: error instanceof Error ? error.message : String(error) }).catch(() => undefined)
+      await send({ kind: 'error', message: error instanceof Error ? error.message : String(error) }).catch(() => {
+        // ignore: The parent may have disconnected; stderr already reports the original failure.
+      })
       process.exitCode = 1
     }).finally(() => { if (process.connected) process.disconnect?.() })
   })

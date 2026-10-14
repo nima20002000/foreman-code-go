@@ -6,6 +6,7 @@ import type { ArtifactEdgeBinding } from '@foreman-code/contracts/artifact-edges
 import { artifactEdgeMigrationSql } from '../src/infrastructure/artifactEdgeMigration.js'
 import { PostgresArtifactEdgeRepository } from '../src/modules/files/distributed/postgres.js'
 import { DomainError } from '../src/modules/errors.js'
+import { withTransaction } from '../src/infrastructure/transaction.js'
 const databaseUrl = process.env.TEST_DATABASE_URL
 const schema = `w09_edges_${randomUUID().replaceAll('-', '')}`
 const binding = (): ArtifactEdgeBinding => {
@@ -54,27 +55,36 @@ describe.skipIf(!databaseUrl)('W09 canonical edge database fault fixtures', () =
     const pending = binding(); pending.publication.requestId = pending.edgeId; await seed(pending, 'staged')
     await expect(repository.pin(pending, async () => {})).rejects.toMatchObject({ code: 'FILE_BYTES_UNAVAILABLE' })
     const b = binding(); b.publication.requestId = b.edgeId; await seed(b)
-    const client = await pool.connect(); await client.query('begin'); await client.query('select file_id from files where file_id=$1 for update', [b.pins.fileId])
-    let reached!: () => void
-    const authorized = new Promise<void>(resolve => { reached = resolve })
-    const operation = repository.pin(b, async () => { reached() })
-    const denied = expect(operation).rejects.toMatchObject({ code: 'FILE_BYTES_UNAVAILABLE' })
-    await authorized
-    await client.query("update files set expires_at=clock_timestamp()-interval '1 second' where file_id=$1", [b.pins.fileId]); await client.query('commit'); client.release()
+    let denied!: Promise<void>
+    await withTransaction(pool, async client => {
+      await client.query('select file_id from files where file_id=$1 for update', [b.pins.fileId])
+      let reached!: () => void
+      const authorized = new Promise<void>(resolve => { reached = resolve })
+      const operation = repository.pin(b, async () => { reached() })
+      denied = expect(operation).rejects.toMatchObject({ code: 'FILE_BYTES_UNAVAILABLE' })
+      await authorized
+      await client.query("update files set expires_at=clock_timestamp()-interval '1 second' where file_id=$1", [b.pins.fileId])
+    })
     await denied
     expect(await repository.read(b.edgeId)).toBeUndefined()
   })
   it('revocation winning the authorization row lock denies read provenance', async () => {
     const b = binding(); b.publication.requestId = b.edgeId; await seed(b); await repository.pin(b, async () => {})
-    const client = await pool.connect(); await client.query('begin'); await client.query("select grant_id from grants where grant_id='grant' for update")
-    let reached!: () => void; const waiting = new Promise<void>(resolve => { reached = resolve })
-    const operation = repository.recordRead(b, new Date().toISOString(), async query => {
-      reached(); const current = await query.query("select revoked from grants where grant_id='grant' for share")
-      if (!current.rows[0] || current.rows[0].revoked) throw new DomainError('AUTH_REVOKED','revoked',403)
+    let denied!: Promise<void>
+    await withTransaction(pool, async client => {
+      await client.query("select grant_id from grants where grant_id='grant' for update")
+      let reached!: () => void
+      const waiting = new Promise<void>(resolve => { reached = resolve })
+      const operation = repository.recordRead(b, new Date().toISOString(), async query => {
+        reached()
+        const current = await query.query("select revoked from grants where grant_id='grant' for share")
+        if (!current.rows[0] || current.rows[0].revoked) throw new DomainError('AUTH_REVOKED','revoked',403)
+      })
+      // Attach the rejection handler now: the operation can fail as soon as the lock is released.
+      denied = expect(operation).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
+      await waiting
+      await client.query("update grants set revoked=true where grant_id='grant'")
     })
-    // Attach the rejection handler now: the operation can fail as soon as the lock is released.
-    const denied = expect(operation).rejects.toMatchObject({ code: 'AUTH_REVOKED' })
-    await waiting; await client.query("update grants set revoked=true where grant_id='grant'"); await client.query('commit'); client.release()
     await denied
     expect((await pool.query('select count(*)::int as count from file_artifact_edge_reads where edge_id=$1', [b.edgeId])).rows[0].count).toBe(0)
   })

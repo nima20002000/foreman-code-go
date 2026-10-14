@@ -10,6 +10,7 @@ import { PrivateSourceSnapshotStore } from '../src/modules/sources/store.js'
 import { measureRetainedMaterializationFootprint, measureRetainedSourceDirectory } from '../src/modules/sources/retainedDirectoryUsage.js'
 import { WorkspaceLocationService } from '../src/modules/workspaces/location.js'
 import { readSourceStorageCapacity } from '../src/modules/sources/storageCapacity.js'
+import { withTransaction } from '../src/infrastructure/transaction.js'
 
 let fixture: Awaited<ReturnType<typeof setupMaterializationReservationCleanup>> | undefined
 afterEach(async () => { await fixture?.close(); fixture = undefined })
@@ -92,16 +93,10 @@ it('charges three closed references and one reused writable tree across closure 
   async function close(copy: Awaited<ReturnType<typeof f.orphan>>) {
     await releaseMaterializationClaim(copy.receipt, async () => 'released')
     const footprint = await measureRetainedMaterializationFootprint(copy.receipt)
-    const sql = await f.pool.connect()
-    try {
-      await sql.query('begin')
+    await withTransaction(f.pool, async sql => {
       await reservations.retainMaterialization(sql, copy.reservation,
         { ...footprint, retainedBytes: footprint.retainedBytes + 16 * 1024 })
-      await sql.query('commit')
-    } catch (error) {
-      await sql.query('rollback')
-      throw error
-    } finally { sql.release() }
+    })
   }
   for (let index = 0; index < 3; index++) {
     const copy = await f.orphan('owned', { sharedWritableTree: true })
