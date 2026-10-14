@@ -34,7 +34,8 @@ it.each(['main', 'device', 'github', 'circleci'] as const)(
     const runner = new HostCiRunner(root, ports, {})
     const git: GitWorktreePorts = { cloneDirectory: () => root,
       git: async () => ({ code: 0, stdout: '', stderr: '' }) }
-    const cloud = new CloudCi(mainId, { id: kind, ready: async () => true } as CloudProvider,
+    const cloud = new CloudCi(mainId, { id: kind, cpus: ports.cpus, memoryBytes: ports.memoryBytes,
+      userSystemd: { supported: false, reason: 'Fixture provider' }, ready: async () => true } as CloudProvider,
       async () => null, root, ports, git)
     const endpoint = new ProductionHostCiEndpoint(database.pool, mainId, () => ({
       capabilities: () => [], request: async (_id, _namespace, request) => ({ payload: await runner.handle(request) }),
