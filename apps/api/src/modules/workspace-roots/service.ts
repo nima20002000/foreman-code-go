@@ -17,7 +17,7 @@ import type { AuthorizedWorkspaceRoot, WorkspaceRootPolicyPort } from '../source
 
 type Sql = Pick<pg.PoolClient, 'query'>
 interface LocationRow { execution_location: unknown; location_revision: string; archived_at: Date | null }
-/** Main-only commands around the shared root policy services. */
+/** Workspace primary location and independent host roots share policy services. */
 export class WorkspaceBoundLocationService {
   constructor(private readonly pool: pg.Pool, private readonly commands: PostgresCommandCoordinator,
     private readonly roots: WorkspaceRootPolicyPort, private readonly localRunnerId = 'runner-local') {}
@@ -120,7 +120,8 @@ export class WorkspaceBoundLocationService {
       if (!row.execution_location) return WorkspaceBoundLocationReadbackSchema.parse({ evidence: 'unconfigured', workspaceId, locationRevision, executionLocation: null })
       const executionLocation = ExecutionLocationSchema.parse(row.execution_location)
       const policies = (await this.roots.read(sql, live, workspaceId))
-        .filter(policy => policy.bindingPurpose !== 'ci-enrollment' && policy.locationRevision === row.location_revision)
+        .filter(policy => policy.bindingPurpose !== 'ci-enrollment' && policy.locationRevision === row.location_revision
+          && this.projection(policy).runnerId === executionLocation.runnerId)
       if (!policies.length) return WorkspaceBoundLocationReadbackSchema.parse({ evidence: 'legacy_missing', workspaceId, locationRevision, executionLocation })
       const binding = policies[0]!
       if (policies.length !== 1 || binding.workspaceId !== workspaceId || !sameWorkflowValue(this.projection(binding), executionLocation)) {
@@ -131,7 +132,7 @@ export class WorkspaceBoundLocationService {
   }
   private acceptedReceipt(raw: unknown, input: WorkspaceBoundLocationSetInput): WorkspaceBoundLocationReadback {
     const value = WorkspaceBoundLocationReadbackSchema.parse(raw)
-    if (value.evidence !== 'bound' || value.workspaceId !== input.workspaceId || value.locationRevision !== input.expectedLocationRevision + 1
+    if (value.evidence !== 'bound' || value.workspaceId !== input.workspaceId || value.locationRevision !== input.expectedLocationRevision + (input.hostRef.kind === 'main' ? 1 : 0)
       || value.binding.workspaceId !== input.workspaceId || value.binding.locationRevision !== String(value.locationRevision)
       || value.binding.rootPolicyRevision !== String(input.expectedRootPolicyRevision + 1)
       || !sameWorkflowValue(value.binding.hostRef, input.hostRef) || value.binding.allowedBaseId !== input.allowedBaseId
@@ -163,11 +164,13 @@ export class WorkspaceBoundLocationService {
         const attestation = WorkspaceRootAttestationSchema.parse(await this.roots.attest(root))
         this.assertAttestation(root, attestation)
         await this.authorize(sql, principal, 'workspace_locations:update', input.workspaceId)
-        const nextRevision = input.expectedLocationRevision + 1
+        const nextRevision = input.expectedLocationRevision + (selection.hostRef.kind === 'main' ? 1 : 0)
         const executionLocation = ExecutionLocationSchema.parse({ runnerId: selection.hostRef.kind === 'main' ? this.localRunnerId : root.allowlist.applicationInstallationId, rootPath: attestation.canonicalProjectRoot })
-        const updated = await sql.query(`update workspaces set execution_location=$2::jsonb,execution_location_identity=$3::jsonb,location_revision=$4 where id=$1 and location_revision=$5`,
-          [input.workspaceId, JSON.stringify(executionLocation), JSON.stringify(WorkspaceLocationIdentitySchema.parse({ ...attestation.filesystem, hostRef: attestation.hostRef, applicationInstallationId: attestation.applicationInstallationId, directoryIdentityHash: attestation.directoryIdentityHash })), nextRevision, input.expectedLocationRevision])
-        if (updated.rowCount !== 1) throw new DomainError('LOCATION_REVISION_CONFLICT', 'The workspace location changed during binding.', 409)
+        if (selection.hostRef.kind === 'main') {
+          const updated = await sql.query(`update workspaces set execution_location=$2::jsonb,execution_location_identity=$3::jsonb,location_revision=$4 where id=$1 and location_revision=$5`,
+            [input.workspaceId, JSON.stringify(executionLocation), JSON.stringify(WorkspaceLocationIdentitySchema.parse({ ...attestation.filesystem, hostRef: attestation.hostRef, applicationInstallationId: attestation.applicationInstallationId, directoryIdentityHash: attestation.directoryIdentityHash })), nextRevision, input.expectedLocationRevision])
+          if (updated.rowCount !== 1) throw new DomainError('LOCATION_REVISION_CONFLICT', 'The workspace location changed during binding.', 409)
+        }
         const binding = WorkspaceRootPolicySchema.parse(await this.roots.bind(sql, principal, root, attestation, nextRevision))
         if (binding.workspaceId !== input.workspaceId || binding.locationRevision !== String(nextRevision) || !sameWorkflowValue(this.projection(binding), executionLocation)
           || !sameWorkflowValue(binding.hostRef, attestation.hostRef) || binding.allowedBaseId !== selection.allowedBaseId

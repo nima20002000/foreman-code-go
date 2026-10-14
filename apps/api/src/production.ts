@@ -2117,7 +2117,17 @@ function configureOperatorServices(composition: ProductionComposition) {
     placementChoices: new NodePlacementChoicesService(database.pool, new ProductionPlacementChoiceDiscovery(
       database.pool, () => {
         if (!composition.jobRuntime) throw new DomainError('PLACEMENT_CHOICES_UNAVAILABLE', 'Computer choices are not initialized.', 503)
-        return { roots: composition.jobRuntime.policies, sources: composition.jobRuntime.sources, profiles: hostSettings, registry: harnessRegistry }
+        const runtime = composition.jobRuntime
+        return { roots: runtime.policies, sources: runtime.sources, profiles: hostSettings, registry: harnessRegistry,
+          provisionRoot: (...args: Parameters<ProductionCiEnrollmentInventory['root']>) => {
+            const workspaceRoots = composition.runtimeServices.workspaceRoots
+            if (!workspaceRoots) throw new DomainError('PLACEMENT_CHOICES_UNAVAILABLE', 'Workspace roots are not initialized.', 503)
+            const inventory = new ProductionCiEnrollmentInventory(database.pool, runtime.sources,
+              () => deviceRuntime.endpointForDomains(), () => runtime.mainCiRuntime, workerExecution,
+              new ManagedWorkspaceRootService(commands, workspaceRoots, runtime.policies))
+            return inventory.root(...args)
+          },
+        }
       },
     )),
   }

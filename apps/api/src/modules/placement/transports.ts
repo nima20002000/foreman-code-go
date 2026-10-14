@@ -51,15 +51,15 @@ export function registerNodePlacementChoicesRoutes(app: FastifyInstance, reads: 
   app.get<{ Params: Record<string, string>; Querystring: Record<string, unknown> }>('/api/management/workspaces/:workspaceId/workflows/:workflowId/nodes/:nodeId/placement-choices', async (request, reply) => {
     reply.header('Cache-Control', 'private, no-store').header('Vary', 'Authorization, Cookie')
     if (Object.keys(request.params).some(key => Object.hasOwn(request.query, key))) throw new DomainError('RESOURCE_ID_MISMATCH', 'Placement choice scope must be supplied in the URL.', 400)
-    return reads.get(requirePrincipal(request), { ...request.query, ...request.params })
+    return reads.get(requirePrincipal(request), { ...request.query, ...request.params }, 'http')
   })
 }
 export const nodePlacementChoicesTool = defineOperatorTool({
   name: 'workflow_node_placement_choices',
   requires: grants(placementChoiceRequirements),
   enabled: s => !!s.placementChoices && !!s.workflows,
-  description: 'List computers, approved sources and roots, and matching harness profiles for one saved node/configuration. Unusable roots remain visible as unavailable choices with a reason, including released sources. Existing host bindings remain selectable after workspace location changes while their saved policy and source remain authorized. Requires scoped workflows:read, workspace_locations:read, source_roots:read and sources:read, plus global harnesses:read. Clear node placement through workflow_save_v3 to inherit the workflow default, or Main when no default is saved. Discovery does not grant execution; Save and Start revalidate revisions and authority.',
-  inputSchema: NodePlacementChoicesInputSchema, outputSchema: NodePlacementChoicesResultSchema, annotations: readAnnotations,
+  description: 'List computers, approved sources and roots, and matching harness profiles for one saved node/configuration. Unusable roots remain visible as unavailable choices with a reason, including released sources. Existing host bindings remain selectable after workspace location changes while their saved policy and source remain authorized. Requires scoped workflows:read, workspace_locations:read, source_roots:read and sources:read, plus global harnesses:read. Clear node placement through workflow_save_v3 to inherit the workflow default, or Main when no default is saved. For callers with scoped source_roots:bind and workspace_locations:validate/update, discovery automatically prepares pairing-managed storage and binds the current approved source on ready matching paired Agent hosts. Read-only callers only see existing bindings. Primary workspace location stays unchanged. Save and Start revalidate revisions and authority.',
+  inputSchema: NodePlacementChoicesInputSchema, outputSchema: NodePlacementChoicesResultSchema, annotations: { ...readAnnotations, readOnlyHint: false },
   handle: (context, input) => respond(context.principal, context.services.commands, 'workflow_node_placement_choices',
     () => context.services.placementChoices!.get(context.principal, input)),
 })
@@ -77,6 +77,7 @@ export function placementCapabilityLimit(composed: boolean) {
         + 'Inherited Main nodes without a per-node binding return legacy_missing evidence. '
         + 'workflow_node_placement_choices requires scoped workflows:read, workspace_locations:read, '
         + 'source_roots:read and sources:read, plus global harnesses:read. '
+        + 'Ready paired Agent hosts automatically receive pairing-managed workspace storage and the current source binding when the caller has source_roots:bind and workspace_locations:validate/update. Read-only callers only discover existing roots. Primary location remains unchanged. '
         + 'Existing host bindings retain their saved revisions across workspace location changes while authorized. '
         + 'Unusable roots remain visible as unavailable choices with a reason, including released sources. '
         + 'Clear a saved node placement through workflow_save_v3 to inherit the workflow default, '

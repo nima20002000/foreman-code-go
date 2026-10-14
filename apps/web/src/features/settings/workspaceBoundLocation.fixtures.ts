@@ -30,3 +30,12 @@ export function boundRootReadback(input: WorkspaceRootSelection, host: ApprovedR
   return { evidence: 'bound', workspaceId: input.workspaceId, locationRevision: input.expectedLocationRevision + 1, binding,
     executionLocation: { runnerId: input.hostRef.kind === 'main' ? 'server-main-runner' : 'server-worker-runner', rootPath: binding.canonicalProjectRoot } }
 }
+
+export function rootSetReadback(input: WorkspaceRootSelection, host: ApprovedRootAllowlist): WorkspaceBoundLocationReadback {
+  const value = boundRootReadback(input, host)
+  if (host.hostRef.kind === 'device' && value.evidence === 'bound') {
+    value.locationRevision = input.expectedLocationRevision
+    value.binding.locationRevision = String(input.expectedLocationRevision)
+  }
+  return value
+}

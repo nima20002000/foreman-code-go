@@ -123,7 +123,7 @@ export function useSetBoundWorkspaceLocation(workspaceId: string) {
       if (!sameComputer(binding.hostRef, input.hostRef) || binding.applicationInstallationId !== expectedHost.applicationInstallationId
         || binding.allowedBaseId !== input.allowedBaseId || binding.configurationRevision !== input.configurationRevision
         || binding.relativePath !== input.relativePath || binding.accessMode !== input.accessMode
-        || value.locationRevision !== input.expectedLocationRevision + 1 || binding.locationRevision !== String(value.locationRevision)
+        || value.locationRevision !== input.expectedLocationRevision + (input.hostRef.kind === 'main' ? 1 : 0) || binding.locationRevision !== String(value.locationRevision)
         || binding.rootPolicyRevision !== String(input.expectedRootPolicyRevision + 1)
         || value.executionLocation.rootPath !== binding.canonicalProjectRoot
         || binding.hostRef.kind === 'device' && binding.registration?.workerInstallationId !== expectedHost.applicationInstallationId
@@ -133,7 +133,10 @@ export function useSetBoundWorkspaceLocation(workspaceId: string) {
     },
     onSuccess: result => {
       if (generation !== sessionGeneration()) return
-      client.setQueryData<WorkspaceBoundLocationReadback>(boundLocationKeys.read(workspaceId, generation), previous => previous && previous.locationRevision > result.value.locationRevision ? previous : result.value)
+      if (result.value.evidence === 'bound' && result.value.binding.hostRef.kind === 'main') {
+        client.setQueryData<WorkspaceBoundLocationReadback>(boundLocationKeys.read(workspaceId, generation),
+          previous => previous && previous.locationRevision > result.value.locationRevision ? previous : result.value)
+      }
       void client.invalidateQueries({ queryKey: boundLocationKeys.scope(workspaceId, generation) })
       void client.invalidateQueries({ queryKey: queryKeys.managedWorkspace(workspaceId) })
       void client.invalidateQueries({ queryKey: queryKeys.managedWorkspaces })

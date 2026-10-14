@@ -28,7 +28,7 @@ import { DomainError } from '../src/modules/errors.js'
 /** Actual Postgres/main installation/grants/native component-safe temporary FS.
  * Synthetic human-approved main configuration; no laptop/provider acceptance. */
 describe.skipIf(!postgresEnabled)('production approved-root adoption HTTP/MCP', () => {
-  it('binds an unconfigured workspace without an Agent/Workflow, replays exact receipt and denies a scoped caller', async () => {
+  it('adds a device root without configuring the primary location, replays its receipt and denies a scoped caller', async () => {
     const db = await currentDatabase(), app = Fastify(), clients: Client[] = []
     let rootDirectory: string | undefined
     try {
@@ -97,15 +97,17 @@ describe.skipIf(!postgresEnabled)('production approved-root adoption HTTP/MCP', 
       expect((decodeMcpToolResult(validation) as { attestation: { canonicalProjectRoot: string } }).attestation.canonicalProjectRoot).toBe(join(basePath, 'project'))
       const input = { ...selection, commandId: randomUUID() }
       const saved = await app.inject({ method: 'PUT', url: `${baseUrl}/root-location`, headers: auth, payload: input })
-      expect(saved.statusCode).toBe(200); expect(saved.json().value).toMatchObject({ evidence: 'bound', workspaceId, locationRevision: 1,
+      expect(saved.statusCode).toBe(200); expect(saved.json().value).toMatchObject({ evidence: 'bound', workspaceId, locationRevision: 0,
         executionLocation: { runnerId: workerInstallationId, rootPath: join(basePath, 'project') } })
       const replay = await client.callTool({ name: 'workspace_root_location_set', arguments: input })
       expect(replay.isError).not.toBe(true); expect(decodeMcpToolResult(replay)).toEqual({ ...saved.json(), replayed: true })
-      expect((await service.get(owner.principal, { workspaceId }))).toEqual(saved.json().value)
+      const primary = { evidence: 'unconfigured', workspaceId, locationRevision: 0, executionLocation: null }
+      expect(await service.get(owner.principal, { workspaceId })).toEqual(primary)
+      expect((await service.choices(owner.principal, { workspaceId })).policies).toEqual([saved.json().value.binding])
       const freshCommands = new PostgresCommandCoordinator(db.pool)
       const freshFactory = await createProductionSources({pool:db.pool,commands:freshCommands,locations:{} as WorkspaceLocationService,mainId,runtimeRoot:runtimePath,endpoint:()=>endpoint,dispatch:()=>({} as PostgresJobDispatch)})
       const fresh = new WorkspaceBoundLocationService(db.pool, freshCommands, freshFactory.policies)
-      expect(await fresh.get(owner.principal, { workspaceId })).toEqual(saved.json().value)
+      expect(await fresh.get(owner.principal, { workspaceId })).toEqual(primary)
       expect((await app.inject({ method: 'GET', url: `${baseUrl}/root-policies`, headers: { authorization: `Bearer ${denied.token}` } })).statusCode).toBe(403)
       expect((await deniedClient.callTool({ name: 'workspace_root_choices_list', arguments: { workspaceId } })).isError).toBe(true)
       expect((await deniedClient.callTool({ name: 'workspace_root_location_set', arguments: input })).isError).toBe(true)

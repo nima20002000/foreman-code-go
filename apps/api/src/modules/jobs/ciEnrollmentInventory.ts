@@ -91,10 +91,10 @@ export class ProductionCiEnrollmentInventory implements CiEnrollmentInventory {
   }
 
   async root(principal: ManagementPrincipal, workspaceId: string, template: SourceRootRecord,
-    target: DeviceProvisioningTarget): Promise<SourceRootRecord> {
+    target: DeviceProvisioningTarget, source: 'http' | 'mcp' = 'mcp'): Promise<SourceRootRecord> {
     await assertBuildComputerTarget(this.pool, target)
     this.workerExecution.requireEnabled(target.hostRef)
-    const roots = (await this.sources.rootList(principal, 'mcp', { workspaceId, limit: 100 })).items
+    const roots = (await this.sources.rootList(principal, source, { workspaceId, limit: 100 })).items
     const matching = roots.find(root => canonicalJson(root.selection.hostRef) === canonicalJson(target.hostRef)
       && canonicalJson(root.source) === canonicalJson(template.source)
       && root.binding.accessMode === 'exclusive-write'
@@ -110,7 +110,7 @@ export class ProductionCiEnrollmentInventory implements CiEnrollmentInventory {
         && value.applicationInstallationId === target.applicationInstallationId
         && (target.hostRef.kind === 'main' || value.registration?.keyRevision === target.keyRevision
           && value.registration?.authorizationRevision === target.authorizationRevision))
-      ?? await this.managedRoots.ensure(principal, 'mcp', workspaceId, target)
+      ?? await this.managedRoots.ensure(principal, source, workspaceId, target)
     const selection = { hostRef: policy.hostRef, rootPolicyId: policy.rootPolicyId,
       rootPolicyRevision: policy.rootPolicyRevision, locationRevision: policy.locationRevision }
     const current = roots.find(root => canonicalJson(root.selection.hostRef) === canonicalJson(target.hostRef)
@@ -118,7 +118,7 @@ export class ProductionCiEnrollmentInventory implements CiEnrollmentInventory {
     const previousRevision = current?.binding.bindingRevision ?? 0
     const commandId = `enroll-root-${jobDigest({ workspaceId, selection, source: template.source,
       previous: previousRevision })}`
-    return (await this.sources.bindRoot(principal, 'mcp', { workspaceId, commandId, selection,
+    return (await this.sources.bindRoot(principal, source, { workspaceId, commandId, selection,
       source: template.source, accessMode: 'exclusive-write',
       expectedBindingRevision: previousRevision })).value
   }
