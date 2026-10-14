@@ -92,6 +92,7 @@ export class HostCiRunner {
   private startingRun: CiHostRun | null = null
   private readonly repositoryQueues = new Map<string, Promise<void>>()
   private githubChecked: { at: number; ready: boolean; reason: string | null } | undefined
+  private readonly toolsChecked = new Map<string, number>()
   private draining = false
 
   constructor(private readonly root = hostCiDirectory(),
@@ -185,13 +186,28 @@ export class HostCiRunner {
   }
 
   private async github(): Promise<{ ready: boolean; reason: string | null }> {
-    if (this.githubChecked && Date.now() - this.githubChecked.at < 60_000) return this.githubChecked
+    if (this.githubChecked?.ready && Date.now() - this.githubChecked.at < 300_000) return this.githubChecked
     const result = await this.ports.run('gh', ['auth', 'status', '--hostname', 'github.com'], { env: this.environment, timeoutMs: 15_000 })
       .catch(() => ({ code: 127, stdout: '', stderr: '' }))
     const ready = result.code === 0
     this.githubChecked = { at: Date.now(), ready,
       reason: ready ? null : 'Log in to GitHub on this computer (gh auth login, or computer_github_login_start).' }
     return this.githubChecked
+  }
+
+  private async toolAvailable(tool: string): Promise<boolean> {
+    const checkedAt = this.toolsChecked.get(tool)
+    if (checkedAt !== undefined && Date.now() - checkedAt < 300_000) return true
+    this.toolsChecked.delete(tool)
+    const result = await this.ports.run(tool, ['--version'], { env: this.environment, timeoutMs: 15_000 })
+    if (result.code !== 0) return false
+    this.toolsChecked.set(tool, Date.now())
+    return true
+  }
+
+  private invalidateReadiness() {
+    this.githubChecked = undefined
+    this.toolsChecked.clear()
   }
 
   async status(): Promise<CiHostReply> {
@@ -201,7 +217,7 @@ export class HostCiRunner {
     if (await this.startupSmokePending()) reasons.push('Worker update CI smoke is pending; this computer is reserved for validation.')
     if (this.draining) reasons.push('Worker runtime update is draining CI preparation.')
     for (const tool of ['git', 'corepack']) {
-      if ((await this.ports.run(tool, ['--version'], { env: this.environment, timeoutMs: 15_000 })).code !== 0) {
+      if (!await this.toolAvailable(tool)) {
         reasons.push(`${tool} is not installed for the Worker.`)
       }
     }
@@ -260,6 +276,9 @@ export class HostCiRunner {
     await previous
     try {
       return await this.startRun(request)
+    } catch (error) {
+      this.invalidateReadiness()
+      throw error
     } finally {
       this.startingRun = null
       release()
@@ -342,6 +361,7 @@ export class HostCiRunner {
     })
     if (!ready) return this.refresh(meta.runId)
     const preparing = this.launch(meta).catch(async error => {
+      this.invalidateReadiness()
       const current = await this.readMeta(meta.runId)
       const message = (error instanceof Error ? error.message : String(error)).slice(0, 2000)
       if (current.serviceUnit) {
@@ -709,6 +729,7 @@ export class HostCiRunner {
     const meta = await this.readMeta(runId)
     if (!['starting', 'running'].includes(meta.state)) return
     const outcome = meta.cancellationRequested ? 'canceled' : state
+    if (outcome === 'failed' || outcome === 'lost') this.invalidateReadiness()
     await this.writeMeta({ ...meta, state: outcome, exitCode, message, finishedAt: this.ports.now().toISOString() })
   }
 
