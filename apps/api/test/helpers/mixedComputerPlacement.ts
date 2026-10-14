@@ -17,6 +17,7 @@ import { PrivateSourceSnapshotStore } from '../../src/modules/sources/store.js'
 import { RegisteredWorkspaceSourceRoots } from '../../src/modules/sources/registeredSourceRoots.js'
 import { createSourceManifest, sourceSha256 } from '../../src/modules/sources/manifest.js'
 import { identity, openPrivateRoot } from '../../src/modules/sources/privateFilesystem.js'
+import { withTransaction } from '../../src/infrastructure/transaction.js'
 import { assertDeviceHostInstallation } from '../../src/modules/devices/hostAuthorization.js'
 import { HarnessInstallationRegistry, type HarnessInstallationRecord } from '../../src/modules/harnesses/installationRegistry.js'
 import { HarnessInstanceRegistry, localHarnessDrivers } from '../../src/modules/harnesses/instanceRegistry.js'
@@ -34,6 +35,7 @@ type Fixture = Awaited<ReturnType<typeof currentOperatorIntegration>>
 export async function mixedComputerPlacement(f: Fixture, directory: string, options: {
   git?: SourceManifest['git']
   sourceAccessMode?: SourceRootRecord['binding']['accessMode']
+  unconfiguredDeviceRoot?: boolean
 } = {}) {
   const mainId = (await f.db.pool.query<{ id: string }>(
     'select id from application_installation where singleton=true')).rows[0]!.id
@@ -91,7 +93,8 @@ export async function mixedComputerPlacement(f: Fixture, directory: string, opti
     const managedRuntimeRoot = kind === 'main' ? runtime : '/worker/runtime'
     const allowlist = ApprovedRootAllowlistSchema.parse({ schemaVersion: 1, hostRef, applicationInstallationId,
       configurationRevision: '1', bases: [{ baseId: randomUUID(), canonicalPath: canonicalProjectRoot,
-        filesystem, accessModes: ['read-only', 'read-write'] }], managedRuntimeRoot, runtimeFilesystem: filesystem })
+        filesystem, accessModes: ['read-only', 'read-write'],
+        ...(kind === 'device' && options.unconfiguredDeviceRoot ? { managedBy: 'worker-pairing' } : {}) }], managedRuntimeRoot, runtimeFilesystem: filesystem })
     const policy = WorkspaceRootPolicySchema.parse({ schemaVersion: 1, rootPolicyId: randomUUID(), rootPolicyRevision: '1',
       workspaceId: f.f.scope.workspaceId, hostRef, applicationInstallationId,
       registration: kind === 'main' ? null : registration, locationRevision: String(locationRevision),
@@ -99,19 +102,17 @@ export async function mixedComputerPlacement(f: Fixture, directory: string, opti
       relativePath: '', accessMode: 'read-write', canonicalProjectRoot, filesystem,
       directoryIdentityHash: 'a'.repeat(64), managedRuntimeRoot, runtimeFilesystem: filesystem,
       attestationId: randomUUID(), attestationDigest: 'a'.repeat(64) })
-    const sql = await f.db.pool.connect()
-    try {
-      await sql.query('begin')
+    await withTransaction(f.db.pool, async sql => {
       await policies.publishApprovedHostConfiguration(sql, allowlist, { mainId, hostRef, applicationInstallationId,
         configurationRevision: '1', configurationDigest: sourceSha256(Buffer.from(JSON.stringify(allowlist))) })
+      if (kind === 'device' && options.unconfiguredDeviceRoot) return
       const scope = workspaceRootHostScope(hostRef)
       await sql.query(`insert into workspace_root_policies(root_policy_id,root_policy_revision,workspace_id,
         host_scope,location_revision,record) values($1,1,$2,$3,$4,$5::jsonb)`,
       [policy.rootPolicyId, policy.workspaceId, scope, locationRevision, JSON.stringify(policy)])
       await sql.query(`insert into workspace_root_policy_heads(workspace_id,host_scope,root_policy_id,root_policy_revision)
         values($1,$2,$3,1)`, [policy.workspaceId, scope, policy.rootPolicyId])
-      await sql.query('commit')
-    } catch (error) { await sql.query('rollback'); throw error } finally { sql.release() }
+    })
     const root = SourceRootRecordSchema.parse({ version: 1, source, selection: {
       hostRef, rootPolicyId: policy.rootPolicyId, rootPolicyRevision: '1', locationRevision: String(locationRevision) },
     binding: { version: 1, mainId, deviceId: kind === 'main' ? null : deviceId,
@@ -122,12 +123,14 @@ export async function mixedComputerPlacement(f: Fixture, directory: string, opti
       snapshotId: source.snapshotId, manifestDigest: source.manifestDigest },
     ownerPrincipalId: f.writer.principal.id, authorizedByPrincipalId: f.writer.principal.id,
     registration: policy.registration, attestationId: randomUUID(), attestationDigest: 'a'.repeat(64), boundAt: f.f.createdAt })
-    await f.db.pool.query(`insert into source_root_catalog(root_id,workspace_id,scope_hash,current_binding_revision)
-      values($1,$2,$3,1)`, [root.binding.rootId, policy.workspaceId, sourceSha256(Buffer.from(JSON.stringify({
-        workspaceId: policy.workspaceId, hostRef, rootPolicyId: policy.rootPolicyId,
-      })))])
-    await f.db.pool.query(`insert into source_root_bindings(root_id,binding_revision,workspace_id,snapshot_id,record)
-      values($1,1,$2,$3,$4::jsonb)`, [root.binding.rootId, policy.workspaceId, source.snapshotId, JSON.stringify(root)])
+    if (kind !== 'device' || !options.unconfiguredDeviceRoot) {
+      await f.db.pool.query(`insert into source_root_catalog(root_id,workspace_id,scope_hash,current_binding_revision)
+        values($1,$2,$3,1)`, [root.binding.rootId, policy.workspaceId, sourceSha256(Buffer.from(JSON.stringify({
+          workspaceId: policy.workspaceId, hostRef, rootPolicyId: policy.rootPolicyId,
+        })))])
+      await f.db.pool.query(`insert into source_root_bindings(root_id,binding_revision,workspace_id,snapshot_id,record)
+        values($1,1,$2,$3,$4::jsonb)`, [root.binding.rootId, policy.workspaceId, source.snapshotId, JSON.stringify(root)])
+    }
     const configuration = f.f.configurations[kind === 'main' ? 0 : 1]!
     const instanceId = randomUUID()
     const harnessInstallationId = 'installed-codex'
