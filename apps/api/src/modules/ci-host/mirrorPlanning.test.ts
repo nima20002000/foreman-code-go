@@ -12,7 +12,7 @@ it('starts mirror publication after resolving the commit while planning is block
   const workspaceId = randomUUID()
   const workspace = { id: workspaceId, name: 'CI fixture', repository: {
     provider: 'github', owner: 'fixture', name: 'site', defaultBranch: 'main',
-  }, ciMirror: { owner: 'fixture', name: 'site-ci' } }
+  }, ciMirror: { provider: 'github', owner: 'fixture', name: 'site-ci' } }
   const caller: ManagementPrincipal = { id: 'fixture-operator', name: 'Operator', audience: 'operator',
     grants: [], expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null }
   const pool = { query: vi.fn(async (sql: string) => ({
@@ -61,7 +61,7 @@ it('dispatch reuses a mirror push started during planning with the same learned 
   const workspaceId = randomUUID()
   const workspace = { id: workspaceId, name: 'CI fixture', repository: {
     provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main',
-  }, ciMirror: { owner: 'octo', name: 'site-ci' } }
+  }, ciMirror: { provider: 'github', owner: 'octo', name: 'site-ci' } }
   const caller: ManagementPrincipal = { id: 'fixture-operator', name: 'Operator', audience: 'operator',
     grants: [], expiresAt: '2099-01-01T00:00:00.000Z', revokedAt: null }
   const pool = { query: vi.fn(async (sql: string) => ({
