@@ -16,7 +16,7 @@ export interface CloudRun {
   testsStarted?: boolean
   scope?: CiScope; files?: string[]; part?: CiPart; baseCommit?: string
   dispatch?: { input: CloudDispatchInput; attempts: number; at: string }
-  reconciliation?: { attempts: number; at: string; previousMessage: string | null }
+  reconciliation?: { attempts: number; at: string; since?: string; previousMessage: string | null }
   publicationRequest?: Extract<CiHostRequest, { operation: 'start' }>
   mirrorPublication?: CiHostRun['mirrorPublication']
   mirrorBranch?: string
@@ -495,7 +495,7 @@ export class CircleCiProvider implements CloudProvider {
   async cancel(run: CloudRun) {
     let view: { phase?: string; workflows?: unknown[] } | null
     try {
-      view = JSON.parse(await this.circleci(['run', 'get', run.providerRunId!, '--json'])) as typeof view
+      view = JSON.parse(await this.circleci(['run', 'get', run.providerRunId!, '--json'], 15_000)) as typeof view
     } catch (error) {
       if (error instanceof DomainError && error.code === 'CI_CLOUD_RUN_ENDED') return
       if (!(error instanceof DomainError
@@ -504,6 +504,6 @@ export class CircleCiProvider implements CloudProvider {
       view = null
     }
     if (view?.phase === 'ended' && !view.workflows?.length) return
-    await this.circleci(['run', 'cancel', run.providerRunId!, '--force'])
+    await this.circleci(['run', 'cancel', run.providerRunId!, '--force'], 15_000)
   }
 }
