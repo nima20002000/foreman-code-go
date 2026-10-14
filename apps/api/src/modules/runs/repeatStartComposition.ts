@@ -175,6 +175,7 @@ export async function executeRepeatEngineStart(input: RepeatEngineStartContext):
     || snapshot.version.definition.handoffs && typeof lifecycle.persistDirectionWait !== 'function') {
     throw new DomainError('REPEAT_NATIVE_HOST_REQUIRED', 'Repeat lifecycle proof writers are required.', 409)
   }
+  const recordExecutionFailure = lifecycle.recordExecutionFailure?.bind(lifecycle)
   await executeRepeatRuntime({ runId: snapshot.run.id, version: snapshot.version, owner: input.owner,
     checkpointOwnerGeneration: input.owner.checkpointGeneration,
     signal: input.signal, store, driver, ...(input.jobs ? { jobs: input.jobs(input.owner, snapshot.version) } : {}), checkpointer: input.checkpointer, configuredParallelism: input.configuredParallelism,
@@ -183,6 +184,7 @@ export async function executeRepeatEngineStart(input: RepeatEngineStartContext):
       currentState: () => lifecycle.currentState(),
       persistWait: (checkpoint) => lifecycle.persistWait(checkpoint),
       ...(lifecycle.persistDirectionWait ? { persistDirectionWait: () => lifecycle.persistDirectionWait!() } : {}),
+      ...(recordExecutionFailure ? { recordExecutionFailure } : {}),
       cancelNativeAndRequestCleanup: () => lifecycle.cancelNativeAndRequestCleanup(),
       settleRun: (stopped, interrupted) => lifecycle.settleRun(stopped, interrupted),
       requestCleanup: (failure) => lifecycle.requestCleanup(failure),
