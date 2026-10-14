@@ -69,7 +69,7 @@ export async function installedRestartService(directory: string, configuration: 
   await mkdir(dirname(api), { recursive: true, mode: 0o700 })
   await cp(join(repository, 'scripts'), join(release, 'scripts'), { recursive: true })
   await cp(join(repository, 'packages/contracts/src'), join(release, 'packages/contracts/src'), { recursive: true })
-  // Legacy pnpm deployment changes its source workspace's dependency selection.
+  // Package from a disposable workspace so fixture setup cannot change the installed source.
   const deployment = join(directory, 'deployment-source')
   await mkdir(join(deployment, 'scripts'), { recursive: true, mode: 0o700 })
   for (const name of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml']) {
@@ -90,8 +90,9 @@ export async function installedRestartService(directory: string, configuration: 
     storeDir: string
   }
   const ciMetadataCache = join(repository, '.logs/pnpm-metadata')
-  // Test homes are private; release-age verification needs the metadata from the workspace install.
-  const metadataCache = existsSync(ciMetadataCache) ? ciMetadataCache : join(serviceUser.homedir, '.cache/pnpm')
+  // Test homes are private; use the host or cloud install's cache for release-age verification.
+  const metadataCache = process.env.npm_config_cache_dir
+    || (existsSync(ciMetadataCache) ? ciMetadataCache : join(serviceUser.homedir, '.cache/pnpm'))
   const deploy = async (command: string, args: string[]) => {
     // The disposable deployment workspace is discarded, so it needs no dependency restoration.
     if (args.includes('install')) return

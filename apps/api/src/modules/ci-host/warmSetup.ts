@@ -9,6 +9,7 @@ export function pnpmInstall(cache: string): string[] {
   const install = `corepack pnpm install --frozen-lockfile --config.confirm-modules-purge=false`
     + ` --store-dir ${shellQuote(join(cache, 'pnpm-store'))} --cache-dir ${shellQuote(join(cache, 'pnpm-metadata'))}`
   return [
+    `export npm_config_cache_dir=${shellQuote(join(cache, 'pnpm-metadata'))}`,
     `mkdir -p ${shellQuote(join(cache, 'locks'))}`,
     `exec {cache_lock}>${shellQuote(join(cache, 'locks', 'install.lock'))}`,
     'flock "$cache_lock" || finish $?',
