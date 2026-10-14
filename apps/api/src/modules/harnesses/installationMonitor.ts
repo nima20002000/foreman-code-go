@@ -128,7 +128,13 @@ export class HarnessInstallationMonitor {
   }
   private async collect(): Promise<void> {
     const hosts = this.registry.installations.list().map(record => record.hostRef)
-    if (this.mainHost) hosts.push(this.mainHost)
+    if (this.mainHost) {
+      hosts.push(this.mainHost)
+      for (const [deviceId, signal] of this.workerSignals) {
+        if (signal.aborted) continue
+        hosts.push({ kind: 'device', mainId: this.mainHost.mainId, deviceId })
+      }
+    }
     await this.refreshHosts(hosts)
   }
   async refreshHosts(hosts: readonly CanonicalMachineReference[], signal?: AbortSignal): Promise<void> {
