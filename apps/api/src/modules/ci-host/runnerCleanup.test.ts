@@ -65,13 +65,13 @@ it('deletes only DB-selected terminal directories and preserves active and unkno
   const terminal = await run(f.root)
   const active = await run(f.root, { state: 'running' })
   const unknown = await run(f.root)
-  const reply = await f.runner.handle({ operation: 'cleanup', runIds: [terminal.runId, active.runId] })
-  expect(reply).toMatchObject({ operation: 'cleanup', removed: [terminal.runId] })
+  const reply = await f.runner.handle({ operation: 'status', cleanupRunIds: [terminal.runId, active.runId] })
+  expect(reply).toMatchObject({ operation: 'status', removedRunIds: [terminal.runId] })
   await expect(access(terminal.directory)).rejects.toMatchObject({ code: 'ENOENT' })
   await expect(access(active.directory)).resolves.toBeUndefined()
   await expect(access(unknown.directory)).resolves.toBeUndefined()
-  await expect(f.runner.handle({ operation: 'cleanup', runIds: [terminal.runId] }))
-    .resolves.toMatchObject({ operation: 'cleanup', removed: [] })
+  await expect(f.runner.handle({ operation: 'status', cleanupRunIds: [terminal.runId] }))
+    .resolves.toMatchObject({ operation: 'status', removedRunIds: [] })
 })
 
 async function sparseFile(path: string, size: number, usedAt: string) {

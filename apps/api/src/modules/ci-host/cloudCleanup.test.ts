@@ -16,21 +16,25 @@ it.each(['github', 'circleci'] as const)('cleans selected terminal %s directorie
     run: async () => ({ code: 0, stdout: '', stderr: '' }) }
   const git: GitWorktreePorts = { cloneDirectory: () => root,
     git: async () => ({ code: 0, stdout: '', stderr: '' }) }
-  const cloud = new CloudCi('fixture-main', { id: provider } as CloudProvider, async () => null, root, ports, git)
+  const cloud = new CloudCi('fixture-main', { id: provider, cpus: ports.cpus, memoryBytes: ports.memoryBytes,
+    userSystemd: { supported: false, reason: 'Fixture provider' }, ready: async () => true } as CloudProvider, async () => null, root, ports, git)
   const ids = [randomUUID(), randomUUID(), randomUUID()]
   try {
     for (const [index, runId] of ids.entries()) {
       const run: CloudRun = { runId, repository: 'fixture/site', mirror: 'fixture/mirror',
         commit: 'a'.repeat(40), suite: 'lint', state: index === 1 ? 'running' : 'passed',
-        startedAt: '2026-10-01T00:00:00Z', finishedAt: '2026-10-01T00:01:00Z',
+        startedAt: index === 1 ? new Date().toISOString() : '2026-10-01T00:00:00Z', finishedAt: '2026-10-01T00:01:00Z',
         providerRunId: null, exitCode: 0, message: null }
       const directory = join(root, 'runs', runId)
       await mkdir(directory, { recursive: true })
       await writeFile(join(directory, 'meta.json'), JSON.stringify(run))
     }
-    await expect(cloud.handle({ operation: 'cleanup', runIds: ids.slice(0, 2) }))
-      .resolves.toMatchObject({ operation: 'cleanup', removed: [ids[0]] })
+    await expect(cloud.handle({ operation: 'status', cleanupRunIds: ids.slice(0, 2) }))
+      .resolves.toMatchObject({ operation: 'status', removedRunIds: [ids[0]] })
     await expect(access(join(root, 'runs', ids[0]!))).rejects.toMatchObject({ code: 'ENOENT' })
     for (const id of ids.slice(1)) await expect(access(join(root, 'runs', id))).resolves.toBeUndefined()
-  } finally { await rm(root, { recursive: true, force: true }) }
+  } finally {
+    await cloud.waitForMirrorCleanup('fixture/site', 'fixture/mirror')
+    await rm(root, { recursive: true, force: true })
+  }
 })
