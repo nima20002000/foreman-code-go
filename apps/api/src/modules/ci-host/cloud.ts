@@ -393,8 +393,7 @@ export class CloudCi {
       try {
         if (await this.provider.find(run)) run = await this.save({ ...run, state: 'running', workflowStarted: true })
       } catch (error) {
-        if (error instanceof DomainError
-          && ['CI_CLOUD_PIPELINE_FAILED', 'CI_CLOUD_RUN_ENDED'].includes(error.code)) {
+        if (error instanceof DomainError && error.code === 'CI_CLOUD_PIPELINE_FAILED') {
           run = await this.failPipeline(run, { message: error.message, configError: error.details?.configError === true })
         } else {
           // The trigger was accepted, so a lookup failure must not dispatch the ticket to another computer.
@@ -848,8 +847,7 @@ export class CloudCi {
         return next
       })
     } catch (error) {
-      if (error instanceof DomainError
-        && ['CI_CLOUD_PIPELINE_FAILED', 'CI_CLOUD_RUN_ENDED'].includes(error.code)) {
+      if (error instanceof DomainError && error.code === 'CI_CLOUD_PIPELINE_FAILED') {
         return this.failPipeline(run, { message: error.message, configError: error.details?.configError === true })
       }
       if (error instanceof DomainError && ['CI_CLOUD_RUN_NOT_FOUND', 'CI_CLOUD_RUN_UNREADABLE'].includes(error.code)) {
@@ -983,7 +981,7 @@ export class CloudCi {
       discovered = await this.provider.find(run)
     } catch (error) {
       if (!(error instanceof DomainError
-        && ['CI_CLOUD_RUN_NOT_FOUND', 'CI_CLOUD_RUN_UNREADABLE', 'CI_CLOUD_RUN_ENDED'].includes(error.code))) throw error
+        && ['CI_CLOUD_RUN_NOT_FOUND', 'CI_CLOUD_RUN_UNREADABLE'].includes(error.code))) throw error
       log.warn({ err: error, runId: run.runId }, 'Cloud CI discovery unavailable; canceling known pipelines')
     }
     const attempts = run.dispatchHistory?.map(attempt => attempt.providerRunId) ?? []

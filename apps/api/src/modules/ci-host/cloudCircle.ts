@@ -85,7 +85,7 @@ export class CircleRest {
     }))
     if (mapped.some(workflow => workflow === null)) return null
     const complete = workflows.length > 0 && workflows.every(workflow => lifecycle(workflow.status).phase === 'ended')
-    return { phase: complete ? 'ended' : 'started', errors: pipeline.errors, workflows: mapped }
+    return { state: pipeline.state, phase: complete ? 'ended' : 'started', errors: pipeline.errors, workflows: mapped }
   }
 
   private async job(id: string, args: string[], timeoutMs: number): Promise<CircleJob | null> {
