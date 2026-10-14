@@ -322,6 +322,26 @@ it('keeps assigned running ticket ids visible when the computer is offline', asy
   }] })
 })
 
+it('reads every computer status concurrently when listing computers', async () => {
+  const f = fixture()
+  const fleet = Array.from({ length: 3 }, (_, index) => ({ ...computer, key: `host-${index}`, label: `Host ${index}` }))
+  vi.mocked(f.endpoint.computers).mockResolvedValue(fleet)
+  let pending = 0
+  let release!: () => void
+  const allAsked = new Promise<void>(resolve => { release = resolve })
+  vi.mocked(f.endpoint.request).mockImplementation(async (_target, input) => {
+    if (input.operation !== 'status') throw new Error('Unexpected request')
+    // Each status reply waits until every computer was asked: a one-by-one listing never completes.
+    if (++pending === fleet.length) release()
+    await allAsked
+    return { operation: 'status', ready: true, reasons: [], cpuCount: 8, memoryBytes: 16 * 2 ** 30, runs: [], slotsTotal: 2, slotsUsed: 0 }
+  })
+  const listing = f.create().computers(caller, { workspaceId: 'workspace' })
+  await expect.poll(() => pending, { timeout: 1000 }).toBe(fleet.length)
+  const listed = await listing
+  expect(listed.computers.map(value => value.label)).toEqual(['Host 0', 'Host 1', 'Host 2'])
+})
+
 it('refreshes submitted CI in the background without status reads and stops on close', async () => {
   vi.useFakeTimers()
   const f = fixture()
