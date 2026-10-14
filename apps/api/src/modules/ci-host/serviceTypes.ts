@@ -11,10 +11,14 @@ export interface HostCiComputer {
   key: string; hostRef: HostRef; label: string; priority: number
   buildAllowancePercent?: number; userSystemd?: CiUserSystemd
 }
+export type CiMirrorInput = Pick<Extract<CiHostRequest, { operation: 'start' }>,
+  'repository' | 'commit' | 'defaultBranch' | 'baseCommit' | 'durations'> & { mirror: string }
+
 export interface HostCiEndpoint {
   /** Paired computers that serve host CI now. */
   computers(): Promise<HostCiComputer[]>
   request(computer: HostCiComputer, request: CiHostRequest): Promise<CiHostReply>
+  publishMirror?(input: CiMirrorInput): Promise<void>
 }
 /** Resolves the commit to test and makes sure GitHub has it, so build computers can fetch it. */
 export interface CiCommits {

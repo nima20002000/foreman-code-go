@@ -93,6 +93,7 @@ export class HostCiService {
     this.reservedCloudSlots = options.reservedCloudSlots ?? 0
     this.endpoint = {
       computers: () => endpoint.computers(),
+      ...(endpoint.publishMirror ? { publishMirror: endpoint.publishMirror.bind(endpoint) } : {}),
       request: async (computer, request) => {
         if (request.operation !== 'status' || computer.hostRef.kind === 'cloud') {
           return endpoint.request(computer, request)
@@ -120,7 +121,7 @@ export class HostCiService {
     })
   }
 
-  start(intervalMs = 5000) {
+  start(intervalMs = 1000) {
     if (this.timer) return
     this.timer = setInterval(() => { void this.dispatch() }, intervalMs)
     this.timer.unref()
@@ -278,10 +279,32 @@ export class HostCiService {
     const snapshot = scope.executionId && !input.commit && this.snapshots ? await this.snapshots(scope.executionId) : null
     const commit = await this.commits.resolve(repository, defaultBranch, input.commit, snapshot)
     timing.mark('commitMs')
-    const [infrastructure, branch, capabilities] = await Promise.all([
+    const inventories = Promise.all([
+      ['unit', 'integration'].includes(input.suite) ? this.learnedDurations(repository) : null,
+      input.suite === 'integration' ? this.commits.integrationInventory?.(repository, commit) : undefined,
+    ])
+    if (workspace.ciMirror && this.endpoint.publishMirror) {
+      const publish = this.endpoint.publishMirror.bind(this.endpoint)
+      const mirror = `${workspace.ciMirror.owner}/${workspace.ciMirror.name}`
+      void inventories.then(async ([learned, integration]) => {
+        const merged = { ...integration?.durations, ...learned }
+        const durations = input.suite === 'integration' && integration
+          ? Object.fromEntries(integration.files.filter(file => merged[file] !== undefined)
+            .map(file => [file, merged[file]!])) : learned ?? {}
+        const deriveFiles = !input.gate && (input.scope ?? 'affected') === 'affected' && input.files === undefined
+        await publish({ repository, mirror, commit,
+          ...(deriveFiles && !input.baseCommit ? { defaultBranch } : {}),
+          ...(deriveFiles && input.baseCommit ? { baseCommit: input.baseCommit } : {}),
+          durations: input.suite === 'integration' ? durations : {} })
+      }).catch(error => {
+        log.warn({ err: error, commit, mirror }, 'Early CI mirror publication failed; dispatch will retry')
+      })
+    }
+    const [infrastructure, branch, capabilities, [earlyLearned, earlyIntegration]] = await Promise.all([
       this.commits.infrastructureOnly?.(repository, commit) ?? false,
       this.commits.branch?.(repository, defaultBranch, commit),
       this.commits.capabilities(repository, commit),
+      inventories,
     ])
     timing.mark('commitFactsMs')
     const priority = input.gate || infrastructure || input.priority === 'high' ? 'high' : 'normal'
@@ -294,9 +317,8 @@ export class HostCiService {
     const [inventory, learned, integration] = await Promise.all([
       capabilities.parts && (input.suite === 'unit' || input.gate)
         ? this.commits.unitInventory?.(repository, commit) : undefined,
-      ['unit', 'integration'].includes(input.suite) ? this.learnedDurations(repository) : null,
-      capabilities.integrationPartitions && input.suite === 'integration'
-        ? this.commits.integrationInventory?.(repository, commit) : undefined,
+      earlyLearned,
+      capabilities.integrationPartitions ? earlyIntegration : undefined,
     ])
     timing.mark('inventoryMs')
     if (input.gate && (!capabilities.parts || !integration || !inventory)) {
@@ -804,20 +826,33 @@ export class HostCiService {
     await this.settle(run, computer, collected.run, { logTail })
   }
 
-  private async dispatchOnce() {
-    await this.cancelSuperseded()
-    const computers = await this.endpoint.computers()
-    const active = (await this.pool.query<{ id: string; record: unknown; host_key: string | null }>(
-      `select id,record,host_key from ci_runs where state in ('starting','running') or record->>'collection'='pending'`)).rows
-    // Runs are read concurrently, a few at a time: a cloud read waits on the service's API, and each read also
-    // writes, so reading every part at once would exhaust the database pool.
-    await inBatches(active, 8, async row => {
+  private async refreshActiveRuns(active: { id: string; record: unknown; host_key: string | null }[],
+    computers: HostCiComputer[]) {
+    const refresh = async (row: typeof active[number]) => {
       try {
         await this.refreshRun(row, computers)
       } catch (error) {
         log.warn({ err: error, runId: row.id }, 'CI run refresh failed; retrying')
       }
-    })
+    }
+    const cloud = active.filter(row => CiRunRecordSchema.parse(row.record).computer?.hostRef.kind === 'cloud')
+    const local = active.filter(row => CiRunRecordSchema.parse(row.record).computer?.hostRef.kind !== 'cloud')
+    const expectedEnd = (row: typeof active[number]) => {
+      const run = CiRunRecordSchema.parse(row.record)
+      if (!run.startedAt || !run.expectedDurationMs) return Infinity
+      return Date.parse(run.startedAt) + run.expectedDurationMs
+    }
+    cloud.sort((left, right) => expectedEnd(left) - expectedEnd(right))
+    // Provider reads cover the cloud fleet together; local host reads retain their bounded batch.
+    await Promise.all([inBatches(cloud, 48, refresh), inBatches(local, 8, refresh)])
+  }
+
+  private async dispatchOnce() {
+    await this.cancelSuperseded()
+    const computers = await this.endpoint.computers()
+    const active = (await this.pool.query<{ id: string; record: unknown; host_key: string | null }>(
+      `select id,record,host_key from ci_runs where state in ('starting','running') or record->>'collection'='pending'`)).rows
+    await this.refreshActiveRuns(active, computers)
     const busyRows = (await this.pool.query<{ host_key: string; record: unknown }>(
       `select host_key,record from ci_runs where state in ('starting','running')`)).rows
     const used = new Map<string, number>()

@@ -2,6 +2,7 @@ import type pg from 'pg'
 import { CI_HOST_NAMESPACE, CI_HOST_START_PROTOCOL_VERSION, CiHostReplySchema,
   type CiHostReply, type CiHostRequest } from '@foreman-code/contracts'
 import type { HostCiComputer, HostCiEndpoint } from './service.js'
+import type { CiMirrorInput } from './serviceTypes.js'
 import type { HostCiRunner } from './runner.js'
 import type { CloudCi } from './cloud.js'
 import { DomainError } from '../errors.js'
@@ -23,6 +24,11 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
   constructor(private readonly pool: pg.Pool, private readonly mainId: string,
     private readonly devices: () => DeviceRequests | undefined, private readonly local: Pick<HostCiRunner, 'handle'>,
     private readonly clouds: CloudCi[] = []) {}
+
+  async publishMirror(input: CiMirrorInput): Promise<void> {
+    // Publication is shared by provider and slot; readiness remains a dispatch concern.
+    await Promise.all(this.clouds.map(cloud => cloud.publishMirror(input)))
+  }
 
   async computers(): Promise<HostCiComputer[]> {
     // Recovery sweeps make provider calls; planning and listing must not wait for them.
