@@ -563,8 +563,10 @@ it('rechecks the build allowance when dispatching an already planned gate throug
     const resources = { cpuCount: 16, memoryBytes: 16 * 2 ** 30 }
     const planned = queued.partitions!.filter(run => run.suite === 'integration'
       && run.plannedHostKey?.startsWith('builder-'))
+    expect(planned.map(run => run.plannedHostKey).sort()).toEqual(['builder-main', 'builder-paired'])
     expect(planned).toHaveLength(2)
     for (const host of planned) {
+      expect(host.files).toHaveLength(1)
       expect(host).toMatchObject({ state: 'queued', integrationShards: buildComputerIntegrationShards(resources) })
     }
     for (const computer of f.computers.filter(computer => computer.hostRef.kind !== 'cloud')) {
@@ -575,6 +577,7 @@ it('rechecks the build allowance when dispatching an already planned gate throug
     const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
     const hosts = read.partitions!.filter(run => run.suite === 'integration' && run.plannedHostKey?.startsWith('builder-'))
     expect(hosts).toHaveLength(2)
+    expect(hosts.map(host => host.id).sort()).toEqual(planned.map(host => host.id).sort())
     for (const host of hosts) {
       expect(host).toMatchObject({ state: 'running', integrationShards: buildComputerIntegrationShards(resources) })
       expect(f.started.find(item => item.request.operation === 'start' && item.request.runId === host.id)?.request)
