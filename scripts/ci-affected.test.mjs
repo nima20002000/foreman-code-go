@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { affectedSnapshot, selectAffectedFiles } from './ci-affected.mjs'
 import { affectedCommands } from './ci-affected-run.mjs'
 import { selectByIndexes } from './ci-files.mjs'
 import { snapshot } from './ci-remote.mjs'
+
+function affectedEnvironment(source = process.env) {
+  return { ...source }
+}
 
 const source = 'apps/api/src/feature.ts'
 const unit = 'apps/api/src/feature.test.ts'
@@ -86,12 +90,39 @@ test('runs affected commands without leaking dispatch selections into nested com
     + "if (['SCOPE', 'SELECTED_FILES', 'SLICE', 'DEFAULT_BRANCH', 'CI_PARTITION', 'CI_DURATIONS'].some(key => key in process.env)) process.exit(9)\n"
     + "console.log(process.argv.slice(2).join(' '))\n", { mode: 0o755 })
   const run = spawnSync(process.execPath, [new URL('./ci-affected-run.mjs', import.meta.url).pathname,
-    'lint', '--files-from', selection], { cwd: root, encoding: 'utf8', env: { ...process.env,
+    'lint', '--files-from', selection], { cwd: root, encoding: 'utf8', env: { ...affectedEnvironment(),
     PATH: `${root}:${process.env.PATH}`, SCOPE: 'affected', SELECTED_FILES: 's:0', SLICE: 's:0',
     DEFAULT_BRANCH: 'stable', CI_PARTITION: '{}', CI_DURATIONS: '{}' } })
   assert.equal(run.status, 0, run.stderr)
   assert.match(run.stdout, /pnpm --dir apps\/api exec eslint src\/feature\.ts --max-warnings 0/)
 })
+
+for (const progress of ['', 'parent-progress.jsonl']) {
+  test(`runs selected web tests independently of the parent progress reporter (${progress || 'disabled'})`, t => {
+    const base = join(homedir(), '.cache', 'foreman-tmp')
+    mkdirSync(base, { recursive: true })
+    const root = mkdtempSync(join(base, 'affected-web-'))
+    t.after(() => rmSync(root, { recursive: true, force: true }))
+    const file = 'apps/web/src/view.test.tsx'
+    mkdirSync(join(root, 'apps/web/src'), { recursive: true })
+    writeFileSync(join(root, file), 'export {}')
+    const selection = join(root, 'selected.json')
+    writeFileSync(selection, JSON.stringify([file]))
+    writeFileSync(join(root, 'corepack'), `#!${process.execPath}\n`
+      + "console.log(JSON.stringify(process.argv.slice(2)))\n", { mode: 0o755 })
+    const environment = affectedEnvironment({ ...process.env,
+      CI_PROGRESS_FILE: progress ? join(root, progress) : '', TEST_RESULTS_OUTPUT: '',
+      PATH: `${root}:${process.env.PATH}` })
+    const result = spawnSync(process.execPath, [new URL('./ci-affected-run.mjs', import.meta.url).pathname,
+      'unit', '--files-from', selection], { cwd: root, encoding: 'utf8', env: environment })
+    assert.equal(result.status, 0, result.stderr)
+    const calls = result.stdout.trim().split('\n').map(line => JSON.parse(line))
+    assert.deepEqual(calls, [
+      ['pnpm', '--filter', '@foreman-code/contracts', 'build'],
+      ['pnpm', '--dir', 'apps/web', 'exec', 'vitest', 'run', 'src/view.test.tsx'],
+    ])
+  })
+}
 
 test('selects the snapshot tree against origin/main without reading later working tree edits', t => {
   const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'affected-ci-'))
