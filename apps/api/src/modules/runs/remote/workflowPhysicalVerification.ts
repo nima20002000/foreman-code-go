@@ -470,7 +470,8 @@ async function assertRemoteWorkflowBinding(sql: GraphTransactionSql, owner: RunO
   check()
   // Publication is acknowledged only after this exact original was retained
   // by the existing canonical writer AND its owning transaction committed.
-  const proofs=await sql.query<{record:WorkflowNativeProofRecord}>(`select record from workflow_native_proofs
+  // A boundary observation is never retained as a source, so it has no proof.
+  const proofs=original.source.type==='boundary'?{rows:[]}:await sql.query<{record:WorkflowNativeProofRecord}>(`select record from workflow_native_proofs
     where execution_id=$1 and run_id=$2 and proof_id=$3`,
     [intent.executionId,intent.runId,workflowNativeSourceId(intent.executionId,original.source)])
   if(proofs.rows.some(row=>row.record.execution.executionId===intent.executionId&&same(row.record.session,readout.session)
