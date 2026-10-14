@@ -4,7 +4,8 @@ import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 import { McpDetectionSchema, type McpDetection } from '@foreman-code/contracts'
-import { MANAGED_MCP_NAMESPACE, ManagedMcpRequestSchema } from '@foreman-code/contracts/managed-mcp-channel'
+import { MANAGED_MCP_NAMESPACE, ManagedMcpFailureSchema, ManagedMcpRequestSchema }
+  from '@foreman-code/contracts/managed-mcp-channel'
 import { HarnessMcpPlanSchema, type HarnessMcpManagedInput, type HarnessMcpPlan, type HarnessMcpReconcileInput }
   from '@foreman-code/contracts/management'
 import { syncNativeConfigDirectory } from './nativeConfigFiles.js'
@@ -13,6 +14,7 @@ import { assertManagedChange, expectedMcpUserFingerprint, fingerprint, managedCh
 import { DomainError } from '../errors.js'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
+import { errorMessage } from '../../shared/errorMessage.js'
 
 type Harness = 'codex' | 'claude'
 const RecordSchema = z.object({ hash: z.string(), plan: HarnessMcpPlanSchema, expectedHash: z.string() }).strict()
@@ -184,15 +186,24 @@ export function createWorkerManagedMcpExtension(worker: WorkerManagedMcp,
       assertCurrent()
       const signal = context.connectionSignal ? AbortSignal.any([context.signal, context.connectionSignal]) : context.signal
       let result: unknown
-      if (request.operation === 'list') result = await worker.list(request.harness, signal)
-      else if (request.operation === 'detect') result = { detection: await worker.detect(request.harness, signal),
-        runnerId: context.binding.deviceId, workingDirectory: worker.workingDirectory, providerVersion: 'unknown', nativeFilters: {} }
-      else if (request.operation === 'reconcile') result = await worker.reconcile(request.input, request.plan, signal)
-      else {
-        if (request.input.hostRef && !isDeepStrictEqual(request.input.hostRef, target.hostRef)) {
-          throw new DomainError('MCP_INSPECTION_CONTEXT_MISMATCH', 'The requested MCP computer changed.', 409)
+      try {
+        if (request.operation === 'list') result = await worker.list(request.harness, signal)
+        else if (request.operation === 'detect') result = { detection: await worker.detect(request.harness, signal),
+          runnerId: context.binding.deviceId, workingDirectory: worker.workingDirectory, providerVersion: 'unknown', nativeFilters: {} }
+        else if (request.operation === 'reconcile') result = await worker.reconcile(request.input, request.plan, signal)
+        else {
+          if (request.input.hostRef && !isDeepStrictEqual(request.input.hostRef, target.hostRef)) {
+            throw new DomainError('MCP_INSPECTION_CONTEXT_MISMATCH', 'The requested MCP computer changed.', 409)
+          }
+          result = await worker.apply(request.input, request.requestedBy, signal, assertCurrent)
         }
-        result = await worker.apply(request.input, request.requestedBy, signal, assertCurrent)
+      } catch (error) {
+        assertCurrent()
+        const code = error instanceof Error && 'code' in error && typeof error.code === 'string'
+          ? error.code : 'MCP_OPERATION_FAILED'
+        return { payload: ManagedMcpFailureSchema.parse({ error: { code,
+          message: errorMessage(error, 'The Worker could not complete the native MCP operation.'),
+          status: error instanceof DomainError ? error.status : 503 } }) }
       }
       assertCurrent()
       return { payload: result }

@@ -2,7 +2,8 @@ import type pg from 'pg'
 import { ScopedMcpDetectionSchema } from '@foreman-code/contracts'
 import { DeviceRegistrationSchema, type CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
 import type { DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
-import { MANAGED_MCP_NAMESPACE, type ManagedMcpRequest } from '@foreman-code/contracts/managed-mcp-channel'
+import { MANAGED_MCP_NAMESPACE, ManagedMcpFailureSchema, type ManagedMcpRequest }
+  from '@foreman-code/contracts/managed-mcp-channel'
 import { HarnessMcpListResultSchema, HarnessMcpPlanSchema, type HarnessMcpManagedInput,
   type HarnessMcpPlan, type HarnessMcpReconcileInput, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { isDeepStrictEqual } from 'node:util'
@@ -11,6 +12,7 @@ import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { requireAuthorization } from '../access/policy.js'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
 import { DomainError } from '../errors.js'
+import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
 
 type Harness = 'codex' | 'claude'
 /** Main authorizes and records the command; the current paired Worker owns the native write. */
@@ -39,7 +41,21 @@ export class DeviceManagedMcp {
     if (!isDeepStrictEqual(target, current)) throw new DomainError('COMPUTER_NOT_FOUND', 'The paired computer changed.', 409)
     const deadline = AbortSignal.timeout(120_000)
     const bounded = signal ? AbortSignal.any([signal, deadline]) : deadline
-    return (await captured.request({ target, request }, { signal: bounded, timeoutMs: 120_000 })).payload
+    let payload: unknown
+    try {
+      payload = (await captured.request({ target, request }, { signal: bounded, timeoutMs: 120_000 })).payload
+    } catch (error) {
+      if (error instanceof DeviceApplicationError) {
+        throw new DomainError(error.code, error.message, error.retryable ? 503 : 409)
+      }
+      throw error
+    }
+    const failure = ManagedMcpFailureSchema.safeParse(payload)
+    if (failure.success) {
+      const { code, message, status } = failure.data.error
+      throw new DomainError(code, message, status)
+    }
+    return payload
   }
   async list(principal: ManagementPrincipal, harness: Harness, hostRef: CanonicalMachineReference) {
     requireAuthorization(principal, 'harnesses:read')
