@@ -29,12 +29,13 @@ it('reports a CLI credential fallback and retries token acquisition after a boun
   expect(http.transport).toMatchObject({ source: 'rest', fallbackCount: 2, lastError: null, reason: null })
 })
 
-it('makes deliberately CLI-only credentials visible without fetching over REST', async () => {
+it('makes unavailable REST credentials visible without fetching over REST', async () => {
   const fetch = vi.fn()
   const http = new CloudHttp(systemHostCiPorts(), 'circleci', { circleToken: async () => null, fetch })
   expect(await http.request('/fixture')).toBeNull()
-  expect(http).toMatchObject({ transport: { source: 'cli', fallbackCount: 1, lastError: null,
-    reason: 'REST token unavailable; using CLI credential resolution.' } })
+  expect(http.transport).toMatchObject({ source: 'cli', fallbackCount: 1,
+    lastError: 'CircleCI REST credential resolution failed.',
+    reason: 'CircleCI REST credential resolution failed.' })
   expect(fetch).not.toHaveBeenCalled()
 })
 

@@ -524,5 +524,7 @@ it('reads the CircleCI CLI configured token and keeps it in memory between polls
   await rm(join(root, 'circleci', 'config.yml'))
   expect(await provider.find(run)).toBe('42')
   expect(server.requests.every(request => request.authorization === 'Bearer configured-test-token')).toBe(true)
-  expect(cli.calls).not.toHaveBeenCalled()
+  expect(cli.calls).toHaveBeenCalledExactlyOnceWith('secret-tool',
+    ['lookup', 'service', 'com.circleci.cli:https://circleci.com', 'username', expect.any(String)],
+    { timeoutMs: 15_000 })
 })
