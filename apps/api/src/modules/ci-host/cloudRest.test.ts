@@ -198,6 +198,14 @@ function circleHandler(request: IncomingMessage, response: ServerResponse) {
   json(response, {}, 404)
 }
 
+// CircleCI v3 rejects step output reads without JSON:API filter parameters.
+function circleOutputQuery(request: IncomingMessage, response: ServerResponse) {
+  const query = new URL(request.url!, 'http://circle').searchParams
+  if (query.has('filter[execution]') && query.has('filter[step_num]')) return true
+  json(response, { message: 'Bad Request' }, 400)
+  return false
+}
+
 it('reads CircleCI workflows, steps and live output without polling subprocesses', async () => {
   const server = await http(circleHandler)
   const cli = ports()
@@ -223,6 +231,7 @@ it('polls CircleCI status repeatedly and collects raw Suite output through REST'
         { steps: [{ num: 2, name: 'Suite', phase: 'started' }] },
       ],
     } } })
+    if (/\/std(out|err)/.test(request.url!) && !circleOutputQuery(request, response)) return
     if (request.url!.includes('/stdout')) return response.end(stdout)
     if (request.url!.includes('/stderr')) return response.end(stderr)
     circleHandler(request, response)
@@ -238,7 +247,7 @@ it('polls CircleCI status repeatedly and collects raw Suite output through REST'
   expect(await provider.status(run)).toEqual(expected)
   expect(cli.calls).not.toHaveBeenCalled()
   expect(await provider.log(run)).toBe(`Suite\n${stdout}${stderr}\n${stdout}${stderr}`)
-  expect(server.requests.some(request => request.url === '/api/v3/jobs/job/stdout?execution=1&step_num=2'))
+  expect(server.requests.some(request => request.url === '/api/v3/jobs/job/stdout?filter%5Bexecution%5D=1&filter%5Bstep_num%5D=2'))
     .toBe(true)
   expect(cli.calls).not.toHaveBeenCalled()
 })
@@ -317,14 +326,14 @@ it('preserves CircleCI configuration failures', async () => {
     message: 'CircleCI pipeline failed: config: invalid configuration', details: { configError: true } })
 })
 
-it('downloads only CircleCI duration artifacts across all listing pages', async () => {
+it('downloads only CircleCI duration artifacts from the job artifact listing', async () => {
   const server = await http((request, response) => {
-    if (request.url!.includes('/artifacts')) {
-      const second = request.url!.includes('page-token=next')
-      return json(response, { items: second
-        ? [{ path: 'durations/test-results.json', url: 'https://downloads.example/results' }]
-        : [{ path: 'durations/durations.json', url: 'https://downloads.example/durations' },
-          { path: 'logs/large.log', url: 'https://downloads.example/large' }], next_page_token: second ? null : 'next' })
+    if (request.url === '/api/v3/jobs/job/artifacts') {
+      return json(response, { data: [
+        { attributes: { path: 'durations/durations.json', url: 'https://downloads.example/durations', execution: 0 } },
+        { attributes: { path: 'logs/large.log', url: 'https://downloads.example/large', execution: 0 } },
+        { attributes: { path: 'durations/test-results.json', url: 'https://downloads.example/results', execution: 0 } },
+      ] })
     }
     if (request.url === '/durations') return json(response, { 'feature.test.ts': 10 })
     if (request.url === '/results') return json(response, { files: [] })
