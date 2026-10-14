@@ -82,7 +82,7 @@ describe.skipIf(process.env.NIM2691_POSTGRES !== '1')('workflow settlement retur
         configuredParallelism: 2,
         runtimeRoot: f.db.directory,
         factory,
-        native: { observeExact: unexpectedLaunch, assertResume: unexpectedLaunch },
+        native: { observeExact: unexpectedLaunch, assertResume: unexpectedLaunch, failIntervalCheck: unexpectedLaunch },
         workflows: { getAgentConfiguration: unexpectedLaunch },
         locations: { revalidateRunAuthorization: unexpectedLaunch, revalidateSnapshot: unexpectedLaunch },
         nativeBoundaryEvidence: unexpectedLaunch,

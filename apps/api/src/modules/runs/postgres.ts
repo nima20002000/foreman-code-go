@@ -235,7 +235,7 @@ export class PostgresRunRepository {
     this.requireOwner(owner.runId, owner)
     // Acquiring the Run lock excludes a live start owner. Unclaimed queued work remains runnable.
     const row = (await owner.client.query<{ id: string }>(`select e.id from harness_executions e
-      where e.run_id=$1 and e.record->>'nativeSessionId' is null and (
+      where e.run_id=$1 and e.tick_index is null and e.record->>'nativeSessionId' is null and (
         e.record->>'state'='starting' or e.record->>'state'='queued' and exists (
           select 1 from run_graph_effects f where f.run_id=e.run_id
             and f.effect_kind='execution.launch' and f.entity_id=e.id))

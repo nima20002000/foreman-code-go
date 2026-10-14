@@ -49,6 +49,7 @@ export function repeatExecutionDriver(input: {
    * allocate a candidate, directory, credential, session or turn, or call finishRun. */
   observeExact(execution: HarnessExecution, signal: AbortSignal): Promise<void>
   requestStartCleanup(failure: ExecutionResult): Promise<void>
+  failIntervalCheck?(executionId: string, failure: ExecutionResult): Promise<void>
   reconcileArtifacts?(execution: HarnessExecution, signal: AbortSignal): Promise<void>
 }): RepeatExecutionDriver {
   const inFlight = new Map<string, Promise<void>>()
@@ -107,6 +108,20 @@ export function repeatExecutionDriver(input: {
             signal, check: () => input.owner.assertOwned(),
           })
           if (terminal.execution.state !== 'completed') {
+            if (repeatTickIndex(terminal.execution.input) !== undefined && !repeatSettlementPending(error)) {
+              const failCheck = input.failIntervalCheck
+              if (!failCheck) return repeatConflict('TICK_FAILURE_WRITER_REQUIRED')
+              const failure: ExecutionResult = { outcome: 'failed', error: {
+                code: error instanceof DomainError ? error.code : 'EXECUTION_START_INTERRUPTED',
+                message: error instanceof DomainError ? error.message : 'The interval check could not start.',
+                retryable: false,
+              } }
+              await retryDatabaseTimeout(() => failCheck(execution.id, failure), {
+                signal, check: () => input.owner.assertOwned(),
+              })
+              await finalize((await input.store.readExecution(execution.id)).execution)
+              return
+            }
             const startFailed = !(error instanceof DomainError) || isDatabaseTimeout(error)
               || error instanceof DomainError && error.code === 'NATIVE_SESSION_START_UNCERTAIN'
             if (startFailed && !terminal.execution.nativeSessionId
@@ -403,8 +418,8 @@ function runtimeFailureResult(error: unknown): ExecutionResult | undefined {
  * and observes it through the same native driver without using graph parallelism slots. Each loop
  * re-observes its node's latest check until that check is settled, also after a restart. The
  * returned stop only ends scheduling: the caller's task drain waits for in-flight checks, with the
- * bounded cleanup deadline after Stop or failure. Transient errors back off; refused preparation
- * or a failed start with a persisted cleanup intent ends the Run. */
+ * bounded cleanup deadline after Stop or graph failure. Failed checks settle independently;
+ * incomplete cleanup backs off and re-observes the same check. */
 export function startIntervalChecks(input: {
   version: WorkflowVersionV3; store: Partial<Pick<RepeatRunRepository, 'admitTick'>>
   driver: RepeatExecutionDriver; signal: AbortSignal
@@ -436,7 +451,6 @@ export function startIntervalChecks(input: {
         }
       } catch (error) {
         if (input.signal.aborted) return
-        if (error instanceof DomainError && (preparationFailureCodes.has(error.code) || error.code === 'EXECUTION_START_INTERRUPTED')) throw error
         if (!scheduling.aborted) componentLogger('engine').warn({ err: error, workflowNodeId: node.id }, 'interval check failed')
       }
       if (scheduling.aborted) return

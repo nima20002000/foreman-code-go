@@ -10,7 +10,7 @@ import { graphSourceDigest } from '../run-graph/publication.js'
 import { requireRepeatCanonicalReceiptBeforeCommit } from '../run-graph/repeatReceipts.js'
 import { readAcceptedRepeatRunLocked } from './repeatStartRead.js'
 import { openWorkflowLifecycleLocked } from './repeatLifecycle.js'
-import { sameRepeatValue, compileRepeatLayout } from './repeatResolution.js'
+import { sameRepeatValue, compileRepeatLayout, repeatTickIndex } from './repeatResolution.js'
 import { assertWorkflowRunSettlementLocked, type WorkflowRestartApprovals } from './workflowRepositoryServices.js'
 import type { RunOwnership } from './ownership.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
@@ -296,7 +296,7 @@ export async function hasWorkDirectionWait(owner: RunOwnership): Promise<boolean
   return row.rowCount === 1
 }
 
-/** Retain the launch failure without fencing sibling handoffs or claiming closure. */
+/** Retain an execution failure without fencing sibling work or claiming closure. */
 export async function recordWorkflowExecutionFailure(owner: RunOwnership, executionId: string,
   failure: ExecutionResult): Promise<void> {
   const result = ExecutionResultSchema.parse(failure)
@@ -304,18 +304,22 @@ export async function recordWorkflowExecutionFailure(owner: RunOwnership, execut
   await owner.oneShotConnection().transaction(async sql => {
     const { publication, snapshot } = await openWorkflowLifecycleLocked(sql, owner.runId)
     await retainOwner(sql, owner)
-    if (!snapshot.version.definition.handoffs || snapshot.stopRequested || snapshot.cleanupPending
+    if (snapshot.stopRequested || snapshot.cleanupPending
       || !['running', 'waiting'].includes(snapshot.run.executionState)) {
       return fail('GRAPH_STOP_CONFLICT')
     }
     const stored = await readRepeatExecutionLocked(sql, snapshot, executionId)
-    if (!stored.workActivationId || stored.execution.nativeSessionId
-      || !['queued', 'starting'].includes(stored.execution.state)) return fail('RUN_FAILURE_CAUSE_INVALID')
+    const intervalCheck = repeatTickIndex(stored.execution.input) !== undefined
+    if (!intervalCheck && (!snapshot.version.definition.handoffs || !stored.workActivationId
+      || stored.execution.nativeSessionId || !['queued', 'starting'].includes(stored.execution.state))) {
+      return fail('RUN_FAILURE_CAUSE_INVALID')
+    }
+    if (stored.execution.state === 'completed') return
     const budget = (await sql.query<{ failure_result: unknown }>(
       'select failure_result from approval_execution_state where execution_id=$1 for update', [executionId])).rows[0]
     if (!budget) return fail('RUN_FAILURE_CAUSE_INVALID')
     if (budget.failure_result) {
-      if (!sameRepeatValue(budget.failure_result, result)) return fail('RUN_FAILURE_CAUSE_INVALID')
+      if (!intervalCheck && !sameRepeatValue(budget.failure_result, result)) return fail('RUN_FAILURE_CAUSE_INVALID')
       return
     }
     await lifecycleSource(publication, { kind: 'execution_failure_recorded', executionId, result }, async () => {

@@ -25,7 +25,7 @@ export interface RepeatEngineStartContext {
   configuredParallelism: number
   runtimeRoot: string
   factory: RepeatRepositoryFactory
-  native: Pick<ApprovalExecutionCoordinator, 'observeExact' | 'assertResume'>
+  native: Pick<ApprovalExecutionCoordinator, 'observeExact' | 'assertResume' | 'failIntervalCheck'>
   workflows: Pick<PostgresWorkflowRepository, 'getAgentConfiguration'>
   locations: Pick<WorkspaceLocationService, 'revalidateRunAuthorization' | 'revalidateSnapshot'>
   jobs?: (owner: RunOwnership, version: import('@foreman-code/contracts/wave25').WorkflowVersionV3) => {
@@ -164,6 +164,10 @@ export async function executeRepeatEngineStart(input: RepeatEngineStartContext):
     workflowVersionId: snapshot.version.id, executionSemanticsVersion: 3 as const }
   const driver = repeatExecutionDriver({ scope, version: snapshot.version, owner: input.owner, store, observeExact,
     requestStartCleanup: (failure) => input.lifecycle.requestCleanup(failure),
+    failIntervalCheck: async (executionId, failure) => {
+      const { execution } = await store.readExecution(executionId)
+      await input.native.failIntervalCheck(input.owner, execution, failure)
+    },
     reconcileArtifacts: (execution, signal) =>
       input.factory.reconcileWorkflowArtifacts(input.owner, snapshot.run, execution, signal) })
   // Capture the lifecycle object, rather than reading mutable context properties
