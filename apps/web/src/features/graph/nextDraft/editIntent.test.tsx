@@ -188,10 +188,14 @@ beforeEach(() => {
 afterEach(() => {
   cleanup(); clients.splice(0).forEach((client) => client.clear())
   useGraphDraftStore.getState().clearAllDrafts(); vi.restoreAllMocks(); vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 
 describe('NIM-2644 mounted frontend recovery through the real edit-intent hook', () => {
   it('unlocks a rejected Agent branch prefix and restores the saved draft on Discard and reload', async () => {
+    // Recovery needs only immediate responses, not elapsed polling or typing time.
+    vi.useFakeTimers()
+    const startedAt = Date.now()
     const stage = vi.spyOn(nextDraftApi, 'editStage').mockRejectedValue(new ApiError({
       code: 'WORKTREE_BINDING_REQUIRED', message: 'Select an approved root for this Agent branch prefix.',
     }, 409))
@@ -229,6 +233,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     expect(advance).not.toHaveBeenCalled()
     expect(discard).not.toHaveBeenCalled()
     expect(boardStartClient.start).not.toHaveBeenCalled()
+    expect(Date.now()).toBe(startedAt)
   })
 
   it('keeps Start blocked for a saved workflow with a retired Agent while preserving its facts', async () => {
