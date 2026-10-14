@@ -95,7 +95,7 @@ it('keeps graph work and an interval Agent alive through database timeouts and r
   try {
     running = f.engine.start(f.f.run.id)
     // Observe failures without an unhandled rejection while the timing gates remain closed.
-    void running.catch(() => {})
+    void running.catch(() => { /* ignore: the finally block settles and asserts the Run; this only avoids an unhandled rejection */ })
     await readUntil(async () => held.size, count => count === 2,
       { timeoutMs: 30_000, description: 'running graph Agent and interval Agent' })
     const before = await f.runs.getDetails(f.f.run.workspaceId, f.f.run.id)
