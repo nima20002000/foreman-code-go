@@ -13,6 +13,7 @@ import { copyApiRuntime } from '../../../../scripts/copy-api-runtime.mjs'
 import { createRuntimeBuildIdentity } from '@foreman-code/contracts/runtime-build-identity-node'
 import { readUntil } from './observableCondition.js'
 import { removeRestartUnit } from '../../../../scripts/test-restart-units.mjs'
+import { testFixtureCacheRoot } from '../../../../scripts/test-fixture-cache.mjs'
 import { ownedTestPath } from './testResources.js'
 
 const execute = promisify(execFile)
@@ -69,6 +70,9 @@ export async function installedRestartService(directory: string, configuration: 
   await cp(join(repository, 'packages/contracts'), join(deployment, 'packages/contracts'), {
     recursive: true, filter: path => path !== join(repository, 'packages/contracts/node_modules'),
   })
+  // The installer's shared dependency tree is deployed once per lockfile, not copied again for every fixture.
+  // The installed API's own modules are transformed below.
+  await mkdir(join(deployment, 'apps/api/dist'), { recursive: true })
   await deployProductionApi(async (command: string, args: string[]) => {
     // The disposable deployment workspace is discarded, so it needs no dependency restoration.
     if (args.includes('install')) return
@@ -80,7 +84,7 @@ export async function installedRestartService(directory: string, configuration: 
       throw new Error(`${output.message} (code ${output.code}, signal ${output.signal})\n`
         + `${output.stderr ?? ''}\n${output.stdout ?? ''}`, { cause: error })
     }
-  }, api)
+  }, api, { dependencies: { root: join(testFixtureCacheRoot(), 'api-dependencies'), source: deployment } })
   await mkdir(join(api, 'test/helpers'), { recursive: true })
   await copyFile(join(repository, 'apps/api/test/helpers/testPool.mjs'), join(api, 'test/helpers/testPool.mjs'))
   const source = join(repository, 'apps/api/src')
