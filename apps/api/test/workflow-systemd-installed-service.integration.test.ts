@@ -5,9 +5,9 @@ import { execFile } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { delimiter, join } from 'node:path'
-import { parse, stringify } from 'yaml'
+import { copyFile, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { delimiter, dirname, join } from 'node:path'
+import { parse } from 'yaml'
 import { deployProductionApi } from '../../../scripts/local-production-runtime.mjs'
 import { installedRestartService } from './helpers/installedRestartService.js'
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
@@ -62,36 +62,46 @@ describe('installed API fixture packaging', () => {
     }
     const lockfile = parse(await readFile(join(repository, 'pnpm-lock.yaml'), 'utf8'))
     const dependency = lockfile.importers['apps/api'].dependencies.yaml
-    const packageKey = `yaml@${dependency.version}`
     const cache = join(directory, 'metadata')
     const metadata = join(cache, 'v11/metadata/https%3A+registry.npmjs.org')
     const destination = join(directory, 'deployed')
-    await mkdir(join(directory, 'apps/api'), { recursive: true })
+    await mkdir(join(directory, 'scripts'), { recursive: true })
     await mkdir(metadata, { recursive: true })
-    const { packageManager } = JSON.parse(await readFile(join(repository, 'package.json'), 'utf8'))
-    await writeFile(join(directory, 'package.json'), JSON.stringify({ private: true, packageManager }))
-    await writeFile(join(directory, 'pnpm-workspace.yaml'), stringify({
-      packages: ['apps/*'], autoInstallPeers: false, sharedWorkspaceLockfile: true,
-      minimumReleaseAge: 2880, minimumReleaseAgeStrict: true, minimumReleaseAgeIgnoreMissingTime: false,
-    }))
-    await writeFile(join(directory, 'apps/api/package.json'), JSON.stringify({
-      name: '@foreman-code/api', version: '1.0.0', dependencies: { yaml: dependency.specifier },
-    }))
-    await writeFile(join(directory, 'pnpm-lock.yaml'), stringify({
-      lockfileVersion: lockfile.lockfileVersion,
-      settings: lockfile.settings,
-      importers: { '.': {}, 'apps/api': { dependencies: { yaml: dependency } } },
-      packages: { [packageKey]: lockfile.packages[packageKey] },
-      snapshots: { [packageKey]: lockfile.snapshots[packageKey] },
-    }))
-    await writeFile(join(metadata, 'yaml.jsonl'), `${JSON.stringify({ modified })}\n${JSON.stringify({
-      name: 'yaml', modified, 'dist-tags': { latest: dependency.version },
-      versions: { [dependency.version]: {
-        name: 'yaml', version: dependency.version,
-        dist: { integrity: lockfile.packages[packageKey].resolution.integrity,
-          tarball: `https://registry.npmjs.org/yaml/-/yaml-${dependency.version}.tgz` },
-      } },
-    })}`)
+    for (const name of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc', 'scripts/require-pnpm.mjs']) {
+      await copyFile(join(repository, name), join(directory, name))
+    }
+    for (const name of ['api', 'web', 'worker']) {
+      await mkdir(join(directory, 'apps', name), { recursive: true })
+      await copyFile(join(repository, 'apps', name, 'package.json'), join(directory, 'apps', name, 'package.json'))
+    }
+    await cp(join(repository, 'packages/contracts'), join(directory, 'packages/contracts'), {
+      recursive: true, filter: path => path !== join(repository, 'packages/contracts/node_modules'),
+    })
+    // Each registry response has locked artifacts and an optional modified date, but no publication-time map.
+    const packageVersions = new Map<string, Record<string, {
+      name: string; version: string; dist: { integrity: string; tarball: string }
+    }>>()
+    for (const [key, snapshot] of Object.entries(lockfile.packages) as Array<[
+      string, { resolution: { integrity: string } },
+    ]>) {
+      const separator = key.lastIndexOf('@')
+      const name = key.slice(0, separator)
+      const version = key.slice(separator + 1)
+      const versions = packageVersions.get(name) ?? {}
+      versions[version] = {
+        name, version,
+        dist: { integrity: snapshot.resolution.integrity,
+          tarball: `https://registry.npmjs.org/${name}/-/${name.split('/').at(-1)}-${version}.tgz` },
+      }
+      packageVersions.set(name, versions)
+    }
+    for (const [name, versions] of packageVersions) {
+      const metadataPath = join(metadata, `${name}.jsonl`)
+      await mkdir(dirname(metadataPath), { recursive: true })
+      await writeFile(metadataPath, `${JSON.stringify({ modified })}\n${JSON.stringify({
+        name, modified, versions,
+      })}`)
+    }
     const execute = promisify(execFile)
     const deploy = deployProductionApi(async (command, args) => {
       // This disposable workspace needs no post-deploy installation restoration.
@@ -102,13 +112,16 @@ describe('installed API fixture packaging', () => {
     }, destination)
     try {
       if (!succeeds) {
-        await expect(deploy).rejects.toThrow(/minimumReleaseAge|NO_OFFLINE_META|MISSING_TIME/)
+        await expect(deploy).rejects.toMatchObject({
+          stdout: expect.stringMatching(/minimumReleaseAge|NO_OFFLINE_META|MISSING_TIME/),
+        })
         return
       }
       await deploy
       const deployedRequire = createRequire(join(destination, 'package.json'))
       expect(deployedRequire('yaml').parse('installed: true')).toEqual({ installed: true })
       expect(deployedRequire('yaml/package.json').version).toBe(dependency.version)
+      expect(deployedRequire('@foreman-code/contracts').RuntimeBuildIdentitySchema.safeParse({}).success).toBe(false)
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
