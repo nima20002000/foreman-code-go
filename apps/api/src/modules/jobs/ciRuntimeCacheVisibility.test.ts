@@ -43,7 +43,7 @@ it.each(['json', 'metadata', 'receipt', 'missing-receipt', 'image'] as const)(
 
 it('keeps rebuild diagnostics in public runtime status after completion and restart', async () => {
   const f = await fixture()
-  const cache = { status: 'invalid', lastError: 'Runtime cache metadata is invalid.', missCount: 1, rebuildCount: 1 }
+  const cache = { status: 'invalid' as const, lastError: 'Runtime cache metadata is invalid.', missCount: 1, rebuildCount: 1 }
   const ports = { git: { cloneDirectory: () => f.installer,
     git: async () => ({ code: 0, stdout: '', stderr: '' }) },
     managedRuntimeRoot: async () => f.installer, currentRuntimePaths: async () => [],

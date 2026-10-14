@@ -3,6 +3,9 @@ import { DEFAULT_HARNESS_DEFAULTS, HarnessDefaultsSchema, type HarnessConfigurat
 import { HarnessCatalogEntrySchema, type ManagementPrincipal } from '@foreman-code/contracts/management'
 import { ExecutionReadinessService } from '../src/modules/harnesses/executionReadiness.js'
 import { logger } from '../src/modules/diagnostics/logger.js'
+import Fastify from 'fastify'
+import { registerGraphqlMcp, type GraphqlMcpServices } from '../src/mcp/unified/transport.js'
+import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { HarnessCatalogService } from '../src/modules/harnesses/catalog.js'
 import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
 import type { PostgresSettingsRepository } from '../src/modules/settings/postgres.js'
@@ -27,6 +30,38 @@ function fixture(ready = () => true) {
 }
 
 describe('harness catalog status reads', () => {
+  it('returns freshness through authenticated MCP and denies callers without harness read access', async () => {
+    const { catalog } = fixture()
+    const app = Fastify()
+    const recordDenied = vi.fn(async () => undefined)
+    const services = { access: { authenticate: async (token: string) => token === 'reader' ? principal
+      : { ...principal, id: 'denied-reader', grants: [] } },
+      operator: { harnesses: catalog, commands: { recordDenied } } } as unknown as GraphqlMcpServices
+    registerGraphqlMcp(app, services)
+    const call = async (token: string) => {
+      const response = await app.inject({ method: 'POST', url: '/mcp',
+        headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream' },
+        payload: { jsonrpc: '2.0', id: 1, method: 'tools/call',
+          params: { name: 'harness_get', arguments: { harness: 'codex' } } } })
+      expect(response.statusCode).toBe(200)
+      const data = response.body.startsWith('event:')
+        ? JSON.parse(response.body.split('\n').find(line => line.startsWith('data: '))!.slice(6)) : response.json()
+      return data.result
+    }
+    try {
+      const first = await call('reader')
+      expect(first.isError).not.toBe(true)
+      expect(decodeMcpToolResult(first)).toMatchObject({ observation: { stale: false, refreshing: false, lastError: null } })
+      expect(decodeMcpToolResult(await call('reader'))).toEqual(decodeMcpToolResult(first))
+      const denied = await call('denied')
+      expect(denied.isError).toBe(true)
+      expect(recordDenied).toHaveBeenCalledOnce()
+    } finally {
+      await catalog.shutdownChecks()
+      await app.close()
+    }
+  })
+
   it('exposes expired checks, pending refresh and a failed background refresh to readers', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     const start = new Date('2026-10-01T00:00:00Z')
@@ -47,7 +82,8 @@ describe('harness catalog status reads', () => {
     expect(await readiness.get(principal, 'codex')).toMatchObject({ status: 'unverified',
       checkedAt: start.toISOString(), reason: { code: 'HARNESS_STATUS_REFRESHING' } })
     reject(new Error('Native probe failed'))
-    await Promise.resolve()
+    await expect(catalog.checkConfiguration(principal, DEFAULT_HARNESS_DEFAULTS.codex))
+      .rejects.toMatchObject({ code: 'HARNESS_QUALIFICATION_FAILED' })
     const failed = HarnessCatalogEntrySchema.parse(await catalog.get(principal, 'codex'))
     expect(failed).toMatchObject({ capability: null, observation: { checkedAt: start.toISOString(),
       stale: false, refreshing: false, refreshCount: 1, failureCount: 1, lastError: expect.any(String) } })
