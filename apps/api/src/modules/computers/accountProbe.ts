@@ -7,6 +7,8 @@ import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { ComputerAccountsSchema, type ComputerAccount, type ComputerAccounts } from '@foreman-code/contracts/computer-accounts'
 import { fallbackOnError } from '../diagnostics/ignoredError.js'
+import { DomainError } from '../errors.js'
+import { executableUnavailable } from './executableError.js'
 
 export interface AccountProbePorts {
   /** Absolute executable path, or null when the tool is not installed. */
@@ -26,7 +28,10 @@ export async function probeComputerAccounts(ports: AccountProbePorts = systemPor
   const accounts = await Promise.all([codex(ports).then(account => ({ account, observedAt: Date.now() })),
     cachedAccount(ports, 'claude', signal, options),
     cachedAccount(ports, 'github', signal, options)]
-    .map(probe => probe.catch(fallbackOnError(null, 'lifecycle', 'probe computer account'))))
+    .map(probe => probe.catch(error => {
+      if (error instanceof DomainError && error.code === 'COMPUTER_EXECUTABLE_UNAVAILABLE') throw error
+      return fallbackOnError(null, 'lifecycle', 'probe computer account')(error)
+    })))
   const tools = ['codex', 'claude', 'github'] as const
   const observedAt = Math.min(Date.now(), ...accounts.flatMap(value => value ? [value.observedAt] : []))
   return ComputerAccountsSchema.parse({ observedAt: new Date(observedAt).toISOString(),
@@ -161,7 +166,7 @@ function parseJson(value: string): unknown {
   try { return JSON.parse(value) } catch { return null }
 }
 
-/** `binaries` holds installer-selected executables (for example a Worker's configured Codex) checked before PATH. */
+/** Explicit installer selections must be usable; PATH discovery applies only to unconfigured commands. */
 export function systemPorts(environment: NodeJS.ProcessEnv = process.env,
   binaries: Readonly<Partial<Record<string, string>>> = {}): AccountProbePorts {
   const home = environment.HOME ?? homedir()
@@ -194,7 +199,13 @@ export function systemPorts(environment: NodeJS.ProcessEnv = process.env,
     async find(name) {
       const selected = binaries[name]
       if (selected) {
-        try { await access(selected, constants.X_OK); return selected } catch { /* ignore: fall back to PATH */ }
+        try {
+          await access(selected, constants.X_OK)
+          return selected
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code ?? 'ACCESS_FAILED'
+          throw executableUnavailable(name, selected, home, code)
+        }
       }
       for (const directory of directories) {
         const candidate = join(directory, name)

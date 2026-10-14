@@ -1,3 +1,4 @@
+import type { ReadObservation } from '@foreman-code/contracts'
 import { errorMessage } from '../../shared/errorMessage.js'
 import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import type { ChatResponseAcknowledgment } from '@foreman-code/contracts/interaction-activity'
@@ -167,6 +168,7 @@ function definiteCreationFailure(error: unknown): boolean {
 }
 
 export class OperatorChatService {
+  private readonly activityObservations = new Map<string, ReadObservation>()
   readonly events = new OperatorConversationEvents()
   private readonly runtimes = new Map<string, Runtime>()
   private readonly tasks = new Map<string, { requestId: string; controller: AbortController; promise: Promise<void> }>()
@@ -336,7 +338,8 @@ export class OperatorChatService {
     const qualifiedResponse = responseAvailability && !isAuthorized(finalPrincipal, 'operator_chat:respond')
       ? { ...responseAvailability, available: false, status: 'unavailable' as const, path: null,
         reason: 'unauthorized' as const, message: 'Your current grants do not allow responding to this interaction.' } : responseAvailability
-    const activitySnapshot = qualifyChatActivity(state.activitySnapshot, qualifiedResponse)
+    const activitySnapshot = { ...qualifyChatActivity(state.activitySnapshot, qualifiedResponse),
+      ...(this.activityObservations.has(id) ? { observation: this.activityObservations.get(id) } : {}) }
     return { ...state, activitySnapshot, ...(qualifiedResponse ? { responseAvailability: qualifiedResponse } : {}),
       qualificationKey: commandInputHash({ principal: finalPrincipal, revision: state.revision, sourceRevisions: state.activitySnapshot.sourceRevisions,
         responseAvailability: qualifiedResponse ?? null }).slice(7) }
@@ -1228,6 +1231,8 @@ export class OperatorChatService {
 
   private async reconcile() {
     await reconcileKnownActivities({ kind: 'operator', activity: this.repository.activity,
+      observations: this.activityObservations,
+      onObservation: id => this.events.publish(id, 'state', { snapshotRequired: true }),
       signal: AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(5_000)]),
       runtimeFor: (id) => {
         const runtime = this.runtimes.get(id)

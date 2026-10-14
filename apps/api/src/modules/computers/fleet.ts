@@ -1,4 +1,7 @@
 import { errorMessage } from '../../shared/errorMessage.js'
+import type { ReadObservation } from '@foreman-code/contracts'
+import { componentLogger } from '../diagnostics/logger.js'
+import { failedReadObservation, successfulReadObservation } from '../diagnostics/readObservation.js'
 import type pg from 'pg'
 import { randomUUID } from 'node:crypto'
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
@@ -21,7 +24,7 @@ import type { ClaudePluginCatalog } from './claudePlugins.js'
 import type { ComputerMaintenance } from './maintenance.js'
 import { syncFingerprint } from './syncFingerprint.js'
 import { assertComputerTarget } from './target.js'
-import { ignoreError, fallbackOnError } from '../diagnostics/ignoredError.js'
+import { ignoreError } from '../diagnostics/ignoredError.js'
 
 export interface MaintenanceEndpoint {
   capabilities(deviceId: string): readonly { namespace: string; mainCanRequest: boolean }[]
@@ -42,6 +45,11 @@ export interface FleetSources {
 interface WorkerArtifactIdentities {
   manifests: readonly string[]
   contents: readonly string[]
+}
+
+interface MaintenanceObservation {
+  status: MaintenanceStatus | null
+  observation: ReadObservation
 }
 
 const CACHE_MS = 20_000
@@ -95,7 +103,8 @@ export class FleetMaintenanceService {
   private closing = false
   private readonly backgroundTasks = new Set<Promise<void>>()
   private readonly cache = new Map<string, {
-    at: number; pending: boolean; running?: boolean; value: Promise<MaintenanceStatus | null>
+    at: number; pending: boolean; running?: boolean; observation?: ReadObservation;
+    value: Promise<MaintenanceObservation>
   }>()
   constructor(
     private readonly pool: pg.Pool,
@@ -115,7 +124,7 @@ export class FleetMaintenanceService {
     const targets = await this.targets(principal, 'settings:read')
     const workerPublication = await this.sources.workerPublication?.()
     return ComputerMaintenanceListSchema.parse({ computers: await Promise.all(targets.map(async target =>
-      ({ target, status: await this.status(target, refresh), ...(workerPublication ? { workerPublication } : {}) }))) })
+      ({ target, ...await this.observeStatus(target, refresh), ...(workerPublication ? { workerPublication } : {}) }))) })
   }
 
   async start(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: ComputerMaintenanceStartInput): Promise<ComputerMaintenanceStartResult> {
@@ -177,7 +186,7 @@ export class FleetMaintenanceService {
     } finally { sql.release() }
     const workerPublication = await this.sources.workerPublication?.()
     return ComputerMaintenanceListSchema.parse({
-      computers: [{ target: input.target, status: await this.status(input.target, input.refresh === true),
+      computers: [{ target: input.target, ...await this.observeStatus(input.target, input.refresh === true),
         ...(workerPublication ? { workerPublication } : {}) }],
     })
   }
@@ -269,10 +278,8 @@ export class FleetMaintenanceService {
 
   private async workerArtifacts(): Promise<WorkerArtifactIdentities> {
     const [manifests, contents] = await Promise.all([
-      this.sources.workerManifestSha256s?.()
-        .catch(fallbackOnError([], 'lifecycle', 'read available Worker manifests')) ?? [],
-      this.sources.workerContentSha256s?.()
-        .catch(fallbackOnError([], 'lifecycle', 'read available Worker content identities')) ?? [],
+      this.sources.workerManifestSha256s?.() ?? [],
+      this.sources.workerContentSha256s?.() ?? [],
     ])
     return { manifests, contents }
   }
@@ -468,23 +475,39 @@ export class FleetMaintenanceService {
     return reply.task
   }
 
-  private status(target: DeviceProvisioningTarget, refresh: boolean): Promise<MaintenanceStatus | null> {
+  private async status(target: DeviceProvisioningTarget, refresh: boolean): Promise<MaintenanceStatus | null> {
+    return (await this.observeStatus(target, refresh)).status
+  }
+
+  private observeStatus(target: DeviceProvisioningTarget, refresh: boolean): Promise<MaintenanceObservation> {
     const key = this.key(target)
     const cached = this.cache.get(key)
     // A running task's progress is read again within seconds; settled status is reused longer.
     const ttl = cached?.running ? RUNNING_CACHE_MS : CACHE_MS
-    if (cached && (cached.pending || (!refresh && this.now() - cached.at < ttl))) return cached.value
+    if (cached && (cached.pending || (!refresh && cached.observation?.status === 'available'
+      && this.now() - cached.at < ttl))) return cached.value
     // A bounded shared observation survives one reader canceling so other readers can still use it.
-    const value = (async () => {
+    const read = (async () => {
       if (target.hostRef.kind === 'main') return this.local.status(AbortSignal.timeout(90_000))
       const reply = MaintenanceReplySchema.parse((await this.request(target.hostRef.deviceId, { operation: 'status' })).payload)
-      return reply.operation === 'status' ? reply.status : null
-    })().catch(fallbackOnError(null, 'lifecycle', 'read computer maintenance status', { host: target.hostRef }))
-    const entry = { at: this.now(), pending: true, running: false, value }
+      if (reply.operation !== 'status') {
+        throw new DomainError('COMPUTER_MAINTENANCE_INVALID', 'The computer returned an unexpected reply.', 502)
+      }
+      return reply.status
+    })()
+    const value = read.then(status => ({ status, observation: successfulReadObservation(this.now()) }), error => {
+      const observation = failedReadObservation(cached?.observation, error, 'Maintenance observation failed', this.now())
+      componentLogger('lifecycle').warn({ host: target.hostRef, ...observation }, 'Computer maintenance observation unavailable')
+      return { status: null, observation }
+    })
+    const entry: NonNullable<ReturnType<typeof this.cache.get>> = {
+      at: this.now(), pending: true, running: false, value,
+    }
     this.cache.set(key, entry)
-    void value.then(status => {
+    void value.then(({ status, observation }) => {
       entry.pending = false
       entry.at = this.now()
+      entry.observation = observation
       const workerUpdating = status?.worker && !['current', 'rolled-back', 'failed'].includes(status.worker.state)
       entry.running = status?.tasks.some(task => task.state === 'running') || Boolean(workerUpdating)
     })

@@ -1,3 +1,4 @@
+import type { ReadObservation } from '@foreman-code/contracts'
 import { useEffect, useState } from 'react'
 import { ChevronRight, Monitor } from 'lucide-react'
 import type { DeviceRegistration } from '@foreman-code/contracts/device-identity'
@@ -88,8 +89,10 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
             claudeMcp={mcp[index * 2 + 1]?.isError ? undefined : mcp[index * 2 + 1]?.data}
             accounts={accountRead.isError ? undefined : accountRead.data} maintenance={maintenanceRead.data?.status}
             workerPublication={maintenanceRead.data?.workerPublication}
+            maintenanceObservation={maintenanceRead.data?.observation}
             tasksOmitted={maintenanceRead.data?.tasksOmitted ?? 0}
-            maintenanceError={maintenanceRead.isError} onRetryMaintenance={() => { void maintenanceRead.refetch() }}
+            maintenanceError={maintenanceRead.isError || maintenanceRead.data?.observation?.status === 'unavailable'}
+            onRetryMaintenance={() => { void maintenanceRead.refetch() }}
             onMaintain={task => start.mutate({ task, targets: [card.target] })} maintaining={start.isPending || start.unresolved}
             buildPosition={ranksKnown ? builders.indexOf(card) + 1 : undefined} buildCount={builders.length}
             onOpen={card.target.hostRef.kind === 'device' && onSelectComputer
@@ -112,13 +115,14 @@ export function ComputerCards({ mainId, devices, onSelectComputer, only }: {
 }
 
 type Task = ComputerMaintenanceStartInput['task']
-function ComputerCard({ card, observed, fresh, activityComplete, codexMcp, claudeMcp, accounts, maintenance, workerPublication, maintenanceError, tasksOmitted,
+function ComputerCard({ card, observed, fresh, activityComplete, codexMcp, claudeMcp, accounts, maintenance, workerPublication, maintenanceObservation, maintenanceError, tasksOmitted,
   onRetryMaintenance, onMaintain, maintaining, buildPosition, buildCount, onOpen }: {
   codexMcp: HarnessMcpList | undefined; claudeMcp: HarnessMcpList | undefined
   card: Card; observed: ComputerActivity | undefined; fresh: boolean; accounts: ComputerAccounts | null | undefined
   activityComplete: boolean; maintenanceError: boolean; onRetryMaintenance(): void
   maintenance: MaintenanceStatus | null | undefined; onMaintain(task: Task): void; maintaining: boolean
   workerPublication: WorkerReleasePublication | undefined
+  maintenanceObservation: ReadObservation | undefined
   tasksOmitted: number
   buildPosition: number | undefined; buildCount: number; onOpen: (() => void) | undefined
 }) {
@@ -175,6 +179,11 @@ function ComputerCard({ card, observed, fresh, activityComplete, codexMcp, claud
     </dl>
     {maintenanceError ? <div role="alert" className="computer-card-note">
       <p>Maintenance could not be refreshed.{maintenance ? <> Showing last confirmed details from <time dateTime={maintenance.observedAt}>{maintenance.observedAt}</time>. Current task state is unknown.</> : null}</p>
+      {maintenanceObservation?.status === 'unavailable' ? <p>
+        {maintenanceObservation.lastError} {maintenanceObservation.consecutiveFailures} consecutive failed reads.
+        {maintenanceObservation.lastSuccess ? <> Last successful read: <time dateTime={maintenanceObservation.lastSuccess}>
+          {maintenanceObservation.lastSuccess}</time>.</> : null}
+      </p> : null}
       <Button size="sm" variant="ghost" onClick={onRetryMaintenance}>Retry maintenance</Button>
     </div> : null}
     {tasks.map(task => <p key={task.id} className="computer-card-task" data-state={task.state} role="status">

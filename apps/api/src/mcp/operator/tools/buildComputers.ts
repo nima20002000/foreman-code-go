@@ -57,7 +57,9 @@ export const buildComputerTools = [
       + 'including rollback. '
       + 'workerPublication reports the matching Main release\'s GitHub publication state and failure reason, even for offline computers. '
       + 'Requires global settings:read. Supply target to read one current installation independently. '
-      + 'Settled status is cached for 20 seconds unless refresh is true; pending probes are shared. An offline computer reports null status.',
+      + 'Successful settled status is cached for 20 seconds unless refresh is true; pending probes are shared. '
+      + 'Failed observations report null status with observation.status unavailable, lastError, failedAt, lastSuccess and '
+      + 'consecutiveFailures. Failed observations are retried on the next read.',
     inputSchema: ComputerMaintenanceOperatorListInputSchema, outputSchema: ComputerMaintenanceOperatorListSchema,
     annotations: { readOnlyHint: true, idempotentHint: true, destructiveHint: false, openWorldHint: false },
     run: async (context, input) => {

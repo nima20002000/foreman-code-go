@@ -1,3 +1,4 @@
+import { ReadObservationSchema } from './readObservation.js'
 import { optionalCommandId } from './management/commands.js'
 import { z } from 'zod'
 import { DeviceProvisioningTargetSchema } from './deviceResources.js'
@@ -128,9 +129,10 @@ export const MaintenanceReplySchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('start'), task: MaintenanceTaskSchema }).strict(),
 ])
 
-/** Main-side readback across computers. null status: the computer is offline or did not answer in time. */
+/** Main-side readback across computers; observation explains unavailable status. */
 export const ComputerMaintenanceListSchema = z.object({
   computers: z.array(z.object({ target: DeviceProvisioningTargetSchema, status: MaintenanceStatusSchema.nullable(),
+    observation: ReadObservationSchema.optional(),
     workerPublication: WorkerReleasePublicationSchema.optional(),
     tasksOmitted: z.number().int().nonnegative().default(0) }).strict()).max(101),
 }).strict()
@@ -150,6 +152,7 @@ export const ComputerMaintenanceOperatorListSchema = z.object({
   computers: z.array(z.object({
     target: DeviceProvisioningTargetSchema,
     status: z.union([MaintenanceStatusSchema, CompactMaintenanceStatusSchema]).nullable(),
+    observation: ReadObservationSchema.optional(),
     workerPublication: WorkerReleasePublicationSchema.optional(),
     tasksOmitted: z.number().int().nonnegative().default(0),
   }).strict()).max(101),

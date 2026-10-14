@@ -6,6 +6,7 @@ import { MaintenanceTaskStore } from './maintenanceTaskStore.js'
 import { MaintenanceCommandStore } from './maintenanceCommandStore.js'
 import type { MaintenancePorts } from './maintenancePorts.js'
 import { DomainError } from '../errors.js'
+import { executableUnavailable } from './executableError.js'
 import { z } from 'zod'
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -753,18 +754,26 @@ export function systemMaintenancePorts(environment: NodeJS.ProcessEnv = process.
     environment,
     async find(name) {
       const selected = binaries[name]
-      if (selected) { try { await access(selected, constants.X_OK); return selected } catch { /* ignore: fall back to PATH */ } }
-      let firstExecutable: string | null = null
-      for (const directory of directories) {
-        const candidate = join(directory, name)
-        try { await access(candidate, constants.X_OK) } catch { continue }
-        firstExecutable ??= candidate
+      const candidates = selected ? [selected] : directories.map(directory => join(directory, name))
+      for (const candidate of candidates) {
+        try {
+          await access(candidate, constants.X_OK)
+        } catch (error) {
+          if (!selected) continue
+          const code = (error as NodeJS.ErrnoException).code ?? 'ACCESS_FAILED'
+          throw executableUnavailable(name, candidate, home, code)
+        }
         if (name !== 'codex' && name !== 'claude') return candidate
-        // npm can leave an executable launcher whose optional native package is incomplete.
-        const probe = await run(candidate, ['--version'], { signal: AbortSignal.timeout(15_000), timeoutMs: 15_000 })
+        let probe
+        try {
+          probe = await run(candidate, ['--version'], { signal: AbortSignal.timeout(15_000), timeoutMs: 15_000 })
+        } catch {
+          throw executableUnavailable(name, candidate, home, 'version probe failed or timed out')
+        }
         if (probe.code === 0 && versionOf(probe.stdout)) return candidate
+        throw executableUnavailable(name, candidate, home, 'version probe failed; the installation may be incomplete')
       }
-      return firstExecutable
+      return null
     },
     run,
     exists: async target => { try { await access(target); return true } catch { return false } },
