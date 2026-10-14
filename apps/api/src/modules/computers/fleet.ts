@@ -8,6 +8,7 @@ import {
   ComputerMaintenanceStartResultSchema, ComputerMaintenanceDispatchSchema, MaintenanceReplySchema, SyncedMcpServerSchema,
   type ComputerMaintenanceList, type ComputerMaintenanceStartInput, type ComputerMaintenanceStartResult,
   type MaintenanceStatus, type MaintenanceTask, type MaintenanceTaskStart, type SyncedMarketplace, type SyncedMcpServer,
+  type WorkerReleasePublication,
 } from '@foreman-code/contracts/computer-maintenance'
 import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
 import { sameDeviceProvisioningTarget, type DeviceProvisioningTarget } from '@foreman-code/contracts/device-resources'
@@ -35,6 +36,7 @@ export interface FleetSources {
   claudePlugins(): Promise<ClaudePluginCatalog>
   workerManifestSha256s?(): Promise<readonly string[]>
   workerContentSha256s?(): Promise<readonly string[]>
+  workerPublication?(): Promise<WorkerReleasePublication>
 }
 
 interface WorkerArtifactIdentities {
@@ -111,8 +113,9 @@ export class FleetMaintenanceService {
       throw error
     }
     const targets = await this.targets(principal, 'settings:read')
+    const workerPublication = await this.sources.workerPublication?.()
     return ComputerMaintenanceListSchema.parse({ computers: await Promise.all(targets.map(async target =>
-      ({ target, status: await this.status(target, refresh) }))) })
+      ({ target, status: await this.status(target, refresh), ...(workerPublication ? { workerPublication } : {}) }))) })
   }
 
   async start(principal: ManagementPrincipal, source: 'http' | 'mcp', raw: ComputerMaintenanceStartInput): Promise<ComputerMaintenanceStartResult> {
@@ -172,8 +175,10 @@ export class FleetMaintenanceService {
       requireAuthorization(await readLiveManagementPrincipal(sql, principal.id), 'settings:read')
       await assertComputerTarget(sql, this.mainId, input.target)
     } finally { sql.release() }
+    const workerPublication = await this.sources.workerPublication?.()
     return ComputerMaintenanceListSchema.parse({
-      computers: [{ target: input.target, status: await this.status(input.target, input.refresh === true) }],
+      computers: [{ target: input.target, status: await this.status(input.target, input.refresh === true),
+        ...(workerPublication ? { workerPublication } : {}) }],
     })
   }
 
@@ -444,6 +449,11 @@ export class FleetMaintenanceService {
       return this.local.start(task, commandId)
     }
     if (task.kind === 'update-worker') {
+      const publication = await this.sources.workerPublication?.()
+      if (publication && publication.state !== 'published') {
+        throw new DomainError('WORKER_RELEASE_ASSET_UNAVAILABLE', publication.lastError
+          ?? `Worker ${publication.version} is waiting for GitHub publication and verification.`, 503)
+      }
       const capabilities = this.endpoint()?.capabilities(target.hostRef.deviceId) ?? []
       const maintenanceAvailable = capabilities.some(value =>
         value.namespace === COMPUTER_MAINTENANCE_NAMESPACE && value.mainCanRequest)

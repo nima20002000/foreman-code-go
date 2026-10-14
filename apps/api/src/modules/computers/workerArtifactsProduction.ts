@@ -3,7 +3,8 @@ import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { readProductVersion } from '../../infrastructure/productVersion.js'
-import { createWorkerArtifactExtension, readWorkerManifestSha256s, readWorkerContentSha256s } from './workerArtifacts.js'
+import { createWorkerArtifactExtension, readWorkerManifestSha256s, readWorkerContentSha256s,
+  readWorkerReleasePublication } from './workerArtifacts.js'
 
 interface ProductionWorkerArtifactOptions {
   environment: NodeJS.ProcessEnv
@@ -25,6 +26,10 @@ export function readProductionWorkerManifestSha256s(options: ProductionWorkerArt
 
 export function readProductionWorkerContentSha256s(options: ProductionWorkerArtifactOptions) {
   return readWorkerContentSha256s(artifactLocation(options))
+}
+
+export function readProductionWorkerReleasePublication(options: ProductionWorkerArtifactOptions) {
+  return readWorkerReleasePublication(artifactLocation(options))
 }
 
 export function createProductionWorkerArtifactExtension(options: ProductionWorkerArtifactOptions) {

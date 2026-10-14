@@ -49,6 +49,9 @@ export const OPERATOR_RUNTIME_LIMITS = [
   { feature: 'workspace_repository_import', state: 'protected', detail: 'workspace_repository_add prepares a pinned supported tracked GitHub snapshot on Main in the existing app-managed Workspaces base, composing repository metadata, root location, source approval and binding. Read workspace_repository_get for readiness and incomplete progress. Discovery requires the complete scoped read/provision/update/approve/bind grant combination. Retry unknown acknowledgment with the original commandId and input; quarantined capture failures require a new import. Existing project folders, saved workflow versions and historical Runs remain retained.' },
   { feature: 'worker_updates', state: 'limited',
     detail: 'Paired Workers automatically match Main through the authenticated device connection. '
+      + 'Worker targets advance only after GitHub assets are published and download-verified. Updates download only from GitHub '
+      + 'with backoff, and fail visibly with WORKER_RELEASE_ASSET_UNAVAILABLE when the asset is unavailable. '
+      + 'computers_maintenance_status includes workerPublication and its failure reason. '
       + 'Updates wait for active work to drain, verify the artifact and install side-by-side; '
       + 'Bundle downloads have a ten-minute deadline and retry after timeouts. CI smoke remains available before archive publication. '
       + 'A failed release rolls back and reports its phase, readiness failure and available stderr tail. '

@@ -1,9 +1,10 @@
+import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
 import { afterEach, expect, it, vi } from 'vitest'
 import { WorkerPairingConfigurationSchema } from '@foreman-code/contracts/device-identity'
-import { privateFixtureDirectory } from '../../../test/helpers/privateFixtureDirectory.js'
 import { createInstalledWorkerDomains } from './installedWorkerDomains.js'
 
 const preparation = vi.hoisted(() => ({ root: '', pause: async () => {}, launches: 0, failSource: false }))
@@ -52,7 +53,9 @@ afterEach(async () => {
 })
 
 async function fixture() {
-  const root = await privateFixtureDirectory('installed-ci-update-')
+  const storage = join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(storage, { recursive: true, mode: 0o700 })
+  const root = await mkdtemp(join(storage, 'installed-ci-update-'))
   roots.push(root)
   preparation.root = root
   preparation.launches = 0
@@ -90,7 +93,8 @@ async function updater(f: Awaited<ReturnType<typeof fixture>>) {
     packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1, target: { os, osRelease, arch, libc, node },
     files: [{ path: 'src/cli.mjs', size: bytes.length, sha256: hash(bytes) }] }
   const manifestBytes = Buffer.from(JSON.stringify(manifest))
-  const release = { version: manifest.version, manifest, manifestSha256: hash(manifestBytes) }
+  const release = { version: manifest.version, manifest, manifestSha256: hash(manifestBytes),
+    github: { repository: 'example/worker', tag: `worker-${manifest.commit}` } }
   const activity: string[] = []
   const value = await new WorkerUpdater({ stateDirectory: f.root, version: '1.0.0', manifestSha256: 'c'.repeat(64),
     workerInstallationId: f.pairing.workerInstallationId, facts, assertStateOwnership: () => {},
@@ -102,11 +106,16 @@ async function updater(f: Awaited<ReturnType<typeof fixture>>) {
         activity.push('ci-smoke')
         return { payload: { operation: 'ci-smoke', ciSmoke: null } }
       }
-      activity.push('download')
-      const content = payload.path === 'manifest.json' ? manifestBytes : bytes
-      const chunk = content.subarray(payload.offset)
-      return { payload: { ...payload, byteSize: chunk.length }, bytes: chunk }
+      throw new Error(`Unexpected Main request: ${payload.operation}`)
     } }) }),
+    fetchAsset: async ({ destination }: { destination: string }) => {
+      activity.push('download')
+      const source = join(f.root, 'github-asset')
+      await mkdir(join(source, 'src'), { recursive: true })
+      await writeFile(join(source, 'src/cli.mjs'), bytes)
+      await writeFile(join(source, 'manifest.json'), manifestBytes)
+      execFileSync('tar', ['-czf', destination, '-C', source, '.'])
+    },
     drain: () => f.mounted.drainForUpdate(), resume: () => f.mounted.resumeAfterUpdate(),
     locateLaunch: async () => ({ root: f.root }),
     stage: async () => { activity.push('stage'); return { directory: join(f.root, 'installed') } },
@@ -136,14 +145,14 @@ it.each(['ci-host-v1', 'ci-runtime-v1'])(
     await vi.waitFor(async () => expect((await u.value.status()).state).toBe('draining'))
     await new Promise<void>(resolve => setImmediate(resolve))
     // The verified download precedes the drain; staging and restart wait for the preparation.
-    expect(u.activity).toEqual(['download', 'download', 'ci-smoke'])
+    expect(u.activity).toEqual(['download', 'ci-smoke'])
     const next = namespace === 'ci-host-v1'
       ? { ...request, runId: randomUUID() } : { ...request, operationId: randomUUID() }
     await expect(f.handle(namespace, next))
       .rejects.toMatchObject({ code: 'WORKER_RUNTIME_DRAINING' })
     f.release()
     await updating
-    expect(u.activity).toEqual(['download', 'download', 'ci-smoke', 'stage', 'restart'])
+    expect(u.activity).toEqual(['download', 'ci-smoke', 'stage', 'restart'])
     expect(await u.value.status()).toMatchObject({ state: 'restarting', targetVersion: '1.1.0', lastError: null })
     if (namespace === 'ci-host-v1') expect(preparation.launches).toBe(1)
     await f.mounted.close()
@@ -186,7 +195,7 @@ it('allows an installed update after CI source fetching fails without entering r
     expect(f.preparationEntered()).toBe(false)
     updating = u.value.start()
     await updating
-    expect(u.activity).toEqual(['download', 'download', 'ci-smoke', 'stage', 'restart'])
+    expect(u.activity).toEqual(['download', 'ci-smoke', 'stage', 'restart'])
     expect(await u.value.status()).toMatchObject({ state: 'restarting', lastError: null })
   } finally {
     f.release()

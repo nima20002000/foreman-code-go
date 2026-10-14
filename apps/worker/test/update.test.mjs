@@ -54,7 +54,8 @@ async function artifact(base, version) {
     files: [{ path: 'src/cli.mjs', sha256: hash(bytes), size: bytes.length }] };
   const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
   await writeFile(join(directory, 'manifest.json'), manifestBytes, { mode: 0o600 });
-  return { directory, release: { version, manifestSha256: hash(manifestBytes), manifest } };
+  return { directory, release: { version, manifestSha256: hash(manifestBytes), manifest,
+    github: { repository: 'example/product', tag: `worker-${manifest.commit}` } } };
 }
 
 async function fixture(t, targetVersion = '1.1.0') {
@@ -92,10 +93,7 @@ async function fixture(t, targetVersion = '1.1.0') {
     requests.push(payload);
     if (payload.operation === 'release') return { payload: { operation: 'release', release: incoming.release } };
     if (payload.operation === 'ci-smoke') return { payload: { operation: 'ci-smoke', ciSmoke: null } };
-    assert.equal(payload.manifestSha256, incoming.release.manifestSha256);
-    const bytes = (await readFile(join(incoming.directory, payload.path))).subarray(payload.offset,
-      payload.offset + 262_144);
-    return { payload: { ...payload, byteSize: bytes.length }, bytes };
+    throw new Error(`Unexpected Main request: ${payload.operation}`);
   };
   const launch = { root, stateDirectory, service: 'graphql-worker.service',
     pointer: { kind: 'symlink', path: join(root, 'current') },
@@ -112,6 +110,11 @@ async function fixture(t, targetVersion = '1.1.0') {
   const options = { stateDirectory, version: '1.0.0', manifestSha256: previous.release.manifestSha256,
     releaseDirectory: launch.previousDirectory, workerInstallationId, facts,
     assertStateOwnership: () => assertStateOwnership(), connection: () => ({ captureRequest: () => ({ request }) }),
+    fetchAsset: async ({ destination, signal }) => {
+      signal?.throwIfAborted();
+      const result = spawnSync('tar', ['-czf', destination, '-C', incoming.directory, '.']);
+      assert.equal(result.status, 0, result.stderr.toString());
+    },
     drain: async () => {}, resume: () => {}, locateLaunch: async () => launch,
     launchSupervisor: async () => {} };
   return { base, root, stateDirectory, previous, incoming, requests, options, connections, prepareService,
@@ -190,9 +193,8 @@ test('downloads a release from its GitHub release asset and still verifies every
     { code: 'artifact_checksum_mismatch' });
 });
 
-test('a stalled GitHub asset falls back to Main chunks and schedules the verified update', async t => {
+test('a stalled GitHub asset fails visibly without draining or requesting Main bundle bytes', async t => {
   const f = await fixture(t);
-  f.incoming.release.github = { repository: 'example/product', tag: `worker-${'a'.repeat(40)}` };
   const binaries = join(f.base, 'bin');
   await mkdir(binaries);
   await writeFile(join(binaries, 'gh'),
@@ -202,30 +204,21 @@ test('a stalled GitHub asset falls back to Main chunks and schedules the verifie
   process.env.PATH = `${binaries}:${originalPath}`;
   t.after(() => { process.env.PATH = originalPath; });
   const scheduleTimeout = globalThis.setTimeout;
-  // Exercise the real no-bytes detection without waiting a minute per attempt.
   t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) =>
-    scheduleTimeout(callback, delay === 60_000 ? 100 : delay, ...args));
-  const updater = await new WorkerUpdater({ ...f.options, downloadTimeoutMs: 2000 }).initialize();
+    scheduleTimeout(callback, delay >= 5000 && delay <= 60000 ? 100 : delay, ...args));
+  let drained = false;
+  const updater = await new WorkerUpdater({ ...f.options, fetchAsset: fetchGitHubAsset,
+    downloadTimeoutMs: 1000, drain: async () => { drained = true; } }).initialize();
   t.after(() => updater.close());
-
-  assert.equal(await updater.start(), 'Worker 1.1.0 restart is scheduled.');
-  assert.ok(f.requests.some(payload => payload.operation === 'chunk'));
-  const record = await readUpdateRecord(f.stateDirectory);
-  const manifestBytes = await readFile(join(record.restart.directory, 'manifest.json'));
-  assert.equal(hash(manifestBytes), f.incoming.release.manifestSha256);
-  for (const file of f.incoming.release.manifest.files) {
-    const installedBytes = await readFile(join(record.restart.directory, file.path));
-    const fixtureBytes = await readFile(join(f.incoming.directory, file.path));
-    assert.deepEqual(installedBytes, fixtureBytes);
-    assert.equal(installedBytes.length, file.size);
-    assert.equal(hash(installedBytes), file.sha256);
-  }
-  assert.equal(record.status.state, 'restarting');
-  assert.equal(record.downloadSource, 'main');
-  assert.match(record.githubDownloadError, /stall|no bytes/i);
+  await assert.rejects(updater.start(), { code: 'WORKER_RELEASE_ASSET_UNAVAILABLE' });
+  assert.deepEqual(f.requests.map(payload => payload.operation), ['release']);
+  const status = await updater.status();
+  assert.equal(status.state, 'failed');
+  assert.match(status.lastError, /stall|no bytes/i);
+  assert.equal(drained, false);
 });
 
-test('a GitHub asset published during a slow Main download is retried and wins, with each phase logged', async t => {
+test('a temporarily unavailable GitHub asset is retried without Main bytes, with each phase logged', async t => {
   const f = await fixture(t);
   f.incoming.release.github = { repository: 'example/product', tag: `worker-${'a'.repeat(40)}` };
   const archive = join(f.base, 'asset.tar.gz');
@@ -233,7 +226,7 @@ test('a GitHub asset published during a slow Main download is retried and wins, 
   const binaries = join(f.base, 'bin');
   const attempts = join(f.base, 'gh-attempts');
   await mkdir(binaries);
-  // Main cuts over before its release asset is published: the first lookup fails at once.
+  // A transient GitHub lookup failure recovers on the next download attempt.
   await writeFile(join(binaries, 'gh'), `#!/bin/sh\necho attempt >> '${attempts}'\n`
     + `if [ "$(wc -l < '${attempts}')" -eq 1 ]; then echo 'release not found' >&2; exit 1; fi\n`
     + `exec cat '${archive}'\n`, { mode: 0o700 });
@@ -244,18 +237,8 @@ test('a GitHub asset published during a slow Main download is retried and wins, 
   // Keep production retry spacing while letting the fixture observe several retries quickly.
   t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) =>
     scheduleTimeout(callback, delay >= 5_000 && delay <= 60_000 ? 20 : delay, ...args));
-  const request = f.options.connection().captureRequest().request;
-  let mainSignal;
   const logged = [];
-  // A relayed link delivers Main chunks far slower than the bundle deadline allows.
-  const connection = () => ({ captureRequest: () => ({ request: (payload, options) => {
-    if (payload.operation !== 'chunk') return request(payload);
-    mainSignal = options.signal;
-    return new Promise((_resolve, reject) => {
-      options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
-    });
-  } }) });
-  const updater = await new WorkerUpdater({ ...f.options, connection, downloadTimeoutMs: 3000,
+  const updater = await new WorkerUpdater({ ...f.options, fetchAsset: fetchGitHubAsset, downloadTimeoutMs: 3000,
     log: (msg, fields = {}) => logged.push({ msg, ...fields }) }).initialize();
   t.after(() => updater.close());
 
@@ -263,7 +246,7 @@ test('a GitHub asset published during a slow Main download is retried and wins, 
   const record = await readUpdateRecord(f.stateDirectory);
   assert.equal(record.status.state, 'restarting');
   assert.equal(record.downloadSource, 'github');
-  assert.equal(mainSignal.aborted, true);
+  assert.equal(f.requests.some(payload => payload.operation === 'chunk'), false);
   for (const file of f.incoming.release.manifest.files) {
     assert.deepEqual(await readFile(join(record.restart.directory, file.path)),
       await readFile(join(f.incoming.directory, file.path)));
@@ -274,50 +257,46 @@ test('a GitHub asset published during a slow Main download is retried and wins, 
   assert.ok(logged.some(entry => /GitHub/.test(entry.msg) && /release not found/.test(entry.error ?? '')));
 });
 
-test('Main fallback still rejects a file that does not match its announced checksum', async t => {
+test('GitHub recovery still rejects a file that does not match its announced checksum', async t => {
   const f = await fixture(t);
-  const request = f.options.connection().captureRequest().request;
-  const release = { ...f.incoming.release,
-    github: { repository: 'example/product', tag: `worker-${'a'.repeat(40)}` } };
+  await writeFile(join(f.incoming.directory, 'src/cli.mjs'), 'corrupted bytes');
   let completed = false;
-  await assert.rejects(downloadWorkerArtifact({ release, facts, directory: join(f.base, 'corrupt-fallback'),
-    fetchAsset: async () => { throw new WorkerError('worker_update_github_unavailable', 'GitHub unavailable'); },
-    request: async payload => {
-      const response = await request(payload);
-      if (payload.path === 'src/cli.mjs') response.bytes.fill(0);
-      return response;
-    },
-    onDownloadComplete: async () => { completed = true; },
-  }), { code: 'artifact_checksum_mismatch' });
+  let attempts = 0;
+  const scheduleTimeout = globalThis.setTimeout;
+  t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) =>
+    scheduleTimeout(callback, delay === 5000 ? 1 : delay, ...args));
+  await assert.rejects(downloadWorkerArtifact({ release: f.incoming.release, facts,
+    directory: join(f.base, 'corrupt-github'), fetchAsset: async options => {
+      if (++attempts === 1) throw new WorkerError('worker_update_github_unavailable', 'GitHub unavailable');
+      await f.options.fetchAsset(options);
+    }, onDownloadComplete: async () => { completed = true; },
+  }), { code: 'artifact_file_size_mismatch' });
+  assert.equal(attempts, 2);
   assert.equal(completed, false);
+  assert.deepEqual(f.requests, []);
 });
 
-test('Main fallback uses the original download deadline after GitHub fails', async t => {
+test('GitHub retries use the original download deadline after a failed attempt', async t => {
   const f = await fixture(t);
-  const release = { ...f.incoming.release,
-    github: { repository: 'example/product', tag: `worker-${'a'.repeat(40)}` } };
-  let mainSignal;
   const scheduleTimeout = globalThis.setTimeout;
   let deadlineTimers = 0;
   t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
-    if (delay === 1000) deadlineTimers++;
+    if (delay === 100) deadlineTimers++;
     return scheduleTimeout(callback, delay, ...args);
   });
-  await assert.rejects(downloadWorkerArtifact({ release, facts, directory: join(f.base, 'bounded-fallback'),
-    timeoutMs: 1000,
+  await assert.rejects(downloadWorkerArtifact({ release: f.incoming.release, facts,
+    directory: join(f.base, 'bounded-github'), timeoutMs: 100,
     fetchAsset: async () => {
       await wait(20);
       throw new WorkerError('worker_update_github_unavailable', 'GitHub unavailable');
     },
-    request: (_payload, { signal }) => {
-      mainSignal = signal;
-      return new Promise((_resolve, reject) => {
-        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
-      });
-    },
-  }), { code: 'worker_update_download_timeout' });
-  assert.equal(mainSignal.aborted, true);
+  }), error => {
+    assert.equal(error.code, 'WORKER_RELEASE_ASSET_UNAVAILABLE');
+    assert.match(error.message, /GitHub unavailable/);
+    return true;
+  });
   assert.equal(deadlineTimers, 1);
+  assert.deepEqual(f.requests, []);
 });
 
 test('authenticated-ready check detects Main version mismatch, installs and reconnects at the matching version', async t => {
@@ -384,7 +363,8 @@ test('busy work drains naturally after the verified download and before installa
   });
   const update = updater.start();
   await until(async () => (await updater.status()).state === 'draining');
-  assert.ok(f.requests.some(request => request.operation === 'chunk'));
+  assert.equal(f.requests.some(request => request.operation === 'chunk'), false);
+  assert.equal((await readUpdateRecord(f.stateDirectory)).downloadSource, 'github');
   assert.equal(resumed, 0);
   assert.equal((await readInstalledRelease({ root: f.root, facts, expected })).manifest.version, '1.0.0');
   finishWork();
@@ -393,30 +373,26 @@ test('busy work drains naturally after the verified download and before installa
   assert.equal(resumed, 0);
 });
 
-test('an idle Worker keeps admitting work while its update downloads slowly through Main', async t => {
+test('an idle Worker keeps admitting work while its update downloads slowly from GitHub', async t => {
   const f = await fixture(t);
   const drain = createWorkerRuntimeDrain({ signal: new AbortController().signal,
     active: () => [], drainJobs: async () => {}, drainQualifications: async () => {},
     drainMaintenance: async () => {}, quiescent: async () => true });
-  // Before Main publishes the GitHub release asset, every artifact chunk crosses the device channel.
   let finishDownload;
   const downloaded = new Promise(resolve => { finishDownload = resolve; });
-  let chunkWaiting = false;
-  const original = f.options.connection().captureRequest().request;
+  let downloadWaiting = false;
   const updater = await new WorkerUpdater({ ...f.options, drain: () => drain.run(), resume: () => drain.resume(),
-    connection: () => ({ captureRequest: () => ({ request: async payload => {
-      if (payload.operation === 'chunk') {
-        chunkWaiting = true;
-        await downloaded;
-      }
-      return original(payload);
-    } }) }) }).initialize();
+    fetchAsset: async options => {
+      downloadWaiting = true;
+      await downloaded;
+      await f.options.fetchAsset(options);
+    } }).initialize();
   t.after(() => {
     finishDownload();
     return updater.close();
   });
   const update = updater.start();
-  await until(() => chunkWaiting);
+  await until(() => downloadWaiting);
   assert.equal((await updater.status()).state, 'downloading');
   assert.doesNotThrow(() => drain.assertAdmission('harness-discovery-v1', {}));
   assert.doesNotThrow(() => drain.assertAdmission('execution-v1', { method: 'prepare' }));
@@ -428,7 +404,8 @@ test('an idle Worker keeps admitting work while its update downloads slowly thro
 for (const path of ['manifest.json', 'src/cli.mjs']) {
   test(`rejects changed ${path} bytes and keeps the running release admitting work`, async t => {
     const f = await fixture(t);
-    await writeFile(join(f.incoming.directory, path), 'corrupt bytes');
+    const originalBytes = await readFile(join(f.incoming.directory, path));
+    await writeFile(join(f.incoming.directory, path), Buffer.alloc(originalBytes.length, 7));
     const current = await readlink(join(f.root, 'current'));
     let drained = 0;
     let resumed = 0;
@@ -650,7 +627,7 @@ test('an update interrupted by Main restart retries the saved target on the reco
       if (!available) return undefined;
       captures++;
       return { request: async payload => {
-        if (payload.operation === 'chunk' && disconnect) {
+        if (payload.operation === 'ci-smoke' && disconnect) {
           disconnect = false;
           available = false;
           throw new DeviceConnectionError('transport');
@@ -664,7 +641,7 @@ test('an update interrupted by Main restart retries the saved target on the reco
   const interrupted = await readUpdateRecord(f.stateDirectory);
   assert.equal(interrupted.manifestSha256, f.incoming.release.manifestSha256);
   assert.equal(interrupted.status.lastError, 'worker_update_channel_unavailable');
-  // The chunk download precedes the drain, so admissions were never fenced.
+  // Download and smoke configuration precede the drain, so admissions were never fenced.
   assert.equal(resumed, 0);
   assert.equal(launched, 0);
   assert.equal(await updater.start(), 'Worker update is unavailable on this Main connection.');
@@ -980,28 +957,23 @@ test('update failure retains the failed phase and child stderr in persisted stat
   assert.ok(status.lastError.length <= 2000);
 });
 
-test('a stalled bundle download times out, cancels its request and retries on the next check', async t => {
+test('a stalled GitHub download times out, cancels its request and retries on the next check', async t => {
   const f = await fixture(t);
-  const request = f.options.connection().captureRequest().request;
-  let rejectStalled;
   let downloadSignal;
   let stalled = true;
   const options = { ...f.options, downloadTimeoutMs: 50,
-    connection: () => ({ captureRequest: () => ({ request: (payload, requestOptions) => {
-      if (stalled && payload.operation === 'chunk') {
-        downloadSignal = requestOptions.signal;
-        return new Promise((_resolve, reject) => { rejectStalled = reject; });
-      }
-      return request(payload);
-    } }) }) };
+    fetchAsset: input => {
+      if (!stalled) return f.options.fetchAsset(input);
+      downloadSignal = input.signal;
+      return new Promise((_resolve, reject) => {
+        input.signal.addEventListener('abort', () => reject(input.signal.reason), { once: true });
+      });
+    } };
   const updater = await new WorkerUpdater(options).initialize();
-  t.after(async () => {
-    rejectStalled?.(new Error('fixture request closed'));
-    await updater.close();
-  });
+  t.after(() => updater.close());
   const outcome = updater.start().then(() => 'completed', error => error);
   const failure = await Promise.race([outcome, wait(1000).then(() => 'still downloading')]);
-  assert.equal(failure.code, 'worker_update_download_timeout');
+  assert.equal(failure.code, 'WORKER_RELEASE_ASSET_UNAVAILABLE');
   assert.equal(downloadSignal.aborted, true);
   assert.match((await updater.status()).lastError, /download.*timed out/i);
   stalled = false;
@@ -1011,15 +983,13 @@ test('a stalled bundle download times out, cancels its request and retries on th
   assert.equal((await readUpdateRecord(f.stateDirectory)).status.lastError, null);
 });
 
-test('bundle download has a deadline even when individual chunks keep arriving', async t => {
+test('GitHub download keeps its overall deadline when an attempt takes too long', async t => {
   const f = await fixture(t);
-  const request = f.options.connection().captureRequest().request;
   const outcome = downloadWorkerArtifact({ release: f.incoming.release, facts,
     directory: join(f.base, 'bounded-download'), timeoutMs: 15,
-    request: async payload => { await wait(25); return request(payload); },
+    fetchAsset: async options => { await wait(25); await f.options.fetchAsset(options); },
   }).then(() => 'completed', error => error);
-  const failure = await outcome;
-  assert.equal(failure.code, 'worker_update_download_timeout');
+  assert.equal((await outcome).code, 'WORKER_RELEASE_ASSET_UNAVAILABLE');
 });
 
 test('startup timeout retains the last observed readiness phase and failure', async () => {

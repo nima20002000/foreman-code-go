@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rename, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
 import { WorkerArtifactManifestSchema, WorkerArtifactReplySchema, WorkerUpdateStatusSchema,
   WORKER_UPDATE_NAMESPACE, WORKER_UPDATE_VERSION, WORKER_UPDATE_MAX_BINARY_BYTES,
   WORKER_UPDATE_MAX_JSON_BYTES } from '../../../packages/contracts/src/workerUpdate.ts';
@@ -21,7 +20,7 @@ export { fetchGitHubAsset };
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const expected = { protocolVersion: 1, identityFormat: 1 };
 const automaticRetryErrors = new Set(['worker_update_interrupted', 'worker_updater_stopped',
-  'worker_update_channel_unavailable', 'worker_update_download_timeout', 'worker_update_github_unavailable',
+  'worker_update_channel_unavailable', 'worker_update_download_timeout', 'WORKER_RELEASE_ASSET_UNAVAILABLE',
   'worker_update_smoke_unavailable']);
 
 export const workerUpdateExtension = { namespace: WORKER_UPDATE_NAMESPACE, version: WORKER_UPDATE_VERSION,
@@ -45,36 +44,22 @@ async function downloadFromGitHub({ release, announced, directory, signal, fetch
   }
 }
 
-async function requestDownloadChunk(request, payload, signal) {
-  signal.throwIfAborted();
-  let rejectAborted;
-  const aborted = new Promise((_, reject) => { rejectAborted = reject; });
-  const cancel = () => rejectAborted(signal.reason);
-  signal.addEventListener('abort', cancel, { once: true });
-  try {
-    return await Promise.race([request(payload, { signal }), aborted]);
-  } finally {
-    signal.removeEventListener('abort', cancel);
-  }
-}
-
 export async function downloadWorkerArtifact({ signal, timeoutMs = 600_000, ...options }) {
   const deadline = new AbortController();
   const combined = AbortSignal.any([deadline.signal, ...(signal ? [signal] : [])]);
-  const timer = setTimeout(() => deadline.abort(new WorkerError('worker_update_download_timeout',
-    `Worker bundle download timed out after ${timeoutMs} ms.`)), timeoutMs);
+  const timer = setTimeout(() => deadline.abort(new WorkerError('WORKER_RELEASE_ASSET_UNAVAILABLE',
+    `GitHub Worker bundle download timed out after ${timeoutMs} ms.`)), timeoutMs);
   try {
     return await downloadArtifactFiles({ ...options, signal: combined });
   } catch (error) {
+    signal?.throwIfAborted();
+    if (error instanceof WorkerError && error.code === 'WORKER_RELEASE_ASSET_UNAVAILABLE') throw error;
     combined.throwIfAborted();
     throw error;
   } finally {
     clearTimeout(timer);
   }
 }
-
-const GITHUB_RETRY_MS = 15_000;
-const PROGRESS_LOG_MS = 30_000;
 
 function delay(ms, signal) {
   return new Promise((resolve, reject) => {
@@ -85,121 +70,40 @@ function delay(ms, signal) {
   });
 }
 
-async function downloadFromMain({ release, announced, request, directory, signal, log }) {
-  const download = async (path, size) => {
-    const chunks = [];
-    let offset = 0;
-    for (;;) {
-      signal?.throwIfAborted();
-      const response = await requestDownloadChunk(request,
-        { operation: 'chunk', manifestSha256: release.manifestSha256, path, offset }, signal);
-      const payload = WorkerArtifactReplySchema.parse(response.payload);
-      const bytes = response.bytes;
-      if (payload.operation !== 'chunk' || payload.manifestSha256 !== release.manifestSha256
-        || payload.path !== path || payload.offset !== offset || !(bytes instanceof Uint8Array)
-        || payload.byteSize !== bytes.byteLength) throw new WorkerError('artifact_chunk_invalid');
-      if (offset + bytes.byteLength > size) throw new WorkerError('artifact_file_size_mismatch');
-      chunks.push(Buffer.from(bytes));
-      offset += bytes.byteLength;
-      if (bytes.byteLength === 0 || offset === size || path === 'manifest.json'
-        && bytes.byteLength < WORKER_UPDATE_MAX_BINARY_BYTES) break;
-    }
-    return Buffer.concat(chunks);
-  };
-  log('Worker bundle download through Main started', { source: 'main' });
-  const manifestBytes = await download('manifest.json', WORKER_UPDATE_MAX_JSON_BYTES);
-  if (hash(manifestBytes) !== release.manifestSha256) throw new WorkerError('manifest_checksum_mismatch');
-  const manifest = WorkerArtifactManifestSchema.parse(JSON.parse(manifestBytes.toString('utf8')));
-  if (!isDeepStrictEqual(manifest, announced)) throw new WorkerError('manifest_metadata_mismatch');
-  await writeFile(join(directory, 'manifest.json'), manifestBytes, { mode: 0o600 });
-  const totalBytes = manifest.files.reduce((total, file) => total + file.size, 0);
-  let receivedBytes = 0;
-  let reported = Date.now();
-  for (const [index, file] of manifest.files.entries()) {
-    const bytes = file.size ? await download(file.path, file.size) : Buffer.alloc(0);
-    if (bytes.length !== file.size || hash(bytes) !== file.sha256) throw new WorkerError('artifact_checksum_mismatch');
-    const path = join(directory, file.path);
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    await writeFile(path, bytes, { mode: 0o600 });
-    receivedBytes += file.size;
-    if (Date.now() - reported >= PROGRESS_LOG_MS) {
-      reported = Date.now();
-      log('Worker bundle download through Main progressing', { source: 'main', files: index + 1,
-        totalFiles: manifest.files.length, receivedBytes, totalBytes });
-    }
-  }
-  return manifest;
-}
-
-async function downloadArtifactFiles({ release, request, directory, facts, signal,
+async function downloadArtifactFiles({ release, directory, facts, signal,
   fetchAsset = fetchGitHubAsset, onDownloadComplete, log = () => {} }) {
   const announced = WorkerArtifactManifestSchema.parse(release.manifest);
   validateManifest(announced, facts, expected);
   if (announced.version !== release.version) throw new WorkerError('manifest_version_mismatch');
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  if (!release.github) {
-    const manifest = await downloadFromMain({ release, announced, request, directory, signal, log });
-    signal.throwIfAborted();
-    await onDownloadComplete?.({ source: 'main' });
-    return manifest;
-  }
-  const race = new AbortController();
-  const racing = AbortSignal.any([signal, race.signal]);
-  let githubError;
-  const github = targetDirectory => downloadFromGitHub({ release, announced, directory: targetDirectory,
-    signal: racing, fetchAsset });
-  const githubFailed = (error, message) => {
-    signal.throwIfAborted();
-    racing.throwIfAborted();
-    if (!(error instanceof WorkerError) || error.code !== 'worker_update_github_unavailable') throw error;
-    githubError = workerUpdateErrorMessage(error);
-    log(message, { source: 'github', error: githubError });
-  };
-  log('Worker bundle download from GitHub started', { source: 'github' });
+  if (!release.github) throw new WorkerError('WORKER_RELEASE_ASSET_UNAVAILABLE',
+    'Main has no verified GitHub release asset for this Worker version.');
+  const backoff = [5000, 10000, 20000, 40000, 60000];
+  let lastGitHubError;
   try {
-    const manifest = await github(directory);
-    signal.throwIfAborted();
-    await onDownloadComplete?.({ source: 'github' });
-    return manifest;
-  } catch (error) {
-    githubFailed(error, 'GitHub download failed; downloading through Main while retrying GitHub');
-    // GitHub cleanup removes staging; Main starts afresh under the same deadline.
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-  }
-  // Main publishes the GitHub asset after its cutover, and Main chunks crawl over relayed links:
-  // keep retrying GitHub while Main downloads, and keep whichever verified copy finishes first.
-  const githubDirectory = `${directory}-github`;
-  const main = downloadFromMain({ release, announced, request, directory, signal: racing, log })
-    .then(manifest => ({ source: 'main', manifest }));
-  const retry = (async () => {
-    for (;;) {
-      await delay(GITHUB_RETRY_MS, racing);
-      log('Worker bundle download from GitHub retrying', { source: 'github' });
+    for (let attempt = 0; ; attempt++) {
+      signal.throwIfAborted();
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      log('Worker bundle download from GitHub started', { source: 'github', attempt: attempt + 1 });
       try {
-        return { source: 'github', manifest: await github(githubDirectory) };
+        const manifest = await downloadFromGitHub({ release, announced, directory, signal, fetchAsset });
+        signal.throwIfAborted();
+        await onDownloadComplete?.({ source: 'github' });
+        return manifest;
       } catch (error) {
-        githubFailed(error, 'GitHub download retry failed');
+        if (signal.aborted) throw error;
+        if (!(error instanceof WorkerError) || error.code !== 'worker_update_github_unavailable') throw error;
+        lastGitHubError = workerUpdateErrorMessage(error);
+        const retryMs = backoff[Math.min(attempt, backoff.length - 1)];
+        log('GitHub Worker asset unavailable; retrying GitHub', { source: 'github', error: lastGitHubError, retryMs });
+        await delay(retryMs, signal);
       }
     }
-  })();
-  try {
-    let winner;
-    try {
-      winner = await Promise.race([main, retry]);
-    } finally {
-      race.abort();
-      await Promise.allSettled([main, retry]);
+  } catch (error) {
+    if (signal.aborted && signal.reason?.code === 'WORKER_RELEASE_ASSET_UNAVAILABLE') {
+      const reason = [signal.reason.message, lastGitHubError].filter(Boolean).join(' Last GitHub error: ');
+      throw new WorkerError('WORKER_RELEASE_ASSET_UNAVAILABLE', reason, { cause: error });
     }
-    if (winner.source === 'github') {
-      await rm(directory, { recursive: true, force: true });
-      await rename(githubDirectory, directory);
-    }
-    signal.throwIfAborted();
-    await onDownloadComplete?.(winner.source === 'github' ? { source: 'github' }
-      : { source: 'main', ...(githubError ? { githubError } : {}) });
-    return winner.manifest;
-  } finally {
-    await rm(githubDirectory, { recursive: true, force: true });
+    throw error;
   }
 }
 
@@ -351,6 +255,10 @@ export class WorkerUpdater {
         const signal = options.signal ? AbortSignal.any([this.lifetime.signal, options.signal]) : this.lifetime.signal;
         return await captured.request(payload, { timeoutMs: 60_000, signal });
       } catch (error) {
+        if (error instanceof DeviceApplicationError && error.code === 'WORKER_RELEASE_ASSET_UNAVAILABLE') {
+          throw new WorkerError('WORKER_RELEASE_ASSET_UNAVAILABLE',
+            'Main has not published and verified the GitHub Worker asset. Read computer maintenance for the reason.');
+        }
         if (error instanceof DeviceApplicationError && error.code === 'WORKER_UPDATE_SMOKE_UNAVAILABLE') {
           throw new WorkerError('worker_update_smoke_unavailable',
             'Main cannot supply CI smoke configuration for this Worker release.');
@@ -403,16 +311,16 @@ export class WorkerUpdater {
       const launch = await (this.options.locateLaunch ?? locateWorkerLaunch)(this.options);
       await this.save({ targetVersion: release.version, state: 'pending', lastError: null },
         { manifestSha256: release.manifestSha256, contentSha256: workerArtifactContentSha256(manifest),
-          downloadSource: null, githubDownloadError: null });
-      // Download and verify while the Worker still admits work: through Main this can take minutes.
+          downloadSource: null });
+      // Download and verify while the Worker still admits work.
       // Only installation and restart need the drained runtime.
       enter('downloading');
       await this.save({ state: 'downloading' });
       downloading = await mkdtemp(join(stateDirectory, '.worker-download-'));
-      await downloadWorkerArtifact({ release, request, directory: downloading, facts, signal: this.lifetime.signal,
+      await downloadWorkerArtifact({ release, directory: downloading, facts, signal: this.lifetime.signal,
+        fetchAsset: this.options.fetchAsset,
         timeoutMs: this.options.downloadTimeoutMs, log: (msg, fields) => log(msg, { ...fields, ...targetFields }),
-        onDownloadComplete: ({ source, githubError }) => this.save({},
-          { downloadSource: source, githubDownloadError: githubError ?? null }),
+        onDownloadComplete: ({ source }) => this.save({}, { downloadSource: source }),
       });
       this.lifetime.signal.throwIfAborted();
       enter('smoke configuration');

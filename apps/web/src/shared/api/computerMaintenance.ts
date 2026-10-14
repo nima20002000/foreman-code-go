@@ -27,7 +27,8 @@ export function useComputerMaintenance(targets: readonly DeviceProvisioningTarge
   return useQueries({ queries: targets.map(target => ({
     queryKey: [...key(), target], enabled: !sessionIsSwitching(), retry: false, staleTime: 15_000,
     refetchInterval: (query: { state: { data: ComputerMaintenanceList['computers'][number] | undefined } }) =>
-      needsFrequentRefresh(query.state.data?.status, target) ? 5_000 : 60_000,
+      query.state.data?.workerPublication?.state === 'pending'
+        || needsFrequentRefresh(query.state.data?.status, target) ? 5_000 : 60_000,
     queryFn: async ({ signal }: QueryFunctionContext) => {
       const result = await apiClient.request('/api/management/computers/maintenance/read', ComputerMaintenanceListSchema,
         { method: 'POST', body: ComputerMaintenanceReadInputSchema.parse({ target,

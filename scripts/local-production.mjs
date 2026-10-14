@@ -11,10 +11,10 @@ import { readMigrationSchema } from './production-schema.mjs'
 import { readProductEnvironment } from '../packages/contracts/src/productEnvironment.mjs'
 import { renderUserService } from '../apps/worker/src/service.mjs'
 import { workerPath } from '../apps/worker/src/harnessPath.mjs'
-import { buildWorkerReleaseArtifacts } from './worker-release-artifacts.mjs'
+import { buildWorkerReleaseArtifacts, recordWorkerPublicationFailure } from './worker-release-artifacts.mjs'
 import {
   copyVerificationRuntime, deployProductionApi, desktopLaunchEnvironment, localProductionEnvironment, preserveOperatorConfiguration, publish, readEnvironment,
-  pruneApiDependencies, pruneReleases, startBackground, removeUninstalledRelease, readActiveRuns, readProductionIdentity, waitForIdleRuns, renderEnvironment, waitForProductionReady, withInstallationLock,
+  pruneApiDependencies, pruneReleases, removeUninstalledRelease, readActiveRuns, readProductionIdentity, waitForIdleRuns, renderEnvironment, waitForProductionReady, withInstallationLock,
   shouldOpenDashboardAfterInstall,
   productionIntegrationPaths, publishDesktopIntegration, enableProductionServices, apiServiceTemplate,
   launchProduction, launchBrowser, parseRunWaitMinutes, readReleaseSelection,
@@ -107,7 +107,7 @@ async function stageRelease({ source: buildSource, commit }, runBuild) {
     await publish(join(release, 'ci-smoke.json'), JSON.stringify({ commit, repository }))
     await copyFile(process.execPath, join(release, 'node'))
     await chmod(join(release, 'node'), 0o700)
-    // GitHub publishing runs after the cutover (publishWorkerArtifactsLater) so the upload never delays an install.
+    // Devices wait for the background publisher to verify GitHub assets before selecting this Worker target.
     await buildWorkerReleaseArtifacts({ repository: buildSource, expectedCommit: commit,
       directory: join(release, 'worker-artifacts'), productManifestPath: join(release, 'package.json'),
       run: runBuild })
@@ -314,13 +314,21 @@ async function finishInstallation({ release, previousRelease, firstInstall, envi
   }
 }
 
-// Paired Workers download through Main until this detached upload records the GitHub release in the index.
+// Publication success atomically exposes the GitHub target; failures remain visible in maintenance status.
 async function publishWorkerArtifactsLater(release) {
   const { commit, repository } = JSON.parse(await readFile(join(release, 'ci-smoke.json'), 'utf8'))
-  startBackground('foreman-worker-publish', join(release, 'node'), [join(release, 'scripts/worker-release-artifacts.mjs'),
-    'publish', join(release, 'worker-artifacts'), repository, commit],
-  { logFile: join(state, 'logs', 'worker-artifact-publish.log') })
-  console.log(`Publishing Worker artifacts to GitHub in the background (log: ${state}/logs/worker-artifact-publish.log).`)
+  const logFile = join(state, 'logs', 'worker-artifact-publish.log')
+  try {
+    await run('/usr/bin/systemd-run', ['--user', '--collect', '--quiet',
+      `--unit=foreman-worker-publish-${randomBytes(8).toString('hex')}`, `--setenv=PATH=${process.env.PATH}`,
+      `--property=StandardOutput=append:${logFile}`, `--property=StandardError=append:${logFile}`,
+      join(release, 'node'), join(release, 'scripts/worker-release-artifacts.mjs'),
+      'publish', join(release, 'worker-artifacts'), repository, commit])
+    console.log(`Worker target waits for GitHub publication and verification (log: ${logFile}).`)
+  } catch (error) {
+    await recordWorkerPublicationFailure(join(release, 'worker-artifacts'), error)
+    throw error
+  }
 }
 
 async function handoffDashboard() {

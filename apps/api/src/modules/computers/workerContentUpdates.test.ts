@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -35,21 +36,27 @@ async function fixture() {
   await writeFile(join(releaseDirectory, 'src/cli.mjs'), bytes)
   const manifest = { ...installed, commit: 'c'.repeat(40), sourceSnapshot: { commit: 'c'.repeat(40), files: [] } }
   const manifestBytes = () => Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`)
-  const release = () => ({ version: manifest.version, manifest, manifestSha256: hash(manifestBytes()) })
+  const github = { repository: 'example/worker', tag: `worker-${manifest.commit}` }
+  const release = () => ({ version: manifest.version, manifest, manifestSha256: hash(manifestBytes()), github })
   const request = vi.fn(async (input: { operation: string; path?: string; offset?: number }) => {
     if (input.operation === 'release') return { payload: { operation: 'release', release: release() } }
     if (input.operation === 'ci-smoke') {
       return { payload: { operation: 'ci-smoke', ciSmoke: { repository: 'example/worker', commit: manifest.commit } } }
     }
-    const content = input.path === 'manifest.json' ? manifestBytes() : bytes
-    const chunk = content.subarray(input.offset ?? 0)
-    return { payload: { ...input, byteSize: chunk.length }, bytes: chunk }
+    throw new Error(`Unexpected Main request: ${input.operation}`)
   })
+  const fetchAsset = async ({ destination }: { destination: string }) => {
+    const source = join(root, 'github-asset')
+    await mkdir(join(source, 'src'), { recursive: true })
+    await writeFile(join(source, 'manifest.json'), manifestBytes())
+    for (const file of manifest.files) await writeFile(join(source, file.path), bytes)
+    execFileSync('tar', ['-czf', destination, '-C', source, '.'])
+  }
   const drain = vi.fn(async () => {})
   const stage = vi.fn(async () => ({ directory: join(root, 'staged') }))
   const launchSupervisor = vi.fn(async () => {})
   const options = { stateDirectory, releaseDirectory, version: installed.version, manifestSha256: hash(installedBytes),
-    facts, workerInstallationId: randomUUID(), assertStateOwnership: () => {},
+    fetchAsset, facts, workerInstallationId: randomUUID(), assertStateOwnership: () => {},
     connection: () => ({ captureRequest: () => ({ request }) }), drain, resume: vi.fn(), stage, launchSupervisor,
     locateLaunch: async () => ({ root, previousDirectory: releaseDirectory }) }
   const updater = await new WorkerUpdater(options).initialize()
@@ -96,7 +103,7 @@ it('still rejects a download whose manifest checksum differs from the announced 
   const directory = join(f.root, 'download')
   await mkdir(directory)
   await expect(downloadWorkerArtifact({ release: { ...f.release(), manifestSha256: 'e'.repeat(64) },
-    directory, request: f.request, facts })).rejects.toMatchObject({ code: 'manifest_checksum_mismatch' })
+    directory, fetchAsset: f.options.fetchAsset, facts })).rejects.toMatchObject({ code: 'manifest_checksum_mismatch' })
 })
 
 it('keeps the running product version when an equivalent bundle advertises a later version', async () => {
@@ -139,7 +146,8 @@ it('reads content identities from verified manifests and keeps CI smoke pinned t
   await mkdir(artifact, { recursive: true, mode: 0o700 })
   await writeFile(join(artifact, 'manifest.json'), `${JSON.stringify(f.manifest, null, 2)}\n`)
   await writeFile(join(directory, 'index.json'), JSON.stringify({ format: 1, version: '1.0.0',
-    artifacts: [{ target, manifestSha256: release.manifestSha256 }] }))
+    artifacts: [{ target, manifestSha256: release.manifestSha256 }], github: release.github,
+    publication: { state: 'published', lastError: null } }))
   const options = { directory, version: '1.0.0' }
   const identities = await artifacts.readWorkerContentSha256s(options)
   expect(identities).toHaveLength(1)

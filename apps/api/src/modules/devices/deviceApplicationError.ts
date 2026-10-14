@@ -3,6 +3,7 @@ import type { DeviceApplicationFailure } from '@foreman-code/contracts/device-ap
 const retryability: Readonly<Record<string, boolean>> = {
   'extension-rejected': false,
   WORKER_UPDATE_SMOKE_UNAVAILABLE: true,
+  WORKER_RELEASE_ASSET_UNAVAILABLE: true,
   CI_HOST_BUSY: true,
   MCP_INSPECTION_CONTEXT_MISMATCH: false,
   MCP_PRESET_UNAVAILABLE: false,

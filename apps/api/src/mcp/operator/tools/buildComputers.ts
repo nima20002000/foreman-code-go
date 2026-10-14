@@ -55,6 +55,7 @@ export const buildComputerTools = [
       + 'to select one retained task independently of the limit. '
       + 'Paired Workers also report current and target application versions, update state and the last update error, '
       + 'including rollback. '
+      + 'workerPublication reports the matching Main release\'s GitHub publication state and failure reason, even for offline computers. '
       + 'Requires global settings:read. Supply target to read one current installation independently. '
       + 'Settled status is cached for 20 seconds unless refresh is true; pending probes are shared. An offline computer reports null status.',
     inputSchema: ComputerMaintenanceOperatorListInputSchema, outputSchema: ComputerMaintenanceOperatorListSchema,
@@ -76,7 +77,9 @@ export const buildComputerTools = [
       + 'paired computers; other tasks select Main and every paired computer: '
       + 'update-harnesses (install or update Codex/Claude to the latest version), update-system (sudo apt-get update and a '
       + 'non-interactive upgrade with new dependencies, respecting phased rollout and explicit holds; re-reads pending updates), '
-      + 'update-worker (drain active work, verify and install the matching Main version, then restart through the Worker supervisor; '
+      + 'update-worker (download only from GitHub with backoff after Main verifies publication of every release asset; '
+      + 'unpublished targets and unavailable GitHub assets fail visibly with WORKER_RELEASE_ASSET_UNAVAILABLE; '
+      + 'verify checksums, drain active work, install the matching Main version, then restart through the Worker supervisor; '
       + 'enabled build computers must pass a tiny integration CI smoke within 160 seconds after readiness; '
       + 'failed releases roll back and report the error; Main uses production:install), restart (sudo reboot; targets are required), '
       + 'sync-mcp (add Main\'s user-level Codex and Claude MCP '

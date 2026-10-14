@@ -6,7 +6,7 @@ import { createWorkerArtifactExtension } from '../src/modules/computers/workerAr
 import { privateFixtureDirectory } from './helpers/privateFixtureDirectory.js'
 import { remoteReviewWorkerArtifacts } from './helpers/remoteReviewWorkerArtifacts.js'
 
-it('serves the cached Worker release through a symlinked cache ancestor after fixture cleanup', async () => {
+it('retains cached Worker manifests through symlinked cache ancestors without advertising unpublished bundles', async () => {
   const root = await privateFixtureDirectory('remote-review-artifacts-')
   try {
     const fixture = join(root, 'fixture')
@@ -46,12 +46,10 @@ it('serves the cached Worker release through a symlinked cache ancestor after fi
       signal: new AbortController().signal,
     }
     const manifestSha256 = createHash('sha256').update(bytes).digest('hex')
-    expect((await extension.handle!({ operation: 'release', target }, context)).payload).toEqual({
-      operation: 'release', release: { version: manifest.version, manifestSha256, manifest },
-    })
-    const chunk = await extension.handle!({ operation: 'chunk', manifestSha256,
-      path: 'src/cli.mjs', offset: 0 }, context)
-    expect(chunk.bytes).toEqual(content)
+    await expect(extension.handle!({ operation: 'release', target }, context))
+      .rejects.toMatchObject({ code: 'WORKER_RELEASE_ASSET_UNAVAILABLE' })
+    await expect(extension.handle!({ operation: 'chunk', manifestSha256, path: 'src/cli.mjs', offset: 0 }, context))
+      .rejects.toThrow()
     expect(await readFile(join(directory, manifestSha256, 'manifest.json'))).toEqual(bytes)
   } finally {
     await rm(root, { recursive: true, force: true })

@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { buildWorkerReleaseArtifacts, publishInstalledWorkerArtifacts, publishWorkerArtifactsToGitHub,
@@ -59,7 +59,7 @@ test('retries asset upload when an existing empty release is not yet visible', a
   let uploads = 0
   const run = async (command, args) => {
     calls.push({ command, args })
-    if (command === 'tar') await writeFile(args[1], 'archive')
+    await simulateAssetDownload(command, args)
     if (command === 'gh' && args[1] === 'upload' && ++uploads === 1) {
       throw new Error('release not found')
     }
@@ -87,6 +87,7 @@ for (const failure of ['view', 'create', 'upload']) {
     let exists = failure === 'view'
     let failed = false
     const run = async (command, args) => {
+      await simulateAssetDownload(command, args)
       if (command !== 'gh') return
       const operation = args[1]
       calls.push(operation)
@@ -107,7 +108,7 @@ for (const failure of ['view', 'create', 'upload']) {
     assert.equal(result.tag, `worker-${f.commit}`)
     assert.deepEqual(waits, [5000])
     assert.deepEqual(calls, failure === 'view' || failure === 'create'
-      ? ['view', 'create', 'view', 'upload'] : ['view', 'create', 'upload', 'view', 'upload'])
+      ? ['view', 'create', 'view', 'upload', 'download'] : ['view', 'create', 'upload', 'view', 'upload', 'download'])
   })
 }
 
@@ -120,7 +121,7 @@ test('stops retrying after one minute of backoff and cleans up staged assets', a
   let uploads = 0
   let asset
   const run = async (command, args) => {
-    if (command === 'tar') await writeFile(args[1], 'archive')
+    await simulateAssetDownload(command, args)
     if (command === 'gh' && args[1] === 'upload') {
       uploads++
       asset = args[3]
@@ -133,6 +134,15 @@ test('stops retrying after one minute of backoff and cleans up staged assets', a
   assert.deepEqual(waits, [5000, 10000, 20000, 25000])
   await assert.rejects(stat(asset), { code: 'ENOENT' })
 })
+
+async function simulateAssetDownload(command, args) {
+  if (command === 'tar') await writeFile(args[1], 'archive')
+  if (command === 'gh' && args[1] === 'download') {
+    const output = args[args.indexOf('--output') + 1]
+    const pattern = args[args.indexOf('--pattern') + 1]
+    await copyFile(join(dirname(output), pattern), output)
+  }
+}
 
 async function fixture(t) {
   const repository = await mkdtemp(join(tmpdir(), 'worker-release-artifacts-'))
@@ -286,19 +296,19 @@ test('blocks a toolchain pin change before publishing updates to format-one work
   await assert.rejects(stat(f.productManifestPath), { code: 'ENOENT' })
 })
 
-test('an installed release publishes to GitHub after the install and then records the release in its index', async t => {
+test('an installed release advances its target only after the publisher succeeds', async t => {
   const f = await fixture(t)
   const index = await buildWorkerReleaseArtifacts(f)
   assert.equal(index.github, undefined)
   const calls = []
   const publish = async options => { calls.push(options); return { repository: 'example/fixture', tag: `worker-${f.commit}` } }
-  // Uploading took ~78 s inside every install; Workers download through Main until the index names the release.
   const published = await publishInstalledWorkerArtifacts({ directory: f.directory, repositoryName: 'example/fixture',
     commit: f.commit, run: f.run, publish })
   assert.equal(calls.length, 1)
   assert.equal(calls[0].name, 'example/fixture')
   assert.deepEqual(calls[0].artifacts, index.artifacts)
-  assert.deepEqual(published, { ...index, github: { repository: 'example/fixture', tag: `worker-${f.commit}` } })
+  assert.deepEqual(published, { ...index, github: { repository: 'example/fixture', tag: `worker-${f.commit}` },
+    publication: { state: 'published', lastError: null } })
   assert.deepEqual(JSON.parse(await readFile(join(f.directory, 'index.json'))), published)
   assert.equal((await stat(join(f.directory, 'index.json'))).mode & 0o077, 0)
   await publishInstalledWorkerArtifacts({ directory: f.directory, repositoryName: 'example/fixture',
@@ -306,13 +316,14 @@ test('an installed release publishes to GitHub after the install and then record
   assert.equal(calls.length, 1)
 })
 
-test('a failed background upload leaves the installed index for Main downloads', async t => {
+test('a failed background upload keeps the target unpublished and records its reason', async t => {
   const f = await fixture(t)
   const index = await buildWorkerReleaseArtifacts(f)
   const publish = async () => { throw new Error('GitHub unavailable') }
   await assert.rejects(publishInstalledWorkerArtifacts({ directory: f.directory, repositoryName: 'example/fixture',
     commit: f.commit, run: f.run, publish }), /GitHub unavailable/)
-  assert.deepEqual(JSON.parse(await readFile(join(f.directory, 'index.json'))), index)
+  assert.deepEqual(JSON.parse(await readFile(join(f.directory, 'index.json'))), { ...index,
+    publication: { state: 'failed', lastError: 'WORKER_RELEASE_ASSET_UNAVAILABLE: GitHub unavailable' } })
 })
 
 test('the installed background publisher loads without build-only source modules', async t => {
@@ -327,5 +338,5 @@ test('the installed background publisher loads without build-only source modules
   const github = { repository: 'example/worker', tag: `worker-${f.commit}` }
   const published = await installed.publishInstalledWorkerArtifacts({ directory: f.directory,
     repositoryName: github.repository, commit: f.commit, run: f.run, publish: async () => github })
-  assert.deepEqual(published, { ...index, github })
+  assert.deepEqual(published, { ...index, github, publication: { state: 'published', lastError: null } })
 })
