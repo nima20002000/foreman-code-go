@@ -1,4 +1,5 @@
-import { rm } from 'node:fs/promises'
+import { rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createInstalledWorkerManagedMcp } from './installedWorkerManagedMcp.js'
 import { managedMcpNativeFixture } from '../../../test/helpers/managedMcpNative.js'
@@ -12,6 +13,49 @@ vi.mock('./codexMcpConnections.js', async () => ({
 afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllEnvs()
+})
+
+it('converges without another managed native session until configuration changes', async () => {
+  const f = await managedMcpNativeFixture()
+  vi.stubEnv('FOREMAN_CODE_APP_MCP_DIRECTORY', join(f.directory, 'mcp'))
+  const installed = createInstalledWorkerManagedMcp(f.options)
+  const read = vi.spyOn(f.native.adapter, 'read')
+  try {
+    await installed.ensureReady()
+    read.mockClear()
+    await Promise.all(Array.from({ length: 8 }, () => installed.ensureReady()))
+    expect(read).not.toHaveBeenCalled()
+    expect(f.writes()).toBe(1)
+    expect(f.native.owners.size).toBe(0)
+
+    const signal = AbortSignal.timeout(5000)
+    await f.adapters.codex.apply(await f.adapters.codex.read(signal), { kind: 'remove', name: 'foreman-code' }, signal)
+    await writeFile(join(process.env.CODEX_HOME!, 'config.toml'), '# Native configuration changed\n')
+    await installed.ensureReady()
+    expect((await installed.worker.detect('codex', signal)).state).toBe('status_unavailable')
+    expect(f.writes()).toBe(3)
+  } finally {
+    f.dispose()
+    await rm(f.directory, { recursive: true, force: true })
+  }
+})
+
+it('retries failed native readiness without caching it as ready', async () => {
+  const f = await managedMcpNativeFixture()
+  vi.stubEnv('FOREMAN_CODE_APP_MCP_DIRECTORY', join(f.directory, 'mcp'))
+  const installed = createInstalledWorkerManagedMcp(f.options)
+  f.native.failRead = new DomainError('MCP_CONFIG_UNAVAILABLE', 'Native configuration is unavailable.', 503)
+  try {
+    await expect(installed.ensureReady()).rejects.toMatchObject({ code: 'MCP_CONFIG_UNAVAILABLE' })
+    await installed.ensureReady()
+    const read = vi.spyOn(f.native.adapter, 'read')
+    await installed.ensureReady()
+    expect(read).not.toHaveBeenCalled()
+    expect(f.writes()).toBe(1)
+  } finally {
+    f.dispose()
+    await rm(f.directory, { recursive: true, force: true })
+  }
 })
 
 it('lists repeatedly without sharing the active harness settings process owner', async () => {
