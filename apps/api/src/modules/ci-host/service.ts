@@ -391,6 +391,9 @@ export class HostCiService {
         + 'see cachedFiles.' : 'No affected files for this suite.') : null,
       queuedAt: now, startedAt: empty ? now : null, finishedAt: empty ? now : null,
       initiator: { principalId: caller.id, executionId: scope.executionId ?? null } }))
+    const measuredUnitDurations = Object.fromEntries((inventory?.files ?? []).filter(file => unitDurations[file] !== undefined)
+      .map(file => [file, unitDurations[file]!]))
+    if (Object.keys(measuredUnitDurations).length) durations = { ...durations, ...measuredUnitDurations }
     return { repository: workspace.repository, runs, durations,
       ...(cache && !empty ? { cacheKeys: cache.keys } : {}),
       ...(empty && cachedFiles ? { logTail: ciCachedNotice(cachedFiles) } : {}) }
