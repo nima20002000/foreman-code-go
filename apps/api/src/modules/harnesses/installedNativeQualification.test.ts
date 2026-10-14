@@ -41,7 +41,7 @@ async function fixture() {
   const binarySha256 = createHash('sha256').update(bytes).digest('hex')
   const binding: DeviceSessionBinding = {
     mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), bootId: randomUUID(),
-    keyRevision: 1, authorizationRevision: 1, connectionEpoch: 'epoch', connectionGeneration: 1,
+    keyRevision: 1, authorizationRevision: 1, connectionEpoch: randomUUID(), connectionGeneration: 1,
   }
   const configuration = { harness: 'codex' as const, model: model.slug, reasoningEffort: 'high' as const,
     sandbox: 'read-only' as const, serviceTier: 'standard' as const }

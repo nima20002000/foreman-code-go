@@ -100,7 +100,8 @@ it('installs and repairs managed MCP before a paired device becomes an Agent hos
     await open().ensureReady(['codex', 'claude'])
     expect(f.writes()).toBe(2)
     const signal = AbortSignal.timeout(5000)
-    await f.adapters.codex.apply(await f.adapters.codex.read(signal), { kind: 'remove', name: 'foreman-code' }, signal)
+    await f.adapters.codex.apply(await f.adapters.codex.read(signal), { kind: 'remove', name: 'foreman-code' },
+      signal, { preset: 'graphql', endpoint: 'https://app.invalid/mcp' })
     await open().ensureReady(['codex', 'claude'])
     expect((await open().list('codex', signal)).presets?.graphql).toBe('installed')
     expect(f.writes()).toBe(4)
