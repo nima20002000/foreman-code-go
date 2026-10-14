@@ -272,7 +272,7 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
     expect(recovered.servers[0]?.enabled).toBe(false)
     const audits = await pool.query<{ principal_id: string; source: string }>("select principal_id,source from management_audit where action='harness.mcp.apply'")
     expect(audits.rows.length).toBeGreaterThan(0)
-    expect(new Set(audits.rows.map((row) => `${row.principal_id}:${row.source}`))).toEqual(new Set([`${delegated.principal.id}:mcp`]))
+    expect(new Set(audits.rows.map((row) => `${row.principal_id}:${row.source}`))).toEqual(new Set([`${delegated.principal.id}:mcp`, `${delegated.principal.id}:http`]))
     vi.restoreAllMocks()
     const removal = HarnessMcpPlanSchema.parse(decodeMcpToolResult((await client.callTool({ name: 'harness_mcp_managed_request', arguments: {
       harness: 'codex', preset: 'graphql', installed: false, expectedRevision: recovered.revision, commandId: randomUUID(),
