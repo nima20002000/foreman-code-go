@@ -69,10 +69,12 @@ it.each(['starting', 'running'] as const)('retains transient CircleCI ownership 
     const result = await reader.callTool({ name: 'ci_get', arguments: { workspaceId, ticketId: record.id } })
     expect(result.isError).not.toBe(true)
     expect(CiGetOutputSchema.parse(decodeMcpToolResult(result)).run).toMatchObject({ state, finishedAt: null,
-      computer: { hostRef: computer.hostRef }, message: expect.stringContaining('Retrying lookup') })
+      computer: { hostRef: computer.hostRef }, message: expect.stringContaining('Retrying lookup'),
+      observation: { status: 'available', consecutiveFailures: 0, lastError: null } })
     expect((await denied.callTool({ name: 'ci_get', arguments: { workspaceId, ticketId: record.id } })).isError).toBe(true)
     expect((await pool.query('select host_key,record from ci_runs where id=$1', [record.id])).rows[0])
-      .toMatchObject({ host_key: computer.key, record: { state, message: expect.stringContaining('permission denied') } })
+      .toMatchObject({ host_key: computer.key, record: { state, message: expect.stringContaining('permission denied'),
+        observation: { status: 'available', consecutiveFailures: 0, lastError: null } } })
     const reads = f.control.reads
     expect(f.control.canceled).toEqual([])
     f.advance(75_000)

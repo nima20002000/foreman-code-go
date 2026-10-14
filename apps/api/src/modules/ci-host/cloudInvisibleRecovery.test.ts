@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest'
 import { cloudCiLookupFixture } from '../../../test/helpers/cloudCiLookupFixture.js'
+import { expectCliRunMessage } from './cloudAssertions.testSupport.js'
 
 it.each(['starting', 'running'] as const)(
   'requeues an invisible CircleCI execution from %s after the visibility window', async state => {
@@ -85,7 +86,10 @@ it('clears the visibility deadline when CircleCI becomes visible again', async (
     await f.cloud.handle(request)
     f.advance(70_000)
     f.control.error = ''
-    await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state: 'running', message: null } })
+    const read = await f.reopen().handle(request)
+    expect(read).toMatchObject({ run: { state: 'running' } })
+    if (read.operation !== 'read') throw new Error('Expected a read reply')
+    expectCliRunMessage(read.run, null)
     f.advance(4_001)
     f.control.error = 'run.not_found'
     await f.reopen().handle(request)
@@ -110,7 +114,10 @@ it.each(['starting', 'running'] as const)(
       await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state, finishedAt: null } })
       f.control.error = ''
       f.advance(4_001)
-      await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state: 'running', message: null } })
+      const read = await f.reopen().handle(request)
+      expect(read).toMatchObject({ run: { state: 'running' } })
+      if (read.operation !== 'read') throw new Error('Expected a read reply')
+      expectCliRunMessage(read.run, null)
       expect(f.control.canceled).toEqual([])
     } finally { await f.close() }
   },

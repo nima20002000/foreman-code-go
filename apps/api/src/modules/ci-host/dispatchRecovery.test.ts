@@ -56,12 +56,27 @@ it.each(['github', 'circleci'] as const)(
 it.each(['github', 'circleci'] as const)(
   'returns a nullable start time when an unstarted %s dispatch expires', async provider => {
     const f = fixture(provider)
+    vi.mocked(f.endpoint.request).mockResolvedValue({ operation: 'cancel', run: {
+      runId: f.run.id, state: 'canceled', step: null, exitCode: null, startedAt: f.run.queuedAt,
+      finishedAt: new Date().toISOString(), message: 'Canceled.', logBytes: 0,
+    } })
     const run = { ...f.run, dispatchedAt: new Date(Date.now() - 225_100).toISOString() }
     const result = await expireCloudDispatch(f.endpoint, f.computer, run)
     if (!result) throw new Error('Expected the expired dispatch to settle.')
 
     expectTypeOf(result.startedAt).toEqualTypeOf<string | null>()
     expect(result).toMatchObject({ state: 'lost', startedAt: null, finishedAt: expect.any(String) })
+    expect(f.endpoint.request).toHaveBeenCalledExactlyOnceWith(f.computer,
+      { operation: 'cancel', runId: f.run.id })
+  })
+
+it.each(['github', 'circleci'] as const)(
+  'retains expired %s dispatch ownership when provider cancellation is unconfirmed', async provider => {
+    const f = fixture(provider)
+    const run = { ...f.run, dispatchedAt: new Date(Date.now() - 225_100).toISOString() }
+    await expect(expireCloudDispatch(f.endpoint, f.computer, run))
+      .rejects.toMatchObject({ code: 'CI_CLOUD_CLEANUP_PENDING',
+        message: 'Cloud cancellation failed; ownership retained.' })
     expect(f.endpoint.request).toHaveBeenCalledExactlyOnceWith(f.computer,
       { operation: 'cancel', runId: f.run.id })
   })
