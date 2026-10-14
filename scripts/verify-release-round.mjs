@@ -5,7 +5,8 @@
 // CHANGELOG.md on top of its parent, and records the round in 'Clean-Round: gate=<ticket ids>' (one gate group covering
 // typecheck, lint, unit and integration) or older 'Clean-Round: <suite>=<ticket ids>' trailers. Every recorded group
 // must have run on the parent commit with full scope. A failed gate part can be replaced with a passed same-file,
-// same-suite ticket on that code commit or a descendant, recorded as 'Clean-Round-Rerun: <failed>=<replacement>'.
+// same-suite ticket (or that ticket's partitions together) on that code commit or a descendant, recorded as
+// 'Clean-Round-Rerun: <failed>=<replacement>'.
 // Main is reached like scripts/ci-remote.mjs: FOREMAN_CODE_MAIN_URL, FOREMAN_CODE_OPERATOR_TOKEN(_FILE) and
 // optionally FOREMAN_CODE_WORKSPACE_ID.
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -120,23 +121,30 @@ async function rerunProblems(call, workspaceId, failed, ticketId, parent, cwd) {
   const found = await call('ci_get', { workspaceId, ticketId }).catch(error => ({ error }))
   if (found.error) return [`Rerun ticket ${ticketId} is unreadable: ${found.error.message}`]
   const replacement = found.run
+  // The named ticket replaces the failed part on its own when it ran exactly those files. An affected rerun split
+  // across computers otherwise replaces it with all of its partitions together.
+  const parts = sameFiles(failed, [replacement]) ? [replacement] : found.partitions ?? [replacement]
   const problems = []
   const label = `Rerun ticket ${ticketId} for ${failed.id}`
   if (replacement.id !== ticketId) problems.push(`${label} returned a different ticket.`)
-  if (replacement.state !== 'passed') problems.push(`${label} ${replacement.state}.`)
-  if (replacement.suite !== failed.suite) problems.push(`${label} ran ${replacement.suite}, not ${failed.suite}.`)
-  const filesKnown = Array.isArray(failed.files) && Array.isArray(replacement.files)
-    && failed.deriveFiles !== true && replacement.deriveFiles !== true
-  const originalFiles = filesKnown ? [...failed.files].sort() : []
-  const replacementFiles = filesKnown ? [...replacement.files].sort() : []
-  if (!filesKnown || originalFiles.length !== replacementFiles.length
-    || originalFiles.some((file, index) => file !== replacementFiles[index])) {
-    problems.push(`${label} did not select exactly the failed part's files.`)
+  for (const part of parts) {
+    const partLabel = part.id === ticketId ? label : `${label} partition ${part.id}`
+    if (part.state !== 'passed') problems.push(`${partLabel} ${part.state}.`)
+    if (part.suite !== failed.suite) problems.push(`${partLabel} ran ${part.suite}, not ${failed.suite}.`)
+    if (!isDescendant(parent, part.commit, cwd)) {
+      problems.push(`${partLabel} tested ${part.commit}, not the released code ${parent} or a descendant.`)
+    }
   }
-  if (!isDescendant(parent, replacement.commit, cwd)) {
-    problems.push(`${label} tested ${replacement.commit}, not the released code ${parent} or a descendant.`)
-  }
+  if (!sameFiles(failed, parts)) problems.push(`${label} did not select exactly the failed part's files.`)
   return problems
+}
+
+function sameFiles(failed, parts) {
+  if (!Array.isArray(failed.files) || failed.deriveFiles === true
+    || !parts.every(part => Array.isArray(part.files) && part.deriveFiles !== true)) return false
+  const original = [...failed.files].sort()
+  const replacement = parts.flatMap(part => part.files).sort()
+  return original.length === replacement.length && original.every((file, index) => file === replacement[index])
 }
 
 function isDescendant(parent, commit, cwd) {
