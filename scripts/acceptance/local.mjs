@@ -1,5 +1,5 @@
-import { diagnosticWarning } from '../diagnostic-warning.mjs'
 #!/usr/bin/env node
+import { diagnosticWarning } from '../diagnostic-warning.mjs'
 import { spawn, execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'

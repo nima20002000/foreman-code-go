@@ -64,7 +64,7 @@ export async function handoffPlacementFixture(options: { checkOutcome?: 'qualifi
   })
   const directory = join(base.db.directory, 'handoff-placement')
   try {
-    await mkdir(directory)
+    await mkdir(directory, { mode: 0o700 })
     placement = await mixedComputerPlacement(base, directory, { deviceCount: 2 })
     base.services.workflows = new WorkflowManagementService(base.db.pool, base.commands, {
       worktrees: { readyRoot: async () => undefined, sources: placement.sources, roots: placement.policies },

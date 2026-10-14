@@ -5,7 +5,7 @@ import { readCurrentExecutions } from './helpers/wave25Agent3.js'
 const createRuntime = workflowConcurrencyFixture()
 
 it.each(['before turn', 'session reply', 'lane bind'] as const)(
-  'closes a created session after a database failure at %s before offering a turn', async timing => {
+  'closes each failed session and retries a database failure at %s before offering a turn', async timing => {
     const f = await createRuntime()
     let sessionSaved = false
     const update = f.runs.updateExecution.bind(f.runs)
@@ -32,13 +32,27 @@ it.each(['before turn', 'session reply', 'lane bind'] as const)(
     })
     try {
       await f.engine.start(f.f.run.id)
-      expect(await f.runs.get(f.f.run.id)).toMatchObject({ executionState: 'completed', outcome: 'failed' })
-      expect(f.provider.counts).toMatchObject({ sessions: 1, starts: 0 })
-      expect(f.provider.closedSessions.size).toBe(1)
+      const recovered = timing === 'lane bind'
+      const attempts = { 'before turn': 3, 'lane bind': 2, 'session reply': 1 }[timing]
+      const starts = recovered ? 1 : 0
+      expect(await f.runs.get(f.f.run.id)).toMatchObject({ executionState: 'completed',
+        outcome: recovered ? 'succeeded' : 'failed' })
+      expect(f.provider.counts).toMatchObject({ sessions: attempts, starts })
+      expect(f.provider.closedSessions.size).toBe(attempts)
+      const executions = await readCurrentExecutions(f.runs, f.f.run.id)
+      expect(executions).toHaveLength(attempts)
+      const failures = executions.filter(execution => execution.result?.outcome === 'failed')
+      expect(failures).toHaveLength(recovered ? 1 : attempts)
+      for (const execution of failures) {
+        expect(execution).toMatchObject({ state: 'completed', result: { error: {
+          ...(timing === 'session reply' ? { code: expect.any(String) }
+            : { code: 'NATIVE_EXECUTION_FAILED', retryable: true }),
+        } } })
+      }
       const errors: unknown[] = []
       await f.engine.reconcile(error => errors.push(error))
       expect(errors).toEqual([])
-      expect(f.provider.counts.starts).toBe(0)
+      expect(f.provider.counts.starts).toBe(starts)
     } finally {
       await f.close()
     }

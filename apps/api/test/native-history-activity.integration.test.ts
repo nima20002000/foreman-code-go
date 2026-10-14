@@ -29,6 +29,8 @@ describe.skipIf(!postgresEnabled)('native history recovery activity', () => {
       const restarted = f.compose()
       expect((await restarted.runs.listActivity(f.f.run.id)).filter(activity => String(activity.kind) === 'native_events_skipped'))
         .toEqual(markers)
-    } finally { vi.restoreAllMocks(); await f.close() }
+    } finally {
+      try { await f.close() } finally { vi.restoreAllMocks() }
+    }
   }, 60_000)
 })

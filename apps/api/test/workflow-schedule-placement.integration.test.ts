@@ -27,7 +27,7 @@ describe.skipIf(!postgresEnabled)('scheduled placement rejection', () => {
   }, 60_000)
   afterEach(async () => { await database?.close() })
 
-  it.each(['instance revision', 'unavailable source', 'revoked device'] as const)(
+  it.each(['disabled instance', 'unavailable source', 'revoked device'] as const)(
     'records %s rejection through authenticated HTTP/MCP history with denied callers', async (change) => {
     const mainPlacement = await schedulePlacementFixture(f)
     const device = change === 'revoked device' ? await scheduleDevicePlacementFixture(f, mainPlacement) : undefined
@@ -78,7 +78,7 @@ describe.skipIf(!postgresEnabled)('scheduled placement rejection', () => {
       expect(deniedSource.isError).toBe(true)
       expect(JSON.stringify(deniedSource.content)).toContain('ACCESS_DENIED')
       let reason = 'workflow_not_executable'
-      if (change === 'instance revision') await placement.changeInstance()
+      if (change === 'disabled instance') await placement.harness.changeInstance({ enabled: false })
       if (change === 'unavailable source') {
         await database.pool.query("update source_snapshots set availability='unavailable' where snapshot_id=$1",
           [placement.source.snapshotId])
@@ -140,6 +140,23 @@ describe.skipIf(!postgresEnabled)('scheduled placement rejection', () => {
       await Promise.allSettled(clients.map((client) => client.close()))
       await app.close()
     }
+  }, 30_000)
+
+  it('retains the due occurrence while a changed instance revision needs native qualification', async () => {
+    const placement = await schedulePlacementFixture(f)
+    const saved = await placement.save()
+    await placement.changeInstance()
+    placement.restart()
+    await placement.recover()
+    f.time.now = saved.nextOccurrenceAt!
+    const dispatcher = f.dispatcher(async (principal, input, schedule) => {
+      await admitRepeatRun(database.pool, f.locations, principal, 'schedule', input,
+        { ...repeatStartPublication, placementAdmission: placement.producer }, { schedule })
+    })
+    await expect(dispatcher.dispatch(saved)).rejects.toMatchObject({ code: 'HARNESS_PROFILE_UNAVAILABLE' })
+    expect(await f.history()).toEqual([])
+    expect(await f.current()).toEqual(saved)
+    expect(await f.countRuns()).toBe(0)
   }, 30_000)
 
   it('retains a due Once across restart and retries the real path after inventory recovery', async () => {

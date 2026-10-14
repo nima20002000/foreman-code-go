@@ -17,6 +17,7 @@ function route(service: McpDetectionService) {
   } as never, service)
   const request = {
     params: { workspaceId: 'workspace-1', harness: 'codex' },
+    query: {},
     raw: Object.assign(new EventEmitter(), { aborted: false }),
     operatorPrincipal: {
       id: 'operator-1', name: 'Operator', audience: 'operator', expiresAt: new Date(Date.now() + 60_000).toISOString(), revokedAt: null,

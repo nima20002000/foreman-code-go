@@ -55,6 +55,12 @@ describe('workflow session continuity', () => {
     expect(canContinueWorkflowSession({ ...previous, workingDirectory: undefined }, execution)).toBe(false)
   })
 
+  it.each(['failed', 'canceled'] as const)('starts a fresh native session after a %s attempt', outcome => {
+    const abandoned = HarnessExecutionSchema.parse({ ...previous, result: { outcome,
+      ...(outcome === 'failed' ? { error: { code: '08006', message: 'Connection lost.', retryable: true } } : {}) } })
+    expect(canContinueWorkflowSession(abandoned, { ...execution, attempt: 2 })).toBe(false)
+  })
+
   it('starts fresh when the execution host or placement changes', () => {
     const original = { bindingHash: 'a'.repeat(64) }
     expect(canContinueWorkflowSession(previous, execution, { previous: original, current: original })).toBe(true)

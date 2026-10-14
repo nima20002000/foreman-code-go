@@ -108,7 +108,10 @@ export async function replayChatHistory(options: { selectedRun: boolean }) {
   const denied = await f.call('agent_chat_read', { workspaceId, ...(selection ? { selection } : { query }) }, f.denied.token)
   expect(denied.isError).toBe(true)
   await f.restart()
-  expect((await read()).activitySnapshot).toEqual(cold.activitySnapshot)
+  const restarted = (await read()).activitySnapshot!
+  const { observation, ...persisted } = cold.activitySnapshot!
+  expect(observation).toMatchObject({ status: 'available', lastError: null, consecutiveFailures: 0 })
+  expect(restarted).toEqual(persisted)
   const counts = await f.db.pool.query('select count(*)::int as count from management_command_receipts where principal_id=$1 and command_id=$2',
     [f.writer.principal.id, 'cancel-B-control'])
   expect(counts.rows[0]!.count).toBe(1)

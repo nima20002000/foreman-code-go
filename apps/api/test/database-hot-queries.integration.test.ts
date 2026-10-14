@@ -1,6 +1,6 @@
 import { readPublicProjectionLocked } from '../src/modules/run-graph/compactSnapshot.js'
 import { randomUUID } from 'node:crypto'
-import { expect, it } from 'vitest'
+import { expect, it, vi } from 'vitest'
 import { CiGetOutputSchema, CiRunRecordSchema, HarnessExecutionSchema } from '@foreman-code/contracts'
 import { SavedRunDetailsSchema } from '@foreman-code/contracts/wave25'
 import { buildApp } from '../src/app.js'
@@ -179,16 +179,24 @@ it('upgrades hot query access while preserving native facts, CI revisions and au
       return CiGetOutputSchema.parse(graphRpcValue(result.result))
     }
     const ciBefore = await readCi()
+    vi.useFakeTimers({ toFake: ['Date'] })
     await ci.dispatch()
-    expect(await readCi()).toEqual(ciBefore)
-    expect(await stored()).toEqual(before)
+    const observation = { status: 'available', lastSuccessAt: new Date().toISOString(),
+      lastError: null, consecutiveFailures: 0, nextAttemptAt: null }
+    const observedTicket = { ...ticket, observation }
+    expect(await readCi()).toEqual({ ...ciBefore, run: observedTicket })
+    const observed = await stored()
+    expect(observed).toMatchObject({ record: observedTicket, log_tail: before.log_tail,
+      revision: String(BigInt(before.revision) + 1n), test_results: before.test_results })
+    await ci.dispatch()
+    expect(await stored()).toEqual(observed)
     logTail = 'Refreshed log'
     await ci.dispatch()
-    expect(await stored()).toMatchObject({ record: ticket, log_tail: logTail,
-      revision: String(BigInt(before.revision) + 1n), test_results: before.test_results })
+    expect(await stored()).toMatchObject({ record: observedTicket, log_tail: logTail,
+      revision: String(BigInt(observed.revision) + 1n), test_results: before.test_results })
     const refreshed = await stored()
     const ciRefreshed = await readCi()
-    expect(ciRefreshed).toMatchObject({ run: ticket, logTail })
+    expect(ciRefreshed).toMatchObject({ run: observedTicket, logTail })
     await ci.dispatch()
     expect(await readCi()).toEqual(ciRefreshed)
     expect(await stored()).toEqual(refreshed)
@@ -228,6 +236,7 @@ it('upgrades hot query access while preserving native facts, CI revisions and au
     expect((await db.pool.query('select count(*)::int as count from harness_native_events where execution_id=$1',
       [executionId])).rows[0]!.count).toBe(events.length + 2102)
   } finally {
+    vi.useRealTimers()
     await ci.close()
     await app.close()
     await fixture.app.close()

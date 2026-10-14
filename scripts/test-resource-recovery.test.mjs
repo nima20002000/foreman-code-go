@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
   symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import * as resources from './test-resources.mjs'
@@ -91,7 +92,8 @@ test('recovery removes fresh abandoned nested roots and writable copies without 
     readdirCleanup(resource.directory)[0]), 'utf8')).directory
   chmodSync(join(childDirectory, 'readonly'), 0o500)
   symlinkSync(outside, join(childDirectory, 'outside-link'))
-  await resources.recoverAbandonedTestRoots(adminWithoutDatabases(), { parent, containers: noContainers })
+  const recovered = await resources.recoverAbandonedTestRoots(adminWithoutDatabases(), { parent, containers: noContainers })
+  assert.deepEqual(recovered.retained, [])
   assert.equal(existsSync(resource.directory), false)
   assert.equal(readFileSync(join(outside, 'preserved'), 'utf8'), 'outside data')
 })
@@ -198,4 +200,27 @@ test('recovery keeps an abandoned root while a surviving process holds its worki
   }
   await resources.recoverAbandonedTestRoots(adminWithoutDatabases(), { parent, containers: noContainers })
   assert.equal(existsSync(resource.directory), false)
+})
+
+test('recovery closes a dead callers native reservation before removing its nested root', async t => {
+  const parent = fixture(t)
+  const registryModule = new URL('../apps/api/src/modules/harnesses/recovery/processRegistry.ts', import.meta.url).href
+  const child = spawnSync(process.execPath, ['--import', createRequire(new URL('../apps/api/package.json', import.meta.url)).resolve('tsx'), '--input-type=module', '-e', `
+    import { join } from 'node:path';
+    import * as resources from ${JSON.stringify(resourcesModule)};
+    import { NativeProcessRegistry } from ${JSON.stringify(registryModule)};
+    const root = resources.createTestRoot(${JSON.stringify(parent)});
+    const slot = resources.createTestRoot(root.directory, 'slot-');
+    const registryDirectory = join(slot.directory, 'native-registry');
+    new NativeProcessRegistry(registryDirectory).reserveLaunch('abandoned-provider');
+    resources.registerTestResourceCleanup(slot, { kind: 'native-qualification', registryDirectory });
+    resources.registerTestResourceCleanup(slot, { kind: 'suite-process-group', wrapperPid: process.pid });
+    console.log(JSON.stringify(root));
+  `], { encoding: 'utf8' })
+  assert.equal(child.status, 0, child.stderr)
+  const root = JSON.parse(child.stdout)
+  const result = await resources.recoverAbandonedTestRoots(adminWithoutDatabases(), { parent, containers: noContainers })
+  assert.deepEqual(result.retained, [])
+  assert.deepEqual(result.removed, [root.directory])
+  assert.equal(existsSync(root.directory), false)
 })

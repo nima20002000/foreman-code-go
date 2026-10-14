@@ -91,7 +91,7 @@ describe.skipIf(!postgresEnabled)('Operator context over authenticated MCP', () 
       }
       const input = await lookup('workspace_update')
       expect(input).not.toHaveProperty('outputSchema')
-      expect(input.inputSchema.required).toEqual(expect.arrayContaining(['commandId', 'expectedRevision', 'workspaceId']))
+      expect(input.inputSchema.required).toEqual(['workspaceId', 'expectedRevision'])
       expect(input.permissionRequirements.actions).toContain('workspaces:update')
       expect((await lookup('workspace_update', true)).outputSchema).toBeDefined()
       expect(update).not.toHaveBeenCalled()

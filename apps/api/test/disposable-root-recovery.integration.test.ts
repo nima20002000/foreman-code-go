@@ -54,7 +54,12 @@ it('recovers abandoned nested invocations, native reservations and databases aft
     expect((await caller.query('select 1 as retained')).rows).toEqual([{ retained: 1 }])
     await caller.end()
     callerClosed = true
-    await resources.recoverAbandonedTestRoots(admin, { parent, containers: () => '' })
+    await expect.poll(async () => (await admin.query(
+      'select count(*)::int as callers from pg_stat_activity where datname = any($1::text[])',
+      [[saved.database.name, saved.fixture.name]])).rows[0]!.callers).toBe(0)
+    const recovered = await resources.recoverAbandonedTestRoots(admin, { parent, containers: () => '' })
+    expect(recovered.retained).toEqual([])
+    expect(recovered.removed).toContain(saved.root.directory)
     expect(existsSync(saved.root.directory)).toBe(false)
     const databases = await admin.query('select datname from pg_database where datname = any($1::text[])',
       [[saved.database.name, saved.fixture.name]])

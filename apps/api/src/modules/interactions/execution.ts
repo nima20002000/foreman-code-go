@@ -2267,6 +2267,8 @@ export class ApprovalExecutionCoordinator {
     await this.runs.recordExecutionFailure(owner, stored.id, failure)
     const resident = this.ownedSessions.get(stored.id)
     if (resident) {
+      // A session save can commit even when its acknowledgement never reaches the caller.
+      resident.execution = stored
       resident.failed = true
       resident.controller.abort(new DomainError('EXECUTION_ABANDONED', 'This attempt was abandoned for a fresh attempt.', 409))
       const errors = await this.cleanupSession(resident)
