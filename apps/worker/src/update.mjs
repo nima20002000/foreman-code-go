@@ -72,13 +72,30 @@ export async function downloadWorkerArtifact({ signal, timeoutMs = 600_000, ...o
   }
 }
 
-async function downloadArtifactFiles({ release, request, directory, facts, signal, fetchAsset = fetchGitHubAsset }) {
+async function downloadArtifactFiles({ release, request, directory, facts, signal,
+  fetchAsset = fetchGitHubAsset, onDownloadComplete }) {
   const announced = WorkerArtifactManifestSchema.parse(release.manifest);
   validateManifest(announced, facts, expected);
   if (announced.version !== release.version) throw new WorkerError('manifest_version_mismatch');
   await mkdir(directory, { recursive: true, mode: 0o700 });
-  // Main names a GitHub release: download from GitHub, which is far faster than chunks through Main.
-  if (release.github) return downloadFromGitHub({ release, announced, directory, signal, fetchAsset });
+  let githubError;
+  if (release.github) {
+    let manifest;
+    try {
+      manifest = await downloadFromGitHub({ release, announced, directory, signal, fetchAsset });
+    } catch (error) {
+      signal.throwIfAborted();
+      if (!(error instanceof WorkerError) || error.code !== 'worker_update_github_unavailable') throw error;
+      githubError = workerUpdateErrorMessage(error);
+      // GitHub cleanup removes staging; Main starts afresh under the same deadline.
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+    }
+    if (manifest) {
+      signal.throwIfAborted();
+      await onDownloadComplete?.({ source: 'github' });
+      return manifest;
+    }
+  }
   const download = async (path, size) => {
     const chunks = [];
     let offset = 0;
@@ -111,6 +128,8 @@ async function downloadArtifactFiles({ release, request, directory, facts, signa
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     await writeFile(path, bytes, { mode: 0o600 });
   }
+  signal.throwIfAborted();
+  await onDownloadComplete?.({ source: 'main', ...(githubError ? { githubError } : {}) });
   return manifest;
 }
 
@@ -289,14 +308,17 @@ export class WorkerUpdater {
       }
       const launch = await (this.options.locateLaunch ?? locateWorkerLaunch)(this.options);
       await this.save({ targetVersion: release.version, state: 'pending', lastError: null },
-        { manifestSha256: release.manifestSha256 });
+        { manifestSha256: release.manifestSha256, downloadSource: null, githubDownloadError: null });
       // Download and verify while the Worker still admits work: through Main this can take minutes.
       // Only installation and restart need the drained runtime.
       phase = 'downloading';
       await this.save({ state: 'downloading' });
       downloading = await mkdtemp(join(stateDirectory, '.worker-download-'));
       await downloadWorkerArtifact({ release, request, directory: downloading, facts, signal: this.lifetime.signal,
-        timeoutMs: this.options.downloadTimeoutMs });
+        timeoutMs: this.options.downloadTimeoutMs,
+        onDownloadComplete: ({ source, githubError }) => this.save({},
+          { downloadSource: source, githubDownloadError: githubError ?? null }),
+      });
       this.lifetime.signal.throwIfAborted();
       phase = 'smoke configuration';
       const ciSmoke = await readWorkerSmokeConfiguration(request, release.manifestSha256);

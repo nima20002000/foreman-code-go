@@ -44,10 +44,8 @@ export async function fetchGitHubAsset({ signal, ...options }) {
   const { maxBytes } = options;
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new WorkerError('artifact_archive_size_mismatch');
   const deadline = AbortSignal.timeout(600_000);
-  for (;;) {
-    signal?.throwIfAborted();
-    if (await downloadGitHubAssetAttempt({ ...options, signal, deadline })) return;
-  }
+  signal?.throwIfAborted();
+  await downloadGitHubAssetAttempt({ ...options, signal, deadline });
 }
 
 async function downloadGitHubAssetAttempt({ github, asset, destination, signal, deadline, maxBytes }) {
@@ -84,10 +82,11 @@ async function downloadGitHubAssetAttempt({ github, asset, destination, signal, 
     await Promise.allSettled([copied, exited, closed]);
     await rm(destination, { force: true });
     signal?.throwIfAborted();
-    if (stalled && !deadline.aborted) return false;
     if (error instanceof WorkerError && error.code !== 'worker_update_github_unavailable') throw error;
+    const reason = stalled ? 'GitHub download stalled: no bytes received for 60000 ms.' : error.message;
+    const detail = stalled && stderr.trim() ? `${reason} ${stderr.trim()}` : stderr.trim() || reason;
     throw new WorkerError('worker_update_github_unavailable',
-      `worker_update_github_unavailable: ${stderr.trim() || error.message}`, { cause: error });
+      `worker_update_github_unavailable: ${detail}`, { cause: error });
   } finally {
     clearTimeout(stallTimer);
     child.stdout.removeListener('data', receivedBytes);
