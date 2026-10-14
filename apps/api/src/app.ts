@@ -10,14 +10,13 @@ import {
   type RuntimeIdentity, type RuntimeBuildIdentity, RuntimeBuildIdentitySchema, frozenRuntimeIdentity,
 } from '@foreman-code/contracts'
 import Fastify, { LogController, type FastifyBaseLogger, type FastifyInstance } from 'fastify'
-import { localhostHostValidation, localhostOriginValidation } from '@modelcontextprotocol/fastify'
 import type pg from 'pg'
 import { z } from 'zod'
 
 import type { AppMcpServices } from './mcp/app/types.js'
 import { registerGraphqlMcp, type GraphqlMcpServices } from './mcp/unified/transport.js'
 import type { OperatorServices } from './mcp/operator/types.js'
-import { registerOperatorHttpSecurity } from './modules/access/http.js'
+import { registerOperatorHttpSecurity, requireLocalRequest } from './modules/access/http.js'
 import type { PostgresAccessService } from './modules/access/postgres.js'
 import type { LocalHumanAccess } from './modules/access/localHuman.js'
 import { DomainError } from './modules/errors.js'
@@ -162,8 +161,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     request.log[level]({ method: request.method, path: request.url.split('?')[0], statusCode, responseTimeMs }, 'request completed')
   })
   if (options.operator || options.appMcp) {
-    app.addHook('onRequest', localhostHostValidation())
-    app.addHook('onRequest', localhostOriginValidation())
+    app.addHook('onRequest', async request => { requireLocalRequest(request) })
   }
   const checkDatabase = createDependencyCheck(
     (signal) => options.readiness.database.ping(signal), timeoutMs,
