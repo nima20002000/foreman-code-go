@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { access, mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { CiRunRecordSchema } from '@foreman-code/contracts'
-import { afterAll, beforeAll, expect, it } from 'vitest'
+import { afterAll, beforeAll, expect, it, vi } from 'vitest'
 import { ProductionHostCiEndpoint } from '../src/modules/ci-host/endpoint.js'
 import { HostCiRunner, type HostCiPorts } from '../src/modules/ci-host/runner.js'
 import { CloudCi } from '../src/modules/ci-host/cloud.js'
@@ -80,9 +80,11 @@ it.each(['main', 'device', 'github', 'circleci'] as const)(
     try {
       await endpoint.request(computer, { operation: 'status' })
       // There are 207 terminal records; the recent and pending records also count toward the newest 200.
-      for (const record of records.slice(0, 7)) {
-        await expect(access(join(root, 'runs', record.id))).rejects.toMatchObject({ code: 'ENOENT' })
-      }
+      await vi.waitFor(async () => {
+        for (const record of records.slice(0, 7)) {
+          await expect(access(join(root, 'runs', record.id))).rejects.toMatchObject({ code: 'ENOENT' })
+        }
+      }, { timeout: 10_000 })
       for (const record of records.slice(7)) {
         await expect(access(join(root, 'runs', record.id))).resolves.toBeUndefined()
       }

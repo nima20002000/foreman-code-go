@@ -2,11 +2,37 @@ import { randomUUID } from 'node:crypto'
 import { access, mkdir, mkdtemp, open, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
+import { deferred } from '../../../test/helpers/deferred.js'
 import { HostCiRunner, type HostCiPorts } from './runner.js'
 
+const maintenance = vi.hoisted(() => ({ scan: null as null | (() => Promise<void>),
+  sharedRemoval: null as null | (() => Promise<void>), reportRead: null as null | (() => Promise<void>) }))
+vi.mock('node:fs/promises', async original => {
+  const actual = await original<typeof import('node:fs/promises')>()
+  return { ...actual,
+    readFile: async (...args: Parameters<typeof actual.readFile>) => {
+      if (String(args[0]).endsWith('/test-results.json')) await maintenance.reportRead?.()
+      return actual.readFile(...args)
+    },
+    readdir: async (...args: Parameters<typeof actual.readdir>) => {
+      if (String(args[0]).endsWith('/cache')) await maintenance.scan?.()
+      return actual.readdir(...args)
+    },
+    rm: async (...args: Parameters<typeof actual.rm>) => {
+      if (String(args[0]).endsWith('/vitest-cache')) await maintenance.sharedRemoval?.()
+      return actual.rm(...args)
+    },
+  }
+})
+
 const roots: string[] = []
+const runners: HostCiRunner[] = []
 afterEach(async () => {
+  maintenance.scan = null
+  maintenance.sharedRemoval = null
+  maintenance.reportRead = null
+  await Promise.all(runners.splice(0).map(runner => runner.beginDrain()))
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
 })
 
@@ -18,7 +44,9 @@ async function fixture() {
   const ports: HostCiPorts = { cpus: 8, memoryBytes: 16 * 2 ** 30,
     now: () => new Date('2026-10-14T00:00:00Z'),
     run: async () => ({ code: 0, stdout: 'active', stderr: '' }) }
-  return { root, runner: new HostCiRunner(root, ports, {}) }
+  const runner = new HostCiRunner(root, ports, {})
+  runners.push(runner)
+  return { root, runner }
 }
 
 async function run(root: string, options: { state?: string; cleaned?: boolean; repository?: string } = {}) {
@@ -57,7 +85,9 @@ it('retains active per-run and shared caches, then retires the shared cache afte
   await expect(access(join(ticket.directory, 'vitest-cache'))).resolves.toBeUndefined()
   await writeFile(join(ticket.directory, 'exit'), '0\n')
   await f.runner.handle({ operation: 'status' })
-  await expect(access(shared)).rejects.toMatchObject({ code: 'ENOENT' })
+  await vi.waitFor(async () => {
+    await expect(access(shared)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
 })
 
 it('deletes only DB-selected terminal directories and preserves active and unknown runs', async () => {
@@ -91,7 +121,68 @@ it('evicts the least recently used cache entries above 3 GB while preserving act
   await sparseFile(newest, 2 ** 30, '2026-10-03T00:00:00Z')
   await sparseFile(busy, 2 * 2 ** 30, '2026-09-01T00:00:00Z')
   await f.runner.handle({ operation: 'status' })
-  await expect(access(oldest)).rejects.toMatchObject({ code: 'ENOENT' })
+  await vi.waitFor(async () => {
+    await expect(access(oldest)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
   await expect(access(newest)).resolves.toBeUndefined()
   await expect(access(busy)).resolves.toBeUndefined()
+})
+
+it.each(['scan', 'sharedRemoval'] as const)('answers status without waiting for slow cache maintenance: %s', async operation => {
+  const f = await fixture()
+  const entered = deferred()
+  const released = deferred()
+  const finished = deferred()
+  let calls = 0
+  maintenance[operation] = async () => {
+    calls++
+    entered.resolve()
+    await released.promise
+    finished.resolve()
+  }
+  const pending = f.runner.handle({ operation: 'status' })
+  await entered.promise
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    const result = await Promise.race([pending,
+      new Promise<'blocked'>(resolve => { timeout = setTimeout(() => resolve('blocked'), 1000) })])
+    expect(result).toMatchObject({ operation: 'status', ready: true })
+    await expect(f.runner.handle({ operation: 'status' })).resolves.toMatchObject({ operation: 'status', ready: true })
+    expect(calls).toBe(1)
+  } finally {
+    clearTimeout(timeout)
+    released.resolve()
+    await pending
+    await finished.promise
+  }
+})
+
+it('preserves a terminal directory while its report is being read, then removes it after the read', async () => {
+  const f = await fixture()
+  const ticket = await run(f.root, { cleaned: true })
+  const results = { summary: { passed: 1, failed: 0, skipped: 0 }, truncated: false,
+    files: [{ file: 'example.test.ts', status: 'passed', durationMs: 1,
+      tests: [{ name: 'returns a result', status: 'passed', durationMs: 1 }] }] }
+  await writeFile(join(ticket.directory, 'test-results.json'), JSON.stringify(results))
+  const entered = deferred()
+  const released = deferred()
+  maintenance.reportRead = async () => {
+    entered.resolve()
+    await released.promise
+  }
+  const reading = f.runner.handle({ operation: 'read', runId: ticket.runId, afterOffset: 0, maxBytes: 100,
+    testResults: true })
+  try {
+    await entered.promise
+    await expect(f.runner.handle({ operation: 'status', cleanupRunIds: [ticket.runId] }))
+      .resolves.toMatchObject({ removedRunIds: [] })
+    await expect(access(ticket.directory)).resolves.toBeUndefined()
+  } finally {
+    released.resolve()
+    await reading
+  }
+  await expect(reading).resolves.toMatchObject({ text: 'retained log', testResults: results })
+  await expect(f.runner.handle({ operation: 'status', cleanupRunIds: [ticket.runId] }))
+    .resolves.toMatchObject({ removedRunIds: [ticket.runId] })
+  await expect(access(ticket.directory)).rejects.toMatchObject({ code: 'ENOENT' })
 })

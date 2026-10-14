@@ -241,3 +241,31 @@ it('persists cancellation before delayed start delivery and rejects native entry
   await expect(restarted.handle(request)).resolves.toMatchObject({ run: { state: 'canceled' } })
   expect(launches).toHaveLength(0)
 })
+
+it('returns a log page while native launch is waiting for acknowledgement', async () => {
+  const launch = barrier()
+  const { root, runner, request, ports } = await computer()
+  const command = ports.run
+  ports.run = async (file, args, options) => {
+    const result = await command(file, args, options)
+    if (file === 'systemd-run') await launch.pause()
+    return result
+  }
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  let reading: ReturnType<HostCiRunner['handle']> | undefined
+  try {
+    await runner.handle(request)
+    await launch.entered
+    await writeFile(join(root, 'runs', request.runId, 'log'), 'Launching the suite.\n')
+    reading = runner.handle({ operation: 'read', runId: request.runId, afterOffset: 0, maxBytes: 100 })
+    const result = await Promise.race([reading,
+      new Promise<'blocked'>(resolve => { timeout = setTimeout(() => resolve('blocked'), 1000) })])
+    expect(result).toMatchObject({ operation: 'read', text: 'Launching the suite.\n',
+      run: { runId: request.runId, state: 'running', exitCode: null, finishedAt: null } })
+  } finally {
+    clearTimeout(timeout)
+    launch.release()
+    await reading
+    await runner.beginDrain()
+  }
+})
