@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, writeFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { WorkerArtifactManifestSchema, WorkerArtifactReplySchema, WorkerUpdateStatusSchema,
@@ -73,30 +73,19 @@ export async function downloadWorkerArtifact({ signal, timeoutMs = 600_000, ...o
   }
 }
 
-async function downloadArtifactFiles({ release, request, directory, facts, signal,
-  fetchAsset = fetchGitHubAsset, onDownloadComplete }) {
-  const announced = WorkerArtifactManifestSchema.parse(release.manifest);
-  validateManifest(announced, facts, expected);
-  if (announced.version !== release.version) throw new WorkerError('manifest_version_mismatch');
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  let githubError;
-  if (release.github) {
-    let manifest;
-    try {
-      manifest = await downloadFromGitHub({ release, announced, directory, signal, fetchAsset });
-    } catch (error) {
-      signal.throwIfAborted();
-      if (!(error instanceof WorkerError) || error.code !== 'worker_update_github_unavailable') throw error;
-      githubError = workerUpdateErrorMessage(error);
-      // GitHub cleanup removes staging; Main starts afresh under the same deadline.
-      await mkdir(directory, { recursive: true, mode: 0o700 });
-    }
-    if (manifest) {
-      signal.throwIfAborted();
-      await onDownloadComplete?.({ source: 'github' });
-      return manifest;
-    }
-  }
+const GITHUB_RETRY_MS = 15_000;
+const PROGRESS_LOG_MS = 30_000;
+
+function delay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    signal.throwIfAborted();
+    const stop = () => { clearTimeout(timer); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener('abort', stop); resolve(); }, ms);
+    signal.addEventListener('abort', stop, { once: true });
+  });
+}
+
+async function downloadFromMain({ release, announced, request, directory, signal, log }) {
   const download = async (path, size) => {
     const chunks = [];
     let offset = 0;
@@ -117,21 +106,101 @@ async function downloadArtifactFiles({ release, request, directory, facts, signa
     }
     return Buffer.concat(chunks);
   };
+  log('Worker bundle download through Main started', { source: 'main' });
   const manifestBytes = await download('manifest.json', WORKER_UPDATE_MAX_JSON_BYTES);
   if (hash(manifestBytes) !== release.manifestSha256) throw new WorkerError('manifest_checksum_mismatch');
   const manifest = WorkerArtifactManifestSchema.parse(JSON.parse(manifestBytes.toString('utf8')));
   if (!isDeepStrictEqual(manifest, announced)) throw new WorkerError('manifest_metadata_mismatch');
   await writeFile(join(directory, 'manifest.json'), manifestBytes, { mode: 0o600 });
-  for (const file of manifest.files) {
+  const totalBytes = manifest.files.reduce((total, file) => total + file.size, 0);
+  let receivedBytes = 0;
+  let reported = Date.now();
+  for (const [index, file] of manifest.files.entries()) {
     const bytes = file.size ? await download(file.path, file.size) : Buffer.alloc(0);
     if (bytes.length !== file.size || hash(bytes) !== file.sha256) throw new WorkerError('artifact_checksum_mismatch');
     const path = join(directory, file.path);
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     await writeFile(path, bytes, { mode: 0o600 });
+    receivedBytes += file.size;
+    if (Date.now() - reported >= PROGRESS_LOG_MS) {
+      reported = Date.now();
+      log('Worker bundle download through Main progressing', { source: 'main', files: index + 1,
+        totalFiles: manifest.files.length, receivedBytes, totalBytes });
+    }
   }
-  signal.throwIfAborted();
-  await onDownloadComplete?.({ source: 'main', ...(githubError ? { githubError } : {}) });
   return manifest;
+}
+
+async function downloadArtifactFiles({ release, request, directory, facts, signal,
+  fetchAsset = fetchGitHubAsset, onDownloadComplete, log = () => {} }) {
+  const announced = WorkerArtifactManifestSchema.parse(release.manifest);
+  validateManifest(announced, facts, expected);
+  if (announced.version !== release.version) throw new WorkerError('manifest_version_mismatch');
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  if (!release.github) {
+    const manifest = await downloadFromMain({ release, announced, request, directory, signal, log });
+    signal.throwIfAborted();
+    await onDownloadComplete?.({ source: 'main' });
+    return manifest;
+  }
+  const race = new AbortController();
+  const racing = AbortSignal.any([signal, race.signal]);
+  let githubError;
+  const github = targetDirectory => downloadFromGitHub({ release, announced, directory: targetDirectory,
+    signal: racing, fetchAsset });
+  const githubFailed = (error, message) => {
+    signal.throwIfAborted();
+    racing.throwIfAborted();
+    if (!(error instanceof WorkerError) || error.code !== 'worker_update_github_unavailable') throw error;
+    githubError = workerUpdateErrorMessage(error);
+    log(message, { source: 'github', error: githubError });
+  };
+  log('Worker bundle download from GitHub started', { source: 'github' });
+  try {
+    const manifest = await github(directory);
+    signal.throwIfAborted();
+    await onDownloadComplete?.({ source: 'github' });
+    return manifest;
+  } catch (error) {
+    githubFailed(error, 'GitHub download failed; downloading through Main while retrying GitHub');
+    // GitHub cleanup removes staging; Main starts afresh under the same deadline.
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+  }
+  // Main publishes the GitHub asset after its cutover, and Main chunks crawl over relayed links:
+  // keep retrying GitHub while Main downloads, and keep whichever verified copy finishes first.
+  const githubDirectory = `${directory}-github`;
+  const main = downloadFromMain({ release, announced, request, directory, signal: racing, log })
+    .then(manifest => ({ source: 'main', manifest }));
+  const retry = (async () => {
+    for (;;) {
+      await delay(GITHUB_RETRY_MS, racing);
+      log('Worker bundle download from GitHub retrying', { source: 'github' });
+      try {
+        return { source: 'github', manifest: await github(githubDirectory) };
+      } catch (error) {
+        githubFailed(error, 'GitHub download retry failed');
+      }
+    }
+  })();
+  try {
+    let winner;
+    try {
+      winner = await Promise.race([main, retry]);
+    } finally {
+      race.abort();
+      await Promise.allSettled([main, retry]);
+    }
+    if (winner.source === 'github') {
+      await rm(directory, { recursive: true, force: true });
+      await rename(githubDirectory, directory);
+    }
+    signal.throwIfAborted();
+    await onDownloadComplete?.(winner.source === 'github' ? { source: 'github' }
+      : { source: 'main', ...(githubError ? { githubError } : {}) });
+    return winner.manifest;
+  } finally {
+    await rm(githubDirectory, { recursive: true, force: true });
+  }
 }
 
 export class WorkerUpdater {
@@ -293,8 +362,14 @@ export class WorkerUpdater {
       }
     };
     const target = Object.fromEntries(['os', 'osRelease', 'arch', 'libc', 'node'].map(key => [key, facts[key]]));
+    const log = this.options.log ?? (() => {});
     let downloading;
     let phase = 'release';
+    let targetFields = {};
+    const enter = next => {
+      phase = next;
+      log(`Worker update ${next}`, { phase, ...targetFields });
+    };
     let drained = false;
     try {
       const response = await request({ operation: 'release', target });
@@ -323,30 +398,32 @@ export class WorkerUpdater {
         && !this.retryableFailure()) {
         return 'Worker update needs a retry.';
       }
+      targetFields = { targetVersion: release.version, manifestSha256: release.manifestSha256 };
+      enter('release');
       const launch = await (this.options.locateLaunch ?? locateWorkerLaunch)(this.options);
       await this.save({ targetVersion: release.version, state: 'pending', lastError: null },
         { manifestSha256: release.manifestSha256, contentSha256: workerArtifactContentSha256(manifest),
           downloadSource: null, githubDownloadError: null });
       // Download and verify while the Worker still admits work: through Main this can take minutes.
       // Only installation and restart need the drained runtime.
-      phase = 'downloading';
+      enter('downloading');
       await this.save({ state: 'downloading' });
       downloading = await mkdtemp(join(stateDirectory, '.worker-download-'));
       await downloadWorkerArtifact({ release, request, directory: downloading, facts, signal: this.lifetime.signal,
-        timeoutMs: this.options.downloadTimeoutMs,
+        timeoutMs: this.options.downloadTimeoutMs, log: (msg, fields) => log(msg, { ...fields, ...targetFields }),
         onDownloadComplete: ({ source, githubError }) => this.save({},
           { downloadSource: source, githubDownloadError: githubError ?? null }),
       });
       this.lifetime.signal.throwIfAborted();
-      phase = 'smoke configuration';
+      enter('smoke configuration');
       const ciSmoke = await readWorkerSmokeConfiguration(request, release.manifestSha256);
-      phase = 'draining';
+      enter('draining');
       await this.save({ state: 'draining' });
       drained = true;
       await drain();
       this.lifetime.signal.throwIfAborted();
       assertStateOwnership();
-      phase = 'installing';
+      enter('installing');
       await this.save({ state: 'installing' });
       const installed = await (this.options.stage ?? stageRunningVersion)({ root: launch.root, stateDirectory,
         artifact: downloading, approvedManifestSha256: release.manifestSha256, facts, expected,
@@ -358,7 +435,7 @@ export class WorkerUpdater {
         ...(ciSmoke ? { ciSmoke } : {}),
         requestId: this.handoff, restartAttempted: false, previousVersion: version,
         workerInstallationId: this.options.workerInstallationId } });
-      phase = 'restarting';
+      enter('restarting');
       await (this.options.launchSupervisor ?? launchUpdateSupervisor)(stateDirectory);
       return `Worker ${release.version} restart is scheduled.`;
     } catch (error) {
@@ -367,6 +444,7 @@ export class WorkerUpdater {
       const lastError = error instanceof WorkerError && error.message === error.code ? failureCode
         : `${failureCode}: ${phase}: ${workerUpdateErrorMessage(error)}`.slice(0, 2000);
       await this.save({ state: 'failed', lastError }, { failureCode });
+      if (targetFields.targetVersion) log('Worker update failed', { phase, ...targetFields, error: lastError });
       if (drained) resume();
       throw new WorkerError(failureCode, lastError, { cause: error });
     } finally {
