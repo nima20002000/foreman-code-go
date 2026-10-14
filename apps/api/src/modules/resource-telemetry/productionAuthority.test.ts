@@ -44,7 +44,10 @@ it.each(['runs', 'native_session_lanes', 'execution_dispatch_intents'] as const)
 
 it('keeps one coherent owner epoch per passive read and observes a later renewal on the next read', async () => {
   const s = setup()
-  s.afterLane(() => { s.sources[0]!.intent.owner.epoch = '4' })
+  s.afterLane(() => {
+    const original = s.sources[0]!
+    original.intent = { ...original.intent, owner: { ...original.intent.owner, epoch: '4' } }
+  })
   await expect(s.authorities.targets.resolveOwned(principal, target, signal()))
     .resolves.toMatchObject({ kind: 'owned', facts: { owner: { owner: { epoch: '3' } } } })
   await expect(s.authorities.targets.resolveOwned(principal, target, signal()))
