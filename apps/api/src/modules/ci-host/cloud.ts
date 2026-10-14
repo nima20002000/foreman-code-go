@@ -20,7 +20,7 @@ import { CLOUD_START_TIMEOUT_MS, CircleCiProvider, GitHubActionsProvider, valida
   type CloudDispatchInput, type CloudProvider, type CloudRun, type CloudStatus } from './cloudProviders.js'
 import { runsOnCircleCi } from './parts.js'
 import { pruneMirrorBranches, type ActiveCiRuns } from './mirrorBranches.js'
-import { fallbackOnError, logIgnoredError } from '../diagnostics/ignoredError.js'
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 import { readCloudRun, saveCloudRun } from './cloudJournal.js'
 import { ciLogPage } from './logPage.js'
 import { sanitizeCiText } from './text.js'

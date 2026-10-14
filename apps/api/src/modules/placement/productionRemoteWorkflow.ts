@@ -1,5 +1,4 @@
 import { logIgnoredError } from '../diagnostics/ignoredError.js'
-import { REMOTE_PREPARATION_EXTENSION } from '@foreman-code/contracts/remote-execution-rpc'
 import { NativeSessionReferenceSchema } from '@foreman-code/contracts'
 import { RemoteOperationStatusSchema } from '@foreman-code/contracts/remote-execution'
 import { hasPositiveRemoteEntryClosure, hasPositiveRemoteNonEntryClosure } from '@foreman-code/contracts/remote-execution-entry-closure-node'
