@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type pg from 'pg'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -16,7 +16,8 @@ import { buildApp } from '../src/app.js'
 import type { OperatorServices } from '../src/mcp/operator/types.js'
 import { PostgresAccessService } from '../src/modules/access/postgres.js'
 import type { PostgresCommandCoordinator } from '../src/modules/commands/postgres.js'
-import type { ComputerMaintenance } from '../src/modules/computers/maintenance.js'
+import { ComputerMaintenance, type MaintenancePorts } from '../src/modules/computers/maintenance.js'
+import { fakeComputer } from './helpers/fleetSync.js'
 import { FleetMaintenanceService } from '../src/modules/computers/fleet.js'
 import { DomainError } from '../src/modules/errors.js'
 
@@ -40,7 +41,9 @@ const initialStatus = (): MaintenanceStatus => ({
 })
 
 async function fixture() {
-  const directory = await mkdtemp(join(tmpdir(), 'worker-update-mcp-'))
+  const storage = process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(storage, { recursive: true })
+  const directory = await mkdtemp(join(storage, 'worker-update-mcp-'))
   const commandsFile = join(directory, 'commands.json')
   const workerFile = join(directory, 'worker.json')
   await writeFile(commandsFile, '{}')
@@ -82,6 +85,9 @@ async function fixture() {
   let starts = 0
   let mainStarts = 0
   let updateSupported = true
+  const computer = fakeComputer()
+  let updatePorts: MaintenancePorts['workerUpdate']
+  let workerMaintenance: ComputerMaintenance | undefined
   const readWorker = async () => MaintenanceStatusSchema.parse(JSON.parse(await readFile(workerFile, 'utf8')))
   const saveWorker = async (status: MaintenanceStatus) => writeFile(workerFile, JSON.stringify(status))
   const createCommands = () => ({
@@ -126,8 +132,12 @@ async function fixture() {
     ],
     request: async (_deviceId, _namespace, raw) => {
       const request = MaintenanceRequestSchema.parse(raw)
-      const status = await readWorker()
+      const status = workerMaintenance ? await workerMaintenance.status(AbortSignal.timeout(2000)) : await readWorker()
       if (request.operation === 'status') return { payload: { operation: 'status', status } }
+      if (workerMaintenance) {
+        starts++
+        return { payload: { operation: 'start', task: await workerMaintenance.start(request.task, request.commandId) } }
+      }
       const previous = status.tasks.find(task => task.id === request.commandId)
       if (previous) return { payload: { operation: 'start', task: previous } }
       starts++
@@ -160,10 +170,15 @@ async function fixture() {
     return connected
   }
   return {
-    app, connect, registration, registrations, writer, reader, scoped, audits, readWorker, saveWorker,
+    app, connect, registration, registrations, writer, reader, scoped, audits, readWorker, saveWorker, directory,
+    mountUpdater: (ports: NonNullable<MaintenancePorts['workerUpdate']>) => {
+      updatePorts = ports
+      workerMaintenance = new ComputerMaintenance({ ...computer.ports, workerUpdate: ports })
+    },
     counts: () => ({ starts, mainStarts }),
     withoutUpdateExtension: () => { updateSupported = false },
     recreate: () => {
+      if (updatePorts) workerMaintenance = new ComputerMaintenance({ ...computer.ports, workerUpdate: updatePorts })
       services.commands = createCommands()
       services.computerMaintenance = createFleet(services.commands)
     },
@@ -286,4 +301,62 @@ describe('Worker updates through authenticated Operator MCP', () => {
       expect(f.counts()).toEqual({ starts: 1, mainStarts: 0 })
     } finally { await f.close() }
   })
+})
+
+
+it('reports concrete updater failures through authenticated MCP and persists them for a read-only caller', async () => {
+  const f = await fixture()
+  const { WorkerUpdater } = await import(new URL('../../worker/src/update.mjs', import.meta.url).href)
+  const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
+  const bytes = Buffer.from('export {}\n')
+  const target = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.3' }
+  const manifest = { format: 1, version: '1.1.0', commit: 'a'.repeat(40), lockfileSha256: 'b'.repeat(64),
+    packageManager: 'pnpm@11.27.0', protocolVersion: 1, identityFormat: 1, target,
+    files: [{ path: 'src/cli.mjs', size: bytes.length, sha256: hash(bytes) }] }
+  const manifestBytes = Buffer.from(JSON.stringify(manifest))
+  const release = { version: manifest.version, manifest, manifestSha256: hash(manifestBytes) }
+  const updater = await new WorkerUpdater({ stateDirectory: f.directory, version: '1.0.0',
+    manifestSha256: 'c'.repeat(64), workerInstallationId: f.registration.workerInstallationId,
+    facts: { ...target, rootPersistent: true, homePersistent: true, storagePersistent: true },
+    assertStateOwnership: () => {}, locateLaunch: async () => ({}), drain: async () => {}, resume: () => {},
+    stage: async () => { throw Object.assign(new Error('staging command exited 1'), { stderr: 'dependency-helper missing' }) },
+    connection: () => ({ captureRequest: () => ({ request: async (payload: {
+      operation: string; path: string; offset: number;
+    }) => {
+      if (payload.operation === 'release') return { payload: { operation: 'release', release } }
+      if (payload.operation === 'ci-smoke') return { payload: { operation: 'ci-smoke', ciSmoke: null } }
+      const content = payload.path === 'manifest.json' ? manifestBytes : bytes
+      const chunk = content.subarray(payload.offset)
+      return { payload: { ...payload, byteSize: chunk.length }, bytes: chunk }
+    } }) }),
+  }).initialize()
+  try {
+    f.mountUpdater({ status: () => updater.status(), start: () => updater.start({ retry: true }) })
+    const writer = await f.connect('writer')
+    const input = { commandId: randomUUID(), task: { kind: 'update-worker' } }
+    const started = ComputerMaintenanceStartResultSchema.parse(decodeMcpToolResult(await writer.callTool({
+      name: 'computers_maintenance_start', arguments: input,
+    })))
+    const taskId = started.computers[0]!.task!.id
+    let task: MaintenanceTask | undefined
+    for (let attempt = 0; attempt < 200; attempt++) {
+      task = (await readStatus(writer)).computers.find(computer => computer.target.hostRef.kind === 'device')
+        ?.status?.tasks.find(value => value.id === taskId)
+      if (task?.state === 'failed') break
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    expect(task).toMatchObject({ state: 'failed', summary: expect.stringContaining('dependency-helper missing') })
+    expect(task!.summary).toContain('installing')
+    f.recreate()
+    const reader = await f.connect('reader')
+    const retained = (await readStatus(reader)).computers.find(computer => computer.target.hostRef.kind === 'device')!
+    expect(retained.status!.tasks.find(value => value.id === taskId)).toEqual(task)
+    expect(retained.status!.worker!.lastError).toContain('dependency-helper missing')
+    const denied = await reader.callTool({ name: 'computers_maintenance_start', arguments: input })
+    expect(denied.isError).toBe(true)
+    expect(f.counts().starts).toBe(1)
+  } finally {
+    await updater.close()
+    await f.close()
+  }
 })

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { homedir } from 'node:os'
+import type pg from 'pg'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { WorkerArtifactReplySchema } from '@foreman-code/contracts/computer-maintenance'
@@ -20,7 +21,9 @@ afterEach(async () => {
 })
 
 async function release() {
-  const directory = await mkdtemp(join(tmpdir(), 'worker-production-release-'))
+  const storage = process.env.FOREMAN_CODE_TEST_ROOT ?? join(homedir(), '.cache', 'foreman-tmp')
+  await mkdir(storage, { recursive: true })
+  const directory = await mkdtemp(join(storage, 'worker-production-release-'))
   directories.push(directory)
   const artifacts = join(directory, 'worker-artifacts')
   await mkdir(artifacts, { mode: 0o700 })
@@ -106,4 +109,29 @@ it('keeps release announcements readable by retained Workers before updating the
   expect(payload).toEqual({ operation: 'release', release: {
     version: f.manifest.version, manifestSha256: f.manifestSha256, manifest: f.manifest, github,
   } })
+})
+
+
+it('serves pinned CI smoke before the archive upload publishes a GitHub entry', async () => {
+  const f = await release()
+  const smoke = { repository: 'example/product', commit: f.manifest.commit }
+  await writeFile(join(f.directory, 'ci-smoke.json'), JSON.stringify(smoke))
+  const pool = { query: async () => ({ rows: [{}] }) } as unknown as pg.Pool
+  const extension = createProductionWorkerArtifactExtension({ environment: {}, releaseDirectory: f.directory, pool })
+  const reply = await extension.handle!({ operation: 'ci-smoke', manifestSha256: f.manifestSha256 }, context)
+  expect(WorkerArtifactReplySchema.parse(reply.payload)).toEqual({ operation: 'ci-smoke', ciSmoke: smoke })
+  const chunk = await extension.handle!({ operation: 'chunk', manifestSha256: f.manifestSha256,
+    path: 'src/cli.mjs', offset: 0 }, context)
+  expect(chunk.bytes).toEqual(Buffer.from('export {}\n'))
+})
+
+it('reports missing smoke configuration concretely and never skips smoke for enabled build computers', async () => {
+  const f = await release()
+  const pool = { query: async () => ({ rows: [{}] }) } as unknown as pg.Pool
+  const extension = createProductionWorkerArtifactExtension({ environment: {}, releaseDirectory: f.directory, pool })
+  await expect(extension.handle!({ operation: 'ci-smoke', manifestSha256: f.manifestSha256 }, context))
+    .rejects.toMatchObject({ code: 'WORKER_UPDATE_SMOKE_UNAVAILABLE' })
+  await writeFile(join(f.directory, 'ci-smoke.json'), JSON.stringify({ repository: 'example/product', commit: 'c'.repeat(40) }))
+  await expect(extension.handle!({ operation: 'ci-smoke', manifestSha256: f.manifestSha256 }, context))
+    .rejects.toMatchObject({ code: 'WORKER_UPDATE_SMOKE_UNAVAILABLE' })
 })

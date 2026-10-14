@@ -9,7 +9,7 @@ import { persistentFixtureRoot } from './fixtureStorage.mjs';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { setTimeout as wait } from 'node:timers/promises';
-import { WorkerUpdater, downloadWorkerArtifact } from '../src/update.mjs';
+import { WorkerUpdater, downloadWorkerArtifact, fetchGitHubAsset } from '../src/update.mjs';
 import { installVersion, readInstalledRelease, readRetainedRelease } from '../src/installation.mjs';
 import { startWorker, acquireWorkerLock } from '../src/runtime.mjs';
 import { WorkerError } from '../src/diagnostics.mjs';
@@ -323,9 +323,11 @@ test('failed new startup restores the previous pointer and persists rollback acr
   assert.deepEqual(f.connections, ['1.0.0', '1.1.0', '1.0.0']);
   assert.equal((await readInstalledRelease({ root: f.root, facts, expected })).manifest.version, '1.0.0');
   const restarted = await new WorkerUpdater(f.options).initialize();
-  assert.deepEqual(await restarted.status(), { currentVersion: '1.0.0', targetVersion: '1.1.0',
-    manifestSha256: f.previous.release.manifestSha256,
-    state: 'rolled-back', lastError: 'worker_update_startup_timeout' });
+  const { lastError, ...status } = await restarted.status();
+  assert.deepEqual(status, { currentVersion: '1.0.0', targetVersion: '1.1.0',
+    manifestSha256: f.previous.release.manifestSha256, state: 'rolled-back' });
+  assert.match(lastError, /worker_update_startup_timeout/);
+  assert.match(lastError, /authenticating/);
   await restarted.start();
   assert.equal(restarts, 2);
   restarted.close();
@@ -588,7 +590,9 @@ test('application channel loss retries without classifying permission or revocat
       }).initialize();
       t.after(() => updater.close());
       await assert.rejects(updater.start(), { code: expected });
-      assert.equal((await readUpdateRecord(f.stateDirectory)).status.lastError, expected);
+      const lastError = (await readUpdateRecord(f.stateDirectory)).status.lastError;
+      assert.match(lastError, new RegExp(expected));
+      if (expected === 'worker_update_failed') assert.match(lastError, new RegExp(error.code));
       assert.equal(launched, 0);
       if (expected === 'worker_update_channel_unavailable') {
         connected = true;
@@ -810,4 +814,134 @@ test('Worker update persists authenticated CI smoke configuration and rolls back
   await updater.start();
   assert.equal((await readInstalledRelease({ root: f.root, facts, expected })).manifest.version, '1.0.0');
   assert.equal((await readUpdateRecord(f.stateDirectory)).status.lastError, 'CI setup: missing offline package metadata');
+});
+
+
+test('update failure retains the failed phase and child stderr in persisted status', async t => {
+  const f = await fixture(t);
+  const failure = Object.assign(new Error('staging process exited with code 1'), {
+    stderr: 'diagnostic padding\n'.repeat(400) + 'Cannot find package dependency-helper\n',
+  });
+  const updater = await new WorkerUpdater({ ...f.options, stage: async () => { throw failure; } }).initialize();
+  t.after(() => updater.close());
+  await assert.rejects(updater.start(), error => {
+    assert.equal(error.code, 'worker_update_failed');
+    assert.match(error.message, /installing/);
+    assert.match(error.message, /Cannot find package dependency-helper/);
+    return true;
+  });
+  const status = (await readUpdateRecord(f.stateDirectory)).status;
+  assert.equal(status.state, 'failed');
+  assert.match(status.lastError, /staging process exited with code 1/);
+  assert.match(status.lastError, /Cannot find package dependency-helper/);
+  assert.ok(status.lastError.length <= 2000);
+});
+
+test('a stalled bundle download times out, cancels its request and retries on the next check', async t => {
+  const f = await fixture(t);
+  const request = f.options.connection().captureRequest().request;
+  let rejectStalled;
+  let downloadSignal;
+  let stalled = true;
+  const options = { ...f.options, downloadTimeoutMs: 50,
+    connection: () => ({ captureRequest: () => ({ request: (payload, requestOptions) => {
+      if (stalled && payload.operation === 'chunk') {
+        downloadSignal = requestOptions.signal;
+        return new Promise((_resolve, reject) => { rejectStalled = reject; });
+      }
+      return request(payload);
+    } }) }) };
+  const updater = await new WorkerUpdater(options).initialize();
+  t.after(async () => {
+    rejectStalled?.(new Error('fixture request closed'));
+    await updater.close();
+  });
+  const outcome = updater.start().then(() => 'completed', error => error);
+  const failure = await Promise.race([outcome, wait(1000).then(() => 'still downloading')]);
+  assert.equal(failure.code, 'worker_update_download_timeout');
+  assert.equal(downloadSignal.aborted, true);
+  assert.match((await updater.status()).lastError, /download.*timed out/i);
+  stalled = false;
+  options.downloadTimeoutMs = 5000;
+  updater.scheduleCheck();
+  await until(async () => (await updater.status()).state === 'restarting');
+  assert.equal((await readUpdateRecord(f.stateDirectory)).status.lastError, null);
+});
+
+test('bundle download has a deadline even when individual chunks keep arriving', async t => {
+  const f = await fixture(t);
+  const request = f.options.connection().captureRequest().request;
+  const outcome = downloadWorkerArtifact({ release: f.incoming.release, facts,
+    directory: join(f.base, 'bounded-download'), timeoutMs: 15,
+    request: async payload => { await wait(25); return request(payload); },
+  }).then(() => 'completed', error => error);
+  const failure = await outcome;
+  assert.equal(failure.code, 'worker_update_download_timeout');
+});
+
+test('startup timeout retains the last observed readiness phase and failure', async () => {
+  await assert.rejects(waitForWorkerReady({ stateDirectory: '/fixture/state', version: '1.1.0',
+    workerInstallationId: randomUUID(), timeoutMs: 5, pollMs: 1,
+    readStatus: async () => ({ active: true, phase: 'backoff', failure: 'authentication', appVersion: '1.1.0' }),
+  }), error => {
+    assert.equal(error.code, 'worker_update_startup_timeout');
+    assert.match(error.message, /backoff/);
+    assert.match(error.message, /authentication/);
+    return true;
+  });
+});
+
+test('supervisor preserves restart stderr and both update and rollback readiness failures', async t => {
+  const f = await fixture(t);
+  const updater = await new WorkerUpdater(f.options).initialize();
+  t.after(() => updater.close());
+  await updater.start();
+  const record = await readUpdateRecord(f.stateDirectory);
+  let attempts = 0;
+  await assert.rejects(superviseWorkerUpdate(record, {
+    prepareService: async () => {}, switchPointer: async () => {},
+    restart: async () => {
+      if (++attempts === 1) throw Object.assign(new Error('restart exited 1'), { stderr: 'runtime library missing' });
+    },
+    ready: async () => { throw new Error('rollback authentication failed'); },
+  }), { code: 'worker_update_rollback_failed' });
+  const status = (await readUpdateRecord(f.stateDirectory)).status;
+  assert.equal(status.state, 'failed');
+  assert.match(status.lastError, /runtime library missing/);
+  assert.match(status.lastError, /rollback authentication failed/);
+});
+
+
+test('GitHub asset download reports the command stderr tail', async t => {
+  const f = await fixture(t);
+  const binary = join(f.base, 'gh');
+  await writeFile(binary, '#!/bin/sh\nprintf "release asset not found\\n" >&2\nexit 1\n', { mode: 0o700 });
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${f.base}:${originalPath}`;
+  t.after(() => { process.env.PATH = originalPath; });
+  await assert.rejects(fetchGitHubAsset({ github: { repository: 'example/product', tag: `worker-${'a'.repeat(40)}` },
+    asset: 'artifact.tar.gz', destination: join(f.base, 'download.tar.gz'), maxBytes: 1024,
+  }), error => {
+    assert.equal(error.code, 'worker_update_github_unavailable');
+    assert.match(error.message, /release asset not found/);
+    return true;
+  });
+});
+
+test('supervisor readiness failure captures startup stderr before rollback', async t => {
+  const f = await fixture(t);
+  const updater = await new WorkerUpdater(f.options).initialize();
+  t.after(() => updater.close());
+  await updater.start();
+  let readinessChecks = 0;
+  let logReads = 0;
+  await superviseWorkerUpdate(await readUpdateRecord(f.stateDirectory), {
+    prepareService: async () => {}, switchPointer: async () => {}, restart: async () => {},
+    ready: async () => { if (++readinessChecks === 1) throw new WorkerError('worker_update_startup_timeout'); },
+    readStartupFailure: async () => { logReads++; return 'Cannot find module startup-helper'; },
+  });
+  assert.equal(logReads, 1);
+  const status = (await readUpdateRecord(f.stateDirectory)).status;
+  assert.equal(status.state, 'rolled-back');
+  assert.match(status.lastError, /Cannot find module startup-helper/);
 });
