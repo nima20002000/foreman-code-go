@@ -8,7 +8,7 @@ import { readUnboundWorkflowClosure, readWorkflowClosure } from '../interactions
 import { hasRetainedRemoteReviewerSource, readRetainedRemoteReviewer } from '../interactions/retainedRemoteReviewer.js'
 import { closeCompletedWorkflowSources, localWorkflowSourceClosed } from './workflowCleanup.js'
 import { PostgresSourceService } from './service.js'
-import { DomainError } from '../errors.js'
+import { DomainError, databaseReadFailure } from '../errors.js'
 import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
 
 vi.mock('../interactions/workflowClosure.js', () => ({
@@ -145,6 +145,16 @@ it('reports closure uncertainty when no verified retained reviewer owns the sour
   await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
   expect(f.sources.confirmClosed).toHaveBeenCalledWith(f.record)
   expect(f.report).toHaveBeenCalledWith(uncertainty)
+})
+
+it('retries a closure check that timed out behind a busy Run on a later pass instead of reporting it', async () => {
+  const f = remoteSourceFixture()
+  const timeout = Object.assign(new Error('canceling statement due to statement timeout'), { code: '57014' })
+  f.sources.confirmClosed.mockRejectedValue(databaseReadFailure(timeout))
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  await closeCompletedWorkflowSources(f.pool, f.sources, f.report)
+  expect(f.sources.confirmClosed).toHaveBeenCalledOnce()
+  expect(f.report).not.toHaveBeenCalled()
 })
 
 it('defers unconfirmed physical closure without releasing the original source claim', async () => {

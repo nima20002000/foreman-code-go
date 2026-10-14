@@ -1,14 +1,14 @@
-import { readUntil } from './helpers/observableCondition.js'
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS, RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
+import { withTransaction } from '../src/infrastructure/transaction.js'
 import * as credentials from '../src/modules/interactions/wave25/credentialAuthority.js'
 import { ciFixture } from './helpers/ciFixture.js'
 import { createFixtureSchema, dropFixtureSchema } from './helpers/testResources.js'
 import { agent3Database, postgresEnabled } from './helpers/wave25Agent3.js'
 
-describe.skipIf(!postgresEnabled)('CI polling and credential admission lock order', () => {
+describe.skipIf(!postgresEnabled)('CI authority reads beside credential admission', () => {
   const schema = `ci_locks_${randomUUID().replaceAll('-', '')}`
   const f = ciFixture()
   let database: Awaited<ReturnType<typeof agent3Database>>
@@ -45,38 +45,18 @@ describe.skipIf(!postgresEnabled)('CI polling and credential admission lock orde
     }
   })
 
-  it('lets Run-first admission lock its worker binding while ci_run waits for the Run', async () => {
-    const writer = await pool.connect()
-    let pending: Promise<Awaited<ReturnType<RunCiAuthority['resolve']>>> | undefined
-    try {
-      await writer.query('begin')
+  it('lets credential admission lock the Run and its worker binding while ci_run answers from committed rows', async () => {
+    await withTransaction(pool, async writer => {
       await writer.query("select id from runs where id='run' for update")
-      const writerPid = (await writer.query<{ pid: number }>('select pg_backend_pid() as pid')).rows[0]!.pid
-      pending = new RunCiAuthority(pool).resolve(f.worker, undefined, CI_RUN_ACTIONS)
-      const settled = Promise.allSettled([pending])
-      const waiting = await readUntil(async () => {
-        return (await database.pool.query<{ waiting: boolean }>(`select exists(
-          select 1 from pg_stat_activity where $1=any(pg_blocking_pids(pid))) as waiting`,
-        [writerPid])).rows[0]!.waiting
-      }, value => value, { timeoutMs: 1000, description: 'the PostgreSQL lock wait' })
-      expect(waiting).toBe(true)
+      await expect(new RunCiAuthority(pool).resolve(f.worker, undefined, CI_RUN_ACTIONS)).resolves.toMatchObject({
+        workspaceId: f.workspaceId, principal: { id: f.operator.id }, executionId: 'execution' })
       await writer.query('select principal_id from worker_credential_bindings where principal_id=$1 for update',
         [f.worker.id])
-      await writer.query('commit')
-      expect(await pending).toMatchObject({ workspaceId: f.workspaceId, principal: { id: f.operator.id },
-        executionId: 'execution' })
-      expect((await settled)[0]!.status).toBe('fulfilled')
-    } finally {
-      await writer.query('rollback')
-      await Promise.allSettled(pending ? [pending] : [])
-      writer.release()
-    }
+    })
   })
 
   it('answers ci_get without waiting while another transaction holds the Run and its binding for update', async () => {
-    const writer = await pool.connect()
-    try {
-      await writer.query('begin')
+    await withTransaction(pool, async writer => {
       await writer.query("select id from runs where id='run' for update")
       await writer.query('select principal_id from worker_credential_bindings where principal_id=$1 for update',
         [f.worker.id])
@@ -85,10 +65,7 @@ describe.skipIf(!postgresEnabled)('CI polling and credential admission lock orde
         new RunCiAuthority(pool).resolve(f.worker, undefined, CI_GET_ACTIONS)))
       for (const read of reads) expect(read).toMatchObject({ workspaceId: f.workspaceId,
         principal: { id: f.operator.id }, executionId: 'execution' })
-    } finally {
-      await writer.query('rollback')
-      writer.release()
-    }
+    })
   })
 
   it('denies ci_get once the worker binding is revoked', async () => {

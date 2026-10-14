@@ -27,10 +27,10 @@ import type { HarnessExecution } from '@foreman-code/contracts'
 import type pg from 'pg'
 import { createRemoteWorkflowPhysicalVerification, type RemoteWorkflowMainLifetime } from './workflowPhysicalVerification.js'
 import { RemoteWorkflowPhysicalReadoutSchema } from '@foreman-code/contracts/remote-workflow-physical'
-import { createRemoteNativeSourceChannel } from '../../placement/remoteNativeSource.js'
+import { assertRemoteNativeSourceLocked, createRemoteNativeSourceChannel, type RemoteNativeSourceEvidence } from '../../placement/remoteNativeSource.js'
 import { VerifiedRemoteEvidence } from './resultBridge.js'
 import { deviceRequestTimeoutMs } from '../../devices/deviceRequestRetry.js'
-import { ExclusiveGraphConnection } from '../../run-graph/connection.js'
+import { ExclusiveGraphConnection, beforeGraphCommit } from '../../run-graph/connection.js'
 import { repeatExecutionIdentity, repeatDigest } from '../repeatResolution.js'
 
 import { commandInputHash } from '@foreman-code/contracts/command-identity-node'
@@ -643,6 +643,79 @@ describe('physical acknowledgment retry eligibility', () => {
         code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', details: { reason: 'uncommitted_publication' },
       })
       expect(f.request).toHaveBeenCalledOnce()
+    } finally { await f.sqlConnection.close() }
+  })
+})
+
+async function bindRemoteEvent(f: Awaited<ReturnType<typeof physicalFixture>>, source: WorkflowOriginalNativeSource) {
+  const prepared = await f.producer.prefetch(f.readout.receipt, f.placement, source)
+  let evidence: RemoteNativeSourceEvidence | undefined
+  await VerifiedRemoteEvidence.commit(f.readout.receipt, f.connection, { transaction: async (_operation, work) => work({
+    authority: async () => ({ intent: f.intent, placement: f.placement, originalConnection: f.connection,
+      originalIncarnationId: f.readout.receipt.workerIncarnationId, grantIsLive: true, lastSequence: 0, lastReceipt: null,
+      native: null, terminal: null }),
+    reject: async () => { throw new Error('Unit original receipt rejected') },
+    accept: async verified => {
+      f.originals.observe(verified, source, () => {})
+      evidence = f.originals.capture(f.execution.id, source)
+      f.producer.bind(f.originals.verify.read(evidence), prepared, f.owner, f.lifetime)
+    } }) })
+  if (!evidence) throw new Error('Expected private unit original-source evidence')
+  return evidence
+}
+
+describe('remote history publication under the Run lock', () => {
+  it('verifies every event of one remote history without repeating the shared binding reads per event', async () => {
+    const f = await physicalFixture()
+    try {
+      const events = Array.from({ length: 24 }, (_, sequence) => ({ sequence, type: 'item.completed',
+        occurredAt: f.execution.createdAt, payload: { index: sequence } }))
+      f.readout.history = { ...f.readout.history!, events }
+      const sources = events.map(event => ({ type: 'event' as const, event: { ...event, executionId: f.execution.id } }))
+      const evidences: RemoteNativeSourceEvidence[] = []
+      for (const source of sources) evidences.push(await bindRemoteEvent(f, source))
+      for (const source of sources) {
+        f.canonicalProofs.push({ record: { execution: repeatExecutionIdentity(f.execution), session: f.session, original: source as never } })
+      }
+      // The canonical writer verifies each capture, then checks it again before COMMIT.
+      const publish = async (count: number) => {
+        f.query.mockClear()
+        await f.sqlConnection.transaction(async sql => {
+          for (const evidence of evidences.slice(0, count)) {
+            const verify = () => assertRemoteNativeSourceLocked(sql, f.owner, f.execution,
+              f.originals.verify.read(evidence).source, evidence, f.originals.verify, f.producer)
+            await verify()
+            beforeGraphCommit(sql, verify)
+          }
+        })
+        return f.query.mock.calls.length
+      }
+      const one = await publish(1)
+      const all = await publish(events.length)
+      expect(all - one).toBeLessThanOrEqual((events.length - 1) * 6)
+      const last = f.originals.verify.read(evidences.at(-1)!)
+      const ack = { version: 1, operationId: f.intent.operationId, receiptSequence: f.readout.receipt.sequence,
+        sourceDigest: last.sourceDigest, status: 'retired' }
+      f.request.mockResolvedValueOnce({ payload: ack })
+      await expect(f.producer.acknowledge(last)).resolves.toEqual(ack)
+    } finally { await f.sqlConnection.close() }
+  })
+
+  it('still rejects at COMMIT when the shared binding changes after the first event was verified', async () => {
+    const f = await physicalFixture()
+    try {
+      const events = Array.from({ length: 3 }, (_, sequence) => ({ sequence, type: 'item.completed',
+        occurredAt: f.execution.createdAt, payload: { index: sequence } }))
+      f.readout.history = { ...f.readout.history!, events }
+      const evidences: RemoteNativeSourceEvidence[] = []
+      for (const event of events) evidences.push(await bindRemoteEvent(f, { type: 'event', event: { ...event, executionId: f.execution.id } }))
+      await expect(f.sqlConnection.transaction(async sql => {
+        for (const evidence of evidences) {
+          await assertRemoteNativeSourceLocked(sql, f.owner, f.execution,
+            f.originals.verify.read(evidence).source, evidence, f.originals.verify, f.producer)
+        }
+        f.closure.detached = true
+      })).rejects.toMatchObject({ code: 'REMOTE_NATIVE_PHYSICAL_UNAVAILABLE', details: { reason: 'closure_generation' } })
     } finally { await f.sqlConnection.close() }
   })
 })
