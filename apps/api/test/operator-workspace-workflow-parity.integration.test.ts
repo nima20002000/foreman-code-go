@@ -5,7 +5,6 @@ import { createFixtureSchema, dropFixtureSchema, removeFixtureDirectory } from '
 import { randomUUID } from 'node:crypto'
 import { agentWorkflowNode } from './helpers/agentWorkflowFixture.js'
 import { mkdtemp, mkdir, readdir, rename } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import pg from 'pg'
 import { z } from 'zod'
@@ -33,7 +32,11 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('provides authenticated Operator MCP p
   if (!['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) || !parsed.pathname.includes('test')) throw new Error('Use a disposable loopback test database')
   const schema = 'mcp_parity_' + randomUUID().replaceAll('-', '')
   const admin = new pg.Pool({ connectionString })
-  const parentPath = await mkdtemp(join(tmpdir(), 'mcp-parity-'))
+  const directory = await mkdtemp(join(process.env.FOREMAN_CODE_TEST_ROOT!, 'mcp-parity-'))
+  const parentPath = join(directory, 'workspaces')
+  const outsideParent = join(directory, 'outside')
+  await mkdir(parentPath)
+  await mkdir(outsideParent)
   await createFixtureSchema(admin, schema)
   const pool = new pg.Pool({ connectionString, options: `-c search_path=${schema}` })
   const clients: Client[] = []
@@ -120,7 +123,11 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('provides authenticated Operator MCP p
     expect(folder.value.path).toBe(join(parentPath, 'Picker folder'))
     expect((await call('workspace_folder_create', c.WorkspaceFolderCreateResultSchema, folderInput)).replayed).toBe(true)
     expect((await client.callTool({ name: 'workspace_folder_create', arguments: { ...folderInput, commandId: randomUUID() } })).isError).toBe(true)
-    expect((await client.callTool({ name: 'workspace_folder_create', arguments: { ...folderInput, parentPath: tmpdir(), commandId: randomUUID() } })).isError).toBe(true)
+    const outsideFolder = await call('workspace_folder_create', c.WorkspaceFolderCreateResultSchema, {
+      ...folderInput, parentPath: outsideParent, commandId: randomUUID(),
+    })
+    expect(outsideFolder.value.path).toBe(join(outsideParent, folderInput.name))
+    expect(await readdir(outsideParent)).toEqual([folderInput.name])
     expect((await client.callTool({ name: 'workspace_folder_create', arguments: { ...folderInput, name: '../escape', commandId: randomUUID() } })).isError).toBe(true)
     expect((await call('workspace_folders_list', c.HarnessDirectoryBrowseResultSchema)).directories.map((entry) => entry.name)).toContain('Picker folder')
     const automaticInput = { parentPath, commandId: randomUUID() }
@@ -277,6 +284,6 @@ it.skipIf(!process.env.TEST_DATABASE_URL)('provides authenticated Operator MCP p
     await Promise.all(clients.map((client) => client.close()))
     await app.close(); await pool.end()
     await dropFixtureSchema(admin, schema); await admin.end()
-    await removeFixtureDirectory(parentPath)
+    await removeFixtureDirectory(directory)
   }
 }, 30_000)

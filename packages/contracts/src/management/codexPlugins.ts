@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { IdSchema } from '../schemaPrimitives.js'
 
 const PluginId = z.string().min(3).max(240).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$/)
 const Revision = z.string().regex(/^sha256:[a-f0-9]{64}$/)
@@ -46,12 +47,12 @@ export type CodexPluginChangeInput = z.infer<typeof CodexPluginChangeInputSchema
 export const CodexPluginChangeResultSchema = z.object({ pluginId: PluginId, action: z.enum(['install', 'remove']),
   status: z.enum(['applied', 'not_applied', 'reconciled', 'uncertain']), message: z.string(), nativeFailure: z.string().optional(), observedRevision: Revision.optional() }).strict()
 export type CodexPluginChangeResult = z.infer<typeof CodexPluginChangeResultSchema>
-export const CodexPluginReconcileInputSchema = z.object({ commandId: CommandId, requestedBy: z.string().uuid().optional(),
+export const CodexPluginReconcileInputSchema = z.object({ commandId: CommandId, requestedBy: IdSchema.optional(),
   expectedRevision: Revision.optional(), acceptObservedState: z.boolean().default(false),
 }).strict().refine((input) => !input.acceptObservedState || Boolean(input.expectedRevision), { message: 'Keeping observed state requires its reviewed revision.' })
 export type CodexPluginReconcileInput = z.infer<typeof CodexPluginReconcileInputSchema>
 const CodexPluginOperationSchema = z.object({
-  requestedBy: z.string().uuid(), commandId: CommandId,
+  requestedBy: IdSchema, commandId: CommandId,
   // Receipts created before recovery ownership was added cannot reconstruct the reviewed input.
   input: CodexPluginChangeInputSchema.nullable(), result: CodexPluginChangeResultSchema,
 }).strict()

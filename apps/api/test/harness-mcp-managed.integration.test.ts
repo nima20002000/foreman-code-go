@@ -109,8 +109,11 @@ it('requests exact Foreman Code and Linear presets through authenticated MCP, th
     expect(decisionHttp.statusCode).toBe(200)
     expect(HarnessMcpPlanSchema.parse(decisionHttp.json()).status).toBe('applied')
     expect((await listed('codex')).servers).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'example', endpoint: 'https://example.test/mcp' }),
+      expect.objectContaining({ name: 'example', label: 'https://example.test', transport: 'remote',
+        enabled: true, origin: 'user', editable: true }),
     ]))
+    expect((await listed('codex')).servers.find((server) => server.name === 'example')?.endpoint).toBeUndefined()
+    expect(JSON.parse(await readFile(file, 'utf8')).example.url).toBe('https://example.test/mcp')
     const reconcileInput = { planId: genericPlan.id, commandId: randomUUID() }
     const reconcileHttp = await app.inject({ method: 'POST', url: '/api/management/harnesses/mcp/reconcile',
       headers: { authorization: `Bearer ${delegated.token}` }, payload: reconcileInput })
