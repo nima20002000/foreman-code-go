@@ -9,10 +9,6 @@ import { logIgnoredError } from '../diagnostics/ignoredError.js'
 vi.mock('node:fs/promises', async original => ({ ...await original<typeof fs>(),
   readdir: vi.fn(), access: vi.fn(), statfs: vi.fn(),
 }))
-vi.mock('@foreman-code/contracts/computer-maintenance', async original => ({
-  ...await original<typeof import('@foreman-code/contracts/computer-maintenance')>(),
-  MaintenanceStatusSchema: (await import('../../../../../packages/contracts/src/computerMaintenance.js')).MaintenanceStatusSchema,
-}))
 afterEach(() => vi.restoreAllMocks())
 
 function ports(): MaintenancePorts {

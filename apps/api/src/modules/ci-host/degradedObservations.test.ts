@@ -19,11 +19,6 @@ import { splitUnavailableGateParts } from './gateFallback.js'
 import { CiRunRecordSchema } from '@foreman-code/contracts'
 
 const roots: string[] = []
-vi.mock('@foreman-code/contracts', async original => {
-  const host = await import('../../../../../packages/contracts/src/ciHost.js')
-  return { ...await original<typeof import('@foreman-code/contracts')>(),
-    CiRunRecordSchema: host.CiRunRecordSchema, CiHostReplySchema: host.CiHostReplySchema }
-})
 afterEach(async () => {
   vi.restoreAllMocks()
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))

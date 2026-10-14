@@ -9,20 +9,6 @@ import { DomainError } from '../errors.js'
 import { logIgnoredError } from './ignoredError.js'
 import { CI_GET_ACTIONS } from '../jobs/ciAuthority.js'
 
-// Exercise the changed contract without building the workspace during a focused unit run.
-vi.mock('@foreman-code/contracts/management', async original => ({
-  ...await original<typeof import('@foreman-code/contracts/management')>(),
-  OperatorCapabilitiesSchema: (await import('../../../../../packages/contracts/src/management/index.js')).OperatorCapabilitiesSchema,
-}))
-vi.mock('@foreman-code/contracts/operator-mcp', async original => ({
-  ...await original<typeof import('@foreman-code/contracts/operator-mcp')>(),
-  OperatorCompactCapabilitiesSchema: (await import('../../../../../packages/contracts/src/operatorMcp.js')).OperatorCompactCapabilitiesSchema,
-}))
-vi.mock('@foreman-code/contracts', async original => ({
-  ...await original<typeof import('@foreman-code/contracts')>(),
-  CiGetOutputSchema: (await import('../../../../../packages/contracts/src/ci.js')).CiGetOutputSchema,
-}))
-
 it('reads retained sanitized failures over authenticated MCP and denies an invalid caller', async () => {
   const principal: ManagementPrincipal = { id: 'operator', name: 'Operator', audience: 'operator',
     expiresAt: '2099-01-01T00:00:00Z', revokedAt: null,
