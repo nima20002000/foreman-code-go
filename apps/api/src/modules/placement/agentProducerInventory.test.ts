@@ -4,6 +4,7 @@ import { expect, it, vi } from 'vitest'
 import { canonicalGraphJson, makeCurrentWorkflowFixture, RunStartV3InputSchema,
   type SavedWorkflowVersion } from '@foreman-code/contracts/wave25'
 import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
+import { prepareRunStart, START_PREPARATION_TIMEOUT_MS } from '../runs/startPreparation.js'
 import { AgentPlacementProducer } from './agentProducer.js'
 
 function fixture(kind: 'agent' | 'job', refresh: (
@@ -69,4 +70,21 @@ it('refreshes only the saved Agent hosts outside the graph transaction and propa
   controller.abort(canceled)
   await expect(start).rejects.toBe(canceled)
   expect(f.client.release).toHaveBeenCalledTimes(1)
+})
+
+it('gives slow Agent host discovery the preparation budget instead of the quick Start deadline', async () => {
+  vi.useFakeTimers()
+  try {
+    const discovery = START_PREPARATION_TIMEOUT_MS * 3
+    let abortedAfterDiscovery: boolean | undefined
+    const f = fixture('agent', async (_hosts, signal) => {
+      await new Promise(resolve => setTimeout(resolve, discovery))
+      abortedAfterDiscovery = signal?.aborted
+    })
+    const settled = prepareRunStart((signal, started) => f.producer.prepare(f.input, f.principal, signal,
+      { source: 'mcp', sourcePreparationStarted: started })).catch((error: { code?: string }) => error.code)
+    await vi.advanceTimersByTimeAsync(discovery + 1)
+    expect(abortedAfterDiscovery).toBe(false)
+    expect(await settled).not.toBe('RUN_START_PREPARATION_TIMEOUT')
+  } finally { vi.useRealTimers() }
 })

@@ -72,7 +72,11 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     const hosts = savedVersion.definition.nodes.filter(node => node.kind !== 'job')
       .map(node => node.placement?.hostRef ?? initial.root?.selection.hostRef
         ?? { kind: 'main' as const, mainId: this.mainId })
-    if (hosts.length) await this.refreshProfileInventory?.(hosts, signal)
+    if (hosts.length && this.refreshProfileInventory) {
+      // Host discovery makes Worker round-trips, so it uses the preparation budget, not the quick Start deadline.
+      options.sourcePreparationStarted?.()
+      await this.refreshProfileInventory(hosts, signal)
+    }
     signal?.throwIfAborted()
     if (!workflowUsesAgentPlacements(savedVersion.definition) && !initial.repository) return undefined
     if (!initial.root && !initial.repository
