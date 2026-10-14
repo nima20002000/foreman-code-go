@@ -78,3 +78,21 @@ it('persists completed collection for canceled CircleCI jobs without artifacts a
   expect(artifactReads).toBe(1)
   expect(f.circle.triggered).toHaveLength(1)
 })
+
+it('keeps a just-finished CircleCI job pending until its artifacts become visible', async () => {
+  const f = await fixture({}, { provider: 'circleci' })
+  const runCli = f.ports.run
+  vi.spyOn(f.ports, 'run').mockImplementation(async (file, args, options) => {
+    if (file === 'circleci' && args[0] === 'job' && args[1] === 'artifact') {
+      return { code: 5, stdout: '', stderr: 'Error: artifacts.not_found (exit_code 5): No resource found' }
+    }
+    return runCli(file, args, options)
+  })
+  const provider = new CircleCiProvider(f.ports, { circleToken: async () => null })
+  const run: CloudRun = { runId: randomUUID(), repository: 'octo/site', mirror: 'octo/site-ci', commit: f.commit,
+    suite: 'integration', startedAt: f.ports.now().toISOString(), providerRunId: 'run-1', state: 'passed',
+    finishedAt: f.ports.now().toISOString(), exitCode: 0, message: null }
+  await expect(provider.artifacts(run, join(f.root, 'artifacts'))).rejects.toMatchObject({ code: 'CI_CLOUD_FAILED' })
+  f.advance(5 * 60_000)
+  await expect(provider.artifacts(run, join(f.root, 'artifacts'))).resolves.toMatchObject({ testResults: null })
+})
