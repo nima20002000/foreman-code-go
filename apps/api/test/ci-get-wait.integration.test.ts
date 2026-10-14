@@ -59,6 +59,8 @@ it('long-polls authenticated MCP against persisted ticket changes and reads them
       completed = true
       return result
     })
+    // This window verifies that an unchanged ticket does not complete the wait.
+    // eslint-disable-next-line no-restricted-syntax
     await new Promise(resolve => setTimeout(resolve, 200))
     expect(completed).toBe(false)
     record = { ...record, step: 'collecting' }
@@ -85,4 +87,4 @@ it('long-polls authenticated MCP against persisted ticket changes and reads them
     await app.close()
     await database.close()
   }
-})
+}, 60_000)

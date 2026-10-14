@@ -53,7 +53,7 @@ function fixture() {
     recordAudit: vi.fn(async () => undefined) } } as unknown as OperatorServices
   const app = Fastify()
   registerGraphqlMcp(app, { access, operator: services })
-  const rpc = (payload: unknown, token = 'reader') => app.inject({ method: 'POST', url: '/mcp',
+  const rpc = (payload: Record<string, unknown>, token = 'reader') => app.inject({ method: 'POST', url: '/mcp',
     headers: { authorization: `Bearer ${token}`, accept: 'application/json, text/event-stream' }, payload })
   const call = async (input: Record<string, unknown>, id = 1, token = 'reader') => {
     const response = await rpc({ jsonrpc: '2.0', id, method: 'tools/call',
@@ -173,6 +173,55 @@ it('denies an ungranted MCP caller before opening a wait', async () => {
     expect(f.pool.connect).not.toHaveBeenCalled()
     expect(f.services.commands.recordDenied).toHaveBeenCalledWith('denied', 'mcp', 'ci_get', 'mcp:ci_get')
   } finally { await f.close() }
+})
+
+it('shares one subscription connection and cancels only the requested MCP wait', async () => {
+  const f = fixture()
+  try {
+    const first = f.call({ waitSeconds: 2, logTail: false }, 'first')
+    const second = f.call({ waitSeconds: 2, logTail: false }, 'second')
+    await pause(100)
+    expect(f.pool.connect).toHaveBeenCalledTimes(1)
+    await f.rpc({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 'first' } })
+    expect((await first).result.isError).toBe(true)
+    expect(f.client.release).not.toHaveBeenCalled()
+    f.persist({ step: 'collecting' })
+    expect(value(await second).run.step).toBe('collecting')
+    expect(f.client.release).toHaveBeenCalledTimes(1)
+  } finally { await f.close() }
+})
+
+it('reads back a state change that commits while the subscription connection is being acquired', async () => {
+  const f = fixture()
+  try {
+    vi.mocked(f.pool.connect).mockImplementation(async () => {
+      f.persist({ state: 'passed', exitCode: 0 })
+      return f.client as unknown as pg.PoolClient
+    })
+    expect(value(await f.call({ waitSeconds: 2, logTail: false })).run.state).toBe('passed')
+    expect(f.client.release).toHaveBeenCalledTimes(1)
+  } finally { await f.close() }
+})
+
+it('releases the wait when the HTTP client aborts its MCP request', async () => {
+  const f = fixture()
+  const controller = new AbortController()
+  try {
+    const address = await f.app.listen({ host: '127.0.0.1', port: 0 })
+    const pending = fetch(new URL('/mcp', address), {
+      method: 'POST', signal: controller.signal,
+      headers: { authorization: 'Bearer reader', accept: 'application/json, text/event-stream',
+        'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 'disconnect', method: 'tools/call',
+        params: { name: 'ci_get', arguments: { workspaceId: 'workspace', ticketId: f.read().id,
+          waitSeconds: 300, logTail: false } } }),
+    }).then(async response => response.text()).catch(error => error)
+    await pause(100)
+    expect(f.client.release).not.toHaveBeenCalled()
+    controller.abort()
+    expect(await pending).toBeInstanceOf(Error)
+    await vi.waitFor(() => expect(f.client.release).toHaveBeenCalledTimes(1))
+  } finally { controller.abort(); await f.close() }
 })
 
 it('describes waiting and tail omission in Operator discovery and tools/list', async () => {
