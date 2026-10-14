@@ -95,11 +95,15 @@ describe("SCH-02 schedule contracts", () => {
     expect(ScheduleGetInputSchema.safeParse({ ...scope, scheduleId: "second-schedule" }).success).toBe(false);
     expect(WorkflowScheduleSchema.safeParse({ ...record, revision: 0 }).success).toBe(false);
   });
-  it("matches commandId and expectedRevision management mutation boundaries", () => {
+  it("generates omitted command IDs and validates supplied mutation metadata", () => {
     for (const input of [save(weekly), { ...scope, commandId: "disable-command-1", expectedRevision: 1 }]) {
       const schema = "schedule" in input ? ScheduleSaveInputSchema : ScheduleDisableInputSchema;
       expect(schema.safeParse(input).success).toBe(true);
-      for (const field of ["commandId", "expectedRevision", "workspaceId", "workflowId"]) {
+      const generated = schema.parse(without(input, "commandId"));
+      expect(generated.commandId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(generated).toEqual({ ...input, commandId: generated.commandId });
+      expect(schema.parse(input)).toEqual(input);
+      for (const field of ["expectedRevision", "workspaceId", "workflowId"]) {
         expect(schema.safeParse(without(input, field)).success).toBe(false);
       }
       for (const commandId of ["short", " ", "x".repeat(201)]) {

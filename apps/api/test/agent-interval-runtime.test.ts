@@ -84,10 +84,12 @@ it('keeps graph work running after a check startup failure and retries the same 
     expect(t.lifecycle.settleRun).not.toHaveBeenCalled()
   } finally {
     t.workerRelease.resolve()
-    await running
+    t.h.controller.abort(new DomainError('RUN_STOPPED', 'Stop requested.', 409))
+    await expect(running).rejects.toMatchObject({ code: 'RUN_STOPPED' })
   }
   expect(t.observed).toEqual(['check-1', 'check-1'])
-  expect(t.h.completeCalls).toBe(1)
+  expect(t.h.completeCalls).toBe(0)
+  expect(t.lifecycle.settleRun).toHaveBeenCalledWith(true, false)
 }, 20_000)
 
 it('settles a Stop through bounded cleanup while a running check ignores cancellation', async () => {
@@ -148,3 +150,30 @@ it('re-observes a check whose cleanup failed before admitting another', async ()
   expect(t.checks).toHaveLength(1)
   expect(t.settledIds.slice(0, 3)).toEqual([null, null, 'check-1'])
 }, 20_000)
+
+it.each(['RUN_STOPPED', 'ENGINE_RESTART'])(
+  'preserves the %s reason when cancellation interrupts an idle interval wait', async code => {
+    const t = intervalRun({ maxParallelism: 1, observeCheck: async () => undefined })
+    const running = t.run()
+    const result = Promise.allSettled([running])
+    try {
+      t.workerRelease.resolve()
+      await vi.waitFor(() => expect(t.lifecycle.currentState).toHaveBeenCalled(), { timeout: 10_000 })
+      const reason = new DomainError(code, 'Interval wait canceled.', 409)
+      t.h.controller.abort(reason)
+      expect(await result).toEqual([{ status: 'rejected', reason }])
+      expect(t.h.completeCalls).toBe(0)
+      if (code === 'ENGINE_RESTART') {
+        expect(t.lifecycle.requestCleanup).not.toHaveBeenCalled()
+        expect(t.lifecycle.cancelNativeAndRequestCleanup).not.toHaveBeenCalled()
+        expect(t.lifecycle.settleRun).not.toHaveBeenCalled()
+      } else {
+        expect(t.lifecycle.cancelNativeAndRequestCleanup).toHaveBeenCalledTimes(1)
+        expect(t.lifecycle.settleRun).toHaveBeenCalledWith(true, false)
+      }
+    } finally {
+      t.h.controller.abort(new DomainError('ENGINE_RESTART', 'Test cleanup.', 409))
+      await result
+    }
+  }, 15_000,
+)
