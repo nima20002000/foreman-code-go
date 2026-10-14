@@ -29,6 +29,7 @@ import { createRemoteWorkflowPhysicalVerification, type RemoteWorkflowMainLifeti
 import { RemoteWorkflowPhysicalReadoutSchema } from '@foreman-code/contracts/remote-workflow-physical'
 import { createRemoteNativeSourceChannel } from '../../placement/remoteNativeSource.js'
 import { VerifiedRemoteEvidence } from './resultBridge.js'
+import { deviceRequestTimeoutMs } from '../../devices/deviceRequestRetry.js'
 import { ExclusiveGraphConnection } from '../../run-graph/connection.js'
 import { repeatExecutionIdentity, repeatDigest } from '../repeatResolution.js'
 
@@ -583,7 +584,7 @@ describe('physical acknowledgment retry eligibility', () => {
         await expect(f.producer.acknowledge(original)).resolves.toEqual(ack)
         expect(f.request).toHaveBeenLastCalledWith({ method: 'physical-ack', intent: f.readout.receipt.intent,
           placement: f.placement, receiptSequence: f.readout.receipt.sequence, sourceDigest: original.sourceDigest,
-          ...(state === 'completed' ? { retire: true } : {}) }, {})
+          ...(state === 'completed' ? { retire: true } : {}) }, { timeoutMs: deviceRequestTimeoutMs })
       } finally { await f.sqlConnection.close() }
     },
   )
@@ -620,7 +621,7 @@ describe('physical acknowledgment retry eligibility', () => {
       f.request.mockResolvedValueOnce({ payload: ack })
       await expect(f.producer.acknowledge(original)).resolves.toEqual(ack)
       expect(f.request).toHaveBeenLastCalledWith({ method: 'physical-ack', intent: f.readout.receipt.intent,
-        placement: f.placement, receiptSequence: f.readout.receipt.sequence, sourceDigest: original.sourceDigest }, {})
+        placement: f.placement, receiptSequence: f.readout.receipt.sequence, sourceDigest: original.sourceDigest }, { timeoutMs: deviceRequestTimeoutMs })
     } finally { await f.sqlConnection.close() }
   })
 
