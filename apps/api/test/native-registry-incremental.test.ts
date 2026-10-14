@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NativeProcessRegistry } from '../src/modules/harnesses/recovery/processRegistry.js'
 import { bootIdentity, processIdentity } from '../src/modules/harnesses/recovery/linuxIdentity.js'
@@ -201,6 +202,45 @@ describe('incremental native registry', () => {
     expect(costs[1]).toEqual(costs[0])
     expect(costs[1]?.reads).toBe(0)
     expect(costs[1]?.inventories).toBe(0)
+  })
+
+  it('keeps launch publication independent of retired owners while maintenance archives them', async () => {
+    const inventories: number[] = []
+    for (const history of [0, 400]) {
+      const f = fixture()
+      // Each construction archives only a few aged owners, so archiving interleaves with launches.
+      let now = 0
+      const clock = vi.spyOn(performance, 'now').mockImplementation(() => (now += 30))
+      try {
+        for (let index = 0; index < history; index++) {
+          const retired = f.receipt(randomUUID(), `retired-owner-${index}`)
+          age(retired.path)
+          age(join(retired.ownerDirectory, 'retired.json'))
+        }
+        let registry = new NativeProcessRegistry(f.root)
+        expect(registry.snapshot().launches).toHaveLength(history)
+        io.inventories = 0
+        for (let launch = 0; launch < 3; launch++) {
+          registry = new NativeProcessRegistry(f.root)
+          const scope = registry.reserveLaunch(`execution:publication-${launch}`)
+          expect(registry.snapshot().launches).toContainEqual(expect.objectContaining({
+            launchId: scope.launchId, lifecycle: 'closure-unconfirmed',
+          }))
+          expect(await registry.abandonReservedLaunch(scope)).toBe(true)
+          await delay(20)
+          expect(registry.snapshot().launches).toContainEqual(expect.objectContaining({
+            launchId: scope.launchId, lifecycle: 'closed',
+          }))
+        }
+        expect(registry.snapshot().launches).toHaveLength(history + 3)
+        inventories.push(io.inventories)
+      } finally {
+        clock.mockRestore()
+        rmSync(f.root, { recursive: true, force: true })
+      }
+    }
+    // Publications list their own owners only, never the 400 retired ones.
+    expect(inventories[1]).toBeLessThanOrEqual(inventories[0]! + 10)
   })
 
   it('prunes an aged retired receipt while preserving closure readback and idempotent retries', async () => {

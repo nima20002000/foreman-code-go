@@ -150,3 +150,26 @@ it('archives a large retirement backlog a little per registry construction', asy
     expect(owners()).toBe(0)
   } finally { rmSync(directory, { recursive: true, force: true }) }
 })
+
+it('archives owners that age after an earlier maintenance sweep finished', async () => {
+  const directory = await privateFixtureDirectory('native-retirement-continuous-')
+  const root = privateDirectory(join(directory, 'registry'))
+  const observation = { owner: `execution:${randomUUID()}`, launchId: randomUUID(), bootId: bootIdentity(),
+    lifecycle: 'closed' as const, closureEvidence: 'native_not_started' as const }
+  const ownerDirectory = privateDirectory(join(root, createHash('sha256').update(observation.owner).digest('hex')))
+  const retired = join(ownerDirectory, 'retired.json')
+  try {
+    writeRecord(retired, { format: 2, owner: observation.owner, id: observation.launchId, observation })
+    new NativeProcessRegistry(root)
+    expect(existsSync(ownerDirectory)).toBe(true)
+    // The receipt passes its retention window while this process keeps running.
+    const old = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000)
+    utimesSync(retired, old, old)
+    const later = Date.now() + 2 * 60 * 60 * 1000
+    vi.spyOn(Date, 'now').mockImplementation(() => later)
+    const registry = new NativeProcessRegistry(root)
+    expect(existsSync(ownerDirectory)).toBe(false)
+    expect(await registry.closeOwner(observation.owner)).toBe(true)
+    expect(registry.snapshot().launches).toContainEqual(observation)
+  } finally { rmSync(directory, { recursive: true, force: true }) }
+})
