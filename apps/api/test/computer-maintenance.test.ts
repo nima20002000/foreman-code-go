@@ -185,7 +185,7 @@ describe('computer maintenance', () => {
       await maintenance.drain()
       expect(await maintenance.start({ kind: 'update-system' }, commandId)).toMatchObject({
         id: commandId, state: 'failed',
-        summary: expect.stringContaining(afterUpgrade === 'unreadable' ? 'invalid output' : 'still installable'),
+        summary: expect.stringContaining(afterUpgrade === 'unreadable' ? 'invalid output' : '1 installable updates remain'),
       })
     }
     await expect(new ComputerMaintenance(ports({ apt: 'unreadable' }).value).status(AbortSignal.timeout(1000)))

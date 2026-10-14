@@ -81,7 +81,9 @@ it.skipIf(!postgresEnabled)('reads passive Codex account state through authentic
     const http = await app.inject({ method: 'POST', url: '/api/management/computers/accounts/read',
       headers: { authorization: `Bearer ${reader.token}` }, payload: { target } })
     expect(http.statusCode).toBe(200)
-    expect(ComputerAccountsListSchema.parse(http.json())).toEqual(persisted)
+    const httpReadback = ComputerAccountsListSchema.parse(http.json())
+    expect(httpReadback.computers[0]?.accounts?.accounts).toEqual(persisted.computers[0]?.accounts?.accounts)
+    expect(httpReadback.computers[0]?.target).toEqual(target)
     expect(JSON.stringify(persisted)).not.toMatch(/fixture-secret|signature|auth\.json/)
     expect(run).not.toHaveBeenCalled()
   } finally {

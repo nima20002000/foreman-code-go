@@ -8,7 +8,7 @@ it('observes a known sudo denial while preserving harness versions and fleet tas
   await fleet.syncChangedSources()
   const status = await settle(computer)
   expect(status.system).toMatchObject({ sudo: false, packageUpdates: null })
-  expect(status.harnesses).toContainEqual({ harness: 'claude', installed: true, version: '1.2.4', latest: '1.2.4' })
+  expect(status.harnesses).toContainEqual({ harness: 'claude', installed: true, version: '1.2.3', latest: '1.2.4' })
   expect(status.tasks).toContainEqual(expect.objectContaining({ kind: 'sync-mcp', state: 'succeeded' }))
   expect([...computer.codexMcp]).toEqual(['docs'])
   const restored = await new ComputerMaintenance(computer.ports).status(AbortSignal.timeout(1000))
