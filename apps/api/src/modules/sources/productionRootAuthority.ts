@@ -102,12 +102,12 @@ export function rootPolicySourceAttempts(input: {
     return SourceRootRecordSchema.parse(row?.record)
   }
   const attempts: SourceAttemptAuthority = {
-    async authorize(sql, principal, value) {
-      await originalAttempts.authorize(sql, principal, value)
+    async authorize(sql, principal, value, lock) {
+      await originalAttempts.authorize(sql, principal, value, lock)
       await assertRootPolicy(sql, principal, value.root)
     },
-    async authorizeFinal(sql, principal, record, hash) {
-      await originalAttempts.authorizeFinal(sql, principal, record, hash)
+    async authorizeFinal(sql, principal, record, hash, lock) {
+      await originalAttempts.authorizeFinal(sql, principal, record, hash, lock)
       await assertRootPolicy(sql, principal, await readRoot(sql, record))
     },
     async revalidate(root, attempt) {

@@ -7,7 +7,7 @@ import { ApprovedSourceSchema, SourceRootRecordSchema, SourceMaterializationReco
 import type { DeviceConnectionIdentity } from '@foreman-code/contracts/device-identity'
 import type { SourceRootRecord, SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.js'
-import { DomainError } from '../errors.js'
+import { DomainError, retryDatabaseRead } from '../errors.js'
 import type { GraphSqlClient } from '../run-graph/connection.js'
 import type { SourceAttemptAuthority, SourceActiveNativeSessionReader } from './executionHosts.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
@@ -46,15 +46,16 @@ export class PostgresSourceOperationAuthority {
     await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id })
     return principal
   }
+  /** Read-only: the identity is used only after this transaction ends, so it reads committed Run rows. */
   async prepareIdentity(root: SourceRootRecord, attempt: MaterializationAttempt) {
-    return this.transaction(async sql => {
+    return retryDatabaseRead(() => this.transaction(async sql => {
       const allocated = await this.allocation(sql, attempt), principal = await readLiveManagementPrincipal(sql, allocated.principal_id)
       await requireUnreclaimedSourceOperation(sql, allocated.operation_id)
       if ((await sql.query('select 1 from source_preparation_reconciliations where operation_id=$1', [allocated.operation_id])).rowCount)
         throw new DomainError('SOURCE_PREPARATION_RECONCILED', 'The original preparation is fenced for reconciliation.', 409)
-      await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id })
+      await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id }, false)
       return { operationId: allocated.operation_id, ownerPrincipalId: principal.id, expiresAt: principal.expiresAt }
-    })
+    }))
   }
   async resolve(raw: SourceFilesystemOperation, binding: Readonly<DeviceConnectionIdentity>): Promise<SourceOperationOwner> {
     const request = SourceFilesystemOperationSchema.parse(raw)
@@ -66,7 +67,8 @@ export class PostgresSourceOperationAuthority {
         throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Cleanup requires the exact original authenticated worker registration.', 403)
       return owner
     })
-    return this.transaction(async sql => {
+    // Idempotent: a lock or statement timeout rolls back before any effect and is replayed.
+    return retryDatabaseRead(() => this.transaction(async sql => {
       const preparing = request.operation === 'sources.prepare' || request.operation === 'sources.capacity'
       const receipt = preparing ? null : request.record.receipt
       const attempt = preparing ? request.attempt : { placementHash: receipt!.placementHash, executionId: receipt!.executionId,
@@ -85,7 +87,8 @@ export class PostgresSourceOperationAuthority {
         || root.binding.mainId !== binding.mainId || root.binding.workerInstallationId !== binding.workerInstallationId || !root.registration
         || root.registration.keyRevision !== binding.keyRevision || root.registration.authorizationRevision !== binding.authorizationRevision)
         throw new DomainError('SOURCE_CONNECTION_CONFLICT', 'Source operation is not bound to its original current authenticated device.', 409)
-      if (principal) await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id })
+      // The Worker acts on this owner only after the reply, so the Run rows are read without locks.
+      if (principal) await this.attempts.authorize(sql, principal, { workspaceId: root.binding.workspaceId, root, attempt, operationId: allocated.operation_id }, false)
       const snapshot = (await sql.query<{ availability: string; record: unknown }>('select availability,record from source_snapshots where workspace_id=$1 and approved_source_id=$2 and snapshot_id=$3 and manifest_digest=$4 for share',
         [root.binding.workspaceId, root.source.approvedSourceId, root.source.snapshotId, root.source.manifestDigest])).rows[0]
       if ((request.operation !== 'sources.release' || receipt?.quota) && snapshot?.availability !== 'retained') throw new DomainError('SOURCE_UNAVAILABLE', 'The original approved source is not retained.', 410)
@@ -98,7 +101,7 @@ export class PostgresSourceOperationAuthority {
         if (!isDeepStrictEqual(record, request.record)) throw new DomainError('SOURCE_RECORD_CONFLICT', 'The submitted record is not the actual immutable Main materialization.', 409)
         if (request.operation !== 'sources.release' && !['prepared', 'running'].includes(stored!.state))
           throw new DomainError('SOURCE_ATTEMPT_CONFLICT', 'The original source materialization is no longer owned for execution.', 409)
-        if (request.operation !== 'sources.release' && record.finalDispatchBindingHash) await this.attempts.authorizeFinal(sql, principal!, record, record.finalDispatchBindingHash)
+        if (request.operation !== 'sources.release' && record.finalDispatchBindingHash) await this.attempts.authorizeFinal(sql, principal!, record, record.finalDispatchBindingHash, false)
         if (request.operation === 'sources.release') {
           await authorizeClosedSourceRelease(sql, root, record, this.closure)
           physicalClosureConfirmed = true
@@ -140,7 +143,7 @@ export class PostgresSourceOperationAuthority {
         ...(worktree ? { worktree } : {}),
         ...(quotaRequired ? { quotaRequired: true } : {}),
         ...(allocated.preparation_kind === 'workflow' ? { preparationKind: 'workflow' } : {}) })
-    })
+    }))
   }
 }
 

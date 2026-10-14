@@ -85,6 +85,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
     private readonly mainId: string, private readonly roots: RegisteredSourceRootPort,
     private readonly executions: SourceExecutionHostPort, private readonly closure: SourceClosureProofPort,
     private readonly lifecycle: SourceLifecycle = {}) {}
+  private readonly verifiedSources = new Map<string, ApprovedSource>()
   private async transaction<T>(work: (sql: pg.PoolClient) => Promise<T>): Promise<T> {
     return withTransaction(this.pool, work)
   }
@@ -127,16 +128,24 @@ export class PostgresSourceService implements SourceAdmissionPort {
   }
   async resolveApprovedSource(sql: Sql, principal: ManagementPrincipal, workspaceId: string, pin: ApprovedSourcePin): Promise<ApprovedSource> {
     await authorizeSource(sql, principal, 'sources:read', workspaceId); await this.host(sql)
-    const row = (await sql.query<{ record: unknown; availability: string }>(`select record,availability from source_snapshots
-      where workspace_id=$1 and approved_source_id=$2 and snapshot_id=$3 and manifest_digest=$4 for share`,
+    // A snapshot record is immutable (database trigger): verify a large manifest once, but read availability every time.
+    const key = [workspaceId, pin.approvedSourceId, pin.snapshotId, pin.manifestDigest].join(':')
+    const verified = this.verifiedSources.get(key)
+    const row = (await sql.query<{ record: unknown; availability: string }>(`select ${verified ? 'null as record' : 'record'},availability
+      from source_snapshots where workspace_id=$1 and approved_source_id=$2 and snapshot_id=$3 and manifest_digest=$4 for share`,
     [workspaceId, pin.approvedSourceId, pin.snapshotId, pin.manifestDigest])).rows[0]
     if (!row) throw new DomainError('SOURCE_NOT_FOUND', 'The exact approved source snapshot was not found in this workspace.', 404)
-    const source = ApprovedSourceSchema.parse(row.record); verifySourceManifest(source.manifest)
+    const source = verified ?? ApprovedSourceSchema.parse(row.record)
+    if (!verified) verifySourceManifest(source.manifest)
     if (row.availability !== 'retained') throw new DomainError('SOURCE_UNAVAILABLE', 'The exact accepted source bytes are no longer retained.', 410)
     if (source.workspaceId !== workspaceId || source.mainId !== this.mainId || source.manifest.snapshotId !== pin.snapshotId
       || source.manifest.approvedSourceId !== pin.approvedSourceId || source.manifest.manifestDigest !== pin.manifestDigest)
       throw new DomainError('SOURCE_FACT_CONFLICT', 'Persisted source facts do not match their immutable identifiers.', 409)
-    return source
+    if (!verified) {
+      this.verifiedSources.set(key, source)
+      if (this.verifiedSources.size > 64) this.verifiedSources.delete(this.verifiedSources.keys().next().value!)
+    }
+    return structuredClone(source)
   }
   async get(principal: ManagementPrincipal, _source: Transport, raw: unknown): Promise<ApprovedSource> {
     const input = SourceGetInputSchema.parse(raw)

@@ -52,9 +52,11 @@ export interface SourceNativeSessionCapture {
   signal: AbortSignal
   assertCurrent(): Promise<void> | void
 }
+/** `lock` false is for a read-only admission that acts only after its transaction ends: it reads committed Run
+ * rows without row locks, so it never queues behind the Run owner. Writers keep the default and their locks. */
 export interface SourceAttemptAuthority {
-  authorize(sql: GraphSqlClient, principal: ManagementPrincipal, input: { workspaceId: string; root: SourceRootRecord; attempt: MaterializationAttempt; operationId: string }): Promise<void>
-  authorizeFinal(sql: GraphSqlClient, principal: ManagementPrincipal, record: SourceMaterializationRecord, finalDispatchBindingHash: string): Promise<void>
+  authorize(sql: GraphSqlClient, principal: ManagementPrincipal, input: { workspaceId: string; root: SourceRootRecord; attempt: MaterializationAttempt; operationId: string }, lock?: boolean): Promise<void>
+  authorizeFinal(sql: GraphSqlClient, principal: ManagementPrincipal, record: SourceMaterializationRecord, finalDispatchBindingHash: string, lock?: boolean): Promise<void>
   /** Rechecks exact accepted source/root/current host authorization on that host.
    * It confers no native launch right; W08 final intent controls entry. */
   revalidate(root: SourceRootRecord, attempt: MaterializationAttempt): Promise<void>

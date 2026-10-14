@@ -28,3 +28,15 @@ export function databaseReadFailure(error: unknown): unknown {
   failure.cause = error
   return failure
 }
+
+/** Replays an idempotent read after a lock or statement timeout; a timeout that persists becomes DATABASE_READ_TIMEOUT. */
+export async function retryDatabaseRead<T>(read: () => Promise<T>, attempts = 3): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await read()
+    } catch (error) {
+      const failure = databaseReadFailure(error)
+      if (failure === error || attempt >= attempts) throw failure
+    }
+  }
+}

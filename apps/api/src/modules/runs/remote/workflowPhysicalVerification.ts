@@ -15,7 +15,7 @@ import type { RemoteNativePhysicalVerification, VerifiedRemoteOriginalSource } f
 import { readAcceptedPlacement, readNativePlacement } from '../../placement/persistence.js'
 import { readNativeExecutionBinding } from '../../placement/executionBinding.js'
 import { sourceMaterializationDigest } from '../../sources/bindingHash.js'
-import { assertGraphTransaction,didGraphTransactionCommit,beforeGraphCommit,poisonGraphTransaction, type GraphTransactionSql } from '../../run-graph/connection.js'
+import { assertGraphTransaction,didGraphTransactionCommit,beforeGraphCommit,isGraphTransactionFinalizing,poisonGraphTransaction, type GraphTransactionSql } from '../../run-graph/connection.js'
 import type { RunOwnership } from '../ownership.js'
 import { readReconciledDispatchIntent } from './persistence.js'
 import { repeatExecutionIdentity,repeatDigest } from '../repeatResolution.js'
@@ -351,25 +351,39 @@ async function prefetchRemoteWorkflowPhysical(input: RemoteWorkflowPhysicalVerif
   return result
 }
 
-async function assertRemoteWorkflowBinding(sql: GraphTransactionSql, owner: RunOwnership,
-  original: VerifiedRemoteOriginalSource, retained: boolean, bound: WeakMap<object, Bound>,
-  input: RemoteWorkflowPhysicalVerificationInput): Promise<void> {
-  assertGraphTransaction(sql)
-  const capture = bound.get(original)
-  if (!capture || capture.owner !== owner) return unavailable('unbound_owner')
+/** Facts one remote binding check read from the Run's rows; shared by every original of the same capture. */
+interface RemoteBindingRows { execution: HarnessExecution; sessionStored: boolean }
+interface SharedBindingCheck {
+  readout: RemoteWorkflowPhysicalReadout; placement: AcceptedNodePlacement; binding: Readonly<DeviceSessionBinding>
+  owner: RunOwnership; retained: boolean; lifetime: unknown; rows: RemoteBindingRows
+}
+const sharedBindingChecks = new WeakMap<GraphTransactionSql, { finalizing: boolean; checks: SharedBindingCheck[] }>()
+const lifetimeFacts = (lifetime: RemoteWorkflowMainLifetime) => ({ execution: lifetime.execution, session: lifetime.session,
+  lifetimeGeneration: lifetime.lifetimeGeneration, closureGeneration: lifetime.closureGeneration, lane: lifetime.lane,
+  review: lifetime.review })
+
+/** Every original of one history shares its capture, so the Run-locked binding reads run once per transaction
+ * phase instead of once per event. The COMMIT phase always reads again: by then this transaction's own writes are
+ * done, and the rows it locked cannot change before COMMIT. */
+async function sharedRemoteBindingRows(sql: GraphTransactionSql, owner: RunOwnership, capture: Bound, retained: boolean,
+  input: RemoteWorkflowPhysicalVerificationInput): Promise<RemoteBindingRows> {
+  const finalizing = isGraphTransactionFinalizing(sql)
+  let shared = sharedBindingChecks.get(sql)
+  if (!shared || shared.finalizing !== finalizing) sharedBindingChecks.set(sql, shared = { finalizing, checks: [] })
+  const lifetime = lifetimeFacts(capture.lifetime)
+  const found = shared.checks.find(check => check.readout === capture.readout && check.placement === capture.placement
+    && check.binding === capture.binding && check.owner === owner && check.retained === retained && same(check.lifetime, lifetime))
+  if (found) return found.rows
+  const rows = await readRemoteBindingRows(sql, capture, retained, input)
+  shared.checks.push({ readout: capture.readout, placement: capture.placement, binding: capture.binding, owner, retained, lifetime, rows })
+  return rows
+}
+
+async function readRemoteBindingRows(sql: GraphTransactionSql, capture: Bound, retained: boolean,
+  input: RemoteWorkflowPhysicalVerificationInput): Promise<RemoteBindingRows> {
   const { readout, lifetime } = capture, receipt = readout.receipt, intent = receipt.intent
   const published=readout.output?.kind==='published-artifacts'
   const invalidArtifacts = readout.output?.kind === 'invalid-artifacts'
-  const check = () => {
-    owner.assertOwned()
-    if(retained){
-      if(!published||!readout.closure||!same(input.endpoint().currentBinding(capture.binding.deviceId),capture.binding)
-        ||!same(original.verified.receipt,receipt)||!same(original.source,capture.source)
-        ||original.sourceDigest!==remoteWorkflowSourceDigest(capture.source))return unavailable('published_capture')
-    }else{original.assertCurrent();capture.assertCurrent();lifetime.assertCurrent()}
-    assertSource(readout,original.source,capture.placement)
-  }
-  check()
   const current = await readReconciledDispatchIntent(sql, intent.operationId, true)
   if (readout.launchIntent) {
     const originalDispatch = (await sql.query<{ record: unknown }>(
@@ -404,73 +418,134 @@ async function assertRemoteWorkflowBinding(sql: GraphTransactionSql, owner: RunO
     const saved=(await sql.query<{receipt:unknown}>('select receipt from remote_execution_receipts where operation_id=$1 for share',[intent.operationId])).rows[0]
     if(!saved||!same(saved.receipt,receipt))return unavailable('published_receipt')
   }
+  await assertRemoteNativeEntry(sql, intent, execution.data, published)
+  const sessionRow = (await sql.query<{ reference: unknown }>('select reference from execution_native_sessions where execution_id=$1 for share', [intent.executionId])).rows[0]
+  if (sessionRow && !same(NativeSessionReferenceSchema.parse(sessionRow.reference), readout.session)) return unavailable('stored_session')
+  const closure = await assertRemoteNativeClosure(sql, capture, execution.data, published || invalidArtifacts)
+  if (lifetime.lane) await assertRemoteWriterLane(sql, capture, execution.data, retained && closure.closed)
+  if(published || invalidArtifacts){if(!input.artifacts)return unavailable('artifact_verifier');await input.artifacts.assertPublications(sql,readout,capture.binding)}
+  return { execution: execution.data, sessionStored: sessionRow !== undefined }
+}
+
+async function assertRemoteNativeEntry(sql: GraphTransactionSql, intent: RemoteOperationReceipt['intent'],
+  execution: HarnessExecution, published: boolean): Promise<void> {
   const entry = (await sql.query<{ phase: string; source_id: string | null; source_digest: string | null;
     reservation: WorkflowNativeReservation; transition: WorkflowNativeEntryRecord }>(
     'select phase,source_id,source_digest,reservation,transition from workflow_native_entries where execution_id=$1 and run_id=$2 for share', [intent.executionId, intent.runId])).rows[0]
   if (!entry || entry.phase !== 'entered' || entry.transition?.phase !== 'entered' || !entry.transition.launchDigest || !entry.source_id || !entry.source_digest
-    || entry.reservation?.scope?.runId !== intent.runId || !same(entry.reservation.execution, repeatExecutionIdentity(execution.data))
+    || entry.reservation?.scope?.runId !== intent.runId || !same(entry.reservation.execution, repeatExecutionIdentity(execution))
     || !same(entry.transition.reservation,entry.reservation)) return unavailable('native_entry')
-  if(published){
-    const reservation=workflowNativeReservation(entry.reservation.scope,entry.reservation.ref,execution.data,repeatDigest(execution.data.input,4*1024*1024))
-    const admitted=await readWorkflowNativeEntryLocked(sql,reservation)
-    if(admitted.phase!=='entered'||!same(admitted.transition,entry.transition)||admitted.source_id!==entry.source_id
-      ||admitted.source_digest!==entry.source_digest||entry.source_digest!==repeatDigest(entry.transition,8*1024*1024)
-      ||(reservation.ref.occurrence?.occurrenceId??null)!==intent.occurrenceId
-      ||(reservation.ref.occurrence?.occurrenceIndex??0)!==intent.occurrenceIndex)return unavailable('published_native_entry')
-    await assertRepeatCanonicalReceiptLocked(sql,{scope:reservation.scope,
-      evidence:{sourceKind:'execution',sourceId:entry.source_id,sourceRevision:'1'},sourceDigest:entry.source_digest,effect:null})
-    const effects=await sql.query<{payload_digest:string}>(
-      "select payload_digest from run_repeat_effects where run_id=$1 and effect_kind='input.bind' and entity_id=$2 for share",
-      [intent.runId,intent.executionId])
-    if(effects.rows.length!==1||!effects.rows[0])return unavailable('input_binding')
-    const inputReceipt=canonicalRepeatEffectReceipt(reservation.scope,{kind:'input.bind',entityId:intent.executionId,digest:effects.rows[0].payload_digest})
-    await assertRepeatCanonicalReceiptLocked(sql,inputReceipt)
-    requireRepeatCanonicalReceiptBeforeCommit(sql,inputReceipt)
-  }
-  const sessionRow = (await sql.query<{ reference: unknown }>('select reference from execution_native_sessions where execution_id=$1 for share', [intent.executionId])).rows[0]
-  if (sessionRow ? !same(NativeSessionReferenceSchema.parse(sessionRow.reference), readout.session) : original.source.type !== 'session_created') return unavailable('stored_session')
+  if(!published) return
+  const reservation=workflowNativeReservation(entry.reservation.scope,entry.reservation.ref,execution,repeatDigest(execution.input,4*1024*1024))
+  const admitted=await readWorkflowNativeEntryLocked(sql,reservation)
+  if(admitted.phase!=='entered'||!same(admitted.transition,entry.transition)||admitted.source_id!==entry.source_id
+    ||admitted.source_digest!==entry.source_digest||entry.source_digest!==repeatDigest(entry.transition,8*1024*1024)
+    ||(reservation.ref.occurrence?.occurrenceId??null)!==intent.occurrenceId
+    ||(reservation.ref.occurrence?.occurrenceIndex??0)!==intent.occurrenceIndex)return unavailable('published_native_entry')
+  await assertRepeatCanonicalReceiptLocked(sql,{scope:reservation.scope,
+    evidence:{sourceKind:'execution',sourceId:entry.source_id,sourceRevision:'1'},sourceDigest:entry.source_digest,effect:null})
+  const effects=await sql.query<{payload_digest:string}>(
+    "select payload_digest from run_repeat_effects where run_id=$1 and effect_kind='input.bind' and entity_id=$2 for share",
+    [intent.runId,intent.executionId])
+  if(effects.rows.length!==1||!effects.rows[0])return unavailable('input_binding')
+  const inputReceipt=canonicalRepeatEffectReceipt(reservation.scope,{kind:'input.bind',entityId:intent.executionId,digest:effects.rows[0].payload_digest})
+  await assertRepeatCanonicalReceiptLocked(sql,inputReceipt)
+  requireRepeatCanonicalReceiptBeforeCommit(sql,inputReceipt)
+}
+
+async function assertRemoteNativeClosure(sql: GraphTransactionSql, capture: Bound, execution: HarnessExecution,
+  withOutput: boolean): Promise<{ closed: boolean }> {
+  const { readout, lifetime } = capture
   const closure = (await sql.query<{ generation: string; expected_reference: unknown; closed_reference:unknown; closed: boolean; detached:boolean;
     closed_without_session:boolean; execution_identity:unknown }>(`select generation::text,expected_reference,closed_reference,execution_identity,closed_without_session,
-    closed_at is not null as closed,detached_at is not null as detached from execution_native_closures where execution_id=$1 order by generation desc limit 1 for share`, [intent.executionId])).rows[0]
+    closed_at is not null as closed,detached_at is not null as detached from execution_native_closures where execution_id=$1 order by generation desc limit 1 for share`, [readout.receipt.intent.executionId])).rows[0]
   if (!closure || closure.generation !== lifetime.closureGeneration || closure.detached
     || closure.expected_reference !== null && !same(closure.expected_reference, readout.session)) return unavailable('closure_generation')
   if(closure.closed){
-    const e=execution.data
+    const e=execution
     const identity={id:e.id,runId:e.runId,workflowNodeId:e.workflowNodeId,agentId:e.agentId,
       agentConfigurationVersionId:e.agentConfigurationVersionId,attempt:e.attempt,
       ...(e.workingDirectory?{workingDirectory:e.workingDirectory}:{}),...(e.runtimeDirectory?{runtimeDirectory:e.runtimeDirectory}:{})}
-    if((!published && !invalidArtifacts)||!readout.closure||closure.closed_without_session||!same(closure.closed_reference,readout.session)
+    if(!withOutput||!readout.closure||closure.closed_without_session||!same(closure.closed_reference,readout.session)
       ||!same(closure.execution_identity,identity))return unavailable('stored_closure')
   }
-  if (lifetime.lane) {
-    const lane = (await sql.query<{ owner_agent_id: string; harness: string; native_session_id: string; generation: string;
-      token: string | null; correlation: string | null; provider_id: string | null; held: boolean }>(`select owner_agent_id,harness,native_session_id,
-      record->>'connectionGeneration' as generation,record->>'leaseToken' as token,record->>'correlationId' as correlation,
-      record->>'currentTurnOrMessageId' as provider_id,coalesce((record->>'leaseExpiresAt')::timestamptz>clock_timestamp(),false) as held
-      from native_session_lanes where id=$1 for share`, [lifetime.lane.id])).rows[0]
-    if (!lane) return unavailable('writer_lane_missing')
-    const releasedAfterClosure = retained && closure.closed && lane.token === null
-    if (!lane.held && !releasedAfterClosure) return unavailable('writer_lane_expired')
-    if (lane.owner_agent_id !== execution.data.agentId || lane.harness !== readout.session.harness
-      || lane.native_session_id !== readout.session.nativeSessionId) return unavailable('writer_lane_session')
-    if (lane.token !== lifetime.lane.token && !releasedAfterClosure) return unavailable('writer_lane_token')
-    if (lane.generation !== String(lifetime.lane.connectionGeneration)) return unavailable('writer_lane_generation')
-    const correlation = lifetime.review?.correlationId ?? `execution:${intent.executionId}`
-    const providerId = lifetime.review
-      ? receipt.reviewTurns?.find(turn => turn.assignment.jobId === lifetime.review!.jobId)?.providerId : receipt.native?.turnId
-    if (lane.correlation !== correlation) return unavailable('writer_lane_correlation')
-    if (providerId !== undefined && lane.provider_id !== providerId) {
-      return unavailable('writer_lane_receipt_turn')
-    }
-    if (lifetime.lane.providerId !== null && lane.provider_id !== lifetime.lane.providerId) {
-      return unavailable('writer_lane_captured_turn')
-    }
-  } else if (original.source.type === 'history' || original.source.type === 'event') return unavailable('missing_writer_lane')
-  if(published || invalidArtifacts){if(!input.artifacts)return unavailable('artifact_verifier');await input.artifacts.assertPublications(sql,readout,capture.binding)}
+  return { closed: closure.closed }
+}
+
+async function assertRemoteWriterLane(sql: GraphTransactionSql, capture: Bound, execution: HarnessExecution,
+  closedAfterRetention: boolean): Promise<void> {
+  const { readout, lifetime } = capture, receipt = readout.receipt, intent = receipt.intent
+  const lane = (await sql.query<{ owner_agent_id: string; harness: string; native_session_id: string; generation: string;
+    token: string | null; correlation: string | null; provider_id: string | null; held: boolean }>(`select owner_agent_id,harness,native_session_id,
+    record->>'connectionGeneration' as generation,record->>'leaseToken' as token,record->>'correlationId' as correlation,
+    record->>'currentTurnOrMessageId' as provider_id,coalesce((record->>'leaseExpiresAt')::timestamptz>clock_timestamp(),false) as held
+    from native_session_lanes where id=$1 for share`, [lifetime.lane!.id])).rows[0]
+  if (!lane) return unavailable('writer_lane_missing')
+  const releasedAfterClosure = closedAfterRetention && lane.token === null
+  if (!lane.held && !releasedAfterClosure) return unavailable('writer_lane_expired')
+  if (lane.owner_agent_id !== execution.agentId || lane.harness !== readout.session.harness
+    || lane.native_session_id !== readout.session.nativeSessionId) return unavailable('writer_lane_session')
+  if (lane.token !== lifetime.lane!.token && !releasedAfterClosure) return unavailable('writer_lane_token')
+  if (lane.generation !== String(lifetime.lane!.connectionGeneration)) return unavailable('writer_lane_generation')
+  const correlation = lifetime.review?.correlationId ?? `execution:${intent.executionId}`
+  const providerId = lifetime.review
+    ? receipt.reviewTurns?.find(turn => turn.assignment.jobId === lifetime.review!.jobId)?.providerId : receipt.native?.turnId
+  if (lane.correlation !== correlation) return unavailable('writer_lane_correlation')
+  if (providerId !== undefined && lane.provider_id !== providerId) {
+    return unavailable('writer_lane_receipt_turn')
+  }
+  if (lifetime.lane!.providerId !== null && lane.provider_id !== lifetime.lane!.providerId) {
+    return unavailable('writer_lane_captured_turn')
+  }
+}
+
+async function assertRemoteWorkflowBinding(sql: GraphTransactionSql, owner: RunOwnership,
+  original: VerifiedRemoteOriginalSource, retained: boolean, bound: WeakMap<object, Bound>,
+  input: RemoteWorkflowPhysicalVerificationInput): Promise<void> {
+  assertGraphTransaction(sql)
+  const capture = bound.get(original)
+  if (!capture || capture.owner !== owner) return unavailable('unbound_owner')
+  const { readout, lifetime } = capture, receipt = readout.receipt, intent = receipt.intent
+  const published=readout.output?.kind==='published-artifacts'
+  const check = () => {
+    owner.assertOwned()
+    if(retained){
+      if(!published||!readout.closure||!same(input.endpoint().currentBinding(capture.binding.deviceId),capture.binding)
+        ||!same(original.verified.receipt,receipt)||!same(original.source,capture.source)
+        ||original.sourceDigest!==remoteWorkflowSourceDigest(capture.source))return unavailable('published_capture')
+    }else{original.assertCurrent();capture.assertCurrent();lifetime.assertCurrent()}
+    assertSource(readout,original.source,capture.placement)
+  }
   check()
-  // Publication is acknowledged only after this exact original was retained
-  // by the existing canonical writer AND its owning transaction committed.
-  // A boundary observation is never retained as a source, so it has no proof.
+  // During COMMIT checks the rows are final: a second check of the same original repeats only the in-memory checks.
+  const finalized = isGraphTransactionFinalizing(sql) ? finalizedOriginals(sql, retained) : undefined
+  if (finalized?.has(original)) return
+  const rows = await sharedRemoteBindingRows(sql, owner, capture, retained, input)
+  if (!rows.sessionStored && original.source.type !== 'session_created') {
+    // The shared check may predate this transaction's own session insert; read it again for this original.
+    const sessionRow = (await sql.query<{ reference: unknown }>('select reference from execution_native_sessions where execution_id=$1 for share', [intent.executionId])).rows[0]
+    if (!sessionRow || !same(NativeSessionReferenceSchema.parse(sessionRow.reference), readout.session)) return unavailable('stored_session')
+  }
+  if (!lifetime.lane && (original.source.type === 'history' || original.source.type === 'event')) return unavailable('missing_writer_lane')
+  check()
+  await recordRemotePublications(sql, original, capture, rows.execution)
+  check()
+  finalized?.add(original)
+}
+const finalizedChecks = new WeakMap<GraphTransactionSql, Map<boolean, WeakSet<VerifiedRemoteOriginalSource>>>()
+function finalizedOriginals(sql: GraphTransactionSql, retained: boolean): WeakSet<VerifiedRemoteOriginalSource> {
+  let byMode = finalizedChecks.get(sql)
+  if (!byMode) finalizedChecks.set(sql, byMode = new Map())
+  let originals = byMode.get(retained)
+  if (!originals) byMode.set(retained, originals = new WeakSet())
+  return originals
+}
+
+/** Publication is acknowledged only after this exact original was retained by the existing canonical writer AND
+ * its owning transaction committed. A boundary observation is never retained as a source, so it has no proof. */
+async function recordRemotePublications(sql: GraphTransactionSql, original: VerifiedRemoteOriginalSource,
+  capture: Bound, execution: HarnessExecution): Promise<void> {
+  const { readout, lifetime } = capture, receipt = readout.receipt, intent = receipt.intent
   const proofs=original.source.type==='boundary'?{rows:[]}:await sql.query<{record:WorkflowNativeProofRecord}>(`select record from workflow_native_proofs
     where execution_id=$1 and run_id=$2 and proof_id=$3`,
     [intent.executionId,intent.runId,workflowNativeSourceId(intent.executionId,original.source)])
@@ -490,19 +565,18 @@ async function assertRemoteWorkflowBinding(sql: GraphTransactionSql, owner: RunO
   }
   // Source publication may precede the execution's terminal update. Only
   // the transaction that sees the matching saved result may retire the Worker.
-  if (capture.publications.has(sql) && execution.data.state === 'completed' && receipt.terminal
-    && (receipt.terminal.result ? same(execution.data.result, receipt.terminal.result)
-      : receipt.terminal.kind === 'cancelled' && execution.data.result?.outcome === 'canceled')) {
+  if (capture.publications.has(sql) && execution.state === 'completed' && receipt.terminal
+    && (receipt.terminal.result ? same(execution.result, receipt.terminal.result)
+      : receipt.terminal.kind === 'cancelled' && execution.result?.outcome === 'canceled')) {
     capture.terminalPublications.add(sql)
   }
-  if(readout.history) {
+  if(readout.history && capture.publications.has(sql)) {
     const sources:WorkflowOriginalNativeSource[]=readout.history.events.map(event=>({type:'event',event:{...event,executionId:intent.executionId}}))
     const events=await sql.query<{original:WorkflowOriginalNativeSource}>(`select record->'original' as original from workflow_native_proofs
       where execution_id=$1 and run_id=$2 and proof_id=any($3::text[])`,
       [intent.executionId,intent.runId,sources.map(source=>workflowNativeSourceId(intent.executionId,source))])
-    if(sources.every(source=>events.rows.some(row=>same(row.original,source)))&&capture.publications.has(sql))capture.replyPublications.add(sql)
+    if(sources.every(source=>events.rows.some(row=>same(row.original,source))))capture.replyPublications.add(sql)
   }
-  check()
 }
 
 

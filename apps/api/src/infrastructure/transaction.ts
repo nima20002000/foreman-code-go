@@ -56,6 +56,73 @@ export async function rollbackAfterFailure(client: pg.ClientBase): Promise<Error
   }
 }
 
+/** A transaction that holds its locks longer than this is reported with where its time went. */
+const SLOW_TRANSACTION_MS = 1_000
+
+/**
+ * Times one transaction: statements versus the gaps between them, where the application awaited other work while
+ * the transaction kept its locks. `origin` is created where the transaction was requested, so the report names
+ * the caller even when the work runs from a queue.
+ */
+export class TransactionTiming {
+  readonly #started = performance.now()
+  #lastEnd = this.#started
+  #queryMs = 0
+  #queries = 0
+  #largestGapMs = 0
+  #running = 0
+  constructor(private readonly origin: Error) {}
+
+  track<T>(statement: Promise<T>): Promise<T> {
+    const started = performance.now()
+    if (this.#running === 0) this.#largestGapMs = Math.max(this.#largestGapMs, started - this.#lastEnd)
+    this.#running += 1
+    this.#queries += 1
+    const settle = () => {
+      this.#running -= 1
+      this.#lastEnd = performance.now()
+      this.#queryMs += this.#lastEnd - started
+    }
+    return statement.then(result => { settle(); return result }, (error: unknown) => { settle(); throw error })
+  }
+
+  finish(): void {
+    const finished = performance.now(), totalMs = finished - this.#started
+    if (totalMs <= SLOW_TRANSACTION_MS) return
+    const queryMs = Math.min(this.#queryMs, totalMs)
+    componentLogger('db').warn({ caller: transactionCaller(this.origin), totalMs: Math.round(totalMs),
+      queryMs: Math.round(queryMs), betweenQueriesMs: Math.round(totalMs - queryMs), queries: this.#queries,
+      largestGapMs: Math.round(Math.max(this.#largestGapMs, finished - this.#lastEnd)) }, 'Slow database transaction')
+  }
+}
+
+/** The first application frames above the transaction helpers. */
+function transactionCaller(origin: Error): string {
+  return (origin.stack ?? '').split('\n').slice(1).map(line => line.trim().replace(/^at /, ''))
+    .filter(line => !/infrastructure\/transaction\.|run-graph\/connection\.|node:internal|node_modules|<anonymous>/.test(line))
+    .slice(0, 3).map(line => line.replace(/(?:file:\/\/)?\/\S*?\/(?=(?:src|dist|test)\/)/, '')).join(' < ')
+}
+
+/** Times every statement the transaction sends through its own client until the returned restore is called. */
+function timeClientStatements(client: pg.ClientBase, timing: TransactionTiming): () => void {
+  const own = Object.prototype.hasOwnProperty.call(client, 'query')
+  const original = client.query
+  const timed = (...args: unknown[]) => {
+    const result: unknown = (original as unknown as (...values: unknown[]) => unknown).apply(client, args)
+    return result instanceof Promise ? timing.track(result) : result
+  }
+  client.query = timed as unknown as typeof client.query
+  return () => {
+    if (own) client.query = original
+    else delete (client as { query?: unknown }).query
+  }
+}
+
+async function timedPerform<T>(client: pg.ClientBase, timing: TransactionTiming, perform: () => Promise<T>): Promise<T> {
+  const restore = timeClientStatements(client, timing)
+  try { return await perform() } finally { restore() }
+}
+
 function isTransactionConflict(error: unknown): boolean {
   const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
   return code === '40001' || code === '40P01'
@@ -70,18 +137,23 @@ export async function withTransaction<T>(
   perform: (client: pg.PoolClient) => Promise<T>,
   options: TransactionOptions = {},
 ): Promise<T> {
+  const origin = new Error('transaction caller')
   for (let attempt = 0; ; attempt += 1) {
     const client = await pool.connect()
+    const timing = new TransactionTiming(origin)
     let releaseError: Error | undefined
     try {
       await beginTransaction(client, options)
-      const result = await perform(client)
+      const result = await timedPerform(client, timing, () => perform(client))
       await commitTransaction(client)
       return result
     } catch (error) {
       releaseError = await rollbackAfterFailure(client)
       if (releaseError || attempt >= (options.conflictRetries ?? 0) || !isTransactionConflict(error)) throw error
-    } finally { client.release(releaseError) }
+    } finally {
+      client.release(releaseError)
+      timing.finish()
+    }
   }
 }
 
@@ -94,15 +166,16 @@ export async function withClientTransaction<T>(
   perform: () => Promise<T>,
   options: TransactionOptions = {},
 ): Promise<T> {
+  const timing = new TransactionTiming(new Error('transaction caller'))
   await beginTransaction(client, options)
   try {
-    const result = await perform()
+    const result = await timedPerform(client, timing, perform)
     await commitTransaction(client)
     return result
   } catch (error) {
     await rollbackAfterFailure(client)
     throw error
-  }
+  } finally { timing.finish() }
 }
 
 /** A supplied client belongs to the caller's transaction, including its commit/rollback. */

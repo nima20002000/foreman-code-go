@@ -44,7 +44,8 @@ function deferSourceClosure(
   report: (error: unknown) => void,
 ): boolean {
   const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
-  if (code !== 'SOURCE_EXECUTION_UNCERTAIN' && code !== 'ENOENT') {
+  // A read that timed out behind a busy Run proves nothing either way; try again on a later pass.
+  if (code !== 'SOURCE_EXECUTION_UNCERTAIN' && code !== 'ENOENT' && code !== 'DATABASE_READ_TIMEOUT') {
     retries.delete(materializationId)
     return false
   }

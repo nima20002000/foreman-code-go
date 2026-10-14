@@ -33,7 +33,7 @@ import type { PostgresCommandCoordinator } from '../commands/postgres.js'
 import type { WorkspaceLocationService } from '../workspaces/location.js'
 import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
-import { DomainError } from '../errors.js'
+import { DomainError, retryDatabaseRead } from '../errors.js'
 import { isDeepStrictEqual } from 'node:util'
 import { localWorkflowSourceClosed } from './workflowCleanup.js'
 import { requireQueuedPreparationClosed } from './queuedPreparationAuthority.js'
@@ -94,7 +94,8 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
           if (closed) return true
         }
       }
-      const intent = await readReconciledDispatchIntent(sql, record.operationId, true)
+      // Closure facts only ever become true and the dispatch is immutable: read committed rows, never queue behind the Run.
+      const intent = await readReconciledDispatchIntent(sql, record.operationId)
       const parent = await readAcceptedPlacement(sql, original.runId, original.nodeId)
       const rawNative = await readNativePlacement(sql, record.receipt.executionId)
       if (!intent || !parent || !rawNative || intent.executionId !== record.receipt.executionId
@@ -174,11 +175,13 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
     },
   }, quotaPoolFor)
   const sources = new PostgresSourceService(input.pool, input.commands, input.locations, snapshots, input.mainId, roots, executions, {
-    async confirmedClosed(record) {
-      const sql = await input.pool.connect()
-      try {
-        return await confirmedClosed(sql, record)
-      } finally { sql.release() }
+    confirmedClosed(record) {
+      return retryDatabaseRead(async () => {
+        const sql = await input.pool.connect()
+        try {
+          return await confirmedClosed(sql, record)
+        } finally { sql.release() }
+      })
     },
   }, { adopted: input.transferAcknowledged ? async record => {
     const deviceId = record.receipt.binding.deviceId

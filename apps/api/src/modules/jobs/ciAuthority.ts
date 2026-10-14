@@ -7,7 +7,7 @@ import { intersectGrants } from '../access/operatorDelegation.js'
 import { requireAuthorization } from '../access/policy.js'
 import { workerScopesForAction } from '../access/appPolicy.js'
 import { assertWave25WorkerBinding } from '../interactions/wave25/credentialAuthority.js'
-import { DomainError } from '../errors.js'
+import { DomainError, retryDatabaseRead } from '../errors.js'
 
 export const CI_RUN_ACTIONS: ManagementAction[] = ['ci']
 export const CI_GET_ACTIONS: ManagementAction[] = ['jobs:read', 'job_logs:read', 'job_artifacts:read']
@@ -29,26 +29,21 @@ export class RunCiAuthority implements CiAuthority {
   constructor(private readonly pool: pg.Pool) {}
 
   async resolve(caller: ManagementPrincipal, requestedWorkspace: string | undefined, actions: ManagementAction[]) {
-    // Reads verify the binding from one lock-free snapshot; only mutating CI calls lock the Run.
-    const mutating = actions.some(action => !action.endsWith(':read'))
-    return withTransaction(this.pool, async (sql) => {
+    // Only reads: the binding is verified from one committed snapshot and no row lock outlives this COMMIT, so
+    // CI calls never queue behind the Run owner. A CI ticket is admitted later in its own transaction.
+    return retryDatabaseRead(() => withTransaction(this.pool, async (sql) => {
       let principalId = caller.id
       let workspaceId = requestedWorkspace
       let executionId: string | undefined
       let initiatingAgent: JobInitiatingAgent | undefined
       if (caller.audience === 'worker') {
-        // Credential admission locks the Run before its worker binding.
-        if (mutating) await sql.query(`select r.id from runs r join worker_credential_bindings b
-          on b.run_id=r.id and b.workspace_id=r.workspace_id
-          where b.principal_id=$1 and b.agent_id=$2 and b.purpose='workflow' and b.revoked_at is null
-          for share of r`, [caller.id, caller.agentId])
         await assertWave25WorkerBinding(sql, caller.id)
         const binding = (await sql.query<{ workspace_id: string; workflow_id: string; run_id: string;
           authorization_principal_id: string; execution_id: string | null }>(`select b.workspace_id,b.workflow_id,b.run_id,b.execution_id,
             r.record->>'authorizationPrincipalId' as authorization_principal_id
           from worker_credential_bindings b join runs r on r.id=b.run_id and r.workspace_id=b.workspace_id
           join run_authority_principals a on a.run_id=r.id and a.principal_id=r.record->>'authorizationPrincipalId'
-          where b.principal_id=$1 and b.agent_id=$2 and b.purpose='workflow' and b.revoked_at is null${mutating ? ' for share of b,r,a' : ''}`,
+          where b.principal_id=$1 and b.agent_id=$2 and b.purpose='workflow' and b.revoked_at is null`,
         [caller.id, caller.agentId])).rows[0]
         const scoped = binding && workerScopesForAction(caller, 'interactions:read').some(scope =>
           scope.workspaceIds?.includes(binding.workspace_id) && scope.workflowIds?.includes(binding.workflow_id)
@@ -77,6 +72,6 @@ export class RunCiAuthority implements CiAuthority {
         : accepted.expiresAt }
       for (const action of actions) requireAuthorization(principal, action, { workspaceId })
       return { principal, workspaceId, executionId, initiatingAgent }
-    }, mutating ? {} : { isolation: 'repeatable read', readOnly: true })
+    }, { isolation: 'repeatable read', readOnly: true }))
   }
 }
