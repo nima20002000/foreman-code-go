@@ -4,7 +4,7 @@ import { lstat, open, realpath, type FileHandle } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import {
   WORKER_UPDATE_MAX_BINARY_BYTES, WORKER_UPDATE_MAX_JSON_BYTES, WORKER_UPDATE_NAMESPACE, WORKER_UPDATE_VERSION,
-  WorkerArtifactIndexSchema, WorkerArtifactManifestSchema, WorkerArtifactRequestSchema,
+  WorkerArtifactIndexSchema, WorkerArtifactManifestSchema, WorkerArtifactRequestSchema, WorkerCiSmokeSchema,
   type WorkerArtifactManifest, type WorkerArtifactTarget,
 } from '@foreman-code/contracts/computer-maintenance'
 import { DeviceApplicationError } from '../devices/deviceApplicationError.js'
@@ -135,7 +135,12 @@ export async function readWorkerManifestSha256s(options: { directory: string; ve
   return index.artifacts.map(artifact => artifact.manifestSha256)
 }
 
-export function createWorkerArtifactExtension(options: { directory: string; version: string; buildEnabled?: (binding: DeviceSessionBinding) => Promise<boolean> }): DeviceExtensionRegistration {
+export function createWorkerArtifactExtension(options: {
+  directory: string
+  version: string
+  buildEnabled?: (binding: DeviceSessionBinding) => Promise<boolean>
+  ciSmoke?: () => Promise<unknown>
+}): DeviceExtensionRegistration {
   const verifiedFiles = new Map<string, VerifiedFile>()
   return {
     namespace: WORKER_UPDATE_NAMESPACE,
@@ -161,9 +166,16 @@ export function createWorkerArtifactExtension(options: { directory: string; vers
       if (!sameTarget(manifest.target, artifact.target)) throw new DeviceApplicationError('extension-rejected')
       if (request.operation === 'ci-smoke') {
         const enabled = await options.buildEnabled?.(context.binding) ?? false
-        if (enabled && !index.github) throw new DeviceApplicationError('extension-rejected')
-        return { payload: { operation: 'ci-smoke', ciSmoke: enabled
-          ? { repository: index.github!.repository, commit: manifest.commit } : null } }
+        if (!enabled) return { payload: { operation: 'ci-smoke', ciSmoke: null } }
+        // Smoke uses the installed source; archive publication can finish after cutover.
+        let configuration: unknown = null
+        if (options.ciSmoke) configuration = await options.ciSmoke()
+        else if (index.github) configuration = { repository: index.github.repository, commit: manifest.commit }
+        const smoke = WorkerCiSmokeSchema.safeParse(configuration)
+        if (!smoke.success || smoke.data.commit !== manifest.commit) {
+          throw new DeviceApplicationError('WORKER_UPDATE_SMOKE_UNAVAILABLE')
+        }
+        return { payload: { operation: 'ci-smoke', ciSmoke: smoke.data } }
       }
       if (request.operation === 'release') {
         return { payload: { operation: 'release', release: {

@@ -50,7 +50,9 @@ export const OPERATOR_RUNTIME_LIMITS = [
   { feature: 'worker_updates', state: 'limited',
     detail: 'Paired Workers automatically match Main through the authenticated device connection. '
       + 'Updates wait for active work to drain, verify the artifact and install side-by-side; '
-      + 'a failed release rolls back and reports the error. computers_maintenance_status requires global settings:read '
+      + 'Bundle downloads have a ten-minute deadline and retry after timeouts. CI smoke remains available before archive publication. '
+      + 'A failed release rolls back and reports its phase, readiness failure and available stderr tail. '
+      + 'computers_maintenance_status requires global settings:read '
       + 'and exposes current/target versions, update state and last error. It defaults to compact task summaries '
       + '(newest 5 tasks, newest first), without outputTail. taskLimit accepts 1-50; running and queued tasks are always '
       + 'included and tasksOmitted counts excluded retained tasks per computer. Use detail: "full" for output '

@@ -5,7 +5,7 @@ import { lstat, readFile, realpath, open, rename, rm, symlink } from 'node:fs/pr
 import { basename, dirname, join, relative } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { WorkerError, requirePrivateDirectory } from './diagnostics.mjs';
+import { WorkerError, requirePrivateDirectory, workerUpdateErrorMessage } from './diagnostics.mjs';
 import { readWorkerStatus } from './runtime.mjs';
 import { WORKER_UPDATE_STARTUP_TIMEOUT_MS } from './ciSmokeTiming.mjs';
 
@@ -172,14 +172,26 @@ export async function workerPointerMatches(pointer, directory) {
 export async function waitForWorkerReady({ stateDirectory, version, workerInstallationId,
   timeoutMs = 60_000, pollMs = 250, readStatus = readWorkerStatus }) {
   const deadline = Date.now() + timeoutMs;
+  let lastStatus;
   do {
     const status = await readStatus(stateDirectory);
+    lastStatus = status;
     if (status?.phase === 'blocked' && status.failure) throw new Error(status.failure);
     if (status?.active === true && status.phase === 'ready' && status.appVersion === version
       && status.workerInstallationId === workerInstallationId) return;
     await wait(pollMs);
   } while (Date.now() < deadline);
-  throw new WorkerError('worker_update_startup_timeout');
+  const observed = lastStatus
+    ? `phase=${lastStatus.phase}, failure=${lastStatus.failure ?? 'none'}, version=${lastStatus.appVersion ?? 'unknown'}`
+    : 'no running Worker status';
+  throw new WorkerError('worker_update_startup_timeout',
+    `worker_update_startup_timeout: Worker ${version} did not become ready; ${observed}.`);
+}
+
+async function readWorkerStartupFailure(plan, since) {
+  const result = await execute('/usr/bin/journalctl', ['--user', '-u', plan.service, '--since', since,
+    '--no-pager', '-o', 'cat', '-n', '30'], { timeout: 5000, maxBuffer: 65_536, env: environment() });
+  return result.stdout.trim().slice(-1200);
 }
 
 export async function superviseWorkerUpdate(record, ports = {}) {
@@ -190,6 +202,7 @@ export async function superviseWorkerUpdate(record, ports = {}) {
       { timeout: 30_000, maxBuffer: 4096, env: environment() });
   }, ready = waitForWorkerReady, switchPointer = switchWorkerPointer,
   prepareService = migrateWorkerService, persist = writeUpdateRecord,
+  readStartupFailure = ports.restart ? async () => '' : readWorkerStartupFailure,
   smoke = async plan => {
     if (!plan.ciSmoke) return;
     if (process.env.FOREMAN_INSTALL_SKIP_CI_SMOKE === '1') {
@@ -209,10 +222,13 @@ export async function superviseWorkerUpdate(record, ports = {}) {
     record.outcomes = [...(record.outcomes ?? []).filter(value => value.requestId !== plan.requestId), outcome].slice(-20);
     await persist(plan.stateDirectory, record);
   };
+  let restartStartedAt;
+  let waitingForReady = false;
   const restartWorker = async () => {
     // A surviving process may resume only when neither restart was attempted.
     plan.restartAttempted = true;
     await persist(plan.stateDirectory, record);
+    restartStartedAt = new Date().toISOString();
     await restart(plan.service);
   };
   try {
@@ -222,12 +238,22 @@ export async function superviseWorkerUpdate(record, ports = {}) {
       await switchPointer({ kind: 'symlink', path: join(plan.root, 'previous') }, plan.previousDirectory);
     }
     await restartWorker();
+    waitingForReady = true;
     await ready({ stateDirectory: plan.stateDirectory, version: record.status.targetVersion,
       workerInstallationId: plan.workerInstallationId, timeoutMs: WORKER_UPDATE_STARTUP_TIMEOUT_MS });
+    waitingForReady = false;
     await smoke(plan);
     await save('current', record.status.targetVersion, null);
   } catch (error) {
-    const failure = error instanceof WorkerError ? error.code : error.message;
+    let failure = workerUpdateErrorMessage(error);
+    if (waitingForReady) {
+      try {
+        const stderr = await readStartupFailure(plan, restartStartedAt);
+        if (stderr) failure = `${failure}; startup stderr: ${stderr}`.slice(0, 2000);
+      } catch (diagnosticError) {
+        process.stderr.write(`Worker startup diagnostics unavailable: ${workerUpdateErrorMessage(diagnosticError)}\n`);
+      }
+    }
     process.stderr.write(`Worker update failed: ${failure}\n`);
     try {
       await switchPointer(plan.pointer, plan.previousDirectory);
@@ -236,8 +262,8 @@ export async function superviseWorkerUpdate(record, ports = {}) {
         workerInstallationId: plan.workerInstallationId });
       await save('rolled-back', plan.previousVersion, failure.slice(0, 2000));
     } catch (rollbackError) {
-      const reason = rollbackError instanceof WorkerError ? rollbackError.code : 'worker_update_rollback_start_failed';
-      await save('failed', plan.previousVersion, `${failure}; ${reason}`);
+      const reason = workerUpdateErrorMessage(rollbackError);
+      await save('failed', plan.previousVersion, `${failure.slice(-950)}; rollback: ${reason.slice(-950)}`);
       throw new WorkerError('worker_update_rollback_failed');
     }
   }

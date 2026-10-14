@@ -70,7 +70,7 @@ export const WorkerArtifactRequestSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('ci-smoke'), manifestSha256: digest }).strict(),
 ])
 
-const WorkerCiSmokeSchema = z.object({ repository: WorkerArtifactGitHubSchema.shape.repository,
+export const WorkerCiSmokeSchema = z.object({ repository: WorkerArtifactGitHubSchema.shape.repository,
   commit: z.string().regex(/^[a-f0-9]{40}$/u) }).strict()
 
 export const WorkerArtifactReplySchema = z.discriminatedUnion('operation', [

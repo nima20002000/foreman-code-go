@@ -122,7 +122,7 @@ export async function startConfiguredWorker({ stateDirectory, extensions = [], e
         workerInstallationId: pairing.workerInstallationId, releaseDirectory, facts, assertStateOwnership,
         connection: () => connection, drain: () => installed.drainForUpdate(),
         resume: () => installed.resumeAfterUpdate(),
-        reportError: error => process.stderr.write(`Worker update: ${error.code ?? 'worker_update_failed'}\n`),
+        reportError: error => process.stderr.write(`Worker update: ${error.message ?? error.code ?? 'worker_update_failed'}\n`),
       }).initialize();
     }
     const rootExtensions = managedSetup?.state === 'failed' ? []

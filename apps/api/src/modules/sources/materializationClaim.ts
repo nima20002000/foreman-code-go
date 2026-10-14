@@ -7,11 +7,12 @@ import { SOURCE_MATERIALIZATION_RECORD_MAX_BYTES, MaterializationReceiptSchema, 
 import type { JobVerificationQuotaPool } from '@foreman-code/contracts/job-verification-runtime'
 import type { JobQuotaReader } from '../jobs/quotaOwnership.js'
 import { processSourceDirectories } from './entryProcessing.js'
-import { sourceMaterializationClaimName } from './quotaClaims.js'
+import { sourceMaterializationClaimName, writeSourceClaim } from './quotaClaims.js'
 import { SourceError, sourcePath, verifySourceManifest } from './manifest.js'
 import { anchored, identity, openChildDirectory, openPrivateRoot, withPrivateDirectoryLock } from './privateFilesystem.js'
 import type { MaterializationAttempt } from './ports.js'
 import { verifySourceEntry } from './verifySourceEntry.js'
+import { readCleanupRecord } from './sourceCleanupMetadata.js'
 
 const equal = isDeepStrictEqual
 /** Preserve the claim API while sharing Main's joined directory-lock implementation. */
@@ -97,9 +98,7 @@ export async function archiveMaterializationClaim(receipt: MaterializationReceip
         if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16384) throw new SourceError('SOURCE_CLAIM_INVALID', 'Invalid binding claim.')
         const claim = JSON.parse(await lock.readFile(signal ? { encoding: 'utf8', signal } : 'utf8')) as { version: number; materializationId: string; binding: RootBinding; attempt: MaterializationAttempt; quota?: SourceProjectQuotaSlot }
         signal?.throwIfAborted()
-        if (claim.version !== 1 || claim.materializationId !== receipt.materializationId || !equal(claim.binding, binding)
-          || !equal(claim.attempt, { placementHash: receipt.placementHash, executionId: receipt.executionId, attemptId: receipt.attemptId, keyRevision: receipt.keyRevision, authorizationRevision: receipt.authorizationRevision }))
-          throw new SourceError('SOURCE_CLAIM_CONFLICT', 'This receipt does not own the destination claim.')
+        validateClaimOwner(claim, receipt)
       }
       try {
         signal?.throwIfAborted()
@@ -155,6 +154,12 @@ export async function archiveMaterializationClaim(receipt: MaterializationReceip
         }
         signal?.throwIfAborted()
         const lock = await open(anchored(root, name), constants.O_RDONLY | constants.O_NOFOLLOW)
+          .catch(async (error: unknown) => {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+            await restoreReleasedPreparationClaim(root, releaseDirectory, releasedName, receipt, reconcile, signal)
+            return null
+          })
+        if (!lock) return
         try {
           await validateClaim(lock)
           signal?.throwIfAborted()
@@ -178,6 +183,44 @@ export async function archiveMaterializationClaim(receipt: MaterializationReceip
       } finally { await directory.close() }
     }, { signal })
   } finally { await root.close() }
+}
+
+type MaterializationClaim = {
+  version: number
+  materializationId: string
+  binding: RootBinding
+  attempt: MaterializationAttempt
+  quota?: SourceProjectQuotaSlot
+}
+
+function validateClaimOwner(claim: MaterializationClaim, receipt: MaterializationReceipt): void {
+  const attempt = { placementHash: receipt.placementHash, executionId: receipt.executionId,
+    attemptId: receipt.attemptId, keyRevision: receipt.keyRevision, authorizationRevision: receipt.authorizationRevision }
+  if (claim.version !== 1 || claim.materializationId !== receipt.materializationId
+    || !equal(claim.binding, receipt.binding) || !equal(claim.attempt, attempt) || !equal(claim.quota, receipt.quota)) {
+    throw new SourceError('SOURCE_CLAIM_CONFLICT', 'This receipt does not own the destination claim.')
+  }
+}
+
+async function restoreReleasedPreparationClaim(root: FileHandle, directory: FileHandle, name: string,
+  receipt: MaterializationReceipt, reconcile: () => Promise<'released' | 'owned' | 'uncertain'>,
+  signal = AbortSignal.timeout(60_000)): Promise<void> {
+  // Preparation reconciliation can archive a claim before Main receives its receipt.
+  const entries = await readdir(anchored(root))
+  for (const entry of entries) {
+    signal.throwIfAborted()
+    if (!/^closed-preparation-[a-f0-9-]{36}\.claim\.json$/.test(entry)) continue
+    const claim = await readCleanupRecord(root, entry, signal) as MaterializationClaim | null
+    if (claim?.materializationId !== receipt.materializationId) continue
+    validateClaimOwner(claim, receipt)
+    if (await reconcile() !== 'released') throw new SourceError('SOURCE_ROOT_OWNED', 'Execution closure changed.')
+    signal.throwIfAborted()
+    await writeSourceClaim(directory, name, JSON.stringify(claim), signal)
+    await root.sync()
+    return
+  }
+  throw new SourceError('SOURCE_CLAIM_MISSING',
+    'The original source claim and its archived release record are missing; cleanup cannot confirm ownership.')
 }
 
 /** A new worker generation cannot infer closure from its empty in-memory task

@@ -45,9 +45,11 @@ export async function fetchGitHubAsset({ github, asset, destination, signal, max
   const controller = new AbortController();
   const combined = AbortSignal.any([controller.signal, AbortSignal.timeout(600_000), ...(signal ? [signal] : [])]);
   const child = spawn('gh', ['release', 'download', github.tag, '--repo', github.repository,
-    '--pattern', asset, '--output', '-'], { signal: combined, stdio: ['ignore', 'pipe', 'ignore'] });
+    '--pattern', asset, '--output', '-'], { signal: combined, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stderr = '';
+  child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-1200); });
   const exited = new Promise((resolve, reject) => {
-    child.once('error', () => reject(new WorkerError('worker_update_github_unavailable')));
+    child.once('error', error => reject(new WorkerError('worker_update_github_unavailable', error.message)));
     child.once('close', code => code === 0 ? resolve() : reject(new WorkerError('worker_update_github_unavailable')));
   });
   const copied = pipeline(child.stdout, new ByteLimit(maxBytes, 'artifact_archive_size_mismatch'),
@@ -59,8 +61,9 @@ export async function fetchGitHubAsset({ github, asset, destination, signal, max
     await Promise.allSettled([copied, exited]);
     await rm(destination, { force: true });
     signal?.throwIfAborted();
-    if (error instanceof WorkerError) throw error;
-    throw new WorkerError('worker_update_github_unavailable');
+    if (error instanceof WorkerError && error.code !== 'worker_update_github_unavailable') throw error;
+    throw new WorkerError('worker_update_github_unavailable',
+      `worker_update_github_unavailable: ${stderr.trim() || error.message}`, { cause: error });
   }
 }
 

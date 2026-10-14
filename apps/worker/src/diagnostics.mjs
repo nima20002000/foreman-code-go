@@ -3,7 +3,21 @@ import { accessSync, constants } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 
 export class WorkerError extends Error {
-  constructor(code) { super(code); this.code = code; }
+  constructor(code, message = code, options) { super(message, options); this.code = code; }
+}
+
+export function workerUpdateErrorMessage(error, depth = 0) {
+  const message = error instanceof Error ? error.message : String(error);
+  const details = [message.slice(-600)];
+  if (typeof error?.stderr === 'string' && error.stderr.trim()) details.push(error.stderr.trim().slice(-1200));
+  if (depth < 2) {
+    if (error instanceof AggregateError) {
+      details.push(...error.errors.slice(0, 3).map(value => workerUpdateErrorMessage(value, depth + 1)));
+    } else if (error?.cause && error.cause !== error) {
+      details.push(workerUpdateErrorMessage(error.cause, depth + 1));
+    }
+  }
+  return details.join('; ').slice(-1800);
 }
 
 export function persistentFilesystems(mountInfo, home) {

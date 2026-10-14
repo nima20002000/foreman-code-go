@@ -6,7 +6,7 @@ import { WorkerArtifactManifestSchema, WorkerArtifactReplySchema, WorkerUpdateSt
   WORKER_UPDATE_NAMESPACE, WORKER_UPDATE_VERSION, WORKER_UPDATE_MAX_BINARY_BYTES,
   WORKER_UPDATE_MAX_JSON_BYTES } from '../../../packages/contracts/src/workerUpdate.ts';
 import { readWorkerSmokeConfiguration } from './ciInstallSmoke.mjs';
-import { WorkerError } from './diagnostics.mjs';
+import { WorkerError, workerUpdateErrorMessage } from './diagnostics.mjs';
 import { validateManifest, stageRunningVersion } from './installation.mjs';
 import { readUpdateRecord, writeUpdateRecord, locateWorkerLaunch, launchUpdateSupervisor,
   workerPointerMatches } from './updateSupervisor.mjs';
@@ -20,7 +20,8 @@ export { fetchGitHubAsset };
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const expected = { protocolVersion: 1, identityFormat: 1 };
 const automaticRetryErrors = new Set(['worker_update_interrupted', 'worker_updater_stopped',
-  'worker_update_channel_unavailable']);
+  'worker_update_channel_unavailable', 'worker_update_download_timeout', 'worker_update_github_unavailable',
+  'worker_update_smoke_unavailable']);
 
 export const workerUpdateExtension = { namespace: WORKER_UPDATE_NAMESPACE, version: WORKER_UPDATE_VERSION,
   role: 'client', maxJsonBytes: WORKER_UPDATE_MAX_JSON_BYTES, maxBinaryBytes: WORKER_UPDATE_MAX_BINARY_BYTES };
@@ -43,7 +44,35 @@ async function downloadFromGitHub({ release, announced, directory, signal, fetch
   }
 }
 
-export async function downloadWorkerArtifact({ release, request, directory, facts, signal, fetchAsset = fetchGitHubAsset }) {
+async function requestDownloadChunk(request, payload, signal) {
+  signal.throwIfAborted();
+  let rejectAborted;
+  const aborted = new Promise((_, reject) => { rejectAborted = reject; });
+  const cancel = () => rejectAborted(signal.reason);
+  signal.addEventListener('abort', cancel, { once: true });
+  try {
+    return await Promise.race([request(payload, { signal }), aborted]);
+  } finally {
+    signal.removeEventListener('abort', cancel);
+  }
+}
+
+export async function downloadWorkerArtifact({ signal, timeoutMs = 600_000, ...options }) {
+  const deadline = new AbortController();
+  const combined = AbortSignal.any([deadline.signal, ...(signal ? [signal] : [])]);
+  const timer = setTimeout(() => deadline.abort(new WorkerError('worker_update_download_timeout',
+    `Worker bundle download timed out after ${timeoutMs} ms.`)), timeoutMs);
+  try {
+    return await downloadArtifactFiles({ ...options, signal: combined });
+  } catch (error) {
+    combined.throwIfAborted();
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function downloadArtifactFiles({ release, request, directory, facts, signal, fetchAsset = fetchGitHubAsset }) {
   const announced = WorkerArtifactManifestSchema.parse(release.manifest);
   validateManifest(announced, facts, expected);
   if (announced.version !== release.version) throw new WorkerError('manifest_version_mismatch');
@@ -55,7 +84,8 @@ export async function downloadWorkerArtifact({ release, request, directory, fact
     let offset = 0;
     for (;;) {
       signal?.throwIfAborted();
-      const response = await request({ operation: 'chunk', manifestSha256: release.manifestSha256, path, offset });
+      const response = await requestDownloadChunk(request,
+        { operation: 'chunk', manifestSha256: release.manifestSha256, path, offset }, signal);
       const payload = WorkerArtifactReplySchema.parse(response.payload);
       const bytes = response.bytes;
       if (payload.operation !== 'chunk' || payload.manifestSha256 !== release.manifestSha256
@@ -158,6 +188,7 @@ export class WorkerUpdater {
         manifestSha256: this.options.manifestSha256 });
       const retained = await readUpdateRecord(this.options.stateDirectory);
       this.record = { ...retained, ...details, format: 1, status: this.statusValue };
+      if (this.statusValue.lastError === null) delete this.record.failureCode;
       await writeUpdateRecord(this.options.stateDirectory, this.record);
     });
   }
@@ -201,6 +232,10 @@ export class WorkerUpdater {
     return task;
   }
 
+  retryableFailure() {
+    return automaticRetryErrors.has(this.record?.failureCode ?? this.statusValue.lastError);
+  }
+
   async update(retry) {
     const { stateDirectory, version, facts, connection, drain, resume, assertStateOwnership } = this.options;
     await this.status();
@@ -214,10 +249,15 @@ export class WorkerUpdater {
       if (retry) throw new WorkerError('worker_update_channel_unavailable');
       return 'Worker update is unavailable on this Main connection.';
     }
-    const request = async payload => {
+    const request = async (payload, options = {}) => {
       try {
-        return await captured.request(payload, { timeoutMs: 60_000, signal: this.lifetime.signal });
+        const signal = options.signal ? AbortSignal.any([this.lifetime.signal, options.signal]) : this.lifetime.signal;
+        return await captured.request(payload, { timeoutMs: 60_000, signal });
       } catch (error) {
+        if (error instanceof DeviceApplicationError && error.code === 'WORKER_UPDATE_SMOKE_UNAVAILABLE') {
+          throw new WorkerError('worker_update_smoke_unavailable',
+            'Main cannot supply CI smoke configuration for this Worker release.');
+        }
         const channelLost = error instanceof DeviceConnectionError && error.code !== 'revoked'
           || error instanceof DeviceApplicationError && ['unavailable', 'transport', 'timeout'].includes(error.code);
         if (channelLost) throw new WorkerError('worker_update_channel_unavailable');
@@ -226,6 +266,7 @@ export class WorkerUpdater {
     };
     const target = Object.fromEntries(['os', 'osRelease', 'arch', 'libc', 'node'].map(key => [key, facts[key]]));
     let downloading;
+    let phase = 'release';
     let drained = false;
     try {
       const response = await request({ operation: 'release', target });
@@ -234,7 +275,7 @@ export class WorkerUpdater {
       if (!reply.release) throw new WorkerError('worker_update_target_unavailable');
       const release = reply.release;
       if (release.version === version && release.manifestSha256 === this.options.manifestSha256) {
-        if (retry || automaticRetryErrors.has(this.statusValue.lastError)
+        if (retry || this.retryableFailure()
           || !['rolled-back', 'failed'].includes(this.statusValue.state)) {
           await this.save({ targetVersion: version, state: 'current', lastError: null });
         }
@@ -243,7 +284,7 @@ export class WorkerUpdater {
       // Connection loss and interrupted shutdowns are safe to retry from the release manifest.
       if (!retry && this.record?.manifestSha256 === release.manifestSha256
         && ['failed', 'rolled-back'].includes(this.statusValue.state)
-        && !automaticRetryErrors.has(this.statusValue.lastError)) {
+        && !this.retryableFailure()) {
         return 'Worker update needs a retry.';
       }
       const launch = await (this.options.locateLaunch ?? locateWorkerLaunch)(this.options);
@@ -251,16 +292,21 @@ export class WorkerUpdater {
         { manifestSha256: release.manifestSha256 });
       // Download and verify while the Worker still admits work: through Main this can take minutes.
       // Only installation and restart need the drained runtime.
+      phase = 'downloading';
       await this.save({ state: 'downloading' });
       downloading = await mkdtemp(join(stateDirectory, '.worker-download-'));
-      await downloadWorkerArtifact({ release, request, directory: downloading, facts, signal: this.lifetime.signal });
+      await downloadWorkerArtifact({ release, request, directory: downloading, facts, signal: this.lifetime.signal,
+        timeoutMs: this.options.downloadTimeoutMs });
       this.lifetime.signal.throwIfAborted();
+      phase = 'smoke configuration';
       const ciSmoke = await readWorkerSmokeConfiguration(request, release.manifestSha256);
+      phase = 'draining';
       await this.save({ state: 'draining' });
       drained = true;
       await drain();
       this.lifetime.signal.throwIfAborted();
       assertStateOwnership();
+      phase = 'installing';
       await this.save({ state: 'installing' });
       const installed = await (this.options.stage ?? stageRunningVersion)({ root: launch.root, stateDirectory,
         artifact: downloading, approvedManifestSha256: release.manifestSha256, facts, expected,
@@ -272,14 +318,17 @@ export class WorkerUpdater {
         ...(ciSmoke ? { ciSmoke } : {}),
         requestId: this.handoff, restartAttempted: false, previousVersion: version,
         workerInstallationId: this.options.workerInstallationId } });
+      phase = 'restarting';
       await (this.options.launchSupervisor ?? launchUpdateSupervisor)(stateDirectory);
       return `Worker ${release.version} restart is scheduled.`;
     } catch (error) {
-      const lastError = this.lifetime.signal.aborted ? 'worker_updater_stopped'
+      const failureCode = this.lifetime.signal.aborted ? 'worker_updater_stopped'
         : error instanceof WorkerError ? error.code : 'worker_update_failed';
-      await this.save({ state: 'failed', lastError });
+      const lastError = error instanceof WorkerError && error.message === error.code ? failureCode
+        : `${failureCode}: ${phase}: ${workerUpdateErrorMessage(error)}`.slice(0, 2000);
+      await this.save({ state: 'failed', lastError }, { failureCode });
       if (drained) resume();
-      throw new WorkerError(lastError);
+      throw new WorkerError(failureCode, lastError, { cause: error });
     } finally {
       if (downloading) await rm(downloading, { recursive: true, force: true });
     }

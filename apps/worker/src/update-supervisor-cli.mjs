@@ -14,6 +14,6 @@ try {
     await superviseWorkerUpdate(record);
   }
 } catch (error) {
-  process.stderr.write(`${error.code ?? 'worker_update_supervisor_failed'}\n`);
+  process.stderr.write(`${error.message ?? error.code ?? 'worker_update_supervisor_failed'}\n`);
   process.exitCode = 1;
 }

@@ -1,4 +1,5 @@
 import type pg from 'pg'
+import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { readProductEnvironment } from '@foreman-code/contracts/product-environment'
 import { readProductVersion } from '../../infrastructure/productVersion.js'
@@ -25,6 +26,14 @@ export function readProductionWorkerManifestSha256s(options: ProductionWorkerArt
 export function createProductionWorkerArtifactExtension(options: ProductionWorkerArtifactOptions) {
   return createWorkerArtifactExtension({
     ...artifactLocation(options),
+    ciSmoke: async () => {
+      try {
+        return JSON.parse(await readFile(join(options.releaseDirectory, 'ci-smoke.json'), 'utf8')) as unknown
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+        throw error
+      }
+    },
     buildEnabled: async binding => {
       if (!options.pool) return false
       const result = await options.pool.query(`select 1 from build_computer_preferences
