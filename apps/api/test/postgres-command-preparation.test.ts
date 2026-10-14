@@ -28,19 +28,22 @@ function fixture(options: { uncertainCommit?: boolean; failRollback?: boolean; f
     }>,
   }
   let receipt: { input_hash: unknown; target_key: unknown; result: unknown } | undefined
-  let lockTail = Promise.resolve(), commits = 0, lockRequests = 0
+  let lockOwner: symbol | undefined
+  let commits = 0
+  let lockRequests = 0
   const makeClient = () => {
-    let pending: typeof receipt, unlock: (() => void) | undefined
+    const owner = Symbol('command session')
+    let pending: typeof receipt
     return { release: releases, query: vi.fn(async (sql: string, values?: unknown[]) => {
-      if (sql.includes('pg_advisory_lock(')) {
-        const prior = lockTail, held = deferred()
-        lockTail = held.promise; unlock = held.resolve
+      if (sql.includes('pg_try_advisory_lock(')) {
         if (++lockRequests === 2) secondLock.resolve()
-        await prior
+        const locked = lockOwner === undefined || lockOwner === owner
+        if (locked) lockOwner = owner
+        return { rows: [{ locked }], rowCount: 1 }
       }
       if (sql.includes('pg_advisory_unlock(')) {
         if (options.failUnlock) throw new Error('unlock failed')
-        unlock?.()
+        if (lockOwner === owner) lockOwner = undefined
         state.unlocks++
       }
       if (sql.includes('select input_hash')) {

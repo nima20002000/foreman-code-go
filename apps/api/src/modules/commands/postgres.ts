@@ -20,12 +20,31 @@ function commitWasRejected(error: unknown): boolean {
 
 /** Wait outside SQL transactions without a blocking statement that can time out. */
 async function acquireSessionLock(client: pg.PoolClient, key: string): Promise<void> {
+  // Source preparation can take five minutes; queued captures need their own wait budget.
+  const deadline = performance.now() + 600_000
   for (;;) {
     const result = await client.query<{ locked: boolean }>(
       'select pg_try_advisory_lock(hashtext($1)) as locked', [key])
     if (result.rows[0]!.locked) return
+    if (performance.now() >= deadline) {
+      throw new DomainError('COMMAND_LOCK_TIMEOUT',
+        'Another command is still using this resource. Retry the original command.', 503,
+        { retryable: true, newCommandRequired: false })
+    }
     await delay(25)
   }
+}
+
+function commandDatabaseFailure(error: unknown): unknown {
+  if (error instanceof DomainError) return error
+  const code = error instanceof pg.DatabaseError ? error.code : undefined
+  const readTimeout = error instanceof Error && error.message === 'Query read timeout'
+  if (code !== '57014' && code !== '55P03' && !readTimeout) return error
+  const failure = new DomainError('COMMAND_DATABASE_TIMEOUT',
+    'The database command exceeded its deadline. Retry the original command.', 503,
+    { retryable: true, newCommandRequired: false, ...(code ? { sqlState: code } : {}) })
+  failure.cause = error
+  return failure
 }
 
 interface PreparedMutation {
@@ -82,22 +101,23 @@ export class PostgresCommandCoordinator {
     const commandLock = `command:${input.principal.id}:${input.operation}:${commandId}`
     const resourceLock = input.preparedMutation?.resourceLock ?? input.resourceLock
     try {
-      if (input.preparedMutation) {
+      if (dedicatedConnection || input.preparedMutation) {
+        // Track requests before acquisition: a lost reply may leave a session lock held.
         lifecycleLock = true
         await acquireSessionLock(client, commandLock)
       }
+      if (input.resourceLock && lifecycleLock) {
+        resourceLockRequested = true
+        await acquireSessionLock(client, input.resourceLock)
+      }
       await beginTransaction(client)
       inTransaction = true
-      if (dedicatedConnection && !lifecycleLock) {
-        await client.query('select pg_advisory_lock(hashtext($1))', [commandLock])
-        lifecycleLock = true
-      } else if (!lifecycleLock) {
+      if (!lifecycleLock) {
         await client.query('select pg_advisory_xact_lock(hashtext($1))', [commandLock])
       }
-      if (input.resourceLock) {
-        // A lost query reply can leave a session lock held even though acquisition throws.
+      if (input.resourceLock && !resourceLockRequested) {
         resourceLockRequested = true
-        await client.query('select pg_advisory_lock(hashtext($1))', [input.resourceLock])
+        await acquireSessionLock(client, input.resourceLock)
       }
       await input.authorize?.(client)
       const existing = await client.query<{ input_hash: string; target_key: string; result: unknown }>(
@@ -178,7 +198,8 @@ export class PostgresCommandCoordinator {
       inTransaction = false
       return { value, replayed: false }
     } catch (error) {
-      let failure = error
+      let failure = commandDatabaseFailure(error)
+      let cleanupFailed = false
       let rolledBack = false
       if (inTransaction) {
         try {
@@ -195,6 +216,7 @@ export class PostgresCommandCoordinator {
         try {
           await input.afterRollback?.(client)
         } catch (cleanupError) {
+          cleanupFailed = true
           failure = new AggregateError([error, cleanupError], 'The command and rollback cleanup failed.')
           try {
             await rollbackTransaction(client)
@@ -215,7 +237,7 @@ export class PostgresCommandCoordinator {
           [input.principal.id, input.source, input.operation, input.targetKey, commitUncertain ? 'uncertain' : 'failed', JSON.stringify({
             commandId,
             code: failureCode,
-            ...(failure !== error ? { cleanupFailed: true } : {}),
+            ...(cleanupFailed ? { cleanupFailed: true } : {}),
           })],
         ).catch(ignoreError('db', 'record failed command audit', { commandId, command: input.operation }))
       }

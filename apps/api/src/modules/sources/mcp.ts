@@ -56,7 +56,16 @@ export const sourceTools = [
     name: 'source_approve',
     requires: [['source_roots:bind', 'workspace'], ['sources:read', 'workspace'], ['workspace_locations:read', 'workspace']],
     enabled: s => !!s.sources,
-    description: 'Capture the complete tracked tree of a pinned Git commit automatically, without path approvals. Rejects sensitive paths/content and enforces executable policy, entry/byte limits and manifest verification. The request and tracked inventory are audited. Capture runs from the workspace\'s persisted canonical location. Captures the configured repository and approved commit/tree objects so unpublished commits can reach other computers. Requires source root bind, source read and location read grants; no path, Run, Agent, hooks or credentials are accepted. Unused snapshots expire automatically after their retention window; qualified profiles and active work retain their source. Successful commandId retries preserve the exact snapshot, or fail with SOURCE_UNAVAILABLE after release. SOURCE_CAPTURE_TIMEOUT is retryable with a new explicit commandId; a failed command never resurrects its quarantined snapshot.',
+    description: 'Capture the complete tracked tree of a pinned Git commit automatically, without path approvals. '
+      + 'Rejects sensitive paths/content and enforces executable policy, entry/byte limits and manifest verification. '
+      + 'The request and tracked inventory are audited. Capture runs from the workspace\'s persisted canonical location. '
+      + 'Captures the configured repository and approved commit/tree objects so unpublished commits can reach other computers. '
+      + 'Requires source root bind, source read and location read grants; no path, Run, Agent, hooks or credentials are accepted. '
+      + 'Unused snapshots expire automatically after their retention window; qualified profiles and active work retain their source. '
+      + 'Successful commandId retries preserve the exact snapshot, or fail with SOURCE_UNAVAILABLE after release. '
+      + 'Concurrent captures wait separately from SQL query deadlines. COMMAND_LOCK_TIMEOUT and COMMAND_DATABASE_TIMEOUT '
+      + 'are retryable with the original commandId and input. SOURCE_CAPTURE_TIMEOUT is retryable with a new explicit '
+      + 'commandId; a failed command never resurrects its quarantined snapshot.',
     inputSchema: SourceApproveInputSchema, outputSchema: SourceApproveResultSchema, annotations: annotations(true),
     run: (context, input) => context.services.sources!.approve(context.principal, 'mcp', input),
   }),
