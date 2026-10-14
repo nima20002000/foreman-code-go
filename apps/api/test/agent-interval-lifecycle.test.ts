@@ -23,7 +23,6 @@ it('keeps checking a settled graph, recovers its idle checkpoint, and ends only 
   if (configuration.harness.harness !== 'codex') throw new Error('Expected Codex')
   configuration.harness.advanced = { ...DEFAULT_CODEX_ADVANCED_CONFIGURATION, approvalPolicy: 'never' }
   const node = f.version.definition.nodes[0]!
-  if (node.kind === 'job') throw new Error('Expected an Agent')
   node.interval = { everySeconds: 10 }
   const h = graphHarness(f)
   const checks: HarnessExecution[] = []

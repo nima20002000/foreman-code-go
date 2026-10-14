@@ -75,7 +75,7 @@ export const settingsTools = [
     outputSchema: CreateOperatorConversationResponseSchema,
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: async (context, { commandId, title }) => ({
-    conversation: await context.services.operatorChat!.create(context.principal, title, { commandId, source: 'mcp' }),
+    conversation: await context.services.operatorChat!.create(context.principal, title, commandId ? { commandId, source: 'mcp' } : undefined),
   }),
   }),
   defineOperatorTool({

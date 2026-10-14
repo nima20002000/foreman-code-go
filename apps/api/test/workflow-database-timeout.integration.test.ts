@@ -247,7 +247,7 @@ it('closes the original session when authenticated MCP Stop interrupts active da
     await readUntil(() => f.runs.getDetails(f.f.run.workspaceId, f.f.run.id),
       details => details?.executions.every(execution => execution.state === 'completed') === true,
       { timeoutMs: 10_000, description: 'settled original native executions' })
-    const stopped = await f.client.callTool({ name: 'run_stop', arguments: { ...scopes, commandId: randomUUID() } })
+    const stopped = await f.client.callTool({ name: 'run_stop', arguments: { workspaceId: f.f.run.workspaceId, runId: f.f.run.id, commandId: randomUUID() } })
     expect(stopped.isError).not.toBe(true)
     await Promise.allSettled([running])
     await f.close()
