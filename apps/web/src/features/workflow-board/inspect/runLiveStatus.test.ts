@@ -16,6 +16,21 @@ const ci = (fields: Partial<CiActivity>) => ({ id: 't', suite: 'integration', pa
   computer: null, step: null, ...fields }) as CiActivity
 
 describe('live Run waits', () => {
+  it('shows startup capacity and workflow parallelism waits on Agents and queued loops', () => {
+    const queued = { state: 'queued' as const, label: 'Queued' }
+    const host = { kind: 'host_capacity' as const, hostKey: 'device:host-other', limit: 2,
+      since: '2026-10-14T14:20:00.000Z' }
+    expect(liveNodeView(queued, undefined, undefined, undefined, undefined, host)).toEqual({
+      state: 'queued', label: 'Waiting for a startup slot on this computer (limit 2)',
+    })
+    expect(liveNodeView(queued, undefined, undefined, undefined, { check: 3, queued: true }, host).label)
+      .toBe('Loop 3 queued · Waiting for a startup slot on this computer (limit 2)')
+    expect(liveNodeView(queued, undefined, undefined, undefined, undefined,
+      { kind: 'workflow_parallelism', limit: 3, since: host.since }).label)
+      .toBe('Waiting for this workflow\'s parallelism slot (limit 3)')
+    expect(liveNodeView(queued, undefined, undefined)).toBe(queued)
+  })
+
   it('names the reason each Agent waits instead of leaving it idle', () => {
     const waits = interactionWaits(record(), [request('a', { kind: 'work_direction' }),
       request('b', { approval: { handler: 'orchestrator', designatedOrchestratorAgentId: 'agent-c' } }),
