@@ -83,7 +83,7 @@ const configuration = params => {
   const write = config.sandbox_workspace_write ?? {}
   return { model: params.model ?? 'test-model', modelProvider: 'openai', cwd: params.cwd ?? process.cwd(),
     reasoningEffort: config.model_reasoning_effort ?? 'low', serviceTier: params.serviceTier === 'fast' ? 'fast' : null,
-    approvalPolicy: params.approvalPolicy ?? 'on-request', approvalsReviewer: params.approvalsReviewer ?? 'user',
+    approvalPolicy: params.approvalPolicy ?? 'never', approvalsReviewer: params.approvalsReviewer ?? 'user',
     instructionSources: [], sandbox: params.sandbox === 'workspace-write'
       ? { type: 'workspaceWrite', writableRoots: write.writable_roots ?? [], networkAccess: write.network_access ?? false,
         excludeTmpdirEnvVar: write.exclude_tmpdir_env_var ?? false, excludeSlashTmp: write.exclude_slash_tmp ?? false }
@@ -276,8 +276,12 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', async 
     reply(message.id, {})
     if (turn?.status === 'inProgress') complete(turn, 'Interrupted', 'interrupted')
   } else if (message.method === 'config/read') {
-    reply(message.id, { config: { approval_policy: thread?.settings.approvalPolicy ?? 'on-request',
-      mcp_servers: { [mcpName]: { ...mcp.transport, enabled: mcp.enabled, required: true } } }, origins: {}, layers: [] })
+    const config = { approval_policy: thread?.settings.approvalPolicy ?? 'never',
+      mcp_servers: { [mcpName]: { ...mcp.transport, enabled: mcp.enabled, required: true } } }
+    const file = join(process.env.CODEX_HOME ?? join(process.env.HOME, '.codex'), 'config.toml')
+    reply(message.id, { config, origins: {}, layers: [{
+      name: { type: 'user', file }, version: 'fixture-user-config', config,
+    }] })
   } else if (message.method === 'mcpServerStatus/list') {
     const workflowAdmission = thread?.instructions.includes('fixture-work-handoff') && thread.turns.length === 0
     if (workflowAdmission && existsSync(join(root, 'block-workflow-admission'))) {

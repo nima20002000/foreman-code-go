@@ -7,6 +7,7 @@ import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { ComputerAccountsSchema, type ComputerAccount, type ComputerAccounts } from '@foreman-code/contracts/computer-accounts'
 import { fallbackOnMissing } from '../diagnostics/ignoredError.js'
+import { DomainError } from '../errors.js'
 import { executableUnavailable } from './executableError.js'
 
 export interface AccountProbePorts {
@@ -24,12 +25,28 @@ const plain = (value: string) => value.replace(ansi, '')
 /** Passive sign-in facts for this computer. Reads identity only; tokens never leave the probe. */
 export async function probeComputerAccounts(ports: AccountProbePorts = systemPorts(), signal = AbortSignal.timeout(20_000),
   options: { refresh?: boolean } = {}): Promise<ComputerAccounts> {
-  const accounts = await Promise.all([codex(ports).then(account => ({ account, observedAt: Date.now() })),
-    cachedAccount(ports, 'claude', signal, options),
-    cachedAccount(ports, 'github', signal, options)])
+  const accounts = await Promise.all([
+    inspectAccount('codex', () => codex(ports)).then(account => ({ account, observedAt: Date.now() })),
+    inspectAccount('claude', () => cachedAccount(ports, 'claude', signal, options)),
+    inspectAccount('github', () => cachedAccount(ports, 'github', signal, options)),
+  ])
   const observedAt = Math.min(Date.now(), ...accounts.map(value => value.observedAt))
   return ComputerAccountsSchema.parse({ observedAt: new Date(observedAt).toISOString(),
     accounts: accounts.map(value => value.account) })
+}
+
+async function inspectAccount<T>(tool: ComputerAccount['tool'], read: () => Promise<T>): Promise<T> {
+  try {
+    return await read()
+  } catch (error) {
+    if (error instanceof DomainError) throw error
+    if (error instanceof Error && ['AbortError', 'TimeoutError'].includes(error.name)) throw error
+    const code = tool === 'github' ? 'GITHUB_STATUS_UNKNOWN' : 'COMPUTER_ACCOUNT_UNAVAILABLE'
+    const failure = new DomainError(code, `${tool} account state could not be checked. Retry account inspection.`,
+      502, { tool, retryable: true })
+    failure.cause = error
+    throw failure
+  }
 }
 
 const unknown = (tool: ComputerAccount['tool']): ComputerAccount => ({ tool, installed: true, signedIn: null, account: null, details: [] })
@@ -125,7 +142,11 @@ const githubStatusSchema = z.object({
 })
 const githubSignedOut = /You are not logged into (?:any GitHub hosts|any accounts on github\.com)/iu
 
-export async function probeGitHubAccount(ports: AccountProbePorts, signal = AbortSignal.timeout(20_000)): Promise<ComputerAccount> {
+export function probeGitHubAccount(ports: AccountProbePorts, signal = AbortSignal.timeout(20_000)): Promise<ComputerAccount> {
+  return inspectAccount('github', () => readGitHubAccount(ports, signal))
+}
+
+async function readGitHubAccount(ports: AccountProbePorts, signal: AbortSignal): Promise<ComputerAccount> {
   const binary = await ports.find('gh')
   if (!binary) return missing('github')
   const args = ['auth', 'status', '--active', '--hostname', 'github.com']
@@ -139,8 +160,10 @@ export async function probeGitHubAccount(ports: AccountProbePorts, signal = Abor
       const entries = parsed.data.hosts['github.com'] ?? []
       if (!entries.length) return { ...unknown('github'), signedIn: false }
       const active = entries.filter(entry => entry.active)
-      if (active.length !== 1) return unknown('github')
-      return { ...unknown('github'), signedIn: active[0]!.state === 'success' ? true : null, account: active[0]!.login }
+      if (active.length !== 1 || active[0]!.state !== 'success') {
+        throw new Error('GitHub account inspection did not establish an active account.')
+      }
+      return { ...unknown('github'), signedIn: true, account: active[0]!.login }
     }
     throw new Error('GitHub account inspection returned invalid output.')
   }
