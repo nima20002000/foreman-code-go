@@ -13,14 +13,14 @@ function fixture() {
   const principal: ManagementPrincipal = { id: 'owner', name: 'Owner', audience: 'operator', revokedAt: null, expiresAt: '2099-01-01T00:00:00Z', grants: [{ actions: ['settings:read', 'settings:update'], scope: {} }] }
   const reader: ManagementPrincipal = { ...principal, id: 'reader', grants: [{ actions: ['settings:read'], scope: {} }] }
   const registration = { mainId: randomUUID(), deviceId: randomUUID(), workerInstallationId: randomUUID(), keyRevision: 1, authorizationRevision: 1, publicKeyFingerprint: 'a'.repeat(64), scopes: ['connect'] as ('connect')[], status: 'paired' as const }
-  const input = { deviceId: registration.deviceId, commandId: randomUUID(), expectedRevision: 0, expectedAuthorizationRevision: 1, endpoint: { host: '100.64.0.20', port: 22, osUser: 'builder', transport: 'tailscale' as const }, hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, allowOwnerCommands: true, approvalId: randomUUID() }
+  const input = { deviceId: registration.deviceId, commandId: randomUUID(), expectedRevision: 0, expectedAuthorizationRevision: 1, endpoint: { host: '100.64.0.20', port: 22, osUser: 'builder', transport: 'tailscale' as const }, hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, allowOwnerCommands: true }
   let consent: TrustedConnectionConsent | null = null
   const service = {
     read: vi.fn(async (who: ManagementPrincipal) => { requireAuthorization(who, 'settings:read'); return { registration, consent } }),
     configure: vi.fn(async (who: ManagementPrincipal) => {
       requireAuthorization(who, 'settings:update')
       consent ??= { mainId: registration.mainId, deviceId: registration.deviceId, workerInstallationId: registration.workerInstallationId, keyRevision: 1, authorizationRevision: 1, publicKeyFingerprint: registration.publicKeyFingerprint,
-        revision: 1, endpoint: input.endpoint, hostKeyFingerprint: input.hostKeyFingerprint, allowOwnerCommands: true, approvedBy: who.id, approvalId: input.approvalId, approvedAt: '2026-10-02T00:00:00Z', privilege: 'selected-os-user', automaticSudo: false, grantsAgentPermissions: false }
+        revision: 1, endpoint: input.endpoint, hostKeyFingerprint: input.hostKeyFingerprint, allowOwnerCommands: true, privilege: 'selected-os-user', automaticSudo: false, grantsAgentPermissions: false }
       return consent
     }),
   } as unknown as TrustedConnectionManagementService

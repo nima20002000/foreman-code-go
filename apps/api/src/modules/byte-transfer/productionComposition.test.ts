@@ -149,7 +149,7 @@ describe('original rsync common composition, no SSH/native acceptance', () => {
       registration, state: 'ready', checkedAt: new Date().toISOString(), consent: { mainId: registration.mainId, deviceId: registration.deviceId,
         workerInstallationId: registration.workerInstallationId, keyRevision: 1, authorizationRevision: 1, publicKeyFingerprint: registration.publicKeyFingerprint,
         revision: 1, endpoint: { transport: 'tailscale', host: endpoint.host, port: 22, osUser: endpoint.user }, hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`,
-        allowOwnerCommands: true, approvedBy: 'original-human', approvalId: randomUUID(), approvedAt: new Date().toISOString(), privilege: 'selected-os-user',
+        allowOwnerCommands: true, privilege: 'selected-os-user',
         automaticSudo: false, grantsAgentPermissions: false }, probe: { state: 'connected', hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, osUser: endpoint.user,
         uid: 1000, hostname: 'worker', sshVersion: 'fixture', rsyncVersion: 'fixture', tailscaleVersion: 'fixture' } } }
     if (mode === 'revalidated') selected.revalidate = vi.fn(async () => {})

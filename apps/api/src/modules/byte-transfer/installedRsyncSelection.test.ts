@@ -26,7 +26,7 @@ async function fixture() {
     keyRevision: 1, authorizationRevision: 1, publicKeyFingerprint: 'a'.repeat(64), status: 'paired', scopes: ['connect', 'heartbeat'] }
   let consent: TrustedConnectionConsent = { mainId: original.mainId, deviceId: original.deviceId, workerInstallationId: original.workerInstallationId,
     keyRevision: 1, authorizationRevision: 1, publicKeyFingerprint: 'a'.repeat(64), revision: 1, endpoint: { transport: 'tailscale', host: '100.64.0.20', port: 22, osUser: 'builder' },
-    hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, allowOwnerCommands: true, approvedBy: 'human-owner', approvalId: randomUUID(), approvedAt: new Date().toISOString(),
+    hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, allowOwnerCommands: true,
     privilege: 'selected-os-user', automaticSudo: false, grantsAgentPermissions: false }
   const intent = TransferIntentSchema.parse({ ...transferContextForBinding(original), version: 1, transferId: randomUUID(), operationId: randomUUID(), executionId: randomUUID(), attemptId: randomUUID(),
     placementHash: 'a'.repeat(64), rootId: randomUUID(), rootBindingRevision: 1, direction: 'to-worker', byteClass: 'source', sha256: 'c'.repeat(64),

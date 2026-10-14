@@ -6,7 +6,6 @@ import { join } from 'node:path'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { ManagementActionSchema } from '@foreman-code/contracts/management'
 import { pairingProof, publicKeyFingerprint } from '@foreman-code/contracts/device-identity-node'
-import { TrustedConnectionApprovalReadSchema } from '@foreman-code/contracts/trusted-device-connection'
 import { describe, expect, it } from 'vitest'
 import { loadConfig } from '../src/config.js'
 import { createCheckpointStore } from '../src/infrastructure/checkpoints.js'
@@ -85,7 +84,7 @@ describe.skipIf(!postgresEnabled)('trusted connections through the production Ma
     } finally { await f.close() }
   })
 
-  it('mounts HTTP/browser approval and MCP with denial, atomic consent and persisted readback', async () => {
+  it('mounts direct HTTP and MCP configuration with denial and persisted readback', async () => {
     const f = await fixture()
     try {
       const browser = await f.setup(), deviceId = f.paired.registration.deviceId
@@ -95,8 +94,7 @@ describe.skipIf(!postgresEnabled)('trusted connections through the production Ma
       const checked = await f.app.inject({ method: 'POST', url: '/api/devices/connection-check', headers: f.auth, payload: { deviceId } })
       expect(checked.statusCode, checked.body).toBe(200)
       expect(checked.json().state).toBe('consent-required')
-      for (const [method, url] of [['GET', '/api/devices/connection-host'], ['POST', '/api/devices/connection-inspect'],
-        ['GET', '/api/devices/connection-approvals/:approvalId'], ['POST', '/api/devices/connection-approvals/:approvalId/revoke']] as const) {
+      for (const [method, url] of [['GET', '/api/devices/connection-host'], ['POST', '/api/devices/connection-inspect']] as const) {
         expect(f.app.hasRoute({ method, url })).toBe(true)
       }
       const client = await f.call(f.owner.token)
@@ -111,36 +109,23 @@ describe.skipIf(!postgresEnabled)('trusted connections through the production Ma
         headers: { authorization: `Bearer ${outsider.token}` }, payload: { deviceId } })).statusCode).toBe(403)
       const deniedClient = await f.call(outsider.token), readerClient = await f.call(reader.token)
       expect((await deniedClient.callTool({ name: 'device_connection_read', arguments: { deviceId } })).isError).toBe(true)
-      const input = { requestCommandId: randomUUID(), action: { deviceId, commandId: randomUUID(), expectedRevision: 0,
+      const input = { deviceId, commandId: randomUUID(), expectedRevision: 0,
         expectedAuthorizationRevision: 1, endpoint: { host: '192.0.2.10', port: 22, osUser: 'test-user', transport: 'lan' },
-        hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, allowOwnerCommands: true } }
-      const deniedBrowser = await f.app.inject({ method: 'POST', url: '/api/devices/connection-approvals', headers: f.auth, payload: input })
-      expect(deniedBrowser.statusCode).toBe(403)
-      expect(deniedBrowser.json().error.code).toBe('MCP_BROWSER_REVIEW_REQUIRED')
-      const requested = await f.app.inject({ method: 'POST', url: '/api/devices/connection-approvals', headers: browser, payload: input })
-      expect(requested.statusCode, requested.body).toBe(200)
-      const pending = TrustedConnectionApprovalReadSchema.parse(requested.json())
-      expect((await client.callTool({ name: 'device_connection_configure', arguments: pending.action })).isError).toBe(true)
-      const approved = await f.app.inject({ method: 'POST', url: `/api/devices/connection-approvals/${pending.id}/approve`,
-        headers: browser, payload: { commandId: randomUUID() } })
-      expect(approved.statusCode, approved.body).toBe(200)
-      expect((await readerClient.callTool({ name: 'device_connection_configure', arguments: pending.action })).isError).toBe(true)
-      const applied = await client.callTool({ name: 'device_connection_configure', arguments: pending.action })
+        hostKeyFingerprint: `SHA256:${'b'.repeat(43)}`, allowOwnerCommands: true }
+      expect((await readerClient.callTool({ name: 'device_connection_configure', arguments: input })).isError).toBe(true)
+      const applied = await client.callTool({ name: 'device_connection_configure', arguments: input })
       expect(applied.isError, JSON.stringify(applied.content)).not.toBe(true)
-      expect(decodeMcpToolResult(applied)).toMatchObject({ approvedBy: f.owner.principal.id, revision: 1, automaticSudo: false, grantsAgentPermissions: false })
-      expect(decodeMcpToolResult((await client.callTool({ name: 'device_connection_configure', arguments: pending.action })))).toEqual(decodeMcpToolResult(applied))
+      expect(decodeMcpToolResult(applied)).toMatchObject({ revision: 1, automaticSudo: false, grantsAgentPermissions: false })
+      expect(decodeMcpToolResult((await client.callTool({ name: 'device_connection_configure', arguments: input })))).toEqual(decodeMcpToolResult(applied))
       const persisted = await f.app.inject({ method: 'POST', url: '/api/devices/connection-read', headers: browser, payload: { deviceId } })
       expect(persisted.statusCode, persisted.body).toBe(200)
       expect(persisted.json().consent).toEqual(decodeMcpToolResult(applied))
       expect(decodeMcpToolResult((await client.callTool({ name: 'device_connection_read', arguments: { deviceId } })))).toEqual(persisted.json())
-      const approvalRead = await f.app.inject({ method: 'GET', url: `/api/devices/connection-approvals/${pending.id}`, headers: browser })
-      expect(approvalRead.statusCode, approvalRead.body).toBe(200)
-      expect(approvalRead.json().state).toBe('consumed')
-      const receipts = await f.db.pool.query("select result from management_command_receipts where operation='device.trusted-connection.configure' and command_id=$1", [pending.action.commandId])
+      const receipts = await f.db.pool.query("select result from management_command_receipts where operation='device.trusted-connection.configure' and command_id=$1", [input.commandId])
       expect(receipts.rows).toEqual([{ result: decodeMcpToolResult(applied) }])
       const audit = await f.db.pool.query("select outcome from management_audit where action='device.trusted-connection.configure'")
       expect(audit.rows.filter(row => row.outcome === 'succeeded')).toHaveLength(1)
-      expect(audit.rows.filter(row => row.outcome === 'failed')).toHaveLength(1)
+      expect(audit.rows.filter(row => row.outcome === 'failed')).toHaveLength(0)
       const deniedAudit = await f.db.pool.query("select outcome from management_audit where action='device_connection_configure' and principal_id=$1", [reader.principal.id])
       expect(deniedAudit.rows).toEqual([{ outcome: 'denied' }])
     } finally { await f.close() }
