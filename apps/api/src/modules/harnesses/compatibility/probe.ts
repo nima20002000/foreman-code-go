@@ -110,6 +110,7 @@ async function command(binary: string, args: string[], directory: string, enviro
   const failure = new Promise<never>((_resolve, reject) => { rejectFailure = reject })
   void failure.catch(() => { /* ignore: the owner awaits the original promise; this observer prevents a duplicate unhandled rejection. */ })
   const owned = spawnOwnedStdioProcess({ binary, args, cwd: directory, environment,
+    preserveReadableDrain: true,
     ...(ownership ? { recovery: ownership.recovery } : {}),
     onError: () => rejectFailure(unavailable()),
   })
