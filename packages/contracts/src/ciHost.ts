@@ -132,9 +132,7 @@ const CiHostStartSchema = z.object({
   'Gate jobs require full integration scope, assigned files and a shard count; other selections require affected scope.')
   .refine(validCiPart, 'The part and partition must belong to the requested suite.')
 export const CiHostRequestSchema = z.discriminatedUnion('operation', [
-  z.object({ operation: z.literal('status'),
-    /** Main selects expired terminal directories from persisted tickets. */
-    cleanupRunIds: z.array(CiHostRunIdSchema).max(1000).optional() }).strict(),
+  z.object({ operation: z.literal('status') }).strict(),
   CiHostStartSchema,
   // `durations: true` asks a finished test run for the file durations it measured, `testResults: true` for its
   // test results. Results are opt-in so a Worker never sends them to a Main whose reply schema predates them.
@@ -166,9 +164,6 @@ export const CiHostStatusSchema = z.object({
   operation: z.literal('status'), ready: z.boolean(), reasons: z.array(z.string().max(300)).max(10),
   /** Start protocol 3 enforces the saved CPU and memory build allowance on host starts. */
   startProtocolVersion: z.number().int().positive().optional(),
-  /** Supports bounded directory cleanup selected from Main's persisted terminal tickets. */
-  cleanupSupported: z.boolean().optional(),
-  removedRunIds: z.array(CiHostRunIdSchema).max(1000).optional(),
   cpuCount: z.number().int().positive(), memoryBytes: z.number().int().positive(),
   availableMemoryBytes: z.number().int().nonnegative().optional(),
   slotsUsed: z.number().int().nonnegative().optional(), slotsTotal: z.number().int().positive().optional(),
