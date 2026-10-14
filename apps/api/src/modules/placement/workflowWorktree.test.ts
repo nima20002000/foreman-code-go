@@ -51,11 +51,18 @@ function fixture(options: { repository?: boolean } = {}) {
     presetId: 'codex', enabled: true, driverId: 'codex', configuration: configuration.harness,
     configurationFingerprint: digest, qualification: 'qualified' }
   const profiles = [profile]
-  const sources = { resolveRootBinding: vi.fn(async () => root),
+  const catalog = { root }
+  const sources = { resolveRootBinding: vi.fn(async (_sql: unknown, _principal: unknown,
+    input: { bindingRevision: number }) => {
+    if (input.bindingRevision !== root.binding.bindingRevision) {
+      throw new DomainError('SOURCE_ROOT_NOT_FOUND', 'Source binding revision not found.', 404)
+    }
+    return root
+  }),
     resolveApprovedSource: vi.fn(async () => ({ manifest })) } as unknown as SourceAdmissionPort
   const policy = { ...root.selection, canonicalProjectRoot: '/worker/project', managedRuntimeRoot: '/worker/runtime',
     registration: root.registration, applicationInstallationId: workerInstallationId }
-  const roots = { resolve: vi.fn(async () => policy) } as unknown as WorkspaceRootPolicyPort
+  const roots = { resolve: vi.fn(async () => policy), read: vi.fn(async () => [policy]) } as unknown as WorkspaceRootPolicyPort
   const installations = { list: () => [{ ...target, installed: true,
     driverRevision: '1', protocolRevision: 'native-v1' }], assertCurrent: vi.fn() }
   const registry = { installations, pinOverride: (value: HostHarnessOverride) => ({
@@ -73,7 +80,7 @@ function fixture(options: { repository?: boolean } = {}) {
       id: version.workspaceId, name: 'GitHub workspace',
       repository: { provider: 'github', owner: 'octo', name: 'site', defaultBranch: 'main' },
     } }]
-    else if (text.includes('from source_root_bindings')) rows = [{ record: root }]
+    else if (text.includes('from source_root_bindings')) rows = [{ record: catalog.root }]
     else if (text.includes('from harness_instance_settings')) rows = profiles.map(record => ({ record }))
     return { rows, rowCount: rows.length }
   }, on: () => {}, removeListener: () => {}, release: () => {} }
@@ -92,7 +99,7 @@ function fixture(options: { repository?: boolean } = {}) {
       commandId: randomUUID(), executionSemanticsVersion: 3, expectedWorkflowRevision: 1,
       expectedLocationRevision: 1, input: {} }), principal)
   }
-  return { prepare, node, version, root, profile, profiles, policy, refresh, configuration, sources }
+  return { prepare, node, version, root, profile, profiles, policy, refresh, configuration, sources, catalog }
 }
 
 it('refreshes the inherited computer and freezes the workflow root and Agent prefix override', async () => {
@@ -120,7 +127,10 @@ it('binds a GitHub Run to its freshly approved root without changing the saved w
   freshRoot.source.approvedSourceId = randomUUID()
   freshRoot.binding.snapshotId = freshRoot.source.snapshotId
   freshRoot.binding.bindingRevision = 2
-  const prepare = vi.fn(async () => [freshRoot])
+  const prepare = vi.fn(async () => {
+    f.catalog.root = freshRoot
+    return [freshRoot]
+  })
   f.sources.prepareRunSources = prepare
   vi.mocked(f.sources.resolveRootBinding).mockImplementation(async (_sql, _principal, input) =>
     input.bindingRevision === 2 ? freshRoot : f.root)
@@ -193,3 +203,49 @@ it('fails an unavailable inherited source before refreshing a replacement comput
   await expect(f.prepare()).rejects.toThrow('Retained source unavailable')
   expect(f.refresh).not.toHaveBeenCalled()
 })
+
+it.each(['explicit', 'workflow-default'] as const)(
+  'resolves saved %s placement against the latest policy, binding and enabled instance', async mode => {
+    const f = fixture()
+    if (mode === 'explicit') {
+      f.node.placement = { schemaVersion: 1, ...f.root.selection, projectRoot: f.policy.canonicalProjectRoot,
+        cwdPolicy: 'project-subdirectory', relativeCwd: 'src', instanceId: f.profile.instanceId,
+        instanceRevision: f.profile.instanceRevision, harnessInstallationId: f.profile.target.harnessInstallationId,
+        source: structuredClone(f.root.source), rootBinding: { rootId: f.root.binding.rootId, bindingRevision: 1 } }
+    }
+    const original = structuredClone(f.version.definition)
+    f.policy.rootPolicyRevision = '3'
+    f.policy.locationRevision = '6'
+    f.policy.canonicalProjectRoot = '/worker/selected-project'
+    f.root.selection = { ...f.root.selection, rootPolicyRevision: '3', locationRevision: '6' }
+    f.root.binding.bindingRevision = 2
+    f.root.binding.locationRevision = 6
+    f.root.source.snapshotId = randomUUID()
+    f.root.binding.snapshotId = f.root.source.snapshotId
+    f.profile.instanceRevision = '2'
+    f.profile.revision = 2
+    const accepted = (await f.prepare())!.bind('run-latest')[0]!
+    expect(accepted.destination).toMatchObject({ rootPolicyRevision: '3', locationRevision: '6',
+      canonicalProjectRoot: '/worker/selected-project',
+      canonicalCwd: mode === 'explicit' ? '/worker/selected-project/src' : '/worker/selected-project' })
+    expect(accepted.source).toMatchObject({ snapshotId: f.root.source.snapshotId, bindingRevision: 2 })
+    expect(accepted.payload).toMatchObject({ instanceId: f.profile.instanceId, instanceRevision: '2' })
+    expect(f.version.definition).toEqual(original)
+  },
+)
+
+it.each(['disabled-instance', 'different-host', 'missing-policy'] as const)(
+  'rejects saved placement with a %s without selecting another computer or instance', async reason => {
+    const f = fixture()
+    f.node.placement = { schemaVersion: 1, ...f.root.selection, projectRoot: f.policy.canonicalProjectRoot,
+      cwdPolicy: 'project-root', relativeCwd: '', instanceId: f.profile.instanceId,
+      instanceRevision: f.profile.instanceRevision, harnessInstallationId: f.profile.target.harnessInstallationId,
+      source: f.root.source, rootBinding: { rootId: f.root.binding.rootId, bindingRevision: 1 } }
+    if (reason === 'disabled-instance') f.profile.enabled = false
+    if (reason === 'different-host') {
+      f.profile.target.hostRef = { kind: 'device', mainId: f.root.selection.hostRef.mainId, deviceId: randomUUID() }
+    }
+    if (reason === 'missing-policy') f.policy.rootPolicyId = randomUUID()
+    await expect(f.prepare()).rejects.toMatchObject({ code: 'PLACEMENT_ADMISSION_CONFLICT' })
+  },
+)
