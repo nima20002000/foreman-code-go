@@ -12,10 +12,12 @@ export function workHandoffSiblings() {
     delete configured.join
     return configured
   })
+  const entryNodeId = graph.entryNodeId
+  if (!entryNodeId) throw new Error('The handoff sibling fixture needs an entry node.')
   graph.edges = graph.nodes.slice(1).map(node => ({
-    id: `${graph.entryNodeId}-${node.id}`,
+    id: `${entryNodeId}-${node.id}`,
     kind: 'execution',
-    source: graph.entryNodeId,
+    source: entryNodeId,
     target: node.id,
   }))
   return fixture
