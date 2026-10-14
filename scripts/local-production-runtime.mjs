@@ -807,6 +807,14 @@ export async function pruneReleases(releasesDirectory, keep,
     if (error.code !== 'ENOENT') throw error
   }
   const kept = new Set(await Promise.all(retained.map(path => realpath(path))))
+  // Retry detached removals left behind by an interrupted installer or remover.
+  const parent = dirname(directory)
+  for (const entry of await readdir(parent, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith('.pruned-releases-')) continue
+    const abandoned = join(parent, entry.name)
+    const inUse = [...kept].some(path => path === abandoned || path.startsWith(`${abandoned}/`))
+    if (!inUse) await removeInBackground(abandoned)
+  }
   const removed = []
   const candidates = []
   for (const name of await readdir(directory)) {

@@ -6,6 +6,7 @@ import { basename, dirname, join, relative } from 'node:path';
 import { setTimeout as wait } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WorkerError, requirePrivateDirectory, workerUpdateErrorMessage } from './diagnostics.mjs';
+import { pruneWorkerVersions } from './installation.mjs';
 import { readWorkerStatus } from './runtime.mjs';
 import { WORKER_UPDATE_STARTUP_TIMEOUT_MS } from './ciSmokeTiming.mjs';
 
@@ -265,6 +266,14 @@ export async function superviseWorkerUpdate(record, ports = {}) {
       const reason = workerUpdateErrorMessage(rollbackError);
       await save('failed', plan.previousVersion, `${failure.slice(-950)}; rollback: ${reason.slice(-950)}`);
       throw new WorkerError('worker_update_rollback_failed');
+    }
+  }
+  if (record.status.state === 'current') {
+    try {
+      await pruneWorkerVersions({ root: plan.root, stateDirectory: plan.stateDirectory });
+    } catch (error) {
+      // Cleanup failure does not undo a healthy update; the next update retries it.
+      process.stderr.write(`Worker version cleanup failed: ${workerUpdateErrorMessage(error)}\n`);
     }
   }
 }

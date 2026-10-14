@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, lstat, realpath, copyFile, chmod, open, rename, symlink, readlink, rm, statfs } from 'node:fs/promises';
+import { mkdir, readFile, lstat, realpath, copyFile, chmod, open, rename, symlink, readlink, readdir, rm, statfs } from 'node:fs/promises';
 import { join, dirname, basename, isAbsolute } from 'node:path';
 import { WorkerError, requirePrivateDirectory } from './diagnostics.mjs';
 import { acquireWorkerLock } from './runtime.mjs';
@@ -165,6 +165,7 @@ export async function installVersion(options) {
     try {
       const result = await installRelease(options, state, bound);
       if (publishInstallation) await publishInstallation(result);
+      await removeObsoleteWorkerVersions(root, state, [result.directory]);
       return result;
     } finally {
       await unlock();
@@ -268,4 +269,64 @@ export async function rollbackVersion({ root, stateDirectory, approveStop, facts
       await unlock();
     }
   });
+}
+
+export async function pruneWorkerVersions({ root, stateDirectory }) {
+  return withInstallLock(root, async () => {
+    const state = await requireInstallationState({ root, stateDirectory });
+    await removeObsoleteWorkerVersions(root, state);
+  });
+}
+
+async function removeObsoleteWorkerVersions(root, stateDirectory, retained = []) {
+  const versions = await realpath(join(root, 'versions'));
+  const keep = new Set(await Promise.all(retained.map(path => realpath(path))));
+  const hashes = new Set();
+  for (const name of ['current', 'previous']) {
+    try {
+      await lstat(join(root, name));
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw error;
+    }
+    keep.add(await realpath(join(root, name)));
+  }
+  try {
+    const path = join(stateDirectory, 'worker-update.json');
+    const info = await lstat(path);
+    if (!info.isFile() || info.uid !== process.getuid() || (info.mode & 0o077)) {
+      throw new WorkerError('worker_update_state_invalid');
+    }
+    const record = JSON.parse(await readFile(path, 'utf8'));
+    if (record?.format !== 1) throw new WorkerError('worker_update_state_invalid');
+    await retainUpdateReferences(record, keep, hashes);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  for (const entry of await readdir(versions, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^\d+\.\d+\.\d+-[a-f0-9]{64}$/.test(entry.name)) continue;
+    const path = join(versions, entry.name);
+    const referenced = [...keep].some(reference => reference === path || reference.startsWith(`${path}/`));
+    if (referenced || hashes.has(entry.name.slice(-64))) continue;
+    await rm(path, { recursive: true, force: true });
+  }
+  await syncDirectory(versions);
+}
+
+async function retainUpdateReferences(value, keep, hashes) {
+  if (typeof value === 'string') {
+    if (digest.test(value)) hashes.add(value);
+    if (isAbsolute(value)) {
+      keep.add(value);
+      try {
+        keep.add(await realpath(value));
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    }
+    return;
+  }
+  if (value && typeof value === 'object') {
+    for (const child of Object.values(value)) await retainUpdateReferences(child, keep, hashes);
+  }
 }
