@@ -93,6 +93,8 @@ export class HostCiRunner {
   private readonly repositoryQueues = new Map<string, Promise<void>>()
   private githubChecked: { at: number; ready: boolean; reason: string | null } | undefined
   private readonly toolsChecked = new Map<string, number>()
+  /** Status polls list every retained run; settled, cleaned runs are reused until their metadata file changes. */
+  private readonly settledRuns = new Map<string, { version: string; run: CiHostRun }>()
   private draining = false
 
   constructor(private readonly root = hostCiDirectory(),
@@ -802,6 +804,13 @@ export class HostCiRunner {
 
   /** Reads the current state of a run, settling it once its unit has exited, and frees its worktree. */
   async refresh(runId: string): Promise<CiHostRun> {
+    const metaVersion = async () => {
+      const info = await stat(join(this.runDirectory(runId), 'meta.json')).catch(fallbackOnError(
+        null, 'jobs', 'stat CI run metadata', { runId }, ['ENOENT']))
+      return info && `${info.ino}:${info.size}:${info.mtimeMs}`
+    }
+    const cached = this.settledRuns.get(runId)
+    if (cached && cached.version === await metaVersion()) return cached.run
     // Launch can finish while the metadata read is awaiting I/O.
     const preparing = this.preparing.has(runId) || this.startingRun?.runId === runId
     let meta = await this.readMeta(runId).catch(error => {
@@ -840,9 +849,13 @@ export class HostCiRunner {
     const log = await stat(join(directory, 'log')).catch(fallbackOnError(null, 'jobs', 'stat CI log', { runId }, ['ENOENT']))
     const step = (await readFile(join(directory, 'step'), 'utf8').catch(() => '')).trim()
       || (this.startingRun?.runId === runId ? 'dispatch' : null)
-    return { runId, state: meta.state, step, exitCode: meta.exitCode, startedAt: meta.startedAt,
+    const run = { runId, state: meta.state, step, exitCode: meta.exitCode, startedAt: meta.startedAt,
       finishedAt: meta.finishedAt, logBytes: log?.size ?? 0,
       message: this.runMessage(meta) }
+    const version = settled && meta.cleaned && !preparing ? await metaVersion() : null
+    if (version) this.settledRuns.set(runId, { version, run })
+    else this.settledRuns.delete(runId)
+    return run
   }
 
   private runMessage(meta: RunMeta): string | null {

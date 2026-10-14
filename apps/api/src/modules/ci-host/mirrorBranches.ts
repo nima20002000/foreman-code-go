@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { readdir, readFile } from 'node:fs/promises'
+import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
@@ -16,6 +16,33 @@ interface MirrorRun {
   state: string
   mirrorBranch?: string
   dispatch?: { input: { branch: string; defaultBranch?: string } }
+}
+
+// Sweeps run after every finished ticket over thousands of retained tickets; unchanged files are not parsed again.
+const parsedMeta = new Map<string, { version: string; run: MirrorRun }>()
+
+async function readRun(path: string): Promise<MirrorRun | undefined> {
+  let version: string
+  try {
+    const info = await stat(path)
+    version = `${info.ino}:${info.size}:${info.mtimeMs}`
+  } catch (error) {
+    // A run directory can precede its first atomic metadata write.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+  const cached = parsedMeta.get(path)
+  if (cached?.version === version) return cached.run
+  let text: string
+  try {
+    text = await readFile(path, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+  const run = JSON.parse(text) as MirrorRun
+  parsedMeta.set(path, { version, run })
+  return run
 }
 
 async function runDirectories(root: string) {
@@ -46,15 +73,8 @@ export async function pruneMirrorBranches(options: {
   for (const root of new Set(options.roots)) {
     for (const directory of await runDirectories(root)) {
       if (!directory.isDirectory()) continue
-      let text: string
-      try {
-        text = await readFile(join(root, 'runs', directory.name, 'meta.json'), 'utf8')
-      } catch (error) {
-        // A run directory can precede its first atomic metadata write.
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-        throw error
-      }
-      const run = JSON.parse(text) as MirrorRun
+      const run = await readRun(join(root, 'runs', directory.name, 'meta.json'))
+      if (!run) continue
       if (run.mirror !== options.mirror || !['starting', 'running', 'queued'].includes(run.state)) continue
       const index = options.activeRuns
       // A new dispatch after the index was read stays protected until the next sweep.
