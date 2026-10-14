@@ -32,6 +32,25 @@ describe('worker selected-main application lease with authenticated carrier doub
     } finally { vi.useRealTimers() }
   })
 
+  it('retries a Main database read timeout for the lease and for a tool call that never reached Main MCP', async () => {
+    vi.useFakeTimers()
+    const value = fixture()
+    const response = { statusCode: 200, contentType: 'application/json', body: '{"ok":true}' }
+    const request = vi.fn<Parameters<typeof prepareWorkerApplicationAccess>[0]['request']>(async (_namespace, raw) =>
+      ({ payload: (raw as { operation: string }).operation === 'worker-mcp.authorize' ? value.lease : response }))
+    try {
+      request.mockRejectedValueOnce(new DeviceApplicationError('DATABASE_READ_TIMEOUT'))
+      const preparing = prepareWorkerApplicationAccess({ request }, value.intent, value.placement, value.applicationAccess)
+      await Promise.allSettled([preparing, vi.advanceTimersByTimeAsync(5_000)])
+      const prepared = await preparing
+      request.mockRejectedValueOnce(new DeviceApplicationError('DATABASE_READ_TIMEOUT'))
+      const called = prepared.request({ method: 'tools/call', params: { name: 'write' } })
+      await Promise.allSettled([called, vi.advanceTimersByTimeAsync(5_000)])
+      expect(await called).toEqual(response)
+      expect(request).toHaveBeenCalledTimes(4)
+    } finally { vi.useRealTimers() }
+  })
+
   it('allows slow relay responses and never replays a tool call after its response times out', async () => {
     const value = fixture()
     const request = vi.fn<Parameters<typeof prepareWorkerApplicationAccess>[0]['request']>(async () => ({ payload: value.lease }))
