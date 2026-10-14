@@ -437,7 +437,7 @@ export class PostgresSourceService implements SourceAdmissionPort {
           await authorizeSource(sql, principal, 'source_roots:read', input.workspaceId)
           await this.resolveApprovedSource(sql, principal, input.workspaceId, input.source); await this.workspace(sql, input.workspaceId)
           const root = await this.roots.authorize(sql, live.principal, input)
-          if (root.mainId !== this.mainId || root.workspaceId !== input.workspaceId || root.ownerPrincipalId !== live.ownerId
+          if (root.mainId !== this.mainId || root.workspaceId !== input.workspaceId
             || !isDeepStrictEqual(root.selection, input.selection)
             || (input.selection.hostRef.kind === 'main' ? root.deviceId !== null || root.workerInstallationId !== null || root.keyRevision !== null || root.authorizationRevision !== null
               : root.deviceId !== input.selection.hostRef.deviceId || root.workerInstallationId === null || root.keyRevision === null || root.authorizationRevision === null)) throw new DomainError('SOURCE_ROOT_CONFLICT', 'Root catalog authority does not match the approved workspace/host.', 409)

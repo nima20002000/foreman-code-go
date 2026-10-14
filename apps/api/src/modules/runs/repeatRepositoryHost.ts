@@ -4,6 +4,7 @@ import {
   CurrentRunVersionSnapshotSchema, type AcceptedWorkflowRunV3, type WorkflowVersionV3,
 } from '@foreman-code/contracts/wave25'
 import type { WorkflowNativeProofRecord } from './workflowNativeProof.js'
+import { DomainError } from '../errors.js'
 
 import {
   assertGraphTransaction, beforeGraphCommit, isReadOnlyGraphTransaction, type GraphTransactionSql,
@@ -95,9 +96,31 @@ export class RepeatRepositoryFactory {
     return store
   }
 
-  preparePlacementExecution(owner: RunOwnership, run: AcceptedWorkflowRunV3, execution: HarnessExecution) {
+  async preparePlacementExecution(owner: RunOwnership, run: AcceptedWorkflowRunV3, execution: HarnessExecution) {
     owner.assertOwned()
-    return this.services.preparePlacementExecution?.(owner, run, execution) ?? Promise.resolve(undefined)
+    try {
+      return await this.services.preparePlacementExecution?.(owner, run, execution)
+    } catch (error) {
+      owner.assertOwned()
+      const permanent = error instanceof DomainError && error.status >= 400 && error.status < 500
+        && error.status !== 408 && error.status !== 429 && error.details?.retryable !== true
+      if (permanent) {
+        if (execution.state === 'queued' && !execution.nativeSessionId) {
+          const current = this.stores.get(owner)
+          if (!current) return repeatConflict('REPEAT_NATIVE_HOST_REQUIRED')
+          await current.store.failPreparation(execution.id, { outcome: 'failed', error: {
+            code: error.code, message: error.message, retryable: false,
+          } })
+        }
+        throw error
+      }
+      // Preparation transport failures are retried from the saved checkpoint,
+      // rather than treated as an interrupted native launch by the driver.
+      const unavailable = new DomainError('EXECUTION_PREPARATION_UNAVAILABLE',
+        'Execution preparation is temporarily unavailable.', 503, { retryable: true })
+      unavailable.cause = error
+      throw unavailable
+    }
   }
   reconcileWorkflowArtifacts(owner: RunOwnership, run: AcceptedWorkflowRunV3,
     execution: HarnessExecution, signal: AbortSignal): Promise<void> {

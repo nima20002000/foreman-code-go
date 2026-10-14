@@ -50,6 +50,18 @@ function activityWorkResult(raw: unknown): RunActivityPublic['workResult'] {
   })
 }
 
+function recordedResultActivity(raw: unknown): Pick<RunActivityPublic, 'status' | 'summary' | 'detail' | 'workResult'> {
+  const result = ExecutionResultSchema.safeParse(raw)
+  if (result.success && result.data.outcome === 'failed') {
+    const error = result.data.error
+    const detail = error ? nativePersistenceRedactor([]).text(`${error.code}: ${error.message}`).slice(0, 500)
+      : undefined
+    return { status: 'failed', summary: 'Work failed', ...(detail ? { detail } : {}) }
+  }
+  const workResult = activityWorkResult(raw)
+  return { status: 'completed', summary: 'Work result recorded', ...(workResult ? { workResult } : {}) }
+}
+
 function toolLabel(native: Record<string, unknown>): string | undefined {
   const item = string(native.itemType), part = string(native.partTool)
   if (item === 'commandExecution' && native.commandName) {
@@ -357,9 +369,7 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
       ({ kind, status, summary, detail } = nativeOutputActivity(native, runId))
       break
     case 'result_recorded': case 'work_result_accepted':
-      status = 'completed'
-      summary = 'Work result recorded'
-      workResult = activityWorkResult(row.work_result)
+      ({ status, summary, detail, workResult } = recordedResultActivity(row.work_result))
       break
     case 'work_handoff_accepted':
       kind = 'work_request'; status = refs.requestId ? 'accepted' : 'unknown'

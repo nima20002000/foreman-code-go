@@ -72,6 +72,7 @@ export const runTools = [
       + 'Includes persisted Host CI lifecycle states with ciTicketId, ciGroupId, originating Agent execution, part, partition and computer. '
       + 'Native summaries identify messages, reasoning, commands, file edits and tool calls; details include safe counts, message phase and command exit code. '
       + 'Work result and needs-direction activities include redacted latestDeliverable, remainingFindings and outcome. '
+      + 'Failed executions include their redacted failure code and reason in activity details. '
       + 'Pages may return fewer items than limit to fit the 128 KiB public-page budget; follow the returned cursors. '
       + 'Use run_get for execution and normalized activity snapshots. '
       + 'Use nextCursor for incremental catch-up and olderCursor for earlier retained history; '

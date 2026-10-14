@@ -42,6 +42,7 @@ Everything else that made an authorized caller prove, approve, re-state or re-re
 | Idempotency | Required `commandId` on simple operations | Optional; generated when omitted |
 | Settings revisions | Required `expectedRevision` on settings writes | Optional; last write wins when omitted |
 | Saved workflow placement | Root policy, location, source binding/snapshot and harness instance revision pins required again at Start | Saved placements name the host, root policy, instance and cwd; Start resolves their current revisions, rebinds the current approved source when needed, and records exact resolved facts on the Run |
+| Workspace root sharing | Creator equality between root policies, source bindings, placements and Runs | Any caller with the normal workspace grants may use its root policies and bindings; creator IDs remain historical facts. Host, installation, registration and canonical path identity checks still apply |
 | MCP inputs | Rejecting unknown fields | Unknown fields are stripped |
 | Read sizes | Hard caps that threw on large workspace and graph reads | Truncated newest-first |
 | Agent snapshots | 700 KiB source snapshot limit | 32 MiB |

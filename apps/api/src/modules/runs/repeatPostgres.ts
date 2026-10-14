@@ -22,6 +22,7 @@ import {
 } from '@foreman-code/contracts/wave25'
 
 import { enterWorkflowNativeLocked, releaseWorkflowNativeEntryPermit, reserveWorkflowNativeEntryLocked, readWorkflowNativeEntryLocked,
+  sealWorkflowPreparationFailureLocked,
   sealWorkflowNativeEntryLocked, workflowNativeReservation, type WorkflowNativeEntryPermit, type WorkflowNativeEntryRecord } from './workflowNativeEntry.js'
 import {
   beforeGraphCommit,
@@ -809,6 +810,41 @@ export class RepeatRunRepository {
         scope: context.scope, evidence: { sourceKind: 'execution', sourceId: change.sourceId, sourceRevision: '1' },
         sourceDigest: change.sourceDigest, effect: null,
       }) : undefined)
+    })
+  }
+
+  async failPreparation(executionId: string, failure: unknown): Promise<void> {
+    const result = ExecutionResultSchema.parse(failure)
+    if (result.outcome !== 'failed' || !result.error || result.error.retryable) {
+      return repeatConflict('RUN_FAILURE_CAUSE_INVALID')
+    }
+    await this.transaction(async context => {
+      const stored = await this.execution(context, executionId)
+      await this.recordedEffect(context, 'input.bind', executionId)
+      if (stored.execution.state === 'completed') return
+      this.active(context)
+      if (await repeatPossibleSubmissionLocked(context.sql, stored.execution)) {
+        return repeatConflict('NATIVE_ENTRY_CONFLICT')
+      }
+      const reservation = workflowNativeReservation(context.scope, stored.ref, stored.execution, stored.inputDigest)
+      const entry = await readWorkflowNativeEntryLocked(context.sql, reservation)
+      if (entry.phase !== 'reserved') return repeatConflict('NATIVE_ENTRY_CONFLICT')
+      const seal: WorkflowNativeEntryRecord = { reservation, phase: 'not_submitted',
+        ownerId: context.fence.ownerId, ownerFence: context.fence.fence, launchDigest: null }
+      const next = HarnessExecutionSchema.parse({ ...stored.execution,
+        state: 'completed', result, finishedAt: context.now })
+      const change = this.nativeChange(context, stored, next, 'negative_settlement', {
+        scope: context.scope, ref: stored.ref, previous: stored.execution, next, noSubmission: seal,
+      })
+      await this.publishNative(context, change, async () => {
+        await sealWorkflowPreparationFailureLocked(context.sql, this.owner, seal, {
+          scope: context.scope, evidence: { sourceKind: 'execution', sourceId: change.sourceId, sourceRevision: '1' },
+          sourceDigest: change.sourceDigest, effect: null,
+        })
+        await context.sql.query(`insert into run_activity(run_id,source,kind,harness_execution_id,occurred_at,payload)
+          values($1,'backend','result_recorded',$2,$3,$4::jsonb)`, [context.scope.runId, executionId, context.now,
+          canonicalGraphJson({ workflowNodeId: stored.ref.nodeId, result })])
+      })
     })
   }
 

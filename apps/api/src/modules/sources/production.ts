@@ -1,5 +1,6 @@
 import { ResolvedJobDefinitionSpecRecordSchema } from '@foreman-code/contracts/job-verification'
 import { withTransaction } from '../../infrastructure/transaction.js'
+import { createProductionRootPolicies, rootPolicySourceAttempts } from './productionRootAuthority.js'
 import type { MaterializationAttempt } from './ports.js'
 import { installedSourceQuotaPool } from '../jobs/quotaOwnership.js'
 import type { InstalledRuntimeConfigurationLocation } from '../jobs/installedRuntimeHost.js'
@@ -13,8 +14,7 @@ import { sourceMaterializationDigest } from './bindingHash.js'
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
 import { SOURCE_OPERATION_EXTENSION } from '@foreman-code/contracts/source-operations'
 import type { GraphSqlClient } from '../run-graph/connection.js'
-import type { ManagementPrincipal } from '@foreman-code/contracts/management'
-import { SourceRootRecordSchema, type SourceRootRecord, type SourcePreparationClosure, type SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
+import type { SourceRootRecord, SourcePreparationClosure, SourceMaterializationRecord } from '@foreman-code/contracts/source-admission'
 import { PostgresSourceOperationAuthority } from './operationAuthority.js'
 import { PostgresSourcePackageTransfers } from './operationTransferAdmission.js'
 import { GitHubSourcePublisher } from './githubPublisher.js'
@@ -23,13 +23,7 @@ import type { MainWorkerCarrier } from '../placement/workerCarrier.js'
 import { lstat, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type pg from 'pg'
-import { ApprovedRootAllowlistSchema, WORKSPACE_ROOT_EXTENSION } from '@foreman-code/contracts/workspace-root-policies'
-import type { WorkspaceRootHostPort } from './rootPolicyPorts.js'
-import { PostgresWorkspaceRootPolicies, workspaceRootHostScope } from './rootPolicies.js'
-import { InstalledWorkspaceRootHosts } from './rootHosts.js'
-import { RegisteredWorkspaceSourceRoots } from './registeredSourceRoots.js'
-import type { RegisteredSourceRootPort } from './admissionPorts.js'
-import { InstalledSourceExecutionHosts, type SourceAttemptAuthority, type RemoteSourceMaterializationHost, type SourceActiveNativeSessionReader, type SourceNativeSessionCaptureReader } from './executionHosts.js'
+import { InstalledSourceExecutionHosts, type RemoteSourceMaterializationHost, type SourceActiveNativeSessionReader, type SourceNativeSessionCaptureReader } from './executionHosts.js'
 import { PrivateSourceSnapshotStore } from './store.js'
 import { PostgresSourceService } from './service.js'
 import { JobSourceAttemptAuthority } from '../jobs/sourceAuthority.js'
@@ -41,8 +35,6 @@ import type { DeviceEndpoint } from '../devices/deviceEndpoint.js'
 import { assertDeviceHostInstallation } from '../devices/hostAuthorization.js'
 import { DomainError } from '../errors.js'
 import { isDeepStrictEqual } from 'node:util'
-import { DeviceRegistrationSchema } from '@foreman-code/contracts/device-identity'
-import { readInstalledRootConfiguration } from './installedRootConfiguration.js'
 import { localWorkflowSourceClosed } from './workflowCleanup.js'
 import { requireQueuedPreparationClosed } from './queuedPreparationAuthority.js'
 import { localWorkflowPreparationClosed, remoteWorkflowPreparationClosed } from './workflowPreparationCleanup.js'
@@ -63,56 +55,7 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
   transferPreparationClosed?: (closure: SourcePreparationClosure) => Promise<void>;
   transferMaterializationClosed?: (record: SourceMaterializationRecord) => Promise<void> }) {
   const unavailable = (): never => { throw new DomainError('SOURCE_REMOTE_UNAVAILABLE', 'The authenticated source materialization host is not installed.', 409) }
-  const hosts: WorkspaceRootHostPort = {
-    async configuration(sql, host) {
-      if (host.kind === 'main') return readInstalledRootConfiguration(join(input.runtimeRoot, 'approved-roots.json'))
-      const row = (await sql.query<{ record: unknown }>('select record from device_registrations where id=$1 and main_id=$2 for share', [host.deviceId, host.mainId])).rows[0]
-      if (!row) throw new DomainError('ROOT_DEVICE_CONFLICT', 'The selected root host is not registered.', 403)
-      const registration = DeviceRegistrationSchema.parse(row.record)
-      await assertDeviceHostInstallation(sql, host, registration.workerInstallationId)
-      const endpoint = input.endpoint(), captured = endpoint.captureRequest(host.deviceId, WORKSPACE_ROOT_EXTENSION.namespace)
-      if (!captured || captured.binding.mainId !== host.mainId || captured.binding.workerInstallationId !== registration.workerInstallationId
-        || captured.binding.keyRevision !== registration.keyRevision || captured.binding.authorizationRevision !== registration.authorizationRevision) unavailable()
-      const reply = await captured!.request({ version: 1, operation: 'workspace-roots.configuration' }, { signal: AbortSignal.timeout(10_000) })
-      if (reply.bytes !== undefined || !isDeepStrictEqual(endpoint.currentBinding(host.deviceId), captured!.binding))
-        throw new DomainError('ROOT_DEVICE_CONFLICT', 'The authenticated root configuration channel changed during adoption.', 409)
-      const configuration = ApprovedRootAllowlistSchema.parse(reply.payload)
-      if (!isDeepStrictEqual(configuration.hostRef, host) || configuration.applicationInstallationId !== registration.workerInstallationId)
-        throw new DomainError('ROOT_CONFIGURATION_CONFLICT', 'The approved configuration belongs to another host installation.', 409)
-      return configuration
-    },
-    authorize: async (sql, _principal, host, installationId) => {
-      const registration = await assertDeviceHostInstallation(sql, host, installationId)
-      return registration ? { workerInstallationId: registration.workerInstallationId,
-        keyRevision: registration.keyRevision, authorizationRevision: registration.authorizationRevision } : null
-    },
-    async configurations(sql) {
-      const rows = await sql.query<{ record: unknown }>(`select c.record from workspace_root_host_configuration_heads h
-        join workspace_root_host_configurations c on c.host_scope=h.host_scope and c.configuration_revision=h.configuration_revision
-        where c.main_id=$1 order by h.host_scope`, [input.mainId])
-      return rows.rows.map(row => ApprovedRootAllowlistSchema.parse(row.record))
-    },
-    attest: async root => (await installed(root.selection.hostRef)).attest(root),
-    prepareManaged: async root => (await installed(root.selection.hostRef)).prepareManaged(root),
-    browse: async (root, path) => (await installed(root.selection.hostRef)).browse(root, path),
-    sourceNamespace: async (policy, id) => (await installed(policy.hostRef)).sourceNamespace(policy, id),
-  }
-  async function installed(host: Parameters<typeof workspaceRootHostScope>[0]) {
-    const rows = await input.pool.query<{ record: unknown }>(`select c.record from workspace_root_host_configuration_heads h
-      join workspace_root_host_configurations c on c.host_scope=h.host_scope and c.configuration_revision=h.configuration_revision
-      where h.host_scope=$1`, [workspaceRootHostScope(host)])
-    if (!rows.rows[0]) throw new DomainError('ROOT_CONFIGURATION_MISSING', 'The selected host has no explicit human-approved root configuration.', 409)
-    const configuration = ApprovedRootAllowlistSchema.parse(rows.rows[0].record)
-    return new InstalledWorkspaceRootHosts(configuration, hosts.authorize, { async request(host, registration, request) {
-      if (host.kind !== 'device') throw new DomainError('ROOT_HOST_MISMATCH', 'The remote root request must target its actual registered device.', 409)
-      const endpoint = input.endpoint(), binding = endpoint.currentBinding(host.deviceId)
-      if (!binding || binding.mainId !== host.mainId || binding.workerInstallationId !== registration.workerInstallationId
-        || binding.keyRevision !== registration.keyRevision || binding.authorizationRevision !== registration.authorizationRevision) unavailable()
-      return (await endpoint.request(host.deviceId, WORKSPACE_ROOT_EXTENSION.namespace, request)).payload
-    } })
-  }
-  const policies = new PostgresWorkspaceRootPolicies(input.mainId, hosts)
-  const roots: RegisteredSourceRootPort = new RegisteredWorkspaceSourceRoots(policies, hosts)
+  const { policies, roots } = createProductionRootPolicies(input)
   const root = join(input.runtimeRoot, 'source-snapshots')
   await mkdir(root, { recursive: true, mode: 0o700 })
   const snapshots = new PrivateSourceSnapshotStore(root)
@@ -123,30 +66,8 @@ export async function createProductionSources(input: { pool: pg.Pool; commands: 
   const jobs = new JobSourceAttemptAuthority(input.pool, installationFence)
   const agents = new AgentSourceAttemptAuthority(input.pool, installationFence)
   const originalAttempts = installedSourceAttemptAuthority(input.pool, agents, jobs)
-  const assertRootPolicy = async (sql: GraphSqlClient, principal: ManagementPrincipal, root: SourceRootRecord) => {
-    const current = await roots.authorize(sql, principal, { workspaceId: root.binding.workspaceId, selection: root.selection, accessMode: root.binding.accessMode })
-    if (current.ownerPrincipalId !== root.ownerPrincipalId || current.mainId !== root.binding.mainId || current.deviceId !== root.binding.deviceId
-      || current.workerInstallationId !== root.binding.workerInstallationId || current.keyRevision !== (root.registration?.keyRevision ?? null)
-      || current.authorizationRevision !== (root.registration?.authorizationRevision ?? null)
-      || current.canonicalPath !== root.binding.canonicalPath) throw new DomainError('SOURCE_ROOT_CONFLICT', 'Current root authority differs from the exact accepted source namespace.', 409)
-  }
-  const readRoot = async (sql: GraphSqlClient, record: Parameters<SourceAttemptAuthority['revalidateMaterialization']>[0]) => {
-    const row = (await sql.query<{ record: unknown }>('select record from source_root_bindings where root_id=$1 and binding_revision=$2 for share',
-      [record.receipt.binding.rootId, record.receipt.binding.bindingRevision])).rows[0]
-    return SourceRootRecordSchema.parse(row?.record)
-  }
-  const attempts: SourceAttemptAuthority = {
-    async authorize(sql, principal, value) { await originalAttempts.authorize(sql, principal, value); await assertRootPolicy(sql, principal, value.root) },
-    async authorizeFinal(sql, principal, record, hash) { await originalAttempts.authorizeFinal(sql, principal, record, hash); await assertRootPolicy(sql, principal, await readRoot(sql, record)) },
-    async revalidate(root, attempt) { await owners.prepareIdentity(root, attempt) },
-    async revalidateMaterialization(record) {
-      const sql = await input.pool.connect()
-      let root: SourceRootRecord
-      try { root = await readRoot(sql, record) } finally { sql.release() }
-      await originalAttempts.revalidateMaterialization(record)
-      await owners.prepareIdentity(root, record.receipt)
-    },
-  }
+  const attempts = rootPolicySourceAttempts({ pool: input.pool, roots, originalAttempts,
+    prepareIdentity: (root, attempt) => owners.prepareIdentity(root, attempt) })
   const confirmedClosed = async (sql: GraphSqlClient, record: import('@foreman-code/contracts/source-admission').SourceMaterializationRecord) => {
     const original = await readDispatchIntent(sql, record.receipt.executionId)
     if (original) {
