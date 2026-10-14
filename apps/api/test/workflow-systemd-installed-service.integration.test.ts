@@ -50,10 +50,12 @@ describe('installed Main-local workflows across systemd restart', () => {
 
 describe('installed API fixture packaging', () => {
   it.each([
-    { age: 'old', modified: '2000-01-01T00:00:00.000Z', succeeds: true },
-    { age: 'unknown', modified: undefined, succeeds: false },
+    { age: 'old', modified: '2000-01-01T00:00:00.000Z', publication: undefined, succeeds: true },
+    { age: 'recent', modified: new Date().toISOString(), publication: undefined, succeeds: true },
+    { age: 'unknown', modified: undefined, publication: undefined, succeeds: true },
+    { age: 'too young', modified: new Date().toISOString(), publication: new Date().toISOString(), succeeds: false },
   ])('deploys locked packages with $age abbreviated metadata without bypassing release age', async ({
-    modified, succeeds,
+    modified, publication, succeeds,
   }) => {
     const directory = await privateFixtureDirectory('locked-packaging-')
     const repository = fileURLToPath(new URL('../../../', import.meta.url))
@@ -101,6 +103,14 @@ describe('installed API fixture packaging', () => {
       await writeFile(metadataPath, `${JSON.stringify({ modified })}\n${JSON.stringify({
         name, modified, versions,
       })}`)
+      if (publication) {
+        const fullMetadataPath = join(cache, 'v11/metadata-full/https%3A+registry.npmjs.org', `${name}.jsonl`)
+        await mkdir(dirname(fullMetadataPath), { recursive: true })
+        await writeFile(fullMetadataPath, `${JSON.stringify({ modified })}\n${JSON.stringify({
+          name, modified, versions,
+          time: Object.fromEntries(Object.keys(versions).map(version => [version, publication])),
+        })}`)
+      }
     }
     const execute = promisify(execFile)
     const deploy = deployProductionApi(async (command, args) => {
@@ -113,7 +123,7 @@ describe('installed API fixture packaging', () => {
     try {
       if (!succeeds) {
         await expect(deploy).rejects.toMatchObject({
-          stdout: expect.stringMatching(/minimumReleaseAge|NO_OFFLINE_META|MISSING_TIME/),
+          stdout: expect.stringMatching(/minimumReleaseAge/),
         })
         return
       }
@@ -136,7 +146,7 @@ process.stdout.write(JSON.stringify({
     }
   }, 60_000)
 
-  it('deploys offline using the package store that populated the workspace', async () => {
+  it('prefers cached packages and allows missing metadata using the installation store and cache', async () => {
     const directory = await privateFixtureDirectory('installed-packaging-')
     const bin = join(directory, 'bin')
     const calls = join(directory, 'calls.json')
@@ -159,7 +169,8 @@ process.exit(1)
       await expect(installedRestartService(directory, join(directory, 'config.json'), {}, join(directory, 'runtime')))
         .rejects.toThrow('Fixture package store is intentionally empty')
       const args = JSON.parse(await readFile(calls, 'utf8')) as string[]
-      expect(args).toContain('--offline')
+      expect(args).toContain('--prefer-offline')
+      expect(args).not.toContain('--offline')
       expect(args[args.indexOf('--store-dir') + 1]).toBe(storeDir)
       expect(args[args.indexOf('--cache-dir') + 1]).toBe(join(directory, 'metadata'))
     } finally {
