@@ -162,7 +162,8 @@ async function fixture(options: { managedStorage: boolean; hostCi?: boolean; bef
     const createInventory = () => new ProductionCiEnrollmentInventory(db.pool, sources.sources,
       () => endpoint, () => undefined, new WorkerExecutionPolicy({ enabled: true, managedBy: 'startup' }),
       new ManagedWorkspaceRootService(new PostgresCommandCoordinator(db.pool), roots, sources.policies))
-    enrollment = new CiEnrollment(db.pool, commands, profiles, preparation, createInventory())
+    const reconciled = deferred()
+    enrollment = new CiEnrollment(db.pool, commands, profiles, preparation, createInventory(), () => reconciled.resolve())
     const settings = new BuildComputerSettings(db.pool, commands,
       async () => ({ state: 'ready', reasons: [], remoteExecutionEnabled: true }))
     await settings.update(owner.principal, 'mcp', { commandId: randomUUID(), target: worker.target,
@@ -198,7 +199,9 @@ async function fixture(options: { managedStorage: boolean; hostCi?: boolean; bef
         expectedLocationRevision: 1, expectedRootPolicyRevision: 0 })).value
     }
     const waitForPreparation = async () => {
-      await vi.waitFor(async () => expect((await read()).computers[0]!.state).toBe('preparing'), { timeout: 5000 })
+      // Reconciliation signals only after preparation and its enrollment state have been persisted.
+      await reconciled.promise
+      expect((await read()).computers[0]!.state).toBe('preparing')
     }
     return { db, app, access, owner, workspaceId, worker, workerAllowlist, rootRequests, roots, primary,
       managedBase, arbitraryBase, managedSetup, runtimeState, saved, sources: sources.sources,
