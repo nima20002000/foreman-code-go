@@ -12,6 +12,7 @@ import { componentLogger } from '../diagnostics/logger.js'
 import { ensureClone, ensureCommit, fetchRepositoryBranch, systemGitWorktreePorts, type GitWorktreePorts } from '../sources/gitWorktree.js'
 import { systemHostCiPorts, type HostCiPorts } from './runner.js'
 import type { HostCiComputer } from './service.js'
+import type { CiMirrorInput } from './serviceTypes.js'
 import { CLOUD_START_TIMEOUT_MS, CircleCiProvider, GitHubActionsProvider, validateProviderParameters,
   type CloudDispatchInput, type CloudProvider, type CloudRun, type CloudStatus } from './cloudProviders.js'
 import { runsOnCircleCi } from './parts.js'
@@ -26,11 +27,13 @@ const LOG_LIMIT = 4 * 1024 * 1024
 const MAX_DISPATCH_ATTEMPTS = 3
 /** A running run asks its service at most this often; reads in between answer from the kept state and log. */
 const POLL_MS = 4_000
+const FINISH_POLL_MS = 2_000
+const FINISH_WINDOW_MS = 3_000
 const MAX_BACKOFF_MS = 10 * 60_000
 const MIN_STALL_MS = 15 * 60_000
 const EXPECTED_DURATION_MULTIPLIER = 3
-/** Provider CLI polls run on Main, which also runs Agents: at most this many follow runs at once per service. */
-const POLL_CONCURRENCY = 3
+/** Status reads are cheap and must cover a full provider fleet without serial polling waves. */
+const POLL_CONCURRENCY = 24
 const PRUNE_INTERVAL_MS = 5 * 60_000
 const log = componentLogger('jobs')
 
@@ -90,7 +93,7 @@ export class CloudCi {
   private reconcileCursor = 0
   private backoff = { until: 0, ms: 0 }
   private following = 0
-  private readonly waiting: (() => void)[] = []
+  private readonly waiting: { run: CloudRun; resume: () => void }[] = []
   private readonly reading = new Set<string>()
 
   constructor(private readonly mainId: string, readonly provider: CloudProvider, private readonly mirrors: Mirrors,
@@ -98,6 +101,11 @@ export class CloudCi {
     private readonly ports: HostCiPorts = systemHostCiPorts(),
     private readonly git: GitWorktreePorts = systemGitWorktreePorts(),
     private readonly identity = { home: homedir(), user: userInfo().username, host: hostname() }) {}
+
+  async publishMirror(input: CiMirrorInput): Promise<void> {
+    await this.publish(input.repository, input.mirror, input.commit,
+      input.defaultBranch, input.baseCommit, input.durations ?? {})
+  }
 
   setActiveRunLookup(lookup: () => Promise<ActiveCiRuns>) {
     this.activeRuns = lookup
@@ -798,6 +806,12 @@ export class CloudCi {
     }
   }
 
+  private expectedEnd(run: CloudRun): number {
+    const duration = run.dispatch?.input.expectedDurationMs ?? 0
+    if (duration <= 0) return Infinity
+    return Date.parse(run.dispatch?.at ?? run.startedAt) + duration
+  }
+
   /** Follows the provider's run at most every few seconds, pausing while the service's rate limit is spent. */
   private async refresh(runId: string): Promise<CloudRun> {
     const run = await this.read(runId)
@@ -811,14 +825,15 @@ export class CloudCi {
     if (run.reconciliation && (run.reconciliation.attempts >= MAX_DISPATCH_ATTEMPTS && !this.stalled(run)
       || now - Date.parse(run.reconciliation.at) < POLL_MS)) return run
     if (now < this.backoff.until) return run
+    const interval = this.expectedEnd(run) - now <= FINISH_WINDOW_MS ? FINISH_POLL_MS : POLL_MS
     if ((run.cancellation || pendingCollection || run.state === 'running' && run.workflowStarted)
-      && now - (this.polled.get(runId) ?? -Infinity) < POLL_MS) return run
-    if (this.following >= POLL_CONCURRENCY) await new Promise<void>(resolve => { this.waiting.push(resolve) })
+      && now - (this.polled.get(runId) ?? -Infinity) < interval) return run
+    if (this.following >= POLL_CONCURRENCY) await new Promise<void>(resume => { this.waiting.push({ run, resume }) })
     else this.following++
     try {
       // A poll that waited for its slot skips the service if a rate limit was hit meanwhile.
       if (this.ports.now().getTime() < this.backoff.until) return run
-      const next = await withProviderPoll(async () => {
+      let next = await withProviderPoll(async () => {
         if (run.cancellation) return this.cancelAttempts(run)
         if (pendingCollection) return this.collect(run)
         return this.follow(run)
@@ -828,8 +843,9 @@ export class CloudCi {
         const recovered = { ...next,
           message: next.message === run.message ? next.reconciliation.previousMessage : next.message }
         delete recovered.reconciliation
-        return this.save(recovered)
+        next = await this.save(recovered)
       }
+      if (next.collection && (!next.collection.log || !next.collection.artifacts)) return this.collect(next)
       return next
     } catch (error) {
       if (error instanceof DomainError
@@ -846,8 +862,9 @@ export class CloudCi {
       return run
     } finally {
       // The slot passes straight to the next waiting poll.
+      this.waiting.sort((left, right) => this.expectedEnd(left.run) - this.expectedEnd(right.run))
       const next = this.waiting.shift()
-      if (next) next()
+      if (next) next.resume()
       else this.following--
     }
   }
@@ -1028,7 +1045,7 @@ export class CloudCi {
       exitCode: passed ? 0 : 1, finishedAt: status.finishedAt, collection: { log: false, artifacts: false },
       ...(failedSetup ? { testsStarted: false } : {}),
       message })
-    return this.collect(terminal)
+    return terminal
   }
 }
 
