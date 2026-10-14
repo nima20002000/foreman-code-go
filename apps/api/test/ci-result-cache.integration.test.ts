@@ -242,13 +242,22 @@ it('never skips cached files in full-scope runs or gates', async () => {
     const full = CiRunOutputSchema.parse(await f.call('ci_run', { suite: 'integration', commit: commit('1'),
       scope: 'full', commandId: randomUUID() }))
     expect(full.cachedFiles).toBeUndefined()
-    expect((await f.read(full.ticketId)).run).toMatchObject({ scope: 'full', files: [] })
+    expect(await f.sent(full.ticketId)).not.toBeNull()
+    expect((await f.read(full.ticketId)).run).toMatchObject({ scope: 'full', files: [], state: 'running',
+      computer: { hostRef: { kind: 'main', mainId: 'cache-main' } } })
+
+    const reader = await f.connect(CI_GET_ACTIONS)
+    const denied = await reader.callTool({ name: 'ci_run', arguments: { workspaceId: f.workspaceId,
+      suite: 'integration', commit: commit('1'), scope: 'full', gate: true } })
+    expect(denied.isError).toBe(true)
 
     const gate = CiRunOutputSchema.parse(await f.call('ci_run', { suite: 'integration', commit: commit('1'),
       scope: 'full', gate: true, commandId: randomUUID() }))
     expect(gate.cachedFiles).toBeUndefined()
     const parts = (await f.read(gate.ticketId)).partitions ?? []
     expect(parts.every(part => part.cachedFiles === undefined)).toBe(true)
+    expect(parts.filter(part => part.suite === 'integration').every(part => part.plannedHostKey === 'cache-builder'))
+      .toBe(true)
     expect(parts.filter(part => part.suite === 'integration').flatMap(part => part.files).sort())
       .toEqual([DYNAMIC, LABEL, PLAIN])
   } finally { await f.close() }
