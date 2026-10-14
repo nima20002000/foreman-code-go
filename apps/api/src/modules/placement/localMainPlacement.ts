@@ -2,6 +2,7 @@ import { withAdvancedDefaults, type AgentConfigurationVersion, type Compatibilit
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { SavedNodePlacementSchema, type SavedNodePlacement } from '@foreman-code/contracts/node-placement'
 import { SourceRootRecordSchema, type SourceRootRecord } from '@foreman-code/contracts/source-admission'
+import type { WorkspaceRootPolicy } from '@foreman-code/contracts/workspace-root-policies'
 import type { SourceRootReference } from '@foreman-code/contracts/worktree-settings'
 import { HostHarnessOverrideSchema, type HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
 import { sameWorkflowValue } from '@foreman-code/contracts/wave25'
@@ -30,17 +31,32 @@ export async function resolveLocalMainPlacement(input: {
   qualificationSuites: Readonly<Record<CompatibilityHarness, string>>
   assertProfileReady?: (profile: HostHarnessOverride) => void
 }): Promise<SavedNodePlacement> {
+  const root = await readLocalMainRoot(input)
+  return resolveBoundRootPlacement({ ...input, root })
+}
+
+export async function readLocalMainRoot(input: {
+  sql: GraphSqlClient; principal: ManagementPrincipal; mainId: string; workspaceId: string
+  roots: WorkspaceRootPolicyPort
+}): Promise<SourceRootRecord> {
   const { sql, mainId, workspaceId } = input
   const hostRef = { kind: 'main' as const, mainId }
+  const policies = (await input.roots.read(sql, input.principal, workspaceId))
+    .filter(policy => sameWorkflowValue(policy.hostRef, hostRef) && policy.bindingPurpose !== 'ci-enrollment')
+  if (!policies.length) {
+    throw new DomainError('ROOT_POLICY_UNAVAILABLE', 'The selected Main root policy is missing or revoked.', 409)
+  }
+  if (policies.length !== 1) return unavailable('main_root_policy')
   const bindings = await sql.query<{ record: unknown }>(`select b.record from source_root_catalog c
     join source_root_bindings b on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision
-    where c.workspace_id=$1 and b.record#>'{selection,hostRef}'=$2::jsonb for share of c,b`,
-  [workspaceId, JSON.stringify(hostRef)])
+    where c.workspace_id=$1 and b.record#>'{selection,hostRef}'=$2::jsonb
+      and b.record#>>'{selection,rootPolicyId}'=$3 for share of c,b`,
+  [workspaceId, JSON.stringify(hostRef), policies[0]!.rootPolicyId])
   const root = bindings.rows[0] && SourceRootRecordSchema.parse(bindings.rows[0].record)
   if (bindings.rows.length !== 1 || !root || root.binding.workspaceId !== workspaceId) {
     return unavailable('main_source_binding')
   }
-  return resolveBoundRootPlacement({ ...input, root })
+  return root
 }
 
 export async function resolveWorkflowRootBinding(input: {
@@ -51,12 +67,43 @@ export async function resolveWorkflowRootBinding(input: {
   sources: SourceAdmissionPort
 }): Promise<SourceRootRecord> {
   const { sql, principal, workspaceId, reference } = input
-  const row = (await sql.query<{ record: unknown }>(`select record from source_root_bindings
-    where workspace_id=$1 and root_id=$2 and binding_revision=$3 for share`,
-  [workspaceId, reference.rootId, reference.bindingRevision])).rows[0]
+  const row = (await sql.query<{ record: unknown }>(`select b.record from source_root_bindings b
+    join source_root_catalog c on c.root_id=b.root_id and c.current_binding_revision=b.binding_revision
+    where c.workspace_id=$1 and b.workspace_id=$1 and c.root_id=$2 for share of c,b`,
+  [workspaceId, reference.rootId])).rows[0]
   if (!row) return unavailable('workflow_source_binding')
   const root = SourceRootRecordSchema.parse(row.record)
-  return input.sources.resolveRootBinding(sql, principal, { workspaceId, ...reference, source: root.source })
+  return input.sources.resolveRootBinding(sql, principal, { workspaceId, rootId: reference.rootId,
+    bindingRevision: root.binding.bindingRevision, source: root.source })
+}
+
+export async function readPlacementRootBinding(input: {
+  sql: GraphSqlClient; principal: ManagementPrincipal; workspaceId: string
+  placement: Pick<SavedNodePlacement, 'hostRef' | 'rootPolicyId'>; sources: SourceAdmissionPort
+}): Promise<SourceRootRecord> {
+  const { sql, principal, workspaceId, placement } = input
+  const rows = await sql.query<{ record: unknown }>(`select b.record from source_root_bindings b
+    join source_root_catalog c on c.root_id=b.root_id and c.current_binding_revision=b.binding_revision
+    where c.workspace_id=$1 and b.workspace_id=$1
+      and b.record#>'{selection,hostRef}'=$2::jsonb and b.record#>>'{selection,rootPolicyId}'=$3
+    for share of c,b`, [workspaceId, JSON.stringify(placement.hostRef), placement.rootPolicyId])
+  if (rows.rows.length !== 1) return unavailable('selected_source_binding')
+  const root = SourceRootRecordSchema.parse(rows.rows[0]!.record)
+  return input.sources.resolveRootBinding(sql, principal, { workspaceId, rootId: root.binding.rootId,
+    bindingRevision: root.binding.bindingRevision, source: root.source })
+}
+
+export async function resolvePlacementRootPolicy(input: {
+  sql: GraphSqlClient; principal: ManagementPrincipal; workspaceId: string
+  selection: SourceRootRecord['selection']; roots: WorkspaceRootPolicyPort
+}): Promise<WorkspaceRootPolicy> {
+  const { sql, principal, workspaceId, selection } = input
+  const policy = (await input.roots.read(sql, principal, workspaceId)).find(policy =>
+    policy.rootPolicyId === selection.rootPolicyId && sameWorkflowValue(policy.hostRef, selection.hostRef))
+  if (!policy) return unavailable('selected_root_policy')
+  return input.roots.resolve(sql, principal, { workspaceId, hostRef: selection.hostRef,
+    rootPolicyId: policy.rootPolicyId, rootPolicyRevision: policy.rootPolicyRevision,
+    locationRevision: policy.locationRevision })
 }
 
 export async function resolveBoundRootPlacement(input: {
@@ -88,8 +135,8 @@ export async function resolveBoundRootPlacement(input: {
   const requested = configuration.harnessProfileSelection
   const candidates = profiles.rows.map(row => HostHarnessOverrideSchema.parse(row.record)).filter(profile =>
     profile.enabled
-    && sameWorkflowValue(withAdvancedDefaults(profile.configuration), withAdvancedDefaults(configuration.harness))
-    && (!requested || profile.instanceId === requested.instanceId && profile.instanceRevision === requested.instanceRevision))
+    && (requested ? profile.instanceId === requested.instanceId
+      : sameWorkflowValue(withAdvancedDefaults(profile.configuration), withAdvancedDefaults(configuration.harness))))
   for (const candidate of candidates) input.assertProfileReady?.(candidate)
   const compatible = candidates.filter(profile => installed.some(item => item.installed
     && sameWorkflowValue(item.hostRef, hostRef) && item.harnessInstallationId === profile.target.harnessInstallationId

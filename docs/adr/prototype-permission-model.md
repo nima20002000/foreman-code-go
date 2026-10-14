@@ -40,6 +40,7 @@ Everything else that made an authorized caller prove, approve, re-state or re-re
 | Harness settings | Local-human-only plugin and MCP change/reconcile routes | Bearer callers with the normal grant |
 | Idempotency | Required `commandId` on simple operations | Optional; generated when omitted |
 | Settings revisions | Required `expectedRevision` on settings writes | Optional; last write wins when omitted |
+| Saved workflow placement | Root policy, location, source binding/snapshot and harness instance revision pins required again at Start | Saved placements name the host, root policy, instance and cwd; Start resolves their current revisions, rebinds the current approved source when needed, and records exact resolved facts on the Run |
 | MCP inputs | Rejecting unknown fields | Unknown fields are stripped |
 | Read sizes | Hard caps that threw on large workspace and graph reads | Truncated newest-first |
 | Agent snapshots | 700 KiB source snapshot limit | 32 MiB |

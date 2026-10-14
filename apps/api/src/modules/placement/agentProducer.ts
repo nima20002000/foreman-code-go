@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { posix } from 'node:path'
 import type pg from 'pg'
-import { AgentConfigurationVersionSchema, WorkspaceSchema, withAdvancedDefaults,
+import { AgentConfigurationVersionSchema, WorkspaceSchema,
   type AgentConfigurationVersion, type HarnessExecution, type CompatibilityHarness } from '@foreman-code/contracts'
 import { HostHarnessOverrideSchema, type HostHarnessOverride } from '@foreman-code/contracts/harness-registry'
 import { type AcceptedNodePlacement, type DispatchIntent, type SavedNodePlacement } from '@foreman-code/contracts/node-placement'
@@ -28,26 +28,28 @@ import type { ProviderAccountResolver } from '../provider-accounts/service.js'
 import { legacyProviderAccountBinding } from '../provider-accounts/acceptedBindings.js'
 import { readAcceptedPlacement, insertDispatchIntent } from './persistence.js'
 import type { RunPlacementAdmissionPort, PreparedRunPlacementAdmission } from './startPort.js'
-import { resolveBoundRootPlacement, resolveLocalMainPlacement, resolveWorkflowRootBinding } from './localMainPlacement.js'
+import { readLocalMainRoot, readPlacementRootBinding, resolveBoundRootPlacement, resolveLocalMainPlacement,
+  resolvePlacementRootPolicy, resolveWorkflowRootBinding } from './localMainPlacement.js'
+import { prepareRunRoots, type SelectedRunRoot } from './runRoots.js'
 import { bindGeneratedWorktreeRun, generatedWorktreePrefix } from '../sources/worktreeRequest.js'
-import { SourceRootRecordSchema, type SourceRootRecord } from '@foreman-code/contracts/source-admission'
+import type { SourceRootRecord } from '@foreman-code/contracts/source-admission'
 
 function refreshSourcePlacement(
   saved: SavedNodePlacement, roots: ReadonlyMap<string, SourceRootRecord>,
 ): SavedNodePlacement {
-  const reference = saved.rootBinding
-  if (!reference) return saved
-  const root = roots.get(`${reference.rootId}:${reference.bindingRevision}`)
+  const root = [...roots.values()].find(root => root.selection.rootPolicyId === saved.rootPolicyId
+    && sameWorkflowValue(root.selection.hostRef, saved.hostRef))
   if (!root) return saved
   return {
     ...saved,
+    ...root.selection,
     source: root.source,
     rootBinding: { rootId: root.binding.rootId, bindingRevision: root.binding.bindingRevision },
   }
 }
 
-/** Installed main-owned producer: saved immutable versions and W09/W07/HRT
- * authorities supply every pin. No request/Board JSON becomes a runtime grant. */
+/** Resolve saved locations through the shared source, root and harness services,
+ * then freeze the resolved facts on the Run. */
 export class AgentPlacementProducer implements RunPlacementAdmissionPort {
   constructor(private readonly pool: pg.Pool, private readonly mainId: string,
     private readonly sources: SourceAdmissionPort, private readonly roots: WorkspaceRootPolicyPort,
@@ -63,42 +65,7 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
       source: 'http' | 'mcp'; sourcePreparationStarted?: () => void
     } = { source: 'mcp' }): Promise<PreparedRunPlacementAdmission | undefined> {
     signal?.throwIfAborted()
-    const initial = await withExclusiveGraphConnection(this.pool, async connection => {
-      const version = await this.readVersion(connection, input)
-      const needsDefault = version.definition.nodes.some(node => node.kind !== 'job' && !node.placement)
-      const root = needsDefault && version.definition.defaultWorktree
-        ? await resolveWorkflowRootBinding({ sql: connection, principal, workspaceId: input.workspaceId,
-          reference: version.definition.defaultWorktree.rootBinding, sources: this.sources }) : undefined
-      const workspace = (await connection.query<{ record: unknown }>(
-        'select record from workspaces where id=$1', [input.workspaceId])).rows[0]
-      const repository = workspace && WorkspaceSchema.parse(workspace.record).repository
-      const selected = new Map<string, SourceRootRecord>()
-      let inheritedRoot = root
-      if (repository) {
-        for (const node of version.definition.nodes) {
-          if (node.kind === 'job') continue
-          let selectedRoot = root
-          if (node.placement?.rootBinding && node.placement.source) {
-            selectedRoot = await this.sources.resolveRootBinding(connection, principal, {
-              workspaceId: input.workspaceId, ...node.placement.rootBinding, source: node.placement.source,
-            })
-          } else if (!selectedRoot) {
-            const bindings = await connection.query<{ record: unknown }>(`select b.record from source_root_catalog c
-              join source_root_bindings b on b.root_id=c.root_id and b.binding_revision=c.current_binding_revision
-              where c.workspace_id=$1 and b.record#>>'{selection,hostRef,kind}'='main'`, [input.workspaceId])
-            if (bindings.rows.length !== 1) this.conflict()
-            const saved = SourceRootRecordSchema.parse(bindings.rows[0]!.record)
-            selectedRoot = await this.sources.resolveRootBinding(connection, principal, {
-              workspaceId: input.workspaceId, rootId: saved.binding.rootId,
-              bindingRevision: saved.binding.bindingRevision, source: saved.source,
-            })
-          }
-          if (!node.placement) inheritedRoot = selectedRoot
-          selected.set(`${selectedRoot.binding.rootId}:${selectedRoot.binding.bindingRevision}`, selectedRoot)
-        }
-      }
-      return { version, root, repository, selected, inheritedRoot }
-    })
+    let initial = await this.readSelectedRoots(input, principal)
     const savedVersion = initial.version
     signal?.throwIfAborted()
     if (!sameWorkflowValue(savedVersion.agentConfigurationVersionIds, input.expectedAgentConfigurationVersionIds)) this.conflict()
@@ -108,10 +75,14 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     if (hosts.length) await this.refreshProfileInventory?.(hosts, signal)
     signal?.throwIfAborted()
     if (!workflowUsesAgentPlacements(savedVersion.definition) && !initial.repository) return undefined
+    if (!initial.root && !initial.repository
+      && savedVersion.definition.nodes.some(node => node.kind !== 'job' && !node.placement)) {
+      initial = await this.readSelectedRoots(input, principal, { includeImplicitMain: true })
+    }
     if (initial.selected.size) options.sourcePreparationStarted?.()
-    const refreshed = initial.selected.size ? await this.sources.prepareRunSources(principal, {
-      workspaceId: input.workspaceId, commandId: input.commandId, source: options.source, roots: [...initial.selected.values()],
-    }) : []
+    const refreshed = initial.selected.size ? await prepareRunRoots(this.sources, principal, {
+      workspaceId: input.workspaceId, commandId: input.commandId, source: options.source,
+    }, [...initial.selected.values()], { captureSource: !!initial.repository }) : []
     signal?.throwIfAborted()
     const roots = new Map([...initial.selected.keys()].map((key, index) => [key, refreshed[index]!]))
     return withExclusiveGraphConnection(this.pool, connection => connection.transaction(async sql => {
@@ -135,7 +106,8 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
           roots: this.roots, installations: this.registry.installations, qualificationSuites: this.qualificationSuites,
           ...(this.assertProfileReady ? { assertProfileReady: this.assertProfileReady } : {}) }
         if (initial.inheritedRoot) {
-          return refreshSourcePlacement(await resolveBoundRootPlacement({ ...context, root: initial.inheritedRoot }), roots)
+          const root = roots.get(initial.inheritedRoot.binding.rootId) ?? initial.inheritedRoot
+          return resolveBoundRootPlacement({ ...context, root })
         }
         return refreshSourcePlacement(await resolveLocalMainPlacement(context), roots)
       }
@@ -144,18 +116,17 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         if (!version.definition.defaultWorktree) return resolveMain(sql, principal, configuration)
         const root = await resolveWorkflowRootBinding({ sql, principal, workspaceId: input.workspaceId,
           reference: version.definition.defaultWorktree.rootBinding, sources: this.sources })
-        return refreshSourcePlacement(await resolveBoundRootPlacement({ sql, principal, configuration, root, mainId: this.mainId,
+        return resolveBoundRootPlacement({ sql, principal, configuration, root, mainId: this.mainId,
           workspaceId: input.workspaceId, roots: this.roots, installations: this.registry.installations,
           qualificationSuites: this.qualificationSuites,
-          ...(this.assertProfileReady ? { assertProfileReady: this.assertProfileReady } : {}) }), roots)
+          ...(this.assertProfileReady ? { assertProfileReady: this.assertProfileReady } : {}) })
       }
       const prepared: { pins: Omit<AcceptedNodePlacement, 'runId' | 'bindingHash'>; selection: RegistryHarnessSelection;
         saved: SavedNodePlacement; configuration: AgentConfigurationVersion; implicit: boolean;
         generatedBranch: boolean }[] = []
       for (const node of nodes) {
         signal?.throwIfAborted()
-        if (node.placement && (!node.placement.source || !node.placement.rootBinding
-          || node.placement.hostRef.mainId !== this.mainId)) this.conflict()
+        if (node.placement && node.placement.hostRef.mainId !== this.mainId) this.conflict()
         const configRow = (await sql.query<{ record: unknown }>('select record from agent_configuration_versions where id=$1 and workspace_id=$2 and agent_id=$3',
           [version.agentConfigurationVersionIds[node.agentId], input.workspaceId, node.agentId])).rows[0]
         const config = AgentConfigurationVersionSchema.parse(configRow?.record)
@@ -183,13 +154,9 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         const policy = await this.roots.resolve(sql, principal, { workspaceId: input.workspaceId, hostRef: saved!.hostRef,
           rootPolicyId: saved!.rootPolicyId, rootPolicyRevision: saved!.rootPolicyRevision, locationRevision: saved!.locationRevision })
         signal?.throwIfAborted()
-        if (saved!.projectRoot !== policy.canonicalProjectRoot) this.conflict()
         if (!sameWorkflowValue(root.selection, { hostRef: saved!.hostRef, rootPolicyId: saved!.rootPolicyId,
           rootPolicyRevision: saved!.rootPolicyRevision, locationRevision: saved!.locationRevision }) || !sameWorkflowValue(policy.registration, root.registration)) this.conflict()
-        if (!instance.enabled || instance.instanceRevision !== saved!.instanceRevision
-          || !sameWorkflowValue(instance.target.hostRef, saved!.hostRef)
-          || !sameWorkflowValue(withAdvancedDefaults(instance.configuration), withAdvancedDefaults(config.harness))
-          || instance.driverId !== config.harness.harness) this.conflict()
+        if (!instance.enabled || !sameWorkflowValue(instance.target.hostRef, saved!.hostRef)) this.conflict()
         this.assertProfileReady?.(instance)
         const selection = this.registry.pinOverride(instance)
         const account = this.accounts && config.harness.harness !== 'opencode' && config.harness.accountId
@@ -255,6 +222,41 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
         } }) }
     }))
   }
+  private async readSelectedRoots(input: RunStartV3Input, principal: ManagementPrincipal,
+    options: { includeImplicitMain?: boolean } = {}) {
+    return withExclusiveGraphConnection(this.pool, async connection => {
+      const version = await this.readVersion(connection, input)
+      const needsDefault = version.definition.nodes.some(node => node.kind !== 'job' && !node.placement)
+      const root = needsDefault && version.definition.defaultWorktree
+        ? await resolveWorkflowRootBinding({ sql: connection, principal, workspaceId: input.workspaceId,
+          reference: version.definition.defaultWorktree.rootBinding, sources: this.sources }) : undefined
+      const workspace = (await connection.query<{ record: unknown }>(
+        'select record from workspaces where id=$1', [input.workspaceId])).rows[0]
+      const repository = workspace && WorkspaceSchema.parse(workspace.record).repository
+      const selected = new Map<string, SelectedRunRoot>()
+      let inheritedRoot = root
+      for (const node of version.definition.nodes) {
+        if (node.kind === 'job' || !node.placement && !root && !repository && !options.includeImplicitMain) continue
+        if (node.placement && node.placement.hostRef.mainId !== this.mainId) this.conflict()
+        let selectedRoot = root
+        if (node.placement) {
+          selectedRoot = await readPlacementRootBinding({ sql: connection, principal,
+            workspaceId: input.workspaceId, placement: node.placement, sources: this.sources,
+          })
+          if (selectedRoot.selection.rootPolicyId !== node.placement.rootPolicyId
+            || !sameWorkflowValue(selectedRoot.selection.hostRef, node.placement.hostRef)) this.conflict()
+        } else if (!selectedRoot) {
+          selectedRoot = await readLocalMainRoot({ sql: connection, principal, mainId: this.mainId,
+            workspaceId: input.workspaceId, roots: this.roots })
+        }
+        if (!node.placement) inheritedRoot = selectedRoot
+        const policy = await resolvePlacementRootPolicy({ sql: connection, principal,
+          workspaceId: input.workspaceId, selection: selectedRoot.selection, roots: this.roots })
+        selected.set(selectedRoot.binding.rootId, { root: selectedRoot, policy })
+      }
+      return { version, root, repository, selected, inheritedRoot }
+    })
+  }
   private async readVersion(sql: GraphSqlClient, input: RunStartV3Input) {
     const row = (await sql.query<ImmutableWorkflowVersionRow>(`select ${IMMUTABLE_WORKFLOW_VERSION_COLUMNS}
       from workflow_versions where id=$1 and workspace_id=$2 and workflow_id=$3`,
@@ -313,5 +315,8 @@ export class AgentPlacementProducer implements RunPlacementAdmissionPort {
     beforeGraphCommit(sql, async () => { owner.assertOwned(); await owner.readOneShotFence(sql) })
     return accepted
   }
-  private conflict(): never { throw new DomainError('PLACEMENT_ADMISSION_CONFLICT', 'Exact saved source, root and compatible harness placement are required.', 409) }
+  private conflict(): never {
+    throw new DomainError('PLACEMENT_ADMISSION_CONFLICT',
+      'The selected root and enabled harness instance must be available on the selected computer.', 409)
+  }
 }
