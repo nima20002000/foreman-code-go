@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicketPolls = 0 } = {}) {
+async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicketPolls = 0, slowDiscoveries = 0 } = {}) {
   const computers = [
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'first' }, ready: true },
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'second' }, ready: true },
@@ -46,7 +46,13 @@ async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicke
     } else if (request.url.endsWith('/tests')) {
       response.end(JSON.stringify({ tests: { summary: { passed: 1, failed: 0, skipped: 0 },
         files: [{ file: 'apps/api/test/ci-smoke.integration.test.ts', tests: [{ status: 'passed' }] }] } }))
-    } else if (request.url.endsWith('/computers')) response.end(JSON.stringify({ computers }))
+    } else if (request.url.endsWith('/computers')) {
+      if (slowDiscoveries > 0) {
+        slowDiscoveries--
+        await delay(200)
+      }
+      response.end(JSON.stringify({ computers }))
+    }
     else if (request.method === 'POST') {
       let body = ''
       for await (const chunk of request) body += chunk
@@ -149,6 +155,13 @@ for (const failure of ['setup', 'lock', 'stall']) {
 test('a slow ticket poll is retried until the smoke deadline instead of failing the smoke', async t => {
   const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
   const f = await fixture(t, undefined, undefined, { slowTicketPolls: 1 })
+  await runInstallCiSmoke({ ...options, origin: f.origin })
+  assert.equal(f.admissions.filter(input => input.smokeComputer).length, 4)
+})
+
+test('a slow computer discovery is retried until the smoke deadline instead of failing the smoke', async t => {
+  const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
+  const f = await fixture(t, undefined, undefined, { slowDiscoveries: 1 })
   await runInstallCiSmoke({ ...options, origin: f.origin })
   assert.equal(f.admissions.filter(input => input.smokeComputer).length, 4)
 })
