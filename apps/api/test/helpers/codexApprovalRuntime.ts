@@ -121,7 +121,7 @@ export async function codexApprovalRuntime(handler: 'user' | 'orchestrator' = 'u
       engines.push(activeEngine)
       const service = new InteractionService(repository, budgets, native, (i) => activeEngine.resumeInteraction(i))
       registerApprovalCheckpointResume(service, activeEngine)
-      return { engine: activeEngine, native, runs, repository, service, credentials,
+      return { engine: activeEngine, native, runs, repository, service, credentials, locations, workflows,
         nativeCapture, nativeVerification: workflowCapture.verify }
     }
     const runtime = compose()

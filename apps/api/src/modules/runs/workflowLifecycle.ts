@@ -50,9 +50,11 @@ export async function settleWorkForRestart(owner: RunOwnership, approvals?: Work
           where n.execution_id=e.id and n.run_id=e.run_id and n.phase='reserved')
           or exists(select 1 from run_graph_effects f where f.run_id=e.run_id
             and f.effect_kind='execution.launch' and f.entity_id=e.id))
-        or e.record#>>'{result,outcome}'='succeeded' and (e.accepted and not exists(
-          select 1 from run_work_results x where x.run_id=e.run_id and x.execution_id=e.id
-            and x.activation_id=e.work_activation_id)
+        or e.record#>>'{result,outcome}'='succeeded' and (e.accepted and case
+          when e.work_activation_id is null then not exists(
+            select 1 from run_repeat_results x where x.run_id=e.run_id and x.execution_id=e.id)
+          else not exists(select 1 from run_work_results x where x.run_id=e.run_id and x.execution_id=e.id
+            and x.activation_id=e.work_activation_id) end
           or not e.accepted and not exists(select 1 from workflow_native_proofs p
             where p.run_id=e.run_id and p.execution_id=e.id
               and p.record#>>'{original,type}'='history'

@@ -52,8 +52,10 @@ function intervalRun(options: { maxParallelism: number; observeCheck(check: Harn
       : h.input.driver.candidate(ref, attempt),
     observe: async (execution, signal) => {
       if (!execution.id.startsWith('check-')) return h.input.driver.observe(execution, signal)
+      if (execution.state === 'completed') return
       observed.push(execution.id)
       await options.observeCheck(execution, signal)
+      execution.state = 'completed'
     },
   }
   const lifecycle = {
@@ -102,7 +104,7 @@ it('settles a Stop through bounded cleanup while a running check ignores cancell
   expect(t.checks).toHaveLength(1)
 }, 15_000)
 
-it('checks beside graph work with one parallelism slot and completes after the in-flight check', async () => {
+it('checks beside graph work with one parallelism slot and keeps the idle Run until Stop', async () => {
   const checkStarted = deferred()
   const checkRelease = deferred()
   const t = intervalRun({ maxParallelism: 1, observeCheck: async () => {
@@ -121,11 +123,13 @@ it('checks beside graph work with one parallelism slot and completes after the i
   expect(t.h.completeCalls).toBe(0)
   expect(t.lifecycle.finishCleanup).not.toHaveBeenCalled()
   checkRelease.resolve()
-  await running
+  await vi.waitFor(() => expect(t.events).toContain('check:end'))
+  t.h.controller.abort(new DomainError('RUN_STOPPED', 'Stop requested.', 409))
+  await expect(running).rejects.toMatchObject({ code: 'RUN_STOPPED' })
   expect(t.events).toEqual(['worker:start', 'check:start', 'worker:end', 'check:end'])
-  expect(t.h.completeCalls).toBe(1)
+  expect(t.h.completeCalls).toBe(0)
   expect(t.checks).toHaveLength(1)
-  expect(t.lifecycle.finishCleanup).toHaveBeenCalledTimes(1)
+  expect(t.lifecycle.settleRun).toHaveBeenCalledWith(true, false)
 }, 15_000)
 
 it('re-observes a check whose cleanup failed before admitting another', async () => {
@@ -136,7 +140,9 @@ it('re-observes a check whose cleanup failed before admitting another', async ()
   const running = t.run()
   await vi.waitFor(() => expect(t.settledIds).toContain('check-1'), { timeout: 10_000, interval: 50 })
   t.workerRelease.resolve()
-  await running
+  await vi.waitFor(() => expect(t.events).toContain('worker:end'))
+  t.h.controller.abort(new DomainError('RUN_STOPPED', 'Stop requested.', 409))
+  await expect(running).rejects.toMatchObject({ code: 'RUN_STOPPED' })
   expect(t.observed).toEqual(['check-1', 'check-1'])
   expect(t.checks).toHaveLength(1)
   expect(t.settledIds.slice(0, 3)).toEqual([null, null, 'check-1'])

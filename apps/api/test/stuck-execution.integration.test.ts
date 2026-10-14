@@ -125,7 +125,9 @@ it('reports an idle running execution after every CI ticket ends, without stoppi
       await runtime.credentials.revoke(credential)
       checkGate.resolve()
       workerGate.resolve()
-      await finished
+      await runtime.stop()
+      await runtime.engine.cancel(f.run.id)
+      await Promise.allSettled([finished])
       expect(await restarted.detectStuckExecutions(idleMs, detectionAt)).toBe(0)
     } finally {
       checkGate.resolve()

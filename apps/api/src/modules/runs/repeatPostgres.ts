@@ -978,6 +978,7 @@ export class RepeatRunRepository {
   async admitTick(nodeId: string, candidate: () => HarnessExecution, settledId: string | null): Promise<RepeatTickAdmission> {
     return this.transaction(async (context) => {
       this.active(context)
+      if (context.hooks.run.executionState !== 'running') return { kind: 'wait', dueAt: null }
       const node = context.version.definition.nodes.find((item) => item.id === nodeId)
       if (!node || node.kind === 'job' || !node.interval || blockForNode(context.version, nodeId)) return repeatConflict('TICK_NODE_CONFLICT')
       const facts = await readIntervalCheckFacts(context.sql, context.scope.runId, nodeId, Boolean(context.version.definition.handoffs))
@@ -1212,6 +1213,7 @@ export class RepeatRunRepository {
         return
       }
       this.active(context)
+      if (context.version.definition.nodes.some(node => node.kind !== 'job' && node.interval)) return
       // Required global approval/cleanup/pending transition checks belong to the
       // same existing terminal writer. A single final block is never Run completion.
       await this.settleAttempts(context, { kind: 'run' })
@@ -1219,7 +1221,7 @@ export class RepeatRunRepository {
         () => context.hooks.completeRunLocked(context.sql, terminals))
     })
   }
-  async completeWorkRun(): Promise<'completed' | 'needs_direction'> {
+  async completeWorkRun(): Promise<'completed' | 'needs_direction' | 'idle'> {
     return this.transaction(async (context) => {
       if (!context.version.definition.handoffs || context.version.definition.repeat) return repeatConflict('WORK_POLICY_PIN_CONFLICT')
       const activations = await context.sql.query<{ activation_id: string; state: string }>(
@@ -1339,6 +1341,7 @@ export class RepeatRunRepository {
         return 'completed'
       }
       this.active(context)
+      if (context.version.definition.nodes.some(node => node.kind !== 'job' && node.interval)) return 'idle'
       await this.settleAttempts(context, { kind: 'run' })
       await this.effect(context, 'run.complete', context.scope.runId, terminals, [],
         () => context.hooks.completeRunLocked(context.sql, terminals))
