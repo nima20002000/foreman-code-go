@@ -47,7 +47,13 @@ function totals(samples: readonly { responseBytes: number }[]) {
 }
 
 async function expectLoadedHistoryItems(container: HTMLElement, count: number) {
-  await waitFor(() => expect(within(container).getAllByRole('listitem')).toHaveLength(count))
+  // Role queries check styles and ancestors for every row. Keep that work out of
+  // retries while MSW and React are still delivering the requested page.
+  await waitFor(() => expect(container.querySelectorAll('li')).toHaveLength(count), {
+    container,
+    mutationObserverOptions: { childList: true, subtree: true },
+  })
+  expect(within(container).getAllByRole('listitem')).toHaveLength(count)
 }
 
 describe('mounted Board bounded-history wire budgets', () => {
@@ -135,8 +141,12 @@ describe('mounted Board bounded-history wire budgets', () => {
     await expectLoadedHistoryItems(inspector, 25)
     expect(within(inspector).queryByRole('combobox', { name: 'Business repetition' })).not.toBeInTheDocument()
     expect(wire.activity()).toHaveLength(0)
+    const loadMoreExecutions = within(inspector).getByRole('button', { name: 'Load more executions' })
+    const refreshExecutions = within(inspector).getByRole('button', { name: 'Refresh executions' })
+    const loadMoreRuns = screen.getByRole('button', { name: 'Load more Runs' })
+    const refreshRuns = screen.getByRole('button', { name: 'Refresh Runs' })
     for (let page = 2; page <= 5; page++) {
-      await user.click(within(inspector).getByRole('button', { name: 'Load more executions' }))
+      await user.click(loadMoreExecutions)
       await expectLoadedHistoryItems(inspector, page * 25)
     }
     const history = screen.getByText('Run activity history').closest('details')!
@@ -147,9 +157,9 @@ describe('mounted Board bounded-history wire budgets', () => {
       await expectLoadedHistoryItems(history, page * 50)
     }
     await waitFor(() => expect(wire.runLists()).toHaveLength(1))
-    await user.click(screen.getByRole('button', { name: 'Load more Runs' }))
+    await user.click(loadMoreRuns)
     await waitFor(() => expect(wire.runLists()).toHaveLength(2))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Load more Runs' })).toBeEnabled())
+    await waitFor(() => expect(loadMoreRuns).toBeEnabled())
 
     expect(wire.executions()).toHaveLength(5)
     expect(wire.activity()).toHaveLength(5)
@@ -187,7 +197,7 @@ describe('mounted Board bounded-history wire budgets', () => {
 
     // Reconnect is automatic current evidence, not permission to replay five pages.
     // Explicit refresh below must discard the old cursor chain, not refetch it.
-    await user.click(within(inspector).getByRole('button', { name: 'Refresh executions' }))
+    await user.click(refreshExecutions)
     await expectLoadedHistoryItems(inspector, 25)
     expect(wire.executions()).toHaveLength(6)
     expect(wire.executions().at(-1)!.query.has('cursor')).toBe(false)
@@ -195,7 +205,7 @@ describe('mounted Board bounded-history wire budgets', () => {
     await expectLoadedHistoryItems(history, 50)
     expect(wire.activity()).toHaveLength(6)
     expect(wire.activity().at(-1)!.query.has('cursor')).toBe(false)
-    await user.click(screen.getByRole('button', { name: 'Refresh Runs' }))
+    await user.click(refreshRuns)
     await waitFor(() => expect(wire.runLists()).toHaveLength(3))
     expect(wire.runLists().at(-1)!.query.has('cursor')).toBe(false)
     wire.report('mounted-151-attempts-252-events-64-runs-eight-ticks')
