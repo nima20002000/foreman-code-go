@@ -131,6 +131,8 @@ class Projection {
   private rows = new Map<string, NativeLaunchObservation>()
   private active = new Map<string, NativeLaunchObservation>()
   private initialized = false
+  /** Owner directories present at the last inventory; archived-only owners are not listed. */
+  private readonly listedOwners = new Set<string>()
   private readonly storageChanges: RegistryChanges
   private readonly waiters = new Set<() => void>()
   private retiring: { rows: Map<string, NativeLaunchObservation>; closed: Set<string>; eviction: Iterator<string>; truncated: boolean } | undefined
@@ -171,7 +173,9 @@ class Projection {
     let remaining = 10_000
     const present = existingPrivateDirectory(this.root)
     if (present) this.storageChanges.start()
-    const owners = refreshRoot && present ? this.ownerKeys() : changed.owners
+    const fullScan = !this.initialized
+    const owners = !refreshRoot || !present ? changed.owners
+      : fullScan ? this.ownerKeys() : this.listingChanges(changed.owners)
     for (const ownerKey of owners) {
       remaining -= this.refreshOwner(ownerKey, next, seen, remaining)
     }
@@ -179,7 +183,7 @@ class Projection {
       if (!owners.includes(dirname(path))) this.refreshLaunch(path, next)
     }
     // Missing registrations and vanished guardians never become closure evidence.
-    if (refreshRoot) for (const [id, row] of next) {
+    if (fullScan || (refreshRoot && !present)) for (const [id, row] of next) {
       if (!seen.has(id) && row.lifecycle === 'active') {
         next.set(id, Object.freeze({ ...row, lifecycle: 'closure-unconfirmed' }))
       }
@@ -193,16 +197,27 @@ class Projection {
       this.initialized = true
       return snapshot
     } catch (error) {
+      this.initialized = false
       this.storageChanges.rescan()
       throw error
     }
   }
   private ownerKeys(): string[] {
     const owners = new Set([...entries(this.root)].filter(name => name !== 'closed'))
+    this.listedOwners.clear()
+    for (const owner of owners) this.listedOwners.add(owner)
     for (const name of entries(join(this.root, 'closed'))) {
       const match = /^([0-9a-f]{64})\.json$/.exec(name)
       if (match) owners.add(match[1]!)
     }
+    return [...owners]
+  }
+  /** A changed root lists owner names only; unchanged owners keep their rows and watches. */
+  private listingChanges(dirty: readonly string[]): string[] {
+    const listed = new Set([...entries(this.root)].filter(name => name !== 'closed'))
+    const owners = new Set(dirty)
+    for (const owner of listed) if (!this.listedOwners.has(owner)) owners.add(owner)
+    for (const owner of this.listedOwners) if (!listed.has(owner)) owners.add(owner)
     return [...owners]
   }
   private refreshOwner(ownerKey: string, next: Map<string, NativeLaunchObservation>,
@@ -218,7 +233,16 @@ class Projection {
       ownerSeen.add(retired.launchId)
       next.set(retired.launchId, retired)
     }
-    if (existingPrivateDirectory(ownerDirectory)) {
+    const present = existingPrivateDirectory(ownerDirectory)
+    if (present) {
+      this.listedOwners.add(ownerKey)
+      // Watch before listing, so a change during the scan is never missed.
+      this.storageChanges.watchOwner(ownerKey)
+    } else {
+      this.listedOwners.delete(ownerKey)
+      this.storageChanges.unwatchOwner(ownerKey)
+    }
+    if (present) {
       for (const id of entries(ownerDirectory)) {
         if (!/^[0-9a-f-]{36}$/.test(id)) continue
         if (++scanned > remaining) throw new Error('limit-exceeded')
@@ -300,14 +324,26 @@ class Projection {
       this.retiring = { rows, closed, eviction: closed.values(), truncated: false }
     }
     if (truncated) { this.epoch = randomUUID(); this.sequence = 0 }
-    const launches = Object.freeze([...next.values()].sort((a, b) => a.launchId.localeCompare(b.launchId)))
-    if (truncated || JSON.stringify(launches) !== JSON.stringify(this.current.launches)) {
-      this.rows = next
+    if (truncated || this.changedRows(next)) {
+      // Launch ids are lowercase UUIDs, so code-point order equals the previous locale order.
+      const launches = Object.freeze([...next.values()].sort((a, b) =>
+        a.launchId < b.launchId ? -1 : a.launchId > b.launchId ? 1 : 0))
+      // Sorted insertion order keeps the next publication's sort nearly linear.
+      this.rows = new Map(launches.map(row => [row.launchId, row]))
       this.active = new Map([...next].filter(([, row]) => row.lifecycle === 'active'))
       this.current = Object.freeze({ revision: `${this.epoch}:${++this.sequence}`, launches })
       for (const wake of this.waiters) wake()
     }
     return this.current
+  }
+  /** Unchanged rows keep their identity, so comparison costs only the rows that were reread. */
+  private changedRows(next: Map<string, NativeLaunchObservation>): boolean {
+    if (next.size !== this.rows.size) return true
+    for (const [id, row] of next) {
+      const previous = this.rows.get(id)
+      if (previous !== row && (!previous || JSON.stringify(previous) !== JSON.stringify(row))) return true
+    }
+    return false
   }
   async *changes(afterRevision: string, signal: AbortSignal): AsyncIterable<NativeRegistryChange> {
     let after = afterRevision

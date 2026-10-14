@@ -9,7 +9,8 @@ import { existingPrivateDirectory, privateDirectory, readRecord, recordObject, s
 
 // Keep fresh closure certificates in place for in-flight recovery and retries.
 const closureRetentionMs = 24 * 60 * 60 * 1000
-const preparedRoots = new Set<string>()
+/** When each root's last maintenance sweep finished. */
+const sweptRoots = new Map<string, number>()
 
 function existingStat(path: string) {
   try {
@@ -121,9 +122,13 @@ const retirementCursors = new Map<string, string>()
 /** Each registry construction spends at most this long on maintenance, so a large backlog never blocks startup. */
 export const REGISTRY_RETIREMENT_BUDGET_MS = 100
 
-/** Maintenance runs until each root has been swept once; passive telemetry never performs GC. */
+/** Owners keep aging while the API runs, so a finished sweep starts again after this interval. */
+const REGISTRY_RETIREMENT_INTERVAL_MS = 60 * 60 * 1000
+
+/** Maintenance sweeps each root in budgeted slices and repeats hourly; passive telemetry never performs GC. */
 export function prepareRegistryRetirement(root: string, retire: (directory: string) => void): void {
-  if (preparedRoots.has(root) || !existingPrivateDirectory(root)) return
+  const swept = sweptRoots.get(root)
+  if ((swept !== undefined && Date.now() - swept < REGISTRY_RETIREMENT_INTERVAL_MS) || !existingPrivateDirectory(root)) return
   const deadline = performance.now() + REGISTRY_RETIREMENT_BUDGET_MS
   nativeRegistryProjection(root).retirementBatch(() => {
     const cursor = retirementCursors.get(root)
@@ -147,6 +152,6 @@ export function prepareRegistryRetirement(root: string, retire: (directory: stri
       pruneRetiredOwner(directory)
     }
     retirementCursors.delete(root)
-    preparedRoots.add(root)
+    sweptRoots.set(root, Date.now())
   })
 }

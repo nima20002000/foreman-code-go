@@ -17,6 +17,7 @@ export class RegistryChanges {
   private rootStamp: string | undefined
   private watcher: FSWatcher | undefined
   private watcherError: Error | undefined
+  private readonly ownerWatchers = new Map<string, FSWatcher>()
   private readonly owners = new Map<string, { stamp: string | undefined; launches: Set<string> }>()
   private readonly registrations = new Map<string, string | undefined>()
   private dirtyRoot = false
@@ -29,7 +30,11 @@ export class RegistryChanges {
 
   private changed(path: string): void {
     const [owner, id] = path.split(sep)
-    if (!owner || !/^[0-9a-f]{64}$/.test(owner)) {
+    const archived = owner === 'closed' && id ? /^([0-9a-f]{64})(?:-[0-9a-f-]{36})?\.json$/.exec(id) : null
+    if (archived) {
+      // An archive record belongs to exactly one owner; it never changes the owner inventory.
+      this.dirtyOwners.add(archived[1]!)
+    } else if (!owner || !/^[0-9a-f]{64}$/.test(owner)) {
       this.dirtyRoot = true
     } else if (id && /^[0-9a-f-]{36}$/.test(id)) {
       this.dirtyLaunches.add(join(owner, id))
@@ -38,24 +43,50 @@ export class RegistryChanges {
     }
   }
 
+  private watchDirectory(path: string, onChange: (filename: string | null) => void,
+    onMissing: () => void): FSWatcher | undefined {
+    let watcher: FSWatcher
+    try {
+      // Non-recursive: Node's userland recursive watch rereads and stats the whole tree on events.
+      watcher = watch(path, { persistent: false }, (_event, filename) => onChange(filename?.toString() ?? null))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      onMissing()
+      return undefined
+    }
+    watcher.on('error', error => {
+      // A watched directory can disappear while another process removes it.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') onMissing()
+      else this.watcherError = error
+    })
+    return watcher
+  }
+
   start(): void {
     this.rootStamp = stamp(this.root)
     if (this.rootStamp === undefined || this.watcher) return
-    try {
-      this.watcher = watch(this.root, { recursive: true, persistent: false }, (_event, filename) => {
-        if (filename === null) this.dirtyRoot = true
-        else this.changed(filename.toString())
-      })
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-      this.dirtyRoot = true
-      return
-    }
-    this.watcher.on('error', error => {
-      // Recursive watchers can encounter a tombstone while another process removes it.
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') this.dirtyRoot = true
-      else this.watcherError = error
+    this.watcher = this.watchDirectory(this.root, filename => {
+      if (filename === null) this.dirtyRoot = true
+      else this.changed(filename)
+    }, () => { this.dirtyRoot = true })
+  }
+
+  /** Each owner directory has its own watch, so an event costs one owner refresh. */
+  watchOwner(owner: string): void {
+    if (this.ownerWatchers.has(owner)) return
+    const watcher = this.watchDirectory(join(this.root, owner), filename => {
+      if (filename !== null && /^[0-9a-f-]{36}$/.test(filename)) this.dirtyLaunches.add(join(owner, filename))
+      else this.dirtyOwners.add(owner)
+    }, () => {
+      this.unwatchOwner(owner)
+      this.dirtyOwners.add(owner)
     })
+    if (watcher) this.ownerWatchers.set(owner, watcher)
+  }
+
+  unwatchOwner(owner: string): void {
+    this.ownerWatchers.get(owner)?.close()
+    this.ownerWatchers.delete(owner)
   }
 
   poll(): { root: boolean; owners: readonly string[]; launches: readonly string[] } {
@@ -65,6 +96,7 @@ export class RegistryChanges {
     if (rootStamp === undefined) {
       this.watcher?.close()
       this.watcher = undefined
+      for (const owner of [...this.ownerWatchers.keys()]) this.unwatchOwner(owner)
     }
     for (const [owner, previous] of this.owners) {
       if (stamp(join(this.root, owner)) !== previous.stamp) this.dirtyOwners.add(owner)
