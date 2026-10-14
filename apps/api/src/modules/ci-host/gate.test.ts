@@ -78,7 +78,7 @@ it.each([
           ? { ...response, slotsUsed: 1 } : response
       },
     }
-    const hostFile = userSystemdIntegrationFiles[0]!
+    const hostFile = [...userSystemdIntegrationFiles][0]!
     const ordinaryFile = 'apps/api/test/feature.integration.test.ts'
     const parts = await planCiGate({ suite: 'integration', scope: 'full', gate: true },
       { files: [hostFile, ordinaryFile], durations: {} },

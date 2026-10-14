@@ -99,6 +99,7 @@ it('refreshes the CircleCI pipeline on the next poll and shares that read with f
   f.advance(4_000)
   f.circle.runView = { phase: 'ended', outcome: 'succeeded', workflows: [{ jobs: [{ id: 'job-1' }] }] }
   f.circle.outcome = 'succeeded'
+  f.circle.durations = {}
   expect(await f.cloud.handle(read)).toMatchObject({
     run: { state: 'passed', collection: 'complete' },
     text: 'Suite\nall green\n',
