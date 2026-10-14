@@ -59,3 +59,71 @@ it('stops drain diagnostics when a stage rejects', async () => {
   expect(logging.warn).not.toHaveBeenCalled()
   expect(logging.info).not.toHaveBeenCalled()
 })
+
+it.each(['sources.reclaim-reservation', 'sources.reconcile-preparation', 'sources.release'])(
+  'defers new %s retries during an update and resumes them afterwards', async operation => {
+    const drain = createWorkerRuntimeDrain({
+      signal: new AbortController().signal, active: () => [], drainJobs: async () => {},
+      drainQualifications: async () => {}, drainMaintenance: async () => {}, quiescent: async () => true,
+    })
+    await drain.run()
+    expect(() => drain.assertAdmission('source-operations-v1', { operation }))
+      .toThrow(expect.objectContaining({ code: 'WORKER_RUNTIME_DRAINING' }))
+    drain.resume()
+    expect(() => drain.assertAdmission('source-operations-v1', { operation })).not.toThrow()
+  })
+
+it('waits for a control operation admitted after the initial dispatch drain', async () => {
+  vi.useFakeTimers()
+  const pending = deferred<void>()
+  const active: Promise<unknown>[] = []
+  const drain = createWorkerRuntimeDrain({
+    signal: new AbortController().signal, active: () => [...active], drainJobs: async () => {
+      active.push(pending.promise)
+      void pending.promise.then(() => active.splice(0))
+    },
+    drainQualifications: async () => {}, drainMaintenance: async () => {}, quiescent: async () => true,
+  })
+  let finished = false
+  const running = drain.run().then(() => { finished = true })
+  try {
+    await vi.advanceTimersByTimeAsync(0)
+    expect(finished).toBe(false)
+    pending.resolve()
+    await vi.advanceTimersByTimeAsync(100)
+    await running
+    expect(finished).toBe(true)
+  } finally {
+    pending.resolve()
+    await vi.advanceTimersByTimeAsync(100)
+    await running
+  }
+})
+
+it('keeps source cleanup available until native processes have closed', async () => {
+  vi.useFakeTimers()
+  let idle = false
+  const checking = deferred<void>()
+  const drain = createWorkerRuntimeDrain({
+    signal: new AbortController().signal, active: () => [], drainJobs: async () => {},
+    drainQualifications: async () => {}, drainMaintenance: async () => {}, quiescent: async () => {
+      checking.resolve()
+      return idle
+    },
+  })
+  const running = drain.run()
+  try {
+    await checking.promise
+    expect(() => drain.assertAdmission('source-operations-v1', { operation: 'sources.reconcile-preparation' }))
+      .not.toThrow()
+    idle = true
+    await vi.advanceTimersByTimeAsync(100)
+    await running
+    expect(() => drain.assertAdmission('source-operations-v1', { operation: 'sources.reconcile-preparation' }))
+      .toThrow(expect.objectContaining({ code: 'WORKER_RUNTIME_DRAINING' }))
+  } finally {
+    idle = true
+    await vi.advanceTimersByTimeAsync(100)
+    await running
+  }
+})
