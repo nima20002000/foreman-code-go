@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import {
   DEVICE_APPLICATION_IN_FLIGHT, DEVICE_APPLICATION_STOP_IN_FLIGHT,
   type DeviceRequestPriority,
@@ -80,6 +81,18 @@ export class DeviceRequestQueue {
     this.failure = error
     for (const request of [...this.waiting]) request.reject(error)
   }
+}
+
+const foregroundWork = new AsyncLocalStorage<true>()
+
+/** Device requests made while serving an Operator or Agent tool call are foreground, whatever their namespace. */
+export function asForegroundWork<T>(work: () => Promise<T>): Promise<T> {
+  return foregroundWork.run(true, work)
+}
+
+export function effectiveDeviceRequestPriority(namespace: string, payload: unknown,
+  explicit?: DeviceRequestPriority): DeviceRequestPriority {
+  return explicit ?? (foregroundWork.getStore() ? 'foreground' : deviceRequestPriority(namespace, payload))
 }
 
 export function deviceRequestPriority(namespace: string, payload: unknown): DeviceRequestPriority {

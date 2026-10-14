@@ -7,6 +7,7 @@ import { componentLogger } from '../../infrastructure/logger.js'
 import { toolFailure, toolResult } from '../shared/results.js'
 import type { OperatorRequestContext } from './types.js'
 import { deviceBusyFailure } from '../../modules/devices/deviceBusyError.js'
+import { asForegroundWork } from '../../modules/devices/deviceRequestQueue.js'
 
 export function logOperatorToolFailure(name: string, error: unknown): void {
   if (error instanceof DomainError) return
@@ -28,7 +29,7 @@ export async function invokeOperatorTool(
   /** The tool's registry action (catalog.ts). A failed read is classified as a retryable read failure. */
   action?: ManagementAction,
 ) {
-  try { return toolResult(await work()) } catch (caughtError) {
+  try { return toolResult(await asForegroundWork(work)) } catch (caughtError) {
     let error = deviceBusyFailure(caughtError)
     logOperatorToolFailure(name, error)
     if (action?.endsWith(':read')) error = databaseReadFailure(error)

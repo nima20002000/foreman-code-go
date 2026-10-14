@@ -15,7 +15,7 @@ import { DeviceConnectionError, nextFrame, readFrame, sendFrame, withDeviceDeadl
 import { DeviceApplicationAdmissionError, DeviceApplicationError, deviceApplicationFailure } from './deviceApplicationError.js'
 import { deviceRequestTimeoutMs, retryDeviceRequest, waitForDeviceRetry } from './deviceRequestRetry.js'
 import { MainClock } from './workerClock.js'
-import { DeviceRequestQueue, deviceForegroundWaitMs, deviceRequestPriority } from './deviceRequestQueue.js'
+import { DeviceRequestQueue, deviceForegroundWaitMs, effectiveDeviceRequestPriority } from './deviceRequestQueue.js'
 export { DeviceApplicationError } from './deviceApplicationError.js'
 
 export interface DeviceExtensionContext { binding: Readonly<DeviceSessionBinding>; signal: AbortSignal; connectionSignal?: AbortSignal; bytes?: Uint8Array }
@@ -161,7 +161,7 @@ export class DeviceApplicationChannel {
     this.current()
     const stopNamespace = this.options.side === 'main' ? 'execution-v1' : EXECUTION_AUTHORITY_EXTENSION.namespace
     const stop = namespace === stopNamespace && !options.bytes && this.stopRequest(namespace, payload)
-    const priority = options.priority ?? deviceRequestPriority(namespace, payload)
+    const priority = effectiveDeviceRequestPriority(namespace, payload, options.priority)
     const release = await this.requestQueue.acquire({ priority, stop, signal: options.signal })
     try {
       const deadline = Date.now() + deviceForegroundWaitMs
