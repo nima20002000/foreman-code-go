@@ -1,3 +1,4 @@
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 import type { ReadObservation } from '@foreman-code/contracts'
 import { errorMessage } from '../../shared/errorMessage.js'
 import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
@@ -82,7 +83,7 @@ export class OperatorConversationEvents {
   publish(conversationId: string, type: OperatorConversationStreamEvent['type'], data: Record<string, unknown>) {
     const event = OperatorConversationStreamEventSchema.parse({ id: this.sequence++, conversationId, type, data })
     for (const listener of this.listeners.get(conversationId) ?? []) {
-      try { listener(event) } catch { /* ignore: a disconnected subscriber cannot fail a native turn. */ }
+      try { listener(event) } catch (error) { logIgnoredError('engine', 'publish conversation event', error) }
     }
   }
   subscribe(id: string, listener: (event: OperatorConversationStreamEvent) => void) {

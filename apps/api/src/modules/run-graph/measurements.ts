@@ -1,3 +1,4 @@
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 import type pg from 'pg'
 export interface GraphMeasurement {
   stage: 'snapshot' | 'delta' | 'projection' | 'publication' | 'storage'
@@ -9,7 +10,7 @@ export interface GraphMeasurement {
 /** Bounded labels only. Implementations must not attach Run IDs, native IDs or payloads. */
 export type GraphMeasurementSink = (measurement: Readonly<GraphMeasurement>) => void
 export function observeGraph(sink: GraphMeasurementSink | undefined, measurement: GraphMeasurement): void {
-  try { sink?.(Object.freeze({ ...measurement })) } catch { /* ignore: observability is never workflow authority. */ }
+  try { sink?.(Object.freeze({ ...measurement })) } catch (error) { logIgnoredError('engine', 'publish graph measurement', error) }
 }
 /** Qualification hook, NOT called on every graph poll. Counts are planner estimates, bytes are relation sizes. */
 export async function measureGraphStorage(pool: pg.Pool, sink?: GraphMeasurementSink) {

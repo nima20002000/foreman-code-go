@@ -41,10 +41,16 @@ export async function passiveDriverPayloads(driver: string, launcher: string,
   const requireLauncher = createRequire(selected)
   let vendor: string
   try { vendor = join(dirname(requireLauncher.resolve(`${target.package}/package.json`)), 'vendor') }
-  catch { vendor = join(dirname(selected), '..', 'vendor') }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'MODULE_NOT_FOUND') throw error
+    vendor = join(dirname(selected), '..', 'vendor')
+  }
   const payload = join(vendor, target.triple, 'bin', platform === 'win32' ? 'codex.exe' : 'codex')
   try { await access(payload, constants.X_OK); return { complete: true, paths: [await realpath(payload)] } }
-  catch { return { complete: false, paths: [] } }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    return { complete: false, paths: [] }
+  }
 }
 
 export const inventoryDriverPayloads: typeof passiveDriverPayloads = (driver, launcher, platform, architecture) =>

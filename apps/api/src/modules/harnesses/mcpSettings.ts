@@ -17,14 +17,17 @@ import { NativeMcpNotSubmittedError } from './nativeMcpDelivery.js'
 import { qualificationError } from './qualificationErrors.js'
 import { assertNoUnresolvedPluginWrites, lockNativeConfigurationFile } from './nativeSettingsWrites.js'
 import { MCP_INSPECTION_TIMEOUT_MS } from './mcpDetection.js'
-import { ignoreError } from '../diagnostics/ignoredError.js'
+import { ignoreError, logIgnoredError } from '../diagnostics/ignoredError.js'
 
 type Harness = 'codex'
 type RecordedMcpHarness = Harness | 'claude' | 'opencode'
 type McpList = ReturnType<typeof publicMcpList> & { presets?: { graphql: ReturnType<typeof managedStatus>; linear: Exclude<ReturnType<typeof managedStatus>, 'legacy'> } | undefined }
 async function fileStamp(file: string): Promise<string | null> {
   try { const info = await stat(file); return info.isFile() ? `${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}` : null }
-  catch { return null }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
 }
 type Row = { id: string; harness: RecordedMcpHarness; revision: string; change: unknown; managed_preset: HarnessMcpManagedPreset | null;
   requested_by: string; status: string; created_at: Date; expires_at: Date; error: string | null;
@@ -109,7 +112,11 @@ export class HarnessMcpSettingsService {
   }
   /** Fill Connections before Settings opens. */
   async warmup(harnesses: readonly Harness[]): Promise<void> {
-    await Promise.allSettled(harnesses.map((harness) => this.cachedList(harness)))
+    const results = await Promise.allSettled(harnesses.map((harness) => this.cachedList(harness)))
+    for (const [index, result] of results.entries()) {
+      if (result.status === 'rejected') logIgnoredError('harness', 'warm MCP discovery', result.reason,
+        { harness: harnesses[index] })
+    }
   }
   /** Raw user-layer server entries for fleet sync on Main. Callers must not expose them; they can contain secrets. */
   async userServers(harness: Harness): Promise<Record<string, unknown>> {

@@ -5,6 +5,13 @@ import type { NativeProcessRecovery } from './recovery/processRegistry.js'
 import { inheritedAgentEnvironment } from './secrets.js'
 import { APP_MCP_SERVER_NAME, chatExcludedAppMcpServerNames } from './appMcpLauncher.js'
 import { runCommand } from './process.js'
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
+
+function reportRefreshFailure(): void {
+  logIgnoredError('harness', 'refresh native model catalog',
+    Object.assign(new Error('Native model refresh failed; using its validated cached catalog.'),
+      { code: 'NATIVE_MODEL_REFRESH_FAILED' }))
+}
 
 const MAX_MODELS = 10_000
 const REFRESH_FAILURE = 'failed to refresh available models:'
@@ -93,6 +100,7 @@ export async function readNativeCodexModelCatalog(
   }
   if (failed) throw failure
   signal?.throwIfAborted()
+  if (refreshFailed) reportRefreshFailure()
   return { ...catalog!, ...(refreshFailed ? { modelCatalogSource: 'cached' } : {}) }
 }
 
@@ -129,6 +137,7 @@ export function parseCodexModelCatalog(result: {
     ids.add(model.slug)
     models.push(model)
   }
+  if (result.stderr.includes(REFRESH_FAILURE)) reportRefreshFailure()
   return { ...catalog, models,
     ...(result.stderr.includes(REFRESH_FAILURE) ? { modelCatalogSource: 'cached' } : {}) }
 }

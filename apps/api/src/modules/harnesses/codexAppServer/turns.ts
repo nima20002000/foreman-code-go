@@ -1,3 +1,4 @@
+import { logIgnoredError } from '../../diagnostics/ignoredError.js'
 /** Turn submission, streaming, steering, cancellation, history and native interaction responses. */
 import { runtimeTimingPoint } from '../../diagnostics/runtimeTiming.js'
 import { DEVICE_HISTORY_PAGE_BYTES } from '@foreman-code/contracts/device-application'
@@ -108,11 +109,13 @@ export abstract class CodexManagerTurns extends CodexManagerControls {
       const restarting = signal?.reason instanceof DomainError && signal.reason.code === 'ENGINE_RESTART'
       if (!restarting) starting.cancelRequested = true
       starting.preparationController.abort(signal?.reason)
-      void this.finishTurnResources(runtime).catch(() => {
+      void this.finishTurnResources(runtime).catch(cleanupError => {
+      logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
         // ignore: resources stay owned for the next admission or explicit close to retry.
       })
       if (!restarting && runtime.activeTurnId && !runtime.terminalResult) {
-        void this.interrupt(runtime).catch(() => {
+        void this.interrupt(runtime).catch(cleanupError => {
+      logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
           // ignore: abort cannot await delivery; interrupt records uncertainty for reconciliation.
         })
       }
@@ -495,7 +498,8 @@ export abstract class CodexManagerTurns extends CodexManagerControls {
     if (runtime.starting) {
       runtime.starting.cancelRequested = true
       runtime.starting.preparationController.abort()
-      void this.finishTurnResources(runtime).catch(() => {
+      void this.finishTurnResources(runtime).catch(cleanupError => {
+      logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
         // ignore: resources stay owned for the next admission or explicit close to retry.
       })
       const id = await deadline(runtime.starting.nativeIdentity, signal, undefined, this.dependencies)

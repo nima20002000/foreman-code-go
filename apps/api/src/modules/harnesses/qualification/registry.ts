@@ -25,7 +25,10 @@ export class HarnessQualificationRegistry {
     const candidates = isAbsolute(binary) || binary.includes('/') ? [binary] : (process.env.PATH ?? '').split(delimiter).map((entry) => resolve(entry || '.', binary))
     let resolved: string | undefined
     for (const candidate of candidates) {
-      try { await access(candidate, constants.X_OK); resolved = await realpath(candidate); break } catch { /* ignore: try PATH. */ }
+      try { await access(candidate, constants.X_OK); resolved = await realpath(candidate); break }
+      catch (error) {
+        if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error
+      }
     }
     if (!resolved) throw new Error('The configured harness executable is unavailable.')
     const sha256 = createHash('sha256').update(await readFile(resolved)).digest('hex')

@@ -1,3 +1,4 @@
+import { logIgnoredError } from '../../diagnostics/ignoredError.js'
 /** Native callbacks and notifications: staging, translation, interactions and turn resources. */
 import { codexCompactionNotification, codexContextSnapshot } from '../codexSessionControls.js'
 import { createHash } from 'node:crypto'
@@ -19,7 +20,7 @@ export abstract class CodexManagerEvents extends CodexManagerPreparation {
     if (runtime.nativeOutput && !runtime.nativeOutputCleanup) {
       const attempt = runtime.nativeOutput.close()
       runtime.nativeOutputCleanup = attempt
-      void attempt.catch(() => { if (runtime.nativeOutputCleanup === attempt) runtime.nativeOutputCleanup = undefined })
+      void attempt.catch(cleanupError => { logIgnoredError('harness', 'clean up Codex native output', cleanupError); if (runtime.nativeOutputCleanup === attempt) runtime.nativeOutputCleanup = undefined })
     }
     return Promise.all([this.finishFiles(runtime), runtime.nativeOutputCleanup]).then(() => undefined)
   }
@@ -29,7 +30,8 @@ export abstract class CodexManagerEvents extends CodexManagerPreparation {
     if (runtime.fileCleanup) return runtime.fileCleanup
     const attempt = runtime.files.close()
     runtime.fileCleanup = attempt
-    void attempt.catch(() => {
+    void attempt.catch(cleanupError => {
+      logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
       // Keep the bridge owned so close/dispose or the next admission can retry.
       if (runtime.fileCleanup === attempt) runtime.fileCleanup = undefined
       this.record(runtime, 'files.cleanup_failed', {})
@@ -92,7 +94,8 @@ export abstract class CodexManagerEvents extends CodexManagerPreparation {
     if (turn.status === 'failed' && retry?.canAdvanceIdentity && isCodexCapacityError(turn.error)
       && retry.attempt < CODEX_CAPACITY_ATTEMPTS && !retry.controller.signal.aborted) retry.failure = result
     runtime.phase = 'idle'
-    void this.finishTurnResources(runtime).catch(() => {
+    void this.finishTurnResources(runtime).catch(cleanupError => {
+      logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
       // ignore: resources stay owned for the next admission or explicit close to retry.
     })
     for (const [key, waiting] of runtime.interactions) {
@@ -200,7 +203,7 @@ export abstract class CodexManagerEvents extends CodexManagerPreparation {
       // An untrackable live ID cannot be forgotten while this connection keeps
       // accepting callbacks. Fence it synchronously and retain failed cleanup.
       this.handleDisconnect(runtime)
-      void runtime.transport.close().catch(() => { this.record(runtime, 'transport.close_unconfirmed', {}) })
+      void runtime.transport.close().catch(cleanupError => { logIgnoredError('harness', 'close Codex transport', cleanupError); this.record(runtime, 'transport.close_unconfirmed', {}) })
       return
     }
     const reservation: ResolvedRequest = { signature, nativeRequestId: undefined,
@@ -378,7 +381,8 @@ export abstract class CodexManagerEvents extends CodexManagerPreparation {
   protected handleDisconnect(runtime: Runtime): void {
     runtime.closed = true
     runtime.starting?.preparationController.abort()
-    void this.finishTurnResources(runtime).catch(() => {
+    void this.finishTurnResources(runtime).catch(cleanupError => {
+      logIgnoredError('harness', 'clean up Codex turn resources', cleanupError)
       // ignore: resources stay owned for the next admission or explicit close to retry.
     })
     if (runtime.phase === 'starting' || runtime.phase === 'active') runtime.phase = 'uncertain'
