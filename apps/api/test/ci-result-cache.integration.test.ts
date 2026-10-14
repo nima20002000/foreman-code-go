@@ -242,8 +242,11 @@ it('never skips cached files in full-scope runs or gates', async () => {
     const full = CiRunOutputSchema.parse(await f.call('ci_run', { suite: 'integration', commit: commit('1'),
       scope: 'full', commandId: randomUUID() }))
     expect(full.cachedFiles).toBeUndefined()
-    // ci_run returns before its background dispatch reaches the executor.
-    await expect.poll(() => f.sent(full.ticketId)).not.toBeNull()
+    // A full-scope start sends no file list, so the builder runs every file.
+    await f.sent(full.ticketId)
+    const start = f.starts.find(sent => sent.runId === full.ticketId)
+    expect(start).toMatchObject({ scope: 'full' })
+    expect(start?.files).toBeUndefined()
     expect((await f.read(full.ticketId)).run).toMatchObject({ scope: 'full', files: [], state: 'running',
       computer: { hostRef: { kind: 'main', mainId: 'cache-main' } } })
 
