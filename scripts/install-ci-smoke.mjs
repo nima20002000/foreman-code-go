@@ -68,10 +68,20 @@ export async function runInstallCiSmoke({ origin, workspaceId, commit, token, pr
     } while (Date.now() < until || !ciFinished)
   }
   const admit = async selection => {
-    const result = await request(root, { method: 'POST', timeoutMs: admissionTimeoutMs,
-      step: `admission ${++admissionCount}`, body: JSON.stringify({
-      suite: selection.smokeComputer ? 'integration' : 'unit', scope: 'affected', commit, commandId: randomUUID(), priority: 'high',
-      noSupersede: true, ...selection }) })
+    const body = JSON.stringify({ suite: selection.smokeComputer ? 'integration' : 'unit', scope: 'affected', commit,
+      commandId: randomUUID(), priority: 'high', noSupersede: true, ...selection })
+    let result
+    while (true) {
+      try {
+        result = await request(root, { method: 'POST', timeoutMs: admissionTimeoutMs, step: `admission ${++admissionCount}`, body })
+        break
+      } catch (error) {
+        // A Worker still reconnecting after the restart is retried; the smoke deadline bounds the wait.
+        if (signal.aborted || !/HTTP 503: .*"retryable":true/.test(error.message)) throw error
+        log(error.message)
+        await delay(pollMs, undefined, { signal })
+      }
+    }
     for (const part of result.partitions ?? [result]) tickets.add(part.ticketId)
     if (result.partitions) throw new Error(`CI smoke unexpectedly split into ${result.partitions.length} jobs.`)
     return result.ticketId
