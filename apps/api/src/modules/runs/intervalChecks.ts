@@ -1,5 +1,5 @@
 import type { RunIntervalCheck } from '@foreman-code/contracts/run-snapshots'
-import { AGENT_INTERVAL_MAX_CHECKS_PER_RUN, type WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
+import type { WorkflowVersionV3 } from '@foreman-code/contracts/wave25'
 import type pg from 'pg'
 
 type Queryable = { query<R extends pg.QueryResultRow>(text: string, values?: unknown[]): Promise<pg.QueryResult<R>> }
@@ -7,8 +7,8 @@ export interface IntervalCheckFacts {
   /** An unfinished execution of the node, preferring graph work over a check. */
   openId: string | null; openTick: boolean | null
   lastFinished: string | null; lastTick: number
-  /** The node's latest check in any state, and all checks of the Run. */
-  lastTickId: string | null; runChecks: number
+  /** The node's latest check in any state. */
+  lastTickId: string | null
   /** The node still has graph work to do: no resolution, or an unfinished work activation. */
   graphOpen: boolean
 }
@@ -17,13 +17,12 @@ export interface IntervalCheckFacts {
 export async function readIntervalCheckFacts(sql: Queryable, runId: string, nodeId: string,
   handoffs: boolean): Promise<IntervalCheckFacts> {
   const row = (await sql.query<{ open_id: string | null; open_tick: boolean | null; last_finished: string | null
-    last_tick: number; last_tick_id: string | null; run_checks: number; graph_open: boolean }>(`select open.id as open_id,open.tick as open_tick,
+    last_tick: number; last_tick_id: string | null; graph_open: boolean }>(`select open.id as open_id,open.tick as open_tick,
       (select max(e.record->>'finishedAt') from harness_executions e where e.run_id=$1 and e.workflow_node_id=$2
         and e.record->>'state'='completed') as last_finished,
       coalesce((select max(e.tick_index) from harness_executions e where e.run_id=$1 and e.workflow_node_id=$2),0) as last_tick,
       (select e.id from harness_executions e where e.run_id=$1 and e.workflow_node_id=$2 and e.tick_index is not null
         order by e.tick_index desc limit 1) as last_tick_id,
-      (select count(*) from harness_executions e where e.run_id=$1 and e.tick_index is not null) as run_checks,
       case when $3 then exists(select 1 from run_work_activations a where a.run_id=$1 and a.workflow_node_id=$2
           and a.state<>'completed')
         else not exists(select 1 from run_repeat_resolutions r where r.run_id=$1 and r.occurrence_key=''
@@ -32,13 +31,13 @@ export async function readIntervalCheckFacts(sql: Queryable, runId: string, node
       where e.run_id=$1 and e.workflow_node_id=$2 and e.record->>'state'<>'completed'
       order by e.tick_index nulls first,e.id limit 1) open on true`, [runId, nodeId, handoffs])).rows[0]!
   return { openId: row.open_id, openTick: row.open_tick, lastFinished: row.last_finished,
-    lastTick: Number(row.last_tick), lastTickId: row.last_tick_id, runChecks: Number(row.run_checks), graphOpen: row.graph_open }
+    lastTick: Number(row.last_tick), lastTickId: row.last_tick_id, graphOpen: row.graph_open }
 }
 
 /** When the next check may start, or null while one is running, graph work is open, the node never
- * finished, or the Run has used all of its checks. */
+ * finished. */
 export function nextIntervalCheckAt(facts: IntervalCheckFacts, everySeconds: number): string | null {
-  if (facts.openId || facts.graphOpen || !facts.lastFinished || facts.runChecks >= AGENT_INTERVAL_MAX_CHECKS_PER_RUN) return null
+  if (facts.openId || facts.graphOpen || !facts.lastFinished) return null
   return new Date(Date.parse(facts.lastFinished) + everySeconds * 1000).toISOString()
 }
 

@@ -466,6 +466,24 @@ async function drainRuntimeTasks(tasks: Set<Promise<unknown>>, signal: AbortSign
   } finally { finished() }
 }
 
+/** An idle loop Run retains its owner and scheduler until Stop, failure or restart. */
+async function waitForIntervalRun(input: Parameters<typeof startIntervalChecks>[0] & {
+  currentState: RepeatRuntimeLifecycle['currentState']
+}): Promise<void> {
+  const stopChecks = startIntervalChecks(input)
+  try {
+    for (;;) {
+      input.signal.throwIfAborted()
+      const current = await input.currentState()
+      if (current.stopRequested || current.cleanupPending) {
+        throw new DomainError('GRAPH_STOP_CONFLICT', 'The Run has a Stop or cleanup request.', 409)
+      }
+      if (current.executionState !== 'running') return
+      await delay(1_000, undefined, { signal: input.signal })
+    }
+  } finally { stopChecks() }
+}
+
 /** Executes the one graph on the existing Run thread. Settlement retries drain
  * wrappers and re-enter the same checkpoint; business progression stays inside
  * guarded graph edges. The shared engine owns Run ownership/admission,
@@ -586,15 +604,24 @@ export async function executeRepeatRuntime(input: {
         signal.throwIfAborted()
         if (await bookkeeping(async () => input.lifecycle.persistWait(await readCheckpoint()))) return
         if (!work && firstFailure) throw firstFailure
+        let idle = input.version.definition.nodes.some(node => node.kind !== 'job' && node.interval)
         if (work) {
-          if (await bookkeeping(() => input.store.completeWorkRun()) === 'needs_direction') {
+          const completion = await bookkeeping(() => input.store.completeWorkRun())
+          idle = completion === 'idle'
+          if (completion === 'needs_direction') {
             if (!input.lifecycle.persistDirectionWait) throw new DomainError('WORK_DIRECTION_WAIT_WRITER_REQUIRED',
               'Unresolved work requires the durable workflow direction-wait writer.', 409)
             await bookkeeping(() => input.lifecycle.persistDirectionWait!())
             return
           }
         }
-        else await timeRuntimeOperation('engine', 'run.settle', () => bookkeeping(() => input.store.completeRun()))
+        else if (!idle) await timeRuntimeOperation('engine', 'run.settle', () => bookkeeping(() => input.store.completeRun()))
+        if (idle) {
+          await waitForIntervalRun({ version: input.version, store: input.store, driver: input.driver,
+            signal, track, currentState: readCurrentState })
+          await drain()
+          return
+        }
         await bookkeeping(() => input.lifecycle.requestCleanup())
         await input.lifecycle.finishNative()
         await bookkeeping(() => input.lifecycle.finishCleanup())

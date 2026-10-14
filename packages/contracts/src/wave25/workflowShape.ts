@@ -84,8 +84,6 @@ export type WorkflowExecutionPolicy = z.infer<typeof WorkflowExecutionPolicySche
  * graph and stop with the Run; workflow schedules, which start Runs, are separate. */
 export const AGENT_INTERVAL_MIN_SECONDS = 10
 export const AGENT_INTERVAL_MAX_SECONDS = 24 * 60 * 60
-/** Checks across all Agents of one Run; the bound keeps the Run's history readable. */
-export const AGENT_INTERVAL_MAX_CHECKS_PER_RUN = 1000
 export const AGENT_INTERVAL_PROMPT_MAX_LENGTH = 4000
 const AgentIntervalSchema = z.object({
   everySeconds: z.number().int().min(AGENT_INTERVAL_MIN_SECONDS).max(AGENT_INTERVAL_MAX_SECONDS),

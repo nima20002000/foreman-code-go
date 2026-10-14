@@ -2,7 +2,7 @@ import { WorkflowWorktreeSettingsSchema } from '../worktreeSettings.js'
 import { z } from 'zod'
 import { ApprovalHandlerSchema,
   DEFAULT_AGENT_ACTIVE_TIMEOUT_MS, MAX_AGENT_ACTIVE_TIMEOUT_MS,
-  AGENT_INTERVAL_MIN_SECONDS, AGENT_INTERVAL_MAX_SECONDS, AGENT_INTERVAL_MAX_CHECKS_PER_RUN,
+  AGENT_INTERVAL_MIN_SECONDS, AGENT_INTERVAL_MAX_SECONDS,
   AGENT_INTERVAL_PROMPT_MAX_LENGTH } from './workflowShape.js'
 import { CommandIdSchema, ExpectedRevisionSchema, WorkflowCreateInputSchema, ManagedAgentSchema } from '../management/index.js'
 import { GraphIdSchema } from './graphPrimitives.js'
@@ -100,7 +100,7 @@ export const CurrentWorkflowCapabilitiesSchema = z.object({
   agentInterval: z.object({ field: z.literal('node.interval.everySeconds'),
     promptField: z.literal('node.interval.prompt'), promptMaxLength: z.literal(AGENT_INTERVAL_PROMPT_MAX_LENGTH),
     minimumSeconds: z.literal(AGENT_INTERVAL_MIN_SECONDS), maximumSeconds: z.literal(AGENT_INTERVAL_MAX_SECONDS),
-    maximumChecksPerRun: z.literal(AGENT_INTERVAL_MAX_CHECKS_PER_RUN), defaultEnabled: z.literal(false), routesGraph: z.literal(false), runStatusTool: z.literal('run_status_get'),
+    maximumChecksPerRun: z.null(), defaultEnabled: z.literal(false), routesGraph: z.literal(false), runStatusTool: z.literal('run_status_get'),
     requires: z.literal('approval handler native, or a Codex Agent with approvalPolicy never; no artifactOutputs') }).strict(),
   approvalHandlers: z.array(ApprovalHandlerSchema),
   forms: z.tuple([z.literal('sequential'), z.literal('parallel_all_required'), z.literal('conditional'),
@@ -137,7 +137,7 @@ export const CURRENT_WORKFLOW_CAPABILITIES = CurrentWorkflowCapabilitiesSchema.p
     perExecution: true, approvalWaitExcluded: true },
   agentInterval: { field: 'node.interval.everySeconds', promptField: 'node.interval.prompt',
     promptMaxLength: AGENT_INTERVAL_PROMPT_MAX_LENGTH, minimumSeconds: AGENT_INTERVAL_MIN_SECONDS,
-    maximumSeconds: AGENT_INTERVAL_MAX_SECONDS, maximumChecksPerRun: AGENT_INTERVAL_MAX_CHECKS_PER_RUN, defaultEnabled: false, routesGraph: false, runStatusTool: 'run_status_get',
+    maximumSeconds: AGENT_INTERVAL_MAX_SECONDS, maximumChecksPerRun: null, defaultEnabled: false, routesGraph: false, runStatusTool: 'run_status_get',
     requires: 'approval handler native, or a Codex Agent with approvalPolicy never; no artifactOutputs' },
   approvalHandlers: ApprovalHandlerSchema.options,
   forms: ['sequential', 'parallel_all_required', 'conditional', 'approval', 'bounded_repeat'],
