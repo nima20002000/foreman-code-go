@@ -13,7 +13,8 @@ function httpClient(origin, signal, requestTimeoutMs, token, log = console.log) 
     const timeout = AbortSignal.timeout(timeoutMs)
     try {
       const response = await fetch(`${origin}${path}`, { ...options,
-        headers: { origin, 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        headers: { origin, ...(options.body ? { 'content-type': 'application/json' } : {}),
+          ...(token ? { authorization: `Bearer ${token}` } : {}) },
         signal: AbortSignal.any([signal, timeout]) })
       const body = await response.text()
       if (!response.ok) throw new Error(`${method} ${path}: HTTP ${response.status}: ${body}`)
@@ -77,7 +78,15 @@ export async function runInstallCiSmoke({ origin, workspaceId, commit, token, pr
   }
   const wait = async (ticketId, computer) => {
     while (true) {
-      const result = await request(`${root}/${ticketId}`, { step: `ticket ${ticketId}` })
+      let result
+      try {
+        result = await request(`${root}/${ticketId}`, { step: `ticket ${ticketId}` })
+      } catch (error) {
+        // A slow status read right after a restart is retried; the smoke deadline still bounds the wait.
+        if (signal.aborted || !/timed out/.test(error.message)) throw error
+        log(error.message)
+        continue
+      }
       if (result.run.state === 'passed' && result.run.exitCode === 0) {
         if (computer) {
           if (!isDeepStrictEqual(result.run.computer?.hostRef, computer.hostRef)) {
