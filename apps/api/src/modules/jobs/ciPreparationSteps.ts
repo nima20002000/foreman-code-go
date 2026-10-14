@@ -50,6 +50,7 @@ export async function runCiPreparation(record: CiPreparationRecord, ports: CiPre
         decisionDigest: record.profile.approvalConfig.review!.decisionDigest },
       keepImages: [...new Set([record.profile.spec.policy.imageDigest, ...await ports.deviceImages()])] })
     while (state.state === 'preparing' && state.operationId === record.id) {
+      if (state.cache) record.status.cache = state.cache
       if (state.preparationLimits) record.status.preparationLimits = state.preparationLimits
       await update('preparing', state.stage)
       await ports.wait()
@@ -59,6 +60,7 @@ export async function runCiPreparation(record: CiPreparationRecord, ports: CiPre
       throw new DomainError('CI_RUNTIME_PREPARE_FAILED', state.message ?? 'The computer could not prepare its CI runtime.', 502)
     }
     record.prepared = state.prepared
+    if (state.cache) record.status.cache = state.cache
     if (state.preparationLimits) record.status.preparationLimits = state.preparationLimits
     await ports.checkpoint()
   }

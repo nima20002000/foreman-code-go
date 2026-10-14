@@ -7,7 +7,10 @@ export const workspaceDefaultsTools = [
     name: 'workspace_defaults_get',
     requires: [['settings:read', 'global']],
     enabled: s => !!s.settings,
-    description: 'Read the default parentPath, suggested name and starting description for new workspaces. Pass parentPath to workspace_create to create a project folder. Reading defaults does not grant filesystem access.',
+    description: 'Read the default parentPath, suggested name and starting description for new workspaces. '
+      + 'An unavailable saved parent returns WORKSPACE_DEFAULT_UNAVAILABLE with its saved path and revision; '
+      + 'it is never replaced by another folder. Pass parentPath to workspace_create to create a project folder. '
+      + 'Reading defaults does not grant filesystem access.',
     inputSchema: z.object({}).strict(), outputSchema: ManagedWorkspaceDefaultsSchema,
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     run: (context) => context.services.settings!.getWorkspaceDefaults(context.principal),

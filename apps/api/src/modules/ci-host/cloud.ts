@@ -23,6 +23,7 @@ import { ciLogPage } from './logPage.js'
 import { sanitizeCiText } from './text.js'
 import { withProviderPoll } from './providerPoll.js'
 import { sweepCiRunDirectories } from './directoryRetention.js'
+import { readFleetIdentityInventory } from './fleetIdentityInventory.js'
 
 const LOG_LIMIT = 4 * 1024 * 1024
 const MAX_DISPATCH_ATTEMPTS = 3
@@ -793,18 +794,14 @@ export class CloudCi {
     const fixed = new Set<string>([this.identity.home]), words = new Set<string>([this.identity.user])
     const word = (value: string) => { const first = value.toLowerCase().split(/[^a-z0-9]/)[0] ?? ''; if (first.length >= 3) words.add(first) }
     word(this.identity.host)
-    const status = await this.ports.run('tailscale', ['status', '--json'], { timeoutMs: 15_000 }).catch(fallbackOnError(null, 'jobs', 'read tailscale status'))
-    if (status?.code === 0) {
-      const parsed = JSON.parse(status.stdout) as { Self?: Peer; Peer?: Record<string, Peer>; MagicDNSSuffix?: string
-        User?: Record<string, { LoginName?: string }> }
-      for (const peer of [parsed.Self, ...Object.values(parsed.Peer ?? {})]) {
-        if (!peer) continue
-        for (const address of peer.TailscaleIPs ?? []) if (address.includes('.')) fixed.add(address)
-        if (peer.HostName) { fixed.add(peer.HostName); word(peer.HostName) }
-      }
-      if (parsed.MagicDNSSuffix) fixed.add(parsed.MagicDNSSuffix)
-      for (const user of Object.values(parsed.User ?? {})) if (user.LoginName?.includes('@')) fixed.add(user.LoginName)
+    const parsed = await readFleetIdentityInventory(this.ports)
+    for (const peer of [parsed.Self, ...Object.values(parsed.Peer ?? {})]) {
+      for (const address of peer.TailscaleIPs) if (address.includes('.')) fixed.add(address)
+      fixed.add(peer.HostName)
+      word(peer.HostName)
     }
+    if (parsed.MagicDNSSuffix) fixed.add(parsed.MagicDNSSuffix)
+    for (const user of Object.values(parsed.User ?? {})) if (user.LoginName?.includes('@')) fixed.add(user.LoginName)
     const found: string[] = []
     for (const [mode, values] of [[['-F'], fixed], [['-w', '-F'], words]] as const) {
       const patterns = [...values].filter(value => value.length >= 3).flatMap(value => ['-e', value])
@@ -1104,4 +1101,3 @@ export function cloudCis(mainId: string, mirrors: Mirrors,
   })
 }
 
-interface Peer { HostName?: string; TailscaleIPs?: string[] }

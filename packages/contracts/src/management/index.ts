@@ -453,6 +453,11 @@ export const HarnessCatalogEntrySchema = z.object({
   defaultsRevision: ExpectedRevisionSchema,
   capability: HarnessQualificationSchema.nullable(),
   discoveryError: z.object({ code: z.string(), message: z.string() }).strict().nullable(),
+  observation: z.object({
+    checkedAt: TimestampSchema.nullable(), stale: z.boolean(), refreshing: z.boolean(),
+    refreshCount: z.number().int().nonnegative(), failureCount: z.number().int().nonnegative(),
+    staleReadCount: z.number().int().nonnegative(), lastError: z.string().nullable(),
+  }).strict().optional(),
   interactionSupport: z.array(NativeInteractionSupportSchema).optional(),
 }).strict();
 export const HarnessCatalogSchema = z.array(HarnessCatalogEntrySchema);

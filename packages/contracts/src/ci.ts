@@ -179,10 +179,16 @@ const CiPreparationLimitsSchema = z.object({
   cpuCount: z.number().positive(), memoryBytes: z.number().int().positive(),
 }).strict()
 export type CiPreparationLimits = z.infer<typeof CiPreparationLimitsSchema>
+export const CiCacheStatusSchema = z.object({
+  status: z.enum(['hit', 'miss', 'invalid']), lastError: z.string().max(500).nullable(),
+  missCount: z.number().int().nonnegative(), rebuildCount: z.number().int().nonnegative(),
+}).strict()
+export type CiCacheStatus = z.infer<typeof CiCacheStatusSchema>
 export const PreparedCiRuntimeSchema = z.object({
   commit: CommitSchema, imageId: z.string().regex(/^sha256:[a-f0-9]{64}$/), imageManifestDigest: z.string().min(1).max(200),
   seedReceiptPath: AbsolutePathSchema, contextReceiptPath: AbsolutePathSchema, qualificationSource: AbsolutePathSchema,
   reusedImage: z.boolean().optional(),
+  cache: CiCacheStatusSchema.optional(),
   unitCodex: z.object({ executable: AbsolutePathSchema, sourceExecutable: AbsolutePathSchema, version: z.string().min(1).max(200),
     binarySha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict().optional(),
 }).strict()
@@ -196,6 +202,7 @@ export const CiRuntimeRequestSchema = z.discriminatedUnion('operation', [
     resources: JobResourceRequestSchema }).strict(),
 ])
 export const CiRuntimeWorkerStateSchema = z.object({
+  cache: CiCacheStatusSchema.optional(),
   managedSetup: CiManagedSetupSchema.optional(),
   preparationLimits: CiPreparationLimitsSchema.optional(),
   installedStorage: CiInstalledStorageSchema.nullable().optional(),
@@ -210,6 +217,7 @@ export const BuildComputerPrepareInputSchema = z.object({ workspaceId: IdSchema,
 }).strict()
 export const BuildComputerPrepareGetInputSchema = z.object({ workspaceId: IdSchema, profileId: IdSchema }).strict()
 export const BuildComputerPrepareStatusSchema = z.object({
+  cache: CiCacheStatusSchema.optional(),
   preparationLimits: CiPreparationLimitsSchema.optional(),
   failureCount: z.number().int().nonnegative().optional(), retryAt: z.string().datetime().optional(),
   profileId: IdSchema, deviceId: IdSchema.nullable(),

@@ -42,11 +42,13 @@ export class ExecutionReadinessService {
         ? 'Codex execution is disabled by this app’s runtime configuration.'
         : 'Claude execution is disabled by this app’s runtime configuration.',
     } : setupReason ?? entry?.discoveryError ?? null
-    const unverified = reason && /CHECK_TIMEOUT|QUALIFICATION_FAILED|DISCOVERY_UNAVAILABLE/.test(reason.code)
+    const unverified = reason && /CHECK_TIMEOUT|QUALIFICATION_FAILED|DISCOVERY_UNAVAILABLE|STATUS_REFRESHING/.test(reason.code)
     return ExecutionReadinessSchema.parse({
       harness, scope, ...(operator || configurationVersionId ? { configurationVersionId: operator?.configurationVersionId ?? configurationVersionId } : {}),
       status: unverified ? 'unverified' : reason ? 'blocked' : 'eligible', rolloutEnabled,
-      defaultsRevision: operator?.defaultsRevision ?? entry?.defaultsRevision ?? null, checkedAt: new Date().toISOString(), reason,
+      defaultsRevision: operator?.defaultsRevision ?? entry?.defaultsRevision ?? null,
+      checkedAt: entry && 'observation' in entry ? entry.observation.checkedAt ?? new Date().toISOString()
+        : new Date().toISOString(), reason,
       limitation: scope === 'operator-configuration'
         ? 'This checks the exact saved Operator configuration and current host profile. Workspace, permissions, and MCP policy are checked again at execution.'
         : 'This checks the workflow harness preset only. Operator configurations have their own host profiles; each configuration, workspace, permissions, and MCP policy is checked again at execution.',

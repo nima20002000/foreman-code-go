@@ -108,6 +108,9 @@ export class CiRuntimeWorker {
       const prepared = await this.ports.prepare({ repository, commit: request.commit,
         installer, review: request.review, keepImages: request.keepImages, keepPaths,
         signal: this.lifetime,
+        onCacheStatus: cache => {
+          if (this.state?.operationId === request.operationId) this.set({ ...this.state, cache })
+        },
         log: stage => {
           this.lifetime.throwIfAborted()
           if (this.state?.commit === request.commit) this.set({ ...this.state, stage })
@@ -115,11 +118,13 @@ export class CiRuntimeWorker {
       this.lifetime.throwIfAborted()
       const completed = this.set({ operationId: request.operationId, state: 'prepared', commit: request.commit,
         stage: null, prepared: PreparedCiRuntimeSchema.parse(prepared), message: null,
+        ...(prepared.cache ? { cache: prepared.cache } : {}),
         preparationLimits: state.preparationLimits! })
       await writeCiRuntimeState(this.stateDirectory, completed)
     })().catch(async error => {
       const failed = this.set({ operationId: request.operationId, state: 'failed', commit: request.commit,
         stage: this.state?.stage ?? null, prepared: null,
+        ...(this.state?.cache ? { cache: this.state.cache } : {}),
         preparationLimits: state.preparationLimits!,
         message: (error instanceof Error ? error.message : String(error)).slice(-2000) })
       await writeCiRuntimeState(this.stateDirectory, failed)
