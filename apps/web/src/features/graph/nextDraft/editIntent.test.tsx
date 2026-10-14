@@ -2,7 +2,7 @@ import { nativeNode } from '../../../shared/mocks/nativeFixtureTypes'
 import { HarnessConfigurationSchema } from '@foreman-code/contracts'
 import { journalIntent, savedJournal } from './nim2644Journal.fixture'
 import { boardStartClient } from '../../workflow-board/startClient'
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -188,40 +188,54 @@ beforeEach(() => {
 afterEach(() => {
   cleanup(); clients.splice(0).forEach((client) => client.clear())
   useGraphDraftStore.getState().clearAllDrafts(); vi.restoreAllMocks(); vi.unstubAllGlobals()
+  vi.useRealTimers()
 })
 
 describe('NIM-2644 mounted frontend recovery through the real edit-intent hook', () => {
   it('unlocks a rejected Agent branch prefix and restores the saved draft on Discard and reload', async () => {
+    // Recovery needs only immediate responses, not elapsed polling or typing time.
+    vi.useFakeTimers()
+    const startedAt = Date.now()
+    const update = async (action: () => void) => {
+      await act(async () => {
+        action()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+    }
     const stage = vi.spyOn(nextDraftApi, 'editStage').mockRejectedValue(new ApiError({
       code: 'WORKTREE_BINDING_REQUIRED', message: 'Select an approved root for this Agent branch prefix.',
     }, 409))
     const advance = vi.spyOn(nextDraftApi, 'editAdvance')
     const discard = vi.spyOn(nextDraftApi, 'editDiscard')
-    const user = userEvent.setup()
     let view = mount()
     const saved = structuredClone(edit().graph)
-    await user.click(screen.getByRole('button', { name: 'Entry · Node 0' }))
-    await user.type(screen.getByRole('textbox', { name: 'Agent branch prefix' }), 'foreman/journey-worker')
-    await user.click(screen.getByRole('button', { name: 'Save agent settings' }))
-    await requestSave(user)
-    await screen.findAllByText('Select an approved root for this Agent branch prefix.')
-    await waitFor(() => expect(readEditOutbox(key)).toBeUndefined())
+    await update(() => fireEvent.click(screen.getByRole('button', { name: 'Entry · Node 0' })))
+    await update(() => fireEvent.change(screen.getByRole('textbox', { name: 'Agent branch prefix' }), {
+      target: { value: 'foreman/journey-worker' },
+    }))
+    await update(() => fireEvent.click(screen.getByRole('button', { name: 'Save agent settings' })))
+    expect(saveButton()).toBeEnabled()
+    await update(() => fireEvent.click(saveButton()))
+    expect(screen.getAllByText('Select an approved root for this Agent branch prefix.')).not.toHaveLength(0)
+    expect(readEditOutbox(key)).toBeUndefined()
     expect(nativeNode(edit().graph.nodes[0]).worktree?.branchPrefix).toBe('foreman/journey-worker')
     expect(screen.queryByRole('button', { name: 'Reconcile Save' })).not.toBeInTheDocument()
 
-    view = reopen(view)
-    await screen.findByRole('region', { name: 'Workflow authoring' })
-    await user.click(screen.getByRole('button', { name: 'Entry · Node 0' }))
+    await update(() => { view = reopen(view) })
+    expect(screen.getByRole('region', { name: 'Workflow authoring' })).toBeInTheDocument()
+    await update(() => fireEvent.click(screen.getByRole('button', { name: 'Entry · Node 0' })))
     expect(screen.getByRole('textbox', { name: 'Agent branch prefix' })).toBeEnabled()
     expect(screen.getByRole('button', { name: 'Use workflow default' })).toBeEnabled()
-    await confirmDiscard(user)
-    await waitFor(() => expect(nextDraftDirty(edit())).toBe(false))
+    await update(() => fireEvent.click(screen.getByRole('button', { name: /^Discard changes$/ })))
+    await update(() => fireEvent.click(within(screen.getByRole('alertdialog'))
+      .getByRole('button', { name: 'Discard changes' })))
+    expect(nextDraftDirty(edit())).toBe(false)
     expect(edit().graph).toEqual(saved)
     expect(readEditSnapshot(key)?.graph).toEqual(saved)
 
-    reopen(view)
-    await screen.findByRole('region', { name: 'Workflow authoring' })
-    await user.click(screen.getByRole('button', { name: 'Entry · Node 0' }))
+    await update(() => { reopen(view) })
+    expect(screen.getByRole('region', { name: 'Workflow authoring' })).toBeInTheDocument()
+    await update(() => fireEvent.click(screen.getByRole('button', { name: 'Entry · Node 0' })))
     expect(screen.getByRole('textbox', { name: 'Agent branch prefix' })).toHaveValue('')
     expect(screen.getByRole('textbox', { name: 'Agent branch prefix' })).toBeEnabled()
     expect(edit().graph).toEqual(saved)
@@ -229,6 +243,7 @@ describe('NIM-2644 mounted frontend recovery through the real edit-intent hook',
     expect(advance).not.toHaveBeenCalled()
     expect(discard).not.toHaveBeenCalled()
     expect(boardStartClient.start).not.toHaveBeenCalled()
+    expect(Date.now()).toBe(startedAt)
   })
 
   it('keeps Start blocked for a saved workflow with a retired Agent while preserving its facts', async () => {
