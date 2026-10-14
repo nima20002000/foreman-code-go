@@ -646,6 +646,27 @@ export class OperatorChatService {
     return runtime
   }
 
+  /** The tracked control queue owns cancellation delivery after the submission callback returns. */
+  private deliverRequestedCancellation(id: string, requestId: string, runtime: Runtime) {
+    void this.control(id, async () => {
+      const current = await this.repository.active(id)
+      if (!current || current.active_request_id !== requestId || !current.cancel_requested) return
+      try {
+        await this.interrupt(id, current, runtime)
+        await this.observe(id, requestId, runtime, AbortSignal.timeout(5_000))
+      } catch (error) {
+        await this.repository.uncertain(id, requestId,
+          errorMessage(error, 'Cancellation delivery is uncertain.'))
+        this.events.publish(id, 'error', { requestId, turnState: 'uncertain' })
+      } finally {
+        // Native completion was checked above. Detach a silent SSE reader
+        // so an unproven result remains recoverable by durable reconciliation.
+        const task = this.tasks.get(id)
+        if (task && task.requestId === requestId) task.controller.abort()
+      }
+    }).catch(ignoreError('harness', 'deliver cancellation to native turn', { chatId: id, requestId })) // Persistence failure leaves the accepted request fenced.
+  }
+
   private async runTurn(id: string, input: SendOperatorMessageRequest, configuration: OperatorConfigurationVersion, ownerId: string, signal: AbortSignal) {
     let creating = false
     let submitting = false
@@ -804,23 +825,7 @@ export class OperatorChatService {
             // Persist identity before acknowledging submission, but NEVER await
             // a native operation here. The tracked control queue owns delivery
             // after this callback returns and releases that native lock.
-            void this.control(id, async () => {
-              const current = await this.repository.active(id)
-              if (!current || current.active_request_id !== input.requestId || !current.cancel_requested) return
-              try {
-                await this.interrupt(id, current, runtime)
-                await this.observe(id, input.requestId, runtime, AbortSignal.timeout(5_000))
-              } catch (error) {
-                await this.repository.uncertain(id, input.requestId,
-                  errorMessage(error, 'Cancellation delivery is uncertain.'))
-                this.events.publish(id, 'error', { requestId: input.requestId, turnState: 'uncertain' })
-              } finally {
-                // Native completion was checked above. Detach a silent SSE reader
-                // so an unproven result remains recoverable by durable reconciliation.
-                const task = this.tasks.get(id)
-                if (task && task.requestId === input.requestId) task.controller.abort()
-              }
-            }).catch(ignoreError('harness', 'deliver cancellation to native turn', { chatId: id, requestId: input.requestId })) // Persistence failure leaves the accepted request fenced.
+            this.deliverRequestedCancellation(id, input.requestId, runtime)
           }
         },
       }, signal)) {
@@ -848,13 +853,7 @@ export class OperatorChatService {
       submitted = true
       await this.control(id, () => this.observe(id, input.requestId, runtime))
     } catch (error) {
-      const code = failure(error).error?.code
-      componentLogger('harness').error({
-        errorType: error instanceof Error ? error.constructor.name : typeof error,
-        ...(code && /^[A-Za-z0-9_-]{1,64}$/.test(code) ? { errorCode: code } : {}),
-        stackFrames: error instanceof Error
-          ? error.stack?.split('\n').filter(frame => /^\s+at\s/.test(frame)).slice(0, 8) ?? [] : [],
-      }, 'Operator native turn failed')
+      logOperatorTurnFailure(error)
       if (signal.aborted) textStream?.dispose(); else textStream?.flush()
       if (submitted || (submitting && !definitePromptRejection(error)) || (creating && !definiteCreationFailure(error))) {
         await this.repository.uncertain(id, input.requestId, errorMessage(error, 'Native delivery is uncertain.'))
@@ -1354,4 +1353,14 @@ export class OperatorChatService {
     })()
     return this.shutdownTask
   }
+}
+
+function logOperatorTurnFailure(error: unknown) {
+  const code = failure(error).error?.code
+  componentLogger('harness').error({
+    errorType: error instanceof Error ? error.constructor.name : typeof error,
+    ...(code && /^[A-Za-z0-9_-]{1,64}$/.test(code) ? { errorCode: code } : {}),
+    stackFrames: error instanceof Error
+      ? error.stack?.split('\n').filter(frame => /^\s+at\s/.test(frame)).slice(0, 8) ?? [] : [],
+  }, 'Operator native turn failed')
 }
