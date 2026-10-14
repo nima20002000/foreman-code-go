@@ -234,6 +234,16 @@ function reviewActivity(state: string | undefined, reviewJobId: string | undefin
   return { kind: 'review', status, summary }
 }
 
+function skippedEventsActivity(payload: Record<string, unknown>): ActivityView {
+  const from = count(payload.fromSequence)
+  const to = count(payload.toSequence)
+  const skipped = from !== undefined && to !== undefined && to >= from ? to - from + 1 : undefined
+  const summary = skipped === undefined ? 'Events skipped' : `${skipped} ${skipped === 1 ? 'event' : 'events'} skipped`
+  const detail = to === undefined ? undefined
+    : `Activity observation resumed at event ${to + 1}. The Agent kept running.`
+  return { kind: 'recovery', status: 'recorded', summary, detail }
+}
+
 /** Project typed activity details and recorded work results; exclude native provider bodies. */
 export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersionV3,
   runId: string, runOutcome: string): RunActivityPublic {
@@ -245,7 +255,8 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
   const actorKind = new Set(['node_scheduled','node_state_changed','harness_session_started',
     'harness_output','harness_session_finished','result_recorded','work_result_accepted',
     'work_handoff_accepted','work_handoff_returned','work_handoff_denied','work_rerouted','ci_state_changed',
-    'interaction_pending','interaction_decided','interaction_delivery_state','interaction_resolved','interaction_worker_ack'])
+    'interaction_pending','interaction_decided','interaction_delivery_state','interaction_resolved','interaction_worker_ack',
+    'native_events_skipped'])
   const jobActor = node?.kind === 'job' && row.job_execution_id && row.node_execution_id === row.job_execution_id
     && row.job_definition_id === node.jobDefinitionId && row.job_definition_revision === node.jobDefinitionRevision
     && row.job_definition_version_id === node.jobDefinitionVersionId
@@ -312,6 +323,9 @@ export function publicRunActivity(row: ActivityReadRow, version: WorkflowVersion
   let detail: string | undefined
   let workResult: RunActivityPublic['workResult']
   switch (row.kind) {
+    case 'native_events_skipped':
+      ({ kind, status, summary, detail } = skippedEventsActivity(payload))
+      break
     case 'ci_state_changed': {
       kind = 'job_work'
       if (!ci) {

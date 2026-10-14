@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import { DEFAULT_HARNESS_DEFAULTS, type AgentConfigurationVersion, type NativeHarnessEvent } from '@foreman-code/contracts'
 import { DEVICE_APPLICATION_JSON_BYTES } from '@foreman-code/contracts/device-application'
+import type { DeviceHistoryGap } from '@foreman-code/contracts/device-application'
 import { RemoteOperationReceiptSchema } from '@foreman-code/contracts/remote-execution'
 import { remoteEntryClosureDigest, remoteNonEntryClosureDigest } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 import { RemoteExecutionRpcRequestSchema } from '@foreman-code/contracts/remote-execution-rpc'
@@ -354,26 +355,83 @@ describe('remote native history streaming', () => {
     expect(f.request).toHaveBeenCalledTimes(1)
   })
 
-  it('reports a gap when a delayed consumer falls behind the retained window, before yielding its newer events', async () => {
+  it('resumes a delayed consumer after retention and preserves the correlated terminal result', async () => {
     let history: NativeHistory = { events: [event(0)], pendingInteractions: [], firstRetainedSequence: 0,
       nextSequence: 1 }
     const f = setup(() => history)
     const session = await f.proxy.createSession(f.start)
-    const stream = f.proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: f.start.correlationId })
+    const skipped: DeviceHistoryGap[] = []
+    const input = { prompt: 'prompt', clientCorrelationId: f.start.correlationId,
+      onEventsSkipped: async (gap: DeviceHistoryGap) => { skipped.push(gap) } }
+    const stream = f.proxy.startTurn(session, input)
     expect((await stream.next()).value).toEqual(event(0))
     // The worker advances while the consumer is suspended at the prior yield.
     history = terminal([event(50), event(51)])
-    await expect(stream.next()).rejects.toMatchObject({ result: { error: { code: 'NATIVE_HISTORY_GAP' } } })
+    expect((await stream.next()).value).toEqual(event(50))
+    expect((await stream.next()).value).toEqual(event(51))
+    expect((await stream.next()).done).toBe(true)
+    expect(skipped).toEqual([{ fromSequence: 1, toSequence: 49, reason: 'retention' }])
     expect(f.cursors).toEqual([-1, 0])
     expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
     expect((await f.proxy.reconcile(session, f.start.correlationId)).terminalTurn).toEqual(history.terminalTurn)
   })
 
-  it('checks the retained floor even when the worker omits its explicit gap flag', async () => {
+  it.each(['succeeded', 'failed', 'canceled'] as const)(
+    'preserves the original %s result after events were trimmed before the first read', async outcome => {
+    const history = terminal([event(50)])
+    const result = { outcome, output: { text: 'saved result' } }
+    history.terminalResult = result
+    history.terminalTurn!.result = result
+    const f = setup(() => history, reply => { delete reply.history.gap })
+    const session = await f.proxy.createSession(f.start)
+    const skipped: DeviceHistoryGap[] = []
+    const input = { prompt: 'prompt', clientCorrelationId: f.start.correlationId,
+      onEventsSkipped: async (gap: DeviceHistoryGap) => { skipped.push(gap) } }
+    const delivered: NativeHarnessEvent[] = []
+    for await (const value of f.proxy.startTurn(session, input)) delivered.push(value)
+    expect(delivered).toEqual([event(50)])
+    expect(skipped).toEqual([{ fromSequence: 0, toSequence: 49, reason: 'retention' }])
+    expect((await f.proxy.reconcile(session, f.start.correlationId)).terminalTurn?.result).toEqual(result)
+    expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
+  })
+
+  it('refreshes an aged page and resumes when retention advances during publication', async () => {
+    let now = Date.now()
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now)
+    try {
+      let history = terminal([event(0), event(1)])
+      const f = setup(() => history)
+      const session = await f.proxy.createSession(f.start)
+      const skipped: DeviceHistoryGap[] = []
+      const input = { prompt: 'prompt', clientCorrelationId: f.start.correlationId,
+        onEventsSkipped: async (gap: DeviceHistoryGap) => { skipped.push(gap) } }
+      const stream = f.proxy.startTurn(session, input)
+      expect((await stream.next()).value).toEqual(event(0))
+      now += 30_001
+      history = terminal([event(50)])
+      expect((await stream.next()).value).toEqual(event(50))
+      expect((await stream.next()).done).toBe(true)
+      expect(skipped).toEqual([{ fromSequence: 1, toSequence: 49, reason: 'retention' }])
+      expect(f.cursors).toEqual([-1, 0])
+    } finally { clock.mockRestore() }
+  })
+
+  it.each(['correlation', 'turn', 'session'] as const)('rejects foreign %s history even after retention', async defect => {
     const f = setup(() => terminal([event(50)]), reply => { delete reply.history.gap })
     const session = await f.proxy.createSession(f.start)
+    const request = f.request.getMockImplementation()!
+    f.request.mockImplementation(async (method, payload, signal) => {
+      const reply = await request(method, payload, signal)
+      if (method !== 'history') return reply
+      const value = reply as ReturnType<typeof pageNativeHistory>
+      if (defect === 'correlation') value.history.terminalTurn!.correlationId = 'foreign-correlation'
+      if (defect === 'turn') value.history.terminalTurn!.providerId = 'foreign-turn'
+      if (defect === 'session') value.history.nativeSubmission = { kind: 'message',
+        nativeSessionId: 'foreign-session', nativeMessageId: 'native-message', clientCorrelationId: f.start.correlationId }
+      return reply
+    })
     const stream = f.proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: f.start.correlationId })
-    await expect(stream.next()).rejects.toMatchObject({ result: { error: { code: 'NATIVE_HISTORY_GAP' } } })
+    await expect(stream.next()).rejects.toThrow()
     expect(f.cursors).toEqual([-1])
   })
 
@@ -384,6 +442,29 @@ describe('remote native history streaming', () => {
     expect((await stream.next()).value).toEqual(event(0))
     await expect(stream.next()).rejects.toMatchObject({ result: { error: { code: 'NATIVE_HISTORY_GAP' } } })
     expect(f.cursors).toEqual([-1])
+  })
+
+  it('reads the terminal result when the Worker retained no events', async () => {
+    const history = { ...terminal([]), firstRetainedSequence: 50, nextSequence: 50 }
+    const f = setup(() => history)
+    const session = await f.proxy.createSession(f.start)
+    const skipped: DeviceHistoryGap[] = []
+    const input = { prompt: 'prompt', clientCorrelationId: f.start.correlationId,
+      onEventsSkipped: async (gap: DeviceHistoryGap) => { skipped.push(gap) } }
+    const stream = f.proxy.startTurn(session, input)
+    expect((await stream.next()).done).toBe(true)
+    expect(skipped).toEqual([{ fromSequence: 0, toSequence: 49, reason: 'retention' }])
+    expect((await f.proxy.reconcile(session, f.start.correlationId)).terminalTurn?.result).toEqual(history.terminalResult)
+  })
+
+  it('rejects a terminal result that differs from the saved Worker result', async () => {
+    const f = setup(() => terminal([event(50)]))
+    const session = await f.proxy.createSession(f.start)
+    f.receipt.phase = 'confirmed_terminal'
+    f.receipt.terminal = { kind: 'completed', closureEvidenceDigest: 'b'.repeat(64),
+      result: { outcome: 'failed', error: { code: 'PROVIDER_FAILURE', message: 'Original failure' } } }
+    const stream = f.proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: f.start.correlationId })
+    await expect(stream.next()).rejects.toThrow()
   })
 
   it('still ignores duplicate sequences in overlapping pages', async () => {
@@ -440,12 +521,16 @@ describe('remote native history streaming', () => {
     expect(f.request.mock.calls.filter(([method]) => method === 'start-turn')).toHaveLength(1)
   })
 
-  it('exposes an oversized event gap without blocking subsequent terminal recovery or replaying the turn', async () => {
+  it('skips an oversized event without blocking terminal recovery or replaying the turn', async () => {
     const history = terminal([event(0, 'x'.repeat(DEVICE_APPLICATION_JSON_BYTES + 1))])
     const f = setup(() => history)
     const session = await f.proxy.createSession(f.start)
-    const stream = f.proxy.startTurn(session, { prompt: 'prompt', clientCorrelationId: f.start.correlationId })
-    await expect(stream.next()).rejects.toMatchObject({ result: { error: { code: 'NATIVE_HISTORY_GAP' } } })
+    const skipped: DeviceHistoryGap[] = []
+    const input = { prompt: 'prompt', clientCorrelationId: f.start.correlationId,
+      onEventsSkipped: async (gap: DeviceHistoryGap) => { skipped.push(gap) } }
+    const stream = f.proxy.startTurn(session, input)
+    expect((await stream.next()).done).toBe(true)
+    expect(skipped).toEqual([{ fromSequence: 0, toSequence: 0, reason: 'event_too_large' }])
     const recovered = await f.proxy.reconcile(session, f.start.correlationId)
     expect(recovered.events).toEqual([])
     expect(recovered.gap).toEqual({ fromSequence: 0, toSequence: 0, reason: 'event_too_large' })

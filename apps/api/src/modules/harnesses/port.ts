@@ -121,6 +121,8 @@ export interface NativeTurnInput {
   /** Release the failed attempt's writer identity before a confirmed capacity retry.
    * Callers that persist turn IDs must supply this to enable retry. */
   onRetry?(nativeTurnId: string): Promise<void>
+  /** Observer history loss does not change the provider's turn result. */
+  onEventsSkipped?(gap: DeviceHistoryGap): Promise<void>
   onMessageSubmitted?(identity: NativeMessageSubmission): Promise<void>
   /** Save the matched native result before publishing completion or releasing its runtime. */
   onTerminal?(observation: NativeTerminalObservation): Promise<void>
@@ -255,6 +257,9 @@ export interface NativeHarnessSessionManager extends ResponseAvailabilityInspect
   /** Refresh authenticated remote ownership before a coordinator boundary check. */
   observeBoundary?(session: NativeSessionReference, signal?: AbortSignal): Promise<void>
   reconcile(session: NativeSessionReference, correlationId: string, signal?: AbortSignal): Promise<NativeHistory>
+  /** Read chronological retained events without applying the recent observation window. */
+  reconcileHistoryPage?(session: NativeSessionReference, correlationId: string,
+    afterSequence: number, signal?: AbortSignal): Promise<NativeHistory>
   /** Release resident turn resources after the caller commits its result and history. */
   retireTurn?(session: NativeSessionReference, correlationId: string): Promise<void>
   /** Read-only recovery of the exact response; missing evidence remains uncertain. */

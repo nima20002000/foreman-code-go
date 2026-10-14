@@ -8,6 +8,7 @@ import { componentLogger } from '../diagnostics/logger.js'
 import { isDatabaseTimeout, retryDatabaseTimeout } from '../../infrastructure/databaseTimeout.js'
 
 import type { NativeHarnessEvent, NativeSessionLane, NativeSessionReference } from '@foreman-code/contracts'
+import type { DeviceHistoryGap } from '@foreman-code/contracts/device-application'
 
 import { DomainError } from '../errors.js'
 import type { NativeHarnessSessionManager, NativeHistory, NativeSessionStart, NativeTurnInput, NativeInitialTurnInput } from '../harnesses/port.js'
@@ -501,6 +502,14 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       : evidence.acknowledged || evidence.nativeBusy ? 'busy' : 'uncertain'
   }
 
+  private async recordSkippedEvents(lease: SessionWriteLease, input: NativeTurnInput, gap: DeviceHistoryGap) {
+    await lease.guard.check()
+    await retryDatabaseTimeout(() => this.coordination.recordSkippedEvents(lease.fence, input.clientCorrelationId, gap),
+      { signal: lease.guard.signal })
+    await input.onEventsSkipped?.(gap)
+    await lease.guard.check()
+  }
+
   private async *initialTurn(start: NativeSessionStart, input: NativeInitialTurnInput,
     signal?: AbortSignal): AsyncIterable<NativeHarnessEvent> {
     for await (const batch of this.initialTurnBatches(start, input, signal, individualEvents)) yield* batch
@@ -523,6 +532,10 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       input.onTurnOffered?.()
       const events = this.manager.startInitialTurn(start, {
         prompt: input.prompt, clientCorrelationId: input.clientCorrelationId,
+        onEventsSkipped: async gap => {
+          if (!lease) throw new DomainError('NATIVE_SESSION_IDENTITY_CONFLICT', 'Observation recovery requires an owned session.', 409)
+          await this.recordSkippedEvents(lease, input, gap)
+        },
         onSessionObserved: async (observed) => {
           session = observed
           if (observed.harness !== this.harness) throw new DomainError('NATIVE_SESSION_IDENTITY_CONFLICT', 'Observed session has a different provider.', 409)
@@ -606,6 +619,7 @@ export class SingleWriterSessionManager implements NativeHarnessSessionManager {
       onTurnOffered?.()
       const events = this.manager.startTurn(session, {
         ...nativeInput,
+        onEventsSkipped: gap => this.recordSkippedEvents(lease, input, gap),
         onRetry: async (providerId) => {
           await lease.guard.check()
           if (session.harness !== 'codex' || lease.providerId !== providerId || !evidence.snapshot().terminal) {

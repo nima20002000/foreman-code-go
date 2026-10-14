@@ -13,6 +13,14 @@ const row: ActivityReadRow = {
 }
 
 describe('native Run activity status', () => {
+  it('shows skipped events as observation recovery without reporting a work failure', () => {
+    const activity = publicRunActivity({ ...row, source: 'backend', kind: 'native_events_skipped',
+      safe_payload: { fromSequence: 10, toSequence: 29, reason: 'retention' } },
+    fixture.version, fixture.run.id, fixture.run.outcome)
+    expect(activity).toMatchObject({ kind: 'recovery', status: 'recorded',
+      summary: '20 events skipped', detail: 'Activity observation resumed at event 30. The Agent kept running.',
+      actor: { nodeId: node.id, agentId: node.agentId }, refs: { executionId: 'execution' } })
+  })
   it('shows model capacity backoff as waiting activity', () => {
     const activity = publicRunActivity({ ...row, native: { type: 'turn.capacity_wait' } },
       fixture.version, fixture.run.id, fixture.run.outcome)
