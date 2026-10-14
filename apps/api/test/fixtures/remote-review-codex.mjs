@@ -324,6 +324,9 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', async 
         return cwd === workingDirectory || cwd.startsWith(`${workingDirectory}/`)
       }
       while (blocked()) await new Promise(resolve => setTimeout(resolve, 20))
+      if (existsSync(join(root, 'fail-model-refresh'))) {
+        process.stderr.write('failed to refresh available models: fixture remote discovery unavailable\n')
+      }
       reply(message.id, { data: existsSync(join(root, 'hide-models')) ? [] : models, nextCursor: null })
     }
     void respond()

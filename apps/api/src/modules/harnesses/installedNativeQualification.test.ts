@@ -67,9 +67,11 @@ async function fixture() {
   }
   const checkConfiguration = vi.fn(async (profile: HostHarnessOverride, cwd: string, signal: AbortSignal) => {
     if (profile.configuration.harness !== 'codex') throw new Error('Expected Codex profile')
-    await qualifyNativeCodexModel(profile.configuration, binary, cwd, {}, signal, undefined,
+    const facts = await qualifyNativeCodexModel(profile.configuration, binary, cwd, {}, signal, undefined,
       { qualified: { binary, providerVersion: target.expectedVersion } as QualifiedCodex })
-    return nativeQualification(profile.configuration, target.expectedVersion)
+    return { ...nativeQualification(profile.configuration, target.expectedVersion),
+      ...(typeof facts === 'object' && 'modelCatalogSource' in facts
+        ? { modelCatalogSource: facts.modelCatalogSource as 'cached' } : {}) }
   })
   const qualifier = createInstalledNativeQualifier({
     harness: 'codex', binding, trustedCurrentBinding: () => binding,
@@ -134,4 +136,28 @@ it('stops catalog retries when the check budget is aborted', async () => {
   })
   await expect(f.check()).rejects.toThrow(reason)
   expect(f.checkConfiguration).toHaveBeenCalledTimes(1)
+})
+
+it('qualifies a selected profile from a valid cached catalog after remote refresh fails', async () => {
+  const f = await fixture()
+  catalog.mockImplementation(async () => parseCodexModelCatalog({
+    exitCode: 0, stdout: JSON.stringify({ models: [model] }),
+    stderr: 'failed to refresh available models: remote discovery unavailable',
+  }))
+  const result = await f.check()
+  expect(result).toMatchObject({ qualified: true, modelCatalogSource: 'cached' })
+  expect(catalog).toHaveBeenCalledTimes(1)
+})
+
+it('reports a missing selected model from a cached catalog without retrying refresh', async () => {
+  const f = await fixture()
+  catalog.mockImplementation(async () => parseCodexModelCatalog({
+    exitCode: 0, stdout: JSON.stringify({ models: [] }),
+    stderr: 'failed to refresh available models: remote discovery unavailable',
+  }))
+  const result = await f.check()
+  expect(result).toMatchObject({ qualified: false, failure: { code: 'CODEX_MODEL_UNAVAILABLE' } })
+  expect(result.completedNativeQualification?.record.checks)
+    .toContainEqual({ id: 'selected-profile', passed: false, detail: 'CODEX_MODEL_UNAVAILABLE' })
+  expect(catalog).toHaveBeenCalledTimes(1)
 })

@@ -12,13 +12,10 @@ const result = (models: unknown, stderr = '') => ({ exitCode: 0, stdout: JSON.st
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true }))) })
 
-it('reports failed remote refresh as a retryable read failure even when fallback models are returned successfully', () => {
+it('retains valid cached catalogs after remote refresh fails without exposing provider stderr', () => {
   const stderr = 'ERROR models_manager: failed to refresh available models: private provider detail'
   for (const models of [[], [model]]) {
-    expect(() => parseCodexModelCatalog(result(models, stderr))).toThrow(expect.objectContaining({
-      result: { outcome: 'failed', error: { code: 'CODEX_MODEL_CATALOG_UNAVAILABLE', retryable: true,
-        message: expect.not.stringContaining('private provider detail') } },
-    }))
+    expect(parseCodexModelCatalog(result(models, stderr))).toEqual({ models, modelCatalogSource: 'cached' })
   }
 })
 
@@ -74,11 +71,11 @@ it('checks the exact model, effort and tier through validated stdio without crea
 })
 
 it.each(['models-refresh-failed', 'models-refresh-failed-on-close'])(
-  'rejects fallback models after stderr is drained, without a model retry or native thread: %s', async flag => {
+  'qualifies cached models after stderr is drained, without inference or another model read: %s', async flag => {
     const f = await native([model], flag)
     await expect(qualifyNativeCodexModel({ ...DEFAULT_HARNESS_DEFAULTS.codex,
       model: model.slug, reasoningEffort: 'medium' }, f.binary, f.directory, {}, undefined, undefined, f.inspection))
-      .rejects.toMatchObject({ result: { error: { code: 'CODEX_MODEL_CATALOG_UNAVAILABLE', retryable: true } } })
+      .resolves.toMatchObject({ modelCatalogSource: 'cached' })
     const wire = (await calls(f.directory)).filter(entry => entry.wire).map(entry => entry.wire as { method: string })
     expect(wire.filter(entry => entry.method === 'model/list')).toHaveLength(1)
     expect(wire.some(entry => ['thread/start', 'thread/resume', 'turn/start'].includes(entry.method))).toBe(false)

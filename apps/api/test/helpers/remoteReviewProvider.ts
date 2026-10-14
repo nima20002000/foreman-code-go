@@ -109,6 +109,7 @@ int main(int argc, char **argv) {
       // Publish the payload and its version together so discovery sees one installation change.
       await rename(replacement, binary)
     },
+    failModelRefresh: () => writeFile(join(directory, 'fail-model-refresh'), '', { mode: 0o600 }),
     hideModels: () => writeFile(join(directory, 'hide-models'), '', { mode: 0o600 }),
     showModels: () => rm(join(directory, 'hide-models')),
     blockModels: (options?: { workingDirectory: string }) => writeFile(join(directory, 'block-models'),
