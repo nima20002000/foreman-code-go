@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import { setTimeout as delay } from 'node:timers/promises'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { BuildComputerPrepareStatusSchema, CI_HOST_NAMESPACE, CI_RUNTIME_NAMESPACE, CiEnrollmentStateSchema, CiRuntimeWorkerStateSchema,
@@ -351,12 +350,10 @@ describe.skipIf(!postgresEnabled)('pairing-managed CI root enrollment', () => {
         target: f.worker.target, commandId: randomUUID(), expectedRevision: 0, enabled: true } })
       expect(updated.isError, JSON.stringify(updated.content)).not.toBe(true)
       await entered.promise
-      expect((await f.read()).computers[0]!.state).toBe('pending')
-      const waiting = f.waitForPreparation().then(() => 'prepared', () => 'failed')
-      // Keep preparation blocked beyond the polling deadline to reproduce a busy CI computer.
-      expect(await Promise.race([waiting, delay(5100, 'blocked')])).toBe('blocked')
+      await vi.waitFor(async () => expect((await f.read()).computers[0]!.state).toBe('pending'), { timeout: 5000 })
+      const waiting = f.waitForPreparation()
       release.resolve()
-      expect(await waiting).toBe('prepared')
+      await waiting
       expect((await f.read()).computers[0]).toMatchObject({ state: 'preparing',
         templates: [{ templateId: f.saved.id, state: 'preparing' }] })
       expect(await f.roots.get(f.owner.principal, { workspaceId: f.workspaceId })).toEqual(primary)

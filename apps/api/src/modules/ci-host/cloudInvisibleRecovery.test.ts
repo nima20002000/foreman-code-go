@@ -77,3 +77,21 @@ it('clears the visibility deadline when CircleCI becomes visible again', async (
     await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state: 'queued' } })
   } finally { await f.close() }
 })
+
+it.each(['starting', 'running'] as const)(
+  'keeps an older CircleCI execution through a transient lookup failure from %s', async state => {
+    const f = await cloudCiLookupFixture(state)
+    try {
+      const request = { operation: 'read', runId: f.run.runId, afterOffset: 0, maxBytes: 1 }
+      f.advance(120_000)
+      f.control.error = 'run.not_found'
+      await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state, finishedAt: null } })
+      f.advance(74_999)
+      await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state, finishedAt: null } })
+      f.control.error = ''
+      f.advance(4_001)
+      await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state: 'running', message: null } })
+      expect(f.control.canceled).toEqual([])
+    } finally { await f.close() }
+  },
+)
