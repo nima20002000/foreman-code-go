@@ -1,4 +1,6 @@
 import type pg from 'pg'
+import { canonicalJson } from '@foreman-code/contracts/canonical-json'
+import { ciDirectoryCleanupCandidates } from './directoryRetention.js'
 import { CI_HOST_NAMESPACE, CI_HOST_START_PROTOCOL_VERSION, CiHostReplySchema,
   type CiHostReply, type CiHostRequest } from '@foreman-code/contracts'
 import type { HostCiComputer, HostCiEndpoint } from './service.js'
@@ -21,6 +23,8 @@ interface DeviceRequests {
 /** Build-enabled paired computers that serve host CI now, Main itself through its local runner, and cloud CI services
  * on the workspace's public mirror. */
 export class ProductionHostCiEndpoint implements HostCiEndpoint {
+  private readonly cleanupAt = new Map<string, number>()
+  private readonly cleanupPending = new Map<string, Promise<void>>()
   constructor(private readonly pool: pg.Pool, private readonly mainId: string,
     private readonly devices: () => DeviceRequests | undefined, private readonly local: Pick<HostCiRunner, 'handle'>,
     private readonly clouds: CloudCi[] = []) {}
@@ -73,6 +77,45 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
       }
       request = { ...request, buildAllowancePercent: saved.buildAllowancePercent ?? 100 }
     }
+    if (request.operation === 'start' && computer.hostRef.kind === 'device') {
+      const status = await this.request(computer, { operation: 'status' })
+      if (status.operation !== 'status') throw new DomainError('CI_HOST_REPLY_INVALID', 'Expected Worker CI status.', 502)
+      if ((status.startProtocolVersion ?? 0) < CI_HOST_START_PROTOCOL_VERSION) {
+        throw new DomainError('CI_HOST_PROTOCOL_UNSUPPORTED', status.reasons.join('; '), 409)
+      }
+      if (!status.ready) throw new DomainError('CI_HOST_BUSY', status.reasons.join('; '), 409)
+    }
+    const reply = await this.sendRequest(computer, request)
+    if (reply.operation === 'status' && reply.cleanupSupported) {
+      await this.cleanDirectories(computer).catch(error => {
+        log.warn({ err: error, hostRef: computer.hostRef }, 'CI directory cleanup failed; next status will retry')
+      })
+    }
+    return reply
+  }
+
+  private async cleanDirectories(computer: HostCiComputer): Promise<void> {
+    const hostRef = { ...computer.hostRef }
+    delete hostRef.slot
+    const key = canonicalJson(hostRef)
+    const pending = this.cleanupPending.get(key)
+    if (pending) return pending
+    const now = Date.now()
+    if (now - (this.cleanupAt.get(key) ?? -Infinity) < 5 * 60_000) return
+    const cleanup = (async () => {
+      const runIds = await ciDirectoryCleanupCandidates(this.pool, { hostRef: computer.hostRef, label: computer.label }, now)
+      for (let offset = 0; offset < runIds.length; offset += 1000) {
+        const reply = await this.sendRequest(computer, { operation: 'status', cleanupRunIds: runIds.slice(offset, offset + 1000) })
+        if (reply.operation !== 'status' || !reply.removedRunIds) throw new Error('Expected CI cleanup reply.')
+      }
+      this.cleanupAt.set(key, now)
+    })()
+    this.cleanupPending.set(key, cleanup)
+    try { await cleanup }
+    finally { this.cleanupPending.delete(key) }
+  }
+
+  private async sendRequest(computer: HostCiComputer, request: CiHostRequest): Promise<CiHostReply> {
     if (computer.hostRef.kind === 'main') return this.local.handle(request)
     if (computer.hostRef.kind === 'cloud') {
       const cloud = this.clouds.find(value => value.provider.id === computer.hostRef.provider)
@@ -81,14 +124,6 @@ export class ProductionHostCiEndpoint implements HostCiEndpoint {
     }
     const devices = this.devices()
     if (!devices || !computer.hostRef.deviceId) throw new Error('The build computer is offline.')
-    if (request.operation === 'start') {
-      const status = await this.request(computer, { operation: 'status' })
-      if (status.operation !== 'status') throw new DomainError('CI_HOST_REPLY_INVALID', 'Expected Worker CI status.', 502)
-      if ((status.startProtocolVersion ?? 0) < CI_HOST_START_PROTOCOL_VERSION) {
-        throw new DomainError('CI_HOST_PROTOCOL_UNSUPPORTED', status.reasons.join('; '), 409)
-      }
-      if (!status.ready) throw new DomainError('CI_HOST_BUSY', status.reasons.join('; '), 409)
-    }
     const reply = await devices.request(computer.hostRef.deviceId, CI_HOST_NAMESPACE, request, { timeoutMs: 120_000 })
     const parsed = CiHostReplySchema.parse(reply.payload)
     if (parsed.operation === 'status' && (parsed.startProtocolVersion ?? 0) < CI_HOST_START_PROTOCOL_VERSION) {
