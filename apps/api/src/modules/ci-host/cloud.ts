@@ -833,20 +833,21 @@ export class CloudCi {
     try {
       // A poll that waited for its slot skips the service if a rate limit was hit meanwhile.
       if (this.ports.now().getTime() < this.backoff.until) return run
-      let next = await withProviderPoll(async () => {
-        if (run.cancellation) return this.cancelAttempts(run)
-        if (pendingCollection) return this.collect(run)
-        return this.follow(run)
+      return await withProviderPoll(async () => {
+        let next: CloudRun
+        if (run.cancellation) next = await this.cancelAttempts(run)
+        else if (pendingCollection) next = await this.collect(run)
+        else next = await this.follow(run)
+        this.backoff = { until: 0, ms: 0 }
+        if (next.reconciliation && next.state !== 'starting') {
+          const recovered = { ...next,
+            message: next.message === run.message ? next.reconciliation.previousMessage : next.message }
+          delete recovered.reconciliation
+          next = await this.save(recovered)
+        }
+        if (next.collection && (!next.collection.log || !next.collection.artifacts)) return this.collect(next)
+        return next
       })
-      this.backoff = { until: 0, ms: 0 }
-      if (next.reconciliation && next.state !== 'starting') {
-        const recovered = { ...next,
-          message: next.message === run.message ? next.reconciliation.previousMessage : next.message }
-        delete recovered.reconciliation
-        next = await this.save(recovered)
-      }
-      if (next.collection && (!next.collection.log || !next.collection.artifacts)) return this.collect(next)
-      return next
     } catch (error) {
       if (error instanceof DomainError
         && ['CI_CLOUD_PIPELINE_FAILED', 'CI_CLOUD_RUN_ENDED'].includes(error.code)) {
