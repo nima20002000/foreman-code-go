@@ -24,12 +24,20 @@ export function requestCloud(endpoint: HostCiEndpoint, computer: HostCiComputer,
     ? { ...request, deferMirror: true } : request), { timeoutMs: CLOUD_START_TIMEOUT_MS })
 }
 
+function cloudDispatchStartedAt(run: CiRunRecord, observed?: CiHostRun): number {
+  const timestamps = [observed?.mirrorPublication?.finishedAt, run.mirrorPublication?.finishedAt,
+    observed?.startedAt, run.startedAt, run.dispatchedAt]
+    .filter((at): at is string => at != null)
+    .map(at => Date.parse(at))
+  return timestamps.length > 0 ? Math.max(...timestamps) : Date.parse(run.queuedAt)
+}
+
 export async function expireCloudDispatch(endpoint: HostCiEndpoint, computer: HostCiComputer,
   run: CiRunRecord, observed?: CiHostRun): Promise<CiRunSettlement | null> {
   if (observed?.mirrorPublication?.state === 'pending') return observed
-  const at = observed?.mirrorPublication?.finishedAt ?? run.startedAt ?? run.dispatchedAt ?? run.queuedAt
+  const at = cloudDispatchStartedAt(run, observed)
   if ((observed?.state ?? run.state) !== 'starting'
-    || Date.now() - Date.parse(at) < CLOUD_START_TIMEOUT_MS * CI_START_MAX_ATTEMPTS) return observed ?? null
+    || Date.now() - at < CLOUD_START_TIMEOUT_MS * CI_START_MAX_ATTEMPTS) return observed ?? null
   try {
     await requestCloud(endpoint, computer, { operation: 'cancel', runId: ciExecutionRunId(run) })
   } catch (error) {
@@ -42,7 +50,7 @@ export async function expireCloudDispatch(endpoint: HostCiEndpoint, computer: Ho
 export async function dispatchCloudTicket(sql: SqlQuery, endpoint: HostCiEndpoint,
   computer: HostCiComputer, run: CiRunRecord): Promise<DispatchOutcome> {
   const attempts = run.dispatchAttempts ?? 1
-  const elapsed = Date.now() - Date.parse(run.dispatchedAt ?? run.queuedAt)
+  const elapsed = Date.now() - cloudDispatchStartedAt(run)
   if (attempts > 0) {
     try {
       const reply = await requestCloud(endpoint, computer, { operation: 'read', runId: ciExecutionRunId(run),
