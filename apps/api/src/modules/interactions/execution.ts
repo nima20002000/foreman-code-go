@@ -2945,7 +2945,6 @@ export class ApprovalExecutionCoordinator {
         observation.ownedSession!.failed = true
         const failures = await this.cleanupSession(observation.ownedSession!)
         // The caught error may contain provider secrets; retain only its sanitized form.
-        // eslint-disable-next-line preserve-caught-error
         if (failures.length) throw new AggregateError(failures, 'Original native closure is still pending.', { cause: error })
       }
       await persist(() => this.budgets.stop(observation.execution.id))
