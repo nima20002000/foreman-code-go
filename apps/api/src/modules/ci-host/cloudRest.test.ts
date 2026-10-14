@@ -442,7 +442,7 @@ it.each([401, 403])('classifies CircleCI HTTP %s lookup denials and still attemp
   })
   await expect(provider.cancel(run)).resolves.toBeUndefined()
   expect(cli.calls).toHaveBeenCalledExactlyOnceWith('circleci', ['run', 'cancel', '42', '--force'],
-    { timeoutMs: 120_000 })
+    { timeoutMs: 15_000 })
 })
 
 it('keeps CircleCI rate limits from triggering cancellation', async () => {
@@ -462,7 +462,7 @@ it('propagates CircleCI cancellation denials after an unreadable lookup', async 
     code: 'CI_CLOUD_FAILED', message: 'CircleCI did not accept circleci run cancel: permission denied',
   })
   expect(cli.calls).toHaveBeenCalledExactlyOnceWith('circleci', ['run', 'cancel', '42', '--force'],
-    { timeoutMs: 120_000 })
+    { timeoutMs: 15_000 })
 })
 
 it('keeps full CircleCI log output, empty streams, progress redraws and report labels', async () => {

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { decodeMcpToolResult } from '@foreman-code/contracts/operator-mcp'
 import { CiGetOutputSchema, CiRunOutputSchema, CiRunRecordSchema, exclusiveIntegrationFiles, userSystemdIntegrationFiles,
-  type CiHostRun, type CiHostRequest } from '@foreman-code/contracts'
+  type CiHostRun, type CiHostRequest, type CiHostReply } from '@foreman-code/contracts'
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 import pg from 'pg'
 import { buildApp } from '../src/app.js'
@@ -14,6 +14,7 @@ import { buildComputerIntegrationShards, gateIntegrationShards } from '../src/mo
 import { HostCiService, type HostCiComputer } from '../src/modules/ci-host/service.js'
 import { CI_GET_ACTIONS, CI_RUN_ACTIONS, RunCiAuthority } from '../src/modules/jobs/ciAuthority.js'
 import { migratedDatabase } from './helpers/migratedDatabase.js'
+import { cloudCiLookupFixture } from './helpers/cloudCiLookupFixture.js'
 
 let database: Awaited<ReturnType<typeof migratedDatabase>>
 beforeAll(async () => { database = await migratedDatabase() }, 60_000)
@@ -145,7 +146,10 @@ it('reports how often each failed test failed in recent gate runs, through MCP a
 })
 
 async function fixture(options: { cloudSlots?: number; files?: string[]; offlineKey?: string; pool?: pg.Pool;
-  occupiedKeys?: Set<string>; unavailableKeys?: Set<string>; allowance?: number; hostCpuCount?: number } = {}) {
+  occupiedKeys?: Set<string>; unavailableKeys?: Set<string>; allowance?: number; hostCpuCount?: number;
+  cloudProvider?: 'github' | 'circleci';
+  readCloud?: (computer: HostCiComputer, request: Extract<CiHostRequest, { operation: 'read' }>)
+    => Promise<CiHostReply | undefined> } = {}) {
   const pool = options.pool ?? database.pool
   const workspaceId = randomUUID()
   await database.pool.query('insert into workspaces(id,record) values($1,$2::jsonb)', [workspaceId,
@@ -157,7 +161,7 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
     { key: 'builder-paired', label: 'Paired builder', priority: 50, ...{ buildAllowancePercent: options.allowance ?? 100 },
       hostRef: { kind: 'device', mainId: 'main', deviceId: 'paired' } },
     ...Array.from({ length: options.cloudSlots ?? 24 }, (_, slot) => ({ key: `cloud-${slot}`, label: `Cloud ${slot}`, priority: 30,
-      hostRef: { kind: 'cloud' as const, mainId: 'main', provider: 'github' as const, slot },
+      hostRef: { kind: 'cloud' as const, mainId: 'main', provider: options.cloudProvider ?? 'github', slot },
       userSystemd: { supported: true, reason: null } })),
   ]
   const files = options.files ?? [...userSystemdIntegrationFiles,
@@ -190,6 +194,8 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
       }
       const run = runs.get(request.runId)!
       if (request.operation === 'cancel') return { operation: 'cancel', run: { ...run, state: 'canceled' } }
+      const cloudReply = await options.readCloud?.(computer, request)
+      if (cloudReply) return cloudReply
       return { operation: 'read', run, text: '', nextOffset: 0 }
     },
   })
@@ -242,6 +248,74 @@ async function fixture(options: { cloudSlots?: number; files?: string[]; offline
     await app.close()
   } }
 }
+
+it.each(['cloud', 'build'] as const)(
+  'recovers an invisible CircleCI gate part on another %s computer through MCP', async destination => {
+    const cloud = await cloudCiLookupFixture('running')
+    let invisibleId: string | undefined
+    const f = await fixture({ cloudProvider: 'circleci', readCloud: async (computer, request) => {
+      if (request.runId !== invisibleId || computer.hostRef.provider !== 'circleci') return undefined
+      const reply = await cloud.reopen().handle({ ...request, runId: cloud.run.runId })
+      if (reply.operation !== 'read') throw new Error('Expected a cloud read')
+      return { ...reply, run: { ...reply.run, runId: request.runId } }
+    } })
+    try {
+      const admitted = CiRunOutputSchema.parse(await f.value('ci_run', {
+        suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40),
+      }))
+      await f.ci.dispatch()
+      const initial = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
+      const part = initial.partitions!.find(run => run.state === 'running' && run.suite === 'integration'
+        && run.computer?.hostRef.provider === 'circleci')!
+      expect(part).toBeDefined()
+      invisibleId = part.id
+      cloud.control.operation = 'run'
+      cloud.control.error = 'run.not_found'
+      await f.ci.dispatch()
+      const computers = [...f.computers]
+      if (destination === 'cloud') {
+        const spare: HostCiComputer = { key: 'cloud-spare', label: 'Spare cloud', priority: 30,
+          hostRef: { kind: 'cloud', mainId: 'main', provider: 'github', slot: 24 },
+          userSystemd: { supported: true, reason: null } }
+        f.computers.push(spare)
+        computers.push(spare)
+      } else {
+        for (const run of initial.partitions!.filter(run => run.computer?.hostRef.kind !== 'cloud')) {
+          const attempt = f.runs.get(run.id)
+          if (attempt) f.runs.set(run.id, { ...attempt, state: 'passed', exitCode: 0,
+            finishedAt: new Date().toISOString() })
+        }
+      }
+      f.computers.splice(0, f.computers.length, ...f.computers.filter(computer =>
+        computer.hostRef.provider === 'circleci' || (destination === 'cloud'
+          ? computer.key === 'cloud-spare' : computer.hostRef.kind !== 'cloud')))
+      cloud.advance(75_000)
+      await f.ci.dispatch()
+      const recovered = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: part.id }))
+      expect(recovered.run).toMatchObject({ id: part.id, groupId: part.groupId, state: 'running',
+        commit: part.commit, files: part.files, unstartedProviders: ['circleci'],
+        messageHistory: expect.arrayContaining([expect.stringContaining('queued for another computer')]) })
+      if (destination === 'cloud') expect(recovered.run.computer!.hostRef.provider).toBe('github')
+      else expect(recovered.run.computer!.hostRef.kind).not.toBe('cloud')
+      expect(recovered.run.computer!.hostRef).not.toEqual(part.computer!.hostRef)
+      expect(cloud.control.canceled).toEqual(['pipeline-1'])
+      expect(f.started.filter(value => value.request.operation === 'start' && value.request.runId === part.id))
+        .toHaveLength(2)
+      expect((await database.pool.query('select record,host_key from ci_runs where id=$1', [part.id])).rows[0])
+        .toMatchObject({ record: recovered.run, host_key: expect.any(String) })
+      const denied = await f.connect('ungranted')
+      expect((await f.call(denied, 'ci_get', { ticketId: part.id })).isError).toBe(true)
+      f.computers.splice(0, f.computers.length, ...computers)
+      await f.finishGate(admitted.ticketId)
+      const completed = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: part.id }))
+      expect(completed.run).toMatchObject({ id: part.id, state: 'passed', unstartedProviders: ['circleci'] })
+      expect(completed.group?.state).toBe('passed')
+    } finally {
+      await f.close()
+      await cloud.close()
+    }
+  },
+)
 
 it.each(['cloud', 'build'] as const)('requeues a cloud setup failure once on another %s slot and completes the gate', async destination => {
   const f = await fixture()

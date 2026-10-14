@@ -23,7 +23,7 @@ it.each(['starting', 'running'] as const)('cancels a known CircleCI pipeline aft
   }
 })
 
-it.each(['starting', 'running'] as const)('persists and bounds permanent CircleCI lookup failures from %s', async state => {
+it.each(['starting', 'running'] as const)('requeues permanent CircleCI lookup failures from %s', async state => {
   const f = await cloudCiLookupFixture(state)
   try {
     f.control.error = 'permission denied'
@@ -33,15 +33,11 @@ it.each(['starting', 'running'] as const)('persists and bounds permanent CircleC
       await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state, finishedAt: null,
         message: expect.stringContaining('permission denied') } })
     }
-    await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state,
-      message: expect.stringContaining('Operator cancellation is required') } })
     const reads = f.control.reads
-    f.advance(120_000)
-    await f.reopen().handle(request)
-    expect(f.control.reads).toBe(reads)
-    expect(f.control.canceled).toEqual([])
-    await expect(f.cloud.handle({ operation: 'cancel', runId: f.run.runId }))
-      .resolves.toMatchObject({ run: { state: 'canceled' } })
+    f.advance(75_000)
+    await expect(f.reopen().handle(request)).resolves.toMatchObject({ run: { state: 'queued',
+      message: expect.stringContaining('queued for another computer') } })
+    expect(f.control.reads).toBeGreaterThan(reads)
     expect(f.control.canceled).toEqual(['pipeline-1'])
   } finally { await f.close() }
 })
