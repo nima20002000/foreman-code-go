@@ -253,7 +253,7 @@ export async function sourceWorktreeMcpFixture() {
     } })
     expect(savedResponse.isError, JSON.stringify(savedResponse)).not.toBe(true)
     const saved = CurrentWorkflowSaveResultSchema.parse(decodeMcpToolResult(savedResponse)).value
-    return { base, client, connect, source, root, production, input: {
+    return { base, app, client, connect, source, root, production, saved, input: {
       workspaceId: base.f.scope.workspaceId, workflowId: base.f.scope.workflowId,
       workflowVersionId: saved.currentVersionId, executionSemanticsVersion: 3,
       expectedWorkflowRevision: saved.revision, expectedLocationRevision: located.locationRevision,
