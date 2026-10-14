@@ -108,6 +108,42 @@ it('persists a throughput-sized gate through MCP and rejects a read-only caller'
   } finally { await f.close() }
 })
 
+it('reports how often each failed test failed in recent gate runs, through MCP and only to CI readers', async () => {
+  const f = await fixture()
+  try {
+    const flaky = 'apps/api/test/flaky.integration.test.ts', hung = 'apps/api/test/hung.integration.test.ts'
+    const insert = async (gate: boolean, state: 'passed' | 'failed', minutesAgo: number,
+      files: { file: string; status: 'passed' | 'failed'; tests: { name: string; status: 'passed' | 'failed' }[] }[]) => {
+      const at = new Date(Date.now() - minutesAgo * 60_000).toISOString()
+      const record = CiRunRecordSchema.parse({ id: randomUUID(), workspaceId: f.workspaceId, groupId: randomUUID(),
+        suite: 'integration', scope: gate ? 'full' : 'affected', gate, part: null, partition: null, files: files.map(item => item.file),
+        repository: 'octo/site', commit: 'c'.repeat(40), state, computer: null, step: 'integration',
+        exitCode: state === 'passed' ? 0 : 1, message: null, queuedAt: at, startedAt: at, finishedAt: at,
+        initiator: { principalId: 'operator', executionId: null } })
+      const failed = files.flatMap(item => item.tests).filter(test => test.status === 'failed').length
+      const results = { truncated: false, summary: { passed: files.flatMap(item => item.tests).length - failed, failed, skipped: 0 },
+        files: files.map(item => ({ ...item, durationMs: 10, tests: item.tests.map(test => ({ ...test, durationMs: 10 })) })) }
+      await database.pool.query(`insert into ci_runs(id,workspace_id,group_id,state,record,test_results,created_at)
+        values($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7)`,
+      [record.id, f.workspaceId, record.groupId, state, JSON.stringify(record), JSON.stringify(results), at])
+      return record.id
+    }
+    const flakyRun = (status: 'passed' | 'failed') => ({ file: flaky, status, tests: [{ name: 'retries', status }] })
+    await insert(true, 'failed', 30, [flakyRun('failed'), { file: hung, status: 'failed', tests: [] }])
+    await insert(true, 'passed', 20, [flakyRun('passed'), { file: hung, status: 'passed', tests: [] }])
+    await insert(true, 'failed', 10, [flakyRun('failed')])
+    // Non-gate runs are not history: Agents' own failing work would read as flakiness.
+    await insert(false, 'failed', 5, [flakyRun('failed')])
+    const ticket = await insert(false, 'failed', 1, [flakyRun('failed'), { file: hung, status: 'failed', tests: [] }])
+
+    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: ticket }))
+    expect(read.failureHistory).toEqual([{ file: flaky, test: 'retries', failedRuns: 2, runs: 3 },
+      { file: hung, test: null, failedRuns: 1, runs: 2 }])
+    const denied = await f.call(await f.connect('ungranted'), 'ci_get', { ticketId: ticket })
+    expect(denied.isError).toBe(true)
+  } finally { await f.close() }
+})
+
 async function fixture(options: { cloudSlots?: number; files?: string[]; offlineKey?: string; pool?: pg.Pool;
   occupiedKeys?: Set<string>; unavailableKeys?: Set<string>; allowance?: number; hostCpuCount?: number } = {}) {
   const pool = options.pool ?? database.pool
