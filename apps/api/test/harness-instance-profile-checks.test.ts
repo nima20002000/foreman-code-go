@@ -7,6 +7,7 @@ import type { PostgresCommandCoordinator } from '../src/modules/commands/postgre
 import type { HarnessInstanceSettingsRepository } from '../src/modules/harnesses/instanceSettings/repository.js'
 import type { HostHarnessProfileEvidenceRepository } from '../src/modules/harnesses/instanceSettings/profileRepository.js'
 import { HostHarnessInstanceProfileChecks, nativeProfileCheckId } from '../src/modules/harnesses/instanceSettings/profileChecks.js'
+import { DomainError } from '../src/modules/errors.js'
 import { assertDeviceHostInstallation } from '../src/modules/devices/hostAuthorization.js'
 import { harnessConnectionGeneration } from '../src/modules/harnesses/hostConnectionGeneration.js'
 import type { HarnessInstallationRecord } from '../src/modules/harnesses/installationRegistry.js'
@@ -143,6 +144,39 @@ describe('automatic installation profile checks', () => {
       installation: () => installation }
     return { ...f, saved, installation, request }
   }
+  it('deduplicates requested automatic checks per instance revision and persists their result', async () => {
+    const f = updatedFixture()
+    let release!: () => void
+    const waiting = new Promise<void>(resolve => { release = resolve })
+    f.qualify.mockImplementation(async value => {
+      await waiting
+      return f.proof(value)
+    })
+    const task = f.service.checkAutomatically(f.saved, f.installation)
+    expect(f.service.checkAutomatically(f.saved, f.installation)).toBe(task)
+    expect(f.service.pending(f.saved)).toBe(true)
+    const explicit = f.service.check(principal, 'mcp', f.input)
+    release()
+    await task
+    expect((await explicit).value.proof.qualified).toBe(true)
+    expect(f.qualify).toHaveBeenCalledTimes(1)
+    expect(f.append).toHaveBeenCalledTimes(1)
+    expect(f.service.pending(f.saved)).toBe(false)
+    const changed = { ...f.saved, revision: 2, instanceRevision: '2' }
+    f.setOverride(changed)
+    await f.service.checkAutomatically(changed, f.installation)
+    expect(f.qualify).toHaveBeenCalledTimes(2)
+    await f.service.close()
+  })
+  it('persists the real reason when a requested automatic check throws', async () => {
+    const f = updatedFixture()
+    f.qualify.mockRejectedValueOnce(new DomainError('CODEX_MODEL_UNAVAILABLE', 'Model unavailable.', 422))
+    await expect(f.service.checkAutomatically(f.saved, f.installation))
+      .rejects.toMatchObject({ code: 'CODEX_MODEL_UNAVAILABLE' })
+    expect(await f.service.failure(f.saved)).toEqual({ code: 'CODEX_MODEL_UNAVAILABLE', message: 'Model unavailable.' })
+    expect(f.service.pending(f.saved)).toBe(false)
+    await f.service.close()
+  })
   it('leaves qualified Codex profiles and their proofs unchanged after a Claude installation update', async () => {
     const f = updatedFixture()
     const beforeChecks = vi.fn(async () => {})
