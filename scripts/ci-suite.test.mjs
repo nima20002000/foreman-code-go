@@ -66,6 +66,9 @@ if (args.at(-1) === process.env.FAIL_COMMAND) process.exit(9)
 `, { mode: 0o755 })
   writeFileSync(join(directory, 'node'), `#!${process.execPath}
 require('node:fs').appendFileSync(process.env.CALLS_FILE, JSON.stringify(process.argv.slice(2)) + '\\n')
+if (process.argv[2] === 'scripts/ci-contracts.mjs' && process.argv[3] === 'ready') {
+  process.exit(process.env.CONTRACTS_READY === 'true' ? 0 : 1)
+}
 if (process.argv[2] === 'scripts/ci-selection.mjs') {
   const selection = JSON.parse(process.env.RUNNER_SELECTION)
   if (process.env.BASE_COMMIT) {
@@ -117,6 +120,8 @@ if (process.argv[2] === 'rev-parse') console.log('false')
       RUNNER_SELECTION: JSON.stringify(selection),
       BASE_COMMIT: selection?.baseCommit ?? '',
       CI_HOST_RUNNER: hostRunner ? '1' : '0',
+      FOREMAN_CODE_CI_CONTRACTS_CACHE: selection?.contractsCache ? '.logs/contracts-cache' : '',
+      CONTRACTS_READY: String(selection?.contractsReady ?? false),
       CI_USER_SYSTEMD: '0', CI_EXPECTED_DURATION_MS: '', CI_WATCHDOG_ACTIVE: '', CI_PROGRESS_FILE: '',
       PATH: installedClis ? `${directory}${delimiter}${process.env.PATH}` : directory,
       CALLS_FILE: callsFile, FAIL_COMMAND: failCommand },
@@ -290,9 +295,19 @@ for (const suite of ['typecheck', 'build']) {
   })
 }
 
-function runNodeBootstrap(t, failedAttempts) {
-  const directory = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'ci-node-bootstrap-'))
+function runNodeBootstrap(t, failedAttempts, restoredNode = false) {
+  const base = join(homedir(), '.cache', 'foreman-tmp')
+  mkdirSync(base, { recursive: true })
+  const directory = mkdtempSync(join(base, 'ci-node-bootstrap-'))
   t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const home = join(directory, 'home')
+  mkdirSync(home)
+  mkdirSync(join(directory, '.logs'))
+  if (restoredNode) {
+    const bin = join(home, '.nvm/versions/node/v22.23.2/bin')
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(join(bin, 'node'), '#!/bin/bash\nexit 0\n', { mode: 0o755 })
+  }
   const callsFile = join(directory, 'calls')
   const shellEnvironment = join(directory, 'shell-environment')
   writeFileSync(callsFile, '')
@@ -323,9 +338,9 @@ function runNodeBootstrap(t, failedAttempts) {
     export -f nvm corepack node sleep chmod mkdir
   `
   const result = spawnSync('bash', ['-ec', fixture + command], {
-    cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8',
-    env: { ...process.env, CALLS_FILE: callsFile, FAILED_ATTEMPTS: String(failedAttempts),
-      NODE_BINARY: process.execPath, BASH_ENV: shellEnvironment },
+    cwd: directory, encoding: 'utf8',
+    env: { ...process.env, SUITE: 'install', CALLS_FILE: callsFile, FAILED_ATTEMPTS: String(failedAttempts),
+      NODE_BINARY: process.execPath, BASH_ENV: shellEnvironment, HOME: home },
   })
   return { result, calls: readFileSync(callsFile, 'utf8').trim().split('\n'),
     shellEnvironment: readFileSync(shellEnvironment, 'utf8') }
@@ -431,4 +446,32 @@ test('the other unit phase passes a recursive script-test glob to Node', t => {
   assert.equal(result.status, 0, result.stderr)
   const scriptTests = calls.find(args => args.includes('--test') && args.includes('scripts/**/*.test.mjs'))
   assert.ok(scriptTests, 'The script-test phase must discover top-level and nested test files')
+})
+
+for (const suite of ['typecheck-api', 'typecheck-other', 'build-api']) {
+  test(`${suite} skips the package-manager build when restored contracts match the checkout`, t => {
+    const { result, calls } = runSuite(t, suite, '', 'full', '', true,
+      { contractsCache: true, contractsReady: true })
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(calls[0][0], 'scripts/ci-contracts.mjs')
+    assert.equal(calls[0][1], 'ready')
+    assert.equal(calls.some(args => JSON.stringify(args) === JSON.stringify(contractsBuild)), false)
+    assert.equal(calls.at(-1).at(-1), suite.startsWith('typecheck') ? 'typecheck' : 'build')
+  })
+}
+
+test('a missing or stale contracts cache still builds and propagates compiler failure', t => {
+  const { result, calls } = runSuite(t, 'typecheck-api', 'build', 'full', '', true,
+    { contractsCache: true, contractsReady: false })
+  assert.equal(result.status, 9)
+  assert.deepEqual(calls.at(-1), contractsBuild)
+})
+
+test('cloud Node bootstrap uses the cached toolchain without invoking nvm', t => {
+  const { result, calls, shellEnvironment } = runNodeBootstrap(t, 10, true)
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(calls.some(call => call.startsWith('nvm ')), false)
+  assert.ok(calls.includes('corepack enable'))
+  assert.ok(calls.includes('node --version'))
+  assert.match(shellEnvironment, /\.nvm\/versions\/node\/v22\.23\.2\/bin/)
 })

@@ -52,7 +52,8 @@ process.exit(Number(process.env.COMPILER_EXIT || 0));
     child.once('error', reject)
     child.once('exit', status => resolve({ status, output }))
   })
-  return { root, other, build, buildAsync, builds, commit }
+  const ready = () => spawnSync(process.execPath, [script, 'ready', root], { cwd: root, env, encoding: 'utf8' })
+  return { root, other, build, buildAsync, builds, commit, ready }
 }
 
 test('restores contracts for unchanged inputs and rebuilds for contracts or dependency changes', t => {
@@ -93,4 +94,19 @@ test('concurrent worktrees compile once and restore independent contracts output
   assert.equal(f.build().status, 0)
   assert.equal(readFileSync(join(f.root, 'packages/contracts/dist/index.js'), 'utf8'), 'export const value = 1')
   assert.equal(f.builds(), 1)
+})
+
+test('contracts readiness accepts matching output and rejects missing or changed inputs', t => {
+  const f = fixture(t)
+  assert.equal(f.ready().status, 1)
+  assert.equal(f.build().status, 0)
+  assert.equal(f.ready().status, 0)
+  rmSync(join(f.root, 'packages/contracts/dist/index.js'))
+  assert.equal(f.ready().status, 1)
+  assert.equal(f.build().status, 0)
+  writeFileSync(join(f.root, 'packages/contracts/src/index.ts'), 'export const value = 3')
+  f.commit()
+  assert.equal(f.ready().status, 1)
+  assert.equal(f.build().status, 0)
+  assert.equal(f.ready().status, 0)
 })
