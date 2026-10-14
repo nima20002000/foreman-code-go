@@ -3,6 +3,7 @@ import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { chmod, link, lstat, mkdtemp, readFile, readdir, rm, symlink, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { afterEach, expect, it, vi } from 'vitest'
 import { measureRetainedMaterialization, measureRetainedSourceDirectory } from './retainedDirectoryUsage.js'
 import { PrivateSourceMaterializer, releaseMaterializationClaim } from './materialization.js'
@@ -30,11 +31,13 @@ vi.mock('node:fs/promises', async original => {
 const roots: string[] = []
 afterEach(async () => { pauses.beforeUnlink = null; for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }) })
 async function fixture(accessMode: RootBinding['accessMode'] = 'exclusive-write') {
-  const root = await mkdtemp('/tmp/source-claims-'); roots.push(root); await chmod(root, 0o700)
+  const root = await mkdtemp(join(tmpdir(), 'source-claims-'))
+  roots.push(root)
+  await chmod(root, 0o700)
   const bytes = Buffer.from('accepted source\n')
   const manifest = createSourceManifest({ version: 1, snapshotId: randomUUID(), approvedSourceId: randomUUID(),
     capturePolicy: 'exclusive-explicit-bytes-v1', executablePolicy: 'strip',
-    entries: [{ path: 'src/app.ts', kind: 'file', byteSize: bytes.length, sha256: sourceSha256(bytes), executable: false }], deletions: [] })
+    entries: [{ path: 'src/app.txt', kind: 'file', byteSize: bytes.length, sha256: sourceSha256(bytes), executable: false }], deletions: [] })
   const handle = await openPrivateRoot(root), filesystem = await identity(handle); await handle.close()
   const binding: RootBinding = { version: 1, mainId: randomUUID(), deviceId: null, workerInstallationId: null,
     workspaceId: randomUUID(), rootId: randomUUID(), bindingRevision: 1, locationRevision: 1, canonicalPath: root,
@@ -78,7 +81,7 @@ it('lets another execution prepare a read-only root while the first execution ke
   const other = { ...f, attempt: { ...f.attempt, executionId: randomUUID(), attemptId: randomUUID() } }
   const second = await f.materializer().prepare(other)
   expect(second.materializationId).not.toBe(first.materializationId)
-  expect(await readFile(join(f.root, second.materializationId, 'tree/src/app.ts'))).toEqual(f.bytes)
+  expect(await readFile(join(f.root, second.materializationId, 'tree/src/app.txt'))).toEqual(f.bytes)
   // Each original attempt still recovers only its own claim and copy.
   expect(await f.materializer().prepare(f)).toEqual(first)
   expect(await f.materializer().prepare(other)).toEqual(second)
@@ -97,7 +100,7 @@ it('lets two writable executions write in the same working directory while the f
   const script = `
     const fs = require('node:fs');
     fs.writeFileSync('orchestrator.txt', 'ORCHESTRATOR');
-    fs.writeFileSync('src/app.ts', 'shared edit');
+    fs.writeFileSync('src/app.txt', 'shared edit');
     console.log('ready');
     const deadline = Date.now() + 5000;
     const timer = setInterval(() => {
@@ -124,7 +127,7 @@ it('lets two writable executions write in the same working directory while the f
       fs.writeFileSync('requester.txt', 'REQUESTER');
     `], { cwd: secondCwd })
     expect(await exited).toBe(0)
-    expect(await readFile(join(cwd, 'src/app.ts'), 'utf8')).toBe('shared edit')
+    expect(await readFile(join(cwd, 'src/app.txt'), 'utf8')).toBe('shared edit')
     expect(await readFile(join(cwd, 'requester.txt'), 'utf8')).toBe('REQUESTER')
     expect(await measureRetainedMaterialization(first)).toBe(
       await measureRetainedSourceDirectory(f.root, first.materializationId)
@@ -165,7 +168,7 @@ it('measures shared working and reference trees once per hard-linked inode after
   const separateBytes = await measureRetainedSourceDirectory(f.root, receipt.materializationId)
     + await measureRetainedSourceDirectory(f.root, receipt.sharedTree!.id)
   expect(await measureRetainedMaterialization(receipt)).toBe(separateBytes - duplicateBytes)
-  expect(await readFile(join(cwd, 'src/app.ts'))).toEqual(f.bytes)
+  expect(await readFile(join(cwd, 'src/app.txt'))).toEqual(f.bytes)
   await expect(readFile(claim)).rejects.toMatchObject({ code: 'ENOENT' })
 })
 
@@ -181,7 +184,7 @@ it('replays the exact durable release in a fresh process after a lost acknowledg
   await expect(inFreshProcess(receipt, true)).rejects.toMatchObject({ code: 42 })
   expect(await f.materializer().recover(f.binding, f.attempt)).toBeNull()
   await inFreshProcess(receipt)
-  expect(await readFile(join(f.root, receipt.materializationId, 'tree/src/app.ts'))).toEqual(f.bytes)
+  expect(await readFile(join(f.root, receipt.materializationId, 'tree/src/app.txt'))).toEqual(f.bytes)
 })
 
 it('replays an old release without deleting a successor claim', async () => {
@@ -197,7 +200,10 @@ it('replays an old release without deleting a successor claim', async () => {
 it('rejects arbitrary missing claims without a durable original release', async () => {
   const f = await fixture(), receipt = await f.materializer().prepare(f)
   await unlink(await claimPath(f.root, receipt))
-  await expect(releaseMaterializationClaim(receipt, async () => 'released')).rejects.toMatchObject({ code: 'ENOENT' })
+  await expect(releaseMaterializationClaim(receipt, async () => 'released')).rejects.toMatchObject({
+    code: 'SOURCE_CLAIM_MISSING',
+    message: 'The original source claim and its archived release record are missing; cleanup cannot confirm ownership.',
+  })
 })
 
 it.each(['owned', 'uncertain'] as const)('does not replay without positive reconciliation (%s)', async status => {

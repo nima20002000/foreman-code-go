@@ -13,8 +13,9 @@ it('ends an expired session lock wait with a retryable domain error before execu
   const client = { release, query: async (statement: string) => ({
     rows: statement.includes('advisory_lock(') ? [{ locked: false }] : [], rowCount: 0,
   }) }
-  const pool = { options: {}, connect: async () => client, end }
-  vi.spyOn(pg, 'Pool').mockImplementation(function () { return pool } as never)
+  const pool = { options: {}, connect: vi.fn() }
+  const dedicatedPool = { connect: vi.fn(async () => client), end }
+  vi.spyOn(pg, 'Pool').mockImplementation(function () { return dedicatedPool } as never)
   vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValue(600_001)
   const perform = vi.fn(async () => 'captured')
   const coordinator = new PostgresCommandCoordinator(pool as unknown as pg.Pool)
@@ -23,6 +24,8 @@ it('ends an expired session lock wait with a retryable domain error before execu
   })).rejects.toMatchObject({ code: 'COMMAND_LOCK_TIMEOUT', status: 503,
     details: { retryable: true, newCommandRequired: false } })
   expect(perform).not.toHaveBeenCalled()
+  expect(pool.connect).not.toHaveBeenCalled()
+  expect(dedicatedPool.connect).toHaveBeenCalledOnce()
   expect(release).toHaveBeenCalledOnce()
   expect(end).toHaveBeenCalledOnce()
 })

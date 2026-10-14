@@ -1,4 +1,7 @@
 import { afterEach, expect, it } from 'vitest'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { buildApp } from '../../app.js'
 import { toolFailure } from '../../mcp/shared/results.js'
 import { snapshotAgentWorktree } from './agentSnapshot.js'
@@ -22,9 +25,12 @@ const credentials = [
   ['multiline helper output', 'synthetic-helper-secret\nfatal: authentication failed'],
 ] as const
 
-function failingPorts(stderr: string, operation: string): GitWorktreePorts {
+const roots: string[] = []
+async function failingPorts(stderr: string, operation: string): Promise<GitWorktreePorts> {
+  const clone = await mkdtemp(join(tmpdir(), 'git-errors-'))
+  roots.push(clone)
   return {
-    cloneDirectory: () => '/unused-clone',
+    cloneDirectory: () => clone,
     git: async args => ({
       code: args[0] === operation || args[0] === 'cat-file' ? 1 : 0,
       stdout: '',
@@ -60,7 +66,7 @@ for (const operation of operations) {
   it.each(credentials)(`${operation.name} excludes %s from its public error`, async (_name, stderr) => {
     let failure: unknown
     try {
-      await operation.run(failingPorts(stderr, operation.command))
+      await operation.run(await failingPorts(stderr, operation.command))
     } catch (error) {
       failure = error
     }
@@ -78,6 +84,7 @@ for (const operation of operations) {
 const apps: ReturnType<typeof buildApp>[] = []
 afterEach(async () => {
   for (const app of apps.splice(0)) await app.close()
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
 
 it.each(credentials)('excludes %s through the HTTP error handler', async (_name, stderr) => {
@@ -85,7 +92,8 @@ it.each(credentials)('excludes %s through the HTTP error handler', async (_name,
     database: { ping: async () => {} }, checkpoints: { ping: async () => {} },
   } })
   apps.push(app)
-  app.get('/git-failure', () => ensureCommit(failingPorts(stderr, 'fetch'),
+  const ports = await failingPorts(stderr, 'fetch')
+  app.get('/git-failure', () => ensureCommit(ports,
     'octo/site', commit, new AbortController().signal))
   const response = await app.inject({ method: 'GET', url: '/git-failure' })
   expect(response.statusCode).toBe(400)

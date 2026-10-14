@@ -79,6 +79,33 @@ function setup(handler: NonNullable<DeviceExtensionRegistration['handle']>, limi
 }
 afterEach(() => vi.useRealTimers())
 describe('authenticated namespace carrier mechanics', () => {
+  it('queues foreground work behind occupied slots while Stop remains available', async () => {
+    const releases: Array<() => void> = []
+    const handled = vi.fn(async (payload: unknown) => {
+      if (payload === 'occupied') await new Promise<void>(resolve => { releases.push(resolve) })
+      return { payload }
+    })
+    const pair = setup(handled)
+    const occupied = Array.from({ length: 8 }, () => pair.main.request('execution-v1', 'occupied'))
+    const queued = pair.main.request('execution-v1', 'queued')
+    try {
+      await flush()
+      expect(releases).toHaveLength(8)
+      expect(handled).toHaveBeenCalledTimes(8)
+      const stop = stopRequest()
+      await expect(pair.main.request('execution-v1', stop)).resolves.toEqual({ payload: stop })
+      expect(handled).toHaveBeenCalledTimes(9)
+      releases[0]!()
+      await expect(queued).resolves.toEqual({ payload: 'queued' })
+      expect(handled.mock.calls.filter(([payload]) => payload === 'queued')).toHaveLength(1)
+      expect(pair.rawMain.closed).toBe(false)
+    } finally {
+      for (const release of releases) release()
+      await pair.close()
+      await Promise.allSettled([...occupied, queued])
+    }
+  })
+
   it('waits for transient socket backpressure without entering the handler twice', async () => {
     vi.useFakeTimers()
     const handled = vi.fn(async () => ({ payload: 'started' }))
@@ -395,13 +422,16 @@ describe('authenticated namespace carrier mechanics', () => {
       expect(await pair.main.request('execution-v1', { dispatch: true })).toEqual({ payload: 'receipt' })
     } finally { await pair.close(); expect(vi.getTimerCount()).toBe(0) }
   })
-  it('bounds concurrent requests even across awaited live authorization', async () => {
+  it('bounds background admission even across awaited live authorization', async () => {
     const pair = setup(async () => new Promise(() => {}))
     const requests = Array.from({ length: 8 }, () => pair.main.request('execution-v1', {}))
     for (const request of requests) void request.catch(() => {
       // ignore: the original requests are awaited below or joined after channel cancellation.
     })
-    await flush(); await expect(pair.main.request('execution-v1', {})).rejects.toThrow('backpressure'); await pair.close(); await Promise.allSettled(requests)
+    await flush()
+    await expect(pair.main.request('execution-v1', {}, { priority: 'background' })).rejects.toThrow('backpressure')
+    await pair.close()
+    await Promise.allSettled(requests)
   })
   it('delivers exact-owner Stop with all ordinary outgoing slots occupied', async () => {
     const releases: Array<() => void> = []
@@ -421,7 +451,7 @@ describe('authenticated namespace carrier mechanics', () => {
     try {
       await flush()
       expect(releases).toHaveLength(8)
-      await expect(pair.main.request('execution-v1', 'ordinary')).rejects.toThrow('backpressure')
+      await expect(pair.main.request('execution-v1', 'ordinary', { priority: 'background' })).rejects.toThrow('backpressure')
       const stop = stopRequest()
       await expect(pair.main.request('execution-v1', stop)).resolves.toEqual({ payload: 'stopped' })
       expect(stopped).toHaveBeenCalledExactlyOnceWith(stop)
@@ -454,7 +484,7 @@ describe('authenticated namespace carrier mechanics', () => {
       await vi.advanceTimersByTimeAsync(21)
       for (const request of requests) await expect(request).rejects.toThrow('timeout')
       expect(signals.every(signal => signal.aborted)).toBe(true)
-      await expect(pair.main.request('execution-v1', 'ordinary')).rejects.toThrow('backpressure')
+      await expect(pair.main.request('execution-v1', 'ordinary', { priority: 'background' })).rejects.toThrow('backpressure')
       await expect(pair.main.request('execution-v1', stopRequest())).resolves.toEqual({ payload: 'stopped' })
       expect(entered).toHaveBeenCalledTimes(9)
       expect(pair.rawMain.closed).toBe(false)
@@ -506,7 +536,8 @@ describe('authenticated namespace carrier mechanics', () => {
       await flush()
       const stop = stopRequest()
       await expect(pair.main.request('execution-v1', { ...stop,
-        command: { ...stop.command, owner: { ...stop.command.owner, epoch: '2' } } })).rejects.toThrow('backpressure')
+        command: { ...stop.command, owner: { ...stop.command.owner, epoch: '2' } },
+      }, { priority: 'background' })).rejects.toThrow('backpressure')
     } finally { await pair.close(); await Promise.allSettled(requests) }
   })
   it('delivers Stop with every declared output key at its admitted size while ordinary requests are full', async () => {
@@ -595,7 +626,7 @@ describe('authenticated namespace carrier mechanics', () => {
     })
     try {
       await flush(); expect(entered).toHaveBeenCalledTimes(8)
-      await expect(caller.request('execution-v1', {})).rejects.toThrow('backpressure')
+      await expect(caller.request('execution-v1', {}, { priority: 'background' })).rejects.toThrow('backpressure')
       await expect(occupied.request('execution-v1', {})).resolves.toEqual({ payload: 'reply' })
       await expect(occupied.request('execution-v1', 'deny')).rejects.toThrow('forbidden')
       expect(pair.rawMain.closed).toBe(false); expect(pair.rawWorker.closed).toBe(false)
@@ -650,7 +681,7 @@ describe('authenticated namespace carrier mechanics', () => {
         }).filter(frame => frame.type === 'application-open' && uploadIds.has(frame.id))
         expect(opens.reduce((total, frame) => total + frame.jsonBytes + frame.binaryBytes, 0))
           .toBe(DEVICE_APPLICATION_BUFFER_BYTES - DEVICE_APPLICATION_STOP_BYTES)
-        await expect(uploader.request('execution-v1', 'overflow')).rejects.toThrow('backpressure')
+        await expect(uploader.request('execution-v1', 'overflow', { priority: 'background' })).rejects.toThrow('backpressure')
         const replies = Promise.allSettled(['reply', 'deny', 'large-reply']
           .map(request => caller.request('execution-v1', request)))
         let settled = false

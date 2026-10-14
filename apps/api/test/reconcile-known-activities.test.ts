@@ -1,5 +1,6 @@
 import type { ReadObservation } from '@foreman-code/contracts'
 import { expect, it, vi } from 'vitest'
+import type { ReadObservation } from '@foreman-code/contracts'
 import type { NativeHarnessSessionManager } from '../src/modules/harnesses/port.js'
 import type { PostgresOperatorActivityRepository } from '../src/modules/conversations/operatorActivityRepository.js'
 import { reconcileKnownActivities } from '../src/modules/conversations/reconcileKnownActivities.js'
@@ -16,6 +17,7 @@ it('settles only preexisting original-owner items through the resident history p
     observations: new Map<string, ReadObservation>(), onObservation: vi.fn(),
     runtimeFor: () => ({ manager, session }), publish: vi.fn() }
   await reconcileKnownActivities(input)
+  expect(input.observations.get('conversation')).toMatchObject({ status: 'available', consecutiveFailures: 0 })
   expect(activity.settleKnownByNative).toHaveBeenCalledWith('conversation', expect.objectContaining({ id: 'older-tool', status: 'completed' }), owner.native, undefined)
   expect(manager.attachSession).not.toHaveBeenCalled(); expect(manager.startTurn).not.toHaveBeenCalled()
   expect(manager.respond).not.toHaveBeenCalled(); expect(manager.cancel).not.toHaveBeenCalled()
