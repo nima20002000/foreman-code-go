@@ -22,6 +22,7 @@ import { readCloudRun, saveCloudRun } from './cloudJournal.js'
 import { ciLogPage } from './logPage.js'
 import { sanitizeCiText } from './text.js'
 import { withProviderPoll } from './providerPoll.js'
+import { sweepCiRunDirectories } from './directoryRetention.js'
 
 const LOG_LIMIT = 4 * 1024 * 1024
 const MAX_DISPATCH_ATTEMPTS = 3
@@ -94,7 +95,7 @@ export class CloudCi {
   private backoff = { until: 0, ms: 0 }
   private following = 0
   private readonly waiting: { run: CloudRun; resume: () => void }[] = []
-  private readonly reading = new Set<string>()
+  private readonly reading = new Map<string, number>()
 
   constructor(private readonly mainId: string, readonly provider: CloudProvider, private readonly mirrors: Mirrors,
     private readonly root = join(homedir(), '.local/share/foreman-code/ci-cloud', provider.id),
@@ -134,19 +135,26 @@ export class CloudCi {
   async handle(raw: unknown): Promise<CiHostReply> {
     const request = CiHostRequestSchema.parse(raw)
     if (request.operation === 'status') {
+      const removedRunIds = request.cleanupRunIds ? await sweepCiRunDirectories({
+        root: this.root, runIds: request.cleanupRunIds,
+        isInUse: runId => this.reading.has(runId) || pendingPublications.has(`${this.root}\n${runId}`),
+        withRun: (runId, work) => this.serializeRun(runId, work),
+      }) : undefined
+      for (const runId of removedRunIds ?? []) this.polled.delete(runId)
       // Recovery of an old ticket must not delay readiness for every slot of this provider.
       void this.reconcile().catch(error => {
         log.warn({ err: error, provider: this.provider.id }, 'Cloud CI recovery sweep failed')
       })
       const ready = await this.ready()
       return CiHostReplySchema.parse({ operation: 'status', ready, reasons: ready ? [] : [this.provider.loginHint],
-        cpuCount: this.provider.cpus, memoryBytes: this.provider.memoryBytes,
-        userSystemd: this.provider.userSystemd, runs: [] })
+        cpuCount: this.provider.cpus, memoryBytes: this.provider.memoryBytes, cleanupSupported: true,
+        userSystemd: this.provider.userSystemd, runs: [],
+        ...(removedRunIds ? { removedRunIds } : {}) })
     }
     if (request.operation === 'read' && (this.reading.has(request.runId)
       || pendingPublications.has(`${this.root}\n${request.runId}`))) {
       // Publication and provider work answer reads from the journal while they continue in the background.
-      return this.answer(request, await this.read(request.runId))
+      return this.withRead(request.runId, async () => this.answer(request, await this.read(request.runId)))
     }
     return this.serializeRun(request.runId, () => this.handleRun(request))
   }
@@ -176,11 +184,16 @@ export class CloudCi {
       this.schedulePrune(canceled, canceled.runId)
       return CiHostReplySchema.parse({ operation: 'cancel', run: this.view(canceled, 0) })
     }
-    this.reading.add(request.runId)
-    try {
-      return await this.answer(request, await this.refresh(request.runId))
-    } finally {
-      this.reading.delete(request.runId)
+    return this.withRead(request.runId, async () => this.answer(request, await this.refresh(request.runId)))
+  }
+
+  private async withRead<T>(runId: string, read: () => Promise<T>): Promise<T> {
+    this.reading.set(runId, (this.reading.get(runId) ?? 0) + 1)
+    try { return await read() }
+    finally {
+      const remaining = this.reading.get(runId)! - 1
+      if (remaining) this.reading.set(runId, remaining)
+      else this.reading.delete(runId)
     }
   }
 
