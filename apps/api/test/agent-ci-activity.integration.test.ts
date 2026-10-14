@@ -2,11 +2,11 @@ import { randomUUID } from 'node:crypto'
 import { setImmediate } from 'node:timers/promises'
 import type pg from 'pg'
 import { describe, expect, it } from 'vitest'
-import { CiGetOutputSchema, CiListOutputSchema, CiRunOutputSchema, CiRunRecordSchema, CiTestsOutputSchema,
+import { CiGetOutputSchema, CiLogsOutputSchema, CiCancelOutputSchema, CiListOutputSchema, CiRunOutputSchema, CiRunRecordSchema, CiTestsOutputSchema,
   type CiHostRun, type CiRunInput, type CiTestResults } from '@foreman-code/contracts'
 import { RunBoardSnapshotGetResultSchema } from '@foreman-code/contracts/run-snapshots'
 import { AcceptedRepeatStartV1Schema, RunActivitiesPageSchema, makeCurrentWorkflowFixture,
-  type AcceptedRepeatStartV1 } from '@foreman-code/contracts/wave25'
+  type AcceptedRepeatStartV1, type CurrentFixtureForm } from '@foreman-code/contracts/wave25'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
 import { beginTransaction, commitTransaction, rollbackTransaction } from '../src/infrastructure/transaction.js'
 import { buildApp } from '../src/app.js'
@@ -42,19 +42,24 @@ async function admitCiRun(pool: pg.Pool, input: AcceptedRepeatStartV1, principal
   }))
 }
 
-async function fixture(options: { deferMigration?: number | number[] } = {}) {
+async function fixture(options: { deferMigration?: number | number[]; form?: CurrentFixtureForm;
+  deniedCiReader?: boolean } = {}) {
   const database = await currentDatabase(options)
-  const graph = await graphFixture(database, { form: 'single', qualifiedReads: true, insert: false })
+  const graph = await graphFixture(database, { form: options.form ?? 'single', qualifiedReads: true, insert: false,
+    ...(options.deniedCiReader ? { nodeToolOverrides: [
+      { add: [], remove: [] }, { add: [], remove: [] }, { add: [], remove: ['ci_get'] },
+    ] } : {}) })
   graph.accepted = await admitCiRun(database.pool, graph.accepted, graph.writer.principal)
   graph.run = graph.accepted.run
   graph.f.run = graph.run
   await changeRunState(database, graph, 'running')
   const node = agentWorkflowNode(graph.version.definition.nodes[0])
   const executionId = randomUUID()
-  const insertExecution = async (id: string, runId: string) => database.pool.query(`insert into harness_executions
+  const insertExecution = async (id: string, runId: string, executionNode = node) => database.pool.query(`insert into harness_executions
     (id,run_id,workflow_node_id,agent_id,attempt,record) values($1,$2,$3,$4,1,$5::jsonb)`,
-  [id, runId, node.id, node.agentId, JSON.stringify({ id, runId, workflowNodeId: node.id,
-    agentId: node.agentId, attempt: 1, agentConfigurationVersionId: graph.version.agentConfigurationVersionIds[node.agentId],
+  [id, runId, executionNode.id, executionNode.agentId, JSON.stringify({ id, runId, workflowNodeId: executionNode.id,
+    agentId: executionNode.agentId, attempt: 1,
+    agentConfigurationVersionId: graph.version.agentConfigurationVersionIds[executionNode.agentId],
     state: 'starting', input: {}, createdAt: graph.run.createdAt })])
   await insertExecution(executionId, graph.run.id)
   await database.pool.query(`update workspaces set record=record||$2::jsonb where id=$1`,
@@ -67,6 +72,7 @@ async function fixture(options: { deferMigration?: number | number[] } = {}) {
     label: 'Build computer', priority: 1 }
   const hostRuns = new Map<string, CiHostRun>()
   const reported = new Map<string, CiTestResults>()
+  const logs = new Map<string, string>()
   const endpoint: HostCiEndpoint = {
     computers: async () => online ? [computer] : [],
     request: async (_computer, request) => {
@@ -86,7 +92,9 @@ async function fixture(options: { deferMigration?: number | number[] } = {}) {
       }
       if (legacyWorker && 'testResults' in request) throw new Error('Unrecognized key: "testResults"')
       const tests = request.testResults && run.finishedAt ? reported.get(run.runId) : undefined
-      return { operation: 'read', run, text: '', nextOffset: 0, ...(tests ? { testResults: tests } : {}) }
+      const text = (logs.get(request.runId) ?? '').slice(request.afterOffset, request.afterOffset + request.maxBytes)
+      return { operation: 'read', run, text, nextOffset: request.afterOffset + Buffer.byteLength(text),
+        ...(tests ? { testResults: tests } : {}) }
     },
   }
   const ci = new HostCiService(database.pool, graph.commands, new RunCiAuthority(database.pool), {
@@ -138,6 +146,10 @@ async function fixture(options: { deferMigration?: number | number[] } = {}) {
   return { database, graph, node, executionId, ci, app, reader, denied, request, boardInput, activity, board,
     submit, get, finish, call, value, workerToken, credentials, insertExecution, computer,
     online() { online = true },
+    log(ticketId: string, text: string) {
+      logs.set(ticketId, text)
+      hostRuns.set(ticketId, { ...hostRuns.get(ticketId)!, logBytes: Buffer.byteLength(text) })
+    },
     legacyWorker(value: boolean) { legacyWorker = value },
     async close() {
       await ci.close()
@@ -172,6 +184,44 @@ async function anotherWorkflow(f: Awaited<ReturnType<typeof fixture>>) {
 const ciRef = (ticketId: string, executionId: string) => expect.objectContaining({ kind: 'ci', ticketId, executionId })
 
 describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => {
+  it('lets another node read and cancel workspace CI tickets while a node without ci_get is denied', async () => {
+    const f = await fixture({ form: 'parallel', deniedCiReader: true })
+    try {
+      f.online()
+      const ticket = await f.submit({ suite: 'install' })
+      f.finish(ticket.ticketId, 'passed')
+      f.log(ticket.ticketId, 'Install completed\n')
+      const original = (await f.get(ticket.ticketId)).run
+      const readerNode = agentWorkflowNode(f.graph.version.definition.nodes[1])
+      const readerExecutionId = randomUUID()
+      await f.insertExecution(readerExecutionId, f.graph.run.id, readerNode)
+      const reader = await f.credentials.issueForExecution(readerExecutionId)
+      const readerToken = reader.environment.variables.GRAPHQL_MCP_TOKEN!
+      const input = { ticketId: ticket.ticketId }
+      const read = CiGetOutputSchema.parse(await f.value(readerToken, 'ci_get', input))
+      expect(read.run).toEqual(original)
+      expect(read.run.initiator.executionId).toBe(f.executionId)
+      expect(CiLogsOutputSchema.parse(await f.value(readerToken, 'ci_logs_read', input)))
+        .toMatchObject({ text: 'Install completed\n', nextOffset: 18 })
+      const deniedNode = agentWorkflowNode(f.graph.version.definition.nodes[2])
+      const deniedExecutionId = randomUUID()
+      await f.insertExecution(deniedExecutionId, f.graph.run.id, deniedNode)
+      const denied = await f.credentials.issueForExecution(deniedExecutionId)
+      const deniedToken = denied.environment.variables.GRAPHQL_MCP_TOKEN!
+      const catalog = await graphRpc(f.app, deniedToken, 'tools/list')
+      expect(catalog.result?.tools?.map(tool => tool.name)).not.toContain('ci_get')
+      const blocked = await f.call(deniedToken, 'ci_get', input)
+      expect(blocked.result?.isError).toBe(true)
+      expect(graphRpcValue(blocked.result)).toMatchObject({ error: { code: 'TOOL_NOT_ENABLED' } })
+      const outsideWorkspace = await f.call(readerToken, 'ci_get', { ...input, workspaceId: 'other-workspace' })
+      expect(outsideWorkspace.result?.isError).toBe(true)
+      const waiting = await f.submit({ suite: 'install' })
+      expect(CiCancelOutputSchema.parse(await f.value(readerToken, 'ci_cancel', { ticketId: waiting.ticketId })))
+        .toMatchObject({ run: { id: waiting.ticketId, state: 'canceled' } })
+      expect((await f.get(waiting.ticketId)).run.state).toBe('canceled')
+    } finally { await f.close() }
+  }, 120000)
+
   it('publishes queued, running and completed CI through authenticated MCP and HTTP with persisted readback', async () => {
     const f = await fixture()
     try {
@@ -385,7 +435,7 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
     } finally { await f.close() }
   }, 120000)
 
-  it('keeps CI parts and partitions scoped to their Agent execution and workflow', async () => {
+  it('keeps CI activity scoped to its workflow while other Runs can read and cancel workspace tickets', async () => {
     const f = await fixture()
     try {
       const split = await f.submit({ partitions: 2 })
@@ -415,12 +465,16 @@ describe.skipIf(!postgresEnabled)('Agent Host CI in public Run activity', () => 
           workflowId: foreign.scope.workflowId, runId: foreign.run.id }))
       expect(foreignBoard.activitySnapshot?.active.filter(work => work.ref.kind === 'ci').map(work => work.ref))
         .toEqual([expect.objectContaining({ executionId: foreignExecutionId, ticketId: foreignTicket.ticketId })])
-      for (const tool of ['ci_get', 'ci_logs_read', 'ci_cancel']) {
-        const blocked = await f.call(token, tool, { ticketId: split.ticketId })
-        expect(blocked.error || blocked.result?.isError).toBeTruthy()
-        expect(JSON.stringify(blocked)).not.toContain(split.ticketId)
-      }
-      expect((await f.get(split.ticketId)).run.state).toBe('queued')
+      const read = CiGetOutputSchema.parse(await f.value(token, 'ci_get', { ticketId: split.ticketId }))
+      expect(read.run.initiator.executionId).toBe(f.executionId)
+      const logs = CiLogsOutputSchema.parse(await f.value(token, 'ci_logs_read', {
+        ticketId: split.ticketId, group: true,
+      }))
+      expect(logs.parts?.map(part => part.run.id).sort())
+        .toEqual(split.partitions!.map(part => part.ticketId).sort())
+      expect(CiCancelOutputSchema.parse(await f.value(token, 'ci_cancel', { ticketId: split.ticketId })))
+        .toMatchObject({ run: { id: split.ticketId, state: 'canceled' } })
+      expect((await f.get(split.ticketId)).run.state).toBe('canceled')
       await expect(f.database.pool.query(`update ci_runs set record=jsonb_set(record,
         '{initiator,executionId}',to_jsonb($2::text)) where id=$1`, [split.ticketId, foreignExecutionId]))
         .rejects.toThrow('CI run ownership cannot change')
