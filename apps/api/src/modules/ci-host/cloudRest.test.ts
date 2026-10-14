@@ -213,6 +213,73 @@ it('reads CircleCI workflows, steps and live output without polling subprocesses
   expect(circleToken).toHaveBeenCalledTimes(1)
 })
 
+it('polls CircleCI status repeatedly and collects raw Suite output through REST', async () => {
+  const stdout = 'progress 1\r\u001b[2Kprogress 2\n'
+  const stderr = '\u001b[31mfailure\u001b[0m\n'
+  const server = await http((request, response) => {
+    if (request.url === '/api/v3/jobs/job') return json(response, { data: { attributes: {
+      name: 'Tests', phase: 'started', parallel_executions: [
+        { steps: [{ num: 1, name: 'Suite', phase: 'started' }] },
+        { steps: [{ num: 2, name: 'Suite', phase: 'started' }] },
+      ],
+    } } })
+    if (request.url!.includes('/stdout')) return response.end(stdout)
+    if (request.url!.includes('/stderr')) return response.end(stderr)
+    circleHandler(request, response)
+  })
+  const cli = ports()
+  const provider = new CircleCiProvider(cli.value, { ...server, circleToken: async () => 'circle-test-token' })
+  const expected = { done: false, steps: [
+    { key: 'job:1', name: 'Suite', state: 'running' },
+    { key: 'job:2', name: 'Suite', state: 'running' },
+  ], output: { key: 'job:2', text: 'progress 2\nfailure\n' } }
+  expect(await provider.find(run)).toBe('42')
+  expect(await provider.status(run)).toEqual(expected)
+  expect(await provider.status(run)).toEqual(expected)
+  expect(cli.calls).not.toHaveBeenCalled()
+  expect(await provider.log(run)).toBe(`Suite\n${stdout}${stderr}\n${stdout}${stderr}`)
+  expect(server.requests.some(request => request.url === '/api/v3/jobs/job/stdout?execution=1&step_num=2'))
+    .toBe(true)
+  expect(cli.calls).not.toHaveBeenCalled()
+})
+
+it('keeps the CircleCI Suite output CLI fallback when REST credentials are unavailable', async () => {
+  const server = await http((_request, response) => json(response, {}, 500))
+  const cli = ports()
+  cli.calls.mockImplementation(async (_file, args) => {
+    if (args[0] === 'run') return { code: 0, stderr: '', stdout: JSON.stringify({
+      workflows: [{ jobs: [{ id: 'job' }] }],
+    }) }
+    if (args[1] === 'get') return { code: 0, stderr: '', stdout: JSON.stringify({
+      executions: [{ steps: [{ num: 3, name: 'Suite' }] }],
+    }) }
+    return { code: 0, stderr: '', stdout: 'raw suite output\n' }
+  })
+  const provider = new CircleCiProvider(cli.value, { ...server, circleToken: async () => null })
+  expect(await provider.log(run)).toBe('Suite\nraw suite output\n')
+  expect(cli.calls).toHaveBeenCalledWith('circleci', ['job', 'output', 'get', 'job',
+    '--step-num', '3', '--execution', '0', '--strip-ansi=false'], { timeoutMs: 300_000 })
+  expect(server.requests).toEqual([])
+})
+
+it.each([403, 429, 500])('propagates CircleCI Suite output HTTP %s errors without a CLI retry', async status => {
+  const server = await http((request, response) => {
+    if (request.url === '/api/v3/jobs/job') return json(response, { data: { attributes: {
+      name: 'Tests', phase: 'started', parallel_executions: [
+        { steps: [{ num: 1, name: 'Suite', phase: 'started' }] },
+      ],
+    } } })
+    if (request.url!.includes('/stdout')) return json(response, { message: 'unavailable' }, status)
+    circleHandler(request, response)
+  })
+  const cli = ports()
+  const provider = new CircleCiProvider(cli.value, { ...server, circleToken: async () => 'circle-test-token' })
+  await expect(provider.log(run)).rejects.toMatchObject({
+    code: status === 429 ? 'CI_CLOUD_RATE_LIMITED' : 'CI_CLOUD_FAILED',
+  })
+  expect(cli.calls).not.toHaveBeenCalled()
+})
+
 it('keeps transient CircleCI missing-run handling and expired lookup errors', async () => {
   const server = await http((_request, response) => json(response, { message: 'Not Found' }, 404))
   const cli = ports()
