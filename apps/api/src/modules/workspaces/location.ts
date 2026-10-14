@@ -27,7 +27,6 @@ import { readLiveManagementPrincipal } from '../access/liveManagementPrincipal.j
 import { currentOperatorAuthority } from '../access/runAuthority.js'
 import { PostgresCommandCoordinator } from '../commands/postgres.js'
 import { DomainError } from '../errors.js'
-import { requireWorkspaceStoragePath } from './storage.js'
 import { canonicalRuntimePath, pathsOverlap, withFilesystemDeadline } from './filesystem.js'
 import { WORKSPACE_FOLDER_LIFECYCLE_LOCK } from './projectFolderCleanup.js'
 import type { WorkspaceRootPolicyPort } from '../sources/rootPolicyPorts.js'
@@ -64,7 +63,6 @@ export class WorkspaceLocationService {
     private readonly commands: PostgresCommandCoordinator,
     managedRuntimeRoot?: string,
     readonly runnerId = LOCAL_RUNNER_ID,
-    private readonly projectRoot?: string,
   ) {
     this.managedRuntimeRoot = managedRuntimeRoot ? resolve(managedRuntimeRoot) : undefined
   }
@@ -121,7 +119,6 @@ export class WorkspaceLocationService {
     try {
       return await withFilesystemDeadline(async (check) => {
         const canonicalPath = await check(() => realpath(rootPath))
-        if (this.projectRoot) requireWorkspaceStoragePath(await check(() => realpath(this.projectRoot!)), canonicalPath)
         if (this.managedRuntimeRoot) {
           const runtimePath = await canonicalRuntimePath(this.managedRuntimeRoot, check)
           if (pathsOverlap(canonicalPath, runtimePath)) {

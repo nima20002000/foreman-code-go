@@ -78,7 +78,7 @@ it.skipIf(!postgresEnabled)('profiles complete repository approval through real 
   const approvedPaths = (await qualifiedGit(root, ['ls-tree', '-r', '--name-only', '-z', commit])).toString().split('\0').filter(Boolean)
   const lsTreeMs = performance.now() - lsTreeStart
   const commands = new PostgresCommandCoordinator(db.pool), access = new PostgresAccessService(db.pool)
-  const locations = new WorkspaceLocationService(db.pool, commands, join(directory, 'runtime'), 'runner-local', directory)
+  const locations = new WorkspaceLocationService(db.pool, commands, join(directory, 'runtime'), 'runner-local')
   const workspaces = new WorkspaceManagementService(db.pool, commands, locations)
   const owner = await access.issue({ name: 'Profile owner', audience: 'operator', grants: [{ actions: ManagementActionSchema.options, scope: {} }], expiresAt: new Date(Date.now() + 600_000) })
   const created = await workspaces.create(owner.principal, 'http', { commandId: randomUUID(), name: 'Actual repository approval' })

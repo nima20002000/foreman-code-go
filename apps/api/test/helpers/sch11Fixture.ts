@@ -46,7 +46,7 @@ export async function sch11Fixture(database: Sch11Database, initialNow = '2030-0
   const commands = new PostgresCommandCoordinator(database.pool)
   const workflows = new WorkflowManagementService(database.pool, commands)
   const service = new WorkflowScheduleService(database.pool, commands, clock)
-  const locations = new WorkspaceLocationService(database.pool, commands, runtimeRoot, LOCAL_RUNNER_ID, projectRoot)
+  const locations = new WorkspaceLocationService(database.pool, commands, runtimeRoot, LOCAL_RUNNER_ID)
   const issue = (actions: ManagementGrant['actions'], workspaceId = scope.workspaceId) => access.issue({
     name: 'SCH-11 synthetic human', audience: 'operator', expiresAt: new Date(Date.now() + 3_600_000),
     grants: [{ actions, scope: { workspaceIds: [workspaceId] } }],

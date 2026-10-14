@@ -74,7 +74,7 @@ export const HarnessMcpPlanResultSchema = z.object({ value: HarnessMcpPlanSchema
 export const HarnessMcpPlansResultSchema = z.object({ items: z.array(HarnessMcpPlanSchema) }).strict()
 export const HarnessMcpPlanGetInputSchema = z.object({ planId: z.string().uuid() }).strict()
 export const HarnessMcpDecisionInputSchema = z.object({ planId: z.string().uuid(), approve: z.boolean() }).strict()
-/** Explicit browser-owner settlement; never authorizes another native write. */
+/** Reconciliation reads native state without repeating the write. */
 export const HarnessMcpReconcileInputSchema = z.object({
   planId: z.string().uuid(), commandId: CommandId, expectedRevision: Revision.optional().describe('Omit for last write wins; supply to reject a stale revision.'),
   acceptObservedState: z.boolean().default(false),

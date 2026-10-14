@@ -53,7 +53,7 @@ export async function workspaceMcpFixture(options: {
   const clients: Client[] = []
   const access = new PostgresAccessService(pool)
   const commands = new PostgresCommandCoordinator(pool)
-  const locations = new WorkspaceLocationService(pool, commands, undefined, 'runner-local', parentPath)
+  const locations = new WorkspaceLocationService(pool, commands, undefined, 'runner-local')
   const defaults = new PostgresFoundationSettingsRepository(pool, parentPath)
   const workspaces = new WorkspaceManagementService(pool, commands, locations, defaults, parentPath)
   const services = { commands, locations, workspaces } as unknown as OperatorServices

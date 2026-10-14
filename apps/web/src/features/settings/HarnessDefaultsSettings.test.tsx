@@ -52,7 +52,7 @@ it('shows Codex and Claude as summary cards with status and no editor', () => {
   expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
 })
 
-it('drafts a preset change for the Operator and opens human-only Codex panels', async () => {
+it('drafts a preset change for the Operator and opens Codex panels', async () => {
   const onOpen = vi.fn()
   mount({ onOpen })
   await userEvent.click(screen.getByRole('button', { name: 'Edit Codex defaults' }))
@@ -67,6 +67,9 @@ it.each([['plugins', 'Codex plugins', 'Plugin catalog'], ['connections', 'Codex 
   'shows the %s panel in a dialog from the URL', (section, title, content) => {
     mount({ selectedHarness: 'codex', section })
     expect(within(screen.getByRole('dialog', { name: title })).getByText(content)).toBeVisible()
+    if (section === 'connections') {
+      expect(screen.getByRole('dialog', { name: title })).toHaveTextContent('Ask the Operator to manage connections.')
+    }
   })
 
 it('opens the Claude plugin summary from its card and URL', async () => {

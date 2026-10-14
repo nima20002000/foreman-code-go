@@ -920,7 +920,7 @@ function configureWorkflowRepositories(composition: ProductionComposition) {
   composition.budgets = new PostgresApprovalBudgetRepository(database.pool)
   const projectRoot = composition.projectRoot = config.workspaceStorageRoot ?? workspaceStorageRoot()
   const runWorktrees = composition.runWorktrees = new RunWorktrees(database.pool, join(config.harnesses.workspaceRoot, 'run-worktrees'))
-  const locations = composition.locations = new WorkspaceLocationService(database.pool, commands, config.harnesses.workspaceRoot, 'runner-local', projectRoot)
+  const locations = composition.locations = new WorkspaceLocationService(database.pool, commands, config.harnesses.workspaceRoot, 'runner-local')
   const workflows = composition.workflows = new PostgresWorkflowRepository(database.pool)
   const runs = composition.runs = new PostgresRunRepository(database.pool, workflows, locations,
     { runtimeRoot: config.harnesses.workspaceRoot, ...workflowRuntime, services: workflowServices }, async evidence => {

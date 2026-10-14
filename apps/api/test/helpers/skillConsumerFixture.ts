@@ -58,7 +58,7 @@ export function skillConsumerFixture() {
     database = await migratedDatabase()
     commands = new PostgresCommandCoordinator(database.pool)
     access = new PostgresAccessService(database.pool)
-    const locations = new WorkspaceLocationService(database.pool, commands, undefined, 'runner-local', database.directory)
+    const locations = new WorkspaceLocationService(database.pool, commands, undefined, 'runner-local')
     agents = new OperatorAgentMutationService(database.pool, commands, { qualifyConfiguration: async (value) => ({
       harness: value.harness, version: 'fixture', authenticated: true, ready: true,
       structuredEvents: true, supportsResume: true, supportsCancellation: true, supportsWorkingDirectory: true,

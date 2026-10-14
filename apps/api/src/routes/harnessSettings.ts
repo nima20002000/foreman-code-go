@@ -64,19 +64,16 @@ export function registerHarnessSettingsRoutes(app: FastifyInstance, services: Op
       await plugins.get(requirePrincipal(request), input.pluginId, { signal, refresh: input.refresh })))
   })
   app.get('/api/management/harnesses/codex/plugins/operations', async (request) => {
-    requireLocalHuman(request)
     const plugins = settings().plugins
     if (!plugins) throw new DomainError('CODEX_PLUGINS_UNAVAILABLE', 'Codex plugin management is unavailable.', 503)
     return CodexPluginOperationsResultSchema.parse(await plugins.operations(requirePrincipal(request)))
   })
   app.post('/api/management/harnesses/codex/plugins/reconcile', async (request) => {
-    requireLocalHuman(request)
     const plugins = settings().plugins
     if (!plugins) throw new DomainError('CODEX_PLUGINS_UNAVAILABLE', 'Codex plugin management is unavailable.', 503)
     return CodexPluginChangeResultSchema.parse(await plugins.reconcile(requirePrincipal(request), CodexPluginReconcileInputSchema.parse(request.body)))
   })
   app.post('/api/management/harnesses/codex/plugins/change', async (request) => {
-    requireLocalHuman(request)
     const plugins = settings().plugins
     if (!plugins) throw new DomainError('CODEX_PLUGINS_UNAVAILABLE', 'Codex plugin management is unavailable.', 503)
     return CodexPluginChangeResultSchema.parse(await plugins.change(requirePrincipal(request), CodexPluginChangeInputSchema.parse(request.body)))
@@ -92,18 +89,15 @@ export function registerHarnessSettingsRoutes(app: FastifyInstance, services: Op
   app.post('/api/management/harnesses/mcp/plans', async (request) => HarnessMcpPlanResultSchema.parse(
     await settings().mcp.plan(requirePrincipal(request), 'http', HarnessMcpPlanInputSchema.parse(request.body))))
   app.post('/api/management/harnesses/mcp/managed', async (request) => {
-    requireLocalHuman(request)
     return HarnessMcpPlanSchema.parse(await settings().mcp.applyManaged(requirePrincipal(request), HarnessMcpManagedInputSchema.parse(request.body)))
   })
   app.get('/api/management/harnesses/mcp/plans/:planId', async (request) => HarnessMcpPlanSchema.parse(
     await settings().mcp.get(requirePrincipal(request), HarnessMcpPlanGetInputSchema.parse(request.params).planId)))
   app.post('/api/management/harnesses/mcp/reconcile', async (request) => {
-    requireLocalHuman(request)
     return HarnessMcpPlanResultSchema.parse(await settings().mcp.reconcile(
       requirePrincipal(request), HarnessMcpReconcileInputSchema.parse(request.body)))
   })
   app.post('/api/management/harnesses/mcp/decision', async (request) => {
-    requireLocalHuman(request)
     const input = HarnessMcpDecisionInputSchema.parse(request.body)
     return HarnessMcpPlanSchema.parse(await settings().mcp.decide(requirePrincipal(request), input.planId, input.approve))
   })
@@ -113,22 +107,18 @@ export function registerHarnessSettingsRoutes(app: FastifyInstance, services: Op
       requirePrincipal(request), 'http', WorkspaceFolderDeleteInputSchema.parse(request.body)))
   })
   app.post('/api/management/harnesses/directories/undo', async (request) => {
-    requireLocalHuman(request)
     return WorkspaceFolderUndoResultSchema.parse(await settings().directories.undoCreated(
       requirePrincipal(request), 'http', WorkspaceFolderUndoInputSchema.parse(request.body)))
   })
   app.post('/api/management/harnesses/directories/rename', async (request) => {
-    requireLocalHuman(request)
     return WorkspaceFolderRenameResultSchema.parse(await settings().directories.renameCreated(
       requirePrincipal(request), 'http', WorkspaceFolderRenameInputSchema.parse(request.body)))
   })
   app.post('/api/management/harnesses/directories', async (request) => {
-    requireLocalHuman(request)
     return WorkspaceFolderCreateResultSchema.parse(await settings().directories.create(
       requirePrincipal(request), 'http', WorkspaceFolderCreateInputSchema.parse(request.body)))
   })
   app.get('/api/management/harnesses/directories', async (request) => {
-    requireLocalHuman(request)
     return HarnessDirectoryBrowseResultSchema.parse(await settings().directories.browse(requirePrincipal(request), HarnessDirectoryBrowseInputSchema.parse(request.query)))
   })
 }

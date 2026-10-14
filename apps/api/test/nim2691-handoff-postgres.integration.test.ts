@@ -49,7 +49,7 @@ postgresDescribe('NIM-2691 durable handoff migration', () => {
       assert.ok(owner)
       let recoveredOwner: RunOwnership | undefined
       try {
-        const locations = new WorkspaceLocationService(pool, t.commands, directory, 'runner-local', directory)
+        const locations = new WorkspaceLocationService(pool, t.commands, directory, 'runner-local')
         const factory = new RepeatRepositoryFactory(locations, directory,
           createWorkflowRepositoryServices(createWorkflowNativeCaptureChannel().verify).services)
         const store = factory.forOwner(owner, t.version)

@@ -57,7 +57,7 @@ async function setup() {
   const owner = await access.issue({ name: 'Snapshot retention fixture', audience: 'operator',
     grants: [{ actions: [...ManagementActionSchema.options], scope: {} }],
     expiresAt: new Date(Date.now() + 3600_000) })
-  const locations = new WorkspaceLocationService(pool, commands, runtime, 'runner-local', database.directory)
+  const locations = new WorkspaceLocationService(pool, commands, runtime, 'runner-local')
   const workspaces = new WorkspaceManagementService(pool, commands, locations)
   const created = await workspaces.create(owner.principal, 'http', { commandId: randomUUID(), name: 'Retention' })
   const workspaceId = created.value.workspace.id

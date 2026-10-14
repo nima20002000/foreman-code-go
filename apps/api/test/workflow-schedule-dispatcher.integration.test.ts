@@ -66,7 +66,7 @@ describe.skipIf(!postgresEnabled)('SCH-04 PostgreSQL dispatcher / common Start',
     const identity = await stat(directory, { bigint: true })
     await database.pool.query('update workspaces set execution_location_identity=$2::jsonb where id=$1',
       [scope.workspaceId, JSON.stringify({ device: String(identity.dev), inode: String(identity.ino) })])
-    locations = new WorkspaceLocationService(database.pool, commands, runtimeRoot, LOCAL_RUNNER_ID, projectRoot)
+    locations = new WorkspaceLocationService(database.pool, commands, runtimeRoot, LOCAL_RUNNER_ID)
     writer = await issue(actions)
     reader = await issue(['workflows:read', 'capabilities:read'])
     service = new WorkflowScheduleService(database.pool, commands, () => new Date(now))

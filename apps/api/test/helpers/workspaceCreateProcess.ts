@@ -24,7 +24,7 @@ interface Request {
 process.once('message', async (request: Request) => {
   const pool = new pg.Pool(request.database)
   const commands = new PostgresCommandCoordinator(pool)
-  const locations = new WorkspaceLocationService(pool, commands, undefined, 'runner-local', request.parentPath)
+  const locations = new WorkspaceLocationService(pool, commands, undefined, 'runner-local')
   const defaults = new PostgresFoundationSettingsRepository(pool, request.parentPath)
   const workspaces = new WorkspaceManagementService(pool, commands, locations, defaults, request.parentPath)
   const app = buildApp({ logger: false, readiness: {

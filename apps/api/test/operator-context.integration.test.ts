@@ -131,7 +131,9 @@ describe.skipIf(!postgresEnabled)('Operator context over authenticated MCP', () 
       expect(compact.tools).not.toContain('workspace_update')
       expect(compact.grants).toEqual(issued.principal.grants)
       expect(compact.runtimeLimits).toEqual(expect.arrayContaining([
-        expect.objectContaining({ feature: 'native_mcp_provisioning', detail: expect.stringContaining('human') }),
+        expect.objectContaining({ feature: 'native_mcp_provisioning', detail: expect.stringContaining('harnesses:update') }),
+        expect.objectContaining({ feature: 'codex_plugins', detail: expect.stringContaining('codex_plugin_change') }),
+        expect.objectContaining({ feature: 'remote_runners_and_host_browsing', detail: expect.stringContaining('home') }),
         expect.objectContaining({ feature: 'trusted_device_connections', detail: expect.stringContaining('settings:update') }),
       ]))
     } finally { await f.close() }
