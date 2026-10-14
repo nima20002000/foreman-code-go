@@ -4,13 +4,15 @@ import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 import { McpDetectionSchema, type McpDetection } from '@foreman-code/contracts'
+import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import { MANAGED_MCP_NAMESPACE, ManagedMcpFailureSchema, ManagedMcpRequestSchema }
   from '@foreman-code/contracts/managed-mcp-channel'
 import { HarnessMcpPlanSchema, type HarnessMcpManagedInput, type HarnessMcpPlan, type HarnessMcpReconcileInput }
   from '@foreman-code/contracts/management'
 import { syncNativeConfigDirectory } from './nativeConfigFiles.js'
-import { assertManagedChange, expectedMcpUserFingerprint, fingerprint, managedChange, managedEnableChange,
-  managedStatus, mcpUserFingerprint, publicMcpList, type NativeMcpAdapter } from './nativeMcpCommon.js'
+import { appMcpNeedsMigration, assertManagedChange, expectedMcpUserFingerprint, fingerprint, managedChange, managedEnableChange,
+  managedStatus, mcpUserFingerprint, publicMcpList, record, type NativeMcpAdapter } from './nativeMcpCommon.js'
+import { APP_MCP_SERVER_NAME, appLauncherTokenName } from './appMcpLauncher.js'
 import { DomainError } from '../errors.js'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { DeviceExtensionRegistration } from '../devices/deviceApplicationChannel.js'
@@ -58,14 +60,17 @@ export class WorkerManagedMcp {
   }
   async detect(harness: Harness, signal: AbortSignal): Promise<McpDetection> {
     if (this.options.inspect) return McpDetectionSchema.parse(await this.options.inspect(harness, signal))
-    const list = await this.list(harness, signal)
-    const status = list.presets.graphql
+    const snapshot = await this.options.adapters[harness].read(signal)
+    const status = managedStatus(snapshot, 'graphql')
+    const name = APP_MCP_SERVER_NAMES.find(server => Object.hasOwn(snapshot.user, server)
+      || Object.hasOwn(snapshot.effective, server)) ?? APP_MCP_SERVER_NAME
+    const entry = record(snapshot.effective[name] ?? snapshot.user[name])
     const states = { missing: 'not_detected', installed: 'status_unavailable', disabled: 'disabled',
       mismatch: 'misconfigured', inherited: 'misconfigured', legacy: 'misconfigured' } as const
-    return McpDetectionSchema.parse({ harness, serverName: 'foreman-code', state: states[status],
+    return McpDetectionSchema.parse({ harness, serverName: name, state: states[status],
       endpointMatches: status === 'installed' || status === 'disabled',
-      credentialEnvironmentVariable: status === 'installed' || status === 'disabled' ? 'FOREMAN_CODE_MCP_TOKEN' : null,
-      checkedAt: list.checkedAt, detail: 'Native user configuration inspected on this computer.' })
+      credentialEnvironmentVariable: status === 'installed' || status === 'disabled' ? appLauncherTokenName(entry) : null,
+      checkedAt: new Date().toISOString(), detail: 'Native user configuration inspected on this computer.' })
   }
   apply(input: HarnessMcpManagedInput, requestedBy: string, signal: AbortSignal,
     assertCurrent: () => void = () => {}): Promise<HarnessMcpPlan> {
@@ -158,10 +163,17 @@ export class WorkerManagedMcp {
     await this.options.installLauncher(signal)
     for (const harness of harnesses) {
       await this.options.prepare?.(harness)
-      const list = await this.list(harness, signal)
-      if (list.presets.graphql !== 'missing' && list.presets.graphql !== 'legacy') continue
+      const snapshot = await this.options.adapters[harness].read(signal)
+      const status = managedStatus(snapshot, 'graphql')
+      const migrate = appMcpNeedsMigration(snapshot)
+      if ((status === 'installed' || status === 'disabled') && !migrate) continue
+      if (status !== 'missing' && status !== 'legacy' && !migrate) {
+        throw new DomainError('APP_MCP_SETUP_FAILED',
+          'Foreman Code MCP has custom or inherited configuration. Inspect its native connection settings.', 409)
+      }
       const result = await this.applyOnce({ harness, preset: 'graphql', installed: true,
-        commandId: `ready-${randomUUID()}`, expectedRevision: list.revision }, 'paired-device', signal, () => signal.throwIfAborted())
+        commandId: `ready-${randomUUID()}`, expectedRevision: snapshot.revision },
+      'paired-device', signal, () => signal.throwIfAborted())
       if (result.status !== 'applied') throw new DomainError('APP_MCP_SETUP_FAILED', result.error ?? 'Managed MCP setup failed.', 409)
     }
   }
