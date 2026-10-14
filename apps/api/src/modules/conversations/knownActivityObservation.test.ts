@@ -18,12 +18,14 @@ it('reports failed history reads, counts retries and still settles independent o
   const healthy = { harness: 'codex', history: vi.fn().mockResolvedValue({ events: [event] }) }
   const observations = new Map()
   const publish = vi.fn()
-  const input = { kind: 'operator' as const, activity, signal: AbortSignal.timeout(1000), observations, publish,
+  const onObservation = vi.fn()
+  const input = { kind: 'operator' as const, activity, signal: AbortSignal.timeout(1000), observations, publish, onObservation,
     runtimeFor: (id: string) => ({ manager: (id === 'blocked' ? blocked : healthy) as unknown as NativeHarnessSessionManager,
-      session: { harness: 'codex' as const, nativeSessionId: id }, redact: nativePersistenceRedactor(['provider-token']) }) }
+      session: { harness: 'codex' as const, nativeSessionId: id, providerVersion: 'codex-cli 1.2.3' }, redact: nativePersistenceRedactor(['provider-token']) }) }
   expect(await reconcileKnownActivities(input)).toBe(true)
   expect(observations.get('blocked')).toMatchObject({ status: 'unavailable', consecutiveFailures: 1,
     lastError: expect.stringContaining('NATIVE_HISTORY_UNAVAILABLE'), failedAt: expect.any(String), lastSuccess: null })
+  expect(onObservation).toHaveBeenCalledWith('blocked')
   expect(JSON.stringify(observations.get('blocked'))).not.toContain('provider-token')
   expect(publish).toHaveBeenCalledWith('healthy', settled)
   await reconcileKnownActivities(input)

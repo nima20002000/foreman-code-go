@@ -46,31 +46,34 @@ function fixture() {
       codexPlugins: async () => [], codexMarketplaces: async () => [],
       claudePlugins: async () => ({ plugins: [], marketplaces: [] }),
     }, () => now)
-  return { fleet, principal, commands, status, probe, advance: () => { now += 1000 } }
+  return { fleet, principal, commands, status, probe, target: { hostRef: { kind: 'main', mainId },
+    applicationInstallationId: mainId, keyRevision: null, authorizationRevision: null }, advance: () => { now += 1000 } }
 }
 
-it('reports failed observations, retries ordinary reads and clears the failure after success', async () => {
+it.each(['fleet', 'target'] as const)('reports failed %s observations, retries ordinary reads and clears the failure after success', async kind => {
   const f = fixture()
-  await f.fleet.list(f.principal)
+  const read = (refresh = false) => kind === 'fleet' ? f.fleet.list(f.principal, 'http', refresh)
+    : f.fleet.readTarget(f.principal, 'http', { target: f.target, refresh })
+  await read()
   f.advance()
   f.probe.mockRejectedValue(Object.assign(new Error('secret transport details'), { code: 'DEVICE_TRANSPORT_ERROR' }))
-  const failed = await f.fleet.list(f.principal, 'http', true)
+  const failed = await read(true)
   expect(failed.computers[0]).toMatchObject({ status: null, observation: {
     status: 'unavailable', lastError: expect.stringContaining('DEVICE_TRANSPORT_ERROR'),
     failedAt: '2026-10-14T00:00:01.000Z', lastSuccess: '2026-10-14T00:00:00.000Z', consecutiveFailures: 1,
   } })
   expect(JSON.stringify(failed)).not.toContain('secret transport details')
-  const retried = await f.fleet.list(f.principal)
+  const retried = await read()
   expect(retried.computers[0]).toMatchObject({ observation: { consecutiveFailures: 2 } })
   expect(f.probe).toHaveBeenCalledTimes(3)
   f.probe.mockResolvedValue(f.status)
-  expect((await f.fleet.list(f.principal)).computers[0]).toMatchObject({ status: f.status, observation: {
+  expect((await read()).computers[0]).toMatchObject({ status: f.status, observation: {
     status: 'available', lastError: null, failedAt: null, consecutiveFailures: 0,
   } })
   await f.fleet.drain()
 })
 
-it('returns maintenance failure observations through authenticated MCP and denies an unauthorized caller', async () => {
+it.each(['fleet', 'target'] as const)('returns %s maintenance failure observations through authenticated MCP and denies an unauthorized caller', async kind => {
   const f = fixture()
   f.probe.mockRejectedValue(Object.assign(new Error('private transport data'), { code: 'DEVICE_TRANSPORT_ERROR' }))
   const access = { authenticate: async (token: string) => token === 'reader'
@@ -79,6 +82,7 @@ it('returns maintenance failure observations through authenticated MCP and denie
     readiness: { database: { ping: async () => {} }, checkpoints: { ping: async () => {} } },
     operator: { access, services: { commands: f.commands, computerMaintenance: f.fleet } as unknown as OperatorServices } })
   const address = await app.listen({ host: '127.0.0.1', port: 0 })
+  const argumentsForRead = kind === 'target' ? { target: f.target } : {}
   const clients: Client[] = []
   const connect = async (token: string) => {
     const client = new Client({ name: 'maintenance-reader', version: '1' })
@@ -90,16 +94,16 @@ it('returns maintenance failure observations through authenticated MCP and denie
   }
   try {
     const reader = await connect('reader')
-    const result = await reader.callTool({ name: 'computers_maintenance_status', arguments: {} })
+    const result = await reader.callTool({ name: 'computers_maintenance_status', arguments: argumentsForRead })
     expect(result.isError).not.toBe(true)
     expect(decodeMcpToolResult(result)).toMatchObject({ computers: [{ status: null,
       observation: { status: 'unavailable', consecutiveFailures: 1,
         lastError: expect.stringContaining('DEVICE_TRANSPORT_ERROR') } }] })
     const denied = await connect('denied')
-    expect((await denied.callTool({ name: 'computers_maintenance_status', arguments: {} })).isError).toBe(true)
+    expect((await denied.callTool({ name: 'computers_maintenance_status', arguments: argumentsForRead })).isError).toBe(true)
     expect(f.probe).toHaveBeenCalledOnce()
     f.probe.mockResolvedValue(f.status)
-    const recovered = await reader.callTool({ name: 'computers_maintenance_status', arguments: {} })
+    const recovered = await reader.callTool({ name: 'computers_maintenance_status', arguments: argumentsForRead })
     expect(decodeMcpToolResult(recovered)).toMatchObject({ computers: [{ status: f.status,
       observation: { status: 'available', lastError: null, consecutiveFailures: 0 } }] })
   } finally {
