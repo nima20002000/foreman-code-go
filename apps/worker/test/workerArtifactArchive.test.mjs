@@ -153,7 +153,7 @@ for (const partial of [false, true]) {
     await waitForDownload(async () => await f.attempts() === 2);
     assert.deepEqual(await outcome, { manifest: f.manifest });
     assert.equal(await readFile(join(f.base, 'aborted-1'), 'utf8'), 'aborted');
-    assert.deepEqual(await readFile(join(f.directory, 'src/cli.mjs')), f.bytes);
+    assert.deepEqual(await readFile(join(f.directory, f.manifest.files[0].path)), f.bytes);
   });
 }
 
