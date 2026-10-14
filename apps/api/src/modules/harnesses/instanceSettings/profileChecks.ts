@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
 import { RETIRED_OPENCODE_MESSAGE } from '@foreman-code/contracts'
 import type pg from 'pg'
 import type { DeviceSessionBinding } from '@foreman-code/contracts/device-connection'
 import type { DeviceRequestPriority } from '@foreman-code/contracts/device-application'
 import type { CanonicalMachineReference } from '@foreman-code/contracts/device-identity'
 import { assertDeviceHostInstallation } from '../../devices/hostAuthorization.js'
+import { deviceBackpressured } from '../../devices/deviceBusyError.js'
 import { harnessConnectionGeneration } from '../hostConnectionGeneration.js'
 import { HostHarnessProfileCheckRequestSchema, HostHarnessInstanceCheckInputSchema, HostHarnessProfileEvidenceSchema, type HostHarnessInstanceCheckInput, type HostHarnessOverride, type HostHarnessProfileEvidence } from '@foreman-code/contracts/harness-registry'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
@@ -150,8 +152,7 @@ export class HostHarnessInstanceProfileChecks {
       await assertDeviceHostInstallation(client, value.target.hostRef, value.target.applicationInstallationId)
     }
     try {
-      const result = await this.settings.withProfileConnection(client =>
-        this.qualifyProfile(client, input, checkId, authorize, signal, { source: 'system' }))
+      const result = await this.qualifyAutomatically(input, checkId, authorize, signal)
       if (result.proof.completedNativeQualification) await this.nativeRetention!.refresh(result.override, signal)
     } catch (error) {
       if (this.stopping.signal.aborted) throw error
@@ -243,8 +244,7 @@ export class HostHarnessInstanceProfileChecks {
         const bounded = AbortSignal.any([input.signal, AbortSignal.timeout(240_000)])
         const request = { commandId: checkId, instanceId: value.instanceId,
           expectedRevision: value.revision, target: value.target }
-        const result = await this.settings.withProfileConnection(client =>
-          this.qualifyProfile(client, request, checkId, input.authorize, bounded, { source: 'system' }))
+        const result = await this.qualifyAutomatically(request, checkId, input.authorize, bounded)
         if (result.proof.completedNativeQualification) await this.nativeRetention!.refresh(result.override, bounded)
         batch.pendingProfiles!.delete(profileKey(value))
       } catch (error) {
@@ -319,8 +319,7 @@ export class HostHarnessInstanceProfileChecks {
       }
       try {
         const bounded = AbortSignal.any([signal, AbortSignal.timeout(240_000)])
-        const result = await this.settings.withProfileConnection(client =>
-          this.qualifyProfile(client, input, checkId, authorize, bounded, { source: 'system' }))
+        const result = await this.qualifyAutomatically(input, checkId, authorize, bounded)
         if (result.proof.completedNativeQualification) await this.nativeRetention!.refresh(result.override, bounded)
         batch.pendingProfiles!.delete(profileKey(value))
       } catch (error) {
@@ -420,6 +419,19 @@ export class HostHarnessInstanceProfileChecks {
     if (!value.enabled) throw new DomainError('HARNESS_INSTANCE_DISABLED', 'Disabled host instances cannot be qualified.', 409)
     assertClaudeFullAccess(value.configuration)
     return value
+  }
+  private async qualifyAutomatically(input: HostHarnessInstanceCheckInput, checkId: string,
+    authorize: (client: pg.PoolClient) => Promise<void>, signal: AbortSignal) {
+    for (;;) {
+      signal.throwIfAborted()
+      try {
+        return await this.settings.withProfileConnection(client =>
+          this.qualifyProfile(client, input, checkId, authorize, signal, { source: 'system' }))
+      } catch (error) {
+        if (!deviceBackpressured(error)) throw error
+        await delay(250, undefined, { signal })
+      }
+    }
   }
   private async qualifyProfile(client: pg.PoolClient, input: HostHarnessInstanceCheckInput, checkId: string,
     authorize: (client: pg.PoolClient) => Promise<void>, signal: AbortSignal,
