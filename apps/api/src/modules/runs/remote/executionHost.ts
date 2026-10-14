@@ -225,7 +225,7 @@ export class RemoteExecutionHost {
     if (frame.method === 'receipt-continuation') throw new Error('Receipt continuations require the installed response owner.')
     if (frame.method === 'get-application-access') throw new Error('Application lease recovery requires the installed physical owner')
     if (frame.method === 'history') {
-      const result = await this.read(frame.intent.operationId, 'history', frame.correlationId) as {
+      const result = await this.read(frame.intent.operationId, 'history', frame.correlationId, frame.afterSequence) as {
         history: NativeHistory; context: ContextSnapshot | null;
         status: Awaited<ReturnType<RemoteOperationJournal['status']>>
       }
@@ -570,7 +570,8 @@ export class RemoteExecutionHost {
     await resident.manager.cancel(resident.session)
     await this.settle(resident, `execution:${resident.intent.executionId}`)
   }
-  async read(operationId: string, method: 'history' | 'pending' | 'capabilities' | 'inspectMcp', correlationId?: string) {
+  async read(operationId: string, method: 'history' | 'pending' | 'capabilities' | 'inspectMcp',
+    correlationId?: string, afterSequence?: number) {
     const resident = await this.resident(operationId, 'read')
     if (correlationId && correlationId !== `execution:${resident.intent.executionId}`) {
       await this.ports.journal.loadReviewTurn(operationId, correlationId)
@@ -598,7 +599,9 @@ export class RemoteExecutionHost {
         if (archived) history = archived
         else if (resident.settlementHistory) history = structuredClone(resident.settlementHistory)
         else {
-          history = await resident.manager.reconcile(resident.session, correlation)
+          history = afterSequence !== undefined && resident.manager.reconcileHistoryPage
+            ? await resident.manager.reconcileHistoryPage(resident.session, correlation, afterSequence)
+            : await resident.manager.reconcile(resident.session, correlation)
           context = resident.manager.contextSnapshot?.(resident.session) ?? null
         }
       }

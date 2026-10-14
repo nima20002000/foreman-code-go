@@ -1006,6 +1006,7 @@ export const ActivityKindSchema = z.enum([
   "ci_state_changed",
   "harness_session_started",
   "harness_output",
+  "native_events_skipped",
   "harness_session_finished",
   "result_recorded",
   "interaction_pending",

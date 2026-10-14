@@ -62,6 +62,8 @@ export const RUN_ACTIVITIES_PAGE_SQL = `select a.sequence::text,a.source,a.kind,
         and g.approval_native_ack_id=a.payload->>'acknowledgementId')
       then a.payload->>'acknowledgementId' end,
     'nativeEventSequence',a.payload->'nativeEventSequence',
+    'fromSequence',a.payload->'fromSequence','toSequence',a.payload->'toSequence',
+    'reason',case when a.kind='native_events_skipped' then a.payload->>'reason' end,
     'used',a.payload->'used','maximum',a.payload->'maximum')) as safe_payload,
   case when n.execution_id is null then null else jsonb_strip_nulls(jsonb_build_object(
     'type',left(n.record->>'type',48),
