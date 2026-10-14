@@ -342,6 +342,18 @@ it('reads every computer status concurrently when listing computers', async () =
   expect(listed.computers.map(value => value?.label)).toEqual(['Host 0', 'Host 1', 'Host 2'])
 })
 
+it('reuses fresh computer statuses across repeated computer listings', async () => {
+  const f = fixture()
+  vi.mocked(f.endpoint.request).mockImplementation(async (_target, input) => {
+    if (input.operation !== 'status') throw new Error('Unexpected request')
+    return { operation: 'status', ready: true, reasons: [], cpuCount: 8, memoryBytes: 16 * 2 ** 30, runs: [], slotsTotal: 2, slotsUsed: 0 }
+  })
+  const ci = f.create()
+  await ci.computers(caller, { workspaceId: 'workspace' })
+  expect((await ci.computers(caller, { workspaceId: 'workspace' })).computers).toMatchObject([{ label: 'Builder', ready: true }])
+  expect(vi.mocked(f.endpoint.request).mock.calls.filter(([, input]) => input.operation === 'status')).toHaveLength(1)
+})
+
 it('refreshes submitted CI in the background without status reads and stops on close', async () => {
   vi.useFakeTimers()
   const f = fixture()
