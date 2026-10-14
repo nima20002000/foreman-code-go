@@ -29,7 +29,8 @@ import { PostgresApprovalBudgetRepository } from '../../src/modules/interactions
 import { ApprovalExecutionCoordinator } from '../../src/modules/interactions/execution.js'
 import { InteractionService } from '../../src/modules/interactions/service.js'
 import { Wave25InteractionRepository } from '../../src/modules/interactions/wave25/repository.js'
-import { ExecutionScopedNativeSessionManagerResolver } from '../../src/modules/interactions/runtimePorts.js'
+import { ExecutionScopedNativeSessionManagerResolver, type NativeManagerResolutionContext } from '../../src/modules/interactions/runtimePorts.js'
+import type { RunOwnership } from '../../src/modules/runs/ownership.js'
 import { LangGraphWorkflowEngine } from '../../src/modules/runs/engine.js'
 import { PostgresRunRepository } from '../../src/modules/runs/postgres.js'
 import { continuationValidator } from '../../src/modules/runs/continuation.js'
@@ -57,7 +58,11 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
     admitPlacementExecutionLocked?: RepeatRepositoryServices['admitPlacementExecutionLocked'];
     preparePlacementExecution?: RepeatRepositoryServices['preparePlacementExecution'];
     /** Exact physical closure port; omitted unless a fixture supplies native lifetimes. */
-    recoverNativeProcesses?: ConstructorParameters<typeof ApprovalExecutionCoordinator>[11] } = {}) {
+    recoverNativeProcesses?: ConstructorParameters<typeof ApprovalExecutionCoordinator>[11];
+    managerFactory?: (context: NativeManagerResolutionContext,
+      owner: () => RunOwnership | undefined) => NativeHarnessSessionManager;
+    prepareManagerContext?: ConstructorParameters<typeof ApprovalExecutionCoordinator>[13];
+    mcpInspector?: (manager: NativeHarnessSessionManager) => NativeMcpInspector } = {}) {
   const db = options.database ?? await agent3Database(options.databaseUrl)
   const engines: LangGraphWorkflowEngine[] = []
   try {
@@ -114,20 +119,22 @@ export async function checkpointRuntimeFixture(branches: 1 | 2 = 1, pendingPerEx
             ? { admitPlacementExecutionLocked: options.admitPlacementExecutionLocked } : {}) } },
         options.nativeCommitted)
       const repository = new Wave25InteractionRepository(db.pool, new ReviewNativeProofServices(reviewCapture.verify)), budgets = new PostgresApprovalBudgetRepository(db.pool)
-      const managers = new ExecutionScopedNativeSessionManagerResolver(() => provider.connection())
+      const managers = new ExecutionScopedNativeSessionManagerResolver((context, owner) =>
+        options.managerFactory ? options.managerFactory(context, owner) : provider.connection())
       const credentials = new Wave25WorkerCredentialService(db.pool, access, options.credentialTtlMs)
       // This helper's external provider is deterministic. Its configuration
       // inspector is the same explicit synthetic boundary as its transport.
-      const launchCredentials = providerLaunchCredentials(runs, locations, managers, credentials, () => ({
+      const launchCredentials = providerLaunchCredentials(runs, locations, managers, credentials, options.mcpInspector ?? (() => ({
         async inspect(input) { return { harness: input.harness, providerVersion: '0.154.0',
           runnerId: input.runnerId, workingDirectory: input.workingDirectory, inspectedAt: new Date().toISOString(),
           entry: { name: input.serverName, transport: 'streamable-http', endpoint: providerAppEndpoint,
             enabled: true, credentialEnvironmentVariable: APP_MCP_TOKEN_ENVIRONMENT_VARIABLE, status: 'connected' } } },
-      }), db.pool)
+      })), db.pool)
       const native = new ApprovalExecutionCoordinator(runs, repository, budgets, managers, 600000,
         launchCredentials, continuationValidator(db.pool, locations),
         new PostgresWorkflowClosureStore(db.pool), new PostgresRepeatReviewerBindings(db.pool),
-        workflowCapture.capture, reviewCapture.capture, options.recoverNativeProcesses)
+        workflowCapture.capture, reviewCapture.capture, options.recoverNativeProcesses,
+        undefined, options.prepareManagerContext)
       const engine = new LangGraphWorkflowEngine(runs, workflows, native, checkpointer, db.directory,
         locations, launchCredentials, repository, options.onRunTerminal,
         { workerParallelism: options.workerParallelism ?? 2 })
