@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
 import { persistentFixtureRoot } from './fixtureStorage.mjs';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { setTimeout as wait } from 'node:timers/promises';
 import { WorkerUpdater, downloadWorkerArtifact, fetchGitHubAsset } from '../src/update.mjs';
@@ -161,7 +160,7 @@ test('update supervision allows bounded capacity drain and smoke before rolling 
 });
 
 test('downloads a release from its GitHub release asset and still verifies every byte against the manifest', async t => {
-  const base = await mkdtemp(join(tmpdir(), 'worker-github-'));
+  const base = await mkdtemp(join(persistentFixtureRoot, 'worker-github-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const built = await artifact(base, '1.2.0');
   const archive = join(base, 'asset.tar.gz');
@@ -175,7 +174,11 @@ test('downloads a release from its GitHub release asset and still verifies every
   const request = async () => { throw new Error('No chunk may come through Main.'); };
   const release = { ...built.release, github };
   const installed = join(base, 'installed');
-  const manifest = await downloadWorkerArtifact({ release, request, directory: installed, facts, fetchAsset });
+  let completion;
+  const manifest = await downloadWorkerArtifact({ release, request, directory: installed, facts, fetchAsset,
+    onDownloadComplete: async details => { completion = details; },
+  });
+  assert.deepEqual(completion, { source: 'github' });
   assert.deepEqual(requested, [{ github, asset: `${built.release.manifestSha256}.tar.gz` }]);
   assert.equal(manifest.version, '1.2.0');
   assert.equal(spawnSync(process.execPath, [join(installed, 'src/cli.mjs')], { encoding: 'utf8' }).stdout, '1.2.0\n');
@@ -184,6 +187,82 @@ test('downloads a release from its GitHub release asset and still verifies every
   spawnSync('tar', ['-czf', archive, '-C', built.directory, '.']);
   await assert.rejects(downloadWorkerArtifact({ release, request, directory: join(base, 'tampered'), facts, fetchAsset }),
     { code: 'artifact_checksum_mismatch' });
+});
+
+test('a stalled GitHub asset falls back to Main chunks and schedules the verified update', async t => {
+  const f = await fixture(t);
+  f.incoming.release.github = { repository: 'example/product', tag: `worker-${'a'.repeat(40)}` };
+  const binaries = join(f.base, 'bin');
+  await mkdir(binaries);
+  await writeFile(join(binaries, 'gh'),
+    `#!/bin/sh\nexec node -e 'process.stderr.write("fixture GitHub stalled\\n"); setInterval(() => {}, 1000);'\n`,
+    { mode: 0o700 });
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${binaries}:${originalPath}`;
+  t.after(() => { process.env.PATH = originalPath; });
+  const scheduleTimeout = globalThis.setTimeout;
+  // Exercise the real no-bytes detection without waiting a minute per attempt.
+  t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) =>
+    scheduleTimeout(callback, delay === 60_000 ? 100 : delay, ...args));
+  const updater = await new WorkerUpdater({ ...f.options, downloadTimeoutMs: 2000 }).initialize();
+  t.after(() => updater.close());
+
+  assert.equal(await updater.start(), 'Worker 1.1.0 restart is scheduled.');
+  assert.ok(f.requests.some(payload => payload.operation === 'chunk'));
+  const record = await readUpdateRecord(f.stateDirectory);
+  const manifestBytes = await readFile(join(record.restart.directory, 'manifest.json'));
+  assert.equal(hash(manifestBytes), f.incoming.release.manifestSha256);
+  assert.deepEqual(await readFile(join(record.restart.directory, 'src/cli.mjs')),
+    await readFile(join(f.incoming.directory, 'src/cli.mjs')));
+  assert.equal(record.status.state, 'restarting');
+  assert.equal(record.downloadSource, 'main');
+  assert.match(record.githubDownloadError, /stall|no bytes/i);
+});
+
+test('Main fallback still rejects a file that does not match its announced checksum', async t => {
+  const f = await fixture(t);
+  const request = f.options.connection().captureRequest().request;
+  const release = { ...f.incoming.release,
+    github: { repository: 'example/product', tag: `worker-${'a'.repeat(40)}` } };
+  let completed = false;
+  await assert.rejects(downloadWorkerArtifact({ release, facts, directory: join(f.base, 'corrupt-fallback'),
+    fetchAsset: async () => { throw new WorkerError('worker_update_github_unavailable', 'GitHub unavailable'); },
+    request: async payload => {
+      const response = await request(payload);
+      if (payload.path === 'src/cli.mjs') response.bytes.fill(0);
+      return response;
+    },
+    onDownloadComplete: async () => { completed = true; },
+  }), { code: 'artifact_checksum_mismatch' });
+  assert.equal(completed, false);
+});
+
+test('Main fallback uses the original download deadline after GitHub fails', async t => {
+  const f = await fixture(t);
+  const release = { ...f.incoming.release,
+    github: { repository: 'example/product', tag: `worker-${'a'.repeat(40)}` } };
+  let mainSignal;
+  const scheduleTimeout = globalThis.setTimeout;
+  let deadlineTimers = 0;
+  t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
+    if (delay === 1000) deadlineTimers++;
+    return scheduleTimeout(callback, delay, ...args);
+  });
+  await assert.rejects(downloadWorkerArtifact({ release, facts, directory: join(f.base, 'bounded-fallback'),
+    timeoutMs: 1000,
+    fetchAsset: async () => {
+      await wait(20);
+      throw new WorkerError('worker_update_github_unavailable', 'GitHub unavailable');
+    },
+    request: (_payload, { signal }) => {
+      mainSignal = signal;
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    },
+  }), { code: 'worker_update_download_timeout' });
+  assert.equal(mainSignal.aborted, true);
+  assert.equal(deadlineTimers, 1);
 });
 
 test('authenticated-ready check detects Main version mismatch, installs and reconnects at the matching version', async t => {
