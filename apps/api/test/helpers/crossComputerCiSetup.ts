@@ -52,6 +52,12 @@ export async function callCiTool(client: Pick<Client, 'callTool'>, name: string,
       await delay(10)
       continue
     }
+    // A loaded Main may time out a read; the error is marked retryable and reads are side-effect free.
+    if (code === 'DATABASE_READ_TIMEOUT' && /_(get|list|read)(_v\d+)?$/.test(name) && Date.now() < pendingDeadline) {
+      await delay(1_000)
+      attempt--
+      continue
+    }
     // A reconnected Worker rechecks its Agent profiles first; Start retries the same command meanwhile.
     if (code === 'HARNESS_PROFILE_CHECK_PENDING' && name === 'run_start' && Date.now() < pendingDeadline) {
       await delay(100)
