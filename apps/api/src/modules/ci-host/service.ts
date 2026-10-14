@@ -374,7 +374,12 @@ export class HostCiService {
       : [{ part: null, partition: null, files: selection.files ?? [] }]
     let smokeShards: number | undefined
     if (smokeTarget && input.suite === 'integration') {
-      const status = await this.planningEndpoint.request(smokeTarget, { operation: 'status' })
+      const status = await this.planningEndpoint.request(smokeTarget, { operation: 'status' }).catch(error => {
+        if (error instanceof DomainError) throw error
+        // A Worker that is still reconnecting after a restart is temporarily unavailable, not an API failure.
+        throw new DomainError('CI_SMOKE_COMPUTER_UNAVAILABLE', 'The smoke computer is not reachable yet. Retry shortly.', 503,
+          { retryable: true })
+      })
       if (status.operation !== 'status' || !status.ready) {
         throw new DomainError('CI_SMOKE_COMPUTER_UNAVAILABLE', 'The smoke computer is not ready.', 409)
       }

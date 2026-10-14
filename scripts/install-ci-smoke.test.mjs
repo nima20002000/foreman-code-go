@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicketPolls = 0, slowDiscoveries = 0 } = {}) {
+async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicketPolls = 0, slowDiscoveries = 0, unreachableSmokes = 0 } = {}) {
   const computers = [
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'first' }, ready: true },
     { hostRef: { kind: 'device', mainId: 'main', deviceId: 'second' }, ready: true },
@@ -57,6 +57,13 @@ async function fixture(t, failure, token, { firstAdmissionDelayMs = 0, slowTicke
       let body = ''
       for await (const chunk of request) body += chunk
       const input = JSON.parse(body)
+      if (input.smokeComputer && unreachableSmokes > 0) {
+        unreachableSmokes--
+        response.statusCode = 503
+        response.end(JSON.stringify({ error: { code: 'CI_SMOKE_COMPUTER_UNAVAILABLE',
+          message: 'The smoke computer is not reachable yet. Retry shortly.', details: { retryable: true } } }))
+        return
+      }
       admissions.push(input)
       if (failure === 'lock' && admissions.length === 2) return
       if (admissions.length === 1) await delay(firstAdmissionDelayMs)
@@ -162,6 +169,13 @@ test('a slow ticket poll is retried until the smoke deadline instead of failing 
 test('a slow computer discovery is retried until the smoke deadline instead of failing the smoke', async t => {
   const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
   const f = await fixture(t, undefined, undefined, { slowDiscoveries: 1 })
+  await runInstallCiSmoke({ ...options, origin: f.origin })
+  assert.equal(f.admissions.filter(input => input.smokeComputer).length, 4)
+})
+
+test('a smoke computer that is still reconnecting is admitted again within the smoke deadline', async t => {
+  const { runInstallCiSmoke } = await import('./install-ci-smoke.mjs')
+  const f = await fixture(t, undefined, undefined, { unreachableSmokes: 1 })
   await runInstallCiSmoke({ ...options, origin: f.origin })
   assert.equal(f.admissions.filter(input => input.smokeComputer).length, 4)
 })
