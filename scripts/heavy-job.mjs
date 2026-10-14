@@ -204,7 +204,7 @@ if (process.argv[2] === '__hold') {
 } else {
 function inputHash(kind) {
   const list = git('ls-files', '-z', '--cached', '--others', '--exclude-standard')
-  if (list.status !== 0) return null
+  if (list.status !== 0) throw new Error('Build cache source inventory could not be read.')
   const hash = createHash('sha256').update(process.version).update(process.platform).update(process.arch).update(common).update(root)
   const scope = kind === 'contracts' ? 'packages/contracts' : `apps/${kind}`
   const tools = kind === 'web' ? ['typescript', 'vite', '@vitejs/plugin-react', '@tailwindcss/vite'] : ['typescript']
@@ -213,13 +213,13 @@ function inputHash(kind) {
       const path = require.resolve(name, { paths: [join(root, scope)] })
       hash.update(name).update(path).update(readFileSync(path))
     }
-  } catch { return null }
+  } catch { throw new Error('Build cache hashing tools are unavailable.') }
   for (const relative of list.stdout.split('\0').filter(Boolean).sort()) {
     const path = join(root, relative)
     try {
       if (!statSync(path).isFile()) continue
       hash.update(relative).update(readFileSync(path))
-    } catch { return null }
+    } catch { throw new Error('Build cache source files could not be read.') }
   }
   return hash.digest('hex')
 }
@@ -238,25 +238,77 @@ function outputHash(kind) {
       else throw new Error('Unexpected build output')
     }
   }
-  try { visit(base); return count ? hash.digest('hex') : null } catch { return null }
+  try {
+    visit(base)
+    return count ? hash.digest('hex') : null
+  } catch { throw new Error('Build cache artifacts could not be hashed.') }
+}
+function recordBuildCache(kind, fresh, lastError) {
+  const path = join(root, '.logs', `heavy-cache-${kind}.json`)
+  let previous = null
+  try { previous = JSON.parse(readFileSync(path, 'utf8')) }
+  catch (error) {
+    if (error.code !== 'ENOENT') console.warn('Build cache diagnostic history is unavailable.')
+  }
+  const count = value => Number.isSafeInteger(value) && value >= 0 ? value : 0
+  let cacheStatus = 'miss'
+  if (fresh) cacheStatus = 'hit'
+  if (lastError) cacheStatus = 'invalid'
+  const status = { status: cacheStatus, lastError,
+    missCount: count(previous?.missCount) + Number(!fresh),
+    rebuildCount: count(previous?.rebuildCount) + Number(!fresh) }
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, JSON.stringify(status))
+  if (lastError) console.warn('Build cache unavailable; rebuilding', JSON.stringify(status))
+  else console.log('Build cache status', JSON.stringify(status))
+}
+function readBuildStamp(path) {
+  try {
+    const record = JSON.parse(readFileSync(path, 'utf8'))
+    if (!/^[a-f0-9]{64}$/.test(record?.signature) || !/^[a-f0-9]{64}$/.test(record?.output)) {
+      throw new SyntaxError('Invalid build cache metadata')
+    }
+    return record
+  } catch (error) {
+    if (error.code === 'ENOENT') return null
+    throw new Error(error instanceof SyntaxError ? 'Build cache metadata is invalid.' : 'Build cache metadata could not be read.')
+  }
 }
 function freshBuild(kind) {
   // The API build also probes installed harness binaries and environment.
   // Those can change without any source or output change, so always run it.
   if (kind === 'api' || process.env.FOREMAN_CODE_VERIFICATION_ROOT === root) return { fresh: false, stamp: null }
   if (!outputs[kind]) return { fresh: false, stamp: null }
-  const signature = inputHash(kind)
   const stamp = join(root, '.logs', `heavy-build-${kind}.json`)
-  const recorded = readJson(stamp)
-  return { fresh: Boolean(signature && recorded?.signature === signature && recorded?.output === outputHash(kind)), stamp, signature }
+  let signature = null
+  let fresh = false
+  let lastError = null
+  try {
+    signature = inputHash(kind)
+    const recorded = readBuildStamp(stamp)
+    if (recorded?.signature === signature) {
+      const output = outputHash(kind)
+      fresh = recorded.output === output
+      if (!fresh) lastError = output ? 'Build cache artifacts have changed.' : 'Build cache artifacts are missing.'
+    }
+  } catch (error) { lastError = error.message }
+  recordBuildCache(kind, fresh, lastError)
+  return { fresh, stamp, signature }
 }
 function stampBuild(kind, freshness) {
   if (kind === 'api') return
-  if (!freshness?.signature || freshness.signature !== inputHash(kind)) return
-  const output = outputHash(kind)
-  if (!output) return
-  mkdirSync(dirname(freshness.stamp), { recursive: true })
-  writeFileSync(freshness.stamp, JSON.stringify({ signature: freshness.signature, output }))
+  if (!freshness?.signature) return
+  try {
+    if (freshness.signature !== inputHash(kind)) return
+    const output = outputHash(kind)
+    if (!output) throw new Error('Build cache artifacts are missing after the build.')
+    mkdirSync(dirname(freshness.stamp), { recursive: true })
+    writeFileSync(freshness.stamp, JSON.stringify({ signature: freshness.signature, output }))
+  } catch (error) {
+    const reason = error.message.startsWith('Build cache ')
+      ? error.message : 'Build cache metadata could not be saved.'
+    recordBuildCache(kind, true, reason)
+  }
 }
 async function waitGroup(pgid, graceMs = 5000) {
   const start = Date.now()

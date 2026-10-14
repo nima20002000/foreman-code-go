@@ -117,10 +117,15 @@ export class HarnessCatalogService {
     }
     try {
       const capability = (await this.currentStatus(configuration)).qualification
-      return { harness, defaults: configuration, defaultsRevision: revision, capability, discoveryError: null, ...support }
+      const observation = this.statuses.observation(canonicalJson(withAdvancedDefaults(configuration)))
+      const discoveryError = observation.stale ? { code: 'HARNESS_STATUS_REFRESHING',
+        message: `Readiness was last checked at ${observation.checkedAt}. A fresh check is still running.` } : null
+      return { harness, defaults: configuration, defaultsRevision: revision, capability, discoveryError,
+        observation, ...support }
     } catch (error) {
       return {
         harness, defaults: configuration, defaultsRevision: revision, capability: null, ...support,
+        observation: this.statuses.observation(canonicalJson(withAdvancedDefaults(configuration))),
         discoveryError: { code: error instanceof DomainError ? error.code : 'HARNESS_DISCOVERY_UNAVAILABLE', message: errorMessage(error, 'Harness discovery failed.') },
       }
     }

@@ -24,6 +24,44 @@ test('setup cache persists across invocation roots and respects an explicit cach
   assert.equal(testFixtureCacheRoot({ FOREMAN_CODE_TEST_CACHE_ROOT: 'selected-cache' }), 'selected-cache')
 })
 
+test('an incomplete release donor warns and reports why the release was rebuilt', async t => {
+  const root = await fixtureCache(t)
+  const repository = join(root, 'repository')
+  await mkdir(join(repository, 'packages/contracts/src'), { recursive: true })
+  await writeFile(join(repository, 'packages/contracts/src/used.ts'), 'export const value = 1\n')
+  const git = async args => (await execute('git', args, { cwd: repository,
+    env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' } })).stdout.trim()
+  await git(['init', '--quiet'])
+  const commit = async () => {
+    await git(['add', '.'])
+    await git(['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+      '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'Fixture input'])
+    return git(['rev-parse', 'HEAD'])
+  }
+  const build = async directory => {
+    await mkdir(join(directory, 'release'))
+    await writeFile(join(directory, 'release/manifest.json'), JSON.stringify({ sourceSnapshot: { files: [] } }))
+  }
+  const first = await cachedWorkerRelease(join(root, 'cache'), repository, await commit(), ['target'], build)
+  await writeFile(join(first, 'release/manifest.json'), '{')
+  await writeFile(join(repository, 'packages/contracts/src/used.ts'), 'export const value = 2\n')
+  const reports = []
+  const warnings = []
+  const original = console.warn
+  console.warn = (...args) => warnings.push(args)
+  try {
+    await cachedWorkerRelease(join(root, 'cache'), repository, await commit(), ['target'], build,
+      { onCacheStatus: status => reports.push(status) })
+  } finally {
+    console.warn = original
+  }
+  assert.equal(reports.at(-1)?.status, 'invalid')
+  assert.equal(reports.at(-1)?.lastError, 'Release donor metadata is invalid or incomplete.')
+  assert.equal(reports.at(-1)?.rebuildCount, 1)
+  assert.equal(reports.at(-1)?.missCount, 1)
+  assert.equal(warnings.length, 1)
+})
+
 test('Worker output discovers API inputs without registration and rebuilds when their content changes', async t => {
   const root = await fixtureCache(t)
   const repository = join(root, 'repository')

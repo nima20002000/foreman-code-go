@@ -7,9 +7,10 @@ import { PreparedCiRuntimeSchema, type PreparedCiRuntime } from '@foreman-code/c
 import { anchored, openPrivateRoot } from '../sources/privateFilesystem.js'
 import { readProtectedRuntimeFile } from './installedRuntimeConfiguration.js'
 import { fingerprintQualificationPath } from './qualification.js'
+import { componentLogger } from '../diagnostics/logger.js'
 
 const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/u)
-const ImageSchema = PreparedCiRuntimeSchema.omit({ commit: true, qualificationSource: true, reusedImage: true })
+const ImageSchema = PreparedCiRuntimeSchema.omit({ commit: true, qualificationSource: true, reusedImage: true, cache: true })
 type CachedCiRuntimeImage = z.infer<typeof ImageSchema>
 const CacheSchema = z.object({
   schemaVersion: z.literal(1),
@@ -40,29 +41,40 @@ export async function readCiRuntimeCache(input: {
   installer: string
   inputDigest: string
   imageExists(imageId: string): Promise<boolean>
+  onInvalid?: (reason: string) => void
 }): Promise<CachedCiRuntimeImage | null> {
+  const invalid = (reason: string) => {
+    componentLogger('jobs').warn({ lastError: reason, status: 'invalid', missCount: 1,
+      rebuildCount: Number(Boolean(input.onInvalid)) }, 'Runtime cache entry is unusable')
+    input.onInvalid?.(reason)
+    return null
+  }
   const path = cachePath(input.installer, input.inputDigest)
   if (!await pathExists(path)) return null
   const bytes = await readProtectedRuntimeFile({ path, ownerUid: process.getuid!() })
   let value: unknown
   try { value = JSON.parse(bytes.toString('utf8')) }
   catch (error) {
-    if (error instanceof SyntaxError) return null
+    if (error instanceof SyntaxError) return invalid('Runtime cache JSON is invalid.')
     throw error
   }
   const cached = CacheSchema.safeParse(value)
-  if (!cached.success || cached.data.inputDigest !== input.inputDigest) return null
+  if (!cached.success || cached.data.inputDigest !== input.inputDigest) return invalid('Runtime cache metadata is invalid.')
   const { image: prepared, seedReceiptDigest, contextReceiptDigest } = cached.data
-  if (!ownsArtifacts(input.installer, prepared)) return null
-  if (!await pathExists(prepared.seedReceiptPath) || !await pathExists(prepared.contextReceiptPath)) return null
-  if (await receiptDigest(prepared.seedReceiptPath) !== seedReceiptDigest
-    || await receiptDigest(prepared.contextReceiptPath) !== contextReceiptDigest) return null
-  if (prepared.unitCodex) {
-    if (!await pathExists(prepared.unitCodex.sourceExecutable)) return null
-    const binary = await fingerprintQualificationPath(prepared.unitCodex.sourceExecutable, true)
-    if (binary.sha256 !== prepared.unitCodex.binarySha256) return null
+  if (!ownsArtifacts(input.installer, prepared)) return invalid('Runtime cache artifacts belong to another installation.')
+  if (!await pathExists(prepared.seedReceiptPath) || !await pathExists(prepared.contextReceiptPath)) {
+    return invalid('Runtime cache receipts are missing.')
   }
-  if (!await input.imageExists(prepared.imageId)) return null
+  if (await receiptDigest(prepared.seedReceiptPath) !== seedReceiptDigest
+    || await receiptDigest(prepared.contextReceiptPath) !== contextReceiptDigest) {
+    return invalid('Runtime cache receipts have changed.')
+  }
+  if (prepared.unitCodex) {
+    if (!await pathExists(prepared.unitCodex.sourceExecutable)) return invalid('Runtime cache executable is missing.')
+    const binary = await fingerprintQualificationPath(prepared.unitCodex.sourceExecutable, true)
+    if (binary.sha256 !== prepared.unitCodex.binarySha256) return invalid('Runtime cache executable has changed.')
+  }
+  if (!await input.imageExists(prepared.imageId)) return invalid('Runtime cache image is missing.')
   return prepared
 }
 

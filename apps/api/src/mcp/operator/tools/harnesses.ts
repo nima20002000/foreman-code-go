@@ -69,6 +69,7 @@ export const harnessTools = [
     requires: [['harnesses:read', 'global']],
     description: 'List observed local harness versions, dynamic model catalogs, contract compatibility, '
       + 'saved defaults and application interactionSupport limits. Discovery errors identify unmet contracts. '
+      + 'Observation reports the last successful checkedAt, stale/refreshing state, lastError and refresh counters. '
       + 'Only configured presets are listed; unavailable presets keep their harness identity and include a reason. '
       + 'An absent preset does not change existing saved Agents. Use agent_get to read their saved configuration. '
       + 'Codex supports generic questions, MCP approvals, and schema-validated data-entry forms. '
@@ -84,6 +85,7 @@ export const harnessTools = [
     requires: [['harnesses:read', 'global']],
     description: 'Read the selected harness observed version, dynamic capabilities, saved defaults '
       + 'and application interactionSupport limits. Compatible versions are accepted by contract behavior; '
+      + 'Observation reports the last successful checkedAt, stale/refreshing state, lastError and refresh counters. '
       + 'authentication and host policy still apply. '
       + 'A missing Claude preset returns HARNESS_PROFILE_REQUIRED with setup instructions; '
       + 'existing Agents retain their saved harness. '

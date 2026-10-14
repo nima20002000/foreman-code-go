@@ -1,3 +1,5 @@
+import { logger } from '../diagnostics/logger.js'
+
 interface Entry<T> {
   expiresAt: number
   pending: boolean
@@ -8,6 +10,11 @@ interface Entry<T> {
   controller: AbortController
   readers: number
   background: boolean
+  checkedAt: string | null
+  refreshCount: number
+  failureCount: number
+  staleReadCount: number
+  lastError: string | null
 }
 interface ReadOptions {
   signal?: AbortSignal | undefined
@@ -27,6 +34,7 @@ export class QualificationCache<T> {
     if (this.closing) return Promise.reject(new Error('Native checks are shutting down.'))
     if (options.signal?.aborted) return Promise.reject(options.signal.reason)
     let entry = this.values.get(key)
+    const previous = entry
     let stale: Promise<T> | undefined
     if (entry && !entry.pending && (options.refresh || entry.expiresAt <= this.now())) {
       if (!options.refresh && options.allowStale !== false && this.staleWhileRevalidate && entry.fulfilled) {
@@ -49,9 +57,16 @@ export class QualificationCache<T> {
           return load(controller.signal)
         }),
         stale, controller, readers: 0, background: Boolean(stale),
+        checkedAt: previous?.checkedAt ?? null,
+        refreshCount: (previous?.refreshCount ?? 0) + Number(Boolean(previous)),
+        failureCount: previous?.failureCount ?? 0,
+        staleReadCount: previous?.staleReadCount ?? 0,
+        lastError: previous?.lastError ?? null,
       }
       this.values.set(key, entry)
       const loaded = entry
+      if (stale) logger.warn({ component: 'harness', checkedAt: loaded.checkedAt,
+        status: 'refreshing', refreshCount: loaded.refreshCount }, 'Native readiness is stale; refresh pending')
       const settle = (ttl: number, fulfilled: boolean) => {
         loaded.pending = false
         loaded.fulfilled = fulfilled
@@ -59,11 +74,22 @@ export class QualificationCache<T> {
         loaded.expiresAt = this.now() + ttl
         if (loaded.invalidated && this.values.get(key) === loaded) this.values.delete(key)
       }
-      void loaded.value.then(() => settle(this.ttlMs, true), () => settle(Math.min(this.ttlMs, 15_000), false))
+      void loaded.value.then(() => {
+        loaded.checkedAt = new Date(this.now()).toISOString()
+        loaded.lastError = null
+        settle(this.ttlMs, true)
+      }, () => {
+        loaded.failureCount++
+        loaded.lastError = 'The native readiness check could not complete.'
+        if (previous) logger.warn({ component: 'harness', failureCount: loaded.failureCount,
+          refreshCount: loaded.refreshCount, lastError: loaded.lastError }, 'Native readiness refresh failed')
+        settle(Math.min(this.ttlMs, 15_000), false)
+      })
     }
     const selected = entry
     if (options.refresh || options.allowStale === false) selected.background = false
     if (!options.refresh && options.allowStale !== false && selected.pending && selected.stale) {
+      selected.staleReadCount++
       return selected.stale.then((value) => structuredClone(value))
     }
     return this.read(key, selected, options.signal).then(
@@ -73,6 +99,18 @@ export class QualificationCache<T> {
         throw error
       },
     )
+  }
+  observation(key: string) {
+    const entry = this.values.get(key)
+    return {
+      checkedAt: entry?.checkedAt ?? null,
+      stale: Boolean(entry?.pending && entry.stale),
+      refreshing: entry?.pending ?? false,
+      refreshCount: entry?.refreshCount ?? 0,
+      failureCount: entry?.failureCount ?? 0,
+      staleReadCount: entry?.staleReadCount ?? 0,
+      lastError: entry?.lastError ?? null,
+    }
   }
   private read(key: string, entry: Entry<T>, signal?: AbortSignal): Promise<T> {
     entry.readers++
