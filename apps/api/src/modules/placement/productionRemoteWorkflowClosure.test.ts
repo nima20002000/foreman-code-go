@@ -2,7 +2,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import type { HarnessExecution, NativeSessionReference } from '@foreman-code/contracts'
 import type { RemoteOperationReceipt } from '@foreman-code/contracts/remote-execution'
-import { remoteEntryClosureDigest } from '@foreman-code/contracts/remote-execution-entry-closure-node'
+import { remoteEntryClosureDigest, remoteNonEntryClosureDigest } from '@foreman-code/contracts/remote-execution-entry-closure-node'
 import { ExclusiveGraphConnection } from '../run-graph/connection.js'
 import type { RunOwnership } from '../runs/ownership.js'
 import { DomainError } from '../errors.js'
@@ -83,7 +83,8 @@ function fixture() {
     runId: 'run', assertOwned() {}, oneShotConnection: () => connection,
     readOneShotFence: async () => ({ ownerId: 'owner', fence: '1' }),
   } as unknown as RunOwnership
-  const request = vi.fn(async () => ({ payload: { status: 'known', receipt } }))
+  const request = vi.fn<(payload: unknown, options?: { signal?: AbortSignal }) => Promise<{ payload: unknown }>>(
+    async () => ({ payload: { status: 'known', receipt } }))
   ports.persist.mockImplementation(async (_sql, _owner, evidence) => { state.stored = evidence.receipt })
   const composition = createProductionRemoteWorkflow({
     pool: { query } as unknown as pg.Pool,
@@ -107,6 +108,38 @@ it('persists proven cold closure when Main crashed before binding the native ses
     expect(f.state.stored).toEqual(f.receipt)
     expect(f.state.session).toBeNull()
     expect(f.request).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ method: 'status' }), expect.any(Object))
+  } finally { await f.close() }
+})
+
+it('stops and settles an accepted remote preparation that never entered native execution', async () => {
+  const f = fixture()
+  delete f.receipt.native
+  delete f.receipt.terminal
+  f.receipt.phase = 'received'
+  f.receipt.entryAttempted = false
+  f.receipt.stopFence = false
+  const accepted = structuredClone(f.receipt)
+  f.request.mockImplementation(async (...args: unknown[]) => {
+    const frame = args[0] as { method: string; command?: unknown }
+    if (frame.method === 'control') {
+      f.receipt.phase = 'confirmed_terminal'
+      f.receipt.stopFence = true
+      f.receipt.sequence++
+      f.receipt.terminal = { kind: 'not_started', closureEvidenceDigest: remoteNonEntryClosureDigest(f.receipt.intent) }
+    }
+    return { payload: { status: 'known', receipt: frame.method === 'status' ? accepted : f.receipt } }
+  })
+  try {
+    await expect(f.composition.confirmClosedExecution('execution', new AbortController().signal, f.owner))
+      .resolves.toBe(true)
+    expect(f.request.mock.calls.map(call => (call[0] as unknown as { method: string }).method))
+      .toEqual(['status', 'control'])
+    expect(f.request.mock.calls[1]![0]).toMatchObject({ command: {
+      operationId: f.receipt.intent.operationId, attemptId: f.receipt.intent.attemptId,
+      executionId: f.receipt.intent.executionId, owner: f.receipt.intent.owner, action: { kind: 'stop' },
+    } })
+    expect(f.state.stored).toEqual(f.receipt)
+    expect(ports.prefetch).not.toHaveBeenCalled()
   } finally { await f.close() }
 })
 
