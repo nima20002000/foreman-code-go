@@ -7,6 +7,29 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.0.98] - 2026-10-14
+
+### Prototype simplification
+- Settings and workflow edits use last-write-wins with optional revisions and generated command IDs; removed location, presentation and geometry baselines.
+- One `ci` action for CI; credentials that could start jobs get it automatically. Default Codex workflow approval policy is `never`; tracked source is captured without path approvals.
+- MCP inputs strip unknown fields; Operator credentials no longer expire by default.
+
+### CI speed and reliability
+- `ci_run` returns without waiting for unrelated dispatch or cleanup; preparation time is logged per phase.
+- CI mirror publishing keeps source alternates out of the mirror clone and reads source commits only in their own clone.
+- Cloud setup failures requeue once on another slot; Workers that reconnect wake enrollment and dispatch.
+- Orphan CI compose networks and resources are reclaimed; cleanup tolerates resources another slot already removed.
+- Releases accept validated reruns of failed gate parts (`--rerun`), including reruns split across computers.
+- Integration shards reserve 1.5 GiB each (measured), so build computers no longer swap or refuse source work under gate load.
+- The API no longer spawns a lock process per retained CI run on every status poll, and listing CI computers no longer waits for cloud recovery sweeps: gate admission drops from about 100 s to under 10 s.
+- CI admission no longer fails for pushed commits that are missing from Main's shallow clone; CircleCI jobs without artifacts finish collection.
+
+### Product fixes
+- The web app reconnects automatically while the API restarts and keeps domain errors inline.
+- Source reservations admit one preparation on an idle low-memory host.
+- Workflow source closure backs off instead of retrying hundreds of times a minute.
+- Large workspace and graph reads are truncated newest-first.
+
 ## [0.0.97] - 2026-10-13
 
 ### Fixes from the connection audit
