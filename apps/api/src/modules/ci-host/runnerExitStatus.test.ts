@@ -23,6 +23,8 @@ async function fixture(options: {
     exitCode: null, message: null, cleaned: false, cancellationRequested: options.canceled ?? false,
   }))
   await writeFile(join(directory, 'log'), 'Suite completed.\n')
+  // The runner reads a cancellation request from this marker file.
+  if (options.canceled) await writeFile(join(directory, 'cancel-requested'), '')
   const ports: HostCiPorts = {
     now: () => new Date('2026-10-13T00:01:00Z'), cpus: 8, memoryBytes: 16 * 2 ** 30,
     run: async (file, args) => {
