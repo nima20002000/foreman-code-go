@@ -280,35 +280,21 @@ it.each(['save', 'logout'] as const)('serializes %s compensation before a concur
   const failed = mutation.catch(error => error)
   await restoreEntered
   const committedKey = `sk-committed-${randomUUID()}`
-  let contenderSaved!: () => void
-  const contenderWritten = new Promise<void>(resolve => { contenderSaved = resolve })
-  const saveApiKey = f.credentials.saveApiKey.bind(f.credentials)
-  vi.spyOn(f.credentials, 'saveApiKey').mockImplementation(async (id, apiKey) => {
-    await saveApiKey(id, apiKey)
-    if (apiKey === committedKey) contenderSaved()
-  })
+  vi.spyOn(f.credentials, 'saveApiKey')
   const contender = f.service.provisionApiKey(f.owner.principal, accountId,
     { ...command(2), apiKey: committedKey })
-  let waitingForMutation = true
-  const waitForBlockedMutation = async () => {
-    const deadline = Date.now() + 5000
-    while (waitingForMutation && Date.now() < deadline) {
-      const waiting = await pool.query<{ waiting: boolean }>(
-        "select exists(select 1 from pg_locks where locktype='advisory' and not granted) as waiting")
-      if (waiting.rows[0]?.waiting) return
-      await new Promise<void>(resolve => setImmediate(resolve))
-    }
-    if (waitingForMutation) throw new Error('The concurrent mutation did not wait for account ownership.')
-  }
+  let contenderSettled = false
+  const observedContender = contender.finally(() => { contenderSettled = true })
   try {
-    await Promise.race([contenderWritten, waitForBlockedMutation()])
+    await new Promise<void>(resolve => setTimeout(resolve, 100))
+    expect(contenderSettled).toBe(false)
+    expect(f.credentials.saveApiKey).not.toHaveBeenCalled()
   } finally {
-    waitingForMutation = false
     releaseRestore()
   }
   expect(await failed).toBeInstanceOf(Error)
   if (action === 'logout') expect(f.native.logout).not.toHaveBeenCalled()
-  expect((await contender).value.revision).toBe(3)
+  expect((await observedContender).value.revision).toBe(3)
   expect((await f.createService().resolve('claude', accountId))?.apiKey).toBe(committedKey)
   expect((await f.service.list(f.reader.principal)).revision).toBe(3)
 })

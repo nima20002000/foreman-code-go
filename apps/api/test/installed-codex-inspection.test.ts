@@ -51,12 +51,12 @@ describe('passive installed worker Codex evidence producer', () => {
       const second = await inspectInstalledCodex(input)
       expect(second.currentTarget?.binarySha256).toBe(first.currentTarget?.binarySha256)
       expect(fs.createReadStream).toHaveBeenCalledTimes(1)
-      await inspectInstalledCodex(f.input)
-      expect(fs.createReadStream).toHaveBeenCalledTimes(4)
+      await inspectInstalledCodex({ ...f.input, fingerprintCache: new PayloadFingerprintCache() })
+      expect(fs.createReadStream).toHaveBeenCalledTimes(2)
       await writeFile(f.binary, Buffer.concat([Buffer.from('7f454c46', 'hex'), Buffer.from('changed-image')]))
       expect((await inspectInstalledCodex(input)).currentTarget?.binarySha256)
         .not.toBe(first.currentTarget?.binarySha256)
-      expect(fs.createReadStream).toHaveBeenCalledTimes(5)
+      expect(fs.createReadStream).toHaveBeenCalledTimes(3)
     } finally {
       await rm(f.root, { recursive: true, force: true })
     }

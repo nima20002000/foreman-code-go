@@ -443,8 +443,9 @@ describe.skipIf(!postgresEnabled)('computer maintenance through Operator MCP', (
     let upgraded = false
     let readbacks = 0
     const ports: MaintenancePorts = {
-      environment: { HOME: '/home/owner' }, find: async name => name === 'apt-get' ? '/usr/bin/apt-get' : null,
+      environment: { HOME: '/home/owner' }, find: async name => ['apt-get', 'npm'].includes(name) ? `/usr/bin/${name}` : null,
       run: async (binary, args) => {
+        if (args[0] === 'view') return { code: 0, stdout: '1.2.3', stderr: '' }
         if (binary.endsWith('apt-get')) {
           if (upgraded) readbacks++
           return { code: 0, stdout: `${upgraded ? 0 : 2} upgraded, 0 newly installed, 0 to remove and 23 not upgraded.`, stderr: '' }

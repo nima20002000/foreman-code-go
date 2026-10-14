@@ -10,8 +10,10 @@ export function claudePluginPorts() {
   }))
   const ports: MaintenancePorts = {
     environment: { HOME: '/home/owner' },
-    find: async name => name === 'claude' ? '/usr/bin/claude' : null,
-    run: async (_binary, args) => {
+    find: async name => ['claude', 'npm'].includes(name) ? `/usr/bin/${name}` : null,
+    run: async (binary, args) => {
+      if (binary === 'sudo') return { code: 1, stdout: '', stderr: 'sudo: a password is required' }
+      if (args[0] === 'view') return { code: 0, stdout: '2.1.294', stderr: '' }
       const result = (value: unknown, code = 0) => ({ code, stdout: JSON.stringify(value), stderr: '' })
       if (args[0] === '--version') return result('2.1.294 (Claude Code)')
       if (args[1] === 'list') return result({

@@ -93,7 +93,7 @@ const configuration = params => {
   const write = config.sandbox_workspace_write ?? {}
   return { model: params.model ?? 'test-model', modelProvider: 'openai', cwd: params.cwd ?? process.cwd(),
     reasoningEffort: config.model_reasoning_effort ?? 'low', serviceTier: params.serviceTier === 'fast' ? 'fast' : null,
-    approvalPolicy: params.approvalPolicy ?? 'on-request', approvalsReviewer: params.approvalsReviewer ?? 'user',
+    approvalPolicy: params.approvalPolicy ?? 'never', approvalsReviewer: params.approvalsReviewer ?? 'user',
     instructionSources: [], sandbox: params.sandbox === 'workspace-write'
       ? { type: 'workspaceWrite', writableRoots: write.writable_roots ?? [], networkAccess: write.network_access ?? false,
         excludeTmpdirEnvVar: write.exclude_tmpdir_env_var ?? false, excludeSlashTmp: write.exclude_slash_tmp ?? false }

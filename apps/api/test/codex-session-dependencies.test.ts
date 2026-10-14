@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'vitest'
 import { APP_MCP_SERVER_NAMES } from '@foreman-code/contracts/product'
 import { CodexAppServerSessionManager, type CodexSessionDependencies, type CodexTransport } from '../src/modules/harnesses/codexAppServer.js'
-import { HarnessExecutionError } from '../src/modules/harnesses/errors.js'
 import type { JsonObject } from '../src/modules/harnesses/codexStdioTransport.js'
 import { fixtureProtocol, input } from './fixtures/codex-test-helpers.js'
 
@@ -79,7 +78,7 @@ describe('Codex production/replay dependency boundary', () => {
 })
 
 describe('Codex native model discovery', () => {
-  it('does not publish fallback options after native diagnostics report a failed remote refresh', async () => {
+  it('keeps an empty validated native catalog after diagnostics report a failed remote refresh', async () => {
     const f = replay()
     f.dependencies.transport = (...args) => ({
       start: async () => { args[10]?.() }, close: async () => undefined,
@@ -92,12 +91,7 @@ describe('Codex native model discovery', () => {
     const manager = new CodexAppServerSessionManager('/recorded-codex',
       undefined, undefined, undefined, undefined, undefined, f.dependencies)
     try {
-      await assert.rejects(manager.discoverModels('/recorded-workspace'), (error: unknown) => {
-        assert(error instanceof HarnessExecutionError)
-        assert.equal(error.result.error?.code, 'CODEX_MODEL_CATALOG_UNAVAILABLE')
-        assert.equal(error.result.error?.retryable, true)
-        return true
-      })
+      assert.deepEqual(await manager.discoverModels('/recorded-workspace'), { providerVersion: RECORDED_CODEX_VERSION, models: [] })
       assert(!f.calls.includes('thread/start'))
     } finally { await manager.shutdown() }
   })

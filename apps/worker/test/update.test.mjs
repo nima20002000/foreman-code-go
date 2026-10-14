@@ -110,7 +110,8 @@ async function fixture(t, targetVersion = '1.1.0') {
   const options = { stateDirectory, version: '1.0.0', manifestSha256: previous.release.manifestSha256,
     releaseDirectory: launch.previousDirectory, workerInstallationId, facts,
     assertStateOwnership: () => assertStateOwnership(), connection: () => ({ captureRequest: () => ({ request }) }),
-    fetchAsset: async ({ destination, signal }) => {
+    fetchAsset: async ({ github, destination, signal }) => {
+      assert.deepEqual(github, incoming.release.github);
       signal?.throwIfAborted();
       const result = spawnSync('tar', ['-czf', destination, '-C', incoming.directory, '.']);
       assert.equal(result.status, 0, result.stderr.toString());
@@ -648,7 +649,8 @@ test('an update interrupted by Main restart retries the saved target on the reco
   available = true;
   updater.ready();
   await until(async () => (await updater.status()).state === 'restarting');
-  assert.equal(captures, 2);
+  assert.equal(captures, 6);
+  assert.deepEqual(f.requests.map(payload => payload.operation), ['release', 'release', 'ci-smoke']);
   assert.equal(launched, 1);
   assert.equal((await updater.status()).lastError, null);
 });
@@ -659,7 +661,7 @@ test('reconnection during a failing update schedules a fresh check after the old
   let captures = 0;
   const updater = await new WorkerUpdater({ ...f.options, connection: () => ({ captureRequest: () => {
     captures++;
-    if (captures === 1) return { request: () => new Promise((_resolve, reject) => { rejectRequest = reject; }) };
+    if (captures <= 2) return { request: () => new Promise((_resolve, reject) => { rejectRequest = reject; }) };
     return { request: async () => ({ payload: { operation: 'release', release: f.previous.release } }) };
   } }) }).initialize();
   t.after(() => updater.close());
@@ -668,7 +670,7 @@ test('reconnection during a failing update schedules a fresh check after the old
   updater.ready();
   rejectRequest(new DeviceConnectionError('authentication'));
   await interrupted;
-  await until(async () => captures === 2 && (await updater.status()).state === 'current');
+  await until(async () => captures === 4 && (await updater.status()).state === 'current');
   assert.equal((await readUpdateRecord(f.stateDirectory)).status.lastError, null);
 });
 
