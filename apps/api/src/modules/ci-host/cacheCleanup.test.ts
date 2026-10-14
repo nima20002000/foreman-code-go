@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, open, readFile, rm, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, access, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
@@ -43,7 +43,7 @@ it('evicts complete contracts snapshots and preserves lock files and cache entri
       .resolves.toEqual([])
     await expect(sweepHostCiCache(root, { budgetBytes: 0, activeRepositories: () => new Set<string>() }))
       .resolves.toEqual([snapshot])
-    await expect(open(snapshot)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(access(snapshot)).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(readFile(join(cache, 'locks/install.lock'), 'utf8')).resolves.toBe('')
   } finally { await rm(root, { recursive: true, force: true }) }
 })
