@@ -5,6 +5,7 @@ declare module 'pino-roll' {
     file: string
     extension?: string
     frequency?: 'daily' | 'hourly' | number
+    dateFormat?: string
     size?: string | number
     mkdir?: boolean
     symlink?: boolean
