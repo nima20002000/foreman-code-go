@@ -75,7 +75,7 @@ jobs:
             git fetch --quiet --no-tags --depth="$depth" origin "$CIRCLE_SHA1"
             git checkout --quiet --detach FETCH_HEAD
             echo "[ci-setup] checkout completed in $(( $(date +%s%3N) - started )) ms"
-      # The pinned Node toolchain is cached by version, so VMs stop downloading it; nvm install finds it locally.
+      # The pinned Node toolchain is cached by version; hits use its bin directory directly.
       - restore_cache:
           keys:
             - node-toolchain-v22.23.2-{{ arch }}
@@ -83,49 +83,54 @@ jobs:
           name: Node and pnpm
           command: |
             # Immutable caches restored by their exact key are not saved again at the end of the job.
-            if [ -x "$HOME/.nvm/versions/node/v22.23.2/bin/node" ]; then touch "$HOME/.ci-node-restored"; fi
             # The app keeps private files only under folders other users cannot replace; the image's home is group-writable.
             chmod go-w "$HOME"
             mkdir -p "$HOME/.cache" && chmod go-w "$HOME/.cache"
-            for attempt in 1 2 3; do
-              if nvm install 22.23.2; then
-                break
-              else
-                status=$?
-                if [ "$attempt" -eq 3 ]; then exit "$status"; fi
-                echo "Node install failed; retrying attempt $((attempt + 1)) of 3." >&2
-                sleep "$((attempt * 5))"
-              fi
-            done
-            bin="$(dirname "$(nvm which 22.23.2)")"
+            bin="$HOME/.nvm/versions/node/v22.23.2/bin"
+            if [ -x "$bin/node" ]; then
+              touch "$HOME/.ci-node-restored"
+            else
+              for attempt in 1 2 3; do
+                if nvm install 22.23.2; then
+                  break
+                else
+                  status=$?
+                  if [ "$attempt" -eq 3 ]; then exit "$status"; fi
+                  echo "Node install failed; retrying attempt $((attempt + 1)) of 3." >&2
+                  sleep "$((attempt * 5))"
+                fi
+              done
+              bin="$(dirname "$(nvm which 22.23.2)")"
+            fi
             echo "export PATH=\"$bin:\$PATH\"" >> "$BASH_ENV"
             export PATH="$bin:$PATH"
             corepack enable
             node --version
+            mkdir -p .logs
+            node scripts/ci-packages.mjs key "$PWD" > .logs/ci-packages-key
+            if [ "$SUITE" != install ]; then
+              node scripts/ci-contracts.mjs key "$PWD" > .logs/ci-contracts-key
+            fi
       - run: scripts/ci-suite.sh start
-      - run:
-          name: Contracts cache inputs
-          command: mkdir -p .logs && node scripts/ci-contracts.mjs key "$PWD" > .logs/ci-contracts-key
       # Keep the pnpm store inside node_modules so cache hits retain the package integrity index.
       - restore_cache:
           keys:
-            - packages-with-store-metadata-node22.23.2-{{ checksum "pnpm-lock.yaml" }}
-      - run: |
-          if [ -d node_modules/.pnpm ]; then
-            echo "packages restored"
-            touch "$HOME/.ci-packages-restored"
-            pnpm install --offline --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink
-          else
-            pnpm install --offline --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink ||
-              pnpm install --frozen-lockfile --store-dir node_modules/.pnpm-store --cache-dir .logs/pnpm-metadata --package-import-method=hardlink
-          fi
-      - restore_cache:
-          keys:
-            - contracts-build-{{ checksum ".logs/ci-contracts-key" }}
-      - run: if [ -d packages/contracts/dist ]; then touch "$HOME/.ci-contracts-restored"; fi
-      - restore_cache:
-          keys:
-            - ci-<< pipeline.parameters.suite >>-{{ checksum "pnpm-lock.yaml" }}-
+            - packages-with-store-metadata-v2-{{ checksum ".logs/ci-packages-key" }}
+      - run:
+          name: Install from cached store
+          command: node scripts/ci-packages.mjs install "$PWD"
+      - when:
+          condition:
+            not:
+              equal: [install, << pipeline.parameters.suite >>]
+          steps:
+            - restore_cache:
+                keys:
+                  - contracts-build-{{ checksum ".logs/ci-contracts-key" }}
+            - run: if [ -d packages/contracts/dist ]; then touch "$HOME/.ci-contracts-restored"; fi
+            - restore_cache:
+                keys:
+                  - ci-<< pipeline.parameters.suite >>-{{ checksum "pnpm-lock.yaml" }}-
       - run:
           name: Suite
           command: |
@@ -136,16 +141,21 @@ jobs:
       - store_artifacts:
           path: .logs/ci-durations
           destination: durations
-      - save_cache:
-          key: ci-<< pipeline.parameters.suite >>-{{ checksum "pnpm-lock.yaml" }}-{{ .Revision }}
-          when: always
-          paths:
-            - node_modules/.vitest-cache
-            - apps/api/node_modules/.cache
-            - apps/web/node_modules/.cache
-            - apps/web/node_modules/.tmp
-            - apps/worker/node_modules/.cache
-            - packages/contracts/node_modules/.cache
+      - when:
+          condition:
+            not:
+              equal: [install, << pipeline.parameters.suite >>]
+          steps:
+            - save_cache:
+                key: ci-<< pipeline.parameters.suite >>-{{ checksum "pnpm-lock.yaml" }}-{{ .Revision }}
+                when: always
+                paths:
+                  - node_modules/.vitest-cache
+                  - apps/api/node_modules/.cache
+                  - apps/web/node_modules/.cache
+                  - apps/web/node_modules/.tmp
+                  - apps/worker/node_modules/.cache
+                  - packages/contracts/node_modules/.cache
       # Keep summaries and failing files' logs; the per-slot copies and the archive of them are successful-file noise.
       - run:
           name: Trim integration logs
@@ -160,7 +170,8 @@ jobs:
       - run:
           name: Skip saves of restored caches
           command: |
-            if [ -e "$HOME/.ci-node-restored" ] && [ -e "$HOME/.ci-packages-restored" ] && [ -e "$HOME/.ci-contracts-restored" ]; then
+            if [ -e "$HOME/.ci-node-restored" ] && [ -e .logs/ci-packages-restored ] \
+              && { [ "$SUITE" = install ] || [ -e "$HOME/.ci-contracts-restored" ]; }; then
               circleci-agent step halt
             fi
       - save_cache:
@@ -170,7 +181,7 @@ jobs:
       # The suite adds its own caches under these folders; the packages cache keeps only the installed state.
       - run: rm -rf node_modules/.vitest-cache apps/*/node_modules/.cache apps/*/node_modules/.tmp packages/*/node_modules/.cache
       - save_cache:
-          key: packages-with-store-metadata-node22.23.2-{{ checksum "pnpm-lock.yaml" }}
+          key: packages-with-store-metadata-v2-{{ checksum ".logs/ci-packages-key" }}
           paths:
             - node_modules
             - .logs/pnpm-metadata
@@ -178,10 +189,15 @@ jobs:
             - apps/web/node_modules
             - apps/worker/node_modules
             - packages/contracts/node_modules
-      - save_cache:
-          key: contracts-build-{{ checksum ".logs/ci-contracts-key" }}
-          paths:
-            - packages/contracts/dist
+      - when:
+          condition:
+            not:
+              equal: [install, << pipeline.parameters.suite >>]
+          steps:
+            - save_cache:
+                key: contracts-build-{{ checksum ".logs/ci-contracts-key" }}
+                paths:
+                  - packages/contracts/dist
 
 workflows:
   ci:
