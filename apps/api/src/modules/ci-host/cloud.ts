@@ -213,10 +213,15 @@ export class CloudCi {
 
   private async answer(request: Extract<CiHostRequest, { operation: 'read' }>, run: CloudRun) {
     const page = await this.logPage(run.runId, request.afterOffset, request.maxBytes).catch(error => {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT' && ['queued', 'starting'].includes(run.state)) {
-        return { text: '', nextOffset: request.afterOffset, logBytes: 0 }
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      const retainedOutput = run.collection?.log || (run.live?.bytes ?? 0) > 0
+      const awaitingOutput = ['queued', 'starting', 'running', 'canceled'].includes(run.state)
+        || run.collection?.log === false
+        || run.mirrorPublication?.state === 'failed' && !run.providerRunId
+      if (retainedOutput || !awaitingOutput) {
+        throw new DomainError('CI_LOG_UNAVAILABLE', 'The retained CI log is missing.', 503)
       }
-      throw error
+      return { text: '', nextOffset: request.afterOffset, logBytes: 0 }
     })
     if (!['starting', 'running', 'queued'].includes(run.state)) this.schedulePrune(run, run.runId)
     const view = this.view(run, page.logBytes)
