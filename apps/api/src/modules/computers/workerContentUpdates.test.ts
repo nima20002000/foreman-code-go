@@ -8,6 +8,7 @@ import { WorkerUpdater, downloadWorkerArtifact } from '../../../../worker/src/up
 import { ComputerMaintenance } from './maintenance.js'
 import { fakeComputer } from '../../../test/helpers/fleetSync.js'
 import * as artifacts from './workerArtifacts.js'
+import { DeviceConnectionError } from '../devices/deviceWire.js'
 
 const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 const target = { os: 'ubuntu', osRelease: '24.04', arch: 'x64', libc: 'glibc-2.39', node: 'v22.23.2' }
@@ -96,6 +97,27 @@ it('updates changed Worker bytes at the same product version and retains CI smok
   expect(f.launchSupervisor).toHaveBeenCalledOnce()
   const record = JSON.parse(await readFile(join(f.options.stateDirectory, 'worker-update.json'), 'utf8'))
   expect(record.restart.ciSmoke).toEqual({ repository: 'example/worker', commit: f.manifest.commit })
+})
+
+it('recaptures the update channel for smoke configuration after downloading across a transport reconnect', async () => {
+  const f = await fixture()
+  f.manifest.files.push({ ...f.manifest.files[0]!, path: 'src/extra.mjs' })
+  let connected = true
+  const oldRequest = async (input: { operation: string }) => {
+    if (!connected) throw new DeviceConnectionError('transport')
+    return f.request(input)
+  }
+  const captureRequest = vi.fn(() => ({ request: connected ? oldRequest : f.request }))
+  const updater = await new WorkerUpdater({ ...f.options, connection: () => ({ captureRequest }),
+    fetchAsset: async (input: { destination: string }) => {
+      await f.options.fetchAsset(input)
+      connected = false
+    } }).initialize()
+  try {
+    expect(await updater.start()).toBe('Worker 1.0.0 restart is scheduled.')
+    expect(f.request.mock.calls.map(([input]) => input.operation)).toEqual(['release', 'ci-smoke'])
+    expect(f.launchSupervisor).toHaveBeenCalledOnce()
+  } finally { await updater.close() }
 })
 
 it('still rejects a download whose manifest checksum differs from the announced hash', async () => {

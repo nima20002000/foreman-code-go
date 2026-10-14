@@ -14,6 +14,7 @@ import type { ClaudeSdkClient, ClaudeSdkUserMessage } from './claudeSdk/port.js'
 import type { AcceptedClaudeProfile } from './instanceSettings/acceptedProfile.js'
 import type { NativeProcessRegistry } from './recovery/processRegistry.js'
 import { CLAUDE_PROFILE_CHECK_REVISION } from './claudeSdk/profileRevision.js'
+import { previousWorkerHarnessGeneration } from '../../../test/support/previousWorkerHarness.js'
 
 vi.mock('./installedClaudeInspection.js', () => ({ inspectInstalledClaude: vi.fn() }))
 vi.mock('./claudeSdk/official.js', () => ({ loadOfficialClaudeSdk: vi.fn() }))
@@ -112,6 +113,22 @@ function fixture() {
     afterStatus: (callback: () => void) => { afterStatus = callback },
   }
 }
+
+it('inspects a previous Worker using its persisted session-scoped profile without rewriting the wire proof', async () => {
+  const f = fixture()
+  const generation = previousWorkerHarnessGeneration(f.binding)
+  f.accepted.persistedProof.connectionGeneration = generation
+  f.accepted.currentBinding.connectionGeneration = generation
+  f.request.mockImplementation(async payload => {
+    expect((payload as { proof: { connectionGeneration: string } }).proof.connectionGeneration).toBe(generation)
+    return { payload: { status: 'configured', harness: 'claude', endpoint: f.endpointUrl, routing: 'fixed',
+      checkedAt: new Date().toISOString() } }
+  })
+  expect(await f.inspect()).toMatchObject({ status: 'configured', harness: 'claude', endpoint: f.endpointUrl })
+  expect(f.request).toHaveBeenCalledOnce()
+  f.replaceConnection()
+  await expect(f.inspect()).rejects.toMatchObject({ code: 'HARNESS_INVENTORY_STALE' })
+})
 
 it('routes setup through the selected Worker SDK with zero model input and deny-all tool callbacks', async () => {
   const f = fixture()
