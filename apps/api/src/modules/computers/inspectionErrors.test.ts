@@ -3,9 +3,15 @@ import { ComputerMaintenance, systemMaintenancePorts } from './maintenance.js'
 import { MainCodexSelection } from './installedCodexSelection.js'
 import type { MaintenancePorts } from './maintenancePorts.js'
 import * as fs from 'node:fs/promises'
+import { probeComputerAccounts, probeGitHubAccount, type AccountProbePorts } from './accountProbe.js'
+import { logIgnoredError } from '../diagnostics/ignoredError.js'
 
 vi.mock('node:fs/promises', async original => ({ ...await original<typeof fs>(),
   readdir: vi.fn(), access: vi.fn(), statfs: vi.fn(),
+}))
+vi.mock('@foreman-code/contracts/computer-maintenance', async original => ({
+  ...await original<typeof import('@foreman-code/contracts/computer-maintenance')>(),
+  MaintenanceStatusSchema: (await import('../../../../../packages/contracts/src/computerMaintenance.js')).MaintenanceStatusSchema,
 }))
 afterEach(() => vi.restoreAllMocks())
 
@@ -43,4 +49,51 @@ it('does not turn unreadable reboot and disk facts into absence', async () => {
   const host = systemMaintenancePorts({ HOME: '/fixture', PATH: '' })
   await expect(host.exists('/fixture/reboot-required')).rejects.toBe(failure)
   await expect(host.disk('/fixture')).rejects.toBe(failure)
+})
+
+it('reports missing npm and retries latest-version discovery after it becomes available', async () => {
+  const host = ports()
+  let npmAvailable = false
+  host.find = async name => name === 'npm' && !npmAvailable ? null : name
+  host.run = async binary => ({ code: 0, stderr: '',
+    stdout: binary === 'apt-get' ? '0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.' : '1.2.3' })
+  const maintenance = new ComputerMaintenance(host)
+  await expect(maintenance.status(new AbortController().signal)).rejects.toThrow(/npm.*not installed/i)
+  npmAvailable = true
+  expect(await maintenance.status(new AbortController().signal)).toMatchObject({
+    harnesses: [expect.objectContaining({ latest: '1.2.3' }), expect.objectContaining({ latest: '1.2.3' })],
+  })
+})
+
+it('does not infer installation after account discovery fails', async () => {
+  const failure = Object.assign(new Error('Discovery unavailable'), { code: 'EIO' })
+  const host: AccountProbePorts = { environment: {}, find: async () => { throw failure },
+    run: async () => ({ code: 0, stdout: '', stderr: '' }), readText: async () => null }
+  await expect(probeComputerAccounts(host)).rejects.toBe(failure)
+})
+
+it('does not hide malformed native account JSON', async () => {
+  const host: AccountProbePorts = { environment: {}, find: async name => name === 'claude' ? name : null,
+    run: async () => ({ code: 0, stdout: 'invalid-json', stderr: '' }), readText: async () => null }
+  await expect(probeComputerAccounts(host)).rejects.toThrow('Unreadable Claude sign-in status')
+})
+
+it('does not turn an unexpected account command failure into an ordinary unknown', async () => {
+  const host: AccountProbePorts = { environment: {}, find: async name => name,
+    run: async () => ({ code: 2, stdout: '', stderr: 'Command failed' }), readText: async () => null }
+  await expect(probeGitHubAccount(host)).rejects.toThrow(/GitHub.*inspection/i)
+})
+
+it('returns retained operational failures on computer status reads', async () => {
+  const host = ports()
+  host.run = async binary => ({ code: 0, stderr: '',
+    stdout: binary === 'apt-get' ? '0 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.' : '1.2.3' })
+  logIgnoredError('devices', 'repair managed MCP mount', Object.assign(new Error('Unavailable'), { code: 'EIO' }))
+  const maintenance = new ComputerMaintenance(host)
+  for (let read = 0; read < 2; read++) {
+    const status = await maintenance.status(new AbortController().signal)
+    expect(status).toMatchObject({ operationalFailures: expect.arrayContaining([
+      expect.objectContaining({ operation: 'repair managed MCP mount', lastError: 'EIO', failureCount: 1 }),
+    ]) })
+  }
 })

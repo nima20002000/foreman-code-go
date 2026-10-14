@@ -6,6 +6,7 @@ import { fixtureProtocol } from '../../../test/fixtures/codex-test-helpers.js'
 import { RECORDED_CODEX_VERSION } from '../../../test/fixtures/codex-version.js'
 
 it.each(['completion', 'disconnect', 'expiry', 'request failure'])('retains and reports login cleanup after %s', async trigger => {
+  const before = readOperationalFailures().find(item => item.operation === 'clean up Codex login')?.failureCount ?? 0
   let notify: ((method: string, params: Record<string, unknown>) => void) | undefined
   let disconnect: ((error: Error) => void) | undefined
   let expire: (() => void) | undefined
@@ -43,7 +44,8 @@ it.each(['completion', 'disconnect', 'expiry', 'request failure'])('retains and 
       await Promise.resolve()
       await Promise.resolve()
     }
-    expect(readOperationalFailures()).toContainEqual(expect.objectContaining({ operation: 'clean up Codex login', lastError: 'EIO' }))
+    expect(readOperationalFailures()).toContainEqual(expect.objectContaining({ operation: 'clean up Codex login', lastError: 'EIO',
+      failureCount: before + 1 }))
   } finally {
     failClose = false
     await manager.shutdown()

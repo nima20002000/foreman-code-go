@@ -19,6 +19,11 @@ import { splitUnavailableGateParts } from './gateFallback.js'
 import { CiRunRecordSchema } from '@foreman-code/contracts'
 
 const roots: string[] = []
+vi.mock('@foreman-code/contracts', async original => {
+  const host = await import('../../../../../packages/contracts/src/ciHost.js')
+  return { ...await original<typeof import('@foreman-code/contracts')>(),
+    CiRunRecordSchema: host.CiRunRecordSchema, CiHostReplySchema: host.CiHostReplySchema }
+})
 afterEach(async () => {
   vi.restoreAllMocks()
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
@@ -40,6 +45,17 @@ it('does not report an estimated ordinary slot as observed capacity', async () =
   expect(capacity).toMatchObject({ host: 0, ordinary: 0 })
 })
 
+it('marks planning capacity incomplete after an executor observation fails', async () => {
+  const pool = { query: async () => ({ rows: [] }) } as unknown as pg.Pool
+  const computer = { key: 'fixture-computer', label: 'Fixture', priority: 1,
+    hostRef: { kind: 'main' as const, mainId: 'main' } }
+  const capacity = await readCiSlots(pool, { computers: async () => [computer], request: async () => {
+    throw Object.assign(new Error('Read unavailable'), { code: 'EIO' })
+  } })
+  expect(capacity).toMatchObject({ host: 0, ordinary: 0, complete: false, unavailableComputers: [computer.key] })
+  expect(readOperationalFailures()).toContainEqual(expect.objectContaining({ operation: 'read CI planning capacity', lastError: 'EIO' }))
+})
+
 it('rechecks provider readiness after a failed observation and retains its cause', async () => {
   const f = await fixture()
   vi.spyOn(f.cloud.provider, 'ready').mockRejectedValueOnce(Object.assign(new Error('Unavailable'), { code: 'EIO' }))
@@ -48,6 +64,15 @@ it('rechecks provider readiness after a failed observation and retains its cause
   expect(await f.cloud.ready()).toBe(true)
   expect(readOperationalFailures()).toContainEqual(expect.objectContaining({ operation: 'check CI provider readiness',
     lastError: 'EIO', failureCount: 1 }))
+})
+
+it('reports a failed provider check as unavailable instead of a login requirement', async () => {
+  const f = await fixture()
+  vi.spyOn(f.cloud.provider, 'ready').mockRejectedValue(Object.assign(new Error('Unavailable'), { code: 'EIO' }))
+  expect(await f.cloud.handle({ operation: 'status' })).toMatchObject({ ready: false,
+    reasons: [expect.stringContaining('EIO')] })
+  expect(f.cloud).toHaveProperty('readinessObservation', expect.objectContaining({
+    status: 'unavailable', consecutiveFailures: 1, lastError: expect.stringContaining('EIO') }))
 })
 
 it('keeps a live output failure visible while preserving the running result', async () => {
@@ -82,7 +107,7 @@ it('marks skipped step logs in the returned text', async () => {
   expect(readOperationalFailures()).toContainEqual(expect.objectContaining({ operation: 'read GitHub step log' }))
 })
 
-it.each(['metadata', 'exit', 'step'])('does not hide an unreadable retained %s file', async area => {
+it.each(['metadata', 'exit', 'step', 'empty exit'])('does not hide an unreadable retained %s file', async area => {
   const root = await directory()
   const runId = randomUUID()
   const run = join(root, 'runs', runId)
@@ -90,6 +115,7 @@ it.each(['metadata', 'exit', 'step'])('does not hide an unreadable retained %s f
   await writeFile(join(run, 'meta.json'), JSON.stringify({ ...retained, runId, cleaned: false,
     cancellationRequested: false }))
   if (area === 'metadata') await writeFile(join(run, 'meta.json'), '{invalid')
+  else if (area === 'empty exit') await writeFile(join(run, 'exit'), '')
   else await mkdir(join(run, area))
   const runner = new HostCiRunner(root, { now: () => new Date(), cpus: 4, memoryBytes: 2 ** 30,
     run: async binary => ({ code: 0, stdout: binary === 'systemctl' ? 'active\n' : '', stderr: '' }) })
@@ -123,5 +149,55 @@ it('keeps the build-computer reassignment cause on the original ticket', async (
     shards: new Map([[cloud.key, 1]]), durations: new Map(), reservedCloud: new Set(), gate: undefined,
     canTake: () => true, idle: () => true, freeSlots: () => 1 })
   expect(parts[0]).toMatchObject({ id: run.id, message: expect.stringMatching(/unavailable.*reassigned/i) })
+  expect(parts[0]).toMatchObject({ reassignment: { count: 1, previousHostKey: run.plannedHostKey,
+    lastError: 'CI_BUILD_COMPUTER_UNAVAILABLE' } })
   expect(readOperationalFailures()).toContainEqual(expect.objectContaining({ operation: 'reassign unavailable CI build part' }))
+})
+
+it('reports the source, count and elapsed time of one mirror repair', async () => {
+  const f = await fixture()
+  const git = f.git.git.bind(f.git)
+  let injected = false
+  vi.spyOn(f.git, 'git').mockImplementation(async (args, options) => {
+    if (!injected && args[0] === 'fetch' && options.cwd?.endsWith('site-ci')) {
+      injected = true
+      return { code: 1, stdout: '', stderr: 'fatal: bad object' }
+    }
+    return git(args, options)
+  })
+  const started = await f.cloud.handle({ operation: 'start', runId: randomUUID(), workspaceId: 'ci-workspace',
+    repository: 'octo/site', commit: f.commit, suite: 'lint', scope: 'full' })
+  expect(injected).toBe(true)
+  expect(started).toMatchObject({ run: { mirrorPublication: { repair: { count: 1,
+    repository: 'octo/site-ci', sourceCommit: f.commit, reason: 'CI_MIRROR_CORRUPT', elapsedMs: expect.any(Number) } } } })
+  expect(readOperationalFailures()).toContainEqual(expect.objectContaining({ operation: 'repair CI mirror clone',
+    failureCount: 1, attempt: 1, elapsedMs: expect.any(Number) }))
+})
+
+it('does not return an empty log after a completed native run loses its retained log', async () => {
+  const root = await directory()
+  const runId = randomUUID()
+  const path = join(root, 'runs', runId)
+  await mkdir(path, { recursive: true })
+  await writeFile(join(path, 'meta.json'), JSON.stringify({ ...retained, runId, state: 'passed',
+    exitCode: 0, finishedAt: '2026-10-14T00:01:00Z', cleaned: true, cancellationRequested: false }))
+  const runner = new HostCiRunner(root, { now: () => new Date(), cpus: 4, memoryBytes: 2 ** 30,
+    run: async () => ({ code: 0, stdout: '', stderr: '' }) })
+  await expect(runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 100 }))
+    .rejects.toMatchObject({ code: 'CI_LOG_UNAVAILABLE' })
+})
+
+it('reports missing completed progress while preserving the verified result', async () => {
+  const root = await directory()
+  const runId = randomUUID()
+  const path = join(root, 'runs', runId)
+  await mkdir(path, { recursive: true })
+  await writeFile(join(path, 'meta.json'), JSON.stringify({ ...retained, runId, state: 'passed',
+    exitCode: 0, finishedAt: '2026-10-14T00:01:00Z', cleaned: true, cancellationRequested: false }))
+  await writeFile(join(path, 'log'), 'Tests passed.\n')
+  const runner = new HostCiRunner(root, { now: () => new Date(), cpus: 4, memoryBytes: 2 ** 30,
+    run: async () => ({ code: 0, stdout: '', stderr: '' }) })
+  expect(await runner.handle({ operation: 'read', runId, afterOffset: 0, maxBytes: 100 }))
+    .toMatchObject({ run: { state: 'passed' }, text: 'Tests passed.\n' })
+  expect(readOperationalFailures()).toContainEqual(expect.objectContaining({ operation: 'read completed CI progress', lastError: 'ENOENT' }))
 })

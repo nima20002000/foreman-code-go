@@ -13,6 +13,7 @@ import { passiveDriverPayloads } from './payloadDiscovery.js'
 import type { PayloadFingerprintCache } from './payloadFingerprintCache.js'
 import { readOperationalFailures } from '../diagnostics/logger.js'
 import type { ManagementPrincipal } from '@foreman-code/contracts/management'
+import { HarnessCatalogService } from './catalog.js'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -39,18 +40,29 @@ it('propagates unexpected default binary access failures', async () => {
   expect(() => harnessBinaries({ PATH: loop })).toThrow(expect.objectContaining({ code: 'ELOOP' }))
 })
 
+it('reports a rejected default wrapper and the source finally selected', async () => {
+  const root = await directory()
+  const bin = join(root, 'bin')
+  await mkdir(bin)
+  await writeFile(join(root, 'package.json'), '{"name":"fixture-wrapper"}')
+  await writeFile(join(bin, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o700 })
+  harnessBinaries({ PATH: bin })
+  expect(readOperationalFailures()).toContainEqual(expect.objectContaining({ operation: 'reject default Codex candidate',
+    lastError: 'UNRECOGNIZED_CODEX_LAUNCHER', selectedSource: expect.stringMatching(/^(?:bundled-package|command)$/) }))
+})
+
 it('does not skip an unreadable qualification candidate', async () => {
   const root = await directory()
   const loop = join(root, 'loop')
   await symlink(loop, loop)
-  const registry = new HarnessQualificationRegistry({ list: async () => [], find: async () => undefined }, {})
+  const registry = new HarnessQualificationRegistry({ list: async () => [], find: async () => null }, {})
   await expect(registry.inspectBinary(join(loop, 'codex'))).rejects.toMatchObject({ code: 'ELOOP' })
 })
 
 it('reports native model refresh failure while retaining the validated catalog', () => {
   expect(parseCodexModelCatalog({ exitCode: 0, stdout: '{"models":[]}',
     stderr: 'failed to refresh available models: private provider output' })).toMatchObject({ modelCatalogSource: 'cached' })
-  expect(readOperationalFailures()).toContainEqual(expect.objectContaining({ operation: 'refresh native model catalog' }))
+  expect(readOperationalFailures()).toContainEqual(expect.objectContaining({ operation: 'refresh native model catalog', dataAgeMs: null }))
   expect(JSON.stringify(readOperationalFailures())).not.toContain('private provider output')
 })
 
@@ -88,4 +100,21 @@ it('does not turn an unreadable pinned native payload into an incomplete invento
   await symlink(binary, binary)
   const fingerprints = { fingerprint: async () => '61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70' } as unknown as PayloadFingerprintCache
   await expect(passiveDriverPayloads('codex', launcher, 'linux', 'x64', fingerprints)).rejects.toMatchObject({ code: 'ELOOP' })
+})
+
+it('reports a failed default read before prewarm discovery starts', async () => {
+  const failure = Object.assign(new Error('Defaults unavailable'), { code: 'EIO' })
+  const service = new HarnessCatalogService({} as never,
+    { getManagedHarnessDefaults: async () => { throw failure } } as never, {} as never, '/fixture')
+  await expect(service.warmup()).rejects.toBe(failure)
+  expect(readOperationalFailures()).toContainEqual(expect.objectContaining({ operation: 'load harness prewarm defaults', lastError: 'EIO' }))
+})
+
+it('identifies the capability whose native prewarm failed', async () => {
+  const service = new HarnessCatalogService({ qualify: async () => { throw new Error('Unavailable') } } as never,
+    { getManagedHarnessDefaults: async () => ({ defaults: { codex: { harness: 'codex', model: 'fixture',
+      reasoningEffort: 'high', sandbox: 'read-only', serviceTier: 'standard' } }, unavailable: [] }) } as never,
+    {} as never, '/fixture')
+  await service.warmup()
+  expect(readOperationalFailures()).toContainEqual(expect.objectContaining({ operation: 'warm codex harness discovery' }))
 })

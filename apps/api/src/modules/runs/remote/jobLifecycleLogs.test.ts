@@ -11,6 +11,7 @@ import type { PodmanJobSupervisor } from '../../jobs/executorPodman.js'
 import { deriveJobReceiptLocked } from '../../jobs/receiptProjection.js'
 import { RemoteOperationJournal } from './operationJournal.js'
 import { RemoteJobExecutionHost } from './jobExecutionHost.js'
+import { readOperationalFailures } from '../../diagnostics/logger.js'
 
 vi.mock('../../jobs/executor.js', async importOriginal => ({
   ...await importOriginal<typeof import('../../jobs/executor.js')>(), executeJob: vi.fn(),
@@ -66,6 +67,8 @@ describe('terminal completion with durable log delivery', () => {
     const projected = await deriveJobReceiptLocked({ query: vi.fn() }, f.execution, f.receipt, { verifyRequiredOutputs: async () => {} })
     expect(projected.resultIssue).toBe('log_delivery_unknown')
     expect(await f.journal.jobPendingLogs(f.intent.operationId)).toEqual([f.chunk])
+    expect(readOperationalFailures()).toContainEqual(expect.objectContaining({ operation: 'flush remote job log spool',
+      pendingBytes: f.chunk.byteSize, pendingSince: f.chunk.createdAt }))
     // Transport is restored, but Main has retired ownership. The gap must stay explicit.
     await f.host.handle({ method: 'job-status', intent: f.intent })
     expect(f.appendLog).toHaveBeenLastCalledWith(f.chunk)

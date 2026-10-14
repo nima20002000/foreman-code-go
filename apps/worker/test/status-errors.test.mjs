@@ -4,7 +4,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { acquireWorkerLock, readWorkerStatus } from '../src/runtime.mjs'
-import { executableAvailability, hostFacts } from '../src/diagnostics.mjs'
+import { doctorReport, executableAvailability, hostFacts } from '../src/diagnostics.mjs'
+import { workerPath } from '../src/harnessPath.mjs'
 
 async function fixture(t) {
   const cache = join(homedir(), '.cache', 'foreman-tmp')
@@ -42,5 +43,23 @@ test('reports storage and executable inspection failures independently', async t
   await symlink(loop, loop)
   const facts = await hostFacts(loop, [loop])
   assert.ok(facts.inspectionErrors?.some(error => error.lastError === 'ELOOP'))
-  assert.throws(() => executableAvailability(loop), { code: 'ELOOP' })
+  const executables = executableAvailability(loop)
+  assert.ok(executables.inspectionErrors?.some(error => error.lastError === 'ELOOP'))
+  const report = doctorReport({ facts, executables, service: {}, identity: null })
+  assert.ok(report.inspectionErrors.some(error => error.lastError === 'ELOOP'))
+})
+
+test('does not silently reject an unreadable optional installation', async t => {
+  const root = await fixture(t)
+  const bin = join(root, '.local', 'bin')
+  await mkdir(bin, { recursive: true })
+  const binary = join(bin, 'codex')
+  await symlink(binary, binary)
+  assert.throws(() => workerPath(root, process.execPath), { code: 'ELOOP' })
+})
+
+test('doctor preserves manifest and runtime inspection reasons', () => {
+  const errors = ['manifest_missing', 'manifest_unreadable', 'manifest_invalid', 'worker_status_unavailable']
+  const report = doctorReport({ facts: {}, identity: null, service: {}, executables: {}, errors })
+  assert.deepEqual(report.errors, errors)
 })

@@ -6,6 +6,7 @@ import { observeGraph } from '../run-graph/measurements.js'
 import { readOperationalFailures } from '../diagnostics/logger.js'
 
 it.each([OperatorConversationEvents, AgentChatEvents])('isolates and counts a failed conversation subscriber', Events => {
+  const before = readOperationalFailures().find(item => item.operation === 'publish conversation event')?.failureCount ?? 0
   const events = new Events()
   const received = vi.fn()
   events.subscribe('conversation', () => { throw Object.assign(new Error('Subscriber failed'), { code: 'EIO' }) })
@@ -13,7 +14,7 @@ it.each([OperatorConversationEvents, AgentChatEvents])('isolates and counts a fa
   events.publish('conversation', 'state', {})
   expect(received).toHaveBeenCalledOnce()
   expect(readOperationalFailures()).toContainEqual(expect.objectContaining({ operation: 'publish conversation event',
-    lastError: 'EIO' }))
+    lastError: 'EIO', failureCount: before + 1 }))
 })
 
 it('isolates and counts a failed graph measurement sink', () => {
