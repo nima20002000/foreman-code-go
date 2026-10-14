@@ -22,6 +22,49 @@ beforeEach(async () => {
   await database.pool.query('truncate ci_runs, ci_file_durations, management_command_receipts, management_audit')
 })
 
+it.each(['runner', 'persisted'] as const)('plans a gate away from a builder occupied by a %s non-gate run', async source => {
+  const occupiedKeys = new Set(source === 'runner' ? ['builder-main'] : [])
+  const f = await fixture({ occupiedKeys })
+  try {
+    if (source === 'persisted') {
+      const affected = CiRunOutputSchema.parse(await f.value('ci_run', {
+        suite: 'unit', scope: 'affected', files: ['apps/api/src/site.test.ts'],
+        smokeComputer: f.computers[0]!.hostRef, commit: 'b'.repeat(40),
+      }))
+      await f.ci.dispatch()
+      expect(CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: affected.ticketId })).run)
+        .toMatchObject({ state: 'running', computer: { hostRef: f.computers[0]!.hostRef } })
+    }
+    const input = { suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40) }
+    const reader = await f.connect(true)
+    expect((await f.call(reader, 'ci_run', input)).isError).toBe(true)
+    const admitted = CiRunOutputSchema.parse(await f.value('ci_run', input))
+    await f.ci.close()
+    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
+    expect(read.partitions!.some(run => run.plannedHostKey === 'builder-main')).toBe(false)
+    expect(read.partitions!.some(run => run.plannedHostKey === 'builder-paired')).toBe(true)
+    expect(read.partitions!.filter(run => run.suite === 'integration').flatMap(run => run.files).sort())
+      .toEqual([...f.files].sort())
+    for (const run of read.partitions!) {
+      const stored = (await database.pool.query('select record from ci_runs where id=$1', [run.id])).rows[0].record
+      expect(stored).toMatchObject({ plannedHostKey: run.plannedHostKey, files: run.files })
+    }
+  } finally { await f.close() }
+})
+
+it('plans all gate integration on cloud when every builder is occupied', async () => {
+  const f = await fixture({ occupiedKeys: new Set(['builder-main', 'builder-paired']) })
+  try {
+    const admitted = CiRunOutputSchema.parse(await f.value('ci_run', {
+      suite: 'integration', scope: 'full', gate: true, commit: 'a'.repeat(40),
+    }))
+    const read = CiGetOutputSchema.parse(await f.value('ci_get', { ticketId: admitted.ticketId }))
+    expect(read.partitions!.every(run => run.plannedHostKey?.startsWith('cloud-'))).toBe(true)
+    expect(read.partitions!.filter(run => run.suite === 'integration').flatMap(run => run.files).sort())
+      .toEqual([...f.files].sort())
+  } finally { await f.close() }
+})
+
 it('persists a throughput-sized gate through MCP and rejects a read-only caller', async () => {
   const files = Array.from({ length: 700 }, (_, index) => `apps/api/test/feature-${index}.integration.test.ts`)
   const f = await fixture({ files })
